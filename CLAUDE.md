@@ -206,9 +206,28 @@
           | grep "\[Phase N\]"
     Replace N with the current phase number. Every result must be raised with
     the Supervisor and included in the phase plan before any feature work begins.
-    When an item is resolved, remove its TODO comment from the code, move it to
-    the Resolved table in KNOWN_ISSUES.md, and record the fix in DECISIONS.md.
-    Never leave a resolved TODO comment in the code.
+
+    When a KI item is resolved:
+    - Remove the TODO comment from the code entirely. Never leave a resolved
+      TODO in the code.
+    - Remove the row from the Open table in KNOWN_ISSUES.md.
+    - Add it to the Resolved table in KNOWN_ISSUES.md with the phase it was
+      resolved in.
+    - Record the fix in DECISIONS.md.
+    - If the resolved item corresponds to a trade-off entry in DECISIONS.md
+      (D039-D048 range), update that entry to show it was resolved: add
+      "Resolved in: Phase N" and a one-line summary. Do not delete the entry.
+
+    When the Open table in KNOWN_ISSUES.md is empty:
+    - Delete KNOWN_ISSUES.md entirely. Do not leave an empty or Resolved-only file.
+
+    Before any release tag is pushed:
+    - Verify KNOWN_ISSUES.md does not exist. If it exists, all open items must
+      be resolved and the file deleted before the tag is pushed, OR the Supervisor
+      must explicitly approve shipping with known issues and state which items
+      are acceptable.
+    - Never push a release tag with open KI items without explicit Supervisor
+      approval.
 
 ---
 

@@ -58,8 +58,14 @@ def init(
     token: str,
     capture_prompts: bool = False,
     quiet: bool = False,
+    limit: int | None = None,
+    warn_at: float = 0.8,
 ) -> None:
     """Initialize the sensor and start the session.
+
+    ``limit`` sets a local WARN-only token threshold. Never blocks. Never
+    degrades. Most restrictive threshold wins when both local and server
+    policies are active. See DECISIONS.md D035.
 
     Reads from environment (overrides parameters):
 
@@ -94,6 +100,8 @@ def init(
             agent_flavor=os.environ.get("AGENT_FLAVOR", "unknown"),
             agent_type=os.environ.get("AGENT_TYPE", "autonomous"),
             quiet=quiet,
+            limit=limit,
+            warn_at=warn_at,
         )
 
         _client = ControlPlaneClient(

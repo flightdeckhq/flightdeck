@@ -179,7 +179,8 @@ def _pre_call(
     * WARN: logs once, returns original kwargs.
     * ALLOW: returns original kwargs.
     """
-    decision = session.policy.check(session.tokens_used, estimated)
+    result = session.policy.check(session.tokens_used, estimated)
+    decision = result.decision
 
     if decision == PolicyDecision.BLOCK:
         raise BudgetExceededError(

@@ -131,6 +131,9 @@
 30. **capture_prompts defaults to False.** The default init() call never captures
     content. Always verify this default has not been accidentally changed.
 
+31. **init() limit param fires WARN only.** Never upgrade a local limit to BLOCK
+    or DEGRADE regardless of what the server policy says. See DECISIONS.md D035.
+
 ---
 
 ## API and Schema Rules

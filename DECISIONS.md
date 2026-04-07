@@ -451,13 +451,43 @@ Handlers should not depend on a concrete type.
 
 ---
 
-## D034 -- Go module minimum set to 1.24
+## D034 -- Go 1.26 pinned across all modules
 
-**Decision:** `go.mod` uses `go 1.24` across all three Go modules.
-Dockerfiles and CI use `golang:1.24-alpine`.
+**Decision:** `go.mod` uses `go 1.26` across all three Go modules.
+Dockerfiles use `golang:1.26-alpine`. CI uses `go-version: "1.26"`.
 
-**Reasoning:** Go 1.24 is the latest stable release supported by
-golangci-lint in CI. Using a higher version (e.g. 1.25.0 which `go mod tidy`
-auto-set on a 1.26 toolchain) causes CI failures because golangci-lint is
-built with Go 1.24. Pinning to 1.24 ensures compatibility across local dev
-and CI environments.
+**Reasoning:** Using the current stable Go release avoids version mismatch
+issues between `go mod tidy`, Dockerfiles, and CI. Pinning to a fixed version
+(not `latest`) ensures reproducible builds.
+
+---
+
+## D035 -- init() local limit is WARN-only
+
+**Decision:** The `limit`, `warn_at`, and `degrade_to` parameters accepted by
+`init()` only ever fire warnings. They never block or degrade model calls.
+Hard enforcement (BLOCK, DEGRADE) is exclusively a server-side policy concern
+configured in the dashboard.
+
+**Reasoning:** A developer setting a local limit in a script is expressing
+intent and wanting visibility, not writing infrastructure policy. A silent
+block that stops an agent mid-flight because of a local `init()` param would
+be confusing and harmful. Platform engineers retain full control over hard
+enforcement via server policy.
+
+Most-restrictive-wins applies across local and server thresholds: if `init()`
+warns at 80% of 50k and the server warns at 70% of 100k, both fire at their
+respective thresholds. Neither suppresses the other.
+
+---
+
+## D036 -- policy_warn events carry a source field
+
+**Decision:** `policy_warn` events include a `source` field with value
+`"local"` (fired from `init()` limit) or `"server"` (fired from server-side
+policy). Both are stored in the events table and shown in the dashboard
+PolicyEventList with distinct labels.
+
+**Reasoning:** Platform engineers need to distinguish between developers
+self-imposing limits and agents breaching server-enforced budgets. Without
+the source field both look identical in the dashboard.

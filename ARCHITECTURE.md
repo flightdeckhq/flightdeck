@@ -413,9 +413,15 @@ def init(
     token: str,
     capture_prompts: bool = False,   # opt-in only -- see DECISIONS.md D019
     quiet: bool = False,
+    limit: int | None = None,        # local WARN-only token threshold -- see D035
+    warn_at: float = 0.8,            # fire WARN at this fraction of limit
 ) -> None:
     """
     Initialize the sensor.
+
+    limit sets a local WARN-only token threshold. Never blocks. Never degrades.
+    Most restrictive threshold wins when both local and server policies are active.
+    See DECISIONS.md D035.
 
     Reads from environment (override init() params):
         AGENT_FLAVOR                  -- persistent identity, e.g. "research-agent"
@@ -601,6 +607,7 @@ CREATE TABLE events (
     latency_ms      INTEGER,
     tool_name       TEXT,
     has_content     BOOLEAN NOT NULL DEFAULT FALSE,
+    source          TEXT,               -- "local" or "server" on policy_warn events, NULL otherwise
     payload         JSONB,
     occurred_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (id, occurred_at)
@@ -1085,7 +1092,8 @@ their agent appear in the live dashboard timeline in real time.
 
 `sensor/flightdeck_sensor/core/types.py`
 - `SessionState` enum: ACTIVE, IDLE, STALE, CLOSED, LOST
-- `EventType` enum: SESSION_START, SESSION_END, HEARTBEAT, PRE_CALL, POST_CALL, TOOL_CALL
+- `EventType` enum: SESSION_START, SESSION_END, HEARTBEAT, PRE_CALL, POST_CALL, TOOL_CALL, POLICY_WARN
+  - POLICY_WARN events carry a `source` field: `"local"` (from init() limit) or `"server"` (from server policy)
 - `DirectiveAction` enum: SHUTDOWN, SHUTDOWN_FLAVOR, DEGRADE, THROTTLE, POLICY_UPDATE, CHECKPOINT
 - `SensorConfig` dataclass: server, token, capture_prompts (False), unavailable_policy ("continue"), agent_flavor, agent_type, session_id
 - `TokenUsage` dataclass: input_tokens, output_tokens, total property

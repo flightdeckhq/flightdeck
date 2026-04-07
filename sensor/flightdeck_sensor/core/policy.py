@@ -1,24 +1,33 @@
 """Local token budget enforcement cache.
 
-Holds the current policy thresholds (pulled from the control plane via
-directive envelope) and evaluates them on every LLM call.
+Holds both local (init() limit) and server-side policy thresholds.
+Local limits fire WARN only -- never BLOCK or DEGRADE (see D035).
+Server thresholds can fire any action.
 """
 
 from __future__ import annotations
 
 import threading
+from dataclasses import dataclass
 from typing import Any
 
 from flightdeck_sensor.core.types import PolicyDecision
 
 
+@dataclass
+class PolicyResult:
+    """Result of a policy check, including which source triggered it."""
+
+    decision: PolicyDecision
+    source: str | None = None  # "local" or "server", None for ALLOW
+
+
 class PolicyCache:
     """Thread-safe local cache of the token budget policy.
 
-    ``check()`` is called on every LLM call before and after the actual
-    provider request.  It is deliberately cheap -- all data is in memory,
-    no I/O, no locking beyond a fast ``threading.Lock`` for the fire-once
-    flag.
+    Evaluates both local (from ``init(limit=...)``) and server-side
+    thresholds.  Local thresholds only fire WARN -- never BLOCK or DEGRADE.
+    Most-restrictive-wins: whichever threshold fires first takes effect.
     """
 
     def __init__(
@@ -28,57 +37,66 @@ class PolicyCache:
         degrade_at_pct: int = 90,
         block_at_pct: int = 100,
         degrade_to: str | None = None,
+        local_limit: int | None = None,
+        local_warn_at: float = 0.8,
     ) -> None:
+        # Server-side thresholds
         self.token_limit = token_limit
         self.warn_at_pct = warn_at_pct
         self.degrade_at_pct = degrade_at_pct
         self.block_at_pct = block_at_pct
         self.degrade_to = degrade_to
 
-        self._warned = False
+        # Local thresholds (WARN-only, see D035)
+        self.local_limit = local_limit
+        self.local_warn_at = local_warn_at
+
+        self._server_warned = False
+        self._local_warned = False
         self._lock = threading.Lock()
 
-    def check(self, tokens_used: int, estimated: int) -> PolicyDecision:
-        """Evaluate thresholds against *tokens_used* + *estimated*.
+    def check(self, tokens_used: int, estimated: int) -> PolicyResult:
+        """Evaluate all thresholds against *tokens_used* + *estimated*.
 
-        Returns the highest-severity decision that applies:
-
-        * :attr:`PolicyDecision.BLOCK` -- budget exhausted, call must not
-          proceed.
-        * :attr:`PolicyDecision.DEGRADE` -- budget nearly exhausted, swap
-          to a cheaper model.
-        * :attr:`PolicyDecision.WARN` -- approaching limit (fires once
-          per session).
-        * :attr:`PolicyDecision.ALLOW` -- under all thresholds.
+        Server-side thresholds can return BLOCK, DEGRADE, or WARN.
+        Local thresholds only return WARN (never BLOCK/DEGRADE per D035).
+        Most-restrictive fires first within each source.
         """
-        if self.token_limit is None:
-            return PolicyDecision.ALLOW
-
         projected = tokens_used + estimated
-        pct = (projected * 100) // self.token_limit
 
-        if pct >= self.block_at_pct:
-            return PolicyDecision.BLOCK
+        # Server-side evaluation (can BLOCK/DEGRADE/WARN)
+        if self.token_limit is not None and self.token_limit > 0:
+            pct = (projected * 100) // self.token_limit
 
-        if pct >= self.degrade_at_pct:
-            return PolicyDecision.DEGRADE
+            if pct >= self.block_at_pct:
+                return PolicyResult(PolicyDecision.BLOCK, source="server")
 
-        if pct >= self.warn_at_pct:
-            with self._lock:
-                if not self._warned:
-                    self._warned = True
-                    return PolicyDecision.WARN
-            return PolicyDecision.ALLOW
+            if pct >= self.degrade_at_pct:
+                return PolicyResult(PolicyDecision.DEGRADE, source="server")
 
-        return PolicyDecision.ALLOW
+            if pct >= self.warn_at_pct:
+                with self._lock:
+                    if not self._server_warned:
+                        self._server_warned = True
+                        return PolicyResult(PolicyDecision.WARN, source="server")
+
+        # Local evaluation (WARN-only per D035)
+        if self.local_limit is not None and self.local_limit > 0:
+            threshold = int(self.local_limit * self.local_warn_at)
+            if projected >= threshold:
+                with self._lock:
+                    if not self._local_warned:
+                        self._local_warned = True
+                        return PolicyResult(PolicyDecision.WARN, source="local")
+
+        return PolicyResult(PolicyDecision.ALLOW)
 
     def update(self, policy_dict: dict[str, Any]) -> None:
-        """Atomically replace all fields from a directive payload."""
+        """Atomically replace server-side fields from a directive payload."""
         self.token_limit = policy_dict.get("token_limit", self.token_limit)
         self.warn_at_pct = policy_dict.get("warn_at_pct", self.warn_at_pct)
         self.degrade_at_pct = policy_dict.get("degrade_at_pct", self.degrade_at_pct)
         self.block_at_pct = policy_dict.get("block_at_pct", self.block_at_pct)
         self.degrade_to = policy_dict.get("degrade_to", self.degrade_to)
-        # Reset warn flag when policy changes
         with self._lock:
-            self._warned = False
+            self._server_warned = False

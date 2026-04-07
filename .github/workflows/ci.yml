@@ -40,26 +40,26 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.24"
+          go-version: "1.26"
 
       - name: Lint ingestion
         uses: golangci/golangci-lint-action@v6
         with:
-          version: v2.1.6
+          version: latest
           working-directory: ingestion
           args: --timeout=5m
 
       - name: Lint workers
         uses: golangci/golangci-lint-action@v6
         with:
-          version: v2.1.6
+          version: latest
           working-directory: workers
           args: --timeout=5m
 
       - name: Lint api
         uses: golangci/golangci-lint-action@v6
         with:
-          version: v2.1.6
+          version: latest
           working-directory: api
           args: --timeout=5m
 

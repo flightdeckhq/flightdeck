@@ -14,8 +14,8 @@ import urllib.request
 import urllib.error
 import json
 
-INGESTION_URL = "http://localhost:8080"
-API_URL = "http://localhost:8081"
+INGESTION_URL = "http://localhost:4000/ingest"
+API_URL = "http://localhost:4000/api"
 INGEST_HEALTH = f"{INGESTION_URL}/health"
 API_HEALTH = f"{API_URL}/health"
 TOKEN = "tok_dev"

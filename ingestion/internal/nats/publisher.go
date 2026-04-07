@@ -34,6 +34,13 @@ func NewPublisher(nc *nats.Conn) (*Publisher, error) {
 	return &Publisher{js: js}, nil
 }
 
+// TODO(KI02)[Phase 2]: Events are lost if NATS is
+// temporarily unavailable. Publish() returns an error,
+// the sensor retries 3 times then drops the event.
+// Fix: add a local WAL/buffer that stores events when
+// NATS is down and replays them on reconnect.
+// See DECISIONS.md D041.
+
 // Publish sends data to the given NATS subject.
 func (p *Publisher) Publish(subject string, data []byte) error {
 	_, err := p.js.Publish(subject, data)

@@ -6,8 +6,12 @@ No ``requests``, no ``httpx`` -- zero required dependencies.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
+import queue
+import threading
+import time
 import urllib.request
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -122,3 +126,88 @@ class ControlPlaneClient:
         except (KeyError, ValueError) as exc:
             _log.warning("Malformed directive in response: %s (%s)", raw, exc)
             return None
+
+
+# ------------------------------------------------------------------
+# Non-blocking event queue
+# ------------------------------------------------------------------
+
+_MAX_QUEUE_SIZE = 1000
+_SENTINEL = object()
+
+
+class EventQueue:
+    """Non-blocking event queue with background drain thread.
+
+    The interceptor calls :meth:`enqueue` which never blocks.
+    A daemon thread drains the queue and calls
+    :meth:`ControlPlaneClient.post_event`.
+    """
+
+    def __init__(self, client: ControlPlaneClient) -> None:
+        self._client = client
+        self._queue: queue.Queue[dict[str, Any] | object] = queue.Queue(
+            maxsize=_MAX_QUEUE_SIZE,
+        )
+        self._thread = threading.Thread(
+            target=self._drain_loop,
+            daemon=True,
+            name="flightdeck-event-queue",
+        )
+        self._thread.start()
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def enqueue(self, payload: dict[str, Any]) -> None:
+        """Put *payload* on queue.  Never blocks.  Never raises."""
+        try:
+            self._queue.put_nowait(payload)
+        except queue.Full:
+            # Drop oldest, enqueue new
+            with contextlib.suppress(queue.Empty):
+                self._queue.get_nowait()
+            with contextlib.suppress(queue.Full):
+                self._queue.put_nowait(payload)
+            _log.warning(
+                "Event queue full (%d), dropped oldest event",
+                _MAX_QUEUE_SIZE,
+            )
+
+    def flush(self, timeout: float = 5.0) -> None:
+        """Drain remaining items synchronously.  Called on session end."""
+        deadline = time.monotonic() + timeout
+        while not self._queue.empty() and time.monotonic() < deadline:
+            try:
+                item = self._queue.get_nowait()
+                if item is _SENTINEL:
+                    break
+                self._client.post_event(item)  # type: ignore[arg-type]
+            except queue.Empty:
+                break
+            except Exception:
+                _log.debug("flush post_event failed", exc_info=True)
+
+    def close(self) -> None:
+        """Stop the drain thread."""
+        self._queue.put(_SENTINEL)
+        self._thread.join(timeout=5)
+
+    # ------------------------------------------------------------------
+    # Internals
+    # ------------------------------------------------------------------
+
+    def _drain_loop(self) -> None:
+        """Background thread: drain queue, post events."""
+        while True:
+            try:
+                item = self._queue.get(timeout=1.0)
+            except queue.Empty:
+                continue
+            if item is _SENTINEL:
+                break
+            try:
+                self._client.post_event(item)  # type: ignore[arg-type]
+            except Exception:
+                _log.debug("drain post_event failed", exc_info=True)

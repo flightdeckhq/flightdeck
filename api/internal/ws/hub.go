@@ -4,14 +4,18 @@ package ws
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 const notifyChannel = "flightdeck_fleet"
+
+const notifyReconnectDelay = 3 * time.Second
 
 const broadcastChannelBuffer = 256
 
@@ -102,6 +106,14 @@ func (h *Hub) Unregister(client *Client) {
 	h.unregister <- client
 }
 
+// TODO(KI08)[Phase 2]: Every NOTIFY broadcasts to all
+// connected dashboard clients regardless of what they
+// are viewing. At 500 users × 10k events/min this is
+// 5M messages/min.
+// Fix: clients subscribe to specific flavors. Only
+// broadcast relevant updates per client.
+// See DECISIONS.md D044.
+
 // Broadcast sends a message to all connected clients.
 func (h *Hub) Broadcast(msg []byte) {
 	h.broadcast <- msg
@@ -122,20 +134,18 @@ func WritePump(client *Client) {
 	}
 }
 
-// ListenNotify subscribes to the Postgres NOTIFY channel and broadcasts
-// each notification payload to all connected WebSocket clients.
-func (h *Hub) ListenNotify(ctx context.Context, pool *pgxpool.Pool) {
+// listenOnce acquires a connection, issues LISTEN, and blocks reading
+// notifications until an error occurs or ctx is cancelled.
+func (h *Hub) listenOnce(ctx context.Context, pool *pgxpool.Pool) error {
 	conn, err := pool.Acquire(ctx)
 	if err != nil {
-		slog.Error("acquire conn for LISTEN", "err", err)
-		return
+		return fmt.Errorf("acquire conn for LISTEN: %w", err)
 	}
 	defer conn.Release()
 
 	_, err = conn.Exec(ctx, "LISTEN "+notifyChannel)
 	if err != nil {
-		slog.Error("LISTEN failed", "channel", notifyChannel, "err", err)
-		return
+		return fmt.Errorf("LISTEN failed: %w", err)
 	}
 
 	slog.Info("listening on Postgres NOTIFY", "channel", notifyChannel)
@@ -143,13 +153,29 @@ func (h *Hub) ListenNotify(ctx context.Context, pool *pgxpool.Pool) {
 	for {
 		notification, err := conn.Conn().WaitForNotification(ctx)
 		if err != nil {
-			if ctx.Err() != nil {
-				return // Context cancelled -- clean shutdown
-			}
-			slog.Error("wait for notification", "err", err)
+			return fmt.Errorf("wait for notification: %w", err)
+		}
+		h.Broadcast([]byte(notification.Payload))
+	}
+}
+
+// ListenNotify subscribes to the Postgres NOTIFY channel with automatic
+// reconnection on failure. Blocks until ctx is cancelled.
+func (h *Hub) ListenNotify(ctx context.Context, pool *pgxpool.Pool) {
+	for {
+		if ctx.Err() != nil {
 			return
 		}
-
-		h.Broadcast([]byte(notification.Payload))
+		if err := h.listenOnce(ctx, pool); err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			slog.Error("NOTIFY listener error, reconnecting", "delay", notifyReconnectDelay, "err", err)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(notifyReconnectDelay):
+			}
+		}
 	}
 }

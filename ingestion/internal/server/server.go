@@ -25,7 +25,7 @@ func New(
 	mux := http.NewServeMux()
 
 	mux.Handle("POST /v1/events", handlers.EventsHandler(validator, publisher, dirStore))
-	mux.Handle("POST /v1/heartbeat", handlers.HeartbeatHandler(validator, publisher))
+	mux.Handle("POST /v1/heartbeat", handlers.HeartbeatHandler(validator, publisher, dirStore))
 	mux.Handle("GET /health", handlers.HealthHandler())
 
 	return &http.Server{

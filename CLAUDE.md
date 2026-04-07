@@ -198,6 +198,18 @@
     turns out to be untestable, overconstrained, or based on a wrong assumption,
     raise it with the Supervisor. Do not silently skip a criterion.
 
+47. **At the start of every phase, run this command:**
+        grep -rn "TODO(KI" . \
+          --include="*.go" \
+          --include="*.py" \
+          --include="*.ts" \
+          | grep "\[Phase N\]"
+    Replace N with the current phase number. Every result must be raised with
+    the Supervisor and included in the phase plan before any feature work begins.
+    When an item is resolved, remove its TODO comment from the code, move it to
+    the Resolved table in KNOWN_ISSUES.md, and record the fix in DECISIONS.md.
+    Never leave a resolved TODO comment in the code.
+
 ---
 
 ## Git Rules

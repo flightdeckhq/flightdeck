@@ -13,6 +13,7 @@ import (
 func HeartbeatHandler(
 	validator TokenValidator,
 	publisher EventPublisher,
+	dirStore DirectiveLookup,
 ) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		token := extractBearerToken(r)
@@ -56,7 +57,16 @@ func HeartbeatHandler(
 			return
 		}
 
+		// Look up pending directive for this session
+		resp := map[string]any{"status": "ok", "directive": nil}
+		d, lookupErr := dirStore.LookupPending(r.Context(), sessionID)
+		if lookupErr != nil {
+			slog.Error("directive lookup error", "session_id", sessionID, "err", lookupErr)
+		} else if d != nil {
+			resp["directive"] = d
+		}
+
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+		_ = json.NewEncoder(w).Encode(resp)
 	}
 }

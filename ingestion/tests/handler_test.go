@@ -155,6 +155,7 @@ func TestHeartbeatHandler_ValidToken_Returns200(t *testing.T) {
 	handler := handlers.HeartbeatHandler(
 		&mockValidator{valid: true},
 		&mockPublisher{},
+		&mockDirStore{directive: nil},
 	)
 	body := `{"session_id":"abc-123"}`
 	req := httptest.NewRequest("POST", "/v1/heartbeat", bytes.NewBufferString(body))
@@ -164,5 +165,37 @@ func TestHeartbeatHandler_ValidToken_Returns200(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Errorf("expected 200, got %d", w.Code)
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["status"] != "ok" {
+		t.Errorf("expected status=ok, got %v", resp["status"])
+	}
+	if resp["directive"] != nil {
+		t.Errorf("expected nil directive, got %v", resp["directive"])
+	}
+}
+
+func TestHeartbeatHandler_PendingDirective_ReturnsDirective(t *testing.T) {
+	handler := handlers.HeartbeatHandler(
+		&mockValidator{valid: true},
+		&mockPublisher{},
+		&mockDirStore{directive: &handlers.DirectiveResponse{
+			Action: "shutdown", Reason: "kill", GracePeriodMs: 5000,
+		}},
+	)
+	body := `{"session_id":"abc-123"}`
+	req := httptest.NewRequest("POST", "/v1/heartbeat", bytes.NewBufferString(body))
+	req.Header.Set("Authorization", "Bearer valid-token")
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["directive"] == nil {
+		t.Error("expected directive in response, got nil")
 	}
 }

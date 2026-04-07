@@ -25,6 +25,12 @@ func NewSessionProcessor(w *writer.Writer, pool *pgxpool.Pool) *SessionProcessor
 	return &SessionProcessor{w: w, pool: pool}
 }
 
+// TODO(KI05)[Phase 2]: No session state transition guards.
+// A replayed event could resurrect a lost or closed session.
+// Fix: reject events for sessions in terminal states
+// (closed, lost). Check current state before any upsert.
+// See DECISIONS.md D042.
+
 // HandleSessionStart upserts the agent and creates a new session.
 func (sp *SessionProcessor) HandleSessionStart(ctx context.Context, e consumer.EventPayload) error {
 	if err := sp.w.UpsertAgent(ctx, e.Flavor, e.AgentType); err != nil {

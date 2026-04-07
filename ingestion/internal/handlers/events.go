@@ -36,6 +36,11 @@ type DirectiveResponse struct {
 	GracePeriodMs int    `json:"grace_period_ms"`
 }
 
+// TODO(KI04)[Phase 2]: No rate limiting on ingestion API.
+// A misbehaving sensor could flood the system with events.
+// Fix: add per-token rate limiting middleware.
+// See DECISIONS.md D048.
+
 // EventsHandler handles POST /v1/events.
 func EventsHandler(
 	validator TokenValidator,

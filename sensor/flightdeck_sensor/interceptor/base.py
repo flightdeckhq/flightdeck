@@ -235,7 +235,7 @@ def _post_call(
     with contextlib.suppress(Exception):
         resp_model = getattr(response, "model", "") or resp_model
 
-    session.post_call_event(
+    session.post_call_event_async(
         event_type=EventType.POST_CALL,
         usage=usage,
         model=resp_model,

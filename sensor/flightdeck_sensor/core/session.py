@@ -28,7 +28,7 @@ from flightdeck_sensor.core.types import (
 )
 
 if TYPE_CHECKING:
-    from flightdeck_sensor.transport.client import ControlPlaneClient
+    from flightdeck_sensor.transport.client import ControlPlaneClient, EventQueue
 
 _log = logging.getLogger("flightdeck_sensor.core.session")
 
@@ -43,9 +43,15 @@ class Session:
         self,
         config: SensorConfig,
         client: ControlPlaneClient,
+        event_queue: EventQueue | None = None,
     ) -> None:
         self.config = config
         self.client = client
+
+        # Lazy import to avoid circular dependency at module level.
+        from flightdeck_sensor.transport.client import EventQueue as LocalEventQueue
+
+        self.event_queue: EventQueue = event_queue or LocalEventQueue(client)
         self.policy = PolicyCache(
             local_limit=config.limit,
             local_warn_at=config.warn_at,
@@ -66,6 +72,12 @@ class Session:
     # Public API
     # ------------------------------------------------------------------
 
+    # TODO(KI01)[Phase 2]: PolicyCache is empty until first
+    # directive arrives in a response envelope. First LLM call
+    # always runs ungoverned with no server policy.
+    # Fix: add preflight GET /v1/policy call during init() to
+    # populate PolicyCache before the first LLM call is made.
+    # See DECISIONS.md D040.
     def start(self) -> None:
         """Fire SESSION_START and begin the heartbeat daemon thread."""
         self._post_event(EventType.SESSION_START)
@@ -90,6 +102,8 @@ class Session:
         if self._heartbeat_thread is not None:
             self._heartbeat_thread.join(timeout=_HEARTBEAT_JOIN_TIMEOUT_SECS)
         self._post_event(EventType.SESSION_END)
+        self.event_queue.flush()
+        self.event_queue.close()
         self.client.close()
         if not self.config.quiet:
             _log.info(
@@ -133,6 +147,28 @@ class Session:
             latency_ms=latency_ms,
             tool_name=tool_name,
         )
+
+    def post_call_event_async(
+        self,
+        event_type: EventType,
+        usage: TokenUsage,
+        model: str,
+        latency_ms: int,
+        tool_name: str | None = None,
+    ) -> None:
+        """Enqueue a call event (non-blocking).  Used on the hot path."""
+        self.record_usage(usage)
+        self.record_model(model)
+        payload = self._build_payload(
+            event_type,
+            model=model,
+            tokens_input=usage.input_tokens,
+            tokens_output=usage.output_tokens,
+            tokens_total=usage.total,
+            latency_ms=latency_ms,
+            tool_name=tool_name,
+        )
+        self.event_queue.enqueue(payload)
 
     def get_status(self) -> StatusResponse:
         """Build a status snapshot of the current session."""
@@ -258,6 +294,13 @@ class Session:
     # Process exit handlers
     # ------------------------------------------------------------------
 
+    # TODO(KI09)[Phase 3]: SIGKILL bypasses all handlers.
+    # Session never transitions to closed. Worker reconciler
+    # marks it stale after 2min, lost after 10min. Up to 12min
+    # of phantom active state.
+    # This is untrappable by design. Document the staleness
+    # window clearly in operator runbooks.
+    # See DECISIONS.md D039.
     def _register_handlers(self) -> None:
         """Register atexit and signal handlers for clean shutdown."""
         atexit.register(self.end)

@@ -8,18 +8,37 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/flightdeckhq/flightdeck/ingestion/internal/auth"
-	"github.com/flightdeckhq/flightdeck/ingestion/internal/directive"
 	inats "github.com/flightdeckhq/flightdeck/ingestion/internal/nats"
 )
 
+// TokenValidator validates bearer tokens.
+type TokenValidator interface {
+	Validate(ctx context.Context, rawToken string) (bool, error)
+}
+
+// EventPublisher publishes event payloads to a message queue.
+type EventPublisher interface {
+	Publish(subject string, data []byte) error
+}
+
+// DirectiveLookup finds pending directives for a session.
+type DirectiveLookup interface {
+	LookupPending(ctx context.Context, sessionID string) (*DirectiveResponse, error)
+}
+
+// DirectiveResponse is the directive payload returned in the response envelope.
+type DirectiveResponse struct {
+	ID            string `json:"id"`
+	Action        string `json:"action"`
+	Reason        string `json:"reason"`
+	GracePeriodMs int    `json:"grace_period_ms"`
+}
+
 // EventsHandler handles POST /v1/events.
-// Validates the bearer token, parses the event payload, publishes to NATS,
-// looks up pending directives, and returns the response envelope.
 func EventsHandler(
-	validator *auth.Validator,
-	publisher *inats.Publisher,
-	dirStore *directive.Store,
+	validator TokenValidator,
+	publisher EventPublisher,
+	dirStore DirectiveLookup,
 ) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
@@ -42,7 +61,7 @@ func EventsHandler(
 		}
 
 		// Parse body
-		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20)) // 1 MB limit
+		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "unable to read request body")
 			return
@@ -78,7 +97,7 @@ func EventsHandler(
 	}
 }
 
-func buildResponse(ctx context.Context, dirStore *directive.Store, sessionID string) map[string]any {
+func buildResponse(ctx context.Context, dirStore DirectiveLookup, sessionID string) map[string]any {
 	resp := map[string]any{
 		"status":    "ok",
 		"directive": nil,

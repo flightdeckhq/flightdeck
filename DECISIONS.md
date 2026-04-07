@@ -422,3 +422,72 @@ doubling each attempt, capped at 30s.
 many clients disconnect simultaneously (e.g. control plane restart).
 Exponential backoff spreads reconnect load. The shorter initial interval
 (1s vs 3s) also means faster recovery for transient blips.
+
+---
+
+## D032 -- Handler interfaces for testability (ingestion)
+
+**Decision:** Introduced `TokenValidator`, `EventPublisher`, and
+`DirectiveLookup` interfaces in ingestion handlers so handlers can accept
+mocks in tests. Concrete implementations (`auth.Validator`, `nats.Publisher`,
+`directive.Store`) implement these implicitly via Go duck typing. A
+`directiveAdapter` in `cmd/main.go` bridges the `directive.Directive` to
+`handlers.DirectiveResponse` type gap.
+
+**Reasoning:** Go's interface-based dependency injection is the idiomatic
+pattern for testable HTTP handlers. Without interfaces, handlers require
+real NATS and Postgres connections to test.
+
+---
+
+## D033 -- Store Querier interface (api)
+
+**Decision:** Introduced `store.Querier` interface so api handlers accept
+either the real Postgres-backed store or a mock. `WrapStore()` is a
+pass-through helper.
+
+**Reasoning:** Same rationale as D032 -- idiomatic Go testability pattern.
+Handlers should not depend on a concrete type.
+
+---
+
+## D034 -- Go 1.26 pinned across all modules
+
+**Decision:** `go.mod` uses `go 1.26` across all three Go modules.
+Dockerfiles use `golang:1.26-alpine`. CI uses `go-version: "1.26"`.
+
+**Reasoning:** Using the current stable Go release avoids version mismatch
+issues between `go mod tidy`, Dockerfiles, and CI. Pinning to a fixed version
+(not `latest`) ensures reproducible builds.
+
+---
+
+## D035 -- init() local limit is WARN-only
+
+**Decision:** The `limit`, `warn_at`, and `degrade_to` parameters accepted by
+`init()` only ever fire warnings. They never block or degrade model calls.
+Hard enforcement (BLOCK, DEGRADE) is exclusively a server-side policy concern
+configured in the dashboard.
+
+**Reasoning:** A developer setting a local limit in a script is expressing
+intent and wanting visibility, not writing infrastructure policy. A silent
+block that stops an agent mid-flight because of a local `init()` param would
+be confusing and harmful. Platform engineers retain full control over hard
+enforcement via server policy.
+
+Most-restrictive-wins applies across local and server thresholds: if `init()`
+warns at 80% of 50k and the server warns at 70% of 100k, both fire at their
+respective thresholds. Neither suppresses the other.
+
+---
+
+## D036 -- policy_warn events carry a source field
+
+**Decision:** `policy_warn` events include a `source` field with value
+`"local"` (fired from `init()` limit) or `"server"` (fired from server-side
+policy). Both are stored in the events table and shown in the dashboard
+PolicyEventList with distinct labels.
+
+**Reasoning:** Platform engineers need to distinguish between developers
+self-imposing limits and agents breaching server-enforced budgets. Without
+the source field both look identical in the dashboard.

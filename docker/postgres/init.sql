@@ -77,6 +77,7 @@ CREATE TABLE events (
     latency_ms      INTEGER,
     tool_name       TEXT,
     has_content     BOOLEAN NOT NULL DEFAULT FALSE,
+    source          TEXT,               -- Phase 1 revision: "local" or "server" on policy_warn events, NULL otherwise
     payload         JSONB,
     occurred_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (id, occurred_at)

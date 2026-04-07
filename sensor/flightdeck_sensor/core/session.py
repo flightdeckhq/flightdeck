@@ -45,7 +45,10 @@ class Session:
     ) -> None:
         self.config = config
         self.client = client
-        self.policy = PolicyCache()
+        self.policy = PolicyCache(
+            local_limit=config.limit,
+            local_warn_at=config.warn_at,
+        )
 
         self._state = SessionState.ACTIVE
         self._tokens_used = 0

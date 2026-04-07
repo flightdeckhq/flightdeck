@@ -9,8 +9,7 @@ import (
 )
 
 // FleetHandler handles GET /v1/fleet.
-// Returns all sessions grouped by flavor, excluding lost sessions.
-func FleetHandler(s *store.Store) http.HandlerFunc {
+func FleetHandler(s store.Querier) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		flavors, err := s.GetFleet(r.Context())
 		if err != nil {

@@ -18,7 +18,11 @@ class SessionState(enum.Enum):
 
 
 class EventType(enum.Enum):
-    """All event types the sensor can emit."""
+    """All event types the sensor can emit.
+
+    POLICY_WARN events carry a ``source`` field: ``"local"`` (from init() limit)
+    or ``"server"`` (from server-side policy).
+    """
 
     SESSION_START = "session_start"
     SESSION_END = "session_end"
@@ -26,6 +30,7 @@ class EventType(enum.Enum):
     PRE_CALL = "pre_call"
     POST_CALL = "post_call"
     TOOL_CALL = "tool_call"
+    POLICY_WARN = "policy_warn"
 
 
 class DirectiveAction(enum.Enum):
@@ -72,6 +77,8 @@ class SensorConfig:
     agent_type: str = "autonomous"
     session_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     quiet: bool = False
+    limit: int | None = None
+    warn_at: float = 0.8
 
 
 @dataclass(frozen=True)

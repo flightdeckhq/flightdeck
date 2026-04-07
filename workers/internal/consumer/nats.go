@@ -64,6 +64,16 @@ func (c *Consumer) Start(ctx context.Context) error {
 		return fmt.Errorf("jetstream context: %w", err)
 	}
 
+	// Ensure the stream exists (may be created by ingestion first, or by us)
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     streamName,
+		Subjects: []string{"events.>"},
+		Storage:  nats.FileStorage,
+	})
+	if err != nil {
+		return fmt.Errorf("ensure stream %s: %w", streamName, err)
+	}
+
 	sub, err := js.PullSubscribe(subjectAll, durableName, nats.MaxDeliver(maxDeliver))
 	if err != nil {
 		return fmt.Errorf("pull subscribe: %w", err)

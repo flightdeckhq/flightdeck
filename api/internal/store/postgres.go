@@ -12,6 +12,17 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// Querier is the interface for fleet data access.
+// Implemented by Store (Postgres) and mocks in tests.
+type Querier interface {
+	GetFleet(ctx context.Context) ([]FlavorSummary, error)
+	GetSession(ctx context.Context, sessionID string) (*Session, error)
+	GetSessionEvents(ctx context.Context, sessionID string) ([]Event, error)
+}
+
+// WrapStore returns a Querier from any compatible implementation.
+func WrapStore(q Querier) Querier { return q }
+
 // Store provides read queries for the fleet dashboard.
 type Store struct {
 	pool *pgxpool.Pool

@@ -30,7 +30,7 @@ jobs:
         run: ruff check flightdeck_sensor/
 
       - name: Unit tests
-        run: pytest tests/unit/ -v
+        run: pytest tests/ -v
 
   go:
     name: Go (ingestion, workers, api)
@@ -40,28 +40,22 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.22"
+          go-version: "1.26"
 
-      - name: Install golangci-lint
-        uses: golangci/golangci-lint-action@v6
-        with:
-          version: latest
-          working-directory: ingestion
-          args: --timeout=5m
+      - name: Install golangci-lint v2
+        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+
+      - name: Lint ingestion
+        working-directory: ingestion
+        run: golangci-lint run ./... --timeout=5m
 
       - name: Lint workers
-        uses: golangci/golangci-lint-action@v6
-        with:
-          version: latest
-          working-directory: workers
-          args: --timeout=5m
+        working-directory: workers
+        run: golangci-lint run ./... --timeout=5m
 
       - name: Lint api
-        uses: golangci/golangci-lint-action@v6
-        with:
-          version: latest
-          working-directory: api
-          args: --timeout=5m
+        working-directory: api
+        run: golangci-lint run ./... --timeout=5m
 
       - name: Test ingestion
         working-directory: ingestion

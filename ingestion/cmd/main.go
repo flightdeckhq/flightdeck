@@ -15,11 +15,30 @@ import (
 	"github.com/flightdeckhq/flightdeck/ingestion/internal/auth"
 	"github.com/flightdeckhq/flightdeck/ingestion/internal/config"
 	"github.com/flightdeckhq/flightdeck/ingestion/internal/directive"
+	"github.com/flightdeckhq/flightdeck/ingestion/internal/handlers"
 	inats "github.com/flightdeckhq/flightdeck/ingestion/internal/nats"
 	"github.com/flightdeckhq/flightdeck/ingestion/internal/server"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go"
 )
+
+// directiveAdapter wraps directive.Store to satisfy handlers.DirectiveLookup.
+type directiveAdapter struct {
+	store *directive.Store
+}
+
+func (a *directiveAdapter) LookupPending(ctx context.Context, sessionID string) (*handlers.DirectiveResponse, error) {
+	d, err := a.store.LookupPending(ctx, sessionID)
+	if err != nil || d == nil {
+		return nil, err
+	}
+	return &handlers.DirectiveResponse{
+		ID:            d.ID,
+		Action:        d.Action,
+		Reason:        d.Reason,
+		GracePeriodMs: d.GracePeriodMs,
+	}, nil
+}
 
 func main() {
 	cfg := config.Load()
@@ -47,7 +66,7 @@ func main() {
 	}
 
 	validator := auth.NewValidator(pool)
-	dirStore := directive.NewStore(pool)
+	dirStore := &directiveAdapter{store: directive.NewStore(pool)}
 
 	addr := fmt.Sprintf(":%s", cfg.Port)
 	srv := server.New(addr, validator, publisher, dirStore)

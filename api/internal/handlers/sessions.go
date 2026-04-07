@@ -10,10 +10,8 @@ import (
 )
 
 // SessionsHandler handles GET /v1/sessions/{id}.
-// Returns session metadata and all events in chronological order.
-func SessionsHandler(s *store.Store) http.HandlerFunc {
+func SessionsHandler(s store.Querier) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// Extract session ID from path: /v1/sessions/{id}
 		id := strings.TrimPrefix(r.URL.Path, "/v1/sessions/")
 		if id == "" {
 			writeError(w, http.StatusBadRequest, "session id is required")

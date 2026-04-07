@@ -58,8 +58,14 @@ def init(
     token: str,
     capture_prompts: bool = False,
     quiet: bool = False,
+    limit: int | None = None,
+    warn_at: float = 0.8,
 ) -> None:
     """Initialize the sensor and start the session.
+
+    ``limit`` sets a local WARN-only token threshold. Never blocks. Never
+    degrades. Most restrictive threshold wins when both local and server
+    policies are active. See DECISIONS.md D035.
 
     Reads from environment (overrides parameters):
 
@@ -76,10 +82,17 @@ def init(
                 _log.warning("flightdeck_sensor.init() called twice; ignoring")
             return
 
+        resolved_server = os.environ.get("FLIGHTDECK_SERVER", server)
+        resolved_token = os.environ.get("FLIGHTDECK_TOKEN", token)
+        if not resolved_server:
+            raise ConfigurationError("server URL is required")
+        if not resolved_token:
+            raise ConfigurationError("token is required")
+
         capture = _env_bool("FLIGHTDECK_CAPTURE_PROMPTS", capture_prompts)
         config = SensorConfig(
-            server=os.environ.get("FLIGHTDECK_SERVER", server),
-            token=os.environ.get("FLIGHTDECK_TOKEN", token),
+            server=resolved_server,
+            token=resolved_token,
             capture_prompts=capture,
             unavailable_policy=os.environ.get(
                 "FLIGHTDECK_UNAVAILABLE_POLICY", "continue"
@@ -87,6 +100,8 @@ def init(
             agent_flavor=os.environ.get("AGENT_FLAVOR", "unknown"),
             agent_type=os.environ.get("AGENT_TYPE", "autonomous"),
             quiet=quiet,
+            limit=limit,
+            warn_at=warn_at,
         )
 
         _client = ControlPlaneClient(

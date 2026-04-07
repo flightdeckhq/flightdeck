@@ -3,21 +3,21 @@
 
 services:
   ingestion:
-    image: golang:1.25-alpine
+    image: golang:1.26-alpine
     working_dir: /app
     command: ["go", "run", "./cmd/"]
     volumes:
       - ../ingestion:/app
 
   workers:
-    image: golang:1.25-alpine
+    image: golang:1.26-alpine
     working_dir: /app
     command: ["go", "run", "./cmd/"]
     volumes:
       - ../workers:/app
 
   api:
-    image: golang:1.25-alpine
+    image: golang:1.26-alpine
     working_dir: /app
     command: ["go", "run", "./cmd/"]
     volumes:

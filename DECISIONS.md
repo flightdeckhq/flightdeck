@@ -717,14 +717,16 @@ hand-written specs drift from code.
 
 ---
 
-## D051 -- Standalone smoke test script
+## D051 -- Smoke test deferred to Phase 5
 
-**Decision:** Smoke test is a plain Python script (`tests/smoke/smoke_test.py`),
-not pytest. Runs like developer documentation. Scenarios are commentable.
-Output is human-readable PASS/FAIL per check. API keys are read from
-environment only and are never printed or logged.
+**Decision:** The end-to-end smoke test will be written after Phase 5 closes
+when all product features exist.
 
-**Reasoning:** The smoke test simulates a real developer using Flightdeck.
-It should read and run like user code, not like a test framework. pytest
-adds friction and obscures what the test is actually doing. Inspired by
-tokencap's smoke_test.py pattern.
+**Reasoning:** A smoke test for a platform is only meaningful when the platform
+is feature-complete. Writing it incrementally per phase creates maintenance
+overhead and tests a hollow product. The script will be written once and cover
+the full workflow: instrument an agent, observe in fleet, set policy, enforce,
+kill switch, prompt capture, analytics. Inspired by tokencap's smoke_test.py
+pattern but adapted for a platform product rather than a standalone library.
+
+**Address in:** Phase 5.

@@ -1,4 +1,4 @@
-.PHONY: help build test test-integration test-smoke lint dev dev-reset down logs release
+.PHONY: help build test test-integration lint dev dev-reset down logs release
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-12s %s\n", $$1, $$2}'
@@ -14,9 +14,6 @@ test: ## Run all unit tests
 	$(MAKE) -C ingestion test
 	$(MAKE) -C workers test
 	$(MAKE) -C api test
-
-test-smoke: ## Run smoke test (requires API keys + make dev)
-	python tests/smoke/smoke_test.py
 
 test-integration: ## Run integration tests (requires running stack)
 	$(MAKE) -C docker dev

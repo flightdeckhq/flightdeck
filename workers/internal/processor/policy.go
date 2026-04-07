@@ -124,7 +124,8 @@ func (pe *PolicyEvaluator) cachePolicy(key string, p *CachedPolicy) {
 	pe.cache[key] = p
 }
 
-func (pe *PolicyEvaluator) hasFired(sessionID, directiveType string) bool {
+// HasFired checks if a directive type has already fired for a session.
+func (pe *PolicyEvaluator) HasFired(sessionID, directiveType string) bool {
 	pe.firedMu.RLock()
 	defer pe.firedMu.RUnlock()
 	if m, ok := pe.fired[sessionID]; ok {
@@ -133,7 +134,8 @@ func (pe *PolicyEvaluator) hasFired(sessionID, directiveType string) bool {
 	return false
 }
 
-func (pe *PolicyEvaluator) markFired(sessionID, directiveType string) {
+// MarkFired records that a directive type has fired for a session.
+func (pe *PolicyEvaluator) MarkFired(sessionID, directiveType string) {
 	pe.firedMu.Lock()
 	defer pe.firedMu.Unlock()
 	if pe.fired[sessionID] == nil {
@@ -176,16 +178,16 @@ func (pe *PolicyEvaluator) Evaluate(ctx context.Context, sessionID string) error
 
 	// Check degrade threshold (fire-once per session)
 	if policy.DegradeAtPct != nil && pctUsed >= int64(*policy.DegradeAtPct) {
-		if !pe.hasFired(sessionID, "degrade") {
-			pe.markFired(sessionID, "degrade")
+		if !pe.HasFired(sessionID, "degrade") {
+			pe.MarkFired(sessionID, "degrade")
 			return pe.writeDirective(ctx, sessionID, flavor, "degrade", "token_budget_degrade", policy.DegradeTo)
 		}
 	}
 
 	// Check warn threshold (fire-once per session)
 	if policy.WarnAtPct != nil && pctUsed >= int64(*policy.WarnAtPct) {
-		if !pe.hasFired(sessionID, "warn") {
-			pe.markFired(sessionID, "warn")
+		if !pe.HasFired(sessionID, "warn") {
+			pe.MarkFired(sessionID, "warn")
 			return pe.writeDirective(ctx, sessionID, flavor, "warn", "token_budget_warning", nil)
 		}
 	}

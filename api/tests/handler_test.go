@@ -57,6 +57,14 @@ func (m *mockStore) GetEffectivePolicy(_ context.Context, flavor, _ string) (*st
 			TokenLimit: &limit, WarnAtPct: &warn,
 		}, nil
 	}
+	if flavor == "org-fallback-flavor" {
+		// No flavor policy exists, but an org-scoped policy does
+		limit := int64(50000)
+		return &store.Policy{
+			ID: "pol-org", Scope: "org", ScopeValue: "",
+			TokenLimit: &limit,
+		}, nil
+	}
 	return nil, nil
 }
 
@@ -196,6 +204,35 @@ func TestEffectivePolicyHandler_Returns404WhenNone(t *testing.T) {
 	s := &mockStore{}
 	handler := handlers.EffectivePolicyHandler(store.WrapStore(s))
 	req := httptest.NewRequest("GET", "/v1/policy?flavor=unknown", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d", w.Code)
+	}
+}
+
+func TestEffectivePolicyHandler_FallsBackToOrg(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.EffectivePolicyHandler(store.WrapStore(s))
+	// "org-fallback-flavor" has no flavor policy but mock returns org-scoped policy
+	req := httptest.NewRequest("GET", "/v1/policy?flavor=org-fallback-flavor", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200 (org fallback), got %d", w.Code)
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["scope"] != "org" {
+		t.Errorf("expected org scope in fallback, got %v", resp["scope"])
+	}
+}
+
+func TestEffectivePolicyHandler_Returns404NoPolicy(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.EffectivePolicyHandler(store.WrapStore(s))
+	// "nonexistent" has no policy at any scope
+	req := httptest.NewRequest("GET", "/v1/policy?flavor=nonexistent", nil)
 	w := httptest.NewRecorder()
 	handler(w, req)
 	if w.Code != http.StatusNotFound {

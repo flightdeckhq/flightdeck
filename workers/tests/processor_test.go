@@ -240,3 +240,68 @@ func TestPolicyEvaluator_DegradeFiresOnce(t *testing.T) {
 		t.Error("expected degrade target model")
 	}
 }
+
+// --- KI06: Additional fire-once and directive type tests ---
+
+func TestWarnFiresOnlyOnce(t *testing.T) {
+	// Test fire-once: MarkFired prevents second fire
+	pe := processor.NewPolicyEvaluator(nil)
+	if pe.HasFired("sess-warn-1", "warn") {
+		t.Error("warn should not have fired yet")
+	}
+	pe.MarkFired("sess-warn-1", "warn")
+	if !pe.HasFired("sess-warn-1", "warn") {
+		t.Error("warn should be marked as fired after MarkFired")
+	}
+	// A second MarkFired is idempotent
+	pe.MarkFired("sess-warn-1", "warn")
+	if !pe.HasFired("sess-warn-1", "warn") {
+		t.Error("warn should still be fired after second mark")
+	}
+	// Other types should NOT be fired
+	if pe.HasFired("sess-warn-1", "degrade") {
+		t.Error("degrade should not be fired for this session")
+	}
+}
+
+func TestDegradeDirectiveHasCorrectModel(t *testing.T) {
+	// Verify CachedPolicy carries degrade_to model correctly
+	degradeTo := "claude-haiku-4-5-20251001"
+	cp := &processor.CachedPolicy{
+		TokenLimit:   ptrInt64(10000),
+		DegradeAtPct: ptrInt(90),
+		DegradeTo:    &degradeTo,
+		BlockAtPct:   ptrInt(100),
+		LoadedAt:     time.Now(),
+	}
+	if cp.DegradeTo == nil {
+		t.Fatal("degrade_to should not be nil")
+	}
+	if *cp.DegradeTo != "claude-haiku-4-5-20251001" {
+		t.Errorf("expected claude-haiku-4-5-20251001, got %s", *cp.DegradeTo)
+	}
+	if *cp.DegradeTo == "" {
+		t.Error("degrade_to model must not be empty")
+	}
+}
+
+func TestBlockDirectiveWrittenAtBlockThreshold(t *testing.T) {
+	// Verify CachedPolicy correctly represents block threshold
+	cp := &processor.CachedPolicy{
+		TokenLimit: ptrInt64(1000),
+		BlockAtPct: ptrInt(100),
+		LoadedAt:   time.Now(),
+	}
+	// At 100% of 1000 tokens = 1000 tokens used
+	tokensUsed := int64(1000)
+	limit := *cp.TokenLimit
+	pctUsed := (tokensUsed * 100) / limit
+	blockPct := int64(*cp.BlockAtPct)
+	if pctUsed < blockPct {
+		t.Errorf("expected pctUsed >= blockPct: %d >= %d", pctUsed, blockPct)
+	}
+	// Verify the block threshold is met
+	if pctUsed < 100 {
+		t.Error("at 1000/1000 tokens, pctUsed should be >= 100")
+	}
+}

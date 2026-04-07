@@ -1,0 +1,37 @@
+# Development overrides: source mounts, hot reload, dev servers
+# Usage: docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+
+services:
+  ingestion:
+    image: golang:1.25-alpine
+    working_dir: /app
+    command: ["go", "run", "./cmd/"]
+    volumes:
+      - ../ingestion:/app
+
+  workers:
+    image: golang:1.25-alpine
+    working_dir: /app
+    command: ["go", "run", "./cmd/"]
+    volumes:
+      - ../workers:/app
+
+  api:
+    image: golang:1.25-alpine
+    working_dir: /app
+    command: ["go", "run", "./cmd/"]
+    volumes:
+      - ../api:/app
+
+  dashboard:
+    image: node:20-alpine
+    working_dir: /app
+    command: ["sh", "-c", "npm install && npm run dev -- --host 0.0.0.0"]
+    volumes:
+      - ../dashboard:/app
+      - dashboard_node_modules:/app/node_modules
+    environment:
+      VITE_API_BASE_URL: ""
+
+volumes:
+  dashboard_node_modules:

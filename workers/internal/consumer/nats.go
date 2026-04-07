@@ -1,0 +1,120 @@
+// Package consumer provides a NATS JetStream consumer goroutine pool.
+package consumer
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"sync"
+
+	"github.com/nats-io/nats.go"
+)
+
+const (
+	streamName   = "FLIGHTDECK"
+	durableName  = "flightdeck-workers"
+	subjectAll   = "events.>"
+	maxDeliver   = 3
+)
+
+// EventPayload is the raw event received from NATS.
+type EventPayload struct {
+	SessionID       string          `json:"session_id"`
+	Flavor          string          `json:"flavor"`
+	AgentType       string          `json:"agent_type"`
+	EventType       string          `json:"event_type"`
+	Host            string          `json:"host"`
+	Framework       string          `json:"framework"`
+	Model           string          `json:"model"`
+	TokensInput     *int            `json:"tokens_input"`
+	TokensOutput    *int            `json:"tokens_output"`
+	TokensTotal     *int            `json:"tokens_total"`
+	TokensUsedSess  int             `json:"tokens_used_session"`
+	TokenLimitSess  *int            `json:"token_limit_session"`
+	LatencyMs       *int            `json:"latency_ms"`
+	ToolName        *string         `json:"tool_name"`
+	HasContent      bool            `json:"has_content"`
+	Content         json.RawMessage `json:"content"`
+	Timestamp       string          `json:"timestamp"`
+}
+
+// Processor processes a single event payload.
+type Processor interface {
+	Process(ctx context.Context, event EventPayload) error
+}
+
+// Consumer subscribes to NATS JetStream and dispatches events
+// to a Processor using a goroutine pool.
+type Consumer struct {
+	nc        *nats.Conn
+	poolSize  int
+	processor Processor
+}
+
+// New creates a Consumer.
+func New(nc *nats.Conn, poolSize int, processor Processor) *Consumer {
+	return &Consumer{nc: nc, poolSize: poolSize, processor: processor}
+}
+
+// Start begins consuming messages. Blocks until ctx is cancelled.
+func (c *Consumer) Start(ctx context.Context) error {
+	js, err := c.nc.JetStream()
+	if err != nil {
+		return fmt.Errorf("jetstream context: %w", err)
+	}
+
+	sub, err := js.PullSubscribe(subjectAll, durableName, nats.MaxDeliver(maxDeliver))
+	if err != nil {
+		return fmt.Errorf("pull subscribe: %w", err)
+	}
+
+	var wg sync.WaitGroup
+	for i := range c.poolSize {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			c.worker(ctx, sub, workerID)
+		}(i)
+	}
+
+	<-ctx.Done()
+	wg.Wait()
+	return nil
+}
+
+func (c *Consumer) worker(ctx context.Context, sub *nats.Subscription, id int) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		msgs, err := sub.Fetch(1, nats.MaxWait(nats.DefaultTimeout))
+		if err != nil {
+			if err == nats.ErrTimeout || err == context.Canceled {
+				continue
+			}
+			slog.Error("fetch error", "worker", id, "err", err)
+			continue
+		}
+
+		for _, msg := range msgs {
+			var event EventPayload
+			if err := json.Unmarshal(msg.Data, &event); err != nil {
+				slog.Error("unmarshal error", "worker", id, "err", err)
+				_ = msg.Term()
+				continue
+			}
+
+			if err := c.processor.Process(ctx, event); err != nil {
+				slog.Error("process error", "worker", id, "event_type", event.EventType, "err", err)
+				_ = msg.Nak()
+				continue
+			}
+
+			_ = msg.Ack()
+		}
+	}
+}

@@ -312,6 +312,32 @@ analytics page code does not change -- only the storage engine underneath.
 
 ---
 
+## D024 -- Anthropic cache tokens included in input token total
+
+**Decision:** `AnthropicProvider.extract_usage()` sums `cache_read_input_tokens`
+and `cache_creation_input_tokens` into the input token total.
+
+**Reasoning:** Cache tokens are real tokens consumed and billed by Anthropic.
+Excluding them would cause the sensor to undercount actual usage for agents using
+prompt caching, which would make token enforcement fire later than intended and
+give the fleet dashboard inaccurate consumption numbers. The total must reflect
+what the provider actually processed.
+
+---
+
+## D025 -- Windows SIGINT handler skipped
+
+**Decision:** SIGINT handler registration is skipped on Windows
+(`os.name == "nt"`). SIGTERM is still registered. atexit covers clean shutdown
+on all platforms.
+
+**Reasoning:** Python on Windows does not support SIGINT in signal handlers the
+same way Unix does. Attempting to register it raises an error. The atexit handler
+provides equivalent clean shutdown coverage on Windows. This is a platform
+constraint, not a design choice.
+
+---
+
 ## D023 -- Provider terminology preserved in prompt capture
 
 **Decision:** Prompt content is stored and displayed using the provider's own
@@ -326,3 +352,73 @@ exactly what was sent -- no translation layer to reason about.
 
 The `PromptViewer` component in the dashboard handles provider-specific rendering:
 Anthropic shows system separately, OpenAI shows all messages in sequence.
+
+---
+
+## D026 -- NATS pull-based subscription
+
+**Decision:** Consumer uses pull-based JetStream subscription (`PullSubscribe`
+with `Fetch(1)`) rather than push-based.
+
+**Reasoning:** Pull-based gives explicit backpressure control. Each worker
+goroutine fetches one message at a time and only proceeds after ack/nack. This
+is the standard JetStream pattern for durable consumers. Push-based subscriptions
+can overwhelm slow consumers and require more complex flow control logic.
+
+---
+
+## D027 -- Directive lookup covers session and flavor scope in one query
+
+**Decision:** `LookupPending` checks `session_id = X OR flavor = (SELECT flavor
+FROM sessions WHERE session_id = X)` in a single query.
+
+**Reasoning:** Both session-specific and fleet-wide directives must be picked up
+on each sensor POST. A single query is more efficient and avoids a race condition
+between two separate lookups where a directive could be inserted between the
+session-scoped and flavor-scoped reads.
+
+---
+
+## D028 -- GuardedStream.__exit__ returns None
+
+**Decision:** `GuardedStream.__exit__` returns `None` instead of `bool`.
+
+**Reasoning:** mypy strict requires `Literal[False]` or `None` for `__exit__`
+methods that never suppress exceptions. `None` is equivalent to `False` at
+runtime and satisfies the type checker without requiring a cast or `Literal`
+import.
+
+---
+
+## D029 -- Go 1.22 stdlib ServeMux over third-party router
+
+**Decision:** Used Go 1.22 `net/http` ServeMux method routing syntax
+(`mux.Handle("POST /v1/events", ...)`) instead of adding chi or gorilla/mux.
+
+**Reasoning:** Stdlib routing is sufficient for the number of routes in each
+service. Keeping dependencies minimal reduces the attack surface and simplifies
+the Go module graph. Go 1.22 added method-aware routing to the standard library,
+eliminating the primary reason third-party routers were previously needed.
+
+---
+
+## D030 -- StartReconciler delegated through Processor
+
+**Decision:** `Processor` exposes `StartReconciler()` which delegates to
+`SessionProcessor.StartReconciler()`. `main.go` only knows about `Processor`.
+
+**Reasoning:** Keeps `main.go` decoupled from internal processor types. The
+wiring stays clean without requiring the entry point to import internal
+packages directly.
+
+---
+
+## D031 -- WebSocket exponential backoff over fixed 3s interval
+
+**Decision:** `useWebSocket.ts` uses exponential backoff starting at 1s,
+doubling each attempt, capped at 30s.
+
+**Reasoning:** A fixed 3s reconnect interval causes a thundering herd if
+many clients disconnect simultaneously (e.g. control plane restart).
+Exponential backoff spreads reconnect load. The shorter initial interval
+(1s vs 3s) also means faster recovery for transient blips.

@@ -61,7 +61,10 @@ flightdeck/
 ├── ARCHITECTURE.md             # This file -- read before writing any code
 ├── DECISIONS.md                # Why decisions were made, alternatives rejected
 ├── CLAUDE.md                   # Standing rules for Claude Code sessions
-├── CONTRIBUTING.md             # Contributor guide
+├── CONTRIBUTING.md             # Contributor guide: setup, tests, PR process
+├── RELEASING.md                # How to cut a release: version bump, tag, verify
+├── METHODOLOGY.md              # Supervisor/Executor build methodology
+├── CHANGELOG.md                # Version history
 ├── README.md                   # User-facing documentation
 ├── Makefile                    # Root Makefile -- orchestrates all components
 │
@@ -179,9 +182,13 @@ flightdeck/
 │   ├── Makefile
 │   ├── Dockerfile
 │   ├── nginx.conf
+│   ├── index.html              # Root HTML, theme class on html element
 │   ├── vite.config.ts
 │   ├── tsconfig.json
 │   ├── package.json
+│   ├── postcss.config.js       # Tailwind + Autoprefixer
+│   ├── tailwind.config.js      # CSS variable-based theme colors
+│   ├── eslint.config.js        # ESLint 9 flat config
 │   ├── src/
 │   │   ├── main.tsx
 │   │   ├── App.tsx             # Root: theme provider, router, WebSocket init
@@ -230,17 +237,19 @@ flightdeck/
 │   │   │       ├── tooltip.tsx
 │   │   │       └── ...
 │   │   ├── hooks/
-│   │   │   ├── useFleet.ts       # Fleet state: WebSocket + REST initial load
+│   │   │   ├── useFleet.ts       # Fleet state: WebSocket init, REST initial load, live updates
 │   │   │   ├── useSession.ts     # Session event history + prompt content
 │   │   │   ├── useAnalytics.ts   # Analytics queries with dimension/metric/range params
 │   │   │   ├── useSearch.ts      # Debounced search query
-│   │   │   └── useWebSocket.ts   # WebSocket with auto-reconnect (3s)
+│   │   │   └── useWebSocket.ts   # WebSocket with auto-reconnect (exponential backoff: 1s→2s→4s, cap 30s)
 │   │   ├── store/
 │   │   │   └── fleet.ts          # Zustand: fleet state, session map, WebSocket stream
 │   │   ├── lib/
 │   │   │   ├── api.ts            # Typed fetch wrappers for all endpoints
 │   │   │   ├── time.ts           # Time scale helpers (d3-scale + d3-time math only)
-│   │   │   └── types.ts          # TypeScript types mirroring all backend schemas
+│   │   │   ├── types.ts          # TypeScript types mirroring all backend schemas
+│   │   │   └── utils.ts          # cn() helper (clsx + tailwind-merge)
+│   │   ├── vite-env.d.ts         # Vite client type reference
 │   │   └── styles/
 │   │       ├── globals.css       # CSS variables for both themes -- NEVER casually edit
 │   │       └── themes.css        # Neon dark + clean light theme definitions
@@ -328,12 +337,12 @@ flightdeck/
 │   │   ├── linux.sh
 │   │   ├── macos.sh
 │   │   └── windows.ps1
-│   └── release.sh
+│   └── release.sh              # Validate, bump version, tag, push → triggers CI
 │
 └── .github/
     └── workflows/
-        ├── ci.yml
-        └── release.yml
+        ├── ci.yml              # Test + lint on every PR (all components in parallel)
+        ├── release.yml         # On version tag: publish PyPI + Docker Hub + GitHub release
 ```
 
 ---
@@ -1014,7 +1023,65 @@ their agent appear in the live dashboard timeline in real time.
 > this phase. If a task bleeds into policy enforcement, directives, kill switch,
 > analytics, or prompt capture, stop and raise it with the Supervisor.
 
-**Deliverables:**
+**Deliverables -- Repo documentation (create before any code is merged):**
+
+`METHODOLOGY.md`
+- Full writeup of the Supervisor/Executor methodology used to build this project
+- Mirrors the structure of AI Ranger's METHODOLOGY.md
+- Three roles table, external memory section, two loops, prompt examples, audit prompt
+
+`CONTRIBUTING.md`
+- How to set up the development environment
+- How to run tests per component
+- Commit message convention (conventional commits)
+- PR process and branch naming
+- How to add a new agent framework integration to the sensor
+
+`RELEASING.md`
+- Step-by-step guide for cutting a release
+- How to bump the sensor version in pyproject.toml
+- How to tag and push (triggers CI release pipeline)
+- What the release pipeline does automatically
+- How to verify the PyPI publish succeeded
+
+`CHANGELOG.md`
+- v0.0.1 entry: PyPI stub reservation
+- v0.1.0 entry: Phase 1 deliverables (filled in when Phase 1 ships)
+
+**Deliverables -- Release pipeline:**
+
+`.github/workflows/release.yml`
+- Triggers on version tag push (`v*.*.*`)
+- Job 1 -- publish sensor to PyPI:
+  - Uses OIDC trusted publishing (no stored API key)
+  - PyPI project owner: pykul account
+  - Builds with `python -m build`, uploads with twine
+  - Only runs when tag is on main branch
+- Job 2 -- build and push Docker images:
+  - Builds ingestion, workers, api, dashboard Dockerfiles
+  - Pushes to Docker Hub under `flightdeckhq/flightdeck-ingestion`,
+    `flightdeckhq/flightdeck-workers`, `flightdeckhq/flightdeck-api`,
+    `flightdeckhq/flightdeck-dashboard`
+  - Tags: `latest` and the version tag (e.g. `v0.1.0`)
+  - Uses `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` repository secrets
+- Job 3 -- create GitHub release:
+  - Auto-generates release notes from commits since previous tag
+  - Attaches nothing (binaries are on PyPI and Docker Hub)
+
+`scripts/release.sh`
+- Validates working tree is clean
+- Confirms current branch is main
+- Prompts for version (e.g. `v0.1.0`)
+- Updates `version` in `sensor/pyproject.toml`
+- Commits the version bump: `chore: release v0.1.0`
+- Creates and pushes the tag
+- Pushing the tag triggers `.github/workflows/release.yml`
+
+`docker/docker-compose.yml` (update)
+- Image references use `flightdeckhq/flightdeck-*:latest` so users can
+  `make dev` without building from source after images are published
+
+**Deliverables -- already listed (carry forward):**
 
 `sensor/flightdeck_sensor/core/types.py`
 - `SessionState` enum: ACTIVE, IDLE, STALE, CLOSED, LOST
@@ -1158,7 +1225,7 @@ their agent appear in the live dashboard timeline in real time.
 `ingestion/internal/handlers/events.go`
 - `POST /v1/events`: validate Bearer token, parse payload, publish to NATS, look up pending directive, return 200
 - Returns `{"status":"ok","directive":null}` or `{"status":"ok","directive":{...}}`
-- Returns 401 on invalid token, 400 on invalid payload, never 500 to caller
+- Never exposes internal error details to callers. Returns `{"error": "internal server error"}` with the appropriate HTTP status code (401, 400, 500) depending on the failure type
 
 `ingestion/internal/handlers/heartbeat.go`
 - `POST /v1/heartbeat`: validate token, publish heartbeat to NATS, return 200
@@ -1308,7 +1375,7 @@ their agent appear in the live dashboard timeline in real time.
 
 ---
 
-`dashboard/src/App.tsx` -- router, theme provider, WebSocket init
+`dashboard/src/App.tsx` -- router, theme provider
 `dashboard/src/pages/Fleet.tsx` -- primary view layout
 `dashboard/src/components/timeline/Timeline.tsx` -- primary surface
 `dashboard/src/components/timeline/SwimLane.tsx`
@@ -1321,9 +1388,9 @@ their agent appear in the live dashboard timeline in real time.
 `dashboard/src/components/session/SessionTimeline.tsx`
 `dashboard/src/components/session/EventDetail.tsx`
 `dashboard/src/components/session/TokenUsageBar.tsx`
-`dashboard/src/hooks/useFleet.ts`
+`dashboard/src/hooks/useFleet.ts` -- WebSocket init, REST initial load, live updates
 `dashboard/src/hooks/useSession.ts`
-`dashboard/src/hooks/useWebSocket.ts`
+`dashboard/src/hooks/useWebSocket.ts` -- exponential backoff: 1s→2s→4s, cap 30s
 `dashboard/src/store/fleet.ts` -- Zustand store
 `dashboard/src/lib/api.ts`
 `dashboard/src/lib/time.ts`
@@ -1368,9 +1435,9 @@ their agent appear in the live dashboard timeline in real time.
 
 * `make dev` completes successfully and all 7 services report healthy
 * Dashboard opens at `http://localhost:4000` with no console errors
-* Adding two lines to a test agent script causes the agent to appear in the timeline
-  within 5 seconds of starting
-* Session state updates to active → idle → stale → lost/closed correctly
+* Adding two lines to a test agent script causes the agent to appear in the
+  timeline within 5 seconds of starting
+* Session state updates active → idle → stale → lost/closed correctly
   (verified by integration tests)
 * GET /v1/fleet returns correct session counts grouped by flavor
 * WS /v1/stream delivers state change within 2 seconds of the Postgres write
@@ -1385,15 +1452,26 @@ their agent appear in the live dashboard timeline in real time.
 * api: `golangci-lint run ./...` passes with zero errors
 * dashboard: `npm run typecheck` passes with zero errors
 * dashboard: `npm run lint` passes with zero errors
-* sensor unit test count: minimum 30 tests covering session lifecycle,
-  policy cache, interceptor paths, transport, and both providers
+* sensor unit test count: minimum 30 tests
 * Go unit test count: minimum 20 tests across ingestion, workers, api
 * Timeline renders swim lanes for each unique AGENT_FLAVOR in fleet
 * SessionDrawer opens on node click and shows chronological event list
 * FleetPanel shows live counts updated via WebSocket
-* Both neon dark theme renders without errors (light theme is Phase 4)
+* Neon dark theme renders without errors
 * `.github/workflows/ci.yml` exists and triggers on pull_request to main
 * CI runs sensor, Go, and dashboard test jobs in parallel
+* `.github/workflows/release.yml` exists with correct PyPI OIDC config
+  and Docker Hub image build/push jobs
+* `scripts/release.sh` exists, validates clean tree, updates pyproject.toml
+  version, commits, tags, and pushes
+* `make release VERSION=v0.1.0` triggers the full release pipeline
+* `METHODOLOGY.md`, `CONTRIBUTING.md`, `RELEASING.md`, `CHANGELOG.md`
+  all exist with substantive content
+* Docker Hub images `flightdeckhq/flightdeck-ingestion`,
+  `flightdeckhq/flightdeck-workers`, `flightdeckhq/flightdeck-api`,
+  `flightdeckhq/flightdeck-dashboard` are published and pullable
+* `pip install flightdeck-sensor` installs the stub package (v0.0.1
+  already published; v0.1.0 published by release pipeline on Phase 1 tag)
 
 ---
 

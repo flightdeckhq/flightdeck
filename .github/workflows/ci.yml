@@ -1,0 +1,101 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  sensor:
+    name: Sensor (Python)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sensor
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -e ".[dev,anthropic,openai]"
+
+      - name: mypy --strict
+        run: mypy flightdeck_sensor/ --strict
+
+      - name: ruff check
+        run: ruff check flightdeck_sensor/
+
+      - name: Unit tests
+        run: pytest tests/unit/ -v
+
+  go:
+    name: Go (ingestion, workers, api)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+
+      - name: Install golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          working-directory: ingestion
+          args: --timeout=5m
+
+      - name: Lint workers
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          working-directory: workers
+          args: --timeout=5m
+
+      - name: Lint api
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          working-directory: api
+          args: --timeout=5m
+
+      - name: Test ingestion
+        working-directory: ingestion
+        run: go test ./... -v
+
+      - name: Test workers
+        working-directory: workers
+        run: go test ./... -v
+
+      - name: Test api
+        working-directory: api
+        run: go test ./... -v
+
+  dashboard:
+    name: Dashboard (TypeScript)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dashboard
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Unit tests
+        run: npm run test

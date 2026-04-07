@@ -1,0 +1,102 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-flightdeck}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-flightdeck_dev}
+      POSTGRES_DB: ${POSTGRES_DB:-flightdeck}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-flightdeck}"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  nats:
+    image: nats:2.10-alpine
+    command: ["--jetstream", "--store_dir", "/data"]
+    volumes:
+      - nats_data:/data
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    healthcheck:
+      test: ["CMD", "nats-server", "--signal", "ldm"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  ingestion:
+    image: flightdeckhq/flightdeck-ingestion:latest
+    environment:
+      FLIGHTDECK_PORT: "8080"
+      FLIGHTDECK_POSTGRES_URL: postgres://flightdeck:flightdeck_dev@postgres:5432/flightdeck?sslmode=disable
+      FLIGHTDECK_NATS_URL: nats://nats:4222
+      FLIGHTDECK_ENV: development
+      SHUTDOWN_TIMEOUT_SECS: "30"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  workers:
+    image: flightdeckhq/flightdeck-workers:latest
+    environment:
+      FLIGHTDECK_POSTGRES_URL: postgres://flightdeck:flightdeck_dev@postgres:5432/flightdeck?sslmode=disable
+      FLIGHTDECK_NATS_URL: nats://nats:4222
+      FLIGHTDECK_WORKER_POOL_SIZE: "10"
+      SHUTDOWN_TIMEOUT_SECS: "30"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+
+  api:
+    image: flightdeckhq/flightdeck-api:latest
+    environment:
+      FLIGHTDECK_PORT: "8081"
+      FLIGHTDECK_POSTGRES_URL: postgres://flightdeck:flightdeck_dev@postgres:5432/flightdeck?sslmode=disable
+      FLIGHTDECK_ENV: development
+      SHUTDOWN_TIMEOUT_SECS: "30"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8081/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  dashboard:
+    image: flightdeckhq/flightdeck-dashboard:latest
+    ports:
+      - "3000:3000"
+
+  nginx:
+    image: nginx:1.25-alpine
+    volumes:
+      - ./nginx/nginx.dev.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "4000:4000"
+    depends_on:
+      - dashboard
+      - api
+      - ingestion
+
+volumes:
+  postgres_data:
+  nats_data:

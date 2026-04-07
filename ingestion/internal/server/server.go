@@ -1,0 +1,55 @@
+// Package server provides the HTTP server for the ingestion API.
+package server
+
+import (
+	"log/slog"
+	"net/http"
+	"time"
+
+	"github.com/flightdeckhq/flightdeck/ingestion/internal/auth"
+	"github.com/flightdeckhq/flightdeck/ingestion/internal/directive"
+	"github.com/flightdeckhq/flightdeck/ingestion/internal/handlers"
+	inats "github.com/flightdeckhq/flightdeck/ingestion/internal/nats"
+)
+
+// New creates the HTTP server with all routes registered.
+func New(
+	addr string,
+	validator *auth.Validator,
+	publisher *inats.Publisher,
+	dirStore *directive.Store,
+) *http.Server {
+	mux := http.NewServeMux()
+
+	mux.Handle("POST /v1/events", handlers.EventsHandler(validator, publisher, dirStore))
+	mux.Handle("POST /v1/heartbeat", handlers.HeartbeatHandler(validator, publisher))
+	mux.Handle("GET /health", handlers.HealthHandler())
+
+	return &http.Server{
+		Addr:         addr,
+		Handler:      withLogging(withRecovery(mux)),
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 10 * time.Second,
+		IdleTimeout:  60 * time.Second,
+	}
+}
+
+func withRecovery(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if err := recover(); err != nil {
+				slog.Error("panic recovered", "err", err, "path", r.URL.Path)
+				http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
+}
+
+func withLogging(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		next.ServeHTTP(w, r)
+		slog.Debug("request", "method", r.Method, "path", r.URL.Path, "duration", time.Since(start))
+	})
+}

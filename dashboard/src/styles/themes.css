@@ -1,0 +1,26 @@
+/* Neon dark theme -- signature Flightdeck look */
+.theme-neon-dark {
+  --bg: #0a0a0f;
+  --surface: #12121a;
+  --surface-hover: #1a1a28;
+  --border: #1e1e30;
+  --text: #e4e4ef;
+  --text-muted: #6b6b8a;
+  --primary: #7c5cff;
+  --primary-glow: rgba(124, 92, 255, 0.25);
+  --accent: #00e5a0;
+  --accent-glow: rgba(0, 229, 160, 0.2);
+  --success: #00e5a0;
+  --warning: #ffb224;
+  --danger: #ff4d6a;
+  --node-active: #00e5a0;
+  --node-idle: #7c5cff;
+  --node-stale: #ffb224;
+  --node-closed: #6b6b8a;
+  --node-lost: #ff4d6a;
+}
+
+/* Clean light theme -- Phase 4 */
+.theme-clean-light {
+  /* Phase 4: light theme variables will be defined here */
+}

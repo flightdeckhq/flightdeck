@@ -12,6 +12,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+const reconcilerInterval = 60 * time.Second
+
 // SessionProcessor manages the session state machine in Postgres.
 type SessionProcessor struct {
 	w    *writer.Writer
@@ -22,6 +24,12 @@ type SessionProcessor struct {
 func NewSessionProcessor(w *writer.Writer, pool *pgxpool.Pool) *SessionProcessor {
 	return &SessionProcessor{w: w, pool: pool}
 }
+
+// TODO(KI05)[Phase 2]: No session state transition guards.
+// A replayed event could resurrect a lost or closed session.
+// Fix: reject events for sessions in terminal states
+// (closed, lost). Check current state before any upsert.
+// See DECISIONS.md D042.
 
 // HandleSessionStart upserts the agent and creates a new session.
 func (sp *SessionProcessor) HandleSessionStart(ctx context.Context, e consumer.EventPayload) error {
@@ -67,7 +75,7 @@ func (sp *SessionProcessor) HandleSessionEnd(ctx context.Context, e consumer.Eve
 
 // StartReconciler runs a background loop every 60s to mark stale/lost sessions.
 func (sp *SessionProcessor) StartReconciler(ctx context.Context) {
-	ticker := time.NewTicker(60 * time.Second)
+	ticker := time.NewTicker(reconcilerInterval)
 	defer ticker.Stop()
 
 	for {

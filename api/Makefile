@@ -4,6 +4,7 @@ help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-12s %s\n", $$1, $$2}'
 
 build: ## Build the api binary
+	swag init -g cmd/main.go -o docs
 	go build -o bin/api ./cmd/
 
 run: ## Run the query API locally

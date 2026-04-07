@@ -9,6 +9,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+const blockThresholdPct = 100
+
 // PolicyEvaluator checks token thresholds after each post_call event.
 // When a threshold is crossed it writes a directive to the directives table.
 // It does NOT deliver the directive -- the ingestion API picks it up on the
@@ -21,6 +23,13 @@ type PolicyEvaluator struct {
 func NewPolicyEvaluator(pool *pgxpool.Pool) *PolicyEvaluator {
 	return &PolicyEvaluator{pool: pool}
 }
+
+// TODO(KI06)[Phase 2]: Policy evaluation hits Postgres on
+// every post_call event. At 100 events/s this is 100
+// queries/s.
+// Fix: cache policy in worker memory, refresh only on
+// policy_update directive. Avoid per-event DB queries.
+// See DECISIONS.md D043.
 
 // Evaluate checks the session's token usage against any applicable policy.
 // Writes a directive to the directives table when block_at_pct is crossed.
@@ -67,7 +76,7 @@ func (pe *PolicyEvaluator) Evaluate(ctx context.Context, sessionID string) error
 	}
 
 	pctUsed := (tokensUsed * 100) / *tokenLimit
-	if pctUsed >= 100 {
+	if pctUsed >= blockThresholdPct {
 		// Check if a block directive already exists for this session
 		var exists bool
 		err := pe.pool.QueryRow(ctx, `

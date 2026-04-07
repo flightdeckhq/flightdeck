@@ -7,6 +7,15 @@ import (
 	"time"
 
 	"github.com/flightdeckhq/flightdeck/ingestion/internal/handlers"
+	httpSwagger "github.com/swaggo/http-swagger/v2"
+
+	_ "github.com/flightdeckhq/flightdeck/ingestion/docs"
+)
+
+const (
+	serverReadTimeout  = 10 * time.Second
+	serverWriteTimeout = 10 * time.Second
+	serverIdleTimeout  = 60 * time.Second
 )
 
 // New creates the HTTP server with all routes registered.
@@ -19,15 +28,16 @@ func New(
 	mux := http.NewServeMux()
 
 	mux.Handle("POST /v1/events", handlers.EventsHandler(validator, publisher, dirStore))
-	mux.Handle("POST /v1/heartbeat", handlers.HeartbeatHandler(validator, publisher))
+	mux.Handle("POST /v1/heartbeat", handlers.HeartbeatHandler(validator, publisher, dirStore))
 	mux.Handle("GET /health", handlers.HealthHandler())
+	mux.Handle("GET /docs/", httpSwagger.WrapHandler)
 
 	return &http.Server{
 		Addr:         addr,
 		Handler:      withLogging(withRecovery(mux)),
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 10 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		ReadTimeout:  serverReadTimeout,
+		WriteTimeout: serverWriteTimeout,
+		IdleTimeout:  serverIdleTimeout,
 	}
 }
 

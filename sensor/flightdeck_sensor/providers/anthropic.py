@@ -17,6 +17,9 @@ if TYPE_CHECKING:
 
 _log = logging.getLogger("flightdeck_sensor.providers.anthropic")
 
+_DEFAULT_COUNT_TOKENS_MODEL = "claude-sonnet-4-20250514"
+_CHARS_PER_TOKEN_ESTIMATE = 4
+
 
 class AnthropicProvider:
     """Provider adapter for the Anthropic Python SDK.
@@ -24,6 +27,8 @@ class AnthropicProvider:
     All methods are safe to call on the hot path.  None of them raise
     exceptions -- failures return zero/empty defaults.
     """
+
+    _client: Any = None
 
     def __init__(self, capture_prompts: bool = False) -> None:
         self._capture_prompts = capture_prompts
@@ -39,16 +44,17 @@ class AnthropicProvider:
         try:
             import anthropic as _anthropic
 
-            client = _anthropic.Anthropic()
-            count: int = client.messages.count_tokens(
-                model=request_kwargs.get("model", "claude-sonnet-4-20250514"),
+            if AnthropicProvider._client is None:
+                AnthropicProvider._client = _anthropic.Anthropic()
+            count: int = AnthropicProvider._client.messages.count_tokens(
+                model=request_kwargs.get("model", _DEFAULT_COUNT_TOKENS_MODEL),
                 messages=request_kwargs.get("messages", []),
                 system=request_kwargs.get("system", ""),
                 tools=request_kwargs.get("tools", []),
             ).input_tokens
             return count
         except Exception:
-            pass
+            _log.debug("SDK count_tokens failed, using char heuristic", exc_info=True)
 
         # Fallback: character-based heuristic
         try:
@@ -56,8 +62,9 @@ class AnthropicProvider:
             system = request_kwargs.get("system", "")
             tools = request_kwargs.get("tools", [])
             text = str(messages) + str(system) + str(tools)
-            return len(text) // 4
+            return len(text) // _CHARS_PER_TOKEN_ESTIMATE
         except Exception:
+            _log.debug("char estimation failed", exc_info=True)
             return 0
 
     def extract_usage(self, response: Any) -> TokenUsage:

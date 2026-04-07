@@ -451,14 +451,22 @@ Handlers should not depend on a concrete type.
 
 ---
 
-## D034 -- Go 1.26 pinned across all modules
+## D034 -- Go version pinned to 1.26
 
-**Decision:** `go.mod` uses `go 1.26` across all three Go modules.
-Dockerfiles use `golang:1.26-alpine`. CI uses `go-version: "1.26"`.
+**Decision:** All Go modules use `go 1.26` in go.mod. Dockerfiles use
+`golang:1.26-alpine`. CI uses `go-version: "1.26"`. golangci-lint v2
+installed via `go install` to match.
 
-**Reasoning:** Using the current stable Go release avoids version mismatch
-issues between `go mod tidy`, Dockerfiles, and CI. Pinning to a fixed version
-(not `latest`) ensures reproducible builds.
+**Progression:** 1.22 (original ARCHITECTURE.md) → 1.24 (attempted
+golangci-lint v1 compat) → 1.25 (go mod tidy auto-set on 1.26 toolchain)
+→ 1.26 (final pin matching installed toolchain). The 1.24 attempt failed
+because pgx v5.9.1 requires go >= 1.25. The 1.25 attempt failed because
+golangci-lint v1.64.8 was built with Go 1.24 and rejected go 1.25 modules.
+Pinning to 1.26 with golangci-lint v2 resolved all incompatibilities.
+
+**Reasoning:** Using a fixed version matching the development toolchain
+ensures `go mod tidy` doesn't drift the directive. All Dockerfiles,
+go.mod files, CI, and docker-compose.dev.yml are updated.
 
 ---
 
@@ -491,3 +499,234 @@ PolicyEventList with distinct labels.
 **Reasoning:** Platform engineers need to distinguish between developers
 self-imposing limits and agents breaching server-enforced budgets. Without
 the source field both look identical in the dashboard.
+
+---
+
+## D037 -- Event posting moved off LLM call hot path
+
+**Decision:** Introduced `EventQueue` in `transport/client.py`. The interceptor
+calls `enqueue()` which puts the event on a `threading.Queue` and returns
+immediately. A background daemon thread drains the queue and calls
+`post_event()`. `Session.end()` calls `flush()` to drain remaining events
+before exit.
+
+**Reasoning:** The previous design called `post_event()` synchronously from
+`interceptor/base.py._post_call()`, which is on the LLM call return path.
+A slow or unreachable control plane could block the agent for up to 35 seconds
+(3 retries × 10s timeout + backoff). This violated the sensor's core design
+principle: never add meaningful latency to the agent's hot path.
+
+---
+
+## D038 -- Postgres NOTIFY listener auto-reconnects
+
+**Decision:** `ListenNotify()` in `api/internal/ws/hub.go` wraps the listen
+logic in a reconnection loop. On any error it waits 3 seconds and re-acquires
+a connection + re-LISTENs. The loop exits cleanly on context cancellation.
+
+**Reasoning:** The previous implementation returned on any error with no
+reconnection. A transient Postgres connection drop permanently silenced the
+real-time dashboard until the API process was restarted. The reconnection
+loop ensures the dashboard recovers automatically.
+
+---
+
+## D039 -- SIGKILL phantom session state (accepted trade-off)
+
+**Decision:** Accepted as known trade-off for Phase 1.
+
+**Risk:** Medium. SIGKILL bypasses all handlers. Session never transitions
+to closed. Worker reconciler marks it stale after 2min, lost after 10min.
+Up to 12min of phantom "active" state.
+
+**Mitigation:** SIGKILL is untrappable by design. The reconciler handles
+this case. The staleness window should be documented in operator runbooks.
+
+**Address in:** Phase 3 (operator documentation).
+**Code location:** `sensor/flightdeck_sensor/core/session.py:_register_handlers`
+
+---
+
+## D040 -- PolicyCache empty on first call (accepted trade-off)
+
+**Decision:** Accepted as known trade-off for Phase 1.
+
+**Risk:** Medium. PolicyCache is empty until the first directive arrives
+in a response envelope. First LLM call always runs ungoverned.
+
+**Mitigation:** Add a preflight `GET /v1/policy` call during `init()` to
+populate the cache before the first call.
+
+**Address in:** Phase 2.
+**Code location:** `sensor/flightdeck_sensor/core/session.py:Session.start`
+
+---
+
+## D041 -- NATS event loss on unavailability (accepted trade-off)
+
+**Decision:** Accepted as known trade-off for Phase 1.
+
+**Risk:** Medium. If NATS is temporarily down, `Publish()` returns an error.
+The sensor retries 3 times then drops the event (continue policy).
+
+**Mitigation:** Add a local WAL/buffer that stores events when NATS is
+down and replays them on reconnect.
+
+**Address in:** Phase 2.
+**Code location:** `ingestion/internal/nats/publisher.go:Publish`
+
+---
+
+## D042 -- No session state transition guards (accepted trade-off)
+
+**Decision:** Accepted as known trade-off for Phase 1.
+
+**Risk:** Medium. A replayed event could resurrect a lost or closed session.
+No guard against impossible state transitions.
+
+**Mitigation:** Reject events for sessions in terminal states (`closed`,
+`lost`). Check current state before any upsert.
+
+**Address in:** Phase 2.
+**Code location:** `workers/internal/processor/session.go:HandleSessionStart`
+
+---
+
+## D043 -- Per-event policy Postgres query (accepted trade-off)
+
+**Decision:** Accepted as known trade-off for Phase 1.
+
+**Risk:** Medium. Policy evaluation runs a Postgres query on every
+`post_call` event. At 100 events/second, that is 100 queries/second.
+
+**Mitigation:** Cache policy in worker memory, refresh only on
+`policy_update` directive. Avoid per-event database queries.
+
+**Address in:** Phase 2.
+**Code location:** `workers/internal/processor/policy.go:Evaluate`
+
+---
+
+## D044 -- WebSocket broadcast fan-out (accepted trade-off)
+
+**Decision:** Accepted as known trade-off for Phase 1.
+
+**Risk:** Medium. Every NOTIFY broadcasts to all connected dashboard clients
+regardless of what they are viewing. At 500 users × 10k events/min this
+is 5M messages/min.
+
+**Mitigation:** Clients subscribe to specific flavors. Only broadcast
+relevant updates per client.
+
+**Address in:** Phase 2.
+**Code location:** `api/internal/ws/hub.go:Broadcast`
+
+---
+
+## D045 -- GET /v1/fleet no pagination (accepted trade-off)
+
+**Decision:** Accepted as known trade-off for Phase 1.
+
+**Risk:** Medium. `GET /v1/fleet` loads all non-lost sessions into memory.
+No pagination. At 100k sessions this is a large response and a full table scan.
+
+**Mitigation:** Add pagination (`?limit=100&offset=0`) and composite index
+on `(state, flavor)`.
+
+**Address in:** Phase 2.
+**Code location:** `api/internal/handlers/fleet.go:FleetHandler`
+
+---
+
+## D046 -- SHA256 token auth without salt (accepted trade-off)
+
+**Decision:** Accepted as known trade-off for Phase 1.
+
+**Risk:** Low. If the `api_tokens` table is leaked, short tokens (like
+`tok_dev`) can be brute-forced. SHA256 without salt provides no key
+stretching.
+
+**Mitigation:** Use bcrypt or argon2 for production tokens. SHA256 is
+acceptable for the dev seed token only.
+
+**Address in:** Phase 5 (production hardening).
+**Code location:** `ingestion/internal/auth/token.go:Validate`
+
+---
+
+## D047 -- No NATS auth in dev compose (accepted trade-off)
+
+**Decision:** Accepted as known trade-off for Phase 1.
+
+**Risk:** Low. NATS has no authentication in the dev Docker Compose. Any
+process on the Docker network can publish to the FLIGHTDECK stream.
+
+**Mitigation:** Add NATS token auth or NKey in the Helm chart and
+`docker-compose.prod.yml`. Dev compose is acceptable without auth.
+
+**Address in:** Phase 5 (production hardening).
+**Code location:** `docker/docker-compose.yml:nats`
+
+---
+
+## D048 -- Token validation and rate limiting not cached (accepted trade-off)
+
+**Decision:** Accepted as known trade-off for Phase 1.
+
+**Risk:** Low. Token validation hits Postgres on every request with no caching.
+No rate limiting on the ingestion API.
+
+**Mitigation:** Add in-memory LRU cache with 60s TTL for token validation.
+Add per-token rate limiting middleware.
+
+**Address in:** Phase 2.
+**Code locations:** `ingestion/internal/auth/token.go:Validate`,
+`ingestion/internal/handlers/events.go:EventsHandler`
+
+---
+
+## D049 -- Directive lookup added to heartbeat handler
+
+**Decision:** `HeartbeatHandler` now accepts `DirectiveLookup` and returns a
+directive envelope in its response, identical to the events handler pattern.
+This ensures idle agents (heartbeat only, no LLM calls) receive kill switch
+directives within one heartbeat interval (30s worst case).
+
+**Reasoning:** Without this fix, an idle agent with no LLM calls would never
+receive a kill switch directive, making the kill switch useless for any agent
+in idle state. The heartbeat is the only regular communication from an idle
+agent to the control plane.
+
+---
+
+## D050 -- swaggo/swag for OpenAPI documentation
+
+**Decision:** Use swaggo/swag to generate OpenAPI 3.0 documentation from
+structured Go comments on handlers. Swagger UI served at `/docs` on both
+ingestion API (port 8080) and query API (port 8081). Accessible via nginx
+at `/ingest/docs` and `/api/docs`.
+
+**Reasoning:** Machine-readable API docs are a requirement for any platform
+tool used by engineering teams. swaggo/swag is the most widely adopted Go
+OpenAPI generation tool, requires no runtime dependency, and integrates
+cleanly with stdlib ServeMux. The spec is generated at build time and
+committed to the repo so it is always in sync with the code.
+
+**Rejected alternative:** Hand-written OpenAPI YAML. Rejected because
+hand-written specs drift from code.
+
+---
+
+## D051 -- Smoke test deferred to Phase 5
+
+**Decision:** The end-to-end smoke test will be written after Phase 5 closes
+when all product features exist.
+
+**Reasoning:** A smoke test for a platform is only meaningful when the platform
+is feature-complete. Writing it incrementally per phase creates maintenance
+overhead and tests a hollow product. The script will be written once and cover
+the full workflow: instrument an agent, observe in fleet, set policy, enforce,
+kill switch, prompt capture, analytics. Inspired by tokencap's smoke_test.py
+pattern but adapted for a platform product rather than a standalone library.
+
+**Address in:** Phase 5.

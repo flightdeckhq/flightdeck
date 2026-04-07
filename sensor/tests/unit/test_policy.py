@@ -104,3 +104,22 @@ def test_local_limit_does_not_upgrade_to_block() -> None:
     assert result.decision != PolicyDecision.BLOCK
     assert result.decision == PolicyDecision.WARN
     assert result.source == "local"
+
+
+def test_most_restrictive_wins_local_and_server() -> None:
+    # Server warns at 80% of 100k = 80k, local warns at 80% of 50k = 40k
+    # When at 41k tokens, local fires first (lower absolute threshold)
+    cache = PolicyCache(
+        token_limit=100000, warn_at_pct=80,
+        degrade_at_pct=90, block_at_pct=100,
+        local_limit=50000, local_warn_at=0.8,
+    )
+    # At 41k: local threshold (40k) crossed, server threshold (80k) not crossed
+    result1 = cache.check(tokens_used=41000, estimated=0)
+    assert result1.decision == PolicyDecision.WARN
+    assert result1.source == "local"
+
+    # At 81k: server threshold (80k) now crossed
+    result2 = cache.check(tokens_used=81000, estimated=0)
+    assert result2.decision == PolicyDecision.WARN
+    assert result2.source == "server"

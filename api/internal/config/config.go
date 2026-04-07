@@ -17,6 +17,7 @@ type Config struct {
 	AdminEmail          string
 	AdminPassword       string
 	ShutdownTimeoutSecs int
+	CORSOrigin          string
 }
 
 // Load reads configuration from environment variables.
@@ -32,6 +33,7 @@ func Load() Config {
 		AdminEmail:          os.Getenv("FLIGHTDECK_ADMIN_EMAIL"),
 		AdminPassword:       os.Getenv("FLIGHTDECK_ADMIN_PASSWORD"),
 		ShutdownTimeoutSecs: envIntOrDefault("SHUTDOWN_TIMEOUT_SECS", 30),
+		CORSOrigin:          envOrDefault("FLIGHTDECK_CORS_ORIGIN", "*"),
 	}
 	if env == "production" {
 		if cfg.JWTSecret == "" {

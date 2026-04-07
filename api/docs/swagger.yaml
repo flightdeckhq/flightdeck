@@ -1,0 +1,96 @@
+basePath: /
+definitions:
+  handlers.ErrorResponse:
+    properties:
+      error:
+        type: string
+    type: object
+host: localhost:8081
+info:
+  contact: {}
+  description: Fleet visibility, session history, and control plane for AI agent fleets
+  title: Flightdeck Query API
+  version: 0.1.0
+paths:
+  /health:
+    get:
+      description: Returns service health status
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Health check
+      tags:
+      - health
+  /v1/fleet:
+    get:
+      description: Returns all sessions grouped by flavor, excluding lost sessions
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      summary: Get fleet state
+      tags:
+      - fleet
+  /v1/sessions/{id}:
+    get:
+      description: Returns session metadata and all events in chronological order
+      parameters:
+      - description: Session UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      summary: Get session detail
+      tags:
+      - sessions
+  /v1/stream:
+    get:
+      description: WebSocket connection for real-time fleet state updates. Upgrades
+        HTTP to WebSocket.
+      responses:
+        "101":
+          description: Switching Protocols
+          schema:
+            type: string
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      summary: Real-time fleet stream
+      tags:
+      - stream
+swagger: "2.0"

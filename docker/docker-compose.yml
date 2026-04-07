@@ -16,6 +16,12 @@ services:
       timeout: 3s
       retries: 5
 
+  # TODO(KI11)[Phase 5]: NATS has no authentication in dev
+  # compose. Any process on the Docker network can publish
+  # to the FLIGHTDECK stream.
+  # Fix: add NATS token auth or NKey in Helm chart and
+  # docker-compose.prod.yml.
+  # See DECISIONS.md D047.
   nats:
     image: nats:2.10-alpine
     command: ["--jetstream", "--store_dir", "/data", "--http_port", "8222"]

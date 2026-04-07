@@ -1,3 +1,9 @@
+// @title       Flightdeck Query API
+// @version     0.1.0
+// @description Fleet visibility, session history, and control plane for AI agent fleets
+// @host        localhost:8081
+// @BasePath    /
+
 // Entry point for the Flightdeck query API.
 // Serves dashboard REST endpoints and WebSocket stream.
 package main
@@ -43,7 +49,7 @@ func main() {
 	go hub.ListenNotify(ctx, pool)
 
 	addr := fmt.Sprintf(":%s", cfg.Port)
-	srv := server.New(addr, s, hub)
+	srv := server.New(addr, s, hub, cfg.CORSOrigin)
 
 	// Start server
 	go func() {

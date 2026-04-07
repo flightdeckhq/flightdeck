@@ -11,22 +11,24 @@ import (
 	inats "github.com/flightdeckhq/flightdeck/ingestion/internal/nats"
 )
 
-// TokenValidator validates bearer tokens.
+const maxRequestBodyBytes = 1 << 20 // 1MB
+
+// TokenValidator validates bearer tokens against stored hashes.
 type TokenValidator interface {
 	Validate(ctx context.Context, rawToken string) (bool, error)
 }
 
-// EventPublisher publishes event payloads to a message queue.
+// EventPublisher publishes event payloads to the message queue.
 type EventPublisher interface {
 	Publish(subject string, data []byte) error
 }
 
-// DirectiveLookup finds pending directives for a session.
+// DirectiveLookup finds pending directives for a given session.
 type DirectiveLookup interface {
 	LookupPending(ctx context.Context, sessionID string) (*DirectiveResponse, error)
 }
 
-// DirectiveResponse is the directive payload returned in the response envelope.
+// DirectiveResponse represents the directive payload returned in the response envelope.
 type DirectiveResponse struct {
 	ID            string `json:"id"`
 	Action        string `json:"action"`
@@ -34,7 +36,25 @@ type DirectiveResponse struct {
 	GracePeriodMs int    `json:"grace_period_ms"`
 }
 
+// TODO(KI04)[Phase 2]: No rate limiting on ingestion API.
+// A misbehaving sensor could flood the system with events.
+// Fix: add per-token rate limiting middleware.
+// See DECISIONS.md D048.
+
 // EventsHandler handles POST /v1/events.
+//
+// @Summary      Submit agent event
+// @Description  Validates bearer token, publishes event to NATS, returns directive envelope
+// @Tags         events
+// @Accept       json
+// @Produce      json
+// @Param        Authorization  header    string  true  "Bearer token"
+// @Param        event          body      object  true  "Event payload"
+// @Success      200  {object}  map[string]interface{}
+// @Failure      400  {object}  ErrorResponse
+// @Failure      401  {object}  ErrorResponse
+// @Failure      500  {object}  ErrorResponse
+// @Router       /v1/events [post]
 func EventsHandler(
 	validator TokenValidator,
 	publisher EventPublisher,
@@ -61,7 +81,7 @@ func EventsHandler(
 		}
 
 		// Parse body
-		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+		body, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBodyBytes))
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "unable to read request body")
 			return

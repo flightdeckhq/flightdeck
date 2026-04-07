@@ -11,12 +11,15 @@ _T = TypeVar("_T")
 
 _log = logging.getLogger("flightdeck_sensor.transport.retry")
 
+_DEFAULT_MAX_ATTEMPTS = 3
+_DEFAULT_BACKOFF_BASE = 0.5
+
 
 def with_retry(
     fn: Callable[[], _T],
     *,
-    max_attempts: int = 3,
-    backoff_base: float = 0.5,
+    max_attempts: int = _DEFAULT_MAX_ATTEMPTS,
+    backoff_base: float = _DEFAULT_BACKOFF_BASE,
     retryable: tuple[type[BaseException], ...] = (
         ConnectionError,
         TimeoutError,

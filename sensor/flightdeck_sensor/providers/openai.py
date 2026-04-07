@@ -17,6 +17,10 @@ if TYPE_CHECKING:
 
 _log = logging.getLogger("flightdeck_sensor.providers.openai")
 
+_TOKENS_PER_MESSAGE = 4
+_TOKENS_REPLY_PRIMING = 2
+_CHARS_PER_TOKEN_ESTIMATE = 4
+
 
 def _try_tiktoken_count(messages: list[Any], model: str) -> int | None:
     """Attempt to count tokens using tiktoken if installed.
@@ -34,11 +38,11 @@ def _try_tiktoken_count(messages: list[Any], model: str) -> int | None:
         total = 0
         for msg in messages:
             # Per-message overhead (role, content separators)
-            total += 4
+            total += _TOKENS_PER_MESSAGE
             if isinstance(msg, dict):
                 for value in msg.values():
                     total += len(enc.encode(str(value)))
-        total += 2  # reply priming
+        total += _TOKENS_REPLY_PRIMING  # reply priming
         return total
     except Exception:
         return None
@@ -72,7 +76,7 @@ class OpenAIProvider:
             # Fallback: character-based heuristic
             tools = request_kwargs.get("tools", [])
             text = str(messages) + str(tools)
-            return len(text) // 4
+            return len(text) // _CHARS_PER_TOKEN_ESTIMATE
         except Exception:
             return 0
 

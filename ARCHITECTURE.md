@@ -332,6 +332,8 @@ flightdeck/
 │   └── .env.example
 │
 ├── tests/
+│   ├── smoke/
+│   │   └── smoke_test.py       # Standalone smoke test: real provider APIs, not pytest
 │   └── integration/
 │       ├── conftest.py
 │       ├── test_pipeline.py

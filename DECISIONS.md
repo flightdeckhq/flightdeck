@@ -714,3 +714,17 @@ committed to the repo so it is always in sync with the code.
 
 **Rejected alternative:** Hand-written OpenAPI YAML. Rejected because
 hand-written specs drift from code.
+
+---
+
+## D051 -- Standalone smoke test script
+
+**Decision:** Smoke test is a plain Python script (`tests/smoke/smoke_test.py`),
+not pytest. Runs like developer documentation. Scenarios are commentable.
+Output is human-readable PASS/FAIL per check. API keys are read from
+environment only and are never printed or logged.
+
+**Reasoning:** The smoke test simulates a real developer using Flightdeck.
+It should read and run like user code, not like a test framework. pytest
+adds friction and obscures what the test is actually doing. Inspired by
+tokencap's smoke_test.py pattern.

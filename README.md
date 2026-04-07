@@ -400,8 +400,29 @@ flightdeck_sensor.init(server="http://localhost:4000", token="tok_dev")
 ```bash
 make test              # unit tests across all components
 make test-integration  # full pipeline integration tests (requires Docker)
+make test-smoke        # smoke test against real provider APIs (see below)
 make lint              # ruff + mypy --strict, golangci-lint, tsc + eslint
 ```
+
+### Smoke test
+
+The smoke test runs every Phase 1 feature against real provider APIs with a
+live Flightdeck stack. It is a plain Python script, not pytest.
+
+Requirements:
+- `make dev` (stack must be running)
+- `pip install anthropic openai`
+- Anthropic and/or OpenAI API keys in environment
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+export OPENAI_API_KEY=sk-...
+python tests/smoke/smoke_test.py
+```
+
+Each scenario is independent. Comment out any section to skip it. The full run
+costs roughly $0.05-0.10. API keys are read from environment only and are never
+printed or logged.
 
 ---
 

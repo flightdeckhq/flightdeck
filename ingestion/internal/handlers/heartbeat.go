@@ -6,18 +6,15 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/flightdeckhq/flightdeck/ingestion/internal/auth"
 	inats "github.com/flightdeckhq/flightdeck/ingestion/internal/nats"
 )
 
 // HeartbeatHandler handles POST /v1/heartbeat.
-// Validates the bearer token, publishes heartbeat to NATS.
 func HeartbeatHandler(
-	validator *auth.Validator,
-	publisher *inats.Publisher,
+	validator TokenValidator,
+	publisher EventPublisher,
 ) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// Auth
 		token := extractBearerToken(r)
 		if token == "" {
 			writeError(w, http.StatusUnauthorized, "missing or invalid authorization")
@@ -34,7 +31,6 @@ func HeartbeatHandler(
 			return
 		}
 
-		// Parse body
 		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "unable to read request body")
@@ -53,7 +49,6 @@ func HeartbeatHandler(
 			return
 		}
 
-		// Publish heartbeat
 		subject := inats.SubjectForEventType("heartbeat")
 		if err := publisher.Publish(subject, body); err != nil {
 			slog.Error("NATS publish error", "subject", subject, "err", err)

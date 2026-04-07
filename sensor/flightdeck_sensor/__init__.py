@@ -76,10 +76,17 @@ def init(
                 _log.warning("flightdeck_sensor.init() called twice; ignoring")
             return
 
+        resolved_server = os.environ.get("FLIGHTDECK_SERVER", server)
+        resolved_token = os.environ.get("FLIGHTDECK_TOKEN", token)
+        if not resolved_server:
+            raise ConfigurationError("server URL is required")
+        if not resolved_token:
+            raise ConfigurationError("token is required")
+
         capture = _env_bool("FLIGHTDECK_CAPTURE_PROMPTS", capture_prompts)
         config = SensorConfig(
-            server=os.environ.get("FLIGHTDECK_SERVER", server),
-            token=os.environ.get("FLIGHTDECK_TOKEN", token),
+            server=resolved_server,
+            token=resolved_token,
             capture_prompts=capture,
             unavailable_policy=os.environ.get(
                 "FLIGHTDECK_UNAVAILABLE_POLICY", "continue"

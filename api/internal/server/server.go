@@ -12,7 +12,7 @@ import (
 )
 
 // New creates the HTTP server with all routes registered.
-func New(addr string, s *store.Store, hub *ws.Hub) *http.Server {
+func New(addr string, s store.Querier, hub *ws.Hub) *http.Server {
 	mux := http.NewServeMux()
 
 	mux.Handle("GET /v1/fleet", handlers.FleetHandler(s))

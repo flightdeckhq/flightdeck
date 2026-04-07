@@ -422,3 +422,42 @@ doubling each attempt, capped at 30s.
 many clients disconnect simultaneously (e.g. control plane restart).
 Exponential backoff spreads reconnect load. The shorter initial interval
 (1s vs 3s) also means faster recovery for transient blips.
+
+---
+
+## D032 -- Handler interfaces for testability (ingestion)
+
+**Decision:** Introduced `TokenValidator`, `EventPublisher`, and
+`DirectiveLookup` interfaces in ingestion handlers so handlers can accept
+mocks in tests. Concrete implementations (`auth.Validator`, `nats.Publisher`,
+`directive.Store`) implement these implicitly via Go duck typing. A
+`directiveAdapter` in `cmd/main.go` bridges the `directive.Directive` to
+`handlers.DirectiveResponse` type gap.
+
+**Reasoning:** Go's interface-based dependency injection is the idiomatic
+pattern for testable HTTP handlers. Without interfaces, handlers require
+real NATS and Postgres connections to test.
+
+---
+
+## D033 -- Store Querier interface (api)
+
+**Decision:** Introduced `store.Querier` interface so api handlers accept
+either the real Postgres-backed store or a mock. `WrapStore()` is a
+pass-through helper.
+
+**Reasoning:** Same rationale as D032 -- idiomatic Go testability pattern.
+Handlers should not depend on a concrete type.
+
+---
+
+## D034 -- Go module minimum set to 1.24
+
+**Decision:** `go.mod` uses `go 1.24` across all three Go modules.
+Dockerfiles and CI use `golang:1.24-alpine`.
+
+**Reasoning:** Go 1.24 is the latest stable release supported by
+golangci-lint in CI. Using a higher version (e.g. 1.25.0 which `go mod tidy`
+auto-set on a 1.26 toolchain) causes CI failures because golangci-lint is
+built with Go 1.24. Pinning to 1.24 ensures compatibility across local dev
+and CI environments.

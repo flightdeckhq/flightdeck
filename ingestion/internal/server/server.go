@@ -6,18 +6,15 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/flightdeckhq/flightdeck/ingestion/internal/auth"
-	"github.com/flightdeckhq/flightdeck/ingestion/internal/directive"
 	"github.com/flightdeckhq/flightdeck/ingestion/internal/handlers"
-	inats "github.com/flightdeckhq/flightdeck/ingestion/internal/nats"
 )
 
 // New creates the HTTP server with all routes registered.
 func New(
 	addr string,
-	validator *auth.Validator,
-	publisher *inats.Publisher,
-	dirStore *directive.Store,
+	validator handlers.TokenValidator,
+	publisher handlers.EventPublisher,
+	dirStore handlers.DirectiveLookup,
 ) *http.Server {
 	mux := http.NewServeMux()
 

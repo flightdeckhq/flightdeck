@@ -1214,6 +1214,7 @@ their agent appear in the live dashboard timeline in real time.
 
 `ingestion/cmd/main.go`
 - Reads config from environment, starts HTTP server, handles SIGTERM gracefully
+- directiveAdapter bridges directive.Directive to handlers.DirectiveResponse
 
 `ingestion/internal/config/config.go`
 - `Config` struct: Port, PostgresURL, NatsURL, Env, ShutdownTimeoutSecs
@@ -1324,6 +1325,7 @@ their agent appear in the live dashboard timeline in real time.
 - `GET /health`: returns `{"status":"ok","service":"api"}`
 
 `api/internal/store/postgres.go`
+- Exposes Querier interface for handler dependency injection
 - `GetFleet() ([]FlavorSummary, error)`
 - `GetSession(sessionID string) (*Session, error)`
 - `GetSessionEvents(sessionID string) ([]Event, error)`

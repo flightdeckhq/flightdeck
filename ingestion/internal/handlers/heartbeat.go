@@ -31,7 +31,7 @@ func HeartbeatHandler(
 			return
 		}
 
-		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+		body, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBodyBytes))
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "unable to read request body")
 			return

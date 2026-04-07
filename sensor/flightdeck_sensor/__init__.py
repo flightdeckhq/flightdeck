@@ -43,6 +43,7 @@ _log = logging.getLogger("flightdeck_sensor")
 
 # Global state -- protected by _lock
 _lock = threading.Lock()
+_patch_lock = threading.Lock()
 _session: Session | None = None
 _client: ControlPlaneClient | None = None
 _original_inits: dict[str, Any] = {}
@@ -151,27 +152,29 @@ def patch(
     session = _require_session("patch")
     targets = providers or ["anthropic", "openai"]
 
-    if "anthropic" in targets:
-        _patch_anthropic(session, quiet)
+    with _patch_lock:
+        if "anthropic" in targets:
+            _patch_anthropic(session, quiet)
 
-    if "openai" in targets:
-        _patch_openai(session, quiet)
+        if "openai" in targets:
+            _patch_openai(session, quiet)
 
 
 def unpatch() -> None:
     """Reverse all monkey-patches applied by :func:`patch`."""
-    for key, original in _original_inits.items():
-        parts = key.rsplit(".", 1)
-        if len(parts) == 2:
-            mod_name, attr = parts
-            try:
-                import importlib
+    with _patch_lock:
+        for key, original in _original_inits.items():
+            parts = key.rsplit(".", 1)
+            if len(parts) == 2:
+                mod_name, attr = parts
+                try:
+                    import importlib
 
-                mod = importlib.import_module(mod_name)
-                setattr(mod, attr, original)
-            except (ImportError, AttributeError):
-                pass
-    _original_inits.clear()
+                    mod = importlib.import_module(mod_name)
+                    setattr(mod, attr, original)
+                except (ImportError, AttributeError):
+                    pass
+        _original_inits.clear()
 
 
 def get_status() -> StatusResponse:

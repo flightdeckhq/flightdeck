@@ -43,7 +43,7 @@ func main() {
 	go hub.ListenNotify(ctx, pool)
 
 	addr := fmt.Sprintf(":%s", cfg.Port)
-	srv := server.New(addr, s, hub)
+	srv := server.New(addr, s, hub, cfg.CORSOrigin)
 
 	// Start server
 	go func() {

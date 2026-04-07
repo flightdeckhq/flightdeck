@@ -9,6 +9,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+const blockThresholdPct = 100
+
 // PolicyEvaluator checks token thresholds after each post_call event.
 // When a threshold is crossed it writes a directive to the directives table.
 // It does NOT deliver the directive -- the ingestion API picks it up on the
@@ -67,7 +69,7 @@ func (pe *PolicyEvaluator) Evaluate(ctx context.Context, sessionID string) error
 	}
 
 	pctUsed := (tokensUsed * 100) / *tokenLimit
-	if pctUsed >= 100 {
+	if pctUsed >= blockThresholdPct {
 		// Check if a block directive already exists for this session
 		var exists bool
 		err := pe.pool.QueryRow(ctx, `

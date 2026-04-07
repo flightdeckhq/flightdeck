@@ -9,6 +9,12 @@ import (
 	"github.com/flightdeckhq/flightdeck/ingestion/internal/handlers"
 )
 
+const (
+	serverReadTimeout  = 10 * time.Second
+	serverWriteTimeout = 10 * time.Second
+	serverIdleTimeout  = 60 * time.Second
+)
+
 // New creates the HTTP server with all routes registered.
 func New(
 	addr string,
@@ -25,9 +31,9 @@ func New(
 	return &http.Server{
 		Addr:         addr,
 		Handler:      withLogging(withRecovery(mux)),
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 10 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		ReadTimeout:  serverReadTimeout,
+		WriteTimeout: serverWriteTimeout,
+		IdleTimeout:  serverIdleTimeout,
 	}
 }
 

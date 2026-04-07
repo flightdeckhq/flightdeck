@@ -451,14 +451,22 @@ Handlers should not depend on a concrete type.
 
 ---
 
-## D034 -- Go 1.26 pinned across all modules
+## D034 -- Go version pinned to 1.26
 
-**Decision:** `go.mod` uses `go 1.26` across all three Go modules.
-Dockerfiles use `golang:1.26-alpine`. CI uses `go-version: "1.26"`.
+**Decision:** All Go modules use `go 1.26` in go.mod. Dockerfiles use
+`golang:1.26-alpine`. CI uses `go-version: "1.26"`. golangci-lint v2
+installed via `go install` to match.
 
-**Reasoning:** Using the current stable Go release avoids version mismatch
-issues between `go mod tidy`, Dockerfiles, and CI. Pinning to a fixed version
-(not `latest`) ensures reproducible builds.
+**Progression:** 1.22 (original ARCHITECTURE.md) → 1.24 (attempted
+golangci-lint v1 compat) → 1.25 (go mod tidy auto-set on 1.26 toolchain)
+→ 1.26 (final pin matching installed toolchain). The 1.24 attempt failed
+because pgx v5.9.1 requires go >= 1.25. The 1.25 attempt failed because
+golangci-lint v1.64.8 was built with Go 1.24 and rejected go 1.25 modules.
+Pinning to 1.26 with golangci-lint v2 resolved all incompatibilities.
+
+**Reasoning:** Using a fixed version matching the development toolchain
+ensures `go mod tidy` doesn't drift the directive. All Dockerfiles,
+go.mod files, CI, and docker-compose.dev.yml are updated.
 
 ---
 

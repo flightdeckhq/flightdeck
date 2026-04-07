@@ -11,22 +11,24 @@ import (
 	inats "github.com/flightdeckhq/flightdeck/ingestion/internal/nats"
 )
 
-// TokenValidator validates bearer tokens.
+const maxRequestBodyBytes = 1 << 20 // 1MB
+
+// TokenValidator validates bearer tokens against stored hashes.
 type TokenValidator interface {
 	Validate(ctx context.Context, rawToken string) (bool, error)
 }
 
-// EventPublisher publishes event payloads to a message queue.
+// EventPublisher publishes event payloads to the message queue.
 type EventPublisher interface {
 	Publish(subject string, data []byte) error
 }
 
-// DirectiveLookup finds pending directives for a session.
+// DirectiveLookup finds pending directives for a given session.
 type DirectiveLookup interface {
 	LookupPending(ctx context.Context, sessionID string) (*DirectiveResponse, error)
 }
 
-// DirectiveResponse is the directive payload returned in the response envelope.
+// DirectiveResponse represents the directive payload returned in the response envelope.
 type DirectiveResponse struct {
 	ID            string `json:"id"`
 	Action        string `json:"action"`
@@ -61,7 +63,7 @@ func EventsHandler(
 		}
 
 		// Parse body
-		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+		body, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBodyBytes))
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "unable to read request body")
 			return

@@ -145,7 +145,8 @@ flightdeck/
 │   │       ├── session.go      # Session struct (mirrors sessions table)
 │   │       ├── event.go        # Event struct (mirrors events table)
 │   │       ├── event_content.go # EventContent struct (mirrors event_content table)
-│   │       └── policy.go       # Policy struct (mirrors policies table)
+│   │       ├── policy.go       # Policy struct (mirrors policies table)
+│   │       └── directive.go    # Directive struct (mirrors directives table, split per D032)
 │   └── tests/
 │       └── processor_test.go   # Unit tests: event processing, state machine, policy eval
 │
@@ -1113,7 +1114,7 @@ their agent appear in the live dashboard timeline in real time.
 
 `sensor/flightdeck_sensor/core/policy.py`
 - `PolicyCache` class: holds token_limit, warn_at_pct, degrade_at_pct, block_at_pct, degrade_to
-- `check(tokens_used, estimated)`: returns PolicyDecision (allow/warn/degrade/block)
+- `check(tokens_used, estimated)`: returns PolicyResult with decision and source fields. Source is `"local"` for init() limit thresholds, `"server"` for control plane policy thresholds.
 - `update(policy_dict)`: replace cache from directive payload
 - `fire_once` tracking: WARN fires once per session, not on every call after threshold
 
@@ -1165,7 +1166,7 @@ their agent appear in the live dashboard timeline in real time.
 - Streaming: inject `stream_options={"include_usage": True}` when `stream=True`
 
 `sensor/flightdeck_sensor/__init__.py`
-- `init(server, token, capture_prompts=False, quiet=False)`: creates global Session and ControlPlaneClient
+- `init(server, token, capture_prompts=False, limit=None, warn_at=0.8, quiet=False)`: creates global Session and ControlPlaneClient
 - `wrap(client, quiet=False)`: wraps Anthropic or OpenAI client
 - `patch(quiet=False, providers=None)`: monkey-patches SDK constructors
 - `unpatch()`: reverses all patches

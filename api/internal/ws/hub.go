@@ -13,6 +13,8 @@ import (
 
 const notifyChannel = "flightdeck_fleet"
 
+const broadcastChannelBuffer = 256
+
 // Client is a single WebSocket connection managed by the Hub.
 type Client struct {
 	conn *websocket.Conn
@@ -34,7 +36,7 @@ func NewHub() *Hub {
 		clients:    make(map[*Client]struct{}),
 		register:   make(chan *Client),
 		unregister: make(chan *Client),
-		broadcast:  make(chan []byte, 256),
+		broadcast:  make(chan []byte, broadcastChannelBuffer),
 	}
 }
 
@@ -72,7 +74,11 @@ func (h *Hub) Run(ctx context.Context) {
 				default:
 					// Client buffer full -- drop and unregister
 					go func(c *Client) {
-						h.unregister <- c
+						select {
+						case h.unregister <- c:
+						default:
+							// Channel full, client will be cleaned up on next broadcast
+						}
 					}(client)
 				}
 			}

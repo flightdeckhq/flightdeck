@@ -33,6 +33,7 @@ if TYPE_CHECKING:
 _log = logging.getLogger("flightdeck_sensor.core.session")
 
 _HEARTBEAT_INTERVAL_SECS = 30
+_HEARTBEAT_JOIN_TIMEOUT_SECS = 5
 
 
 class Session:
@@ -87,7 +88,7 @@ class Session:
         self._state = SessionState.CLOSED
         self._stopped.set()
         if self._heartbeat_thread is not None:
-            self._heartbeat_thread.join(timeout=5)
+            self._heartbeat_thread.join(timeout=_HEARTBEAT_JOIN_TIMEOUT_SECS)
         self._post_event(EventType.SESSION_END)
         self.client.close()
         if not self.config.quiet:
@@ -104,11 +105,13 @@ class Session:
 
     def record_model(self, model: str) -> None:
         """Record the model used in the most recent call."""
-        self._model = model
+        with self._lock:
+            self._model = model
 
     def record_framework(self, framework: str) -> None:
         """Record the framework if detected."""
-        self._framework = framework
+        with self._lock:
+            self._framework = framework
 
     def post_call_event(
         self,
@@ -204,6 +207,8 @@ class Session:
     ) -> dict[str, Any]:
         with self._lock:
             tokens_used_session = self._tokens_used
+            framework = self._framework
+            model = self._model
 
         payload: dict[str, Any] = {
             "session_id": self.config.session_id,
@@ -211,8 +216,8 @@ class Session:
             "agent_type": self.config.agent_type,
             "event_type": event_type.value,
             "host": self._host,
-            "framework": self._framework,
-            "model": self._model,
+            "framework": framework,
+            "model": model,
             "tokens_input": None,
             "tokens_output": None,
             "tokens_total": None,

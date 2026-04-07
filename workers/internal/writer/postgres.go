@@ -10,6 +10,11 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+const (
+	staleThreshold = "2 minutes"
+	lostThreshold  = "10 minutes"
+)
+
 // Writer performs all Postgres writes for the worker pipeline.
 type Writer struct {
 	pool *pgxpool.Pool
@@ -122,7 +127,7 @@ func (w *Writer) ReconcileStaleSessions(ctx context.Context) error {
 		UPDATE sessions
 		SET state = 'stale'
 		WHERE state IN ('active', 'idle')
-		  AND last_seen_at < NOW() - INTERVAL '2 minutes'
+		  AND last_seen_at < NOW() - INTERVAL '` + staleThreshold + `'
 	`)
 	if err != nil {
 		return fmt.Errorf("mark stale: %w", err)
@@ -133,7 +138,7 @@ func (w *Writer) ReconcileStaleSessions(ctx context.Context) error {
 		UPDATE sessions
 		SET state = 'lost'
 		WHERE state = 'stale'
-		  AND last_seen_at < NOW() - INTERVAL '10 minutes'
+		  AND last_seen_at < NOW() - INTERVAL '` + lostThreshold + `'
 	`)
 	if err != nil {
 		return fmt.Errorf("mark lost: %w", err)

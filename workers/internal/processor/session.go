@@ -12,6 +12,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+const reconcilerInterval = 60 * time.Second
+
 // SessionProcessor manages the session state machine in Postgres.
 type SessionProcessor struct {
 	w    *writer.Writer
@@ -67,7 +69,7 @@ func (sp *SessionProcessor) HandleSessionEnd(ctx context.Context, e consumer.Eve
 
 // StartReconciler runs a background loop every 60s to mark stale/lost sessions.
 func (sp *SessionProcessor) StartReconciler(ctx context.Context) {
-	ticker := time.NewTicker(60 * time.Second)
+	ticker := time.NewTicker(reconcilerInterval)
 	defer ticker.Stop()
 
 	for {

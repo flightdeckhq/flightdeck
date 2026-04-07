@@ -18,6 +18,7 @@ type Querier interface {
 	GetFleet(ctx context.Context) ([]FlavorSummary, error)
 	GetSession(ctx context.Context, sessionID string) (*Session, error)
 	GetSessionEvents(ctx context.Context, sessionID string) ([]Event, error)
+	GetEffectivePolicy(ctx context.Context, flavor, sessionID string) (*Policy, error)
 }
 
 // WrapStore returns a Querier from any compatible implementation.
@@ -149,6 +150,48 @@ func (s *Store) GetSession(ctx context.Context, sessionID string) (*Session, err
 		return nil, fmt.Errorf("get session %s: %w", sessionID, err)
 	}
 	return &sess, nil
+}
+
+// Policy represents a token budget policy.
+type Policy struct {
+	ID           string    `json:"id"`
+	Scope        string    `json:"scope"`
+	ScopeValue   string    `json:"scope_value"`
+	TokenLimit   *int64    `json:"token_limit,omitempty"`
+	WarnAtPct    *int      `json:"warn_at_pct,omitempty"`
+	DegradeAtPct *int      `json:"degrade_at_pct,omitempty"`
+	DegradeTo    *string   `json:"degrade_to,omitempty"`
+	BlockAtPct   *int      `json:"block_at_pct,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+// GetEffectivePolicy returns the most specific policy for a given flavor/session.
+// Cascading lookup: session > flavor > org. Returns nil if no policy found.
+func (s *Store) GetEffectivePolicy(ctx context.Context, flavor, sessionID string) (*Policy, error) {
+	for _, pair := range []struct{ scope, value string }{
+		{"session", sessionID},
+		{"flavor", flavor},
+		{"org", ""},
+	} {
+		if pair.value == "" && pair.scope != "org" {
+			continue
+		}
+		var p Policy
+		err := s.pool.QueryRow(ctx, `
+			SELECT id::text, scope, scope_value, token_limit, warn_at_pct, degrade_at_pct, degrade_to, block_at_pct, created_at, updated_at
+			FROM policies WHERE scope = $1 AND scope_value = $2
+		`, pair.scope, pair.value).Scan(
+			&p.ID, &p.Scope, &p.ScopeValue, &p.TokenLimit, &p.WarnAtPct, &p.DegradeAtPct, &p.DegradeTo, &p.BlockAtPct, &p.CreatedAt, &p.UpdatedAt,
+		)
+		if err == nil {
+			return &p, nil
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("get policy %s/%s: %w", pair.scope, pair.value, err)
+		}
+	}
+	return nil, nil
 }
 
 // GetSessionEvents returns all events for a session in chronological order.

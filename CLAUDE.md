@@ -251,6 +251,32 @@
 
 ---
 
+## API Documentation Rules
+
+49. **Every API endpoint must have complete Swagger documentation.**
+
+    When any new endpoint is added to ingestion or api:
+    - Add swaggo annotations to the handler before the task is considered complete
+    - Required annotations: @Summary, @Description, @Tags, @Accept, @Produce,
+      @Param (every param including query params), @Success with the correct
+      response struct, @Failure for every error code the handler can return, @Router
+    - Run `swag init -g cmd/main.go -o docs` in the component after adding annotations
+    - Commit the regenerated `docs/` directory
+
+    At the end of every phase audit, verify:
+    - Every endpoint listed in ARCHITECTURE.md has a Swagger annotation in the handler
+    - The Swagger spec accurately reflects the actual request and response schemas
+      (field names, types, nullable fields marked as omitempty or pointer)
+    - `curl -s -o /dev/null -w "%{http_code}" http://localhost:4000/api/docs/index.html`
+      and `curl -s -o /dev/null -w "%{http_code}" http://localhost:4000/ingest/docs/index.html`
+      both return 200
+    - No endpoint exists in the code that is absent from the Swagger spec
+
+    If any endpoint is undocumented, the phase audit fails. Document it before
+    the phase can close.
+
+---
+
 ## What Is Out of Scope
 
 Do not implement without explicit Supervisor instruction:

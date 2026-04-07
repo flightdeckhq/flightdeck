@@ -560,6 +560,10 @@ populate the cache before the first call.
 **Address in:** Phase 2.
 **Code location:** `sensor/flightdeck_sensor/core/session.py:Session.start`
 
+**Resolved in:** Phase 2.
+**Resolution:** Added preflight GET /v1/policy call in Session.start() before
+returning. PolicyCache is populated before the first LLM call.
+
 ---
 
 ## D041 -- NATS event loss on unavailability (accepted trade-off)
@@ -590,6 +594,10 @@ No guard against impossible state transitions.
 **Address in:** Phase 2.
 **Code location:** `workers/internal/processor/session.go:HandleSessionStart`
 
+**Resolved in:** Phase 2.
+**Resolution:** Added isTerminal() helper in workers/internal/processor/session.go.
+All handler methods reject events for closed and lost sessions.
+
 ---
 
 ## D043 -- Per-event policy Postgres query (accepted trade-off)
@@ -604,6 +612,11 @@ No guard against impossible state transitions.
 
 **Address in:** Phase 2.
 **Code location:** `workers/internal/processor/policy.go:Evaluate`
+
+**Resolved in:** Phase 2.
+**Resolution:** PolicyEvaluator now uses an in-memory cache keyed by scope.
+Postgres is queried only on cache miss or TTL expiry (5 minutes). Cache is
+invalidated on policy_update directive.
 
 ---
 

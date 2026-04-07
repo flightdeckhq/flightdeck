@@ -48,6 +48,18 @@ func (m *mockStore) GetSessionEvents(_ context.Context, _ string) ([]store.Event
 	}, nil
 }
 
+func (m *mockStore) GetEffectivePolicy(_ context.Context, flavor, _ string) (*store.Policy, error) {
+	if flavor == "test-flavor" {
+		limit := int64(10000)
+		warn := 80
+		return &store.Policy{
+			ID: "pol-1", Scope: "flavor", ScopeValue: "test-flavor",
+			TokenLimit: &limit, WarnAtPct: &warn,
+		}, nil
+	}
+	return nil, nil
+}
+
 // --- Tests ---
 
 func TestHealthHandler_Returns200(t *testing.T) {
@@ -166,5 +178,27 @@ func TestStreamHandler_ReceivesBroadcast(t *testing.T) {
 	}
 	if string(msg) != `{"type":"session_update"}` {
 		t.Errorf("expected broadcast message, got %s", msg)
+	}
+}
+
+func TestEffectivePolicyHandler_ReturnsFlavored(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.EffectivePolicyHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/policy?flavor=test-flavor", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+}
+
+func TestEffectivePolicyHandler_Returns404WhenNone(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.EffectivePolicyHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/policy?flavor=unknown", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d", w.Code)
 	}
 }

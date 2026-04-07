@@ -25,14 +25,30 @@ func NewSessionProcessor(w *writer.Writer, pool *pgxpool.Pool) *SessionProcessor
 	return &SessionProcessor{w: w, pool: pool}
 }
 
-// TODO(KI05)[Phase 2]: No session state transition guards.
-// A replayed event could resurrect a lost or closed session.
-// Fix: reject events for sessions in terminal states
-// (closed, lost). Check current state before any upsert.
-// See DECISIONS.md D042.
+// isTerminal checks if a session is in a terminal state (closed or lost).
+// Returns false if the session does not exist (new session -- allow through).
+// On Postgres error, logs warning and returns false (fail open).
+func (sp *SessionProcessor) isTerminal(ctx context.Context, sessionID string) bool {
+	var state string
+	err := sp.pool.QueryRow(ctx,
+		"SELECT state FROM sessions WHERE session_id = $1::uuid", sessionID,
+	).Scan(&state)
+	if err != nil {
+		// Session doesn't exist (new) or DB error -- fail open
+		return false
+	}
+	return state == "closed" || state == "lost"
+}
 
 // HandleSessionStart upserts the agent and creates a new session.
 func (sp *SessionProcessor) HandleSessionStart(ctx context.Context, e consumer.EventPayload) error {
+	if sp.isTerminal(ctx, e.SessionID) {
+		slog.Warn("skipping event for terminal session",
+			"session_id", e.SessionID,
+			"event_type", "session_start",
+		)
+		return nil
+	}
 	if err := sp.w.UpsertAgent(ctx, e.Flavor, e.AgentType); err != nil {
 		return fmt.Errorf("session start: %w", err)
 	}
@@ -47,11 +63,25 @@ func (sp *SessionProcessor) HandleSessionStart(ctx context.Context, e consumer.E
 
 // HandleHeartbeat updates last_seen_at on the session.
 func (sp *SessionProcessor) HandleHeartbeat(ctx context.Context, e consumer.EventPayload) error {
+	if sp.isTerminal(ctx, e.SessionID) {
+		slog.Warn("skipping event for terminal session",
+			"session_id", e.SessionID,
+			"event_type", "heartbeat",
+		)
+		return nil
+	}
 	return sp.w.UpdateLastSeen(ctx, e.SessionID)
 }
 
 // HandlePostCall updates token usage and last_seen_at.
 func (sp *SessionProcessor) HandlePostCall(ctx context.Context, e consumer.EventPayload) error {
+	if sp.isTerminal(ctx, e.SessionID) {
+		slog.Warn("skipping event for terminal session",
+			"session_id", e.SessionID,
+			"event_type", "post_call",
+		)
+		return nil
+	}
 	delta := 0
 	if e.TokensTotal != nil {
 		delta = *e.TokensTotal
@@ -70,6 +100,13 @@ func (sp *SessionProcessor) HandlePostCall(ctx context.Context, e consumer.Event
 
 // HandleSessionEnd closes the session.
 func (sp *SessionProcessor) HandleSessionEnd(ctx context.Context, e consumer.EventPayload) error {
+	if sp.isTerminal(ctx, e.SessionID) {
+		slog.Warn("skipping event for terminal session",
+			"session_id", e.SessionID,
+			"event_type", "session_end",
+		)
+		return nil
+	}
 	return sp.w.CloseSession(ctx, e.SessionID)
 }
 

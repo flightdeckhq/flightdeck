@@ -8,6 +8,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from typing import Any
+
 from flightdeck_sensor.core.exceptions import ConfigurationError
 from flightdeck_sensor.core.session import Session
 from flightdeck_sensor.core.types import SensorConfig
@@ -86,6 +88,56 @@ def test_sigterm_handler_fires_session_end() -> None:
     assert callable(handler)
     session.end()
     signal.signal(signal.SIGTERM, prev if callable(prev) else signal.SIG_DFL)
+
+
+def test_preflight_populates_policy_cache(mock_control_plane: Any) -> None:
+    """Preflight GET /v1/policy populates PolicyCache on start()."""
+    mock_control_plane["set_response"]({
+        "token_limit": 50000,
+        "warn_at_pct": 80,
+        "degrade_at_pct": 90,
+        "block_at_pct": 100,
+    })
+
+    config = SensorConfig(
+        server=mock_control_plane["url"],
+        token="test-token",
+        agent_flavor="test-preflight",
+        agent_type="autonomous",
+        quiet=True,
+    )
+    client_obj = ControlPlaneClient(
+        server=mock_control_plane["url"],
+        token="test-token",
+    )
+    session = Session(config=config, client=client_obj)
+    session.start()
+    session.end()
+
+    assert session.policy.token_limit == 50000
+    assert session.policy.warn_at_pct == 80
+
+
+def test_preflight_failure_proceeds_with_empty_cache() -> None:
+    """Preflight failure: start() completes without exception, PolicyCache empty."""
+    config = SensorConfig(
+        server="http://127.0.0.1:1",  # unreachable
+        token="test-token",
+        agent_flavor="test-preflight-fail",
+        agent_type="autonomous",
+        quiet=True,
+    )
+    client_obj = ControlPlaneClient(
+        server="http://127.0.0.1:1",
+        token="test-token",
+        unavailable_policy="continue",
+    )
+    session = Session(config=config, client=client_obj)
+    session.start()
+    session.end()
+
+    # PolicyCache should be empty (no token_limit set)
+    assert session.policy.token_limit is None
 
 
 def test_configuration_error_on_empty_server() -> None:

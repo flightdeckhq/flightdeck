@@ -8,11 +8,13 @@ process-exit handlers, and posts lifecycle events to the control plane.
 from __future__ import annotations
 
 import atexit
+import json
 import logging
 import os
 import signal
 import socket
 import threading
+import urllib.request
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
@@ -72,17 +74,12 @@ class Session:
     # Public API
     # ------------------------------------------------------------------
 
-    # TODO(KI01)[Phase 2]: PolicyCache is empty until first
-    # directive arrives in a response envelope. First LLM call
-    # always runs ungoverned with no server policy.
-    # Fix: add preflight GET /v1/policy call during init() to
-    # populate PolicyCache before the first LLM call is made.
-    # See DECISIONS.md D040.
     def start(self) -> None:
         """Fire SESSION_START and begin the heartbeat daemon thread."""
         self._post_event(EventType.SESSION_START)
         self._start_heartbeat()
         self._register_handlers()
+        self._preflight_policy()
         if not self.config.quiet:
             _log.info(
                 "Flightdeck session started: flavor=%s session=%s",
@@ -200,6 +197,46 @@ class Session:
     @property
     def token_limit(self) -> int | None:
         return self._token_limit
+
+    # ------------------------------------------------------------------
+    # Preflight policy
+    # ------------------------------------------------------------------
+
+    def _preflight_policy(self) -> None:
+        """Fetch effective policy from control plane on session start.
+
+        Populates PolicyCache before the first LLM call. On any failure
+        (network error, 404, parse error), logs at debug level and proceeds
+        with empty cache. Fail open per D007.
+        """
+        try:
+            url = (
+                f"{self.config.server}/v1/policy"
+                f"?flavor={self.config.agent_flavor}"
+                f"&session_id={self.config.session_id}"
+            )
+            req = urllib.request.Request(
+                url,
+                headers={"Authorization": f"Bearer {self.config.token}"},
+                method="GET",
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                data = json.loads(resp.read().decode())
+                policy_fields: dict[str, Any] = {}
+                if "token_limit" in data:
+                    policy_fields["token_limit"] = data["token_limit"]
+                if "warn_at_pct" in data:
+                    policy_fields["warn_at_pct"] = data["warn_at_pct"]
+                if "degrade_at_pct" in data:
+                    policy_fields["degrade_at_pct"] = data["degrade_at_pct"]
+                if "degrade_to" in data:
+                    policy_fields["degrade_to"] = data["degrade_to"]
+                if "block_at_pct" in data:
+                    policy_fields["block_at_pct"] = data["block_at_pct"]
+                if policy_fields:
+                    self.policy.update(policy_fields)
+        except Exception:
+            _log.debug("preflight policy fetch failed, proceeding with empty cache", exc_info=True)
 
     # ------------------------------------------------------------------
     # Heartbeat

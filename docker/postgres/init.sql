@@ -23,20 +23,25 @@ CREATE TABLE agents (
     policy_id       UUID
 );
 
--- Policies (Phase 2 enforces, but table exists for schema completeness)
+-- Policies (Phase 2: token enforcement)
+-- scope values: 'org', 'flavor', 'session'
+-- scope_value: '' for org, flavor name for flavor, session_id for session
 CREATE TABLE policies (
-    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    scope               TEXT NOT NULL,
-    scope_value         TEXT,
-    warn_at_pct         INTEGER NOT NULL DEFAULT 80,
-    degrade_at_pct      INTEGER NOT NULL DEFAULT 90,
-    degrade_to          TEXT,
-    block_at_pct        INTEGER NOT NULL DEFAULT 100,
-    token_limit         INTEGER,
-    unavailable_policy  TEXT NOT NULL DEFAULT 'continue',
-    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    scope           TEXT NOT NULL,
+    scope_value     TEXT NOT NULL DEFAULT '',
+    token_limit     BIGINT,
+    warn_at_pct     INT,
+    degrade_at_pct  INT,
+    degrade_to      TEXT,
+    block_at_pct    INT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (scope, scope_value)
 );
+
+CREATE INDEX IF NOT EXISTS idx_policies_scope
+    ON policies (scope, scope_value);
 
 -- Add foreign key on agents now that policies table exists
 ALTER TABLE agents

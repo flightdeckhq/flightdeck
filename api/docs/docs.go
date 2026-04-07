@@ -66,6 +66,52 @@ const docTemplate = `{
                 }
             }
         },
+        "/v1/policy": {
+            "get": {
+                "description": "Returns the most specific policy for a given flavor/session scope. Lookup order: session \u003e flavor \u003e org",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "policies"
+                ],
+                "summary": "Get effective policy",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Agent flavor",
+                        "name": "flavor",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Session ID",
+                        "name": "session_id",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/store.Policy"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/v1/sessions/{id}": {
             "get": {
                 "description": "Returns session metadata and all events in chronological order",
@@ -144,6 +190,41 @@ const docTemplate = `{
             "properties": {
                 "error": {
                     "type": "string"
+                }
+            }
+        },
+        "store.Policy": {
+            "type": "object",
+            "properties": {
+                "block_at_pct": {
+                    "type": "integer"
+                },
+                "created_at": {
+                    "type": "string"
+                },
+                "degrade_at_pct": {
+                    "type": "integer"
+                },
+                "degrade_to": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "scope": {
+                    "type": "string"
+                },
+                "scope_value": {
+                    "type": "string"
+                },
+                "token_limit": {
+                    "type": "integer"
+                },
+                "updated_at": {
+                    "type": "string"
+                },
+                "warn_at_pct": {
+                    "type": "integer"
                 }
             }
         }

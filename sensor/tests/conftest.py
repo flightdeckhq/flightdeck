@@ -28,6 +28,13 @@ class _MockHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(json.dumps(srv.response_body).encode())
 
+    def do_GET(self) -> None:
+        srv: Any = self.server
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps(srv.response_body).encode())
+
     def log_message(self, *_args: Any) -> None:
         pass
 

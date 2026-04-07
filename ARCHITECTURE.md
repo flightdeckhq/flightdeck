@@ -176,7 +176,7 @@ flightdeck/
 │   │   │   ├── content.go      # GET /v1/events/:id/content: prompt content (when enabled)
 │   │   │   ├── search.go       # GET /v1/search: cross-entity full-text search
 │   │   │   ├── directives.go   # POST /v1/directives: issue kill switch or directive
-│   │   │   ├── policies.go     # GET/PUT /v1/policies: policy management
+│   │   │   ├── policies.go     # GET /v1/policy, GET/POST /v1/policies, PUT/DELETE /v1/policies/{id}
 │   │   │   ├── analytics.go    # GET /v1/analytics: flexible breakdown queries
 │   │   │   ├── stream.go       # WS /v1/stream: real-time WebSocket fleet updates
 │   │   │   └── health.go       # GET /health: liveness check

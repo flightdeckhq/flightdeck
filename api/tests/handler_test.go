@@ -1,6 +1,7 @@
 package handlers_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -12,11 +13,14 @@ import (
 	"github.com/flightdeckhq/flightdeck/api/internal/store"
 	"github.com/flightdeckhq/flightdeck/api/internal/ws"
 	"github.com/gorilla/websocket"
+	"github.com/jackc/pgx/v5"
 )
 
 // --- Mock Store ---
 
-type mockStore struct{}
+type mockStore struct {
+	policies []store.Policy
+}
 
 func (m *mockStore) GetFleet(_ context.Context) ([]store.FlavorSummary, error) {
 	return []store.FlavorSummary{
@@ -66,6 +70,40 @@ func (m *mockStore) GetEffectivePolicy(_ context.Context, flavor, _ string) (*st
 		}, nil
 	}
 	return nil, nil
+}
+
+func (m *mockStore) GetPolicies(_ context.Context) ([]store.Policy, error) {
+	if m.policies == nil {
+		return []store.Policy{}, nil
+	}
+	return m.policies, nil
+}
+
+func (m *mockStore) GetPolicyByID(_ context.Context, id string) (*store.Policy, error) {
+	for i := range m.policies {
+		if m.policies[i].ID == id {
+			return &m.policies[i], nil
+		}
+	}
+	return nil, nil
+}
+
+func (m *mockStore) UpsertPolicy(_ context.Context, p store.Policy) (*store.Policy, error) {
+	p.ID = "new-pol-id"
+	p.CreatedAt = time.Now()
+	p.UpdatedAt = time.Now()
+	m.policies = append(m.policies, p)
+	return &p, nil
+}
+
+func (m *mockStore) DeletePolicy(_ context.Context, id string) error {
+	for i, p := range m.policies {
+		if p.ID == id {
+			m.policies = append(m.policies[:i], m.policies[i+1:]...)
+			return nil
+		}
+	}
+	return pgx.ErrNoRows
 }
 
 // --- Tests ---
@@ -237,5 +275,84 @@ func TestEffectivePolicyHandler_Returns404NoPolicy(t *testing.T) {
 	handler(w, req)
 	if w.Code != http.StatusNotFound {
 		t.Errorf("expected 404, got %d", w.Code)
+	}
+}
+
+func TestPoliciesListHandler_Empty(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.PoliciesListHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/policies", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+	if w.Body.String() != "[]\n" {
+		t.Errorf("expected empty array, got %s", w.Body.String())
+	}
+}
+
+func TestPolicyCreateHandler_Succeeds(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.PolicyCreateHandler(store.WrapStore(s))
+	body := `{"scope":"flavor","scope_value":"test-agent","token_limit":100000,"warn_at_pct":80,"degrade_at_pct":90,"block_at_pct":100}`
+	req := httptest.NewRequest("POST", "/v1/policies", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusCreated {
+		t.Errorf("expected 201, got %d", w.Code)
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["id"] == nil {
+		t.Error("expected id in response")
+	}
+	if resp["scope"] != "flavor" {
+		t.Errorf("expected scope=flavor, got %v", resp["scope"])
+	}
+}
+
+func TestPolicyCreateHandler_InvalidThresholds(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.PolicyCreateHandler(store.WrapStore(s))
+	body := `{"scope":"flavor","scope_value":"test","warn_at_pct":90,"degrade_at_pct":80,"block_at_pct":100}`
+	req := httptest.NewRequest("POST", "/v1/policies", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestPolicyUpdateHandler_Succeeds(t *testing.T) {
+	limit := int64(100000)
+	s := &mockStore{
+		policies: []store.Policy{{ID: "pol-1", Scope: "flavor", ScopeValue: "test", TokenLimit: &limit}},
+	}
+	handler := handlers.PolicyUpdateHandler(store.WrapStore(s))
+	body := `{"scope":"flavor","scope_value":"test","token_limit":200000,"warn_at_pct":80,"degrade_at_pct":90,"block_at_pct":100}`
+	req := httptest.NewRequest("PUT", "/v1/policies/pol-1", bytes.NewBufferString(body))
+	req.SetPathValue("id", "pol-1")
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+}
+
+func TestPolicyDeleteHandler_Succeeds(t *testing.T) {
+	s := &mockStore{
+		policies: []store.Policy{{ID: "pol-del", Scope: "org", ScopeValue: ""}},
+	}
+	handler := handlers.PolicyDeleteHandler(store.WrapStore(s))
+	req := httptest.NewRequest("DELETE", "/v1/policies/pol-del", nil)
+	req.SetPathValue("id", "pol-del")
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusNoContent {
+		t.Errorf("expected 204, got %d", w.Code)
 	}
 }

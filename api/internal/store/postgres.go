@@ -19,6 +19,10 @@ type Querier interface {
 	GetSession(ctx context.Context, sessionID string) (*Session, error)
 	GetSessionEvents(ctx context.Context, sessionID string) ([]Event, error)
 	GetEffectivePolicy(ctx context.Context, flavor, sessionID string) (*Policy, error)
+	GetPolicies(ctx context.Context) ([]Policy, error)
+	GetPolicyByID(ctx context.Context, id string) (*Policy, error)
+	UpsertPolicy(ctx context.Context, p Policy) (*Policy, error)
+	DeletePolicy(ctx context.Context, id string) error
 }
 
 // WrapStore returns a Querier from any compatible implementation.
@@ -222,4 +226,84 @@ func (s *Store) GetSessionEvents(ctx context.Context, sessionID string) ([]Event
 		events = append(events, e)
 	}
 	return events, nil
+}
+
+// GetPolicies returns all policies ordered by creation date (newest first).
+func (s *Store) GetPolicies(ctx context.Context) ([]Policy, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id::text, scope, scope_value, token_limit, warn_at_pct, degrade_at_pct, degrade_to, block_at_pct, created_at, updated_at
+		FROM policies ORDER BY created_at DESC
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("get policies: %w", err)
+	}
+	defer rows.Close()
+
+	var policies []Policy
+	for rows.Next() {
+		var p Policy
+		if err := rows.Scan(
+			&p.ID, &p.Scope, &p.ScopeValue, &p.TokenLimit, &p.WarnAtPct, &p.DegradeAtPct, &p.DegradeTo, &p.BlockAtPct, &p.CreatedAt, &p.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan policy: %w", err)
+		}
+		policies = append(policies, p)
+	}
+	if policies == nil {
+		policies = []Policy{} // Return empty array, not null
+	}
+	return policies, nil
+}
+
+// GetPolicyByID returns a single policy by ID. Returns nil if not found.
+func (s *Store) GetPolicyByID(ctx context.Context, id string) (*Policy, error) {
+	var p Policy
+	err := s.pool.QueryRow(ctx, `
+		SELECT id::text, scope, scope_value, token_limit, warn_at_pct, degrade_at_pct, degrade_to, block_at_pct, created_at, updated_at
+		FROM policies WHERE id = $1::uuid
+	`, id).Scan(
+		&p.ID, &p.Scope, &p.ScopeValue, &p.TokenLimit, &p.WarnAtPct, &p.DegradeAtPct, &p.DegradeTo, &p.BlockAtPct, &p.CreatedAt, &p.UpdatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get policy %s: %w", id, err)
+	}
+	return &p, nil
+}
+
+// UpsertPolicy creates or updates a policy. Returns the resulting policy with all fields.
+func (s *Store) UpsertPolicy(ctx context.Context, p Policy) (*Policy, error) {
+	var result Policy
+	err := s.pool.QueryRow(ctx, `
+		INSERT INTO policies (scope, scope_value, token_limit, warn_at_pct, degrade_at_pct, degrade_to, block_at_pct)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		ON CONFLICT (scope, scope_value)
+		DO UPDATE SET token_limit = EXCLUDED.token_limit,
+		              warn_at_pct = EXCLUDED.warn_at_pct,
+		              degrade_at_pct = EXCLUDED.degrade_at_pct,
+		              degrade_to = EXCLUDED.degrade_to,
+		              block_at_pct = EXCLUDED.block_at_pct,
+		              updated_at = NOW()
+		RETURNING id::text, scope, scope_value, token_limit, warn_at_pct, degrade_at_pct, degrade_to, block_at_pct, created_at, updated_at
+	`, p.Scope, p.ScopeValue, p.TokenLimit, p.WarnAtPct, p.DegradeAtPct, p.DegradeTo, p.BlockAtPct).Scan(
+		&result.ID, &result.Scope, &result.ScopeValue, &result.TokenLimit, &result.WarnAtPct, &result.DegradeAtPct, &result.DegradeTo, &result.BlockAtPct, &result.CreatedAt, &result.UpdatedAt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("upsert policy: %w", err)
+	}
+	return &result, nil
+}
+
+// DeletePolicy removes a policy by ID. Returns an error if not found.
+func (s *Store) DeletePolicy(ctx context.Context, id string) error {
+	tag, err := s.pool.Exec(ctx, "DELETE FROM policies WHERE id = $1::uuid", id)
+	if err != nil {
+		return fmt.Errorf("delete policy %s: %w", id, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return pgx.ErrNoRows
+	}
+	return nil
 }

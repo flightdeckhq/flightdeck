@@ -10,6 +10,19 @@ import (
 )
 
 // HeartbeatHandler handles POST /v1/heartbeat.
+//
+// @Summary      Agent heartbeat
+// @Description  Validates bearer token, publishes heartbeat to NATS, returns directive envelope
+// @Tags         heartbeat
+// @Accept       json
+// @Produce      json
+// @Param        Authorization  header    string  true  "Bearer token"
+// @Param        heartbeat      body      object  true  "Heartbeat payload with session_id"
+// @Success      200  {object}  map[string]interface{}
+// @Failure      400  {object}  ErrorResponse
+// @Failure      401  {object}  ErrorResponse
+// @Failure      500  {object}  ErrorResponse
+// @Router       /v1/heartbeat [post]
 func HeartbeatHandler(
 	validator TokenValidator,
 	publisher EventPublisher,

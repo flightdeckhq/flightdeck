@@ -42,6 +42,19 @@ type DirectiveResponse struct {
 // See DECISIONS.md D048.
 
 // EventsHandler handles POST /v1/events.
+//
+// @Summary      Submit agent event
+// @Description  Validates bearer token, publishes event to NATS, returns directive envelope
+// @Tags         events
+// @Accept       json
+// @Produce      json
+// @Param        Authorization  header    string  true  "Bearer token"
+// @Param        event          body      object  true  "Event payload"
+// @Success      200  {object}  map[string]interface{}
+// @Failure      400  {object}  ErrorResponse
+// @Failure      401  {object}  ErrorResponse
+// @Failure      500  {object}  ErrorResponse
+// @Router       /v1/events [post]
 func EventsHandler(
 	validator TokenValidator,
 	publisher EventPublisher,

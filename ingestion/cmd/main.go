@@ -1,3 +1,9 @@
+// @title       Flightdeck Ingestion API
+// @version     0.1.0
+// @description Receives sensor events and delivers directives to agents
+// @host        localhost:8080
+// @BasePath    /
+
 // Entry point for the Flightdeck ingestion API.
 // Receives sensor events via HTTP, publishes to NATS JetStream.
 package main

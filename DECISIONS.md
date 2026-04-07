@@ -696,3 +696,21 @@ directives within one heartbeat interval (30s worst case).
 receive a kill switch directive, making the kill switch useless for any agent
 in idle state. The heartbeat is the only regular communication from an idle
 agent to the control plane.
+
+---
+
+## D050 -- swaggo/swag for OpenAPI documentation
+
+**Decision:** Use swaggo/swag to generate OpenAPI 3.0 documentation from
+structured Go comments on handlers. Swagger UI served at `/docs` on both
+ingestion API (port 8080) and query API (port 8081). Accessible via nginx
+at `/ingest/docs` and `/api/docs`.
+
+**Reasoning:** Machine-readable API docs are a requirement for any platform
+tool used by engineering teams. swaggo/swag is the most widely adopted Go
+OpenAPI generation tool, requires no runtime dependency, and integrates
+cleanly with stdlib ServeMux. The spec is generated at build time and
+committed to the repo so it is always in sync with the code.
+
+**Rejected alternative:** Hand-written OpenAPI YAML. Rejected because
+hand-written specs drift from code.

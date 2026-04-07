@@ -7,6 +7,9 @@ import (
 	"time"
 
 	"github.com/flightdeckhq/flightdeck/ingestion/internal/handlers"
+	httpSwagger "github.com/swaggo/http-swagger/v2"
+
+	_ "github.com/flightdeckhq/flightdeck/ingestion/docs"
 )
 
 const (
@@ -27,6 +30,7 @@ func New(
 	mux.Handle("POST /v1/events", handlers.EventsHandler(validator, publisher, dirStore))
 	mux.Handle("POST /v1/heartbeat", handlers.HeartbeatHandler(validator, publisher, dirStore))
 	mux.Handle("GET /health", handlers.HealthHandler())
+	mux.Handle("GET /docs/", httpSwagger.WrapHandler)
 
 	return &http.Server{
 		Addr:         addr,

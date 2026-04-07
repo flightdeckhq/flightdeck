@@ -10,6 +10,17 @@ import (
 )
 
 // SessionsHandler handles GET /v1/sessions/{id}.
+//
+// @Summary      Get session detail
+// @Description  Returns session metadata and all events in chronological order
+// @Tags         sessions
+// @Produce      json
+// @Param        id   path      string  true  "Session UUID"
+// @Success      200  {object}  map[string]interface{}
+// @Failure      400  {object}  ErrorResponse
+// @Failure      404  {object}  ErrorResponse
+// @Failure      500  {object}  ErrorResponse
+// @Router       /v1/sessions/{id} [get]
 func SessionsHandler(s store.Querier) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := strings.TrimPrefix(r.URL.Path, "/v1/sessions/")

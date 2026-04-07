@@ -9,6 +9,9 @@ import (
 	"github.com/flightdeckhq/flightdeck/api/internal/handlers"
 	"github.com/flightdeckhq/flightdeck/api/internal/store"
 	"github.com/flightdeckhq/flightdeck/api/internal/ws"
+	httpSwagger "github.com/swaggo/http-swagger/v2"
+
+	_ "github.com/flightdeckhq/flightdeck/api/docs"
 )
 
 const (
@@ -25,6 +28,7 @@ func New(addr string, s store.Querier, hub *ws.Hub, corsOrigin string) *http.Ser
 	mux.Handle("GET /v1/sessions/", handlers.SessionsHandler(s))
 	mux.Handle("GET /v1/stream", handlers.StreamHandler(hub))
 	mux.Handle("GET /health", handlers.HealthHandler())
+	mux.Handle("GET /docs/", httpSwagger.WrapHandler)
 
 	return &http.Server{
 		Addr:         addr,

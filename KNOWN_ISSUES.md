@@ -44,4 +44,4 @@ fix in DECISIONS.md. Never leave a resolved TODO comment in the code.
 |-------|------------|--------------------------------------|-------------|-----------|
 | KI-R1 | Sensor     | Hot path blocking on event POST      | Phase 1     | D037      |
 | KI-R2 | API        | LISTEN connection no reconnect       | Phase 1     | D038      |
-| KI-R3 | Ingestion  | Kill switch not delivered to idle     | Phase 1     | --        |
+| KI-R3 | Ingestion  | Kill switch not delivered to idle     | Phase 1     | D049      |

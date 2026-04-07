@@ -138,71 +138,87 @@
 
 ## API and Schema Rules
 
-31. **Never change the event payload schema without updating ARCHITECTURE.md first.**
+32. **Never change the event payload schema without updating ARCHITECTURE.md first.**
     The schema is a contract between the sensor and the ingestion API.
 
-32. **All database migrations must be reversible.** Every migration has an up and
+33. **All database migrations must be reversible.** Every migration has an up and
     a down. Test both.
 
-33. **No raw SQL outside `api/internal/store/`.** SQL lives in the store package only.
+34. **No raw SQL outside `api/internal/store/`.** SQL lives in the store package only.
 
-34. **Validate all event payloads at the ingestion API boundary.** Do not pass
+35. **Validate all event payloads at the ingestion API boundary.** Do not pass
     invalid events to NATS.
 
-35. **GET /v1/events/:id/content returns 404 when capture is disabled** for that
+36. **GET /v1/events/:id/content returns 404 when capture is disabled** for that
     session. Not 200 with empty data. Not 403. 404 -- the resource does not exist.
 
 ---
 
 ## Reporting Rules
 
-36. **After every task, report:**
+37. **After every task, report:**
     - Every file created or modified
     - Every decision made not explicitly covered in ARCHITECTURE.md
     - Test count before and after (must increase)
     - Whether both themes pass (for frontend tasks)
     - Any blockers
 
-37. **If you find a discrepancy between code and ARCHITECTURE.md, report it
+38. **If you find a discrepancy between code and ARCHITECTURE.md, report it
     immediately.** Log it, fix it, report it.
 
-38. **Do not report a task complete if tests are failing.**
+39. **Do not report a task complete if tests are failing.**
 
 ---
 
 ## Living Document Rules
 
-42. **ARCHITECTURE.md is a living document, not a contract carved in stone.**
+40. **ARCHITECTURE.md is a living document, not a contract carved in stone.**
     When implementation reveals that a planned approach is wrong, impractical,
     or superseded by a better idea, update the document to reflect reality.
     A codebase that matches a stale ARCHITECTURE.md is worse than no
     ARCHITECTURE.md at all.
 
-43. **When any planned decision changes, update docs before merging code.**
+41. **When any planned decision changes, update docs before merging code.**
     The order is always: update ARCHITECTURE.md → update DECISIONS.md (record
     the pivot and why) → write the code → tests pass → report back.
     Never merge code that contradicts the architecture docs.
 
-44. **DECISIONS.md records every pivot immediately.** If the plan says to use
+42. **DECISIONS.md records every pivot immediately.** If the plan says to use
     library X and you switch to library Y mid-implementation, stop. Add a
     DECISIONS.md entry: what changed, what was rejected, why. Then proceed.
     Future contributors must understand why the code looks different from the plan.
 
-45. **Phase plan changes must be approved by the Supervisor.** If a task reveals
+43. **Phase plan changes must be approved by the Supervisor.** If a task reveals
     that a planned deliverable is wrong in scope, sequencing, or approach, raise
     it before changing the plan. Do not silently resequence phases or remove
     deliverables. The Supervisor decides whether to update the plan or stay the
     course.
 
-46. **Acceptance criteria can be revised if they are wrong.** If a criterion
+44. **Acceptance criteria can be revised if they are wrong.** If a criterion
     turns out to be untestable, overconstrained, or based on a wrong assumption,
     raise it with the Supervisor. Do not silently skip a criterion.
 
-47. **At the start of every phase, run this command:**
+---
+
+## Git Rules
+
+45. **Never commit directly to main.** All changes go through a branch.
+
+46. **Commit messages follow conventional commits:**
+    `feat:`, `fix:`, `test:`, `docs:`, `chore:`, `refactor:`
+
+47. **Never commit secrets, API keys, or tokens.**
+
+---
+
+## Known Issues Rules
+
+48. **At the start of every phase, run this command:**
         grep -rn "TODO(KI" . \
           --include="*.go" \
           --include="*.py" \
           --include="*.ts" \
+          --include="*.yml" \
           | grep "\[Phase N\]"
     Replace N with the current phase number. Every result must be raised with
     the Supervisor and included in the phase plan before any feature work begins.
@@ -215,30 +231,23 @@
       resolved in.
     - Record the fix in DECISIONS.md.
     - If the resolved item corresponds to a trade-off entry in DECISIONS.md
-      (D039-D048 range), update that entry to show it was resolved: add
-      "Resolved in: Phase N" and a one-line summary. Do not delete the entry.
+      (D039-D048 range), update that entry to add:
+        "Resolved in: Phase N"
+        "Resolution: <one-line summary of what was done>"
+      Do not delete the DECISIONS.md entry -- it is a historical record.
+      Only update it.
 
     When the Open table in KNOWN_ISSUES.md is empty:
-    - Delete KNOWN_ISSUES.md entirely. Do not leave an empty or Resolved-only file.
+    - Delete KNOWN_ISSUES.md entirely.
+    - Do not leave an empty file or a Resolved-only file.
 
     Before any release tag is pushed:
-    - Verify KNOWN_ISSUES.md does not exist. If it exists, all open items must
-      be resolved and the file deleted before the tag is pushed, OR the Supervisor
-      must explicitly approve shipping with known issues and state which items
-      are acceptable.
+    - Verify KNOWN_ISSUES.md does not exist.
+    - If it exists, all open items must be resolved and the file deleted
+      before the tag is pushed, OR the Supervisor must explicitly approve
+      shipping with known issues and state which items are acceptable.
     - Never push a release tag with open KI items without explicit Supervisor
       approval.
-
----
-
-## Git Rules
-
-39. **Never commit directly to main.** All changes go through a branch.
-
-40. **Commit messages follow conventional commits:**
-    `feat:`, `fix:`, `test:`, `docs:`, `chore:`, `refactor:`
-
-41. **Never commit secrets, API keys, or tokens.**
 
 ---
 

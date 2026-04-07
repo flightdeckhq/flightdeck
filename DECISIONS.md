@@ -682,3 +682,17 @@ Add per-token rate limiting middleware.
 **Address in:** Phase 2.
 **Code locations:** `ingestion/internal/auth/token.go:Validate`,
 `ingestion/internal/handlers/events.go:EventsHandler`
+
+---
+
+## D049 -- Directive lookup added to heartbeat handler
+
+**Decision:** `HeartbeatHandler` now accepts `DirectiveLookup` and returns a
+directive envelope in its response, identical to the events handler pattern.
+This ensures idle agents (heartbeat only, no LLM calls) receive kill switch
+directives within one heartbeat interval (30s worst case).
+
+**Reasoning:** Without this fix, an idle agent with no LLM calls would never
+receive a kill switch directive, making the kill switch useless for any agent
+in idle state. The heartbeat is the only regular communication from an idle
+agent to the control plane.

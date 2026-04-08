@@ -92,7 +92,7 @@ flightdeck/
 │   │       └── openai.py       # OpenAIProvider: handles messages (all roles), tools, response
 │   └── tests/
 │       ├── unit/
-│       │   ├── test_session.py         # Session lifecycle, state transitions, heartbeat
+│       │   ├── test_session.py         # Session lifecycle, directive application, shutdown flag
 │       │   ├── test_policy.py          # Token enforcement, threshold evaluation
 │       │   ├── test_interceptor.py     # wrap(), patch(), call interception
 │       │   ├── test_transport.py       # HTTP client, directive parsing, unavailability
@@ -1738,8 +1738,11 @@ with one click. Fleet-wide stop by flavor works simultaneously.
 
 `api/internal/store/postgres.go` (extend)
 - `CreateDirective(directive Directive) error`
-- `GetPendingDirective(sessionID string) (*Directive, error)` -- also checks flavor-wide
-- `MarkDelivered(directiveID string) error`
+
+Note: Directive lookup and delivery marking is handled by
+`ingestion/internal/directive/store.go:LookupPending()` which was built in
+Phase 1 and required no changes in Phase 3. The atomic UPDATE...RETURNING
+query combines lookup and mark-delivered in a single operation.
 
 `sensor/flightdeck_sensor/core/session.py` (extend)
 - `apply_directive(directive Directive)`: handle shutdown, degrade, throttle, checkpoint
@@ -1770,8 +1773,8 @@ with one click. Fleet-wide stop by flavor works simultaneously.
 * `make test-integration` passes test_killswitch.py with all 4 cases
 * Kill switch button in drawer sends POST /v1/directives and session
   state changes to closed within 5 seconds (integration test)
-* Fleet-wide kill stops all sessions of a flavor within one heartbeat
-  interval (integration test)
+* Fleet-wide kill stops all sessions of a flavor when they next make
+  an LLM call (integration test)
 * Directive is delivered exactly once -- not re-delivered on subsequent
   POSTs after the first one that received it
 * All linters pass with zero errors

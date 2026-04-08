@@ -484,6 +484,25 @@ Data flows:
 
 ---
 
+## Sensor Design Principles
+
+The sensor is a library wrapper, not an OS agent.
+
+It has no background threads, no polling loops, and no network activity
+independent of LLM calls. It runs when called and returns when done. The
+application is fully in control of when the sensor does anything.
+
+The one exception is the event queue drain thread, which offloads HTTP POSTs
+off the LLM call hot path. This is a performance optimization that is invisible
+to the application, not a control plane concern.
+
+Never add heartbeat-like behavior, polling loops, or daemon threads to the
+sensor. If a feature requires background activity, it belongs in a sidecar
+container or system service, not in a library that runs inside an application
+process.
+
+---
+
 ## Component Interfaces
 
 ### flightdeck-sensor Public API

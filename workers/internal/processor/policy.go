@@ -103,7 +103,7 @@ func (pe *PolicyEvaluator) queryPolicy(ctx context.Context, scope, scopeValue st
 	var cp CachedPolicy
 	err := pe.pool.QueryRow(ctx, `
 		SELECT token_limit, warn_at_pct, degrade_at_pct, degrade_to, block_at_pct
-		FROM policies WHERE scope = $1 AND scope_value = $2
+		FROM token_policies WHERE scope = $1 AND scope_value = $2
 	`, scope, scopeValue).Scan(
 		&cp.TokenLimit, &cp.WarnAtPct, &cp.DegradeAtPct, &cp.DegradeTo, &cp.BlockAtPct,
 	)
@@ -144,6 +144,22 @@ func (pe *PolicyEvaluator) MarkFired(sessionID, directiveType string) {
 	pe.fired[sessionID][directiveType] = true
 }
 
+// CheckAndMarkFired atomically checks if a directive type has fired and marks it.
+// Returns true if the caller should fire the directive (was not previously fired).
+// This avoids the TOCTOU race between separate HasFired/MarkFired calls.
+func (pe *PolicyEvaluator) CheckAndMarkFired(sessionID, directiveType string) bool {
+	pe.firedMu.Lock()
+	defer pe.firedMu.Unlock()
+	if pe.fired[sessionID] == nil {
+		pe.fired[sessionID] = make(map[string]bool)
+	}
+	if pe.fired[sessionID][directiveType] {
+		return false
+	}
+	pe.fired[sessionID][directiveType] = true
+	return true
+}
+
 // Evaluate checks the session's token usage against the effective policy.
 // Writes warn, degrade, or shutdown directives to the directives table.
 func (pe *PolicyEvaluator) Evaluate(ctx context.Context, sessionID string) error {
@@ -176,18 +192,16 @@ func (pe *PolicyEvaluator) Evaluate(ctx context.Context, sessionID string) error
 		return pe.writeDirective(ctx, sessionID, flavor, "shutdown", "token_budget_exceeded", nil)
 	}
 
-	// Check degrade threshold (fire-once per session)
+	// Check degrade threshold (fire-once per session, atomic check-and-mark)
 	if policy.DegradeAtPct != nil && pctUsed >= int64(*policy.DegradeAtPct) {
-		if !pe.HasFired(sessionID, "degrade") {
-			pe.MarkFired(sessionID, "degrade")
+		if pe.CheckAndMarkFired(sessionID, "degrade") {
 			return pe.writeDirective(ctx, sessionID, flavor, "degrade", "token_budget_degrade", policy.DegradeTo)
 		}
 	}
 
-	// Check warn threshold (fire-once per session)
+	// Check warn threshold (fire-once per session, atomic check-and-mark)
 	if policy.WarnAtPct != nil && pctUsed >= int64(*policy.WarnAtPct) {
-		if !pe.HasFired(sessionID, "warn") {
-			pe.MarkFired(sessionID, "warn")
+		if pe.CheckAndMarkFired(sessionID, "warn") {
 			return pe.writeDirective(ctx, sessionID, flavor, "warn", "token_budget_warning", nil)
 		}
 	}
@@ -217,8 +231,8 @@ func (pe *PolicyEvaluator) writeDirective(
 		}
 	}
 
-	query := `INSERT INTO directives (session_id, flavor, action, reason, issued_by) VALUES ($1::uuid, $2, $3, $4, 'policy_evaluator')`
-	_, err := pe.pool.Exec(ctx, query, sessionID, flavor, action, reason)
+	query := `INSERT INTO directives (session_id, flavor, action, reason, degrade_to, issued_by) VALUES ($1::uuid, $2, $3, $4, $5, 'policy_evaluator')`
+	_, err := pe.pool.Exec(ctx, query, sessionID, flavor, action, reason, degradeTo)
 	if err != nil {
 		return err
 	}

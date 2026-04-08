@@ -13,6 +13,7 @@ type Directive struct {
 	Flavor         pgtype.Text      `json:"flavor,omitempty" db:"flavor"`
 	Action         string           `json:"action" db:"action"`
 	Reason         pgtype.Text      `json:"reason,omitempty" db:"reason"`
+	DegradeTo      pgtype.Text      `json:"degrade_to,omitempty" db:"degrade_to"`
 	GracePeriodMs  int              `json:"grace_period_ms" db:"grace_period_ms"`
 	IssuedBy       string           `json:"issued_by" db:"issued_by"`
 	IssuedAt       time.Time        `json:"issued_at" db:"issued_at"`

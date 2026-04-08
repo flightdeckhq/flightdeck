@@ -183,13 +183,17 @@ func PolicyUpdateHandler(s store.Querier) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, msg)
 			return
 		}
-		policy, err := s.UpsertPolicy(r.Context(), store.Policy{
+		policy, err := s.UpdatePolicy(r.Context(), id, store.Policy{
 			Scope: req.Scope, ScopeValue: req.ScopeValue,
 			TokenLimit: req.TokenLimit, WarnAtPct: req.WarnAtPct,
 			DegradeAtPct: req.DegradeAtPct, DegradeTo: req.DegradeTo,
 			BlockAtPct: req.BlockAtPct,
 		})
 		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				writeError(w, http.StatusNotFound, "policy not found")
+				return
+			}
 			slog.Error("update policy error", "err", err)
 			writeError(w, http.StatusInternalServerError, "internal server error")
 			return

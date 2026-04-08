@@ -743,3 +743,40 @@ kill switch, prompt capture, analytics. Inspired by tokencap's smoke_test.py
 pattern but adapted for a platform product rather than a standalone library.
 
 **Address in:** Phase 5.
+
+---
+
+## D052 -- Policies table renamed to token_policies
+
+**Decision:** The `policies` table is renamed to `token_policies` in all SQL,
+Go store queries, and schema documentation.
+
+**Reasoning:** The name `policies` is too generic. As Flightdeck grows, other
+policy types (access policies, routing policies) may be added. `token_policies`
+makes the purpose explicit and avoids future naming collisions. API endpoint
+paths (`/v1/policies`) remain unchanged -- they refer to the resource name, not
+the table name.
+
+---
+
+## D053 -- Delete confirmation uses Dialog not AlertDialog
+
+**Decision:** PolicyTable delete confirmation uses the existing shadcn/ui Dialog
+component rather than AlertDialog from `@radix-ui/react-alert-dialog`.
+
+**Reasoning:** AlertDialog would require adding a new package dependency. The
+existing Dialog achieves the same UX without new dependencies. Constraint 4
+(no new UI libraries) applies.
+
+---
+
+## D054 -- Nav bar added to App.tsx
+
+**Decision:** A minimal 40px nav bar with Fleet and Policies links was added to
+App.tsx. Fleet.tsx was updated from `h-screen` to `h-full` to accommodate the
+nav bar height.
+
+**Reasoning:** The Policies page required navigation between dashboard pages.
+A minimal top nav is the simplest solution that works with the existing routing
+structure. ARCHITECTURE.md App.tsx description updated to reflect this.
+

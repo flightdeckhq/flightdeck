@@ -23,10 +23,10 @@ CREATE TABLE agents (
     policy_id       UUID
 );
 
--- Policies (Phase 2: token enforcement)
+-- Token policies (Phase 2: token enforcement)
 -- scope values: 'org', 'flavor', 'session'
 -- scope_value: '' for org, flavor name for flavor, session_id for session
-CREATE TABLE policies (
+CREATE TABLE IF NOT EXISTS token_policies (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     scope           TEXT NOT NULL,
     scope_value     TEXT NOT NULL DEFAULT '',
@@ -40,12 +40,12 @@ CREATE TABLE policies (
     UNIQUE (scope, scope_value)
 );
 
-CREATE INDEX IF NOT EXISTS idx_policies_scope
-    ON policies (scope, scope_value);
+CREATE INDEX IF NOT EXISTS idx_token_policies_scope
+    ON token_policies (scope, scope_value);
 
--- Add foreign key on agents now that policies table exists
+-- Add foreign key on agents now that token_policies table exists
 ALTER TABLE agents
-    ADD CONSTRAINT agents_policy_id_fk FOREIGN KEY (policy_id) REFERENCES policies(id);
+    ADD CONSTRAINT agents_policy_id_fk FOREIGN KEY (policy_id) REFERENCES token_policies(id);
 
 -- Sessions (ephemeral identity)
 CREATE TABLE sessions (
@@ -115,6 +115,7 @@ CREATE TABLE directives (
     flavor          TEXT,
     action          TEXT NOT NULL,
     reason          TEXT,
+    degrade_to      TEXT,
     grace_period_ms INTEGER NOT NULL DEFAULT 5000,
     issued_by       TEXT NOT NULL DEFAULT 'platform',
     issued_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),

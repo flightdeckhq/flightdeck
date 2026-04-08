@@ -33,6 +33,10 @@ export interface Session {
   ended_at: string | null;
   tokens_used: number;
   token_limit: number | null;
+  warn_at_pct?: number | null;
+  degrade_at_pct?: number | null;
+  degrade_to?: string | null;
+  block_at_pct?: number | null;
 }
 
 /** Event metadata (no prompt content inline). */
@@ -76,6 +80,31 @@ export interface SessionDetail {
 export interface FleetUpdate {
   type: "session_update" | "session_start" | "session_end";
   session: Session;
+}
+
+/** Token policy as returned by GET /v1/policies. */
+export interface Policy {
+  id: string;
+  scope: "org" | "flavor" | "session";
+  scope_value: string;
+  token_limit: number | null;
+  warn_at_pct: number | null;
+  degrade_at_pct: number | null;
+  degrade_to: string | null;
+  block_at_pct: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Request body for creating or updating a policy. */
+export interface PolicyRequest {
+  scope: "org" | "flavor" | "session";
+  scope_value: string;
+  token_limit: number | null;
+  warn_at_pct: number | null;
+  degrade_at_pct: number | null;
+  degrade_to: string | null;
+  block_at_pct: number | null;
 }
 
 /** Control-plane directive (Phase 2+, defined for type completeness). */

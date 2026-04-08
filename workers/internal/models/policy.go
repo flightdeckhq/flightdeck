@@ -6,7 +6,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-// Policy mirrors the policies table.
+// Policy mirrors the token_policies table.
 type Policy struct {
 	ID                pgtype.UUID `json:"id" db:"id"`
 	Scope             string      `json:"scope" db:"scope"`

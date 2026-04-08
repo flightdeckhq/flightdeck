@@ -36,6 +36,7 @@ _log = logging.getLogger("flightdeck_sensor.core.session")
 
 _HEARTBEAT_INTERVAL_SECS = 30
 _HEARTBEAT_JOIN_TIMEOUT_SECS = 5
+_PREFLIGHT_TIMEOUT_SECS = 5
 
 
 class Session:
@@ -63,6 +64,9 @@ class Session:
         self._tokens_used = 0
         self._token_limit: int | None = None
         self._lock = threading.Lock()
+
+        self._shutdown_requested: bool = False
+        self._shutdown_reason: str = ""
 
         self._stopped = threading.Event()
         self._heartbeat_thread: threading.Thread | None = None
@@ -220,7 +224,7 @@ class Session:
                 headers={"Authorization": f"Bearer {self.config.token}"},
                 method="GET",
             )
-            with urllib.request.urlopen(req, timeout=5) as resp:
+            with urllib.request.urlopen(req, timeout=_PREFLIGHT_TIMEOUT_SECS) as resp:
                 data = json.loads(resp.read().decode())
                 policy_fields: dict[str, Any] = {}
                 if "token_limit" in data:
@@ -312,20 +316,71 @@ class Session:
     # ------------------------------------------------------------------
 
     def _apply_directive(self, directive: Directive) -> None:
-        """Handle a directive received from the control plane."""
-        if directive.action == DirectiveAction.POLICY_UPDATE:
-            _log.info("Policy update received")
-        elif directive.action in (
-            DirectiveAction.SHUTDOWN,
-            DirectiveAction.SHUTDOWN_FLAVOR,
-        ):
+        """Apply a directive received from the control plane.
+
+        Called from both the heartbeat thread (for WARN, DEGRADE, POLICY_UPDATE)
+        and the interceptor hot path (for SHUTDOWN via flag). Must never raise
+        for WARN, DEGRADE, or POLICY_UPDATE. SHUTDOWN and SHUTDOWN_FLAVOR set
+        the _shutdown_requested flag -- the actual raise happens in _pre_call().
+        """
+        if directive.action == DirectiveAction.WARN:
+            _log.warning("[flightdeck] policy warning: %s", directive.reason)
+            payload = self._build_payload(
+                EventType.POLICY_WARN,
+                source="server",
+                reason=directive.reason,
+            )
+            self.event_queue.enqueue(payload)
+
+        elif directive.action == DirectiveAction.DEGRADE:
+            degrade_to = directive.payload.get("degrade_to", "")
+            self.policy.set_degrade_model(degrade_to)
+            _log.info("[flightdeck] model degraded to: %s", degrade_to)
+
+        elif directive.action == DirectiveAction.POLICY_UPDATE:
+            allowed = {
+                "token_limit", "warn_at_pct", "degrade_at_pct",
+                "degrade_to", "block_at_pct",
+            }
+            fields = {
+                k: v
+                for k, v in directive.payload.items()
+                if k in allowed
+            }
+            self.policy.update(fields)
+            _log.debug("[flightdeck] policy updated from directive")
+
+        elif directive.action == DirectiveAction.SHUTDOWN:
             _log.warning(
-                "Shutdown directive received: %s (reason: %s)",
-                directive.action.value,
+                "[flightdeck] shutdown directive received: %s",
                 directive.reason,
             )
+            with self._lock:
+                self._shutdown_requested = True
+                self._shutdown_reason = directive.reason
+
+        elif directive.action == DirectiveAction.SHUTDOWN_FLAVOR:
+            _log.warning(
+                "[flightdeck] fleet shutdown directive received for flavor %s: %s",
+                self.config.agent_flavor,
+                directive.reason,
+            )
+            with self._lock:
+                self._shutdown_requested = True
+                self._shutdown_reason = directive.reason
+
+        elif directive.action == DirectiveAction.THROTTLE:
+            _log.warning(
+                "[flightdeck] directive action not yet implemented: throttle. Ignoring.",
+            )
+
+        elif directive.action == DirectiveAction.CHECKPOINT:
+            _log.warning(
+                "[flightdeck] directive action not yet implemented: checkpoint. Ignoring.",
+            )
+
         else:
-            _log.info("Directive received: %s", directive.action.value)
+            _log.debug("[flightdeck] unknown directive action: %s", directive.action.value)
 
     # ------------------------------------------------------------------
     # Process exit handlers

@@ -150,7 +150,7 @@ flightdeck/
 │   │       ├── session.go      # Session struct (mirrors sessions table)
 │   │       ├── event.go        # Event struct (mirrors events table)
 │   │       ├── event_content.go # EventContent struct (mirrors event_content table)
-│   │       ├── policy.go       # Policy struct (mirrors policies table)
+│   │       ├── policy.go       # Policy struct (mirrors token_policies table)
 │   │       └── directive.go    # Directive struct (mirrors directives table, split per D032)
 │   └── tests/
 │       └── processor_test.go   # Unit tests: event processing, state machine, policy eval
@@ -201,12 +201,12 @@ flightdeck/
 │   ├── eslint.config.js        # ESLint 9 flat config
 │   ├── src/
 │   │   ├── main.tsx
-│   │   ├── App.tsx             # Root: theme provider, router, WebSocket init
+│   │   ├── App.tsx             # Root: router, theme provider, nav bar with Fleet and Policies links
 │   │   ├── pages/
 │   │   │   ├── Fleet.tsx       # Primary view: timeline + fleet health panel
 │   │   │   ├── Session.tsx     # Session drill-down (opened from timeline node click)
 │   │   │   ├── Analytics.tsx   # Analytics page: flexible breakdown charts
-│   │   │   └── Policies.tsx    # Policy management
+│   │   │   └── Policies.tsx    # Policy management: list, create, edit, delete via PolicyEditor dialog
 │   │   ├── components/
 │   │   │   ├── timeline/
 │   │   │   │   ├── Timeline.tsx        # Primary surface: swim lanes, real-time scrolling
@@ -234,8 +234,8 @@ flightdeck/
 │   │   │   │   ├── CommandPalette.tsx  # Cmd+K palette (shadcn Command + cmdk)
 │   │   │   │   └── SearchResults.tsx   # Grouped results: Agents, Sessions, Events, Policy
 │   │   │   ├── policy/
-│   │   │   │   ├── PolicyEditor.tsx
-│   │   │   │   └── PolicyTable.tsx
+│   │   │   │   ├── PolicyEditor.tsx    # Form component for create/edit policy in Dialog
+│   │   │   │   └── PolicyTable.tsx     # Sortable table with scope badges and delete confirmation
 │   │   │   └── ui/                     # shadcn/ui components (owned, copied into project)
 │   │   │       ├── button.tsx
 │   │   │       ├── card.tsx
@@ -269,6 +269,9 @@ flightdeck/
 │       │   ├── CommandPalette.test.tsx
 │       │   ├── SessionDrawer.test.tsx
 │       │   ├── FleetPanel.test.tsx
+│       │   ├── PolicyEditor.test.tsx    # 6 tests: create mode, edit mode, threshold validation, scope_value required
+│       │   ├── PolicyTable.test.tsx     # 4 tests: scope badges, empty state, delete confirmation, onDelete callback
+│       │   ├── TokenUsageBar.test.tsx   # 3 tests: markers at correct positions, null thresholds, no-limit path
 │       │   ├── DimensionChart.test.tsx  # Group-by switching, chart re-render
 │       │   └── PromptViewer.test.tsx    # Prompt display, provider terminology
 │       └── e2e/
@@ -573,7 +576,7 @@ CREATE TABLE agents (
     first_seen      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     last_seen       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     session_count   INTEGER NOT NULL DEFAULT 0,
-    policy_id       UUID REFERENCES policies(id)
+    policy_id       UUID REFERENCES token_policies(id)
 );
 ```
 
@@ -651,10 +654,10 @@ Content is never joined into event queries automatically. It is fetched explicit
 via `GET /v1/events/:id/content`. This keeps event table queries fast regardless
 of prompt capture settings.
 
-### policies
+### token_policies
 
 ```sql
-CREATE TABLE policies (
+CREATE TABLE token_policies (
     id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     scope               TEXT NOT NULL,
     scope_value         TEXT,
@@ -678,6 +681,7 @@ CREATE TABLE directives (
     flavor          TEXT,
     action          TEXT NOT NULL,
     reason          TEXT,
+    degrade_to      TEXT,
     grace_period_ms INTEGER NOT NULL DEFAULT 5000,
     issued_by       TEXT NOT NULL DEFAULT 'platform',
     issued_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -1395,7 +1399,7 @@ their agent appear in the live dashboard timeline in real time.
 
 ---
 
-`dashboard/src/App.tsx` -- router, theme provider
+`dashboard/src/App.tsx` -- router, theme provider, nav bar with Fleet and Policies links
 `dashboard/src/pages/Fleet.tsx` -- primary view layout
 `dashboard/src/components/timeline/Timeline.tsx` -- primary surface
 `dashboard/src/components/timeline/SwimLane.tsx`

@@ -9,14 +9,20 @@ import (
 	"github.com/flightdeckhq/flightdeck/api/internal/store"
 )
 
+// SessionResponse is the response body for GET /v1/sessions/{id}.
+type SessionResponse struct {
+	Session *store.Session `json:"session"`
+	Events  []store.Event  `json:"events"`
+}
+
 // SessionsHandler handles GET /v1/sessions/{id}.
 //
 // @Summary      Get session detail
-// @Description  Returns session metadata and all events in chronological order
+// @Description  Returns session metadata (including effective policy thresholds) and all events in chronological order
 // @Tags         sessions
 // @Produce      json
 // @Param        id   path      string  true  "Session UUID"
-// @Success      200  {object}  map[string]interface{}
+// @Success      200  {object}  SessionResponse
 // @Failure      400  {object}  ErrorResponse
 // @Failure      404  {object}  ErrorResponse
 // @Failure      500  {object}  ErrorResponse
@@ -48,9 +54,9 @@ func SessionsHandler(s store.Querier) http.HandlerFunc {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"session": session,
-			"events":  events,
+		_ = json.NewEncoder(w).Encode(SessionResponse{
+			Session: session,
+			Events:  events,
 		})
 	}
 }

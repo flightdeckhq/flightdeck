@@ -42,6 +42,7 @@ func (a *directiveAdapter) LookupPending(ctx context.Context, sessionID string) 
 		ID:            d.ID,
 		Action:        d.Action,
 		Reason:        d.Reason,
+		DegradeTo:     d.DegradeTo,
 		GracePeriodMs: d.GracePeriodMs,
 	}, nil
 }

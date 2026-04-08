@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, useCallback } from "react";
+import { useMemo, useRef, useState, useCallback, useEffect } from "react";
 import { scaleTime } from "d3-scale";
 import type { FlavorSummary } from "@/lib/types";
 import { TimeAxis } from "./TimeAxis";
@@ -26,26 +26,28 @@ interface TimelineProps {
 
 export function Timeline({ flavors, flavorFilter, onNodeClick }: TimelineProps) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const [timeRange, setTimeRange] = useState<TimeRange>("30m");
+  const [timeRange, setTimeRange] = useState<TimeRange>("5m");
+
+  // Live-updating "now" — refreshes every 10 seconds so the timeline slides
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    const interval = setInterval(() => setNow(new Date()), 10000);
+    return () => clearInterval(interval);
+  }, []);
 
   const filteredFlavors = useMemo(() => {
     if (!flavorFilter) return flavors;
     return flavors.filter((f) => f.flavor === flavorFilter);
   }, [flavors, flavorFilter]);
 
-  const { start, end } = useMemo(() => {
-    const now = new Date();
-    return {
-      start: new Date(now.getTime() - TIME_RANGE_MS[timeRange]),
-      end: now,
-    };
-  }, [timeRange]);
+  const rangeMs = TIME_RANGE_MS[timeRange];
+  const start = useMemo(() => new Date(now.getTime() - rangeMs), [now, rangeMs]);
 
   const width = 800;
 
   const scale = useMemo(
-    () => scaleTime().domain([start, end]).range([0, width]),
-    [start, end, width]
+    () => scaleTime().domain([start, now]).range([0, width]),
+    [start, now, width]
   );
 
   const handleTimeRangeChange = useCallback((range: TimeRange) => {
@@ -82,8 +84,27 @@ export function Timeline({ flavors, flavorFilter, onNodeClick }: TimelineProps) 
 
         <div ref={containerRef} className="overflow-x-auto">
           <div style={{ minWidth: width + 160 }}>
-            <div className="pl-40">
-              <TimeAxis start={start} end={end} width={width} />
+            <div className="pl-40 relative">
+              <TimeAxis start={start} end={now} width={width} />
+              {/* "Now" indicator line at right edge */}
+              <div
+                className="absolute top-0 h-full w-px"
+                style={{
+                  left: width,
+                  backgroundColor: "var(--accent)",
+                  opacity: 0.5,
+                }}
+              />
+              <span
+                className="absolute text-[9px] font-semibold"
+                style={{
+                  left: width - 12,
+                  top: -2,
+                  color: "var(--accent)",
+                }}
+              >
+                now
+              </span>
             </div>
             {filteredFlavors.map((f) => (
               <SwimLane

@@ -1,51 +1,69 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { fetchSession } from "@/lib/api";
 import type { AgentEvent } from "@/lib/types";
 
 // Module-level cache: sessionId → events array.
-// Persists across re-renders. Cleared on page refresh.
 const eventsCache = new Map<string, AgentEvent[]>();
+
+const POLL_INTERVAL_MS = 15000; // 15 seconds for active sessions
 
 /**
  * Fetches events for a session with module-level caching.
- * Does not re-fetch if the session's events are already cached.
+ * When isActive=true, polls every 15 seconds for new events.
  * Note: IntersectionObserver lazy loading is a Phase 5 optimization.
  */
-export function useSessionEvents(sessionId: string) {
+export function useSessionEvents(sessionId: string, isActive = false) {
   const [events, setEvents] = useState<AgentEvent[]>(
     () => eventsCache.get(sessionId) ?? []
   );
   const [loading, setLoading] = useState(!eventsCache.has(sessionId));
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
-    if (eventsCache.has(sessionId)) {
-      setEvents(eventsCache.get(sessionId)!);
-      setLoading(false);
-      return;
+    let cancelled = false;
+
+    function doFetch() {
+      fetchSession(sessionId)
+        .then((detail) => {
+          if (cancelled) return;
+          const evts = detail.events ?? [];
+          eventsCache.set(sessionId, evts);
+          setEvents(evts);
+        })
+        .catch(() => {
+          if (cancelled) return;
+          setEvents([]);
+        })
+        .finally(() => {
+          if (!cancelled) setLoading(false);
+        });
     }
 
-    let cancelled = false;
-    setLoading(true);
+    // Initial fetch (skip if cached and not active)
+    if (eventsCache.has(sessionId) && !isActive) {
+      setEvents(eventsCache.get(sessionId)!);
+      setLoading(false);
+    } else {
+      setLoading(!eventsCache.has(sessionId));
+      doFetch();
+    }
 
-    fetchSession(sessionId)
-      .then((detail) => {
-        if (cancelled) return;
-        const evts = detail.events ?? [];
-        eventsCache.set(sessionId, evts);
-        setEvents(evts);
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setEvents([]);
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
+    // Poll for active sessions
+    if (isActive) {
+      pollRef.current = setInterval(() => {
+        eventsCache.delete(sessionId); // Invalidate cache before poll
+        doFetch();
+      }, POLL_INTERVAL_MS);
+    }
 
     return () => {
       cancelled = true;
+      if (pollRef.current) {
+        clearInterval(pollRef.current);
+        pollRef.current = null;
+      }
     };
-  }, [sessionId]);
+  }, [sessionId, isActive]);
 
   return { events, loading };
 }

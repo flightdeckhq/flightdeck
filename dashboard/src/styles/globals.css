@@ -4,6 +4,20 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Active session pulsing indicator */
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+.pulse-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--node-active);
+  animation: pulse-dot 2s ease-in-out infinite;
+  flex-shrink: 0;
+}
+
 * {
   box-sizing: border-box;
   margin: 0;

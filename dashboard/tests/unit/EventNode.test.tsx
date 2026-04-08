@@ -3,17 +3,6 @@ import { render } from "@testing-library/react";
 import { EventNode } from "@/components/timeline/EventNode";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
-// Mock framer-motion
-vi.mock("framer-motion", () => ({
-  motion: {
-    div: ({ children, style, className, ...props }: Record<string, unknown>) => (
-      <div style={style as React.CSSProperties} className={className as string} data-testid="event-node">
-        {children as React.ReactNode}
-      </div>
-    ),
-  },
-}));
-
 describe("EventNode", () => {
   const baseProps = {
     x: 100,
@@ -24,42 +13,43 @@ describe("EventNode", () => {
     onClick: vi.fn(),
   };
 
+  function renderNode(props = {}) {
+    return render(
+      <TooltipProvider>
+        <EventNode {...baseProps} {...props} />
+      </TooltipProvider>
+    );
+  }
+
   it("renders with LLM color for post_call", () => {
-    const { container } = render(<TooltipProvider><EventNode {...baseProps} /></TooltipProvider>);
-    const node = container.querySelector("[data-testid='event-node']") as HTMLElement;
+    const { container } = renderNode();
+    const node = container.querySelector("[style*='background']") as HTMLElement;
     expect(node).not.toBeNull();
     expect(node.style.backgroundColor).toBe("var(--event-llm)");
   });
 
   it("renders with tool color for tool_call", () => {
-    const { container } = render(
-      <TooltipProvider><EventNode {...baseProps} eventType="tool_call" toolName="bash" /></TooltipProvider>
-    );
-    const node = container.querySelector("[data-testid='event-node']") as HTMLElement;
+    const { container } = renderNode({ eventType: "tool_call", toolName: "bash" });
+    const node = container.querySelector("[style*='background']") as HTMLElement;
     expect(node.style.backgroundColor).toBe("var(--event-tool)");
   });
 
   it("renders with warn color for policy_warn", () => {
-    const { container } = render(
-      <TooltipProvider><EventNode {...baseProps} eventType="policy_warn" /></TooltipProvider>
-    );
-    const node = container.querySelector("[data-testid='event-node']") as HTMLElement;
+    const { container } = renderNode({ eventType: "policy_warn" });
+    const node = container.querySelector("[style*='background']") as HTMLElement;
     expect(node.style.backgroundColor).toBe("var(--event-warn)");
   });
 
   it("renders with lifecycle color for session_start", () => {
-    const { container } = render(
-      <TooltipProvider><EventNode {...baseProps} eventType="session_start" /></TooltipProvider>
-    );
-    const node = container.querySelector("[data-testid='event-node']") as HTMLElement;
+    const { container } = renderNode({ eventType: "session_start" });
+    const node = container.querySelector("[style*='background']") as HTMLElement;
     expect(node.style.backgroundColor).toBe("var(--event-lifecycle)");
   });
 
-  it("renders with lifecycle color for session_end", () => {
-    const { container } = render(
-      <TooltipProvider><EventNode {...baseProps} eventType="session_end" /></TooltipProvider>
-    );
-    const node = container.querySelector("[data-testid='event-node']") as HTMLElement;
-    expect(node.style.backgroundColor).toBe("var(--event-lifecycle)");
+  it("renders 18px circle", () => {
+    const { container } = renderNode();
+    const node = container.querySelector("[style*='background']") as HTMLElement;
+    expect(node.style.width).toBe("18px");
+    expect(node.style.height).toBe("18px");
   });
 });

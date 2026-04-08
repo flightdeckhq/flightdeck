@@ -12,7 +12,8 @@ interface SessionEventRowProps {
 }
 
 export function SessionEventRow({ session, scale, onClick }: SessionEventRowProps) {
-  const { events, loading } = useSessionEvents(session.session_id);
+  const isActive = session.state === "active";
+  const { events, loading } = useSessionEvents(session.session_id, isActive);
 
   const eventNodes = useMemo(
     () =>
@@ -36,6 +37,7 @@ export function SessionEventRow({ session, scale, onClick }: SessionEventRowProp
     >
       {/* Left: session metadata */}
       <div className="w-40 shrink-0 px-3 flex items-center gap-1.5">
+        {isActive && <div className="pulse-dot" />}
         <span className="font-mono text-[10px] text-text-muted">
           {session.session_id.slice(0, 8)}
         </span>
@@ -50,7 +52,6 @@ export function SessionEventRow({ session, scale, onClick }: SessionEventRowProp
       {/* Center: event circles on the time axis */}
       <div className="relative h-full flex-1">
         {loading && (
-          // Loading skeleton: 3 placeholder circles
           <div className="flex items-center h-full gap-2 pl-4">
             {[0, 1, 2].map((i) => (
               <div

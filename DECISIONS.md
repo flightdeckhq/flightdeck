@@ -813,26 +813,30 @@ external service. Coverage HTML reports uploaded as GitHub Actions artifacts
 per run (14 day retention). No Codecov or external coverage service.
 
 Thresholds:
-- Sensor: 70% hard fail (baseline 71.7%)
-- Ingestion: 60% hard fail (baseline 61.9%)
-- API: 40% hard fail (baseline 41.4%)
-- Workers: report only, no threshold (baseline 9.7%)
+- Sensor: 70% hard fail (full package, baseline 72.4%)
+- API: 66% hard fail (handlers only, baseline 71.4%)
+- Ingestion: 67% hard fail (handlers only, baseline 72.0%)
+- Workers: report only, no threshold
 
 **Reasoning:** External coverage services add operational dependencies and
 require secret management. Self-contained thresholds give the same CI gate
 with zero external dependencies.
 
-Thresholds are set just below current coverage as regression floors, not
-aspirational targets. API and ingestion thresholds are low because the store
-layer is SQL-heavy and meaningful coverage comes from integration tests, not
-unit tests. Thresholds will be raised in Phase 4 and Phase 5 as new handlers
-are added and coverage improves organically. Writing unit tests solely to hit
-a coverage number produces coverage theater -- tests that execute lines without
-asserting behavior, which is worse than no tests.
+API and ingestion thresholds measure `./internal/handlers/...` only, not
+`./internal/...`. The store layer (postgres.go, analytics.go, search.go) and
+infrastructure (config.go, server.go) require a real Postgres connection and
+are covered by integration tests. Measuring them against unit coverage produces
+a misleading 0% that drags the total below any meaningful threshold.
+Handler-only coverage is the correct scope for unit test gates.
 
-Workers threshold omitted -- unit coverage is structurally low (9.7%) because
-SQL paths only run in integration tests. Integration tests cover what unit
-tests cannot.
+Handler baselines: API 71.4%, Ingestion 72.0%. Thresholds set at baseline
+minus 5% as regression floors. Writing unit tests solely to hit a coverage
+number produces coverage theater -- tests that execute lines without asserting
+behavior, which is worse than no tests.
+
+Workers threshold omitted -- unit coverage is structurally low because SQL
+paths only run in integration tests. Integration tests cover what unit tests
+cannot.
 
 **Rejected:** 100% target -- forces trivial tests that mock away all
 interesting behavior.

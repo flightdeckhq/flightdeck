@@ -22,8 +22,8 @@ type mockStore struct {
 	policies []store.Policy
 }
 
-func (m *mockStore) GetFleet(_ context.Context) ([]store.FlavorSummary, error) {
-	return []store.FlavorSummary{
+func (m *mockStore) GetFleet(_ context.Context, limit, offset int) ([]store.FlavorSummary, int, error) {
+	flavors := []store.FlavorSummary{
 		{
 			Flavor:          "research-agent",
 			AgentType:       "autonomous",
@@ -35,7 +35,8 @@ func (m *mockStore) GetFleet(_ context.Context) ([]store.FlavorSummary, error) {
 				{SessionID: "s2", Flavor: "research-agent", State: "closed", StartedAt: time.Now(), LastSeenAt: time.Now(), TokensUsed: 2000},
 			},
 		},
-	}, nil
+	}
+	return flavors, 2, nil
 }
 
 func (m *mockStore) GetSession(_ context.Context, id string) (*store.Session, error) {

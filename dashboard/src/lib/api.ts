@@ -10,8 +10,8 @@ async function fetchJson<T>(path: string): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-export function fetchFleet(): Promise<FleetResponse> {
-  return fetchJson<FleetResponse>("/v1/fleet");
+export function fetchFleet(limit = 50, offset = 0): Promise<FleetResponse> {
+  return fetchJson<FleetResponse>(`/v1/fleet?limit=${limit}&offset=${offset}`);
 }
 
 export function fetchSession(id: string): Promise<SessionDetail> {

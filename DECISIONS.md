@@ -654,6 +654,10 @@ on `(state, flavor)`.
 **Address in:** Phase 2.
 **Code location:** `api/internal/handlers/fleet.go:FleetHandler`
 
+**Resolved in:** Phase 3.
+**Resolution:** Added limit/offset pagination to GET /v1/fleet. `total_session_count`
+added to top-level response. Default limit=50, max=200.
+
 ---
 
 ## D046 -- SHA256 token auth without salt (accepted trade-off)

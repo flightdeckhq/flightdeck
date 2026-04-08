@@ -68,6 +68,7 @@ export interface FlavorSummary {
 /** Top-level fleet response. */
 export interface FleetResponse {
   flavors: FlavorSummary[];
+  total_session_count: number;
 }
 
 /** Session detail response from GET /v1/sessions/:id. */

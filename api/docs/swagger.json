@@ -32,9 +32,55 @@
                 }
             }
         },
+        "/v1/directives": {
+            "post": {
+                "description": "Issues a shutdown directive to a single agent session or all sessions of a flavor",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "directives"
+                ],
+                "summary": "Create directive",
+                "parameters": [
+                    {
+                        "description": "Directive definition",
+                        "name": "directive",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handlers.DirectiveRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/store.Directive"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/v1/fleet": {
             "get": {
-                "description": "Returns all sessions grouped by flavor, excluding lost sessions",
+                "description": "Returns sessions grouped by flavor, excluding lost sessions. Supports pagination via limit/offset on sessions.",
                 "produces": [
                     "application/json"
                 ],
@@ -42,12 +88,25 @@
                     "fleet"
                 ],
                 "summary": "Get fleet state",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Max sessions to return (default 50, max 200)",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Offset into sessions list (default 0)",
+                        "name": "offset",
+                        "in": "query"
+                    }
+                ],
                 "responses": {
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "type": "object",
-                            "additionalProperties": true
+                            "$ref": "#/definitions/handlers.FleetResponse"
                         }
                     },
                     "500": {
@@ -342,11 +401,45 @@
         }
     },
     "definitions": {
+        "handlers.DirectiveRequest": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string"
+                },
+                "flavor": {
+                    "type": "string"
+                },
+                "grace_period_ms": {
+                    "type": "integer"
+                },
+                "reason": {
+                    "type": "string"
+                },
+                "session_id": {
+                    "type": "string"
+                }
+            }
+        },
         "handlers.ErrorResponse": {
             "type": "object",
             "properties": {
                 "error": {
                     "type": "string"
+                }
+            }
+        },
+        "handlers.FleetResponse": {
+            "type": "object",
+            "properties": {
+                "flavors": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/store.FlavorSummary"
+                    }
+                },
+                "total_session_count": {
+                    "type": "integer"
                 }
             }
         },
@@ -390,6 +483,41 @@
                 }
             }
         },
+        "store.Directive": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string"
+                },
+                "degrade_to": {
+                    "type": "string"
+                },
+                "delivered_at": {
+                    "type": "string"
+                },
+                "flavor": {
+                    "type": "string"
+                },
+                "grace_period_ms": {
+                    "type": "integer"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "issued_at": {
+                    "type": "string"
+                },
+                "issued_by": {
+                    "type": "string"
+                },
+                "reason": {
+                    "type": "string"
+                },
+                "session_id": {
+                    "type": "string"
+                }
+            }
+        },
         "store.Event": {
             "type": "object",
             "properties": {
@@ -428,6 +556,32 @@
                 },
                 "tool_name": {
                     "type": "string"
+                }
+            }
+        },
+        "store.FlavorSummary": {
+            "type": "object",
+            "properties": {
+                "active_count": {
+                    "type": "integer"
+                },
+                "agent_type": {
+                    "type": "string"
+                },
+                "flavor": {
+                    "type": "string"
+                },
+                "session_count": {
+                    "type": "integer"
+                },
+                "sessions": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/store.Session"
+                    }
+                },
+                "tokens_used_total": {
+                    "type": "integer"
                 }
             }
         },
@@ -489,6 +643,10 @@
                 },
                 "framework": {
                     "type": "string"
+                },
+                "has_pending_directive": {
+                    "description": "HasPendingDirective is true when an undelivered shutdown directive exists.",
+                    "type": "boolean"
                 },
                 "host": {
                     "type": "string"

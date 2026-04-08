@@ -401,9 +401,10 @@ flightdeck/
 │ GET  /health         │    │ GET /v1/policy               │
 │ GET  /docs/          │    │ GET/POST/PUT/DELETE          │
 │                      │    │   /v1/policies               │
-│ Auth: validates      │    │ WS  /v1/stream               │
-│   bearer token       │    │ GET /docs/                   │
-│   (reads api_tokens) │    │                              │
+│ Auth: validates      │    │ POST /v1/directives          │
+│   bearer token       │    │ WS  /v1/stream               │
+│   (reads api_tokens) │    │ GET /docs/                   │
+│                      │    │                              │
 │                      │    │ LISTEN flightdeck_fleet      │
 │ Directive: reads +   │    │   (reconnects every 3s)      │
 │   marks delivered    │    │   → broadcasts to WS clients │
@@ -475,7 +476,9 @@ Data flows:
 
   Query API → Postgres:
     READ  sessions, events, event_content
+    READ  directives (pending directive check)
     READ+WRITE token_policies (CRUD)
+    WRITE directives (POST /v1/directives)
     LISTEN flightdeck_fleet (real-time push to dashboard)
 ```
 

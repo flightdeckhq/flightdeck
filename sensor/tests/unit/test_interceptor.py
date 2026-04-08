@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from flightdeck_sensor.core.exceptions import BudgetExceededError
+from flightdeck_sensor.core.exceptions import BudgetExceededError, DirectiveError
 from flightdeck_sensor.core.policy import PolicyCache
 from flightdeck_sensor.core.session import Session
 from flightdeck_sensor.core.types import SensorConfig
@@ -157,8 +157,23 @@ def test_async_call_intercept() -> None:
         return mock_response
 
     kwargs = {"model": "test", "messages": []}
-    result = asyncio.get_event_loop().run_until_complete(
+    result = asyncio.run(
         base.call_async(mock_fn, kwargs, session, provider)
     )
     assert result is mock_response
     assert session.tokens_used > 0
+
+
+def test_shutdown_flag_raises_on_next_call() -> None:
+    """When shutdown flag is set, _pre_call raises DirectiveError."""
+    session, provider = _make_session_and_provider()
+    session._shutdown_requested = True
+    session._shutdown_reason = "test kill"
+
+    real_fn = MagicMock()
+    kwargs = {"model": "claude-sonnet-4-6", "messages": [{"role": "user", "content": "hi"}]}
+
+    with pytest.raises(DirectiveError, match="test kill"):
+        base.call(real_fn, kwargs, session, provider)
+
+    assert real_fn.call_count == 0

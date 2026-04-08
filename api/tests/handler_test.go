@@ -147,6 +147,25 @@ func (m *mockStore) CreateDirective(_ context.Context, d store.Directive) (*stor
 	return &d, nil
 }
 
+func (m *mockStore) GetActiveSessionIDsByFlavor(_ context.Context, flavor string) ([]string, error) {
+	var ids []string
+	for _, f := range []store.FlavorSummary{
+		{Flavor: "research-agent", Sessions: []store.Session{
+			{SessionID: "s1", State: "active"},
+			{SessionID: "s2", State: "closed"},
+		}},
+	} {
+		if f.Flavor == flavor {
+			for _, s := range f.Sessions {
+				if s.State == "active" || s.State == "idle" {
+					ids = append(ids, s.SessionID)
+				}
+			}
+		}
+	}
+	return ids, nil
+}
+
 // --- Tests ---
 
 func TestHealthHandler_Returns200(t *testing.T) {

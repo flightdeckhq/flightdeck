@@ -46,15 +46,52 @@ func CreateDirectiveHandler(s store.Querier) http.HandlerFunc {
 			req.GracePeriodMs = 5000
 		}
 
+		// For shutdown_flavor: fan out into one directive per active session
+		// so each session receives its own directive via the atomic lookup.
+		if req.Action == "shutdown_flavor" {
+			sessionIDs, err := s.GetActiveSessionIDsByFlavor(r.Context(), req.Flavor)
+			if err != nil {
+				slog.Error("get active sessions error", "err", err)
+				writeError(w, http.StatusInternalServerError, "internal server error")
+				return
+			}
+			var lastResult *store.Directive
+			for _, sid := range sessionIDs {
+				d := store.Directive{
+					Action:        "shutdown",
+					GracePeriodMs: req.GracePeriodMs,
+					SessionID:     &sid,
+				}
+				if req.Flavor != "" {
+					d.Flavor = &req.Flavor
+				}
+				if req.Reason != "" {
+					d.Reason = &req.Reason
+				}
+				result, err := s.CreateDirective(r.Context(), d)
+				if err != nil {
+					slog.Error("create directive error", "session_id", sid, "err", err)
+					continue
+				}
+				lastResult = result
+			}
+			if lastResult == nil {
+				writeError(w, http.StatusInternalServerError, "no directives created")
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(lastResult)
+			return
+		}
+
+		// Single session shutdown
 		d := store.Directive{
 			Action:        req.Action,
 			GracePeriodMs: req.GracePeriodMs,
 		}
 		if req.SessionID != "" {
 			d.SessionID = &req.SessionID
-		}
-		if req.Flavor != "" {
-			d.Flavor = &req.Flavor
 		}
 		if req.Reason != "" {
 			d.Reason = &req.Reason

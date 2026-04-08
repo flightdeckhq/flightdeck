@@ -25,6 +25,7 @@ type Querier interface {
 	UpdatePolicy(ctx context.Context, id string, p Policy) (*Policy, error)
 	DeletePolicy(ctx context.Context, id string) error
 	CreateDirective(ctx context.Context, d Directive) (*Directive, error)
+	GetActiveSessionIDsByFlavor(ctx context.Context, flavor string) ([]string, error)
 }
 
 // WrapStore returns a Querier from any compatible implementation.
@@ -391,6 +392,27 @@ type Directive struct {
 	IssuedBy      string     `json:"issued_by"`
 	IssuedAt      time.Time  `json:"issued_at"`
 	DeliveredAt   *time.Time `json:"delivered_at"`
+}
+
+// GetActiveSessionIDsByFlavor returns session IDs for active/idle sessions of a flavor.
+func (s *Store) GetActiveSessionIDsByFlavor(ctx context.Context, flavor string) ([]string, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT session_id::text FROM sessions
+		WHERE flavor = $1 AND state IN ('active', 'idle')
+	`, flavor)
+	if err != nil {
+		return nil, fmt.Errorf("get active sessions for %s: %w", flavor, err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan session id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, nil
 }
 
 // CreateDirective inserts a new directive and returns the full record.

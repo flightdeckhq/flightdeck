@@ -24,8 +24,8 @@ type mockStore struct {
 	directives []store.Directive
 }
 
-func (m *mockStore) GetFleet(_ context.Context, limit, offset int) ([]store.FlavorSummary, int, error) {
-	flavors := []store.FlavorSummary{
+func (m *mockStore) GetFleet(_ context.Context, limit, offset int, agentType string) ([]store.FlavorSummary, int, error) {
+	allFlavors := []store.FlavorSummary{
 		{
 			Flavor:          "research-agent",
 			AgentType:       "autonomous",
@@ -33,12 +33,44 @@ func (m *mockStore) GetFleet(_ context.Context, limit, offset int) ([]store.Flav
 			ActiveCount:     1,
 			TokensUsedTotal: 5000,
 			Sessions: []store.Session{
-				{SessionID: "s1", Flavor: "research-agent", State: "active", StartedAt: time.Now(), LastSeenAt: time.Now(), TokensUsed: 3000},
-				{SessionID: "s2", Flavor: "research-agent", State: "closed", StartedAt: time.Now(), LastSeenAt: time.Now(), TokensUsed: 2000},
+				{SessionID: "s1", Flavor: "research-agent", AgentType: "autonomous", State: "active", StartedAt: time.Now(), LastSeenAt: time.Now(), TokensUsed: 3000},
+				{SessionID: "s2", Flavor: "research-agent", AgentType: "autonomous", State: "closed", StartedAt: time.Now(), LastSeenAt: time.Now(), TokensUsed: 2000},
+			},
+		},
+		{
+			Flavor:          "dev-helper",
+			AgentType:       "developer",
+			SessionCount:    1,
+			ActiveCount:     1,
+			TokensUsedTotal: 1000,
+			Sessions: []store.Session{
+				{SessionID: "s3", Flavor: "dev-helper", AgentType: "developer", State: "active", StartedAt: time.Now(), LastSeenAt: time.Now(), TokensUsed: 1000},
 			},
 		},
 	}
-	return flavors, 2, nil
+
+	// Apply agent_type filter matching real store logic
+	switch agentType {
+	case "developer":
+		var filtered []store.FlavorSummary
+		for _, f := range allFlavors {
+			if f.AgentType == "developer" {
+				filtered = append(filtered, f)
+			}
+		}
+		return filtered, len(filtered), nil
+	case "":
+		return allFlavors, 3, nil
+	default:
+		// production: exclude developer
+		var filtered []store.FlavorSummary
+		for _, f := range allFlavors {
+			if f.AgentType != "developer" {
+				filtered = append(filtered, f)
+			}
+		}
+		return filtered, len(filtered), nil
+	}
 }
 
 func (m *mockStore) GetSession(_ context.Context, id string) (*store.Session, error) {
@@ -241,8 +273,56 @@ func TestFleetHandler_ReturnsSessionsGroupedByFlavor(t *testing.T) {
 	var resp map[string]any
 	_ = json.Unmarshal(w.Body.Bytes(), &resp)
 	flavors, ok := resp["flavors"].([]any)
+	if !ok || len(flavors) != 2 {
+		t.Errorf("expected 2 flavor groups, got %v", resp["flavors"])
+	}
+}
+
+func TestFleetHandler_FilterByAgentType(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.FleetHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/fleet?agent_type=developer", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	flavors, ok := resp["flavors"].([]any)
 	if !ok || len(flavors) != 1 {
-		t.Errorf("expected 1 flavor group, got %v", resp["flavors"])
+		t.Errorf("expected 1 developer flavor, got %d", len(flavors))
+	}
+	if len(flavors) > 0 {
+		fm := flavors[0].(map[string]any)
+		if fm["agent_type"] != "developer" {
+			t.Errorf("expected agent_type=developer, got %v", fm["agent_type"])
+		}
+	}
+}
+
+func TestFleetHandler_FilterByProduction(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.FleetHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/fleet?agent_type=production", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	flavors, ok := resp["flavors"].([]any)
+	if !ok || len(flavors) != 1 {
+		t.Errorf("expected 1 non-developer flavor, got %d", len(flavors))
+	}
+	if len(flavors) > 0 {
+		fm := flavors[0].(map[string]any)
+		if fm["agent_type"] == "developer" {
+			t.Errorf("expected non-developer agent_type, got developer")
+		}
 	}
 }
 

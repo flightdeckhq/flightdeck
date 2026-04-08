@@ -114,9 +114,14 @@ function FlavorRow({ flavor }: { flavor: FlavorSummary }) {
 
   return (
     <div className="flex items-center justify-between text-xs">
-      <div>
+      <div className="flex items-center gap-1">
         <span className="font-mono">{flavor.flavor}</span>
-        <span className="ml-1 text-text-muted">({flavor.active_count})</span>
+        {flavor.agent_type === "developer" && (
+          <span className="rounded bg-[var(--primary-glow)] px-1 py-0.5 text-[9px] font-semibold uppercase text-[var(--primary)]">
+            DEV
+          </span>
+        )}
+        <span className="text-text-muted">({flavor.active_count})</span>
       </div>
       {hasActive && !sent && (
         <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>

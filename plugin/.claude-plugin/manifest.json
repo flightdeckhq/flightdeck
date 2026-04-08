@@ -1,0 +1,6 @@
+{
+  "name": "flightdeck",
+  "version": "0.1.0",
+  "description": "Flightdeck observability for Claude Code sessions",
+  "hooks": "hooks/hooks.json"
+}

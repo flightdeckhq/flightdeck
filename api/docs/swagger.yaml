@@ -455,6 +455,11 @@ paths:
         in: query
         name: offset
         type: integer
+      - description: 'Filter by agent type: ''developer'', ''production'', or empty
+          for all'
+        in: query
+        name: agent_type
+        type: string
       produces:
       - application/json
       responses:

@@ -236,6 +236,12 @@ const docTemplate = `{
                         "description": "Offset into sessions list (default 0)",
                         "name": "offset",
                         "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by agent type: 'developer', 'production', or empty for all",
+                        "name": "agent_type",
+                        "in": "query"
                     }
                 ],
                 "responses": {

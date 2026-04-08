@@ -780,3 +780,19 @@ nav bar height.
 A minimal top nav is the simplest solution that works with the existing routing
 structure. ARCHITECTURE.md App.tsx description updated to reflect this.
 
+---
+
+## D055 -- Coverage reporting via Codecov
+
+**Decision:** pytest-cov for sensor, built-in `go test -coverprofile` for Go
+components. Reports uploaded to Codecov on every CI run. Sensor hard threshold:
+70% (CI fails below this). Go components report only -- no hard threshold set yet.
+
+**Reasoning:** Coverage metrics catch regressions and gaps in test coverage.
+Codecov provides PR-level diff coverage so reviewers can see whether new code
+is covered. Badges in README signal project health to contributors.
+
+Go threshold deferred: Go components are integration-heavy and unit coverage
+alone is not a complete picture. Will set thresholds after Phase 3 when coverage
+is more stable.
+

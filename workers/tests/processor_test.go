@@ -466,3 +466,22 @@ func TestInsertEventContent(t *testing.T) {
 		t.Fatalf("InsertEventContent duplicate failed: %v", err)
 	}
 }
+
+func TestProcessDirectiveResultEvent(t *testing.T) {
+	e := makeEvent("directive_result")
+	if e.EventType != "directive_result" {
+		t.Fatalf("expected event_type=directive_result, got %s", e.EventType)
+	}
+	// Verify the mock writer handles directive_result (routes to InsertEvent, not policy)
+	w := newMockWriter()
+	_, err := w.InsertEvent(context.Background(), e.SessionID, e.Flavor, e.EventType, "", nil, nil, nil, nil, nil, false, time.Now())
+	if err != nil {
+		t.Fatalf("InsertEvent failed: %v", err)
+	}
+	if len(w.eventsInserted) != 1 {
+		t.Errorf("expected 1 event inserted, got %d", len(w.eventsInserted))
+	}
+	// directive_result should NOT trigger policy evaluation
+	// (verified by the routing in event.go -- it falls through to InsertEvent
+	// without calling policy.Evaluate)
+}

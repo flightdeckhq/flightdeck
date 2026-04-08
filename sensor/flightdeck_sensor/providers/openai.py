@@ -8,12 +8,10 @@ from __future__ import annotations
 
 import contextlib
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from flightdeck_sensor.core.types import TokenUsage
-
-if TYPE_CHECKING:
-    from flightdeck_sensor.providers.protocol import PromptContent
+from flightdeck_sensor.providers.protocol import PromptContent
 
 _log = logging.getLogger("flightdeck_sensor.providers.openai")
 
@@ -112,12 +110,38 @@ class OpenAIProvider:
         request_kwargs: dict[str, Any],
         response: Any,
     ) -> PromptContent | None:
-        """Extract prompt content for storage.
+        """Extract full prompt payload for storage.
 
-        Returns ``None`` in Phase 1 -- prompt capture is not implemented
-        until Phase 5.
+        Returns ``None`` when capture_prompts is False. Never raises.
+        OpenAI has no separate system field -- system role is in messages.
         """
-        return None
+        if not self._capture_prompts:
+            return None
+        try:
+            from datetime import datetime, timezone
+
+            resp_dict: dict[str, Any] = {}
+            if hasattr(response, "model_dump"):
+                resp_dict = response.model_dump()
+            elif hasattr(response, "__dict__"):
+                resp_dict = dict(response.__dict__)
+            else:
+                resp_dict = {"raw": str(response)}
+
+            return PromptContent(
+                system=None,  # OpenAI embeds system in messages
+                messages=request_kwargs.get("messages", []),
+                tools=request_kwargs.get("tools"),
+                response=resp_dict,
+                provider="openai",
+                model=request_kwargs.get("model", ""),
+                session_id="",  # Filled by caller
+                event_id="",  # Filled by caller
+                captured_at=datetime.now(timezone.utc).isoformat(),
+            )
+        except Exception:
+            _log.debug("extract_content failed", exc_info=True)
+            return None
 
     def get_model(self, request_kwargs: dict[str, Any]) -> str:
         """Extract the model name from request kwargs."""

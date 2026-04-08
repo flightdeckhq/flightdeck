@@ -131,3 +131,95 @@ export interface Directive {
   issued_at: string;
   delivered_at: string | null;
 }
+
+/** Query parameters for GET /v1/analytics. */
+export interface AnalyticsParams {
+  metric?: string;
+  group_by?: string;
+  range?: string;
+  from?: string;
+  to?: string;
+  granularity?: string;
+  filter_flavor?: string;
+  filter_model?: string;
+  filter_agent_type?: string;
+}
+
+/** A single time-series data point. */
+export interface DataPoint {
+  date: string;
+  value: number;
+}
+
+/** One dimension series in the analytics response. */
+export interface AnalyticsSeries {
+  dimension: string;
+  total: number;
+  data: DataPoint[];
+}
+
+/** Aggregated totals for the analytics response. */
+export interface AnalyticsTotals {
+  grand_total: number;
+  period_change_pct: number;
+}
+
+/** Response from GET /v1/analytics. */
+export interface AnalyticsResponse {
+  metric: string;
+  group_by: string;
+  range: string;
+  granularity: string;
+  series: AnalyticsSeries[];
+  totals: AnalyticsTotals;
+}
+
+/** Prompt content for a single event, from GET /v1/events/:id/content. */
+export interface EventContent {
+  event_id: string;
+  session_id: string;
+  provider: string;
+  model: string;
+  system_prompt: string | null;
+  // Provider-specific JSON structures -- intentionally untyped per rule 20
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  messages: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  tools: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  response: any;
+  captured_at: string;
+}
+
+/** Search result: agent summary. */
+export interface SearchResultAgent {
+  flavor: string;
+  agent_type: string;
+  last_seen: string;
+}
+
+/** Search result: session summary. */
+export interface SearchResultSession {
+  session_id: string;
+  flavor: string;
+  host: string;
+  state: string;
+  started_at: string;
+}
+
+/** Search result: event summary. */
+export interface SearchResultEvent {
+  event_id: string;
+  session_id: string;
+  event_type: string;
+  tool_name: string;
+  model: string;
+  occurred_at: string;
+}
+
+/** Combined search results from GET /v1/search. */
+export interface SearchResults {
+  agents: SearchResultAgent[];
+  sessions: SearchResultSession[];
+  events: SearchResultEvent[];
+}

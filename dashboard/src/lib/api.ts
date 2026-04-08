@@ -1,6 +1,6 @@
-import type { FleetResponse, SessionDetail, Policy, PolicyRequest, DirectiveRequest, Directive } from "./types";
+import type { FleetResponse, SessionDetail, Policy, PolicyRequest, DirectiveRequest, Directive, AnalyticsParams, AnalyticsResponse, EventContent, SearchResults } from "./types";
 
-const BASE = import.meta.env.VITE_API_BASE_URL ?? "/api";
+const BASE = import.meta.env.VITE_API_BASE_URL || "/api";
 
 async function fetchJson<T>(path: string): Promise<T> {
   const res = await fetch(`${BASE}${path}`);
@@ -10,8 +10,10 @@ async function fetchJson<T>(path: string): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-export function fetchFleet(limit = 50, offset = 0): Promise<FleetResponse> {
-  return fetchJson<FleetResponse>(`/v1/fleet?limit=${limit}&offset=${offset}`);
+export function fetchFleet(limit = 50, offset = 0, agentType?: string): Promise<FleetResponse> {
+  let url = `/v1/fleet?limit=${limit}&offset=${offset}`;
+  if (agentType) url += `&agent_type=${agentType}`;
+  return fetchJson<FleetResponse>(url);
 }
 
 export function fetchSession(id: string): Promise<SessionDetail> {
@@ -69,4 +71,28 @@ export async function createDirective(data: DirectiveRequest): Promise<Directive
     throw new Error(`API ${res.status}: POST /v1/directives`);
   }
   return res.json() as Promise<Directive>;
+}
+
+export async function fetchEventContent(eventId: string): Promise<EventContent | null> {
+  try {
+    return await fetchJson<EventContent>(`/v1/events/${eventId}/content`);
+  } catch {
+    return null; // 404 or error
+  }
+}
+
+export async function fetchSearch(query: string, signal?: AbortSignal): Promise<SearchResults> {
+  const res = await fetch(`${BASE}/v1/search?q=${encodeURIComponent(query)}`, { signal });
+  if (!res.ok) {
+    throw new Error(`API ${res.status}: /v1/search`);
+  }
+  return res.json() as Promise<SearchResults>;
+}
+
+export function fetchAnalytics(params: AnalyticsParams): Promise<AnalyticsResponse> {
+  const searchParams = new URLSearchParams();
+  Object.entries(params).forEach(([key, value]) => {
+    if (value) searchParams.set(key, value);
+  });
+  return fetchJson<AnalyticsResponse>(`/v1/analytics?${searchParams.toString()}`);
 }

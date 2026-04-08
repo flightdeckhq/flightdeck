@@ -13,8 +13,11 @@ import {
 } from "@/components/ui/dialog";
 import { SessionTimeline } from "./SessionTimeline";
 import { TokenUsageBar } from "./TokenUsageBar";
+import { PromptViewer } from "./PromptViewer";
 import { createDirective } from "@/lib/api";
-import type { SessionState } from "@/lib/types";
+import type { SessionState, AgentEvent } from "@/lib/types";
+
+type DrawerTab = "timeline" | "prompts";
 
 interface SessionDrawerProps {
   sessionId: string | null;
@@ -27,6 +30,8 @@ export function SessionDrawer({ sessionId, onClose }: SessionDrawerProps) {
   const [killSent, setKillSent] = useState(false);
   const [killError, setKillError] = useState<string | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState<DrawerTab>("timeline");
+  const [selectedEventId, setSelectedEventId] = useState<string | null>(null);
 
   const session = data?.session;
   const isTerminal = session?.state === "closed" || session?.state === "lost";
@@ -173,14 +178,117 @@ export function SessionDrawer({ sessionId, onClose }: SessionDrawerProps) {
                 </div>
               )}
 
-              {/* Event timeline */}
+              {/* Tab bar */}
+              <div className="flex border-b border-border">
+                <button
+                  className={`flex-1 px-4 py-2 text-xs font-medium transition-colors ${
+                    activeTab === "timeline"
+                      ? "border-b-2 text-text"
+                      : "text-text-muted hover:text-text"
+                  }`}
+                  style={
+                    activeTab === "timeline"
+                      ? { borderBottomColor: "var(--primary)" }
+                      : undefined
+                  }
+                  onClick={() => setActiveTab("timeline")}
+                >
+                  Timeline
+                </button>
+                <button
+                  className={`flex-1 px-4 py-2 text-xs font-medium transition-colors ${
+                    activeTab === "prompts"
+                      ? "border-b-2 text-text"
+                      : "text-text-muted hover:text-text"
+                  }`}
+                  style={
+                    activeTab === "prompts"
+                      ? { borderBottomColor: "var(--primary)" }
+                      : undefined
+                  }
+                  onClick={() => setActiveTab("prompts")}
+                >
+                  Prompts
+                </button>
+              </div>
+
+              {/* Tab content */}
               <div className="flex-1 overflow-y-auto">
-                <SessionTimeline events={data.events} />
+                {activeTab === "timeline" && (
+                  <SessionTimeline events={data.events} />
+                )}
+                {activeTab === "prompts" && (
+                  <PromptsTab
+                    events={data.events}
+                    selectedEventId={selectedEventId}
+                    onSelectEvent={setSelectedEventId}
+                  />
+                )}
               </div>
             </>
           )}
         </motion.div>
       )}
     </AnimatePresence>
+  );
+}
+
+/* ---- Prompts tab content ---- */
+
+interface PromptsTabProps {
+  events: AgentEvent[];
+  selectedEventId: string | null;
+  onSelectEvent: (id: string | null) => void;
+}
+
+function PromptsTab({ events, selectedEventId, onSelectEvent }: PromptsTabProps) {
+  const contentEvents = events.filter(
+    (e) => e.has_content && e.event_type === "post_call"
+  );
+
+  if (contentEvents.length === 0) {
+    return (
+      <div className="px-4 py-8 text-center text-xs text-text-muted">
+        Prompt capture is not enabled for this deployment.
+      </div>
+    );
+  }
+
+  if (selectedEventId) {
+    return (
+      <div className="flex flex-col">
+        <div className="border-b border-border px-3 py-2">
+          <Button
+            variant="ghost"
+            size="sm"
+            className="text-xs"
+            onClick={() => onSelectEvent(null)}
+          >
+            &larr; Back to event list
+          </Button>
+        </div>
+        <PromptViewer eventId={selectedEventId} />
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col">
+      {contentEvents.map((event) => (
+        <button
+          key={event.id}
+          className="flex items-center justify-between border-b border-border px-3 py-2 text-left text-xs hover:bg-surface-hover"
+          onClick={() => onSelectEvent(event.id)}
+        >
+          <span className="font-mono text-text-muted">
+            {new Date(event.occurred_at).toLocaleTimeString()}
+          </span>
+          <span className="font-medium">{event.event_type}</span>
+          {event.model && (
+            <span className="text-text-muted">{event.model}</span>
+          )}
+        </button>
+      ))}
+    </div>
   );
 }

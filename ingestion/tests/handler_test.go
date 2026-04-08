@@ -13,9 +13,13 @@ import (
 
 // --- Mocks ---
 
-type mockValidator struct{ valid bool }
+type mockValidator struct {
+	valid    bool
+	callCount int
+}
 
 func (m *mockValidator) Validate(_ context.Context, _ string) (bool, error) {
+	m.callCount++
 	return m.valid, nil
 }
 
@@ -54,6 +58,7 @@ func TestEventsHandler_MissingAuth_Returns401(t *testing.T) {
 		&mockValidator{valid: false},
 		&mockPublisher{},
 		&mockDirStore{},
+		nil,
 	)
 	body := `{"session_id":"abc","event_type":"post_call"}`
 	req := httptest.NewRequest("POST", "/v1/events", bytes.NewBufferString(body))
@@ -70,6 +75,7 @@ func TestEventsHandler_InvalidToken_Returns401(t *testing.T) {
 		&mockValidator{valid: false},
 		&mockPublisher{},
 		&mockDirStore{},
+		nil,
 	)
 	body := `{"session_id":"abc","event_type":"post_call"}`
 	req := httptest.NewRequest("POST", "/v1/events", bytes.NewBufferString(body))
@@ -87,6 +93,7 @@ func TestEventsHandler_MalformedPayload_Returns400(t *testing.T) {
 		&mockValidator{valid: true},
 		&mockPublisher{},
 		&mockDirStore{},
+		nil,
 	)
 	req := httptest.NewRequest("POST", "/v1/events", bytes.NewBufferString("not json"))
 	req.Header.Set("Authorization", "Bearer valid-token")
@@ -104,6 +111,7 @@ func TestEventsHandler_ValidToken_Returns200WithNullDirective(t *testing.T) {
 		&mockValidator{valid: true},
 		pub,
 		&mockDirStore{directive: nil},
+		nil,
 	)
 	body := `{"session_id":"abc-123","event_type":"post_call","flavor":"test"}`
 	req := httptest.NewRequest("POST", "/v1/events", bytes.NewBufferString(body))
@@ -134,6 +142,7 @@ func TestEventsHandler_PendingDirective_Returns200WithDirective(t *testing.T) {
 		&mockDirStore{directive: &handlers.DirectiveResponse{
 			Action: "shutdown", Reason: "kill", GracePeriodMs: 5000,
 		}},
+		nil,
 	)
 	body := `{"session_id":"abc-123","event_type":"post_call","flavor":"test"}`
 	req := httptest.NewRequest("POST", "/v1/events", bytes.NewBufferString(body))
@@ -197,5 +206,71 @@ func TestHeartbeatHandler_PendingDirective_ReturnsDirective(t *testing.T) {
 	_ = json.Unmarshal(w.Body.Bytes(), &resp)
 	if resp["directive"] == nil {
 		t.Error("expected directive in response, got nil")
+	}
+}
+
+// --- Rate Limiter Tests ---
+
+func TestRateLimitAllowsUnderLimit(t *testing.T) {
+	limiter := handlers.NewRateLimiter()
+	defer limiter.Close()
+
+	for i := range 999 {
+		allowed, _ := limiter.Allow("tok-hash")
+		if !allowed {
+			t.Fatalf("request %d should be allowed under limit", i+1)
+		}
+	}
+}
+
+func TestRateLimitBlocksOverLimit(t *testing.T) {
+	limiter := handlers.NewRateLimiter()
+	defer limiter.Close()
+
+	for range 1000 {
+		limiter.Allow("tok-hash")
+	}
+
+	allowed, retryAfter := limiter.Allow("tok-hash")
+	if allowed {
+		t.Error("request 1001 should be blocked")
+	}
+	if retryAfter < 1 {
+		t.Errorf("expected positive Retry-After, got %d", retryAfter)
+	}
+}
+
+func TestRateLimitReturns429ViaHandler(t *testing.T) {
+	limiter := handlers.NewRateLimiter()
+	defer limiter.Close()
+
+	handler := handlers.EventsHandler(
+		&mockValidator{valid: true},
+		&mockPublisher{},
+		&mockDirStore{directive: nil},
+		limiter,
+	)
+
+	// Exhaust the rate limit
+	for range 1000 {
+		body := `{"session_id":"abc","event_type":"post_call","flavor":"test"}`
+		req := httptest.NewRequest("POST", "/v1/events", bytes.NewBufferString(body))
+		req.Header.Set("Authorization", "Bearer tok")
+		w := httptest.NewRecorder()
+		handler(w, req)
+	}
+
+	// The 1001st request should return 429
+	body := `{"session_id":"abc","event_type":"post_call","flavor":"test"}`
+	req := httptest.NewRequest("POST", "/v1/events", bytes.NewBufferString(body))
+	req.Header.Set("Authorization", "Bearer tok")
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	if w.Code != http.StatusTooManyRequests {
+		t.Errorf("expected 429, got %d", w.Code)
+	}
+	if w.Header().Get("Retry-After") == "" {
+		t.Error("expected Retry-After header")
 	}
 }

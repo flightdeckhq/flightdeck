@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -19,12 +20,13 @@ import (
 // --- Mock Store ---
 
 type mockStore struct {
-	policies   []store.Policy
+	policies      []store.Policy
+	lastSearchQuery string
 	directives []store.Directive
 }
 
-func (m *mockStore) GetFleet(_ context.Context, limit, offset int) ([]store.FlavorSummary, int, error) {
-	flavors := []store.FlavorSummary{
+func (m *mockStore) GetFleet(_ context.Context, limit, offset int, agentType string) ([]store.FlavorSummary, int, error) {
+	allFlavors := []store.FlavorSummary{
 		{
 			Flavor:          "research-agent",
 			AgentType:       "autonomous",
@@ -32,12 +34,44 @@ func (m *mockStore) GetFleet(_ context.Context, limit, offset int) ([]store.Flav
 			ActiveCount:     1,
 			TokensUsedTotal: 5000,
 			Sessions: []store.Session{
-				{SessionID: "s1", Flavor: "research-agent", State: "active", StartedAt: time.Now(), LastSeenAt: time.Now(), TokensUsed: 3000},
-				{SessionID: "s2", Flavor: "research-agent", State: "closed", StartedAt: time.Now(), LastSeenAt: time.Now(), TokensUsed: 2000},
+				{SessionID: "s1", Flavor: "research-agent", AgentType: "autonomous", State: "active", StartedAt: time.Now(), LastSeenAt: time.Now(), TokensUsed: 3000},
+				{SessionID: "s2", Flavor: "research-agent", AgentType: "autonomous", State: "closed", StartedAt: time.Now(), LastSeenAt: time.Now(), TokensUsed: 2000},
+			},
+		},
+		{
+			Flavor:          "dev-helper",
+			AgentType:       "developer",
+			SessionCount:    1,
+			ActiveCount:     1,
+			TokensUsedTotal: 1000,
+			Sessions: []store.Session{
+				{SessionID: "s3", Flavor: "dev-helper", AgentType: "developer", State: "active", StartedAt: time.Now(), LastSeenAt: time.Now(), TokensUsed: 1000},
 			},
 		},
 	}
-	return flavors, 2, nil
+
+	// Apply agent_type filter matching real store logic
+	switch agentType {
+	case "developer":
+		var filtered []store.FlavorSummary
+		for _, f := range allFlavors {
+			if f.AgentType == "developer" {
+				filtered = append(filtered, f)
+			}
+		}
+		return filtered, len(filtered), nil
+	case "":
+		return allFlavors, 3, nil
+	default:
+		// production: exclude developer
+		var filtered []store.FlavorSummary
+		for _, f := range allFlavors {
+			if f.AgentType != "developer" {
+				filtered = append(filtered, f)
+			}
+		}
+		return filtered, len(filtered), nil
+	}
 }
 
 func (m *mockStore) GetSession(_ context.Context, id string) (*store.Session, error) {
@@ -70,6 +104,24 @@ func (m *mockStore) GetSessionEvents(_ context.Context, _ string) ([]store.Event
 		{ID: "e1", EventType: "session_start", OccurredAt: time.Now().Add(-time.Minute)},
 		{ID: "e2", EventType: "post_call", OccurredAt: time.Now()},
 	}, nil
+}
+
+func (m *mockStore) GetEventContent(_ context.Context, eventID string) (*store.EventContent, error) {
+	if eventID == "evt-with-content" {
+		sys := "You are a helpful assistant."
+		return &store.EventContent{
+			EventID:      eventID,
+			SessionID:    "sess-001",
+			Provider:     "openai",
+			Model:        "gpt-4",
+			SystemPrompt: &sys,
+			Messages:     []any{map[string]any{"role": "user", "content": "hello"}},
+			Tools:        nil,
+			Response:     map[string]any{"role": "assistant", "content": "hi"},
+			CapturedAt:   time.Now(),
+		}, nil
+	}
+	return nil, nil
 }
 
 func (m *mockStore) GetEffectivePolicy(_ context.Context, flavor, _ string) (*store.Policy, error) {
@@ -166,6 +218,33 @@ func (m *mockStore) GetActiveSessionIDsByFlavor(_ context.Context, flavor string
 	return ids, nil
 }
 
+func (m *mockStore) Search(_ context.Context, query string) (*store.SearchResults, error) {
+	m.lastSearchQuery = query
+	if query == "no-match" {
+		return &store.SearchResults{
+			Agents: []store.SearchResultAgent{}, Sessions: []store.SearchResultSession{}, Events: []store.SearchResultEvent{},
+		}, nil
+	}
+	return &store.SearchResults{
+		Agents:   []store.SearchResultAgent{{Flavor: "test-agent", AgentType: "autonomous", LastSeen: "2026-04-08"}},
+		Sessions: []store.SearchResultSession{{SessionID: "s1", Flavor: "test-agent", Host: "host-1", State: "active", StartedAt: "2026-04-08"}},
+		Events:   []store.SearchResultEvent{{EventID: "e1", SessionID: "s1", EventType: "post_call", ToolName: "search", Model: "claude", OccurredAt: "2026-04-08"}},
+	}, nil
+}
+
+func (m *mockStore) QueryAnalytics(_ context.Context, params store.AnalyticsParams) (*store.AnalyticsResponse, error) {
+	return &store.AnalyticsResponse{
+		Metric:      params.Metric,
+		GroupBy:     params.GroupBy,
+		Range:       params.Range,
+		Granularity: params.Granularity,
+		Series: []store.AnalyticsSeries{
+			{Dimension: "research-agent", Total: 5000, Data: []store.DataPoint{{Date: "2026-04-01", Value: 5000}}},
+		},
+		Totals: store.AnalyticsTotals{GrandTotal: 5000, PeriodChangePct: 10.0},
+	}, nil
+}
+
 // --- Tests ---
 
 func TestHealthHandler_Returns200(t *testing.T) {
@@ -196,8 +275,56 @@ func TestFleetHandler_ReturnsSessionsGroupedByFlavor(t *testing.T) {
 	var resp map[string]any
 	_ = json.Unmarshal(w.Body.Bytes(), &resp)
 	flavors, ok := resp["flavors"].([]any)
+	if !ok || len(flavors) != 2 {
+		t.Errorf("expected 2 flavor groups, got %v", resp["flavors"])
+	}
+}
+
+func TestFleetHandler_FilterByAgentType(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.FleetHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/fleet?agent_type=developer", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	flavors, ok := resp["flavors"].([]any)
 	if !ok || len(flavors) != 1 {
-		t.Errorf("expected 1 flavor group, got %v", resp["flavors"])
+		t.Errorf("expected 1 developer flavor, got %d", len(flavors))
+	}
+	if len(flavors) > 0 {
+		fm := flavors[0].(map[string]any)
+		if fm["agent_type"] != "developer" {
+			t.Errorf("expected agent_type=developer, got %v", fm["agent_type"])
+		}
+	}
+}
+
+func TestFleetHandler_FilterByProduction(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.FleetHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/fleet?agent_type=production", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	flavors, ok := resp["flavors"].([]any)
+	if !ok || len(flavors) != 1 {
+		t.Errorf("expected 1 non-developer flavor, got %d", len(flavors))
+	}
+	if len(flavors) > 0 {
+		fm := flavors[0].(map[string]any)
+		if fm["agent_type"] == "developer" {
+			t.Errorf("expected non-developer agent_type, got developer")
+		}
 	}
 }
 
@@ -768,5 +895,200 @@ func TestCreateDirectiveShutdownFlavorNoSessions(t *testing.T) {
 	errMsg, _ := resp["error"].(string)
 	if !contains(errMsg, "no active sessions") {
 		t.Errorf("expected error about no active sessions, got %q", errMsg)
+	}
+}
+
+// --- Analytics Tests ---
+
+func TestGetAnalyticsTokensByFlavor(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.AnalyticsHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/analytics?metric=tokens&group_by=flavor", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["metric"] != "tokens" {
+		t.Errorf("expected metric=tokens, got %v", resp["metric"])
+	}
+	if resp["group_by"] != "flavor" {
+		t.Errorf("expected group_by=flavor, got %v", resp["group_by"])
+	}
+	if resp["series"] == nil {
+		t.Error("expected series in response")
+	}
+	if resp["totals"] == nil {
+		t.Error("expected totals in response")
+	}
+}
+
+func TestGetAnalyticsInvalidMetric(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.AnalyticsHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/analytics?metric=invalid", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestGetAnalyticsInvalidGroupBy(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.AnalyticsHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/analytics?group_by=invalid", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestGetAnalyticsCustomRangeNoFrom(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.AnalyticsHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/analytics?range=custom", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestGetAnalyticsCustomRangeValid(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.AnalyticsHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/analytics?range=custom&from=2026-01-01T00:00:00Z&to=2026-02-01T00:00:00Z", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// --- Event Content Tests ---
+
+func TestContentHandler_ReturnsContent(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.ContentHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/events/evt-with-content/content", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["event_id"] != "evt-with-content" {
+		t.Errorf("expected event_id=evt-with-content, got %v", resp["event_id"])
+	}
+	if resp["provider"] != "openai" {
+		t.Errorf("expected provider=openai, got %v", resp["provider"])
+	}
+	if resp["system_prompt"] != "You are a helpful assistant." {
+		t.Errorf("expected system_prompt, got %v", resp["system_prompt"])
+	}
+}
+
+func TestContentHandler_Returns404WhenNoContent(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.ContentHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/events/evt-no-content/content", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestContentHandler_Returns400WhenNoID(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.ContentHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/events//content", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// --- Search Tests ---
+
+func TestSearchReturnsResults(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.SearchHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/search?q=test", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["agents"] == nil {
+		t.Error("expected agents in response")
+	}
+	if resp["sessions"] == nil {
+		t.Error("expected sessions in response")
+	}
+	if resp["events"] == nil {
+		t.Error("expected events in response")
+	}
+}
+
+func TestSearchMissingQuery(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.SearchHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/search", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestSearchEmptyQuery(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.SearchHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/search?q=", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestSearchQueryTooLong(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.SearchHandler(store.WrapStore(s))
+	longQ := strings.Repeat("a", 201)
+	req := httptest.NewRequest("GET", "/v1/search?q="+longQ, nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestSearchNoResults(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.SearchHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/search?q=no-match", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200 even with no results, got %d", w.Code)
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	agents := resp["agents"].([]any)
+	if len(agents) != 0 {
+		t.Errorf("expected empty agents, got %d", len(agents))
 	}
 }

@@ -25,7 +25,25 @@
 
 /* Clean light theme -- Phase 4 */
 .theme-clean-light {
+  --bg: #ffffff;
+  --surface: #f8f9fa;
+  --surface-hover: #e9ecef;
+  --border: #dee2e6;
+  --text: #212529;
+  --text-muted: #6c757d;
+  --primary: #6c5ce7;
+  --primary-glow: rgba(108, 92, 231, 0.15);
+  --accent: #00b894;
+  --accent-glow: rgba(0, 184, 148, 0.1);
+  --success: #00b894;
+  --warning: #fdcb6e;
+  --danger: #e17055;
+  --node-active: #00b894;
+  --node-idle: #6c5ce7;
+  --node-stale: #fdcb6e;
+  --node-closed: #b2bec3;
+  --node-lost: #e17055;
   --color-warn: var(--warning);
-  --color-degrade: #ff8c00;
+  --color-degrade: #e67e22;
   --color-block: var(--danger);
 }

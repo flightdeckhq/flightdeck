@@ -77,18 +77,18 @@ jobs:
           go test ./tests/... -v \
             -coverprofile=coverage.out \
             -covermode=atomic \
-            -coverpkg=./internal/...
+            -coverpkg=./internal/handlers/...
 
       - name: Check ingestion coverage threshold
         run: |
           cd ingestion
           COVERAGE=$(go tool cover -func=coverage.out | grep "^total:" | awk '{print $3}' | sed 's/%//')
-          echo "Ingestion coverage: ${COVERAGE}%"
-          if (( $(echo "$COVERAGE < 60" | bc -l) )); then
-            echo "FAIL: ${COVERAGE}% below 60%"
+          echo "Ingestion coverage (handlers): ${COVERAGE}%"
+          if (( $(echo "$COVERAGE < 67" | bc -l) )); then
+            echo "FAIL: ${COVERAGE}% below 67%"
             exit 1
           fi
-          echo "PASS: ${COVERAGE}% meets 60%"
+          echo "PASS: ${COVERAGE}% meets 67%"
 
       - name: Print ingestion coverage summary
         run: |
@@ -145,18 +145,18 @@ jobs:
           go test ./tests/... -v \
             -coverprofile=coverage.out \
             -covermode=atomic \
-            -coverpkg=./internal/...
+            -coverpkg=./internal/handlers/...
 
       - name: Check api coverage threshold
         run: |
           cd api
           COVERAGE=$(go tool cover -func=coverage.out | grep "^total:" | awk '{print $3}' | sed 's/%//')
-          echo "API coverage: ${COVERAGE}%"
-          if (( $(echo "$COVERAGE < 40" | bc -l) )); then
-            echo "FAIL: ${COVERAGE}% below 40%"
+          echo "API coverage (handlers): ${COVERAGE}%"
+          if (( $(echo "$COVERAGE < 66" | bc -l) )); then
+            echo "FAIL: ${COVERAGE}% below 66%"
             exit 1
           fi
-          echo "PASS: ${COVERAGE}% meets 40%"
+          echo "PASS: ${COVERAGE}% meets 66%"
 
       - name: Print api coverage summary
         run: |

@@ -21,8 +21,9 @@ type FleetResponse struct {
 // @Description  Returns sessions grouped by flavor, excluding lost sessions. Supports pagination via limit/offset on sessions.
 // @Tags         fleet
 // @Produce      json
-// @Param        limit   query  int  false  "Max sessions to return (default 50, max 200)"
-// @Param        offset  query  int  false  "Offset into sessions list (default 0)"
+// @Param        limit       query  int     false  "Max sessions to return (default 50, max 200)"
+// @Param        offset      query  int     false  "Offset into sessions list (default 0)"
+// @Param        agent_type  query  string  false  "Filter by agent type: 'developer', 'production', or empty for all"
 // @Success      200  {object}  FleetResponse
 // @Failure      500  {object}  ErrorResponse
 // @Router       /v1/fleet [get]
@@ -30,6 +31,7 @@ func FleetHandler(s store.Querier) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		limit := parseIntParam(r, "limit", 50)
 		offset := parseIntParam(r, "offset", 0)
+		agentType := r.URL.Query().Get("agent_type")
 
 		if limit < 1 {
 			limit = 1
@@ -41,7 +43,7 @@ func FleetHandler(s store.Querier) http.HandlerFunc {
 			offset = 0
 		}
 
-		flavors, totalCount, err := s.GetFleet(r.Context(), limit, offset)
+		flavors, totalCount, err := s.GetFleet(r.Context(), limit, offset, agentType)
 		if err != nil {
 			slog.Error("get fleet error", "err", err)
 			writeError(w, http.StatusInternalServerError, "internal server error")

@@ -1,0 +1,146 @@
+package store
+
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	"golang.org/x/sync/errgroup"
+)
+
+// SearchResultAgent is a search hit on the agents table.
+type SearchResultAgent struct {
+	Flavor    string `json:"flavor"`
+	AgentType string `json:"agent_type"`
+	LastSeen  string `json:"last_seen"`
+}
+
+// SearchResultSession is a search hit on the sessions table.
+type SearchResultSession struct {
+	SessionID string `json:"session_id"`
+	Flavor    string `json:"flavor"`
+	Host      string `json:"host"`
+	State     string `json:"state"`
+	StartedAt string `json:"started_at"`
+}
+
+// SearchResultEvent is a search hit on the events table.
+type SearchResultEvent struct {
+	EventID    string `json:"event_id"`
+	SessionID  string `json:"session_id"`
+	EventType  string `json:"event_type"`
+	ToolName   string `json:"tool_name"`
+	Model      string `json:"model"`
+	OccurredAt string `json:"occurred_at"`
+}
+
+// SearchResults groups search hits by entity type.
+type SearchResults struct {
+	Agents   []SearchResultAgent   `json:"agents"`
+	Sessions []SearchResultSession `json:"sessions"`
+	Events   []SearchResultEvent   `json:"events"`
+}
+
+// sanitizeQuery wraps the query for ILIKE and escapes LIKE special characters.
+// Order: escape backslash first, then % and _, to avoid double-escaping.
+func sanitizeQuery(q string) string {
+	escaped := strings.ReplaceAll(q, "\\", "\\\\")
+	escaped = strings.ReplaceAll(escaped, "%", "\\%")
+	escaped = strings.ReplaceAll(escaped, "_", "\\_")
+	return "%" + escaped + "%"
+}
+
+// Search performs a cross-entity ILIKE search across agents, sessions, and events.
+// All three queries run in parallel. Returns up to 5 results per group.
+func (s *Store) Search(ctx context.Context, query string) (*SearchResults, error) {
+	pattern := sanitizeQuery(query)
+	var results SearchResults
+
+	g, ctx := errgroup.WithContext(ctx)
+
+	// Search agents
+	g.Go(func() error {
+		rows, err := s.pool.Query(ctx, `
+			SELECT flavor, agent_type, last_seen::text
+			FROM agents
+			WHERE flavor ILIKE $1
+			ORDER BY last_seen DESC
+			LIMIT 5
+		`, pattern)
+		if err != nil {
+			return fmt.Errorf("search agents: %w", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var a SearchResultAgent
+			if err := rows.Scan(&a.Flavor, &a.AgentType, &a.LastSeen); err != nil {
+				return fmt.Errorf("scan agent: %w", err)
+			}
+			results.Agents = append(results.Agents, a)
+		}
+		return nil
+	})
+
+	// Search sessions
+	g.Go(func() error {
+		rows, err := s.pool.Query(ctx, `
+			SELECT session_id::text, flavor, COALESCE(host, ''), state, started_at::text
+			FROM sessions
+			WHERE session_id::text ILIKE $1 OR COALESCE(host, '') ILIKE $1
+			ORDER BY started_at DESC
+			LIMIT 5
+		`, pattern)
+		if err != nil {
+			return fmt.Errorf("search sessions: %w", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var s SearchResultSession
+			if err := rows.Scan(&s.SessionID, &s.Flavor, &s.Host, &s.State, &s.StartedAt); err != nil {
+				return fmt.Errorf("scan session: %w", err)
+			}
+			results.Sessions = append(results.Sessions, s)
+		}
+		return nil
+	})
+
+	// Search events
+	g.Go(func() error {
+		rows, err := s.pool.Query(ctx, `
+			SELECT id::text, session_id::text, event_type, COALESCE(tool_name, ''), COALESCE(model, ''), occurred_at::text
+			FROM events
+			WHERE COALESCE(tool_name, '') ILIKE $1 OR COALESCE(model, '') ILIKE $1
+			ORDER BY occurred_at DESC
+			LIMIT 5
+		`, pattern)
+		if err != nil {
+			return fmt.Errorf("search events: %w", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var e SearchResultEvent
+			if err := rows.Scan(&e.EventID, &e.SessionID, &e.EventType, &e.ToolName, &e.Model, &e.OccurredAt); err != nil {
+				return fmt.Errorf("scan event: %w", err)
+			}
+			results.Events = append(results.Events, e)
+		}
+		return nil
+	})
+
+	if err := g.Wait(); err != nil {
+		return nil, err
+	}
+
+	// Ensure non-nil arrays for JSON serialization
+	if results.Agents == nil {
+		results.Agents = []SearchResultAgent{}
+	}
+	if results.Sessions == nil {
+		results.Sessions = []SearchResultSession{}
+	}
+	if results.Events == nil {
+		results.Events = []SearchResultEvent{}
+	}
+
+	return &results, nil
+}

@@ -60,12 +60,20 @@ func (p *Processor) Process(ctx context.Context, e consumer.EventPayload) error 
 	if err != nil {
 		ts = time.Now().UTC()
 	}
-	if err := p.w.InsertEvent(
+	eventID, err := p.w.InsertEvent(
 		ctx, e.SessionID, e.Flavor, e.EventType, e.Model,
 		e.TokensInput, e.TokensOutput, e.TokensTotal,
 		e.LatencyMs, e.ToolName, e.HasContent, ts,
-	); err != nil {
+	)
+	if err != nil {
 		return err
+	}
+
+	// Store prompt content when capture is enabled
+	if e.HasContent && len(e.Content) > 0 {
+		if err := p.w.InsertEventContent(ctx, eventID, e.SessionID, e.Content); err != nil {
+			slog.Warn("insert event content error", "err", err)
+		}
 	}
 
 	// NOTIFY for real-time dashboard push

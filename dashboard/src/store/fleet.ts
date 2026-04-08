@@ -2,13 +2,17 @@ import { create } from "zustand";
 import type { FlavorSummary, Session, FleetUpdate } from "@/lib/types";
 import { fetchFleet } from "@/lib/api";
 
+export type AgentTypeFilter = "all" | "production" | "developer";
+
 interface FleetState {
   flavors: FlavorSummary[];
   loading: boolean;
   error: string | null;
   selectedSessionId: string | null;
+  agentTypeFilter: AgentTypeFilter;
 
-  load: () => Promise<void>;
+  load: (agentType?: AgentTypeFilter) => Promise<void>;
+  setAgentTypeFilter: (filter: AgentTypeFilter) => void;
   applyUpdate: (update: FleetUpdate) => void;
   selectSession: (id: string | null) => void;
 }
@@ -18,15 +22,23 @@ export const useFleetStore = create<FleetState>((set, get) => ({
   loading: false,
   error: null,
   selectedSessionId: null,
+  agentTypeFilter: "all",
 
-  load: async () => {
+  load: async (agentType?: AgentTypeFilter) => {
+    const filter = agentType ?? get().agentTypeFilter;
     set({ loading: true, error: null });
     try {
-      const data = await fetchFleet();
+      const apiFilter = filter === "all" ? undefined : filter;
+      const data = await fetchFleet(50, 0, apiFilter);
       set({ flavors: data.flavors, loading: false });
     } catch (e) {
       set({ error: (e as Error).message, loading: false });
     }
+  },
+
+  setAgentTypeFilter: (filter: AgentTypeFilter) => {
+    set({ agentTypeFilter: filter });
+    get().load(filter);
   },
 
   applyUpdate: (update: FleetUpdate) => {

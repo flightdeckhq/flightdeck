@@ -4,6 +4,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -16,9 +17,10 @@ import (
 // Querier is the interface for fleet data access.
 // Implemented by Store (Postgres) and mocks in tests.
 type Querier interface {
-	GetFleet(ctx context.Context, limit, offset int) ([]FlavorSummary, int, error)
+	GetFleet(ctx context.Context, limit, offset int, agentType string) ([]FlavorSummary, int, error)
 	GetSession(ctx context.Context, sessionID string) (*Session, error)
 	GetSessionEvents(ctx context.Context, sessionID string) ([]Event, error)
+	GetEventContent(ctx context.Context, eventID string) (*EventContent, error)
 	GetEffectivePolicy(ctx context.Context, flavor, sessionID string) (*Policy, error)
 	GetPolicies(ctx context.Context) ([]Policy, error)
 	GetPolicyByID(ctx context.Context, id string) (*Policy, error)
@@ -27,6 +29,8 @@ type Querier interface {
 	DeletePolicy(ctx context.Context, id string) error
 	CreateDirective(ctx context.Context, d Directive) (*Directive, error)
 	GetActiveSessionIDsByFlavor(ctx context.Context, flavor string) ([]string, error)
+	QueryAnalytics(ctx context.Context, params AnalyticsParams) (*AnalyticsResponse, error)
+	Search(ctx context.Context, query string) (*SearchResults, error)
 }
 
 // WrapStore returns a Querier from any compatible implementation.
@@ -98,21 +102,35 @@ type FlavorSummary struct {
 
 // GetFleet returns sessions grouped by flavor, excluding lost sessions.
 // Limit/offset apply to the sessions query. Returns (flavors, total_session_count, error).
-func (s *Store) GetFleet(ctx context.Context, limit, offset int) ([]FlavorSummary, int, error) {
+// agentType filters: "developer" = only developer sessions, non-empty other = exclude developer, empty = all.
+func (s *Store) GetFleet(ctx context.Context, limit, offset int, agentType string) ([]FlavorSummary, int, error) {
+	// Build optional agent_type filter
+	var agentFilter string
+	var args []any
+	switch agentType {
+	case "developer":
+		agentFilter = " AND agent_type = 'developer'"
+	case "":
+		// no filter
+	default:
+		agentFilter = " AND agent_type != 'developer'"
+	}
+
 	// Get total count for pagination metadata
 	var totalCount int
-	if err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM sessions WHERE state != 'lost'`).Scan(&totalCount); err != nil {
+	if err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM sessions WHERE state != 'lost'`+agentFilter).Scan(&totalCount); err != nil {
 		return nil, 0, fmt.Errorf("get fleet count: %w", err)
 	}
 
+	args = append(args, limit, offset)
 	rows, err := s.pool.Query(ctx, `
 		SELECT session_id::text, flavor, agent_type, host, framework, model,
 		       state, started_at, last_seen_at, ended_at, tokens_used, token_limit
 		FROM sessions
-		WHERE state != 'lost'
+		WHERE state != 'lost'`+agentFilter+`
 		ORDER BY flavor, started_at DESC
 		LIMIT $1 OFFSET $2
-	`, limit, offset)
+	`, args...)
 	if err != nil {
 		return nil, 0, fmt.Errorf("get fleet: %w", err)
 	}
@@ -437,4 +455,61 @@ func (s *Store) CreateDirective(ctx context.Context, d Directive) (*Directive, e
 		return nil, fmt.Errorf("create directive: %w", err)
 	}
 	return &result, nil
+}
+
+// EventContent represents a row in the event_content table.
+type EventContent struct {
+	EventID      string    `json:"event_id"`
+	SessionID    string    `json:"session_id"`
+	Provider     string    `json:"provider"`
+	Model        string    `json:"model"`
+	SystemPrompt *string   `json:"system_prompt"`
+	Messages     any       `json:"messages"`
+	Tools        any       `json:"tools"`
+	Response     any       `json:"response"`
+	CapturedAt   time.Time `json:"captured_at"`
+}
+
+// GetEventContent returns the prompt content for an event.
+// Returns nil, nil when the event has no captured content.
+func (s *Store) GetEventContent(ctx context.Context, eventID string) (*EventContent, error) {
+	var ec EventContent
+	var messagesRaw, toolsRaw, responseRaw []byte
+	err := s.pool.QueryRow(ctx, `
+		SELECT event_id::text, session_id::text, provider, model, system_prompt,
+		       messages, tools, response, captured_at
+		FROM event_content
+		WHERE event_id = $1::uuid
+	`, eventID).Scan(
+		&ec.EventID, &ec.SessionID, &ec.Provider, &ec.Model, &ec.SystemPrompt,
+		&messagesRaw, &toolsRaw, &responseRaw, &ec.CapturedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get event content %s: %w", eventID, err)
+	}
+
+	// Unmarshal JSONB columns into any for proper JSON serialization
+	if messagesRaw != nil {
+		var v any
+		if jsonErr := json.Unmarshal(messagesRaw, &v); jsonErr == nil {
+			ec.Messages = v
+		}
+	}
+	if toolsRaw != nil {
+		var v any
+		if jsonErr := json.Unmarshal(toolsRaw, &v); jsonErr == nil {
+			ec.Tools = v
+		}
+	}
+	if responseRaw != nil {
+		var v any
+		if jsonErr := json.Unmarshal(responseRaw, &v); jsonErr == nil {
+			ec.Response = v
+		}
+	}
+
+	return &ec, nil
 }

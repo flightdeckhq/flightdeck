@@ -32,6 +32,94 @@
                 }
             }
         },
+        "/v1/analytics": {
+            "get": {
+                "description": "Flexible GROUP BY analytics endpoint. Returns time series data grouped by dimension.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "analytics"
+                ],
+                "summary": "Query analytics",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Metric: tokens, sessions, latency_avg, policy_events (default: tokens)",
+                        "name": "metric",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Dimension: flavor, model, framework, host, agent_type, team (default: flavor)",
+                        "name": "group_by",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Time range: 7d, 30d, 90d, custom (default: 30d)",
+                        "name": "range",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Start time ISO 8601 (required when range=custom)",
+                        "name": "from",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "End time ISO 8601 (required when range=custom)",
+                        "name": "to",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Granularity: hour, day, week (default: day)",
+                        "name": "granularity",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter to specific flavor",
+                        "name": "filter_flavor",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter to specific model",
+                        "name": "filter_model",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter to specific agent_type",
+                        "name": "filter_agent_type",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/store.AnalyticsResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/v1/directives": {
             "post": {
                 "description": "Issues a shutdown directive to a single agent session or all sessions of a flavor",
@@ -78,6 +166,47 @@
                 }
             }
         },
+        "/v1/events/{id}/content": {
+            "get": {
+                "description": "Returns prompt capture content for an event. Returns 404 when the event does not exist or capture was not enabled.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "events"
+                ],
+                "summary": "Get event content",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Event UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/store.EventContent"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/v1/fleet": {
             "get": {
                 "description": "Returns sessions grouped by flavor, excluding lost sessions. Supports pagination via limit/offset on sessions.",
@@ -99,6 +228,12 @@
                         "type": "integer",
                         "description": "Offset into sessions list (default 0)",
                         "name": "offset",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by agent type: 'developer', 'production', or empty for all",
+                        "name": "agent_type",
                         "in": "query"
                     }
                 ],
@@ -329,6 +464,47 @@
                 }
             }
         },
+        "/v1/search": {
+            "get": {
+                "description": "Searches agents, sessions, and events by partial match. Returns up to 5 results per group.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "search"
+                ],
+                "summary": "Cross-entity search",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Search query (min 1, max 200 characters)",
+                        "name": "q",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/store.SearchResults"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/v1/sessions/{id}": {
             "get": {
                 "description": "Returns session metadata (including effective policy thresholds) and all events in chronological order",
@@ -483,6 +659,71 @@
                 }
             }
         },
+        "store.AnalyticsResponse": {
+            "type": "object",
+            "properties": {
+                "granularity": {
+                    "type": "string"
+                },
+                "group_by": {
+                    "type": "string"
+                },
+                "metric": {
+                    "type": "string"
+                },
+                "range": {
+                    "type": "string"
+                },
+                "series": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/store.AnalyticsSeries"
+                    }
+                },
+                "totals": {
+                    "$ref": "#/definitions/store.AnalyticsTotals"
+                }
+            }
+        },
+        "store.AnalyticsSeries": {
+            "type": "object",
+            "properties": {
+                "data": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/store.DataPoint"
+                    }
+                },
+                "dimension": {
+                    "type": "string"
+                },
+                "total": {
+                    "type": "number"
+                }
+            }
+        },
+        "store.AnalyticsTotals": {
+            "type": "object",
+            "properties": {
+                "grand_total": {
+                    "type": "number"
+                },
+                "period_change_pct": {
+                    "type": "number"
+                }
+            }
+        },
+        "store.DataPoint": {
+            "type": "object",
+            "properties": {
+                "date": {
+                    "type": "string"
+                },
+                "value": {
+                    "type": "number"
+                }
+            }
+        },
         "store.Directive": {
             "type": "object",
             "properties": {
@@ -559,6 +800,32 @@
                 }
             }
         },
+        "store.EventContent": {
+            "type": "object",
+            "properties": {
+                "captured_at": {
+                    "type": "string"
+                },
+                "event_id": {
+                    "type": "string"
+                },
+                "messages": {},
+                "model": {
+                    "type": "string"
+                },
+                "provider": {
+                    "type": "string"
+                },
+                "response": {},
+                "session_id": {
+                    "type": "string"
+                },
+                "system_prompt": {
+                    "type": "string"
+                },
+                "tools": {}
+            }
+        },
         "store.FlavorSummary": {
             "type": "object",
             "properties": {
@@ -617,6 +884,86 @@
                 },
                 "warn_at_pct": {
                     "type": "integer"
+                }
+            }
+        },
+        "store.SearchResultAgent": {
+            "type": "object",
+            "properties": {
+                "agent_type": {
+                    "type": "string"
+                },
+                "flavor": {
+                    "type": "string"
+                },
+                "last_seen": {
+                    "type": "string"
+                }
+            }
+        },
+        "store.SearchResultEvent": {
+            "type": "object",
+            "properties": {
+                "event_id": {
+                    "type": "string"
+                },
+                "event_type": {
+                    "type": "string"
+                },
+                "model": {
+                    "type": "string"
+                },
+                "occurred_at": {
+                    "type": "string"
+                },
+                "session_id": {
+                    "type": "string"
+                },
+                "tool_name": {
+                    "type": "string"
+                }
+            }
+        },
+        "store.SearchResultSession": {
+            "type": "object",
+            "properties": {
+                "flavor": {
+                    "type": "string"
+                },
+                "host": {
+                    "type": "string"
+                },
+                "session_id": {
+                    "type": "string"
+                },
+                "started_at": {
+                    "type": "string"
+                },
+                "state": {
+                    "type": "string"
+                }
+            }
+        },
+        "store.SearchResults": {
+            "type": "object",
+            "properties": {
+                "agents": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/store.SearchResultAgent"
+                    }
+                },
+                "events": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/store.SearchResultEvent"
+                    }
+                },
+                "sessions": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/store.SearchResultSession"
+                    }
                 }
             }
         },

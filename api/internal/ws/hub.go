@@ -71,22 +71,17 @@ func (h *Hub) Run(ctx context.Context) {
 			h.mu.Unlock()
 
 		case msg := <-h.broadcast:
-			h.mu.RLock()
+			h.mu.Lock()
 			for client := range h.clients {
 				select {
 				case client.send <- msg:
 				default:
-					// Client buffer full -- drop and unregister
-					go func(c *Client) {
-						select {
-						case h.unregister <- c:
-						default:
-							// Channel full, client will be cleaned up on next broadcast
-						}
-					}(client)
+					// Client send buffer full -- close and remove
+					close(client.send)
+					delete(h.clients, client)
 				}
 			}
-			h.mu.RUnlock()
+			h.mu.Unlock()
 		}
 	}
 }
@@ -105,14 +100,6 @@ func (h *Hub) Register(conn *websocket.Conn) *Client {
 func (h *Hub) Unregister(client *Client) {
 	h.unregister <- client
 }
-
-// TODO(KI08)[Phase 4]: Every NOTIFY broadcasts to all
-// connected dashboard clients regardless of what they
-// are viewing. At 500 users × 10k events/min this is
-// 5M messages/min.
-// Fix: clients subscribe to specific flavors. Only
-// broadcast relevant updates per client.
-// See DECISIONS.md D044.
 
 // ClientCount returns the number of connected clients (test helper).
 func (h *Hub) ClientCount() int {

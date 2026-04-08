@@ -4,6 +4,7 @@ package writer
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -62,7 +63,7 @@ func (w *Writer) UpsertSession(
 	return nil
 }
 
-// InsertEvent inserts a new event record (metadata only).
+// InsertEvent inserts a new event record (metadata only) and returns the generated event ID.
 func (w *Writer) InsertEvent(
 	ctx context.Context,
 	sessionID, flavor, eventType, model string,
@@ -71,13 +72,41 @@ func (w *Writer) InsertEvent(
 	toolName *string,
 	hasContent bool,
 	occurredAt time.Time,
-) error {
-	_, err := w.pool.Exec(ctx, `
+) (string, error) {
+	var eventID string
+	err := w.pool.QueryRow(ctx, `
 		INSERT INTO events (session_id, flavor, event_type, model, tokens_input, tokens_output, tokens_total, latency_ms, tool_name, has_content, occurred_at)
 		VALUES ($1::uuid, $2, $3, NULLIF($4, ''), $5, $6, $7, $8, $9, $10, $11)
-	`, sessionID, flavor, eventType, model, tokensInput, tokensOutput, tokensTotal, latencyMs, toolName, hasContent, occurredAt)
+		RETURNING id::text
+	`, sessionID, flavor, eventType, model, tokensInput, tokensOutput, tokensTotal, latencyMs, toolName, hasContent, occurredAt).Scan(&eventID)
 	if err != nil {
-		return fmt.Errorf("insert event: %w", err)
+		return "", fmt.Errorf("insert event: %w", err)
+	}
+	return eventID, nil
+}
+
+// InsertEventContent inserts prompt capture content into event_content.
+// Called only when event.HasContent is true.
+func (w *Writer) InsertEventContent(ctx context.Context, eventID, sessionID string, content json.RawMessage) error {
+	// Parse the content JSON to extract fields
+	var c struct {
+		Provider     string          `json:"provider"`
+		Model        string          `json:"model"`
+		SystemPrompt *string         `json:"system"`
+		Messages     json.RawMessage `json:"messages"`
+		Tools        json.RawMessage `json:"tools"`
+		Response     json.RawMessage `json:"response"`
+	}
+	if err := json.Unmarshal(content, &c); err != nil {
+		return fmt.Errorf("parse event content: %w", err)
+	}
+	_, err := w.pool.Exec(ctx, `
+		INSERT INTO event_content (event_id, session_id, provider, model, system_prompt, messages, tools, response)
+		VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8)
+		ON CONFLICT (event_id) DO NOTHING
+	`, eventID, sessionID, c.Provider, c.Model, c.SystemPrompt, c.Messages, c.Tools, c.Response)
+	if err != nil {
+		return fmt.Errorf("insert event content: %w", err)
 	}
 	return nil
 }

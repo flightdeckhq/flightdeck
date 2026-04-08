@@ -41,9 +41,12 @@ type SearchResults struct {
 	Events   []SearchResultEvent   `json:"events"`
 }
 
-// sanitizeQuery wraps the query for ILIKE and escapes % characters.
+// sanitizeQuery wraps the query for ILIKE and escapes LIKE special characters.
+// Order: escape backslash first, then % and _, to avoid double-escaping.
 func sanitizeQuery(q string) string {
-	escaped := strings.ReplaceAll(q, "%", "\\%")
+	escaped := strings.ReplaceAll(q, "\\", "\\\\")
+	escaped = strings.ReplaceAll(escaped, "%", "\\%")
+	escaped = strings.ReplaceAll(escaped, "_", "\\_")
 	return "%" + escaped + "%"
 }
 

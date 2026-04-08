@@ -20,7 +20,8 @@ import (
 // --- Mock Store ---
 
 type mockStore struct {
-	policies   []store.Policy
+	policies      []store.Policy
+	lastSearchQuery string
 	directives []store.Directive
 }
 
@@ -218,6 +219,7 @@ func (m *mockStore) GetActiveSessionIDsByFlavor(_ context.Context, flavor string
 }
 
 func (m *mockStore) Search(_ context.Context, query string) (*store.SearchResults, error) {
+	m.lastSearchQuery = query
 	if query == "no-match" {
 		return &store.SearchResults{
 			Agents: []store.SearchResultAgent{}, Sessions: []store.SearchResultSession{}, Events: []store.SearchResultEvent{},

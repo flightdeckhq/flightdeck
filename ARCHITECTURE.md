@@ -402,8 +402,9 @@ flightdeck/
 │ GET  /docs/          │    │ GET/POST/PUT/DELETE          │
 │                      │    │   /v1/policies               │
 │ Auth: validates      │    │ POST /v1/directives          │
-│   bearer token       │    │ WS  /v1/stream               │
-│   (reads api_tokens) │    │ GET /docs/                   │
+│   bearer token       │    │ GET /v1/analytics            │
+│   (reads api_tokens) │    │ WS  /v1/stream               │
+│                      │    │ GET /docs/                   │
 │                      │    │                              │
 │                      │    │ LISTEN flightdeck_fleet      │
 │ Directive: reads +   │    │   (reconnects every 3s)      │

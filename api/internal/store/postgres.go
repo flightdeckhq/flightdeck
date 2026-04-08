@@ -27,6 +27,7 @@ type Querier interface {
 	DeletePolicy(ctx context.Context, id string) error
 	CreateDirective(ctx context.Context, d Directive) (*Directive, error)
 	GetActiveSessionIDsByFlavor(ctx context.Context, flavor string) ([]string, error)
+	QueryAnalytics(ctx context.Context, params AnalyticsParams) (*AnalyticsResponse, error)
 }
 
 // WrapStore returns a Querier from any compatible implementation.

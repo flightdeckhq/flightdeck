@@ -166,6 +166,19 @@ func (m *mockStore) GetActiveSessionIDsByFlavor(_ context.Context, flavor string
 	return ids, nil
 }
 
+func (m *mockStore) QueryAnalytics(_ context.Context, params store.AnalyticsParams) (*store.AnalyticsResponse, error) {
+	return &store.AnalyticsResponse{
+		Metric:      params.Metric,
+		GroupBy:     params.GroupBy,
+		Range:       params.Range,
+		Granularity: params.Granularity,
+		Series: []store.AnalyticsSeries{
+			{Dimension: "research-agent", Total: 5000, Data: []store.DataPoint{{Date: "2026-04-01", Value: 5000}}},
+		},
+		Totals: store.AnalyticsTotals{GrandTotal: 5000, PeriodChangePct: 10.0},
+	}, nil
+}
+
 // --- Tests ---
 
 func TestHealthHandler_Returns200(t *testing.T) {
@@ -768,5 +781,76 @@ func TestCreateDirectiveShutdownFlavorNoSessions(t *testing.T) {
 	errMsg, _ := resp["error"].(string)
 	if !contains(errMsg, "no active sessions") {
 		t.Errorf("expected error about no active sessions, got %q", errMsg)
+	}
+}
+
+// --- Analytics Tests ---
+
+func TestGetAnalyticsTokensByFlavor(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.AnalyticsHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/analytics?metric=tokens&group_by=flavor", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["metric"] != "tokens" {
+		t.Errorf("expected metric=tokens, got %v", resp["metric"])
+	}
+	if resp["group_by"] != "flavor" {
+		t.Errorf("expected group_by=flavor, got %v", resp["group_by"])
+	}
+	if resp["series"] == nil {
+		t.Error("expected series in response")
+	}
+	if resp["totals"] == nil {
+		t.Error("expected totals in response")
+	}
+}
+
+func TestGetAnalyticsInvalidMetric(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.AnalyticsHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/analytics?metric=invalid", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestGetAnalyticsInvalidGroupBy(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.AnalyticsHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/analytics?group_by=invalid", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestGetAnalyticsCustomRangeNoFrom(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.AnalyticsHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/analytics?range=custom", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestGetAnalyticsCustomRangeValid(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.AnalyticsHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/analytics?range=custom&from=2026-01-01T00:00:00Z&to=2026-02-01T00:00:00Z", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 }

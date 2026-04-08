@@ -131,3 +131,45 @@ export interface Directive {
   issued_at: string;
   delivered_at: string | null;
 }
+
+/** Query parameters for GET /v1/analytics. */
+export interface AnalyticsParams {
+  metric?: string;
+  group_by?: string;
+  range?: string;
+  from?: string;
+  to?: string;
+  granularity?: string;
+  filter_flavor?: string;
+  filter_model?: string;
+  filter_agent_type?: string;
+}
+
+/** A single time-series data point. */
+export interface DataPoint {
+  date: string;
+  value: number;
+}
+
+/** One dimension series in the analytics response. */
+export interface AnalyticsSeries {
+  dimension: string;
+  total: number;
+  data: DataPoint[];
+}
+
+/** Aggregated totals for the analytics response. */
+export interface AnalyticsTotals {
+  grand_total: number;
+  period_change_pct: number;
+}
+
+/** Response from GET /v1/analytics. */
+export interface AnalyticsResponse {
+  metric: string;
+  group_by: string;
+  range: string;
+  granularity: string;
+  series: AnalyticsSeries[];
+  totals: AnalyticsTotals;
+}

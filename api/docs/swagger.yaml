@@ -53,6 +53,48 @@ definitions:
       session:
         $ref: '#/definitions/store.Session'
     type: object
+  store.AnalyticsResponse:
+    properties:
+      granularity:
+        type: string
+      group_by:
+        type: string
+      metric:
+        type: string
+      range:
+        type: string
+      series:
+        items:
+          $ref: '#/definitions/store.AnalyticsSeries'
+        type: array
+      totals:
+        $ref: '#/definitions/store.AnalyticsTotals'
+    type: object
+  store.AnalyticsSeries:
+    properties:
+      data:
+        items:
+          $ref: '#/definitions/store.DataPoint'
+        type: array
+      dimension:
+        type: string
+      total:
+        type: number
+    type: object
+  store.AnalyticsTotals:
+    properties:
+      grand_total:
+        type: number
+      period_change_pct:
+        type: number
+    type: object
+  store.DataPoint:
+    properties:
+      date:
+        type: string
+      value:
+        type: number
+    type: object
   store.Directive:
     properties:
       action:
@@ -210,6 +252,67 @@ paths:
       summary: Health check
       tags:
       - health
+  /v1/analytics:
+    get:
+      description: Flexible GROUP BY analytics endpoint. Returns time series data
+        grouped by dimension.
+      parameters:
+      - description: 'Metric: tokens, sessions, latency_avg, policy_events (default:
+          tokens)'
+        in: query
+        name: metric
+        type: string
+      - description: 'Dimension: flavor, model, framework, host, agent_type, team
+          (default: flavor)'
+        in: query
+        name: group_by
+        type: string
+      - description: 'Time range: 7d, 30d, 90d, custom (default: 30d)'
+        in: query
+        name: range
+        type: string
+      - description: Start time ISO 8601 (required when range=custom)
+        in: query
+        name: from
+        type: string
+      - description: End time ISO 8601 (required when range=custom)
+        in: query
+        name: to
+        type: string
+      - description: 'Granularity: hour, day, week (default: day)'
+        in: query
+        name: granularity
+        type: string
+      - description: Filter to specific flavor
+        in: query
+        name: filter_flavor
+        type: string
+      - description: Filter to specific model
+        in: query
+        name: filter_model
+        type: string
+      - description: Filter to specific agent_type
+        in: query
+        name: filter_agent_type
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/store.AnalyticsResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      summary: Query analytics
+      tags:
+      - analytics
   /v1/directives:
     post:
       consumes:

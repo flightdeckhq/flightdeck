@@ -1,6 +1,7 @@
 import { BrowserRouter, Routes, Route, NavLink } from "react-router-dom";
 import { Fleet } from "@/pages/Fleet";
 import { Policies } from "@/pages/Policies";
+import { Analytics } from "@/pages/Analytics";
 
 function Nav() {
   return (
@@ -23,6 +24,14 @@ function Nav() {
       >
         Policies
       </NavLink>
+      <NavLink
+        to="/analytics"
+        className={({ isActive }) =>
+          `text-xs ${isActive ? "text-text" : "text-text-muted hover:text-text"}`
+        }
+      >
+        Analytics
+      </NavLink>
     </nav>
   );
 }
@@ -36,6 +45,7 @@ export default function App() {
           <Routes>
             <Route path="/" element={<Fleet />} />
             <Route path="/policies" element={<Policies />} />
+            <Route path="/analytics" element={<Analytics />} />
           </Routes>
         </div>
       </div>

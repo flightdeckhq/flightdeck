@@ -27,7 +27,8 @@ func New(
 ) *http.Server {
 	mux := http.NewServeMux()
 
-	mux.Handle("POST /v1/events", handlers.EventsHandler(validator, publisher, dirStore))
+	limiter := handlers.NewRateLimiter()
+	mux.Handle("POST /v1/events", handlers.EventsHandler(validator, publisher, dirStore, limiter))
 	mux.Handle("POST /v1/heartbeat", handlers.HeartbeatHandler(validator, publisher, dirStore))
 	mux.Handle("GET /health", handlers.HealthHandler())
 	mux.Handle("GET /docs/", httpSwagger.WrapHandler)

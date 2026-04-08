@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -43,11 +44,6 @@ type EventResponse struct {
 	Directive *DirectiveResponse `json:"directive,omitempty"`
 }
 
-// TODO(KI04)[Phase 4]: No rate limiting on ingestion API.
-// A misbehaving sensor could flood the system with events.
-// Fix: add per-token rate limiting middleware.
-// See DECISIONS.md D048.
-
 // EventsHandler handles POST /v1/events.
 //
 // @Summary      Submit agent event
@@ -60,12 +56,14 @@ type EventResponse struct {
 // @Success      200  {object}  EventResponse
 // @Failure      400  {object}  ErrorResponse
 // @Failure      401  {object}  ErrorResponse
+// @Failure      429  {object}  ErrorResponse
 // @Failure      500  {object}  ErrorResponse
 // @Router       /v1/events [post]
 func EventsHandler(
 	validator TokenValidator,
 	publisher EventPublisher,
 	dirStore DirectiveLookup,
+	limiter *RateLimiter,
 ) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
@@ -85,6 +83,16 @@ func EventsHandler(
 		if !valid {
 			writeError(w, http.StatusUnauthorized, "invalid token")
 			return
+		}
+
+		// Rate limit
+		if limiter != nil {
+			allowed, retryAfter := limiter.Allow(token)
+			if !allowed {
+				w.Header().Set("Retry-After", fmt.Sprintf("%d", retryAfter))
+				writeError(w, http.StatusTooManyRequests, "rate limit exceeded")
+				return
+			}
 		}
 
 		// Parse body

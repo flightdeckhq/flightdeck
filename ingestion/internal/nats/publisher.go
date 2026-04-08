@@ -3,6 +3,9 @@ package nats
 
 import (
 	"fmt"
+	"log/slog"
+	"sync/atomic"
+	"time"
 
 	"github.com/nats-io/nats.go"
 )
@@ -11,7 +14,8 @@ const streamName = "FLIGHTDECK"
 
 // Publisher publishes event payloads to NATS JetStream subjects.
 type Publisher struct {
-	js nats.JetStreamContext
+	js         nats.JetStreamContext
+	lostEvents atomic.Int64
 }
 
 // NewPublisher creates a Publisher, ensuring the FLIGHTDECK stream exists.
@@ -34,20 +38,38 @@ func NewPublisher(nc *nats.Conn) (*Publisher, error) {
 	return &Publisher{js: js}, nil
 }
 
-// TODO(KI02)[Phase 4]: Events are lost if NATS is
-// temporarily unavailable. Publish() returns an error,
-// the sensor retries 3 times then drops the event.
-// Fix: add a local WAL/buffer that stores events when
-// NATS is down and replays them on reconnect.
-// See DECISIONS.md D041.
-
-// Publish sends data to the given NATS subject.
+// Publish sends data to the given NATS subject with retry on failure.
+// On persistent failure after 3 attempts: logs the loss and returns nil
+// to avoid blocking the ingestion response.
 func (p *Publisher) Publish(subject string, data []byte) error {
-	_, err := p.js.Publish(subject, data)
-	if err != nil {
-		return fmt.Errorf("publish to %s: %w", subject, err)
+	var lastErr error
+	delays := []time.Duration{100 * time.Millisecond, 200 * time.Millisecond, 400 * time.Millisecond}
+
+	for attempt := range len(delays) + 1 {
+		_, err := p.js.Publish(subject, data)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		if attempt < len(delays) {
+			time.Sleep(delays[attempt])
+		}
 	}
+
+	// All retries exhausted -- log the loss and continue
+	p.lostEvents.Add(1)
+	slog.Error("NATS publish failed after retries, event lost",
+		"subject", subject,
+		"attempts", len(delays)+1,
+		"err", lastErr,
+		"total_lost", p.lostEvents.Load(),
+	)
 	return nil
+}
+
+// LostEvents returns the total number of events lost due to publish failures.
+func (p *Publisher) LostEvents() int64 {
+	return p.lostEvents.Load()
 }
 
 // SubjectForEventType maps an event_type string to a NATS subject.

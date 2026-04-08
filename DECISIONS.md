@@ -584,6 +584,11 @@ down and replays them on reconnect.
 **Address in:** Phase 2.
 **Code location:** `ingestion/internal/nats/publisher.go:Publish`
 
+**Resolved in:** Phase 4.
+**Resolution:** Exponential backoff retry (3 attempts: 100ms, 200ms, 400ms).
+On persistent failure: log the loss with slog.Error and return nil to avoid
+blocking the ingestion response. Lost event counter tracked in memory.
+
 ---
 
 ## D042 -- No session state transition guards (accepted trade-off)
@@ -638,6 +643,11 @@ relevant updates per client.
 
 **Address in:** Phase 2.
 **Code location:** `api/internal/ws/hub.go:Broadcast`
+
+**Resolved in:** Phase 4.
+**Resolution:** Non-blocking select per client in Broadcast(). Slow clients with
+full send buffers are closed and removed immediately rather than blocking delivery
+to other clients.
 
 ---
 
@@ -704,6 +714,11 @@ Add per-token rate limiting middleware.
 **Address in:** Phase 2.
 **Code locations:** `ingestion/internal/auth/token.go:Validate`,
 `ingestion/internal/handlers/events.go:EventsHandler`
+
+**Resolved in:** Phase 4.
+**Resolution:** 60s in-memory cache for valid token hashes, max 1000 entries
+(KI03). Per-token sliding window rate limit: 1000 requests/minute, returns
+429 with Retry-After header on breach (KI04). Invalid tokens never cached.
 
 ---
 

@@ -780,3 +780,20 @@ nav bar height.
 A minimal top nav is the simplest solution that works with the existing routing
 structure. ARCHITECTURE.md App.tsx description updated to reflect this.
 
+---
+
+## D056 -- golang-migrate for schema migrations
+
+**Decision:** Use golang-migrate to manage all schema changes via versioned SQL
+files in `docker/postgres/migrations/`. Workers run migrations on startup before
+processing events. `init.sql` is reduced to seed data only.
+
+**Reasoning:** The previous `init.sql` approach cannot apply schema changes to
+existing deployments without destroying data. Every new column required
+`make dev-reset`. golang-migrate provides versioned, reversible migrations that
+can be applied to running deployments safely.
+
+**Rejected:** ORM-based migration tools (GORM, sqlboiler). Rejected because the
+project uses raw pgx SQL (D034) and ORM tools require ORM model definitions.
+golang-migrate works with plain SQL files and is ORM-agnostic.
+

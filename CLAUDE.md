@@ -141,8 +141,13 @@
 32. **Never change the event payload schema without updating ARCHITECTURE.md first.**
     The schema is a contract between the sensor and the ingestion API.
 
-33. **All database migrations must be reversible.** Every migration has an up and
-    a down. Test both.
+33. **All database schema changes must use golang-migrate.** Create a new numbered
+    migration pair in `docker/postgres/migrations/`:
+      `000NNN_description.up.sql`
+      `000NNN_description.down.sql`
+    The down file must be the exact inverse of the up file. Never add schema
+    changes to `init.sql` -- it contains seed data only. Never modify an existing
+    migration file that has already been applied. Always add a new migration.
 
 34. **No raw SQL outside `api/internal/store/`.** SQL lives in the store package only.
 

@@ -14,6 +14,7 @@ type Config struct {
 	NatsURL             string
 	WorkerPoolSize      int
 	ShutdownTimeoutSecs int
+	MigrationsDir       string
 }
 
 // Load reads configuration from environment variables.
@@ -24,6 +25,7 @@ func Load() Config {
 		NatsURL:             envOrDefault("FLIGHTDECK_NATS_URL", "nats://nats:4222"),
 		WorkerPoolSize:      envIntOrDefault("FLIGHTDECK_WORKER_POOL_SIZE", 10),
 		ShutdownTimeoutSecs: envIntOrDefault("SHUTDOWN_TIMEOUT_SECS", 30),
+		MigrationsDir:       envOrDefault("FLIGHTDECK_MIGRATIONS_DIR", "/migrations"),
 	}
 	return cfg
 }

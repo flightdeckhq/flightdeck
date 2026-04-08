@@ -56,6 +56,73 @@ This runs:
 4. Open a PR against `main` -- CI runs automatically
 5. All CI checks must pass before merge
 
+## Database Migrations
+
+Schema changes are managed by [golang-migrate](https://github.com/golang-migrate/migrate).
+Migration files live in `docker/postgres/migrations/`.
+
+### Creating a new migration
+
+1. Name the files `000NNN_description.up.sql` and `000NNN_description.down.sql`
+   where `NNN` is the next sequential number.
+2. The down file must be the **exact inverse** of the up file.
+3. Never modify `docker/postgres/init.sql` for schema changes -- it contains
+   seed data only.
+4. Never modify an existing migration file that has already been applied to
+   any environment. Always add a new migration.
+
+### Applying migrations
+
+`make dev-reset` automatically applies all pending migrations. Workers run
+migrations on startup before processing events.
+
+### Verifying migrations applied
+
+```bash
+docker exec -it docker-postgres-1 psql \
+  -U flightdeck -d flightdeck \
+  -c "SELECT version, dirty FROM schema_migrations ORDER BY version;"
+```
+
+The `version` column shows the latest applied migration number. `dirty`
+must be `f` (false). If `dirty` is `t`, a migration failed mid-apply and
+must be investigated manually.
+
+### Common commands (local development)
+
+```bash
+make migrate-local-up       # Apply pending migrations (local dev only)
+make migrate-local-status   # Check current version and dirty state
+make dev-reset              # Full reset (wipe volumes + apply migrations)
+```
+
+### Running migrations in remote environments
+
+The make targets above require Docker Compose and only work locally.
+For remote or production deployments, migrations are applied automatically
+by the workers service on startup -- no manual step is required in normal
+operation.
+
+Workers always run all pending migrations before starting the NATS consumer.
+If workers start successfully, migrations have been applied.
+
+To run migrations without starting the full workers service (e.g. in a CI
+pipeline, a Kubernetes init container, or a one-off job):
+
+```bash
+FLIGHTDECK_MIGRATE_ONLY=true \
+  FLIGHTDECK_POSTGRES_URL=<url> \
+  FLIGHTDECK_MIGRATIONS_DIR=<path> \
+  ./workers
+```
+
+The workers binary will apply all pending migrations and exit 0. It will
+not start the NATS consumer or any background processes.
+
+In Kubernetes, the recommended pattern is an init container running the
+workers binary with `FLIGHTDECK_MIGRATE_ONLY=true` before the main
+workers deployment starts.
+
 ## Adding a Provider
 
 To add a new LLM provider to the sensor:

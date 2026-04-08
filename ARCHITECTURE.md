@@ -1485,9 +1485,11 @@ their agent appear in the live dashboard timeline in real time.
 
 `api/internal/store/postgres.go`
 - Exposes Querier interface for handler dependency injection
-- `GetFleet() ([]FlavorSummary, error)`
-- `GetSession(sessionID string) (*Session, error)`
+- `GetFleet(limit, offset int) ([]FlavorSummary, int, error)`
+- `GetSession(sessionID string) (*Session, error)` -- includes `has_pending_directive`
 - `GetSessionEvents(sessionID string) ([]Event, error)`
+- `CreateDirective(d Directive) (*Directive, error)`
+- `GetActiveSessionIDsByFlavor(flavor string) ([]string, error)` -- used by shutdown_flavor fan-out
 - All queries via pgx, parameterized
 
 `api/internal/ws/hub.go`

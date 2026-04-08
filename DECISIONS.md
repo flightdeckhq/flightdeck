@@ -842,3 +842,17 @@ teardown complexity for no justified benefit.
 The `POST /v1/heartbeat` ingestion endpoint remains to avoid breaking changes
 but the sensor no longer calls it.
 
+---
+
+## D058 -- shutdown_flavor fans out to per-session directives
+
+**Decision:** When `POST /v1/directives` receives `action=shutdown_flavor`, the
+handler immediately queries all active and idle sessions of that flavor and
+inserts one directive per session.
+
+**Reasoning:** The `LookupPending` query in ingestion atomically marks a directive
+as delivered on first pickup. A single flavor-scoped directive would be delivered
+to only the first session to make an LLM call after issuance. Fan-out at creation
+time ensures every active session receives exactly one directive regardless of
+which session calls the ingestion API first.
+

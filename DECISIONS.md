@@ -545,6 +545,11 @@ this case. The staleness window should be documented in operator runbooks.
 **Address in:** Phase 3 (operator documentation).
 **Code location:** `sensor/flightdeck_sensor/core/session.py:_register_handlers`
 
+**Resolved in:** Phase 3.
+**Resolution:** Documented staleness window. No code fix possible -- SIGKILL is
+untrappable by design. Sessions affected by SIGKILL transition to stale after 2
+minutes and lost after 10 minutes via the background reconciler.
+
 ---
 
 ## D040 -- PolicyCache empty on first call (accepted trade-off)

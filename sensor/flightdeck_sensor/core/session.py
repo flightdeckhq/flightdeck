@@ -386,13 +386,6 @@ class Session:
     # Process exit handlers
     # ------------------------------------------------------------------
 
-    # TODO(KI09)[Phase 3]: SIGKILL bypasses all handlers.
-    # Session never transitions to closed. Worker reconciler
-    # marks it stale after 2min, lost after 10min. Up to 12min
-    # of phantom active state.
-    # This is untrappable by design. Document the staleness
-    # window clearly in operator runbooks.
-    # See DECISIONS.md D039.
     def _register_handlers(self) -> None:
         """Register atexit and signal handlers for clean shutdown."""
         atexit.register(self.end)

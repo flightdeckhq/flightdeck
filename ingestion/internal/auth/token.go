@@ -20,7 +20,7 @@ func NewValidator(pool *pgxpool.Pool) *Validator {
 	return &Validator{pool: pool}
 }
 
-// TODO(KI03)[Phase 3]: Token validation hits Postgres on
+// TODO(KI03)[Phase 4]: Token validation hits Postgres on
 // every request with no caching. At high throughput this
 // becomes a bottleneck.
 // Fix: add in-memory LRU cache with 60s TTL.

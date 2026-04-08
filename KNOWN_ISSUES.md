@@ -26,12 +26,11 @@ fix in DECISIONS.md. Never leave a resolved TODO comment in the code.
 
 | ID   | Component  | Concern                              | Risk   | Phase | File                                        | DECISIONS |
 |------|------------|--------------------------------------|--------|-------|---------------------------------------------|-----------|
-| KI02 | Ingestion  | NATS event loss on unavailability    | Medium | 3     | nats/publisher.go:Publish                   | D041      |
-| KI03 | Ingestion  | Token validation not cached          | Low    | 3     | auth/token.go:Validate                      | D048      |
-| KI04 | Ingestion  | No rate limiting                     | Low    | 3     | handlers/events.go:EventsHandler            | D048      |
+| KI02 | Ingestion  | NATS event loss on unavailability    | Medium | 4     | nats/publisher.go:Publish                   | D041      |
+| KI03 | Ingestion  | Token validation not cached          | Low    | 4     | auth/token.go:Validate                      | D048      |
+| KI04 | Ingestion  | No rate limiting                     | Low    | 4     | handlers/events.go:EventsHandler            | D048      |
 | KI07 | API        | GET /v1/fleet no pagination          | Medium | 3     | handlers/fleet.go:FleetHandler              | D045      |
-| KI08 | API        | WebSocket broadcast fan-out          | Medium | 3     | ws/hub.go:Broadcast                         | D044      |
-| KI09 | Sensor     | SIGKILL phantom session state        | Medium | 3     | core/session.py:_register_handlers          | D039      |
+| KI08 | API        | WebSocket broadcast fan-out          | Medium | 4     | ws/hub.go:Broadcast                         | D044      |
 | KI10 | Security   | SHA256 token auth without salt       | Low    | 5     | auth/token.go:Validate                      | D046      |
 | KI11 | Security   | No NATS auth in dev compose          | Low    | 5     | docker/docker-compose.yml:nats              | D047      |
 
@@ -45,3 +44,4 @@ fix in DECISIONS.md. Never leave a resolved TODO comment in the code.
 | KI01  | Sensor     | PolicyCache empty on first call      | Phase 2     | D040      |
 | KI05  | Workers    | No state transition guards           | Phase 2     | D042      |
 | KI06  | Workers    | Per-event policy Postgres query      | Phase 2     | D043      |
+| KI09  | Sensor     | SIGKILL phantom session state        | Phase 3     | D039      |

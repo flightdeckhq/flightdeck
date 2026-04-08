@@ -1415,6 +1415,7 @@ their agent appear in the live dashboard timeline in real time.
 - `HandlePostCall()`: update tokens_used, update last_seen_at
 - `HandleSessionEnd()`: set state=closed, set ended_at
 - Background reconciler: runs every 60s, sets stale (>2min no signal), lost (>10min no close)
+- SIGKILL bypasses all handlers. Affected sessions transition to stale after 2 minutes and lost after 10 minutes via the background reconciler. This is untrappable by design (see D039).
 
 `workers/internal/processor/policy.go`
 - `PolicyEvaluator`: checks token thresholds against sessions table after each post_call

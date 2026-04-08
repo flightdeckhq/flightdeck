@@ -2,6 +2,7 @@ package tests
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -39,8 +40,12 @@ func (m *mockWriter) UpsertSession(_ context.Context, sessionID, _, _, _, _, _, 
 	return nil
 }
 
-func (m *mockWriter) InsertEvent(_ context.Context, sessionID, _, _, _ string, _, _, _ *int, _ *int, _ *string, _ bool, _ interface{}) error {
+func (m *mockWriter) InsertEvent(_ context.Context, sessionID, _, _, _ string, _, _, _ *int, _ *int, _ *string, _ bool, _ interface{}) (string, error) {
 	m.eventsInserted = append(m.eventsInserted, sessionID)
+	return "evt-" + sessionID, nil
+}
+
+func (m *mockWriter) InsertEventContent(_ context.Context, _, _ string, _ json.RawMessage) error {
 	return nil
 }
 
@@ -435,5 +440,29 @@ func TestProcessToolCallEvent(t *testing.T) {
 	_ = w.UpdateLastSeen(context.Background(), e.SessionID)
 	if len(w.lastSeenUpdated) != 1 {
 		t.Error("expected last_seen update for tool_call")
+	}
+}
+
+func TestInsertEventContent(t *testing.T) {
+	w := newMockWriter()
+	content := json.RawMessage(`{
+		"provider": "anthropic",
+		"model": "claude-sonnet-4-6",
+		"system": "You are helpful",
+		"messages": [{"role": "user", "content": "Hello"}],
+		"tools": null,
+		"response": {"model": "claude-sonnet-4-6"}
+	}`)
+
+	// First call should succeed
+	err := w.InsertEventContent(context.Background(), "evt-1", "sess-1", content)
+	if err != nil {
+		t.Fatalf("InsertEventContent failed: %v", err)
+	}
+
+	// Second call with same event_id should also succeed (ON CONFLICT DO NOTHING)
+	err = w.InsertEventContent(context.Background(), "evt-1", "sess-1", content)
+	if err != nil {
+		t.Fatalf("InsertEventContent duplicate failed: %v", err)
 	}
 }

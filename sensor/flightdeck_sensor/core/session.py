@@ -1,8 +1,8 @@
 """Session lifecycle management for flightdeck-sensor.
 
 A ``Session`` represents one running instance of an agent.  It holds the
-sensor configuration, manages the heartbeat daemon thread, registers
-process-exit handlers, and posts lifecycle events to the control plane.
+sensor configuration, registers process-exit handlers, and posts lifecycle
+events to the control plane.
 """
 
 from __future__ import annotations
@@ -34,9 +34,7 @@ if TYPE_CHECKING:
 
 _log = logging.getLogger("flightdeck_sensor.core.session")
 
-_HEARTBEAT_INTERVAL_SECS = 30
-_HEARTBEAT_JOIN_TIMEOUT_SECS = 5
-_PREFLIGHT_TIMEOUT_SECS = 5
+_PREFLIGHT_TIMEOUT_SECS = 1
 
 
 class Session:
@@ -68,8 +66,6 @@ class Session:
         self._shutdown_requested: bool = False
         self._shutdown_reason: str = ""
 
-        self._stopped = threading.Event()
-        self._heartbeat_thread: threading.Thread | None = None
         self._host = socket.gethostname()
         self._framework: str | None = None
         self._model: str | None = None
@@ -79,9 +75,8 @@ class Session:
     # ------------------------------------------------------------------
 
     def start(self) -> None:
-        """Fire SESSION_START and begin the heartbeat daemon thread."""
+        """Fire SESSION_START, register handlers, and fetch policy."""
         self._post_event(EventType.SESSION_START)
-        self._start_heartbeat()
         self._register_handlers()
         self._preflight_policy()
         if not self.config.quiet:
@@ -92,16 +87,13 @@ class Session:
             )
 
     def end(self) -> None:
-        """Fire SESSION_END and stop the heartbeat thread.
+        """Fire SESSION_END and clean up.
 
         Safe to call multiple times -- second call is a no-op.
         """
         if self._state == SessionState.CLOSED:
             return
         self._state = SessionState.CLOSED
-        self._stopped.set()
-        if self._heartbeat_thread is not None:
-            self._heartbeat_thread.join(timeout=_HEARTBEAT_JOIN_TIMEOUT_SECS)
         self._post_event(EventType.SESSION_END)
         self.event_queue.flush()
         self.event_queue.close()
@@ -243,25 +235,6 @@ class Session:
             _log.debug("preflight policy fetch failed, proceeding with empty cache", exc_info=True)
 
     # ------------------------------------------------------------------
-    # Heartbeat
-    # ------------------------------------------------------------------
-
-    def _start_heartbeat(self) -> None:
-        self._heartbeat_thread = threading.Thread(
-            target=self._heartbeat_loop,
-            daemon=True,
-            name="flightdeck-heartbeat",
-        )
-        self._heartbeat_thread.start()
-
-    def _heartbeat_loop(self) -> None:
-        """Daemon thread: post heartbeat every 30 s until stopped."""
-        while not self._stopped.wait(timeout=_HEARTBEAT_INTERVAL_SECS):
-            directive = self.client.post_heartbeat(self.config.session_id)
-            if directive is not None:
-                self._apply_directive(directive)
-
-    # ------------------------------------------------------------------
     # Event posting
     # ------------------------------------------------------------------
 
@@ -318,8 +291,7 @@ class Session:
     def _apply_directive(self, directive: Directive) -> None:
         """Apply a directive received from the control plane.
 
-        Called from both the heartbeat thread (for WARN, DEGRADE, POLICY_UPDATE)
-        and the interceptor hot path (for SHUTDOWN via flag). Must never raise
+        Called from _post_event() on every event POST response. Must never raise
         for WARN, DEGRADE, or POLICY_UPDATE. SHUTDOWN and SHUTDOWN_FLAVOR set
         the _shutdown_requested flag -- the actual raise happens in _pre_call().
         """
@@ -386,13 +358,6 @@ class Session:
     # Process exit handlers
     # ------------------------------------------------------------------
 
-    # TODO(KI09)[Phase 3]: SIGKILL bypasses all handlers.
-    # Session never transitions to closed. Worker reconciler
-    # marks it stale after 2min, lost after 10min. Up to 12min
-    # of phantom active state.
-    # This is untrappable by design. Document the staleness
-    # window clearly in operator runbooks.
-    # See DECISIONS.md D039.
     def _register_handlers(self) -> None:
         """Register atexit and signal handlers for clean shutdown."""
         atexit.register(self.end)

@@ -76,7 +76,7 @@ flightdeck/
 │   │   ├── py.typed            # PEP 561 marker
 │   │   ├── core/
 │   │   │   ├── types.py        # SessionState, EventType, DirectiveAction, SensorConfig -- pure dataclasses
-│   │   │   ├── session.py      # Session: lifecycle, identity, heartbeat thread, atexit/signal handlers
+│   │   │   ├── session.py      # Session: lifecycle, identity, atexit/signal handlers
 │   │   │   ├── policy.py       # PolicyCache: local token enforcement, threshold evaluation
 │   │   │   └── exceptions.py   # BudgetExceededError, DirectiveError, ConfigurationError
 │   │   ├── transport/
@@ -92,7 +92,7 @@ flightdeck/
 │   │       └── openai.py       # OpenAIProvider: handles messages (all roles), tools, response
 │   └── tests/
 │       ├── unit/
-│       │   ├── test_session.py         # Session lifecycle, state transitions, heartbeat
+│       │   ├── test_session.py         # Session lifecycle, directive application, shutdown flag
 │       │   ├── test_policy.py          # Token enforcement, threshold evaluation
 │       │   ├── test_interceptor.py     # wrap(), patch(), call interception
 │       │   ├── test_transport.py       # HTTP client, directive parsing, unavailability
@@ -379,8 +379,8 @@ flightdeck/
 └────────┬────────────┘          └────────┬─────────────────┘
          │                                │
          │ POST /ingest/v1/events         │ REST  /api/*
-         │ POST /ingest/v1/heartbeat      │ WS    /api/v1/stream
-         │ GET  /api/v1/policy            │ GET   / (SPA static)
+         │ GET  /api/v1/policy            │ WS    /api/v1/stream
+         │                                │ GET   / (SPA static)
          │                                │
          ▼                                ▼
 ┌──────────────────────────────────────────────────────────┐
@@ -401,9 +401,10 @@ flightdeck/
 │ GET  /health         │    │ GET /v1/policy               │
 │ GET  /docs/          │    │ GET/POST/PUT/DELETE          │
 │                      │    │   /v1/policies               │
-│ Auth: validates      │    │ WS  /v1/stream               │
-│   bearer token       │    │ GET /docs/                   │
-│   (reads api_tokens) │    │                              │
+│ Auth: validates      │    │ POST /v1/directives          │
+│   bearer token       │    │ WS  /v1/stream               │
+│   (reads api_tokens) │    │ GET /docs/                   │
+│                      │    │                              │
 │                      │    │ LISTEN flightdeck_fleet      │
 │ Directive: reads +   │    │   (reconnects every 3s)      │
 │   marks delivered    │    │   → broadcasts to WS clients │
@@ -475,9 +476,30 @@ Data flows:
 
   Query API → Postgres:
     READ  sessions, events, event_content
+    READ  directives (pending directive check)
     READ+WRITE token_policies (CRUD)
+    WRITE directives (POST /v1/directives)
     LISTEN flightdeck_fleet (real-time push to dashboard)
 ```
+
+---
+
+## Sensor Design Principles
+
+The sensor is a library wrapper, not an OS agent.
+
+It has no background threads, no polling loops, and no network activity
+independent of LLM calls. It runs when called and returns when done. The
+application is fully in control of when the sensor does anything.
+
+The one exception is the event queue drain thread, which offloads HTTP POSTs
+off the LLM call hot path. This is a performance optimization that is invisible
+to the application, not a control plane concern.
+
+Never add heartbeat-like behavior, polling loops, or daemon threads to the
+sensor. If a feature requires background activity, it belongs in a sidecar
+container or system service, not in a library that runs inside an application
+process.
 
 ---
 
@@ -627,6 +649,11 @@ The worker stores this in `event_content` and sets `has_content=true` on the eve
   }
 }
 ```
+
+Directives are delivered in the HTTP response envelope of the sensor's next
+`POST /v1/events` call. Delivery latency equals the time between LLM calls.
+Idle agents (no active LLM calls) will not receive directives until they make
+their next LLM call.
 
 ---
 
@@ -1233,9 +1260,8 @@ their agent appear in the live dashboard timeline in real time.
 
 `sensor/flightdeck_sensor/core/session.py`
 - `Session` class: holds SensorConfig, manages session lifecycle
-- `start()`: fires SESSION_START event, starts heartbeat daemon thread (30s interval)
-- `end()`: fires SESSION_END event, stops heartbeat thread
-- `_heartbeat_loop()`: daemon thread, fires HEARTBEAT every 30s, stops on teardown event
+- `start()`: fires SESSION_START event, registers handlers, fetches policy
+- `end()`: fires SESSION_END event, flushes event queue
 - `_register_handlers()`: registers atexit + SIGTERM + SIGINT handlers
 
 `sensor/flightdeck_sensor/core/policy.py`
@@ -1247,7 +1273,6 @@ their agent appear in the live dashboard timeline in real time.
 `sensor/flightdeck_sensor/transport/client.py`
 - `ControlPlaneClient` class
 - `post_event(payload: dict) -> Directive | None`: HTTP POST to /v1/events, parses response envelope
-- `post_heartbeat(session_id: str) -> Directive | None`: HTTP POST to /v1/heartbeat
 - On connectivity failure + policy=continue: logs warning, returns None
 - On connectivity failure + policy=halt: raises DirectiveError
 
@@ -1310,7 +1335,6 @@ their agent appear in the live dashboard timeline in real time.
 `sensor/tests/unit/test_session.py`
 - Session start fires SESSION_START event
 - Session end fires SESSION_END event
-- Heartbeat thread starts on session start, stops on teardown
 - atexit handler fires session_end on clean process exit
 - SIGTERM handler fires session_end
 
@@ -1332,7 +1356,6 @@ their agent appear in the live dashboard timeline in real time.
 - Successful POST returns Directive when envelope contains one
 - Connectivity failure + continue policy: returns None, no exception
 - Connectivity failure + halt policy: raises DirectiveError
-- Heartbeat fires correct payload format
 
 `sensor/tests/unit/test_providers.py`
 - Anthropic estimation within 15% of actual for fixture payloads
@@ -1415,6 +1438,7 @@ their agent appear in the live dashboard timeline in real time.
 - `HandlePostCall()`: update tokens_used, update last_seen_at
 - `HandleSessionEnd()`: set state=closed, set ended_at
 - Background reconciler: runs every 60s, sets stale (>2min no signal), lost (>10min no close)
+- SIGKILL bypasses all handlers. Affected sessions transition to stale after 2 minutes and lost after 10 minutes via the background reconciler. This is untrappable by design (see D039).
 
 `workers/internal/processor/policy.go`
 - `PolicyEvaluator`: checks token thresholds against sessions table after each post_call
@@ -1461,9 +1485,11 @@ their agent appear in the live dashboard timeline in real time.
 
 `api/internal/store/postgres.go`
 - Exposes Querier interface for handler dependency injection
-- `GetFleet() ([]FlavorSummary, error)`
-- `GetSession(sessionID string) (*Session, error)`
+- `GetFleet(limit, offset int) ([]FlavorSummary, int, error)`
+- `GetSession(sessionID string) (*Session, error)` -- includes `has_pending_directive`
 - `GetSessionEvents(sessionID string) ([]Event, error)`
+- `CreateDirective(d Directive) (*Directive, error)`
+- `GetActiveSessionIDsByFlavor(flavor string) ([]string, error)` -- used by shutdown_flavor fan-out
 - All queries via pgx, parameterized
 
 `api/internal/ws/hub.go`
@@ -1712,8 +1738,11 @@ with one click. Fleet-wide stop by flavor works simultaneously.
 
 `api/internal/store/postgres.go` (extend)
 - `CreateDirective(directive Directive) error`
-- `GetPendingDirective(sessionID string) (*Directive, error)` -- also checks flavor-wide
-- `MarkDelivered(directiveID string) error`
+
+Note: Directive lookup and delivery marking is handled by
+`ingestion/internal/directive/store.go:LookupPending()` which was built in
+Phase 1 and required no changes in Phase 3. The atomic UPDATE...RETURNING
+query combines lookup and mark-delivered in a single operation.
 
 `sensor/flightdeck_sensor/core/session.py` (extend)
 - `apply_directive(directive Directive)`: handle shutdown, degrade, throttle, checkpoint
@@ -1744,8 +1773,8 @@ with one click. Fleet-wide stop by flavor works simultaneously.
 * `make test-integration` passes test_killswitch.py with all 4 cases
 * Kill switch button in drawer sends POST /v1/directives and session
   state changes to closed within 5 seconds (integration test)
-* Fleet-wide kill stops all sessions of a flavor within one heartbeat
-  interval (integration test)
+* Fleet-wide kill stops all sessions of a flavor when they next make
+  an LLM call (integration test)
 * Directive is delivered exactly once -- not re-delivered on subsequent
   POSTs after the first one that received it
 * All linters pass with zero errors

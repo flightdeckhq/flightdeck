@@ -279,6 +279,52 @@ def wait_for_state(
     return detail
 
 
+def post_directive(
+    action: str,
+    session_id: str | None = None,
+    flavor: str | None = None,
+    reason: str | None = None,
+    grace_period_ms: int = 5000,
+) -> dict[str, Any]:
+    """POST /api/v1/directives and return response JSON."""
+    body: dict[str, Any] = {
+        "action": action,
+        "grace_period_ms": grace_period_ms,
+    }
+    if session_id is not None:
+        body["session_id"] = session_id
+    if flavor is not None:
+        body["flavor"] = flavor
+    if reason is not None:
+        body["reason"] = reason
+    data = json.dumps(body).encode()
+    req = urllib.request.Request(
+        f"{API_URL}/v1/directives",
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=5) as resp:
+        return json.loads(resp.read())  # type: ignore[no-any-return]
+
+
+def directive_has_delivered_at(directive_id: str) -> bool:
+    """Check if a directive has been marked delivered via direct DB query."""
+    import subprocess
+
+    sql = (
+        f"SELECT delivered_at IS NOT NULL "
+        f"FROM directives "
+        f"WHERE id = '{directive_id}'::uuid"
+    )
+    result = subprocess.run(
+        ["docker", "exec", "docker-postgres-1", "psql", "-U", "flightdeck",
+         "-d", "flightdeck", "-t", "-c", sql],
+        capture_output=True, text=True, timeout=10,
+    )
+    return result.stdout.strip() == "t"
+
+
 def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line(
         "markers",

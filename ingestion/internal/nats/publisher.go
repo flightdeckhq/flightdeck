@@ -34,7 +34,7 @@ func NewPublisher(nc *nats.Conn) (*Publisher, error) {
 	return &Publisher{js: js}, nil
 }
 
-// TODO(KI02)[Phase 3]: Events are lost if NATS is
+// TODO(KI02)[Phase 4]: Events are lost if NATS is
 // temporarily unavailable. Publish() returns an error,
 // the sensor retries 3 times then drops the event.
 // Fix: add a local WAL/buffer that stores events when

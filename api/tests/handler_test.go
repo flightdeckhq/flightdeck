@@ -19,11 +19,12 @@ import (
 // --- Mock Store ---
 
 type mockStore struct {
-	policies []store.Policy
+	policies   []store.Policy
+	directives []store.Directive
 }
 
-func (m *mockStore) GetFleet(_ context.Context) ([]store.FlavorSummary, error) {
-	return []store.FlavorSummary{
+func (m *mockStore) GetFleet(_ context.Context, limit, offset int) ([]store.FlavorSummary, int, error) {
+	flavors := []store.FlavorSummary{
 		{
 			Flavor:          "research-agent",
 			AgentType:       "autonomous",
@@ -35,7 +36,8 @@ func (m *mockStore) GetFleet(_ context.Context) ([]store.FlavorSummary, error) {
 				{SessionID: "s2", Flavor: "research-agent", State: "closed", StartedAt: time.Now(), LastSeenAt: time.Now(), TokensUsed: 2000},
 			},
 		},
-	}, nil
+	}
+	return flavors, 2, nil
 }
 
 func (m *mockStore) GetSession(_ context.Context, id string) (*store.Session, error) {
@@ -52,7 +54,15 @@ func (m *mockStore) GetSession(_ context.Context, id string) (*store.Session, er
 			PolicyTokenLimit: &limit, WarnAtPct: &warn, BlockAtPct: &block,
 		}, nil
 	}
-	return &store.Session{SessionID: id, Flavor: "test", State: "active", StartedAt: time.Now(), LastSeenAt: time.Now()}, nil
+	sess := &store.Session{SessionID: id, Flavor: "test", State: "active", StartedAt: time.Now(), LastSeenAt: time.Now()}
+	// Check for pending directives in mock
+	for _, d := range m.directives {
+		if d.DeliveredAt == nil && (d.SessionID != nil && *d.SessionID == id) {
+			sess.HasPendingDirective = true
+			break
+		}
+	}
+	return sess, nil
 }
 
 func (m *mockStore) GetSessionEvents(_ context.Context, _ string) ([]store.Event, error) {
@@ -127,6 +137,33 @@ func (m *mockStore) DeletePolicy(_ context.Context, id string) error {
 		}
 	}
 	return pgx.ErrNoRows
+}
+
+func (m *mockStore) CreateDirective(_ context.Context, d store.Directive) (*store.Directive, error) {
+	d.ID = "dir-new-id"
+	d.IssuedBy = "dashboard"
+	d.IssuedAt = time.Now()
+	m.directives = append(m.directives, d)
+	return &d, nil
+}
+
+func (m *mockStore) GetActiveSessionIDsByFlavor(_ context.Context, flavor string) ([]string, error) {
+	var ids []string
+	for _, f := range []store.FlavorSummary{
+		{Flavor: "research-agent", Sessions: []store.Session{
+			{SessionID: "s1", State: "active"},
+			{SessionID: "s2", State: "closed"},
+		}},
+	} {
+		if f.Flavor == flavor {
+			for _, s := range f.Sessions {
+				if s.State == "active" || s.State == "idle" {
+					ids = append(ids, s.SessionID)
+				}
+			}
+		}
+	}
+	return ids, nil
 }
 
 // --- Tests ---
@@ -589,4 +626,147 @@ func containsHelper(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+// --- Directive Tests ---
+
+func TestCreateDirectiveShutdown(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.CreateDirectiveHandler(store.WrapStore(s))
+	body := `{"action":"shutdown","session_id":"00000000-0000-0000-0000-000000000001","reason":"manual_kill_switch"}`
+	req := httptest.NewRequest("POST", "/v1/directives", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusCreated {
+		t.Errorf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["id"] == nil || resp["id"] == "" {
+		t.Error("expected id in response")
+	}
+	if resp["action"] != "shutdown" {
+		t.Errorf("expected action=shutdown, got %v", resp["action"])
+	}
+}
+
+func TestCreateDirectiveShutdownFlavor(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.CreateDirectiveHandler(store.WrapStore(s))
+	body := `{"action":"shutdown_flavor","flavor":"research-agent","reason":"manual_fleet_kill"}`
+	req := httptest.NewRequest("POST", "/v1/directives", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusCreated {
+		t.Errorf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestCreateDirectiveMissingSessionID(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.CreateDirectiveHandler(store.WrapStore(s))
+	body := `{"action":"shutdown"}`
+	req := httptest.NewRequest("POST", "/v1/directives", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if !contains(resp["error"].(string), "session_id is required") {
+		t.Errorf("expected error about session_id, got %v", resp["error"])
+	}
+}
+
+func TestCreateDirectiveMissingFlavor(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.CreateDirectiveHandler(store.WrapStore(s))
+	body := `{"action":"shutdown_flavor"}`
+	req := httptest.NewRequest("POST", "/v1/directives", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if !contains(resp["error"].(string), "flavor is required") {
+		t.Errorf("expected error about flavor, got %v", resp["error"])
+	}
+}
+
+func TestCreateDirectiveInvalidAction(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.CreateDirectiveHandler(store.WrapStore(s))
+	body := `{"action":"reboot","session_id":"abc"}`
+	req := httptest.NewRequest("POST", "/v1/directives", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestGetSessionIncludesPendingDirective(t *testing.T) {
+	sessID := "sess-with-directive"
+	s := &mockStore{
+		directives: []store.Directive{
+			{ID: "dir-1", SessionID: &sessID, Action: "shutdown"},
+		},
+	}
+	handler := handlers.SessionsHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/sessions/"+sessID, nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	session := resp["session"].(map[string]any)
+	if session["has_pending_directive"] != true {
+		t.Errorf("expected has_pending_directive=true, got %v", session["has_pending_directive"])
+	}
+}
+
+func TestGetSessionNoPendingDirective(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.SessionsHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/sessions/sess-no-directive", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	session := resp["session"].(map[string]any)
+	if session["has_pending_directive"] != false {
+		t.Errorf("expected has_pending_directive=false, got %v", session["has_pending_directive"])
+	}
+}
+
+func TestCreateDirectiveShutdownFlavorNoSessions(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.CreateDirectiveHandler(store.WrapStore(s))
+	body := `{"action":"shutdown_flavor","flavor":"nonexistent-flavor","reason":"test"}`
+	req := httptest.NewRequest("POST", "/v1/directives", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	errMsg, _ := resp["error"].(string)
+	if !contains(errMsg, "no active sessions") {
+		t.Errorf("expected error about no active sessions, got %q", errMsg)
+	}
 }

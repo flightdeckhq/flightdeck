@@ -27,7 +27,6 @@ class EventType(enum.Enum):
 
     SESSION_START = "session_start"
     SESSION_END = "session_end"
-    HEARTBEAT = "heartbeat"
     PRE_CALL = "pre_call"
     POST_CALL = "post_call"
     TOOL_CALL = "tool_call"

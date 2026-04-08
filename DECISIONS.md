@@ -545,6 +545,11 @@ this case. The staleness window should be documented in operator runbooks.
 **Address in:** Phase 3 (operator documentation).
 **Code location:** `sensor/flightdeck_sensor/core/session.py:_register_handlers`
 
+**Resolved in:** Phase 3.
+**Resolution:** Documented staleness window. No code fix possible -- SIGKILL is
+untrappable by design. Sessions affected by SIGKILL transition to stale after 2
+minutes and lost after 10 minutes via the background reconciler.
+
 ---
 
 ## D040 -- PolicyCache empty on first call (accepted trade-off)
@@ -648,6 +653,10 @@ on `(state, flavor)`.
 
 **Address in:** Phase 2.
 **Code location:** `api/internal/handlers/fleet.go:FleetHandler`
+
+**Resolved in:** Phase 3.
+**Resolution:** Added limit/offset pagination to GET /v1/fleet. `total_session_count`
+added to top-level response. Default limit=50, max=200.
 
 ---
 
@@ -830,4 +839,38 @@ can be applied to running deployments safely.
 **Rejected:** ORM-based migration tools (GORM, sqlboiler). Rejected because the
 project uses raw pgx SQL (D034) and ORM tools require ORM model definitions.
 golang-migrate works with plain SQL files and is ORM-agnostic.
+
+---
+
+## D057 -- Heartbeat removed from sensor
+
+**Decision:** The sensor no longer sends periodic heartbeat POSTs to the
+ingestion API.
+
+**Reasoning:** The heartbeat served two purposes: (1) updating last_seen_at for
+stale session detection -- already handled by post_call events for active agents;
+the reconciler correctly marks truly idle agents as stale after 2 minutes which
+is the right behavior. (2) delivering directives to idle agents -- this use case
+is not supported. Directives are delivered on the next LLM call. Platform
+engineers are informed of this via the kill switch confirmation dialog.
+
+The heartbeat added a background thread, polling loop, extra HTTP load, and
+teardown complexity for no justified benefit.
+
+The `POST /v1/heartbeat` ingestion endpoint remains to avoid breaking changes
+but the sensor no longer calls it.
+
+---
+
+## D058 -- shutdown_flavor fans out to per-session directives
+
+**Decision:** When `POST /v1/directives` receives `action=shutdown_flavor`, the
+handler immediately queries all active and idle sessions of that flavor and
+inserts one directive per session.
+
+**Reasoning:** The `LookupPending` query in ingestion atomically marks a directive
+as delivered on first pickup. A single flavor-scoped directive would be delivered
+to only the first session to make an LLM call after issuance. Fan-out at creation
+time ensures every active session receives exactly one directive regardless of
+which session calls the ingestion API first.
 

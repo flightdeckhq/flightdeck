@@ -134,14 +134,19 @@
 31. **init() limit param fires WARN only.** Never upgrade a local limit to BLOCK
     or DEGRADE regardless of what the server policy says. See DECISIONS.md D035.
 
+32. **The sensor is a library wrapper, not an OS agent.** Never add background
+    threads, polling loops, or daemon threads to the sensor beyond the existing
+    event queue drain thread. If a feature requires background activity
+    independent of LLM calls, it does not belong in the sensor.
+
 ---
 
 ## API and Schema Rules
 
-32. **Never change the event payload schema without updating ARCHITECTURE.md first.**
+33. **Never change the event payload schema without updating ARCHITECTURE.md first.**
     The schema is a contract between the sensor and the ingestion API.
 
-33. **All database schema changes must use golang-migrate.** Create a new numbered
+34. **All database schema changes must use golang-migrate.** Create a new numbered
     migration pair in `docker/postgres/migrations/`:
       `000NNN_description.up.sql`
       `000NNN_description.down.sql`
@@ -149,57 +154,57 @@
     changes to `init.sql` -- it contains seed data only. Never modify an existing
     migration file that has already been applied. Always add a new migration.
 
-34. **No raw SQL outside `api/internal/store/`.** SQL lives in the store package only.
+35. **No raw SQL outside `api/internal/store/`.** SQL lives in the store package only.
 
-35. **Validate all event payloads at the ingestion API boundary.** Do not pass
+36. **Validate all event payloads at the ingestion API boundary.** Do not pass
     invalid events to NATS.
 
-36. **GET /v1/events/:id/content returns 404 when capture is disabled** for that
+37. **GET /v1/events/:id/content returns 404 when capture is disabled** for that
     session. Not 200 with empty data. Not 403. 404 -- the resource does not exist.
 
 ---
 
 ## Reporting Rules
 
-37. **After every task, report:**
+38. **After every task, report:**
     - Every file created or modified
     - Every decision made not explicitly covered in ARCHITECTURE.md
     - Test count before and after (must increase)
     - Whether both themes pass (for frontend tasks)
     - Any blockers
 
-38. **If you find a discrepancy between code and ARCHITECTURE.md, report it
+39. **If you find a discrepancy between code and ARCHITECTURE.md, report it
     immediately.** Log it, fix it, report it.
 
-39. **Do not report a task complete if tests are failing.**
+40. **Do not report a task complete if tests are failing.**
 
 ---
 
 ## Living Document Rules
 
-40. **ARCHITECTURE.md is a living document, not a contract carved in stone.**
+41. **ARCHITECTURE.md is a living document, not a contract carved in stone.**
     When implementation reveals that a planned approach is wrong, impractical,
     or superseded by a better idea, update the document to reflect reality.
     A codebase that matches a stale ARCHITECTURE.md is worse than no
     ARCHITECTURE.md at all.
 
-41. **When any planned decision changes, update docs before merging code.**
+42. **When any planned decision changes, update docs before merging code.**
     The order is always: update ARCHITECTURE.md → update DECISIONS.md (record
     the pivot and why) → write the code → tests pass → report back.
     Never merge code that contradicts the architecture docs.
 
-42. **DECISIONS.md records every pivot immediately.** If the plan says to use
+43. **DECISIONS.md records every pivot immediately.** If the plan says to use
     library X and you switch to library Y mid-implementation, stop. Add a
     DECISIONS.md entry: what changed, what was rejected, why. Then proceed.
     Future contributors must understand why the code looks different from the plan.
 
-43. **Phase plan changes must be approved by the Supervisor.** If a task reveals
+44. **Phase plan changes must be approved by the Supervisor.** If a task reveals
     that a planned deliverable is wrong in scope, sequencing, or approach, raise
     it before changing the plan. Do not silently resequence phases or remove
     deliverables. The Supervisor decides whether to update the plan or stay the
     course.
 
-44. **Acceptance criteria can be revised if they are wrong.** If a criterion
+45. **Acceptance criteria can be revised if they are wrong.** If a criterion
     turns out to be untestable, overconstrained, or based on a wrong assumption,
     raise it with the Supervisor. Do not silently skip a criterion.
 
@@ -207,18 +212,18 @@
 
 ## Git Rules
 
-45. **Never commit directly to main.** All changes go through a branch.
+46. **Never commit directly to main.** All changes go through a branch.
 
-46. **Commit messages follow conventional commits:**
+47. **Commit messages follow conventional commits:**
     `feat:`, `fix:`, `test:`, `docs:`, `chore:`, `refactor:`
 
-47. **Never commit secrets, API keys, or tokens.**
+48. **Never commit secrets, API keys, or tokens.**
 
 ---
 
 ## Known Issues Rules
 
-48. **At the start of every phase, run this command:**
+49. **At the start of every phase, run this command:**
         grep -rn "TODO(KI" . \
           --include="*.go" \
           --include="*.py" \
@@ -258,7 +263,7 @@
 
 ## API Documentation Rules
 
-49. **Every API endpoint must have complete Swagger documentation.**
+50. **Every API endpoint must have complete Swagger documentation.**
 
     When any new endpoint is added to ingestion or api:
     - Add swaggo annotations to the handler before the task is considered complete

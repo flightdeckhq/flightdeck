@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -15,7 +16,7 @@ import (
 // Querier is the interface for fleet data access.
 // Implemented by Store (Postgres) and mocks in tests.
 type Querier interface {
-	GetFleet(ctx context.Context) ([]FlavorSummary, error)
+	GetFleet(ctx context.Context, limit, offset int) ([]FlavorSummary, int, error)
 	GetSession(ctx context.Context, sessionID string) (*Session, error)
 	GetSessionEvents(ctx context.Context, sessionID string) ([]Event, error)
 	GetEffectivePolicy(ctx context.Context, flavor, sessionID string) (*Policy, error)
@@ -24,6 +25,8 @@ type Querier interface {
 	UpsertPolicy(ctx context.Context, p Policy) (*Policy, error)
 	UpdatePolicy(ctx context.Context, id string, p Policy) (*Policy, error)
 	DeletePolicy(ctx context.Context, id string) error
+	CreateDirective(ctx context.Context, d Directive) (*Directive, error)
+	GetActiveSessionIDsByFlavor(ctx context.Context, flavor string) ([]string, error)
 }
 
 // WrapStore returns a Querier from any compatible implementation.
@@ -62,6 +65,9 @@ type Session struct {
 	DegradeAtPct     *int    `json:"degrade_at_pct"`
 	DegradeTo        *string `json:"degrade_to"`
 	BlockAtPct       *int    `json:"block_at_pct"`
+
+	// HasPendingDirective is true when an undelivered shutdown directive exists.
+	HasPendingDirective bool `json:"has_pending_directive"`
 }
 
 // Event represents an event row for API responses.
@@ -90,17 +96,25 @@ type FlavorSummary struct {
 	Sessions       []Session `json:"sessions"`
 }
 
-// GetFleet returns all sessions grouped by flavor, excluding lost sessions.
-func (s *Store) GetFleet(ctx context.Context) ([]FlavorSummary, error) {
+// GetFleet returns sessions grouped by flavor, excluding lost sessions.
+// Limit/offset apply to the sessions query. Returns (flavors, total_session_count, error).
+func (s *Store) GetFleet(ctx context.Context, limit, offset int) ([]FlavorSummary, int, error) {
+	// Get total count for pagination metadata
+	var totalCount int
+	if err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM sessions WHERE state != 'lost'`).Scan(&totalCount); err != nil {
+		return nil, 0, fmt.Errorf("get fleet count: %w", err)
+	}
+
 	rows, err := s.pool.Query(ctx, `
 		SELECT session_id::text, flavor, agent_type, host, framework, model,
 		       state, started_at, last_seen_at, ended_at, tokens_used, token_limit
 		FROM sessions
 		WHERE state != 'lost'
 		ORDER BY flavor, started_at DESC
-	`)
+		LIMIT $1 OFFSET $2
+	`, limit, offset)
 	if err != nil {
-		return nil, fmt.Errorf("get fleet: %w", err)
+		return nil, 0, fmt.Errorf("get fleet: %w", err)
 	}
 	defer rows.Close()
 
@@ -115,7 +129,7 @@ func (s *Store) GetFleet(ctx context.Context) ([]FlavorSummary, error) {
 			&sess.State, &sess.StartedAt, &sess.LastSeenAt,
 			&sess.EndedAt, &sess.TokensUsed, &sess.TokenLimit,
 		); err != nil {
-			return nil, fmt.Errorf("scan session: %w", err)
+			return nil, 0, fmt.Errorf("scan session: %w", err)
 		}
 
 		fs, ok := flavorMap[sess.Flavor]
@@ -140,7 +154,7 @@ func (s *Store) GetFleet(ctx context.Context) ([]FlavorSummary, error) {
 	for _, f := range order {
 		result = append(result, *flavorMap[f])
 	}
-	return result, nil
+	return result, totalCount, nil
 }
 
 // GetSession returns a single session by ID, including effective policy thresholds.
@@ -178,6 +192,21 @@ func (s *Store) GetSession(ctx context.Context, sessionID string) (*Session, err
 	if err != nil {
 		return nil, fmt.Errorf("get session %s: %w", sessionID, err)
 	}
+
+	// Check for pending shutdown directive.
+	// Log but do not fail the request on error -- default to false
+	// so the kill switch button remains usable.
+	if pdErr := s.pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM directives
+			WHERE (session_id = $1::uuid OR flavor = $2)
+			AND delivered_at IS NULL
+			AND action IN ('shutdown', 'shutdown_flavor')
+		)
+	`, sessionID, sess.Flavor).Scan(&sess.HasPendingDirective); pdErr != nil {
+		slog.Warn("has_pending_directive query error", "session_id", sessionID, "err", pdErr)
+	}
+
 	return &sess, nil
 }
 
@@ -354,4 +383,58 @@ func (s *Store) DeletePolicy(ctx context.Context, id string) error {
 		return pgx.ErrNoRows
 	}
 	return nil
+}
+
+// Directive represents a row in the directives table.
+type Directive struct {
+	ID            string     `json:"id"`
+	SessionID     *string    `json:"session_id"`
+	Flavor        *string    `json:"flavor"`
+	Action        string     `json:"action"`
+	Reason        *string    `json:"reason"`
+	DegradeTo     *string    `json:"degrade_to"`
+	GracePeriodMs int        `json:"grace_period_ms"`
+	IssuedBy      string     `json:"issued_by"`
+	IssuedAt      time.Time  `json:"issued_at"`
+	DeliveredAt   *time.Time `json:"delivered_at"`
+}
+
+// GetActiveSessionIDsByFlavor returns session IDs for active/idle sessions of a flavor.
+func (s *Store) GetActiveSessionIDsByFlavor(ctx context.Context, flavor string) ([]string, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT session_id::text FROM sessions
+		WHERE flavor = $1 AND state IN ('active', 'idle')
+	`, flavor)
+	if err != nil {
+		return nil, fmt.Errorf("get active sessions for %s: %w", flavor, err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan session id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, nil
+}
+
+// CreateDirective inserts a new directive and returns the full record.
+func (s *Store) CreateDirective(ctx context.Context, d Directive) (*Directive, error) {
+	var result Directive
+	err := s.pool.QueryRow(ctx, `
+		INSERT INTO directives (session_id, flavor, action, reason, grace_period_ms, issued_by)
+		VALUES ($1, $2, $3, $4, $5, 'dashboard')
+		RETURNING id::text, session_id::text, flavor, action, reason, degrade_to,
+		          grace_period_ms, issued_by, issued_at, delivered_at
+	`, d.SessionID, d.Flavor, d.Action, d.Reason, d.GracePeriodMs).Scan(
+		&result.ID, &result.SessionID, &result.Flavor, &result.Action, &result.Reason,
+		&result.DegradeTo, &result.GracePeriodMs, &result.IssuedBy, &result.IssuedAt,
+		&result.DeliveredAt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("create directive: %w", err)
+	}
+	return &result, nil
 }

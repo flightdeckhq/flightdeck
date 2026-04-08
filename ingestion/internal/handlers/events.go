@@ -43,7 +43,7 @@ type EventResponse struct {
 	Directive *DirectiveResponse `json:"directive,omitempty"`
 }
 
-// TODO(KI04)[Phase 3]: No rate limiting on ingestion API.
+// TODO(KI04)[Phase 4]: No rate limiting on ingestion API.
 // A misbehaving sensor could flood the system with events.
 // Fix: add per-token rate limiting middleware.
 // See DECISIONS.md D048.

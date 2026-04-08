@@ -1,9 +1,31 @@
 basePath: /
 definitions:
+  handlers.DirectiveRequest:
+    properties:
+      action:
+        type: string
+      flavor:
+        type: string
+      grace_period_ms:
+        type: integer
+      reason:
+        type: string
+      session_id:
+        type: string
+    type: object
   handlers.ErrorResponse:
     properties:
       error:
         type: string
+    type: object
+  handlers.FleetResponse:
+    properties:
+      flavors:
+        items:
+          $ref: '#/definitions/store.FlavorSummary'
+        type: array
+      total_session_count:
+        type: integer
     type: object
   handlers.PolicyRequest:
     properties:
@@ -31,6 +53,29 @@ definitions:
       session:
         $ref: '#/definitions/store.Session'
     type: object
+  store.Directive:
+    properties:
+      action:
+        type: string
+      degrade_to:
+        type: string
+      delivered_at:
+        type: string
+      flavor:
+        type: string
+      grace_period_ms:
+        type: integer
+      id:
+        type: string
+      issued_at:
+        type: string
+      issued_by:
+        type: string
+      reason:
+        type: string
+      session_id:
+        type: string
+    type: object
   store.Event:
     properties:
       event_type:
@@ -57,6 +102,23 @@ definitions:
         type: integer
       tool_name:
         type: string
+    type: object
+  store.FlavorSummary:
+    properties:
+      active_count:
+        type: integer
+      agent_type:
+        type: string
+      flavor:
+        type: string
+      session_count:
+        type: integer
+      sessions:
+        items:
+          $ref: '#/definitions/store.Session'
+        type: array
+      tokens_used_total:
+        type: integer
     type: object
   store.Policy:
     properties:
@@ -97,6 +159,10 @@ definitions:
         type: string
       framework:
         type: string
+      has_pending_directive:
+        description: HasPendingDirective is true when an undelivered shutdown directive
+          exists.
+        type: boolean
       host:
         type: string
       last_seen_at:
@@ -144,17 +210,57 @@ paths:
       summary: Health check
       tags:
       - health
+  /v1/directives:
+    post:
+      consumes:
+      - application/json
+      description: Issues a shutdown directive to a single agent session or all sessions
+        of a flavor
+      parameters:
+      - description: Directive definition
+        in: body
+        name: directive
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.DirectiveRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/store.Directive'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      summary: Create directive
+      tags:
+      - directives
   /v1/fleet:
     get:
-      description: Returns all sessions grouped by flavor, excluding lost sessions
+      description: Returns sessions grouped by flavor, excluding lost sessions. Supports
+        pagination via limit/offset on sessions.
+      parameters:
+      - description: Max sessions to return (default 50, max 200)
+        in: query
+        name: limit
+        type: integer
+      - description: Offset into sessions list (default 0)
+        in: query
+        name: offset
+        type: integer
       produces:
       - application/json
       responses:
         "200":
           description: OK
           schema:
-            additionalProperties: true
-            type: object
+            $ref: '#/definitions/handlers.FleetResponse'
         "500":
           description: Internal Server Error
           schema:

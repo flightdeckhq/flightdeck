@@ -1,4 +1,4 @@
-import type { FleetResponse, SessionDetail, Policy, PolicyRequest } from "./types";
+import type { FleetResponse, SessionDetail, Policy, PolicyRequest, DirectiveRequest, Directive } from "./types";
 
 const BASE = import.meta.env.VITE_API_BASE_URL ?? "/api";
 
@@ -10,8 +10,8 @@ async function fetchJson<T>(path: string): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-export function fetchFleet(): Promise<FleetResponse> {
-  return fetchJson<FleetResponse>("/v1/fleet");
+export function fetchFleet(limit = 50, offset = 0): Promise<FleetResponse> {
+  return fetchJson<FleetResponse>(`/v1/fleet?limit=${limit}&offset=${offset}`);
 }
 
 export function fetchSession(id: string): Promise<SessionDetail> {
@@ -57,4 +57,16 @@ export async function deletePolicy(id: string): Promise<void> {
   if (!res.ok) {
     throw new Error(`API ${res.status}: DELETE /v1/policies/${id}`);
   }
+}
+
+export async function createDirective(data: DirectiveRequest): Promise<Directive> {
+  const res = await fetch(`${BASE}/v1/directives`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) {
+    throw new Error(`API ${res.status}: POST /v1/directives`);
+  }
+  return res.json() as Promise<Directive>;
 }

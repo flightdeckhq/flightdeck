@@ -182,7 +182,8 @@ flightdeck/
 │   │   │   └── health.go       # GET /health: liveness check
 │   │   ├── store/
 │   │   │   ├── postgres.go     # Fleet, session, event queries via pgx
-│   │   │   └── analytics.go    # Analytics GROUP BY queries across all dimensions
+│   │   │   ├── analytics.go    # Analytics GROUP BY queries across all dimensions
+│   │   │   └── search.go       # Search() parallel ILIKE across agents, sessions, events via errgroup
 │   │   └── ws/
 │   │       └── hub.go          # WebSocket hub: client registry, broadcast on PG NOTIFY
 │   └── tests/
@@ -284,8 +285,7 @@ flightdeck/
 │   ├── Makefile
 │   ├── package.json
 │   ├── .claude-plugin/
-│   │   ├── manifest.json
-│   │   └── marketplace.json
+│   │   └── manifest.json
 │   ├── hooks/
 │   │   ├── hooks.json          # PreToolUse, PostToolUse, Stop, SubagentSpawn hooks
 │   │   └── scripts/

@@ -7,12 +7,12 @@ Requires `make dev` to be running.
 from __future__ import annotations
 
 import json
-import time
 import urllib.request
 import uuid
 
 from .conftest import (
     API_URL,
+    get_session_event_count,
     make_event,
     post_event,
     session_exists_in_fleet,
@@ -46,7 +46,11 @@ def _setup_searchable(flavor: str, host: str, tool_name: str) -> str:
         tool_name=tool_name,
         model="claude-sonnet-4-6",
     ))
-    time.sleep(2)  # Wait for worker processing
+    wait_until(
+        lambda: get_session_event_count(sid) >= 2,
+        timeout=10,
+        msg=f"post_call event not processed for session {sid}",
+    )
     return sid
 
 

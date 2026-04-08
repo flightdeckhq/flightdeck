@@ -7,12 +7,12 @@ Requires `make dev` to be running with fixture data.
 from __future__ import annotations
 
 import json
-import time
 import urllib.request
 import uuid
 
 from .conftest import (
     API_URL,
+    get_session_event_count,
     make_event,
     post_event,
     session_exists_in_fleet,
@@ -45,8 +45,12 @@ def _setup_fixture(flavor: str, model: str, token_count: int) -> str:
         tokens_input=token_count // 2,
         tokens_output=token_count // 2,
     ))
-    # Wait for event to be processed
-    time.sleep(1)
+    # Wait for event to be processed by workers
+    wait_until(
+        lambda: get_session_event_count(sid) >= 2,
+        timeout=10,
+        msg=f"post_call event not processed for session {sid}",
+    )
     return sid
 
 

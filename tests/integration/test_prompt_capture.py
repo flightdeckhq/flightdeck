@@ -7,12 +7,12 @@ Requires `make dev` to be running.
 from __future__ import annotations
 
 import json
-import time
 import urllib.error
 import urllib.request
 import uuid
 
 from .conftest import (
+    get_session_event_count,
     API_URL,
     make_event,
     post_event,
@@ -77,7 +77,11 @@ def test_capture_off_no_event_content_row() -> None:
 
     # Post event without content (capture off)
     post_event(make_event(sid, flavor, "post_call", tokens_total=100))
-    time.sleep(2)
+    wait_until(
+        lambda: get_session_event_count(sid) >= 2,
+        timeout=10,
+        msg=f"post_call event not processed for session {sid}",
+    )
 
     event_ids = _get_event_ids(sid)
     assert len(event_ids) > 0, f"no events found for session {sid}"
@@ -115,7 +119,11 @@ def test_capture_on_stores_content() -> None:
         has_content=True,
         content=content,
     ))
-    time.sleep(2)
+    wait_until(
+        lambda: get_session_event_count(sid) >= 2,
+        timeout=10,
+        msg=f"post_call event not processed for session {sid}",
+    )
 
     event_ids = _get_event_ids(sid)
     post_call_ids = event_ids
@@ -154,7 +162,11 @@ def test_get_content_endpoint_returns_200() -> None:
         has_content=True,
         content=content,
     ))
-    time.sleep(2)
+    wait_until(
+        lambda: get_session_event_count(sid) >= 2,
+        timeout=10,
+        msg=f"post_call event not processed for session {sid}",
+    )
 
     event_ids = _get_event_ids(sid)
     assert len(event_ids) > 0, f"no post_call events for session {sid}"
@@ -182,7 +194,11 @@ def test_get_content_returns_404_when_off() -> None:
 
     # Post event without content
     post_event(make_event(sid, flavor, "post_call", tokens_total=50))
-    time.sleep(2)
+    wait_until(
+        lambda: get_session_event_count(sid) >= 2,
+        timeout=10,
+        msg=f"post_call event not processed for session {sid}",
+    )
 
     event_ids = _get_event_ids(sid)
     assert len(event_ids) > 0, f"no post_call events for session {sid}"

@@ -331,7 +331,14 @@ flightdeck/
 │   │   ├── nginx.dev.conf
 │   │   └── nginx.prod.conf
 │   ├── postgres/
-│   │   └── init.sql            # Schema + dev seed data
+│   │   ├── migrations/
+│   │   │   ├── 000001_initial_schema.up.sql
+│   │   │   ├── 000001_initial_schema.down.sql
+│   │   │   ├── 000002_add_source_to_events.up.sql
+│   │   │   ├── 000002_add_source_to_events.down.sql
+│   │   │   ├── 000003_add_degrade_to_directives.up.sql
+│   │   │   └── 000003_add_degrade_to_directives.down.sql
+│   │   └── init.sql            # Seed data only (no schema)
 │   └── .env.example
 │
 ├── tests/
@@ -363,55 +370,113 @@ flightdeck/
 ## System Architecture
 
 ```
-┌────────────────────────────────────────────────────────────────────────┐
-│                          AGENT PROCESS                                  │
-│                                                                          │
-│  flightdeck_sensor.init(server="...", token="...",                       │
-│                          capture_prompts=False)  # off by default        │
-│                                                                          │
-│  ┌──────────────────────────────────────────────────────────────────┐   │
-│  │   Session lifecycle  │  Interceptor  │  PolicyCache              │   │
-│  │   heartbeat (30s)    │  wrap()/      │  warn/degrade/block       │   │
-│  │   atexit/SIGTERM     │  patch()      │  pulled from CP           │   │
-│  └──────────────────────┴──────┬────────┴───────────────────────────┘   │
-│                                 │                                        │
-│                      ┌──────────▼──────────┐                            │
-│                      │  Transport (HTTP)    │                            │
-│                      │  fire-and-forget     │                            │
-│                      │  reads directive     │                            │
-│                      └──────────┬───────────┘                            │
-└─────────────────────────────────┼──────────────────────────────────────  │
-                                  │ POST /v1/events
-                                  │ {event, tokens, [content if enabled]}
-                                  │ ← {"status":"ok","directive":...}
-                                  ▼
-┌──────────────────────────────────────────────────────────────────────────┐
-│  Ingestion API → NATS JetStream → Go Workers → PostgreSQL                │
-│                                                                          │
-│  workers write:                                                          │
-│    agents table       (upsert on flavor)                                 │
-│    sessions table     (upsert on session_id, state machine)              │
-│    events table       (insert, metadata only)                            │
-│    event_content table (insert only when capture_prompts=true)           │
-│    directives table   (insert when policy threshold crossed)             │
-│    NOTIFY api on every write                                             │
-│                                                                          │
-│  Query API:                                                              │
-│    REST endpoints for fleet, sessions, events, search, analytics         │
-│    GET /v1/events/:id/content  (returns 404 when capture disabled)       │
-│    GET /v1/analytics           (flexible GROUP BY across all dims)       │
-│    WS /v1/stream               (real-time fleet state via NOTIFY)        │
-└───────────────────────────────────────────────────────────────────────── │
-                    │
-                    ▼
-     ┌─────────────────────────────────────┐
-     │         React Dashboard             │
-     │                                     │
-     │  Fleet view    -- real-time ops     │
-     │  Analytics     -- aggregate views   │
-     │  Session drawer -- full history     │
-     │  Search (Cmd+K) -- find anything    │
-     └─────────────────────────────────────┘
+┌─────────────────────┐          ┌──────────────────────────┐
+│   Agent Process     │          │   React Dashboard :3000  │
+│                     │          │                          │
+│  flightdeck-sensor  │          │  Fleet, Policies,        │
+│  Session + Policy   │          │  Session drawer,         │
+│  Interceptor        │          │  Analytics, Search       │
+└────────┬────────────┘          └────────┬─────────────────┘
+         │                                │
+         │ POST /ingest/v1/events         │ REST  /api/*
+         │ POST /ingest/v1/heartbeat      │ WS    /api/v1/stream
+         │ GET  /api/v1/policy            │ GET   / (SPA static)
+         │                                │
+         ▼                                ▼
+┌──────────────────────────────────────────────────────────┐
+│                    nginx :4000                           │
+│                                                          │
+│  /ingest/*  → ingestion:8080  (strips prefix)           │
+│  /api/*     → api:8081        (strips prefix)           │
+│  /          → dashboard:3000                            │
+│  /api/v1/stream  → api:8081   (WebSocket upgrade)       │
+└───────┬──────────────────────────────┬───────────────────┘
+        │                              │
+        ▼                              ▼
+┌──────────────────────┐    ┌──────────────────────────────┐
+│ Ingestion API :8080  │    │     Query API :8081          │
+│                      │    │                              │
+│ POST /v1/events      │    │ GET /v1/fleet                │
+│ POST /v1/heartbeat   │    │ GET /v1/sessions/:id         │
+│ GET  /health         │    │ GET /v1/policy               │
+│ GET  /docs/          │    │ GET/POST/PUT/DELETE          │
+│                      │    │   /v1/policies               │
+│ Auth: validates      │    │ WS  /v1/stream               │
+│   bearer token       │    │ GET /docs/                   │
+│   (reads api_tokens) │    │                              │
+│                      │    │ LISTEN flightdeck_fleet      │
+│ Directive: reads +   │    │   (reconnects every 3s)      │
+│   marks delivered    │    │   → broadcasts to WS clients │
+│   (directives table) │    │                              │
+└──────────┬───────────┘    └──────────┬───────────────────┘
+           │                           │
+           │ PUBLISH                   │ SQL
+           │ FLIGHTDECK.events.*       │
+           ▼                           │
+┌──────────────────────┐               │
+│  NATS JetStream      │               │
+│  :4222               │               │
+│                      │               │
+│  Stream: FLIGHTDECK  │               │
+│  Subjects: events.>  │               │
+│  Storage: file       │               │
+│  Durable: flightdeck │               │
+│    -workers          │               │
+└──────────┬───────────┘               │
+           │                           │
+           │ PULL events.>             │
+           │ Ack/Nak/Term             │
+           ▼                           │
+┌──────────────────────┐               │
+│  Workers             │               │
+│  (no HTTP port)      │               │
+│                      │               │
+│  Consumer pool       │               │
+│  Session processor   │               │
+│  Policy evaluator    │               │
+│  Background          │               │
+│    reconciler        │               │
+└──────────┬───────────┘               │
+           │                           │
+           │ SQL writes + NOTIFY       │
+           │                           │
+           ▼                           ▼
+┌──────────────────────────────────────────────────────────┐
+│                PostgreSQL :5432                          │
+│                                                          │
+│  Written by Workers:                                    │
+│    agents          sessions        events               │
+│    event_content   directives                           │
+│                                                          │
+│  Written by Query API:                                  │
+│    token_policies                                       │
+│                                                          │
+│  Seed data only:                                        │
+│    api_tokens                                           │
+│                                                          │
+│  NOTIFY channel: flightdeck_fleet                       │
+│    Workers send NOTIFY after every event write          │
+│    Query API hub receives via LISTEN                    │
+└──────────────────────────────────────────────────────────┘
+
+Data flows:
+
+  Ingestion API → Postgres:
+    READ  api_tokens      (auth on every request)
+    READ  sessions        (directive flavor lookup)
+    READ+WRITE directives (lookup pending + mark delivered)
+
+  Workers → Postgres:
+    WRITE agents, sessions, events, event_content, directives
+    READ  sessions        (terminal check, token count)
+    READ  token_policies  (policy evaluation)
+    READ  directives      (shutdown dedup check)
+    NOTIFY flightdeck_fleet (after every event write)
+
+  Query API → Postgres:
+    READ  sessions, events, event_content
+    READ+WRITE token_policies (CRUD)
+    LISTEN flightdeck_fleet (real-time push to dashboard)
 ```
 
 ---
@@ -694,6 +759,54 @@ CREATE INDEX directives_session_pending_idx
 CREATE INDEX directives_flavor_pending_idx
     ON directives(flavor) WHERE delivered_at IS NULL;
 ```
+
+---
+
+## Database Migrations
+
+Schema changes are managed by golang-migrate. Migration files live in
+`docker/postgres/migrations/`. The workers service applies all pending
+migrations on startup before consuming events. If migrations fail,
+workers do not start.
+
+File naming convention:
+
+```
+000NNN_description.up.sql   -- apply change
+000NNN_description.down.sql -- reverse change
+```
+
+Every migration must have a down file that is the exact inverse of the
+up file. Rule 33 enforces this. Never modify `init.sql` for schema
+changes -- always add a new migration pair. `init.sql` contains seed
+data only (and the `api_tokens` table which is needed before migrations
+run).
+
+To add a schema change:
+
+1. Create the next numbered up/down pair in `docker/postgres/migrations/`
+2. Update the Data Model section in ARCHITECTURE.md
+3. Run `make dev-reset` to verify the migration applies and reverses cleanly
+
+Makefile targets (local development only):
+
+```bash
+make migrate-local-up       # Apply pending migrations (uses FLIGHTDECK_MIGRATE_ONLY mode)
+make migrate-local-status   # Show current version from schema_migrations table
+make dev-reset              # Full volume wipe + restart (applies all migrations fresh)
+```
+
+Note: make targets are for local development only. In production, workers
+apply migrations automatically on startup. Use `FLIGHTDECK_MIGRATE_ONLY=true`
+for manual migration runs in remote environments or Kubernetes init containers.
+
+Current migrations:
+
+| Migration | Description |
+|---|---|
+| 000001 | Initial schema (all six tables + api_tokens + indexes) |
+| 000002 | Add `source` column to events |
+| 000003 | Add `degrade_to` column to directives |
 
 ---
 

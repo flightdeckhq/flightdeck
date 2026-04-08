@@ -22,11 +22,15 @@ make release VERSION=v0.1.0
 The script:
 1. Validates the working tree is clean
 2. Confirms you are on the `main` branch
-3. Updates `version` in `sensor/pyproject.toml`
-4. Runs `make test` to verify all tests pass
-5. Commits: `chore: release v0.1.0`
-6. Creates an annotated git tag
-7. Pushes the commit and tag to origin
+3. Runs `make dev-reset` on a clean local environment to verify all
+   migrations apply cleanly from scratch
+4. Verifies `make migrate-local-status` shows the expected version with
+   `dirty=false`. Do not tag a release with dirty migrations.
+5. Updates `version` in `sensor/pyproject.toml`
+6. Runs `make test` to verify all tests pass
+7. Commits: `chore: release v0.1.0`
+8. Creates an annotated git tag
+9. Pushes the commit and tag to origin
 
 ### 2. GitHub Actions takes over
 
@@ -47,6 +51,8 @@ Pushing the tag triggers `.github/workflows/release.yml`, which:
 - Check PyPI: https://pypi.org/project/flightdeck-sensor/
 - Check Docker Hub: https://hub.docker.com/u/flightdeckhq
 - Check GitHub: https://github.com/flightdeckhq/flightdeck/releases
+- In production deployments, migrations run automatically when workers
+  start -- verify the workers service starts successfully after deployment
 
 ## If a Release Fails
 

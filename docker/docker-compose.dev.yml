@@ -15,6 +15,7 @@ services:
     command: ["go", "run", "./cmd/"]
     volumes:
       - ../workers:/app
+      - ./postgres/migrations:/migrations:ro
 
   api:
     image: golang:1.26-alpine

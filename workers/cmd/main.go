@@ -12,6 +12,7 @@ import (
 
 	"github.com/flightdeckhq/flightdeck/workers/internal/config"
 	"github.com/flightdeckhq/flightdeck/workers/internal/consumer"
+	dbmigrate "github.com/flightdeckhq/flightdeck/workers/internal/migrate"
 	"github.com/flightdeckhq/flightdeck/workers/internal/processor"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go"
@@ -19,6 +20,20 @@ import (
 
 func main() {
 	cfg := config.Load()
+
+	// Run database migrations before anything else
+	slog.Info("running database migrations", "dir", cfg.MigrationsDir)
+	if err := dbmigrate.Run(cfg.PostgresURL, cfg.MigrationsDir); err != nil {
+		slog.Error("database migration failed", "err", err)
+		os.Exit(1)
+	}
+	slog.Info("database migrations complete")
+
+	// Migrate-only mode: apply migrations and exit without starting consumers
+	if os.Getenv("FLIGHTDECK_MIGRATE_ONLY") == "true" {
+		slog.Info("migrate-only mode, exiting")
+		os.Exit(0)
+	}
 
 	// Postgres
 	pool, err := pgxpool.New(context.Background(), cfg.PostgresURL)

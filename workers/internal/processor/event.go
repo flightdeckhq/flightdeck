@@ -51,6 +51,11 @@ func (p *Processor) Process(ctx context.Context, e consumer.EventPayload) error 
 		if err := p.session.HandlePostCall(ctx, e); err != nil {
 			return err
 		}
+	case "directive_result":
+		// Insert event but do NOT evaluate policy. Just update last_seen.
+		if err := p.session.HandlePostCall(ctx, e); err != nil {
+			return err
+		}
 	default:
 		return fmt.Errorf("unknown event_type: %s", e.EventType)
 	}

@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
-from typing import Any
+from typing import Any, Callable
 
 from flightdeck_sensor.core.exceptions import (
     BudgetExceededError,
@@ -20,12 +20,16 @@ from flightdeck_sensor.core.exceptions import (
 )
 from flightdeck_sensor.core.session import Session
 from flightdeck_sensor.core.types import (
+    DirectiveParameter,
+    DirectiveRegistration,
     SensorConfig,
     StatusResponse,
 )
 from flightdeck_sensor.interceptor.anthropic import GuardedAnthropic
 from flightdeck_sensor.interceptor.openai import GuardedOpenAI
 from flightdeck_sensor.transport.client import ControlPlaneClient
+
+Parameter = DirectiveParameter
 
 __all__ = [
     "init",
@@ -34,6 +38,8 @@ __all__ = [
     "unpatch",
     "get_status",
     "teardown",
+    "directive",
+    "Parameter",
     "BudgetExceededError",
     "ConfigurationError",
     "DirectiveError",
@@ -47,6 +53,72 @@ _patch_lock = threading.Lock()
 _session: Session | None = None
 _client: ControlPlaneClient | None = None
 _original_inits: dict[str, Any] = {}
+
+# Custom directive registry -- populated by @directive decorator
+_directive_registry: dict[str, DirectiveRegistration] = {}
+
+
+# ------------------------------------------------------------------
+# Custom directive registration
+# ------------------------------------------------------------------
+
+
+def _compute_fingerprint(
+    name: str, description: str, parameters: list[DirectiveParameter]
+) -> str:
+    """Compute a deterministic SHA-256 fingerprint for a directive schema."""
+    import base64
+    import hashlib
+    import json
+
+    payload = json.dumps(
+        {
+            "name": name,
+            "description": description,
+            "parameters": [
+                {
+                    "name": p.name,
+                    "type": p.type,
+                    "description": p.description,
+                    "options": p.options,
+                    "required": p.required,
+                    "default": p.default,
+                }
+                for p in parameters
+            ],
+        },
+        sort_keys=True,
+    )
+    return base64.b64encode(hashlib.sha256(payload.encode()).digest()).decode()
+
+
+def directive(
+    name: str,
+    description: str = "",
+    parameters: list[Parameter] | None = None,
+) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    """Decorator to register a function as a custom directive handler.
+
+    Example::
+
+        @flightdeck_sensor.directive("pause", description="Pause the agent")
+        def handle_pause(ctx, duration=30):
+            time.sleep(duration)
+    """
+
+    def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
+        params = parameters or []
+        fp = _compute_fingerprint(name, description, params)
+        _directive_registry[name] = DirectiveRegistration(
+            name=name,
+            description=description,
+            parameters=params,
+            fingerprint=fp,
+            handler=fn,
+        )
+        return fn
+
+    return decorator
 
 
 # ------------------------------------------------------------------

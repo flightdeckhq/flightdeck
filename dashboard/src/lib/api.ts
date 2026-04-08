@@ -1,4 +1,4 @@
-import type { FleetResponse, SessionDetail, Policy, PolicyRequest, DirectiveRequest, Directive, AnalyticsParams, AnalyticsResponse, EventContent, SearchResults } from "./types";
+import type { FleetResponse, SessionDetail, Policy, PolicyRequest, DirectiveRequest, Directive, AnalyticsParams, AnalyticsResponse, EventContent, SearchResults, CustomDirective } from "./types";
 
 const BASE = import.meta.env.VITE_API_BASE_URL || "/api";
 
@@ -87,6 +87,32 @@ export async function fetchSearch(query: string, signal?: AbortSignal): Promise<
     throw new Error(`API ${res.status}: /v1/search`);
   }
   return res.json() as Promise<SearchResults>;
+}
+
+export async function fetchCustomDirectives(flavor?: string): Promise<CustomDirective[]> {
+  const url = flavor ? `/v1/directives/custom?flavor=${encodeURIComponent(flavor)}` : '/v1/directives/custom';
+  try {
+    const resp = await fetchJson<{ directives: CustomDirective[] }>(url);
+    return resp.directives ?? [];
+  } catch {
+    return [];
+  }
+}
+
+export async function triggerCustomDirective(data: {
+  action: "custom";
+  directive_name: string;
+  fingerprint: string;
+  session_id?: string;
+  flavor?: string;
+  parameters?: Record<string, unknown>;
+}): Promise<void> {
+  const res = await fetch(`${BASE}/v1/directives`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) throw new Error(`API ${res.status}`);
 }
 
 export function fetchAnalytics(params: AnalyticsParams): Promise<AnalyticsResponse> {

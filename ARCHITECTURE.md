@@ -788,6 +788,28 @@ CREATE INDEX directives_flavor_pending_idx
     ON directives(flavor) WHERE delivered_at IS NULL;
 ```
 
+### custom_directives
+
+```sql
+CREATE TABLE custom_directives (
+    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    fingerprint   TEXT NOT NULL UNIQUE,
+    name          TEXT NOT NULL,
+    description   TEXT,
+    flavor        TEXT NOT NULL,
+    parameters    JSONB,
+    registered_at TIMESTAMPTZ DEFAULT now(),
+    last_seen_at  TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX custom_directives_flavor_idx ON custom_directives(flavor);
+CREATE INDEX custom_directives_fp_idx ON custom_directives(fingerprint);
+```
+
+Custom directives are registered by the sensor at init() via fingerprint sync.
+The `directives` table also has a `payload JSONB` column for custom directive
+parameters (added in migration 000005).
+
 ---
 
 ## Database Migrations
@@ -835,6 +857,8 @@ Current migrations:
 | 000001 | Initial schema (all six tables + api_tokens + indexes) |
 | 000002 | Add `source` column to events |
 | 000003 | Add `degrade_to` column to directives |
+| 000004 | Add `custom_directives` table |
+| 000005 | Add `payload` JSONB column to directives |
 
 ---
 

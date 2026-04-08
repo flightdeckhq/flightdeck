@@ -29,6 +29,9 @@ type Querier interface {
 	DeletePolicy(ctx context.Context, id string) error
 	CreateDirective(ctx context.Context, d Directive) (*Directive, error)
 	GetActiveSessionIDsByFlavor(ctx context.Context, flavor string) ([]string, error)
+	SyncDirectives(ctx context.Context, fingerprints []string) ([]string, error)
+	RegisterDirectives(ctx context.Context, directives []CustomDirective) error
+	GetCustomDirectives(ctx context.Context, flavor string) ([]CustomDirective, error)
 	QueryAnalytics(ctx context.Context, params AnalyticsParams) (*AnalyticsResponse, error)
 	Search(ctx context.Context, query string) (*SearchResults, error)
 }
@@ -405,16 +408,29 @@ func (s *Store) DeletePolicy(ctx context.Context, id string) error {
 
 // Directive represents a row in the directives table.
 type Directive struct {
-	ID            string     `json:"id"`
-	SessionID     *string    `json:"session_id"`
-	Flavor        *string    `json:"flavor"`
-	Action        string     `json:"action"`
-	Reason        *string    `json:"reason"`
-	DegradeTo     *string    `json:"degrade_to"`
-	GracePeriodMs int        `json:"grace_period_ms"`
-	IssuedBy      string     `json:"issued_by"`
-	IssuedAt      time.Time  `json:"issued_at"`
-	DeliveredAt   *time.Time `json:"delivered_at"`
+	ID            string           `json:"id"`
+	SessionID     *string          `json:"session_id"`
+	Flavor        *string          `json:"flavor"`
+	Action        string           `json:"action"`
+	Reason        *string          `json:"reason"`
+	DegradeTo     *string          `json:"degrade_to"`
+	GracePeriodMs int              `json:"grace_period_ms"`
+	IssuedBy      string           `json:"issued_by"`
+	IssuedAt      time.Time        `json:"issued_at"`
+	DeliveredAt   *time.Time       `json:"delivered_at"`
+	Payload       *json.RawMessage `json:"payload,omitempty" swaggertype:"object"`
+}
+
+// CustomDirective represents a row in the custom_directives table.
+type CustomDirective struct {
+	ID           string    `json:"id"`
+	Fingerprint  string    `json:"fingerprint"`
+	Name         string    `json:"name"`
+	Description  string    `json:"description"`
+	Flavor       string    `json:"flavor"`
+	Parameters   any       `json:"parameters"`
+	RegisteredAt time.Time `json:"registered_at"`
+	LastSeenAt   time.Time `json:"last_seen_at"`
 }
 
 // GetActiveSessionIDsByFlavor returns session IDs for active/idle sessions of a flavor.
@@ -442,14 +458,14 @@ func (s *Store) GetActiveSessionIDsByFlavor(ctx context.Context, flavor string) 
 func (s *Store) CreateDirective(ctx context.Context, d Directive) (*Directive, error) {
 	var result Directive
 	err := s.pool.QueryRow(ctx, `
-		INSERT INTO directives (session_id, flavor, action, reason, grace_period_ms, issued_by)
-		VALUES ($1, $2, $3, $4, $5, 'dashboard')
+		INSERT INTO directives (session_id, flavor, action, reason, grace_period_ms, issued_by, payload)
+		VALUES ($1, $2, $3, $4, $5, 'dashboard', $6)
 		RETURNING id::text, session_id::text, flavor, action, reason, degrade_to,
-		          grace_period_ms, issued_by, issued_at, delivered_at
-	`, d.SessionID, d.Flavor, d.Action, d.Reason, d.GracePeriodMs).Scan(
+		          grace_period_ms, issued_by, issued_at, delivered_at, payload
+	`, d.SessionID, d.Flavor, d.Action, d.Reason, d.GracePeriodMs, d.Payload).Scan(
 		&result.ID, &result.SessionID, &result.Flavor, &result.Action, &result.Reason,
 		&result.DegradeTo, &result.GracePeriodMs, &result.IssuedBy, &result.IssuedAt,
-		&result.DeliveredAt,
+		&result.DeliveredAt, &result.Payload,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create directive: %w", err)
@@ -512,4 +528,119 @@ func (s *Store) GetEventContent(ctx context.Context, eventID string) (*EventCont
 	}
 
 	return &ec, nil
+}
+
+// SyncDirectives checks which fingerprints are NOT registered in custom_directives.
+// It updates last_seen_at for found ones and returns the unknown fingerprints.
+func (s *Store) SyncDirectives(ctx context.Context, fingerprints []string) ([]string, error) {
+	if len(fingerprints) == 0 {
+		return []string{}, nil
+	}
+
+	// Find which fingerprints exist
+	rows, err := s.pool.Query(ctx, `
+		SELECT fingerprint FROM custom_directives WHERE fingerprint = ANY($1)
+	`, fingerprints)
+	if err != nil {
+		return nil, fmt.Errorf("sync directives lookup: %w", err)
+	}
+	defer rows.Close()
+
+	found := make(map[string]bool)
+	for rows.Next() {
+		var fp string
+		if err := rows.Scan(&fp); err != nil {
+			return nil, fmt.Errorf("scan fingerprint: %w", err)
+		}
+		found[fp] = true
+	}
+
+	// Update last_seen_at for found fingerprints
+	if len(found) > 0 {
+		foundFPs := make([]string, 0, len(found))
+		for fp := range found {
+			foundFPs = append(foundFPs, fp)
+		}
+		if _, err := s.pool.Exec(ctx, `
+			UPDATE custom_directives SET last_seen_at = NOW() WHERE fingerprint = ANY($1)
+		`, foundFPs); err != nil {
+			return nil, fmt.Errorf("sync directives update: %w", err)
+		}
+	}
+
+	// Return unknown fingerprints
+	unknown := make([]string, 0)
+	for _, fp := range fingerprints {
+		if !found[fp] {
+			unknown = append(unknown, fp)
+		}
+	}
+	return unknown, nil
+}
+
+// RegisterDirectives inserts custom directives, updating last_seen_at on conflict.
+func (s *Store) RegisterDirectives(ctx context.Context, directives []CustomDirective) error {
+	for _, d := range directives {
+		var paramsJSON []byte
+		if d.Parameters != nil {
+			var err error
+			paramsJSON, err = json.Marshal(d.Parameters)
+			if err != nil {
+				return fmt.Errorf("marshal parameters for %s: %w", d.Fingerprint, err)
+			}
+		}
+		if _, err := s.pool.Exec(ctx, `
+			INSERT INTO custom_directives (fingerprint, name, description, flavor, parameters)
+			VALUES ($1, $2, $3, $4, $5)
+			ON CONFLICT (fingerprint) DO UPDATE SET last_seen_at = NOW()
+		`, d.Fingerprint, d.Name, d.Description, d.Flavor, paramsJSON); err != nil {
+			return fmt.Errorf("register directive %s: %w", d.Fingerprint, err)
+		}
+	}
+	return nil
+}
+
+// GetCustomDirectives returns all custom directives, optionally filtered by flavor.
+func (s *Store) GetCustomDirectives(ctx context.Context, flavor string) ([]CustomDirective, error) {
+	var rows pgx.Rows
+	var err error
+	if flavor != "" {
+		rows, err = s.pool.Query(ctx, `
+			SELECT id::text, fingerprint, name, COALESCE(description, ''), flavor,
+			       parameters, registered_at, last_seen_at
+			FROM custom_directives WHERE flavor = $1
+			ORDER BY registered_at DESC
+		`, flavor)
+	} else {
+		rows, err = s.pool.Query(ctx, `
+			SELECT id::text, fingerprint, name, COALESCE(description, ''), flavor,
+			       parameters, registered_at, last_seen_at
+			FROM custom_directives
+			ORDER BY registered_at DESC
+		`)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get custom directives: %w", err)
+	}
+	defer rows.Close()
+
+	directives := make([]CustomDirective, 0)
+	for rows.Next() {
+		var d CustomDirective
+		var paramsRaw []byte
+		if err := rows.Scan(
+			&d.ID, &d.Fingerprint, &d.Name, &d.Description, &d.Flavor,
+			&paramsRaw, &d.RegisteredAt, &d.LastSeenAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan custom directive: %w", err)
+		}
+		if paramsRaw != nil {
+			var v any
+			if jsonErr := json.Unmarshal(paramsRaw, &v); jsonErr == nil {
+				d.Parameters = v
+			}
+		}
+		directives = append(directives, d)
+	}
+	return directives, nil
 }

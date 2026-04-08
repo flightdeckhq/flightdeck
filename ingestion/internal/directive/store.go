@@ -3,6 +3,7 @@ package directive
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -13,11 +14,12 @@ import (
 
 // Directive is the response-envelope payload returned to the sensor.
 type Directive struct {
-	ID            string  `json:"id"`
-	Action        string  `json:"action"`
-	Reason        string  `json:"reason"`
-	DegradeTo     *string `json:"degrade_to,omitempty"`
-	GracePeriodMs int     `json:"grace_period_ms"`
+	ID            string           `json:"id"`
+	Action        string           `json:"action"`
+	Reason        string           `json:"reason"`
+	DegradeTo     *string          `json:"degrade_to,omitempty"`
+	GracePeriodMs int              `json:"grace_period_ms"`
+	Payload       *json.RawMessage `json:"payload,omitempty"`
 }
 
 // Store reads and marks directives in Postgres.
@@ -46,8 +48,8 @@ func (s *Store) LookupPending(ctx context.Context, sessionID string) (*Directive
 			ORDER BY issued_at ASC
 			LIMIT 1
 		)
-		RETURNING id::text, action, COALESCE(reason, ''), degrade_to, grace_period_ms
-	`, time.Now().UTC(), sessionID).Scan(&d.ID, &d.Action, &d.Reason, &d.DegradeTo, &d.GracePeriodMs)
+		RETURNING id::text, action, COALESCE(reason, ''), degrade_to, grace_period_ms, payload
+	`, time.Now().UTC(), sessionID).Scan(&d.ID, &d.Action, &d.Reason, &d.DegradeTo, &d.GracePeriodMs, &d.Payload)
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil

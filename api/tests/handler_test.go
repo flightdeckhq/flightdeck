@@ -20,9 +20,10 @@ import (
 // --- Mock Store ---
 
 type mockStore struct {
-	policies      []store.Policy
-	lastSearchQuery string
-	directives []store.Directive
+	policies         []store.Policy
+	lastSearchQuery  string
+	directives       []store.Directive
+	customDirectives []store.CustomDirective
 }
 
 func (m *mockStore) GetFleet(_ context.Context, limit, offset int, agentType string) ([]store.FlavorSummary, int, error) {
@@ -230,6 +231,52 @@ func (m *mockStore) Search(_ context.Context, query string) (*store.SearchResult
 		Sessions: []store.SearchResultSession{{SessionID: "s1", Flavor: "test-agent", Host: "host-1", State: "active", StartedAt: "2026-04-08"}},
 		Events:   []store.SearchResultEvent{{EventID: "e1", SessionID: "s1", EventType: "post_call", ToolName: "search", Model: "claude", OccurredAt: "2026-04-08"}},
 	}, nil
+}
+
+func (m *mockStore) SyncDirectives(_ context.Context, fingerprints []string) ([]string, error) {
+	found := make(map[string]bool)
+	for _, cd := range m.customDirectives {
+		found[cd.Fingerprint] = true
+	}
+	var unknown []string
+	for _, fp := range fingerprints {
+		if !found[fp] {
+			unknown = append(unknown, fp)
+		}
+	}
+	if unknown == nil {
+		unknown = []string{}
+	}
+	return unknown, nil
+}
+
+func (m *mockStore) RegisterDirectives(_ context.Context, directives []store.CustomDirective) error {
+	for _, d := range directives {
+		d.ID = "cd-new-id"
+		d.RegisteredAt = time.Now()
+		d.LastSeenAt = time.Now()
+		m.customDirectives = append(m.customDirectives, d)
+	}
+	return nil
+}
+
+func (m *mockStore) GetCustomDirectives(_ context.Context, flavor string) ([]store.CustomDirective, error) {
+	if flavor == "" {
+		if m.customDirectives == nil {
+			return []store.CustomDirective{}, nil
+		}
+		return m.customDirectives, nil
+	}
+	var result []store.CustomDirective
+	for _, cd := range m.customDirectives {
+		if cd.Flavor == flavor {
+			result = append(result, cd)
+		}
+	}
+	if result == nil {
+		result = []store.CustomDirective{}
+	}
+	return result, nil
 }
 
 func (m *mockStore) QueryAnalytics(_ context.Context, params store.AnalyticsParams) (*store.AnalyticsResponse, error) {
@@ -1090,5 +1137,166 @@ func TestSearchNoResults(t *testing.T) {
 	agents := resp["agents"].([]any)
 	if len(agents) != 0 {
 		t.Errorf("expected empty agents, got %d", len(agents))
+	}
+}
+
+// --- Custom Directive Tests ---
+
+func TestSyncDirectivesReturnsUnknown(t *testing.T) {
+	s := &mockStore{
+		customDirectives: []store.CustomDirective{
+			{ID: "cd-1", Fingerprint: "fp-known", Name: "known-dir", Flavor: "test-agent"},
+		},
+	}
+	handler := handlers.SyncDirectivesHandler(store.WrapStore(s))
+	body := `{"flavor":"test-agent","directives":[{"name":"known","fingerprint":"fp-known"},{"name":"unknown","fingerprint":"fp-unknown"}]}`
+	req := httptest.NewRequest("POST", "/v1/directives/sync", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	unknown, ok := resp["unknown_fingerprints"].([]any)
+	if !ok {
+		t.Fatalf("expected unknown_fingerprints array, got %v", resp["unknown_fingerprints"])
+	}
+	if len(unknown) != 1 {
+		t.Errorf("expected 1 unknown fingerprint, got %d", len(unknown))
+	}
+	if len(unknown) > 0 && unknown[0] != "fp-unknown" {
+		t.Errorf("expected fp-unknown, got %v", unknown[0])
+	}
+}
+
+func TestRegisterDirectivesSuccess(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.RegisterDirectivesHandler(store.WrapStore(s))
+	body := `{"flavor":"test-agent","directives":[{"fingerprint":"fp-1","name":"custom-dir","description":"a custom directive","parameters":{"key":"value"}}]}`
+	req := httptest.NewRequest("POST", "/v1/directives/register", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["registered"] != float64(1) {
+		t.Errorf("expected registered=1, got %v", resp["registered"])
+	}
+	if len(s.customDirectives) != 1 {
+		t.Errorf("expected 1 custom directive in store, got %d", len(s.customDirectives))
+	}
+}
+
+func TestGetCustomDirectives(t *testing.T) {
+	s := &mockStore{
+		customDirectives: []store.CustomDirective{
+			{ID: "cd-1", Fingerprint: "fp-1", Name: "dir-1", Flavor: "agent-a", RegisteredAt: time.Now(), LastSeenAt: time.Now()},
+			{ID: "cd-2", Fingerprint: "fp-2", Name: "dir-2", Flavor: "agent-b", RegisteredAt: time.Now(), LastSeenAt: time.Now()},
+		},
+	}
+
+	// Test without flavor filter
+	handler := handlers.GetCustomDirectivesHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/directives/custom", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	dirs, ok := resp["directives"].([]any)
+	if !ok || len(dirs) != 2 {
+		t.Errorf("expected 2 directives, got %v", resp["directives"])
+	}
+
+	// Test with flavor filter
+	req2 := httptest.NewRequest("GET", "/v1/directives/custom?flavor=agent-a", nil)
+	w2 := httptest.NewRecorder()
+	handler(w2, req2)
+	if w2.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w2.Code)
+	}
+	var resp2 map[string]any
+	_ = json.Unmarshal(w2.Body.Bytes(), &resp2)
+	dirs2, ok := resp2["directives"].([]any)
+	if !ok || len(dirs2) != 1 {
+		t.Errorf("expected 1 directive for agent-a, got %v", resp2["directives"])
+	}
+}
+
+func TestCreateCustomDirectiveAction(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.CreateDirectiveHandler(store.WrapStore(s))
+	body := `{"action":"custom","session_id":"00000000-0000-0000-0000-000000000001","directive_name":"reset_cache","fingerprint":"fp-reset","parameters":{"force":true}}`
+	req := httptest.NewRequest("POST", "/v1/directives", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusCreated {
+		t.Errorf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["id"] == nil || resp["id"] == "" {
+		t.Error("expected id in response")
+	}
+	if resp["action"] != "custom" {
+		t.Errorf("expected action=custom, got %v", resp["action"])
+	}
+	// Verify payload is stored
+	if resp["payload"] == nil {
+		t.Error("expected payload in response")
+	}
+	payload, ok := resp["payload"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected payload to be an object, got %T", resp["payload"])
+	}
+	if payload["directive_name"] != "reset_cache" {
+		t.Errorf("expected directive_name=reset_cache, got %v", payload["directive_name"])
+	}
+	if payload["fingerprint"] != "fp-reset" {
+		t.Errorf("expected fingerprint=fp-reset, got %v", payload["fingerprint"])
+	}
+}
+
+func TestCreateCustomDirectiveMissingName(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.CreateDirectiveHandler(store.WrapStore(s))
+	body := `{"action":"custom","session_id":"abc","fingerprint":"fp-1"}`
+	req := httptest.NewRequest("POST", "/v1/directives", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if !contains(resp["error"].(string), "directive_name is required") {
+		t.Errorf("expected error about directive_name, got %v", resp["error"])
+	}
+}
+
+func TestCreateCustomDirectiveMissingTarget(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.CreateDirectiveHandler(store.WrapStore(s))
+	body := `{"action":"custom","directive_name":"test","fingerprint":"fp-1"}`
+	req := httptest.NewRequest("POST", "/v1/directives", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if !contains(resp["error"].(string), "session_id or flavor is required") {
+		t.Errorf("expected error about session_id or flavor, got %v", resp["error"])
 	}
 }

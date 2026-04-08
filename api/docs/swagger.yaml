@@ -1,13 +1,26 @@
 basePath: /
 definitions:
+  handlers.CustomDirectivesListResponse:
+    properties:
+      directives:
+        items:
+          $ref: '#/definitions/store.CustomDirective'
+        type: array
+    type: object
   handlers.DirectiveRequest:
     properties:
       action:
+        type: string
+      directive_name:
+        type: string
+      fingerprint:
         type: string
       flavor:
         type: string
       grace_period_ms:
         type: integer
+      parameters:
+        type: object
       reason:
         type: string
       session_id:
@@ -44,6 +57,20 @@ definitions:
       warn_at_pct:
         type: integer
     type: object
+  handlers.RegisterDirectivesRequest:
+    properties:
+      directives:
+        items:
+          $ref: '#/definitions/store.CustomDirective'
+        type: array
+      flavor:
+        type: string
+    type: object
+  handlers.RegisterDirectivesResponse:
+    properties:
+      registered:
+        type: integer
+    type: object
   handlers.SessionResponse:
     properties:
       events:
@@ -52,6 +79,27 @@ definitions:
         type: array
       session:
         $ref: '#/definitions/store.Session'
+    type: object
+  handlers.SyncDirectivesRequest:
+    properties:
+      directives:
+        items:
+          properties:
+            fingerprint:
+              type: string
+            name:
+              type: string
+          type: object
+        type: array
+      flavor:
+        type: string
+    type: object
+  handlers.SyncDirectivesResponse:
+    properties:
+      unknown_fingerprints:
+        items:
+          type: string
+        type: array
     type: object
   store.AnalyticsResponse:
     properties:
@@ -88,6 +136,24 @@ definitions:
       period_change_pct:
         type: number
     type: object
+  store.CustomDirective:
+    properties:
+      description:
+        type: string
+      fingerprint:
+        type: string
+      flavor:
+        type: string
+      id:
+        type: string
+      last_seen_at:
+        type: string
+      name:
+        type: string
+      parameters: {}
+      registered_at:
+        type: string
+    type: object
   store.DataPoint:
     properties:
       date:
@@ -113,6 +179,8 @@ definitions:
         type: string
       issued_by:
         type: string
+      payload:
+        type: object
       reason:
         type: string
       session_id:
@@ -387,8 +455,8 @@ paths:
     post:
       consumes:
       - application/json
-      description: Issues a shutdown directive to a single agent session or all sessions
-        of a flavor
+      description: Issues a shutdown or custom directive to a single agent session
+        or all sessions of a flavor
       parameters:
       - description: Directive definition
         in: body
@@ -414,6 +482,91 @@ paths:
       summary: Create directive
       tags:
       - directives
+  /v1/directives/custom:
+    get:
+      description: Returns all registered custom directives, optionally filtered by
+        flavor.
+      parameters:
+      - description: Filter by flavor
+        in: query
+        name: flavor
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/handlers.CustomDirectivesListResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      summary: List custom directives
+      tags:
+      - custom-directives
+  /v1/directives/register:
+    post:
+      consumes:
+      - application/json
+      description: Registers custom directive definitions. Updates last_seen_at on
+        conflict.
+      parameters:
+      - description: Registration request with directives
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.RegisterDirectivesRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/handlers.RegisterDirectivesResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      summary: Register custom directives
+      tags:
+      - custom-directives
+  /v1/directives/sync:
+    post:
+      consumes:
+      - application/json
+      description: Checks which directive fingerprints are registered. Returns fingerprints
+        not found.
+      parameters:
+      - description: Sync request with flavor and fingerprints
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.SyncDirectivesRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/handlers.SyncDirectivesResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      summary: Sync custom directive fingerprints
+      tags:
+      - custom-directives
   /v1/events/{id}/content:
     get:
       description: Returns prompt capture content for an event. Returns 404 when the

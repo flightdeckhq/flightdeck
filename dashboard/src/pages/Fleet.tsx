@@ -1,6 +1,7 @@
 import { useFleet } from "@/hooks/useFleet";
 import { useFleetStore, type AgentTypeFilter } from "@/store/fleet";
 import { FleetPanel } from "@/components/fleet/FleetPanel";
+import { DirectivesPanel } from "@/components/fleet/DirectivesPanel";
 import { Timeline } from "@/components/timeline/Timeline";
 import { SessionDrawer } from "@/components/session/SessionDrawer";
 import { Button } from "@/components/ui/button";
@@ -49,7 +50,12 @@ export function Fleet() {
         flavors={flavors}
         onFlavorClick={handleFlavorClick}
         activeFlavorFilter={flavorFilter}
-      />
+      >
+        <DirectivesPanel
+          flavorFilter={flavorFilter}
+          selectedSessionId={selectedSessionId}
+        />
+      </FleetPanel>
       <div className="flex-1 overflow-hidden p-4">
         <div className="mb-3 flex items-center gap-1">
           {FILTER_OPTIONS.map((opt) => (

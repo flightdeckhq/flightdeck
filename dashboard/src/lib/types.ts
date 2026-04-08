@@ -194,6 +194,28 @@ export interface EventContent {
   captured_at: string;
 }
 
+/** Custom directive registered by a sensor. */
+export interface CustomDirective {
+  id: string;
+  fingerprint: string;
+  name: string;
+  description: string;
+  flavor: string;
+  parameters: CustomDirectiveParameter[];
+  registered_at: string;
+  last_seen_at: string;
+}
+
+/** A single parameter for a custom directive. */
+export interface CustomDirectiveParameter {
+  name: string;
+  type: "string" | "integer" | "boolean" | "float";
+  description: string;
+  options: string[];
+  required: boolean;
+  default: unknown;
+}
+
 /** Search result: agent summary. */
 export interface SearchResultAgent {
   flavor: string;

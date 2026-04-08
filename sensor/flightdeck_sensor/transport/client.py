@@ -52,6 +52,63 @@ class ControlPlaneClient:
         """POST an event to ``/v1/events`` and return any embedded directive."""
         return self._post("/v1/events", payload)
 
+    def sync_directives(
+        self,
+        flavor: str,
+        directives: list[dict[str, Any]],
+    ) -> list[str]:
+        """POST fingerprints to /v1/directives/sync, return unknown fingerprints.
+
+        Each entry in *directives* must have ``name`` and ``fingerprint`` keys.
+        Returns a list of fingerprints the server does not recognise.
+        On any error, returns an empty list (fail open).
+        """
+        url = f"{self._base_url}/v1/directives/sync"
+        body = json.dumps({"flavor": flavor, "directives": directives}).encode()
+        req = urllib.request.Request(
+            url,
+            data=body,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self._token}",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=1) as resp:
+                data: dict[str, Any] = json.loads(resp.read().decode())
+                unknown: list[str] = data.get("unknown", [])
+                return unknown
+        except Exception:
+            _log.debug("directives sync failed, proceeding without sync", exc_info=True)
+            return []
+
+    def register_directives(
+        self,
+        flavor: str,
+        directives: list[dict[str, Any]],
+    ) -> None:
+        """POST full directive schemas to /v1/directives/register.
+
+        Fire-and-forget: ignores all errors (fail open).
+        """
+        url = f"{self._base_url}/v1/directives/register"
+        body = json.dumps({"flavor": flavor, "directives": directives}).encode()
+        req = urllib.request.Request(
+            url,
+            data=body,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self._token}",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=1) as resp:
+                resp.read()
+        except Exception:
+            _log.debug("directives register failed, ignoring", exc_info=True)
+
     def close(self) -> None:
         """No-op -- stdlib ``urllib`` has no persistent connection to close."""
 

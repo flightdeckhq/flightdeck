@@ -129,7 +129,7 @@ const docTemplate = `{
         },
         "/v1/directives": {
             "post": {
-                "description": "Issues a shutdown directive to a single agent session or all sessions of a flavor",
+                "description": "Issues a shutdown or custom directive to a single agent session or all sessions of a flavor",
                 "consumes": [
                     "application/json"
                 ],
@@ -156,6 +156,132 @@ const docTemplate = `{
                         "description": "Created",
                         "schema": {
                             "$ref": "#/definitions/store.Directive"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/directives/custom": {
+            "get": {
+                "description": "Returns all registered custom directives, optionally filtered by flavor.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "custom-directives"
+                ],
+                "summary": "List custom directives",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Filter by flavor",
+                        "name": "flavor",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.CustomDirectivesListResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/directives/register": {
+            "post": {
+                "description": "Registers custom directive definitions. Updates last_seen_at on conflict.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "custom-directives"
+                ],
+                "summary": "Register custom directives",
+                "parameters": [
+                    {
+                        "description": "Registration request with directives",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handlers.RegisterDirectivesRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.RegisterDirectivesResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/directives/sync": {
+            "post": {
+                "description": "Checks which directive fingerprints are registered. Returns fingerprints not found.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "custom-directives"
+                ],
+                "summary": "Sync custom directive fingerprints",
+                "parameters": [
+                    {
+                        "description": "Sync request with flavor and fingerprints",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handlers.SyncDirectivesRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.SyncDirectivesResponse"
                         }
                     },
                     "400": {
@@ -584,10 +710,27 @@ const docTemplate = `{
         }
     },
     "definitions": {
+        "handlers.CustomDirectivesListResponse": {
+            "type": "object",
+            "properties": {
+                "directives": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/store.CustomDirective"
+                    }
+                }
+            }
+        },
         "handlers.DirectiveRequest": {
             "type": "object",
             "properties": {
                 "action": {
+                    "type": "string"
+                },
+                "directive_name": {
+                    "type": "string"
+                },
+                "fingerprint": {
                     "type": "string"
                 },
                 "flavor": {
@@ -595,6 +738,9 @@ const docTemplate = `{
                 },
                 "grace_period_ms": {
                     "type": "integer"
+                },
+                "parameters": {
+                    "type": "object"
                 },
                 "reason": {
                     "type": "string"
@@ -652,6 +798,28 @@ const docTemplate = `{
                 }
             }
         },
+        "handlers.RegisterDirectivesRequest": {
+            "type": "object",
+            "properties": {
+                "directives": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/store.CustomDirective"
+                    }
+                },
+                "flavor": {
+                    "type": "string"
+                }
+            }
+        },
+        "handlers.RegisterDirectivesResponse": {
+            "type": "object",
+            "properties": {
+                "registered": {
+                    "type": "integer"
+                }
+            }
+        },
         "handlers.SessionResponse": {
             "type": "object",
             "properties": {
@@ -663,6 +831,39 @@ const docTemplate = `{
                 },
                 "session": {
                     "$ref": "#/definitions/store.Session"
+                }
+            }
+        },
+        "handlers.SyncDirectivesRequest": {
+            "type": "object",
+            "properties": {
+                "directives": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "fingerprint": {
+                                "type": "string"
+                            },
+                            "name": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                },
+                "flavor": {
+                    "type": "string"
+                }
+            }
+        },
+        "handlers.SyncDirectivesResponse": {
+            "type": "object",
+            "properties": {
+                "unknown_fingerprints": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
                 }
             }
         },
@@ -720,6 +921,33 @@ const docTemplate = `{
                 }
             }
         },
+        "store.CustomDirective": {
+            "type": "object",
+            "properties": {
+                "description": {
+                    "type": "string"
+                },
+                "fingerprint": {
+                    "type": "string"
+                },
+                "flavor": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "last_seen_at": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "parameters": {},
+                "registered_at": {
+                    "type": "string"
+                }
+            }
+        },
         "store.DataPoint": {
             "type": "object",
             "properties": {
@@ -757,6 +985,9 @@ const docTemplate = `{
                 },
                 "issued_by": {
                     "type": "string"
+                },
+                "payload": {
+                    "type": "object"
                 },
                 "reason": {
                     "type": "string"

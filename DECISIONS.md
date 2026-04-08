@@ -919,3 +919,20 @@ visible without scrolling. Engineering dashboards need density. Every pixel shou
 communicate status. The event color system provides instant visual classification
 without reading labels.
 
+
+---
+
+## D060 -- Custom directives
+
+**Decision:** Decorator-based registration at import time. SHA256+base64 fingerprint
+for versioning. Sync at init() -- sensor sends fingerprints, server returns unknown
+fingerprints, sensor registers full schema for unknown only. Known fingerprints get
+last_seen_at bumped. Execution in _apply_directive() before next LLM call, 5s timeout,
+fail open on error or timeout. Results posted as directive_result events in the session
+timeline.
+
+**Rejected:** YAML-only approach -- decorator is the primary interface. YAML is a
+future alternative for teams that cannot modify agent code.
+**Rejected:** Execution in a separate thread -- sensor is a library wrapper not an
+OS agent (rule 32).
+

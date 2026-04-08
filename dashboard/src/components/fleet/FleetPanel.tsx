@@ -17,9 +17,10 @@ interface FleetPanelProps {
   flavors: FlavorSummary[];
   onFlavorClick?: (flavor: string) => void;
   activeFlavorFilter?: string | null;
+  children?: React.ReactNode;
 }
 
-export function FleetPanel({ flavors, onFlavorClick, activeFlavorFilter }: FleetPanelProps) {
+export function FleetPanel({ flavors, onFlavorClick, activeFlavorFilter, children }: FleetPanelProps) {
   const totalSessions = flavors.reduce((s, f) => s + f.session_count, 0);
   const totalActive = flavors.reduce((s, f) => s + f.active_count, 0);
   const totalTokens = flavors.reduce((s, f) => s + f.tokens_used_total, 0);
@@ -94,6 +95,8 @@ export function FleetPanel({ flavors, onFlavorClick, activeFlavorFilter }: Fleet
           <PolicyEventList />
         </CardContent>
       </Card>
+
+      {children}
     </div>
   );
 }

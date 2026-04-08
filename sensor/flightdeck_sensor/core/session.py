@@ -22,6 +22,8 @@ from flightdeck_sensor.core.policy import PolicyCache
 from flightdeck_sensor.core.types import (
     Directive,
     DirectiveAction,
+    DirectiveContext,
+    DirectiveRegistration,
     EventType,
     SensorConfig,
     SessionState,
@@ -75,10 +77,16 @@ class Session:
     # ------------------------------------------------------------------
 
     def start(self) -> None:
-        """Fire SESSION_START, register handlers, and fetch policy."""
+        """Fire SESSION_START, register handlers, fetch policy, and sync directives."""
         self._post_event(EventType.SESSION_START)
         self._register_handlers()
         self._preflight_policy()
+
+        from flightdeck_sensor import _directive_registry
+
+        if _directive_registry:
+            self._sync_directives(_directive_registry)
+
         if not self.config.quiet:
             _log.info(
                 "Flightdeck session started: flavor=%s session=%s",
@@ -235,6 +243,176 @@ class Session:
             _log.debug("preflight policy fetch failed, proceeding with empty cache", exc_info=True)
 
     # ------------------------------------------------------------------
+    # Custom directives
+    # ------------------------------------------------------------------
+
+    def _sync_directives(
+        self, registry: dict[str, DirectiveRegistration]
+    ) -> None:
+        """Sync registered custom directives with the control plane.
+
+        Sends fingerprints to the server. For any the server does not
+        recognise, sends the full schema in a follow-up register call.
+        Fails open on any error.
+        """
+        try:
+            summaries = [
+                {"name": reg.name, "fingerprint": reg.fingerprint}
+                for reg in registry.values()
+            ]
+            unknown_fps = self.client.sync_directives(
+                self.config.agent_flavor, summaries
+            )
+            if unknown_fps:
+                unknown_set = set(unknown_fps)
+                to_register = [
+                    {
+                        "name": reg.name,
+                        "description": reg.description,
+                        "fingerprint": reg.fingerprint,
+                        "parameters": [
+                            {
+                                "name": p.name,
+                                "type": p.type,
+                                "description": p.description,
+                                "options": p.options,
+                                "required": p.required,
+                                "default": p.default,
+                            }
+                            for p in reg.parameters
+                        ],
+                    }
+                    for reg in registry.values()
+                    if reg.fingerprint in unknown_set
+                ]
+                if to_register:
+                    self.client.register_directives(
+                        self.config.agent_flavor, to_register
+                    )
+        except Exception:
+            _log.debug(
+                "directive sync failed, proceeding without sync", exc_info=True
+            )
+
+    def _build_directive_context(self) -> DirectiveContext:
+        """Build an execution context for a custom directive handler."""
+        with self._lock:
+            tokens = self._tokens_used
+            model = self._model or ""
+        return DirectiveContext(
+            session_id=self.config.session_id,
+            flavor=self.config.agent_flavor,
+            tokens_used=tokens,
+            model=model,
+        )
+
+    def _build_directive_result_event(
+        self,
+        directive_name: str,
+        success: bool,
+        result: Any = None,
+        error: str | None = None,
+    ) -> dict[str, Any]:
+        """Build a directive_result event payload."""
+        return self._build_payload(
+            EventType.DIRECTIVE_RESULT,
+            directive_name=directive_name,
+            directive_success=success,
+            directive_result=result,
+            directive_error=error,
+        )
+
+    def _execute_custom_directive(self, directive: Directive) -> None:
+        """Execute a custom directive handler by name.
+
+        Looks up the handler in the global registry, verifies the
+        fingerprint matches, executes with a 5-second timeout
+        (SIGALRM on non-Windows), and posts a directive_result event.
+        Never raises -- always fails open.
+        """
+        from flightdeck_sensor import _directive_registry
+
+        name = directive.payload.get("name", "")
+        fingerprint = directive.payload.get("fingerprint", "")
+        params = directive.payload.get("parameters", {})
+
+        reg = _directive_registry.get(name)
+        if reg is None:
+            _log.warning(
+                "[flightdeck] custom directive '%s' not found in registry", name
+            )
+            payload = self._build_directive_result_event(
+                name, success=False, error="handler not found"
+            )
+            self.event_queue.enqueue(payload)
+            return
+
+        if reg.fingerprint != fingerprint:
+            _log.warning(
+                "[flightdeck] custom directive '%s' fingerprint mismatch "
+                "(expected %s, got %s)",
+                name,
+                reg.fingerprint,
+                fingerprint,
+            )
+            payload = self._build_directive_result_event(
+                name, success=False, error="fingerprint mismatch"
+            )
+            self.event_queue.enqueue(payload)
+            return
+
+        ctx = self._build_directive_context()
+
+        try:
+            result = self._run_handler_with_timeout(reg.handler, ctx, params)
+            payload = self._build_directive_result_event(
+                name, success=True, result=result
+            )
+            self.event_queue.enqueue(payload)
+        except TimeoutError:
+            _log.warning(
+                "[flightdeck] custom directive '%s' timed out after 5s", name
+            )
+            payload = self._build_directive_result_event(
+                name, success=False, error="timeout"
+            )
+            self.event_queue.enqueue(payload)
+        except Exception as exc:
+            _log.warning(
+                "[flightdeck] custom directive '%s' raised: %s", name, exc
+            )
+            payload = self._build_directive_result_event(
+                name, success=False, error=str(exc)
+            )
+            self.event_queue.enqueue(payload)
+
+    @staticmethod
+    def _run_handler_with_timeout(
+        handler: Any,
+        ctx: DirectiveContext,
+        params: dict[str, Any],
+    ) -> Any:
+        """Run a directive handler with a 5-second timeout.
+
+        Uses SIGALRM on non-Windows platforms. On Windows, runs without
+        a timeout (the handler is trusted to return quickly).
+        """
+        if os.name != "nt" and threading.current_thread() is threading.main_thread():
+            def _alarm_handler(signum: int, frame: Any) -> None:
+                raise TimeoutError("custom directive handler timed out")
+
+            old_handler = signal.signal(signal.SIGALRM, _alarm_handler)
+            signal.alarm(5)
+            try:
+                result: Any = handler(ctx, **params)
+            finally:
+                signal.alarm(0)
+                signal.signal(signal.SIGALRM, old_handler)
+            return result
+        else:
+            return handler(ctx, **params)
+
+    # ------------------------------------------------------------------
     # Event posting
     # ------------------------------------------------------------------
 
@@ -350,6 +528,9 @@ class Session:
             _log.warning(
                 "[flightdeck] directive action not yet implemented: checkpoint. Ignoring.",
             )
+
+        elif directive.action == DirectiveAction.CUSTOM:
+            self._execute_custom_directive(directive)
 
         else:
             _log.debug("[flightdeck] unknown directive action: %s", directive.action.value)

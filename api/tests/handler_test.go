@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -182,6 +183,19 @@ func (m *mockStore) GetActiveSessionIDsByFlavor(_ context.Context, flavor string
 		}
 	}
 	return ids, nil
+}
+
+func (m *mockStore) Search(_ context.Context, query string) (*store.SearchResults, error) {
+	if query == "no-match" {
+		return &store.SearchResults{
+			Agents: []store.SearchResultAgent{}, Sessions: []store.SearchResultSession{}, Events: []store.SearchResultEvent{},
+		}, nil
+	}
+	return &store.SearchResults{
+		Agents:   []store.SearchResultAgent{{Flavor: "test-agent", AgentType: "autonomous", LastSeen: "2026-04-08"}},
+		Sessions: []store.SearchResultSession{{SessionID: "s1", Flavor: "test-agent", Host: "host-1", State: "active", StartedAt: "2026-04-08"}},
+		Events:   []store.SearchResultEvent{{EventID: "e1", SessionID: "s1", EventType: "post_call", ToolName: "search", Model: "claude", OccurredAt: "2026-04-08"}},
+	}, nil
 }
 
 func (m *mockStore) QueryAnalytics(_ context.Context, params store.AnalyticsParams) (*store.AnalyticsResponse, error) {
@@ -919,5 +933,80 @@ func TestContentHandler_Returns400WhenNoID(t *testing.T) {
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// --- Search Tests ---
+
+func TestSearchReturnsResults(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.SearchHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/search?q=test", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["agents"] == nil {
+		t.Error("expected agents in response")
+	}
+	if resp["sessions"] == nil {
+		t.Error("expected sessions in response")
+	}
+	if resp["events"] == nil {
+		t.Error("expected events in response")
+	}
+}
+
+func TestSearchMissingQuery(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.SearchHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/search", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestSearchEmptyQuery(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.SearchHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/search?q=", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestSearchQueryTooLong(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.SearchHandler(store.WrapStore(s))
+	longQ := strings.Repeat("a", 201)
+	req := httptest.NewRequest("GET", "/v1/search?q="+longQ, nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestSearchNoResults(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.SearchHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/search?q=no-match", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200 even with no results, got %d", w.Code)
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	agents := resp["agents"].([]any)
+	if len(agents) != 0 {
+		t.Errorf("expected empty agents, got %d", len(agents))
 	}
 }

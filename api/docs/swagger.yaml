@@ -203,6 +203,58 @@ definitions:
       warn_at_pct:
         type: integer
     type: object
+  store.SearchResultAgent:
+    properties:
+      agent_type:
+        type: string
+      flavor:
+        type: string
+      last_seen:
+        type: string
+    type: object
+  store.SearchResultEvent:
+    properties:
+      event_id:
+        type: string
+      event_type:
+        type: string
+      model:
+        type: string
+      occurred_at:
+        type: string
+      session_id:
+        type: string
+      tool_name:
+        type: string
+    type: object
+  store.SearchResultSession:
+    properties:
+      flavor:
+        type: string
+      host:
+        type: string
+      session_id:
+        type: string
+      started_at:
+        type: string
+      state:
+        type: string
+    type: object
+  store.SearchResults:
+    properties:
+      agents:
+        items:
+          $ref: '#/definitions/store.SearchResultAgent'
+        type: array
+      events:
+        items:
+          $ref: '#/definitions/store.SearchResultEvent'
+        type: array
+      sessions:
+        items:
+          $ref: '#/definitions/store.SearchResultSession'
+        type: array
+    type: object
   store.Session:
     properties:
       agent_type:
@@ -557,6 +609,34 @@ paths:
       summary: Get effective policy
       tags:
       - policies
+  /v1/search:
+    get:
+      description: Searches agents, sessions, and events by partial match. Returns
+        up to 5 results per group.
+      parameters:
+      - description: Search query (min 1, max 200 characters)
+        in: query
+        name: q
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/store.SearchResults'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      summary: Cross-entity search
+      tags:
+      - search
   /v1/sessions/{id}:
     get:
       description: Returns session metadata (including effective policy thresholds)

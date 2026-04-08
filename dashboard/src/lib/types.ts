@@ -190,3 +190,36 @@ export interface EventContent {
   response: any;
   captured_at: string;
 }
+
+/** Search result: agent summary. */
+export interface SearchResultAgent {
+  flavor: string;
+  agent_type: string;
+  last_seen: string;
+}
+
+/** Search result: session summary. */
+export interface SearchResultSession {
+  session_id: string;
+  flavor: string;
+  host: string;
+  state: string;
+  started_at: string;
+}
+
+/** Search result: event summary. */
+export interface SearchResultEvent {
+  event_id: string;
+  session_id: string;
+  event_type: string;
+  tool_name: string;
+  model: string;
+  occurred_at: string;
+}
+
+/** Combined search results from GET /v1/search. */
+export interface SearchResults {
+  agents: SearchResultAgent[];
+  sessions: SearchResultSession[];
+  events: SearchResultEvent[];
+}

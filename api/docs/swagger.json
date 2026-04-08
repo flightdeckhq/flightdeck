@@ -458,6 +458,47 @@
                 }
             }
         },
+        "/v1/search": {
+            "get": {
+                "description": "Searches agents, sessions, and events by partial match. Returns up to 5 results per group.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "search"
+                ],
+                "summary": "Cross-entity search",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Search query (min 1, max 200 characters)",
+                        "name": "q",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/store.SearchResults"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/v1/sessions/{id}": {
             "get": {
                 "description": "Returns session metadata (including effective policy thresholds) and all events in chronological order",
@@ -837,6 +878,86 @@
                 },
                 "warn_at_pct": {
                     "type": "integer"
+                }
+            }
+        },
+        "store.SearchResultAgent": {
+            "type": "object",
+            "properties": {
+                "agent_type": {
+                    "type": "string"
+                },
+                "flavor": {
+                    "type": "string"
+                },
+                "last_seen": {
+                    "type": "string"
+                }
+            }
+        },
+        "store.SearchResultEvent": {
+            "type": "object",
+            "properties": {
+                "event_id": {
+                    "type": "string"
+                },
+                "event_type": {
+                    "type": "string"
+                },
+                "model": {
+                    "type": "string"
+                },
+                "occurred_at": {
+                    "type": "string"
+                },
+                "session_id": {
+                    "type": "string"
+                },
+                "tool_name": {
+                    "type": "string"
+                }
+            }
+        },
+        "store.SearchResultSession": {
+            "type": "object",
+            "properties": {
+                "flavor": {
+                    "type": "string"
+                },
+                "host": {
+                    "type": "string"
+                },
+                "session_id": {
+                    "type": "string"
+                },
+                "started_at": {
+                    "type": "string"
+                },
+                "state": {
+                    "type": "string"
+                }
+            }
+        },
+        "store.SearchResults": {
+            "type": "object",
+            "properties": {
+                "agents": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/store.SearchResultAgent"
+                    }
+                },
+                "events": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/store.SearchResultEvent"
+                    }
+                },
+                "sessions": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/store.SearchResultSession"
+                    }
                 }
             }
         },

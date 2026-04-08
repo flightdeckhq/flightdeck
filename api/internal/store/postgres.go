@@ -30,6 +30,7 @@ type Querier interface {
 	CreateDirective(ctx context.Context, d Directive) (*Directive, error)
 	GetActiveSessionIDsByFlavor(ctx context.Context, flavor string) ([]string, error)
 	QueryAnalytics(ctx context.Context, params AnalyticsParams) (*AnalyticsResponse, error)
+	Search(ctx context.Context, query string) (*SearchResults, error)
 }
 
 // WrapStore returns a Querier from any compatible implementation.

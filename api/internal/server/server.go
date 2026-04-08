@@ -34,6 +34,7 @@ func New(addr string, s store.Querier, hub *ws.Hub, corsOrigin string) *http.Ser
 	mux.Handle("DELETE /v1/policies/{id}", handlers.PolicyDeleteHandler(s))
 	mux.Handle("POST /v1/directives", handlers.CreateDirectiveHandler(s))
 	mux.Handle("GET /v1/analytics", handlers.AnalyticsHandler(s))
+	mux.Handle("GET /v1/search", handlers.SearchHandler(s))
 	mux.Handle("GET /v1/stream", handlers.StreamHandler(hub))
 	mux.Handle("GET /health", handlers.HealthHandler())
 	mux.Handle("GET /docs/", httpSwagger.WrapHandler)

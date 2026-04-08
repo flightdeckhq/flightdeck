@@ -226,17 +226,26 @@ class Session:
             )
             with urllib.request.urlopen(req, timeout=_PREFLIGHT_TIMEOUT_SECS) as resp:
                 data = json.loads(resp.read().decode())
+                from flightdeck_sensor.core.schemas import PolicyResponseSchema
+                from pydantic import ValidationError
+
+                try:
+                    parsed = PolicyResponseSchema.model_validate(data)
+                except ValidationError:
+                    _log.warning("preflight policy validation failed, using empty cache")
+                    return
+
                 policy_fields: dict[str, Any] = {}
-                if "token_limit" in data:
-                    policy_fields["token_limit"] = data["token_limit"]
-                if "warn_at_pct" in data:
-                    policy_fields["warn_at_pct"] = data["warn_at_pct"]
-                if "degrade_at_pct" in data:
-                    policy_fields["degrade_at_pct"] = data["degrade_at_pct"]
-                if "degrade_to" in data:
-                    policy_fields["degrade_to"] = data["degrade_to"]
-                if "block_at_pct" in data:
-                    policy_fields["block_at_pct"] = data["block_at_pct"]
+                if parsed.token_limit is not None:
+                    policy_fields["token_limit"] = parsed.token_limit
+                if parsed.warn_at_pct is not None:
+                    policy_fields["warn_at_pct"] = parsed.warn_at_pct
+                if parsed.degrade_at_pct is not None:
+                    policy_fields["degrade_at_pct"] = parsed.degrade_at_pct
+                if parsed.degrade_to is not None:
+                    policy_fields["degrade_to"] = parsed.degrade_to
+                if parsed.block_at_pct is not None:
+                    policy_fields["block_at_pct"] = parsed.block_at_pct
                 if policy_fields:
                     self.policy.update(policy_fields)
         except Exception:
@@ -331,10 +340,17 @@ class Session:
         Never raises -- always fails open.
         """
         from flightdeck_sensor import _directive_registry
+        from flightdeck_sensor.core.schemas import DirectivePayloadSchema
 
-        name = directive.payload.get("name", "")
-        fingerprint = directive.payload.get("fingerprint", "")
-        params = directive.payload.get("parameters", {})
+        try:
+            from pydantic import ValidationError
+            parsed_payload = DirectivePayloadSchema.model_validate(directive.payload)
+            name = parsed_payload.directive_name
+            fingerprint = parsed_payload.fingerprint
+            params = parsed_payload.parameters
+        except (ValidationError, Exception) as exc:
+            _log.warning("[flightdeck] custom directive payload validation failed: %s", exc)
+            return
 
         reg = _directive_registry.get(name)
         if reg is None:

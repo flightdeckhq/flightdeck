@@ -9,6 +9,9 @@ description = "In-process agent observability sensor for Flightdeck"
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.9"
+dependencies = [
+    "pydantic>=2.0",
+]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",

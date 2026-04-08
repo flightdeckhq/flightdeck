@@ -318,7 +318,7 @@ def test_execute_custom_directive_success() -> None:
         d = Directive(
             action=DirectiveAction.CUSTOM,
             reason="test",
-            payload={"name": name, "fingerprint": fp, "parameters": {}},
+            payload={"directive_name": name, "fingerprint": fp, "parameters": {}},
         )
         session._execute_custom_directive(d)
 
@@ -339,7 +339,7 @@ def test_execute_custom_directive_handler_not_found() -> None:
     d = Directive(
         action=DirectiveAction.CUSTOM,
         reason="test",
-        payload={"name": "nonexistent", "fingerprint": "x", "parameters": {}},
+        payload={"directive_name": "nonexistent", "fingerprint": "x", "parameters": {}},
     )
     session._execute_custom_directive(d)
 
@@ -368,7 +368,7 @@ def test_execute_custom_directive_fingerprint_mismatch() -> None:
         d = Directive(
             action=DirectiveAction.CUSTOM,
             reason="test",
-            payload={"name": name, "fingerprint": "wrong_fp", "parameters": {}},
+            payload={"directive_name": name, "fingerprint": "wrong_fp", "parameters": {}},
         )
         session._execute_custom_directive(d)
 
@@ -404,7 +404,7 @@ def test_execute_custom_directive_handler_raises() -> None:
         d = Directive(
             action=DirectiveAction.CUSTOM,
             reason="test",
-            payload={"name": name, "fingerprint": fp, "parameters": {}},
+            payload={"directive_name": name, "fingerprint": fp, "parameters": {}},
         )
         # Should not raise
         session._execute_custom_directive(d)
@@ -445,7 +445,7 @@ def test_execute_custom_directive_passes_parameters() -> None:
         d = Directive(
             action=DirectiveAction.CUSTOM,
             reason="test",
-            payload={"name": name, "fingerprint": fp, "parameters": {"dur": 42}},
+            payload={"directive_name": name, "fingerprint": fp, "parameters": {"dur": 42}},
         )
         session._execute_custom_directive(d)
 
@@ -479,7 +479,7 @@ def test_apply_directive_dispatches_custom() -> None:
         d = Directive(
             action=DirectiveAction.CUSTOM,
             reason="test",
-            payload={"name": name, "fingerprint": fp, "parameters": {}},
+            payload={"directive_name": name, "fingerprint": fp, "parameters": {}},
         )
         session._apply_directive(d)
 
@@ -528,7 +528,7 @@ def test_client_sync_directives_returns_unknown(
     mock_control_plane: dict[str, Any],
 ) -> None:
     """sync_directives returns the unknown list from the server."""
-    mock_control_plane["set_response"]({"unknown": ["fp_abc"]})
+    mock_control_plane["set_response"]({"unknown_fingerprints": ["fp_abc"]})
     client = ControlPlaneClient(
         server=mock_control_plane["url"],
         token="test-token",

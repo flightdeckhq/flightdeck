@@ -75,10 +75,17 @@ class ControlPlaneClient:
             method="POST",
         )
         try:
+            from flightdeck_sensor.core.schemas import SyncResponseSchema
+            from pydantic import ValidationError
+
             with urllib.request.urlopen(req, timeout=1) as resp:
-                data: dict[str, Any] = json.loads(resp.read().decode())
-                unknown: list[str] = data.get("unknown", [])
-                return unknown
+                data = json.loads(resp.read().decode())
+                try:
+                    parsed = SyncResponseSchema.model_validate(data)
+                    return parsed.unknown_fingerprints
+                except ValidationError:
+                    _log.warning("sync response validation failed, returning empty")
+                    return []
         except Exception:
             _log.debug("directives sync failed, proceeding without sync", exc_info=True)
             return []
@@ -166,20 +173,33 @@ class ControlPlaneClient:
 
     @staticmethod
     def _parse_directive(body: dict[str, Any]) -> Directive | None:
-        """Extract a :class:`Directive` from the response envelope, if present."""
+        """Extract a :class:`Directive` from the response envelope, if present.
+
+        Uses Pydantic DirectiveResponseSchema for structured validation.
+        On ValidationError: log warning and return None (fail open).
+        """
+        from flightdeck_sensor.core.schemas import DirectiveResponseSchema
+
         raw = body.get("directive")
         if raw is None:
             return None
         try:
-            payload = raw.get("payload", {})
-            if not isinstance(payload, dict):
-                payload = {}
-            if "degrade_to" in raw and "degrade_to" not in payload:
-                payload["degrade_to"] = raw["degrade_to"]
+            from pydantic import ValidationError
+
+            try:
+                parsed = DirectiveResponseSchema.model_validate(raw)
+            except ValidationError as ve:
+                _log.warning("Directive validation failed: %s", ve)
+                return None
+
+            payload: dict[str, Any] = parsed.payload or {}
+            if parsed.degrade_to and "degrade_to" not in payload:
+                payload["degrade_to"] = parsed.degrade_to
+
             return Directive(
-                action=DirectiveAction(raw["action"]),
-                reason=raw.get("reason", ""),
-                grace_period_ms=raw.get("grace_period_ms", 5000),
+                action=DirectiveAction(parsed.action),
+                reason=parsed.reason or "",
+                grace_period_ms=parsed.grace_period_ms,
                 payload=payload,
             )
         except (KeyError, ValueError) as exc:

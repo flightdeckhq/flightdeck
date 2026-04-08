@@ -936,3 +936,22 @@ future alternative for teams that cannot modify agent code.
 **Rejected:** Execution in a separate thread -- sensor is a library wrapper not an
 OS agent (rule 32).
 
+
+---
+
+## D061 -- Pydantic for sensor schema validation
+
+**Decision:** Pydantic v2 added to sensor runtime dependencies for validation of
+directive payloads, policy responses, and sync responses from the control plane.
+
+**Reasoning:** Manual `.get()` parsing has no type checking and silently accepts
+malformed payloads from the server. Pydantic gives clear ValidationError with
+field-level detail and fail-open behavior on parse failure. Go API handlers keep
+manual validation -- the existing approach is idiomatic and already well-tested.
+
+Parse sites using Pydantic:
+1. `transport/client.py _parse_directive()` — DirectiveResponseSchema
+2. `transport/client.py sync_directives()` — SyncResponseSchema
+3. `core/session.py _execute_custom_directive()` — DirectivePayloadSchema
+4. `core/session.py _preflight_policy()` — PolicyResponseSchema
+

@@ -7,7 +7,7 @@ Uses health check endpoints to wait for readiness.
 from __future__ import annotations
 
 import time
-from typing import Any
+from typing import Any, Callable
 
 import pytest
 import urllib.request
@@ -148,3 +148,139 @@ def make_event(
     }
     payload.update(extra)
     return payload
+
+
+def create_policy(
+    scope: str,
+    scope_value: str,
+    token_limit: int | None,
+    warn_at_pct: int | None = None,
+    degrade_at_pct: int | None = None,
+    degrade_to: str | None = None,
+    block_at_pct: int | None = None,
+) -> dict[str, Any]:
+    """Create a token policy via POST /api/v1/policies."""
+    body: dict[str, Any] = {
+        "scope": scope,
+        "scope_value": scope_value,
+        "token_limit": token_limit,
+        "warn_at_pct": warn_at_pct,
+        "degrade_at_pct": degrade_at_pct,
+        "degrade_to": degrade_to,
+        "block_at_pct": block_at_pct,
+    }
+    data = json.dumps(body).encode()
+    req = urllib.request.Request(
+        f"{API_URL}/v1/policies",
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=5) as resp:
+        return json.loads(resp.read())  # type: ignore[no-any-return]
+
+
+def delete_policy(policy_id: str) -> None:
+    """Delete a token policy via DELETE /api/v1/policies/:id."""
+    req = urllib.request.Request(
+        f"{API_URL}/v1/policies/{policy_id}",
+        method="DELETE",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5):
+            pass
+    except urllib.error.HTTPError:
+        pass  # Already deleted or not found -- safe to ignore
+
+
+def get_session_detail(session_id: str) -> dict[str, Any]:
+    """GET /api/v1/sessions/:id -- returns session with events and policy fields."""
+    req = urllib.request.Request(f"{API_URL}/v1/sessions/{session_id}")
+    with urllib.request.urlopen(req, timeout=5) as resp:
+        return json.loads(resp.read())  # type: ignore[no-any-return]
+
+
+def query_directives(session_id: str) -> list[dict[str, Any]]:
+    """Query directives table directly via docker exec psql."""
+    import subprocess
+
+    sql = (
+        f"SELECT COALESCE(json_agg(row_to_json(d)), '[]'::json) "
+        f"FROM directives d "
+        f"WHERE d.session_id = '{session_id}'::uuid"
+    )
+    result = subprocess.run(
+        ["docker", "exec", "docker-postgres-1", "psql", "-U", "flightdeck",
+         "-d", "flightdeck", "-t", "-c", sql],
+        capture_output=True, text=True, timeout=10,
+    )
+    raw = result.stdout.strip()
+    if not raw or raw == "null":
+        return []
+    return json.loads(raw)  # type: ignore[no-any-return]
+
+
+def wait_until(
+    condition_fn: Callable[[], bool],
+    timeout: float = 10.0,
+    interval: float = 0.25,
+    msg: str = "condition not met",
+) -> None:
+    """Poll condition_fn until it returns True or timeout is reached.
+
+    Never use time.sleep() as a fixed wait -- use this instead.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if condition_fn():
+            return
+        time.sleep(interval)
+    raise TimeoutError(f"Timed out after {timeout}s: {msg}")
+
+
+def session_exists_in_fleet(session_id: str) -> bool:
+    """Check if a session appears in the fleet endpoint."""
+    fleet = get_fleet()
+    for flavor in fleet.get("flavors", []):
+        for s in flavor.get("sessions", []):
+            if s.get("session_id") == session_id:
+                return True
+    return False
+
+
+def get_session_event_count(session_id: str) -> int:
+    """Return the number of events for a session."""
+    try:
+        detail = get_session_detail(session_id)
+        return len(detail.get("events", []))
+    except Exception:
+        return 0
+
+
+def wait_for_state(
+    session_id: str, expected_state: str, timeout: float = 10.0,
+) -> dict[str, Any]:
+    """Poll until session reaches expected_state or timeout."""
+    detail: dict[str, Any] = {}
+
+    def _check() -> bool:
+        nonlocal detail
+        try:
+            detail = get_session_detail(session_id)
+            return detail["session"]["state"] == expected_state
+        except Exception:
+            return False
+
+    wait_until(
+        _check,
+        timeout=timeout,
+        msg=f"session {session_id} did not reach state={expected_state}",
+    )
+    return detail
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    config.addinivalue_line(
+        "markers",
+        "slow: marks tests that require waiting for background reconciler (60s+)",
+    )

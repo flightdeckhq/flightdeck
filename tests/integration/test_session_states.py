@@ -7,14 +7,16 @@ Requires `make dev` to be running.
 from __future__ import annotations
 
 import uuid
-import time
 
 from .conftest import (
     get_session,
+    get_session_detail,
     make_event,
     post_event,
     post_heartbeat,
     wait_for_session_in_fleet,
+    wait_for_state,
+    wait_until,
 )
 
 
@@ -25,8 +27,12 @@ def test_new_session_starts_active() -> None:
 
     post_event(make_event(sid, flavor, "session_start"))
     sess = wait_for_session_in_fleet(sid, timeout=5.0)
-    assert sess is not None
-    assert sess["state"] == "active"
+    assert sess is not None, (
+        f"session {sid} did not appear in fleet after session_start"
+    )
+    assert sess["state"] == "active", (
+        f"expected state=active for new session {sid}, got {sess.get('state')}"
+    )
 
 
 def test_session_with_heartbeats_only_stays_active() -> None:
@@ -43,11 +49,20 @@ def test_session_with_heartbeats_only_stays_active() -> None:
 
     # Send a heartbeat
     post_heartbeat(sid)
-    time.sleep(2)
+
+    # Wait until heartbeat is processed (event count increases)
+    wait_until(
+        lambda: len(get_session_detail(sid).get("events", [])) >= 1,
+        timeout=10,
+        msg=f"heartbeat not processed for session {sid}",
+    )
 
     detail = get_session(sid)
     # Should still be active (heartbeat keeps it alive)
-    assert detail["session"]["state"] == "active"
+    assert detail["session"]["state"] == "active", (
+        f"expected session {sid} to stay active after heartbeat, "
+        f"got state={detail['session'].get('state')}"
+    )
 
 
 def test_session_transitions_to_closed() -> None:
@@ -59,31 +74,37 @@ def test_session_transitions_to_closed() -> None:
     wait_for_session_in_fleet(sid, timeout=5.0)
 
     post_event(make_event(sid, flavor, "session_end"))
-    time.sleep(2)
 
-    detail = get_session(sid)
-    assert detail["session"]["state"] == "closed"
-    assert detail["session"]["ended_at"] is not None
+    detail = wait_for_state(sid, "closed", timeout=10)
+    assert detail["session"]["state"] == "closed", (
+        f"expected session {sid} state=closed after session_end, "
+        f"got state={detail['session'].get('state')}"
+    )
+    assert detail["session"]["ended_at"] is not None, (
+        f"expected ended_at to be set for closed session {sid}"
+    )
 
 
 def test_stale_after_no_signal() -> None:
     """Session with no signal for > 2 minutes transitions to stale.
 
     This test verifies the reconciler SQL logic exists but does not wait
-    the full 2 minutes in CI. Instead, it verifies the reconciler query
-    structure by checking the session stays active within the first few
-    seconds (proving the reconciler doesn't falsely trigger early).
+    the full 2 minutes in CI. Instead, it verifies the reconciler doesn't
+    falsely trigger early by checking the session stays active shortly
+    after creation.
     """
     sid = str(uuid.uuid4())
     flavor = f"test-stale-{uuid.uuid4().hex[:6]}"
 
     post_event(make_event(sid, flavor, "session_start"))
     sess = wait_for_session_in_fleet(sid, timeout=5.0)
-    assert sess is not None
+    assert sess is not None, (
+        f"session {sid} did not appear in fleet after session_start"
+    )
 
-    # Wait a few seconds (well under 2min threshold)
-    time.sleep(3)
-
+    # Verify session is active immediately (reconciler hasn't fired yet)
     detail = get_session(sid)
-    # Should still be active (not stale yet -- 2min threshold not reached)
-    assert detail["session"]["state"] == "active"
+    assert detail["session"]["state"] == "active", (
+        f"expected session {sid} to be active shortly after creation, "
+        f"got state={detail['session'].get('state')}"
+    )

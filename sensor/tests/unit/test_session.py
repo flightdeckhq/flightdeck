@@ -12,7 +12,7 @@ from typing import Any
 
 from flightdeck_sensor.core.exceptions import ConfigurationError
 from flightdeck_sensor.core.session import Session
-from flightdeck_sensor.core.types import SensorConfig
+from flightdeck_sensor.core.types import Directive, DirectiveAction, SensorConfig
 from flightdeck_sensor.transport.client import ControlPlaneClient
 
 
@@ -140,9 +140,112 @@ def test_preflight_failure_proceeds_with_empty_cache() -> None:
     assert session.policy.token_limit is None
 
 
+def test_directive_warn_logs_and_continues() -> None:
+    """WARN directive logs warning, enqueues policy_warn event, does not raise."""
+    session, _client = _make_session()
+    eq = MagicMock()
+    session.event_queue = eq
+
+    directive = Directive(
+        action=DirectiveAction.WARN,
+        reason="token usage at 80%",
+    )
+    # Should not raise
+    session._apply_directive(directive)
+
+    # Verify policy_warn event was enqueued
+    eq.enqueue.assert_called_once()
+    payload = eq.enqueue.call_args[0][0]
+    assert payload["event_type"] == "policy_warn"
+    assert payload["source"] == "server"
+    assert payload["reason"] == "token usage at 80%"
+
+
+def test_directive_degrade_sets_model() -> None:
+    """DEGRADE directive sets policy.degrade_to, does not raise."""
+    session, _client = _make_session()
+    directive = Directive(
+        action=DirectiveAction.DEGRADE,
+        reason="budget threshold crossed",
+        payload={"degrade_to": "claude-haiku-4-5"},
+    )
+    session._apply_directive(directive)
+    assert session.policy.degrade_to == "claude-haiku-4-5"
+
+
+def test_directive_policy_update_replaces_cache() -> None:
+    """POLICY_UPDATE directive updates PolicyCache fields."""
+    session, _client = _make_session()
+    directive = Directive(
+        action=DirectiveAction.POLICY_UPDATE,
+        reason="policy changed",
+        payload={
+            "token_limit": 50000,
+            "warn_at_pct": 80,
+            "degrade_at_pct": 85,
+            "block_at_pct": 95,
+        },
+    )
+    session._apply_directive(directive)
+    assert session.policy.token_limit == 50000
+    assert session.policy.warn_at_pct == 80
+    assert session.policy.degrade_at_pct == 85
+    assert session.policy.block_at_pct == 95
+
+
+def test_directive_shutdown_raises() -> None:
+    """SHUTDOWN directive sets shutdown flag with correct reason."""
+    session, _client = _make_session()
+    directive = Directive(
+        action=DirectiveAction.SHUTDOWN,
+        reason="test kill",
+    )
+    session._apply_directive(directive)
+    assert session._shutdown_requested is True
+    assert session._shutdown_reason == "test kill"
+
+
+def test_directive_shutdown_flavor_raises() -> None:
+    """SHUTDOWN_FLAVOR directive sets shutdown flag."""
+    session, _client = _make_session()
+    directive = Directive(
+        action=DirectiveAction.SHUTDOWN_FLAVOR,
+        reason="fleet-wide stop",
+    )
+    session._apply_directive(directive)
+    assert session._shutdown_requested is True
+    assert session._shutdown_reason == "fleet-wide stop"
+
+
 def test_configuration_error_on_empty_server() -> None:
     import flightdeck_sensor
 
     with pytest.raises(ConfigurationError):
         flightdeck_sensor.init(server="", token="tok", quiet=True)
         flightdeck_sensor.teardown()
+
+
+def test_record_usage_accumulates() -> None:
+    """record_usage adds token counts cumulatively, not replacing."""
+    from flightdeck_sensor.core.types import TokenUsage
+
+    session, _client = _make_session()
+    session.record_usage(TokenUsage(input_tokens=100, output_tokens=50))
+    session.record_usage(TokenUsage(input_tokens=100, output_tokens=50))
+    assert session.tokens_used == 300
+
+
+def test_get_status_returns_correct_fields() -> None:
+    """get_status snapshot reflects recorded usage and configured limit."""
+    from flightdeck_sensor.core.types import TokenUsage
+
+    session, _client = _make_session()
+    session._token_limit = 10000
+    session.record_usage(TokenUsage(input_tokens=500, output_tokens=300))
+    status = session.get_status()
+
+    assert status.session_id == session.config.session_id
+    assert status.tokens_used == 800
+    assert status.token_limit == 10000
+    assert status.pct_used is not None
+    assert status.pct_used == 8.0  # (800 / 10000) * 100

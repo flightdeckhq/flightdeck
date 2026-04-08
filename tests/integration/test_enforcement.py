@@ -7,16 +7,18 @@ Requires `make dev` to be running.
 from __future__ import annotations
 
 import uuid
-import time
 
 from .conftest import (
     create_policy,
     delete_policy,
     get_session_detail,
+    get_session_event_count,
     make_event,
     post_event,
     query_directives,
+    session_exists_in_fleet,
     wait_for_session_in_fleet,
+    wait_until,
 )
 
 
@@ -33,26 +35,36 @@ def test_warn_threshold_fires_and_records() -> None:
         )
 
         post_event(make_event(sid, flavor, "session_start"))
-        time.sleep(1)  # Ensure session row exists before post_call
+        wait_until(
+            lambda: session_exists_in_fleet(sid),
+            timeout=10,
+            msg=f"session {sid} did not appear in fleet after session_start",
+        )
+
         post_event(make_event(
             sid, flavor, "post_call",
             tokens_total=10, tokens_used_session=10,
         ))
 
-        sess = wait_for_session_in_fleet(sid, timeout=5.0)
-        assert sess is not None, f"Session {sid} did not appear in fleet"
-        assert sess["flavor"] == flavor
-
-        # Wait for worker processing
-        time.sleep(4)
+        wait_until(
+            lambda: get_session_event_count(sid) >= 2,
+            timeout=10,
+            msg=f"expected >= 2 events for session {sid}",
+        )
 
         detail = get_session_detail(sid)
-        assert len(detail.get("events", [])) >= 2
+        assert len(detail.get("events", [])) >= 2, (
+            f"expected >= 2 events for session {sid}, got {len(detail.get('events', []))}"
+        )
 
         # Verify policy fields from the LEFT JOIN
         session = detail["session"]
-        assert session["policy_token_limit"] == 500
-        assert session["warn_at_pct"] == 1
+        assert session["policy_token_limit"] == 500, (
+            f"expected policy_token_limit=500, got {session.get('policy_token_limit')}"
+        )
+        assert session["warn_at_pct"] == 1, (
+            f"expected warn_at_pct=1, got {session.get('warn_at_pct')}"
+        )
 
     finally:
         if policy:
@@ -72,19 +84,31 @@ def test_warn_fires_only_once() -> None:
         )
 
         post_event(make_event(sid, flavor, "session_start"))
-        time.sleep(1)  # Ensure session row exists before post_call
+        wait_until(
+            lambda: session_exists_in_fleet(sid),
+            timeout=10,
+            msg=f"session {sid} did not appear in fleet after session_start",
+        )
+
         post_event(make_event(
             sid, flavor, "post_call",
             tokens_total=10, tokens_used_session=10,
         ))
-        time.sleep(1)
+        wait_until(
+            lambda: get_session_event_count(sid) >= 2,
+            timeout=10,
+            msg=f"first post_call not processed for session {sid}",
+        )
+
         post_event(make_event(
             sid, flavor, "post_call",
             tokens_total=10, tokens_used_session=20,
         ))
-
-        # Wait for worker processing
-        time.sleep(4)
+        wait_until(
+            lambda: get_session_event_count(sid) >= 3,
+            timeout=10,
+            msg=f"second post_call not processed for session {sid}",
+        )
 
         directives = query_directives(sid)
         warn_directives = [d for d in directives if d.get("action") == "warn"]
@@ -110,14 +134,25 @@ def test_block_threshold_writes_shutdown_directive() -> None:
         )
 
         post_event(make_event(sid, flavor, "session_start"))
-        time.sleep(1)  # Ensure session row exists before post_call
+        wait_until(
+            lambda: session_exists_in_fleet(sid),
+            timeout=10,
+            msg=f"session {sid} did not appear in fleet after session_start",
+        )
+
         post_event(make_event(
             sid, flavor, "post_call",
             tokens_total=5, tokens_used_session=5,
         ))
 
-        # Wait for worker processing
-        time.sleep(4)
+        wait_until(
+            lambda: any(
+                d.get("action") == "shutdown"
+                for d in query_directives(sid)
+            ),
+            timeout=10,
+            msg=f"no shutdown directive written for session {sid}",
+        )
 
         directives = query_directives(sid)
         shutdown_directives = [d for d in directives if d.get("action") == "shutdown"]
@@ -152,10 +187,18 @@ def test_flavor_policy_applies_to_all_sessions() -> None:
         detail_a = get_session_detail(sid_a)
         detail_b = get_session_detail(sid_b)
 
-        assert detail_a["session"]["policy_token_limit"] == 50000
-        assert detail_a["session"]["warn_at_pct"] == 80
-        assert detail_b["session"]["policy_token_limit"] == 50000
-        assert detail_b["session"]["warn_at_pct"] == 80
+        assert detail_a["session"]["policy_token_limit"] == 50000, (
+            f"session A: expected policy_token_limit=50000, got {detail_a['session'].get('policy_token_limit')}"
+        )
+        assert detail_a["session"]["warn_at_pct"] == 80, (
+            f"session A: expected warn_at_pct=80, got {detail_a['session'].get('warn_at_pct')}"
+        )
+        assert detail_b["session"]["policy_token_limit"] == 50000, (
+            f"session B: expected policy_token_limit=50000, got {detail_b['session'].get('policy_token_limit')}"
+        )
+        assert detail_b["session"]["warn_at_pct"] == 80, (
+            f"session B: expected warn_at_pct=80, got {detail_b['session'].get('warn_at_pct')}"
+        )
 
     finally:
         if policy:
@@ -180,9 +223,15 @@ def test_org_policy_applies_when_no_flavor_policy() -> None:
         detail = get_session_detail(sid)
         session = detail["session"]
 
-        assert session["policy_token_limit"] == 200000
-        assert session["warn_at_pct"] == 90
-        assert session.get("degrade_at_pct") is None
+        assert session["policy_token_limit"] == 200000, (
+            f"expected policy_token_limit=200000, got {session.get('policy_token_limit')}"
+        )
+        assert session["warn_at_pct"] == 90, (
+            f"expected warn_at_pct=90, got {session.get('warn_at_pct')}"
+        )
+        assert session.get("degrade_at_pct") is None, (
+            f"expected degrade_at_pct=None, got {session.get('degrade_at_pct')}"
+        )
 
     finally:
         if policy:
@@ -213,8 +262,12 @@ def test_session_policy_overrides_flavor_policy() -> None:
         session = detail["session"]
 
         # Session scope wins over flavor scope
-        assert session["policy_token_limit"] == 10000
-        assert session["warn_at_pct"] == 50
+        assert session["policy_token_limit"] == 10000, (
+            f"expected session-scoped policy_token_limit=10000, got {session.get('policy_token_limit')}"
+        )
+        assert session["warn_at_pct"] == 50, (
+            f"expected session-scoped warn_at_pct=50, got {session.get('warn_at_pct')}"
+        )
 
     finally:
         if session_policy:

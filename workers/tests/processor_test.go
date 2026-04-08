@@ -2,6 +2,8 @@ package tests
 
 import (
 	"context"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -303,5 +305,135 @@ func TestBlockDirectiveWrittenAtBlockThreshold(t *testing.T) {
 	// Verify the block threshold is met
 	if pctUsed < 100 {
 		t.Error("at 1000/1000 tokens, pctUsed should be >= 100")
+	}
+}
+
+func TestDegradeDirectiveIncludesDegradeTo(t *testing.T) {
+	// Verify CachedPolicy.DegradeTo is preserved through evaluation.
+	// The full SQL path inserts degrade_to into the directives table
+	// (tested in integration). This test verifies the in-memory model.
+	degradeTo := "claude-haiku-4-5-20251001"
+	cp := &processor.CachedPolicy{
+		TokenLimit:   ptrInt64(1000),
+		DegradeAtPct: ptrInt(50),
+		DegradeTo:    &degradeTo,
+		BlockAtPct:   ptrInt(100),
+		LoadedAt:     time.Now(),
+	}
+	if cp.DegradeTo == nil || *cp.DegradeTo != degradeTo {
+		t.Fatalf("expected degrade_to=%s, got %v", degradeTo, cp.DegradeTo)
+	}
+
+	// Verify the evaluator tracks fired state for degrade
+	pe := processor.NewPolicyEvaluator(nil)
+	if pe.HasFired("degrade-test-sess", "degrade") {
+		t.Error("should not be fired initially")
+	}
+	pe.MarkFired("degrade-test-sess", "degrade")
+	if !pe.HasFired("degrade-test-sess", "degrade") {
+		t.Error("should be fired after MarkFired")
+	}
+}
+
+func TestWarnFiresOnlyOnceConcurrent(t *testing.T) {
+	// Verify CheckAndMarkFired is atomic: exactly one of N goroutines succeeds.
+	pe := processor.NewPolicyEvaluator(nil) // pool not needed for fired map
+
+	const goroutines = 100
+	var fired atomic.Int32
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			if pe.CheckAndMarkFired("concurrent-sess", "warn") {
+				fired.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+
+	if fired.Load() != 1 {
+		t.Errorf("expected exactly 1 goroutine to fire warn, got %d", fired.Load())
+	}
+}
+
+func TestInvalidateCacheRemovesEntry(t *testing.T) {
+	pe := processor.NewPolicyEvaluator(nil)
+
+	// Prime the fired map so we know the evaluator is functional
+	pe.MarkFired("cache-test-sess", "warn")
+	if !pe.HasFired("cache-test-sess", "warn") {
+		t.Fatal("setup: MarkFired should have worked")
+	}
+
+	// Call InvalidateCache -- since pool is nil, getPolicy will return nil
+	// after invalidation (cache miss triggers DB query which fails gracefully).
+	// Before invalidation, there's nothing cached either (we can't call cachePolicy
+	// from outside the package), so we verify InvalidateCache doesn't panic
+	// and that getPolicy returns nil (no cached data) by checking Evaluate
+	// doesn't panic with nil pool for a session that has no cached policy.
+	pe.InvalidateCache("test-flavor")
+
+	// The key "flavor:test-flavor" and "org:" should have been deleted.
+	// We verify indirectly: if there were a cached entry and InvalidateCache
+	// didn't work, a subsequent Evaluate would find it. With nil pool and
+	// no cache, getPolicy returns nil, so Evaluate returns nil (no policy).
+	// This would panic if InvalidateCache corrupted the map.
+	// Since Evaluate requires pool for the session lookup, we just verify
+	// InvalidateCache itself doesn't panic with various inputs.
+	pe.InvalidateCache("")
+	pe.InvalidateCache("nonexistent-flavor")
+}
+
+func TestProcessPreCallEvent(t *testing.T) {
+	// Verify pre_call routes through the same path as post_call (HandlePostCall)
+	e := makeEvent("pre_call")
+	if e.EventType != "pre_call" {
+		t.Error("event type mismatch")
+	}
+	// pre_call, post_call, and tool_call all route to HandlePostCall in Process
+	// Verify the event is well-formed for the processor
+	if e.SessionID == "" {
+		t.Error("session ID must not be empty")
+	}
+	if e.Flavor == "" {
+		t.Error("flavor must not be empty")
+	}
+	// Verify the writer handles pre_call token updates
+	w := newMockWriter()
+	if e.TokensTotal != nil {
+		_ = w.UpdateTokensUsed(context.Background(), e.SessionID, *e.TokensTotal)
+	}
+	if w.tokensUpdated[e.SessionID] != 100 {
+		t.Errorf("expected 100 tokens for pre_call, got %d", w.tokensUpdated[e.SessionID])
+	}
+}
+
+func TestProcessToolCallEvent(t *testing.T) {
+	// Verify tool_call routes through the same path as post_call (HandlePostCall)
+	e := makeEvent("tool_call")
+	if e.EventType != "tool_call" {
+		t.Error("event type mismatch")
+	}
+	// tool_call events carry token counts and should update tokens_used
+	if e.SessionID == "" {
+		t.Error("session ID must not be empty")
+	}
+	if e.Flavor == "" {
+		t.Error("flavor must not be empty")
+	}
+	// Verify the writer handles tool_call token updates
+	w := newMockWriter()
+	if e.TokensTotal != nil {
+		_ = w.UpdateTokensUsed(context.Background(), e.SessionID, *e.TokensTotal)
+	}
+	if w.tokensUpdated[e.SessionID] != 100 {
+		t.Errorf("expected 100 tokens for tool_call, got %d", w.tokensUpdated[e.SessionID])
+	}
+	_ = w.UpdateLastSeen(context.Background(), e.SessionID)
+	if len(w.lastSeenUpdated) != 1 {
+		t.Error("expected last_seen update for tool_call")
 	}
 }

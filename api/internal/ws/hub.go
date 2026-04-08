@@ -114,6 +114,13 @@ func (h *Hub) Unregister(client *Client) {
 // broadcast relevant updates per client.
 // See DECISIONS.md D044.
 
+// ClientCount returns the number of connected clients (test helper).
+func (h *Hub) ClientCount() int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return len(h.clients)
+}
+
 // Broadcast sends a message to all connected clients.
 func (h *Hub) Broadcast(msg []byte) {
 	h.broadcast <- msg

@@ -29,8 +29,20 @@ jobs:
       - name: ruff check
         run: ruff check flightdeck_sensor/
 
-      - name: Unit tests
-        run: pytest tests/ -v
+      - name: Test with coverage
+        run: |
+          pytest tests/ -v \
+            --cov=flightdeck_sensor \
+            --cov-report=xml:coverage.xml \
+            --cov-fail-under=70
+
+      - name: Upload sensor coverage
+        uses: codecov/codecov-action@v4
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: sensor/coverage.xml
+          flags: sensor
+          fail_ci_if_error: false
 
   go:
     name: Go (ingestion, workers, api)
@@ -59,15 +71,51 @@ jobs:
 
       - name: Test ingestion
         working-directory: ingestion
-        run: go test ./... -v
+        run: |
+          go test ./tests/... -v \
+            -coverprofile=coverage.out \
+            -covermode=atomic \
+            -coverpkg=./internal/...
 
       - name: Test workers
         working-directory: workers
-        run: go test ./... -v
+        run: |
+          go test ./tests/... -v \
+            -coverprofile=coverage.out \
+            -covermode=atomic \
+            -coverpkg=./internal/...
 
       - name: Test api
         working-directory: api
-        run: go test ./... -v
+        run: |
+          go test ./tests/... -v \
+            -coverprofile=coverage.out \
+            -covermode=atomic \
+            -coverpkg=./internal/...
+
+      - name: Upload ingestion coverage
+        uses: codecov/codecov-action@v4
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ingestion/coverage.out
+          flags: ingestion
+          fail_ci_if_error: false
+
+      - name: Upload workers coverage
+        uses: codecov/codecov-action@v4
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: workers/coverage.out
+          flags: workers
+          fail_ci_if_error: false
+
+      - name: Upload API coverage
+        uses: codecov/codecov-action@v4
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: api/coverage.out
+          flags: api
+          fail_ci_if_error: false
 
   dashboard:
     name: Dashboard (TypeScript)

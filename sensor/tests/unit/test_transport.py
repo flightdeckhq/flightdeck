@@ -51,15 +51,6 @@ def test_connectivity_failure_halt_raises() -> None:
         client.post_event({"session_id": "x", "event_type": "post_call"})
 
 
-def test_heartbeat_fires_correct_payload(mock_control_plane: Any) -> None:
-    client = ControlPlaneClient(mock_control_plane["url"], "tok")
-    client.post_heartbeat("sess-123")
-    assert len(mock_control_plane["requests"]) == 1
-    req = mock_control_plane["requests"][0]
-    assert req["path"] == "/v1/heartbeat"
-    assert req["body"]["session_id"] == "sess-123"
-
-
 def test_retry_fires_with_exponential_backoff() -> None:
     call_count = 0
 

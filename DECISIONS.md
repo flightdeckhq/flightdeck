@@ -822,3 +822,23 @@ can be applied to running deployments safely.
 project uses raw pgx SQL (D034) and ORM tools require ORM model definitions.
 golang-migrate works with plain SQL files and is ORM-agnostic.
 
+---
+
+## D057 -- Heartbeat removed from sensor
+
+**Decision:** The sensor no longer sends periodic heartbeat POSTs to the
+ingestion API.
+
+**Reasoning:** The heartbeat served two purposes: (1) updating last_seen_at for
+stale session detection -- already handled by post_call events for active agents;
+the reconciler correctly marks truly idle agents as stale after 2 minutes which
+is the right behavior. (2) delivering directives to idle agents -- this use case
+is not supported. Directives are delivered on the next LLM call. Platform
+engineers are informed of this via the kill switch confirmation dialog.
+
+The heartbeat added a background thread, polling loop, extra HTTP load, and
+teardown complexity for no justified benefit.
+
+The `POST /v1/heartbeat` ingestion endpoint remains to avoid breaking changes
+but the sensor no longer calls it.
+

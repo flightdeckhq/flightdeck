@@ -1,4 +1,4 @@
-"""Tests for Session lifecycle: start, end, heartbeat, signal handlers."""
+"""Tests for Session lifecycle: start, end, signal handlers."""
 
 from __future__ import annotations
 
@@ -26,7 +26,6 @@ def _make_session(
     )
     client = MagicMock(spec=ControlPlaneClient)
     client.post_event.return_value = None
-    client.post_heartbeat.return_value = None
     session = Session(config=config, client=client)
     return session, client
 
@@ -54,23 +53,6 @@ def test_end_is_idempotent() -> None:
     session.end()
     end_calls = [c for c in client.post_event.call_args_list if c[0][0]["event_type"] == "session_end"]
     assert len(end_calls) == 1
-
-
-def test_heartbeat_thread_starts_on_session_start() -> None:
-    session, _ = _make_session()
-    session.start()
-    assert session._heartbeat_thread is not None
-    assert session._heartbeat_thread.is_alive()
-    session.end()
-
-
-def test_heartbeat_thread_stops_on_teardown() -> None:
-    session, _ = _make_session()
-    session.start()
-    thread = session._heartbeat_thread
-    session.end()
-    assert thread is not None
-    assert not thread.is_alive()
 
 
 def test_atexit_handler_registered() -> None:

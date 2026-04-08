@@ -52,10 +52,6 @@ class ControlPlaneClient:
         """POST an event to ``/v1/events`` and return any embedded directive."""
         return self._post("/v1/events", payload)
 
-    def post_heartbeat(self, session_id: str) -> Directive | None:
-        """POST a heartbeat to ``/v1/heartbeat``."""
-        return self._post("/v1/heartbeat", {"session_id": session_id})
-
     def close(self) -> None:
         """No-op -- stdlib ``urllib`` has no persistent connection to close."""
 

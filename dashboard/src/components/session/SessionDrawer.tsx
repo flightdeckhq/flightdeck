@@ -142,8 +142,10 @@ export function SessionDrawer({ sessionId, onClose }: SessionDrawerProps) {
                       <DialogContent>
                         <DialogTitle>Stop this agent?</DialogTitle>
                         <p className="text-sm text-text-muted">
-                          The agent will receive a shutdown directive on its next
-                          LLM call and terminate gracefully.
+                          The agent will receive the shutdown directive on its
+                          next LLM call and terminate gracefully. Agents in
+                          active loops will stop within seconds. Agents between
+                          calls will stop when they next attempt an LLM call.
                         </p>
                         <div className="flex justify-end gap-2 pt-4">
                           <DialogClose asChild>

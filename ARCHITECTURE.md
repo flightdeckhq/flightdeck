@@ -76,7 +76,7 @@ flightdeck/
 │   │   ├── py.typed            # PEP 561 marker
 │   │   ├── core/
 │   │   │   ├── types.py        # SessionState, EventType, DirectiveAction, SensorConfig -- pure dataclasses
-│   │   │   ├── session.py      # Session: lifecycle, identity, heartbeat thread, atexit/signal handlers
+│   │   │   ├── session.py      # Session: lifecycle, identity, atexit/signal handlers
 │   │   │   ├── policy.py       # PolicyCache: local token enforcement, threshold evaluation
 │   │   │   └── exceptions.py   # BudgetExceededError, DirectiveError, ConfigurationError
 │   │   ├── transport/
@@ -379,8 +379,8 @@ flightdeck/
 └────────┬────────────┘          └────────┬─────────────────┘
          │                                │
          │ POST /ingest/v1/events         │ REST  /api/*
-         │ POST /ingest/v1/heartbeat      │ WS    /api/v1/stream
-         │ GET  /api/v1/policy            │ GET   / (SPA static)
+         │ GET  /api/v1/policy            │ WS    /api/v1/stream
+         │                                │ GET   / (SPA static)
          │                                │
          ▼                                ▼
 ┌──────────────────────────────────────────────────────────┐
@@ -630,6 +630,11 @@ The worker stores this in `event_content` and sets `has_content=true` on the eve
   }
 }
 ```
+
+Directives are delivered in the HTTP response envelope of the sensor's next
+`POST /v1/events` call. Delivery latency equals the time between LLM calls.
+Idle agents (no active LLM calls) will not receive directives until they make
+their next LLM call.
 
 ---
 
@@ -1236,9 +1241,8 @@ their agent appear in the live dashboard timeline in real time.
 
 `sensor/flightdeck_sensor/core/session.py`
 - `Session` class: holds SensorConfig, manages session lifecycle
-- `start()`: fires SESSION_START event, starts heartbeat daemon thread (30s interval)
-- `end()`: fires SESSION_END event, stops heartbeat thread
-- `_heartbeat_loop()`: daemon thread, fires HEARTBEAT every 30s, stops on teardown event
+- `start()`: fires SESSION_START event, registers handlers, fetches policy
+- `end()`: fires SESSION_END event, flushes event queue
 - `_register_handlers()`: registers atexit + SIGTERM + SIGINT handlers
 
 `sensor/flightdeck_sensor/core/policy.py`
@@ -1250,7 +1254,6 @@ their agent appear in the live dashboard timeline in real time.
 `sensor/flightdeck_sensor/transport/client.py`
 - `ControlPlaneClient` class
 - `post_event(payload: dict) -> Directive | None`: HTTP POST to /v1/events, parses response envelope
-- `post_heartbeat(session_id: str) -> Directive | None`: HTTP POST to /v1/heartbeat
 - On connectivity failure + policy=continue: logs warning, returns None
 - On connectivity failure + policy=halt: raises DirectiveError
 
@@ -1313,7 +1316,6 @@ their agent appear in the live dashboard timeline in real time.
 `sensor/tests/unit/test_session.py`
 - Session start fires SESSION_START event
 - Session end fires SESSION_END event
-- Heartbeat thread starts on session start, stops on teardown
 - atexit handler fires session_end on clean process exit
 - SIGTERM handler fires session_end
 
@@ -1335,7 +1337,6 @@ their agent appear in the live dashboard timeline in real time.
 - Successful POST returns Directive when envelope contains one
 - Connectivity failure + continue policy: returns None, no exception
 - Connectivity failure + halt policy: raises DirectiveError
-- Heartbeat fires correct payload format
 
 `sensor/tests/unit/test_providers.py`
 - Anthropic estimation within 15% of actual for fixture payloads

@@ -8,11 +8,13 @@ process-exit handlers, and posts lifecycle events to the control plane.
 from __future__ import annotations
 
 import atexit
+import json
 import logging
 import os
 import signal
 import socket
 import threading
+import urllib.request
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
@@ -34,6 +36,7 @@ _log = logging.getLogger("flightdeck_sensor.core.session")
 
 _HEARTBEAT_INTERVAL_SECS = 30
 _HEARTBEAT_JOIN_TIMEOUT_SECS = 5
+_PREFLIGHT_TIMEOUT_SECS = 5
 
 
 class Session:
@@ -62,6 +65,9 @@ class Session:
         self._token_limit: int | None = None
         self._lock = threading.Lock()
 
+        self._shutdown_requested: bool = False
+        self._shutdown_reason: str = ""
+
         self._stopped = threading.Event()
         self._heartbeat_thread: threading.Thread | None = None
         self._host = socket.gethostname()
@@ -72,17 +78,12 @@ class Session:
     # Public API
     # ------------------------------------------------------------------
 
-    # TODO(KI01)[Phase 2]: PolicyCache is empty until first
-    # directive arrives in a response envelope. First LLM call
-    # always runs ungoverned with no server policy.
-    # Fix: add preflight GET /v1/policy call during init() to
-    # populate PolicyCache before the first LLM call is made.
-    # See DECISIONS.md D040.
     def start(self) -> None:
         """Fire SESSION_START and begin the heartbeat daemon thread."""
         self._post_event(EventType.SESSION_START)
         self._start_heartbeat()
         self._register_handlers()
+        self._preflight_policy()
         if not self.config.quiet:
             _log.info(
                 "Flightdeck session started: flavor=%s session=%s",
@@ -202,6 +203,46 @@ class Session:
         return self._token_limit
 
     # ------------------------------------------------------------------
+    # Preflight policy
+    # ------------------------------------------------------------------
+
+    def _preflight_policy(self) -> None:
+        """Fetch effective policy from control plane on session start.
+
+        Populates PolicyCache before the first LLM call. On any failure
+        (network error, 404, parse error), logs at debug level and proceeds
+        with empty cache. Fail open per D007.
+        """
+        try:
+            url = (
+                f"{self.config.server}/v1/policy"
+                f"?flavor={self.config.agent_flavor}"
+                f"&session_id={self.config.session_id}"
+            )
+            req = urllib.request.Request(
+                url,
+                headers={"Authorization": f"Bearer {self.config.token}"},
+                method="GET",
+            )
+            with urllib.request.urlopen(req, timeout=_PREFLIGHT_TIMEOUT_SECS) as resp:
+                data = json.loads(resp.read().decode())
+                policy_fields: dict[str, Any] = {}
+                if "token_limit" in data:
+                    policy_fields["token_limit"] = data["token_limit"]
+                if "warn_at_pct" in data:
+                    policy_fields["warn_at_pct"] = data["warn_at_pct"]
+                if "degrade_at_pct" in data:
+                    policy_fields["degrade_at_pct"] = data["degrade_at_pct"]
+                if "degrade_to" in data:
+                    policy_fields["degrade_to"] = data["degrade_to"]
+                if "block_at_pct" in data:
+                    policy_fields["block_at_pct"] = data["block_at_pct"]
+                if policy_fields:
+                    self.policy.update(policy_fields)
+        except Exception:
+            _log.debug("preflight policy fetch failed, proceeding with empty cache", exc_info=True)
+
+    # ------------------------------------------------------------------
     # Heartbeat
     # ------------------------------------------------------------------
 
@@ -275,20 +316,71 @@ class Session:
     # ------------------------------------------------------------------
 
     def _apply_directive(self, directive: Directive) -> None:
-        """Handle a directive received from the control plane."""
-        if directive.action == DirectiveAction.POLICY_UPDATE:
-            _log.info("Policy update received")
-        elif directive.action in (
-            DirectiveAction.SHUTDOWN,
-            DirectiveAction.SHUTDOWN_FLAVOR,
-        ):
+        """Apply a directive received from the control plane.
+
+        Called from both the heartbeat thread (for WARN, DEGRADE, POLICY_UPDATE)
+        and the interceptor hot path (for SHUTDOWN via flag). Must never raise
+        for WARN, DEGRADE, or POLICY_UPDATE. SHUTDOWN and SHUTDOWN_FLAVOR set
+        the _shutdown_requested flag -- the actual raise happens in _pre_call().
+        """
+        if directive.action == DirectiveAction.WARN:
+            _log.warning("[flightdeck] policy warning: %s", directive.reason)
+            payload = self._build_payload(
+                EventType.POLICY_WARN,
+                source="server",
+                reason=directive.reason,
+            )
+            self.event_queue.enqueue(payload)
+
+        elif directive.action == DirectiveAction.DEGRADE:
+            degrade_to = directive.payload.get("degrade_to", "")
+            self.policy.set_degrade_model(degrade_to)
+            _log.info("[flightdeck] model degraded to: %s", degrade_to)
+
+        elif directive.action == DirectiveAction.POLICY_UPDATE:
+            allowed = {
+                "token_limit", "warn_at_pct", "degrade_at_pct",
+                "degrade_to", "block_at_pct",
+            }
+            fields = {
+                k: v
+                for k, v in directive.payload.items()
+                if k in allowed
+            }
+            self.policy.update(fields)
+            _log.debug("[flightdeck] policy updated from directive")
+
+        elif directive.action == DirectiveAction.SHUTDOWN:
             _log.warning(
-                "Shutdown directive received: %s (reason: %s)",
-                directive.action.value,
+                "[flightdeck] shutdown directive received: %s",
                 directive.reason,
             )
+            with self._lock:
+                self._shutdown_requested = True
+                self._shutdown_reason = directive.reason
+
+        elif directive.action == DirectiveAction.SHUTDOWN_FLAVOR:
+            _log.warning(
+                "[flightdeck] fleet shutdown directive received for flavor %s: %s",
+                self.config.agent_flavor,
+                directive.reason,
+            )
+            with self._lock:
+                self._shutdown_requested = True
+                self._shutdown_reason = directive.reason
+
+        elif directive.action == DirectiveAction.THROTTLE:
+            _log.warning(
+                "[flightdeck] directive action not yet implemented: throttle. Ignoring.",
+            )
+
+        elif directive.action == DirectiveAction.CHECKPOINT:
+            _log.warning(
+                "[flightdeck] directive action not yet implemented: checkpoint. Ignoring.",
+            )
+
         else:
-            _log.info("Directive received: %s", directive.action.value)
+            _log.debug("[flightdeck] unknown directive action: %s", directive.action.value)
 
     # ------------------------------------------------------------------
     # Process exit handlers

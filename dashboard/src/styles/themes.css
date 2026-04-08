@@ -18,9 +18,14 @@
   --node-stale: #ffb224;
   --node-closed: #6b6b8a;
   --node-lost: #ff4d6a;
+  --color-warn: var(--warning);
+  --color-degrade: #ff8c00;
+  --color-block: var(--danger);
 }
 
 /* Clean light theme -- Phase 4 */
 .theme-clean-light {
-  /* Phase 4: light theme variables will be defined here */
+  --color-warn: var(--warning);
+  --color-degrade: #ff8c00;
+  --color-block: var(--danger);
 }

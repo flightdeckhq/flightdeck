@@ -118,10 +118,16 @@ class ControlPlaneClient:
         if raw is None:
             return None
         try:
+            payload = raw.get("payload", {})
+            if not isinstance(payload, dict):
+                payload = {}
+            if "degrade_to" in raw and "degrade_to" not in payload:
+                payload["degrade_to"] = raw["degrade_to"]
             return Directive(
                 action=DirectiveAction(raw["action"]),
                 reason=raw.get("reason", ""),
                 grace_period_ms=raw.get("grace_period_ms", 5000),
+                payload=payload,
             )
         except (KeyError, ValueError) as exc:
             _log.warning("Malformed directive in response: %s (%s)", raw, exc)

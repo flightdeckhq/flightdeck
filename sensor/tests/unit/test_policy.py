@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+
 from flightdeck_sensor.core.types import PolicyDecision
 from flightdeck_sensor.core.policy import PolicyCache
 
@@ -123,3 +125,33 @@ def test_most_restrictive_wins_local_and_server() -> None:
     result2 = cache.check(tokens_used=81000, estimated=0)
     assert result2.decision == PolicyDecision.WARN
     assert result2.source == "server"
+
+
+def test_set_degrade_model_thread_safe() -> None:
+    """Concurrent set_degrade_model() and check() complete without exception."""
+    cache = PolicyCache(token_limit=100000, warn_at_pct=80, degrade_at_pct=90, block_at_pct=100)
+    errors: list[Exception] = []
+
+    def setter() -> None:
+        try:
+            for _ in range(100):
+                cache.set_degrade_model("claude-haiku-4-5")
+        except Exception as exc:
+            errors.append(exc)
+
+    def checker() -> None:
+        try:
+            for _ in range(100):
+                cache.check(tokens_used=50000, estimated=1000)
+        except Exception as exc:
+            errors.append(exc)
+
+    t1 = threading.Thread(target=setter)
+    t2 = threading.Thread(target=checker)
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+
+    assert len(errors) == 0
+    assert cache.degrade_to == "claude-haiku-4-5"

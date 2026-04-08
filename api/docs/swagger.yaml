@@ -5,6 +5,123 @@ definitions:
       error:
         type: string
     type: object
+  handlers.PolicyRequest:
+    properties:
+      block_at_pct:
+        type: integer
+      degrade_at_pct:
+        type: integer
+      degrade_to:
+        type: string
+      scope:
+        type: string
+      scope_value:
+        type: string
+      token_limit:
+        type: integer
+      warn_at_pct:
+        type: integer
+    type: object
+  handlers.SessionResponse:
+    properties:
+      events:
+        items:
+          $ref: '#/definitions/store.Event'
+        type: array
+      session:
+        $ref: '#/definitions/store.Session'
+    type: object
+  store.Event:
+    properties:
+      event_type:
+        type: string
+      flavor:
+        type: string
+      has_content:
+        type: boolean
+      id:
+        type: string
+      latency_ms:
+        type: integer
+      model:
+        type: string
+      occurred_at:
+        type: string
+      session_id:
+        type: string
+      tokens_input:
+        type: integer
+      tokens_output:
+        type: integer
+      tokens_total:
+        type: integer
+      tool_name:
+        type: string
+    type: object
+  store.Policy:
+    properties:
+      block_at_pct:
+        type: integer
+      created_at:
+        type: string
+      degrade_at_pct:
+        type: integer
+      degrade_to:
+        type: string
+      id:
+        type: string
+      scope:
+        type: string
+      scope_value:
+        type: string
+      token_limit:
+        type: integer
+      updated_at:
+        type: string
+      warn_at_pct:
+        type: integer
+    type: object
+  store.Session:
+    properties:
+      agent_type:
+        type: string
+      block_at_pct:
+        type: integer
+      degrade_at_pct:
+        type: integer
+      degrade_to:
+        type: string
+      ended_at:
+        type: string
+      flavor:
+        type: string
+      framework:
+        type: string
+      host:
+        type: string
+      last_seen_at:
+        type: string
+      model:
+        type: string
+      policy_token_limit:
+        description: |-
+          Active policy thresholds (nullable).
+          Populated by GetSession via effective policy lookup.
+          Null if no policy applies at any scope.
+        type: integer
+      session_id:
+        type: string
+      started_at:
+        type: string
+      state:
+        type: string
+      token_limit:
+        type: integer
+      tokens_used:
+        type: integer
+      warn_at_pct:
+        type: integer
+    type: object
 host: localhost:8081
 info:
   contact: {}
@@ -45,9 +162,150 @@ paths:
       summary: Get fleet state
       tags:
       - fleet
+  /v1/policies:
+    get:
+      description: Returns all token policies
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/store.Policy'
+            type: array
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      summary: List policies
+      tags:
+      - policies
+    post:
+      consumes:
+      - application/json
+      description: Creates a new token policy
+      parameters:
+      - description: Policy definition
+        in: body
+        name: policy
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.PolicyRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/store.Policy'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      summary: Create policy
+      tags:
+      - policies
+  /v1/policies/{id}:
+    delete:
+      description: Deletes a token policy
+      parameters:
+      - description: Policy ID
+        in: path
+        name: id
+        required: true
+        type: string
+      responses:
+        "204":
+          description: No Content
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      summary: Delete policy
+      tags:
+      - policies
+    put:
+      consumes:
+      - application/json
+      description: Updates an existing token policy
+      parameters:
+      - description: Policy ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Policy definition
+        in: body
+        name: policy
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.PolicyRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/store.Policy'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      summary: Update policy
+      tags:
+      - policies
+  /v1/policy:
+    get:
+      description: 'Returns the most specific policy for a given flavor/session scope.
+        Lookup order: session > flavor > org'
+      parameters:
+      - description: Agent flavor
+        in: query
+        name: flavor
+        type: string
+      - description: Session ID
+        in: query
+        name: session_id
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/store.Policy'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      summary: Get effective policy
+      tags:
+      - policies
   /v1/sessions/{id}:
     get:
-      description: Returns session metadata and all events in chronological order
+      description: Returns session metadata (including effective policy thresholds)
+        and all events in chronological order
       parameters:
       - description: Session UUID
         in: path
@@ -60,8 +318,7 @@ paths:
         "200":
           description: OK
           schema:
-            additionalProperties: true
-            type: object
+            $ref: '#/definitions/handlers.SessionResponse'
         "400":
           description: Bad Request
           schema:

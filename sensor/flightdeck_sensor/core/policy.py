@@ -92,6 +92,11 @@ class PolicyCache:
 
             return PolicyResult(PolicyDecision.ALLOW)
 
+    def set_degrade_model(self, model: str) -> None:
+        """Set the model to degrade to, thread-safe."""
+        with self._lock:
+            self.degrade_to = model
+
     def update(self, policy_dict: dict[str, Any]) -> None:
         """Atomically replace server-side fields from a directive payload."""
         with self._lock:

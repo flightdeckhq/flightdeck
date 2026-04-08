@@ -10,7 +10,7 @@ export function Fleet() {
 
   if (loading && flavors.length === 0) {
     return (
-      <div className="flex h-screen items-center justify-center text-text-muted">
+      <div className="flex h-full items-center justify-center text-text-muted">
         Loading fleet...
       </div>
     );
@@ -18,14 +18,14 @@ export function Fleet() {
 
   if (error) {
     return (
-      <div className="flex h-screen items-center justify-center text-danger">
+      <div className="flex h-full items-center justify-center text-danger">
         {error}
       </div>
     );
   }
 
   return (
-    <div className="flex h-screen">
+    <div className="flex h-full">
       <FleetPanel flavors={flavors} />
       <div className="flex-1 overflow-hidden p-4">
         <Timeline

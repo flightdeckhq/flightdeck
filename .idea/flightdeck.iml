@@ -3,6 +3,7 @@
   <component name="Go" enabled="true" />
   <component name="NewModuleRootManager">
     <content url="file://$MODULE_DIR$">
+      <sourceFolder url="file://$MODULE_DIR$/sensor" isTestSource="false" />
       <excludeFolder url="file://$MODULE_DIR$/sensor/.venv" />
     </content>
     <orderEntry type="jdk" jdkName="WSL (Ubuntu): (/home/omria/.virtualenvs/flightdeck/bin/python)" jdkType="Python SDK" />

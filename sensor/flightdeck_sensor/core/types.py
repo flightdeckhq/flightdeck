@@ -5,6 +5,7 @@ from __future__ import annotations
 import enum
 import uuid
 from dataclasses import dataclass, field
+from typing import Any
 
 
 class SessionState(enum.Enum):
@@ -38,6 +39,7 @@ class DirectiveAction(enum.Enum):
 
     SHUTDOWN = "shutdown"
     SHUTDOWN_FLAVOR = "shutdown_flavor"
+    WARN = "warn"
     DEGRADE = "degrade"
     THROTTLE = "throttle"
     POLICY_UPDATE = "policy_update"
@@ -88,6 +90,7 @@ class Directive:
     action: DirectiveAction
     reason: str
     grace_period_ms: int = 5000
+    payload: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

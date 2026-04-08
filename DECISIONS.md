@@ -560,6 +560,10 @@ populate the cache before the first call.
 **Address in:** Phase 2.
 **Code location:** `sensor/flightdeck_sensor/core/session.py:Session.start`
 
+**Resolved in:** Phase 2.
+**Resolution:** Added preflight GET /v1/policy call in Session.start() before
+returning. PolicyCache is populated before the first LLM call.
+
 ---
 
 ## D041 -- NATS event loss on unavailability (accepted trade-off)
@@ -590,6 +594,10 @@ No guard against impossible state transitions.
 **Address in:** Phase 2.
 **Code location:** `workers/internal/processor/session.go:HandleSessionStart`
 
+**Resolved in:** Phase 2.
+**Resolution:** Added isTerminal() helper in workers/internal/processor/session.go.
+All handler methods reject events for closed and lost sessions.
+
 ---
 
 ## D043 -- Per-event policy Postgres query (accepted trade-off)
@@ -604,6 +612,11 @@ No guard against impossible state transitions.
 
 **Address in:** Phase 2.
 **Code location:** `workers/internal/processor/policy.go:Evaluate`
+
+**Resolved in:** Phase 2.
+**Resolution:** PolicyEvaluator now uses an in-memory cache keyed by scope.
+Postgres is queried only on cache miss or TTL expiry (5 minutes). Cache is
+invalidated on policy_update directive.
 
 ---
 
@@ -730,3 +743,40 @@ kill switch, prompt capture, analytics. Inspired by tokencap's smoke_test.py
 pattern but adapted for a platform product rather than a standalone library.
 
 **Address in:** Phase 5.
+
+---
+
+## D052 -- Policies table renamed to token_policies
+
+**Decision:** The `policies` table is renamed to `token_policies` in all SQL,
+Go store queries, and schema documentation.
+
+**Reasoning:** The name `policies` is too generic. As Flightdeck grows, other
+policy types (access policies, routing policies) may be added. `token_policies`
+makes the purpose explicit and avoids future naming collisions. API endpoint
+paths (`/v1/policies`) remain unchanged -- they refer to the resource name, not
+the table name.
+
+---
+
+## D053 -- Delete confirmation uses Dialog not AlertDialog
+
+**Decision:** PolicyTable delete confirmation uses the existing shadcn/ui Dialog
+component rather than AlertDialog from `@radix-ui/react-alert-dialog`.
+
+**Reasoning:** AlertDialog would require adding a new package dependency. The
+existing Dialog achieves the same UX without new dependencies. Constraint 4
+(no new UI libraries) applies.
+
+---
+
+## D054 -- Nav bar added to App.tsx
+
+**Decision:** A minimal 40px nav bar with Fleet and Policies links was added to
+App.tsx. Fleet.tsx was updated from `h-screen` to `h-full` to accommodate the
+nav bar height.
+
+**Reasoning:** The Policies page required navigation between dashboard pages.
+A minimal top nav is the simplest solution that works with the existing routing
+structure. ARCHITECTURE.md App.tsx description updated to reflect this.
+

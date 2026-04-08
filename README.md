@@ -306,7 +306,7 @@ NATS JetStream  →  durable event buffer
 Go Workers  →  write fleet state + events to Postgres, evaluate policy
     |
     v
-PostgreSQL  →  agents, sessions, events, policies, directives
+PostgreSQL  →  agents, sessions, events, token_policies, directives
     ^
     |  LISTEN/NOTIFY for real-time push
     |

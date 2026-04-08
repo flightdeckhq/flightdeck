@@ -106,13 +106,20 @@ func (h *Hub) Unregister(client *Client) {
 	h.unregister <- client
 }
 
-// TODO(KI08)[Phase 2]: Every NOTIFY broadcasts to all
+// TODO(KI08)[Phase 3]: Every NOTIFY broadcasts to all
 // connected dashboard clients regardless of what they
 // are viewing. At 500 users × 10k events/min this is
 // 5M messages/min.
 // Fix: clients subscribe to specific flavors. Only
 // broadcast relevant updates per client.
 // See DECISIONS.md D044.
+
+// ClientCount returns the number of connected clients (test helper).
+func (h *Hub) ClientCount() int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return len(h.clients)
+}
 
 // Broadcast sends a message to all connected clients.
 func (h *Hub) Broadcast(msg []byte) {

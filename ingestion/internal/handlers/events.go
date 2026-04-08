@@ -30,13 +30,20 @@ type DirectiveLookup interface {
 
 // DirectiveResponse represents the directive payload returned in the response envelope.
 type DirectiveResponse struct {
-	ID            string `json:"id"`
-	Action        string `json:"action"`
-	Reason        string `json:"reason"`
-	GracePeriodMs int    `json:"grace_period_ms"`
+	ID            string  `json:"id"`
+	Action        string  `json:"action"`
+	Reason        string  `json:"reason"`
+	DegradeTo     *string `json:"degrade_to,omitempty"`
+	GracePeriodMs int     `json:"grace_period_ms"`
 }
 
-// TODO(KI04)[Phase 2]: No rate limiting on ingestion API.
+// EventResponse is the response envelope for POST /v1/events.
+type EventResponse struct {
+	Status    string             `json:"status"`
+	Directive *DirectiveResponse `json:"directive,omitempty"`
+}
+
+// TODO(KI04)[Phase 3]: No rate limiting on ingestion API.
 // A misbehaving sensor could flood the system with events.
 // Fix: add per-token rate limiting middleware.
 // See DECISIONS.md D048.
@@ -50,7 +57,7 @@ type DirectiveResponse struct {
 // @Produce      json
 // @Param        Authorization  header    string  true  "Bearer token"
 // @Param        event          body      object  true  "Event payload"
-// @Success      200  {object}  map[string]interface{}
+// @Success      200  {object}  EventResponse
 // @Failure      400  {object}  ErrorResponse
 // @Failure      401  {object}  ErrorResponse
 // @Failure      500  {object}  ErrorResponse

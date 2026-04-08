@@ -17,7 +17,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
-from flightdeck_sensor.core.exceptions import BudgetExceededError
+from flightdeck_sensor.core.exceptions import BudgetExceededError, DirectiveError
 from flightdeck_sensor.core.types import EventType, PolicyDecision, TokenUsage
 
 if TYPE_CHECKING:
@@ -179,6 +179,12 @@ def _pre_call(
     * WARN: logs once, returns original kwargs.
     * ALLOW: returns original kwargs.
     """
+    with session._lock:
+        shutdown = session._shutdown_requested
+        reason = session._shutdown_reason
+    if shutdown:
+        raise DirectiveError("shutdown", reason)
+
     result = session.policy.check(session.tokens_used, estimated)
     decision = result.decision
 

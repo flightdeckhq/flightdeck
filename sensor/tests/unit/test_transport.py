@@ -128,3 +128,19 @@ class TestEventQueue:
         except Exception:
             eq.close()
             raise
+
+
+def test_parse_directive_malformed_missing_action() -> None:
+    """_parse_directive returns None for a dict missing the 'action' key."""
+    body = {"directive": {"id": "x", "reason": "r"}}
+    result = ControlPlaneClient._parse_directive(body)
+    assert result is None
+
+
+def test_parse_directive_unknown_action() -> None:
+    """_parse_directive returns None for an unrecognised action value."""
+    body = {"directive": {"action": "unknown_future_action", "id": "x", "reason": "r"}}
+    result = ControlPlaneClient._parse_directive(body)
+    # DirectiveAction("unknown_future_action") raises ValueError,
+    # caught internally → returns None
+    assert result is None

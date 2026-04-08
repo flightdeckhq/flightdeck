@@ -782,19 +782,37 @@ structure. ARCHITECTURE.md App.tsx description updated to reflect this.
 
 ---
 
-## D055 -- Coverage reporting via Codecov
+## D055 -- Self-contained CI coverage gates
 
-**Decision:** pytest-cov for sensor, built-in `go test -coverprofile` for Go
-components. Reports uploaded to Codecov on every CI run. Sensor hard threshold:
-70% (CI fails below this). Go components report only -- no hard threshold set yet.
+**Decision:** Coverage enforced via per-component thresholds in CI with no
+external service. Coverage HTML reports uploaded as GitHub Actions artifacts
+per run (14 day retention). No Codecov or external coverage service.
 
-**Reasoning:** Coverage metrics catch regressions and gaps in test coverage.
-Codecov provides PR-level diff coverage so reviewers can see whether new code
-is covered. Badges in README signal project health to contributors.
+Thresholds:
+- Sensor: 70% hard fail (baseline 71.7%)
+- Ingestion: 60% hard fail (baseline 61.9%)
+- API: 40% hard fail (baseline 41.4%)
+- Workers: report only, no threshold (baseline 9.7%)
 
-Go threshold deferred: Go components are integration-heavy and unit coverage
-alone is not a complete picture. Will set thresholds after Phase 3 when coverage
-is more stable.
+**Reasoning:** External coverage services add operational dependencies and
+require secret management. Self-contained thresholds give the same CI gate
+with zero external dependencies.
+
+Thresholds are set just below current coverage as regression floors, not
+aspirational targets. API and ingestion thresholds are low because the store
+layer is SQL-heavy and meaningful coverage comes from integration tests, not
+unit tests. Thresholds will be raised in Phase 4 and Phase 5 as new handlers
+are added and coverage improves organically. Writing unit tests solely to hit
+a coverage number produces coverage theater -- tests that execute lines without
+asserting behavior, which is worse than no tests.
+
+Workers threshold omitted -- unit coverage is structurally low (9.7%) because
+SQL paths only run in integration tests. Integration tests cover what unit
+tests cannot.
+
+**Rejected:** 100% target -- forces trivial tests that mock away all
+interesting behavior.
+**Rejected:** Codecov -- external dependency, requires secret management.
 
 ---
 

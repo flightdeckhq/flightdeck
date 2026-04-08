@@ -33,16 +33,18 @@ jobs:
         run: |
           pytest tests/ -v \
             --cov=flightdeck_sensor \
+            --cov-report=term-missing \
+            --cov-report=html:htmlcov \
             --cov-report=xml:coverage.xml \
             --cov-fail-under=70
 
-      - name: Upload sensor coverage
-        uses: codecov/codecov-action@v4
+      - name: Upload sensor coverage report
+        uses: actions/upload-artifact@v4
+        if: always()
         with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          files: sensor/coverage.xml
-          flags: sensor
-          fail_ci_if_error: false
+          name: coverage-sensor
+          path: sensor/htmlcov/
+          retention-days: 14
 
   go:
     name: Go (ingestion, workers, api)
@@ -77,6 +79,36 @@ jobs:
             -covermode=atomic \
             -coverpkg=./internal/...
 
+      - name: Check ingestion coverage threshold
+        run: |
+          cd ingestion
+          COVERAGE=$(go tool cover -func=coverage.out | grep "^total:" | awk '{print $3}' | sed 's/%//')
+          echo "Ingestion coverage: ${COVERAGE}%"
+          if (( $(echo "$COVERAGE < 60" | bc -l) )); then
+            echo "FAIL: ${COVERAGE}% below 60%"
+            exit 1
+          fi
+          echo "PASS: ${COVERAGE}% meets 60%"
+
+      - name: Print ingestion coverage summary
+        run: |
+          cd ingestion
+          go tool cover -func=coverage.out | tail -20
+
+      - name: Generate ingestion HTML report
+        if: always()
+        run: |
+          cd ingestion
+          go tool cover -html=coverage.out -o coverage.html
+
+      - name: Upload ingestion coverage report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-ingestion
+          path: ingestion/coverage.html
+          retention-days: 14
+
       - name: Test workers
         working-directory: workers
         run: |
@@ -84,6 +116,28 @@ jobs:
             -coverprofile=coverage.out \
             -covermode=atomic \
             -coverpkg=./internal/...
+
+      - name: Report workers coverage (no threshold)
+        run: |
+          cd workers
+          COVERAGE=$(go tool cover -func=coverage.out | grep "^total:" | awk '{print $3}')
+          echo "Workers coverage: ${COVERAGE}"
+          echo "No threshold -- SQL paths covered by integration tests."
+          go tool cover -func=coverage.out | tail -20
+
+      - name: Generate workers HTML report
+        if: always()
+        run: |
+          cd workers
+          go tool cover -html=coverage.out -o coverage.html
+
+      - name: Upload workers coverage report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-workers
+          path: workers/coverage.html
+          retention-days: 14
 
       - name: Test api
         working-directory: api
@@ -93,29 +147,35 @@ jobs:
             -covermode=atomic \
             -coverpkg=./internal/...
 
-      - name: Upload ingestion coverage
-        uses: codecov/codecov-action@v4
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          files: ingestion/coverage.out
-          flags: ingestion
-          fail_ci_if_error: false
+      - name: Check api coverage threshold
+        run: |
+          cd api
+          COVERAGE=$(go tool cover -func=coverage.out | grep "^total:" | awk '{print $3}' | sed 's/%//')
+          echo "API coverage: ${COVERAGE}%"
+          if (( $(echo "$COVERAGE < 40" | bc -l) )); then
+            echo "FAIL: ${COVERAGE}% below 40%"
+            exit 1
+          fi
+          echo "PASS: ${COVERAGE}% meets 40%"
 
-      - name: Upload workers coverage
-        uses: codecov/codecov-action@v4
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          files: workers/coverage.out
-          flags: workers
-          fail_ci_if_error: false
+      - name: Print api coverage summary
+        run: |
+          cd api
+          go tool cover -func=coverage.out | tail -20
 
-      - name: Upload API coverage
-        uses: codecov/codecov-action@v4
+      - name: Generate api HTML report
+        if: always()
+        run: |
+          cd api
+          go tool cover -html=coverage.out -o coverage.html
+
+      - name: Upload api coverage report
+        uses: actions/upload-artifact@v4
+        if: always()
         with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          files: api/coverage.out
-          flags: api
-          fail_ci_if_error: false
+          name: coverage-api
+          path: api/coverage.html
+          retention-days: 14
 
   dashboard:
     name: Dashboard (TypeScript)

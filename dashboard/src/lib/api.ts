@@ -1,6 +1,6 @@
 import type { FleetResponse, SessionDetail, Policy, PolicyRequest, DirectiveRequest, Directive, AnalyticsParams, AnalyticsResponse, EventContent, SearchResults } from "./types";
 
-const BASE = import.meta.env.VITE_API_BASE_URL ?? "/api";
+const BASE = import.meta.env.VITE_API_BASE_URL || "/api";
 
 async function fetchJson<T>(path: string): Promise<T> {
   const res = await fetch(`${BASE}${path}`);

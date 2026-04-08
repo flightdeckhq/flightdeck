@@ -279,7 +279,7 @@ const docTemplate = `{
         },
         "/v1/sessions/{id}": {
             "get": {
-                "description": "Returns session metadata and all events in chronological order",
+                "description": "Returns session metadata (including effective policy thresholds) and all events in chronological order",
                 "produces": [
                     "application/json"
                 ],
@@ -300,8 +300,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "type": "object",
-                            "additionalProperties": true
+                            "$ref": "#/definitions/handlers.SessionResponse"
                         }
                     },
                     "400": {
@@ -384,6 +383,61 @@ const docTemplate = `{
                 }
             }
         },
+        "handlers.SessionResponse": {
+            "type": "object",
+            "properties": {
+                "events": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/store.Event"
+                    }
+                },
+                "session": {
+                    "$ref": "#/definitions/store.Session"
+                }
+            }
+        },
+        "store.Event": {
+            "type": "object",
+            "properties": {
+                "event_type": {
+                    "type": "string"
+                },
+                "flavor": {
+                    "type": "string"
+                },
+                "has_content": {
+                    "type": "boolean"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "latency_ms": {
+                    "type": "integer"
+                },
+                "model": {
+                    "type": "string"
+                },
+                "occurred_at": {
+                    "type": "string"
+                },
+                "session_id": {
+                    "type": "string"
+                },
+                "tokens_input": {
+                    "type": "integer"
+                },
+                "tokens_output": {
+                    "type": "integer"
+                },
+                "tokens_total": {
+                    "type": "integer"
+                },
+                "tool_name": {
+                    "type": "string"
+                }
+            }
+        },
         "store.Policy": {
             "type": "object",
             "properties": {
@@ -413,6 +467,63 @@ const docTemplate = `{
                 },
                 "updated_at": {
                     "type": "string"
+                },
+                "warn_at_pct": {
+                    "type": "integer"
+                }
+            }
+        },
+        "store.Session": {
+            "type": "object",
+            "properties": {
+                "agent_type": {
+                    "type": "string"
+                },
+                "block_at_pct": {
+                    "type": "integer"
+                },
+                "degrade_at_pct": {
+                    "type": "integer"
+                },
+                "degrade_to": {
+                    "type": "string"
+                },
+                "ended_at": {
+                    "type": "string"
+                },
+                "flavor": {
+                    "type": "string"
+                },
+                "framework": {
+                    "type": "string"
+                },
+                "host": {
+                    "type": "string"
+                },
+                "last_seen_at": {
+                    "type": "string"
+                },
+                "model": {
+                    "type": "string"
+                },
+                "policy_token_limit": {
+                    "description": "Active policy thresholds (nullable).\nPopulated by GetSession via effective policy lookup.\nNull if no policy applies at any scope.",
+                    "type": "integer"
+                },
+                "session_id": {
+                    "type": "string"
+                },
+                "started_at": {
+                    "type": "string"
+                },
+                "state": {
+                    "type": "string"
+                },
+                "token_limit": {
+                    "type": "integer"
+                },
+                "tokens_used": {
+                    "type": "integer"
                 },
                 "warn_at_pct": {
                     "type": "integer"

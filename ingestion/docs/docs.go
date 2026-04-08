@@ -74,8 +74,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "type": "object",
-                            "additionalProperties": true
+                            "$ref": "#/definitions/handlers.EventResponse"
                         }
                     },
                     "400": {
@@ -161,10 +160,41 @@ const docTemplate = `{
         }
     },
     "definitions": {
+        "handlers.DirectiveResponse": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string"
+                },
+                "degrade_to": {
+                    "type": "string"
+                },
+                "grace_period_ms": {
+                    "type": "integer"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "reason": {
+                    "type": "string"
+                }
+            }
+        },
         "handlers.ErrorResponse": {
             "type": "object",
             "properties": {
                 "error": {
+                    "type": "string"
+                }
+            }
+        },
+        "handlers.EventResponse": {
+            "type": "object",
+            "properties": {
+                "directive": {
+                    "$ref": "#/definitions/handlers.DirectiveResponse"
+                },
+                "status": {
                     "type": "string"
                 }
             }

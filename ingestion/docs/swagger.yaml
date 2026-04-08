@@ -1,8 +1,28 @@
 basePath: /
 definitions:
+  handlers.DirectiveResponse:
+    properties:
+      action:
+        type: string
+      degrade_to:
+        type: string
+      grace_period_ms:
+        type: integer
+      id:
+        type: string
+      reason:
+        type: string
+    type: object
   handlers.ErrorResponse:
     properties:
       error:
+        type: string
+    type: object
+  handlers.EventResponse:
+    properties:
+      directive:
+        $ref: '#/definitions/handlers.DirectiveResponse'
+      status:
         type: string
     type: object
 host: localhost:8080
@@ -51,8 +71,7 @@ paths:
         "200":
           description: OK
           schema:
-            additionalProperties: true
-            type: object
+            $ref: '#/definitions/handlers.EventResponse'
         "400":
           description: Bad Request
           schema:

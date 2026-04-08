@@ -33,6 +33,7 @@ export interface Session {
   ended_at: string | null;
   tokens_used: number;
   token_limit: number | null;
+  has_pending_directive?: boolean;
   warn_at_pct?: number | null;
   degrade_at_pct?: number | null;
   degrade_to?: string | null;
@@ -108,9 +109,25 @@ export interface PolicyRequest {
   block_at_pct: number | null;
 }
 
-/** Control-plane directive (Phase 2+, defined for type completeness). */
+/** Request body for POST /v1/directives. */
+export interface DirectiveRequest {
+  action: "shutdown" | "shutdown_flavor";
+  session_id?: string;
+  flavor?: string;
+  reason?: string;
+  grace_period_ms?: number;
+}
+
+/** Control-plane directive as returned by API. */
 export interface Directive {
+  id: string;
+  session_id: string | null;
+  flavor: string | null;
   action: string;
-  reason: string;
+  reason: string | null;
+  degrade_to: string | null;
   grace_period_ms: number;
+  issued_by: string;
+  issued_at: string;
+  delivered_at: string | null;
 }

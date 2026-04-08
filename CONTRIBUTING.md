@@ -36,6 +36,40 @@ make -C api test
 make -C dashboard test
 ```
 
+## Test Coverage
+
+Coverage is enforced in CI per component:
+
+| Component  | Threshold | Notes                      |
+|------------|-----------|----------------------------|
+| Sensor     | 70%       | Hard fail below threshold  |
+| Ingestion  | 60%       | Hard fail below threshold  |
+| API        | 40%       | Hard fail below threshold  |
+| Workers    | none      | Report only                |
+
+Coverage HTML reports are uploaded as GitHub Actions artifacts on every CI
+run (14 day retention). Download from the Actions run page to browse the
+full report.
+
+To check coverage locally:
+
+Sensor:
+```bash
+cd sensor && pytest tests/ \
+  --cov=flightdeck_sensor \
+  --cov-report=term-missing \
+  --cov-fail-under=70
+```
+
+Go components:
+```bash
+cd <component> && go test ./... \
+  -coverprofile=coverage.out \
+  -covermode=atomic \
+  -coverpkg=./internal/... && \
+  go tool cover -func=coverage.out
+```
+
 ## Linting
 
 ```bash

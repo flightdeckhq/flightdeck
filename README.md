@@ -10,10 +10,6 @@ agents from a single dashboard action.
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 [![PyPI](https://img.shields.io/pypi/v/flightdeck-sensor)](https://pypi.org/project/flightdeck-sensor/)
 [![CI](https://github.com/flightdeckhq/flightdeck/actions/workflows/ci.yml/badge.svg)](https://github.com/flightdeckhq/flightdeck/actions)
-[![Sensor Coverage](https://codecov.io/gh/flightdeckhq/flightdeck/branch/main/graph/badge.svg?flag=sensor)](https://codecov.io/gh/flightdeckhq/flightdeck)
-[![API Coverage](https://codecov.io/gh/flightdeckhq/flightdeck/branch/main/graph/badge.svg?flag=api)](https://codecov.io/gh/flightdeckhq/flightdeck)
-[![Workers Coverage](https://codecov.io/gh/flightdeckhq/flightdeck/branch/main/graph/badge.svg?flag=workers)](https://codecov.io/gh/flightdeckhq/flightdeck)
-[![Ingestion Coverage](https://codecov.io/gh/flightdeckhq/flightdeck/branch/main/graph/badge.svg?flag=ingestion)](https://codecov.io/gh/flightdeckhq/flightdeck)
 
 ---
 

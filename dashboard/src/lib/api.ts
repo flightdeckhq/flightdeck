@@ -1,4 +1,4 @@
-import type { FleetResponse, SessionDetail, Policy, PolicyRequest, DirectiveRequest, Directive, AnalyticsParams, AnalyticsResponse } from "./types";
+import type { FleetResponse, SessionDetail, Policy, PolicyRequest, DirectiveRequest, Directive, AnalyticsParams, AnalyticsResponse, EventContent } from "./types";
 
 const BASE = import.meta.env.VITE_API_BASE_URL ?? "/api";
 
@@ -69,6 +69,14 @@ export async function createDirective(data: DirectiveRequest): Promise<Directive
     throw new Error(`API ${res.status}: POST /v1/directives`);
   }
   return res.json() as Promise<Directive>;
+}
+
+export async function fetchEventContent(eventId: string): Promise<EventContent | null> {
+  try {
+    return await fetchJson<EventContent>(`/v1/events/${eventId}/content`);
+  } catch {
+    return null; // 404 or error
+  }
 }
 
 export function fetchAnalytics(params: AnalyticsParams): Promise<AnalyticsResponse> {

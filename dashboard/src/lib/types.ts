@@ -173,3 +173,20 @@ export interface AnalyticsResponse {
   series: AnalyticsSeries[];
   totals: AnalyticsTotals;
 }
+
+/** Prompt content for a single event, from GET /v1/events/:id/content. */
+export interface EventContent {
+  event_id: string;
+  session_id: string;
+  provider: string;
+  model: string;
+  system_prompt: string | null;
+  // Provider-specific JSON structures -- intentionally untyped per rule 20
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  messages: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  tools: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  response: any;
+  captured_at: string;
+}

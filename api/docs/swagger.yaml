@@ -145,6 +145,24 @@ definitions:
       tool_name:
         type: string
     type: object
+  store.EventContent:
+    properties:
+      captured_at:
+        type: string
+      event_id:
+        type: string
+      messages: {}
+      model:
+        type: string
+      provider:
+        type: string
+      response: {}
+      session_id:
+        type: string
+      system_prompt:
+        type: string
+      tools: {}
+    type: object
   store.FlavorSummary:
     properties:
       active_count:
@@ -344,6 +362,34 @@ paths:
       summary: Create directive
       tags:
       - directives
+  /v1/events/{id}/content:
+    get:
+      description: Returns prompt capture content for an event. Returns 404 when the
+        event does not exist or capture was not enabled.
+      parameters:
+      - description: Event UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/store.EventContent'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      summary: Get event content
+      tags:
+      - events
   /v1/fleet:
     get:
       description: Returns sessions grouped by flavor, excluding lost sessions. Supports

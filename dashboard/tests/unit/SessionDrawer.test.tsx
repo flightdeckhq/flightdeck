@@ -24,8 +24,14 @@ const baseEvents = [
   { id: "e2", session_id: "s1", flavor: "test", event_type: "post_call" as const, model: "claude-sonnet-4-20250514", tokens_input: 100, tokens_output: 50, tokens_total: 150, latency_ms: 1200, tool_name: null, has_content: false, occurred_at: "2026-04-07T10:01:00Z" },
 ];
 
+const eventsWithContent = [
+  ...baseEvents,
+  { id: "e3", session_id: "s1", flavor: "test", event_type: "post_call" as const, model: "claude-sonnet-4-20250514", tokens_input: 200, tokens_output: 100, tokens_total: 300, latency_ms: 800, tool_name: null, has_content: true, occurred_at: "2026-04-07T10:02:00Z" },
+];
+
 // Session state per mock call -- reset each test
 let mockSessionOverride: Record<string, unknown> = {};
+let mockEventsOverride: typeof baseEvents | null = null;
 
 vi.mock("@/hooks/useSession", () => ({
   useSession: (id: string | null) => {
@@ -33,7 +39,7 @@ vi.mock("@/hooks/useSession", () => ({
     return {
       data: {
         session: { ...baseSession, ...mockSessionOverride },
-        events: baseEvents,
+        events: mockEventsOverride ?? baseEvents,
       },
       loading: false,
       error: null,
@@ -43,12 +49,14 @@ vi.mock("@/hooks/useSession", () => ({
 
 vi.mock("@/lib/api", () => ({
   createDirective: vi.fn(() => Promise.resolve({ id: "dir-1" })),
+  fetchEventContent: vi.fn(() => Promise.resolve(null)),
 }));
 
 import { createDirective } from "@/lib/api";
 
 beforeEach(() => {
   mockSessionOverride = {};
+  mockEventsOverride = null;
   vi.clearAllMocks();
 });
 
@@ -114,5 +122,42 @@ describe("SessionDrawer", () => {
         grace_period_ms: 5000,
       });
     });
+  });
+
+  it("renders Timeline and Prompts tabs", () => {
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    expect(screen.getByText("Timeline")).toBeInTheDocument();
+    expect(screen.getByText("Prompts")).toBeInTheDocument();
+  });
+
+  it("defaults to Timeline tab showing events", () => {
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    expect(screen.getByText("session_start")).toBeInTheDocument();
+    expect(screen.getByText("post_call")).toBeInTheDocument();
+  });
+
+  it("shows disabled message on Prompts tab when no events have content", () => {
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    fireEvent.click(screen.getByText("Prompts"));
+    expect(
+      screen.getByText("Prompt capture is not enabled for this deployment.")
+    ).toBeInTheDocument();
+  });
+
+  it("shows event list on Prompts tab when events have content", () => {
+    mockEventsOverride = eventsWithContent;
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    fireEvent.click(screen.getByText("Prompts"));
+    // The content event should appear as a clickable item
+    // It should show "post_call" in the prompts list
+    const postCallItems = screen.getAllByText("post_call");
+    expect(postCallItems.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("switches back to Timeline tab", () => {
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    fireEvent.click(screen.getByText("Prompts"));
+    fireEvent.click(screen.getByText("Timeline"));
+    expect(screen.getByText("session_start")).toBeInTheDocument();
   });
 });

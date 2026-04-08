@@ -166,6 +166,47 @@
                 }
             }
         },
+        "/v1/events/{id}/content": {
+            "get": {
+                "description": "Returns prompt capture content for an event. Returns 404 when the event does not exist or capture was not enabled.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "events"
+                ],
+                "summary": "Get event content",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Event UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/store.EventContent"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/v1/fleet": {
             "get": {
                 "description": "Returns sessions grouped by flavor, excluding lost sessions. Supports pagination via limit/offset on sessions.",
@@ -710,6 +751,32 @@
                 "tool_name": {
                     "type": "string"
                 }
+            }
+        },
+        "store.EventContent": {
+            "type": "object",
+            "properties": {
+                "captured_at": {
+                    "type": "string"
+                },
+                "event_id": {
+                    "type": "string"
+                },
+                "messages": {},
+                "model": {
+                    "type": "string"
+                },
+                "provider": {
+                    "type": "string"
+                },
+                "response": {},
+                "session_id": {
+                    "type": "string"
+                },
+                "system_prompt": {
+                    "type": "string"
+                },
+                "tools": {}
             }
         },
         "store.FlavorSummary": {

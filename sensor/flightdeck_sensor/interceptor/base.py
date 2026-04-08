@@ -54,7 +54,7 @@ def call(
     response = real_fn(**call_kwargs)
     latency_ms = int((time.monotonic() - t0) * 1000)
 
-    _post_call(session, provider, response, estimated, latency_ms)
+    _post_call(session, provider, response, estimated, latency_ms, call_kwargs)
     return response
 
 
@@ -77,7 +77,7 @@ async def call_async(
     response = await real_fn(**call_kwargs)
     latency_ms = int((time.monotonic() - t0) * 1000)
 
-    _post_call(session, provider, response, estimated, latency_ms)
+    _post_call(session, provider, response, estimated, latency_ms, call_kwargs)
     return response
 
 
@@ -153,6 +153,7 @@ class GuardedStream:
                 self._stream,
                 self._estimated,
                 latency_ms,
+                self._kwargs,
             )
         except Exception:
             _log.warning("Failed to post stream reconciliation event", exc_info=True)
@@ -222,6 +223,7 @@ def _post_call(
     response: Any,
     estimated: int,
     latency_ms: int,
+    call_kwargs: dict[str, Any] | None = None,
 ) -> None:
     """Extract actual usage, reconcile with estimate, post event."""
     actual = provider.extract_usage(response)
@@ -241,9 +243,38 @@ def _post_call(
     with contextlib.suppress(Exception):
         resp_model = getattr(response, "model", "") or resp_model
 
-    session.post_call_event_async(
-        event_type=EventType.POST_CALL,
-        usage=usage,
+    # Extract content when capture_prompts is enabled
+    content_dict: dict[str, Any] | None = None
+    has_content = False
+    if session.config.capture_prompts and call_kwargs is not None:
+        pc = provider.extract_content(call_kwargs, response)
+        if pc is not None:
+            pc.session_id = session.config.session_id
+            has_content = True
+            content_dict = {
+                "system": pc.system,
+                "messages": pc.messages,
+                "tools": pc.tools,
+                "response": pc.response,
+                "provider": pc.provider,
+                "model": pc.model,
+                "session_id": pc.session_id,
+                "event_id": pc.event_id,
+                "captured_at": pc.captured_at,
+            }
+
+    # Build payload with optional content
+    payload = session._build_payload(
+        EventType.POST_CALL,
         model=resp_model,
+        tokens_input=usage.input_tokens,
+        tokens_output=usage.output_tokens,
+        tokens_total=usage.total,
         latency_ms=latency_ms,
     )
+    if has_content:
+        payload["has_content"] = True
+        payload["content"] = content_dict
+    session.record_usage(usage)
+    session.record_model(resp_model)
+    session.event_queue.enqueue(payload)

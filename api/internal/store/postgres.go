@@ -4,6 +4,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -19,6 +20,7 @@ type Querier interface {
 	GetFleet(ctx context.Context, limit, offset int) ([]FlavorSummary, int, error)
 	GetSession(ctx context.Context, sessionID string) (*Session, error)
 	GetSessionEvents(ctx context.Context, sessionID string) ([]Event, error)
+	GetEventContent(ctx context.Context, eventID string) (*EventContent, error)
 	GetEffectivePolicy(ctx context.Context, flavor, sessionID string) (*Policy, error)
 	GetPolicies(ctx context.Context) ([]Policy, error)
 	GetPolicyByID(ctx context.Context, id string) (*Policy, error)
@@ -438,4 +440,61 @@ func (s *Store) CreateDirective(ctx context.Context, d Directive) (*Directive, e
 		return nil, fmt.Errorf("create directive: %w", err)
 	}
 	return &result, nil
+}
+
+// EventContent represents a row in the event_content table.
+type EventContent struct {
+	EventID      string    `json:"event_id"`
+	SessionID    string    `json:"session_id"`
+	Provider     string    `json:"provider"`
+	Model        string    `json:"model"`
+	SystemPrompt *string   `json:"system_prompt"`
+	Messages     any       `json:"messages"`
+	Tools        any       `json:"tools"`
+	Response     any       `json:"response"`
+	CapturedAt   time.Time `json:"captured_at"`
+}
+
+// GetEventContent returns the prompt content for an event.
+// Returns nil, nil when the event has no captured content.
+func (s *Store) GetEventContent(ctx context.Context, eventID string) (*EventContent, error) {
+	var ec EventContent
+	var messagesRaw, toolsRaw, responseRaw []byte
+	err := s.pool.QueryRow(ctx, `
+		SELECT event_id::text, session_id::text, provider, model, system_prompt,
+		       messages, tools, response, captured_at
+		FROM event_content
+		WHERE event_id = $1::uuid
+	`, eventID).Scan(
+		&ec.EventID, &ec.SessionID, &ec.Provider, &ec.Model, &ec.SystemPrompt,
+		&messagesRaw, &toolsRaw, &responseRaw, &ec.CapturedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get event content %s: %w", eventID, err)
+	}
+
+	// Unmarshal JSONB columns into any for proper JSON serialization
+	if messagesRaw != nil {
+		var v any
+		if jsonErr := json.Unmarshal(messagesRaw, &v); jsonErr == nil {
+			ec.Messages = v
+		}
+	}
+	if toolsRaw != nil {
+		var v any
+		if jsonErr := json.Unmarshal(toolsRaw, &v); jsonErr == nil {
+			ec.Tools = v
+		}
+	}
+	if responseRaw != nil {
+		var v any
+		if jsonErr := json.Unmarshal(responseRaw, &v); jsonErr == nil {
+			ec.Response = v
+		}
+	}
+
+	return &ec, nil
 }

@@ -72,6 +72,24 @@ func (m *mockStore) GetSessionEvents(_ context.Context, _ string) ([]store.Event
 	}, nil
 }
 
+func (m *mockStore) GetEventContent(_ context.Context, eventID string) (*store.EventContent, error) {
+	if eventID == "evt-with-content" {
+		sys := "You are a helpful assistant."
+		return &store.EventContent{
+			EventID:      eventID,
+			SessionID:    "sess-001",
+			Provider:     "openai",
+			Model:        "gpt-4",
+			SystemPrompt: &sys,
+			Messages:     []any{map[string]any{"role": "user", "content": "hello"}},
+			Tools:        nil,
+			Response:     map[string]any{"role": "assistant", "content": "hi"},
+			CapturedAt:   time.Now(),
+		}, nil
+	}
+	return nil, nil
+}
+
 func (m *mockStore) GetEffectivePolicy(_ context.Context, flavor, _ string) (*store.Policy, error) {
 	if flavor == "test-flavor" {
 		limit := int64(10000)
@@ -852,5 +870,54 @@ func TestGetAnalyticsCustomRangeValid(t *testing.T) {
 	handler(w, req)
 	if w.Code != http.StatusOK {
 		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// --- Event Content Tests ---
+
+func TestContentHandler_ReturnsContent(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.ContentHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/events/evt-with-content/content", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["event_id"] != "evt-with-content" {
+		t.Errorf("expected event_id=evt-with-content, got %v", resp["event_id"])
+	}
+	if resp["provider"] != "openai" {
+		t.Errorf("expected provider=openai, got %v", resp["provider"])
+	}
+	if resp["system_prompt"] != "You are a helpful assistant." {
+		t.Errorf("expected system_prompt, got %v", resp["system_prompt"])
+	}
+}
+
+func TestContentHandler_Returns404WhenNoContent(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.ContentHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/events/evt-no-content/content", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestContentHandler_Returns400WhenNoID(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.ContentHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/events//content", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d: %s", w.Code, w.Body.String())
 	}
 }

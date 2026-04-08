@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -192,15 +193,19 @@ func (s *Store) GetSession(ctx context.Context, sessionID string) (*Session, err
 		return nil, fmt.Errorf("get session %s: %w", sessionID, err)
 	}
 
-	// Check for pending shutdown directive
-	_ = s.pool.QueryRow(ctx, `
+	// Check for pending shutdown directive.
+	// Log but do not fail the request on error -- default to false
+	// so the kill switch button remains usable.
+	if pdErr := s.pool.QueryRow(ctx, `
 		SELECT EXISTS (
 			SELECT 1 FROM directives
 			WHERE (session_id = $1::uuid OR flavor = $2)
 			AND delivered_at IS NULL
 			AND action IN ('shutdown', 'shutdown_flavor')
 		)
-	`, sessionID, sess.Flavor).Scan(&sess.HasPendingDirective)
+	`, sessionID, sess.Flavor).Scan(&sess.HasPendingDirective); pdErr != nil {
+		slog.Warn("has_pending_directive query error", "session_id", sessionID, "err", pdErr)
+	}
 
 	return &sess, nil
 }

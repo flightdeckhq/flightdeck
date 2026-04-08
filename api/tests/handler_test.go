@@ -751,3 +751,22 @@ func TestGetSessionNoPendingDirective(t *testing.T) {
 		t.Errorf("expected has_pending_directive=false, got %v", session["has_pending_directive"])
 	}
 }
+
+func TestCreateDirectiveShutdownFlavorNoSessions(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.CreateDirectiveHandler(store.WrapStore(s))
+	body := `{"action":"shutdown_flavor","flavor":"nonexistent-flavor","reason":"test"}`
+	req := httptest.NewRequest("POST", "/v1/directives", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	errMsg, _ := resp["error"].(string)
+	if !contains(errMsg, "no active sessions") {
+		t.Errorf("expected error about no active sessions, got %q", errMsg)
+	}
+}

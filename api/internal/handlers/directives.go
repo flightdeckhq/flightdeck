@@ -55,6 +55,10 @@ func CreateDirectiveHandler(s store.Querier) http.HandlerFunc {
 				writeError(w, http.StatusInternalServerError, "internal server error")
 				return
 			}
+			if len(sessionIDs) == 0 {
+				writeError(w, http.StatusNotFound, "no active sessions found for flavor")
+				return
+			}
 			var lastResult *store.Directive
 			for _, sid := range sessionIDs {
 				d := store.Directive{
@@ -76,7 +80,7 @@ func CreateDirectiveHandler(s store.Querier) http.HandlerFunc {
 				lastResult = result
 			}
 			if lastResult == nil {
-				writeError(w, http.StatusInternalServerError, "no directives created")
+				writeError(w, http.StatusInternalServerError, "failed to create directives")
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")

@@ -11,13 +11,30 @@ import {
   DialogTitle,
   DialogClose,
 } from "@/components/ui/dialog";
-import { SessionTimeline } from "./SessionTimeline";
 import { TokenUsageBar } from "./TokenUsageBar";
 import { PromptViewer } from "./PromptViewer";
 import { createDirective } from "@/lib/api";
-import type { SessionState, AgentEvent } from "@/lib/types";
+import type { SessionState, AgentEvent, EventType } from "@/lib/types";
 
 type DrawerTab = "timeline" | "prompts";
+
+/** Map event types to CSS variable names and icon characters. */
+const eventTypeStyles: Record<
+  EventType,
+  { cssVar: string; icon: string }
+> = {
+  pre_call: { cssVar: "var(--event-llm)", icon: "\u25B6" },
+  post_call: { cssVar: "var(--event-llm)", icon: "\u25C0" },
+  tool_call: { cssVar: "var(--event-tool)", icon: "\u2699" },
+  policy_warn: { cssVar: "var(--event-warn)", icon: "\u26A0" },
+  policy_block: { cssVar: "var(--event-block)", icon: "\u2717" },
+  policy_degrade: { cssVar: "var(--event-degrade)", icon: "\u25BC" },
+  session_start: { cssVar: "var(--event-lifecycle)", icon: "\u25CF" },
+  session_end: { cssVar: "var(--event-lifecycle)", icon: "\u25CB" },
+  heartbeat: { cssVar: "var(--event-lifecycle)", icon: "\u2665" },
+};
+
+const defaultStyle = { cssVar: "var(--event-lifecycle)", icon: "\u00B7" };
 
 interface SessionDrawerProps {
   sessionId: string | null;
@@ -32,6 +49,7 @@ export function SessionDrawer({ sessionId, onClose }: SessionDrawerProps) {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<DrawerTab>("timeline");
   const [selectedEventId, setSelectedEventId] = useState<string | null>(null);
+  const [expandedEventId, setExpandedEventId] = useState<string | null>(null);
 
   const session = data?.session;
   const isTerminal = session?.state === "closed" || session?.state === "lost";
@@ -63,10 +81,10 @@ export function SessionDrawer({ sessionId, onClose }: SessionDrawerProps) {
     <AnimatePresence>
       {sessionId && (
         <motion.div
-          className="fixed right-0 top-0 z-40 flex h-full w-[420px] flex-col border-l border-border bg-surface shadow-2xl"
-          initial={{ x: 420 }}
+          className="fixed right-0 top-0 z-40 flex h-full w-[480px] flex-col border-l border-border bg-surface shadow-2xl"
+          initial={{ x: 480 }}
           animate={{ x: 0 }}
-          exit={{ x: 420 }}
+          exit={{ x: 480 }}
           transition={{ type: "spring", damping: 25, stiffness: 200 }}
         >
           {/* Header */}
@@ -215,7 +233,13 @@ export function SessionDrawer({ sessionId, onClose }: SessionDrawerProps) {
               {/* Tab content */}
               <div className="flex-1 overflow-y-auto">
                 {activeTab === "timeline" && (
-                  <SessionTimeline events={data.events} />
+                  <DenseEventList
+                    events={data.events}
+                    expandedEventId={expandedEventId}
+                    onToggleExpand={(id) =>
+                      setExpandedEventId(expandedEventId === id ? null : id)
+                    }
+                  />
                 )}
                 {activeTab === "prompts" && (
                   <PromptsTab
@@ -230,6 +254,85 @@ export function SessionDrawer({ sessionId, onClose }: SessionDrawerProps) {
         </motion.div>
       )}
     </AnimatePresence>
+  );
+}
+
+/* ---- Dense event list for Timeline tab ---- */
+
+interface DenseEventListProps {
+  events: AgentEvent[];
+  expandedEventId: string | null;
+  onToggleExpand: (id: string) => void;
+}
+
+function DenseEventList({ events, expandedEventId, onToggleExpand }: DenseEventListProps) {
+  if (events.length === 0) {
+    return (
+      <div className="py-8 text-center text-xs text-text-muted">
+        No events recorded for this session.
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col">
+      {events.map((event) => {
+        const style = eventTypeStyles[event.event_type] ?? defaultStyle;
+        const isExpanded = expandedEventId === event.id;
+
+        return (
+          <div
+            key={event.id}
+            className="cursor-pointer border-b border-border px-3 py-1.5 hover:bg-surface-hover transition-colors"
+            onClick={() => onToggleExpand(event.id)}
+          >
+            <div className="flex items-center gap-2 text-xs">
+              <span
+                className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[8px] text-white"
+                style={{ backgroundColor: style.cssVar }}
+              >
+                {style.icon}
+              </span>
+              <span className="font-medium" style={{ color: style.cssVar }}>
+                {event.event_type}
+              </span>
+              {event.model && (
+                <span className="text-text-muted truncate">{event.model}</span>
+              )}
+              {event.tool_name && (
+                <span className="font-mono text-text-muted truncate">{event.tool_name}</span>
+              )}
+              <span className="ml-auto shrink-0 font-mono text-[10px] text-text-muted">
+                {new Date(event.occurred_at).toLocaleTimeString()}
+              </span>
+            </div>
+
+            {isExpanded && (
+              <div className="mt-1.5 rounded bg-bg/50 p-2 text-[10px] font-mono text-text-muted overflow-x-auto">
+                <pre className="whitespace-pre-wrap break-all">
+                  {JSON.stringify(
+                    {
+                      id: event.id,
+                      event_type: event.event_type,
+                      model: event.model,
+                      tokens_input: event.tokens_input,
+                      tokens_output: event.tokens_output,
+                      tokens_total: event.tokens_total,
+                      latency_ms: event.latency_ms,
+                      tool_name: event.tool_name,
+                      has_content: event.has_content,
+                      occurred_at: event.occurred_at,
+                    },
+                    null,
+                    2
+                  )}
+                </pre>
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
   );
 }
 
@@ -274,21 +377,30 @@ function PromptsTab({ events, selectedEventId, onSelectEvent }: PromptsTabProps)
 
   return (
     <div className="flex flex-col">
-      {contentEvents.map((event) => (
-        <button
-          key={event.id}
-          className="flex items-center justify-between border-b border-border px-3 py-2 text-left text-xs hover:bg-surface-hover"
-          onClick={() => onSelectEvent(event.id)}
-        >
-          <span className="font-mono text-text-muted">
-            {new Date(event.occurred_at).toLocaleTimeString()}
-          </span>
-          <span className="font-medium">{event.event_type}</span>
-          {event.model && (
-            <span className="text-text-muted">{event.model}</span>
-          )}
-        </button>
-      ))}
+      {contentEvents.map((event) => {
+        const style = eventTypeStyles[event.event_type] ?? defaultStyle;
+        return (
+          <button
+            key={event.id}
+            className="flex items-center gap-2 border-b border-border px-3 py-2 text-left text-xs hover:bg-surface-hover"
+            onClick={() => onSelectEvent(event.id)}
+          >
+            <span
+              className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[8px] text-white"
+              style={{ backgroundColor: style.cssVar }}
+            >
+              {style.icon}
+            </span>
+            <span className="font-mono text-text-muted">
+              {new Date(event.occurred_at).toLocaleTimeString()}
+            </span>
+            <span className="font-medium">{event.event_type}</span>
+            {event.model && (
+              <span className="text-text-muted">{event.model}</span>
+            )}
+          </button>
+        );
+      })}
     </div>
   );
 }

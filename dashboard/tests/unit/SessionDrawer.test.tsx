@@ -136,6 +136,14 @@ describe("SessionDrawer", () => {
     expect(screen.getByText("post_call")).toBeInTheDocument();
   });
 
+  it("expands event row to show JSON on click", () => {
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    // Click the post_call event row
+    fireEvent.click(screen.getByText("post_call").closest("div[class*='cursor-pointer']")!);
+    // Should show expanded JSON with event details
+    expect(screen.getByText(/"event_type": "post_call"/)).toBeInTheDocument();
+  });
+
   it("shows disabled message on Prompts tab when no events have content", () => {
     render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
     fireEvent.click(screen.getByText("Prompts"));
@@ -159,5 +167,13 @@ describe("SessionDrawer", () => {
     fireEvent.click(screen.getByText("Prompts"));
     fireEvent.click(screen.getByText("Timeline"));
     expect(screen.getByText("session_start")).toBeInTheDocument();
+  });
+
+  it("has 480px width", () => {
+    const { container } = render(
+      <SessionDrawer sessionId="s1" onClose={() => {}} />
+    );
+    const drawer = container.querySelector("[class*='w-\\[480px\\]']");
+    expect(drawer).toBeInTheDocument();
   });
 });

@@ -21,6 +21,13 @@
   --color-warn: var(--warning);
   --color-degrade: #ff8c00;
   --color-block: var(--danger);
+  --event-llm: #7c5cff;
+  --event-tool: #00e5a0;
+  --event-warn: #ffb224;
+  --event-block: #ff4d6a;
+  --event-degrade: #ff8c00;
+  --event-directive: #a855f7;
+  --event-lifecycle: #6b6b8a;
 }
 
 /* Clean light theme -- Phase 4 */
@@ -46,4 +53,11 @@
   --color-warn: var(--warning);
   --color-degrade: #e67e22;
   --color-block: var(--danger);
+  --event-llm: #6c5ce7;
+  --event-tool: #00b894;
+  --event-warn: #f39c12;
+  --event-block: #e17055;
+  --event-degrade: #e67e22;
+  --event-directive: #8b5cf6;
+  --event-lifecycle: #95a5a6;
 }

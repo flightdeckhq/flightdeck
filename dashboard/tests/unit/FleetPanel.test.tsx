@@ -87,4 +87,26 @@ describe("FleetPanel", () => {
       });
     });
   });
+
+  it("calls onFlavorClick when flavor name is clicked", () => {
+    const onFlavorClick = vi.fn();
+    render(<FleetPanel flavors={mockFlavors} onFlavorClick={onFlavorClick} />);
+    fireEvent.click(screen.getByText("research-agent"));
+    expect(onFlavorClick).toHaveBeenCalledWith("research-agent");
+  });
+
+  it("shows filter indicator when activeFlavorFilter is set", () => {
+    render(
+      <FleetPanel
+        flavors={mockFlavors}
+        activeFlavorFilter="research-agent"
+      />
+    );
+    expect(screen.getByText("(filtered)")).toBeInTheDocument();
+  });
+
+  it("does not show filter indicator when no filter active", () => {
+    render(<FleetPanel flavors={mockFlavors} />);
+    expect(screen.queryByText("(filtered)")).not.toBeInTheDocument();
+  });
 });

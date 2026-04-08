@@ -893,3 +893,29 @@ to only the first session to make an LLM call after issuance. Fan-out at creatio
 time ensures every active session receives exactly one directive regardless of
 which session calls the ingestion API first.
 
+
+---
+
+## D059 -- Phase 4.5 UI redesign
+
+**Decision:** Fleet timeline redesigned to flavor → session → event hierarchy.
+Events are color+icon coded circles positioned on a shared time axis. Analytics
+rebalanced to include latency and agent type distribution, reducing token-heavy
+focus. Dense layout adopted throughout.
+
+**Changes:**
+- Event visual system: 7 CSS variable colors for event types (LLM, tool, warn,
+  block, degrade, directive, lifecycle) with icon characters per type
+- Fleet timeline: swim lanes with flavor headers (28px), session rows (32px),
+  time range selector (5m/15m/30m/1h/6h), flavor filter via sidebar click
+- Session drawer: 480px width, dense event list with expand-to-JSON,
+  event-type colored icons
+- Analytics: Row 1 full-width token time series, Row 2 top consumers + latency,
+  Row 3 sessions-by-model + policy events + agent type (3-column)
+- FleetPanel: tighter spacing (11px/13px fonts), clickable flavor filter
+
+**Reasoning:** The original UI was spacious but sparse -- too few data points
+visible without scrolling. Engineering dashboards need density. Every pixel should
+communicate status. The event color system provides instant visual classification
+without reading labels.
+

@@ -10,9 +10,11 @@ interface FleetState {
   error: string | null;
   selectedSessionId: string | null;
   agentTypeFilter: AgentTypeFilter;
+  flavorFilter: string | null;
 
   load: (agentType?: AgentTypeFilter) => Promise<void>;
   setAgentTypeFilter: (filter: AgentTypeFilter) => void;
+  setFlavorFilter: (flavor: string | null) => void;
   applyUpdate: (update: FleetUpdate) => void;
   selectSession: (id: string | null) => void;
 }
@@ -23,6 +25,7 @@ export const useFleetStore = create<FleetState>((set, get) => ({
   error: null,
   selectedSessionId: null,
   agentTypeFilter: "all",
+  flavorFilter: null,
 
   load: async (agentType?: AgentTypeFilter) => {
     const filter = agentType ?? get().agentTypeFilter;
@@ -39,6 +42,10 @@ export const useFleetStore = create<FleetState>((set, get) => ({
   setAgentTypeFilter: (filter: AgentTypeFilter) => {
     set({ agentTypeFilter: filter });
     get().load(filter);
+  },
+
+  setFlavorFilter: (flavor: string | null) => {
+    set({ flavorFilter: flavor });
   },
 
   applyUpdate: (update: FleetUpdate) => {

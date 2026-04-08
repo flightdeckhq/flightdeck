@@ -60,7 +60,7 @@ export function Analytics() {
         {/* KPI Row */}
         <KpiRow range={range ?? ""} from={from} to={to} />
 
-        {/* Row 1: Full-width token usage over time */}
+        {/* Row 1: Full-width token usage over time (area) */}
         <DimensionChart
           title="Token Usage Over Time"
           metric="tokens"
@@ -71,10 +71,10 @@ export function Analytics() {
           to={to}
         />
 
-        {/* Row 2: Tokens by dimension (bar) + Sessions over time (area) */}
+        {/* Row 2: Top Consumers (bar) + Avg Latency (area) */}
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
           <DimensionChart
-            title="Tokens by Dimension"
+            title="Top Consumers"
             metric="tokens"
             defaultGroupBy="flavor"
             chartType="bar"
@@ -83,9 +83,9 @@ export function Analytics() {
             to={to}
           />
           <DimensionChart
-            title="Sessions Over Time"
-            metric="sessions"
-            defaultGroupBy="flavor"
+            title="Avg Latency"
+            metric="latency_avg"
+            defaultGroupBy="model"
             chartType="area"
             range={range}
             from={from}
@@ -93,11 +93,11 @@ export function Analytics() {
           />
         </div>
 
-        {/* Row 3: Token distribution (donut) + Policy events over time (area) */}
-        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        {/* Row 3: Sessions by Model (donut) + Policy Events (area) + Agent Type (donut) */}
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
           <DimensionChart
-            title="Token Distribution by Model"
-            metric="tokens"
+            title="Sessions by Model"
+            metric="sessions"
             defaultGroupBy="model"
             chartType="donut"
             range={range}
@@ -105,10 +105,19 @@ export function Analytics() {
             to={to}
           />
           <DimensionChart
-            title="Policy Events Over Time"
+            title="Policy Events"
             metric="policy_events"
             defaultGroupBy="flavor"
             chartType="area"
+            range={range}
+            from={from}
+            to={to}
+          />
+          <DimensionChart
+            title="Agent Type Distribution"
+            metric="sessions"
+            defaultGroupBy="agent_type"
+            chartType="donut"
             range={range}
             from={from}
             to={to}

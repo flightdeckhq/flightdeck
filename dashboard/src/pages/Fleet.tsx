@@ -4,6 +4,7 @@ import { FleetPanel } from "@/components/fleet/FleetPanel";
 import { Timeline } from "@/components/timeline/Timeline";
 import { SessionDrawer } from "@/components/session/SessionDrawer";
 import { Button } from "@/components/ui/button";
+import { X } from "lucide-react";
 
 const FILTER_OPTIONS: { label: string; value: AgentTypeFilter }[] = [
   { label: "All", value: "all" },
@@ -13,7 +14,14 @@ const FILTER_OPTIONS: { label: string; value: AgentTypeFilter }[] = [
 
 export function Fleet() {
   const { flavors, loading, error } = useFleet();
-  const { selectedSessionId, selectSession, agentTypeFilter, setAgentTypeFilter } = useFleetStore();
+  const {
+    selectedSessionId,
+    selectSession,
+    agentTypeFilter,
+    setAgentTypeFilter,
+    flavorFilter,
+    setFlavorFilter,
+  } = useFleetStore();
 
   if (loading && flavors.length === 0) {
     return (
@@ -31,9 +39,17 @@ export function Fleet() {
     );
   }
 
+  function handleFlavorClick(flavor: string) {
+    setFlavorFilter(flavorFilter === flavor ? null : flavor);
+  }
+
   return (
     <div className="flex h-full">
-      <FleetPanel flavors={flavors} />
+      <FleetPanel
+        flavors={flavors}
+        onFlavorClick={handleFlavorClick}
+        activeFlavorFilter={flavorFilter}
+      />
       <div className="flex-1 overflow-hidden p-4">
         <div className="mb-3 flex items-center gap-1">
           {FILTER_OPTIONS.map((opt) => (
@@ -46,9 +62,24 @@ export function Fleet() {
               {opt.label}
             </Button>
           ))}
+          {flavorFilter && (
+            <div className="ml-3 flex items-center gap-1">
+              <span className="text-[11px] text-text-muted">Flavor:</span>
+              <span className="text-[11px] font-mono text-[var(--primary)]">{flavorFilter}</span>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-5 w-5 p-0"
+                onClick={() => setFlavorFilter(null)}
+              >
+                <X className="h-3 w-3" />
+              </Button>
+            </div>
+          )}
         </div>
         <Timeline
           flavors={flavors}
+          flavorFilter={flavorFilter}
           onNodeClick={(id) => selectSession(id)}
         />
       </div>

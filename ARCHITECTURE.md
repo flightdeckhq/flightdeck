@@ -909,18 +909,18 @@ calls it with different `metric` and `group_by` parameters per chart.
 └────────────────────────────────────────────┘
 
 ┌──────────────────────┬─────────────────────┐
-│  Top by token        │  Sessions per day   │
-│  consumption         │                     │
-│  [Group by: Flavor▾] │  [Group by: Type ▾] │
+│  Top Consumers       │  Avg Latency Over   │
+│                      │  Time               │
+│  [Group by: Flavor▾] │  [Group by: Flavor▾]│
 │  horizontal bar      │  stacked area       │
 └──────────────────────┴─────────────────────┘
 
-┌──────────────────────┬─────────────────────┐
-│  Model distribution  │  Policy events      │
-│  [Group by: Model ▾] │  over time          │
-│  donut chart         │  [Group by: Flavor▾]│
-│                      │  line chart         │
-└──────────────────────┴─────────────────────┘
+┌──────────────┬──────────────┬──────────────┐
+│  Sessions by │  Policy      │  Agent Type  │
+│  Model       │  Events      │  Distribution│
+│  [Model ▾]   │  [Flavor ▾]  │  [Type ▾]    │
+│  donut chart │  area chart  │  donut chart │
+└──────────────┴──────────────┴──────────────┘
 ```
 
 Every chart has:
@@ -1540,12 +1540,12 @@ their agent appear in the live dashboard timeline in real time.
 ---
 
 `dashboard/src/App.tsx` -- router, theme provider, nav bar with Fleet and Policies links
-`dashboard/src/pages/Fleet.tsx` -- primary view layout
-`dashboard/src/components/timeline/Timeline.tsx` -- primary surface
-`dashboard/src/components/timeline/SwimLane.tsx`
-`dashboard/src/components/timeline/EventNode.tsx`
-`dashboard/src/components/timeline/TimeAxis.tsx`
-`dashboard/src/components/fleet/FleetPanel.tsx`
+`dashboard/src/pages/Fleet.tsx` -- primary view: flavor→session→event hierarchy, flavor filter, agent type toggle
+`dashboard/src/components/timeline/Timeline.tsx` -- swim lane container with time range selector (5m/15m/30m/1h/6h)
+`dashboard/src/components/timeline/SwimLane.tsx` -- flavor header + session rows (32px), clickable session rows
+`dashboard/src/components/timeline/EventNode.tsx` -- event-type colored circles (10px) with icons: ✦ LLM, ⚙ tool, ⚠ warn, ▶ start, ■ end
+`dashboard/src/components/timeline/TimeAxis.tsx` -- shared time axis with auto-spaced labels
+`dashboard/src/components/fleet/FleetPanel.tsx` -- sidebar with clickable flavor filter, dense layout (11px/13px fonts)
 `dashboard/src/components/fleet/SessionStateBar.tsx`
 `dashboard/src/components/fleet/PolicyEventList.tsx`
 `dashboard/src/components/session/SessionDrawer.tsx`

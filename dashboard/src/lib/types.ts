@@ -8,7 +8,10 @@ export type EventType =
   | "heartbeat"
   | "pre_call"
   | "post_call"
-  | "tool_call";
+  | "tool_call"
+  | "policy_warn"
+  | "policy_block"
+  | "policy_degrade";
 
 /** Agent flavor (persistent identity). */
 export interface Agent {

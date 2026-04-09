@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo } from "react";
-import type { AgentEvent } from "@/lib/types";
+import type { AgentEvent, FeedEvent } from "@/lib/types";
 import { getBadge, getEventDetail, flavorColor, isEventVisible, truncateSessionId } from "@/lib/events";
 import {
   FEED_MAX_EVENTS,
@@ -21,7 +21,7 @@ function getInitialHeight(): number {
 }
 
 interface LiveFeedProps {
-  events: AgentEvent[];
+  events: FeedEvent[];
   onEventClick: (event: AgentEvent) => void;
   activeFilter?: string | null;
   onFilterChange?: (filter: string | null) => void;
@@ -35,18 +35,13 @@ export function LiveFeed({ events, onEventClick, activeFilter, onFilterChange, i
 
   const capped = events.slice(-FEED_MAX_EVENTS);
   const filtered = activeFilter
-    ? capped.filter((e) => isEventVisible(e.event_type, activeFilter))
+    ? capped.filter((fe) => isEventVisible(fe.event.event_type, activeFilter))
     : capped;
 
-  // Newest first: sort by occurred_at descending.
-  // Cannot use .reverse() because feedEvents arrival order from batched
-  // WebSocket messages does not guarantee chronological order.
+  // Newest arrival at top: feedEvents is always in arrival order
+  // (oldest arrivedAt at index 0, newest at end). Reverse for display.
   const displayEvents = useMemo(
-    () => [...filtered].sort((a, b) => {
-      const ta = a.occurred_at ? new Date(a.occurred_at).getTime() : 0;
-      const tb = b.occurred_at ? new Date(b.occurred_at).getTime() : 0;
-      return tb - ta;
-    }),
+    () => [...filtered].reverse(),
     [filtered]
   );
 
@@ -174,11 +169,11 @@ export function LiveFeed({ events, onEventClick, activeFilter, onFilterChange, i
               Waiting for events...
             </div>
           )}
-          {displayEvents.map((event) => (
+          {displayEvents.map((fe) => (
             <FeedRow
-              key={event.id}
-              event={event}
-              onClick={() => onEventClick(event)}
+              key={`${fe.arrivedAt}-${fe.event.id}`}
+              fe={fe}
+              onClick={() => onEventClick(fe.event)}
             />
           ))}
         </div>
@@ -187,7 +182,8 @@ export function LiveFeed({ events, onEventClick, activeFilter, onFilterChange, i
   );
 }
 
-function FeedRow({ event, onClick }: { event: AgentEvent; onClick: () => void }) {
+function FeedRow({ fe, onClick }: { fe: FeedEvent; onClick: () => void }) {
+  const { event } = fe;
   const badge = getBadge(event.event_type);
   const detail = getEventDetail(event);
   const color = flavorColor(event.flavor);
@@ -229,9 +225,7 @@ function FeedRow({ event, onClick }: { event: AgentEvent; onClick: () => void })
         style={{ color: "var(--text-muted)" }}
         data-testid="feed-timestamp"
       >
-        {event.occurred_at
-          ? new Date(event.occurred_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })
-          : "—"}
+        {new Date(fe.arrivedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
       </span>
     </div>
   );

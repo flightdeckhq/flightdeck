@@ -59,6 +59,12 @@ export interface AgentEvent {
   occurred_at: string;
 }
 
+/** A feed event wraps an AgentEvent with a client-side arrival timestamp. */
+export interface FeedEvent {
+  arrivedAt: number;
+  event: AgentEvent;
+}
+
 /** Fleet state grouped by flavor, as returned by GET /v1/fleet. */
 export interface FlavorSummary {
   flavor: string;

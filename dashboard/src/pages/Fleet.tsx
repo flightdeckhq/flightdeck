@@ -8,7 +8,7 @@ import { LiveFeed } from "@/components/fleet/LiveFeed";
 import { EventDetailDrawer } from "@/components/fleet/EventDetailDrawer";
 import { Timeline } from "@/components/timeline/Timeline";
 import { SessionDrawer } from "@/components/session/SessionDrawer";
-import type { AgentEvent } from "@/lib/types";
+import type { AgentEvent, FeedEvent } from "@/lib/types";
 import { FEED_MAX_EVENTS, PAUSE_QUEUE_MAX_EVENTS, FEED_BATCH_MS } from "@/lib/constants";
 import { eventsCache } from "@/hooks/useSessionEvents";
 
@@ -18,14 +18,14 @@ export type TimeRange = "1m" | "5m" | "15m" | "30m" | "1h" | "6h";
 const TIME_RANGES: TimeRange[] = ["1m", "5m", "15m", "30m", "1h", "6h"];
 
 export function Fleet() {
-  const [feedEvents, setFeedEvents] = useState<AgentEvent[]>([]);
-  const [pauseQueue, setPauseQueue] = useState<AgentEvent[]>([]);
+  const [feedEvents, setFeedEvents] = useState<FeedEvent[]>([]);
+  const [pauseQueue, setPauseQueue] = useState<FeedEvent[]>([]);
   const [paused, setPaused] = useState(false);
   const [pausedAt, setPausedAt] = useState<Date | null>(null);
   const [catchingUp, setCatchingUp] = useState(false);
   const pausedRef = useRef(false);
   const [sessionVersions, setSessionVersions] = useState<Record<string, number>>({});
-  const pendingFeedEvents = useRef<AgentEvent[]>([]);
+  const pendingFeedEvents = useRef<FeedEvent[]>([]);
   const batchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const handleNewEvent = useCallback((event: AgentEvent) => {
@@ -38,13 +38,14 @@ export function Fleet() {
     }
 
     // Add to live feed (batched for performance)
+    const fe: FeedEvent = { arrivedAt: Date.now(), event };
     if (pausedRef.current) {
       setPauseQueue((prev) => {
-        const next = [...prev, event];
+        const next = [...prev, fe];
         return next.length > PAUSE_QUEUE_MAX_EVENTS ? next.slice(-PAUSE_QUEUE_MAX_EVENTS) : next;
       });
     } else {
-      pendingFeedEvents.current.push(event);
+      pendingFeedEvents.current.push(fe);
       if (!batchTimerRef.current) {
         batchTimerRef.current = setTimeout(() => {
           setFeedEvents((prev) =>

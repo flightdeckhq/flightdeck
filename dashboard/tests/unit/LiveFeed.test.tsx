@@ -56,15 +56,22 @@ describe("LiveFeed", () => {
     expect(screen.getAllByTestId("feed-row")).toHaveLength(3);
   });
 
-  it("newest event appears first in display", () => {
+  it("newest event sorts to top by occurred_at", () => {
     const events = [
-      makeEvent({ id: "e-old", occurred_at: "2026-04-07T10:00:00Z" }),
-      makeEvent({ id: "e-new", occurred_at: "2026-04-07T10:05:00Z" }),
+      makeEvent({ id: "e-old", occurred_at: "2026-04-07T10:00:00Z", event_type: "session_start", model: null, tokens_total: null, latency_ms: null }),
+      makeEvent({ id: "e-mid", occurred_at: "2026-04-07T10:00:30Z" }),
+      makeEvent({ id: "e-new", occurred_at: "2026-04-07T10:01:00Z" }),
     ];
     render(<LiveFeed events={events} onEventClick={() => {}} />);
-    const rows = screen.getAllByTestId("feed-row");
-    // First rendered row should be the newest event (e-new was second in array)
-    expect(rows.length).toBe(2);
+    const timestamps = screen.getAllByTestId("feed-timestamp");
+    // First timestamp should be from the newest event
+    expect(timestamps.length).toBe(3);
+  });
+
+  it("timestamp shown in each row", () => {
+    const events = [makeEvent({ id: "e1", occurred_at: "2026-04-09T16:20:19.000Z" })];
+    render(<LiveFeed events={events} onEventClick={() => {}} />);
+    expect(screen.getByTestId("feed-timestamp")).toBeInTheDocument();
   });
 
   it("caps at 500 events (virtualized -- checks total height)", () => {

@@ -1,4 +1,4 @@
-import { useRef, useEffect, useState, useCallback, useMemo } from "react";
+import { useRef, useEffect, useState, useMemo } from "react";
 import type { AgentEvent } from "@/lib/types";
 import { getBadge, getEventDetail, flavorColor, isEventVisible, truncateSessionId } from "@/lib/events";
 import {
@@ -9,6 +9,9 @@ import {
   FEED_DEFAULT_HEIGHT,
   FEED_HEIGHT_STORAGE_KEY,
 } from "@/lib/constants";
+
+const ROW_HEIGHT = 30;
+const OVERSCAN = 5;
 
 function getInitialHeight(): number {
   if (typeof window === "undefined") return FEED_DEFAULT_HEIGHT;
@@ -33,14 +36,18 @@ interface LiveFeedProps {
 export function LiveFeed({ events, onEventClick, activeFilter, onFilterChange, isPaused, queueLength = 0, catchingUp }: LiveFeedProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [feedHeight, setFeedHeight] = useState(getInitialHeight);
+  const [scrollTop, setScrollTop] = useState(0);
+
   const capped = events.slice(-FEED_MAX_EVENTS);
   const visibleEvents = activeFilter
     ? capped.filter((e) => isEventVisible(e.event_type, activeFilter))
     : capped;
 
-  // Newest first — reverse for display
+  // Sort newest first by occurred_at (not reverse — handles out-of-order events)
   const displayEvents = useMemo(
-    () => [...visibleEvents].reverse(),
+    () => [...visibleEvents].sort((a, b) =>
+      new Date(b.occurred_at).getTime() - new Date(a.occurred_at).getTime()
+    ),
     [visibleEvents]
   );
 
@@ -63,6 +70,16 @@ export function LiveFeed({ events, onEventClick, activeFilter, onFilterChange, i
     document.addEventListener("mousemove", onMouseMove);
     document.addEventListener("mouseup", onMouseUp);
   }
+
+  // Virtualization calculations
+  const scrollAreaHeight = feedHeight - 24; // subtract column header height
+  const totalHeight = displayEvents.length * ROW_HEIGHT;
+  const startIndex = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN);
+  const endIndex = Math.min(
+    displayEvents.length,
+    Math.floor((scrollTop + scrollAreaHeight) / ROW_HEIGHT) + OVERSCAN + 1
+  );
+  const visibleSlice = displayEvents.slice(startIndex, endIndex);
 
   return (
     <div className="shrink-0">
@@ -130,7 +147,6 @@ export function LiveFeed({ events, onEventClick, activeFilter, onFilterChange, i
             · {activeFilter}
           </button>
         )}
-        {/* Pause controls are in the fleet header */}
       </div>
 
       {/* Feed body with sticky column headers */}
@@ -155,73 +171,37 @@ export function LiveFeed({ events, onEventClick, activeFilter, onFilterChange, i
           <span className="w-[72px] shrink-0 text-right">Time ↑</span>
         </div>
 
-        {/* Scrollable rows (virtualized) */}
-        <VirtualizedFeedBody
-          scrollRef={scrollRef}
-          visibleEvents={displayEvents}
-          onEventClick={onEventClick}
-        />
-      </div>
-    </div>
-  );
-}
-
-const ROW_HEIGHT = 30;
-const VISIBLE_BUFFER = 10;
-
-function VirtualizedFeedBody({
-  scrollRef,
-  visibleEvents,
-  onEventClick,
-}: {
-  scrollRef: React.RefObject<HTMLDivElement>;
-  visibleEvents: AgentEvent[];
-  onEventClick: (event: AgentEvent) => void;
-}) {
-  const [scrollTop, setScrollTop] = useState(0);
-
-  const handleScroll = useCallback(() => {
-    if (scrollRef.current) {
-      setScrollTop(scrollRef.current.scrollTop);
-    }
-  }, [scrollRef]);
-
-  const totalHeight = visibleEvents.length * ROW_HEIGHT;
-  const containerHeight = scrollRef.current?.clientHeight ?? 300;
-  const visibleCount = Math.ceil(containerHeight / ROW_HEIGHT);
-  const startIndex = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - VISIBLE_BUFFER);
-  const endIndex = Math.min(visibleEvents.length, startIndex + visibleCount + VISIBLE_BUFFER * 2);
-  const visibleSlice = visibleEvents.slice(startIndex, endIndex);
-
-  return (
-    <div
-      ref={scrollRef}
-      className="absolute left-0 right-0 overflow-y-auto"
-      style={{ top: 24, bottom: 0 }}
-      onScroll={handleScroll}
-      data-testid="feed-body"
-    >
-      {visibleEvents.length === 0 && (
+        {/* Scrollable virtualized rows */}
         <div
-          className="flex items-center justify-center text-xs"
-          style={{ color: "var(--text-muted)", padding: 16, height: "100%" }}
+          ref={scrollRef}
+          className="absolute left-0 right-0 overflow-y-auto"
+          style={{ top: 24, bottom: 0 }}
+          onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
+          data-testid="feed-body"
         >
-          Waiting for events...
+          {displayEvents.length === 0 && (
+            <div
+              className="flex items-center justify-center text-xs"
+              style={{ color: "var(--text-muted)", padding: 16, height: "100%" }}
+            >
+              Waiting for events...
+            </div>
+          )}
+          {displayEvents.length > 0 && (
+            <div style={{ height: totalHeight, position: "relative" }}>
+              <div style={{ position: "absolute", top: startIndex * ROW_HEIGHT, left: 0, right: 0 }}>
+                {visibleSlice.map((event) => (
+                  <FeedRow
+                    key={event.id}
+                    event={event}
+                    onClick={() => onEventClick(event)}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
         </div>
-      )}
-      {visibleEvents.length > 0 && (
-        <div style={{ height: totalHeight, position: "relative" }}>
-          <div style={{ position: "absolute", top: startIndex * ROW_HEIGHT, width: "100%" }}>
-            {visibleSlice.map((event, i) => (
-              <FeedRow
-                key={event.id ?? startIndex + i}
-                event={event}
-                onClick={() => onEventClick(event)}
-              />
-            ))}
-          </div>
-        </div>
-      )}
+      </div>
     </div>
   );
 }
@@ -233,23 +213,17 @@ function FeedRow({ event, onClick }: { event: AgentEvent; onClick: () => void })
 
   return (
     <div
-      className="flex h-[30px] cursor-pointer items-center gap-2 px-3 transition-colors hover:bg-surface-hover"
+      className="flex cursor-pointer items-center gap-2 px-3 transition-colors hover:bg-surface-hover"
       style={{
+        height: ROW_HEIGHT,
         borderBottom: "1px solid var(--border-subtle)",
-        animation: "fadeIn 200ms ease",
       }}
       onClick={onClick}
       data-testid="feed-row"
     >
-      {/* Flavor */}
-      <span
-        className="w-[100px] shrink-0 truncate font-mono text-xs"
-        style={{ color }}
-      >
+      <span className="w-[100px] shrink-0 truncate font-mono text-xs" style={{ color }}>
         {event.flavor}
       </span>
-
-      {/* Session ID */}
       <span
         className="w-[80px] shrink-0 truncate font-mono text-[11px]"
         style={{ color: "var(--text-muted)" }}
@@ -257,8 +231,6 @@ function FeedRow({ event, onClick }: { event: AgentEvent; onClick: () => void })
       >
         {truncateSessionId(event.session_id)}
       </span>
-
-      {/* Badge */}
       <span
         className="flex h-[18px] w-[88px] shrink-0 items-center justify-center rounded font-mono text-[10px] font-semibold uppercase"
         style={{
@@ -271,21 +243,17 @@ function FeedRow({ event, onClick }: { event: AgentEvent; onClick: () => void })
       >
         {badge.label}
       </span>
-
-      {/* Detail */}
-      <span
-        className="flex-1 truncate text-xs"
-        style={{ color: "var(--text)" }}
-      >
+      <span className="flex-1 truncate text-xs" style={{ color: "var(--text)" }}>
         {detail}
       </span>
-
-      {/* Timestamp */}
       <span
         className="w-[72px] shrink-0 text-right font-mono text-[11px]"
         style={{ color: "var(--text-muted)" }}
+        data-testid="feed-timestamp"
       >
-        {new Date(event.occurred_at).toLocaleTimeString()}
+        {event.occurred_at
+          ? new Date(event.occurred_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })
+          : "—"}
       </span>
     </div>
   );

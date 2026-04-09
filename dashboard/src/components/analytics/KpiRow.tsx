@@ -13,12 +13,12 @@ function KpiCard({ label, value, changePct, loading }: KpiCardProps) {
   return (
     <Card className="flex-1 min-w-[160px]">
       <CardContent className="flex flex-col gap-1">
-        <span className="text-xs text-text-muted">{label}</span>
+        <span className="text-[13px] text-text-muted">{label}</span>
         {loading ? (
           <div className="h-7 w-20 animate-pulse rounded bg-surface-hover" />
         ) : (
           <div className="flex items-baseline gap-2">
-            <span className="text-xl font-semibold text-text">
+            <span className="text-2xl font-bold text-text">
               {typeof value === "number" ? value.toLocaleString() : value}
             </span>
             {changePct !== undefined && (

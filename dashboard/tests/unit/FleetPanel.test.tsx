@@ -38,18 +38,19 @@ const inactiveFlavors: FlavorSummary[] = [
 ];
 
 describe("FleetPanel", () => {
-  it("renders correct active session count", () => {
+  it("renders correct active session count in session states", () => {
     render(<FleetPanel flavors={mockFlavors} />);
-    expect(screen.getByText("2")).toBeInTheDocument(); // active count
+    const activeCount = screen.getByTestId("state-count-active");
+    expect(activeCount).toHaveTextContent("2");
   });
 
-  it("renders all five state labels in session state bar", () => {
+  it("renders session state counts", () => {
     render(<FleetPanel flavors={mockFlavors} />);
-    expect(screen.getByText("2 active")).toBeInTheDocument();
-    expect(screen.getByText("0 idle")).toBeInTheDocument();
-    expect(screen.getByText("0 stale")).toBeInTheDocument();
-    expect(screen.getByText("1 closed")).toBeInTheDocument();
-    expect(screen.getByText("0 lost")).toBeInTheDocument();
+    // State counts shown as numbers with labels below
+    const activeCount = screen.getByTestId("state-count-active");
+    expect(activeCount).toHaveTextContent("2");
+    const closedCount = screen.getByTestId("state-count-closed");
+    expect(closedCount).toHaveTextContent("1");
   });
 
   it("does not show Stop All when no active sessions", () => {
@@ -74,7 +75,6 @@ describe("FleetPanel", () => {
   it("calls createDirective with correct payload on confirm", async () => {
     render(<FleetPanel flavors={mockFlavors} />);
     fireEvent.click(screen.getByText("Stop All"));
-    // Click the confirm button in the dialog
     const buttons = screen.getAllByText("Stop All");
     const confirmBtn = buttons[buttons.length - 1];
     fireEvent.click(confirmBtn);

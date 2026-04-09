@@ -73,7 +73,7 @@ export function Policies() {
   return (
     <div className="h-full overflow-auto p-6">
       <div className="mb-6 flex items-center justify-between">
-        <h1 className="text-lg font-semibold text-text">Token Policies</h1>
+        <h1 className="text-xl font-semibold text-text">Token Policies</h1>
         <Button onClick={openCreate}>Create Policy</Button>
       </div>
 

@@ -955,3 +955,54 @@ Parse sites using Pydantic:
 3. `core/session.py _execute_custom_directive()` — DirectivePayloadSchema
 4. `core/session.py _preflight_policy()` — PolicyResponseSchema
 
+
+---
+
+## D062 -- Fleet redesign: flavor expand-in-place with dual view modes
+
+**Decision:** Fleet timeline redesigned from flat swimlanes to a flavor-centric
+expand-in-place model with two view modes (swimlane and bar).
+
+**Changes:**
+- Each flavor is a single collapsed row (48px). Click expands inline to show
+  individual session rows below. Only one flavor expanded at a time.
+- Swimlane mode: event circles positioned on a shared D3 time scale. 20px circles
+  in collapsed flavor rows, 24px circles in expanded session rows.
+- Bar mode: 24 equal-width time buckets, stacked bars showing event type distribution
+  (LLM, tool, policy, directive).
+- Fleet header bar (40px) with view mode toggle, time range selector (5m/15m/30m/1h/6h),
+  and live indicator.
+- Left sidebar redesigned: 240px, section headers (uppercase 11px tracked), session
+  state counts as large numbers (20px/700), flavor list with active border + accent glow.
+
+**Reasoning:** The flat swimlane layout showed all sessions simultaneously, which
+doesn't scale past 5-10 agents. The expand-in-place model keeps the fleet overview
+compact while allowing drill-down into any flavor. Bar mode gives a quick activity
+histogram when individual events are less important than volume patterns.
+
+---
+
+## D063 -- Geist font for UI and monospace
+
+**Decision:** Geist (sans) for UI text, GeistMono for identifiers, timestamps,
+and code. Installed via npm package `geist`.
+
+**Reasoning:** Free and open source (Vercel). Superior readability at small sizes
+(11-13px) compared to Inter. GeistMono has consistent character widths ideal for
+session IDs, token counts, and timestamps. Both fonts ship together in one package.
+
+---
+
+## D064 -- Live event feed
+
+**Decision:** Fixed 240px height live feed below the fleet timeline. Driven by
+existing fleet store and WebSocket NOTIFY. Cap at 500 events. Auto-scroll with
+manual pause detection. Clicking a row opens EventDetailDrawer for single-event
+detail including Prompts tab if capture enabled.
+
+**Reasoning:** The swimlane/bar views show temporal patterns. The feed shows the raw
+chronological log. Together they answer two complementary questions: what is the
+pattern, and what exactly happened. The EventDetailDrawer is independent from the
+SessionDrawer — both can be open simultaneously. The 500-event cap prevents memory
+growth in long-running dashboard sessions.
+

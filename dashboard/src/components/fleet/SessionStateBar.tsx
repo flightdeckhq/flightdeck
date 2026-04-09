@@ -1,9 +1,16 @@
 import type { FlavorSummary } from "@/lib/types";
-import { Badge } from "@/components/ui/badge";
 
 interface SessionStateBarProps {
   flavors: FlavorSummary[];
 }
+
+const states = [
+  { key: "active", label: "active", colorVar: "var(--status-active)" },
+  { key: "idle", label: "idle", colorVar: "var(--status-idle)" },
+  { key: "stale", label: "stale", colorVar: "var(--status-stale)" },
+  { key: "closed", label: "closed", colorVar: "var(--text-muted)" },
+  { key: "lost", label: "lost", colorVar: "var(--status-lost)" },
+] as const;
 
 export function SessionStateBar({ flavors }: SessionStateBarProps) {
   const counts = { active: 0, idle: 0, stale: 0, closed: 0, lost: 0 };
@@ -17,12 +24,21 @@ export function SessionStateBar({ flavors }: SessionStateBarProps) {
   }
 
   return (
-    <div className="flex gap-2 text-xs">
-      <Badge variant="active">{counts.active} active</Badge>
-      <Badge variant="idle">{counts.idle} idle</Badge>
-      <Badge variant="stale">{counts.stale} stale</Badge>
-      <Badge variant="closed">{counts.closed} closed</Badge>
-      <Badge variant="lost">{counts.lost} lost</Badge>
+    <div className="flex gap-4">
+      {states.map((s) => (
+        <div key={s.key} className="flex flex-col items-center">
+          <span
+            className="text-xl font-bold"
+            style={{ color: s.colorVar }}
+            data-testid={`state-count-${s.key}`}
+          >
+            {counts[s.key]}
+          </span>
+          <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>
+            {s.label}
+          </span>
+        </div>
+      ))}
     </div>
   );
 }

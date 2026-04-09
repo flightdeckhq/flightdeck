@@ -89,14 +89,15 @@ export async function fetchSearch(query: string, signal?: AbortSignal): Promise<
   return res.json() as Promise<SearchResults>;
 }
 
+export async function fetchFlavors(): Promise<string[]> {
+  const resp = await fetchFleet(200, 0);
+  return resp.flavors.map((f) => f.flavor);
+}
+
 export async function fetchCustomDirectives(flavor?: string): Promise<CustomDirective[]> {
   const url = flavor ? `/v1/directives/custom?flavor=${encodeURIComponent(flavor)}` : '/v1/directives/custom';
-  try {
-    const resp = await fetchJson<{ directives: CustomDirective[] }>(url);
-    return resp.directives ?? [];
-  } catch {
-    return [];
-  }
+  const resp = await fetchJson<{ directives: CustomDirective[] }>(url);
+  return resp.directives ?? [];
 }
 
 export async function triggerCustomDirective(data: {

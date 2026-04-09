@@ -58,7 +58,14 @@ export function DirectivesPanel({ flavorFilter, selectedSessionId }: DirectivesP
           <CardTitle className="text-[11px]">Custom Directives</CardTitle>
         </CardHeader>
         <CardContent className="px-2 pb-2">
-          <div className="py-4 text-center text-xs text-[var(--danger)]">{error}</div>
+          <div className="py-4 text-center text-xs text-[var(--danger)]">
+            Failed to load directives.
+          </div>
+          <div className="text-center">
+            <Button size="sm" className="h-5 px-2 text-[11px]" onClick={load}>
+              Retry
+            </Button>
+          </div>
         </CardContent>
       </Card>
     );
@@ -72,7 +79,7 @@ export function DirectivesPanel({ flavorFilter, selectedSessionId }: DirectivesP
         </CardHeader>
         <CardContent className="px-2 pb-2">
           <div className="py-4 text-center text-xs text-text-muted">
-            No custom directives registered for this fleet.
+            No custom directives registered for this fleet. Decorate a function with @flightdeck_sensor.directive() and call init() to register one.
           </div>
         </CardContent>
       </Card>
@@ -156,7 +163,7 @@ function DirectiveCard({
       <div>
         <div className="text-[11px] font-semibold text-text">{directive.name}</div>
         {directive.description && (
-          <div className="text-[10px] text-text-muted">{directive.description}</div>
+          <div className="text-[11px] text-text-muted">{directive.description}</div>
         )}
       </div>
 
@@ -172,15 +179,15 @@ function DirectiveCard({
       <div className="flex items-center gap-2">
         <Button
           size="sm"
-          className="h-5 px-2 text-[10px]"
+          className="h-5 px-2 text-[11px]"
           onClick={handleRun}
           disabled={submitting}
         >
           {submitting ? "Sending..." : "Run"}
         </Button>
-        {sent && <span className="text-[10px] text-success">Directive sent</span>}
+        {sent && <span className="text-[11px] text-success">Directive sent</span>}
         {submitError && (
-          <span className="text-[10px] text-[var(--danger)]">{submitError}</span>
+          <span className="text-[11px] text-[var(--danger)]">{submitError}</span>
         )}
       </div>
     </div>
@@ -197,7 +204,7 @@ function ParameterField({
   onChange: (value: unknown) => void;
 }) {
   const label = (
-    <label className="text-[10px] text-text-muted block mb-0.5">
+    <label className="text-[11px] text-text-muted block mb-0.5">
       {param.name}
       {param.required && <span className="text-[var(--danger)]"> *</span>}
     </label>
@@ -213,7 +220,7 @@ function ParameterField({
           className="accent-[var(--primary)]"
           aria-label={param.name}
         />
-        <span className="text-[10px] text-text-muted">{param.name}</span>
+        <span className="text-[11px] text-text-muted">{param.name}</span>
       </div>
     );
   }
@@ -226,7 +233,7 @@ function ParameterField({
           value={String(value ?? "")}
           onValueChange={(v) => onChange(v)}
         >
-          <SelectTrigger className="h-6 text-[10px]">
+          <SelectTrigger className="h-6 text-[11px]">
             <SelectValue placeholder={`Select ${param.name}`} />
           </SelectTrigger>
           <SelectContent>
@@ -252,7 +259,7 @@ function ParameterField({
           onChange={(e) => onChange(e.target.value === "" ? "" : Number(e.target.value))}
           placeholder={param.description || param.name}
           aria-label={param.name}
-          className="w-full rounded border border-border bg-surface px-1.5 py-0.5 text-[10px] text-text focus:outline-none focus:ring-1 focus:ring-[var(--primary)]"
+          className="w-full rounded border border-border bg-surface px-1.5 py-0.5 text-[11px] text-text focus:outline-none focus:ring-1 focus:ring-[var(--primary)]"
         />
       </div>
     );
@@ -269,7 +276,7 @@ function ParameterField({
           onChange={(e) => onChange(e.target.value === "" ? "" : Number(e.target.value))}
           placeholder={param.description || param.name}
           aria-label={param.name}
-          className="w-full rounded border border-border bg-surface px-1.5 py-0.5 text-[10px] text-text focus:outline-none focus:ring-1 focus:ring-[var(--primary)]"
+          className="w-full rounded border border-border bg-surface px-1.5 py-0.5 text-[11px] text-text focus:outline-none focus:ring-1 focus:ring-[var(--primary)]"
         />
       </div>
     );
@@ -285,7 +292,7 @@ function ParameterField({
         onChange={(e) => onChange(e.target.value)}
         placeholder={param.description || param.name}
         aria-label={param.name}
-        className="w-full rounded border border-border bg-surface px-1.5 py-0.5 text-[10px] text-text focus:outline-none focus:ring-1 focus:ring-[var(--primary)]"
+        className="w-full rounded border border-border bg-surface px-1.5 py-0.5 text-[11px] text-text focus:outline-none focus:ring-1 focus:ring-[var(--primary)]"
       />
     </div>
   );

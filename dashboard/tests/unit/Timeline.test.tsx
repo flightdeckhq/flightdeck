@@ -1,7 +1,12 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { Timeline } from "@/components/timeline/Timeline";
 import type { FlavorSummary } from "@/lib/types";
+
+// Mock useSessionEvents to avoid real API calls
+vi.mock("@/hooks/useSessionEvents", () => ({
+  useSessionEvents: () => ({ events: [], loading: false }),
+}));
 
 const mockFlavors: FlavorSummary[] = [
   {
@@ -52,62 +57,57 @@ const mockFlavors: FlavorSummary[] = [
   },
 ];
 
+const defaultProps = {
+  flavors: mockFlavors,
+  viewMode: "swimlane" as const,
+  timeRange: "5m" as const,
+  expandedFlavor: null as string | null,
+  onExpandFlavor: vi.fn(),
+  onNodeClick: vi.fn(),
+};
+
 describe("Timeline", () => {
-  it("renders one swim lane per unique flavor", () => {
-    render(<Timeline flavors={mockFlavors} onNodeClick={() => {}} />);
+  it("renders one flavor row per unique flavor", () => {
+    render(<Timeline {...defaultProps} />);
     expect(screen.getByText("research-agent")).toBeInTheDocument();
     expect(screen.getByText("coding-agent")).toBeInTheDocument();
   });
 
   it("renders empty state when no flavors", () => {
-    render(<Timeline flavors={[]} onNodeClick={() => {}} />);
+    render(<Timeline {...defaultProps} flavors={[]} />);
     expect(screen.getByText(/No agents connected/)).toBeInTheDocument();
   });
 
-  it("renders time range buttons", () => {
-    render(<Timeline flavors={mockFlavors} onNodeClick={() => {}} />);
-    expect(screen.getByText("5m")).toBeInTheDocument();
-    expect(screen.getByText("15m")).toBeInTheDocument();
-    expect(screen.getByText("30m")).toBeInTheDocument();
-    expect(screen.getByText("1h")).toBeInTheDocument();
-    expect(screen.getByText("6h")).toBeInTheDocument();
-  });
-
-  it("default time range is 30m", () => {
-    render(<Timeline flavors={mockFlavors} onNodeClick={() => {}} />);
-    const btn30m = screen.getByText("30m");
-    // The default button should have the "default" variant (non-ghost)
-    expect(btn30m).toBeInTheDocument();
-  });
-
-  it("clicking a time range button changes selection", () => {
-    render(<Timeline flavors={mockFlavors} onNodeClick={() => {}} />);
-    fireEvent.click(screen.getByText("1h"));
-    // After click, the button is still rendered (basic smoke test)
-    expect(screen.getByText("1h")).toBeInTheDocument();
-  });
-
   it("filters flavors when flavorFilter is set", () => {
-    render(
-      <Timeline
-        flavors={mockFlavors}
-        flavorFilter="research-agent"
-        onNodeClick={() => {}}
-      />
-    );
+    render(<Timeline {...defaultProps} flavorFilter="research-agent" />);
     expect(screen.getByText("research-agent")).toBeInTheDocument();
     expect(screen.queryByText("coding-agent")).not.toBeInTheDocument();
   });
 
   it("shows all flavors when flavorFilter is null", () => {
-    render(
-      <Timeline
-        flavors={mockFlavors}
-        flavorFilter={null}
-        onNodeClick={() => {}}
-      />
-    );
+    render(<Timeline {...defaultProps} flavorFilter={null} />);
     expect(screen.getByText("research-agent")).toBeInTheDocument();
     expect(screen.getByText("coding-agent")).toBeInTheDocument();
+  });
+
+  it("flavor row click calls onExpandFlavor", () => {
+    const onExpandFlavor = vi.fn();
+    render(<Timeline {...defaultProps} onExpandFlavor={onExpandFlavor} />);
+    // Click the flavor header row (contains flavor name)
+    fireEvent.click(screen.getByText("research-agent").closest("[class*='cursor-pointer']")!);
+    expect(onExpandFlavor).toHaveBeenCalledWith("research-agent");
+  });
+
+  it("expanded flavor shows session sub-rows", () => {
+    render(
+      <Timeline {...defaultProps} expandedFlavor="research-agent" />
+    );
+    // Session ID truncated to 8 chars should be visible
+    expect(screen.getByText("s1")).toBeInTheDocument();
+  });
+
+  it("shows active count in flavor row", () => {
+    render(<Timeline {...defaultProps} />);
+    expect(screen.getByText("1 active")).toBeInTheDocument();
   });
 });

@@ -1,7 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { render } from "@testing-library/react";
 import { EventNode } from "@/components/timeline/EventNode";
-import { TooltipProvider } from "@/components/ui/tooltip";
 
 describe("EventNode", () => {
   const baseProps = {
@@ -14,11 +13,7 @@ describe("EventNode", () => {
   };
 
   function renderNode(props = {}) {
-    return render(
-      <TooltipProvider>
-        <EventNode {...baseProps} {...props} />
-      </TooltipProvider>
-    );
+    return render(<EventNode {...baseProps} {...props} />);
   }
 
   it("renders with LLM color for post_call", () => {
@@ -46,10 +41,17 @@ describe("EventNode", () => {
     expect(node.style.backgroundColor).toBe("var(--event-lifecycle)");
   });
 
-  it("renders 18px circle", () => {
+  it("renders 24px circle by default", () => {
     const { container } = renderNode();
     const node = container.querySelector("[style*='background']") as HTMLElement;
-    expect(node.style.width).toBe("18px");
-    expect(node.style.height).toBe("18px");
+    expect(node.style.width).toBe("24px");
+    expect(node.style.height).toBe("24px");
+  });
+
+  it("renders 20px circle when size=20", () => {
+    const { container } = renderNode({ size: 20 });
+    const node = container.querySelector("[style*='background']") as HTMLElement;
+    expect(node.style.width).toBe("20px");
+    expect(node.style.height).toBe("20px");
   });
 });

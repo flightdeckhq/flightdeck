@@ -1,51 +1,81 @@
 import { useState, useCallback } from "react";
 import { BrowserRouter, Routes, Route, NavLink } from "react-router-dom";
-import { Search } from "lucide-react";
+import { Search, Sun, Moon } from "lucide-react";
 import { Fleet } from "@/pages/Fleet";
 import { Policies } from "@/pages/Policies";
+import { Directives } from "@/pages/Directives";
 import { Analytics } from "@/pages/Analytics";
 import { CommandPalette } from "@/components/search/CommandPalette";
+import { useTheme } from "@/hooks/useTheme";
 
 function Nav({ onSearchClick }: { onSearchClick: () => void }) {
+  const { theme, toggleTheme } = useTheme();
+
   return (
-    <nav className="flex h-10 items-center gap-4 border-b border-border bg-surface px-4">
-      <span className="text-sm font-semibold text-primary">Flightdeck</span>
-      <NavLink
-        to="/"
-        end
-        className={({ isActive }) =>
-          `text-xs ${isActive ? "text-text" : "text-text-muted hover:text-text"}`
-        }
-      >
-        Fleet
-      </NavLink>
-      <NavLink
-        to="/policies"
-        className={({ isActive }) =>
-          `text-xs ${isActive ? "text-text" : "text-text-muted hover:text-text"}`
-        }
-      >
-        Policies
-      </NavLink>
-      <NavLink
-        to="/analytics"
-        className={({ isActive }) =>
-          `text-xs ${isActive ? "text-text" : "text-text-muted hover:text-text"}`
-        }
-      >
-        Analytics
-      </NavLink>
-      <button
-        onClick={onSearchClick}
-        className="ml-auto flex items-center gap-1.5 rounded border border-border px-2 py-1 text-xs text-text-muted transition-colors hover:border-primary hover:text-text"
-        aria-label="Search"
-      >
-        <Search className="h-3.5 w-3.5" />
-        <span className="hidden sm:inline">Search</span>
-        <kbd className="hidden rounded bg-surface-hover px-1 py-0.5 text-[10px] font-medium sm:inline">
-          {navigator.platform.includes("Mac") ? "\u2318" : "Ctrl"}K
-        </kbd>
-      </button>
+    <nav
+      className="flex h-[44px] items-center border-b px-4"
+      style={{
+        background: "var(--surface)",
+        borderColor: "var(--border)",
+      }}
+    >
+      <span className="text-[15px] font-semibold" style={{ color: "var(--text)" }}>
+        Flightdeck
+      </span>
+
+      <div className="ml-8 flex items-center gap-6">
+        {[
+          { to: "/", label: "Fleet", end: true },
+          { to: "/policies", label: "Policies" },
+          { to: "/directives", label: "Directives" },
+          { to: "/analytics", label: "Analytics" },
+        ].map((link) => (
+          <NavLink
+            key={link.to}
+            to={link.to}
+            end={link.end}
+            className={({ isActive }) =>
+              `relative pb-[11px] pt-[13px] text-[13px] transition-colors ${
+                isActive
+                  ? "text-text"
+                  : "text-text-secondary hover:text-text"
+              }`
+            }
+            style={({ isActive }) =>
+              isActive
+                ? { borderBottom: "2px solid var(--accent)" }
+                : undefined
+            }
+          >
+            {link.label}
+          </NavLink>
+        ))}
+      </div>
+
+      <div className="ml-auto flex items-center gap-2">
+        <button
+          onClick={onSearchClick}
+          className="flex items-center gap-1.5 rounded border border-border px-2 py-1 text-xs text-text-muted transition-colors hover:border-primary hover:text-text"
+          aria-label="Search"
+        >
+          <Search className="h-3.5 w-3.5" />
+          <span className="hidden sm:inline">Search</span>
+          <kbd className="hidden rounded bg-bg-elevated px-1 py-0.5 text-[11px] font-medium sm:inline">
+            {navigator.platform.includes("Mac") ? "\u2318" : "Ctrl"}K
+          </kbd>
+        </button>
+        <button
+          onClick={toggleTheme}
+          className="flex h-8 w-8 items-center justify-center rounded transition-colors hover:bg-surface-hover"
+          aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+        >
+          {theme === "dark" ? (
+            <Moon size={16} style={{ color: "var(--text-secondary)" }} />
+          ) : (
+            <Sun size={16} style={{ color: "var(--text-secondary)" }} />
+          )}
+        </button>
+      </div>
     </nav>
   );
 }
@@ -65,6 +95,7 @@ export default function App() {
           <Routes>
             <Route path="/" element={<Fleet />} />
             <Route path="/policies" element={<Policies />} />
+            <Route path="/directives" element={<Directives />} />
             <Route path="/analytics" element={<Analytics />} />
           </Routes>
         </div>

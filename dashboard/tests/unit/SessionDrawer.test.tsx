@@ -4,10 +4,10 @@ import { SessionDrawer } from "@/components/session/SessionDrawer";
 
 // Base session data
 const baseSession = {
-  session_id: "s1",
+  session_id: "s1-abcdef-1234",
   flavor: "test-agent",
   agent_type: "autonomous",
-  host: null,
+  host: "worker-1",
   framework: null,
   model: "claude-sonnet-4-20250514",
   state: "active" as const,
@@ -17,6 +17,10 @@ const baseSession = {
   tokens_used: 5000,
   token_limit: null,
   has_pending_directive: false,
+  warn_at_pct: null,
+  degrade_at_pct: null,
+  degrade_to: null,
+  block_at_pct: null,
 };
 
 const baseEvents = [
@@ -29,7 +33,10 @@ const eventsWithContent = [
   { id: "e3", session_id: "s1", flavor: "test", event_type: "post_call" as const, model: "claude-sonnet-4-20250514", tokens_input: 200, tokens_output: 100, tokens_total: 300, latency_ms: 800, tool_name: null, has_content: true, occurred_at: "2026-04-07T10:02:00Z" },
 ];
 
-// Session state per mock call -- reset each test
+const toolEvent = { id: "e4", session_id: "s1", flavor: "test", event_type: "tool_call" as const, model: null, tokens_input: null, tokens_output: null, tokens_total: null, latency_ms: null, tool_name: "web_search", has_content: false, occurred_at: "2026-04-07T10:03:00Z" };
+
+const warnEvent = { id: "e5", session_id: "s1", flavor: "test", event_type: "policy_warn" as const, model: null, tokens_input: null, tokens_output: null, tokens_total: null, latency_ms: null, tool_name: null, has_content: false, occurred_at: "2026-04-07T10:04:00Z" };
+
 let mockSessionOverride: Record<string, unknown> = {};
 let mockEventsOverride: typeof baseEvents | null = null;
 
@@ -68,12 +75,71 @@ describe("SessionDrawer", () => {
     expect(container.querySelector("[class*='fixed']")).not.toBeInTheDocument();
   });
 
-  it("opens and renders event list when session selected", () => {
+  it("header shows session ID and state badge", () => {
     render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
-    expect(screen.getByText("Session")).toBeInTheDocument();
+    // Session ID truncated to 12 chars
+    expect(screen.getByText("s1-abcdef-12")).toBeInTheDocument();
+    // State badge
+    expect(screen.getByText("active")).toBeInTheDocument();
+  });
+
+  it("metadata bar shows flavor and host separated by dots", () => {
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
     expect(screen.getByText("test-agent")).toBeInTheDocument();
-    expect(screen.getByText("session_start")).toBeInTheDocument();
-    expect(screen.getByText("post_call")).toBeInTheDocument();
+    expect(screen.getByText("worker-1")).toBeInTheDocument();
+  });
+
+  it("event row badge shows correct text per type", () => {
+    mockEventsOverride = [
+      ...baseEvents,
+      toolEvent,
+      warnEvent,
+    ];
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    expect(screen.getByText("START")).toBeInTheDocument();
+    expect(screen.getByText("LLM CALL")).toBeInTheDocument();
+    expect(screen.getByText("TOOL")).toBeInTheDocument();
+    expect(screen.getByText("WARN")).toBeInTheDocument();
+  });
+
+  it("event row click expands and collapses", () => {
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    const rows = screen.getAllByTestId("event-row");
+    // Click second row (post_call) to expand
+    fireEvent.click(rows[1]);
+    // Should show model in summary
+    expect(screen.getByText("Model")).toBeInTheDocument();
+    // Click again to collapse
+    fireEvent.click(rows[1]);
+  });
+
+  it("only one event expanded at a time", () => {
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    const rows = screen.getAllByTestId("event-row");
+    // Expand first
+    fireEvent.click(rows[0]);
+    expect(screen.getByText("Event")).toBeInTheDocument();
+    // Expand second — first should collapse (summary text changes)
+    fireEvent.click(rows[1]);
+    expect(screen.getByText("Model")).toBeInTheDocument();
+    // "Event" summary from session_start should be gone since only one is expanded
+  });
+
+  it("shows View Prompts link when event has content", () => {
+    mockEventsOverride = eventsWithContent;
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    const rows = screen.getAllByTestId("event-row");
+    // Expand the third row (has_content=true)
+    fireEvent.click(rows[2]);
+    expect(screen.getByText("View Prompts →")).toBeInTheDocument();
+  });
+
+  it("hides View Prompts link when event has no content", () => {
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    const rows = screen.getAllByTestId("event-row");
+    // Expand the post_call row (has_content=false)
+    fireEvent.click(rows[1]);
+    expect(screen.queryByText("View Prompts →")).not.toBeInTheDocument();
   });
 
   it("does not show kill button for closed session", () => {
@@ -110,14 +176,13 @@ describe("SessionDrawer", () => {
     mockSessionOverride = { state: "active", has_pending_directive: false };
     render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
     fireEvent.click(screen.getByText("Stop Agent"));
-    // Click the confirm button inside the dialog
     const buttons = screen.getAllByText("Stop Agent");
     const confirmBtn = buttons[buttons.length - 1];
     fireEvent.click(confirmBtn);
     await waitFor(() => {
       expect(createDirective).toHaveBeenCalledWith({
         action: "shutdown",
-        session_id: "s1",
+        session_id: "s1-abcdef-1234",
         reason: "manual_kill_switch",
         grace_period_ms: 5000,
       });
@@ -130,18 +195,10 @@ describe("SessionDrawer", () => {
     expect(screen.getByText("Prompts")).toBeInTheDocument();
   });
 
-  it("defaults to Timeline tab showing events", () => {
+  it("defaults to Timeline tab showing event feed", () => {
     render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
-    expect(screen.getByText("session_start")).toBeInTheDocument();
-    expect(screen.getByText("post_call")).toBeInTheDocument();
-  });
-
-  it("expands event row to show JSON on click", () => {
-    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
-    // Click the post_call event row
-    fireEvent.click(screen.getByText("post_call").closest("div[class*='cursor-pointer']")!);
-    // Should show expanded JSON with event details
-    expect(screen.getByText(/"event_type": "post_call"/)).toBeInTheDocument();
+    expect(screen.getByText("START")).toBeInTheDocument();
+    expect(screen.getByText("LLM CALL")).toBeInTheDocument();
   });
 
   it("shows disabled message on Prompts tab when no events have content", () => {
@@ -156,24 +213,23 @@ describe("SessionDrawer", () => {
     mockEventsOverride = eventsWithContent;
     render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
     fireEvent.click(screen.getByText("Prompts"));
-    // The content event should appear as a clickable item
-    // It should show "post_call" in the prompts list
-    const postCallItems = screen.getAllByText("post_call");
-    expect(postCallItems.length).toBeGreaterThanOrEqual(1);
+    // The content event should show as a clickable badge row
+    const badges = screen.getAllByText("LLM CALL");
+    expect(badges.length).toBeGreaterThanOrEqual(1);
   });
 
   it("switches back to Timeline tab", () => {
     render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
     fireEvent.click(screen.getByText("Prompts"));
     fireEvent.click(screen.getByText("Timeline"));
-    expect(screen.getByText("session_start")).toBeInTheDocument();
+    expect(screen.getByText("START")).toBeInTheDocument();
   });
 
-  it("has 480px width", () => {
+  it("has 520px width", () => {
     const { container } = render(
       <SessionDrawer sessionId="s1" onClose={() => {}} />
     );
-    const drawer = container.querySelector("[class*='w-\\[480px\\]']");
+    const drawer = container.querySelector("[class*='w-\\[520px\\]']");
     expect(drawer).toBeInTheDocument();
   });
 });

@@ -1,12 +1,9 @@
-import { useMemo, useRef, useState, useCallback, useEffect } from "react";
+import { useMemo, useState, useEffect } from "react";
 import { scaleTime } from "d3-scale";
 import type { FlavorSummary } from "@/lib/types";
+import type { ViewMode, TimeRange } from "@/pages/Fleet";
 import { TimeAxis } from "./TimeAxis";
 import { SwimLane } from "./SwimLane";
-import { TooltipProvider } from "@/components/ui/tooltip";
-import { Button } from "@/components/ui/button";
-
-type TimeRange = "5m" | "15m" | "30m" | "1h" | "6h";
 
 const TIME_RANGE_MS: Record<TimeRange, number> = {
   "5m": 5 * 60 * 1000,
@@ -16,19 +13,26 @@ const TIME_RANGE_MS: Record<TimeRange, number> = {
   "6h": 6 * 60 * 60 * 1000,
 };
 
-const TIME_RANGES: TimeRange[] = ["5m", "15m", "30m", "1h", "6h"];
-
 interface TimelineProps {
   flavors: FlavorSummary[];
   flavorFilter?: string | null;
+  viewMode: ViewMode;
+  timeRange: TimeRange;
+  expandedFlavor: string | null;
+  onExpandFlavor: (flavor: string) => void;
   onNodeClick: (sessionId: string) => void;
 }
 
-export function Timeline({ flavors, flavorFilter, onNodeClick }: TimelineProps) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const [timeRange, setTimeRange] = useState<TimeRange>("5m");
-
-  // Live-updating "now" — refreshes every 10 seconds so the timeline slides
+export function Timeline({
+  flavors,
+  flavorFilter,
+  viewMode,
+  timeRange,
+  expandedFlavor,
+  onExpandFlavor,
+  onNodeClick,
+}: TimelineProps) {
+  // Live-updating "now" — refreshes every 10 seconds
   const [now, setNow] = useState(() => new Date());
   useEffect(() => {
     const interval = setInterval(() => setNow(new Date()), 10000);
@@ -42,17 +46,12 @@ export function Timeline({ flavors, flavorFilter, onNodeClick }: TimelineProps) 
 
   const rangeMs = TIME_RANGE_MS[timeRange];
   const start = useMemo(() => new Date(now.getTime() - rangeMs), [now, rangeMs]);
-
   const width = 800;
 
   const scale = useMemo(
     () => scaleTime().domain([start, now]).range([0, width]),
     [start, now, width]
   );
-
-  const handleTimeRangeChange = useCallback((range: TimeRange) => {
-    setTimeRange(range);
-  }, []);
 
   if (flavors.length === 0) {
     return (
@@ -64,61 +63,32 @@ export function Timeline({ flavors, flavorFilter, onNodeClick }: TimelineProps) 
   }
 
   return (
-    <TooltipProvider>
-      <div className="flex flex-col gap-2">
-        {/* Time range selector */}
-        <div className="flex items-center gap-1">
-          <span className="text-[11px] text-text-muted mr-1">Range:</span>
-          {TIME_RANGES.map((range) => (
-            <Button
-              key={range}
-              size="sm"
-              variant={timeRange === range ? "default" : "ghost"}
-              className="h-6 px-2 text-[11px]"
-              onClick={() => handleTimeRangeChange(range)}
-            >
-              {range}
-            </Button>
-          ))}
-        </div>
+    <div className="flex flex-col">
+      {/* Shared time axis */}
+      <div className="pl-[240px]">
+        <TimeAxis start={start} end={now} width={width} />
+      </div>
 
-        <div ref={containerRef} className="overflow-x-auto">
-          <div style={{ minWidth: width + 160 }}>
-            <div className="pl-40 relative">
-              <TimeAxis start={start} end={now} width={width} />
-              {/* "Now" indicator line at right edge */}
-              <div
-                className="absolute top-0 h-full w-px"
-                style={{
-                  left: width,
-                  backgroundColor: "var(--accent)",
-                  opacity: 0.5,
-                }}
-              />
-              <span
-                className="absolute text-[9px] font-semibold"
-                style={{
-                  left: width - 12,
-                  top: -2,
-                  color: "var(--accent)",
-                }}
-              >
-                now
-              </span>
-            </div>
-            {filteredFlavors.map((f) => (
-              <SwimLane
-                key={f.flavor}
-                flavor={f.flavor}
-                activeCount={f.active_count}
-                sessions={f.sessions}
-                scale={scale}
-                onSessionClick={onNodeClick}
-              />
-            ))}
+      {/* Flavor rows */}
+      {filteredFlavors.map((f) => (
+        <div key={f.flavor} className="flex">
+          <div className="flex-1">
+            <SwimLane
+              flavor={f.flavor}
+              activeCount={f.active_count}
+              sessions={f.sessions}
+              scale={scale}
+              onSessionClick={onNodeClick}
+              expanded={expandedFlavor === f.flavor}
+              onToggleExpand={() => onExpandFlavor(f.flavor)}
+              viewMode={viewMode}
+              start={start}
+              end={now}
+              width={width + 240}
+            />
           </div>
         </div>
-      </div>
-    </TooltipProvider>
+      ))}
+    </div>
   );
 }

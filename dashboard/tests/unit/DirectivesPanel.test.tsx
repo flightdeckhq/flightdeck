@@ -167,12 +167,12 @@ describe("DirectivesPanel", () => {
     });
   });
 
-  it("empty state when no directives", async () => {
+  it("empty state shows registration hint", async () => {
     mockFetchCustomDirectives.mockResolvedValue([]);
     render(<DirectivesPanel flavorFilter={null} selectedSessionId={null} />);
     await waitFor(() => {
       expect(
-        screen.getByText("No custom directives registered for this fleet.")
+        screen.getByText(/No custom directives registered for this fleet\. Decorate a function with @flightdeck_sensor\.directive\(\) and call init\(\) to register one\./)
       ).toBeInTheDocument();
     });
   });
@@ -181,6 +181,23 @@ describe("DirectivesPanel", () => {
     mockFetchCustomDirectives.mockReturnValue(new Promise(() => {})); // never resolves
     render(<DirectivesPanel flavorFilter={null} selectedSessionId={null} />);
     expect(screen.getByText("Loading...")).toBeInTheDocument();
+  });
+
+  it("error state renders retry button", async () => {
+    mockFetchCustomDirectives.mockRejectedValue(new Error("API 500: /v1/directives/custom"));
+    render(<DirectivesPanel flavorFilter={null} selectedSessionId={null} />);
+    await waitFor(() => {
+      expect(screen.getByText("Failed to load directives.")).toBeInTheDocument();
+    });
+    expect(screen.getByText("Retry")).toBeInTheDocument();
+
+    // Click retry triggers a new fetch
+    mockFetchCustomDirectives.mockResolvedValue(mockDirectives);
+    fireEvent.click(screen.getByText("Retry"));
+    await waitFor(() => {
+      expect(screen.getByText("rotate-model")).toBeInTheDocument();
+    });
+    expect(mockFetchCustomDirectives).toHaveBeenCalledTimes(2);
   });
 
   it("shows sent confirmation after successful submit", async () => {

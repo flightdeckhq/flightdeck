@@ -71,7 +71,7 @@ export function SearchResultsList({
 
         return (
           <div key={group.key}>
-            <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-text-muted">
+            <div className="px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-text-muted">
               {group.label}
             </div>
             {group.items.map((item, i) => {
@@ -120,7 +120,7 @@ function SessionRow({ item }: { item: SearchResultSession }) {
       </span>
       <span className="text-text-muted">{item.flavor}</span>
       <span
-        className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
+        className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${
           item.state === "active"
             ? "bg-green-500/20 text-green-400"
             : "bg-surface-hover text-text-muted"

@@ -1563,19 +1563,27 @@ their agent appear in the live dashboard timeline in real time.
 
 ---
 
-`dashboard/src/App.tsx` -- router, theme provider, nav bar with Fleet and Policies links
-`dashboard/src/pages/Fleet.tsx` -- primary view: flavor→session→event hierarchy, flavor filter, agent type toggle
-`dashboard/src/components/timeline/Timeline.tsx` -- swim lane container with time range selector (5m/15m/30m/1h/6h)
-`dashboard/src/components/timeline/SwimLane.tsx` -- flavor header + session rows (32px), clickable session rows
-`dashboard/src/components/timeline/EventNode.tsx` -- event-type colored circles (10px) with icons: ✦ LLM, ⚙ tool, ⚠ warn, ▶ start, ■ end
-`dashboard/src/components/timeline/TimeAxis.tsx` -- shared time axis with auto-spaced labels
-`dashboard/src/components/fleet/FleetPanel.tsx` -- sidebar with clickable flavor filter, dense layout (11px/13px fonts)
-`dashboard/src/components/fleet/SessionStateBar.tsx`
+`dashboard/src/App.tsx` -- router, nav bar (44px, centered links with active border), theme toggle (Sun/Moon), search trigger
+`dashboard/src/pages/Fleet.tsx` -- fleet view: sidebar + fleet header (view mode toggle, time range, live indicator) + timeline
+`dashboard/src/components/timeline/Timeline.tsx` -- flavor rows with expand-in-place, shared time axis, dual view modes (swimlane/bar)
+`dashboard/src/components/timeline/SwimLane.tsx` -- flavor row: collapsed (48px, aggregated events) + expanded (session sub-rows), chevron toggle
+`dashboard/src/components/timeline/SessionEventRow.tsx` -- session row (40px): pulsing dot, ID, state badge, tokens, events on time axis
+`dashboard/src/components/timeline/EventNode.tsx` -- event circles: 24px (session rows), 20px (flavor rows), lucide icons, CSS tooltip, hover scale
+`dashboard/src/components/timeline/BarView.tsx` -- bar mode: 24 buckets, stacked bars (LLM/tool/policy/directive), hover tooltip
+`dashboard/src/components/timeline/TimeAxis.tsx` -- shared time axis (28px), mono labels, "now" marker
+`dashboard/src/pages/Directives.tsx` -- dedicated directives page: list all registered custom directives, flavor filter, search, trigger form with target selector
+`dashboard/src/components/fleet/FleetPanel.tsx` -- left sidebar (240px): section headers (uppercase tracked), fleet overview, session states (large counts), flavor list (active border), policy events
+`dashboard/src/components/fleet/SessionStateBar.tsx` -- session state counts: large numbers (20px/700) with status-colored labels
+`dashboard/src/hooks/useTheme.ts` -- theme toggle: dark/light class on html, localStorage persistence
 `dashboard/src/components/fleet/PolicyEventList.tsx`
-`dashboard/src/components/session/SessionDrawer.tsx`
+`dashboard/src/components/fleet/LiveFeed.tsx` -- live event feed (240px fixed height, 500 event cap, auto-scroll with pause, WebSocket-driven)
+`dashboard/src/components/fleet/EventDetailDrawer.tsx` -- single-event detail drawer (520px, independent from SessionDrawer, Details + Prompts tabs)
+`dashboard/src/components/session/SessionDrawer.tsx` -- session drawer (520px): header with session ID + state badge, metadata bar, tabs (Timeline/Prompts), event feed with type badges, expandable JSON detail
 `dashboard/src/components/session/SessionTimeline.tsx`
 `dashboard/src/components/session/EventDetail.tsx`
 `dashboard/src/components/session/TokenUsageBar.tsx`
+`dashboard/src/lib/events.ts` -- shared event helpers: badge config, detail text, summary rows, flavor color hash
+`dashboard/src/components/ui/syntax-json.tsx` -- JSON syntax highlighting component (keys/strings/numbers/bools colored)
 `dashboard/src/hooks/useFleet.ts` -- WebSocket init, REST initial load, live updates
 `dashboard/src/hooks/useSession.ts`
 `dashboard/src/hooks/useWebSocket.ts` -- exponential backoff: 1s→2s→4s, cap 30s

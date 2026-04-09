@@ -1,7 +1,5 @@
 import { useState } from "react";
 import type { FlavorSummary } from "@/lib/types";
-import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogTrigger,
@@ -9,9 +7,11 @@ import {
   DialogTitle,
   DialogClose,
 } from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
 import { SessionStateBar } from "./SessionStateBar";
 import { PolicyEventList } from "./PolicyEventList";
 import { createDirective } from "@/lib/api";
+import { X } from "lucide-react";
 
 interface FleetPanelProps {
   flavors: FlavorSummary[];
@@ -26,82 +26,85 @@ export function FleetPanel({ flavors, onFlavorClick, activeFlavorFilter, childre
   const totalTokens = flavors.reduce((s, f) => s + f.tokens_used_total, 0);
 
   return (
-    <div className="flex w-64 shrink-0 flex-col gap-2 border-r border-border p-2">
-      <Card>
-        <CardHeader className="px-2 py-1.5">
-          <CardTitle className="text-[11px]">Fleet Overview</CardTitle>
-        </CardHeader>
-        <CardContent className="px-2 pb-2">
-          <div className="space-y-1 text-[11px]">
-            <div className="flex justify-between">
-              <span className="text-text-muted">Flavors</span>
-              <span className="text-[13px]">{flavors.length}</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-text-muted">Sessions</span>
-              <span className="text-[13px]">{totalSessions}</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-text-muted">Active</span>
-              <span className="text-[13px] text-success">{totalActive}</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-text-muted">Tokens</span>
-              <span className="text-[13px]">{totalTokens.toLocaleString()}</span>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
+    <div
+      className="flex w-[240px] shrink-0 flex-col overflow-y-auto"
+      style={{
+        background: "var(--surface)",
+        borderRight: "1px solid var(--border)",
+      }}
+    >
+      {/* Fleet Overview */}
+      <div className="px-3 pb-2 pt-4 text-[11px] font-semibold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>
+        Fleet Overview
+      </div>
+      <div className="space-y-1 px-3 pb-3">
+        <SidebarRow label="Flavors" value={flavors.length} />
+        <SidebarRow label="Sessions" value={totalSessions} />
+        <SidebarRow label="Active" value={totalActive} valueColor="var(--status-active)" />
+        <SidebarRow label="Tokens" value={totalTokens.toLocaleString()} />
+      </div>
 
-      <Card>
-        <CardHeader className="px-2 py-1.5">
-          <CardTitle className="text-[11px]">Session States</CardTitle>
-        </CardHeader>
-        <CardContent className="px-2 pb-2">
-          <SessionStateBar flavors={flavors} />
-        </CardContent>
-      </Card>
+      {/* Session States */}
+      <div className="px-3 pb-2 pt-2 text-[11px] font-semibold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>
+        Session States
+      </div>
+      <div className="px-3 pb-3">
+        <SessionStateBar flavors={flavors} />
+      </div>
 
-      <Card>
-        <CardHeader className="px-2 py-1.5">
-          <CardTitle className="text-[11px]">
-            Flavors
-            {activeFlavorFilter && (
-              <span className="ml-1 text-[9px] font-normal text-[var(--primary)]">
-                (filtered)
-              </span>
-            )}
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="px-2 pb-2">
-          <div className="space-y-1">
-            {flavors.map((f) => (
-              <FlavorRow
-                key={f.flavor}
-                flavor={f}
-                isActive={activeFlavorFilter === f.flavor}
-                onFlavorClick={onFlavorClick}
-              />
-            ))}
-          </div>
-        </CardContent>
-      </Card>
+      {/* Flavors */}
+      <div className="px-3 pb-2 pt-2 text-[11px] font-semibold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>
+        Flavors
+        {activeFlavorFilter && (
+          <span className="ml-1 font-normal" style={{ color: "var(--primary)" }}>
+            (filtered)
+          </span>
+        )}
+      </div>
+      <div className="pb-3">
+        {flavors.map((f) => (
+          <FlavorItem
+            key={f.flavor}
+            flavor={f}
+            isActive={activeFlavorFilter === f.flavor}
+            onFlavorClick={onFlavorClick}
+          />
+        ))}
+      </div>
 
-      <Card>
-        <CardHeader className="px-2 py-1.5">
-          <CardTitle className="text-[11px]">Policy Events</CardTitle>
-        </CardHeader>
-        <CardContent className="px-2 pb-2">
-          <PolicyEventList />
-        </CardContent>
-      </Card>
+      {/* Policy Events */}
+      <div className="px-3 pb-2 pt-2 text-[11px] font-semibold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>
+        Policy Events
+      </div>
+      <div className="px-3 pb-3">
+        <PolicyEventList />
+      </div>
 
       {children}
     </div>
   );
 }
 
-function FlavorRow({
+function SidebarRow({
+  label,
+  value,
+  valueColor,
+}: {
+  label: string;
+  value: string | number;
+  valueColor?: string;
+}) {
+  return (
+    <div className="flex items-center justify-between py-[5px] px-0 text-[13px]">
+      <span style={{ color: "var(--text-secondary)" }}>{label}</span>
+      <span className="font-mono text-[13px]" style={{ color: valueColor ?? "var(--text)" }}>
+        {value}
+      </span>
+    </div>
+  );
+}
+
+function FlavorItem({
   flavor,
   isActive,
   onFlavorClick,
@@ -138,33 +141,62 @@ function FlavorRow({
   }
 
   return (
-    <div className="flex items-center justify-between text-[11px]">
-      <div className="flex items-center gap-1 min-w-0">
-        <button
-          className={`font-mono truncate text-left hover:text-[var(--primary)] transition-colors ${
-            isActive ? "text-[var(--primary)] font-semibold" : ""
-          }`}
-          onClick={() => onFlavorClick?.(flavor.flavor)}
-          title={flavor.flavor}
-        >
-          {flavor.flavor}
-        </button>
+    <div
+      className="flex items-center justify-between cursor-pointer py-[5px] px-3 text-[13px] transition-colors hover:bg-surface-hover"
+      style={
+        isActive
+          ? {
+              borderLeft: "2px solid var(--accent)",
+              background: "var(--accent-glow)",
+              color: "var(--text)",
+            }
+          : { color: "var(--text-secondary)" }
+      }
+      onClick={() => onFlavorClick?.(flavor.flavor)}
+    >
+      <div className="flex items-center gap-2 min-w-0">
+        <span className="font-mono truncate">{flavor.flavor}</span>
         {flavor.agent_type === "developer" && (
-          <span className="rounded bg-[var(--primary-glow)] px-1 py-0.5 text-[9px] font-semibold uppercase text-[var(--primary)]">
+          <span
+            className="rounded px-1 py-0.5 text-[11px] font-semibold uppercase"
+            style={{
+              background: "var(--accent-glow)",
+              color: "var(--primary)",
+            }}
+          >
             DEV
           </span>
         )}
-        <span className="text-text-muted">({flavor.active_count})</span>
+        <span className="text-[11px] font-mono" style={{ color: "var(--text-muted)" }}>
+          ({flavor.active_count})
+        </span>
+        {isActive && (
+          <button
+            className="ml-1 flex h-4 w-4 items-center justify-center rounded hover:bg-surface-hover"
+            onClick={(e) => {
+              e.stopPropagation();
+              onFlavorClick?.(flavor.flavor);
+            }}
+            aria-label="Clear filter"
+          >
+            <X size={10} style={{ color: "var(--text-muted)" }} />
+          </button>
+        )}
       </div>
       {hasActive && !sent && (
         <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
           <DialogTrigger asChild>
-            <Button
-              size="sm"
-              className="h-5 bg-[var(--danger)] px-1.5 text-[10px] text-white hover:bg-[var(--danger)]/90"
+            <button
+              className="shrink-0 rounded px-1.5 py-0.5 text-[11px] transition-colors"
+              style={{
+                background: "rgba(239,68,68,0.15)",
+                color: "var(--status-lost)",
+                border: "1px solid rgba(239,68,68,0.3)",
+              }}
+              onClick={(e) => e.stopPropagation()}
             >
               Stop All
-            </Button>
+            </button>
           </DialogTrigger>
           <DialogContent>
             <DialogTitle>
@@ -190,13 +222,13 @@ function FlavorRow({
               </Button>
             </div>
             {error && (
-              <p className="text-xs text-[var(--danger)]">{error}</p>
+              <p className="text-xs" style={{ color: "var(--danger)" }}>{error}</p>
             )}
           </DialogContent>
         </Dialog>
       )}
       {sent && (
-        <span className="text-[10px] text-text-muted">Directives sent</span>
+        <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>Directives sent</span>
       )}
     </div>
   );

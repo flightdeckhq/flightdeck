@@ -1,28 +1,37 @@
+import { useState } from "react";
 import { useFleet } from "@/hooks/useFleet";
-import { useFleetStore, type AgentTypeFilter } from "@/store/fleet";
+import { useFleetStore } from "@/store/fleet";
 import { FleetPanel } from "@/components/fleet/FleetPanel";
 import { DirectivesPanel } from "@/components/fleet/DirectivesPanel";
+import { LiveFeed } from "@/components/fleet/LiveFeed";
+import { EventDetailDrawer } from "@/components/fleet/EventDetailDrawer";
 import { Timeline } from "@/components/timeline/Timeline";
 import { SessionDrawer } from "@/components/session/SessionDrawer";
-import { Button } from "@/components/ui/button";
-import { X } from "lucide-react";
+import type { AgentEvent } from "@/lib/types";
 
-const FILTER_OPTIONS: { label: string; value: AgentTypeFilter }[] = [
-  { label: "All", value: "all" },
-  { label: "Production", value: "production" },
-  { label: "Developer", value: "developer" },
-];
+export type ViewMode = "swimlane" | "bars";
+export type TimeRange = "5m" | "15m" | "30m" | "1h" | "6h";
+
+const TIME_RANGES: TimeRange[] = ["5m", "15m", "30m", "1h", "6h"];
 
 export function Fleet() {
   const { flavors, loading, error } = useFleet();
   const {
     selectedSessionId,
     selectSession,
-    agentTypeFilter,
-    setAgentTypeFilter,
     flavorFilter,
     setFlavorFilter,
   } = useFleetStore();
+
+  const [viewMode, setViewMode] = useState<ViewMode>("swimlane");
+  const [timeRange, setTimeRange] = useState<TimeRange>("5m");
+  const [expandedFlavor, setExpandedFlavor] = useState<string | null>(null);
+  const [selectedEvent, setSelectedEvent] = useState<AgentEvent | null>(null);
+
+  // Collect events from all sessions for the live feed (last 100 initial)
+  // Feed starts empty — will be populated by WebSocket events in a future iteration.
+  // The fleet store's session data doesn't carry inline events.
+  const [feedEvents] = useState<AgentEvent[]>([]);
 
   if (loading && flavors.length === 0) {
     return (
@@ -44,6 +53,10 @@ export function Fleet() {
     setFlavorFilter(flavorFilter === flavor ? null : flavor);
   }
 
+  function handleExpandFlavor(flavor: string) {
+    setExpandedFlavor(expandedFlavor === flavor ? null : flavor);
+  }
+
   return (
     <div className="flex h-full">
       <FleetPanel
@@ -56,42 +69,108 @@ export function Fleet() {
           selectedSessionId={selectedSessionId}
         />
       </FleetPanel>
-      <div className="flex-1 overflow-hidden p-4">
-        <div className="mb-3 flex items-center gap-1">
-          {FILTER_OPTIONS.map((opt) => (
-            <Button
-              key={opt.value}
-              size="sm"
-              variant={agentTypeFilter === opt.value ? "default" : "ghost"}
-              onClick={() => setAgentTypeFilter(opt.value)}
-            >
-              {opt.label}
-            </Button>
-          ))}
-          {flavorFilter && (
-            <div className="ml-3 flex items-center gap-1">
-              <span className="text-[11px] text-text-muted">Flavor:</span>
-              <span className="text-[11px] font-mono text-[var(--primary)]">{flavorFilter}</span>
-              <Button
-                size="sm"
-                variant="ghost"
-                className="h-5 w-5 p-0"
-                onClick={() => setFlavorFilter(null)}
+
+      <div className="flex flex-1 flex-col overflow-hidden">
+        {/* Fleet header */}
+        <div
+          className="flex h-10 shrink-0 items-center gap-3 px-3"
+          style={{
+            background: "var(--bg)",
+            borderBottom: "1px solid var(--border-subtle)",
+          }}
+        >
+          {/* View mode toggle */}
+          <div className="flex gap-0.5">
+            {(["swimlane", "bars"] as const).map((mode) => (
+              <button
+                key={mode}
+                className="rounded px-2.5 py-[3px] text-xs capitalize transition-colors"
+                style={
+                  viewMode === mode
+                    ? {
+                        background: "var(--bg-elevated)",
+                        color: "var(--text)",
+                        border: "1px solid var(--border-strong)",
+                      }
+                    : {
+                        background: "transparent",
+                        color: "var(--text-muted)",
+                        border: "1px solid transparent",
+                      }
+                }
+                onClick={() => setViewMode(mode)}
               >
-                <X className="h-3 w-3" />
-              </Button>
-            </div>
-          )}
+                {mode === "swimlane" ? "Swimlane" : "Bars"}
+              </button>
+            ))}
+          </div>
+
+          {/* Time range */}
+          <div className="flex gap-0.5">
+            {TIME_RANGES.map((range) => (
+              <button
+                key={range}
+                className="rounded px-2.5 py-[3px] text-xs transition-colors"
+                style={
+                  timeRange === range
+                    ? {
+                        background: "var(--bg-elevated)",
+                        color: "var(--text)",
+                        border: "1px solid var(--border-strong)",
+                      }
+                    : {
+                        background: "transparent",
+                        color: "var(--text-muted)",
+                        border: "1px solid transparent",
+                      }
+                }
+                onClick={() => setTimeRange(range)}
+              >
+                {range}
+              </button>
+            ))}
+          </div>
+
+          {/* Live indicator */}
+          <div className="ml-auto flex items-center gap-1.5">
+            <div className="pulse-dot" />
+            <span
+              className="font-mono text-[11px]"
+              style={{ color: "var(--text-muted)" }}
+            >
+              Live
+            </span>
+          </div>
         </div>
-        <Timeline
-          flavors={flavors}
-          flavorFilter={flavorFilter}
-          onNodeClick={(id) => selectSession(id)}
+
+        {/* Timeline area */}
+        <div className="flex-1 overflow-auto">
+          <Timeline
+            flavors={flavors}
+            flavorFilter={flavorFilter}
+            viewMode={viewMode}
+            timeRange={timeRange}
+            expandedFlavor={expandedFlavor}
+            onExpandFlavor={handleExpandFlavor}
+            onNodeClick={(id) => selectSession(id)}
+          />
+        </div>
+
+        {/* Live feed */}
+        <LiveFeed
+          events={feedEvents}
+          onEventClick={setSelectedEvent}
         />
       </div>
+
       <SessionDrawer
         sessionId={selectedSessionId}
         onClose={() => selectSession(null)}
+      />
+
+      <EventDetailDrawer
+        event={selectedEvent}
+        onClose={() => setSelectedEvent(null)}
       />
     </div>
   );

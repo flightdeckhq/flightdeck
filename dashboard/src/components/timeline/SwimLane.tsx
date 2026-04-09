@@ -72,8 +72,8 @@ function SwimLaneComponent({
           </span>
         </div>
 
-        {/* Right panel — aggregated events */}
-        <div className="relative h-full flex-1 flex items-center px-1">
+        {/* Right panel — aggregated events (overflow hidden prevents circles leaking into left panel) */}
+        <div className="relative h-full flex-1 flex items-center px-1 overflow-hidden">
           {viewMode === "swimlane" ? (
             <AggregatedSwimLane
               sessions={sessions}
@@ -81,6 +81,7 @@ function SwimLaneComponent({
               onSessionClick={onSessionClick}
               flavor={flavor}
               activeFilter={activeFilter}
+              sessionVersions={sessionVersions}
             />
           ) : (
             <AggregatedBarView
@@ -149,12 +150,14 @@ function AggregatedSwimLane({
   onSessionClick,
   flavor,
   activeFilter,
+  sessionVersions,
 }: {
   sessions: Session[];
   scale: ScaleTime<number, number>;
   onSessionClick: (sessionId: string, eventId?: string) => void;
   flavor: string;
   activeFilter?: string | null;
+  sessionVersions?: Record<string, number>;
 }) {
   return (
     <div className="relative h-full w-full">
@@ -166,6 +169,7 @@ function AggregatedSwimLane({
           onClick={() => onSessionClick(session.session_id)}
           flavor={flavor}
           activeFilter={activeFilter}
+          version={sessionVersions?.[session.session_id] ?? 0}
         />
       ))}
     </div>
@@ -178,15 +182,17 @@ function AggregatedSessionEvents({
   onClick,
   flavor,
   activeFilter,
+  version = 0,
 }: {
   session: Session;
   scale: ScaleTime<number, number>;
   onClick: () => void;
   flavor: string;
   activeFilter?: string | null;
+  version?: number;
 }) {
   const isActive = session.state === "active";
-  const { events } = useSessionEvents(session.session_id, isActive);
+  const { events } = useSessionEvents(session.session_id, isActive, version);
 
   const nodes = useMemo(
     () =>

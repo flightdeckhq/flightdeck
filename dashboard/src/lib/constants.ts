@@ -38,3 +38,6 @@ export const FEED_HEIGHT_STORAGE_KEY = "flightdeck-feed-height";
 
 /** LocalStorage key for persisting theme preference. */
 export const THEME_STORAGE_KEY = "flightdeck-theme";
+
+/** Width of the left panel in fleet view (sidebar + flavor/session info). */
+export const LEFT_PANEL_WIDTH = 240;

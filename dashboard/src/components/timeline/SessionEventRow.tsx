@@ -74,8 +74,8 @@ function SessionEventRowComponent({ session, scale, onClick, viewMode, start, en
         </span>
       </div>
 
-      {/* Right panel — events */}
-      <div className="relative h-full flex-1 flex items-center px-1">
+      {/* Right panel — events (overflow hidden prevents circles leaking into left panel) */}
+      <div className="relative h-full flex-1 flex items-center px-1 overflow-hidden">
         {loading && (
           <div className="flex items-center h-full gap-2 pl-4">
             {[0, 1, 2].map((i) => (

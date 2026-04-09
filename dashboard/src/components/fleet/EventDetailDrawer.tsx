@@ -4,6 +4,8 @@ import { X } from "lucide-react";
 import { PromptViewer } from "@/components/session/PromptViewer";
 import { SyntaxJson } from "@/components/ui/syntax-json";
 import { getBadge, getSummaryRows, truncateSessionId } from "@/lib/events";
+import { getProvider } from "@/lib/models";
+import { ProviderLogo } from "@/components/ui/provider-logo";
 import type { AgentEvent } from "@/lib/types";
 
 type Tab = "details" | "prompts";
@@ -105,7 +107,8 @@ export function EventDetailDrawer({ event, onClose }: EventDetailDrawerProps) {
           {event.model && (
             <>
               <span className="mx-1.5" style={{ color: "var(--text-muted)" }}>·</span>
-              <span>{event.model}</span>
+              <ProviderLogo provider={getProvider(event.model)} size={12} />
+              <span className="ml-1">{event.model}</span>
             </>
           )}
           {event.tokens_total != null && (

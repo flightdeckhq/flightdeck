@@ -2,7 +2,8 @@ import { useState, useEffect, useMemo } from "react";
 import type { Policy, PolicyRequest } from "@/lib/types";
 import { useFleetStore } from "@/store/fleet";
 import { truncateSessionId } from "@/lib/events";
-import { ALL_MODELS as ALL_MODELS_LIST } from "@/lib/models";
+import { ALL_MODELS as ALL_MODELS_LIST, getProvider } from "@/lib/models";
+import { ProviderLogo } from "@/components/ui/provider-logo";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -348,6 +349,7 @@ export function PolicyEditor({ policy, onSave, onCancel }: PolicyEditorProps) {
                           style={{ width: 6, height: 6, background: "var(--status-active)", flexShrink: 0 }}
                           data-testid="in-use-dot"
                         />
+                        <ProviderLogo provider={getProvider(m)} size={12} />
                         {m}
                       </button>
                     ))}
@@ -365,10 +367,11 @@ export function PolicyEditor({ policy, onSave, onCancel }: PolicyEditorProps) {
                   <button
                     key={m}
                     type="button"
-                    className="flex w-full items-center px-2.5 py-1 text-left font-mono text-[13px] transition-colors hover:bg-surface-hover"
+                    className="flex w-full items-center gap-1.5 px-2.5 py-1 text-left font-mono text-[13px] transition-colors hover:bg-surface-hover"
                     style={{ color: degradeTo === m ? "var(--text)" : "var(--text-secondary)" }}
                     onClick={() => setDegradeTo(m)}
                   >
+                    <ProviderLogo provider={getProvider(m)} size={12} />
                     {m}
                   </button>
                 ))}

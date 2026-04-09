@@ -265,6 +265,13 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
                 <span>{formatDuration(data.session.started_at)}</span>
                 <span className="mx-1.5" style={{ color: "var(--text-muted)" }}>·</span>
                 <span>{data.session.tokens_used.toLocaleString()} tok</span>
+                {data.session.model && (
+                  <>
+                    <span className="mx-1.5" style={{ color: "var(--text-muted)" }}>·</span>
+                    <ProviderLogo provider={getProvider(data.session.model)} size={12} />
+                    <span className="ml-1">{data.session.model}</span>
+                  </>
+                )}
               </div>
 
               {/* Tab bar */}

@@ -300,11 +300,16 @@ export function Fleet() {
             timeRange={timeRange}
             expandedFlavor={expandedFlavor}
             onExpandFlavor={handleExpandFlavor}
-            onNodeClick={(id, eventId, event) => {
-              selectSession(id);
-              setInitialEventId(eventId ?? null);
-              // event is passed directly from SessionEventRow — no cache lookup needed
-              setDirectEventDetail(event ?? null);
+            onNodeClick={(id, _eventId, event) => {
+              if (event) {
+                // Event circle clicked — open EventDetailDrawer (same as live feed)
+                setSelectedEvent(event);
+              } else {
+                // Session row clicked (no specific event) — open SessionDrawer
+                selectSession(id);
+                setInitialEventId(null);
+                setDirectEventDetail(null);
+              }
             }}
             activeFilter={activeFilter}
             paused={paused}

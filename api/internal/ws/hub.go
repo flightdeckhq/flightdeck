@@ -190,11 +190,14 @@ func (h *Hub) listenOnce(ctx context.Context, pool *pgxpool.Pool) error {
 		}
 
 		// Determine update type from event_type
-		updateType := "session_update"
-		if np.EventType == "session_start" {
+		var updateType string
+		switch np.EventType {
+		case "session_start":
 			updateType = "session_start"
-		} else if np.EventType == "session_end" {
+		case "session_end":
 			updateType = "session_end"
+		default:
+			updateType = "session_update"
 		}
 
 		// Build and broadcast the enriched payload

@@ -1,4 +1,4 @@
-import { useRef, useEffect, useState, useCallback } from "react";
+import { useRef, useEffect, useState, useCallback, useMemo } from "react";
 import type { AgentEvent } from "@/lib/types";
 import { getBadge, getEventDetail, flavorColor, isEventVisible } from "@/lib/events";
 import {
@@ -32,37 +32,21 @@ interface LiveFeedProps {
 
 export function LiveFeed({ events, onEventClick, activeFilter, onFilterChange, isPaused, queueLength = 0, catchingUp }: LiveFeedProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
-  const [paused, setPaused] = useState(false);
   const [feedHeight, setFeedHeight] = useState(getInitialHeight);
   const capped = events.slice(-FEED_MAX_EVENTS);
   const visibleEvents = activeFilter
     ? capped.filter((e) => isEventVisible(e.event_type, activeFilter))
     : capped;
 
+  // Newest first — reverse for display
+  const displayEvents = useMemo(
+    () => [...visibleEvents].reverse(),
+    [visibleEvents]
+  );
+
   useEffect(() => {
     localStorage.setItem(FEED_HEIGHT_STORAGE_KEY, String(feedHeight));
   }, [feedHeight]);
-
-  useEffect(() => {
-    if (!paused && scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
-  }, [capped.length, paused]);
-
-  const handleScroll = useCallback(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 20;
-    if (!atBottom && !paused) setPaused(true);
-    if (atBottom && paused) setPaused(false);
-  }, [paused]);
-
-  function handleResume() {
-    setPaused(false);
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
-  }
 
   function handleResizeStart(e: React.MouseEvent) {
     e.preventDefault();
@@ -100,7 +84,7 @@ export function LiveFeed({ events, onEventClick, activeFilter, onFilterChange, i
           borderBottom: "1px solid var(--border-subtle)",
         }}
       >
-        {!paused && !isPaused && visibleEvents.length > 0 && <div className="pulse-dot" />}
+        {!isPaused && visibleEvents.length > 0 && <div className="pulse-dot" />}
         <span
           className="font-mono text-[11px] font-semibold uppercase tracking-[0.08em]"
           style={{ color: "var(--text-muted)" }}
@@ -146,20 +130,7 @@ export function LiveFeed({ events, onEventClick, activeFilter, onFilterChange, i
             · {activeFilter}
           </button>
         )}
-        <button
-          className="ml-auto text-[11px]"
-          style={{
-            color: paused ? "var(--accent)" : "var(--text-muted)",
-            background: "transparent",
-            border: "none",
-            cursor: "pointer",
-            padding: "2px 6px",
-          }}
-          onClick={paused ? handleResume : () => setPaused(true)}
-          data-testid="feed-pause-btn"
-        >
-          {paused ? "▶ Resume" : "⏸ Pause"}
-        </button>
+        {/* Pause controls are in the fleet header */}
       </div>
 
       {/* Feed body with sticky column headers */}
@@ -181,15 +152,14 @@ export function LiveFeed({ events, onEventClick, activeFilter, onFilterChange, i
           <span className="w-[80px] shrink-0">Session</span>
           <span className="w-[88px] shrink-0">Type</span>
           <span className="flex-1">Detail</span>
-          <span className="w-[72px] shrink-0 text-right">Time</span>
+          <span className="w-[72px] shrink-0 text-right">Time ↑</span>
         </div>
 
         {/* Scrollable rows (virtualized) */}
         <VirtualizedFeedBody
           scrollRef={scrollRef}
-          visibleEvents={visibleEvents}
+          visibleEvents={displayEvents}
           onEventClick={onEventClick}
-          onScroll={handleScroll}
         />
       </div>
     </div>
@@ -203,12 +173,10 @@ function VirtualizedFeedBody({
   scrollRef,
   visibleEvents,
   onEventClick,
-  onScroll,
 }: {
   scrollRef: React.RefObject<HTMLDivElement>;
   visibleEvents: AgentEvent[];
   onEventClick: (event: AgentEvent) => void;
-  onScroll: () => void;
 }) {
   const [scrollTop, setScrollTop] = useState(0);
 
@@ -216,8 +184,7 @@ function VirtualizedFeedBody({
     if (scrollRef.current) {
       setScrollTop(scrollRef.current.scrollTop);
     }
-    onScroll();
-  }, [scrollRef, onScroll]);
+  }, [scrollRef]);
 
   const totalHeight = visibleEvents.length * ROW_HEIGHT;
   const containerHeight = scrollRef.current?.clientHeight ?? 300;

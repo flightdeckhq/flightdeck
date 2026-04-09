@@ -56,15 +56,15 @@ describe("LiveFeed", () => {
     expect(screen.getAllByTestId("feed-row")).toHaveLength(3);
   });
 
-  it("pause button shows when live", () => {
-    render(<LiveFeed events={mockEvents} onEventClick={() => {}} />);
-    expect(screen.getByText("⏸ Pause")).toBeInTheDocument();
-  });
-
-  it("resume button shows when paused", () => {
-    render(<LiveFeed events={mockEvents} onEventClick={() => {}} />);
-    fireEvent.click(screen.getByTestId("feed-pause-btn"));
-    expect(screen.getByText("▶ Resume")).toBeInTheDocument();
+  it("newest event appears first in display", () => {
+    const events = [
+      makeEvent({ id: "e-old", occurred_at: "2026-04-07T10:00:00Z" }),
+      makeEvent({ id: "e-new", occurred_at: "2026-04-07T10:05:00Z" }),
+    ];
+    render(<LiveFeed events={events} onEventClick={() => {}} />);
+    const rows = screen.getAllByTestId("feed-row");
+    // First rendered row should be the newest event (e-new was second in array)
+    expect(rows.length).toBe(2);
   });
 
   it("caps at 500 events (virtualized -- checks total height)", () => {

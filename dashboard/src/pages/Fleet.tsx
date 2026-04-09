@@ -70,6 +70,7 @@ export function Fleet() {
   const [expandedFlavor, setExpandedFlavor] = useState<string | null>(null);
   const [selectedEvent, setSelectedEvent] = useState<AgentEvent | null>(null);
   const [initialEventId, setInitialEventId] = useState<string | null>(null);
+  const [directEventDetail, setDirectEventDetail] = useState<AgentEvent | null>(null);
   const [activeFilter, setActiveFilter] = useState<string | null>(null);
 
   if (loading && flavors.length === 0) {
@@ -305,6 +306,14 @@ export function Fleet() {
             onNodeClick={(id, eventId) => {
               selectSession(id);
               setInitialEventId(eventId ?? null);
+              // Find the full event from cache for direct detail view
+              if (eventId) {
+                const cached = eventsCache.get(id) ?? [];
+                const evt = cached.find((e) => e.id === eventId);
+                if (evt) setDirectEventDetail(evt);
+              } else {
+                setDirectEventDetail(null);
+              }
             }}
             activeFilter={activeFilter}
             paused={paused}
@@ -327,8 +336,9 @@ export function Fleet() {
 
       <SessionDrawer
         sessionId={selectedSessionId}
-        onClose={() => { selectSession(null); setInitialEventId(null); }}
+        onClose={() => { selectSession(null); setInitialEventId(null); setDirectEventDetail(null); }}
         initialEventId={initialEventId}
+        directEventDetail={directEventDetail}
       />
 
       <EventDetailDrawer

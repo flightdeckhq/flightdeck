@@ -1,4 +1,4 @@
-import type { FleetResponse, SessionDetail, Policy, PolicyRequest, DirectiveRequest, Directive, AnalyticsParams, AnalyticsResponse, EventContent, SearchResults, CustomDirective } from "./types";
+import type { FleetResponse, SessionDetail, Policy, PolicyRequest, DirectiveRequest, Directive, AnalyticsParams, AnalyticsResponse, EventContent, SearchResults, CustomDirective, AgentEvent } from "./types";
 
 const BASE = import.meta.env.VITE_API_BASE_URL || "/api";
 
@@ -114,6 +114,36 @@ export async function triggerCustomDirective(data: {
     body: JSON.stringify(data),
   });
   if (!res.ok) throw new Error(`API ${res.status}`);
+}
+
+export interface BulkEventsParams {
+  from: string;
+  to?: string;
+  flavor?: string;
+  event_type?: string;
+  session_id?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export interface BulkEventsResponse {
+  events: AgentEvent[];
+  total: number;
+  limit: number;
+  offset: number;
+  has_more: boolean;
+}
+
+export function fetchBulkEvents(params: BulkEventsParams): Promise<BulkEventsResponse> {
+  const searchParams = new URLSearchParams();
+  searchParams.set("from", params.from);
+  if (params.to) searchParams.set("to", params.to);
+  if (params.flavor) searchParams.set("flavor", params.flavor);
+  if (params.event_type) searchParams.set("event_type", params.event_type);
+  if (params.session_id) searchParams.set("session_id", params.session_id);
+  if (params.limit) searchParams.set("limit", String(params.limit));
+  if (params.offset) searchParams.set("offset", String(params.offset));
+  return fetchJson<BulkEventsResponse>(`/v1/events?${searchParams.toString()}`);
 }
 
 export function fetchAnalytics(params: AnalyticsParams): Promise<AnalyticsResponse> {

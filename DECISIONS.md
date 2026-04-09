@@ -1023,3 +1023,20 @@ how engineers think: "show me the LLM calls" not "show me post_call and pre_call
 Opacity-based hiding in the swimlane preserves x position so layout does not shift
 when toggling filters. Inspired by agent-observe's filter bar.
 
+---
+
+## D066 -- Bulk events endpoint replaces per-session fetches
+
+**Decision:** `GET /v1/events` loads all events for a time range in one request.
+`eventsCache` is populated client-side by grouping events by session_id. Zero
+per-session HTTP requests after initial bulk load. WebSocket handles all real-time
+updates after load. Live feed and swimlane share the same data source.
+
+**Reasoning:** The original architecture fetched `GET /v1/sessions/:id` for each
+session individually — 10 sessions = 10 HTTP requests. With `useSessionEvents`
+called from both aggregated flavor rows and session rows, this doubled to ~20
+requests. The bulk endpoint reduces this to 1 request that returns all events
+within the selected time range. Client-side grouping by session_id populates the
+same `eventsCache` that the swimlane reads from. Time range changes re-fetch.
+Pagination via `offset` supports loading older events.
+

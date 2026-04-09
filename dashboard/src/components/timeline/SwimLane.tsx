@@ -167,7 +167,7 @@ function AggregatedSwimLane({
           key={session.session_id}
           session={session}
           scale={scale}
-          onClick={() => onSessionClick(session.session_id)}
+          onSessionClick={onSessionClick}
           flavor={flavor}
           activeFilter={activeFilter}
           version={sessionVersions?.[session.session_id] ?? 0}
@@ -180,14 +180,14 @@ function AggregatedSwimLane({
 function AggregatedSessionEvents({
   session,
   scale,
-  onClick,
+  onSessionClick,
   flavor,
   activeFilter,
   version = 0,
 }: {
   session: Session;
   scale: ScaleTime<number, number>;
-  onClick: () => void;
+  onSessionClick: (sessionId: string, eventId?: string, event?: AgentEvent) => void;
   flavor: string;
   activeFilter?: string | null;
   version?: number;
@@ -224,7 +224,11 @@ function AggregatedSessionEvents({
           tokensTotal={node.tokensTotal}
           latencyMs={node.latencyMs}
           occurredAt={node.occurredAt}
-          onClick={onClick}
+          eventId={node.id}
+          onClick={(eid) => {
+            const fullEvent = events.find((e) => e.id === eid);
+            onSessionClick(session.session_id, eid, fullEvent);
+          }}
           size={20}
           isVisible={isEventVisible(node.eventType, activeFilter)}
         />

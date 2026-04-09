@@ -178,11 +178,13 @@ flightdeck/
 │   │   │   ├── directives.go   # POST /v1/directives: issue kill switch or directive
 │   │   │   ├── policies.go     # GET /v1/policy, GET/POST /v1/policies, PUT/DELETE /v1/policies/{id}
 │   │   │   ├── analytics.go    # GET /v1/analytics: flexible breakdown queries
+│   │   │   ├── events_list.go  # GET /v1/events: bulk events with time range, filters, pagination
 │   │   │   ├── stream.go       # WS /v1/stream: real-time WebSocket fleet updates
 │   │   │   └── health.go       # GET /health: liveness check
 │   │   ├── store/
 │   │   │   ├── postgres.go     # Fleet, session, event queries via pgx
 │   │   │   ├── analytics.go    # Analytics GROUP BY queries across all dimensions
+│   │   │   ├── events.go       # GetEvents() bulk event query with time range, filters, pagination
 │   │   │   └── search.go       # Search() parallel ILIKE across agents, sessions, events via errgroup
 │   │   └── ws/
 │   │       └── hub.go          # WebSocket hub: client registry, broadcast on PG NOTIFY

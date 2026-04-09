@@ -1,0 +1,110 @@
+package store
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"time"
+)
+
+// EventsParams defines filters for bulk event queries.
+type EventsParams struct {
+	From      time.Time
+	To        time.Time
+	Flavor    string
+	EventType string
+	SessionID string
+	Limit     int
+	Offset    int
+}
+
+// EventsResponse is the paginated response for GET /v1/events.
+type EventsResponse struct {
+	Events  []Event `json:"events"`
+	Total   int     `json:"total"`
+	Limit   int     `json:"limit"`
+	Offset  int     `json:"offset"`
+	HasMore bool    `json:"has_more"`
+}
+
+// GetEvents returns events matching the given filters with pagination.
+func (s *Store) GetEvents(ctx context.Context, params EventsParams) (*EventsResponse, error) {
+	var conditions []string
+	var args []interface{}
+	argIdx := 1
+
+	conditions = append(conditions, fmt.Sprintf("occurred_at >= $%d", argIdx))
+	args = append(args, params.From)
+	argIdx++
+
+	conditions = append(conditions, fmt.Sprintf("occurred_at <= $%d", argIdx))
+	args = append(args, params.To)
+	argIdx++
+
+	if params.Flavor != "" {
+		conditions = append(conditions, fmt.Sprintf("flavor = $%d", argIdx))
+		args = append(args, params.Flavor)
+		argIdx++
+	}
+	if params.EventType != "" {
+		conditions = append(conditions, fmt.Sprintf("event_type = $%d", argIdx))
+		args = append(args, params.EventType)
+		argIdx++
+	}
+	if params.SessionID != "" {
+		conditions = append(conditions, fmt.Sprintf("session_id = $%d::uuid", argIdx))
+		args = append(args, params.SessionID)
+		argIdx++
+	}
+
+	where := "WHERE " + strings.Join(conditions, " AND ")
+
+	// Count total
+	countSQL := fmt.Sprintf("SELECT COUNT(*) FROM events %s", where)
+	var total int
+	if err := s.pool.QueryRow(ctx, countSQL, args...).Scan(&total); err != nil {
+		return nil, fmt.Errorf("count events: %w", err)
+	}
+
+	// Fetch page
+	querySQL := fmt.Sprintf(`
+		SELECT id::text, session_id::text, flavor, event_type, model,
+		       tokens_input, tokens_output, tokens_total, latency_ms,
+		       tool_name, has_content, occurred_at
+		FROM events
+		%s
+		ORDER BY occurred_at ASC
+		LIMIT $%d OFFSET $%d
+	`, where, argIdx, argIdx+1)
+	args = append(args, params.Limit, params.Offset)
+
+	rows, err := s.pool.Query(ctx, querySQL, args...)
+	if err != nil {
+		return nil, fmt.Errorf("get events: %w", err)
+	}
+	defer rows.Close()
+
+	var events []Event
+	for rows.Next() {
+		var e Event
+		if err := rows.Scan(
+			&e.ID, &e.SessionID, &e.Flavor, &e.EventType, &e.Model,
+			&e.TokensInput, &e.TokensOutput, &e.TokensTotal, &e.LatencyMs,
+			&e.ToolName, &e.HasContent, &e.OccurredAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan event: %w", err)
+		}
+		events = append(events, e)
+	}
+	if events == nil {
+		events = []Event{}
+	}
+
+	return &EventsResponse{
+		Events:  events,
+		Total:   total,
+		Limit:   params.Limit,
+		Offset:  params.Offset,
+		HasMore: params.Offset+len(events) < total,
+	}, nil
+}

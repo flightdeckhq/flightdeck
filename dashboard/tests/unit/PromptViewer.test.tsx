@@ -71,10 +71,10 @@ describe("PromptViewer", () => {
   it("renders tool names in tools section", async () => {
     render(<PromptViewer eventId="e1" />);
     await waitFor(() => {
-      expect(screen.getByText("Tools")).toBeInTheDocument();
+      // Tools section now shows count: "Tools (2)"
+      expect(screen.getByText(/Tools \(/)).toBeInTheDocument();
     });
-    // Expand tools section
-    fireEvent.click(screen.getByText("Tools"));
+    // Tools are expanded by default now — no click needed
     expect(screen.getByText("web_search")).toBeInTheDocument();
     expect(screen.getByText("calculator")).toBeInTheDocument();
   });

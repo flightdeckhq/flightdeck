@@ -1,6 +1,7 @@
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import { useFleet } from "@/hooks/useFleet";
 import { useFleetStore } from "@/store/fleet";
+import { useHistoricalEvents } from "@/hooks/useHistoricalEvents";
 import { FleetPanel } from "@/components/fleet/FleetPanel";
 import { DirectivesPanel } from "@/components/fleet/DirectivesPanel";
 import { EventFilterBar } from "@/components/fleet/EventFilterBar";
@@ -66,9 +67,45 @@ export function Fleet() {
   const [timeRange, setTimeRange] = useState<TimeRange>("1m");
   const [expandedFlavor, setExpandedFlavor] = useState<string | null>(null);
   const [selectedEvent, setSelectedEvent] = useState<AgentEvent | null>(null);
-  const [initialEventId, setInitialEventId] = useState<string | null>(null);
-  // directEventDetail removed — swimlane click auto-expands event in SessionDrawer
+  const [directEventDetail, setDirectEventDetail] = useState<AgentEvent | null>(null);
   const [activeFilter, setActiveFilter] = useState<string | null>(null);
+
+  // Bulk historical events load — one request replaces all per-session fetches
+  const { events: historicalEvents } = useHistoricalEvents(timeRange);
+
+  // Populate eventsCache and feedEvents from bulk load
+  useEffect(() => {
+    if (!historicalEvents.length) return;
+
+    // Group by session_id and populate cache
+    const grouped = new Map<string, AgentEvent[]>();
+    for (const event of historicalEvents) {
+      const existing = grouped.get(event.session_id) ?? [];
+      grouped.set(event.session_id, [...existing, event]);
+    }
+    grouped.forEach((events, sessionId) => {
+      const existing = eventsCache.get(sessionId);
+      if (!existing || existing.length < events.length) {
+        eventsCache.set(sessionId, events);
+      }
+    });
+
+    // Increment versions for all affected sessions
+    setSessionVersions((prev) => {
+      const next = { ...prev };
+      grouped.forEach((_, sessionId) => {
+        next[sessionId] = (next[sessionId] ?? 0) + 1;
+      });
+      return next;
+    });
+
+    // Populate live feed from historical events
+    const feedFromHistory: FeedEvent[] = historicalEvents.map((event) => ({
+      arrivedAt: new Date(event.occurred_at).getTime(),
+      event,
+    }));
+    setFeedEvents(feedFromHistory.slice(-FEED_MAX_EVENTS));
+  }, [historicalEvents]);
 
   if (loading && flavors.length === 0) {
     return (
@@ -302,7 +339,7 @@ export function Fleet() {
             onExpandFlavor={handleExpandFlavor}
             onNodeClick={(id, _eventId, event) => {
               selectSession(id);
-              setInitialEventId(event?.id ?? null);
+              setDirectEventDetail(event ?? null);
             }}
             activeFilter={activeFilter}
             paused={paused}
@@ -327,8 +364,9 @@ export function Fleet() {
 
       <SessionDrawer
         sessionId={selectedSessionId}
-        onClose={() => { selectSession(null); setInitialEventId(null); }}
-        initialEventId={initialEventId}
+        onClose={() => { selectSession(null); setDirectEventDetail(null); }}
+        directEventDetail={directEventDetail}
+        onClearDirectEvent={() => setDirectEventDetail(null)}
         version={selectedSessionId ? (sessionVersions[selectedSessionId] ?? 0) : 0}
       />
 

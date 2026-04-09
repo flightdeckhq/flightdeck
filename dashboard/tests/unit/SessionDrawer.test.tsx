@@ -229,12 +229,11 @@ describe("SessionDrawer", () => {
     expect(drawer).toBeInTheDocument();
   });
 
-  it("highlights initial event when initialEventId is set", () => {
-    render(<SessionDrawer sessionId="s1" onClose={() => {}} initialEventId="e2" />);
-    const rows = screen.getAllByTestId("event-row");
-    // Reversed: row[0]=e2(post_call), row[1]=e1(session_start)
-    const postCallRow = rows[0];
-    expect(postCallRow.style.background).toBe("var(--accent-glow)");
+  it("opens Mode 2 when directEventDetail is set", () => {
+    const directEvent = baseEvents[1]; // post_call
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} directEventDetail={directEvent} onClearDirectEvent={() => {}} />);
+    // Should show back nav bar immediately (Mode 2)
+    expect(screen.getByTestId("back-to-session")).toBeInTheDocument();
   });
 
   it("open full detail switches to detail view", () => {
@@ -261,10 +260,11 @@ describe("SessionDrawer", () => {
     expect(screen.getAllByTestId("event-row").length).toBeGreaterThanOrEqual(1);
   });
 
-  it("initialEventId auto-expands the event row", () => {
-    render(<SessionDrawer sessionId="s1" onClose={() => {}} initialEventId="e2" />);
-    // e2 (post_call) should be expanded — showing summary grid
-    expect(screen.getByText("Model")).toBeInTheDocument();
+  it("back from Mode 2 returns to event list", () => {
+    const directEvent = baseEvents[1];
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} directEventDetail={directEvent} onClearDirectEvent={() => {}} />);
+    fireEvent.click(screen.getByTestId("back-to-session"));
+    expect(screen.getAllByTestId("event-row").length).toBeGreaterThanOrEqual(1);
   });
 
   it("events shown newest first", () => {

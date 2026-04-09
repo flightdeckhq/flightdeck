@@ -1,19 +1,12 @@
-import { useEffect, useState, memo } from "react";
+import { useEffect, useState, memo, useCallback } from "react";
+import { createPortal } from "react-dom";
 import type { EventType } from "@/lib/types";
 import { truncateSessionId } from "@/lib/events";
 import {
-  Zap,
-  Wrench,
-  AlertTriangle,
-  XCircle,
-  ArrowDown,
-  Play,
-  Square,
-  Check,
-  Circle,
+  Zap, Wrench, AlertTriangle, XCircle, ArrowDown,
+  Play, Square, Check, Circle,
 } from "lucide-react";
 
-/** Map event types to CSS variable names and labels. */
 const eventTypeConfig: Record<
   string,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -50,76 +43,72 @@ export interface EventNodeProps {
 }
 
 function EventNodeComponent({
-  x,
-  eventType,
-  sessionId,
-  flavor,
-  model,
-  toolName,
-  tokensTotal,
-  latencyMs,
-  occurredAt,
-  eventId,
-  onClick,
-  size = 24,
-  isVisible = true,
+  x, eventType, sessionId, flavor, model, toolName,
+  tokensTotal, latencyMs, occurredAt, eventId, onClick,
+  size = 24, isVisible = true,
 }: EventNodeProps) {
   const config = eventTypeConfig[eventType] ?? defaultConfig;
   const color = config.cssVar;
   const [hovered, setHovered] = useState(false);
   const [mounted, setMounted] = useState(false);
+  const [tooltipPos, setTooltipPos] = useState<{ top: number; left: number } | null>(null);
   const iconSize = size <= 20 ? 11 : 13;
 
-  // Fade-in on mount via React state (not direct DOM mutation)
   useEffect(() => {
     requestAnimationFrame(() => setMounted(true));
   }, []);
 
-  const IconComponent = config.Icon;
+  const handleMouseEnter = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    setTooltipPos({ top: rect.top - 8, left: rect.left + rect.width / 2 });
+    setHovered(true);
+  }, []);
 
-  // opacity: visible only when both mounted (fade-in complete) AND filter allows
+  const handleMouseLeave = useCallback(() => {
+    setHovered(false);
+    setTooltipPos(null);
+  }, []);
+
+  const IconComponent = config.Icon;
   const finalOpacity = isVisible && mounted ? 1 : 0;
 
   return (
-    <div
-      className="absolute top-1/2 -translate-y-1/2 cursor-pointer rounded-full flex items-center justify-center flex-shrink-0"
-      style={{
-        left: x,
-        width: size,
-        height: size,
-        backgroundColor: color,
-        color: "white",
-        border: "1.5px solid rgba(255,255,255,0.1)",
-        transform: hovered
-          ? "translateY(-50%) scale(1.25)"
-          : "translateY(-50%) scale(1)",
-        transition: "transform 150ms ease, opacity 300ms ease",
-        zIndex: hovered ? 10 : 1,
-        opacity: finalOpacity,
-        pointerEvents: isVisible ? "auto" : "none",
-      }}
-      onClick={(e) => {
-        e.stopPropagation();
-        onClick(eventId);
-      }}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-    >
-      <IconComponent size={iconSize} />
+    <>
+      <div
+        className="absolute top-1/2 -translate-y-1/2 cursor-pointer rounded-full flex items-center justify-center flex-shrink-0"
+        style={{
+          left: x, width: size, height: size,
+          backgroundColor: color, color: "white",
+          border: "1.5px solid rgba(255,255,255,0.1)",
+          transform: hovered ? "translateY(-50%) scale(1.25)" : "translateY(-50%) scale(1)",
+          transition: "transform 150ms ease, opacity 300ms ease",
+          zIndex: hovered ? 10 : 1,
+          opacity: finalOpacity,
+          pointerEvents: isVisible ? "auto" : "none",
+        }}
+        onClick={(e) => { e.stopPropagation(); onClick(eventId); }}
+        onMouseEnter={handleMouseEnter}
+        onMouseLeave={handleMouseLeave}
+      >
+        <IconComponent size={iconSize} />
+      </div>
 
-      {hovered && (
+      {/* Tooltip rendered in a portal to escape overflow:hidden */}
+      {hovered && tooltipPos && createPortal(
         <div
-          className="absolute z-50 whitespace-nowrap rounded"
           style={{
-            bottom: "calc(100% + 8px)",
-            left: "50%",
-            transform: "translateX(-50%)",
+            position: "fixed",
+            top: tooltipPos.top,
+            left: tooltipPos.left,
+            transform: "translate(-50%, -100%)",
             background: "var(--bg-elevated)",
             border: "1px solid var(--border)",
             borderRadius: 4,
             padding: "6px 8px",
             fontSize: 11,
             pointerEvents: "none",
+            zIndex: 9999,
+            whiteSpace: "nowrap",
           }}
         >
           <div style={{ color: "var(--text-secondary)" }}>{config.label}</div>
@@ -137,9 +126,10 @@ function EventNodeComponent({
           <div className="font-mono" style={{ color: "var(--text-muted)" }}>
             {new Date(occurredAt).toLocaleTimeString()}
           </div>
-        </div>
+        </div>,
+        document.body
       )}
-    </div>
+    </>
   );
 }
 

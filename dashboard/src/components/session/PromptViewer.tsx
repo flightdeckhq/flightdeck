@@ -165,21 +165,32 @@ export function PromptViewer({ eventId }: PromptViewerProps) {
       )}
 
       {/* Tools */}
-      {content.tools != null && (
-        <CollapsibleSection title="Tools" defaultOpen={false}>
-          {Array.isArray(content.tools) ? (
-            <ul className="space-y-1">
-              {content.tools.map((tool: Record<string, unknown>, i: number) => (
-                <li key={i} className="font-mono text-xs text-text-muted">
-                  {(tool.name as string) ?? ((tool.function as Record<string, unknown>)?.name as string) ?? JSON.stringify(tool)}
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <pre className="overflow-x-auto whitespace-pre-wrap break-words text-xs text-text-muted">
-              {JSON.stringify(content.tools, null, 2)}
-            </pre>
-          )}
+      {content.tools != null && Array.isArray(content.tools) && content.tools.length > 0 && (
+        <CollapsibleSection title={`Tools (${content.tools.length})`} defaultOpen>
+          <div className="space-y-2">
+            {content.tools.map((tool: Record<string, unknown>, i: number) => {
+              const name = (tool.name as string) ?? ((tool.function as Record<string, unknown>)?.name as string) ?? `tool_${i}`;
+              const desc = (tool.description as string) ?? ((tool.function as Record<string, unknown>)?.description as string) ?? null;
+              const schema = (tool.input_schema as Record<string, unknown>) ?? ((tool.function as Record<string, unknown>)?.parameters as Record<string, unknown>) ?? null;
+              const props = (schema?.properties as Record<string, Record<string, unknown>>) ?? null;
+
+              return (
+                <div key={i} className="rounded border border-border/50 p-2">
+                  <div className="font-mono text-[13px] font-semibold" style={{ color: "var(--text)" }}>{name}</div>
+                  {desc && <div className="text-xs" style={{ color: "var(--text-secondary)" }}>{desc}</div>}
+                  {props && (
+                    <div className="mt-1 space-y-0.5">
+                      {Object.entries(props).map(([propName, propDef]) => (
+                        <div key={propName} className="font-mono text-[11px]" style={{ color: "var(--text-muted)" }}>
+                          {propName} · {(propDef as Record<string, unknown>).type as string ?? "any"}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
         </CollapsibleSection>
       )}
 

@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from "react";
 import type { Policy, PolicyRequest } from "@/lib/types";
 import { useFleetStore } from "@/store/fleet";
 import { truncateSessionId } from "@/lib/events";
+import { ALL_MODELS as ALL_MODELS_LIST } from "@/lib/models";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -25,28 +26,7 @@ const SCOPE_LABELS: Record<Scope, string> = {
   session: "Session",
 };
 
-const ANTHROPIC_MODELS = [
-  "claude-opus-4-6",
-  "claude-sonnet-4-6",
-  "claude-haiku-4-5-20251001",
-  "claude-opus-4-5-20251101",
-  "claude-sonnet-4-5-20250929",
-  "claude-opus-4-20250514",
-  "claude-sonnet-4-20250514",
-  "claude-3-5-sonnet-20241022",
-  "claude-3-5-haiku-20241022",
-  "claude-3-opus-20240229",
-];
-
-const OPENAI_MODELS = [
-  "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano",
-  "gpt-5.2", "gpt-5", "gpt-5-mini", "gpt-5-nano",
-  "gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano",
-  "gpt-4o", "gpt-4o-mini", "gpt-4-turbo",
-  "o4-mini", "o3", "o3-pro", "o3-mini", "o1", "o1-mini",
-];
-
-const ALL_MODELS = [...ANTHROPIC_MODELS, ...OPENAI_MODELS];
+// Model lists imported from @/lib/models
 
 function numOrNull(value: string): number | null {
   if (value === "") return null;
@@ -381,7 +361,7 @@ export function PolicyEditor({ policy, onSave, onCancel }: PolicyEditorProps) {
                 >
                   All models
                 </div>
-                {ALL_MODELS.filter((m) => !inUseModels.includes(m)).map((m) => (
+                {ALL_MODELS_LIST.filter((m) => !inUseModels.includes(m)).map((m) => (
                   <button
                     key={m}
                     type="button"

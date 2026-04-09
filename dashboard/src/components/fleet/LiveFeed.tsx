@@ -1,6 +1,8 @@
 import { useEffect, useState, useMemo } from "react";
 import type { AgentEvent, FeedEvent } from "@/lib/types";
 import { getBadge, getEventDetail, flavorColor, isEventVisible, truncateSessionId } from "@/lib/events";
+import { getProvider } from "@/lib/models";
+import { ProviderLogo } from "@/components/ui/provider-logo";
 import {
   FEED_MAX_EVENTS,
   PAUSE_QUEUE_MAX_EVENTS,
@@ -278,7 +280,12 @@ function FeedRow({ fe, colWidths, onClick }: { fe: FeedEvent; colWidths: ColWidt
         }}
         data-testid="feed-badge"
       >{badge.label}</span>
-      <span className="shrink-0 truncate text-xs pl-2" style={{ width: colWidths.detail, color: "var(--text)" }}>{detail}</span>
+      <span className="shrink-0 truncate text-xs pl-2 flex items-center gap-1" style={{ width: colWidths.detail, color: "var(--text)" }}>
+        {(event.event_type === "post_call" || event.event_type === "pre_call") && event.model && (
+          <ProviderLogo provider={getProvider(event.model)} size={12} />
+        )}
+        {detail}
+      </span>
       <span className="shrink-0 text-right font-mono text-[11px]" style={{ width: colWidths.time, color: "var(--text-muted)" }} data-testid="feed-timestamp">
         {new Date(fe.arrivedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
       </span>

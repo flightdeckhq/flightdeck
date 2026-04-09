@@ -38,6 +38,7 @@ func New(addr string, s store.Querier, hub *ws.Hub, corsOrigin string) *http.Ser
 	mux.Handle("POST /v1/directives/sync", handlers.SyncDirectivesHandler(s))
 	mux.Handle("POST /v1/directives/register", handlers.RegisterDirectivesHandler(s))
 	mux.Handle("GET /v1/directives/custom", handlers.GetCustomDirectivesHandler(s))
+	mux.Handle("GET /v1/events", handlers.EventsListHandler(s))
 	mux.Handle("GET /v1/analytics", handlers.AnalyticsHandler(s))
 	mux.Handle("GET /v1/search", handlers.SearchHandler(s))
 	mux.Handle("GET /v1/stream", handlers.StreamHandler(hub))

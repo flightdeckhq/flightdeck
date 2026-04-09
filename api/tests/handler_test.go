@@ -233,6 +233,43 @@ func (m *mockStore) Search(_ context.Context, query string) (*store.SearchResult
 	}, nil
 }
 
+func (m *mockStore) GetEvents(_ context.Context, params store.EventsParams) (*store.EventsResponse, error) {
+	events := []store.Event{
+		{ID: "e1", SessionID: "s1", Flavor: "test-agent", EventType: "post_call", HasContent: false, OccurredAt: time.Now()},
+		{ID: "e2", SessionID: "s1", Flavor: "test-agent", EventType: "tool_call", HasContent: false, OccurredAt: time.Now()},
+	}
+	// Apply filters
+	var filtered []store.Event
+	for _, e := range events {
+		if params.Flavor != "" && e.Flavor != params.Flavor {
+			continue
+		}
+		if params.EventType != "" && e.EventType != params.EventType {
+			continue
+		}
+		filtered = append(filtered, e)
+	}
+	if filtered == nil {
+		filtered = []store.Event{}
+	}
+	end := params.Offset + params.Limit
+	if end > len(filtered) {
+		end = len(filtered)
+	}
+	start := params.Offset
+	if start > len(filtered) {
+		start = len(filtered)
+	}
+	page := filtered[start:end]
+	return &store.EventsResponse{
+		Events:  page,
+		Total:   len(filtered),
+		Limit:   params.Limit,
+		Offset:  params.Offset,
+		HasMore: end < len(filtered),
+	}, nil
+}
+
 func (m *mockStore) SyncDirectives(_ context.Context, fingerprints []string) ([]string, error) {
 	found := make(map[string]bool)
 	for _, cd := range m.customDirectives {
@@ -1397,5 +1434,77 @@ func TestCreateCustomDirectiveMissingTarget(t *testing.T) {
 	_ = json.Unmarshal(w.Body.Bytes(), &resp)
 	if !contains(resp["error"].(string), "session_id or flavor is required") {
 		t.Errorf("expected error about session_id or flavor, got %v", resp["error"])
+	}
+}
+
+func TestGetEventsBasic(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.EventsListHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/events?from=2026-01-01T00:00:00Z", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	events, ok := resp["events"].([]any)
+	if !ok {
+		t.Fatalf("expected events array, got %v", resp["events"])
+	}
+	if len(events) == 0 {
+		t.Error("expected non-empty events array")
+	}
+}
+
+func TestGetEventsMissingFrom(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.EventsListHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/events", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestGetEventsLimitTooLarge(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.EventsListHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/events?from=2026-01-01T00:00:00Z&limit=9999", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestGetEventsFlavorFilter(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.EventsListHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/events?from=2026-01-01T00:00:00Z&flavor=test-agent", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+}
+
+func TestGetEventsPagination(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.EventsListHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/events?from=2026-01-01T00:00:00Z&limit=1&offset=0", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["limit"] != float64(1) {
+		t.Errorf("expected limit=1, got %v", resp["limit"])
+	}
+	if resp["offset"] != float64(0) {
+		t.Errorf("expected offset=0, got %v", resp["offset"])
 	}
 }

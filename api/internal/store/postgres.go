@@ -32,6 +32,7 @@ type Querier interface {
 	SyncDirectives(ctx context.Context, fingerprints []string) ([]string, error)
 	RegisterDirectives(ctx context.Context, directives []CustomDirective) error
 	GetCustomDirectives(ctx context.Context, flavor string) ([]CustomDirective, error)
+	GetEvents(ctx context.Context, params EventsParams) (*EventsResponse, error)
 	QueryAnalytics(ctx context.Context, params AnalyticsParams) (*AnalyticsResponse, error)
 	Search(ctx context.Context, query string) (*SearchResults, error)
 }

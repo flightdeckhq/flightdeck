@@ -1006,3 +1006,20 @@ pattern, and what exactly happened. The EventDetailDrawer is independent from th
 SessionDrawer — both can be open simultaneously. The 500-event cap prevents memory
 growth in long-running dashboard sessions.
 
+---
+
+## D065 -- Event type filter bar
+
+**Decision:** Single-select pill filter above the time axis. Filters both swimlane
+circles and live feed rows simultaneously. Event types grouped into 5 semantic
+categories: LLM Calls (post_call, pre_call), Tools (tool_call), Policy
+(policy_warn, policy_block, policy_degrade), Directives (directive, directive_result),
+Session (session_start, session_end).
+
+**Reasoning:** A fleet with many agents produces hundreds of events per minute.
+Without filtering, the swimlane becomes a dense wall of circles and the feed
+scrolls too fast. Grouping by semantic category (not by raw event_type) matches
+how engineers think: "show me the LLM calls" not "show me post_call and pre_call".
+Opacity-based hiding in the swimlane preserves x position so layout does not shift
+when toggling filters. Inspired by agent-observe's filter bar.
+

@@ -7,6 +7,7 @@ import { SessionEventRow } from "./SessionEventRow";
 import { EventNode } from "./EventNode";
 import { BarView } from "./BarView";
 import { useSessionEvents } from "@/hooks/useSessionEvents";
+import { isEventVisible } from "@/lib/events";
 
 interface SwimLaneProps {
   flavor: string;
@@ -20,6 +21,7 @@ interface SwimLaneProps {
   start: Date;
   end: Date;
   width: number;
+  activeFilter?: string | null;
 }
 
 export function SwimLane({
@@ -34,6 +36,7 @@ export function SwimLane({
   start,
   end,
   width,
+  activeFilter,
 }: SwimLaneProps) {
   return (
     <div style={{ borderBottom: "1px solid var(--border-subtle)" }}>
@@ -75,6 +78,7 @@ export function SwimLane({
               scale={scale}
               onSessionClick={onSessionClick}
               flavor={flavor}
+              activeFilter={activeFilter}
             />
           ) : (
             <AggregatedBarView
@@ -110,6 +114,7 @@ export function SwimLane({
                 start={start}
                 end={end}
                 width={width - 240}
+                activeFilter={activeFilter}
               />
             ))}
           </div>
@@ -125,11 +130,13 @@ function AggregatedSwimLane({
   scale,
   onSessionClick,
   flavor,
+  activeFilter,
 }: {
   sessions: Session[];
   scale: ScaleTime<number, number>;
   onSessionClick: (sessionId: string, eventId?: string) => void;
   flavor: string;
+  activeFilter?: string | null;
 }) {
   return (
     <div className="relative h-full w-full">
@@ -140,6 +147,7 @@ function AggregatedSwimLane({
           scale={scale}
           onClick={() => onSessionClick(session.session_id)}
           flavor={flavor}
+          activeFilter={activeFilter}
         />
       ))}
     </div>
@@ -151,11 +159,13 @@ function AggregatedSessionEvents({
   scale,
   onClick,
   flavor,
+  activeFilter,
 }: {
   session: Session;
   scale: ScaleTime<number, number>;
   onClick: () => void;
   flavor: string;
+  activeFilter?: string | null;
 }) {
   const isActive = session.state === "active";
   const { events } = useSessionEvents(session.session_id, isActive);
@@ -191,6 +201,7 @@ function AggregatedSessionEvents({
           occurredAt={node.occurredAt}
           onClick={onClick}
           size={20}
+          isVisible={isEventVisible(node.eventType, activeFilter)}
         />
       ))}
     </>

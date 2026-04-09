@@ -5,6 +5,7 @@ import type { ViewMode } from "@/pages/Fleet";
 import { EventNode } from "./EventNode";
 import { BarView } from "./BarView";
 import { useSessionEvents } from "@/hooks/useSessionEvents";
+import { isEventVisible } from "@/lib/events";
 
 const stateBadgeColors: Record<string, { bg: string; color: string }> = {
   active: { bg: "rgba(34,197,94,0.15)", color: "var(--status-active)" },
@@ -22,9 +23,10 @@ interface SessionEventRowProps {
   start: Date;
   end: Date;
   width: number;
+  activeFilter?: string | null;
 }
 
-export function SessionEventRow({ session, scale, onClick, viewMode, start, end, width }: SessionEventRowProps) {
+export function SessionEventRow({ session, scale, onClick, viewMode, start, end, width, activeFilter }: SessionEventRowProps) {
   const isActive = session.state === "active";
   const { events, loading } = useSessionEvents(session.session_id, isActive);
   const badge = stateBadgeColors[session.state] ?? stateBadgeColors.closed;
@@ -98,6 +100,7 @@ export function SessionEventRow({ session, scale, onClick, viewMode, start, end,
               occurredAt={node.occurredAt}
               onClick={onClick}
               size={24}
+              isVisible={isEventVisible(node.eventType, activeFilter)}
             />
           ))}
         {!loading && viewMode === "bars" && (

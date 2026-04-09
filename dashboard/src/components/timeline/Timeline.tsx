@@ -22,6 +22,7 @@ interface TimelineProps {
   expandedFlavor: string | null;
   onExpandFlavor: (flavor: string) => void;
   onNodeClick: (sessionId: string, eventId?: string) => void;
+  activeFilter?: string | null;
 }
 
 export function Timeline({
@@ -32,6 +33,7 @@ export function Timeline({
   expandedFlavor,
   onExpandFlavor,
   onNodeClick,
+  activeFilter,
 }: TimelineProps) {
   // Live-updating "now" — smooth scrolling via requestAnimationFrame
   const [now, setNow] = useState(() => new Date());
@@ -91,6 +93,7 @@ export function Timeline({
               start={start}
               end={now}
               width={width + 240}
+              activeFilter={activeFilter}
             />
           </div>
         </div>

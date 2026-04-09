@@ -3,6 +3,7 @@ import { useFleet } from "@/hooks/useFleet";
 import { useFleetStore } from "@/store/fleet";
 import { FleetPanel } from "@/components/fleet/FleetPanel";
 import { DirectivesPanel } from "@/components/fleet/DirectivesPanel";
+import { EventFilterBar } from "@/components/fleet/EventFilterBar";
 import { LiveFeed } from "@/components/fleet/LiveFeed";
 import { EventDetailDrawer } from "@/components/fleet/EventDetailDrawer";
 import { Timeline } from "@/components/timeline/Timeline";
@@ -34,6 +35,7 @@ export function Fleet() {
   const [expandedFlavor, setExpandedFlavor] = useState<string | null>(null);
   const [selectedEvent, setSelectedEvent] = useState<AgentEvent | null>(null);
   const [initialEventId, setInitialEventId] = useState<string | null>(null);
+  const [activeFilter, setActiveFilter] = useState<string | null>(null);
 
   if (loading && flavors.length === 0) {
     return (
@@ -145,6 +147,12 @@ export function Fleet() {
           </div>
         </div>
 
+        {/* Event type filter bar */}
+        <EventFilterBar
+          activeFilter={activeFilter}
+          onFilterChange={setActiveFilter}
+        />
+
         {/* Timeline area */}
         <div className="flex-1 overflow-auto">
           <Timeline
@@ -158,6 +166,7 @@ export function Fleet() {
               selectSession(id);
               setInitialEventId(eventId ?? null);
             }}
+            activeFilter={activeFilter}
           />
         </div>
 
@@ -165,6 +174,7 @@ export function Fleet() {
         <LiveFeed
           events={feedEvents}
           onEventClick={setSelectedEvent}
+          activeFilter={activeFilter}
         />
       </div>
 

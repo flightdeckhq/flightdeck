@@ -1,6 +1,6 @@
 import { useRef, useEffect, useState, useCallback } from "react";
 import type { AgentEvent } from "@/lib/types";
-import { getBadge, getEventDetail, flavorColor } from "@/lib/events";
+import { getBadge, getEventDetail, flavorColor, isEventVisible } from "@/lib/events";
 
 const STORAGE_KEY = "flightdeck-feed-height";
 const MIN_HEIGHT = 120;
@@ -20,13 +20,17 @@ function getInitialHeight(): number {
 interface LiveFeedProps {
   events: AgentEvent[];
   onEventClick: (event: AgentEvent) => void;
+  activeFilter?: string | null;
 }
 
-export function LiveFeed({ events, onEventClick }: LiveFeedProps) {
+export function LiveFeed({ events, onEventClick, activeFilter }: LiveFeedProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [paused, setPaused] = useState(false);
   const [feedHeight, setFeedHeight] = useState(getInitialHeight);
   const capped = events.slice(-500);
+  const visibleEvents = activeFilter
+    ? capped.filter((e) => isEventVisible(e.event_type, activeFilter))
+    : capped;
 
   // Persist height
   useEffect(() => {
@@ -94,7 +98,7 @@ export function LiveFeed({ events, onEventClick }: LiveFeedProps) {
           borderBottom: "1px solid var(--border-subtle)",
         }}
       >
-        {!paused && capped.length > 0 && <div className="pulse-dot" />}
+        {!paused && visibleEvents.length > 0 && <div className="pulse-dot" />}
         <span
           className="font-mono text-[11px] font-semibold uppercase tracking-[0.08em]"
           style={{ color: "var(--text-muted)" }}
@@ -105,7 +109,7 @@ export function LiveFeed({ events, onEventClick }: LiveFeedProps) {
           className="font-mono text-[11px]"
           style={{ color: "var(--text-secondary)" }}
         >
-          {capped.length} events
+          {visibleEvents.length} events
         </span>
         <button
           className="ml-auto text-[11px]"
@@ -131,7 +135,7 @@ export function LiveFeed({ events, onEventClick }: LiveFeedProps) {
         onScroll={handleScroll}
         data-testid="feed-body"
       >
-        {capped.length === 0 && (
+        {visibleEvents.length === 0 && (
           <div
             className="flex items-center justify-center text-xs"
             style={{ color: "var(--text-muted)", padding: 16, height: "100%" }}
@@ -139,7 +143,7 @@ export function LiveFeed({ events, onEventClick }: LiveFeedProps) {
             Waiting for events...
           </div>
         )}
-        {capped.map((event, i) => (
+        {visibleEvents.map((event, i) => (
           <FeedRow
             key={event.id ?? i}
             event={event}

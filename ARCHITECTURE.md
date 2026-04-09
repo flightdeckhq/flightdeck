@@ -1575,6 +1575,7 @@ their agent appear in the live dashboard timeline in real time.
 `dashboard/src/components/fleet/FleetPanel.tsx` -- left sidebar (240px): section headers (uppercase tracked), fleet overview, session states (large counts), flavor list (active border), policy events
 `dashboard/src/components/fleet/SessionStateBar.tsx` -- session state counts: large numbers (20px/700) with status-colored labels
 `dashboard/src/hooks/useTheme.ts` -- theme toggle: dark/light class on html, localStorage persistence
+`dashboard/src/components/fleet/EventFilterBar.tsx` -- event type filter pills (All/LLM Calls/Tools/Policy/Directives/Session), single-select, filters swimlane + live feed simultaneously
 `dashboard/src/components/fleet/PolicyEventList.tsx`
 `dashboard/src/components/fleet/LiveFeed.tsx` -- live event feed (240px fixed height, 500 event cap, auto-scroll with pause, WebSocket-driven)
 `dashboard/src/components/fleet/EventDetailDrawer.tsx` -- single-event detail drawer (520px, independent from SessionDrawer, Details + Prompts tabs)

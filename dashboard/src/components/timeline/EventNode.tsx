@@ -45,6 +45,7 @@ export interface EventNodeProps {
   eventId?: string;
   onClick: (eventId?: string) => void;
   size?: number;
+  isVisible?: boolean;
 }
 
 export function EventNode({
@@ -60,6 +61,7 @@ export function EventNode({
   eventId,
   onClick,
   size = 24,
+  isVisible = true,
 }: EventNodeProps) {
   const config = eventTypeConfig[eventType] ?? defaultConfig;
   const color = config.cssVar;
@@ -94,8 +96,10 @@ export function EventNode({
         transform: hovered
           ? "translateY(-50%) scale(1.25)"
           : "translateY(-50%) scale(1)",
-        transition: "transform 150ms ease",
+        transition: "transform 150ms ease, opacity 150ms ease",
         zIndex: hovered ? 10 : 1,
+        opacity: isVisible ? 1 : 0,
+        pointerEvents: isVisible ? "auto" : "none",
       }}
       onClick={(e) => {
         e.stopPropagation();

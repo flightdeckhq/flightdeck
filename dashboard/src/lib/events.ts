@@ -84,6 +84,31 @@ export function getSummaryRows(event: AgentEvent): [string, string][] {
   }
 }
 
+/* ---- Event type filter groups ---- */
+
+export const EVENT_TYPE_GROUPS: Record<string, string[]> = {
+  "LLM Calls": ["post_call", "pre_call"],
+  "Tools": ["tool_call"],
+  "Policy": ["policy_warn", "policy_block", "policy_degrade"],
+  "Directives": ["directive", "directive_result"],
+  "Session": ["session_start", "session_end"],
+};
+
+export const EVENT_FILTER_PILLS = [
+  { label: "All", color: null },
+  { label: "LLM Calls", color: "var(--event-llm)" },
+  { label: "Tools", color: "var(--event-tool)" },
+  { label: "Policy", color: "var(--event-warn)" },
+  { label: "Directives", color: "var(--event-directive)" },
+  { label: "Session", color: "var(--event-lifecycle)" },
+] as const;
+
+export function isEventVisible(eventType: string, activeFilter: string | null | undefined): boolean {
+  if (!activeFilter) return true;
+  const group = EVENT_TYPE_GROUPS[activeFilter];
+  return group ? group.includes(eventType) : true;
+}
+
 /* ---- Flavor color hash ---- */
 
 const CHART_COLORS = [

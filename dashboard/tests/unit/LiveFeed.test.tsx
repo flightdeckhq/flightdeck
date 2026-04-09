@@ -92,4 +92,14 @@ describe("LiveFeed", () => {
     render(<LiveFeed events={mockEvents} onEventClick={() => {}} />);
     expect(screen.getByTestId("feed-resize-handle")).toBeInTheDocument();
   });
+
+  it("filter hides non-matching events", () => {
+    render(<LiveFeed events={mockEvents} onEventClick={() => {}} activeFilter="Tools" />);
+    // Only tool_call events should render
+    const rows = screen.getAllByTestId("feed-row");
+    expect(rows).toHaveLength(1);
+    expect(screen.getByText("TOOL")).toBeInTheDocument();
+    expect(screen.queryByText("START")).not.toBeInTheDocument();
+    expect(screen.queryByText("LLM CALL")).not.toBeInTheDocument();
+  });
 });

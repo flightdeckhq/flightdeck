@@ -17,10 +17,7 @@ export const PAUSE_QUEUE_MAX_EVENTS = 1000;
  *  into the live feed on initial mount. */
 export const FEED_INITIAL_LOAD = 100;
 
-/** Batching window for live feed state updates in milliseconds.
- *  Events arriving within this window are batched into a single setState. */
-export const FEED_BATCH_MS = 16;
-
+// FEED_BATCH_MS removed — React 18 automatic batching makes manual timers redundant.
 // SESSION_POLL_INTERVAL_MS and SESSION_INITIAL_POLL_MS removed.
 // Active sessions now update exclusively via WebSocket cache injection.
 // Polling was removed in favor of a single HTTP fetch on mount.

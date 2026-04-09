@@ -9,7 +9,7 @@ import { EventDetailDrawer } from "@/components/fleet/EventDetailDrawer";
 import { Timeline } from "@/components/timeline/Timeline";
 import { SessionDrawer } from "@/components/session/SessionDrawer";
 import type { AgentEvent, FeedEvent } from "@/lib/types";
-import { FEED_MAX_EVENTS, PAUSE_QUEUE_MAX_EVENTS, FEED_BATCH_MS } from "@/lib/constants";
+import { FEED_MAX_EVENTS, PAUSE_QUEUE_MAX_EVENTS } from "@/lib/constants";
 import { eventsCache } from "@/hooks/useSessionEvents";
 
 export type ViewMode = "swimlane" | "bars";
@@ -25,8 +25,9 @@ export function Fleet() {
   const [catchingUp, setCatchingUp] = useState(false);
   const pausedRef = useRef(false);
   const [sessionVersions, setSessionVersions] = useState<Record<string, number>>({});
-  const pendingFeedEvents = useRef<FeedEvent[]>([]);
-  const batchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Monotonic counter ensures every FeedEvent has a unique arrivedAt even
+  // if multiple events arrive in the same millisecond.
+  const arrivalCounter = useRef(0);
 
   const handleNewEvent = useCallback((event: AgentEvent) => {
     // Inject into eventsCache for swimlane (instant update via version bump)
@@ -37,24 +38,19 @@ export function Fleet() {
       setSessionVersions((prev) => ({ ...prev, [sid]: (prev[sid] ?? 0) + 1 }));
     }
 
-    // Add to live feed (batched for performance)
-    const fe: FeedEvent = { arrivedAt: Date.now(), event };
+    // Stamp arrivedAt NOW — monotonic counter avoids same-millisecond collisions
+    arrivalCounter.current += 1;
+    const fe: FeedEvent = { arrivedAt: Date.now() + arrivalCounter.current * 0.001, event };
+
+    // Add to live feed — direct setState, no batch timer.
+    // React 18 automatic batching handles multiple setState calls in the same tick.
     if (pausedRef.current) {
       setPauseQueue((prev) => {
         const next = [...prev, fe];
         return next.length > PAUSE_QUEUE_MAX_EVENTS ? next.slice(-PAUSE_QUEUE_MAX_EVENTS) : next;
       });
     } else {
-      pendingFeedEvents.current.push(fe);
-      if (!batchTimerRef.current) {
-        batchTimerRef.current = setTimeout(() => {
-          setFeedEvents((prev) =>
-            [...prev, ...pendingFeedEvents.current].slice(-FEED_MAX_EVENTS)
-          );
-          pendingFeedEvents.current = [];
-          batchTimerRef.current = null;
-        }, FEED_BATCH_MS);
-      }
+      setFeedEvents((prev) => [...prev, fe].slice(-FEED_MAX_EVENTS));
     }
   }, []);
 

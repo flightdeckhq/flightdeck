@@ -43,11 +43,11 @@ export function LiveFeed({ events, onEventClick, activeFilter, onFilterChange, i
     ? capped.filter((e) => isEventVisible(e.event_type, activeFilter))
     : capped;
 
-  // Sort newest first by occurred_at (not reverse — handles out-of-order events)
+  // Newest first — reverse the chronological array for display.
+  // feedEvents is always in arrival order (oldest at 0, newest at end).
+  // .reverse() is O(n) and correct because arrival order = chronological order.
   const displayEvents = useMemo(
-    () => [...visibleEvents].sort((a, b) =>
-      new Date(b.occurred_at).getTime() - new Date(a.occurred_at).getTime()
-    ),
+    () => [...visibleEvents].reverse(),
     [visibleEvents]
   );
 

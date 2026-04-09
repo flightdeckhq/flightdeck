@@ -129,6 +129,13 @@ def test_ui_demo() -> None:
     policy_id: str | None = None
     policy_created = False
     directive_sent = False
+    flow1_done = False
+    flow2_done = False
+    flow3_done = False
+    flow4_done = False
+
+    def now_iso() -> str:
+        return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
     try:
         # ---- PHASE 1: Start all 10 sessions ----
@@ -156,6 +163,28 @@ def test_ui_demo() -> None:
             elapsed = int(time.monotonic() - start)
             print(f"\n--- Tick {tick} ({elapsed}s) ---")
 
+            # ---- Flow 1: Custom directive at 60s ----
+            if elapsed >= 60 and not flow1_done:
+                flow1_done = True
+                target = research_sessions[1]["session_id"]
+                _safe_post(make_event(target, "research-agent", "directive_result",
+                    agent_type="production", host=research_sessions[1]["host"],
+                    directive_name="clear_cache", directive_action="custom",
+                    directive_status="success",
+                ))
+                print(f"  ** Flow 1: clear_cache directive result for {target[:8]}")
+
+            # ---- Flow 2: Degrade result at 75s ----
+            if elapsed >= 75 and not flow2_done:
+                flow2_done = True
+                target = research_sessions[2]["session_id"]
+                _safe_post(make_event(target, "research-agent", "directive_result",
+                    agent_type="production", host=research_sessions[2]["host"],
+                    directive_name="degrade", directive_action="degrade",
+                    directive_status="acknowledged",
+                ))
+                print(f"  ** Flow 2: degrade result for {target[:8]}")
+
             # ---- PHASE 3: Policy at 90 seconds ----
             if elapsed >= 90 and not policy_created:
                 policy = create_policy(
@@ -166,16 +195,35 @@ def test_ui_demo() -> None:
                 policy_created = True
                 print(f"  ** Created warn policy for research-agent at {elapsed}s (id={policy_id})")
 
-            # ---- PHASE 4: Kill switch at 135 seconds ----
+            # ---- Flow 3: Failed directive at 90s ----
+            if elapsed >= 90 and not flow3_done:
+                flow3_done = True
+                target = code_sessions[0]["session_id"]
+                _safe_post(make_event(target, "code-agent", "directive_result",
+                    agent_type="production", host=code_sessions[0]["host"],
+                    directive_name="unknown_action", directive_action="custom",
+                    directive_status="error",
+                ))
+                print(f"  ** Flow 3: failed directive result for {target[:8]}")
+
+            # ---- Flow 4 + PHASE 4: Shutdown with ack at 135 seconds ----
             if elapsed >= 135 and not directive_sent:
                 target_sid = research_sessions[0]["session_id"]
                 post_directive(
                     action="shutdown", session_id=target_sid,
                     reason="demo kill switch", grace_period_ms=5000,
                 )
+                time.sleep(2)
+                # Post acknowledgement result
+                _safe_post(make_event(target_sid, "research-agent", "directive_result",
+                    agent_type="production", host=research_sessions[0]["host"],
+                    directive_name="shutdown", directive_action="shutdown",
+                    directive_status="acknowledged",
+                ))
                 research_sessions[0]["active"] = False
                 directive_sent = True
-                print(f"  ** Sent shutdown directive to research-agent session {target_sid[:8]}")
+                flow4_done = True
+                print(f"  ** Flow 4: shutdown acknowledged and session ending for {target_sid[:8]}")
 
             for s in sessions:
                 if not s["active"]:

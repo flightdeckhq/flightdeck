@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect } from "react";
+import { useState, useCallback, useRef, useEffect, useMemo } from "react";
 import { useFleet } from "@/hooks/useFleet";
 import { useFleetStore } from "@/store/fleet";
 import { useHistoricalEvents } from "@/hooks/useHistoricalEvents";
@@ -123,6 +123,15 @@ export function Fleet() {
     );
   }
 
+  const directiveEvents = useMemo(() =>
+    feedEvents
+      .filter((fe) => fe.event.event_type === "directive" || fe.event.event_type === "directive_result")
+      .slice(-20)
+      .reverse()
+      .slice(0, 5),
+    [feedEvents]
+  );
+
   function handleFlavorClick(flavor: string) {
     setFlavorFilter(flavorFilter === flavor ? null : flavor);
   }
@@ -164,6 +173,7 @@ export function Fleet() {
         flavors={flavors}
         onFlavorClick={handleFlavorClick}
         activeFlavorFilter={flavorFilter}
+        directiveEvents={directiveEvents}
       >
         <DirectivesPanel
           flavorFilter={flavorFilter}

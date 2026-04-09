@@ -1,5 +1,6 @@
 import { useState } from "react";
-import type { FlavorSummary } from "@/lib/types";
+import type { FlavorSummary, FeedEvent } from "@/lib/types";
+import { truncateSessionId } from "@/lib/events";
 import {
   Dialog,
   DialogTrigger,
@@ -17,10 +18,11 @@ interface FleetPanelProps {
   flavors: FlavorSummary[];
   onFlavorClick?: (flavor: string) => void;
   activeFlavorFilter?: string | null;
+  directiveEvents?: FeedEvent[];
   children?: React.ReactNode;
 }
 
-export function FleetPanel({ flavors, onFlavorClick, activeFlavorFilter, children }: FleetPanelProps) {
+export function FleetPanel({ flavors, onFlavorClick, activeFlavorFilter, directiveEvents = [], children }: FleetPanelProps) {
   const totalSessions = flavors.reduce((s, f) => s + f.session_count, 0);
   const totalActive = flavors.reduce((s, f) => s + f.active_count, 0);
   const totalTokens = flavors.reduce((s, f) => s + f.tokens_used_total, 0);
@@ -78,6 +80,44 @@ export function FleetPanel({ flavors, onFlavorClick, activeFlavorFilter, childre
       </div>
       <div className="px-3 pb-3">
         <PolicyEventList />
+      </div>
+
+      {/* Directive Activity */}
+      <div className="px-3 pb-2 pt-2 text-xs font-semibold uppercase tracking-[0.06em]" style={{ color: "var(--text-secondary)" }}>
+        Directive Activity
+      </div>
+      <div className="px-3 pb-3">
+        {directiveEvents.length === 0 ? (
+          <div className="py-3 text-center text-xs" style={{ color: "var(--text-muted)" }}>
+            No directive activity yet.
+          </div>
+        ) : (
+          <div className="space-y-0.5">
+            {directiveEvents.map((fe, i) => {
+              const evt = fe.event;
+              const isResult = evt.event_type === "directive_result";
+              const dotColor = isResult
+                ? "var(--event-result)"
+                : "var(--event-directive)";
+              const label = evt.tool_name ?? evt.event_type;
+
+              return (
+                <div key={`${fe.arrivedAt}-${i}`} className="flex items-center gap-2" style={{ height: 28 }}>
+                  <span className="inline-block rounded-full" style={{ width: 6, height: 6, background: dotColor, flexShrink: 0 }} />
+                  <div className="flex-1 min-w-0">
+                    <div className="text-xs truncate" style={{ color: "var(--text)" }}>{label}</div>
+                    <div className="font-mono text-[11px] truncate" style={{ color: "var(--text-muted)" }}>
+                      {evt.flavor} · {truncateSessionId(evt.session_id)}
+                    </div>
+                  </div>
+                  <span className="font-mono text-[11px] shrink-0" style={{ color: "var(--text-muted)" }}>
+                    {new Date(fe.arrivedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {children}

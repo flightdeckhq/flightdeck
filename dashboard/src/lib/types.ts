@@ -11,7 +11,9 @@ export type EventType =
   | "tool_call"
   | "policy_warn"
   | "policy_block"
-  | "policy_degrade";
+  | "policy_degrade"
+  | "directive"
+  | "directive_result";
 
 /** Agent flavor (persistent identity). */
 export interface Agent {

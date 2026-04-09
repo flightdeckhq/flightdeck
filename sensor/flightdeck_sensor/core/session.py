@@ -501,6 +501,21 @@ class Session:
 
         elif directive.action == DirectiveAction.DEGRADE:
             degrade_to = directive.payload.get("degrade_to", "")
+            # Acknowledge degrade before acting
+            with self._lock:
+                current_model = self._model or ""
+            ack = self._build_payload(
+                EventType.DIRECTIVE_RESULT,
+                directive_name="degrade",
+                directive_action="degrade",
+                directive_status="acknowledged",
+            )
+            ack["result"] = {
+                "message": "model degraded",
+                "from_model": current_model,
+                "to_model": degrade_to,
+            }
+            self.event_queue.enqueue(ack)
             self.policy.set_degrade_model(degrade_to)
             _log.info("[flightdeck] model degraded to: %s", degrade_to)
 
@@ -522,6 +537,22 @@ class Session:
                 "[flightdeck] shutdown directive received: %s",
                 directive.reason,
             )
+            # Acknowledge shutdown before acting — flush synchronously
+            ack = self._build_payload(
+                EventType.DIRECTIVE_RESULT,
+                directive_name="shutdown",
+                directive_action="shutdown",
+                directive_status="acknowledged",
+            )
+            ack["result"] = {
+                "message": "agent shutting down",
+                "reason": directive.reason or "directive received",
+            }
+            self.event_queue.enqueue(ack)
+            try:
+                self.event_queue.flush()
+            except Exception:
+                pass
             with self._lock:
                 self._shutdown_requested = True
                 self._shutdown_reason = directive.reason
@@ -532,6 +563,22 @@ class Session:
                 self.config.agent_flavor,
                 directive.reason,
             )
+            # Acknowledge shutdown_flavor before acting — flush synchronously
+            ack = self._build_payload(
+                EventType.DIRECTIVE_RESULT,
+                directive_name="shutdown_flavor",
+                directive_action="shutdown_flavor",
+                directive_status="acknowledged",
+            )
+            ack["result"] = {
+                "message": "agent shutting down (fleet-wide)",
+                "reason": directive.reason or "fleet directive received",
+            }
+            self.event_queue.enqueue(ack)
+            try:
+                self.event_queue.flush()
+            except Exception:
+                pass
             with self._lock:
                 self._shutdown_requested = True
                 self._shutdown_reason = directive.reason

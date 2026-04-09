@@ -67,7 +67,7 @@ export function Fleet() {
   const [expandedFlavor, setExpandedFlavor] = useState<string | null>(null);
   const [selectedEvent, setSelectedEvent] = useState<AgentEvent | null>(null);
   const [initialEventId, setInitialEventId] = useState<string | null>(null);
-  const [directEventDetail, setDirectEventDetail] = useState<AgentEvent | null>(null);
+  // directEventDetail removed — swimlane click auto-expands event in SessionDrawer
   const [activeFilter, setActiveFilter] = useState<string | null>(null);
 
   if (loading && flavors.length === 0) {
@@ -301,15 +301,8 @@ export function Fleet() {
             expandedFlavor={expandedFlavor}
             onExpandFlavor={handleExpandFlavor}
             onNodeClick={(id, _eventId, event) => {
-              if (event) {
-                // Event circle clicked — open EventDetailDrawer (same as live feed)
-                setSelectedEvent(event);
-              } else {
-                // Session row clicked (no specific event) — open SessionDrawer
-                selectSession(id);
-                setInitialEventId(null);
-                setDirectEventDetail(null);
-              }
+              selectSession(id);
+              setInitialEventId(event?.id ?? null);
             }}
             activeFilter={activeFilter}
             paused={paused}
@@ -334,9 +327,8 @@ export function Fleet() {
 
       <SessionDrawer
         sessionId={selectedSessionId}
-        onClose={() => { selectSession(null); setInitialEventId(null); setDirectEventDetail(null); }}
+        onClose={() => { selectSession(null); setInitialEventId(null); }}
         initialEventId={initialEventId}
-        directEventDetail={directEventDetail}
         version={selectedSessionId ? (sessionVersions[selectedSessionId] ?? 0) : 0}
       />
 

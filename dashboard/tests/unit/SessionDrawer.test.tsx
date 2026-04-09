@@ -261,19 +261,10 @@ describe("SessionDrawer", () => {
     expect(screen.getAllByTestId("event-row").length).toBeGreaterThanOrEqual(1);
   });
 
-  it("direct event detail opens Mode 2 immediately", () => {
-    const directEvent = baseEvents[1]; // post_call event
-    render(<SessionDrawer sessionId="s1" onClose={() => {}} directEventDetail={directEvent} />);
-    // Should be in Mode 2 — back nav bar visible
-    expect(screen.getByTestId("back-to-session")).toBeInTheDocument();
-  });
-
-  it("back from direct detail returns to Mode 1", () => {
-    const directEvent = baseEvents[1];
-    render(<SessionDrawer sessionId="s1" onClose={() => {}} directEventDetail={directEvent} />);
-    fireEvent.click(screen.getByTestId("back-to-session"));
-    // Should return to session event list
-    expect(screen.getAllByTestId("event-row").length).toBeGreaterThanOrEqual(1);
+  it("initialEventId auto-expands the event row", () => {
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} initialEventId="e2" />);
+    // e2 (post_call) should be expanded — showing summary grid
+    expect(screen.getByText("Model")).toBeInTheDocument();
   });
 
   it("events shown newest first", () => {

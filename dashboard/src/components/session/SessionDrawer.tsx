@@ -69,11 +69,10 @@ interface SessionDrawerProps {
   sessionId: string | null;
   onClose: () => void;
   initialEventId?: string | null;
-  directEventDetail?: AgentEvent | null;
   version?: number;
 }
 
-export function SessionDrawer({ sessionId, onClose, initialEventId, directEventDetail, version = 0 }: SessionDrawerProps) {
+export function SessionDrawer({ sessionId, onClose, initialEventId, version = 0 }: SessionDrawerProps) {
   const { data, loading } = useSession(sessionId);
   const [killLoading, setKillLoading] = useState(false);
   const [killSent, setKillSent] = useState(false);
@@ -97,21 +96,16 @@ export function SessionDrawer({ sessionId, onClose, initialEventId, directEventD
   // Merge: use liveEvents if available and newer, otherwise data.events
   const drawerEvents = liveEvents.length > 0 ? liveEvents : (data?.events ?? []);
 
-  // Open directly in Mode 2 when directEventDetail is provided
+  // When initialEventId is set, auto-expand that event and highlight it
   useEffect(() => {
-    if (directEventDetail) {
-      setDetailEvent(directEventDetail);
-    }
-  }, [directEventDetail]);
-
-  // Scroll to and highlight the initial event when drawer opens in Mode 1
-  useEffect(() => {
-    if (initialEventId && data?.events && !directEventDetail) {
+    if (initialEventId) {
+      setExpandedEventId(initialEventId);
       setHighlightedEventId(initialEventId);
+      setDetailEvent(null); // ensure Mode 1
       const timer = setTimeout(() => setHighlightedEventId(null), 2000);
       return () => clearTimeout(timer);
     }
-  }, [initialEventId, data?.events, directEventDetail]);
+  }, [initialEventId]);
 
   const session = data?.session;
   const isTerminal = session?.state === "closed" || session?.state === "lost";

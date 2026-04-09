@@ -1,6 +1,7 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import type { CustomDirective, CustomDirectiveParameter } from "@/lib/types";
 import { fetchCustomDirectives, fetchFlavors, triggerCustomDirective } from "@/lib/api";
+import { useFleetStore } from "@/store/fleet";
 import { formatRelativeTime } from "@/lib/time";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -138,10 +139,29 @@ export function Directives() {
 }
 
 function DirectiveCard({ directive }: { directive: CustomDirective }) {
+  const { flavors } = useFleetStore();
   const [paramsOpen, setParamsOpen] = useState(false);
   const [triggerOpen, setTriggerOpen] = useState(false);
   const [targetMode, setTargetMode] = useState<"session" | "flavor">("flavor");
   const [sessionId, setSessionId] = useState("");
+
+  // Sessions of this directive's flavor for targeting indicators
+  const flavorSessions = useMemo(() => {
+    const result: { session_id: string; state: string }[] = [];
+    for (const f of flavors) {
+      if (f.flavor === directive.flavor) {
+        for (const s of f.sessions) {
+          if (s.state === "active" || s.state === "idle") {
+            result.push({ session_id: s.session_id, state: s.state });
+          }
+        }
+      }
+    }
+    return result;
+  }, [flavors, directive.flavor]);
+
+  const isRecentlyRegistered = directive.last_seen_at &&
+    Date.now() - new Date(directive.last_seen_at).getTime() < 10 * 60 * 1000;
   const [params, setParams] = useState<Record<string, unknown>>(() => {
     const defaults: Record<string, unknown> = {};
     for (const p of directive.parameters) {
@@ -287,6 +307,39 @@ function DirectiveCard({ directive }: { directive: CustomDirective }) {
                   />
                 )}
               </div>
+
+              {/* Targeting indicators */}
+              {targetMode === "flavor" && (
+                <div className="text-[11px]" style={{ color: "var(--text-muted)" }} data-testid="flavor-disclaimer">
+                  Sessions running older code may skip this directive.
+                </div>
+              )}
+              {targetMode === "session" && flavorSessions.length > 0 && (
+                <div className="space-y-0.5">
+                  {flavorSessions.map((s) => (
+                    <div key={s.session_id} className="flex items-center gap-1.5 text-[11px]">
+                      <span
+                        className="inline-block rounded-full"
+                        style={{
+                          width: 6,
+                          height: 6,
+                          background: isRecentlyRegistered
+                            ? "var(--status-active)"
+                            : "var(--status-idle)",
+                          flexShrink: 0,
+                        }}
+                        data-testid="session-status-dot"
+                      />
+                      <span className="font-mono" style={{ color: "var(--text-secondary)" }}>
+                        {s.session_id.slice(0, 8)}
+                      </span>
+                      <span style={{ color: isRecentlyRegistered ? "var(--status-active)" : "var(--status-idle)" }}>
+                        {isRecentlyRegistered ? "registered" : "may not respond"}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
 
               {directive.parameters.length > 0 && (
                 <div className="space-y-1.5">

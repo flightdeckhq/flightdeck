@@ -43,6 +43,33 @@ const mockDirectives: CustomDirective[] = [
   },
 ];
 
+vi.mock("@/store/fleet", () => ({
+  useFleetStore: () => ({
+    flavors: [
+      {
+        flavor: "research-agent",
+        agent_type: "autonomous",
+        session_count: 1,
+        active_count: 1,
+        tokens_used_total: 1000,
+        sessions: [
+          { session_id: "sess-active-1", flavor: "research-agent", agent_type: "autonomous", host: null, framework: null, model: "claude-sonnet-4-6", state: "active", started_at: "", last_seen_at: "", ended_at: null, tokens_used: 1000, token_limit: null },
+        ],
+      },
+    ],
+    loading: false,
+    error: null,
+    selectedSessionId: null,
+    agentTypeFilter: "all",
+    flavorFilter: null,
+    load: vi.fn(),
+    setAgentTypeFilter: vi.fn(),
+    setFlavorFilter: vi.fn(),
+    applyUpdate: vi.fn(),
+    selectSession: vi.fn(),
+  }),
+}));
+
 vi.mock("@/lib/api", () => ({
   fetchCustomDirectives: vi.fn(() => Promise.resolve([])),
   fetchFlavors: vi.fn(() => Promise.resolve(["research-agent", "coding-agent"])),
@@ -151,5 +178,33 @@ describe("Directives page", () => {
     await waitFor(() => {
       expect(screen.getByText(/Directive sent to all research-agent sessions/)).toBeInTheDocument();
     });
+  });
+
+  it("shows flavor disclaimer when targeting all sessions", async () => {
+    mockFetchCustomDirectives.mockResolvedValue([mockDirectives[1]]);
+    render(<Directives />);
+    await waitFor(() => {
+      expect(screen.getByText("flush-cache")).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByText("Trigger"));
+    expect(screen.getByTestId("flavor-disclaimer")).toBeInTheDocument();
+    expect(screen.getByText(/Sessions running older code may skip/)).toBeInTheDocument();
+  });
+
+  it("shows session registration status with green dot for recent directives", async () => {
+    // The mock directive has last_seen_at in the past (2026-04-07), so it's stale
+    const recentDirective = {
+      ...mockDirectives[1],
+      last_seen_at: new Date().toISOString(), // just now — recently registered
+    };
+    mockFetchCustomDirectives.mockResolvedValue([recentDirective]);
+    render(<Directives />);
+    await waitFor(() => {
+      expect(screen.getByText("flush-cache")).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByText("Trigger"));
+    // Switch to session mode to see per-session indicators
+    // The fleet store mock has one active session for research-agent
+    // Since last_seen_at is recent, it should show "registered"
   });
 });

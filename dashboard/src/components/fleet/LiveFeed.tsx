@@ -1,4 +1,4 @@
-import { useRef, useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo } from "react";
 import type { AgentEvent } from "@/lib/types";
 import { getBadge, getEventDetail, flavorColor, isEventVisible, truncateSessionId } from "@/lib/events";
 import {
@@ -9,9 +9,6 @@ import {
   FEED_DEFAULT_HEIGHT,
   FEED_HEIGHT_STORAGE_KEY,
 } from "@/lib/constants";
-
-const ROW_HEIGHT = 30;
-const OVERSCAN = 5;
 
 function getInitialHeight(): number {
   if (typeof window === "undefined") return FEED_DEFAULT_HEIGHT;
@@ -34,21 +31,18 @@ interface LiveFeedProps {
 }
 
 export function LiveFeed({ events, onEventClick, activeFilter, onFilterChange, isPaused, queueLength = 0, catchingUp }: LiveFeedProps) {
-  const scrollRef = useRef<HTMLDivElement>(null);
   const [feedHeight, setFeedHeight] = useState(getInitialHeight);
-  const [scrollTop, setScrollTop] = useState(0);
 
   const capped = events.slice(-FEED_MAX_EVENTS);
-  const visibleEvents = activeFilter
+  const filtered = activeFilter
     ? capped.filter((e) => isEventVisible(e.event_type, activeFilter))
     : capped;
 
-  // Newest first — reverse the chronological array for display.
-  // feedEvents is always in arrival order (oldest at 0, newest at end).
-  // .reverse() is O(n) and correct because arrival order = chronological order.
+  // Newest first: feedEvents is chronological (oldest=0, newest=end).
+  // Reverse so newest renders at top of the list.
   const displayEvents = useMemo(
-    () => [...visibleEvents].reverse(),
-    [visibleEvents]
+    () => [...filtered].reverse(),
+    [filtered]
   );
 
   useEffect(() => {
@@ -71,16 +65,6 @@ export function LiveFeed({ events, onEventClick, activeFilter, onFilterChange, i
     document.addEventListener("mouseup", onMouseUp);
   }
 
-  // Virtualization calculations
-  const scrollAreaHeight = feedHeight - 24; // subtract column header height
-  const totalHeight = displayEvents.length * ROW_HEIGHT;
-  const startIndex = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN);
-  const endIndex = Math.min(
-    displayEvents.length,
-    Math.floor((scrollTop + scrollAreaHeight) / ROW_HEIGHT) + OVERSCAN + 1
-  );
-  const visibleSlice = displayEvents.slice(startIndex, endIndex);
-
   return (
     <div className="shrink-0">
       {/* Resize handle */}
@@ -101,7 +85,7 @@ export function LiveFeed({ events, onEventClick, activeFilter, onFilterChange, i
           borderBottom: "1px solid var(--border-subtle)",
         }}
       >
-        {!isPaused && visibleEvents.length > 0 && <div className="pulse-dot" />}
+        {!isPaused && filtered.length > 0 && <div className="pulse-dot" />}
         <span
           className="font-mono text-[11px] font-semibold uppercase tracking-[0.08em]"
           style={{ color: "var(--text-muted)" }}
@@ -133,8 +117,8 @@ export function LiveFeed({ events, onEventClick, activeFilter, onFilterChange, i
             data-testid="feed-count"
           >
             {activeFilter
-              ? `${visibleEvents.length} of ${capped.length} events`
-              : `${visibleEvents.length} events`}
+              ? `${filtered.length} of ${capped.length} events`
+              : `${filtered.length} events`}
           </span>
         )}
         {activeFilter && (
@@ -171,12 +155,10 @@ export function LiveFeed({ events, onEventClick, activeFilter, onFilterChange, i
           <span className="w-[72px] shrink-0 text-right">Time ↑</span>
         </div>
 
-        {/* Scrollable virtualized rows */}
+        {/* Scrollable rows */}
         <div
-          ref={scrollRef}
           className="absolute left-0 right-0 overflow-y-auto"
           style={{ top: 24, bottom: 0 }}
-          onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
           data-testid="feed-body"
         >
           {displayEvents.length === 0 && (
@@ -187,19 +169,13 @@ export function LiveFeed({ events, onEventClick, activeFilter, onFilterChange, i
               Waiting for events...
             </div>
           )}
-          {displayEvents.length > 0 && (
-            <div style={{ height: totalHeight, position: "relative" }}>
-              <div style={{ position: "absolute", top: startIndex * ROW_HEIGHT, left: 0, right: 0 }}>
-                {visibleSlice.map((event) => (
-                  <FeedRow
-                    key={event.id}
-                    event={event}
-                    onClick={() => onEventClick(event)}
-                  />
-                ))}
-              </div>
-            </div>
-          )}
+          {displayEvents.map((event) => (
+            <FeedRow
+              key={event.id}
+              event={event}
+              onClick={() => onEventClick(event)}
+            />
+          ))}
         </div>
       </div>
     </div>
@@ -213,11 +189,8 @@ function FeedRow({ event, onClick }: { event: AgentEvent; onClick: () => void })
 
   return (
     <div
-      className="flex cursor-pointer items-center gap-2 px-3 transition-colors hover:bg-surface-hover"
-      style={{
-        height: ROW_HEIGHT,
-        borderBottom: "1px solid var(--border-subtle)",
-      }}
+      className="flex h-[30px] cursor-pointer items-center gap-2 px-3 transition-colors hover:bg-surface-hover"
+      style={{ borderBottom: "1px solid var(--border-subtle)" }}
       onClick={onClick}
       data-testid="feed-row"
     >

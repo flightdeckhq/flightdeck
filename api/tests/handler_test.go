@@ -429,7 +429,7 @@ func TestSessionsHandler_UnknownID_Returns404(t *testing.T) {
 }
 
 func TestStreamHandler_ReceivesBroadcast(t *testing.T) {
-	hub := ws.NewHub()
+	hub := ws.NewHub(&mockStore{})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go hub.Run(ctx)

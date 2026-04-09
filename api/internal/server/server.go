@@ -15,9 +15,11 @@ import (
 )
 
 const (
-	serverReadTimeout  = 10 * time.Second
-	serverWriteTimeout = 10 * time.Second
-	serverIdleTimeout  = 120 * time.Second
+	serverReadTimeout = 15 * time.Second
+	// WriteTimeout intentionally omitted -- WebSocket connections are
+	// long-lived and a global write timeout kills them after N seconds.
+	// The WebSocket write pump controls its own per-message deadline.
+	serverIdleTimeout = 120 * time.Second
 )
 
 // New creates the HTTP server with all routes registered.
@@ -45,9 +47,8 @@ func New(addr string, s store.Querier, hub *ws.Hub, corsOrigin string) *http.Ser
 	return &http.Server{
 		Addr:         addr,
 		Handler:      withCORS(withLogging(withRecovery(mux)), corsOrigin),
-		ReadTimeout:  serverReadTimeout,
-		WriteTimeout: serverWriteTimeout,
-		IdleTimeout:  serverIdleTimeout,
+		ReadTimeout: serverReadTimeout,
+		IdleTimeout: serverIdleTimeout,
 	}
 }
 

@@ -10,9 +10,9 @@ import { SessionDrawer } from "@/components/session/SessionDrawer";
 import type { AgentEvent } from "@/lib/types";
 
 export type ViewMode = "swimlane" | "bars";
-export type TimeRange = "5m" | "15m" | "30m" | "1h" | "6h";
+export type TimeRange = "1m" | "5m" | "15m" | "30m" | "1h" | "6h";
 
-const TIME_RANGES: TimeRange[] = ["5m", "15m", "30m", "1h", "6h"];
+const TIME_RANGES: TimeRange[] = ["1m", "5m", "15m", "30m", "1h", "6h"];
 
 export function Fleet() {
   const { flavors, loading, error } = useFleet();
@@ -24,7 +24,7 @@ export function Fleet() {
   } = useFleetStore();
 
   const [viewMode, setViewMode] = useState<ViewMode>("swimlane");
-  const [timeRange, setTimeRange] = useState<TimeRange>("5m");
+  const [timeRange, setTimeRange] = useState<TimeRange>("1m");
   const [expandedFlavor, setExpandedFlavor] = useState<string | null>(null);
   const [selectedEvent, setSelectedEvent] = useState<AgentEvent | null>(null);
 

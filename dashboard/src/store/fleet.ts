@@ -61,12 +61,29 @@ function applySessionUpdate(
   flavors: FlavorSummary[],
   session: Session
 ): FlavorSummary[] {
+  const flavorExists = flavors.some((f) => f.flavor === session.flavor);
+
+  if (!flavorExists) {
+    // New flavor not present at initial load — create a new entry
+    return [
+      ...flavors,
+      {
+        flavor: session.flavor,
+        agent_type: session.agent_type,
+        session_count: 1,
+        active_count: session.state === "active" ? 1 : 0,
+        tokens_used_total: session.tokens_used,
+        sessions: [session],
+      },
+    ];
+  }
+
   return flavors.map((f) => {
     if (f.flavor !== session.flavor) return f;
     const sessions = f.sessions.map((s) =>
       s.session_id === session.session_id ? session : s
     );
-    // If session is new, add it
+    // If session is new within existing flavor, add it
     if (!sessions.some((s) => s.session_id === session.session_id)) {
       sessions.unshift(session);
     }

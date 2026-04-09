@@ -4,11 +4,13 @@ package ws
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"sync"
 	"time"
 
+	"github.com/flightdeckhq/flightdeck/api/internal/store"
 	"github.com/gorilla/websocket"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -32,15 +34,17 @@ type Hub struct {
 	unregister chan *Client
 	broadcast  chan []byte
 	mu         sync.RWMutex
+	store      store.Querier
 }
 
-// NewHub creates a Hub.
-func NewHub() *Hub {
+// NewHub creates a Hub with access to the store for enriching NOTIFY payloads.
+func NewHub(s store.Querier) *Hub {
 	return &Hub{
 		clients:    make(map[*Client]struct{}),
 		register:   make(chan *Client),
 		unregister: make(chan *Client),
 		broadcast:  make(chan []byte, broadcastChannelBuffer),
+		store:      s,
 	}
 }
 
@@ -128,6 +132,18 @@ func WritePump(client *Client) {
 	}
 }
 
+// notifyPayload is the raw payload from Postgres NOTIFY.
+type notifyPayload struct {
+	SessionID string `json:"session_id"`
+	EventType string `json:"event_type"`
+}
+
+// fleetUpdate is the enriched payload broadcast to WebSocket clients.
+type fleetUpdate struct {
+	Type    string        `json:"type"`
+	Session *store.Session `json:"session"`
+}
+
 // listenOnce acquires a connection, issues LISTEN, and blocks reading
 // notifications until an error occurs or ctx is cancelled.
 func (h *Hub) listenOnce(ctx context.Context, pool *pgxpool.Pool) error {
@@ -149,7 +165,49 @@ func (h *Hub) listenOnce(ctx context.Context, pool *pgxpool.Pool) error {
 		if err != nil {
 			return fmt.Errorf("wait for notification: %w", err)
 		}
-		h.Broadcast([]byte(notification.Payload))
+
+		// Parse the thin NOTIFY payload to get session_id
+		var np notifyPayload
+		if jsonErr := json.Unmarshal([]byte(notification.Payload), &np); jsonErr != nil {
+			slog.Warn("invalid NOTIFY payload", "payload", notification.Payload, "err", jsonErr)
+			continue
+		}
+
+		if np.SessionID == "" {
+			slog.Warn("NOTIFY payload missing session_id", "payload", notification.Payload)
+			continue
+		}
+
+		// Fetch the full session from the store
+		session, fetchErr := h.store.GetSession(ctx, np.SessionID)
+		if fetchErr != nil {
+			slog.Warn("failed to fetch session for WS broadcast", "session_id", np.SessionID, "err", fetchErr)
+			continue
+		}
+		if session == nil {
+			slog.Debug("session not found for WS broadcast", "session_id", np.SessionID)
+			continue
+		}
+
+		// Determine update type from event_type
+		updateType := "session_update"
+		if np.EventType == "session_start" {
+			updateType = "session_start"
+		} else if np.EventType == "session_end" {
+			updateType = "session_end"
+		}
+
+		// Build and broadcast the enriched payload
+		msg, marshalErr := json.Marshal(fleetUpdate{
+			Type:    updateType,
+			Session: session,
+		})
+		if marshalErr != nil {
+			slog.Error("marshal fleet update", "err", marshalErr)
+			continue
+		}
+
+		h.Broadcast(msg)
 	}
 }
 

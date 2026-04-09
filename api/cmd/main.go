@@ -37,7 +37,7 @@ func main() {
 	defer pool.Close()
 
 	s := store.New(pool)
-	hub := ws.NewHub()
+	hub := ws.NewHub(s)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

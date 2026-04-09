@@ -6,6 +6,7 @@ import { TimeAxis } from "./TimeAxis";
 import { SwimLane } from "./SwimLane";
 
 const TIME_RANGE_MS: Record<TimeRange, number> = {
+  "1m": 60 * 1000,
   "5m": 5 * 60 * 1000,
   "15m": 15 * 60 * 1000,
   "30m": 30 * 60 * 1000,

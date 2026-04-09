@@ -304,17 +304,11 @@ export function Fleet() {
             timeRange={timeRange}
             expandedFlavor={expandedFlavor}
             onExpandFlavor={handleExpandFlavor}
-            onNodeClick={(id, eventId) => {
+            onNodeClick={(id, eventId, event) => {
               selectSession(id);
               setInitialEventId(eventId ?? null);
-              // Find the full event from cache for direct detail view
-              if (eventId) {
-                const cached = eventsCache.get(id) ?? [];
-                const evt = cached.find((e) => e.id === eventId);
-                if (evt) setDirectEventDetail(evt);
-              } else {
-                setDirectEventDetail(null);
-              }
+              // event is passed directly from SessionEventRow — no cache lookup needed
+              setDirectEventDetail(event ?? null);
             }}
             activeFilter={activeFilter}
             paused={paused}

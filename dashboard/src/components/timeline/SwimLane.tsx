@@ -1,6 +1,6 @@
 import { useMemo, memo } from "react";
 import type { ScaleTime } from "d3-scale";
-import type { Session } from "@/lib/types";
+import type { Session, AgentEvent } from "@/lib/types";
 import type { ViewMode } from "@/pages/Fleet";
 import { ChevronRight } from "lucide-react";
 import { SessionEventRow } from "./SessionEventRow";
@@ -14,7 +14,7 @@ interface SwimLaneProps {
   activeCount: number;
   sessions: Session[];
   scale: ScaleTime<number, number>;
-  onSessionClick: (sessionId: string, eventId?: string) => void;
+  onSessionClick: (sessionId: string, eventId?: string, event?: AgentEvent) => void;
   expanded: boolean;
   onToggleExpand: () => void;
   viewMode: ViewMode;
@@ -112,7 +112,7 @@ function SwimLaneComponent({
                 key={session.session_id}
                 session={session}
                 scale={scale}
-                onClick={(eventId) => onSessionClick(session.session_id, eventId)}
+                onClick={(eventId, event) => onSessionClick(session.session_id, eventId, event)}
                 viewMode={viewMode}
                 start={start}
                 end={end}
@@ -154,7 +154,7 @@ function AggregatedSwimLane({
 }: {
   sessions: Session[];
   scale: ScaleTime<number, number>;
-  onSessionClick: (sessionId: string, eventId?: string) => void;
+  onSessionClick: (sessionId: string, eventId?: string, event?: AgentEvent) => void;
   flavor: string;
   activeFilter?: string | null;
   sessionVersions?: Record<string, number>;

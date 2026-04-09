@@ -1,6 +1,6 @@
 import { useMemo, memo } from "react";
 import type { ScaleTime } from "d3-scale";
-import type { Session } from "@/lib/types";
+import type { Session, AgentEvent } from "@/lib/types";
 import type { ViewMode } from "@/pages/Fleet";
 import { EventNode } from "./EventNode";
 import { BarView } from "./BarView";
@@ -18,7 +18,7 @@ const stateBadgeColors: Record<string, { bg: string; color: string }> = {
 interface SessionEventRowProps {
   session: Session;
   scale: ScaleTime<number, number>;
-  onClick: (eventId?: string) => void;
+  onClick: (eventId?: string, event?: AgentEvent) => void;
   viewMode: ViewMode;
   start: Date;
   end: Date;
@@ -100,7 +100,10 @@ function SessionEventRowComponent({ session, scale, onClick, viewMode, start, en
               latencyMs={node.latencyMs}
               occurredAt={node.occurredAt}
               eventId={node.id}
-              onClick={onClick}
+              onClick={(eid) => {
+                const fullEvent = events.find((e) => e.id === eid);
+                onClick(eid, fullEvent);
+              }}
               size={24}
               isVisible={isEventVisible(node.eventType, activeFilter)}
             />

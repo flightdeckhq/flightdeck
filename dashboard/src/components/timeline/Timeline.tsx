@@ -21,7 +21,7 @@ interface TimelineProps {
   timeRange: TimeRange;
   expandedFlavor: string | null;
   onExpandFlavor: (flavor: string) => void;
-  onNodeClick: (sessionId: string, eventId?: string) => void;
+  onNodeClick: (sessionId: string, eventId?: string, event?: import("@/lib/types").AgentEvent) => void;
   activeFilter?: string | null;
   paused?: boolean;
   pausedAt?: Date | null;

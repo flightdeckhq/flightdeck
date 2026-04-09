@@ -154,8 +154,19 @@ describe("LiveFeed", () => {
   });
 
   it("both resume and return to live buttons visible in Fleet when paused", () => {
-    // This is tested at the Fleet level, but we verify LiveFeed shows queue info
     render(<LiveFeed events={mockEvents} onEventClick={() => {}} isPaused={true} queueLength={3} />);
     expect(screen.getByText(/3 events waiting/)).toBeInTheDocument();
+  });
+
+  it("cap indicator shows oldest dropped at 1000", () => {
+    render(<LiveFeed events={mockEvents} onEventClick={() => {}} isPaused={true} queueLength={1000} />);
+    expect(screen.getByTestId("feed-count").textContent).toContain("oldest dropped");
+  });
+
+  it("under cap shows amber waiting text", () => {
+    render(<LiveFeed events={mockEvents} onEventClick={() => {}} isPaused={true} queueLength={500} />);
+    const count = screen.getByTestId("feed-count");
+    expect(count.textContent).toContain("500 events waiting");
+    expect(count.textContent).not.toContain("oldest dropped");
   });
 });

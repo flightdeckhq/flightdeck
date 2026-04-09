@@ -115,10 +115,12 @@ export function LiveFeed({ events, onEventClick, activeFilter, onFilterChange, i
         ) : isPaused ? (
           <span
             className="font-mono text-[11px]"
-            style={{ color: "var(--status-idle)" }}
+            style={{ color: queueLength >= 1000 ? "var(--status-stale)" : "var(--status-idle)" }}
             data-testid="feed-count"
           >
-            Paused · {queueLength} events waiting
+            {queueLength >= 1000
+              ? `Paused · ${queueLength.toLocaleString()} events buffered (oldest dropped)`
+              : `Paused · ${queueLength} events waiting`}
           </span>
         ) : (
           <span

@@ -23,9 +23,14 @@ export function Fleet() {
   const [catchingUp, setCatchingUp] = useState(false);
   const pausedRef = useRef(false);
 
+  const QUEUE_CAP = 1000;
+
   const handleNewEvent = useCallback((event: AgentEvent) => {
     if (pausedRef.current) {
-      setPauseQueue((prev) => [...prev, event]);
+      setPauseQueue((prev) => {
+        const next = [...prev, event];
+        return next.length > QUEUE_CAP ? next.slice(-QUEUE_CAP) : next;
+      });
     } else {
       setFeedEvents((prev) => [...prev, event].slice(-500));
     }
@@ -226,21 +231,24 @@ export function Fleet() {
               <>
                 <div
                   className="h-1.5 w-1.5 rounded-full"
-                  style={{ background: "var(--status-idle)" }}
+                  style={{ background: pauseQueue.length >= QUEUE_CAP ? "var(--status-stale)" : "var(--status-idle)" }}
+                  data-testid="pause-dot"
                 />
                 <span
                   className="font-mono text-[11px]"
-                  style={{ color: "var(--status-idle)" }}
+                  style={{ color: pauseQueue.length >= QUEUE_CAP ? "var(--status-stale)" : "var(--status-idle)" }}
                 >
                   Paused at {pausedAt?.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
                 </span>
                 {pauseQueue.length > 0 && (
                   <span
                     className="font-mono text-[11px]"
-                    style={{ color: "var(--text-muted)" }}
+                    style={{ color: pauseQueue.length >= QUEUE_CAP ? "var(--status-stale)" : "var(--text-muted)" }}
                     data-testid="queue-count"
                   >
-                    · {pauseQueue.length} events waiting
+                    · {pauseQueue.length >= QUEUE_CAP
+                      ? `${pauseQueue.length.toLocaleString()} events buffered (oldest dropped)`
+                      : `${pauseQueue.length} events waiting`}
                   </span>
                 )}
               </>

@@ -22,9 +22,12 @@ interface LiveFeedProps {
   onEventClick: (event: AgentEvent) => void;
   activeFilter?: string | null;
   onFilterChange?: (filter: string | null) => void;
+  isPaused?: boolean;
+  queueLength?: number;
+  catchingUp?: boolean;
 }
 
-export function LiveFeed({ events, onEventClick, activeFilter, onFilterChange }: LiveFeedProps) {
+export function LiveFeed({ events, onEventClick, activeFilter, onFilterChange, isPaused, queueLength = 0, catchingUp }: LiveFeedProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [paused, setPaused] = useState(false);
   const [feedHeight, setFeedHeight] = useState(getInitialHeight);
@@ -94,22 +97,40 @@ export function LiveFeed({ events, onEventClick, activeFilter, onFilterChange }:
           borderBottom: "1px solid var(--border-subtle)",
         }}
       >
-        {!paused && visibleEvents.length > 0 && <div className="pulse-dot" />}
+        {!paused && !isPaused && visibleEvents.length > 0 && <div className="pulse-dot" />}
         <span
           className="font-mono text-[11px] font-semibold uppercase tracking-[0.08em]"
           style={{ color: "var(--text-muted)" }}
         >
           Live Feed
         </span>
-        <span
-          className="font-mono text-[11px]"
-          style={{ color: "var(--text-secondary)" }}
-          data-testid="feed-count"
-        >
-          {activeFilter
-            ? `${visibleEvents.length} of ${capped.length} events`
-            : `${visibleEvents.length} events`}
-        </span>
+        {catchingUp ? (
+          <span
+            className="font-mono text-[11px]"
+            style={{ color: "var(--status-idle)" }}
+            data-testid="feed-catching-up"
+          >
+            Catching up...
+          </span>
+        ) : isPaused ? (
+          <span
+            className="font-mono text-[11px]"
+            style={{ color: "var(--status-idle)" }}
+            data-testid="feed-count"
+          >
+            Paused · {queueLength} events waiting
+          </span>
+        ) : (
+          <span
+            className="font-mono text-[11px]"
+            style={{ color: "var(--text-secondary)" }}
+            data-testid="feed-count"
+          >
+            {activeFilter
+              ? `${visibleEvents.length} of ${capped.length} events`
+              : `${visibleEvents.length} events`}
+          </span>
+        )}
         {activeFilter && (
           <button
             className="font-mono text-[11px]"

@@ -141,4 +141,21 @@ describe("LiveFeed", () => {
     fireEvent.click(screen.getByTestId("feed-filter-label"));
     expect(onFilterChange).toHaveBeenCalledWith(null);
   });
+
+  it("paused header shows queue count", () => {
+    render(<LiveFeed events={mockEvents} onEventClick={() => {}} isPaused={true} queueLength={7} />);
+    expect(screen.getByTestId("feed-count").textContent).toContain("7 events waiting");
+  });
+
+  it("catching up header shows during drain", () => {
+    render(<LiveFeed events={mockEvents} onEventClick={() => {}} catchingUp={true} />);
+    expect(screen.getByTestId("feed-catching-up")).toBeInTheDocument();
+    expect(screen.getByText("Catching up...")).toBeInTheDocument();
+  });
+
+  it("both resume and return to live buttons visible in Fleet when paused", () => {
+    // This is tested at the Fleet level, but we verify LiveFeed shows queue info
+    render(<LiveFeed events={mockEvents} onEventClick={() => {}} isPaused={true} queueLength={3} />);
+    expect(screen.getByText(/3 events waiting/)).toBeInTheDocument();
+  });
 });

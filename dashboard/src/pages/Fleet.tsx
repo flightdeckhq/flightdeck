@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useRef } from "react";
 import { useFleet } from "@/hooks/useFleet";
 import { useFleetStore } from "@/store/fleet";
 import { FleetPanel } from "@/components/fleet/FleetPanel";
@@ -17,9 +17,18 @@ const TIME_RANGES: TimeRange[] = ["1m", "5m", "15m", "30m", "1h", "6h"];
 
 export function Fleet() {
   const [feedEvents, setFeedEvents] = useState<AgentEvent[]>([]);
+  const [pauseQueue, setPauseQueue] = useState<AgentEvent[]>([]);
+  const [paused, setPaused] = useState(false);
+  const [pausedAt, setPausedAt] = useState<Date | null>(null);
+  const [catchingUp, setCatchingUp] = useState(false);
+  const pausedRef = useRef(false);
 
   const handleNewEvent = useCallback((event: AgentEvent) => {
-    setFeedEvents((prev) => [...prev, event].slice(-500));
+    if (pausedRef.current) {
+      setPauseQueue((prev) => [...prev, event]);
+    } else {
+      setFeedEvents((prev) => [...prev, event].slice(-500));
+    }
   }, []);
 
   const { flavors, loading, error } = useFleet(handleNewEvent);
@@ -36,8 +45,6 @@ export function Fleet() {
   const [selectedEvent, setSelectedEvent] = useState<AgentEvent | null>(null);
   const [initialEventId, setInitialEventId] = useState<string | null>(null);
   const [activeFilter, setActiveFilter] = useState<string | null>(null);
-  const [paused, setPaused] = useState(false);
-  const [pausedAt, setPausedAt] = useState<Date | null>(null);
 
   if (loading && flavors.length === 0) {
     return (
@@ -65,13 +72,29 @@ export function Fleet() {
 
   function handlePause() {
     setPaused(true);
+    pausedRef.current = true;
     setPausedAt(new Date());
   }
 
-  function handleReturnToLive() {
+  function handleResume() {
+    // Drain queue into feedEvents in FIFO order
+    setCatchingUp(true);
+    setFeedEvents((prev) => [...prev, ...pauseQueue].slice(-500));
+    setPauseQueue([]);
     setPaused(false);
+    pausedRef.current = false;
+    setPausedAt(null);
+    setTimeout(() => setCatchingUp(false), 500);
+  }
+
+  function handleReturnToLive() {
+    // Discard queue entirely
+    setPauseQueue([]);
+    setPaused(false);
+    pausedRef.current = false;
     setPausedAt(null);
     setTimeRange("1m");
+    setCatchingUp(false);
   }
 
   return (
@@ -148,22 +171,38 @@ export function Fleet() {
             ))}
           </div>
 
-          {/* Pause / Return to live */}
+          {/* Pause controls */}
           {paused ? (
-            <button
-              className="rounded px-2.5 py-[3px] text-xs font-semibold transition-colors"
-              style={{
-                background: "var(--accent-glow)",
-                color: "var(--accent)",
-                border: "1px solid var(--accent-border)",
-                borderRadius: 4,
-                cursor: "pointer",
-              }}
-              onClick={handleReturnToLive}
-              data-testid="return-to-live-btn"
-            >
-              Return to live
-            </button>
+            <div className="flex gap-1.5">
+              <button
+                className="rounded px-2.5 py-[3px] text-xs transition-colors"
+                style={{
+                  background: "var(--bg-elevated)",
+                  color: "var(--text)",
+                  border: "1px solid var(--border-strong)",
+                  borderRadius: 4,
+                  cursor: "pointer",
+                }}
+                onClick={handleResume}
+                data-testid="resume-btn"
+              >
+                ▶ Resume
+              </button>
+              <button
+                className="rounded px-2.5 py-[3px] text-xs font-semibold transition-colors"
+                style={{
+                  background: "var(--accent-glow)",
+                  color: "var(--accent)",
+                  border: "1px solid var(--accent-border)",
+                  borderRadius: 4,
+                  cursor: "pointer",
+                }}
+                onClick={handleReturnToLive}
+                data-testid="return-to-live-btn"
+              >
+                ⚡ Return to live
+              </button>
+            </div>
           ) : (
             <button
               className="rounded px-2.5 py-[3px] text-xs transition-colors"
@@ -195,6 +234,15 @@ export function Fleet() {
                 >
                   Paused at {pausedAt?.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
                 </span>
+                {pauseQueue.length > 0 && (
+                  <span
+                    className="font-mono text-[11px]"
+                    style={{ color: "var(--text-muted)" }}
+                    data-testid="queue-count"
+                  >
+                    · {pauseQueue.length} events waiting
+                  </span>
+                )}
               </>
             ) : (
               <>
@@ -241,6 +289,9 @@ export function Fleet() {
           onEventClick={setSelectedEvent}
           activeFilter={activeFilter}
           onFilterChange={setActiveFilter}
+          isPaused={paused}
+          queueLength={pauseQueue.length}
+          catchingUp={catchingUp}
         />
       </div>
 

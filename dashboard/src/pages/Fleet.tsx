@@ -10,6 +10,7 @@ import { Timeline } from "@/components/timeline/Timeline";
 import { SessionDrawer } from "@/components/session/SessionDrawer";
 import type { AgentEvent } from "@/lib/types";
 import { FEED_MAX_EVENTS, PAUSE_QUEUE_MAX_EVENTS } from "@/lib/constants";
+import { eventsCache } from "@/hooks/useSessionEvents";
 
 export type ViewMode = "swimlane" | "bars";
 export type TimeRange = "1m" | "5m" | "15m" | "30m" | "1h" | "6h";
@@ -23,15 +24,36 @@ export function Fleet() {
   const [pausedAt, setPausedAt] = useState<Date | null>(null);
   const [catchingUp, setCatchingUp] = useState(false);
   const pausedRef = useRef(false);
+  const [sessionVersions, setSessionVersions] = useState<Record<string, number>>({});
+  const pendingFeedEvents = useRef<AgentEvent[]>([]);
+  const batchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const handleNewEvent = useCallback((event: AgentEvent) => {
+    // Inject into eventsCache for swimlane (instant update via version bump)
+    const sid = event.session_id;
+    const cached = eventsCache.get(sid) ?? [];
+    if (!cached.some((e) => e.id === event.id)) {
+      eventsCache.set(sid, [...cached, event]);
+      setSessionVersions((prev) => ({ ...prev, [sid]: (prev[sid] ?? 0) + 1 }));
+    }
+
+    // Add to live feed (batched for performance)
     if (pausedRef.current) {
       setPauseQueue((prev) => {
         const next = [...prev, event];
         return next.length > PAUSE_QUEUE_MAX_EVENTS ? next.slice(-PAUSE_QUEUE_MAX_EVENTS) : next;
       });
     } else {
-      setFeedEvents((prev) => [...prev, event].slice(-FEED_MAX_EVENTS));
+      pendingFeedEvents.current.push(event);
+      if (!batchTimerRef.current) {
+        batchTimerRef.current = setTimeout(() => {
+          setFeedEvents((prev) =>
+            [...prev, ...pendingFeedEvents.current].slice(-FEED_MAX_EVENTS)
+          );
+          pendingFeedEvents.current = [];
+          batchTimerRef.current = null;
+        }, 50);
+      }
     }
   }, []);
 
@@ -287,6 +309,7 @@ export function Fleet() {
             activeFilter={activeFilter}
             paused={paused}
             pausedAt={pausedAt}
+            sessionVersions={sessionVersions}
           />
         </div>
 

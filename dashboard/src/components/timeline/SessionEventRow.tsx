@@ -24,11 +24,12 @@ interface SessionEventRowProps {
   end: Date;
   width: number;
   activeFilter?: string | null;
+  version?: number;
 }
 
-export function SessionEventRow({ session, scale, onClick, viewMode, start, end, width, activeFilter }: SessionEventRowProps) {
+export function SessionEventRow({ session, scale, onClick, viewMode, start, end, width, activeFilter, version = 0 }: SessionEventRowProps) {
   const isActive = session.state === "active";
-  const { events, loading } = useSessionEvents(session.session_id, isActive);
+  const { events, loading } = useSessionEvents(session.session_id, isActive, version);
   const badge = stateBadgeColors[session.state] ?? stateBadgeColors.closed;
 
   const eventNodes = useMemo(

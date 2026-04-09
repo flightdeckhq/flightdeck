@@ -20,6 +20,10 @@ export const FEED_INITIAL_LOAD = 100;
 /** Active session polling interval in milliseconds. */
 export const SESSION_POLL_INTERVAL_MS = 15_000;
 
+/** Initial poll delay after mount in milliseconds.
+ *  Faster than normal poll to show events quickly on page load. */
+export const SESSION_INITIAL_POLL_MS = 2_000;
+
 /** Minimum live feed height in pixels (resize handle lower bound). */
 export const FEED_MIN_HEIGHT = 120;
 

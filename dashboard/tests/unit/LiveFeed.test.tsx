@@ -67,12 +67,13 @@ describe("LiveFeed", () => {
     expect(screen.getByText("▶ Resume")).toBeInTheDocument();
   });
 
-  it("caps at 500 events", () => {
+  it("caps at 500 events (virtualized -- checks total height)", () => {
     const manyEvents = Array.from({ length: 501 }, (_, i) =>
       makeEvent({ id: `e${i}` })
     );
     render(<LiveFeed events={manyEvents} onEventClick={() => {}} />);
-    expect(screen.getAllByTestId("feed-row")).toHaveLength(500);
+    // With virtualization, not all 500 are in DOM, but the feed count shows 500
+    expect(screen.getByTestId("feed-count").textContent).toContain("500 events");
   });
 
   it("row click calls onEventClick with correct event", () => {

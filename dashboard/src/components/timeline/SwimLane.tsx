@@ -22,6 +22,7 @@ interface SwimLaneProps {
   end: Date;
   width: number;
   activeFilter?: string | null;
+  sessionVersions?: Record<string, number>;
 }
 
 export function SwimLane({
@@ -37,6 +38,7 @@ export function SwimLane({
   end,
   width,
   activeFilter,
+  sessionVersions,
 }: SwimLaneProps) {
   return (
     <div style={{ borderBottom: "1px solid var(--border-subtle)" }}>
@@ -115,6 +117,7 @@ export function SwimLane({
                 end={end}
                 width={width - 240}
                 activeFilter={activeFilter}
+                version={sessionVersions?.[session.session_id] ?? 0}
               />
             ))}
           </div>

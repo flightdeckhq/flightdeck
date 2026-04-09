@@ -184,31 +184,77 @@ export function LiveFeed({ events, onEventClick, activeFilter, onFilterChange, i
           <span className="w-[72px] shrink-0 text-right">Time</span>
         </div>
 
-        {/* Scrollable rows */}
-        <div
-          ref={scrollRef}
-          className="absolute left-0 right-0 overflow-y-auto"
-          style={{ top: 24, bottom: 0 }}
+        {/* Scrollable rows (virtualized) */}
+        <VirtualizedFeedBody
+          scrollRef={scrollRef}
+          visibleEvents={visibleEvents}
+          onEventClick={onEventClick}
           onScroll={handleScroll}
-          data-testid="feed-body"
-        >
-          {visibleEvents.length === 0 && (
-            <div
-              className="flex items-center justify-center text-xs"
-              style={{ color: "var(--text-muted)", padding: 16, height: "100%" }}
-            >
-              Waiting for events...
-            </div>
-          )}
-          {visibleEvents.map((event, i) => (
-            <FeedRow
-              key={event.id ?? i}
-              event={event}
-              onClick={() => onEventClick(event)}
-            />
-          ))}
-        </div>
+        />
       </div>
+    </div>
+  );
+}
+
+const ROW_HEIGHT = 30;
+const VISIBLE_BUFFER = 10;
+
+function VirtualizedFeedBody({
+  scrollRef,
+  visibleEvents,
+  onEventClick,
+  onScroll,
+}: {
+  scrollRef: React.RefObject<HTMLDivElement>;
+  visibleEvents: AgentEvent[];
+  onEventClick: (event: AgentEvent) => void;
+  onScroll: () => void;
+}) {
+  const [scrollTop, setScrollTop] = useState(0);
+
+  const handleScroll = useCallback(() => {
+    if (scrollRef.current) {
+      setScrollTop(scrollRef.current.scrollTop);
+    }
+    onScroll();
+  }, [scrollRef, onScroll]);
+
+  const totalHeight = visibleEvents.length * ROW_HEIGHT;
+  const containerHeight = scrollRef.current?.clientHeight ?? 300;
+  const visibleCount = Math.ceil(containerHeight / ROW_HEIGHT);
+  const startIndex = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - VISIBLE_BUFFER);
+  const endIndex = Math.min(visibleEvents.length, startIndex + visibleCount + VISIBLE_BUFFER * 2);
+  const visibleSlice = visibleEvents.slice(startIndex, endIndex);
+
+  return (
+    <div
+      ref={scrollRef}
+      className="absolute left-0 right-0 overflow-y-auto"
+      style={{ top: 24, bottom: 0 }}
+      onScroll={handleScroll}
+      data-testid="feed-body"
+    >
+      {visibleEvents.length === 0 && (
+        <div
+          className="flex items-center justify-center text-xs"
+          style={{ color: "var(--text-muted)", padding: 16, height: "100%" }}
+        >
+          Waiting for events...
+        </div>
+      )}
+      {visibleEvents.length > 0 && (
+        <div style={{ height: totalHeight, position: "relative" }}>
+          <div style={{ position: "absolute", top: startIndex * ROW_HEIGHT, width: "100%" }}>
+            {visibleSlice.map((event, i) => (
+              <FeedRow
+                key={event.id ?? startIndex + i}
+                event={event}
+                onClick={() => onEventClick(event)}
+              />
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

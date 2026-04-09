@@ -25,6 +25,7 @@ interface TimelineProps {
   activeFilter?: string | null;
   paused?: boolean;
   pausedAt?: Date | null;
+  sessionVersions?: Record<string, number>;
 }
 
 export function Timeline({
@@ -38,14 +39,19 @@ export function Timeline({
   activeFilter,
   paused,
   pausedAt,
+  sessionVersions,
 }: TimelineProps) {
-  // Live-updating "now" — smooth scrolling via rAF, stops when paused
+  // Live-updating "now" — throttled to 10fps (100ms) for performance
   const [now, setNow] = useState(() => new Date());
   useEffect(() => {
     if (paused) return;
     let rafId: number;
-    const tick = () => {
-      setNow(new Date());
+    let lastUpdate = 0;
+    const tick = (timestamp: number) => {
+      if (timestamp - lastUpdate >= 100) {
+        setNow(new Date());
+        lastUpdate = timestamp;
+      }
       rafId = requestAnimationFrame(tick);
     };
     rafId = requestAnimationFrame(tick);
@@ -100,6 +106,7 @@ export function Timeline({
               end={scaleEnd}
               width={width + 240}
               activeFilter={activeFilter}
+              sessionVersions={sessionVersions}
             />
           </div>
         </div>

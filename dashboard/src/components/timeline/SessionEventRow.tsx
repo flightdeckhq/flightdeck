@@ -109,7 +109,7 @@ function SessionEventRowComponent({ session, scale, onClick, viewMode, start, en
             />
           ))}
         {!loading && viewMode === "bars" && (
-          <BarView events={events} start={start} end={end} width={Math.max(width, 100)} />
+          <BarView events={events} start={start} end={end} width={Math.max(width, 100)} activeFilter={activeFilter} />
         )}
       </div>
     </div>

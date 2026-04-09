@@ -89,6 +89,7 @@ function SwimLaneComponent({
               start={start}
               end={end}
               width={width - 240}
+              activeFilter={activeFilter}
             />
           )}
         </div>
@@ -237,11 +238,13 @@ function AggregatedBarView({
   start,
   end,
   width,
+  activeFilter,
 }: {
   sessions: Session[];
   start: Date;
   end: Date;
   width: number;
+  activeFilter?: string | null;
 }) {
   // Collect all events from all sessions using hooks
   const eventArrays = sessions.map((s) => {
@@ -252,5 +255,5 @@ function AggregatedBarView({
 
   const allEvents = useMemo(() => eventArrays.flat(), [eventArrays]);
 
-  return <BarView events={allEvents} start={start} end={end} width={Math.max(width, 100)} />;
+  return <BarView events={allEvents} start={start} end={end} width={Math.max(width, 100)} activeFilter={activeFilter} />;
 }

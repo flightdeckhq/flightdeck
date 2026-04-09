@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import type { AgentEvent } from "@/lib/types";
+import { isEventVisible } from "@/lib/events";
 
 const BUCKET_COUNT = 24;
 const MAX_HEIGHT = 36;
@@ -16,9 +17,10 @@ interface BarViewProps {
   start: Date;
   end: Date;
   width: number;
+  activeFilter?: string | null;
 }
 
-export function BarView({ events, start, end, width }: BarViewProps) {
+export function BarView({ events, start, end, width, activeFilter }: BarViewProps) {
   const [hoveredBucket, setHoveredBucket] = useState<number | null>(null);
 
   const buckets = useMemo(() => {
@@ -30,6 +32,9 @@ export function BarView({ events, start, end, width }: BarViewProps) {
     }
 
     for (const evt of events) {
+      // Skip events that don't match the active filter
+      if (!isEventVisible(evt.event_type, activeFilter)) continue;
+
       const t = new Date(evt.occurred_at).getTime();
       const idx = Math.min(
         Math.floor((t - start.getTime()) / bucketMs),
@@ -44,7 +49,7 @@ export function BarView({ events, start, end, width }: BarViewProps) {
       }
     }
     return result;
-  }, [events, start, end]);
+  }, [events, start, end, activeFilter]);
 
   const maxCount = Math.max(1, ...buckets.map((b) => b.llm + b.tool + b.policy + b.directive));
   const barWidth = Math.max(1, (width / BUCKET_COUNT) - 2);

@@ -85,6 +85,7 @@ export interface SessionDetail {
 export interface FleetUpdate {
   type: "session_update" | "session_start" | "session_end";
   session: Session;
+  last_event?: AgentEvent;
 }
 
 /** Token policy as returned by GET /v1/policies. */

@@ -42,7 +42,8 @@ export interface EventNodeProps {
   tokensTotal?: number | null;
   latencyMs?: number | null;
   occurredAt: string;
-  onClick: () => void;
+  eventId?: string;
+  onClick: (eventId?: string) => void;
   size?: number;
 }
 
@@ -56,6 +57,7 @@ export function EventNode({
   tokensTotal,
   latencyMs,
   occurredAt,
+  eventId,
   onClick,
   size = 24,
 }: EventNodeProps) {
@@ -97,7 +99,7 @@ export function EventNode({
       }}
       onClick={(e) => {
         e.stopPropagation();
-        onClick();
+        onClick(eventId);
       }}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}

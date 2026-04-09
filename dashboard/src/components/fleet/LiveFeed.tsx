@@ -2,6 +2,21 @@ import { useRef, useEffect, useState, useCallback } from "react";
 import type { AgentEvent } from "@/lib/types";
 import { getBadge, getEventDetail, flavorColor } from "@/lib/events";
 
+const STORAGE_KEY = "flightdeck-feed-height";
+const MIN_HEIGHT = 120;
+const MAX_HEIGHT = 600;
+const DEFAULT_HEIGHT = 240;
+
+function getInitialHeight(): number {
+  if (typeof window === "undefined") return DEFAULT_HEIGHT;
+  const stored = localStorage.getItem(STORAGE_KEY);
+  if (stored) {
+    const n = parseInt(stored, 10);
+    if (!isNaN(n) && n >= MIN_HEIGHT && n <= MAX_HEIGHT) return n;
+  }
+  return DEFAULT_HEIGHT;
+}
+
 interface LiveFeedProps {
   events: AgentEvent[];
   onEventClick: (event: AgentEvent) => void;
@@ -10,7 +25,13 @@ interface LiveFeedProps {
 export function LiveFeed({ events, onEventClick }: LiveFeedProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [paused, setPaused] = useState(false);
+  const [feedHeight, setFeedHeight] = useState(getInitialHeight);
   const capped = events.slice(-500);
+
+  // Persist height
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEY, String(feedHeight));
+  }, [feedHeight]);
 
   // Auto-scroll to bottom when new events arrive
   useEffect(() => {
@@ -34,18 +55,46 @@ export function LiveFeed({ events, onEventClick }: LiveFeedProps) {
     }
   }
 
+  function handleResizeStart(e: React.MouseEvent) {
+    e.preventDefault();
+    const startY = e.clientY;
+    const startHeight = feedHeight;
+
+    const onMouseMove = (ev: MouseEvent) => {
+      const delta = startY - ev.clientY;
+      setFeedHeight(Math.min(MAX_HEIGHT, Math.max(MIN_HEIGHT, startHeight + delta)));
+    };
+
+    const onMouseUp = () => {
+      document.removeEventListener("mousemove", onMouseMove);
+      document.removeEventListener("mouseup", onMouseUp);
+    };
+
+    document.addEventListener("mousemove", onMouseMove);
+    document.addEventListener("mouseup", onMouseUp);
+  }
+
   return (
-    <div>
+    <div className="shrink-0">
+      {/* Resize handle */}
+      <div
+        className="h-1 w-full cursor-ns-resize transition-colors"
+        style={{ background: "var(--border)" }}
+        onMouseDown={handleResizeStart}
+        onMouseEnter={(e) => { (e.target as HTMLElement).style.background = "var(--accent)"; }}
+        onMouseLeave={(e) => { (e.target as HTMLElement).style.background = "var(--border)"; }}
+        data-testid="feed-resize-handle"
+      />
+
       {/* Feed header — 36px */}
       <div
         className="flex h-9 items-center gap-2 px-3"
         style={{
           background: "var(--surface)",
-          borderTop: "1px solid var(--border)",
           borderBottom: "1px solid var(--border-subtle)",
         }}
       >
-        {!paused && <div className="pulse-dot" />}
+        {!paused && capped.length > 0 && <div className="pulse-dot" />}
         <span
           className="font-mono text-[11px] font-semibold uppercase tracking-[0.08em]"
           style={{ color: "var(--text-muted)" }}
@@ -74,14 +123,22 @@ export function LiveFeed({ events, onEventClick }: LiveFeedProps) {
         </button>
       </div>
 
-      {/* Feed body — 240px fixed */}
+      {/* Feed body */}
       <div
         ref={scrollRef}
         className="overflow-y-auto"
-        style={{ height: 240, background: "var(--bg)" }}
+        style={{ height: feedHeight, background: "var(--bg)" }}
         onScroll={handleScroll}
         data-testid="feed-body"
       >
+        {capped.length === 0 && (
+          <div
+            className="flex items-center justify-center text-xs"
+            style={{ color: "var(--text-muted)", padding: 16, height: "100%" }}
+          >
+            Waiting for events...
+          </div>
+        )}
         {capped.map((event, i) => (
           <FeedRow
             key={event.id ?? i}
@@ -109,7 +166,6 @@ function FeedRow({ event, onClick }: { event: AgentEvent; onClick: () => void })
       onClick={onClick}
       data-testid="feed-row"
     >
-      {/* Flavor */}
       <span
         className="w-[100px] shrink-0 truncate font-mono text-xs"
         style={{ color }}
@@ -117,7 +173,6 @@ function FeedRow({ event, onClick }: { event: AgentEvent; onClick: () => void })
         {event.flavor}
       </span>
 
-      {/* Badge */}
       <span
         className="flex h-[18px] w-[88px] shrink-0 items-center justify-center rounded font-mono text-[10px] font-semibold uppercase"
         style={{
@@ -131,7 +186,6 @@ function FeedRow({ event, onClick }: { event: AgentEvent; onClick: () => void })
         {badge.label}
       </span>
 
-      {/* Detail */}
       <span
         className="flex-1 truncate text-xs"
         style={{ color: "var(--text)" }}
@@ -139,7 +193,6 @@ function FeedRow({ event, onClick }: { event: AgentEvent; onClick: () => void })
         {detail}
       </span>
 
-      {/* Timestamp */}
       <span
         className="w-[72px] shrink-0 text-right font-mono text-[11px]"
         style={{ color: "var(--text-muted)" }}

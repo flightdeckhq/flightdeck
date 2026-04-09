@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import { useFleet } from "@/hooks/useFleet";
 import { useFleetStore } from "@/store/fleet";
 import { FleetPanel } from "@/components/fleet/FleetPanel";
@@ -15,7 +15,13 @@ export type TimeRange = "1m" | "5m" | "15m" | "30m" | "1h" | "6h";
 const TIME_RANGES: TimeRange[] = ["1m", "5m", "15m", "30m", "1h", "6h"];
 
 export function Fleet() {
-  const { flavors, loading, error } = useFleet();
+  const [feedEvents, setFeedEvents] = useState<AgentEvent[]>([]);
+
+  const handleNewEvent = useCallback((event: AgentEvent) => {
+    setFeedEvents((prev) => [...prev, event].slice(-500));
+  }, []);
+
+  const { flavors, loading, error } = useFleet(handleNewEvent);
   const {
     selectedSessionId,
     selectSession,
@@ -27,11 +33,7 @@ export function Fleet() {
   const [timeRange, setTimeRange] = useState<TimeRange>("1m");
   const [expandedFlavor, setExpandedFlavor] = useState<string | null>(null);
   const [selectedEvent, setSelectedEvent] = useState<AgentEvent | null>(null);
-
-  // Collect events from all sessions for the live feed (last 100 initial)
-  // Feed starts empty — will be populated by WebSocket events in a future iteration.
-  // The fleet store's session data doesn't carry inline events.
-  const [feedEvents] = useState<AgentEvent[]>([]);
+  const [initialEventId, setInitialEventId] = useState<string | null>(null);
 
   if (loading && flavors.length === 0) {
     return (
@@ -152,7 +154,10 @@ export function Fleet() {
             timeRange={timeRange}
             expandedFlavor={expandedFlavor}
             onExpandFlavor={handleExpandFlavor}
-            onNodeClick={(id) => selectSession(id)}
+            onNodeClick={(id, eventId) => {
+              selectSession(id);
+              setInitialEventId(eventId ?? null);
+            }}
           />
         </div>
 
@@ -165,7 +170,8 @@ export function Fleet() {
 
       <SessionDrawer
         sessionId={selectedSessionId}
-        onClose={() => selectSession(null)}
+        onClose={() => { selectSession(null); setInitialEventId(null); }}
+        initialEventId={initialEventId}
       />
 
       <EventDetailDrawer

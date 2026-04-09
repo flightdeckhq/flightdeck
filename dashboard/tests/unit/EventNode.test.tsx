@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { render } from "@testing-library/react";
+import { render, fireEvent } from "@testing-library/react";
 import { EventNode } from "@/components/timeline/EventNode";
 
 describe("EventNode", () => {
@@ -53,5 +53,13 @@ describe("EventNode", () => {
     const node = container.querySelector("[style*='background']") as HTMLElement;
     expect(node.style.width).toBe("20px");
     expect(node.style.height).toBe("20px");
+  });
+
+  it("click passes eventId to onClick handler", () => {
+    const onClick = vi.fn();
+    const { container } = renderNode({ onClick, eventId: "evt-42" });
+    const node = container.querySelector("[style*='background']") as HTMLElement;
+    fireEvent.click(node);
+    expect(onClick).toHaveBeenCalledWith("evt-42");
   });
 });

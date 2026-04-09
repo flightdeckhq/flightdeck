@@ -232,4 +232,13 @@ describe("SessionDrawer", () => {
     const drawer = container.querySelector("[class*='w-\\[520px\\]']");
     expect(drawer).toBeInTheDocument();
   });
+
+  it("highlights initial event when initialEventId is set", () => {
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} initialEventId="e2" />);
+    // The highlighted event row should have accent-glow background
+    const rows = screen.getAllByTestId("event-row");
+    // Second row (post_call, id=e2) should have highlight style
+    const postCallRow = rows[1];
+    expect(postCallRow.style.background).toBe("var(--accent-glow)");
+  });
 });

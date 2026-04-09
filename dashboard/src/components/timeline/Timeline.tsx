@@ -21,7 +21,7 @@ interface TimelineProps {
   timeRange: TimeRange;
   expandedFlavor: string | null;
   onExpandFlavor: (flavor: string) => void;
-  onNodeClick: (sessionId: string) => void;
+  onNodeClick: (sessionId: string, eventId?: string) => void;
 }
 
 export function Timeline({
@@ -33,11 +33,16 @@ export function Timeline({
   onExpandFlavor,
   onNodeClick,
 }: TimelineProps) {
-  // Live-updating "now" — refreshes every 10 seconds
+  // Live-updating "now" — smooth scrolling via requestAnimationFrame
   const [now, setNow] = useState(() => new Date());
   useEffect(() => {
-    const interval = setInterval(() => setNow(new Date()), 10000);
-    return () => clearInterval(interval);
+    let rafId: number;
+    const tick = () => {
+      setNow(new Date());
+      rafId = requestAnimationFrame(tick);
+    };
+    rafId = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafId);
   }, []);
 
   const filteredFlavors = useMemo(() => {
@@ -67,7 +72,7 @@ export function Timeline({
     <div className="flex flex-col">
       {/* Shared time axis */}
       <div className="pl-[240px]">
-        <TimeAxis start={start} end={now} width={width} />
+        <TimeAxis start={start} end={now} width={width} timeRange={timeRange} />
       </div>
 
       {/* Flavor rows */}

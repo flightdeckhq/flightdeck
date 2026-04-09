@@ -140,8 +140,9 @@ type notifyPayload struct {
 
 // fleetUpdate is the enriched payload broadcast to WebSocket clients.
 type fleetUpdate struct {
-	Type    string        `json:"type"`
-	Session *store.Session `json:"session"`
+	Type      string       `json:"type"`
+	Session   *store.Session `json:"session"`
+	LastEvent *store.Event   `json:"last_event,omitempty"`
 }
 
 // listenOnce acquires a connection, issues LISTEN, and blocks reading
@@ -189,6 +190,13 @@ func (h *Hub) listenOnce(ctx context.Context, pool *pgxpool.Pool) error {
 			continue
 		}
 
+		// Fetch the latest event for the live feed
+		var lastEvent *store.Event
+		events, evtErr := h.store.GetSessionEvents(ctx, np.SessionID)
+		if evtErr == nil && len(events) > 0 {
+			lastEvent = &events[len(events)-1]
+		}
+
 		// Determine update type from event_type
 		var updateType string
 		switch np.EventType {
@@ -202,8 +210,9 @@ func (h *Hub) listenOnce(ctx context.Context, pool *pgxpool.Pool) error {
 
 		// Build and broadcast the enriched payload
 		msg, marshalErr := json.Marshal(fleetUpdate{
-			Type:    updateType,
-			Session: session,
+			Type:      updateType,
+			Session:   session,
+			LastEvent: lastEvent,
 		})
 		if marshalErr != nil {
 			slog.Error("marshal fleet update", "err", marshalErr)

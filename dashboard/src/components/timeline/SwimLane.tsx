@@ -13,7 +13,7 @@ interface SwimLaneProps {
   activeCount: number;
   sessions: Session[];
   scale: ScaleTime<number, number>;
-  onSessionClick: (sessionId: string) => void;
+  onSessionClick: (sessionId: string, eventId?: string) => void;
   expanded: boolean;
   onToggleExpand: () => void;
   viewMode: ViewMode;
@@ -128,7 +128,7 @@ function AggregatedSwimLane({
 }: {
   sessions: Session[];
   scale: ScaleTime<number, number>;
-  onSessionClick: (sessionId: string) => void;
+  onSessionClick: (sessionId: string, eventId?: string) => void;
   flavor: string;
 }) {
   return (

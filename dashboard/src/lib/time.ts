@@ -26,8 +26,16 @@ export function getTimeTicks(
 
 /**
  * Format a date for the time axis label.
+ * includeSeconds=true shows HH:MM:SS for short ranges.
  */
-export function formatTimeLabel(date: Date): string {
+export function formatTimeLabel(date: Date, includeSeconds = false): string {
+  if (includeSeconds) {
+    return date.toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+  }
   return date.toLocaleTimeString([], {
     hour: "2-digit",
     minute: "2-digit",

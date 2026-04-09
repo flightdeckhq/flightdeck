@@ -8,13 +8,13 @@
 
   /* Borders */
   --border-subtle: #1e1e1e;
-  --border: #2a2a2a;
+  --border: #303030;
   --border-strong: #383838;
 
   /* Text */
   --text: #f0f0f0;
-  --text-muted: #4a4a4a;
-  --text-secondary: #888888;
+  --text-muted: #666666;
+  --text-secondary: #a0a0a0;
   --text-disabled: #2e2e2e;
 
   /* Accent */

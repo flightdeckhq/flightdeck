@@ -82,4 +82,14 @@ describe("LiveFeed", () => {
     fireEvent.click(rows[1]);
     expect(onEventClick).toHaveBeenCalledWith(mockEvents[1]);
   });
+
+  it("empty state shows waiting message", () => {
+    render(<LiveFeed events={[]} onEventClick={() => {}} />);
+    expect(screen.getByText("Waiting for events...")).toBeInTheDocument();
+  });
+
+  it("resize handle exists", () => {
+    render(<LiveFeed events={mockEvents} onEventClick={() => {}} />);
+    expect(screen.getByTestId("feed-resize-handle")).toBeInTheDocument();
+  });
 });

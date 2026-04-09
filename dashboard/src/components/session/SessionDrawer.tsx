@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { X } from "lucide-react";
 import { useSession } from "@/hooks/useSession";
@@ -67,9 +67,10 @@ function formatDuration(startedAt: string): string {
 interface SessionDrawerProps {
   sessionId: string | null;
   onClose: () => void;
+  initialEventId?: string | null;
 }
 
-export function SessionDrawer({ sessionId, onClose }: SessionDrawerProps) {
+export function SessionDrawer({ sessionId, onClose, initialEventId }: SessionDrawerProps) {
   const { data, loading } = useSession(sessionId);
   const [killLoading, setKillLoading] = useState(false);
   const [killSent, setKillSent] = useState(false);
@@ -78,6 +79,16 @@ export function SessionDrawer({ sessionId, onClose }: SessionDrawerProps) {
   const [activeTab, setActiveTab] = useState<DrawerTab>("timeline");
   const [expandedEventId, setExpandedEventId] = useState<string | null>(null);
   const [selectedEventId, setSelectedEventId] = useState<string | null>(null);
+  const [highlightedEventId, setHighlightedEventId] = useState<string | null>(null);
+
+  // Scroll to and highlight the initial event when drawer opens
+  useEffect(() => {
+    if (initialEventId && data?.events) {
+      setHighlightedEventId(initialEventId);
+      const timer = setTimeout(() => setHighlightedEventId(null), 2000);
+      return () => clearTimeout(timer);
+    }
+  }, [initialEventId, data?.events]);
 
   const session = data?.session;
   const isTerminal = session?.state === "closed" || session?.state === "lost";
@@ -288,6 +299,7 @@ export function SessionDrawer({ sessionId, onClose }: SessionDrawerProps) {
                       setExpandedEventId(expandedEventId === id ? null : id)
                     }
                     onViewPrompts={handleViewPrompts}
+                    highlightedEventId={highlightedEventId}
                   />
                 )}
                 {activeTab === "prompts" && (
@@ -313,9 +325,10 @@ interface EventFeedProps {
   expandedEventId: string | null;
   onToggleExpand: (id: string) => void;
   onViewPrompts: () => void;
+  highlightedEventId?: string | null;
 }
 
-function EventFeed({ events, expandedEventId, onToggleExpand, onViewPrompts }: EventFeedProps) {
+function EventFeed({ events, expandedEventId, onToggleExpand, onViewPrompts, highlightedEventId }: EventFeedProps) {
   if (events.length === 0) {
     return (
       <div className="py-8 text-center text-xs text-text-muted">
@@ -330,13 +343,21 @@ function EventFeed({ events, expandedEventId, onToggleExpand, onViewPrompts }: E
         const badge = getBadge(event.event_type);
         const isExpanded = expandedEventId === event.id;
         const detail = getEventDetail(event);
+        const isHighlighted = highlightedEventId === event.id;
 
         return (
-          <div key={event.id}>
+          <EventRow
+            key={event.id}
+            isHighlighted={isHighlighted}
+          >
             {/* Row — 32px */}
             <div
               className="flex h-8 cursor-pointer items-center gap-2 px-3 transition-colors hover:bg-surface-hover"
-              style={{ borderBottom: "1px solid var(--border-subtle)" }}
+              style={{
+                borderBottom: "1px solid var(--border-subtle)",
+                background: isHighlighted ? "var(--accent-glow)" : undefined,
+                transition: "background 1s ease",
+              }}
               onClick={() => onToggleExpand(event.id)}
               data-testid="event-row"
             >
@@ -387,11 +408,24 @@ function EventFeed({ events, expandedEventId, onToggleExpand, onViewPrompts }: E
                 />
               )}
             </div>
-          </div>
+          </EventRow>
         );
       })}
     </div>
   );
+}
+
+/** Wrapper that scrolls into view when highlighted */
+function EventRow({ children, isHighlighted }: { children: React.ReactNode; isHighlighted: boolean }) {
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (isHighlighted && ref.current && ref.current.scrollIntoView) {
+      ref.current.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  }, [isHighlighted]);
+
+  return <div ref={ref}>{children}</div>;
 }
 
 /* ---- Expanded event detail ---- */

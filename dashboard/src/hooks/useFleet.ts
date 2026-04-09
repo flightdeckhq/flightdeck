@@ -1,7 +1,7 @@
 import { useEffect, useCallback } from "react";
 import { useFleetStore } from "@/store/fleet";
 import { useWebSocket } from "./useWebSocket";
-import type { FleetUpdate } from "@/lib/types";
+import type { FleetUpdate, AgentEvent } from "@/lib/types";
 
 const WS_URL =
   (import.meta.env.VITE_API_BASE_URL ?? "").replace(/^http/, "ws") +
@@ -9,8 +9,9 @@ const WS_URL =
 
 /**
  * Load fleet state via REST, then keep it live via WebSocket.
+ * onEvent callback fires when a new event arrives via WebSocket.
  */
-export function useFleet() {
+export function useFleet(onEvent?: (event: AgentEvent) => void) {
   const { load, applyUpdate, flavors, loading, error } = useFleetStore();
 
   useEffect(() => {
@@ -24,11 +25,14 @@ export function useFleet() {
         if (update.session) {
           applyUpdate(update);
         }
+        if (update.last_event && onEvent) {
+          onEvent(update.last_event);
+        }
       } catch {
         // Ignore malformed messages
       }
     },
-    [applyUpdate]
+    [applyUpdate, onEvent]
   );
 
   useWebSocket(WS_URL, handleMessage);

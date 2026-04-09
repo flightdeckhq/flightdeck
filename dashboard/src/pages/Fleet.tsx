@@ -9,6 +9,7 @@ import { EventDetailDrawer } from "@/components/fleet/EventDetailDrawer";
 import { Timeline } from "@/components/timeline/Timeline";
 import { SessionDrawer } from "@/components/session/SessionDrawer";
 import type { AgentEvent } from "@/lib/types";
+import { FEED_MAX_EVENTS, PAUSE_QUEUE_MAX_EVENTS } from "@/lib/constants";
 
 export type ViewMode = "swimlane" | "bars";
 export type TimeRange = "1m" | "5m" | "15m" | "30m" | "1h" | "6h";
@@ -23,16 +24,14 @@ export function Fleet() {
   const [catchingUp, setCatchingUp] = useState(false);
   const pausedRef = useRef(false);
 
-  const QUEUE_CAP = 1000;
-
   const handleNewEvent = useCallback((event: AgentEvent) => {
     if (pausedRef.current) {
       setPauseQueue((prev) => {
         const next = [...prev, event];
-        return next.length > QUEUE_CAP ? next.slice(-QUEUE_CAP) : next;
+        return next.length > PAUSE_QUEUE_MAX_EVENTS ? next.slice(-PAUSE_QUEUE_MAX_EVENTS) : next;
       });
     } else {
-      setFeedEvents((prev) => [...prev, event].slice(-500));
+      setFeedEvents((prev) => [...prev, event].slice(-FEED_MAX_EVENTS));
     }
   }, []);
 
@@ -84,7 +83,7 @@ export function Fleet() {
   function handleResume() {
     // Drain queue into feedEvents in FIFO order
     setCatchingUp(true);
-    setFeedEvents((prev) => [...prev, ...pauseQueue].slice(-500));
+    setFeedEvents((prev) => [...prev, ...pauseQueue].slice(-FEED_MAX_EVENTS));
     setPauseQueue([]);
     setPaused(false);
     pausedRef.current = false;
@@ -231,22 +230,22 @@ export function Fleet() {
               <>
                 <div
                   className="h-1.5 w-1.5 rounded-full"
-                  style={{ background: pauseQueue.length >= QUEUE_CAP ? "var(--status-stale)" : "var(--status-idle)" }}
+                  style={{ background: pauseQueue.length >= PAUSE_QUEUE_MAX_EVENTS ? "var(--status-stale)" : "var(--status-idle)" }}
                   data-testid="pause-dot"
                 />
                 <span
                   className="font-mono text-[11px]"
-                  style={{ color: pauseQueue.length >= QUEUE_CAP ? "var(--status-stale)" : "var(--status-idle)" }}
+                  style={{ color: pauseQueue.length >= PAUSE_QUEUE_MAX_EVENTS ? "var(--status-stale)" : "var(--status-idle)" }}
                 >
                   Paused at {pausedAt?.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
                 </span>
                 {pauseQueue.length > 0 && (
                   <span
                     className="font-mono text-[11px]"
-                    style={{ color: pauseQueue.length >= QUEUE_CAP ? "var(--status-stale)" : "var(--text-muted)" }}
+                    style={{ color: pauseQueue.length >= PAUSE_QUEUE_MAX_EVENTS ? "var(--status-stale)" : "var(--text-muted)" }}
                     data-testid="queue-count"
                   >
-                    · {pauseQueue.length >= QUEUE_CAP
+                    · {pauseQueue.length >= PAUSE_QUEUE_MAX_EVENTS
                       ? `${pauseQueue.length.toLocaleString()} events buffered (oldest dropped)`
                       : `${pauseQueue.length} events waiting`}
                   </span>

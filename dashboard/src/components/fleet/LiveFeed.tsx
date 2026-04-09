@@ -1,20 +1,23 @@
 import { useRef, useEffect, useState, useCallback } from "react";
 import type { AgentEvent } from "@/lib/types";
 import { getBadge, getEventDetail, flavorColor, isEventVisible } from "@/lib/events";
-
-const STORAGE_KEY = "flightdeck-feed-height";
-const MIN_HEIGHT = 120;
-const MAX_HEIGHT = 600;
-const DEFAULT_HEIGHT = 240;
+import {
+  FEED_MAX_EVENTS,
+  PAUSE_QUEUE_MAX_EVENTS,
+  FEED_MIN_HEIGHT,
+  FEED_MAX_HEIGHT,
+  FEED_DEFAULT_HEIGHT,
+  FEED_HEIGHT_STORAGE_KEY,
+} from "@/lib/constants";
 
 function getInitialHeight(): number {
-  if (typeof window === "undefined") return DEFAULT_HEIGHT;
-  const stored = localStorage.getItem(STORAGE_KEY);
+  if (typeof window === "undefined") return FEED_DEFAULT_HEIGHT;
+  const stored = localStorage.getItem(FEED_HEIGHT_STORAGE_KEY);
   if (stored) {
     const n = parseInt(stored, 10);
-    if (!isNaN(n) && n >= MIN_HEIGHT && n <= MAX_HEIGHT) return n;
+    if (!isNaN(n) && n >= FEED_MIN_HEIGHT && n <= FEED_MAX_HEIGHT) return n;
   }
-  return DEFAULT_HEIGHT;
+  return FEED_DEFAULT_HEIGHT;
 }
 
 interface LiveFeedProps {
@@ -31,13 +34,13 @@ export function LiveFeed({ events, onEventClick, activeFilter, onFilterChange, i
   const scrollRef = useRef<HTMLDivElement>(null);
   const [paused, setPaused] = useState(false);
   const [feedHeight, setFeedHeight] = useState(getInitialHeight);
-  const capped = events.slice(-500);
+  const capped = events.slice(-FEED_MAX_EVENTS);
   const visibleEvents = activeFilter
     ? capped.filter((e) => isEventVisible(e.event_type, activeFilter))
     : capped;
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, String(feedHeight));
+    localStorage.setItem(FEED_HEIGHT_STORAGE_KEY, String(feedHeight));
   }, [feedHeight]);
 
   useEffect(() => {
@@ -67,7 +70,7 @@ export function LiveFeed({ events, onEventClick, activeFilter, onFilterChange, i
     const startHeight = feedHeight;
     const onMouseMove = (ev: MouseEvent) => {
       const delta = startY - ev.clientY;
-      setFeedHeight(Math.min(MAX_HEIGHT, Math.max(MIN_HEIGHT, startHeight + delta)));
+      setFeedHeight(Math.min(FEED_MAX_HEIGHT, Math.max(FEED_MIN_HEIGHT, startHeight + delta)));
     };
     const onMouseUp = () => {
       document.removeEventListener("mousemove", onMouseMove);
@@ -115,10 +118,10 @@ export function LiveFeed({ events, onEventClick, activeFilter, onFilterChange, i
         ) : isPaused ? (
           <span
             className="font-mono text-[11px]"
-            style={{ color: queueLength >= 1000 ? "var(--status-stale)" : "var(--status-idle)" }}
+            style={{ color: queueLength >= PAUSE_QUEUE_MAX_EVENTS ? "var(--status-stale)" : "var(--status-idle)" }}
             data-testid="feed-count"
           >
-            {queueLength >= 1000
+            {queueLength >= PAUSE_QUEUE_MAX_EVENTS
               ? `Paused · ${queueLength.toLocaleString()} events buffered (oldest dropped)`
               : `Paused · ${queueLength} events waiting`}
           </span>

@@ -1,11 +1,10 @@
 import { useEffect, useState, useRef } from "react";
 import { fetchSession } from "@/lib/api";
 import type { AgentEvent } from "@/lib/types";
+import { SESSION_POLL_INTERVAL_MS } from "@/lib/constants";
 
 // Module-level cache: sessionId → events array.
 const eventsCache = new Map<string, AgentEvent[]>();
-
-const POLL_INTERVAL_MS = 15000; // 15 seconds for active sessions
 
 /**
  * Fetches events for a session with module-level caching.
@@ -53,7 +52,7 @@ export function useSessionEvents(sessionId: string, isActive = false) {
       pollRef.current = setInterval(() => {
         eventsCache.delete(sessionId); // Invalidate cache before poll
         doFetch();
-      }, POLL_INTERVAL_MS);
+      }, SESSION_POLL_INTERVAL_MS);
     }
 
     return () => {

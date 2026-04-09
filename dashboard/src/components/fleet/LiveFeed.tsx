@@ -38,10 +38,15 @@ export function LiveFeed({ events, onEventClick, activeFilter, onFilterChange, i
     ? capped.filter((e) => isEventVisible(e.event_type, activeFilter))
     : capped;
 
-  // Newest first: feedEvents is chronological (oldest=0, newest=end).
-  // Reverse so newest renders at top of the list.
+  // Newest first: sort by occurred_at descending.
+  // Cannot use .reverse() because feedEvents arrival order from batched
+  // WebSocket messages does not guarantee chronological order.
   const displayEvents = useMemo(
-    () => [...filtered].reverse(),
+    () => [...filtered].sort((a, b) => {
+      const ta = a.occurred_at ? new Date(a.occurred_at).getTime() : 0;
+      const tb = b.occurred_at ? new Date(b.occurred_at).getTime() : 0;
+      return tb - ta;
+    }),
     [filtered]
   );
 

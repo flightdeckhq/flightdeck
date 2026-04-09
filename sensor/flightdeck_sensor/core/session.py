@@ -226,8 +226,9 @@ class Session:
             )
             with urllib.request.urlopen(req, timeout=_PREFLIGHT_TIMEOUT_SECS) as resp:
                 data = json.loads(resp.read().decode())
-                from flightdeck_sensor.core.schemas import PolicyResponseSchema
                 from pydantic import ValidationError
+
+                from flightdeck_sensor.core.schemas import PolicyResponseSchema
 
                 try:
                     parsed = PolicyResponseSchema.model_validate(data)

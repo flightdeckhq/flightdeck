@@ -75,8 +75,9 @@ class ControlPlaneClient:
             method="POST",
         )
         try:
-            from flightdeck_sensor.core.schemas import SyncResponseSchema
             from pydantic import ValidationError
+
+            from flightdeck_sensor.core.schemas import SyncResponseSchema
 
             with urllib.request.urlopen(req, timeout=1) as resp:
                 data = json.loads(resp.read().decode())

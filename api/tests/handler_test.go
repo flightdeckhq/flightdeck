@@ -1283,6 +1283,105 @@ func TestCreateCustomDirectiveMissingName(t *testing.T) {
 	}
 }
 
+func TestSyncDirectivesInvalidJSON(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.SyncDirectivesHandler(store.WrapStore(s))
+	req := httptest.NewRequest("POST", "/v1/directives/sync", bytes.NewBufferString(`{bad`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestSyncDirectivesEmptyArray(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.SyncDirectivesHandler(store.WrapStore(s))
+	req := httptest.NewRequest("POST", "/v1/directives/sync", bytes.NewBufferString(`{"directives":[]}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestSyncDirectivesMissingFingerprint(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.SyncDirectivesHandler(store.WrapStore(s))
+	req := httptest.NewRequest("POST", "/v1/directives/sync", bytes.NewBufferString(`{"directives":[{"name":"x","fingerprint":""}]}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestRegisterDirectivesInvalidJSON(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.RegisterDirectivesHandler(store.WrapStore(s))
+	req := httptest.NewRequest("POST", "/v1/directives/register", bytes.NewBufferString(`{bad`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestRegisterDirectivesEmptyArray(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.RegisterDirectivesHandler(store.WrapStore(s))
+	req := httptest.NewRequest("POST", "/v1/directives/register", bytes.NewBufferString(`{"directives":[]}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestRegisterDirectivesMissingName(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.RegisterDirectivesHandler(store.WrapStore(s))
+	body := `{"flavor":"test","directives":[{"fingerprint":"fp-1","name":"","flavor":"test"}]}`
+	req := httptest.NewRequest("POST", "/v1/directives/register", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestRegisterDirectivesMissingFlavor(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.RegisterDirectivesHandler(store.WrapStore(s))
+	body := `{"directives":[{"fingerprint":"fp-1","name":"test","flavor":""}]}`
+	req := httptest.NewRequest("POST", "/v1/directives/register", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestRegisterDirectivesMissingFingerprint(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.RegisterDirectivesHandler(store.WrapStore(s))
+	body := `{"flavor":"test","directives":[{"fingerprint":"","name":"test"}]}`
+	req := httptest.NewRequest("POST", "/v1/directives/register", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
 func TestCreateCustomDirectiveMissingTarget(t *testing.T) {
 	s := &mockStore{}
 	handler := handlers.CreateDirectiveHandler(store.WrapStore(s))

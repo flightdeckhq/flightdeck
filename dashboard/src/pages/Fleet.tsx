@@ -332,6 +332,7 @@ export function Fleet() {
         onClose={() => { selectSession(null); setInitialEventId(null); setDirectEventDetail(null); }}
         initialEventId={initialEventId}
         directEventDetail={directEventDetail}
+        version={selectedSessionId ? (sessionVersions[selectedSessionId] ?? 0) : 0}
       />
 
       <EventDetailDrawer

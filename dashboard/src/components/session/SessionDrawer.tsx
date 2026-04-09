@@ -14,6 +14,7 @@ import { TokenUsageBar } from "./TokenUsageBar";
 import { PromptViewer } from "./PromptViewer";
 import { createDirective } from "@/lib/api";
 import { getBadge, getEventDetail, getSummaryRows, truncateSessionId } from "@/lib/events";
+import { eventsCache } from "@/hooks/useSessionEvents";
 import { SyntaxJson } from "@/components/ui/syntax-json";
 import type { AgentEvent, Session as SessionType } from "@/lib/types";
 
@@ -69,9 +70,10 @@ interface SessionDrawerProps {
   onClose: () => void;
   initialEventId?: string | null;
   directEventDetail?: AgentEvent | null;
+  version?: number;
 }
 
-export function SessionDrawer({ sessionId, onClose, initialEventId, directEventDetail }: SessionDrawerProps) {
+export function SessionDrawer({ sessionId, onClose, initialEventId, directEventDetail, version = 0 }: SessionDrawerProps) {
   const { data, loading } = useSession(sessionId);
   const [killLoading, setKillLoading] = useState(false);
   const [killSent, setKillSent] = useState(false);
@@ -82,6 +84,18 @@ export function SessionDrawer({ sessionId, onClose, initialEventId, directEventD
   const [selectedEventId, setSelectedEventId] = useState<string | null>(null);
   const [highlightedEventId, setHighlightedEventId] = useState<string | null>(null);
   const [detailEvent, setDetailEvent] = useState<AgentEvent | null>(null);
+  const [liveEvents, setLiveEvents] = useState<AgentEvent[]>([]);
+
+  // Re-read events from cache when version increments (WebSocket injection)
+  useEffect(() => {
+    if (sessionId && version > 0) {
+      const cached = eventsCache.get(sessionId);
+      if (cached) setLiveEvents(cached);
+    }
+  }, [sessionId, version]);
+
+  // Merge: use liveEvents if available and newer, otherwise data.events
+  const drawerEvents = liveEvents.length > 0 ? liveEvents : (data?.events ?? []);
 
   // Open directly in Mode 2 when directEventDetail is provided
   useEffect(() => {
@@ -231,18 +245,26 @@ export function SessionDrawer({ sessionId, onClose, initialEventId, directEventD
             </div>
           </div>
 
-          {loading && (
-            <div className="flex flex-1 items-center justify-center text-xs text-text-muted">
-              Loading...
-            </div>
-          )}
-
-          {data && detailEvent && (
+          {detailEvent && data && (
             <EventDetailView
               event={detailEvent}
               session={data.session}
               onBack={() => setDetailEvent(null)}
             />
+          )}
+
+          {detailEvent && !data && (
+            <EventDetailView
+              event={detailEvent}
+              session={null}
+              onBack={() => setDetailEvent(null)}
+            />
+          )}
+
+          {loading && !detailEvent && (
+            <div className="flex flex-1 items-center justify-center text-xs text-text-muted">
+              Loading...
+            </div>
           )}
 
           {data && !detailEvent && (
@@ -310,7 +332,7 @@ export function SessionDrawer({ sessionId, onClose, initialEventId, directEventD
               <div className="flex-1 overflow-y-auto">
                 {activeTab === "timeline" && (
                   <EventFeed
-                    events={[...data.events].reverse()}
+                    events={[...drawerEvents].reverse()}
                     expandedEventId={expandedEventId}
                     onToggleExpand={(id) =>
                       setExpandedEventId(expandedEventId === id ? null : id)
@@ -322,7 +344,7 @@ export function SessionDrawer({ sessionId, onClose, initialEventId, directEventD
                 )}
                 {activeTab === "prompts" && (
                   <PromptsTab
-                    events={data.events}
+                    events={drawerEvents}
                     selectedEventId={selectedEventId}
                     onSelectEvent={setSelectedEventId}
                   />
@@ -544,7 +566,7 @@ function EventDetailView({
   onBack,
 }: {
   event: AgentEvent;
-  session: SessionType;
+  session: SessionType | null;
   onBack: () => void;
 }) {
   const [activeTab, setActiveTab] = useState<DetailTab>("details");
@@ -600,11 +622,11 @@ function EventDetailView({
           {badge.label}
         </span>
         <span className="font-mono text-xs" style={{ color: "var(--text-secondary)" }}>
-          {session.flavor}
+          {session?.flavor ?? event.flavor}
         </span>
         <span style={{ color: "var(--text-muted)" }}>·</span>
         <span className="font-mono text-xs" style={{ color: "var(--text-muted)" }}>
-          {truncateSessionId(session.session_id)}
+          {truncateSessionId(session?.session_id ?? event.session_id)}
         </span>
       </div>
 

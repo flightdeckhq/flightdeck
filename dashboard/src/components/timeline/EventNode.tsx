@@ -1,4 +1,4 @@
-import { useRef, useEffect, useState, memo } from "react";
+import { useEffect, useState, memo } from "react";
 import type { EventType } from "@/lib/types";
 import { truncateSessionId } from "@/lib/events";
 import {
@@ -66,26 +66,22 @@ function EventNodeComponent({
 }: EventNodeProps) {
   const config = eventTypeConfig[eventType] ?? defaultConfig;
   const color = config.cssVar;
-  const nodeRef = useRef<HTMLDivElement>(null);
   const [hovered, setHovered] = useState(false);
+  const [mounted, setMounted] = useState(false);
   const iconSize = size <= 20 ? 11 : 13;
 
-  // Fade-in animation on mount
+  // Fade-in on mount via React state (not direct DOM mutation)
   useEffect(() => {
-    const el = nodeRef.current;
-    if (!el) return;
-    el.style.opacity = "0";
-    requestAnimationFrame(() => {
-      el.style.transition = "opacity 300ms ease, transform 150ms ease";
-      el.style.opacity = "1";
-    });
+    requestAnimationFrame(() => setMounted(true));
   }, []);
 
   const IconComponent = config.Icon;
 
+  // opacity: visible only when both mounted (fade-in complete) AND filter allows
+  const finalOpacity = isVisible && mounted ? 1 : 0;
+
   return (
     <div
-      ref={nodeRef}
       className="absolute top-1/2 -translate-y-1/2 cursor-pointer rounded-full flex items-center justify-center flex-shrink-0"
       style={{
         left: x,
@@ -97,9 +93,9 @@ function EventNodeComponent({
         transform: hovered
           ? "translateY(-50%) scale(1.25)"
           : "translateY(-50%) scale(1)",
-        transition: "transform 150ms ease, opacity 150ms ease",
+        transition: "transform 150ms ease, opacity 300ms ease",
         zIndex: hovered ? 10 : 1,
-        opacity: isVisible ? 1 : 0,
+        opacity: finalOpacity,
         pointerEvents: isVisible ? "auto" : "none",
       }}
       onClick={(e) => {

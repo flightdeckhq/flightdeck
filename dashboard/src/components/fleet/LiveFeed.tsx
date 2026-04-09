@@ -1,6 +1,6 @@
 import { useRef, useEffect, useState, useCallback, useMemo } from "react";
 import type { AgentEvent } from "@/lib/types";
-import { getBadge, getEventDetail, flavorColor, isEventVisible } from "@/lib/events";
+import { getBadge, getEventDetail, flavorColor, isEventVisible, truncateSessionId } from "@/lib/events";
 import {
   FEED_MAX_EVENTS,
   PAUSE_QUEUE_MAX_EVENTS,
@@ -255,7 +255,7 @@ function FeedRow({ event, onClick }: { event: AgentEvent; onClick: () => void })
         style={{ color: "var(--text-muted)" }}
         data-testid="feed-session-id"
       >
-        {event.session_id.slice(0, 8)}
+        {truncateSessionId(event.session_id)}
       </span>
 
       {/* Badge */}

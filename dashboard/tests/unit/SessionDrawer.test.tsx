@@ -78,7 +78,7 @@ describe("SessionDrawer", () => {
   it("header shows session ID and state badge", () => {
     render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
     // Session ID truncated to 12 chars
-    expect(screen.getByText("s1-abcdef-12")).toBeInTheDocument();
+    expect(screen.getByText("s1-abcde")).toBeInTheDocument();
     // State badge
     expect(screen.getByText("active")).toBeInTheDocument();
   });

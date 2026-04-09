@@ -13,7 +13,7 @@ import {
 import { TokenUsageBar } from "./TokenUsageBar";
 import { PromptViewer } from "./PromptViewer";
 import { createDirective } from "@/lib/api";
-import { getBadge, getEventDetail, getSummaryRows } from "@/lib/events";
+import { getBadge, getEventDetail, getSummaryRows, truncateSessionId } from "@/lib/events";
 import { SyntaxJson } from "@/components/ui/syntax-json";
 import type { AgentEvent, Session as SessionType } from "@/lib/types";
 
@@ -155,7 +155,7 @@ export function SessionDrawer({ sessionId, onClose, initialEventId, directEventD
               {session && (
                 <>
                   <span className="font-mono text-[13px]" style={{ color: "var(--text)" }}>
-                    {session.session_id.slice(0, 12)}
+                    {truncateSessionId(session.session_id)}
                   </span>
                   <span
                     className="rounded font-mono text-[10px] px-1.5 py-0.5"
@@ -604,7 +604,7 @@ function EventDetailView({
         </span>
         <span style={{ color: "var(--text-muted)" }}>·</span>
         <span className="font-mono text-xs" style={{ color: "var(--text-muted)" }}>
-          {session.session_id.slice(0, 8)}
+          {truncateSessionId(session.session_id)}
         </span>
       </div>
 

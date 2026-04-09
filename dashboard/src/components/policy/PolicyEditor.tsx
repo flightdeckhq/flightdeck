@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from "react";
 import type { Policy, PolicyRequest } from "@/lib/types";
 import { useFleetStore } from "@/store/fleet";
+import { truncateSessionId } from "@/lib/events";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -243,7 +244,7 @@ export function PolicyEditor({ policy, onSave, onCancel }: PolicyEditorProps) {
               <SelectContent>
                 {activeSessions.map((s) => (
                   <SelectItem key={s.session_id} value={s.session_id}>
-                    <span className="font-mono">{s.session_id.slice(0, 8)}</span>
+                    <span className="font-mono">{truncateSessionId(s.session_id)}</span>
                     <span className="ml-1" style={{ color: "var(--text-muted)" }}>·</span>
                     <span className="ml-1">{s.flavor}</span>
                     <span className="ml-1" style={{ color: "var(--text-muted)" }}>·</span>

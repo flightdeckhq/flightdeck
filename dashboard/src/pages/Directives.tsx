@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from "react";
 import type { CustomDirective, CustomDirectiveParameter } from "@/lib/types";
 import { fetchCustomDirectives, fetchFlavors, triggerCustomDirective } from "@/lib/api";
 import { useFleetStore } from "@/store/fleet";
+import { truncateSessionId } from "@/lib/events";
 import { formatRelativeTime } from "@/lib/time";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -331,7 +332,7 @@ function DirectiveCard({ directive }: { directive: CustomDirective }) {
                         data-testid="session-status-dot"
                       />
                       <span className="font-mono" style={{ color: "var(--text-secondary)" }}>
-                        {s.session_id.slice(0, 8)}
+                        {truncateSessionId(s.session_id)}
                       </span>
                       <span style={{ color: isRecentlyRegistered ? "var(--status-active)" : "var(--status-idle)" }}>
                         {isRecentlyRegistered ? "registered" : "may not respond"}

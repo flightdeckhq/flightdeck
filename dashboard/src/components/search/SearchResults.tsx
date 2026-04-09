@@ -1,3 +1,4 @@
+import { truncateSessionId } from "@/lib/events";
 import type {
   SearchResults as SearchResultsType,
   SearchResultAgent,
@@ -116,7 +117,7 @@ function SessionRow({ item }: { item: SearchResultSession }) {
   return (
     <>
       <span className="font-mono font-medium text-text">
-        {item.session_id.slice(0, 8)}
+        {truncateSessionId(item.session_id)}
       </span>
       <span className="text-text-muted">{item.flavor}</span>
       <span

@@ -109,6 +109,12 @@ export function isEventVisible(eventType: string, activeFilter: string | null | 
   return group ? group.includes(eventType) : true;
 }
 
+/* ---- Session ID truncation ---- */
+
+export function truncateSessionId(sessionId: string): string {
+  return sessionId.slice(0, 8);
+}
+
 /* ---- Flavor color hash ---- */
 
 const CHART_COLORS = [

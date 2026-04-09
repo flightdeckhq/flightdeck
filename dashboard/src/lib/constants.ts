@@ -17,12 +17,13 @@ export const PAUSE_QUEUE_MAX_EVENTS = 1000;
  *  into the live feed on initial mount. */
 export const FEED_INITIAL_LOAD = 100;
 
-/** Active session polling interval in milliseconds. */
-export const SESSION_POLL_INTERVAL_MS = 15_000;
+/** Batching window for live feed state updates in milliseconds.
+ *  Events arriving within this window are batched into a single setState. */
+export const FEED_BATCH_MS = 16;
 
-/** Initial poll delay after mount in milliseconds.
- *  Faster than normal poll to show events quickly on page load. */
-export const SESSION_INITIAL_POLL_MS = 2_000;
+// SESSION_POLL_INTERVAL_MS and SESSION_INITIAL_POLL_MS removed.
+// Active sessions now update exclusively via WebSocket cache injection.
+// Polling was removed in favor of a single HTTP fetch on mount.
 
 /** Minimum live feed height in pixels (resize handle lower bound). */
 export const FEED_MIN_HEIGHT = 120;

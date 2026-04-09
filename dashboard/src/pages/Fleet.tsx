@@ -9,7 +9,7 @@ import { EventDetailDrawer } from "@/components/fleet/EventDetailDrawer";
 import { Timeline } from "@/components/timeline/Timeline";
 import { SessionDrawer } from "@/components/session/SessionDrawer";
 import type { AgentEvent } from "@/lib/types";
-import { FEED_MAX_EVENTS, PAUSE_QUEUE_MAX_EVENTS } from "@/lib/constants";
+import { FEED_MAX_EVENTS, PAUSE_QUEUE_MAX_EVENTS, FEED_BATCH_MS } from "@/lib/constants";
 import { eventsCache } from "@/hooks/useSessionEvents";
 
 export type ViewMode = "swimlane" | "bars";
@@ -52,7 +52,7 @@ export function Fleet() {
           );
           pendingFeedEvents.current = [];
           batchTimerRef.current = null;
-        }, 50);
+        }, FEED_BATCH_MS);
       }
     }
   }, []);

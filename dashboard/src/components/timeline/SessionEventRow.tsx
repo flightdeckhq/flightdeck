@@ -5,7 +5,7 @@ import type { ViewMode } from "@/pages/Fleet";
 import { EventNode } from "./EventNode";
 import { BarView } from "./BarView";
 import { useSessionEvents } from "@/hooks/useSessionEvents";
-import { isEventVisible } from "@/lib/events";
+import { isEventVisible, truncateSessionId } from "@/lib/events";
 
 const stateBadgeColors: Record<string, { bg: string; color: string }> = {
   active: { bg: "rgba(34,197,94,0.15)", color: "var(--status-active)" },
@@ -57,7 +57,7 @@ function SessionEventRowComponent({ session, scale, onClick, viewMode, start, en
       <div className="flex h-full w-[240px] shrink-0 items-center gap-1.5 pl-7 pr-3">
         {isActive && <div className="pulse-dot" />}
         <span className="font-mono text-xs" style={{ color: "var(--text-secondary)" }}>
-          {session.session_id.slice(0, 8)}
+          {truncateSessionId(session.session_id)}
         </span>
         <span
           className="rounded font-mono text-[10px] px-[5px] py-[1px]"

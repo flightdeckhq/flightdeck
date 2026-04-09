@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { X } from "lucide-react";
 import { PromptViewer } from "@/components/session/PromptViewer";
 import { SyntaxJson } from "@/components/ui/syntax-json";
-import { getBadge, getSummaryRows } from "@/lib/events";
+import { getBadge, getSummaryRows, truncateSessionId } from "@/lib/events";
 import type { AgentEvent } from "@/lib/types";
 
 type Tab = "details" | "prompts";
@@ -72,7 +72,7 @@ export function EventDetailDrawer({ event, onClose }: EventDetailDrawerProps) {
           </span>
           <span style={{ color: "var(--text-muted)" }}>·</span>
           <span className="font-mono text-xs" style={{ color: "var(--text-muted)" }}>
-            {event.session_id.slice(0, 8)}
+            {truncateSessionId(event.session_id)}
           </span>
 
           {/* Close */}

@@ -1,5 +1,6 @@
 import { useRef, useEffect, useState, memo } from "react";
 import type { EventType } from "@/lib/types";
+import { truncateSessionId } from "@/lib/events";
 import {
   Zap,
   Wrench,
@@ -127,7 +128,7 @@ function EventNodeComponent({
         >
           <div style={{ color: "var(--text-secondary)" }}>{config.label}</div>
           <div className="font-mono" style={{ color: "var(--text-muted)" }}>
-            {flavor} / {sessionId.slice(0, 8)}
+            {flavor} / {truncateSessionId(sessionId)}
           </div>
           {model && <div style={{ color: "var(--text)" }}>{model}</div>}
           {toolName && <div style={{ color: "var(--text)" }}>Tool: {toolName}</div>}

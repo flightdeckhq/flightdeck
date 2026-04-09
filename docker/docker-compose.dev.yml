@@ -33,6 +33,7 @@ services:
       - dashboard_node_modules:/app/node_modules
     environment:
       VITE_API_BASE_URL: ""
+      CHOKIDAR_USEPOLLING: "false"
 
 volumes:
   dashboard_node_modules:

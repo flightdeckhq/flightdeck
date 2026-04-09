@@ -105,40 +105,36 @@ describe("SessionDrawer", () => {
   it("event row click expands and collapses", () => {
     render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
     const rows = screen.getAllByTestId("event-row");
-    // Click second row (post_call) to expand
-    fireEvent.click(rows[1]);
-    // Should show model in summary
+    // Reversed: row[0]=post_call (LLM CALL), row[1]=session_start (START)
+    fireEvent.click(rows[0]);
     expect(screen.getByText("Model")).toBeInTheDocument();
-    // Click again to collapse
-    fireEvent.click(rows[1]);
+    fireEvent.click(rows[0]);
   });
 
   it("only one event expanded at a time", () => {
     render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
     const rows = screen.getAllByTestId("event-row");
-    // Expand first
+    // Reversed: row[0]=post_call, row[1]=session_start
     fireEvent.click(rows[0]);
-    expect(screen.getByText("Event")).toBeInTheDocument();
-    // Expand second — first should collapse (summary text changes)
-    fireEvent.click(rows[1]);
     expect(screen.getByText("Model")).toBeInTheDocument();
-    // "Event" summary from session_start should be gone since only one is expanded
+    fireEvent.click(rows[1]);
+    expect(screen.getByText("Event")).toBeInTheDocument();
   });
 
   it("shows View Prompts link when event has content", () => {
     mockEventsOverride = eventsWithContent;
     render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
     const rows = screen.getAllByTestId("event-row");
-    // Expand the third row (has_content=true)
-    fireEvent.click(rows[2]);
+    // Reversed: row[0]=e3(has_content=true), row[1]=e2, row[2]=e1
+    fireEvent.click(rows[0]);
     expect(screen.getByText("View Prompts →")).toBeInTheDocument();
   });
 
   it("hides View Prompts link when event has no content", () => {
     render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
     const rows = screen.getAllByTestId("event-row");
-    // Expand the post_call row (has_content=false)
-    fireEvent.click(rows[1]);
+    // Reversed: row[0]=post_call (no content), row[1]=session_start
+    fireEvent.click(rows[0]);
     expect(screen.queryByText("View Prompts →")).not.toBeInTheDocument();
   });
 
@@ -236,15 +232,16 @@ describe("SessionDrawer", () => {
   it("highlights initial event when initialEventId is set", () => {
     render(<SessionDrawer sessionId="s1" onClose={() => {}} initialEventId="e2" />);
     const rows = screen.getAllByTestId("event-row");
-    const postCallRow = rows[1];
+    // Reversed: row[0]=e2(post_call), row[1]=e1(session_start)
+    const postCallRow = rows[0];
     expect(postCallRow.style.background).toBe("var(--accent-glow)");
   });
 
   it("open full detail switches to detail view", () => {
     render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
-    // Expand first event
+    // Reversed: row[0]=post_call (LLM CALL)
     const rows = screen.getAllByTestId("event-row");
-    fireEvent.click(rows[1]); // post_call
+    fireEvent.click(rows[0]);
     // Click "Open full detail →"
     const detailLink = screen.getByTestId("open-full-detail");
     fireEvent.click(detailLink);
@@ -256,7 +253,7 @@ describe("SessionDrawer", () => {
   it("back navigation returns to session event list", () => {
     render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
     const rows = screen.getAllByTestId("event-row");
-    fireEvent.click(rows[1]);
+    fireEvent.click(rows[0]);
     fireEvent.click(screen.getByTestId("open-full-detail"));
     // Now click back
     fireEvent.click(screen.getByTestId("back-to-session"));
@@ -277,5 +274,14 @@ describe("SessionDrawer", () => {
     fireEvent.click(screen.getByTestId("back-to-session"));
     // Should return to session event list
     expect(screen.getAllByTestId("event-row").length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("events shown newest first", () => {
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    const badges = screen.getAllByTestId("event-badge");
+    // baseEvents: e1=session_start (10:00), e2=post_call (10:01)
+    // Reversed: first badge should be LLM CALL (newest), last should be START (oldest)
+    expect(badges[0].textContent).toBe("LLM CALL");
+    expect(badges[badges.length - 1].textContent).toBe("START");
   });
 });

@@ -310,7 +310,7 @@ export function SessionDrawer({ sessionId, onClose, initialEventId, directEventD
               <div className="flex-1 overflow-y-auto">
                 {activeTab === "timeline" && (
                   <EventFeed
-                    events={data.events}
+                    events={[...data.events].reverse()}
                     expandedEventId={expandedEventId}
                     onToggleExpand={(id) =>
                       setExpandedEventId(expandedEventId === id ? null : id)

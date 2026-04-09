@@ -36,6 +36,8 @@ export function Fleet() {
   const [selectedEvent, setSelectedEvent] = useState<AgentEvent | null>(null);
   const [initialEventId, setInitialEventId] = useState<string | null>(null);
   const [activeFilter, setActiveFilter] = useState<string | null>(null);
+  const [paused, setPaused] = useState(false);
+  const [pausedAt, setPausedAt] = useState<Date | null>(null);
 
   if (loading && flavors.length === 0) {
     return (
@@ -59,6 +61,17 @@ export function Fleet() {
 
   function handleExpandFlavor(flavor: string) {
     setExpandedFlavor(expandedFlavor === flavor ? null : flavor);
+  }
+
+  function handlePause() {
+    setPaused(true);
+    setPausedAt(new Date());
+  }
+
+  function handleReturnToLive() {
+    setPaused(false);
+    setPausedAt(null);
+    setTimeRange("1m");
   }
 
   return (
@@ -135,15 +148,65 @@ export function Fleet() {
             ))}
           </div>
 
+          {/* Pause / Return to live */}
+          {paused ? (
+            <button
+              className="rounded px-2.5 py-[3px] text-xs font-semibold transition-colors"
+              style={{
+                background: "var(--accent-glow)",
+                color: "var(--accent)",
+                border: "1px solid var(--accent-border)",
+                borderRadius: 4,
+                cursor: "pointer",
+              }}
+              onClick={handleReturnToLive}
+              data-testid="return-to-live-btn"
+            >
+              Return to live
+            </button>
+          ) : (
+            <button
+              className="rounded px-2.5 py-[3px] text-xs transition-colors"
+              style={{
+                background: "transparent",
+                color: "var(--text-muted)",
+                border: "1px solid var(--border)",
+                borderRadius: 4,
+                cursor: "pointer",
+              }}
+              onClick={handlePause}
+              data-testid="pause-btn"
+            >
+              ⏸ Pause
+            </button>
+          )}
+
           {/* Live indicator */}
           <div className="ml-auto flex items-center gap-1.5">
-            <div className="pulse-dot" />
-            <span
-              className="font-mono text-[11px]"
-              style={{ color: "var(--text-muted)" }}
-            >
-              Live
-            </span>
+            {paused ? (
+              <>
+                <div
+                  className="h-1.5 w-1.5 rounded-full"
+                  style={{ background: "var(--status-idle)" }}
+                />
+                <span
+                  className="font-mono text-[11px]"
+                  style={{ color: "var(--status-idle)" }}
+                >
+                  Paused at {pausedAt?.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+                </span>
+              </>
+            ) : (
+              <>
+                <div className="pulse-dot" />
+                <span
+                  className="font-mono text-[11px]"
+                  style={{ color: "var(--status-active)" }}
+                >
+                  Live
+                </span>
+              </>
+            )}
           </div>
         </div>
 
@@ -167,6 +230,8 @@ export function Fleet() {
               setInitialEventId(eventId ?? null);
             }}
             activeFilter={activeFilter}
+            paused={paused}
+            pausedAt={pausedAt}
           />
         </div>
 
@@ -175,6 +240,7 @@ export function Fleet() {
           events={feedEvents}
           onEventClick={setSelectedEvent}
           activeFilter={activeFilter}
+          onFilterChange={setActiveFilter}
         />
       </div>
 

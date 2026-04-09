@@ -235,10 +235,32 @@ describe("SessionDrawer", () => {
 
   it("highlights initial event when initialEventId is set", () => {
     render(<SessionDrawer sessionId="s1" onClose={() => {}} initialEventId="e2" />);
-    // The highlighted event row should have accent-glow background
     const rows = screen.getAllByTestId("event-row");
-    // Second row (post_call, id=e2) should have highlight style
     const postCallRow = rows[1];
     expect(postCallRow.style.background).toBe("var(--accent-glow)");
+  });
+
+  it("open full detail switches to detail view", () => {
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    // Expand first event
+    const rows = screen.getAllByTestId("event-row");
+    fireEvent.click(rows[1]); // post_call
+    // Click "Open full detail →"
+    const detailLink = screen.getByTestId("open-full-detail");
+    fireEvent.click(detailLink);
+    // Should show back navigation
+    expect(screen.getByTestId("back-to-session")).toBeInTheDocument();
+    expect(screen.getByText("← Back to session")).toBeInTheDocument();
+  });
+
+  it("back navigation returns to session event list", () => {
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    const rows = screen.getAllByTestId("event-row");
+    fireEvent.click(rows[1]);
+    fireEvent.click(screen.getByTestId("open-full-detail"));
+    // Now click back
+    fireEvent.click(screen.getByTestId("back-to-session"));
+    // Should be back to session view with event rows
+    expect(screen.getAllByTestId("event-row").length).toBeGreaterThanOrEqual(1);
   });
 });

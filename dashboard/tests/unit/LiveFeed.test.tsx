@@ -95,11 +95,50 @@ describe("LiveFeed", () => {
 
   it("filter hides non-matching events", () => {
     render(<LiveFeed events={mockEvents} onEventClick={() => {}} activeFilter="Tools" />);
-    // Only tool_call events should render
     const rows = screen.getAllByTestId("feed-row");
     expect(rows).toHaveLength(1);
     expect(screen.getByText("TOOL")).toBeInTheDocument();
     expect(screen.queryByText("START")).not.toBeInTheDocument();
     expect(screen.queryByText("LLM CALL")).not.toBeInTheDocument();
+  });
+
+  it("column headers render", () => {
+    render(<LiveFeed events={mockEvents} onEventClick={() => {}} />);
+    const headers = screen.getByTestId("feed-column-headers");
+    expect(headers).toBeInTheDocument();
+    expect(headers.textContent).toContain("Flavor");
+    expect(headers.textContent).toContain("Session");
+    expect(headers.textContent).toContain("Type");
+    expect(headers.textContent).toContain("Detail");
+    expect(headers.textContent).toContain("Time");
+  });
+
+  it("session ID shows 8 chars", () => {
+    const events = [makeEvent({ id: "e1", session_id: "abcdef1234567890" })];
+    render(<LiveFeed events={events} onEventClick={() => {}} />);
+    expect(screen.getByText("abcdef12")).toBeInTheDocument();
+  });
+
+  it("column header is not static positioned", () => {
+    render(<LiveFeed events={mockEvents} onEventClick={() => {}} />);
+    const headers = screen.getByTestId("feed-column-headers");
+    expect(headers.style.position || headers.className).toContain("absolute");
+  });
+
+  it("filtered count shows N of M", () => {
+    render(<LiveFeed events={mockEvents} onEventClick={() => {}} activeFilter="Tools" />);
+    expect(screen.getByTestId("feed-count").textContent).toBe("1 of 3 events");
+  });
+
+  it("filter label in header", () => {
+    render(<LiveFeed events={mockEvents} onEventClick={() => {}} activeFilter="Policy" />);
+    expect(screen.getByTestId("feed-filter-label")).toBeInTheDocument();
+  });
+
+  it("filter label click clears filter", () => {
+    const onFilterChange = vi.fn();
+    render(<LiveFeed events={mockEvents} onEventClick={() => {}} activeFilter="Tools" onFilterChange={onFilterChange} />);
+    fireEvent.click(screen.getByTestId("feed-filter-label"));
+    expect(onFilterChange).toHaveBeenCalledWith(null);
   });
 });

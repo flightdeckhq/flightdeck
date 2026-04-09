@@ -109,7 +109,7 @@ export function SwimLane({
                 key={session.session_id}
                 session={session}
                 scale={scale}
-                onClick={() => onSessionClick(session.session_id)}
+                onClick={(eventId) => onSessionClick(session.session_id, eventId)}
                 viewMode={viewMode}
                 start={start}
                 end={end}

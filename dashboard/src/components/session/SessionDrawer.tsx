@@ -15,7 +15,7 @@ import { PromptViewer } from "./PromptViewer";
 import { createDirective } from "@/lib/api";
 import { getBadge, getEventDetail, getSummaryRows } from "@/lib/events";
 import { SyntaxJson } from "@/components/ui/syntax-json";
-import type { AgentEvent } from "@/lib/types";
+import type { AgentEvent, Session as SessionType } from "@/lib/types";
 
 type DrawerTab = "timeline" | "prompts";
 
@@ -80,6 +80,7 @@ export function SessionDrawer({ sessionId, onClose, initialEventId }: SessionDra
   const [expandedEventId, setExpandedEventId] = useState<string | null>(null);
   const [selectedEventId, setSelectedEventId] = useState<string | null>(null);
   const [highlightedEventId, setHighlightedEventId] = useState<string | null>(null);
+  const [detailEvent, setDetailEvent] = useState<AgentEvent | null>(null);
 
   // Scroll to and highlight the initial event when drawer opens
   useEffect(() => {
@@ -228,7 +229,15 @@ export function SessionDrawer({ sessionId, onClose, initialEventId }: SessionDra
             </div>
           )}
 
-          {data && (
+          {data && detailEvent && (
+            <EventDetailView
+              event={detailEvent}
+              session={data.session}
+              onBack={() => setDetailEvent(null)}
+            />
+          )}
+
+          {data && !detailEvent && (
             <>
               {/* Metadata bar — 32px */}
               <div
@@ -300,6 +309,7 @@ export function SessionDrawer({ sessionId, onClose, initialEventId }: SessionDra
                     }
                     onViewPrompts={handleViewPrompts}
                     highlightedEventId={highlightedEventId}
+                    onOpenDetail={setDetailEvent}
                   />
                 )}
                 {activeTab === "prompts" && (
@@ -326,9 +336,10 @@ interface EventFeedProps {
   onToggleExpand: (id: string) => void;
   onViewPrompts: () => void;
   highlightedEventId?: string | null;
+  onOpenDetail?: (event: AgentEvent) => void;
 }
 
-function EventFeed({ events, expandedEventId, onToggleExpand, onViewPrompts, highlightedEventId }: EventFeedProps) {
+function EventFeed({ events, expandedEventId, onToggleExpand, onViewPrompts, highlightedEventId, onOpenDetail }: EventFeedProps) {
   if (events.length === 0) {
     return (
       <div className="py-8 text-center text-xs text-text-muted">
@@ -405,6 +416,7 @@ function EventFeed({ events, expandedEventId, onToggleExpand, onViewPrompts, hig
                 <ExpandedEvent
                   event={event}
                   onViewPrompts={event.has_content ? onViewPrompts : undefined}
+                  onOpenDetail={onOpenDetail ? () => onOpenDetail(event) : undefined}
                 />
               )}
             </div>
@@ -433,9 +445,11 @@ function EventRow({ children, isHighlighted }: { children: React.ReactNode; isHi
 function ExpandedEvent({
   event,
   onViewPrompts,
+  onOpenDetail,
 }: {
   event: AgentEvent;
   onViewPrompts?: () => void;
+  onOpenDetail?: () => void;
 }) {
   const summaryRows = getSummaryRows(event);
 
@@ -480,19 +494,185 @@ function ExpandedEvent({
       {/* JSON payload */}
       <SyntaxJson data={payload} />
 
-      {/* View Prompts link */}
-      {onViewPrompts && (
+      {/* Action links */}
+      <div className="mt-2 flex items-center gap-3">
+        {onViewPrompts && (
+          <button
+            className="text-xs"
+            style={{ color: "var(--accent)" }}
+            onClick={(e) => {
+              e.stopPropagation();
+              onViewPrompts();
+            }}
+          >
+            View Prompts →
+          </button>
+        )}
+        {onOpenDetail && (
+          <button
+            className="text-[11px]"
+            style={{ color: "var(--accent)" }}
+            onClick={(e) => {
+              e.stopPropagation();
+              onOpenDetail();
+            }}
+            data-testid="open-full-detail"
+          >
+            Open full detail →
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ---- Event detail view (Mode 2) ---- */
+
+type DetailTab = "details" | "prompts";
+
+function EventDetailView({
+  event,
+  session,
+  onBack,
+}: {
+  event: AgentEvent;
+  session: SessionType;
+  onBack: () => void;
+}) {
+  const [activeTab, setActiveTab] = useState<DetailTab>("details");
+  const badge = getBadge(event.event_type);
+  const summaryRows = getSummaryRows(event);
+  const payload = {
+    id: event.id,
+    event_type: event.event_type,
+    model: event.model,
+    tokens_input: event.tokens_input,
+    tokens_output: event.tokens_output,
+    tokens_total: event.tokens_total,
+    latency_ms: event.latency_ms,
+    tool_name: event.tool_name,
+    has_content: event.has_content,
+    occurred_at: event.occurred_at,
+  };
+
+  return (
+    <div className="flex flex-1 flex-col overflow-hidden">
+      {/* Back bar */}
+      <div
+        className="flex h-8 shrink-0 items-center px-3"
+        style={{
+          background: "var(--bg-elevated)",
+          borderBottom: "1px solid var(--border-subtle)",
+        }}
+      >
         <button
-          className="mt-2 text-xs"
+          className="text-xs"
           style={{ color: "var(--accent)" }}
-          onClick={(e) => {
-            e.stopPropagation();
-            onViewPrompts();
+          onClick={onBack}
+          data-testid="back-to-session"
+        >
+          ← Back to session
+        </button>
+      </div>
+
+      {/* Event header */}
+      <div
+        className="flex h-14 shrink-0 items-center gap-2 px-4"
+        style={{ borderBottom: "1px solid var(--border)" }}
+      >
+        <span
+          className="flex h-[18px] w-[88px] shrink-0 items-center justify-center rounded font-mono text-[10px] font-semibold uppercase"
+          style={{
+            background: `color-mix(in srgb, ${badge.cssVar} 15%, transparent)`,
+            color: badge.cssVar,
+            border: `1px solid color-mix(in srgb, ${badge.cssVar} 30%, transparent)`,
+            borderRadius: 3,
           }}
         >
-          View Prompts →
-        </button>
-      )}
+          {badge.label}
+        </span>
+        <span className="font-mono text-xs" style={{ color: "var(--text-secondary)" }}>
+          {session.flavor}
+        </span>
+        <span style={{ color: "var(--text-muted)" }}>·</span>
+        <span className="font-mono text-xs" style={{ color: "var(--text-muted)" }}>
+          {session.session_id.slice(0, 8)}
+        </span>
+      </div>
+
+      {/* Metadata */}
+      <div
+        className="flex h-8 shrink-0 items-center px-3 font-mono text-[11px]"
+        style={{
+          background: "var(--bg-elevated)",
+          borderBottom: "1px solid var(--border-subtle)",
+          color: "var(--text-secondary)",
+        }}
+      >
+        <span>{new Date(event.occurred_at).toLocaleString()}</span>
+        {event.latency_ms != null && (
+          <>
+            <span className="mx-1.5" style={{ color: "var(--text-muted)" }}>·</span>
+            <span>{event.latency_ms}ms</span>
+          </>
+        )}
+        {event.model && (
+          <>
+            <span className="mx-1.5" style={{ color: "var(--text-muted)" }}>·</span>
+            <span>{event.model}</span>
+          </>
+        )}
+      </div>
+
+      {/* Tabs */}
+      <div
+        className="flex h-9 shrink-0 items-end gap-4 px-4"
+        style={{ borderBottom: "1px solid var(--border)" }}
+      >
+        {(["details", "prompts"] as const).map((tab) => (
+          <button
+            key={tab}
+            className="pb-2 text-xs font-medium capitalize transition-colors"
+            style={
+              activeTab === tab
+                ? { color: "var(--text)", borderBottom: "2px solid var(--accent)" }
+                : { color: "var(--text-muted)" }
+            }
+            onClick={() => setActiveTab(tab)}
+          >
+            {tab === "details" ? "Details" : "Prompts"}
+          </button>
+        ))}
+      </div>
+
+      {/* Content */}
+      <div className="flex-1 overflow-y-auto">
+        {activeTab === "details" && (
+          <div className="p-3" style={{ background: "var(--bg)" }}>
+            <div className="mb-3 grid gap-x-3 gap-y-1" style={{ gridTemplateColumns: "140px 1fr" }}>
+              {summaryRows.map(([key, val]) => (
+                <div key={key} className="contents">
+                  <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>{key}</span>
+                  <span className="font-mono text-xs" style={{ color: "var(--text)" }}>{val}</span>
+                </div>
+              ))}
+            </div>
+            <div className="mb-3" style={{ borderTop: "1px solid var(--border-subtle)" }} />
+            <SyntaxJson data={payload} />
+          </div>
+        )}
+        {activeTab === "prompts" && (
+          <>
+            {event.has_content ? (
+              <PromptViewer eventId={event.id} />
+            ) : (
+              <div className="px-4 py-6 text-[13px]" style={{ color: "var(--text-muted)" }}>
+                Prompt capture is not enabled for this deployment.
+              </div>
+            )}
+          </>
+        )}
+      </div>
     </div>
   );
 }

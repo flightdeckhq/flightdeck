@@ -18,7 +18,7 @@ const stateBadgeColors: Record<string, { bg: string; color: string }> = {
 interface SessionEventRowProps {
   session: Session;
   scale: ScaleTime<number, number>;
-  onClick: () => void;
+  onClick: (eventId?: string) => void;
   viewMode: ViewMode;
   start: Date;
   end: Date;
@@ -50,7 +50,7 @@ export function SessionEventRow({ session, scale, onClick, viewMode, start, end,
     <div
       className="flex h-10 cursor-pointer items-center transition-colors hover:bg-surface-hover"
       style={{ borderBottom: "1px solid var(--border-subtle)" }}
-      onClick={onClick}
+      onClick={() => onClick()}
     >
       {/* Left panel — 240px, indented */}
       <div className="flex h-full w-[240px] shrink-0 items-center gap-1.5 pl-7 pr-3">
@@ -98,6 +98,7 @@ export function SessionEventRow({ session, scale, onClick, viewMode, start, end,
               tokensTotal={node.tokensTotal}
               latencyMs={node.latencyMs}
               occurredAt={node.occurredAt}
+              eventId={node.id}
               onClick={onClick}
               size={24}
               isVisible={isEventVisible(node.eventType, activeFilter)}

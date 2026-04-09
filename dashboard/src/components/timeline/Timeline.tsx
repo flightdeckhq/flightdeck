@@ -23,6 +23,8 @@ interface TimelineProps {
   onExpandFlavor: (flavor: string) => void;
   onNodeClick: (sessionId: string, eventId?: string) => void;
   activeFilter?: string | null;
+  paused?: boolean;
+  pausedAt?: Date | null;
 }
 
 export function Timeline({
@@ -34,10 +36,13 @@ export function Timeline({
   onExpandFlavor,
   onNodeClick,
   activeFilter,
+  paused,
+  pausedAt,
 }: TimelineProps) {
-  // Live-updating "now" — smooth scrolling via requestAnimationFrame
+  // Live-updating "now" — smooth scrolling via rAF, stops when paused
   const [now, setNow] = useState(() => new Date());
   useEffect(() => {
+    if (paused) return;
     let rafId: number;
     const tick = () => {
       setNow(new Date());
@@ -45,7 +50,7 @@ export function Timeline({
     };
     rafId = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(rafId);
-  }, []);
+  }, [paused]);
 
   const filteredFlavors = useMemo(() => {
     if (!flavorFilter) return flavors;
@@ -53,12 +58,13 @@ export function Timeline({
   }, [flavors, flavorFilter]);
 
   const rangeMs = TIME_RANGE_MS[timeRange];
-  const start = useMemo(() => new Date(now.getTime() - rangeMs), [now, rangeMs]);
+  const scaleEnd = paused && pausedAt ? pausedAt : now;
+  const start = useMemo(() => new Date(scaleEnd.getTime() - rangeMs), [scaleEnd, rangeMs]);
   const width = 800;
 
   const scale = useMemo(
-    () => scaleTime().domain([start, now]).range([0, width]),
-    [start, now, width]
+    () => scaleTime().domain([start, scaleEnd]).range([0, width]),
+    [start, scaleEnd, width]
   );
 
   if (flavors.length === 0) {
@@ -74,7 +80,7 @@ export function Timeline({
     <div className="flex flex-col">
       {/* Shared time axis */}
       <div className="pl-[240px]">
-        <TimeAxis start={start} end={now} width={width} timeRange={timeRange} />
+        <TimeAxis start={start} end={scaleEnd} width={width} timeRange={timeRange} />
       </div>
 
       {/* Flavor rows */}
@@ -91,7 +97,7 @@ export function Timeline({
               onToggleExpand={() => onExpandFlavor(f.flavor)}
               viewMode={viewMode}
               start={start}
-              end={now}
+              end={scaleEnd}
               width={width + 240}
               activeFilter={activeFilter}
             />

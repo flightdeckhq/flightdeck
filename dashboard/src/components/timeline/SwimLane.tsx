@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, memo } from "react";
 import type { ScaleTime } from "d3-scale";
 import type { Session } from "@/lib/types";
 import type { ViewMode } from "@/pages/Fleet";
@@ -25,7 +25,7 @@ interface SwimLaneProps {
   sessionVersions?: Record<string, number>;
 }
 
-export function SwimLane({
+function SwimLaneComponent({
   flavor,
   activeCount,
   sessions,
@@ -126,6 +126,21 @@ export function SwimLane({
     </div>
   );
 }
+
+export const SwimLane = memo(SwimLaneComponent, (prev, next) => {
+  if (prev.flavor !== next.flavor) return false;
+  if (prev.sessions !== next.sessions) return false;
+  if (prev.expanded !== next.expanded) return false;
+  if (prev.viewMode !== next.viewMode) return false;
+  if (prev.activeFilter !== next.activeFilter) return false;
+  if (prev.sessionVersions !== next.sessionVersions) return false;
+  // Only re-render for scale changes > 1 second
+  const domainDelta = Math.abs(
+    next.scale.domain()[1].getTime() - prev.scale.domain()[1].getTime()
+  );
+  if (domainDelta < 1000) return true;
+  return false;
+});
 
 /** Shows aggregated 20px event circles from all sessions of a flavor. */
 function AggregatedSwimLane({

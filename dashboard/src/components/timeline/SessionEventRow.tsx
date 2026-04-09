@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, memo } from "react";
 import type { ScaleTime } from "d3-scale";
 import type { Session } from "@/lib/types";
 import type { ViewMode } from "@/pages/Fleet";
@@ -27,7 +27,7 @@ interface SessionEventRowProps {
   version?: number;
 }
 
-export function SessionEventRow({ session, scale, onClick, viewMode, start, end, width, activeFilter, version = 0 }: SessionEventRowProps) {
+function SessionEventRowComponent({ session, scale, onClick, viewMode, start, end, width, activeFilter, version = 0 }: SessionEventRowProps) {
   const isActive = session.state === "active";
   const { events, loading } = useSessionEvents(session.session_id, isActive, version);
   const badge = stateBadgeColors[session.state] ?? stateBadgeColors.closed;
@@ -112,3 +112,17 @@ export function SessionEventRow({ session, scale, onClick, viewMode, start, end,
     </div>
   );
 }
+
+export const SessionEventRow = memo(SessionEventRowComponent, (prev, next) => {
+  if (prev.session.state !== next.session.state) return false;
+  if (prev.session.tokens_used !== next.session.tokens_used) return false;
+  if (prev.viewMode !== next.viewMode) return false;
+  if (prev.activeFilter !== next.activeFilter) return false;
+  if (prev.version !== next.version) return false;
+  // Only re-render for scale changes > 1 second
+  const domainDelta = Math.abs(
+    next.scale.domain()[1].getTime() - prev.scale.domain()[1].getTime()
+  );
+  if (domainDelta < 1000) return true;
+  return false;
+});

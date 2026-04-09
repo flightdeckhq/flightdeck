@@ -1,4 +1,4 @@
-import { useRef, useEffect, useState } from "react";
+import { useRef, useEffect, useState, memo } from "react";
 import type { EventType } from "@/lib/types";
 import {
   Zap,
@@ -48,7 +48,7 @@ export interface EventNodeProps {
   isVisible?: boolean;
 }
 
-export function EventNode({
+function EventNodeComponent({
   x,
   eventType,
   sessionId,
@@ -145,3 +145,11 @@ export function EventNode({
     </div>
   );
 }
+
+export const EventNode = memo(EventNodeComponent, (prev, next) => {
+  if (prev.x !== next.x) return false;
+  if (prev.isVisible !== next.isVisible) return false;
+  if (prev.eventId !== next.eventId) return false;
+  if (prev.size !== next.size) return false;
+  return true;
+});

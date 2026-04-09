@@ -28,7 +28,7 @@ export function SessionStateBar({ flavors }: SessionStateBarProps) {
       {states.map((s) => (
         <div key={s.key} className="flex flex-col items-center">
           <span
-            className="text-xl font-bold"
+            className="text-[22px] font-bold"
             style={{ color: s.colorVar }}
             data-testid={`state-count-${s.key}`}
           >

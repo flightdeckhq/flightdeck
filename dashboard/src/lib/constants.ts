@@ -39,3 +39,15 @@ export const THEME_STORAGE_KEY = "flightdeck-theme";
 
 /** Width of the left panel in fleet view (sidebar + flavor/session info). */
 export const LEFT_PANEL_WIDTH = 240;
+
+/** LocalStorage key for live feed column widths. */
+export const FEED_COL_WIDTHS_KEY = "flightdeck-feed-col-widths";
+
+/** Default live feed column widths in pixels. */
+export const FEED_COL_DEFAULTS = {
+  flavor: 120,
+  session: 80,
+  type: 96,
+  detail: 400,
+  time: 80,
+} as const;

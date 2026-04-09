@@ -322,6 +322,8 @@ export function Fleet() {
           isPaused={paused}
           queueLength={pauseQueue.length}
           catchingUp={catchingUp}
+          onPause={handlePause}
+          onResume={handleReturnToLive}
         />
       </div>
 

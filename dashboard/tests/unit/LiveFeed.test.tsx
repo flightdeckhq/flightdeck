@@ -176,4 +176,45 @@ describe("LiveFeed", () => {
     expect(count.textContent).toContain("500 events waiting");
     expect(count.textContent).not.toContain("oldest dropped");
   });
+
+  it("default sort is time descending (newest first)", () => {
+    render(<LiveFeed events={mockFeedEvents} onEventClick={() => {}} />);
+    const rows = screen.getAllByTestId("feed-row");
+    const firstBadge = rows[0].querySelector("[data-testid='feed-badge']");
+    expect(firstBadge?.textContent).toBe("TOOL"); // arrivedAt=3000, newest
+  });
+
+  it("click flavor header sorts by flavor ascending", () => {
+    const events = [
+      makeFeedEvent({ id: "e1", flavor: "zeta-agent" }, 1000),
+      makeFeedEvent({ id: "e2", flavor: "alpha-agent" }, 2000),
+    ];
+    render(<LiveFeed events={events} onEventClick={() => {}} />);
+    fireEvent.click(screen.getByTestId("feed-col-flavor"));
+    const rows = screen.getAllByTestId("feed-row");
+    expect(rows[0].textContent).toContain("alpha-agent");
+  });
+
+  it("sort indicator shows arrow", () => {
+    render(<LiveFeed events={mockFeedEvents} onEventClick={() => {}} />);
+    // Default: time col has ↓
+    const timeCol = screen.getByTestId("feed-col-time");
+    expect(timeCol.textContent).toContain("↓");
+  });
+
+  it("non-time sort triggers onPause", () => {
+    const onPause = vi.fn();
+    render(<LiveFeed events={mockFeedEvents} onEventClick={() => {}} onPause={onPause} />);
+    fireEvent.click(screen.getByTestId("feed-col-flavor"));
+    expect(onPause).toHaveBeenCalled();
+  });
+
+  it("return to live resets sort and calls onResume", () => {
+    const onResume = vi.fn();
+    render(<LiveFeed events={mockFeedEvents} onEventClick={() => {}} onPause={() => {}} onResume={onResume} />);
+    fireEvent.click(screen.getByTestId("feed-col-flavor"));
+    expect(screen.getByTestId("sort-pause-banner")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Return to live"));
+    expect(onResume).toHaveBeenCalled();
+  });
 });

@@ -34,7 +34,7 @@ export function FleetPanel({ flavors, onFlavorClick, activeFlavorFilter, childre
       }}
     >
       {/* Fleet Overview */}
-      <div className="px-3 pb-2 pt-4 text-[11px] font-semibold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>
+      <div className="px-3 pb-2 pt-4 text-xs font-semibold uppercase tracking-[0.06em]" style={{ color: "var(--text-secondary)" }}>
         Fleet Overview
       </div>
       <div className="space-y-1 px-3 pb-3">
@@ -45,7 +45,7 @@ export function FleetPanel({ flavors, onFlavorClick, activeFlavorFilter, childre
       </div>
 
       {/* Session States */}
-      <div className="px-3 pb-2 pt-2 text-[11px] font-semibold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>
+      <div className="px-3 pb-2 pt-2 text-xs font-semibold uppercase tracking-[0.06em]" style={{ color: "var(--text-secondary)" }}>
         Session States
       </div>
       <div className="px-3 pb-3">
@@ -53,7 +53,7 @@ export function FleetPanel({ flavors, onFlavorClick, activeFlavorFilter, childre
       </div>
 
       {/* Flavors */}
-      <div className="px-3 pb-2 pt-2 text-[11px] font-semibold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>
+      <div className="px-3 pb-2 pt-2 text-xs font-semibold uppercase tracking-[0.06em]" style={{ color: "var(--text-secondary)" }}>
         Flavors
         {activeFlavorFilter && (
           <span className="ml-1 font-normal" style={{ color: "var(--primary)" }}>
@@ -73,7 +73,7 @@ export function FleetPanel({ flavors, onFlavorClick, activeFlavorFilter, childre
       </div>
 
       {/* Policy Events */}
-      <div className="px-3 pb-2 pt-2 text-[11px] font-semibold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>
+      <div className="px-3 pb-2 pt-2 text-xs font-semibold uppercase tracking-[0.06em]" style={{ color: "var(--text-secondary)" }}>
         Policy Events
       </div>
       <div className="px-3 pb-3">
@@ -97,7 +97,7 @@ function SidebarRow({
   return (
     <div className="flex items-center justify-between py-[5px] px-0 text-[13px]">
       <span style={{ color: "var(--text-secondary)" }}>{label}</span>
-      <span className="font-mono text-[13px]" style={{ color: valueColor ?? "var(--text)" }}>
+      <span className="font-mono text-sm font-semibold" style={{ color: valueColor ?? "var(--text)" }}>
         {value}
       </span>
     </div>
@@ -150,7 +150,7 @@ function FlavorItem({
               background: "var(--accent-glow)",
               color: "var(--text)",
             }
-          : { color: "var(--text-secondary)" }
+          : { color: "var(--text)" }
       }
       onClick={() => onFlavorClick?.(flavor.flavor)}
     >

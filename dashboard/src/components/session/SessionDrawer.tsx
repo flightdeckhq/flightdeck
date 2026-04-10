@@ -677,7 +677,14 @@ function MetadataBar({ session }: { session: SessionType }) {
       data-testid="session-metadata-bar"
       style={{
         display: "grid",
-        gridTemplateColumns: "repeat(auto-fit, minmax(96px, 1fr))",
+        // minmax(140, 1fr) collapses the grid to 3 columns at the
+        // 520px drawer width (inner = 496px; 3*140 + 2*16 = 452 ≤ 496,
+        // 4*140 + 3*16 = 608 > 496). Each column then resolves to
+        // ~155px, which is the smallest size that fits a
+        // 17-char model name ("claude-sonnet-4-6") plus the provider
+        // logo plus the 4px gap without triggering the ellipsis
+        // clip. Anything longer than that still ellipsises cleanly.
+        gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))",
         gap: "6px 16px",
         padding: "8px 12px",
         background: "var(--bg-elevated)",

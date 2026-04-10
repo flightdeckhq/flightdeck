@@ -78,8 +78,27 @@ export const useFleetStore = create<FleetState>((set, get) => ({
 
   applyUpdate: (update: FleetUpdate) => {
     const { flavors } = get();
+    // Snapshot whether this flavor was already in the store BEFORE
+    // we mutate flavors. A new flavor appearing via session_start is
+    // a strong signal that the agent just called sensor.init() and
+    // may have registered new custom directives -- the dashboard
+    // would otherwise miss them until a hard refresh.
+    const isNewFlavor = !flavors.some((f) => f.flavor === update.session.flavor);
     const updated = applySessionUpdate(flavors, update.session);
     set({ flavors: updated });
+
+    if (update.type === "session_start" && isNewFlavor) {
+      // Best-effort: refetch the directive registry. The new
+      // FlavorItem will pick it up automatically because the
+      // FleetPanel reads customDirectives from the store via a
+      // useFleetStore selector. Failures are swallowed so a
+      // transient API blip never blocks WebSocket processing.
+      fetchCustomDirectives()
+        .then((directives) => set({ customDirectives: directives }))
+        .catch(() => {
+          /* directive refresh is best-effort */
+        });
+    }
   },
 
   selectSession: (id) => set({ selectedSessionId: id }),

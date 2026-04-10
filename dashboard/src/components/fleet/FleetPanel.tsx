@@ -15,7 +15,7 @@ import { PolicyEventList } from "./PolicyEventList";
 import { createDirective } from "@/lib/api";
 import { DirectiveCard } from "@/components/directives/DirectiveCard";
 import { useFleetStore } from "@/store/fleet";
-import { X } from "lucide-react";
+import { OctagonX, X, Zap } from "lucide-react";
 
 /**
  * Per-state session counts. Computed by Fleet.tsx via useMemo from
@@ -550,6 +550,10 @@ function FlavorItem({
           </button>
         )}
       </div>
+      {/* Action buttons -- icon-only so the flavor name doesn't
+          truncate at the default 240px sidebar width. Both buttons
+          carry a title attribute so the action is discoverable on
+          hover and a data-testid for tests. */}
       <div className="flex items-center gap-1 shrink-0">
       {hasDirectives && (
         <Dialog
@@ -559,7 +563,9 @@ function FlavorItem({
           <DialogTrigger asChild>
             <button
               data-testid={`flavor-directives-button-${flavor.flavor}`}
-              className="rounded px-1.5 py-0.5 text-[11px] font-mono transition-colors"
+              title={`Trigger directives on ${flavor.flavor}`}
+              aria-label={`Trigger directives on ${flavor.flavor}`}
+              className="flex h-5 w-5 items-center justify-center rounded transition-colors"
               style={{
                 background: "var(--accent-glow)",
                 color: "var(--accent)",
@@ -567,7 +573,7 @@ function FlavorItem({
               }}
               onClick={(e) => e.stopPropagation()}
             >
-              Directives
+              <Zap size={11} />
             </button>
           </DialogTrigger>
           <DialogContent>
@@ -601,7 +607,10 @@ function FlavorItem({
         <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
           <DialogTrigger asChild>
             <button
-              className="rounded px-1.5 py-0.5 text-[11px] transition-colors"
+              data-testid={`flavor-stop-all-button-${flavor.flavor}`}
+              title={`Stop all sessions of ${flavor.flavor}`}
+              aria-label={`Stop all sessions of ${flavor.flavor}`}
+              className="flex h-5 w-5 items-center justify-center rounded transition-colors"
               style={{
                 background: "rgba(239,68,68,0.15)",
                 color: "var(--status-lost)",
@@ -609,7 +618,7 @@ function FlavorItem({
               }}
               onClick={(e) => e.stopPropagation()}
             >
-              Stop All
+              <OctagonX size={11} />
             </button>
           </DialogTrigger>
           <DialogContent>

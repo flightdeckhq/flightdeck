@@ -126,31 +126,42 @@ describe("FleetPanel", () => {
     expect(closedCount).toHaveTextContent("1");
   });
 
-  it("does not show Stop All when no active sessions", () => {
+  it("does not show Stop All button when no active sessions", () => {
     render(<FleetPanel flavors={inactiveFlavors} />);
-    expect(screen.queryByText("Stop All")).not.toBeInTheDocument();
+    // Stop All is icon-only now -- assert via testid since the
+    // visible glyph is a lucide OctagonX SVG with no text node.
+    expect(
+      screen.queryByTestId("flavor-stop-all-button-batch-agent"),
+    ).not.toBeInTheDocument();
   });
 
-  it("shows Stop All when flavor has active sessions", () => {
+  it("shows Stop All icon button when flavor has active sessions", () => {
     render(<FleetPanel flavors={mockFlavors} />);
-    expect(screen.getByText("Stop All")).toBeInTheDocument();
+    expect(
+      screen.getByTestId("flavor-stop-all-button-research-agent"),
+    ).toBeInTheDocument();
   });
 
   it("opens confirmation dialog on Stop All click", () => {
     render(<FleetPanel flavors={mockFlavors} />);
-    fireEvent.click(screen.getByText("Stop All"));
+    fireEvent.click(
+      screen.getByTestId("flavor-stop-all-button-research-agent"),
+    );
     expect(
-      screen.getByText("Stop all sessions of research-agent?")
+      screen.getByText("Stop all sessions of research-agent?"),
     ).toBeInTheDocument();
     expect(screen.getByText(/2 active agents/)).toBeInTheDocument();
   });
 
   it("calls createDirective with correct payload on confirm", async () => {
     render(<FleetPanel flavors={mockFlavors} />);
+    fireEvent.click(
+      screen.getByTestId("flavor-stop-all-button-research-agent"),
+    );
+    // The dialog body contains a "Stop All" submit button -- the
+    // outer trigger is icon-only so the only "Stop All" text node
+    // is the confirm button inside the dialog.
     fireEvent.click(screen.getByText("Stop All"));
-    const buttons = screen.getAllByText("Stop All");
-    const confirmBtn = buttons[buttons.length - 1];
-    fireEvent.click(confirmBtn);
     await waitFor(() => {
       expect(createDirective).toHaveBeenCalledWith({
         action: "shutdown_flavor",

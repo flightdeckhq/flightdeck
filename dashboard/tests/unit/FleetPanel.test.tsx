@@ -150,7 +150,7 @@ describe("FleetPanel", () => {
     expect(
       screen.getByText("Stop all sessions of research-agent?"),
     ).toBeInTheDocument();
-    expect(screen.getByText(/2 active agents/)).toBeInTheDocument();
+    expect(screen.getByText(/2 active or idle agents/)).toBeInTheDocument();
   });
 
   it("calls createDirective with correct payload on confirm", async () => {

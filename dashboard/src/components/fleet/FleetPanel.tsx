@@ -484,7 +484,18 @@ function FlavorItem({
   const [dialogOpen, setDialogOpen] = useState(false);
   const [directivesDialogOpen, setDirectivesDialogOpen] = useState(false);
 
-  const hasActive = flavor.active_count > 0;
+  // "Live" sessions = active OR idle. Idle agents are still
+  // killable -- they'll receive the shutdown directive on their next
+  // LLM call. Stop All was previously gated on `active_count > 0`
+  // which hid the button for any flavor whose sessions had all
+  // momentarily transitioned to idle, even though those sessions
+  // are still very much alive. Mirrors SwimLane's `liveCount`
+  // calculation so the FlavorItem and the swimlane row stay in
+  // sync about what counts as "running".
+  const liveSessions = flavor.sessions.filter(
+    (s) => s.state === "active" || s.state === "idle",
+  );
+  const hasLive = liveSessions.length > 0;
   const hasDirectives = directives.length > 0;
 
   async function handleStopAll() {
@@ -603,7 +614,7 @@ function FlavorItem({
           </DialogContent>
         </Dialog>
       )}
-      {hasActive && !sent && (
+      {hasLive && !sent && (
         <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
           <DialogTrigger asChild>
             <button
@@ -626,8 +637,8 @@ function FlavorItem({
               Stop all sessions of {flavor.flavor}?
             </DialogTitle>
             <p className="text-sm text-text-muted">
-              All {flavor.active_count} active agents of this type will receive
-              a shutdown directive on their next LLM call.
+              All {liveSessions.length} active or idle agents of this type
+              will receive a shutdown directive on their next LLM call.
             </p>
             <div className="flex justify-end gap-2 pt-4">
               <DialogClose asChild>

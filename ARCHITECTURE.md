@@ -997,6 +997,368 @@ When capture is disabled for a session, the Prompts tab shows:
 
 ---
 
+## Phase 4.5 Additions
+
+Phase 4.5 is a UI redesign and feature pass that adds custom directives,
+Pydantic schema validation, a bulk events endpoint, a live event feed, a
+pause/queue model, dashboard performance optimizations, and a directives
+management page. This section consolidates everything new in Phase 4.5
+that is not covered above. See DECISIONS.md D059-D072 for the rationale.
+
+### Sensor -- Custom Directives and Pydantic Schemas
+
+`sensor/flightdeck_sensor/core/schemas.py`
+- Pydantic v2 models for control plane envelopes. All use
+  `model_validate()` and fail open on `ValidationError`.
+- `DirectivePayloadSchema`: validates the `payload` field of a custom
+  directive received in a response envelope. Fields:
+  `directive_name: str`, `fingerprint: str`, `parameters: dict`.
+- `PolicyResponseSchema`: validates the `GET /v1/policy` response. Fields:
+  `token_limit`, `warn_at_pct`, `degrade_at_pct`, `degrade_to`,
+  `block_at_pct`, `unavailable_policy`.
+- `DirectiveResponseSchema`: validates the `directive` object inside an
+  ingestion response envelope. Fields: `action`, `reason`,
+  `grace_period_ms`, `degrade_to`, `payload`.
+- `SyncResponseSchema`: validates the `POST /v1/directives/sync` response.
+  Fields: `unknown_fingerprints: list[str]`.
+- Pydantic v2 is added to sensor runtime dependencies. Go API handlers
+  keep manual validation -- this is sensor-only.
+
+`sensor/flightdeck_sensor/__init__.py` (extend Phase 1 public API)
+- `directive(name, description, parameters=None) -> Callable`: decorator
+  that registers a custom directive handler at module load time.
+- `Parameter`: alias of `DirectiveParameter` exposed in `__all__` for
+  ergonomic decorator use.
+- `_compute_fingerprint(name, description, parameters) -> str`: SHA-256
+  digest of the canonical JSON of the directive schema, base64-encoded.
+  Used to detect when a handler has changed since last sync.
+- `_directive_registry: dict[str, DirectiveRegistration]`: module-global
+  registry populated at decorator evaluation time.
+
+`sensor/flightdeck_sensor/core/types.py` (extend Phase 1)
+- `EventType.DIRECTIVE_RESULT = "directive_result"`: result of a directive
+  acknowledgement or custom-directive execution.
+- `DirectiveAction.CUSTOM = "custom"`: action value for custom directives.
+- `DirectiveParameter`: name, type, description, options, required, default.
+- `DirectiveRegistration`: name, description, parameters, fingerprint,
+  handler.
+- `DirectiveContext`: passed to handlers on execution. Fields:
+  session_id, flavor, tokens_used, model.
+
+`sensor/flightdeck_sensor/core/session.py` (extend)
+- `_preflight_policy()`: called from `Session.start()`. Issues
+  `GET /v1/policy?flavor=...&session_id=...` and populates `PolicyCache`
+  before the first LLM call. Validates with `PolicyResponseSchema`.
+- `_sync_directives(registry)`: called from `Session.start()`. POSTs all
+  registered fingerprints to `/v1/directives/sync`. For each unknown
+  fingerprint returned, POSTs the full schema to `/v1/directives/register`.
+- `_execute_custom_directive(directive)`: validates payload via
+  `DirectivePayloadSchema`, looks up handler in `_directive_registry`,
+  verifies fingerprint match, runs handler with a 5 second timeout via
+  `_run_handler_with_timeout()`, then enqueues a `directive_result` event
+  with `directive_success`, `directive_result`, and `directive_error`.
+  Never raises -- always fails open.
+- `_run_handler_with_timeout(handler, ctx, params)`: SIGALRM-based timeout
+  on Unix when running on the main thread. On Windows or non-main threads
+  the handler runs without a timeout (handlers are trusted).
+- Acknowledgement events: in `_apply_directive()`, before acting on
+  `SHUTDOWN`, `SHUTDOWN_FLAVOR`, or `DEGRADE`, the sensor enqueues a
+  `directive_result` event with `directive_status="acknowledged"` and an
+  action-specific result dict (e.g. `from_model`/`to_model` for degrade,
+  `reason` for shutdown). For shutdown variants the sensor calls
+  `EventQueue.flush()` synchronously before raising the shutdown flag so
+  the acknowledgement is not lost when the process exits.
+
+`sensor/flightdeck_sensor/transport/client.py` (extend)
+- `EventQueue.flush(timeout=5.0)`: synchronously drains pending events up
+  to a deadline. Used by `Session.end()` and the shutdown branch of
+  `_apply_directive()`.
+- `ControlPlaneClient.sync_directives(flavor, directives)`: POST to
+  `/v1/directives/sync`. Returns the list of unknown fingerprints from
+  `SyncResponseSchema`.
+- `ControlPlaneClient.register_directives(flavor, directives)`: POST to
+  `/v1/directives/register`. Fire-and-forget; logs failures.
+- `_parse_directive(body)`: now uses `DirectiveResponseSchema`. On
+  `ValidationError`, logs a warning and returns `None` (fail open).
+
+### API -- Bulk Events Endpoint and Custom Directive Endpoints
+
+`api/internal/handlers/events_list.go`
+- `GET /v1/events`: bulk event query for the dashboard's historical load.
+- Query params:
+  - `from` (required, ISO 8601) -- 400 if missing or unparseable
+  - `to` (optional, ISO 8601, defaults to now)
+  - `flavor` (optional)
+  - `event_type` (optional)
+  - `session_id` (optional)
+  - `limit` (optional, default 500, max 2000 -- 400 if exceeded)
+  - `offset` (optional, default 0 -- 400 if negative)
+- Returns `store.EventsResponse`: `events`, `total`, `limit`, `offset`,
+  `has_more`. Full swaggo annotations on the handler.
+
+`api/internal/store/events.go`
+- `GetEvents(ctx, params) (*EventsResponse, error)`: builds a parameterized
+  WHERE clause from the params. Runs a separate `SELECT COUNT(*)` for
+  `total` and a paginated `SELECT` for `events`. All values are passed as
+  parameters; no string interpolation.
+- `EventsResponse` struct: `Events []Event`, `Total int`, `Limit int`,
+  `Offset int`, `HasMore bool`.
+
+`api/internal/handlers/directives.go` (extend Phase 3)
+- `POST /v1/directives` now accepts `action="custom"`. Body may include
+  `directive_name`, `fingerprint`, and `parameters`, packaged into the
+  `payload` JSONB column on the `directives` row. Both flavor-wide and
+  per-session targeting are supported and fan out via the existing
+  `shutdown_flavor` mechanism (D058).
+
+`api/internal/handlers/custom_directives.go` (new in Phase 4.5)
+- `POST /v1/directives/sync`: receives a list of fingerprints from the
+  sensor. Returns the list of fingerprints not present in
+  `custom_directives`. For known fingerprints, bumps `last_seen_at`.
+- `POST /v1/directives/register`: receives full schemas (fingerprint,
+  name, description, flavor, parameters). Upserts into `custom_directives`
+  on `(fingerprint)` conflict.
+- `GET /v1/directives/custom?flavor=`: returns all known custom directives
+  ordered by `registered_at DESC`. Optional `flavor` filter.
+- All three handlers carry full swaggo annotations.
+
+`api/internal/store/postgres.go` (extend)
+- `SyncDirectives(ctx, fingerprints)`: returns unknown fingerprints and
+  bumps `last_seen_at` for known ones.
+- `RegisterDirectives(ctx, directives)`: upsert with
+  `ON CONFLICT (fingerprint) DO UPDATE SET last_seen_at = NOW()`.
+- `GetCustomDirectives(ctx, flavor)`: list query with optional flavor
+  filter.
+- `CustomDirective` struct: id, fingerprint, name, description, flavor,
+  parameters (JSONB), registered_at, last_seen_at.
+
+`api/internal/server/server.go` (extend)
+- New routes registered:
+  - `POST /v1/directives/sync`
+  - `POST /v1/directives/register`
+  - `GET /v1/directives/custom`
+  - `GET /v1/events`
+- HTTP server `WriteTimeout` is intentionally not set so the long-lived
+  WebSocket stream is not killed by a global write deadline. The WebSocket
+  write pump applies its own per-message deadline. Other handlers are
+  protected by request context deadlines plus the existing `ReadTimeout`
+  (15s) and `IdleTimeout` (120s).
+
+`api/internal/ws/hub.go` (WebSocket hub fix)
+- When a `flightdeck_fleet` NOTIFY arrives and the subsequent
+  `GetSession` lookup returns an error (e.g. session deleted between
+  notify and read), the hub logs a warning and continues rather than
+  exiting the listener loop.
+
+### Data Model -- Custom Directives Table
+
+`custom_directives` (added in migration 000004)
+
+```sql
+CREATE TABLE custom_directives (
+    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    fingerprint   TEXT NOT NULL UNIQUE,
+    name          TEXT NOT NULL,
+    description   TEXT,
+    flavor        TEXT NOT NULL,
+    parameters    JSONB,
+    registered_at TIMESTAMPTZ DEFAULT now(),
+    last_seen_at  TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX custom_directives_flavor_idx ON custom_directives(flavor);
+CREATE INDEX custom_directives_fp_idx     ON custom_directives(fingerprint);
+```
+
+`directives.payload` JSONB column (added in migration 000005)
+- Carries the parameter dict for `action="custom"` directives. NULL for
+  built-in actions.
+
+Migrations 000004 and 000005 are listed in the migrations table above.
+
+### Dashboard -- Constants, Models, Provider Logos
+
+`dashboard/src/lib/constants.ts`
+Single source of truth for tunable magic numbers:
+
+| Constant | Value | Purpose |
+|---|---|---|
+| `FEED_MAX_EVENTS` | 500 | Live feed display buffer cap, oldest dropped |
+| `PAUSE_QUEUE_MAX_EVENTS` | 1000 | Pause queue cap, FIFO drop on overflow |
+| `FEED_INITIAL_LOAD` | 100 | Initial fleet store load size |
+| `FEED_MIN_HEIGHT` | 120 | Resize lower bound |
+| `FEED_MAX_HEIGHT` | 600 | Resize upper bound |
+| `FEED_DEFAULT_HEIGHT` | 240 | Initial feed height |
+| `FEED_HEIGHT_STORAGE_KEY` | `flightdeck-feed-height` | localStorage key |
+| `FEED_COL_WIDTHS_KEY` | `flightdeck-feed-col-widths` | Column widths key |
+| `FEED_COL_DEFAULTS` | `{flavor:120, session:80, type:96, detail:400, time:80}` | Default column widths |
+| `LEFT_PANEL_WIDTH` | 240 | Sidebar width |
+| `THEME_STORAGE_KEY` | `flightdeck-theme` | Theme persistence key |
+
+`dashboard/src/lib/models.ts`
+- `ANTHROPIC_MODELS: Set<string>` -- exact known Anthropic model IDs.
+- `OPENAI_MODELS: Set<string>` -- exact known OpenAI model IDs.
+- `getProvider(model): "anthropic" | "openai" | "unknown"` -- O(1) Set
+  lookup with prefix fallback (`claude-`, `gpt-`, `o1`, `o3`, `o4`).
+- This is the single source of truth for provider detection used by
+  the policy degrade dropdown, PromptViewer, session drawer, live feed
+  rows, and analytics legend.
+
+`dashboard/src/components/ui/provider-logo.tsx`
+- `ProviderLogo({ provider, size?, className? })`: renders the inline brand
+  SVG for `anthropic`, `openai`, or a Lucide Sparkles icon for `unknown`.
+  SVGs are inline -- never fetched. Brand colors are hardcoded (not CSS
+  variables).
+
+### Dashboard -- Live Feed and Pause Queue
+
+`dashboard/src/lib/types.ts` (extend)
+- `FeedEvent = { arrivedAt: number; event: AgentEvent }`. `arrivedAt` is
+  the dashboard-local monotonic timestamp at WebSocket message receipt
+  (via a counter in `Fleet.tsx` so same-millisecond events do not collide).
+  See D067.
+
+`dashboard/src/components/fleet/EventFilterBar.tsx`
+- Single-select pill bar above the swimlane and live feed. Categories:
+  All, LLM Calls, Tools, Policy, Directives, Session.
+- Pills filter both swimlane circles (opacity-based hide preserves x
+  position) and live feed rows simultaneously. See D065.
+
+`dashboard/src/components/fleet/LiveFeed.tsx`
+- Renders `FeedEvent[]` capped at `FEED_MAX_EVENTS` from the back, then
+  optionally filtered by `activeFilter`.
+- Columns: Flavor, Session, Type, Detail, Time. Default sort is `time desc`
+  (newest first). Clicking any non-time column header changes the sort
+  and auto-pauses the feed via `onPause()`.
+- Display order is driven by `arrivedAt` (the FeedEvent field) so events
+  always appear in the order the dashboard received them. The "Time"
+  column shows `arrivedAt` formatted as wall-clock time.
+- Column header row is `position: absolute` with `z-index: 10` to stay
+  pinned above the scrollable rows.
+- Header badge shows one of:
+  - Live: `${filtered} of ${capped} events` when a filter is active,
+    otherwise `${filtered} events`.
+  - Paused (queue under cap): `Paused · ${queueLength} events waiting`
+    in amber (`var(--status-idle)`).
+  - Paused (queue at cap): `Paused · ${queueLength} events buffered
+    (oldest dropped)` in orange (`var(--status-stale)`).
+  - Catching up: `Catching up...` while a queue drain is in progress.
+- "Return to live" button resets `sortCol` to `time`, `sortDir` to `desc`,
+  and calls `onResume()`.
+- Column widths and panel height are persisted to `localStorage` under
+  `FEED_COL_WIDTHS_KEY` and `FEED_HEIGHT_STORAGE_KEY`. All rows are
+  rendered directly (no virtualized window) -- this was simpler and
+  faster in practice for the 500-event cap.
+
+`dashboard/src/pages/Fleet.tsx` (extend)
+- `pauseQueue: FeedEvent[]` state buffers WebSocket events when
+  `isPaused` is true. New events are appended; if the queue length
+  reaches `PAUSE_QUEUE_MAX_EVENTS` the oldest entry is dropped (FIFO).
+- `pausedAt: Date | null` is set on pause and used to freeze the D3
+  time scale.
+- "Resume" handler: drains `pauseQueue` into `feedEvents` (FIFO) and
+  shows a 500ms `catchingUp` flag for the visual fade.
+- "Return to live" handler: discards `pauseQueue` entirely, snaps the
+  time range back to live, clears `pausedAt`.
+- See D068.
+
+### Dashboard -- Session Drawer Mode 1 / Mode 2
+
+`dashboard/src/components/session/SessionDrawer.tsx`
+- Two modes:
+  - **Mode 1** (default): session event list, token usage bar, Prompts tab.
+  - **Mode 2**: single-event detail (back-button to Mode 1), Details tab
+    and Prompts tab for the focused event.
+- The active detail event is derived from props every render:
+  `activeDetailEvent = directDismissed ? internalDetailEvent : (directEventDetail ?? internalDetailEvent)`.
+- `directEventDetail` is set by the parent when the user clicks an event
+  circle in the swimlane. `internalDetailEvent` is set by clicking
+  "Open full detail" inside the drawer. `onClearDirectEvent` is called by
+  the Back button so the parent knows the prop-fed event was dismissed.
+- Mode is rendered directly from `activeDetailEvent` truthiness. The
+  previous design copied props into state via `useEffect` and lost the
+  race when `directEventDetail` arrived after the drawer opened.
+  See D069.
+
+### Dashboard -- Event Detail Drawer
+
+`dashboard/src/components/fleet/EventDetailDrawer.tsx`
+- Standalone right-slide drawer (520px) for a single event opened from
+  the live feed (independent of `SessionDrawer`). Tabs: `details` and
+  `prompts`. The Details tab shows a metadata grid plus the JSON
+  payload via `dashboard/src/components/ui/syntax-json.tsx`. The Prompts
+  tab loads `PromptViewer` if `event.has_content`, otherwise shows the
+  capture-disabled message. Mode 2 of `SessionDrawer` reuses the same
+  metadata grid + `syntax-json` rendering for consistency.
+
+### Dashboard -- Bulk Historical Events Hook
+
+`dashboard/src/hooks/useHistoricalEvents.ts`
+- `useHistoricalEvents(timeRange) -> { events, loading, error, hasMore,
+  total, loadMore }`. On mount and on every `timeRange` change, calls
+  `fetchBulkEvents({ from, limit: 500, offset })` (which hits
+  `GET /v1/events`) and returns the chronological list.
+- Fleet.tsx groups the result by `session_id` to populate `eventsCache`
+  and seeds `feedEvents` from the historical data so the live feed is
+  not empty on page load. After the initial load, no per-session HTTP
+  fetches happen -- WebSocket events flow into the same caches. See
+  D066 and D071.
+
+### Dashboard -- Directives Page
+
+`dashboard/src/pages/Directives.tsx`
+- Dedicated `/directives` page. Header + flavor `Select` + search input.
+- Renders one `DirectiveCard` per known custom directive (loaded from
+  `GET /v1/directives/custom`). Each card has expandable parameter
+  details and a trigger form with target selector (session vs flavor),
+  per-parameter inputs (string / int / float / bool / select), and a
+  submit button that POSTs `/v1/directives` with `action="custom"`.
+
+### Dashboard -- Fleet Panel Directive Activity
+
+`dashboard/src/components/fleet/FleetPanel.tsx`
+- New `DIRECTIVE ACTIVITY` section in the left sidebar. Shows the 5 most
+  recent `directive` and `directive_result` events with a colored status
+  dot (green for `directive_result`, purple for `directive`),
+  flavor · truncated session id, and timestamp. Empty state:
+  "No directive activity yet."
+
+### Dashboard -- PromptViewer Redesign
+
+`dashboard/src/components/session/PromptViewer.tsx`
+- Header shows `ProviderLogo` next to the provider name and model.
+- Each message is a card with a colored role badge (system gray, user
+  indigo, assistant accent, tool cyan).
+- Tools section renders one card per tool with name, description, and
+  collapsible parameters.
+- Response section has a `Pretty` / `Raw` toggle.
+- Provider terminology is preserved exactly per Rule 20 -- no
+  normalization between Anthropic and OpenAI shapes.
+
+### Dashboard -- Performance Optimizations
+
+- `SwimLane`, `SessionEventRow`, and `EventNode` are wrapped in
+  `React.memo` with custom comparators that explicitly include
+  `activeFilter`. The previous comparators omitted it, which caused new
+  WebSocket events to bypass the active filter in the swimlane.
+- Time scale updates use `requestAnimationFrame` throttling so the
+  swimlane redraws at most once per frame instead of once per WebSocket
+  message.
+- `EventNode` opacity is driven by React state (`isVisible && mounted`)
+  so the fade-in transition is reproducible. The previous design mutated
+  the DOM directly, which overrode the visibility state.
+
+### Dashboard -- Startup 502 Fix
+
+`docker/docker-compose.dev.yml` and `docker/nginx/nginx.dev.conf`
+- nginx now waits for the dashboard service to report `healthy` (via
+  `depends_on: condition: service_healthy`) before serving traffic. This
+  eliminates the brief startup window during which `make dev` returned
+  502 from nginx because it was already up while the dashboard
+  containers were still booting Vite.
+
+---
+
 ## Deployment
 
 ### Docker Compose

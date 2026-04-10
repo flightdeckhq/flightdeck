@@ -1040,3 +1040,152 @@ within the selected time range. Client-side grouping by session_id populates the
 same `eventsCache` that the swimlane reads from. Time range changes re-fetch.
 Pagination via `offset` supports loading older events.
 
+---
+
+## D067 -- FeedEvent type with arrivedAt
+
+**Decision:** The dashboard live feed uses a `FeedEvent` wrapper type
+(`{ arrivedAt: number; event: AgentEvent }`) instead of the bare event.
+`arrivedAt` is stamped at WebSocket message receipt using `Date.now()`
+combined with a monotonic counter so events received in the same
+millisecond do not collide. The default display order is `arrivedAt`
+descending (newest first). The "Time" column shows `arrivedAt` formatted
+as wall-clock time. Column-sort by other columns is supported and
+auto-pauses the feed.
+
+**Reasoning:** Sorting by `occurred_at` (the sensor-side timestamp)
+produced inconsistent results when WebSocket batching delivered events
+out of order with respect to wall-clock arrival, and made events from
+clock-skewed agents appear interleaved. `arrivedAt` is monotonically
+increasing on the dashboard side and reflects exactly when the user's
+browser saw the event. This is also what platform engineers expect from
+"live feed" -- the order they would have seen if they were watching the
+network in real time.
+
+**Rejected alternative:** Sorting by `occurred_at` -- inconsistent under
+batching and clock skew.
+
+---
+
+## D068 -- Pause queue model for the live feed
+
+**Decision:** Pausing the fleet view freezes the D3 time scale at
+`pausedAt` and buffers incoming WebSocket events in a `pauseQueue:
+FeedEvent[]` capped at `PAUSE_QUEUE_MAX_EVENTS` (1000). Two resume paths:
+
+- **Resume**: drains the queue in FIFO order into `feedEvents` and shows
+  a 500ms `catchingUp` flag for the visual fade.
+- **Return to live**: discards the queue entirely and snaps the time
+  range back to live.
+
+The queue cap indicator is amber (`var(--status-idle)`) under the cap and
+orange (`var(--status-stale)`) at the cap, with text reading
+"Paused · N events buffered (oldest dropped)".
+
+**Reasoning:** Engineers investigating an incident need to freeze the
+view without losing events. The queue ensures no events are dropped
+during investigation. The cap prevents unbounded memory growth if the
+user pauses and walks away from the dashboard. Two resume paths cover
+the two real cases: "I'm done investigating, replay what I missed" and
+"I'm done investigating, snap me back to now".
+
+**Rejected alternative:** Unbounded queue -- unbounded memory.
+**Rejected alternative:** Drop events while paused -- loses information
+during the most important moment for an incident investigation.
+
+---
+
+## D069 -- SessionDrawer Mode 1 / Mode 2 derived from props
+
+**Decision:** `SessionDrawer` has two modes. Mode 1 (default) is the
+session event list. Mode 2 is single-event detail with back navigation.
+The active detail event is computed every render from props plus
+internal state:
+
+```ts
+activeDetailEvent =
+  directDismissed
+    ? internalDetailEvent
+    : (directEventDetail ?? internalDetailEvent);
+```
+
+`directEventDetail` is set by the parent (e.g. swimlane event click).
+`internalDetailEvent` is set by clicking "Open full detail" within the
+drawer. The Back button calls `onClearDirectEvent` so the parent knows
+the prop-fed detail was dismissed. Mode is rendered directly from
+`activeDetailEvent` truthiness.
+
+**Reasoning:** A race condition existed when copying the prop into state
+via `useEffect` -- the drawer rendered Mode 1 for one frame before
+`directEventDetail` was copied into state, causing a visible flash and
+sometimes never showing Mode 2 at all if the drawer mounted before the
+prop arrived. Deriving the mode directly from props eliminates the race.
+
+**Rejected alternative:** `useEffect` to copy `directEventDetail` into
+state -- racy.
+
+---
+
+## D070 -- Provider logo and model registry
+
+**Decision:** `dashboard/src/lib/models.ts` is the single source of
+truth for all known model names, split by provider into
+`ANTHROPIC_MODELS: Set<string>` and `OPENAI_MODELS: Set<string>`.
+`getProvider(model)` does a Set lookup first (`O(1)`, exact match) with
+prefix fallback (`claude-`, `gpt-`, `o1`, `o3`, `o4`) for models not yet
+in the registry. `ProviderLogo` renders the brand SVG inline with brand
+colors -- not CSS variables, brand colors are fixed.
+
+**Reasoning:** The policy degrade dropdown, `PromptViewer`,
+`SessionDrawer`, `LiveFeed`, and the analytics legend all needed
+provider detection. A single registry prevents divergence (e.g. Anthropic
+appearing under one logo in the feed and another in analytics). Inline
+SVGs avoid an extra network round-trip and CSP complications.
+
+**Rejected alternative:** Per-component provider detection -- diverges.
+**Rejected alternative:** Fetched logos from a CDN -- CSP risk and adds
+network latency to dashboard startup.
+
+---
+
+## D071 -- Bulk events load strategy
+
+**Decision:** Extends D066. After the dashboard loads, there are zero
+per-session HTTP requests. `useHistoricalEvents` fetches `GET /v1/events`
+on mount and on every `timeRange` change. The result is grouped by
+`session_id` to populate `eventsCache`, and is also used to seed
+`feedEvents` so the live feed is not empty on page load. After the
+initial bulk load, all real-time updates flow through the WebSocket
+into the same caches.
+
+**Reasoning:** D066 introduced the bulk endpoint. This decision records
+the matching client-side strategy: one historical fetch per time-range
+change, never per session, and the live feed is hydrated from the same
+data so the user never sees an empty "Live Feed" panel on page load.
+This also means new tabs do not generate a thundering herd of session
+fetches.
+
+---
+
+## D072 -- Directive acknowledgement events in the sensor
+
+**Decision:** Before acting on a `shutdown`, `shutdown_flavor`, or
+`degrade` directive, the sensor enqueues a `directive_result` event with
+`directive_status="acknowledged"` and an action-specific result dict
+(e.g. `from_model`/`to_model` for degrade, `reason` for shutdown). For
+shutdown variants the sensor calls `EventQueue.flush()` synchronously
+before raising the shutdown flag, so the acknowledgement is not lost
+when the process exits. Degrade does not need `flush()` because the
+agent continues running and the queue drains normally.
+
+**Reasoning:** Without acknowledgement events, a shutdown directive
+would send the agent away with no visible confirmation in the fleet
+view. Platform engineers issuing a kill switch need to see "the agent
+received this and acted" -- the RESULT ✓ circle in the swimlane is that
+confirmation. Without it, a stuck agent and a successfully killed agent
+look identical in the dashboard for the staleness window.
+
+**Rejected alternative:** Server-side ack on next sensor POST -- only
+works if the agent successfully posts another event after the directive,
+which is exactly what does not happen for shutdown.
+

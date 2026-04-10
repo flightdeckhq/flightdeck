@@ -222,6 +222,86 @@ describe("SwimLane state suffix", () => {
   });
 });
 
+// Context filter behaviour: non-matching sessions are HIDDEN from
+// the expanded swimlane entirely (not dimmed to 0.15 opacity as the
+// previous implementation did). The filter status bar in Fleet.tsx
+// is the primary signal that filtering is active, so dimming ghost
+// rows inside the swimlane no longer pulls its weight.
+describe("SwimLane context filter", () => {
+  const scale = scaleTime()
+    .domain([new Date(Date.now() - 60_000), new Date()])
+    .range([0, 900]);
+  const baseProps = {
+    scale,
+    onSessionClick: vi.fn(),
+    expanded: true,
+    onToggleExpand: vi.fn(),
+    timelineWidth: 900,
+    leftPanelWidth: 320,
+    activeFilter: null,
+    sessionVersions: {},
+  };
+
+  it("renders every session when matchingSessionIds is null", () => {
+    const flavor = "mixed";
+    const sessions = [
+      makeSession("s1", "active", flavor),
+      makeSession("s2", "active", flavor),
+      makeSession("s3", "active", flavor),
+    ];
+    render(
+      <SwimLane
+        flavor={flavor}
+        sessions={sessions}
+        {...baseProps}
+        matchingSessionIds={null}
+      />,
+    );
+    // All three hash labels appear.
+    expect(screen.getAllByTestId("session-row-label").length).toBe(3);
+  });
+
+  it("hides sessions not in matchingSessionIds", () => {
+    const flavor = "mixed";
+    const sessions = [
+      makeSession("s1", "active", flavor),
+      makeSession("s2", "active", flavor),
+      makeSession("s3", "active", flavor),
+    ];
+    render(
+      <SwimLane
+        flavor={flavor}
+        sessions={sessions}
+        {...baseProps}
+        matchingSessionIds={new Set(["s1", "s3"])}
+      />,
+    );
+    // Only the two matched sessions render; s2 is omitted entirely.
+    const labels = screen.getAllByTestId("session-row-label");
+    expect(labels.length).toBe(2);
+    // The old dimmed-row testid must not appear anywhere -- the
+    // previous dim-to-0.15 behaviour is gone.
+    expect(screen.queryAllByTestId("session-row-dimmed").length).toBe(0);
+  });
+
+  it("renders nothing in the expanded area when no sessions match", () => {
+    const flavor = "mixed";
+    const sessions = [
+      makeSession("s1", "active", flavor),
+      makeSession("s2", "active", flavor),
+    ];
+    render(
+      <SwimLane
+        flavor={flavor}
+        sessions={sessions}
+        {...baseProps}
+        matchingSessionIds={new Set(["s-other"])}
+      />,
+    );
+    expect(screen.queryAllByTestId("session-row-label").length).toBe(0);
+  });
+});
+
 // Bars view mode was removed in the April 2026 cleanup. At the fixed
 // 900px canvas the histogram added no information beyond the swimlane
 // dots. Lock that in at the type level so anyone re-introducing a

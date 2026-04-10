@@ -441,6 +441,54 @@ export function Fleet() {
           onFilterChange={setActiveFilter}
         />
 
+        {/* Context filter status bar. Only renders when a CONTEXT
+            filter is active. Shows matched / total session counts
+            and a one-click clear so the user always knows how many
+            sessions are being hidden by the filter. Non-matching
+            sessions are fully hidden in SwimLane (not dimmed), so
+            this bar is the primary signal that filtering is on. */}
+        {matchingSessionIds !== null && (
+          <div
+            data-testid="context-filter-status"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              fontSize: 11,
+              color: "var(--accent)",
+              padding: "3px 12px 4px",
+              fontFamily: "var(--font-mono)",
+              background: "var(--bg)",
+              borderBottom: "1px solid var(--border-subtle)",
+            }}
+          >
+            <span>
+              Filtered: {matchingSessionIds.size} of{" "}
+              {sortedFlavors.reduce(
+                (n, f) => n + f.sessions.length,
+                0,
+              )}{" "}
+              sessions
+            </span>
+            <button
+              type="button"
+              onClick={handleClearContext}
+              data-testid="context-filter-status-clear"
+              style={{
+                cursor: "pointer",
+                color: "var(--text-muted)",
+                background: "transparent",
+                border: "none",
+                padding: "0 4px",
+                fontFamily: "inherit",
+                fontSize: "inherit",
+              }}
+            >
+              × clear
+            </button>
+          </div>
+        )}
+
         {/* Timeline area. Horizontal scroll lives inside Timeline
             (proportional to the selected time range); only vertical
             scroll bubbles up here. */}

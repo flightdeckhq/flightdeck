@@ -339,6 +339,20 @@ export function Timeline({
               }}
             >
               Flavors
+              {matchingSessionIds !== null && (
+                <span
+                  data-testid="flavors-filtered-suffix"
+                  style={{
+                    marginLeft: 6,
+                    fontWeight: 400,
+                    textTransform: "none",
+                    letterSpacing: 0,
+                    color: "var(--accent)",
+                  }}
+                >
+                  (filtered)
+                </span>
+              )}
             </span>
           </div>
           <div style={{ width: timelineWidth, flexShrink: 0 }} />

@@ -95,6 +95,22 @@ describe("FleetPanel", () => {
     expect(screen.queryByText(/Tokens \(/)).not.toBeInTheDocument();
   });
 
+  it("flavor list scroll container has flexShrink: 0 and minHeight to prevent flex collapse", () => {
+    // Root cause of the prior collapse bug: FleetPanel is a flex
+    // column with overflow-y auto, and flex children default to
+    // shrink: 1. Without these two props the flavor list would
+    // compress to min-content (~1 row) whenever sidebar content
+    // exceeded the viewport height. This test locks in the props
+    // that make the collapse impossible.
+    render(<FleetPanel flavors={mockFlavors} />);
+    const firstFlavor = screen.getByText("research-agent");
+    const container = firstFlavor.closest(".thin-scrollbar") as HTMLElement;
+    expect(container).not.toBeNull();
+    expect(container.style.flexShrink).toBe("0");
+    expect(container.style.minHeight).toBe("80px");
+    expect(container.style.maxHeight).toBe("240px");
+  });
+
   it("renders correct active session count in session states", () => {
     render(<FleetPanel flavors={mockFlavors} />);
     const activeCount = screen.getByTestId("state-count-active");

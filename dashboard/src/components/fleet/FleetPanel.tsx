@@ -147,13 +147,26 @@ export function FleetPanel({
           CONTEXT off-screen below. The fade gradient at the bottom is
           a soft visual cue that there is more to scroll to -- only
           rendered when the row count actually overflows the viewport.
-          position: relative anchors the absolutely-positioned overlay
-          to this container. */}
+
+          flexShrink: 0 + minHeight: 80 is load-bearing: the parent
+          FleetPanel is a `flex flex-col overflow-y-auto` with a
+          bounded viewport height, and flex children default to
+          `flex-shrink: 1`. Without these two props the flavor list
+          collapses to its min-content (~1 row) whenever total
+          sidebar content exceeds the viewport, because the flex
+          algorithm shrinks children BEFORE the parent's overflow-y
+          kicks in. Pinning `flex: "0 0 auto"` via shrink-0 keeps the
+          list at its natural size (capped by maxHeight), and the
+          minHeight floor guarantees at least two rows are visible
+          even in the degenerate case where flex-shrink would
+          otherwise win. */}
       <div
         className="thin-scrollbar pb-3"
         style={{
           overflowY: "auto",
+          minHeight: 80,
           maxHeight: 240,
+          flexShrink: 0,
           position: "relative",
           scrollbarWidth: "thin",
         }}
@@ -367,6 +380,13 @@ function ContextFacetSection({
                       height: 24,
                       paddingLeft: 24,
                       paddingRight: 12,
+                      // Subtle accent-glow tint on selected rows so
+                      // the active filter state is obvious at a
+                      // glance without needing to hunt for the
+                      // filled dot.
+                      background: isSelected
+                        ? "var(--accent-glow)"
+                        : undefined,
                     }}
                     onClick={() => onToggle?.(key, entry.value)}
                     data-testid={`context-value-${key}-${entry.value}`}

@@ -89,6 +89,17 @@ function SwimLaneComponent({
     return "";
   }, [liveCount, sessions]);
 
+  // Count of sessions that will actually render in the expanded
+  // view. When a CONTEXT filter is active, non-matching sessions
+  // are omitted from the map below, so the maxHeight animation and
+  // the SESSIONS sub-header count should reflect the visible subset.
+  const visibleSessionCount = useMemo(() => {
+    if (matchingSessionIds === null) return sessions.length;
+    return sessions.filter((s) =>
+      matchingSessionIds.has(s.session_id),
+    ).length;
+  }, [sessions, matchingSessionIds]);
+
   return (
     <div style={{ borderBottom: "1px solid var(--border-subtle)" }}>
       {/* Collapsed flavor header — 48px */}
@@ -182,10 +193,19 @@ function SwimLaneComponent({
           for the SESSIONS sub-header (20px) plus the py-1 padding.
           SESSION_ROW_HEIGHT is centralised in constants so the
           animation stays in sync if we ever bump the row height
-          again. */}
+          again.
+
+          When a CONTEXT filter is active, matchingSessionIds names
+          the subset of sessions that match. Non-matching sessions
+          are hidden entirely (return null in the map below), so
+          the maxHeight allocation uses visibleSessionCount -- the
+          expanded section collapses to the smaller subset size
+          rather than leaving blank gaps for hidden rows. */}
       <div
         style={{
-          maxHeight: expanded ? sessions.length * SESSION_ROW_HEIGHT + 28 : 0,
+          maxHeight: expanded
+            ? visibleSessionCount * SESSION_ROW_HEIGHT + 28
+            : 0,
           opacity: expanded ? 1 : 0,
           overflow: "hidden",
           transition: "max-height 300ms ease, opacity 200ms ease",
@@ -242,37 +262,36 @@ function SwimLaneComponent({
               <div style={{ width: timelineWidth, flexShrink: 0 }} />
             </div>
             {sessions.map((session, sessionIndex) => {
-              // Dim sessions that don't match the active CONTEXT
+              // Hide sessions that don't match the active CONTEXT
               // sidebar filter. matchingSessionIds === null means
               // no filters are active and every row is fully visible.
-              const matches =
-                matchingSessionIds === null ||
-                matchingSessionIds.has(session.session_id);
+              // Non-matching sessions return null entirely rather
+              // than rendering at 0.15 opacity -- the previous
+              // dimming approach made the UI look broken ("why are
+              // some rows ghosted?") rather than filtered. The
+              // filter status bar in Fleet.tsx surfaces the count
+              // and a clear button so the user knows sessions are
+              // hidden by intent.
+              if (
+                matchingSessionIds !== null &&
+                !matchingSessionIds.has(session.session_id)
+              ) {
+                return null;
+              }
               return (
-                <div
+                <SessionEventRow
                   key={session.session_id}
-                  style={{
-                    opacity: matches ? 1 : 0.15,
-                    pointerEvents: matches ? "auto" : "none",
-                    transition: "opacity 150ms ease",
-                  }}
-                  data-testid={
-                    matches ? undefined : "session-row-dimmed"
+                  session={session}
+                  sessionIndex={sessionIndex}
+                  scale={scale}
+                  onClick={(eventId, event) =>
+                    onSessionClick(session.session_id, eventId, event)
                   }
-                >
-                  <SessionEventRow
-                    session={session}
-                    sessionIndex={sessionIndex}
-                    scale={scale}
-                    onClick={(eventId, event) =>
-                      onSessionClick(session.session_id, eventId, event)
-                    }
-                    timelineWidth={timelineWidth}
-                    leftPanelWidth={leftPanelWidth}
-                    activeFilter={activeFilter}
-                    version={sessionVersions?.[session.session_id] ?? 0}
-                  />
-                </div>
+                  timelineWidth={timelineWidth}
+                  leftPanelWidth={leftPanelWidth}
+                  activeFilter={activeFilter}
+                  version={sessionVersions?.[session.session_id] ?? 0}
+                />
               );
             })}
           </div>

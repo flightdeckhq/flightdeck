@@ -1288,3 +1288,185 @@ queries. The down migration drops both.
 
 ---
 
+## D075 -- Bars view mode removed
+
+**Decision:** The Timeline now has a single view mode: swimlane. The
+stacked bar histogram (BarView, BarView.tsx, AggregatedBarView in
+SwimLane) was removed entirely. The `ViewMode` type is now a single
+literal `"swimlane"` so downstream components can keep the prop name
+without re-typing every site at once.
+
+**Reasoning:** At the fixed 900px canvas width (D076) the histogram
+conveyed no information beyond the swimlane dots. The 24 stacked
+buckets just compressed event density into rectangles whose heights
+were dominated by the largest bucket -- which was always the same
+session, making the bars effectively a noisy proxy for the session
+list. The view-mode toggle button added UI complexity (one more
+control to learn, one more state to remember) for no operational
+value. Removing it lets the time range buttons own the timeline
+header bar uncontested.
+
+**Rejected alternative:** Keep BarView but hide the toggle behind a
+feature flag. Rejected because dead code rots; if no one uses it the
+maintenance burden grows over time.
+
+---
+
+## D076 -- Timeline fixed canvas width
+
+**Decision:** Timeline uses a fixed 900px canvas width
+(`TIMELINE_WIDTH_PX = 900`) for every time range. The xScale maps
+the selected range domain to `[0, 900]`, so wider time ranges
+produce denser circles. There is no horizontal scrollbar -- the
+entire timeline fits the visible area at every range.
+
+**Reasoning:** The original design tried proportional scaling
+(`timelineWidth = BASE * (rangeMs / BASE_RANGE)`). At 1h the canvas
+grew to 54,000px; at 6h to 324,000px. This caused cascading layout
+bugs:
+
+- Sticky-left flavor labels broke because the inner content div was
+  wider than the viewport, so `position: sticky; left: 0` had no
+  containing block to stick within and the labels scrolled away
+  with the rest of the timeline.
+- Horizontal scrollbar swallowed the time-axis labels, which had
+  nowhere to anchor.
+- Session row left panels lost their fixed widths inside the
+  growing parent.
+
+Fixed pixel space with denser circles is the correct trade-off: the
+information density is the same, the layout is stable, and the
+swimlane stays usable for historical views. The label intervals
+(formatRelativeLabel via D077) adapt to the range so the labels
+remain readable.
+
+**Rejected alternative:** Proportional width scaling. Rejected due
+to the cascade of layout bugs above.
+**Rejected alternative:** Horizontal scroll inside the swimlane
+only. Rejected because sticky-left positioning across nested scroll
+contexts is brittle and the dashboard's vertical scroll context
+(Fleet.tsx outer div) competed with the inner horizontal scroll.
+
+---
+
+## D077 -- Relative time-axis labels
+
+**Decision:** The TimeAxis component renders 6 evenly-spaced
+relative labels at fractions `[0.0, 0.2, 0.4, 0.6, 0.8, 1.0]` of
+the selected range. The label text is computed by
+`formatRelativeLabel(ms)` which picks the unit suffix (`s`, `m`, or
+`h`). The rightmost label is always `now`. No D3 tick generation,
+no absolute timestamps.
+
+For the 1m range: `60s 48s 36s 24s 12s now` (becomes `1m` for the
+leftmost when 60s rolls over).
+For the 1h range: `1h 48m 36m 24m 12m now`.
+
+**Reasoning:** D3's `timeSecond.every(N)` and `timeMinute.every(N)`
+tick generators broke at large widths -- the 6h range produced zero
+ticks because the smallest tick interval `timeHour.every(1)` only
+fits 6 labels and the algorithm rounded down. The fixed-fraction
+relative approach guarantees exactly 6 labels at every range, the
+intervals stay aligned with the grid line overlay, and the relative
+unit makes "how long ago was this event" immediately obvious
+without arithmetic against an absolute timestamp.
+
+**Rejected alternative:** D3 timeSecond/timeMinute tick intervals.
+Rejected because they broke at large widths (zero ticks at 6h, three
+ticks at 1h).
+**Rejected alternative:** Absolute timestamps (HH:MM:SS). Rejected
+because operators care about "12 seconds ago" and "5 minutes ago"
+when triaging an incident, not absolute wall-clock times that
+require mental arithmetic.
+
+---
+
+## D078 -- simple-icons for platform glyphs
+
+**Decision:** The dashboard uses the `simple-icons@^16.15.0` npm
+package as a devDependency for Apple, Linux, Kubernetes, Docker,
+and Google Cloud SVG paths. These five icons render via a shared
+`SimpleIconSvg` helper at the package's standard `viewBox="0 0 24
+24"`. Hand-crafted fallback SVGs at `viewBox="0 0 14 14"` cover
+Windows (four-square grid) and AWS ECS (hexagon), which are not
+available in simple-icons.
+
+Color overrides:
+- Apple uses `#909090` instead of `siApple.hex` (`#000000`) so it
+  renders visibly on dark backgrounds.
+- Linux uses `#E8914A` (Tux orange).
+- Kubernetes uses `#326CE5`, Docker `#2496ED`, Google Cloud
+  `#4285F4`, Windows `#0078D4`, AWS ECS `#FF9900`.
+
+**Reasoning:** Hand-crafting brand SVG paths at 14px is inaccurate
+-- the resulting glyphs look "off" compared to the official brand
+versions. simple-icons ships pixel-perfect paths maintained by the
+project. Test assertions lock in that the rendered `<path d>`
+matches `siApple.path` / `siLinux.path` / etc verbatim, so any
+future simple-icons upgrade that changes a brand path will fail
+fast in CI rather than silently swapping the visible glyph.
+
+Windows and AWS ECS keep hand-crafted fallbacks because:
+- Windows: simple-icons removed the Microsoft logo for trademark
+  reasons. No alternative entry exists.
+- AWS ECS: simple-icons has no per-service AWS icons, only generic
+  AWS-related entries that don't fit the ECS use case.
+
+**Rejected alternative:** Hand-crafted paths for all icons.
+Rejected because they look inaccurate at 14px next to hostnames in
+the swimlane.
+**Rejected alternative:** Lucide icons (square, server, box) as
+generic substitutes. Rejected because they don't visually
+communicate which platform the agent is running on.
+
+---
+
+## D079 -- Custom directives sidebar section removed
+
+**Decision:** The Custom Directives card that previously rendered
+inside `FleetPanel` (via the `DirectivesPanel` child) is removed
+entirely. Its empty state ("decorate a function with
+`@flightdeck_sensor.directive()` and call init() to register one")
+was developer documentation, not operational UI. The DIRECTIVE
+ACTIVITY section also hides its header AND body when there are no
+recent events -- no more "No directive activity yet" placeholder.
+
+Directive triggering moves to two operational locations:
+
+1. **SessionDrawer Directives tab** -- a third tab next to Timeline
+   and Prompts, conditionally rendered when the session's flavor
+   has registered custom directives. The tab content is a stack of
+   `DirectiveCard`s targeting that single session id.
+2. **FleetPanel flavor row Directives icon button** -- a Zap icon
+   button next to the Stop All icon button on each flavor row,
+   conditionally rendered when the flavor has registered
+   directives. Clicking opens a Dialog with one `DirectiveCard`
+   per directive, each configured to fan out to every active+idle
+   session of that flavor.
+
+The shared `DirectiveCard` component lives in
+`src/components/directives/DirectiveCard.tsx` and is parameterised
+on `sessionId` vs `flavor` (mutually exclusive) so the same
+component handles both single-session and fleet-wide triggers.
+
+**Reasoning:** A sidebar section that mostly displays "no directives
+registered, here's how to register one" is documentation occupying
+prime UI real estate. The relevant operational moment for a custom
+directive is "I'm looking at a specific session and want to send it
+a command" or "I'm looking at a flavor and want to send the command
+to every session of that flavor". Both moments are now one click
+away from the relevant context, instead of being three clicks away
+in a sidebar card.
+
+The DIRECTIVE ACTIVITY section is operational (shows recent
+directive results), so it's kept -- but its empty state was the
+same kind of "nothing here, here's the next step" filler and is
+also removed. The section now appears only when there is actual
+activity to report.
+
+**Rejected alternative:** Move the registered directive list to a
+new top-level page. Rejected because the existing /directives page
+already serves that role. Duplicating it under a different
+navigation path would split the audience without adding value.
+
+---

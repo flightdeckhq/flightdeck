@@ -873,6 +873,7 @@ Current migrations:
 | 000003 | Add `degrade_to` column to directives |
 | 000004 | Add `custom_directives` table |
 | 000005 | Add `payload` JSONB column to directives |
+| 000006 | Add `context` JSONB column + GIN index to sessions (D074) |
 
 ---
 
@@ -1204,8 +1205,14 @@ Single source of truth for tunable magic numbers:
 | `FEED_HEIGHT_STORAGE_KEY` | `flightdeck-feed-height` | localStorage key |
 | `FEED_COL_WIDTHS_KEY` | `flightdeck-feed-col-widths` | Column widths key |
 | `FEED_COL_DEFAULTS` | `{flavor:120, session:80, type:96, detail:400, time:80}` | Default column widths |
-| `LEFT_PANEL_WIDTH` | 240 | Sidebar width |
 | `THEME_STORAGE_KEY` | `flightdeck-theme` | Theme persistence key |
+
+> **Note:** the old fixed `LEFT_PANEL_WIDTH = 240` constant was
+> removed when the swimlane left panel became resizable. See the
+> "Phase 4.5 -- Subsequent Additions" section below for the full
+> current constants table including the new `LEFT_PANEL_*` and
+> `SESSION_ROW_HEIGHT` / `TIMELINE_WIDTH_PX` / `TIMELINE_RANGE_MS`
+> entries.
 
 `dashboard/src/lib/models.ts`
 - `ANTHROPIC_MODELS: Set<string>` -- exact known Anthropic model IDs.
@@ -1378,6 +1385,420 @@ Inline summary grid:
   eliminates the brief startup window during which `make dev` returned
   502 from nginx because it was already up while the dashboard
   containers were still booting Vite.
+
+---
+
+## Phase 4.5 -- Subsequent Additions (post-merge audit pass)
+
+This section consolidates everything added to Phase 4.5 after the
+initial DECISIONS D059-D072 block: runtime context auto-collection,
+the dashboard timeline + sidebar redesign that followed it, the
+Claude Code plugin rewrite, and the final UI cleanup pass. See
+DECISIONS.md D073-D079 for the rationale.
+
+### Sensor -- Runtime Context Auto-Collection
+
+`sensor/flightdeck_sensor/core/context.py` (new in this pass)
+- Pluggable runtime-environment collector chain. The sensor calls
+  `collect()` once at `init()` time and attaches the resulting
+  dict to the `session_start` event payload via
+  `Session.set_context()`.
+- `ContextCollector` Protocol: `applies() -> bool`,
+  `collect() -> dict[str, Any]`. Both must never raise.
+- `BaseCollector` (default base): subclasses override `_gather()`
+  only. `BaseCollector.collect()` wraps `_gather()` in a
+  try/except. The top-level `collect()` orchestrator wraps each
+  collector call in a *second* try/except. Two layers of
+  protection mean a single broken collector cannot crash the
+  sensor or block `init()`.
+- Three collector phases:
+  1. **`PROCESS_COLLECTORS`** -- `ProcessCollector` (pid,
+     process_name), `OSCollector` (os, arch, hostname),
+     `UserCollector`, `PythonCollector`, `GitCollector`. All
+     run; results merge into the dict.
+  2. **`ORCHESTRATION_COLLECTORS`** -- `KubernetesCollector`,
+     `DockerComposeCollector`, `DockerCollector`,
+     `AWSECSCollector`, `CloudRunCollector`. Run in priority
+     order, **first match wins** (the loop breaks). This avoids
+     ambiguous "kubernetes AND docker" results inside k8s pods
+     that also have `/.dockerenv`.
+  3. **`OTHER_COLLECTORS`** -- `FrameworkCollector`. Inspects
+     `sys.modules` for known AI frameworks (crewai, langchain,
+     llama_index, autogen, haystack, dspy, smolagents,
+     pydantic_ai). It NEVER imports anything new -- if a
+     framework was not loaded by the agent before `init()` ran,
+     we do not claim it is in use.
+- `GitCollector` shells out to `git` with a 500 ms `subprocess`
+  timeout, strips embedded credentials from the remote URL via
+  `re.sub(r"https?://[^@]+@", "https://", remote)`, and falls
+  back silently when git is missing or the cwd is not a repo
+  (the broad `except Exception` in `_run` also catches
+  `FileNotFoundError` on Windows where `git.exe` may not be on
+  PATH).
+
+`sensor/flightdeck_sensor/core/session.py` (extend)
+- `set_context(context: dict[str, Any]) -> None` -- called by
+  `init()` after the collector chain runs and before
+  `Session.start()` fires the `session_start` event. The context
+  dict is included in the `session_start` payload's new
+  `context` field. Subsequent events do not carry context (it is
+  set-once on the worker side via `UpsertSession ON CONFLICT`
+  deliberately omitting `context`).
+
+`sensor/flightdeck_sensor/__init__.py` (extend)
+- `init()` invokes `_collect_context()` from `core/context` and
+  passes the result into `session.set_context()` before
+  `session.start()`. Failures in collect() are caught and
+  default to an empty dict.
+
+### Sensor → Ingestion -- session_start payload extension
+
+The `POST /v1/events` payload for `event_type="session_start"`
+events now includes an optional top-level `context` field:
+
+```json
+{
+  "session_id":   "uuid",
+  "flavor":       "research-agent",
+  "agent_type":   "autonomous",
+  "event_type":   "session_start",
+  ...
+  "context": {
+    "hostname":       "k8s-prod-1",
+    "user":           "ci-runner",
+    "pid":            12345,
+    "process_name":   "python",
+    "os":             "Linux",
+    "arch":           "x86_64",
+    "python_version": "3.12.3",
+    "git_commit":     "abc1234",
+    "git_branch":     "main",
+    "git_repo":       "demo-app",
+    "orchestration":  "kubernetes",
+    "k8s_namespace":  "agents",
+    "k8s_node":       "node-1",
+    "k8s_pod":        "research-1",
+    "frameworks":     ["langchain/0.1.12"]
+  }
+}
+```
+
+The field is omitted on every other event_type. The worker
+parses it via `consumer.EventPayload.Context map[string]any` and
+forwards it to `UpsertSession`, which writes it once to
+`sessions.context` and never updates it on conflict. Set-once
+semantics: whatever the agent saw at startup is the canonical
+record for that session.
+
+### API -- Bulk events transaction + WriteTimeout / withRESTTimeout
+
+`api/internal/store/events.go` (clarification)
+- `GetEvents` runs the COUNT and SELECT inside a single
+  `pgx.BeginTx` with `pgx.TxIsoLevel("repeatable read")`. Without
+  the explicit isolation level, a worker INSERT between the
+  COUNT and SELECT could leave `total` stale relative to
+  `events`, breaking pagination math (`offset + len(events) >
+  total`). Repeatable read pins both reads to the same snapshot.
+
+`api/internal/server/server.go` (extend)
+- `withRESTTimeout` middleware: wraps every REST handler in a
+  `context.WithTimeout(15s)` so a slow store query cannot hold
+  an HTTP goroutine forever. The WebSocket route `/v1/stream` is
+  deliberately registered WITHOUT this wrapper -- the WebSocket
+  pump runs for the lifetime of a client connection and applies
+  its own per-message write deadline.
+- `auth.Middleware(validator, ...)` is applied only to
+  `POST /v1/directives/sync` and `POST /v1/directives/register`
+  (the two sensor-facing custom-directive endpoints). Every
+  other endpoint remains unauthenticated -- this is the D073
+  stopgap until full Phase 5 JWT auth lands. The middleware
+  reuses the same SHA-256 lookup against `api_tokens` that
+  ingestion uses, so the sensor's existing token works without
+  any extra plumbing.
+
+### API -- GetContextFacets aggregation
+
+`api/internal/store/postgres.go` (extend)
+- `GetContextFacets(ctx)` runs:
+  ```sql
+  SELECT key, value, COUNT(*) AS count
+  FROM sessions, jsonb_each_text(context)
+  WHERE state IN ('active', 'idle', 'stale')
+    AND context != '{}'::jsonb
+  GROUP BY key, value
+  ORDER BY key ASC, count DESC
+  ```
+- Returns `map[string][]ContextFacetValue` keyed by context
+  field name. Empty context dicts are excluded so they do not
+  pollute the facet groups with `{}` entries.
+- `ContextFacetValue struct { Value string; Count int }`.
+
+`api/internal/handlers/fleet.go`
+- `GetContextFacets()` is invoked from the fleet handler. A
+  failure logs a warning and returns an empty map rather than
+  failing the entire `GET /v1/fleet` response -- the CONTEXT
+  sidebar is best-effort UX, not a load-bearing fleet feature.
+
+### Database -- migration 000006
+
+`docker/postgres/migrations/000006_add_context_to_sessions.{up,down}.sql`
+- Adds `context JSONB NOT NULL DEFAULT '{}'::jsonb` to
+  `sessions` and `CREATE INDEX sessions_context_gin ON sessions
+  USING GIN (context)` for the facet aggregation query.
+- Down migration drops both.
+- Listed in the migrations table at the top of this document.
+
+### Dashboard -- constants.ts (extended table)
+
+The complete current table:
+
+| Constant | Value | Purpose |
+|---|---|---|
+| `FEED_MAX_EVENTS` | 500 | Live feed display buffer cap |
+| `PAUSE_QUEUE_MAX_EVENTS` | 1000 | Pause queue cap |
+| `FEED_INITIAL_LOAD` | 100 | Initial fleet store load size |
+| `FEED_MIN_HEIGHT` | 120 | Live feed resize lower bound |
+| `FEED_MAX_HEIGHT` | 600 | Live feed resize upper bound |
+| `FEED_DEFAULT_HEIGHT` | 240 | Initial feed height |
+| `FEED_HEIGHT_STORAGE_KEY` | `flightdeck-feed-height` | localStorage key |
+| `FEED_COL_WIDTHS_KEY` | `flightdeck-feed-col-widths` | Column widths key |
+| `FEED_COL_DEFAULTS` | `{flavor:120, session:80, type:96, detail:400, time:80}` | Default column widths |
+| `LEFT_PANEL_MIN_WIDTH` | 200 | Resizable swimlane left panel lower bound |
+| `LEFT_PANEL_MAX_WIDTH` | 500 | Upper bound |
+| `LEFT_PANEL_DEFAULT_WIDTH` | 320 | Initial width if no localStorage value |
+| `LEFT_PANEL_WIDTH_KEY` | `flightdeck-left-panel-width` | localStorage key |
+| `SESSION_ROW_HEIGHT` | 48 | Two-line session row height (hostname + hash) |
+| `TIMELINE_WIDTH_PX` | 900 | Fixed event-circles canvas width |
+| `TIMELINE_RANGE_MS` | `{1m: 60_000, 5m: 300_000, 15m: 900_000, 30m: 1_800_000, 1h: 3_600_000}` | Range labels → ms |
+| `THEME_STORAGE_KEY` | `flightdeck-theme` | Theme persistence key |
+
+The previous fixed `LEFT_PANEL_WIDTH = 240` is removed entirely.
+Every Timeline / SwimLane / SessionEventRow consumer reads the
+resizable state via Timeline.tsx's `leftPanelWidth` prop.
+
+### Dashboard -- OS and orchestration icons
+
+`dashboard/src/components/ui/OSIcon.tsx`
+- Renders one of three glyphs based on `session.context.os`:
+  Darwin, Linux, Windows. Returns `null` for unknown / missing
+  values so callers can render unconditionally.
+- Darwin and Linux use the official brand SVG paths from the
+  `simple-icons` npm package (devDependency). Windows is NOT in
+  simple-icons (Microsoft trademark removal), so it falls back
+  to a hand-crafted 4-square grid at viewBox 14x14.
+- A shared `SimpleIconSvg` helper exported from this file
+  renders simple-icons paths at viewBox 24x24 with a `<title>`
+  for accessibility. `OrchestrationIcon` reuses it.
+- Color overrides: Apple uses `#909090` (siApple.hex is
+  `#000000`, invisible on dark backgrounds). Linux uses
+  `#E8914A` (Tux orange). Windows uses `#0078D4`.
+
+`dashboard/src/components/ui/OrchestrationIcon.tsx`
+- Renders one of five glyphs based on
+  `session.context.orchestration`: kubernetes, docker,
+  docker-compose (reuses Docker glyph), aws-ecs, cloud-run.
+  Returns `null` for unknown / missing values.
+- Kubernetes, Docker, Google Cloud (used as the closest fit for
+  Cloud Run since simple-icons has no standalone Cloud Run
+  entry) use simple-icons paths.
+- AWS ECS is NOT in simple-icons, so it falls back to a
+  hand-crafted hexagon at viewBox 14x14.
+- Exports `getOrchestrationLabel(orchestration)` and
+  `ORCHESTRATION_LABELS` for tooltip text mapping.
+
+`package.json`
+- New devDependency: `simple-icons@^16.15.0`.
+
+### Dashboard -- Resizable Timeline left panel
+
+`dashboard/src/components/timeline/Timeline.tsx` (extend)
+- `leftPanelWidth: number` state initialised from
+  `localStorage[LEFT_PANEL_WIDTH_KEY]` clamped to
+  `[LEFT_PANEL_MIN_WIDTH, LEFT_PANEL_MAX_WIDTH]`. Default is
+  `LEFT_PANEL_DEFAULT_WIDTH` (320).
+- A 6px-wide drag handle is rendered absolutely on the right
+  edge of the time-axis row's sticky left spacer. The time-axis
+  row is `position: sticky; top: 0` against Fleet.tsx's outer
+  scroller, so the handle stays visible regardless of vertical
+  scroll position. Hover paints `var(--accent)`. Mouse drag
+  attaches `mousemove` + `mouseup` handlers to `document` and
+  clamps the new width on every move; the resulting width is
+  written to localStorage on every drag update.
+- `leftPanelWidth` flows down as a prop through `SwimLane` →
+  `SessionEventRow`. Both components include `leftPanelWidth`
+  in their `React.memo` comparators so a drag invalidates every
+  row immediately.
+
+### Dashboard -- Timeline fixed width and time labels
+
+`dashboard/src/lib/constants.ts`
+- `TIMELINE_WIDTH_PX = 900`. The xScale maps the selected range
+  domain to `[0, 900]` for every time range. Wider ranges
+  produce denser circles, which is the correct trade-off:
+  fixed pixel space, no horizontal scrollbar, label intervals
+  adapt to the range. The previous proportional-width approach
+  grew the canvas to 54,000px at 1h and 324,000px at 6h, which
+  forced horizontal scroll, broke sticky-left layouts, and made
+  historical views unusable. See D076.
+
+`dashboard/src/components/timeline/TimeAxis.tsx`
+- Renders 6 evenly-spaced relative labels (e.g. `48s 36s 24s
+  12s now` for a 1-minute range) at fractions
+  `[0.0, 0.2, 0.4, 0.6, 0.8, 1.0]`. The `formatRelativeLabel(ms)`
+  helper picks the unit suffix: `s`, `m`, or `h`. No D3 tick
+  generation -- it broke at large widths (zero ticks at 6h).
+  See D077.
+
+`dashboard/src/components/timeline/Timeline.tsx`
+- Vertical grid line overlay: 6 thin vertical lines at the same
+  fractions as the time-axis labels, dropping from the top of
+  the inner content div to the bottom of the last flavor row.
+  The rightmost line is highlighted as the "now" line in
+  `var(--accent)`; the rest are `var(--border)` at low opacity.
+  Constrained to the right-panel area only (`left:
+  leftPanelWidth, width: timelineWidth`) so the resizable label
+  column stays clean. zIndex 1; EventNode circles use zIndex 2
+  so they paint above the grid lines.
+
+### Dashboard -- Bars mode removed
+
+`dashboard/src/pages/Fleet.tsx`
+- The `ViewMode` type is now a single literal `"swimlane"`. The
+  view-mode toggle buttons are gone from the fleet header. The
+  `BarView.tsx` component and the aggregated bar render path in
+  SwimLane.tsx are deleted entirely. Timeline / SwimLane /
+  SessionEventRow no longer accept a `viewMode` prop.
+- Rationale: at the fixed 900px canvas width the stacked
+  histogram conveyed no information beyond the swimlane dots
+  and added UI complexity for no operational value. See D075.
+
+### Dashboard -- Custom Directives sidebar removed
+
+`dashboard/src/components/fleet/FleetPanel.tsx`
+- The `<DirectivesPanel>` child wrapper that previously rendered
+  inside the sidebar is gone. Its empty state was developer
+  documentation ("decorate a function with
+  `@flightdeck_sensor.directive()` and call init() to register
+  one"), not operational UI. See D079.
+- The DIRECTIVE ACTIVITY section now hides BOTH its header and
+  body when the recent-activity buffer is empty -- no more
+  "No directive activity yet" placeholder.
+- Per-flavor `Directives` icon button: appears alongside the
+  `Stop All` icon button when a flavor has registered custom
+  directives. Both buttons are icon-only (Zap and OctagonX from
+  lucide-react) so they don't push the flavor name to truncate
+  at the 240px sidebar width. Clicking opens a Dialog with one
+  `DirectiveCard` per directive, each configured to fan out via
+  the existing `shutdown_flavor` mechanism but with
+  `action="custom"` instead.
+
+### Dashboard -- Directives tab in SessionDrawer
+
+`dashboard/src/components/session/SessionDrawer.tsx` (extend)
+- New `"directives"` value in the `DrawerTab` union. The tab
+  button is conditionally rendered based on
+  `flavorDirectives.length > 0` -- where `flavorDirectives` is
+  derived from the fleet store's `customDirectives` slice
+  filtered by the session's flavor. Sessions whose flavor has
+  no registered directives never see the tab.
+- Tab content renders one `DirectiveCard` per directive with
+  `sessionId={session.session_id}` so the trigger targets only
+  that single session. The same `DirectiveCard` component is
+  shared with the FleetPanel flavor-row dialog (which passes
+  `flavor` instead of `sessionId` for the fan-out path).
+
+`dashboard/src/components/directives/DirectiveCard.tsx`
+- Shared component used by both the session drawer Directives
+  tab and the FleetPanel flavor-row dialog. Renders the
+  directive name, description, parameter inputs (string /
+  integer / float / boolean / select via Radix Select), and a
+  Run button. The button targets either a single session
+  (`sessionId` prop) or every active+idle session of a flavor
+  (`flavor` prop). Mutually exclusive: the session drawer never
+  passes `flavor` and the FleetPanel never passes `sessionId`.
+
+### Dashboard -- Fleet sort and live counts
+
+`dashboard/src/pages/Fleet.tsx`
+- `sortFlavorsByActivity(flavors)` -- exported pure function.
+  Sorts flavors by activity priority so flavors with active or
+  idle sessions float to the top of the swimlane and stale /
+  closed / lost ones sink to the bottom. Stable secondary order
+  is alphabetical. Re-sorts automatically on every flavors
+  update via a `useMemo`.
+- `sessionStateCounts` is computed via `useMemo` from the live
+  `flavors` array on every render and passed down to
+  `FleetPanel.SessionStateBar` as a prop. The previous design
+  recomputed counts inside `SessionStateBar` itself, which
+  could leave stale counts on screen between WebSocket updates
+  if `SessionStateBar` was memoized but the parent re-rendered
+  for an unrelated reason.
+
+### Dashboard -- Fleet Panel directive auto-refresh
+
+`dashboard/src/store/fleet.ts` (extend)
+- `applyUpdate(update: FleetUpdate)` snapshots whether the
+  session's flavor is already in the store BEFORE mutating
+  flavors. If `update.type === "session_start"` and the flavor
+  is new, the store fires `fetchCustomDirectives()` and
+  patches the result into the `customDirectives` slice. The
+  new `FlavorItem` picks up the resulting Directives icon
+  button automatically because `FleetPanel` reads
+  `customDirectives` via a `useFleetStore` selector. Best-effort
+  -- failures are swallowed.
+- Triggered specifically when a new agent comes online via
+  WebSocket: that's the moment a sensor has just registered new
+  custom directives via `init()`. Without this hook, newly
+  registered directives only appeared after a manual page
+  refresh.
+
+### Plugin -- Claude Code observe_cli rewrite
+
+`plugin/hooks/scripts/observe_cli.mjs` (rewritten in this pass)
+- **Stable session ID**: `getSessionId()` prefers
+  `CLAUDE_SESSION_ID` env var, then
+  `ANTHROPIC_CLAUDE_SESSION_ID`, then a file-based id under
+  `tmpdir/flightdeck-plugin/session-${sha256(cwd)[:16]}.txt`.
+  The file fallback exists because every hook invocation runs
+  as a separate Node child process spawned by Claude Code --
+  pid-based fallbacks would create one session row per tool
+  call. Different cwds get different sessions.
+- **session_start with context**: `ensureSessionStarted()`
+  uses a file-marker dedup so the session_start event is sent
+  exactly once per session id (marker file is
+  `tmpdir/flightdeck-plugin/started-${sessionId}.txt`). The
+  payload carries the `collectContext()` dict, which the
+  worker stores in `sessions.context`.
+- `collectContext()` (Node.js parallel of the Python sensor's
+  `context.py`): pid, process_name, os (Windows / Darwin /
+  Linux), arch, hostname, user, node_version, working_dir,
+  git_commit / git_branch / git_repo (each in its own
+  try/catch with a 500ms execSync timeout, credential-stripped
+  remote URL), and orchestration detection (kubernetes >
+  docker-compose). Each probe is independently best-effort.
+- `sanitizeToolInput(input)` -- whitelist that keeps ONLY
+  these fields from the hook event's tool_input:
+  `file_path`, `command` (truncated to 200 chars), `query`,
+  `pattern`, `prompt` (truncated to 100 chars). Everything
+  else (content, message bodies, sub-agent contexts) is
+  dropped. Returns `null` if no whitelisted field was present.
+- `is_subagent_call: toolName === "Task"` -- emitted on the
+  wire so the dashboard can later distinguish sub-agent spawns
+  from regular tool calls. Currently informational only; the
+  worker drops the field at the boundary because no DB column
+  exists.
+- `latency_ms` is populated for `PostToolUse` events as
+  `Date.now() - startTime`, where startTime is stamped at
+  hook script invocation. This is hook PROCESSING time, not
+  actual tool execution time -- Claude Code does not expose
+  tool start/end timestamps to hooks. Documented in a
+  comment.
+- `main()` returns naturally instead of calling
+  `process.exit(0)`. Two consecutive fetches in a single
+  script invocation crash Node on Windows with
+  STATUS_STACK_BUFFER_OVERRUN (`0xC0000409`) if `process.exit`
+  fires while undici is mid-cleanup; letting `main()` return
+  lets the connection pool drain.
 
 ---
 
@@ -1956,12 +2377,11 @@ their agent appear in the live dashboard timeline in real time.
 
 `dashboard/src/App.tsx` -- router, nav bar (44px, centered links with active border), theme toggle (Sun/Moon), search trigger
 `dashboard/src/pages/Fleet.tsx` -- fleet view: sidebar + fleet header (view mode toggle, time range, live indicator) + timeline
-`dashboard/src/components/timeline/Timeline.tsx` -- flavor rows with expand-in-place, shared time axis, dual view modes (swimlane/bar)
+`dashboard/src/components/timeline/Timeline.tsx` -- flavor rows with expand-in-place, shared time axis, swimlane view (the bars view mode was removed in the post-merge cleanup, see D075), resizable left panel with localStorage persistence (see "Phase 4.5 -- Subsequent Additions" → "Resizable Timeline left panel")
 `dashboard/src/components/timeline/SwimLane.tsx` -- flavor row: collapsed (48px, aggregated events) + expanded (session sub-rows), chevron toggle
 `dashboard/src/components/timeline/SessionEventRow.tsx` -- session row (40px): pulsing dot, ID, state badge, tokens, events on time axis
 `dashboard/src/components/timeline/EventNode.tsx` -- event circles: 24px (session rows), 20px (flavor rows), lucide icons, CSS tooltip, hover scale
-`dashboard/src/components/timeline/BarView.tsx` -- bar mode: 24 buckets, stacked bars (LLM/tool/policy/directive), hover tooltip
-`dashboard/src/components/timeline/TimeAxis.tsx` -- shared time axis (28px), mono labels, "now" marker
+`dashboard/src/components/timeline/TimeAxis.tsx` -- shared time axis (28px), 6 evenly-spaced relative labels via `formatRelativeLabel(ms)`, no D3 tick generation (see D077)
 `dashboard/src/pages/Directives.tsx` -- dedicated directives page: list all registered custom directives, flavor filter, search, trigger form with target selector
 `dashboard/src/components/fleet/FleetPanel.tsx` -- left sidebar (240px): section headers (uppercase tracked), fleet overview, session states (large counts), flavor list (active border), policy events, directive activity, **CONTEXT facets** (renders one filterable group per `context_facets` key with 2+ values; single-value facets are skipped; click-to-toggle with `onContextFilter`, clear-all `X` in header when filters active)
 `dashboard/src/components/fleet/SessionStateBar.tsx` -- session state counts: large numbers (20px/700) with status-colored labels

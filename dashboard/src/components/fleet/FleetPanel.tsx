@@ -107,7 +107,22 @@ export function FleetPanel({
           </span>
         )}
       </div>
-      <div className="pb-3">
+      {/* Scrollable flavor list. Caps at ~6 rows (240px) so a long
+          flavor list never pushes POLICY EVENTS / DIRECTIVE ACTIVITY /
+          CONTEXT off-screen below. The fade gradient at the bottom is
+          a soft visual cue that there is more to scroll to -- only
+          rendered when the row count actually overflows the viewport.
+          position: relative anchors the absolutely-positioned overlay
+          to this container. */}
+      <div
+        className="thin-scrollbar pb-3"
+        style={{
+          overflowY: "auto",
+          maxHeight: 240,
+          position: "relative",
+          scrollbarWidth: "thin",
+        }}
+      >
         {flavors.map((f) => (
           <FlavorItem
             key={f.flavor}
@@ -116,6 +131,21 @@ export function FleetPanel({
             onFlavorClick={onFlavorClick}
           />
         ))}
+        {flavors.length > 6 && (
+          <div
+            data-testid="flavor-list-fade"
+            style={{
+              position: "absolute",
+              bottom: 0,
+              left: 0,
+              right: 0,
+              height: 24,
+              background:
+                "linear-gradient(to bottom, transparent, var(--surface))",
+              pointerEvents: "none",
+            }}
+          />
+        )}
       </div>
 
       {/* Policy Events */}

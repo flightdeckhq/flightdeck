@@ -72,3 +72,13 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   background: var(--text-muted);
 }
+
+/* Thin variant for nested scrollers (e.g. flavor list inside the
+   sidebar) where the default 6px scrollbar feels too heavy. */
+.thin-scrollbar::-webkit-scrollbar {
+  width: 4px;
+}
+.thin-scrollbar::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 2px;
+}

@@ -1,6 +1,11 @@
 import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
 import {
+  siDocker,
+  siGooglecloud,
+  siKubernetes,
+} from "simple-icons";
+import {
   OrchestrationIcon,
   getOrchestrationLabel,
 } from "@/components/ui/OrchestrationIcon";
@@ -51,6 +56,51 @@ describe("OrchestrationIcon", () => {
     const svg = screen.getByTestId("orch-icon-kubernetes");
     expect(svg.getAttribute("width")).toBe("20");
     expect(svg.getAttribute("height")).toBe("20");
+  });
+
+  it("kubernetes uses the exact siKubernetes path from simple-icons", () => {
+    render(<OrchestrationIcon orchestration="kubernetes" />);
+    const svg = screen.getByTestId("orch-icon-kubernetes");
+    const path = svg.querySelector("path");
+    expect(path).not.toBeNull();
+    expect(path!.getAttribute("d")).toBe(siKubernetes.path);
+    expect(svg.getAttribute("viewBox")).toBe("0 0 24 24");
+  });
+
+  it("docker uses the exact siDocker path from simple-icons", () => {
+    render(<OrchestrationIcon orchestration="docker" />);
+    const svg = screen.getByTestId("orch-icon-docker");
+    const path = svg.querySelector("path");
+    expect(path).not.toBeNull();
+    expect(path!.getAttribute("d")).toBe(siDocker.path);
+  });
+
+  it("docker-compose reuses the siDocker path", () => {
+    render(<OrchestrationIcon orchestration="docker-compose" />);
+    const svg = screen.getByTestId("orch-icon-docker-compose");
+    const path = svg.querySelector("path");
+    expect(path).not.toBeNull();
+    expect(path!.getAttribute("d")).toBe(siDocker.path);
+  });
+
+  it("cloud-run uses the siGooglecloud path as the closest GCP fit", () => {
+    render(<OrchestrationIcon orchestration="cloud-run" />);
+    const svg = screen.getByTestId("orch-icon-cloud-run");
+    const path = svg.querySelector("path");
+    expect(path).not.toBeNull();
+    expect(path!.getAttribute("d")).toBe(siGooglecloud.path);
+  });
+
+  it("aws-ecs renders the hand-crafted hexagon fallback", () => {
+    // AWS ECS is NOT in simple-icons. Verify the fallback SVG still
+    // renders at its original 14x14 viewBox with a single polygon
+    // (the hexagon) rather than a <path>.
+    render(<OrchestrationIcon orchestration="aws-ecs" />);
+    const svg = screen.getByTestId("orch-icon-aws-ecs");
+    expect(svg.getAttribute("viewBox")).toBe("0 0 14 14");
+    expect(svg.querySelector("polygon")).not.toBeNull();
+    // AWS ECS fallback uses <polygon>, not <path>.
+    expect(svg.querySelector("path")).toBeNull();
   });
 });
 

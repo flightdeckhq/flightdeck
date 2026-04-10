@@ -5,11 +5,19 @@
  * values, fixed brand-adjacent colors via inline style, designed for
  * 12-14px placements next to hostnames.
  *
- * Both icons are intentionally separate so a session can render zero,
- * one, or both side-by-side depending on what context is available
- * (e.g., a Linux pod in Kubernetes shows both; a bare-metal Mac
- * developer laptop shows only OSIcon).
+ * Kubernetes, Docker, docker-compose, and cloud-run all use the
+ * official brand paths from `simple-icons`. AWS ECS is not in
+ * simple-icons (the package has no per-service AWS icons), so it
+ * falls back to a hand-crafted hexagon that matches AWS's own
+ * service-icon glyph style.
  */
+
+import {
+  siDocker,
+  siGooglecloud,
+  siKubernetes,
+} from "simple-icons";
+import { SimpleIconSvg } from "./OSIcon";
 
 interface OrchestrationIconProps {
   orchestration?: string | null;
@@ -46,71 +54,73 @@ export function OrchestrationIcon({
   const color = ORCHESTRATION_COLORS[orchestration];
   if (!color) return null;
 
-  const common = {
-    width: size,
-    height: size,
-    className,
-    style: {
-      color,
-      display: "inline-block",
-      verticalAlign: "middle",
-      flexShrink: 0,
-    } as const,
-    "data-testid": `orch-icon-${orchestration}`,
-  };
-
   if (orchestration === "kubernetes") {
-    // Helm wheel: outer ring, solid hub, six radial spokes. Stroke-
-    // based so currentColor paints the line art.
     return (
-      <svg
-        {...common}
-        viewBox="0 0 14 14"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.2"
-        strokeLinecap="round"
-      >
-        <circle cx="7" cy="7" r="5.5" />
-        <circle cx="7" cy="7" r="1.5" fill="currentColor" />
-        <line x1="7" y1="1.5" x2="7" y2="4" />
-        <line x1="7" y1="10" x2="7" y2="12.5" />
-        <line x1="2" y1="4.2" x2="4.2" y2="5.5" />
-        <line x1="9.8" y1="8.5" x2="12" y2="9.8" />
-        <line x1="2" y1="9.8" x2="4.2" y2="8.5" />
-        <line x1="9.8" y1="5.5" x2="12" y2="4.2" />
-      </svg>
+      <SimpleIconSvg
+        path={siKubernetes.path}
+        size={size}
+        color={color}
+        title={siKubernetes.title}
+        className={className}
+        testId="orch-icon-kubernetes"
+      />
     );
   }
 
   if (orchestration === "docker" || orchestration === "docker-compose") {
-    // Six-container pyramid stack: 3 bottom + 2 middle + 1 top.
-    // docker-compose reuses the same icon -- the tooltip distinguishes.
+    // docker-compose reuses the siDocker glyph -- the tooltip at the
+    // call site distinguishes which variant is in use.
     return (
-      <svg {...common} viewBox="0 0 14 14" fill="currentColor">
-        <rect x="1" y="4" width="3" height="2.5" rx="0.4" />
-        <rect x="5" y="4" width="3" height="2.5" rx="0.4" />
-        <rect x="9" y="4" width="3" height="2.5" rx="0.4" />
-        <rect x="3" y="7" width="3" height="2.5" rx="0.4" />
-        <rect x="7" y="7" width="3" height="2.5" rx="0.4" />
-        <rect x="5" y="10" width="3" height="2" rx="0.4" />
-      </svg>
+      <SimpleIconSvg
+        path={siDocker.path}
+        size={size}
+        color={color}
+        title={
+          orchestration === "docker-compose" ? "Docker Compose" : siDocker.title
+        }
+        className={className}
+        testId={`orch-icon-${orchestration}`}
+      />
     );
   }
 
-  if (orchestration === "aws-ecs") {
-    // AWS-style hexagon.
+  if (orchestration === "cloud-run") {
+    // Google Cloud Run does not have its own simple-icons entry; the
+    // parent Google Cloud brand logo is the closest legitimate fit.
     return (
-      <svg {...common} viewBox="0 0 14 14" fill="currentColor">
-        <polygon points="7,1 12,3.8 12,9.2 7,12 2,9.2 2,3.8" />
-      </svg>
+      <SimpleIconSvg
+        path={siGooglecloud.path}
+        size={size}
+        color={color}
+        title="Google Cloud Run"
+        className={className}
+        testId="orch-icon-cloud-run"
+      />
     );
   }
 
-  // cloud-run: cloud silhouette.
+  // AWS ECS: not in simple-icons. Hexagon matches AWS service icon
+  // style. viewBox stays 14x14 for this fallback since the path is
+  // authored to that coordinate space.
   return (
-    <svg {...common} viewBox="0 0 14 14" fill="currentColor">
-      <path d="M10.5 10H3.5 C2 10 1 8.9 1 7.5 C1 6.2 2 5.2 3.3 5 C3.7 3.5 5 2.5 6.5 2.5 C8.3 2.5 9.8 3.8 10 5.5 C11.2 5.7 12 6.7 12 8 C12 9.1 11.4 10 10.5 10Z" />
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 14 14"
+      fill={color}
+      className={className}
+      style={{
+        color,
+        display: "inline-block",
+        verticalAlign: "middle",
+        flexShrink: 0,
+      }}
+      role="img"
+      aria-label="AWS ECS"
+      data-testid="orch-icon-aws-ecs"
+    >
+      <title>AWS ECS</title>
+      <polygon points="7,1 12,3.8 12,9.2 7,12 2,9.2 2,3.8" />
     </svg>
   );
 }

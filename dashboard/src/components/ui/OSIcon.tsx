@@ -2,17 +2,17 @@
  * OSIcon — small inline-SVG operating system glyph used in the
  * session drawer metadata bar and the session-event row left panel.
  *
- * Renders one of three simple geometric shapes (apple silhouette for
- * Darwin, penguin silhouette for Linux, 2x2 grid for Windows) with a
- * fixed brand-adjacent color baked into inline style. Returns `null`
- * for unknown / missing values so callers can render unconditionally
- * without extra null checks.
+ * Darwin and Linux use the official brand paths from the
+ * `simple-icons` package so the rendering is pixel-perfect at any
+ * size. Windows is NOT in simple-icons (the Microsoft logo was
+ * removed for trademark reasons), so it falls back to a hand-crafted
+ * 4-square grid that matches the actual Windows-logo geometry.
  *
- * Why inline SVG and not lucide / an external library: at 12px these
- * need to be ultra-simple geometric forms with no per-icon margin
- * weirdness, and we already established the inline-SVG-with-fixed-
- * color pattern in ProviderLogo.tsx.
+ * Color for Darwin overrides siApple.hex (which is #000000 black and
+ * invisible on dark backgrounds) with a neutral grey.
  */
+
+import { siApple, siLinux } from "simple-icons";
 
 interface OSIconProps {
   os?: string | null;
@@ -21,76 +21,113 @@ interface OSIconProps {
 }
 
 const OS_COLORS: Record<string, string> = {
-  Darwin: "#8B8B8B",
+  Darwin: "#909090",
   Linux: "#E8914A",
   Windows: "#0078D4",
 };
+
+// ------------------------------------------------------------------
+// Shared simple-icons <svg> wrapper.
+// ------------------------------------------------------------------
+
+interface SimpleIconSvgProps {
+  path: string;
+  size: number;
+  color: string;
+  title: string;
+  className?: string;
+  testId?: string;
+}
+
+/**
+ * Render a simple-icons path at the standard 24x24 viewBox used by
+ * the package. Every brand icon in `simple-icons` ships with a path
+ * authored against this viewBox, so callers just pass `icon.path`.
+ */
+export function SimpleIconSvg({
+  path,
+  size,
+  color,
+  title,
+  className,
+  testId,
+}: SimpleIconSvgProps) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill={color}
+      className={className}
+      style={{
+        color,
+        display: "inline-block",
+        verticalAlign: "middle",
+        flexShrink: 0,
+      }}
+      role="img"
+      aria-label={title}
+      data-testid={testId}
+    >
+      <title>{title}</title>
+      <path d={path} />
+    </svg>
+  );
+}
 
 export function OSIcon({ os, size = 14, className }: OSIconProps) {
   if (!os) return null;
   const color = OS_COLORS[os];
   if (!color) return null;
 
-  const common = {
-    width: size,
-    height: size,
-    className,
-    style: {
-      color,
-      display: "inline-block",
-      verticalAlign: "middle",
-      flexShrink: 0,
-    } as const,
-    "data-testid": `os-icon-${os.toLowerCase()}`,
-  };
-
   if (os === "Darwin") {
-    // Apple silhouette + leaf notch. Geometric, not the copyrighted
-    // Apple logo, but recognisable at 12-14px.
     return (
-      <svg {...common} viewBox="0 0 14 14" fill="currentColor">
-        <path d="M9.5 2C9.5 2 9 1 7.5 1 C6 1 5.2 2 5.2 2 C3.5 2 2 3.8 2 6 C2 9 4 12 5.5 12 C6.2 12 6.5 11.5 7.5 11.5 C8.5 11.5 8.8 12 9.5 12 C11 12 13 9 13 6 C13 3.8 11.5 2 9.5 2Z M7.5 0.5 C8 0 9 0.3 8.8 1.2 C8.3 1.5 7.3 1.2 7.5 0.5Z" />
-      </svg>
+      <SimpleIconSvg
+        path={siApple.path}
+        size={size}
+        color={color}
+        title={siApple.title}
+        className={className}
+        testId="os-icon-darwin"
+      />
     );
   }
 
   if (os === "Linux") {
-    // Penguin silhouette. The eye ellipses and the body-interior
-    // ellipse use var(--bg) so the "white" cutouts blend with
-    // whichever row background the icon is painted on, remaining
-    // legible in both themes. #1a1a1a is the dark-theme fallback.
     return (
-      <svg {...common} viewBox="0 0 14 14" fill="currentColor">
-        <ellipse cx="7" cy="5" rx="3.5" ry="4" />
-        <ellipse
-          cx="7"
-          cy="5"
-          rx="2"
-          ry="2.5"
-          fill="var(--bg, #1a1a1a)"
-        />
-        <ellipse cx="7" cy="10" rx="4" ry="2.5" />
-        <ellipse
-          cx="5.5"
-          cy="4.2"
-          rx="0.7"
-          ry="0.7"
-          fill="var(--bg, #1a1a1a)"
-        />
-        <ellipse
-          cx="8.5"
-          cy="4.2"
-          rx="0.7"
-          ry="0.7"
-          fill="var(--bg, #1a1a1a)"
-        />
-      </svg>
+      <SimpleIconSvg
+        path={siLinux.path}
+        size={size}
+        color={color}
+        title={siLinux.title}
+        className={className}
+        testId="os-icon-linux"
+      />
     );
   }
 
-  // Windows: 2x2 grid of plain squares (no rounding).
+  // Windows: not in simple-icons (removed for trademark reasons).
+  // Four-square grid matches the actual Windows logo geometry.
+  // viewBox stays 14x14 for this fallback since the path data is
+  // authored to that coordinate space.
   return (
-    <svg {...common} viewBox="0 0 14 14" fill="currentColor">
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 14 14"
+      fill={color}
+      className={className}
+      style={{
+        color,
+        display: "inline-block",
+        verticalAlign: "middle",
+        flexShrink: 0,
+      }}
+      role="img"
+      aria-label="Windows"
+      data-testid="os-icon-windows"
+    >
+      <title>Windows</title>
       <rect x="1" y="1" width="5.5" height="5.5" />
       <rect x="7.5" y="1" width="5.5" height="5.5" />
       <rect x="1" y="7.5" width="5.5" height="5.5" />

@@ -147,6 +147,64 @@ describe("FleetPanel", () => {
     expect(screen.getByTestId("state-count-idle")).toHaveTextContent("2");
   });
 
+  // CONTEXT sidebar facet panel
+  it("renders CONTEXT section when at least one facet has 2+ values", () => {
+    render(
+      <FleetPanel
+        flavors={mockFlavors}
+        contextFacets={{
+          orchestration: [
+            { value: "kubernetes", count: 3 },
+            { value: "docker", count: 1 },
+          ],
+        }}
+      />,
+    );
+    expect(screen.getByTestId("fleet-panel-context")).toBeInTheDocument();
+    expect(screen.getByTestId("context-facet-orchestration")).toBeInTheDocument();
+    expect(
+      screen.getByTestId("context-value-orchestration-kubernetes"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId("context-value-orchestration-docker"),
+    ).toBeInTheDocument();
+  });
+
+  it("hides CONTEXT section when every facet has only one value", () => {
+    // Single-value facets are useless as filters -- the section
+    // should be omitted entirely (no header, no rows). This keeps
+    // the sidebar clean for deployments where every agent runs in
+    // the same orchestration / on the same host.
+    render(
+      <FleetPanel
+        flavors={mockFlavors}
+        contextFacets={{
+          orchestration: [{ value: "kubernetes", count: 5 }],
+          hostname: [{ value: "host-1", count: 5 }],
+        }}
+      />,
+    );
+    expect(screen.queryByTestId("fleet-panel-context")).not.toBeInTheDocument();
+  });
+
+  it("invokes onContextFilter when a facet value is clicked", () => {
+    const onContextFilter = vi.fn();
+    render(
+      <FleetPanel
+        flavors={mockFlavors}
+        contextFacets={{
+          orchestration: [
+            { value: "kubernetes", count: 3 },
+            { value: "docker", count: 1 },
+          ],
+        }}
+        onContextFilter={onContextFilter}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("context-value-orchestration-kubernetes"));
+    expect(onContextFilter).toHaveBeenCalledWith("orchestration", "kubernetes");
+  });
+
   it("uses sessionStateCounts prop when provided", () => {
     // When the parent passes pre-computed counts, the bar reads them
     // directly rather than re-deriving from flavors. This is the

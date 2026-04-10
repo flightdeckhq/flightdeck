@@ -52,6 +52,11 @@ type EventPayload struct {
 	Result          json.RawMessage `json:"result,omitempty"`
 	Error           string          `json:"error,omitempty"`
 	DurationMs      *int64          `json:"duration_ms,omitempty"`
+
+	// Runtime context collected by the sensor at init() time.
+	// Present only on session_start events. Stored once in
+	// sessions.context (JSONB) and never updated on conflict.
+	Context map[string]interface{} `json:"context,omitempty"`
 }
 
 // Processor processes a single event payload.

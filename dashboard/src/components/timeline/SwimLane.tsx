@@ -29,6 +29,13 @@ interface SwimLaneProps {
   timelineWidth: number;
   activeFilter?: string | null;
   sessionVersions?: Record<string, number>;
+  /**
+   * Set of session IDs that match the active CONTEXT sidebar filter.
+   * null = no filters active, every session is fully visible.
+   * Sessions not in the set render at opacity 0.15 with
+   * pointer-events: none.
+   */
+  matchingSessionIds?: Set<string> | null;
 }
 
 function SwimLaneComponent({
@@ -44,6 +51,7 @@ function SwimLaneComponent({
   timelineWidth,
   activeFilter,
   sessionVersions,
+  matchingSessionIds = null,
 }: SwimLaneProps) {
   // Live count = sessions that are currently active OR idle. The
   // server-side `activeCount` prop only counts state="active", but
@@ -238,20 +246,41 @@ function SwimLaneComponent({
               </div>
               <div style={{ width: timelineWidth, flexShrink: 0 }} />
             </div>
-            {sessions.map((session) => (
-              <SessionEventRow
-                key={session.session_id}
-                session={session}
-                scale={scale}
-                onClick={(eventId, event) => onSessionClick(session.session_id, eventId, event)}
-                viewMode={viewMode}
-                start={start}
-                end={end}
-                timelineWidth={timelineWidth}
-                activeFilter={activeFilter}
-                version={sessionVersions?.[session.session_id] ?? 0}
-              />
-            ))}
+            {sessions.map((session) => {
+              // Dim sessions that don't match the active CONTEXT
+              // sidebar filter. matchingSessionIds === null means
+              // no filters are active and every row is fully visible.
+              const matches =
+                matchingSessionIds === null ||
+                matchingSessionIds.has(session.session_id);
+              return (
+                <div
+                  key={session.session_id}
+                  style={{
+                    opacity: matches ? 1 : 0.15,
+                    pointerEvents: matches ? "auto" : "none",
+                    transition: "opacity 150ms ease",
+                  }}
+                  data-testid={
+                    matches ? undefined : "session-row-dimmed"
+                  }
+                >
+                  <SessionEventRow
+                    session={session}
+                    scale={scale}
+                    onClick={(eventId, event) =>
+                      onSessionClick(session.session_id, eventId, event)
+                    }
+                    viewMode={viewMode}
+                    start={start}
+                    end={end}
+                    timelineWidth={timelineWidth}
+                    activeFilter={activeFilter}
+                    version={sessionVersions?.[session.session_id] ?? 0}
+                  />
+                </div>
+              );
+            })}
           </div>
         )}
       </div>
@@ -267,6 +296,7 @@ export const SwimLane = memo(SwimLaneComponent, (prev, next) => {
   if (prev.activeFilter !== next.activeFilter) return false;
   if (prev.sessionVersions !== next.sessionVersions) return false;
   if (prev.timelineWidth !== next.timelineWidth) return false;
+  if (prev.matchingSessionIds !== next.matchingSessionIds) return false;
   // Only re-render for scale changes > 1 second
   const domainDelta = Math.abs(
     next.scale.domain()[1].getTime() - prev.scale.domain()[1].getTime()

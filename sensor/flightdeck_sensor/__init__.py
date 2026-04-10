@@ -13,6 +13,7 @@ import os
 import threading
 from typing import Any, Callable
 
+from flightdeck_sensor.core.context import collect as _collect_context
 from flightdeck_sensor.core.exceptions import (
     BudgetExceededError,
     ConfigurationError,
@@ -183,6 +184,18 @@ def init(
             unavailable_policy=config.unavailable_policy,
         )
         _session = Session(config=config, client=_client)
+
+        # Best-effort runtime context collection. Never raises -- if
+        # any collector fails the agent continues with no context
+        # attached. Set on the session BEFORE start() so the
+        # session_start event payload includes it.
+        runtime_ctx: dict[str, Any] = {}
+        try:
+            runtime_ctx = _collect_context()
+        except Exception:
+            pass
+        _session.set_context(runtime_ctx)
+
         _session.start()
 
 

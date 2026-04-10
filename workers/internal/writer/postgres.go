@@ -43,20 +43,33 @@ func (w *Writer) UpsertAgent(ctx context.Context, flavor, agentType string) erro
 }
 
 // UpsertSession inserts a new session or updates its state fields.
+//
+// The optional contextJSON argument carries the runtime context dict
+// collected by the sensor at init() time (see sensor/core/context.py).
+// It is stored in sessions.context (JSONB) and is set ONCE on insert
+// -- the ON CONFLICT branch deliberately does NOT touch the context
+// column so reconnects from the same session_id can't overwrite the
+// initial collection. Pass nil for events that don't carry context
+// (only session_start does).
 func (w *Writer) UpsertSession(
 	ctx context.Context,
 	sessionID, flavor, agentType, host, framework, model, state string,
+	contextJSON []byte,
 ) error {
+	if contextJSON == nil {
+		contextJSON = []byte("{}")
+	}
 	_, err := w.pool.Exec(ctx, `
-		INSERT INTO sessions (session_id, flavor, agent_type, host, framework, model, state, started_at, last_seen_at)
-		VALUES ($1::uuid, $2, $3, NULLIF($4, ''), NULLIF($5, ''), NULLIF($6, ''), $7, NOW(), NOW())
+		INSERT INTO sessions (session_id, flavor, agent_type, host, framework, model, state, started_at, last_seen_at, context)
+		VALUES ($1::uuid, $2, $3, NULLIF($4, ''), NULLIF($5, ''), NULLIF($6, ''), $7, NOW(), NOW(), $8)
 		ON CONFLICT (session_id) DO UPDATE
 		SET state = EXCLUDED.state,
 		    last_seen_at = NOW(),
 		    host = COALESCE(EXCLUDED.host, sessions.host),
 		    framework = COALESCE(EXCLUDED.framework, sessions.framework),
 		    model = COALESCE(EXCLUDED.model, sessions.model)
-	`, sessionID, flavor, agentType, host, framework, model, state)
+		    -- context intentionally NOT updated on conflict
+	`, sessionID, flavor, agentType, host, framework, model, state, contextJSON)
 	if err != nil {
 		return fmt.Errorf("upsert session %s: %w", sessionID, err)
 	}

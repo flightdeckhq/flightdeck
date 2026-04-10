@@ -35,7 +35,7 @@ func (m *mockWriter) UpsertAgent(_ context.Context, flavor, _ string) error {
 	return nil
 }
 
-func (m *mockWriter) UpsertSession(_ context.Context, sessionID, _, _, _, _, _, _ string) error {
+func (m *mockWriter) UpsertSession(_ context.Context, sessionID, _, _, _, _, _, _ string, _ []byte) error {
 	m.sessionsCreated = append(m.sessionsCreated, sessionID)
 	return nil
 }
@@ -86,7 +86,7 @@ func TestSessionStart_UpsertsAgentAndSession(t *testing.T) {
 	w := newMockWriter()
 	e := makeEvent("session_start")
 	_ = w.UpsertAgent(context.Background(), e.Flavor, e.AgentType)
-	_ = w.UpsertSession(context.Background(), e.SessionID, e.Flavor, e.AgentType, e.Host, "", "", "active")
+	_ = w.UpsertSession(context.Background(), e.SessionID, e.Flavor, e.AgentType, e.Host, "", "", "active", nil)
 
 	if len(w.agentsUpserted) != 1 || w.agentsUpserted[0] != "test-agent" {
 		t.Errorf("expected agent upsert for test-agent, got %v", w.agentsUpserted)

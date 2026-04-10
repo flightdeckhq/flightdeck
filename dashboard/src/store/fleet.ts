@@ -1,11 +1,14 @@
 import { create } from "zustand";
 import type { FlavorSummary, Session, FleetUpdate } from "@/lib/types";
+import type { ContextFacets } from "@/types/context";
 import { fetchFleet } from "@/lib/api";
 
 export type AgentTypeFilter = "all" | "production" | "developer";
 
 interface FleetState {
   flavors: FlavorSummary[];
+  /** Context facets aggregated by the API across all non-terminal sessions. */
+  contextFacets: ContextFacets;
   loading: boolean;
   error: string | null;
   selectedSessionId: string | null;
@@ -21,6 +24,7 @@ interface FleetState {
 
 export const useFleetStore = create<FleetState>((set, get) => ({
   flavors: [],
+  contextFacets: {},
   loading: false,
   error: null,
   selectedSessionId: null,
@@ -33,7 +37,11 @@ export const useFleetStore = create<FleetState>((set, get) => ({
     try {
       const apiFilter = filter === "all" ? undefined : filter;
       const data = await fetchFleet(50, 0, apiFilter);
-      set({ flavors: data.flavors, loading: false });
+      set({
+        flavors: data.flavors,
+        contextFacets: data.context_facets ?? {},
+        loading: false,
+      });
     } catch (e) {
       set({ error: (e as Error).message, loading: false });
     }

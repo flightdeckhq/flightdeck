@@ -38,6 +38,12 @@ export interface Session {
   ended_at: string | null;
   tokens_used: number;
   token_limit: number | null;
+  /**
+   * Runtime context dict captured by the sensor at init() time.
+   * Stored once in sessions.context (JSONB) and never updated.
+   * See dashboard/src/types/context.ts for the facet types.
+   */
+  context?: Record<string, unknown>;
   has_pending_directive?: boolean;
   warn_at_pct?: number | null;
   degrade_at_pct?: number | null;
@@ -102,6 +108,12 @@ export interface FlavorSummary {
 export interface FleetResponse {
   flavors: FlavorSummary[];
   total_session_count: number;
+  /**
+   * Aggregated runtime context facets across all non-terminal
+   * sessions. Powers the CONTEXT sidebar filter panel. Empty
+   * object when no sessions have context.
+   */
+  context_facets: import("@/types/context").ContextFacets;
 }
 
 /** Session detail response from GET /v1/sessions/:id. */

@@ -9,7 +9,8 @@ import { LiveFeed } from "@/components/fleet/LiveFeed";
 import { EventDetailDrawer } from "@/components/fleet/EventDetailDrawer";
 import { Timeline } from "@/components/timeline/Timeline";
 import { SessionDrawer } from "@/components/session/SessionDrawer";
-import type { AgentEvent, FeedEvent, FlavorSummary } from "@/lib/types";
+import type { AgentEvent, FeedEvent, FlavorSummary, Session } from "@/lib/types";
+import type { ContextFilters } from "@/types/context";
 import { FEED_MAX_EVENTS, PAUSE_QUEUE_MAX_EVENTS } from "@/lib/constants";
 import { eventsCache } from "@/hooks/useSessionEvents";
 
@@ -81,12 +82,67 @@ export function Fleet() {
   }, []);
 
   const { flavors, loading, error } = useFleet(handleNewEvent);
+  const contextFacets = useFleetStore((s) => s.contextFacets);
   const {
     selectedSessionId,
     selectSession,
     flavorFilter,
     setFlavorFilter,
   } = useFleetStore();
+
+  // CONTEXT sidebar filters. Empty object = no filters active.
+  // sessionMatchesContext below applies these to dim non-matching
+  // session rows in the swimlane and feed events.
+  const [contextFilters, setContextFilters] = useState<ContextFilters>({});
+
+  const handleContextFilter = useCallback((key: string, value: string) => {
+    setContextFilters((prev) => {
+      const current = prev[key] ?? [];
+      const next = { ...prev };
+      if (current.includes(value)) {
+        const remaining = current.filter((v) => v !== value);
+        if (remaining.length === 0) {
+          delete next[key];
+        } else {
+          next[key] = remaining;
+        }
+      } else {
+        next[key] = [...current, value];
+      }
+      return next;
+    });
+  }, []);
+
+  const handleClearContext = useCallback(() => setContextFilters({}), []);
+
+  const sessionMatchesContext = useCallback(
+    (session: Session): boolean => {
+      const entries = Object.entries(contextFilters);
+      if (entries.length === 0) return true;
+      return entries.every(([key, values]) => {
+        const v = session.context?.[key];
+        return values.includes(String(v ?? ""));
+      });
+    },
+    [contextFilters],
+  );
+
+  // Precompute the set of session IDs whose context matches the
+  // active filters. null = no filters active, everything matches.
+  // Both the swimlane and the live feed use this to dim or filter
+  // out non-matching sessions.
+  const matchingSessionIds = useMemo<Set<string> | null>(() => {
+    if (Object.keys(contextFilters).length === 0) return null;
+    const set = new Set<string>();
+    for (const flavor of flavors) {
+      for (const session of flavor.sessions) {
+        if (sessionMatchesContext(session)) {
+          set.add(session.session_id);
+        }
+      }
+    }
+    return set;
+  }, [flavors, contextFilters, sessionMatchesContext]);
 
   const [viewMode, setViewMode] = useState<ViewMode>("swimlane");
   const [timeRange, setTimeRange] = useState<TimeRange>("1m");
@@ -227,6 +283,10 @@ export function Fleet() {
         onFlavorClick={handleFlavorClick}
         activeFlavorFilter={flavorFilter}
         directiveEvents={directiveEvents}
+        contextFacets={contextFacets}
+        contextFilters={contextFilters}
+        onContextFilter={handleContextFilter}
+        onClearContext={handleClearContext}
       >
         <DirectivesPanel
           flavorFilter={flavorFilter}
@@ -410,6 +470,7 @@ export function Fleet() {
             paused={paused}
             pausedAt={pausedAt}
             sessionVersions={sessionVersions}
+            matchingSessionIds={matchingSessionIds}
           />
         </div>
 
@@ -425,7 +486,13 @@ export function Fleet() {
             for the buffered events. So onResume here is intentionally
             wired to handleReturnToLive, not handleResume. */}
         <LiveFeed
-          events={feedEvents}
+          events={
+            matchingSessionIds === null
+              ? feedEvents
+              : feedEvents.filter((fe) =>
+                  matchingSessionIds.has(fe.event.session_id),
+                )
+          }
           onEventClick={setSelectedEvent}
           activeFilter={activeFilter}
           onFilterChange={setActiveFilter}

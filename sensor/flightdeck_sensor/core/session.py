@@ -72,6 +72,12 @@ class Session:
         self._framework: str | None = None
         self._model: str | None = None
 
+        # Runtime context (hostname, OS, git, orchestration, frameworks
+        # ...). Set once via set_context() before start() and attached
+        # to the session_start event payload only. The control plane
+        # stores it once in sessions.context and never updates it.
+        self._context: dict[str, Any] = {}
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -112,6 +118,15 @@ class Session:
                 self.config.session_id,
                 self._tokens_used,
             )
+
+    def set_context(self, context: dict[str, Any]) -> None:
+        """Attach runtime context for inclusion in the session_start event.
+
+        Called once from ``init()`` after running the context
+        collectors. Set BEFORE :meth:`start` so the first event
+        payload carries the context dict.
+        """
+        self._context = context
 
     def record_usage(self, usage: TokenUsage) -> None:
         """Atomically increment session token counts."""
@@ -476,6 +491,14 @@ class Session:
             "content": None,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
+
+        # Attach runtime context only on session_start events. The
+        # control plane stores sessions.context once and never updates
+        # it on conflict, so sending it on every event would be
+        # wasteful network traffic.
+        if event_type == EventType.SESSION_START and self._context:
+            payload["context"] = self._context
+
         payload.update(extra)
         return payload
 

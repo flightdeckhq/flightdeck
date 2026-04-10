@@ -33,6 +33,12 @@ definitions:
     type: object
   handlers.FleetResponse:
     properties:
+      context_facets:
+        additionalProperties:
+          items:
+            $ref: '#/definitions/store.ContextFacetValue'
+          type: array
+        type: object
       flavors:
         items:
           $ref: '#/definitions/store.FlavorSummary'
@@ -136,6 +142,13 @@ definitions:
       period_change_pct:
         type: number
     type: object
+  store.ContextFacetValue:
+    properties:
+      count:
+        type: integer
+      value:
+        type: string
+    type: object
   store.CustomDirective:
     properties:
       description:
@@ -202,6 +215,9 @@ definitions:
         type: string
       occurred_at:
         type: string
+      payload:
+        additionalProperties: {}
+        type: object
       session_id:
         type: string
       tokens_input:
@@ -230,6 +246,21 @@ definitions:
       system_prompt:
         type: string
       tools: {}
+    type: object
+  store.EventsResponse:
+    properties:
+      events:
+        items:
+          $ref: '#/definitions/store.Event'
+        type: array
+      has_more:
+        type: boolean
+      limit:
+        type: integer
+      offset:
+        type: integer
+      total:
+        type: integer
     type: object
   store.FlavorSummary:
     properties:
@@ -329,6 +360,14 @@ definitions:
         type: string
       block_at_pct:
         type: integer
+      context:
+        additionalProperties: {}
+        description: |-
+          Runtime context collected by the sensor at init() time and
+          stored once in sessions.context (JSONB) on the session_start
+          event. Carries hostname, OS, git, orchestration, frameworks,
+          etc. -- see sensor/flightdeck_sensor/core/context.py.
+        type: object
       degrade_at_pct:
         type: integer
       degrade_to:
@@ -475,6 +514,14 @@ paths:
           description: Bad Request
           schema:
             $ref: '#/definitions/handlers.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "422":
+          description: Unprocessable Entity
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
         "500":
           description: Internal Server Error
           schema:
@@ -567,6 +614,58 @@ paths:
       summary: Sync custom directive fingerprints
       tags:
       - custom-directives
+  /v1/events:
+    get:
+      description: Returns events matching time range, flavor, event type, and session
+        filters with pagination.
+      parameters:
+      - description: Start time (ISO 8601)
+        in: query
+        name: from
+        required: true
+        type: string
+      - description: End time (ISO 8601, defaults to now)
+        in: query
+        name: to
+        type: string
+      - description: Filter by flavor
+        in: query
+        name: flavor
+        type: string
+      - description: Filter by event type
+        in: query
+        name: event_type
+        type: string
+      - description: Filter by session ID
+        in: query
+        name: session_id
+        type: string
+      - description: Max results (default 500, max 2000)
+        in: query
+        name: limit
+        type: integer
+      - description: Offset for pagination (default 0)
+        in: query
+        name: offset
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/store.EventsResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      summary: List events with filters
+      tags:
+      - events
   /v1/events/{id}/content:
     get:
       description: Returns prompt capture content for an event. Returns 404 when the
@@ -597,8 +696,9 @@ paths:
       - events
   /v1/fleet:
     get:
-      description: Returns sessions grouped by flavor, excluding lost sessions. Supports
-        pagination via limit/offset on sessions.
+      description: Returns sessions grouped by flavor, excluding lost sessions. Includes
+        runtime context facets aggregated across all non-terminal sessions for the
+        dashboard CONTEXT sidebar.
       parameters:
       - description: Max sessions to return (default 50, max 200)
         in: query

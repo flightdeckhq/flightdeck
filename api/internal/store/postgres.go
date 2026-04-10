@@ -36,6 +36,7 @@ type Querier interface {
 	GetEvents(ctx context.Context, params EventsParams) (*EventsResponse, error)
 	QueryAnalytics(ctx context.Context, params AnalyticsParams) (*AnalyticsResponse, error)
 	Search(ctx context.Context, query string) (*SearchResults, error)
+	GetContextFacets(ctx context.Context) (map[string][]ContextFacetValue, error)
 }
 
 // WrapStore returns a Querier from any compatible implementation.
@@ -66,6 +67,12 @@ type Session struct {
 	TokensUsed int        `json:"tokens_used"`
 	TokenLimit *int       `json:"token_limit,omitempty"`
 
+	// Runtime context collected by the sensor at init() time and
+	// stored once in sessions.context (JSONB) on the session_start
+	// event. Carries hostname, OS, git, orchestration, frameworks,
+	// etc. -- see sensor/flightdeck_sensor/core/context.py.
+	Context map[string]any `json:"context,omitempty"`
+
 	// Active policy thresholds (nullable).
 	// Populated by GetSession via effective policy lookup.
 	// Null if no policy applies at any scope.
@@ -77,6 +84,15 @@ type Session struct {
 
 	// HasPendingDirective is true when an undelivered shutdown directive exists.
 	HasPendingDirective bool `json:"has_pending_directive"`
+}
+
+// ContextFacetValue is a single (value, count) entry inside a context
+// facet group. The fleet response groups facets by key (e.g.
+// "git_branch") and lists each distinct value with the number of
+// active/idle/stale sessions that have it.
+type ContextFacetValue struct {
+	Value string `json:"value"`
+	Count int    `json:"count"`
 }
 
 // Event represents an event row for API responses.
@@ -137,7 +153,8 @@ func (s *Store) GetFleet(ctx context.Context, limit, offset int, agentType strin
 	args = append(args, limit, offset)
 	rows, err := s.pool.Query(ctx, `
 		SELECT session_id::text, flavor, agent_type, host, framework, model,
-		       state, started_at, last_seen_at, ended_at, tokens_used, token_limit
+		       state, started_at, last_seen_at, ended_at, tokens_used, token_limit,
+		       context
 		FROM sessions
 		WHERE state != 'lost'`+agentFilter+`
 		ORDER BY flavor, started_at DESC
@@ -153,13 +170,21 @@ func (s *Store) GetFleet(ctx context.Context, limit, offset int, agentType strin
 
 	for rows.Next() {
 		var sess Session
+		var contextRaw []byte
 		if err := rows.Scan(
 			&sess.SessionID, &sess.Flavor, &sess.AgentType,
 			&sess.Host, &sess.Framework, &sess.Model,
 			&sess.State, &sess.StartedAt, &sess.LastSeenAt,
 			&sess.EndedAt, &sess.TokensUsed, &sess.TokenLimit,
+			&contextRaw,
 		); err != nil {
 			return nil, 0, fmt.Errorf("scan session: %w", err)
+		}
+		if len(contextRaw) > 0 {
+			var v map[string]any
+			if jsonErr := json.Unmarshal(contextRaw, &v); jsonErr == nil && len(v) > 0 {
+				sess.Context = v
+			}
 		}
 
 		fs, ok := flavorMap[sess.Flavor]
@@ -191,10 +216,12 @@ func (s *Store) GetFleet(ctx context.Context, limit, offset int, agentType strin
 // Policy lookup cascades: session scope > flavor scope > org scope.
 func (s *Store) GetSession(ctx context.Context, sessionID string) (*Session, error) {
 	var sess Session
+	var contextRaw []byte
 	err := s.pool.QueryRow(ctx, `
 		SELECT
 			s.session_id::text, s.flavor, s.agent_type, s.host, s.framework, s.model,
 			s.state, s.started_at, s.last_seen_at, s.ended_at, s.tokens_used, s.token_limit,
+			s.context,
 			COALESCE(ps.token_limit, pf.token_limit, po.token_limit) AS policy_token_limit,
 			COALESCE(ps.warn_at_pct, pf.warn_at_pct, po.warn_at_pct) AS warn_at_pct,
 			COALESCE(ps.degrade_at_pct, pf.degrade_at_pct, po.degrade_at_pct) AS degrade_at_pct,
@@ -213,6 +240,7 @@ func (s *Store) GetSession(ctx context.Context, sessionID string) (*Session, err
 		&sess.Host, &sess.Framework, &sess.Model,
 		&sess.State, &sess.StartedAt, &sess.LastSeenAt,
 		&sess.EndedAt, &sess.TokensUsed, &sess.TokenLimit,
+		&contextRaw,
 		&sess.PolicyTokenLimit, &sess.WarnAtPct, &sess.DegradeAtPct,
 		&sess.DegradeTo, &sess.BlockAtPct,
 	)
@@ -221,6 +249,12 @@ func (s *Store) GetSession(ctx context.Context, sessionID string) (*Session, err
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get session %s: %w", sessionID, err)
+	}
+	if len(contextRaw) > 0 {
+		var v map[string]any
+		if jsonErr := json.Unmarshal(contextRaw, &v); jsonErr == nil && len(v) > 0 {
+			sess.Context = v
+		}
 	}
 
 	// Check for pending shutdown directive.
@@ -728,4 +762,45 @@ func (s *Store) GetCustomDirectives(ctx context.Context, flavor string) ([]Custo
 		return nil, fmt.Errorf("custom directives scan: %w", err)
 	}
 	return directives, nil
+}
+
+// GetContextFacets aggregates the runtime context dicts from every
+// non-lost session into a (key -> [(value, count)]) map. The result
+// powers the dashboard CONTEXT sidebar facet panel.
+//
+// Only non-terminal sessions (active / idle / stale) contribute --
+// closed and lost sessions are excluded so the panel reflects the
+// current fleet, not historical state. Empty contexts are also
+// excluded so a fleet without any context-bearing sessions returns
+// an empty map (not an error).
+//
+// Within each key, values are ordered by count descending so the
+// most common value sits at the top of its facet group.
+func (s *Store) GetContextFacets(ctx context.Context) (map[string][]ContextFacetValue, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT key, value, COUNT(*) AS count
+		FROM sessions, jsonb_each_text(context)
+		WHERE state IN ('active', 'idle', 'stale')
+		  AND context != '{}'::jsonb
+		GROUP BY key, value
+		ORDER BY key ASC, count DESC
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("get context facets: %w", err)
+	}
+	defer rows.Close()
+
+	facets := make(map[string][]ContextFacetValue)
+	for rows.Next() {
+		var key, value string
+		var count int
+		if err := rows.Scan(&key, &value, &count); err != nil {
+			return nil, fmt.Errorf("scan context facet: %w", err)
+		}
+		facets[key] = append(facets[key], ContextFacetValue{Value: value, Count: count})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("context facets scan: %w", err)
+	}
+	return facets, nil
 }

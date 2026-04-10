@@ -18,6 +18,13 @@ interface TimelineProps {
   paused?: boolean;
   pausedAt?: Date | null;
   sessionVersions?: Record<string, number>;
+  /**
+   * Set of session IDs that match the active CONTEXT sidebar filter.
+   * null = no filters active, every session matches. Used to dim
+   * non-matching sessions in the swimlane (opacity 0.15 +
+   * pointer-events: none).
+   */
+  matchingSessionIds?: Set<string> | null;
 }
 
 export function Timeline({
@@ -32,6 +39,7 @@ export function Timeline({
   paused,
   pausedAt,
   sessionVersions,
+  matchingSessionIds = null,
 }: TimelineProps) {
   // Live-updating "now" — throttled to 10fps (100ms) for performance
   const [now, setNow] = useState(() => new Date());
@@ -282,6 +290,7 @@ export function Timeline({
             timelineWidth={timelineWidth}
             activeFilter={activeFilter}
             sessionVersions={sessionVersions}
+            matchingSessionIds={matchingSessionIds}
           />
         ))}
       </div>

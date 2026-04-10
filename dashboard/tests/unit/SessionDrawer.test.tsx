@@ -267,6 +267,64 @@ describe("SessionDrawer", () => {
     expect(screen.getAllByTestId("event-row").length).toBeGreaterThanOrEqual(1);
   });
 
+  // RUNTIME panel
+  it("renders RUNTIME panel when session.context is non-empty", () => {
+    mockSessionOverride = {
+      context: {
+        hostname: "agent-pod-7",
+        os: "Linux",
+        orchestration: "kubernetes",
+        k8s_namespace: "agents",
+        k8s_node: "node-1",
+      },
+    };
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    expect(screen.getByTestId("runtime-panel")).toBeInTheDocument();
+    // Toggle to expand
+    fireEvent.click(screen.getByTestId("runtime-panel-toggle"));
+    expect(screen.getByTestId("runtime-key-hostname")).toBeInTheDocument();
+    expect(screen.getByTestId("runtime-value-hostname")).toHaveTextContent(
+      "agent-pod-7",
+    );
+    // kubernetes combined: '{namespace} / {node}'
+    expect(screen.getByTestId("runtime-value-kubernetes")).toHaveTextContent(
+      "agents / node-1",
+    );
+  });
+
+  it("hides RUNTIME panel when session.context is missing or empty", () => {
+    mockSessionOverride = { context: {} };
+    const { rerender } = render(
+      <SessionDrawer sessionId="s1" onClose={() => {}} />,
+    );
+    expect(screen.queryByTestId("runtime-panel")).not.toBeInTheDocument();
+
+    mockSessionOverride = {}; // no context field at all
+    rerender(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    expect(screen.queryByTestId("runtime-panel")).not.toBeInTheDocument();
+  });
+
+  it("RUNTIME panel combines git fields into a single row", () => {
+    mockSessionOverride = {
+      context: {
+        git_commit: "abc1234",
+        git_branch: "main",
+        git_repo: "flightdeck",
+      },
+    };
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    fireEvent.click(screen.getByTestId("runtime-panel-toggle"));
+    // git: '{commit} · {branch} · {repo}'
+    expect(screen.getByTestId("runtime-value-git")).toHaveTextContent(
+      "abc1234 · main · flightdeck",
+    );
+    // The individual git_* keys must NOT be rendered separately --
+    // they were consumed by the combined row.
+    expect(screen.queryByTestId("runtime-key-git_commit")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("runtime-key-git_branch")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("runtime-key-git_repo")).not.toBeInTheDocument();
+  });
+
   it("events shown newest first", () => {
     render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
     const badges = screen.getAllByTestId("event-badge");

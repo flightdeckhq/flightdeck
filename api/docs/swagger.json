@@ -157,6 +157,18 @@
                             "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "422": {
+                        "description": "Unprocessable Entity",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
                     "500": {
                         "description": "Internal Server Error",
                         "schema": {
@@ -292,6 +304,83 @@
                 }
             }
         },
+        "/v1/events": {
+            "get": {
+                "description": "Returns events matching time range, flavor, event type, and session filters with pagination.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "events"
+                ],
+                "summary": "List events with filters",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Start time (ISO 8601)",
+                        "name": "from",
+                        "in": "query",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "End time (ISO 8601, defaults to now)",
+                        "name": "to",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by flavor",
+                        "name": "flavor",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by event type",
+                        "name": "event_type",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by session ID",
+                        "name": "session_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Max results (default 500, max 2000)",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Offset for pagination (default 0)",
+                        "name": "offset",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/store.EventsResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/v1/events/{id}/content": {
             "get": {
                 "description": "Returns prompt capture content for an event. Returns 404 when the event does not exist or capture was not enabled.",
@@ -335,7 +424,7 @@
         },
         "/v1/fleet": {
             "get": {
-                "description": "Returns sessions grouped by flavor, excluding lost sessions. Supports pagination via limit/offset on sessions.",
+                "description": "Returns sessions grouped by flavor, excluding lost sessions. Includes runtime context facets aggregated across all non-terminal sessions for the dashboard CONTEXT sidebar.",
                 "produces": [
                     "application/json"
                 ],
@@ -754,6 +843,15 @@
         "handlers.FleetResponse": {
             "type": "object",
             "properties": {
+                "context_facets": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/definitions/store.ContextFacetValue"
+                        }
+                    }
+                },
                 "flavors": {
                     "type": "array",
                     "items": {
@@ -914,6 +1012,17 @@
                 }
             }
         },
+        "store.ContextFacetValue": {
+            "type": "object",
+            "properties": {
+                "count": {
+                    "type": "integer"
+                },
+                "value": {
+                    "type": "string"
+                }
+            }
+        },
         "store.CustomDirective": {
             "type": "object",
             "properties": {
@@ -1014,6 +1123,10 @@
                 "occurred_at": {
                     "type": "string"
                 },
+                "payload": {
+                    "type": "object",
+                    "additionalProperties": {}
+                },
                 "session_id": {
                     "type": "string"
                 },
@@ -1055,6 +1168,29 @@
                     "type": "string"
                 },
                 "tools": {}
+            }
+        },
+        "store.EventsResponse": {
+            "type": "object",
+            "properties": {
+                "events": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/store.Event"
+                    }
+                },
+                "has_more": {
+                    "type": "boolean"
+                },
+                "limit": {
+                    "type": "integer"
+                },
+                "offset": {
+                    "type": "integer"
+                },
+                "total": {
+                    "type": "integer"
+                }
             }
         },
         "store.FlavorSummary": {
@@ -1206,6 +1342,11 @@
                 },
                 "block_at_pct": {
                     "type": "integer"
+                },
+                "context": {
+                    "description": "Runtime context collected by the sensor at init() time and\nstored once in sessions.context (JSONB) on the session_start\nevent. Carries hostname, OS, git, orchestration, frameworks,\netc. -- see sensor/flightdeck_sensor/core/context.py.",
+                    "type": "object",
+                    "additionalProperties": {}
                 },
                 "degrade_at_pct": {
                     "type": "integer"

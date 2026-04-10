@@ -24,6 +24,18 @@ type mockStore struct {
 	lastSearchQuery  string
 	directives       []store.Directive
 	customDirectives []store.CustomDirective
+	contextFacets    map[string][]store.ContextFacetValue
+	contextFacetsErr error
+}
+
+func (m *mockStore) GetContextFacets(_ context.Context) (map[string][]store.ContextFacetValue, error) {
+	if m.contextFacetsErr != nil {
+		return nil, m.contextFacetsErr
+	}
+	if m.contextFacets == nil {
+		return map[string][]store.ContextFacetValue{}, nil
+	}
+	return m.contextFacets, nil
 }
 
 func (m *mockStore) GetFleet(_ context.Context, limit, offset int, agentType string) ([]store.FlavorSummary, int, error) {
@@ -422,6 +434,79 @@ func TestFleetHandler_FilterByProduction(t *testing.T) {
 		if fm["agent_type"] == "developer" {
 			t.Errorf("expected non-developer agent_type, got developer")
 		}
+	}
+}
+
+func TestGetFleetIncludesContextFacets(t *testing.T) {
+	// The fleet handler must surface the runtime context facets that
+	// the API store aggregates from sessions.context (JSONB). The
+	// dashboard's CONTEXT sidebar reads this map -- a missing or
+	// silently-empty `context_facets` field would break filtering.
+	s := &mockStore{
+		contextFacets: map[string][]store.ContextFacetValue{
+			"orchestration": {
+				{Value: "kubernetes", Count: 3},
+				{Value: "docker", Count: 1},
+			},
+			"hostname": {
+				{Value: "host-1", Count: 2},
+			},
+		},
+	}
+	handler := handlers.FleetHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/fleet", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	facets, ok := resp["context_facets"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected context_facets object, got %T", resp["context_facets"])
+	}
+	if _, ok := facets["orchestration"]; !ok {
+		t.Errorf("expected orchestration facet in response, got keys: %v", facets)
+	}
+	orch, _ := facets["orchestration"].([]any)
+	if len(orch) != 2 {
+		t.Errorf("expected 2 orchestration values, got %d", len(orch))
+	}
+}
+
+func TestGetFleetFacetsErrorDoesNotFail(t *testing.T) {
+	// A failure inside GetContextFacets must NOT fail the entire fleet
+	// request -- facets are best-effort. The handler logs the error
+	// and returns an empty facet map, the rest of the response is
+	// unaffected.
+	s := &mockStore{
+		contextFacetsErr: pgx.ErrNoRows,
+	}
+	handler := handlers.FleetHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/fleet", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 even with facets error, got %d", w.Code)
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if _, ok := resp["flavors"].([]any); !ok {
+		t.Errorf("expected flavors array, got %T", resp["flavors"])
+	}
+	facets, ok := resp["context_facets"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected context_facets object even on error, got %T", resp["context_facets"])
+	}
+	if len(facets) != 0 {
+		t.Errorf("expected empty context_facets on error, got %v", facets)
 	}
 }
 

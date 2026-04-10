@@ -1217,3 +1217,74 @@ will replace this stopgap).
 
 ---
 
+## D074 -- Runtime context auto-collection at sensor init()
+
+**Decision:** The sensor collects a runtime environment snapshot once
+at `init()` time via a pluggable collector chain in
+`sensor/flightdeck_sensor/core/context.py` and attaches it to the
+`session_start` event payload. The control plane stores it in a new
+`sessions.context` JSONB column with set-once semantics (the worker
+writer deliberately omits `context` from the `ON CONFLICT DO UPDATE`
+clause). The API exposes facets via `GetContextFacets()` aggregating
+`jsonb_each_text(context)` across non-terminal sessions, and the
+dashboard renders them as a CONTEXT sidebar filter panel plus a
+collapsible RUNTIME panel in the session drawer.
+
+The collector chain is split into three phases:
+
+1. **Process / system** -- ProcessCollector, OSCollector, UserCollector,
+   PythonCollector, GitCollector. All run, results merge into the dict.
+2. **Orchestration** -- KubernetesCollector, DockerComposeCollector,
+   DockerCollector, AWSECSCollector, CloudRunCollector. Run in priority
+   order, **first match wins** (the loop breaks). This avoids ambiguous
+   "kubernetes AND docker" results inside k8s pods that also have
+   `/.dockerenv`.
+3. **Other** -- FrameworkCollector. Inspects `sys.modules` for known AI
+   frameworks (crewai, langchain, llama_index, autogen, haystack, dspy,
+   smolagents, pydantic_ai). It NEVER imports anything new -- if a
+   framework was not loaded by the agent before `init()` ran, we do not
+   claim it is in use.
+
+Every collector inherits from `BaseCollector`, whose `collect()` wraps
+`_gather()` in a try/except. The top-level `collect()` orchestrator
+wraps each collector call in a *second* try/except. The two layers of
+protection mean a single broken collector can never crash the sensor
+or block `init()`.
+
+The `GitCollector` shells out to `git` with a 500 ms timeout, strips
+embedded credentials from the remote URL via
+`re.sub(r"https?://[^@]+@", "https://", remote)`, and falls back
+silently when git is missing or the cwd is not a repo (the broad
+`except Exception` in `_run` also catches `FileNotFoundError` on
+Windows where `git.exe` may not be on PATH).
+
+**Reasoning rejected alternatives:**
+
+- *Per-event context* -- runtime environment is essentially static for
+  the lifetime of a process. Sending it on every event would bloat
+  payloads, increase NATS throughput, and force the worker writer to
+  re-evaluate "did anything change?" on every insert. Once at init() is
+  the right cardinality.
+- *Mutable context (UPDATE on conflict)* -- session reconnects can race
+  with stale collector data. Set-once means whatever the agent saw at
+  startup is the canonical record for that session, which is what
+  operators expect when filtering by k8s namespace or git commit.
+- *Update existing UpsertSession to recompute facets server-side* --
+  facets are an aggregation across many sessions and must scale with
+  fleet size, so they belong in their own query. The worker writer's
+  job is to write a single row, not to recompute global state.
+- *Eagerly importing frameworks to detect them* -- this would cause
+  side effects (FastAPI route registration, lazy ML model loads) and
+  could break the agent's own startup. `sys.modules` inspection is the
+  only safe option.
+- *Failing the fleet request when GetContextFacets errors* -- the
+  CONTEXT sidebar is best-effort UX. A facet aggregation failure (slow
+  query, transient DB hiccup) must NOT take down the timeline. The
+  handler logs a warning and returns an empty facet map.
+
+**Migration:** `docker/postgres/migrations/000006_add_context_to_sessions.{up,down}.sql`
+adds the column with `DEFAULT '{}'::jsonb` and a GIN index for facet
+queries. The down migration drops both.
+
+---
+

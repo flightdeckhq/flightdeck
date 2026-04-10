@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { Fragment, useState, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { X } from "lucide-react";
 import { useSession } from "@/hooks/useSession";
@@ -63,6 +63,97 @@ function formatDuration(startedAt: string): string {
   return `${h}h ${m % 60}m`;
 }
 
+/**
+ * Build the ordered list of (key, value) rows shown in the RUNTIME
+ * panel from a session.context object. Combines git/kubernetes/
+ * compose/frameworks fields into single readable rows; everything
+ * else falls through in the documented display order, with unknown
+ * keys appended alphabetically at the end.
+ */
+function buildRuntimeRows(
+  context: Record<string, unknown>,
+): Array<{ key: string; value: string }> {
+  const rows: Array<{ key: string; value: string }> = [];
+  const seen = new Set<string>();
+
+  const isEmpty = (v: unknown) =>
+    v === undefined || v === null || v === "";
+
+  const add = (key: string, value: unknown) => {
+    if (isEmpty(value)) return;
+    rows.push({ key, value: String(value) });
+    seen.add(key);
+  };
+
+  const addCombined = (
+    key: string,
+    parts: unknown[],
+    sep: string,
+    consumeKeys: string[],
+  ) => {
+    consumeKeys.forEach((k) => seen.add(k));
+    const filtered = parts.filter((p) => !isEmpty(p)).map(String);
+    if (filtered.length === 0) return;
+    rows.push({ key, value: filtered.join(sep) });
+  };
+
+  // Documented display order — bare fields first.
+  add("hostname", context.hostname);
+  add("user", context.user);
+  add("process_name", context.process_name);
+  add("os", context.os);
+  add("arch", context.arch);
+  add("python_version", context.python_version);
+
+  // git: '{commit} · {branch} · {repo}'
+  addCombined(
+    "git",
+    [context.git_commit, context.git_branch, context.git_repo],
+    " · ",
+    ["git_commit", "git_branch", "git_repo"],
+  );
+
+  add("orchestration", context.orchestration);
+
+  // kubernetes: '{namespace} / {node}'
+  addCombined(
+    "kubernetes",
+    [context.k8s_namespace, context.k8s_node],
+    " / ",
+    ["k8s_namespace", "k8s_node"],
+  );
+
+  // compose: '{project} / {service}'
+  addCombined(
+    "compose",
+    [context.compose_project, context.compose_service],
+    " / ",
+    ["compose_project", "compose_service"],
+  );
+
+  // frameworks: array joined by ", "
+  if (Array.isArray(context.frameworks)) {
+    const joined = (context.frameworks as unknown[])
+      .filter((f) => !isEmpty(f))
+      .map(String)
+      .join(", ");
+    if (joined) rows.push({ key: "frameworks", value: joined });
+    seen.add("frameworks");
+  } else if (!isEmpty(context.frameworks)) {
+    add("frameworks", context.frameworks);
+  }
+
+  // Anything else, alphabetical.
+  const remaining = Object.keys(context)
+    .filter((k) => !seen.has(k))
+    .sort();
+  for (const k of remaining) {
+    add(k, context[k]);
+  }
+
+  return rows;
+}
+
 /* ---- Main component ---- */
 
 interface SessionDrawerProps {
@@ -82,6 +173,7 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
   const [activeTab, setActiveTab] = useState<DrawerTab>("timeline");
   const [expandedEventId, setExpandedEventId] = useState<string | null>(null);
   const [selectedEventId, setSelectedEventId] = useState<string | null>(null);
+  const [runtimeExpanded, setRuntimeExpanded] = useState(false);
 
   // Internal detail event — set when user clicks "Open full detail" within the drawer
   const [internalDetailEvent, setInternalDetailEvent] = useState<AgentEvent | null>(null);
@@ -274,6 +366,16 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
                 )}
               </div>
 
+              {/* Runtime context panel — only renders when the session
+                  has a non-empty `context` object (set once at sensor
+                  init from the pluggable collector chain). Collapsed by
+                  default to keep the drawer chrome compact. */}
+              <RuntimePanel
+                context={data.session.context}
+                expanded={runtimeExpanded}
+                onToggle={() => setRuntimeExpanded((v) => !v)}
+              />
+
               {/* Tab bar */}
               <div className="flex h-9 shrink-0 items-end gap-4 px-4" style={{ borderBottom: "1px solid var(--border)" }}>
                 {(["timeline", "prompts"] as const).map((tab) => (
@@ -325,6 +427,112 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
         </motion.div>
       )}
     </AnimatePresence>
+  );
+}
+
+/* ---- Runtime context panel ---- */
+
+interface RuntimePanelProps {
+  context?: Record<string, unknown>;
+  expanded: boolean;
+  onToggle: () => void;
+}
+
+/**
+ * Collapsible RUNTIME panel rendered between the metadata bar and the
+ * tab bar. Hidden entirely when `context` is missing or empty -- the
+ * sensor only sets context once at init() from the collector chain
+ * (process / OS / orchestration / framework), and many deployments
+ * will simply not have anything to show.
+ */
+function RuntimePanel({ context, expanded, onToggle }: RuntimePanelProps) {
+  const rows = useMemo(
+    () => (context ? buildRuntimeRows(context) : []),
+    [context],
+  );
+  if (rows.length === 0) return null;
+
+  return (
+    <div
+      data-testid="runtime-panel"
+      style={{
+        background: "var(--bg-elevated)",
+        borderBottom: "1px solid var(--border-subtle)",
+      }}
+    >
+      <button
+        type="button"
+        onClick={onToggle}
+        data-testid="runtime-panel-toggle"
+        className="flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors hover:bg-surface-hover"
+        style={{
+          fontSize: 11,
+          fontWeight: 600,
+          letterSpacing: "0.06em",
+          textTransform: "uppercase",
+          color: "var(--text-secondary)",
+        }}
+        aria-expanded={expanded}
+      >
+        <span
+          style={{
+            display: "inline-block",
+            transform: expanded ? "rotate(90deg)" : "rotate(0deg)",
+            transition: "transform 150ms ease",
+            color: "var(--text-muted)",
+          }}
+        >
+          ▶
+        </span>
+        <span>Runtime</span>
+        <span
+          style={{
+            color: "var(--text-muted)",
+            fontWeight: 400,
+            textTransform: "none",
+            letterSpacing: 0,
+          }}
+        >
+          ({rows.length})
+        </span>
+      </button>
+      {expanded && (
+        <div
+          data-testid="runtime-panel-grid"
+          style={{
+            display: "grid",
+            gridTemplateColumns: "110px 1fr",
+            gap: "3px 12px",
+            padding: "8px 12px",
+          }}
+        >
+          {rows.map((row) => (
+            <Fragment key={row.key}>
+              <div
+                data-testid={`runtime-key-${row.key}`}
+                style={{
+                  fontSize: 11,
+                  color: "var(--text-muted)",
+                }}
+              >
+                {row.key}
+              </div>
+              <div
+                data-testid={`runtime-value-${row.key}`}
+                style={{
+                  fontSize: 12,
+                  fontFamily: "var(--font-mono)",
+                  color: "var(--text)",
+                  wordBreak: "break-all",
+                }}
+              >
+                {row.value}
+              </div>
+            </Fragment>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 

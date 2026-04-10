@@ -76,8 +76,9 @@ flightdeck/
 │   │   ├── py.typed            # PEP 561 marker
 │   │   ├── core/
 │   │   │   ├── types.py        # SessionState, EventType, DirectiveAction, SensorConfig -- pure dataclasses
-│   │   │   ├── session.py      # Session: lifecycle, identity, atexit/signal handlers
+│   │   │   ├── session.py      # Session: lifecycle, identity, atexit/signal handlers, runtime context
 │   │   │   ├── policy.py       # PolicyCache: local token enforcement, threshold evaluation
+│   │   │   ├── context.py      # Pluggable runtime context collectors (process, OS, git, orchestration, framework)
 │   │   │   └── exceptions.py   # BudgetExceededError, DirectiveError, ConfigurationError
 │   │   ├── transport/
 │   │   │   ├── client.py       # ControlPlaneClient: HTTP POST, directive envelope parsing
@@ -97,7 +98,8 @@ flightdeck/
 │       │   ├── test_interceptor.py     # wrap(), patch(), call interception
 │       │   ├── test_transport.py       # HTTP client, directive parsing, unavailability
 │       │   ├── test_providers.py       # Token estimation, usage extraction
-│       │   └── test_prompt_capture.py  # Prompt capture on/off, content extraction per provider
+│       │   ├── test_prompt_capture.py  # Prompt capture on/off, content extraction per provider
+│       │   └── test_context.py         # Runtime context collectors, never-raises guarantee, k8s priority
 │       └── conftest.py                 # Shared fixtures: mock control plane, mock providers
 │
 ├── ingestion/                  # Ingestion API (Go) -- receives sensor events, publishes to NATS
@@ -691,14 +693,24 @@ CREATE TABLE sessions (
     ended_at        TIMESTAMPTZ,
     tokens_used     INTEGER NOT NULL DEFAULT 0,
     token_limit     INTEGER,
-    metadata        JSONB
+    metadata        JSONB,
+    context         JSONB NOT NULL DEFAULT '{}'::jsonb
 );
 
-CREATE INDEX sessions_flavor_idx    ON sessions(flavor);
-CREATE INDEX sessions_state_idx     ON sessions(state);
-CREATE INDEX sessions_last_seen_idx ON sessions(last_seen_at);
-CREATE INDEX sessions_started_idx   ON sessions(started_at);
+CREATE INDEX sessions_flavor_idx      ON sessions(flavor);
+CREATE INDEX sessions_state_idx       ON sessions(state);
+CREATE INDEX sessions_last_seen_idx   ON sessions(last_seen_at);
+CREATE INDEX sessions_started_idx     ON sessions(started_at);
+CREATE INDEX sessions_context_gin     ON sessions USING GIN (context);
 ```
+
+The `context` column stores the runtime environment snapshot collected
+once by the sensor at `init()` time -- hostname, OS, Python version, git
+commit / branch / repo, orchestration (kubernetes / compose / docker /
+ECS / cloud-run), and any in-process AI frameworks. The worker writer
+sets it once on session insert and deliberately does NOT update it on
+conflict (set-once semantics). The API aggregates it into facets via
+`GetContextFacets()` for the dashboard CONTEXT sidebar filter panel.
 
 ### events (metadata only -- no prompt content inline)
 
@@ -1874,7 +1886,11 @@ their agent appear in the live dashboard timeline in real time.
 
 `api/internal/handlers/fleet.go`
 - `GET /v1/fleet`: returns all sessions with state != lost, grouped by flavor
-- Response: `{flavors: [{flavor, session_count, active_count, tokens_used_total, sessions: [...]}]}`
+- Response: `{flavors: [{flavor, session_count, active_count, tokens_used_total, sessions: [...]}], total_session_count, context_facets}`
+- `context_facets` is a `map[string][]ContextFacetValue` of `{value, count}`
+  rows aggregated from `sessions.context` (state IN active/idle/stale).
+  GetContextFacets failure is best-effort -- the handler logs a warning
+  and returns an empty map rather than failing the entire fleet request.
 
 `api/internal/handlers/sessions.go`
 - `GET /v1/sessions/:id`: returns session metadata + all events in chronological order
@@ -1884,9 +1900,10 @@ their agent appear in the live dashboard timeline in real time.
 
 `api/internal/store/postgres.go`
 - Exposes Querier interface for handler dependency injection
-- `GetFleet(limit, offset int) ([]FlavorSummary, int, error)`
-- `GetSession(sessionID string) (*Session, error)` -- includes `has_pending_directive`
+- `GetFleet(limit, offset int) ([]FlavorSummary, int, error)` -- selects sessions.context and unmarshals into Session.Context
+- `GetSession(sessionID string) (*Session, error)` -- includes `has_pending_directive` and `context`
 - `GetSessionEvents(sessionID string) ([]Event, error)`
+- `GetContextFacets() (map[string][]ContextFacetValue, error)` -- jsonb_each_text aggregation across non-terminal sessions, ordered by key ASC then count DESC
 - `CreateDirective(d Directive) (*Directive, error)`
 - `GetActiveSessionIDsByFlavor(flavor string) ([]string, error)` -- used by shutdown_flavor fan-out
 - All queries via pgx, parameterized
@@ -1946,14 +1963,14 @@ their agent appear in the live dashboard timeline in real time.
 `dashboard/src/components/timeline/BarView.tsx` -- bar mode: 24 buckets, stacked bars (LLM/tool/policy/directive), hover tooltip
 `dashboard/src/components/timeline/TimeAxis.tsx` -- shared time axis (28px), mono labels, "now" marker
 `dashboard/src/pages/Directives.tsx` -- dedicated directives page: list all registered custom directives, flavor filter, search, trigger form with target selector
-`dashboard/src/components/fleet/FleetPanel.tsx` -- left sidebar (240px): section headers (uppercase tracked), fleet overview, session states (large counts), flavor list (active border), policy events
+`dashboard/src/components/fleet/FleetPanel.tsx` -- left sidebar (240px): section headers (uppercase tracked), fleet overview, session states (large counts), flavor list (active border), policy events, directive activity, **CONTEXT facets** (renders one filterable group per `context_facets` key with 2+ values; single-value facets are skipped; click-to-toggle with `onContextFilter`, clear-all `X` in header when filters active)
 `dashboard/src/components/fleet/SessionStateBar.tsx` -- session state counts: large numbers (20px/700) with status-colored labels
 `dashboard/src/hooks/useTheme.ts` -- theme toggle: dark/light class on html, localStorage persistence
 `dashboard/src/components/fleet/EventFilterBar.tsx` -- event type filter pills (All/LLM Calls/Tools/Policy/Directives/Session), single-select, filters swimlane + live feed simultaneously
 `dashboard/src/components/fleet/PolicyEventList.tsx`
 `dashboard/src/components/fleet/LiveFeed.tsx` -- live event feed (240px fixed height, 500 event cap, auto-scroll with pause, WebSocket-driven)
 `dashboard/src/components/fleet/EventDetailDrawer.tsx` -- single-event detail drawer (520px, independent from SessionDrawer, Details + Prompts tabs)
-`dashboard/src/components/session/SessionDrawer.tsx` -- session drawer (520px): header with session ID + state badge, metadata bar, tabs (Timeline/Prompts), event feed with type badges, expandable JSON detail
+`dashboard/src/components/session/SessionDrawer.tsx` -- session drawer (520px): header with session ID + state badge, metadata bar, **collapsible RUNTIME panel** (only renders when `session.context` is non-empty; combines git/kubernetes/compose/frameworks fields; documented display order with alphabetical fallback), tabs (Timeline/Prompts), event feed with type badges, expandable JSON detail
 `dashboard/src/components/session/SessionTimeline.tsx`
 `dashboard/src/components/session/EventDetail.tsx`
 `dashboard/src/components/session/TokenUsageBar.tsx`

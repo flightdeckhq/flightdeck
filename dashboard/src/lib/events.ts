@@ -50,6 +50,14 @@ export function getEventDetail(event: AgentEvent): string {
       return "session started";
     case "session_end":
       return "session ended";
+    case "directive_result": {
+      const name = event.payload?.directive_name;
+      const status = event.payload?.directive_status;
+      if (name && status) return `${name} · ${status}`;
+      if (name) return name;
+      if (status) return status;
+      return "directive result";
+    }
     default:
       return event.event_type;
   }
@@ -79,6 +87,28 @@ export function getSummaryRows(event: AgentEvent): [string, string][] {
       return [["Event", "session started"]];
     case "session_end":
       return [["Event", "session ended"]];
+    case "directive_result": {
+      const rows: [string, string][] = [];
+      if (event.payload?.directive_name) {
+        rows.push(["Name", event.payload.directive_name]);
+      }
+      if (event.payload?.directive_action) {
+        rows.push(["Action", event.payload.directive_action]);
+      }
+      if (event.payload?.directive_status) {
+        rows.push(["Status", event.payload.directive_status]);
+      }
+      if (event.payload?.duration_ms != null) {
+        rows.push(["Duration", `${event.payload.duration_ms}ms`]);
+      }
+      if (event.payload?.error) {
+        rows.push(["Error", event.payload.error]);
+      }
+      if (rows.length === 0) {
+        rows.push(["Event", "directive result"]);
+      }
+      return rows;
+    }
     default:
       return [["Type", event.event_type]];
   }

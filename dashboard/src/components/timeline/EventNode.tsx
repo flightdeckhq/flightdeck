@@ -26,6 +26,23 @@ const eventTypeConfig: Record<
 
 const defaultConfig = { cssVar: "var(--event-lifecycle)", Icon: Circle, label: "Event" };
 
+// Override colors for directive_result events based on directive_status.
+// success/acknowledged → green (status-active)
+// error/timeout → red (status-lost / event-block)
+// anything else → fall back to the base directive color
+function directiveResultOverride(
+  status: string | undefined,
+): { cssVar: string } | null {
+  if (!status) return null;
+  if (status === "success" || status === "acknowledged") {
+    return { cssVar: "var(--status-active)" };
+  }
+  if (status === "error" || status === "timeout") {
+    return { cssVar: "var(--event-block)" };
+  }
+  return null;
+}
+
 export interface EventNodeProps {
   x: number;
   eventType: EventType | string;
@@ -40,15 +57,20 @@ export interface EventNodeProps {
   onClick: (eventId?: string) => void;
   size?: number;
   isVisible?: boolean;
+  directiveName?: string;
+  directiveStatus?: string;
 }
 
 function EventNodeComponent({
   x, eventType, sessionId, flavor, model, toolName,
   tokensTotal, latencyMs, occurredAt, eventId, onClick,
-  size = 24, isVisible = true,
+  size = 24, isVisible = true, directiveName, directiveStatus,
 }: EventNodeProps) {
   const config = eventTypeConfig[eventType] ?? defaultConfig;
-  const color = config.cssVar;
+  const override = eventType === "directive_result"
+    ? directiveResultOverride(directiveStatus)
+    : null;
+  const color = override?.cssVar ?? config.cssVar;
   const [hovered, setHovered] = useState(false);
   const [mounted, setMounted] = useState(false);
   const [tooltipPos, setTooltipPos] = useState<{ top: number; left: number } | null>(null);
@@ -116,6 +138,11 @@ function EventNodeComponent({
           <div className="font-mono" style={{ color: "var(--text-muted)" }}>
             {flavor} / {truncateSessionId(sessionId)}
           </div>
+          {directiveName && (
+            <div style={{ color: "var(--text)" }}>
+              {directiveName}{directiveStatus ? ` · ${directiveStatus}` : ""}
+            </div>
+          )}
           {model && <div style={{ color: "var(--text)" }}>{model}</div>}
           {toolName && <div style={{ color: "var(--text)" }}>Tool: {toolName}</div>}
           {tokensTotal != null && (
@@ -139,5 +166,7 @@ export const EventNode = memo(EventNodeComponent, (prev, next) => {
   if (prev.isVisible !== next.isVisible) return false;
   if (prev.eventId !== next.eventId) return false;
   if (prev.size !== next.size) return false;
+  if (prev.directiveStatus !== next.directiveStatus) return false;
+  if (prev.directiveName !== next.directiveName) return false;
   return true;
 });

@@ -45,6 +45,26 @@ export interface Session {
   block_at_pct?: number | null;
 }
 
+/**
+ * Per-event-type metadata that does not fit the canonical schema columns.
+ *
+ * Currently only populated for `directive_result` events, where the
+ * sensor sends directive_name / directive_action / directive_status /
+ * result / error / duration_ms. The dashboard reads these fields from
+ * `event.payload` to render directive status without a separate
+ * /v1/events/:id/content fetch.
+ */
+export interface EventPayloadFields {
+  directive_name?: string;
+  directive_action?: string;
+  directive_status?: string;
+  // result is provider-specific JSON -- intentionally untyped
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  result?: any;
+  error?: string;
+  duration_ms?: number;
+}
+
 /** Event metadata (no prompt content inline). */
 export interface AgentEvent {
   id: string;
@@ -58,6 +78,7 @@ export interface AgentEvent {
   latency_ms: number | null;
   tool_name: string | null;
   has_content: boolean;
+  payload?: EventPayloadFields;
   occurred_at: string;
 }
 

@@ -19,6 +19,13 @@ const (
 )
 
 // EventPayload is the raw event received from NATS.
+//
+// The Directive* fields are populated for directive_result events
+// emitted by the sensor when it acknowledges or executes a directive
+// (D072). They are JSON-decoded directly from the top-level keys on
+// the event payload that the sensor POSTs to /v1/events. The worker
+// processor projects these fields into the events.payload JSONB
+// column via processor.BuildEventExtra().
 type EventPayload struct {
 	SessionID       string          `json:"session_id"`
 	Flavor          string          `json:"flavor"`
@@ -37,6 +44,14 @@ type EventPayload struct {
 	HasContent      bool            `json:"has_content"`
 	Content         json.RawMessage `json:"content"`
 	Timestamp       string          `json:"timestamp"`
+
+	// Directive metadata (directive_result events only).
+	DirectiveName   string          `json:"directive_name,omitempty"`
+	DirectiveAction string          `json:"directive_action,omitempty"`
+	DirectiveStatus string          `json:"directive_status,omitempty"`
+	Result          json.RawMessage `json:"result,omitempty"`
+	Error           string          `json:"error,omitempty"`
+	DurationMs      *int64          `json:"duration_ms,omitempty"`
 }
 
 // Processor processes a single event payload.

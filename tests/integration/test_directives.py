@@ -316,7 +316,10 @@ def test_custom_directive_unknown_fingerprint() -> None:
 
 
 def test_directive_result_appears_in_timeline() -> None:
-    """A directive_result event posted via ingestion shows up in the session timeline."""
+    """A directive_result event posted via ingestion shows up in the
+    session timeline AND its directive metadata fields land in the
+    events.payload column so the dashboard can render them.
+    """
     flavor = f"test-dir-result-{uuid.uuid4().hex[:6]}"
     sid = _start_session(flavor)
 
@@ -330,20 +333,26 @@ def test_directive_result_appears_in_timeline() -> None:
         result={"cleared": True},
     ))
 
-    def _has_directive_result() -> bool:
+    def _has_directive_result_with_payload() -> bool:
         try:
             detail = get_session(sid)
         except Exception:
             return False
         for ev in detail.get("events", []):
-            if ev.get("event_type") == "directive_result":
+            if ev.get("event_type") != "directive_result":
+                continue
+            payload = ev.get("payload") or {}
+            if payload.get("directive_status") == "success":
                 return True
         return False
 
     wait_until(
-        _has_directive_result,
+        _has_directive_result_with_payload,
         timeout=10,
-        msg=f"directive_result event did not appear for session {sid}",
+        msg=(
+            f"directive_result event with non-empty payload did not "
+            f"appear for session {sid}"
+        ),
     )
 
     detail = get_session(sid)
@@ -353,6 +362,23 @@ def test_directive_result_appears_in_timeline() -> None:
     ]
     assert len(result_events) >= 1, (
         f"expected at least one directive_result event, got {result_events}"
+    )
+
+    # Find the event we just posted (newest) and assert payload fields
+    latest = result_events[-1]
+    payload = latest.get("payload") or {}
+    assert payload.get("directive_name") == "clear_cache", (
+        f"expected payload.directive_name=clear_cache, got {payload}"
+    )
+    assert payload.get("directive_status") == "success", (
+        f"expected payload.directive_status=success, got {payload}"
+    )
+    assert payload.get("directive_action") == "custom", (
+        f"expected payload.directive_action=custom, got {payload}"
+    )
+    result = payload.get("result")
+    assert isinstance(result, dict) and result.get("cleared") is True, (
+        f"expected payload.result.cleared=True, got {result}"
     )
 
 

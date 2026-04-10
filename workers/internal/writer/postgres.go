@@ -64,6 +64,13 @@ func (w *Writer) UpsertSession(
 }
 
 // InsertEvent inserts a new event record (metadata only) and returns the generated event ID.
+//
+// The optional payload argument is a JSON-encoded blob written into the
+// events.payload JSONB column. It carries per-event-type metadata that
+// does not fit the canonical schema columns -- in particular the
+// directive_name / directive_action / directive_status / result fields
+// emitted by the sensor for directive_result events. Pass nil for
+// events that have no extra metadata; the payload column stays NULL.
 func (w *Writer) InsertEvent(
 	ctx context.Context,
 	sessionID, flavor, eventType, model string,
@@ -72,13 +79,14 @@ func (w *Writer) InsertEvent(
 	toolName *string,
 	hasContent bool,
 	occurredAt time.Time,
+	payload []byte,
 ) (string, error) {
 	var eventID string
 	err := w.pool.QueryRow(ctx, `
-		INSERT INTO events (session_id, flavor, event_type, model, tokens_input, tokens_output, tokens_total, latency_ms, tool_name, has_content, occurred_at)
-		VALUES ($1::uuid, $2, $3, NULLIF($4, ''), $5, $6, $7, $8, $9, $10, $11)
+		INSERT INTO events (session_id, flavor, event_type, model, tokens_input, tokens_output, tokens_total, latency_ms, tool_name, has_content, occurred_at, payload)
+		VALUES ($1::uuid, $2, $3, NULLIF($4, ''), $5, $6, $7, $8, $9, $10, $11, $12)
 		RETURNING id::text
-	`, sessionID, flavor, eventType, model, tokensInput, tokensOutput, tokensTotal, latencyMs, toolName, hasContent, occurredAt).Scan(&eventID)
+	`, sessionID, flavor, eventType, model, tokensInput, tokensOutput, tokensTotal, latencyMs, toolName, hasContent, occurredAt, payload).Scan(&eventID)
 	if err != nil {
 		return "", fmt.Errorf("insert event: %w", err)
 	}

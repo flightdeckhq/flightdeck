@@ -206,6 +206,8 @@ function AggregatedSessionEvents({
         tokensTotal: event.tokens_total,
         latencyMs: event.latency_ms,
         occurredAt: event.occurred_at,
+        directiveName: event.payload?.directive_name,
+        directiveStatus: event.payload?.directive_status,
       })),
     [events, scale]
   );
@@ -225,6 +227,8 @@ function AggregatedSessionEvents({
           latencyMs={node.latencyMs}
           occurredAt={node.occurredAt}
           eventId={node.id}
+          directiveName={node.directiveName}
+          directiveStatus={node.directiveStatus}
           onClick={(eid) => {
             const fullEvent = events.find((e) => e.id === eid);
             onSessionClick(session.session_id, eid, fullEvent);

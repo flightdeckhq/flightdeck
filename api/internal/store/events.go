@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -86,7 +87,7 @@ func (s *Store) GetEvents(ctx context.Context, params EventsParams) (*EventsResp
 	querySQL := fmt.Sprintf(`
 		SELECT id::text, session_id::text, flavor, event_type, model,
 		       tokens_input, tokens_output, tokens_total, latency_ms,
-		       tool_name, has_content, occurred_at
+		       tool_name, has_content, payload, occurred_at
 		FROM events
 		%s
 		ORDER BY occurred_at ASC
@@ -103,12 +104,19 @@ func (s *Store) GetEvents(ctx context.Context, params EventsParams) (*EventsResp
 	var events []Event
 	for rows.Next() {
 		var e Event
+		var payloadRaw []byte
 		if err := rows.Scan(
 			&e.ID, &e.SessionID, &e.Flavor, &e.EventType, &e.Model,
 			&e.TokensInput, &e.TokensOutput, &e.TokensTotal, &e.LatencyMs,
-			&e.ToolName, &e.HasContent, &e.OccurredAt,
+			&e.ToolName, &e.HasContent, &payloadRaw, &e.OccurredAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan event: %w", err)
+		}
+		if len(payloadRaw) > 0 {
+			var v map[string]any
+			if jsonErr := json.Unmarshal(payloadRaw, &v); jsonErr == nil && len(v) > 0 {
+				e.Payload = v
+			}
 		}
 		events = append(events, e)
 	}

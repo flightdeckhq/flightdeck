@@ -230,6 +230,19 @@ export function Fleet() {
   // above for the priority function. (FIX 3 -- part A)
   const sortedFlavors = useMemo(() => sortFlavorsByActivity(flavors), [flavors]);
 
+  // Tokens scoped to the currently selected time range. The Fleet
+  // Overview "Tokens (1h)" row reads this. feedEvents is hydrated
+  // from useHistoricalEvents on every timeRange change, so the sum
+  // updates automatically without an explicit dependency on
+  // timeRange.
+  const scopedTokens = useMemo(() => {
+    let total = 0;
+    for (const fe of feedEvents) {
+      total += fe.event.tokens_total ?? 0;
+    }
+    return total;
+  }, [feedEvents]);
+
   if (loading && flavors.length === 0) {
     return (
       <div className="flex h-full items-center justify-center text-text-muted">
@@ -286,6 +299,8 @@ export function Fleet() {
       <FleetPanel
         flavors={sortedFlavors}
         sessionStateCounts={sessionStateCounts}
+        tokensInRange={scopedTokens}
+        timeRange={timeRange}
         onFlavorClick={handleFlavorClick}
         activeFlavorFilter={flavorFilter}
         directiveEvents={directiveEvents}

@@ -74,9 +74,25 @@ describe("FleetPanel", () => {
     expect(screen.queryByText("Directive Activity")).not.toBeInTheDocument();
   });
 
-  it("Fleet Overview no longer shows a Tokens row", () => {
-    render(<FleetPanel flavors={mockFlavors} />);
-    expect(screen.queryByText("Tokens")).not.toBeInTheDocument();
+  it("Tokens row shows the count scoped to the time range", () => {
+    render(
+      <FleetPanel
+        flavors={mockFlavors}
+        tokensInRange={12_450}
+        timeRange="1h"
+      />,
+    );
+    // Label carries the time-range suffix so the value can't be
+    // misread as an all-time fleet total.
+    expect(screen.getByText("Tokens (1h)")).toBeInTheDocument();
+    // Localised value -- "12,450" not "12450".
+    expect(screen.getByText("12,450")).toBeInTheDocument();
+  });
+
+  it("Tokens row falls back to plain 'Tokens' label when timeRange is omitted", () => {
+    render(<FleetPanel flavors={mockFlavors} tokensInRange={42} />);
+    expect(screen.getByText("Tokens")).toBeInTheDocument();
+    expect(screen.queryByText(/Tokens \(/)).not.toBeInTheDocument();
   });
 
   it("renders correct active session count in session states", () => {

@@ -40,6 +40,17 @@ interface FleetPanelProps {
    * that pass only flavors continue to work.
    */
   sessionStateCounts?: SessionStateCounts;
+  /**
+   * Sum of tokens_total across every event in the currently selected
+   * time range. Optional so existing tests that pre-date the scoped
+   * Tokens row continue to compile -- when omitted the row shows 0.
+   */
+  tokensInRange?: number;
+  /**
+   * Currently selected time range label, used as the suffix on the
+   * Tokens row label ("Tokens (1h)").
+   */
+  timeRange?: string;
   onFlavorClick?: (flavor: string) => void;
   activeFlavorFilter?: string | null;
   directiveEvents?: FeedEvent[];
@@ -60,6 +71,8 @@ interface FleetPanelProps {
 export function FleetPanel({
   flavors,
   sessionStateCounts,
+  tokensInRange = 0,
+  timeRange,
   onFlavorClick,
   activeFlavorFilter,
   directiveEvents = [],
@@ -96,14 +109,20 @@ export function FleetPanel({
       <div className="px-3 pb-2 pt-4 text-xs font-semibold uppercase tracking-[0.06em]" style={{ color: "var(--text-secondary)" }}>
         Fleet Overview
       </div>
-      {/* Fleet Overview no longer surfaces an all-time token total --
-          the number had no time qualifier and was more confusing than
-          useful. Token analytics live on the Analytics page with
-          proper time scope. */}
+      {/* Fleet Overview. The Tokens row is scoped to the currently
+          selected time range -- the label suffix ("(1h)") makes the
+          time qualifier explicit so the number can't be misread as
+          an all-time fleet total. Updates automatically as the user
+          changes the time range upstream because feedEvents
+          repopulates from the new historical fetch. */}
       <div className="space-y-1 px-3 pb-3">
         <SidebarRow label="Flavors" value={flavors.length} />
         <SidebarRow label="Sessions" value={totalSessions} />
         <SidebarRow label="Active" value={totalActive} valueColor="var(--status-active)" />
+        <SidebarRow
+          label={timeRange ? `Tokens (${timeRange})` : "Tokens"}
+          value={tokensInRange.toLocaleString()}
+        />
       </div>
 
       {/* Session States */}
@@ -398,8 +417,23 @@ function SidebarRow({
 }) {
   return (
     <div className="flex items-center justify-between py-[5px] px-0 text-[13px]">
-      <span style={{ color: "var(--text-secondary)" }}>{label}</span>
-      <span className="font-mono text-sm font-semibold" style={{ color: valueColor ?? "var(--text)" }}>
+      <span
+        style={{
+          color: "var(--text-secondary)",
+          // Keep labels on a single line so the new "(1h)" suffix
+          // on the Tokens row never wraps. No visual change for
+          // labels that already fit.
+          whiteSpace: "nowrap",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+        }}
+      >
+        {label}
+      </span>
+      <span
+        className="font-mono text-sm font-semibold"
+        style={{ color: valueColor ?? "var(--text)" }}
+      >
         {value}
       </span>
     </div>

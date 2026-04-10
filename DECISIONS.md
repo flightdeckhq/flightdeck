@@ -1044,26 +1044,20 @@ Pagination via `offset` supports loading older events.
 
 ## D067 -- FeedEvent type with arrivedAt
 
-**Decision:** The dashboard live feed uses a `FeedEvent` wrapper type
-(`{ arrivedAt: number; event: AgentEvent }`) instead of the bare event.
-`arrivedAt` is stamped at WebSocket message receipt using `Date.now()`
-combined with a monotonic counter so events received in the same
-millisecond do not collide. The default display order is `arrivedAt`
-descending (newest first). The "Time" column shows `arrivedAt` formatted
-as wall-clock time. Column-sort by other columns is supported and
-auto-pauses the feed.
+**Decision:** Live feed uses `FeedEvent` wrapper type with `arrivedAt:
+number` (`Date.now()` at WebSocket message receipt). Default display
+order is `arrivedAt` descending (newest first) via `sort()` with
+`arrivedAt` as the sort key. Column sorting is supported -- clicking
+any column header sorts by that column's value; clicking TIME returns
+to `arrivedAt` descending. Non-TIME sorts auto-pause the feed.
+`arrivedAt` is the canonical ordering field and the fallback when sort
+is reset.
 
-**Reasoning:** Sorting by `occurred_at` (the sensor-side timestamp)
-produced inconsistent results when WebSocket batching delivered events
-out of order with respect to wall-clock arrival, and made events from
-clock-skewed agents appear interleaved. `arrivedAt` is monotonically
-increasing on the dashboard side and reflects exactly when the user's
-browser saw the event. This is also what platform engineers expect from
-"live feed" -- the order they would have seen if they were watching the
-network in real time.
-
-**Rejected alternative:** Sorting by `occurred_at` -- inconsistent under
-batching and clock skew.
+**Reasoning:** Sorting by `occurred_at` produced inconsistent results
+when events arrived out of order due to WebSocket batching. `arrivedAt`
+is monotonically increasing and reflects exactly when the dashboard
+received the event. Column sorting adds investigative value --
+engineers can sort by flavor or event type to find patterns.
 
 ---
 

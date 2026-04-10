@@ -1286,10 +1286,20 @@ Single source of truth for tunable magic numbers:
 - Standalone right-slide drawer (520px) for a single event opened from
   the live feed (independent of `SessionDrawer`). Tabs: `details` and
   `prompts`. The Details tab shows a metadata grid plus the JSON
-  payload via `dashboard/src/components/ui/syntax-json.tsx`. The Prompts
-  tab loads `PromptViewer` if `event.has_content`, otherwise shows the
-  capture-disabled message. Mode 2 of `SessionDrawer` reuses the same
-  metadata grid + `syntax-json` rendering for consistency.
+  payload. The Prompts tab loads `PromptViewer` if `event.has_content`,
+  otherwise shows the capture-disabled message.
+
+**Shared rendering between SessionDrawer Mode 2 and EventDetailDrawer**
+
+Shared JSON rendering:
+- `dashboard/src/components/ui/syntax-json.tsx` -- used by both
+  `SessionDrawer` Mode 2 and `EventDetailDrawer` for JSON syntax
+  highlighting.
+
+Inline summary grid:
+- Built directly inside `SessionDrawer` and `EventDetailDrawer` (not a
+  separate component). Uses CSS grid `grid-cols-[140px_1fr]` with
+  key/value rows per event type.
 
 ### Dashboard -- Bulk Historical Events Hook
 

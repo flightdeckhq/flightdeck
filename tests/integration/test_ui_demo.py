@@ -9,12 +9,16 @@ live action. DELETE THIS FILE AFTER USE.
 
 from __future__ import annotations
 
+import json
 import random
 import time
-import uuid
 import urllib.error
+import urllib.request
+import uuid
 
 from .conftest import (
+    API_URL,
+    TOKEN,
     create_policy,
     delete_policy,
     get_fleet,
@@ -183,6 +187,182 @@ def _safe_post(evt: dict) -> bool:
         raise
 
 
+# ---- Custom directive catalog ----
+
+# Per-flavor custom directive definitions. These match the shape of
+# what the sensor's @flightdeck_sensor.directive() decorator would
+# register in production: a name, description, target flavor, and a
+# parameter list with per-parameter type/options/default. The demo
+# POSTs these via POST /v1/directives/register at the start of
+# PHASE 1 so the dashboard's Directives tab (SessionDrawer) and the
+# per-flavor Directives button (FleetPanel) have real entries to
+# render. The UI reads from GET /v1/directives/custom and filters
+# by flavor client-side.
+CUSTOM_DIRECTIVES: dict[str, list[dict]] = {
+    "research-agent": [
+        {
+            "name": "refresh_sources",
+            "fingerprint": "fp-research-refresh-sources",
+            "description": "Invalidate the cached source corpus and re-fetch.",
+            "parameters": [
+                {
+                    "name": "max_age_hours",
+                    "type": "integer",
+                    "description": "Only refresh sources older than this.",
+                    "options": [],
+                    "required": False,
+                    "default": 24,
+                },
+                {
+                    "name": "dry_run",
+                    "type": "boolean",
+                    "description": "Simulate without touching the cache.",
+                    "options": [],
+                    "required": False,
+                    "default": False,
+                },
+            ],
+        },
+        {
+            "name": "switch_search_backend",
+            "fingerprint": "fp-research-switch-backend",
+            "description": "Route web searches through a different backend.",
+            "parameters": [
+                {
+                    "name": "backend",
+                    "type": "string",
+                    "description": "Which search backend to use.",
+                    "options": ["tavily", "brave", "google", "bing"],
+                    "required": True,
+                    "default": None,
+                },
+            ],
+        },
+    ],
+    "code-agent": [
+        {
+            "name": "rotate_model",
+            "fingerprint": "fp-code-rotate-model",
+            "description": "Swap the active LLM for subsequent calls.",
+            "parameters": [
+                {
+                    "name": "target_model",
+                    "type": "string",
+                    "description": "Model to switch to.",
+                    "options": [
+                        "gpt-4o",
+                        "gpt-4o-mini",
+                        "claude-sonnet-4-6",
+                        "claude-haiku-4-5",
+                    ],
+                    "required": True,
+                    "default": None,
+                },
+                {
+                    "name": "reason",
+                    "type": "string",
+                    "description": "Why the rotation is needed.",
+                    "options": [],
+                    "required": False,
+                    "default": "",
+                },
+            ],
+        },
+        {
+            "name": "enable_sandbox",
+            "fingerprint": "fp-code-enable-sandbox",
+            "description": "Force all code execution into a sandbox container.",
+            "parameters": [
+                {
+                    "name": "timeout_seconds",
+                    "type": "integer",
+                    "description": "Sandbox wall-clock limit.",
+                    "options": [],
+                    "required": False,
+                    "default": 30,
+                },
+            ],
+        },
+        {
+            "name": "clear_workspace",
+            "fingerprint": "fp-code-clear-workspace",
+            "description": "Wipe the agent's scratch workspace directory.",
+            "parameters": [],
+        },
+    ],
+    "claude-code": [
+        {
+            "name": "toggle_autonomy",
+            "fingerprint": "fp-cc-toggle-autonomy",
+            "description": "Flip between supervised and autonomous modes.",
+            "parameters": [
+                {
+                    "name": "mode",
+                    "type": "string",
+                    "description": "Supervision mode for the rest of the session.",
+                    "options": ["supervised", "autonomous"],
+                    "required": True,
+                    "default": "supervised",
+                },
+            ],
+        },
+        {
+            "name": "set_context_budget",
+            "fingerprint": "fp-cc-set-context-budget",
+            "description": "Adjust the maximum context window tokens.",
+            "parameters": [
+                {
+                    "name": "max_tokens",
+                    "type": "integer",
+                    "description": "Context window cap.",
+                    "options": [],
+                    "required": True,
+                    "default": 200_000,
+                },
+            ],
+        },
+    ],
+}
+
+
+def register_custom_directives() -> int:
+    """POST each flavor's directive catalog to /v1/directives/register.
+
+    The endpoint is authed with the same bearer token as the
+    ingestion API (D073 stopgap auth). Returns the total number of
+    directives registered across all flavors so the caller can print
+    a summary line.
+    """
+    total = 0
+    for flavor, directives in CUSTOM_DIRECTIVES.items():
+        body = {
+            "flavor": flavor,
+            "directives": [
+                {
+                    "name": d["name"],
+                    "fingerprint": d["fingerprint"],
+                    "description": d["description"],
+                    "flavor": flavor,
+                    "parameters": d["parameters"],
+                }
+                for d in directives
+            ],
+        }
+        req = urllib.request.Request(
+            f"{API_URL}/v1/directives/register",
+            data=json.dumps(body).encode(),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {TOKEN}",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            payload = json.loads(resp.read())
+            total += int(payload.get("registered", 0))
+    return total
+
+
 def test_ui_demo() -> None:
     """
     UI demonstration test. Runs 10 agents across 3 flavors for 3 minutes.
@@ -230,6 +410,21 @@ def test_ui_demo() -> None:
         return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
     try:
+        # ---- PHASE 0: Register custom directives ----
+        # Runs before PHASE 1 so the directives are already present
+        # when the fleet store's initial load picks them up -- the
+        # dashboard only refetches custom directives on full page
+        # load, not on WebSocket update.
+        print("\n=== PHASE 0: Registering custom directives ===")
+        try:
+            registered = register_custom_directives()
+            print(
+                f"  Registered {registered} custom directives across "
+                f"{len(CUSTOM_DIRECTIVES)} flavors"
+            )
+        except urllib.error.HTTPError as e:
+            print(f"  WARN: register failed ({e.code}) -- UI directives tab will be empty")
+
         # ---- PHASE 1: Start all 10 sessions ----
         print("\n=== PHASE 1: Starting 10 sessions ===")
         for s in sessions:

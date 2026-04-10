@@ -2,7 +2,7 @@ import { useMemo, memo } from "react";
 import type { ScaleTime } from "d3-scale";
 import type { Session, AgentEvent } from "@/lib/types";
 import type { ViewMode } from "@/pages/Fleet";
-import { LEFT_PANEL_WIDTH } from "@/lib/constants";
+import { SESSION_ROW_HEIGHT } from "@/lib/constants";
 import { EventNode } from "./EventNode";
 import { BarView } from "./BarView";
 import { useSessionEvents } from "@/hooks/useSessionEvents";
@@ -12,6 +12,15 @@ import {
   OrchestrationIcon,
   getOrchestrationLabel,
 } from "@/components/ui/OrchestrationIcon";
+
+/**
+ * Threshold at which the token count is dropped from the row left
+ * panel. Below this, the panel is too narrow to fit session number +
+ * icons + hostname + state badge + token count without wrapping or
+ * overflowing. The token count is the least critical field so it
+ * hides first; drag the panel wider to bring it back.
+ */
+const TOKEN_COUNT_MIN_WIDTH = 260;
 
 const stateBadgeColors: Record<string, { bg: string; color: string }> = {
   active: { bg: "rgba(34,197,94,0.15)", color: "var(--status-active)" },
@@ -23,6 +32,13 @@ const stateBadgeColors: Record<string, { bg: string; color: string }> = {
 
 interface SessionEventRowProps {
   session: Session;
+  /**
+   * Zero-based position of this session within the parent flavor's
+   * session list. Rendered as a 1-based index prefix in the left
+   * panel so platform engineers can refer to "session 3" without
+   * memorising the UUID.
+   */
+  sessionIndex: number;
   scale: ScaleTime<number, number>;
   onClick: (eventId?: string, event?: AgentEvent) => void;
   viewMode: ViewMode;
@@ -31,16 +47,32 @@ interface SessionEventRowProps {
   /**
    * Width of the event-circles area in pixels. The right panel is
    * sized exactly to this value so xScale.range = [0, timelineWidth]
-   * and circles cannot escape into adjacent layout space. Renamed
-   * from `width` to make the contract explicit and prevent the
-   * double-subtraction bug that broke wide-range layouts.
+   * and circles cannot escape into adjacent layout space.
    */
   timelineWidth: number;
+  /**
+   * Current resizable width of the sticky left panel. Flows from
+   * Timeline.tsx via SwimLane so every row resizes in lockstep when
+   * the user drags the Flavors-header resize handle.
+   */
+  leftPanelWidth: number;
   activeFilter?: string | null;
   version?: number;
 }
 
-function SessionEventRowComponent({ session, scale, onClick, viewMode, start, end, timelineWidth, activeFilter, version = 0 }: SessionEventRowProps) {
+function SessionEventRowComponent({
+  session,
+  sessionIndex,
+  scale,
+  onClick,
+  viewMode,
+  start,
+  end,
+  timelineWidth,
+  leftPanelWidth,
+  activeFilter,
+  version = 0,
+}: SessionEventRowProps) {
   const isActive = session.state === "active";
   const { events, loading } = useSessionEvents(session.session_id, isActive, version);
   const badge = stateBadgeColors[session.state] ?? stateBadgeColors.closed;
@@ -96,22 +128,32 @@ function SessionEventRowComponent({ session, scale, onClick, viewMode, start, en
     [events, scale]
   );
 
+  const truncatedSid = truncateSessionId(session.session_id);
+  const showTokens = leftPanelWidth >= TOKEN_COUNT_MIN_WIDTH;
+
   return (
     <div
-      className="flex h-10 cursor-pointer items-center transition-colors hover:bg-surface-hover"
-      style={{ borderBottom: "1px solid var(--border-subtle)" }}
+      className="flex cursor-pointer items-center transition-colors hover:bg-surface-hover"
+      style={{
+        height: SESSION_ROW_HEIGHT,
+        borderBottom: "1px solid var(--border-subtle)",
+      }}
       onClick={() => onClick()}
     >
-      {/* Left panel — 240px, indented, sticky for horizontal scroll.
-          When the session has a runtime context, the hostname replaces
-          the truncated session id as the primary identifier and OS /
-          orchestration icons sit before it. The full session id is
-          always reachable via the row's hover tooltip so platform
-          engineers don't lose access to the canonical id. */}
+      {/* Left panel — resizable, sticky for horizontal scroll.
+          Layout inside the panel:
+            <index> <pulse> <os-icon> <orch-icon> <label-column>
+            <state-badge> <tokens?>
+          The label column is a 2-line stack: primary label (hostname
+          or hash) on top, secondary hash muted below when hostname is
+          available. The full session id is also reachable via the
+          row's hover tooltip. Token count is hidden when the panel
+          is narrower than TOKEN_COUNT_MIN_WIDTH to keep the row
+          legible during narrow drags. */}
       <div
-        className="flex h-full items-center gap-1.5 pl-7 pr-3"
+        className="flex h-full items-center gap-1.5"
         style={{
-          width: LEFT_PANEL_WIDTH,
+          width: leftPanelWidth,
           flexShrink: 0,
           background: "var(--surface)",
           borderRight: "1px solid var(--border)",
@@ -119,9 +161,23 @@ function SessionEventRowComponent({ session, scale, onClick, viewMode, start, en
           left: 0,
           zIndex: 1,
           overflow: "hidden",
+          padding: "0 8px 0 28px",
         }}
         title={session.session_id}
       >
+        <span
+          data-testid="session-row-index"
+          style={{
+            fontSize: 10,
+            color: "var(--text-muted)",
+            fontFamily: "var(--font-mono)",
+            flexShrink: 0,
+            minWidth: 14,
+            textAlign: "right",
+          }}
+        >
+          {sessionIndex + 1}
+        </span>
         {isActive && <div className="pulse-dot" />}
         {ctxOs && (
           <span title={platformTooltip || undefined}>
@@ -130,27 +186,55 @@ function SessionEventRowComponent({ session, scale, onClick, viewMode, start, en
         )}
         {ctxOrch && (
           <span
-            title={
-              ctxOrch ? getOrchestrationLabel(ctxOrch) : undefined
-            }
+            title={ctxOrch ? getOrchestrationLabel(ctxOrch) : undefined}
           >
             <OrchestrationIcon orchestration={ctxOrch} size={12} />
           </span>
         )}
-        <span
-          className="font-mono text-xs"
+        <div
           style={{
-            color: "var(--text-secondary)",
+            display: "flex",
+            flexDirection: "column",
             overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
+            flex: 1,
             minWidth: 0,
-            flexShrink: 1,
           }}
-          data-testid="session-row-label"
         >
-          {primaryLabel}
-        </span>
+          <span
+            data-testid="session-row-label"
+            style={{
+              fontSize: 12,
+              fontFamily: "var(--font-mono)",
+              color: "var(--text)",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+              lineHeight: 1.3,
+            }}
+          >
+            {primaryLabel}
+          </span>
+          {/* Secondary session hash -- only shown when hostname
+              occupies the primary slot. Without a hostname, the
+              hash IS the identity and duplicating it would waste
+              space. */}
+          {ctxHostname && (
+            <span
+              data-testid="session-row-hash"
+              style={{
+                fontSize: 10,
+                fontFamily: "var(--font-mono)",
+                color: "var(--text-muted)",
+                lineHeight: 1.3,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {truncatedSid}
+            </span>
+          )}
+        </div>
         <span
           className="rounded font-mono text-[10px] px-[5px] py-[1px]"
           style={{
@@ -162,12 +246,15 @@ function SessionEventRowComponent({ session, scale, onClick, viewMode, start, en
         >
           {session.state}
         </span>
-        <span
-          className="ml-auto font-mono text-[11px]"
-          style={{ color: "var(--text-muted)", flexShrink: 0 }}
-        >
-          {session.tokens_used.toLocaleString()}
-        </span>
+        {showTokens && (
+          <span
+            data-testid="session-row-tokens"
+            className="font-mono text-[11px]"
+            style={{ color: "var(--text-muted)", flexShrink: 0 }}
+          >
+            {session.tokens_used.toLocaleString()}
+          </span>
+        )}
       </div>
 
       {/* Right panel — events. Sized to exactly timelineWidth so
@@ -233,10 +320,15 @@ export const SessionEventRow = memo(SessionEventRowComponent, (prev, next) => {
   // and hostname appear without waiting for an unrelated state /
   // token change to invalidate the row.
   if (prev.session.context !== next.session.context) return false;
+  if (prev.sessionIndex !== next.sessionIndex) return false;
   if (prev.viewMode !== next.viewMode) return false;
   if (prev.activeFilter !== next.activeFilter) return false;
   if (prev.version !== next.version) return false;
   if (prev.timelineWidth !== next.timelineWidth) return false;
+  // The left panel width gates token-count visibility and drives
+  // the sticky column's actual width, so a drag must invalidate
+  // every row immediately.
+  if (prev.leftPanelWidth !== next.leftPanelWidth) return false;
   // Only re-render for scale changes > 1 second
   const domainDelta = Math.abs(
     next.scale.domain()[1].getTime() - prev.scale.domain()[1].getTime()

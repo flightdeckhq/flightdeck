@@ -2,7 +2,7 @@ import { memo, useMemo } from "react";
 import type { ScaleTime } from "d3-scale";
 import type { Session, AgentEvent } from "@/lib/types";
 import type { ViewMode } from "@/pages/Fleet";
-import { LEFT_PANEL_WIDTH } from "@/lib/constants";
+import { SESSION_ROW_HEIGHT } from "@/lib/constants";
 import { ChevronRight } from "lucide-react";
 import { SessionEventRow } from "./SessionEventRow";
 import { EventNode } from "./EventNode";
@@ -22,11 +22,18 @@ interface SwimLaneProps {
   end: Date;
   /**
    * Width of the event-circles area in pixels. The full row width is
-   * LEFT_PANEL_WIDTH + timelineWidth. The right (event circles) panel
+   * leftPanelWidth + timelineWidth. The right (event circles) panel
    * is sized exactly to this value so xScale.range = [0, timelineWidth]
    * and circles cannot escape into adjacent layout space.
    */
   timelineWidth: number;
+  /**
+   * Current resizable width of the left label / session-info panel.
+   * Flows from Timeline.tsx's useState into every SwimLane and
+   * SessionEventRow so drag updates on the Flavors header row
+   * resize every row in lockstep.
+   */
+  leftPanelWidth: number;
   activeFilter?: string | null;
   sessionVersions?: Record<string, number>;
   /**
@@ -49,6 +56,7 @@ function SwimLaneComponent({
   start,
   end,
   timelineWidth,
+  leftPanelWidth,
   activeFilter,
   sessionVersions,
   matchingSessionIds = null,
@@ -97,11 +105,13 @@ function SwimLaneComponent({
         style={{ background: expanded ? "var(--bg-elevated)" : "var(--bg)" }}
         onClick={onToggleExpand}
       >
-        {/* Left panel — sticky so it stays pinned during horizontal scroll */}
+        {/* Left panel — sticky so it stays pinned during horizontal scroll.
+            Width tracks the resizable leftPanelWidth state owned by
+            Timeline.tsx. */}
         <div
           className="flex h-full items-center gap-2 px-3"
           style={{
-            width: LEFT_PANEL_WIDTH,
+            width: leftPanelWidth,
             flexShrink: 0,
             background: expanded ? "var(--bg-elevated)" : "var(--surface)",
             borderRight: "1px solid var(--border)",
@@ -187,10 +197,13 @@ function SwimLaneComponent({
       </div>
 
       {/* Expanded session rows. The +28 in maxHeight reserves space
-          for the SESSIONS sub-header (20px) plus the py-1 padding. */}
+          for the SESSIONS sub-header (20px) plus the py-1 padding.
+          SESSION_ROW_HEIGHT is centralised in constants so the
+          animation stays in sync if we ever bump the row height
+          again. */}
       <div
         style={{
-          maxHeight: expanded ? sessions.length * 40 + 28 : 0,
+          maxHeight: expanded ? sessions.length * SESSION_ROW_HEIGHT + 28 : 0,
           opacity: expanded ? 1 : 0,
           overflow: "hidden",
           transition: "max-height 300ms ease, opacity 200ms ease",
@@ -214,12 +227,12 @@ function SwimLaneComponent({
                 height: 20,
                 borderBottom: "1px solid var(--border-subtle)",
                 background: "var(--surface)",
-                width: LEFT_PANEL_WIDTH + timelineWidth,
+                width: leftPanelWidth + timelineWidth,
               }}
             >
               <div
                 style={{
-                  width: LEFT_PANEL_WIDTH,
+                  width: leftPanelWidth,
                   flexShrink: 0,
                   position: "sticky",
                   left: 0,
@@ -246,7 +259,7 @@ function SwimLaneComponent({
               </div>
               <div style={{ width: timelineWidth, flexShrink: 0 }} />
             </div>
-            {sessions.map((session) => {
+            {sessions.map((session, sessionIndex) => {
               // Dim sessions that don't match the active CONTEXT
               // sidebar filter. matchingSessionIds === null means
               // no filters are active and every row is fully visible.
@@ -267,6 +280,7 @@ function SwimLaneComponent({
                 >
                   <SessionEventRow
                     session={session}
+                    sessionIndex={sessionIndex}
                     scale={scale}
                     onClick={(eventId, event) =>
                       onSessionClick(session.session_id, eventId, event)
@@ -275,6 +289,7 @@ function SwimLaneComponent({
                     start={start}
                     end={end}
                     timelineWidth={timelineWidth}
+                    leftPanelWidth={leftPanelWidth}
                     activeFilter={activeFilter}
                     version={sessionVersions?.[session.session_id] ?? 0}
                   />
@@ -296,6 +311,7 @@ export const SwimLane = memo(SwimLaneComponent, (prev, next) => {
   if (prev.activeFilter !== next.activeFilter) return false;
   if (prev.sessionVersions !== next.sessionVersions) return false;
   if (prev.timelineWidth !== next.timelineWidth) return false;
+  if (prev.leftPanelWidth !== next.leftPanelWidth) return false;
   if (prev.matchingSessionIds !== next.matchingSessionIds) return false;
   // Only re-render for scale changes > 1 second
   const domainDelta = Math.abs(

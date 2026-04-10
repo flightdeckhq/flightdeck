@@ -2,17 +2,16 @@
  * OSIcon — small inline-SVG operating system glyph used in the
  * session drawer metadata bar and the session-event row left panel.
  *
- * Renders one of three simple geometric shapes (Apple silhouette for
- * Darwin, terminal-prompt circle for Linux, 2x2 grid for Windows)
- * with a fixed brand-adjacent color baked into inline style. Returns
- * `null` for unknown / missing values so callers can render
- * unconditionally without extra null checks.
+ * Renders one of three simple geometric shapes (apple silhouette for
+ * Darwin, penguin silhouette for Linux, 2x2 grid for Windows) with a
+ * fixed brand-adjacent color baked into inline style. Returns `null`
+ * for unknown / missing values so callers can render unconditionally
+ * without extra null checks.
  *
  * Why inline SVG and not lucide / an external library: at 12px these
  * need to be ultra-simple geometric forms with no per-icon margin
  * weirdness, and we already established the inline-SVG-with-fixed-
- * color pattern in ProviderLogo.tsx -- see that file for the same
- * approach with Anthropic / OpenAI logos.
+ * color pattern in ProviderLogo.tsx.
  */
 
 interface OSIconProps {
@@ -22,7 +21,7 @@ interface OSIconProps {
 }
 
 const OS_COLORS: Record<string, string> = {
-  Darwin: "#909090",
+  Darwin: "#8B8B8B",
   Linux: "#E8914A",
   Windows: "#0078D4",
 };
@@ -46,48 +45,56 @@ export function OSIcon({ os, size = 14, className }: OSIconProps) {
   };
 
   if (os === "Darwin") {
-    // Simplified apple silhouette + leaf. Geometric, not the
-    // copyrighted Apple logo, but recognisable at 12-14px.
+    // Apple silhouette + leaf notch. Geometric, not the copyrighted
+    // Apple logo, but recognisable at 12-14px.
     return (
       <svg {...common} viewBox="0 0 14 14" fill="currentColor">
-        <path d="M10.5 7.2c0-1.6 1.1-2.4 1.2-2.5-0.6-0.9-1.6-1-2-1-0.8-0.1-1.6 0.5-2 0.5-0.4 0-1.1-0.5-1.8-0.5-0.9 0-1.8 0.5-2.3 1.4-1 1.7-0.3 4.2 0.7 5.6 0.5 0.7 1 1.4 1.7 1.4 0.7 0 1-0.4 1.8-0.4 0.8 0 1.1 0.4 1.8 0.4 0.7 0 1.2-0.7 1.7-1.4 0.5-0.8 0.7-1.6 0.7-1.6-0.1 0-1.5-0.6-1.5-1.9zM9.4 2.6c0.4-0.5 0.6-1.1 0.6-1.8-0.5 0-1.1 0.4-1.5 0.8-0.3 0.4-0.7 1-0.6 1.7 0.6 0.1 1.1-0.3 1.5-0.7z" />
+        <path d="M9.5 2C9.5 2 9 1 7.5 1 C6 1 5.2 2 5.2 2 C3.5 2 2 3.8 2 6 C2 9 4 12 5.5 12 C6.2 12 6.5 11.5 7.5 11.5 C8.5 11.5 8.8 12 9.5 12 C11 12 13 9 13 6 C13 3.8 11.5 2 9.5 2Z M7.5 0.5 C8 0 9 0.3 8.8 1.2 C8.3 1.5 7.3 1.2 7.5 0.5Z" />
       </svg>
     );
   }
 
   if (os === "Linux") {
-    // Terminal-prompt-in-a-circle. Recognisable at small sizes,
-    // brand-adjacent without using the copyrighted Tux mascot.
+    // Penguin silhouette. The eye ellipses and the body-interior
+    // ellipse use var(--bg) so the "white" cutouts blend with
+    // whichever row background the icon is painted on, remaining
+    // legible in both themes. #1a1a1a is the dark-theme fallback.
     return (
-      <svg
-        {...common}
-        viewBox="0 0 14 14"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.2"
-      >
-        <circle cx="7" cy="7" r="6" />
-        <text
-          x="3"
-          y="9.5"
-          fontSize="6"
-          fontFamily="monospace"
-          fill="currentColor"
-          stroke="none"
-        >
-          {">_"}
-        </text>
+      <svg {...common} viewBox="0 0 14 14" fill="currentColor">
+        <ellipse cx="7" cy="5" rx="3.5" ry="4" />
+        <ellipse
+          cx="7"
+          cy="5"
+          rx="2"
+          ry="2.5"
+          fill="var(--bg, #1a1a1a)"
+        />
+        <ellipse cx="7" cy="10" rx="4" ry="2.5" />
+        <ellipse
+          cx="5.5"
+          cy="4.2"
+          rx="0.7"
+          ry="0.7"
+          fill="var(--bg, #1a1a1a)"
+        />
+        <ellipse
+          cx="8.5"
+          cy="4.2"
+          rx="0.7"
+          ry="0.7"
+          fill="var(--bg, #1a1a1a)"
+        />
       </svg>
     );
   }
 
-  // Windows: 2x2 grid of rounded squares.
+  // Windows: 2x2 grid of plain squares (no rounding).
   return (
     <svg {...common} viewBox="0 0 14 14" fill="currentColor">
-      <rect x="1" y="1" width="5.5" height="5.5" rx="0.5" />
-      <rect x="7.5" y="1" width="5.5" height="5.5" rx="0.5" />
-      <rect x="1" y="7.5" width="5.5" height="5.5" rx="0.5" />
-      <rect x="7.5" y="7.5" width="5.5" height="5.5" rx="0.5" />
+      <rect x="1" y="1" width="5.5" height="5.5" />
+      <rect x="7.5" y="1" width="5.5" height="5.5" />
+      <rect x="1" y="7.5" width="5.5" height="5.5" />
+      <rect x="7.5" y="7.5" width="5.5" height="5.5" />
     </svg>
   );
 }

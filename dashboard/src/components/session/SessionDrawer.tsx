@@ -655,20 +655,18 @@ function MetadataBar({ session }: { session: SessionType }) {
   const orchestration = ctxString(ctx, "orchestration");
   const pythonVersion = ctxString(ctx, "python_version");
 
-  const platformParts = [
+  // OS cell content: "Linux · arm64" (omits arch if absent).
+  const osText = [os, archStr].filter(Boolean).join(" · ");
+  const osTooltip = [
     os,
     archStr,
-    orchestration ? getOrchestrationLabel(orchestration) : null,
-  ].filter(Boolean);
-  const platformText = platformParts.length > 0 ? platformParts.join(" · ") : "—";
-  const platformTooltip = [
-    os,
-    archStr,
-    orchestration ? getOrchestrationLabel(orchestration) : null,
     pythonVersion ? `Python ${pythonVersion}` : null,
   ]
     .filter(Boolean)
     .join(" · ");
+
+  // Orchestration cell content: the human label e.g. "Docker Compose".
+  const orchLabel = orchestration ? getOrchestrationLabel(orchestration) : null;
 
   const model = session.model;
 
@@ -697,17 +695,29 @@ function MetadataBar({ session }: { session: SessionType }) {
         {session.host ?? "—"}
       </MetadataCell>
 
-      <MetadataCell
-        label="Platform"
-        title={platformTooltip || undefined}
-        testId="metadata-platform"
-      >
-        {os && <OSIcon os={os} size={12} />}
-        {orchestration && (
+      {os && (
+        <MetadataCell
+          label="OS"
+          title={osTooltip || undefined}
+          testId="metadata-os"
+        >
+          <OSIcon os={os} size={12} />
+          <span style={{ ...META_CLIP_STYLE, maxWidth: 120 }}>{osText}</span>
+        </MetadataCell>
+      )}
+
+      {orchestration && orchLabel && (
+        <MetadataCell
+          label="Orchestration"
+          title={orchLabel}
+          testId="metadata-orchestration"
+        >
           <OrchestrationIcon orchestration={orchestration} size={12} />
-        )}
-        <span style={META_CLIP_STYLE}>{platformText}</span>
-      </MetadataCell>
+          <span style={{ ...META_CLIP_STYLE, maxWidth: 120 }}>
+            {orchLabel}
+          </span>
+        </MetadataCell>
+      )}
 
       <MetadataCell label="Started">
         {new Date(session.started_at).toLocaleTimeString()}

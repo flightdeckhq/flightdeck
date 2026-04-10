@@ -216,12 +216,51 @@ describe("Timeline", () => {
     expect((overlay as HTMLElement).style.pointerEvents).toBe("none");
   });
 
-  it("grid overlay is positioned only over the right panel (left=240)", () => {
+  it("grid overlay is positioned only over the right panel at the default left panel width", () => {
     render(<Timeline {...defaultProps} timeRange="5m" />);
     const overlay = screen.getByTestId("timeline-grid-overlay");
-    // 240px LEFT_PANEL_WIDTH offset keeps the lines out of the
-    // flavor labels column.
-    expect((overlay as HTMLElement).style.left).toBe("240px");
+    // LEFT_PANEL_DEFAULT_WIDTH (280px) offset keeps the lines out of
+    // the flavor labels column. The left panel is now resizable;
+    // this test locks in the default without regression.
+    expect((overlay as HTMLElement).style.left).toBe("280px");
     expect((overlay as HTMLElement).style.width).toBe("900px");
+  });
+
+  it("uses LEFT_PANEL_DEFAULT_WIDTH when no stored preference exists", () => {
+    localStorage.removeItem("flightdeck-left-panel-width");
+    render(<Timeline {...defaultProps} />);
+    const overlay = screen.getByTestId("timeline-grid-overlay");
+    expect((overlay as HTMLElement).style.left).toBe("280px");
+  });
+
+  it("reads the stored width from localStorage on mount", () => {
+    localStorage.setItem("flightdeck-left-panel-width", "360");
+    render(<Timeline {...defaultProps} />);
+    const overlay = screen.getByTestId("timeline-grid-overlay");
+    expect((overlay as HTMLElement).style.left).toBe("360px");
+    localStorage.removeItem("flightdeck-left-panel-width");
+  });
+
+  it("clamps stored widths below LEFT_PANEL_MIN_WIDTH to the minimum", () => {
+    localStorage.setItem("flightdeck-left-panel-width", "100");
+    render(<Timeline {...defaultProps} />);
+    const overlay = screen.getByTestId("timeline-grid-overlay");
+    expect((overlay as HTMLElement).style.left).toBe("200px");
+    localStorage.removeItem("flightdeck-left-panel-width");
+  });
+
+  it("clamps stored widths above LEFT_PANEL_MAX_WIDTH to the maximum", () => {
+    localStorage.setItem("flightdeck-left-panel-width", "9999");
+    render(<Timeline {...defaultProps} />);
+    const overlay = screen.getByTestId("timeline-grid-overlay");
+    expect((overlay as HTMLElement).style.left).toBe("480px");
+    localStorage.removeItem("flightdeck-left-panel-width");
+  });
+
+  it("exposes a resize handle on the flavors header row", () => {
+    render(<Timeline {...defaultProps} />);
+    const handle = screen.getByTestId("left-panel-resize-handle");
+    expect(handle).toBeInTheDocument();
+    expect((handle as HTMLElement).style.cursor).toBe("col-resize");
   });
 });

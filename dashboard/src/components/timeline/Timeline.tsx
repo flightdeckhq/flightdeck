@@ -1,8 +1,15 @@
-import { useMemo, useState, useEffect } from "react";
+import { useMemo, useState, useEffect, useCallback } from "react";
 import { scaleTime } from "d3-scale";
 import type { FlavorSummary } from "@/lib/types";
 import type { ViewMode, TimeRange } from "@/pages/Fleet";
-import { TIMELINE_RANGE_MS, TIMELINE_WIDTH_PX, LEFT_PANEL_WIDTH } from "@/lib/constants";
+import {
+  TIMELINE_RANGE_MS,
+  TIMELINE_WIDTH_PX,
+  LEFT_PANEL_MIN_WIDTH,
+  LEFT_PANEL_MAX_WIDTH,
+  LEFT_PANEL_DEFAULT_WIDTH,
+  LEFT_PANEL_WIDTH_KEY,
+} from "@/lib/constants";
 import { TimeAxis } from "./TimeAxis";
 import { SwimLane } from "./SwimLane";
 
@@ -41,6 +48,55 @@ export function Timeline({
   sessionVersions,
   matchingSessionIds = null,
 }: TimelineProps) {
+  // Resizable left panel width. Persisted to localStorage so the
+  // user's preference survives page reloads. Clamped on init AND on
+  // every drag so a stale storage value can't push the panel past
+  // its bounds.
+  const [leftPanelWidth, setLeftPanelWidth] = useState<number>(() => {
+    try {
+      const stored = localStorage.getItem(LEFT_PANEL_WIDTH_KEY);
+      const n = stored ? parseInt(stored, 10) : LEFT_PANEL_DEFAULT_WIDTH;
+      if (Number.isNaN(n)) return LEFT_PANEL_DEFAULT_WIDTH;
+      return Math.min(
+        LEFT_PANEL_MAX_WIDTH,
+        Math.max(LEFT_PANEL_MIN_WIDTH, n),
+      );
+    } catch {
+      return LEFT_PANEL_DEFAULT_WIDTH;
+    }
+  });
+
+  const handleResizeStart = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault();
+      const startX = e.clientX;
+      const startWidth = leftPanelWidth;
+
+      const onMove = (ev: MouseEvent) => {
+        const delta = ev.clientX - startX;
+        const next = Math.min(
+          LEFT_PANEL_MAX_WIDTH,
+          Math.max(LEFT_PANEL_MIN_WIDTH, startWidth + delta),
+        );
+        setLeftPanelWidth(next);
+        try {
+          localStorage.setItem(LEFT_PANEL_WIDTH_KEY, String(next));
+        } catch {
+          /* storage unavailable -- drag still works for this session */
+        }
+      };
+
+      const onUp = () => {
+        document.removeEventListener("mousemove", onMove);
+        document.removeEventListener("mouseup", onUp);
+      };
+
+      document.addEventListener("mousemove", onMove);
+      document.addEventListener("mouseup", onUp);
+    },
+    [leftPanelWidth],
+  );
+
   // Live-updating "now" — throttled to 10fps (100ms) for performance
   const [now, setNow] = useState(() => new Date());
   useEffect(() => {
@@ -100,10 +156,11 @@ export function Timeline({
     );
   }
 
-  // Fixed total content width = LEFT_PANEL_WIDTH + TIMELINE_WIDTH_PX.
-  // No horizontal scrollbar -- the entire timeline fits in the
-  // visible area at every range, since timelineWidth is constant.
-  const innerWidth = timelineWidth + LEFT_PANEL_WIDTH;
+  // Total content width = leftPanelWidth + TIMELINE_WIDTH_PX. The
+  // timeline area is fixed at 900px; only the left panel resizes.
+  // No horizontal scrollbar -- the entire row fits in the visible
+  // area at every range.
+  const innerWidth = timelineWidth + leftPanelWidth;
 
   return (
     <div
@@ -123,28 +180,19 @@ export function Timeline({
             positions as the time axis labels, dropping from the top
             of the inner content div to the bottom of the last
             flavor row. Constrained to the right-panel area only
-            (left: LEFT_PANEL_WIDTH, width: timelineWidth) so the
-            240px label column stays clean. zIndex: 0 + DOM-first
-            ordering puts the overlay behind every other element;
-            event circles (zIndex 1+) and sticky panels paint on top.
-            pointerEvents: none keeps it from blocking circle clicks.
-            The time axis row's solid background covers the part of
-            the overlay that overlaps with the labels, so visually
-            the lines start at the bottom of the time axis and run
-            through every flavor row below. */}
+            (left: leftPanelWidth, width: timelineWidth) so the
+            resizable label column stays clean. zIndex: 1 so lines
+            paint ABOVE the flavor row backgrounds but BELOW the
+            event circles (which use zIndex 2). pointerEvents: none
+            keeps it from blocking circle clicks. */}
         <div
           style={{
             position: "absolute",
             top: 0,
             bottom: 0,
-            left: LEFT_PANEL_WIDTH,
+            left: leftPanelWidth,
             width: timelineWidth,
             pointerEvents: "none",
-            // zIndex 1 so the lines paint ABOVE the flavor row
-            // backgrounds (which are static/non-positioned and so
-            // paint in CSS group 3, before any positive z-index
-            // group). EventNode circles bump to zIndex 2 so they
-            // still render on top of the lines.
             zIndex: 1,
           }}
           data-testid="timeline-grid-overlay"
@@ -191,12 +239,13 @@ export function Timeline({
           }}
         >
           {/* Left spacer above the flavor labels column. Sticky
-              horizontally so it stays pinned over the labels when the
-              user scrolls right. */}
+              horizontally so it stays pinned over the labels when
+              the user scrolls right. Width tracks the resizable
+              leftPanelWidth. */}
           <div
             className="shrink-0"
             style={{
-              width: LEFT_PANEL_WIDTH,
+              width: leftPanelWidth,
               height: 28,
               position: "sticky",
               left: 0,
@@ -217,21 +266,13 @@ export function Timeline({
         </div>
 
         {/* FLAVORS section header.
-            The row is a flex container with width = innerWidth so the
-            bottom border draws across the full timeline. The 240px
-            label slot is `position: sticky; left: 0` -- it's NARROWER
-            than its containing block (innerWidth), so sticky has room
-            to actually take effect and pin the label text to the
-            viewport's left edge as the user scrolls horizontally. The
-            filler slot (width: timelineWidth) is non-sticky and just
-            extends the row so the border reaches the right side.
-
-            A previous version put `position: sticky; left: 0` on the
-            ROW directly with `width: innerWidth`. That doesn't work --
-            a sticky element with the same width as its containing
-            block has no horizontal room to stick within, so it just
-            scrolls along with the rest of the content and the label
-            text slid off the viewport at 5m+. */}
+            Flex row with the label slot sticky to the viewport's
+            left edge (width narrower than innerWidth so sticky has
+            room to take effect). The drag handle sits on the right
+            edge of the label slot -- it's `position: absolute` so it
+            doesn't affect the flex layout, and it hoovers hover
+            events to paint a 4px accent-coloured indicator while
+            the user is close to it. */}
         <div
           style={{
             display: "flex",
@@ -244,7 +285,7 @@ export function Timeline({
         >
           <div
             style={{
-              width: LEFT_PANEL_WIDTH,
+              width: leftPanelWidth,
               flexShrink: 0,
               position: "sticky",
               left: 0,
@@ -268,13 +309,42 @@ export function Timeline({
             >
               Flavors
             </span>
+            {/* Drag handle for resizing the left panel. Only needs
+                to exist on one row -- the width state is shared
+                across every SwimLane below via props, so dragging
+                here resizes every session row simultaneously. */}
+            <div
+              data-testid="left-panel-resize-handle"
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Resize left panel"
+              style={{
+                position: "absolute",
+                right: 0,
+                top: 0,
+                bottom: 0,
+                width: 4,
+                cursor: "col-resize",
+                zIndex: 10,
+                background: "transparent",
+                transition: "background 150ms ease",
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = "var(--accent)";
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = "transparent";
+              }}
+              onMouseDown={handleResizeStart}
+            />
           </div>
           <div style={{ width: timelineWidth, flexShrink: 0 }} />
         </div>
 
-        {/* Flavor rows. Each SwimLane receives timelineWidth directly
-            and is responsible for its own internal flex layout
-            (sticky 240px left + timelineWidth right). */}
+        {/* Flavor rows. Each SwimLane receives both leftPanelWidth
+            and timelineWidth as props so its internal flex layout
+            (sticky left + timeline right) stays in sync with the
+            resizable left column. */}
         {filteredFlavors.map((f) => (
           <SwimLane
             key={f.flavor}
@@ -288,6 +358,7 @@ export function Timeline({
             start={start}
             end={scaleEnd}
             timelineWidth={timelineWidth}
+            leftPanelWidth={leftPanelWidth}
             activeFilter={activeFilter}
             sessionVersions={sessionVersions}
             matchingSessionIds={matchingSessionIds}

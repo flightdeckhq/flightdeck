@@ -37,8 +37,29 @@ export const FEED_HEIGHT_STORAGE_KEY = "flightdeck-feed-height";
 /** LocalStorage key for persisting theme preference. */
 export const THEME_STORAGE_KEY = "flightdeck-theme";
 
-/** Width of the left panel in fleet view (sidebar + flavor/session info). */
-export const LEFT_PANEL_WIDTH = 240;
+/**
+ * Width constants for the resizable left panel (flavor labels +
+ * session rows) in the Timeline component. The panel state lives in
+ * Timeline.tsx's useState with localStorage persistence keyed by
+ * LEFT_PANEL_WIDTH_KEY. Min/max are enforced on both initial load
+ * and drag. DEFAULT is wider than the previous fixed 240px to give
+ * hostnames and icons room to breathe by default; users who drag it
+ * narrower get their choice persisted.
+ */
+export const LEFT_PANEL_MIN_WIDTH = 200;
+export const LEFT_PANEL_MAX_WIDTH = 480;
+export const LEFT_PANEL_DEFAULT_WIDTH = 280;
+export const LEFT_PANEL_WIDTH_KEY = "flightdeck-left-panel-width";
+
+/**
+ * Session row height in pixels. Rows now show a primary hostname
+ * label on the top line and a muted session hash on the bottom line
+ * when the session has runtime context, so 40px was too tight. 48px
+ * fits both lines with clean vertical centring. SwimLane uses this
+ * when computing the expanded section maxHeight so the animation
+ * stays in sync with actual row sizes.
+ */
+export const SESSION_ROW_HEIGHT = 48;
 
 /** LocalStorage key for live feed column widths. */
 export const FEED_COL_WIDTHS_KEY = "flightdeck-feed-col-widths";

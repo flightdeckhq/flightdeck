@@ -86,10 +86,9 @@ describe("SessionDrawer", () => {
   it("metadata bar shows flavor and host with labels", () => {
     render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
     expect(screen.getByTestId("session-metadata-bar")).toBeInTheDocument();
-    // Labels above each cell
+    // Labels above the always-rendered cells
     expect(screen.getByText("Flavor")).toBeInTheDocument();
     expect(screen.getByText("Host")).toBeInTheDocument();
-    expect(screen.getByText("Platform")).toBeInTheDocument();
     expect(screen.getByText("Started")).toBeInTheDocument();
     expect(screen.getByText("Duration")).toBeInTheDocument();
     expect(screen.getByText("Tokens")).toBeInTheDocument();
@@ -99,7 +98,7 @@ describe("SessionDrawer", () => {
     expect(screen.getByText("worker-1")).toBeInTheDocument();
   });
 
-  it("metadata Platform cell renders OS icon when context.os is present", () => {
+  it("metadata OS cell renders OS icon + os/arch when context.os is present", () => {
     mockSessionOverride = {
       context: {
         os: "Darwin",
@@ -107,31 +106,39 @@ describe("SessionDrawer", () => {
       },
     };
     render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    expect(screen.getByText("OS")).toBeInTheDocument();
     expect(screen.getByTestId("os-icon-darwin")).toBeInTheDocument();
-    // Platform text combines os + arch
-    const platform = screen.getByTestId("metadata-platform");
-    expect(platform.textContent).toContain("Darwin");
-    expect(platform.textContent).toContain("arm64");
+    const osCell = screen.getByTestId("metadata-os");
+    expect(osCell.textContent).toContain("Darwin");
+    expect(osCell.textContent).toContain("arm64");
   });
 
-  it("metadata Platform cell renders orchestration icon when context.orchestration is present", () => {
+  it("metadata Orchestration cell renders separately from OS", () => {
     mockSessionOverride = {
       context: {
         os: "Linux",
+        arch: "x86_64",
         orchestration: "kubernetes",
       },
     };
     render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
-    expect(screen.getByTestId("os-icon-linux")).toBeInTheDocument();
+    // Both cells now exist side by side
+    expect(screen.getByTestId("metadata-os")).toBeInTheDocument();
+    expect(screen.getByTestId("metadata-orchestration")).toBeInTheDocument();
+    expect(screen.getByText("Orchestration")).toBeInTheDocument();
     expect(screen.getByTestId("orch-icon-kubernetes")).toBeInTheDocument();
-    const platform = screen.getByTestId("metadata-platform");
-    expect(platform.textContent).toContain("Kubernetes");
+    const orchCell = screen.getByTestId("metadata-orchestration");
+    expect(orchCell.textContent).toContain("Kubernetes");
   });
 
-  it("metadata Platform cell shows em-dash when context is missing", () => {
+  it("metadata OS + Orchestration cells are omitted when context is missing", () => {
     render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
-    const platform = screen.getByTestId("metadata-platform");
-    expect(platform.textContent).toContain("—");
+    // No context on the mock session -> neither cell renders, so
+    // callers can scan the metadata bar by cell presence.
+    expect(screen.queryByTestId("metadata-os")).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("metadata-orchestration"),
+    ).not.toBeInTheDocument();
   });
 
   it("metadata Model cell strips date suffix from model name", () => {

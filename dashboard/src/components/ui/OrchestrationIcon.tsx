@@ -60,36 +60,40 @@ export function OrchestrationIcon({
   };
 
   if (orchestration === "kubernetes") {
-    // Helm-wheel: outer ring, inner hub, six spokes.
+    // Helm wheel: outer ring, solid hub, six radial spokes. Stroke-
+    // based so currentColor paints the line art.
     return (
-      <svg {...common} viewBox="0 0 14 14" fill="currentColor">
-        <circle cx="7" cy="7" r="2" />
-        <circle
-          cx="7"
-          cy="7"
-          r="6"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.2"
-        />
-        <line x1="7" y1="1" x2="7" y2="4" stroke="currentColor" strokeWidth="1.2" />
-        <line x1="7" y1="10" x2="7" y2="13" stroke="currentColor" strokeWidth="1.2" />
-        <line x1="1.8" y1="3.8" x2="4.2" y2="5.2" stroke="currentColor" strokeWidth="1.2" />
-        <line x1="9.8" y1="8.8" x2="12.2" y2="10.2" stroke="currentColor" strokeWidth="1.2" />
-        <line x1="1.8" y1="10.2" x2="4.2" y2="8.8" stroke="currentColor" strokeWidth="1.2" />
-        <line x1="9.8" y1="5.2" x2="12.2" y2="3.8" stroke="currentColor" strokeWidth="1.2" />
+      <svg
+        {...common}
+        viewBox="0 0 14 14"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.2"
+        strokeLinecap="round"
+      >
+        <circle cx="7" cy="7" r="5.5" />
+        <circle cx="7" cy="7" r="1.5" fill="currentColor" />
+        <line x1="7" y1="1.5" x2="7" y2="4" />
+        <line x1="7" y1="10" x2="7" y2="12.5" />
+        <line x1="2" y1="4.2" x2="4.2" y2="5.5" />
+        <line x1="9.8" y1="8.5" x2="12" y2="9.8" />
+        <line x1="2" y1="9.8" x2="4.2" y2="8.5" />
+        <line x1="9.8" y1="5.5" x2="12" y2="4.2" />
       </svg>
     );
   }
 
   if (orchestration === "docker" || orchestration === "docker-compose") {
-    // Three stacked containers. The whale is too detailed at 12px.
+    // Six-container pyramid stack: 3 bottom + 2 middle + 1 top.
     // docker-compose reuses the same icon -- the tooltip distinguishes.
     return (
       <svg {...common} viewBox="0 0 14 14" fill="currentColor">
-        <rect x="2" y="2" width="10" height="3" rx="1" />
-        <rect x="2" y="6" width="10" height="3" rx="1" />
-        <rect x="2" y="10" width="10" height="3" rx="1" />
+        <rect x="1" y="4" width="3" height="2.5" rx="0.4" />
+        <rect x="5" y="4" width="3" height="2.5" rx="0.4" />
+        <rect x="9" y="4" width="3" height="2.5" rx="0.4" />
+        <rect x="3" y="7" width="3" height="2.5" rx="0.4" />
+        <rect x="7" y="7" width="3" height="2.5" rx="0.4" />
+        <rect x="5" y="10" width="3" height="2" rx="0.4" />
       </svg>
     );
   }
@@ -98,15 +102,15 @@ export function OrchestrationIcon({
     // AWS-style hexagon.
     return (
       <svg {...common} viewBox="0 0 14 14" fill="currentColor">
-        <polygon points="7,1 12,3.5 12,8.5 7,11 2,8.5 2,3.5" />
+        <polygon points="7,1 12,3.8 12,9.2 7,12 2,9.2 2,3.8" />
       </svg>
     );
   }
 
-  // cloud-run: simple cloud silhouette.
+  // cloud-run: cloud silhouette.
   return (
     <svg {...common} viewBox="0 0 14 14" fill="currentColor">
-      <path d="M11 9H3.5C2.1 9 1 7.9 1 6.5C1 5.2 2 4.2 3.3 4C3.6 2.8 4.7 2 6 2C7.6 2 8.9 3.2 9 4.8C10.1 4.9 11 5.8 11 7V9Z" />
+      <path d="M10.5 10H3.5 C2 10 1 8.9 1 7.5 C1 6.2 2 5.2 3.3 5 C3.7 3.5 5 2.5 6.5 2.5 C8.3 2.5 9.8 3.8 10 5.5 C11.2 5.7 12 6.7 12 8 C12 9.1 11.4 10 10.5 10Z" />
     </svg>
   );
 }

@@ -29,16 +29,22 @@ function makeScale() {
     .range([0, 900]);
 }
 
-function renderRow(session: Session) {
+function renderRow(
+  session: Session,
+  opts: { sessionIndex?: number; leftPanelWidth?: number } = {},
+) {
+  const { sessionIndex = 0, leftPanelWidth = 280 } = opts;
   return render(
     <SessionEventRow
       session={session}
+      sessionIndex={sessionIndex}
       scale={makeScale()}
       onClick={() => {}}
       viewMode="swimlane"
       start={new Date(Date.now() - 60_000)}
       end={new Date()}
       timelineWidth={900}
+      leftPanelWidth={leftPanelWidth}
     />,
   );
 }
@@ -102,5 +108,45 @@ describe("SessionEventRow", () => {
     });
     expect(screen.queryByTestId("os-icon-darwin")).not.toBeInTheDocument();
     expect(screen.queryByTestId("os-icon-linux")).not.toBeInTheDocument();
+  });
+
+  it("renders a 1-based session number prefix from the zero-based sessionIndex prop", () => {
+    renderRow(baseSession, { sessionIndex: 2 });
+    expect(screen.getByTestId("session-row-index").textContent).toBe("3");
+  });
+
+  it("hides the token count when leftPanelWidth is below the threshold", () => {
+    renderRow(baseSession, { leftPanelWidth: 200 });
+    expect(screen.queryByTestId("session-row-tokens")).not.toBeInTheDocument();
+  });
+
+  it("shows the token count when leftPanelWidth is at or above the threshold", () => {
+    renderRow(baseSession, { leftPanelWidth: 300 });
+    expect(screen.getByTestId("session-row-tokens")).toBeInTheDocument();
+    expect(
+      screen.getByTestId("session-row-tokens").textContent,
+    ).toContain("17,600");
+  });
+
+  it("shows the session hash below the hostname when both are available", () => {
+    renderRow({
+      ...baseSession,
+      context: { hostname: "mac-laptop", os: "Darwin" },
+    });
+    expect(screen.getByTestId("session-row-label").textContent).toBe(
+      "mac-laptop",
+    );
+    // Secondary hash line appears because hostname took the primary slot.
+    expect(screen.getByTestId("session-row-hash").textContent).toBe("fcc640eb");
+  });
+
+  it("does not render the secondary hash line when there is no hostname", () => {
+    // Without a hostname the hash IS the identity -- showing it twice
+    // would waste space.
+    renderRow({
+      ...baseSession,
+      context: { os: "Linux" },
+    });
+    expect(screen.queryByTestId("session-row-hash")).not.toBeInTheDocument();
   });
 });

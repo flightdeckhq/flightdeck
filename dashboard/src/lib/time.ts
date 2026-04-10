@@ -56,3 +56,23 @@ export function formatRelativeTime(iso: string): string {
   const days = Math.floor(hours / 24);
   return `${days}d ago`;
 }
+
+/**
+ * Format a duration in milliseconds as a compact relative-time label
+ * for the timeline axis. Picks the largest natural unit (s/m/h) so the
+ * label fits in a tight axis row without an "ago" suffix.
+ *
+ *   formatRelativeLabel(    30_000) === "30s"
+ *   formatRelativeLabel(    45_000) === "45s"
+ *   formatRelativeLabel(    60_000) === "1m"
+ *   formatRelativeLabel(   300_000) === "5m"
+ *   formatRelativeLabel(   720_000) === "12m"
+ *   formatRelativeLabel( 3_600_000) === "1h"
+ */
+export function formatRelativeLabel(ms: number): string {
+  const totalSecs = ms / 1000;
+  if (totalSecs < 60) return `${Math.round(totalSecs)}s`;
+  const totalMins = ms / 60_000;
+  if (totalMins < 60) return `${Math.round(totalMins)}m`;
+  return `${Math.round(totalMins / 60)}h`;
+}

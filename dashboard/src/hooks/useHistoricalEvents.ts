@@ -9,7 +9,6 @@ const TIME_RANGE_MS: Record<TimeRange, number> = {
   "15m": 15 * 60 * 1000,
   "30m": 30 * 60 * 1000,
   "1h": 60 * 60 * 1000,
-  "6h": 6 * 60 * 60 * 1000,
 };
 
 /**

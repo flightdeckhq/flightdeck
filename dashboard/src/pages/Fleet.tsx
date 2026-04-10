@@ -14,9 +14,9 @@ import { FEED_MAX_EVENTS, PAUSE_QUEUE_MAX_EVENTS } from "@/lib/constants";
 import { eventsCache } from "@/hooks/useSessionEvents";
 
 export type ViewMode = "swimlane" | "bars";
-export type TimeRange = "1m" | "5m" | "15m" | "30m" | "1h" | "6h";
+export type TimeRange = "1m" | "5m" | "15m" | "30m" | "1h";
 
-const TIME_RANGES: TimeRange[] = ["1m", "5m", "15m", "30m", "1h", "6h"];
+const TIME_RANGES: TimeRange[] = ["1m", "5m", "15m", "30m", "1h"];
 
 /**
  * Sort flavors by activity priority so flavors with active or idle

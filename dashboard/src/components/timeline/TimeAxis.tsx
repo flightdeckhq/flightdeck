@@ -1,71 +1,66 @@
 import { useMemo } from "react";
 import { scaleTime } from "d3-scale";
-import { timeSecond, timeMinute, type TimeInterval } from "d3-time";
 import type { TimeRange } from "@/pages/Fleet";
-import { formatTimeLabel } from "@/lib/time";
+import { TIMELINE_RANGE_MS } from "@/lib/constants";
+import { formatRelativeLabel } from "@/lib/time";
 
 /**
- * Per-range tick interval.
+ * Number of evenly spaced labels to render on the time axis.
  *
- * The proportional timeline width keeps pixel-per-second density
- * constant (15 px/s, since base width is 900px for 60s). This means
- * the visible viewport always shows the same amount of wall-clock
- * time -- typically ~100 seconds for a ~1500px viewport -- regardless
- * of the selected range. So the tick interval has to produce labels
- * dense enough to fall inside that ~100s window.
+ * The previous implementation used d3-time tick generators
+ * (timeSecond.every / timeMinute.every) to produce absolute
+ * timestamps like "12:06:30 PM". That approach broke at wide
+ * proportional widths -- the visible viewport at 6h showed zero
+ * labels because the per-range interval put one tick every
+ * thousands of pixels.
  *
- * The previous spec used coarser intervals at wider ranges (every
- * 30 minutes at 6h), which produced one label every 27,000 px and
- * zero labels in the visible viewport almost all the time. The fixed
- * intervals here always put 1-6 labels in any ~1500px window:
+ * The new approach is range-agnostic: always render exactly six
+ * labels evenly distributed across the timeline width, formatted
+ * as relative durations from the right edge ("now" / "paused"):
  *
- *   1m  → every 10s  →   6 ticks total, ~6 visible
- *   5m  → every 30s  →  10 ticks total, ~3 visible
- *   15m → every 1m   →  15 ticks total, ~1-2 visible
- *   30m → every 1m   →  30 ticks total, ~1-2 visible
- *   1h  → every 1m   →  60 ticks total, ~1-2 visible
- *   6h  → every 1m   → 360 ticks total, ~1-2 visible
+ *   1m   60s 48s 36s 24s 12s now
+ *   5m   5m  4m  3m  2m  1m  now
+ *   15m  15m 12m 9m  6m  3m  now
+ *   30m  30m 24m 18m 12m 6m  now
+ *   1h   1h  48m 36m 24m 12m now
  */
-const TICK_INTERVAL: Record<TimeRange, TimeInterval> = {
-  "1m": timeSecond.every(10) as TimeInterval,
-  "5m": timeSecond.every(30) as TimeInterval,
-  "15m": timeMinute.every(1) as TimeInterval,
-  "30m": timeMinute.every(1) as TimeInterval,
-  "1h": timeMinute.every(1) as TimeInterval,
-  "6h": timeMinute.every(1) as TimeInterval,
-};
-
-const SHOW_SECONDS: Record<TimeRange, boolean> = {
-  "1m": true,
-  "5m": true,
-  "15m": false,
-  "30m": false,
-  "1h": false,
-  "6h": false,
-};
+const NUM_LABELS = 6;
 
 interface TimeAxisProps {
   start: Date;
   end: Date;
   width: number;
   timeRange: TimeRange;
+  paused?: boolean;
 }
 
-export function TimeAxis({ start, end, width, timeRange }: TimeAxisProps) {
-  const includeSeconds = SHOW_SECONDS[timeRange] ?? false;
-  const interval = TICK_INTERVAL[timeRange] ?? timeMinute.every(1) as TimeInterval;
-
+export function TimeAxis({ start, end, width, timeRange, paused = false }: TimeAxisProps) {
   const scale = useMemo(
     () => scaleTime().domain([start, end]).range([0, width]),
     [start, end, width],
   );
 
-  // Generate ticks at the explicit interval. Falls back to a count
-  // if the interval rejects the domain (shouldn't happen, but safe).
-  const ticks = useMemo(() => {
-    const t = interval ? scale.ticks(interval) : scale.ticks(10);
-    return t.length > 0 ? t : scale.ticks(10);
-  }, [scale, interval]);
+  const rangeMs = TIMELINE_RANGE_MS[timeRange] ?? 60_000;
+
+  // Build six evenly spaced labels. i=0 is the leftmost (oldest)
+  // edge of the timeline, i=NUM_LABELS-1 is the rightmost ("now"
+  // / "paused"). xPos uses the d3 scale so the "now" label sits
+  // exactly at the right edge regardless of width.
+  const labels = useMemo(() => {
+    const referenceTime = end;
+    return Array.from({ length: NUM_LABELS }, (_, i) => {
+      const fraction = i / (NUM_LABELS - 1);
+      const msAgo = Math.round(rangeMs * (1 - fraction));
+      const xPos = scale(new Date(referenceTime.getTime() - msAgo));
+      const label =
+        msAgo === 0
+          ? paused
+            ? "paused"
+            : "now"
+          : formatRelativeLabel(msAgo);
+      return { xPos, label, isNow: msAgo === 0, index: i };
+    });
+  }, [scale, rangeMs, end, paused]);
 
   return (
     <div
@@ -75,35 +70,47 @@ export function TimeAxis({ start, end, width, timeRange }: TimeAxisProps) {
         borderBottom: "1px solid var(--border-subtle)",
       }}
     >
-      {ticks.map((tick) => {
-        const x = scale(tick);
+      {labels.map(({ xPos, label, isNow, index }) => {
+        // Anchor the leftmost label to its left edge and the
+        // rightmost to its right edge so neither overflows the
+        // axis. Middle labels are centered on their position.
+        const transform = getLabelTransform(index, NUM_LABELS);
+        const isPausedNow = isNow && paused;
+        const color = isNow && !paused
+          ? "var(--accent)"
+          : "var(--text-muted)";
+        const fontWeight = isNow && !paused ? 600 : 400;
         return (
           <span
-            key={tick.getTime()}
-            className="absolute top-1 font-mono text-[11px] -translate-x-1/2"
-            style={{ left: x, color: "var(--text-muted)" }}
+            key={index}
+            className="absolute font-mono text-[11px]"
+            style={{
+              top: 4,
+              left: xPos,
+              transform,
+              color,
+              fontWeight,
+              whiteSpace: "nowrap",
+              userSelect: "none",
+            }}
+            data-testid={isNow ? (isPausedNow ? "axis-label-paused" : "axis-label-now") : undefined}
           >
-            {formatTimeLabel(tick, includeSeconds)}
+            {label}
           </span>
         );
       })}
 
-      {/* "now" marker at right edge */}
+      {/* "now" vertical marker line at the right edge -- unchanged */}
       <div
         className="absolute top-0 h-full w-px"
         style={{ left: width, background: "var(--status-active)", opacity: 0.6 }}
       />
-      <span
-        className="absolute font-mono"
-        style={{
-          left: width - 14,
-          top: 0,
-          color: "var(--status-active)",
-          fontSize: 10,
-        }}
-      >
-        now
-      </span>
     </div>
   );
+}
+
+function getLabelTransform(i: number, total: number): string {
+  if (i === 0) return "translateX(0%)";
+  if (i === total - 1) return "translateX(-100%)";
+  return "translateX(-50%)";
 }

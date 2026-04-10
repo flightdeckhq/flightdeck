@@ -125,10 +125,6 @@ describe("Timeline", () => {
     expect(timelineWidthFor("1h")).toBe(TIMELINE_BASE_WIDTH_PX * 60);
   });
 
-  it("timelineWidthFor returns 360x base width for 6h", () => {
-    expect(timelineWidthFor("6h")).toBe(TIMELINE_BASE_WIDTH_PX * 360);
-  });
-
   it("scroll container has overflow-x set", () => {
     render(<Timeline {...defaultProps} timeRange="1h" />);
     const scrollEl = screen.getByTestId("timeline-scroll");
@@ -139,5 +135,57 @@ describe("Timeline", () => {
     // position: sticky; top: 0 against the parent vertical scroller.
     // FIX 2.
     expect(scrollEl.style.overflowY).toBe("clip");
+  });
+
+  // ---- Relative time axis labels ----
+
+  it("time axis renders exactly 6 labels at 5m", () => {
+    const { container } = render(<Timeline {...defaultProps} timeRange="5m" />);
+    // Find labels inside the time axis row (h-7 sibling div with the
+    // relative class). Match all the absolute font-mono text spans.
+    const labels = container.querySelectorAll(
+      ".h-7 span.absolute.font-mono.text-\\[11px\\]",
+    );
+    expect(labels).toHaveLength(6);
+  });
+
+  it("rightmost time axis label is 'now'", () => {
+    render(<Timeline {...defaultProps} timeRange="5m" />);
+    expect(screen.getByTestId("axis-label-now")).toHaveTextContent("now");
+  });
+
+  it("leftmost label at 5m shows '5m'", () => {
+    const { container } = render(<Timeline {...defaultProps} timeRange="5m" />);
+    const labels = container.querySelectorAll(
+      ".h-7 span.absolute.font-mono.text-\\[11px\\]",
+    );
+    expect(labels[0]).toHaveTextContent("5m");
+  });
+
+  it("leftmost label at 1m is '1m' and middle labels use 's' suffix", () => {
+    const { container } = render(<Timeline {...defaultProps} timeRange="1m" />);
+    const labels = container.querySelectorAll(
+      ".h-7 span.absolute.font-mono.text-\\[11px\\]",
+    );
+    // formatRelativeLabel(60_000) returns "1m" because 60 < 60 is false.
+    // Either "60s" or "1m" is acceptable per the spec; we get "1m".
+    expect(labels[0].textContent).toMatch(/^(60s|1m)$/);
+    // Middle labels (i=1..4) should all be in seconds at 1m (48s, 36s, 24s, 12s)
+    for (let i = 1; i < labels.length - 1; i++) {
+      expect(labels[i].textContent).toMatch(/^\d+s$/);
+    }
+  });
+
+  it("paused timeline shows 'paused' instead of 'now'", () => {
+    render(
+      <Timeline
+        {...defaultProps}
+        timeRange="5m"
+        paused
+        pausedAt={new Date()}
+      />,
+    );
+    expect(screen.getByTestId("axis-label-paused")).toHaveTextContent("paused");
+    expect(screen.queryByTestId("axis-label-now")).toBeNull();
   });
 });

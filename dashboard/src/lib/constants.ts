@@ -75,7 +75,6 @@ export const TIMELINE_RANGE_MS: Record<string, number> = {
   "15m": 900_000,
   "30m": 1_800_000,
   "1h": 3_600_000,
-  "6h": 21_600_000,
 };
 
 /**
@@ -89,7 +88,6 @@ export const TIMELINE_RANGE_MS: Record<string, number> = {
  *   15m → 13,500px
  *   30m → 27,000px
  *   1h  → 54,000px
- *   6h  → 324,000px
  */
 export function timelineWidthFor(range: string): number {
   const ms = TIMELINE_RANGE_MS[range] ?? TIMELINE_BASE_RANGE_MS;

@@ -145,6 +145,7 @@ export function Timeline({
               end={scaleEnd}
               width={timelineWidth}
               timeRange={timeRange}
+              paused={paused}
             />
           </div>
         </div>

@@ -60,7 +60,6 @@ const mockFlavors: FlavorSummary[] = [
 
 const defaultProps = {
   flavors: mockFlavors,
-  viewMode: "swimlane" as const,
   timeRange: "5m" as const,
   expandedFlavor: null as string | null,
   onExpandFlavor: vi.fn(),

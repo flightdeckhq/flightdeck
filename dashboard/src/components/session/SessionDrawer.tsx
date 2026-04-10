@@ -2,6 +2,8 @@ import { Fragment, useState, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { X } from "lucide-react";
 import { useSession } from "@/hooks/useSession";
+import { useFleetStore } from "@/store/fleet";
+import { DirectiveCard } from "@/components/directives/DirectiveCard";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -25,7 +27,7 @@ import { SyntaxJson } from "@/components/ui/syntax-json";
 import { eventsCache } from "@/hooks/useSessionEvents";
 import type { AgentEvent, Session as SessionType } from "@/lib/types";
 
-type DrawerTab = "timeline" | "prompts";
+type DrawerTab = "timeline" | "prompts" | "directives";
 
 /* ---- State badge colors ---- */
 
@@ -195,6 +197,7 @@ interface SessionDrawerProps {
 
 export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDirectEvent, version = 0 }: SessionDrawerProps) {
   const { data, loading } = useSession(sessionId);
+  const customDirectives = useFleetStore((s) => s.customDirectives);
   const [killLoading, setKillLoading] = useState(false);
   const [killSent, setKillSent] = useState(false);
   const [killError, setKillError] = useState<string | null>(null);
@@ -203,6 +206,16 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
   const [expandedEventId, setExpandedEventId] = useState<string | null>(null);
   const [selectedEventId, setSelectedEventId] = useState<string | null>(null);
   const [runtimeExpanded, setRuntimeExpanded] = useState(false);
+
+  // Filter the fleet-wide custom directive list down to ones
+  // registered for this session's flavor. The Directives tab button
+  // and its content are gated on this being non-empty.
+  const flavorDirectives = useMemo(() => {
+    if (!data?.session.flavor) return [];
+    return customDirectives.filter(
+      (d) => d.flavor === data.session.flavor,
+    );
+  }, [customDirectives, data?.session.flavor]);
 
   // Internal detail event — set when user clicks "Open full detail" within the drawer
   const [internalDetailEvent, setInternalDetailEvent] = useState<AgentEvent | null>(null);
@@ -391,18 +404,36 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
                 onToggle={() => setRuntimeExpanded((v) => !v)}
               />
 
-              {/* Tab bar */}
-              <div className="flex h-9 shrink-0 items-end gap-4 px-4" style={{ borderBottom: "1px solid var(--border)" }}>
-                {(["timeline", "prompts"] as const).map((tab) => (
+              {/* Tab bar -- "Directives" tab only renders when the
+                  session's flavor has at least one registered
+                  custom directive. Hidden entirely otherwise so
+                  users aren't confronted with a dead tab. */}
+              <div
+                className="flex h-9 shrink-0 items-end gap-4 px-4"
+                style={{ borderBottom: "1px solid var(--border)" }}
+                data-testid="session-drawer-tab-bar"
+              >
+                {(
+                  [
+                    "timeline",
+                    "prompts",
+                    ...(flavorDirectives.length > 0 ? ["directives" as const] : []),
+                  ] as DrawerTab[]
+                ).map((tab) => (
                   <button
                     key={tab}
+                    data-testid={`drawer-tab-${tab}`}
                     className="pb-2 text-xs font-medium capitalize transition-colors"
                     style={activeTab === tab
                       ? { color: "var(--text)", borderBottom: "2px solid var(--accent)" }
                       : { color: "var(--text-muted)" }}
                     onClick={() => setActiveTab(tab)}
                   >
-                    {tab === "timeline" ? "Timeline" : "Prompts"}
+                    {tab === "timeline"
+                      ? "Timeline"
+                      : tab === "prompts"
+                        ? "Prompts"
+                        : "Directives"}
                   </button>
                 ))}
               </div>
@@ -435,6 +466,20 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
                     selectedEventId={selectedEventId}
                     onSelectEvent={setSelectedEventId}
                   />
+                )}
+                {activeTab === "directives" && (
+                  <div
+                    className="p-3"
+                    data-testid="directives-tab-content"
+                  >
+                    {flavorDirectives.map((d) => (
+                      <DirectiveCard
+                        key={d.id}
+                        directive={d}
+                        sessionId={data.session.session_id}
+                      />
+                    ))}
+                  </div>
                 )}
               </div>
             </>

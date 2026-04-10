@@ -33,16 +33,13 @@ function renderRow(
   session: Session,
   opts: { sessionIndex?: number; leftPanelWidth?: number } = {},
 ) {
-  const { sessionIndex = 0, leftPanelWidth = 280 } = opts;
+  const { sessionIndex = 0, leftPanelWidth = 320 } = opts;
   return render(
     <SessionEventRow
       session={session}
       sessionIndex={sessionIndex}
       scale={makeScale()}
       onClick={() => {}}
-      viewMode="swimlane"
-      start={new Date(Date.now() - 60_000)}
-      end={new Date()}
       timelineWidth={900}
       leftPanelWidth={leftPanelWidth}
     />,

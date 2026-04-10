@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { SessionDrawer } from "@/components/session/SessionDrawer";
+import type { CustomDirective } from "@/lib/types";
 
 // Base session data
 const baseSession = {
@@ -39,6 +40,7 @@ const warnEvent = { id: "e5", session_id: "s1", flavor: "test", event_type: "pol
 
 let mockSessionOverride: Record<string, unknown> = {};
 let mockEventsOverride: typeof baseEvents | null = null;
+let mockCustomDirectives: CustomDirective[] = [];
 
 vi.mock("@/hooks/useSession", () => ({
   useSession: (id: string | null) => {
@@ -54,16 +56,28 @@ vi.mock("@/hooks/useSession", () => ({
   },
 }));
 
+// Mock the fleet store so SessionDrawer's `customDirectives` lookup
+// returns the per-test list. The zustand selector shape is a
+// function that receives the state and returns a slice.
+vi.mock("@/store/fleet", () => ({
+  useFleetStore: (selector: (state: unknown) => unknown) =>
+    selector({ customDirectives: mockCustomDirectives }),
+}));
+
 vi.mock("@/lib/api", () => ({
   createDirective: vi.fn(() => Promise.resolve({ id: "dir-1" })),
   fetchEventContent: vi.fn(() => Promise.resolve(null)),
+  triggerCustomDirective: vi.fn(() => Promise.resolve()),
 }));
 
-import { createDirective } from "@/lib/api";
+import { createDirective, triggerCustomDirective } from "@/lib/api";
+const mockTriggerCustomDirective =
+  triggerCustomDirective as ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
   mockSessionOverride = {};
   mockEventsOverride = null;
+  mockCustomDirectives = [];
   vi.clearAllMocks();
 });
 
@@ -395,5 +409,57 @@ describe("SessionDrawer", () => {
     // Reversed: first badge should be LLM CALL (newest), last should be START (oldest)
     expect(badges[0].textContent).toBe("LLM CALL");
     expect(badges[badges.length - 1].textContent).toBe("START");
+  });
+
+  // ---- Directives tab ----
+
+  const fakeDirective: CustomDirective = {
+    id: "cd-1",
+    fingerprint: "fp-abc",
+    name: "rotate-model",
+    description: "Rotate the active model",
+    flavor: "test-agent",
+    parameters: [],
+    registered_at: "2026-04-07T10:00:00Z",
+    last_seen_at: "2026-04-07T12:00:00Z",
+  };
+
+  it("Directives tab is shown when the session's flavor has a registered directive", () => {
+    mockCustomDirectives = [fakeDirective];
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    expect(screen.getByTestId("drawer-tab-directives")).toBeInTheDocument();
+  });
+
+  it("Directives tab is hidden when the flavor has no registered directives", () => {
+    mockCustomDirectives = []; // explicit reset
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    expect(
+      screen.queryByTestId("drawer-tab-directives"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("Directives tab is hidden when directives exist but for a DIFFERENT flavor", () => {
+    mockCustomDirectives = [{ ...fakeDirective, flavor: "other-agent" }];
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    expect(
+      screen.queryByTestId("drawer-tab-directives"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("Trigger button on Directives tab calls triggerCustomDirective with the session id", async () => {
+    mockCustomDirectives = [fakeDirective];
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    fireEvent.click(screen.getByTestId("drawer-tab-directives"));
+    fireEvent.click(screen.getByTestId("directive-run-rotate-model"));
+    await waitFor(() => {
+      expect(mockTriggerCustomDirective).toHaveBeenCalledTimes(1);
+    });
+    const call = mockTriggerCustomDirective.mock.calls[0][0];
+    expect(call.directive_name).toBe("rotate-model");
+    expect(call.fingerprint).toBe("fp-abc");
+    // SessionDrawer always passes the session id; flavor must be
+    // omitted so the worker fans the directive to ONLY this session.
+    expect(call.session_id).toBe("s1-abcdef-1234");
+    expect(call.flavor).toBeUndefined();
   });
 });

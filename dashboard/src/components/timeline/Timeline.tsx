@@ -1,7 +1,7 @@
 import { useMemo, useState, useEffect, useCallback } from "react";
 import { scaleTime } from "d3-scale";
 import type { FlavorSummary } from "@/lib/types";
-import type { ViewMode, TimeRange } from "@/pages/Fleet";
+import type { TimeRange } from "@/pages/Fleet";
 import {
   TIMELINE_RANGE_MS,
   TIMELINE_WIDTH_PX,
@@ -16,7 +16,6 @@ import { SwimLane } from "./SwimLane";
 interface TimelineProps {
   flavors: FlavorSummary[];
   flavorFilter?: string | null;
-  viewMode: ViewMode;
   timeRange: TimeRange;
   expandedFlavor: string | null;
   onExpandFlavor: (flavor: string) => void;
@@ -37,7 +36,6 @@ interface TimelineProps {
 export function Timeline({
   flavors,
   flavorFilter,
-  viewMode,
   timeRange,
   expandedFlavor,
   onExpandFlavor,
@@ -359,9 +357,6 @@ export function Timeline({
             onSessionClick={onNodeClick}
             expanded={expandedFlavor === f.flavor}
             onToggleExpand={() => onExpandFlavor(f.flavor)}
-            viewMode={viewMode}
-            start={start}
-            end={scaleEnd}
             timelineWidth={timelineWidth}
             leftPanelWidth={leftPanelWidth}
             activeFilter={activeFilter}

@@ -1,12 +1,10 @@
 import { memo, useMemo } from "react";
 import type { ScaleTime } from "d3-scale";
 import type { Session, AgentEvent } from "@/lib/types";
-import type { ViewMode } from "@/pages/Fleet";
 import { SESSION_ROW_HEIGHT } from "@/lib/constants";
 import { ChevronRight } from "lucide-react";
 import { SessionEventRow } from "./SessionEventRow";
 import { EventNode } from "./EventNode";
-import { BarView } from "./BarView";
 import { useSessionEvents } from "@/hooks/useSessionEvents";
 import { isEventVisible } from "@/lib/events";
 
@@ -17,9 +15,6 @@ interface SwimLaneProps {
   onSessionClick: (sessionId: string, eventId?: string, event?: AgentEvent) => void;
   expanded: boolean;
   onToggleExpand: () => void;
-  viewMode: ViewMode;
-  start: Date;
-  end: Date;
   /**
    * Width of the event-circles area in pixels. The full row width is
    * leftPanelWidth + timelineWidth. The right (event circles) panel
@@ -52,9 +47,6 @@ function SwimLaneComponent({
   onSessionClick,
   expanded,
   onToggleExpand,
-  viewMode,
-  start,
-  end,
   timelineWidth,
   leftPanelWidth,
   activeFilter,
@@ -175,24 +167,14 @@ function SwimLaneComponent({
             overflow: "hidden",
           }}
         >
-          {viewMode === "swimlane" ? (
-            <AggregatedSwimLane
-              sessions={sessions}
-              scale={scale}
-              onSessionClick={onSessionClick}
-              flavor={flavor}
-              activeFilter={activeFilter}
-              sessionVersions={sessionVersions}
-            />
-          ) : (
-            <AggregatedBarView
-              sessions={sessions}
-              start={start}
-              end={end}
-              width={timelineWidth}
-              activeFilter={activeFilter}
-            />
-          )}
+          <AggregatedSwimLane
+            sessions={sessions}
+            scale={scale}
+            onSessionClick={onSessionClick}
+            flavor={flavor}
+            activeFilter={activeFilter}
+            sessionVersions={sessionVersions}
+          />
         </div>
       </div>
 
@@ -285,9 +267,6 @@ function SwimLaneComponent({
                     onClick={(eventId, event) =>
                       onSessionClick(session.session_id, eventId, event)
                     }
-                    viewMode={viewMode}
-                    start={start}
-                    end={end}
                     timelineWidth={timelineWidth}
                     leftPanelWidth={leftPanelWidth}
                     activeFilter={activeFilter}
@@ -307,7 +286,6 @@ export const SwimLane = memo(SwimLaneComponent, (prev, next) => {
   if (prev.flavor !== next.flavor) return false;
   if (prev.sessions !== next.sessions) return false;
   if (prev.expanded !== next.expanded) return false;
-  if (prev.viewMode !== next.viewMode) return false;
   if (prev.activeFilter !== next.activeFilter) return false;
   if (prev.sessionVersions !== next.sessionVersions) return false;
   if (prev.timelineWidth !== next.timelineWidth) return false;
@@ -418,27 +396,3 @@ function AggregatedSessionEvents({
   );
 }
 
-function AggregatedBarView({
-  sessions,
-  start,
-  end,
-  width,
-  activeFilter,
-}: {
-  sessions: Session[];
-  start: Date;
-  end: Date;
-  width: number;
-  activeFilter?: string | null;
-}) {
-  // Collect all events from all sessions using hooks
-  const eventArrays = sessions.map((s) => {
-    // eslint-disable-next-line react-hooks/rules-of-hooks
-    const { events } = useSessionEvents(s.session_id, s.state === "active");
-    return events;
-  });
-
-  const allEvents = useMemo(() => eventArrays.flat(), [eventArrays]);
-
-  return <BarView events={allEvents} start={start} end={end} width={Math.max(width, 100)} activeFilter={activeFilter} />;
-}

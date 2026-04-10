@@ -1,10 +1,21 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { FleetPanel } from "@/components/fleet/FleetPanel";
-import type { FlavorSummary } from "@/lib/types";
+import type { CustomDirective, FlavorSummary } from "@/lib/types";
 
 vi.mock("@/lib/api", () => ({
   createDirective: vi.fn(() => Promise.resolve({ id: "dir-1" })),
+  triggerCustomDirective: vi.fn(() => Promise.resolve()),
+}));
+
+// Mock the fleet store so FleetPanel's new `customDirectives`
+// lookup works without spinning up the real Zustand store + API
+// fetch. Tests that need a non-empty directive list mutate
+// mockCustomDirectives before rendering.
+let mockCustomDirectives: CustomDirective[] = [];
+vi.mock("@/store/fleet", () => ({
+  useFleetStore: (selector: (state: unknown) => unknown) =>
+    selector({ customDirectives: mockCustomDirectives }),
 }));
 
 import { createDirective } from "@/lib/api";
@@ -38,6 +49,36 @@ const inactiveFlavors: FlavorSummary[] = [
 ];
 
 describe("FleetPanel", () => {
+  beforeEach(() => {
+    mockCustomDirectives = [];
+  });
+
+  it("Custom Directives sidebar section is gone", () => {
+    render(<FleetPanel flavors={mockFlavors} />);
+    // The old child panel rendered under a "Custom Directives" card
+    // title and included a dev-docs empty state. Both are gone now.
+    expect(screen.queryByText("Custom Directives")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/No custom directives registered/),
+    ).not.toBeInTheDocument();
+  });
+
+  it("Directive Activity header is hidden when directiveEvents is empty", () => {
+    // Previously the header rendered with a muted "No directive
+    // activity yet" empty state. The cleanup hides both the header
+    // and the body when there's nothing to show.
+    render(<FleetPanel flavors={mockFlavors} directiveEvents={[]} />);
+    expect(
+      screen.queryByTestId("directive-activity-header"),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("Directive Activity")).not.toBeInTheDocument();
+  });
+
+  it("Fleet Overview no longer shows a Tokens row", () => {
+    render(<FleetPanel flavors={mockFlavors} />);
+    expect(screen.queryByText("Tokens")).not.toBeInTheDocument();
+  });
+
   it("renders correct active session count in session states", () => {
     render(<FleetPanel flavors={mockFlavors} />);
     const activeCount = screen.getByTestId("state-count-active");

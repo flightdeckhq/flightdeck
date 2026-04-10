@@ -1,10 +1,8 @@
 import { useMemo, memo } from "react";
 import type { ScaleTime } from "d3-scale";
 import type { Session, AgentEvent } from "@/lib/types";
-import type { ViewMode } from "@/pages/Fleet";
 import { SESSION_ROW_HEIGHT } from "@/lib/constants";
 import { EventNode } from "./EventNode";
-import { BarView } from "./BarView";
 import { useSessionEvents } from "@/hooks/useSessionEvents";
 import { isEventVisible, truncateSessionId } from "@/lib/events";
 import { OSIcon } from "@/components/ui/OSIcon";
@@ -46,9 +44,6 @@ interface SessionEventRowProps {
   sessionIndex: number;
   scale: ScaleTime<number, number>;
   onClick: (eventId?: string, event?: AgentEvent) => void;
-  viewMode: ViewMode;
-  start: Date;
-  end: Date;
   /**
    * Width of the event-circles area in pixels. The right panel is
    * sized exactly to this value so xScale.range = [0, timelineWidth]
@@ -70,9 +65,6 @@ function SessionEventRowComponent({
   sessionIndex,
   scale,
   onClick,
-  viewMode,
-  start,
-  end,
   timelineWidth,
   leftPanelWidth,
   activeFilter,
@@ -284,7 +276,7 @@ function SessionEventRowComponent({
             ))}
           </div>
         )}
-        {!loading && viewMode === "swimlane" &&
+        {!loading &&
           eventNodes.map((node) => (
             <EventNode
               key={node.id}
@@ -308,9 +300,6 @@ function SessionEventRowComponent({
               isVisible={isEventVisible(node.eventType, activeFilter)}
             />
           ))}
-        {!loading && viewMode === "bars" && (
-          <BarView events={events} start={start} end={end} width={Math.max(timelineWidth, 100)} activeFilter={activeFilter} />
-        )}
       </div>
     </div>
   );
@@ -326,7 +315,6 @@ export const SessionEventRow = memo(SessionEventRowComponent, (prev, next) => {
   // token change to invalidate the row.
   if (prev.session.context !== next.session.context) return false;
   if (prev.sessionIndex !== next.sessionIndex) return false;
-  if (prev.viewMode !== next.viewMode) return false;
   if (prev.activeFilter !== next.activeFilter) return false;
   if (prev.version !== next.version) return false;
   if (prev.timelineWidth !== next.timelineWidth) return false;

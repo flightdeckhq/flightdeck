@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { scaleTime } from "d3-scale";
 import { sortFlavorsByActivity } from "@/pages/Fleet";
+import type { ViewMode } from "@/pages/Fleet";
 import { SwimLane } from "@/components/timeline/SwimLane";
 import type { FlavorSummary, Session, SessionState } from "@/lib/types";
 
@@ -102,10 +103,8 @@ describe("SwimLane state suffix", () => {
     onSessionClick: vi.fn(),
     expanded: false,
     onToggleExpand: vi.fn(),
-    viewMode: "swimlane" as const,
-    start: new Date(Date.now() - 60_000),
-    end: new Date(),
     timelineWidth: 900,
+    leftPanelWidth: 320,
     activeFilter: null,
     sessionVersions: {},
   };
@@ -220,5 +219,23 @@ describe("SwimLane state suffix", () => {
       />,
     );
     expect(screen.queryByTestId("swimlane-state-suffix")).toBeNull();
+  });
+});
+
+// Bars view mode was removed in the April 2026 cleanup. At the fixed
+// 900px canvas the histogram added no information beyond the swimlane
+// dots. Lock that in at the type level so anyone re-introducing a
+// "bars" variant trips this test immediately.
+describe("ViewMode (Bars removal)", () => {
+  it("ViewMode only accepts 'swimlane'", () => {
+    const valid: ViewMode = "swimlane";
+    expect(valid).toBe("swimlane");
+    // The ViewMode type is a single-string literal now; any attempt
+    // to re-add "bars" would widen the union and make this line
+    // compile again without the @ts-expect-error, failing the test.
+    // @ts-expect-error -- "bars" must NOT be assignable to ViewMode
+    const invalid: ViewMode = "bars";
+    // Runtime value is irrelevant; the guarantee is compile-time.
+    expect(invalid).toBe("bars");
   });
 });

@@ -1,5 +1,5 @@
-import { useState } from "react";
-import type { FlavorSummary, FeedEvent } from "@/lib/types";
+import { useMemo, useState } from "react";
+import type { CustomDirective, FlavorSummary, FeedEvent } from "@/lib/types";
 import type { ContextFacets, ContextFilters } from "@/types/context";
 import { truncateSessionId, getDirectiveResultColor, getDirectiveBadge } from "@/lib/events";
 import {
@@ -13,6 +13,8 @@ import { Button } from "@/components/ui/button";
 import { SessionStateBar } from "./SessionStateBar";
 import { PolicyEventList } from "./PolicyEventList";
 import { createDirective } from "@/lib/api";
+import { DirectiveCard } from "@/components/directives/DirectiveCard";
+import { useFleetStore } from "@/store/fleet";
 import { X } from "lucide-react";
 
 /**
@@ -69,7 +71,18 @@ export function FleetPanel({
 }: FleetPanelProps) {
   const totalSessions = flavors.reduce((s, f) => s + f.session_count, 0);
   const totalActive = flavors.reduce((s, f) => s + f.active_count, 0);
-  const totalTokens = flavors.reduce((s, f) => s + f.tokens_used_total, 0);
+
+  // Read the fleet-wide custom directive list from the store and
+  // index it by flavor so each FlavorItem can show a "Directives"
+  // button only when its flavor actually has directives registered.
+  const customDirectives = useFleetStore((s) => s.customDirectives);
+  const customDirectivesByFlavor = useMemo(() => {
+    const map: Record<string, CustomDirective[]> = {};
+    for (const d of customDirectives) {
+      (map[d.flavor] ??= []).push(d);
+    }
+    return map;
+  }, [customDirectives]);
 
   return (
     <div
@@ -83,11 +96,14 @@ export function FleetPanel({
       <div className="px-3 pb-2 pt-4 text-xs font-semibold uppercase tracking-[0.06em]" style={{ color: "var(--text-secondary)" }}>
         Fleet Overview
       </div>
+      {/* Fleet Overview no longer surfaces an all-time token total --
+          the number had no time qualifier and was more confusing than
+          useful. Token analytics live on the Analytics page with
+          proper time scope. */}
       <div className="space-y-1 px-3 pb-3">
         <SidebarRow label="Flavors" value={flavors.length} />
         <SidebarRow label="Sessions" value={totalSessions} />
         <SidebarRow label="Active" value={totalActive} valueColor="var(--status-active)" />
-        <SidebarRow label="Tokens" value={totalTokens.toLocaleString()} />
       </div>
 
       {/* Session States */}
@@ -129,6 +145,7 @@ export function FleetPanel({
             flavor={f}
             isActive={activeFlavorFilter === f.flavor}
             onFlavorClick={onFlavorClick}
+            directives={customDirectivesByFlavor[f.flavor] ?? []}
           />
         ))}
         {flavors.length > 6 && (
@@ -156,18 +173,21 @@ export function FleetPanel({
         <PolicyEventList />
       </div>
 
-      {/* Directive Activity */}
-      <div className="px-3 pb-2 pt-2 text-xs font-semibold uppercase tracking-[0.06em]" style={{ color: "var(--text-secondary)" }}>
-        Directive Activity
-      </div>
-      <div className="px-3 pb-3">
-        {directiveEvents.length === 0 ? (
-          <div className="py-3 text-center text-xs" style={{ color: "var(--text-muted)" }}>
-            No directive activity yet.
+      {/* Directive Activity -- header + body are BOTH hidden when
+          there's no activity. The section only appears when there's
+          something operational to show, per the cleanup request. */}
+      {directiveEvents.length > 0 && (
+        <>
+          <div
+            className="px-3 pb-2 pt-2 text-xs font-semibold uppercase tracking-[0.06em]"
+            style={{ color: "var(--text-secondary)" }}
+            data-testid="directive-activity-header"
+          >
+            Directive Activity
           </div>
-        ) : (
-          <div className="space-y-0.5">
-            {directiveEvents.map((fe, i) => {
+          <div className="px-3 pb-3">
+            <div className="space-y-0.5">
+              {directiveEvents.map((fe, i) => {
               const evt = fe.event;
               const payload = evt.payload;
               const status = payload?.directive_status;
@@ -236,9 +256,10 @@ export function FleetPanel({
                 </div>
               );
             })}
+            </div>
           </div>
-        )}
-      </div>
+        </>
+      )}
 
       {/* Context facets sidebar. Only renders when at least one
           facet has 2+ distinct values -- single-value facets aren't
@@ -389,17 +410,28 @@ function FlavorItem({
   flavor,
   isActive,
   onFlavorClick,
+  directives = [],
 }: {
   flavor: FlavorSummary;
   isActive?: boolean;
   onFlavorClick?: (flavor: string) => void;
+  /**
+   * Custom directives registered for this flavor. When non-empty,
+   * a "Directives" button appears alongside the optional "Stop All"
+   * button and opens a dialog containing a DirectiveCard per
+   * directive (each configured to target the whole flavor rather
+   * than a single session).
+   */
+  directives?: CustomDirective[];
 }) {
   const [loading, setLoading] = useState(false);
   const [sent, setSent] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [directivesDialogOpen, setDirectivesDialogOpen] = useState(false);
 
   const hasActive = flavor.active_count > 0;
+  const hasDirectives = directives.length > 0;
 
   async function handleStopAll() {
     setLoading(true);
@@ -464,11 +496,58 @@ function FlavorItem({
           </button>
         )}
       </div>
+      <div className="flex items-center gap-1 shrink-0">
+      {hasDirectives && (
+        <Dialog
+          open={directivesDialogOpen}
+          onOpenChange={setDirectivesDialogOpen}
+        >
+          <DialogTrigger asChild>
+            <button
+              data-testid={`flavor-directives-button-${flavor.flavor}`}
+              className="rounded px-1.5 py-0.5 text-[11px] font-mono transition-colors"
+              style={{
+                background: "var(--accent-glow)",
+                color: "var(--accent)",
+                border: "1px solid var(--accent-border)",
+              }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              Directives
+            </button>
+          </DialogTrigger>
+          <DialogContent>
+            <DialogTitle>
+              Trigger directives on {flavor.flavor}
+            </DialogTitle>
+            <p className="text-sm text-text-muted">
+              Each directive fans out to every active session of this
+              flavor. Parameters apply to all sessions uniformly.
+            </p>
+            <div className="max-h-[60vh] overflow-y-auto pt-2">
+              {directives.map((d) => (
+                <DirectiveCard
+                  key={d.id}
+                  directive={d}
+                  flavor={flavor.flavor}
+                />
+              ))}
+            </div>
+            <div className="flex justify-end pt-2">
+              <DialogClose asChild>
+                <Button variant="ghost" size="sm">
+                  Close
+                </Button>
+              </DialogClose>
+            </div>
+          </DialogContent>
+        </Dialog>
+      )}
       {hasActive && !sent && (
         <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
           <DialogTrigger asChild>
             <button
-              className="shrink-0 rounded px-1.5 py-0.5 text-[11px] transition-colors"
+              className="rounded px-1.5 py-0.5 text-[11px] transition-colors"
               style={{
                 background: "rgba(239,68,68,0.15)",
                 color: "var(--status-lost)",
@@ -511,6 +590,7 @@ function FlavorItem({
       {sent && (
         <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>Directives sent</span>
       )}
+      </div>
     </div>
   );
 }

@@ -1,7 +1,12 @@
 import { create } from "zustand";
-import type { FlavorSummary, Session, FleetUpdate } from "@/lib/types";
+import type {
+  CustomDirective,
+  FlavorSummary,
+  Session,
+  FleetUpdate,
+} from "@/lib/types";
 import type { ContextFacets } from "@/types/context";
-import { fetchFleet } from "@/lib/api";
+import { fetchCustomDirectives, fetchFleet } from "@/lib/api";
 
 export type AgentTypeFilter = "all" | "production" | "developer";
 
@@ -9,6 +14,13 @@ interface FleetState {
   flavors: FlavorSummary[];
   /** Context facets aggregated by the API across all non-terminal sessions. */
   contextFacets: ContextFacets;
+  /**
+   * All custom directives registered in the fleet, flat list. The
+   * drawer and per-flavor trigger UI filter this client-side by
+   * flavor so we only fetch once per fleet load. Empty array until
+   * the first load() resolves.
+   */
+  customDirectives: CustomDirective[];
   loading: boolean;
   error: string | null;
   selectedSessionId: string | null;
@@ -25,6 +37,7 @@ interface FleetState {
 export const useFleetStore = create<FleetState>((set, get) => ({
   flavors: [],
   contextFacets: {},
+  customDirectives: [],
   loading: false,
   error: null,
   selectedSessionId: null,
@@ -36,10 +49,17 @@ export const useFleetStore = create<FleetState>((set, get) => ({
     set({ loading: true, error: null });
     try {
       const apiFilter = filter === "all" ? undefined : filter;
-      const data = await fetchFleet(50, 0, apiFilter);
+      // Fetch fleet state and custom directives in parallel. The
+      // directive fetch is best-effort -- if it fails we surface
+      // an empty array rather than blocking the fleet view.
+      const [fleet, directives] = await Promise.all([
+        fetchFleet(50, 0, apiFilter),
+        fetchCustomDirectives().catch(() => [] as CustomDirective[]),
+      ]);
       set({
-        flavors: data.flavors,
-        contextFacets: data.context_facets ?? {},
+        flavors: fleet.flavors,
+        contextFacets: fleet.context_facets ?? {},
+        customDirectives: directives,
         loading: false,
       });
     } catch (e) {

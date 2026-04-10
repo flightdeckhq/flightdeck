@@ -3,7 +3,6 @@ import { useFleet } from "@/hooks/useFleet";
 import { useFleetStore } from "@/store/fleet";
 import { useHistoricalEvents } from "@/hooks/useHistoricalEvents";
 import { FleetPanel } from "@/components/fleet/FleetPanel";
-import { DirectivesPanel } from "@/components/fleet/DirectivesPanel";
 import { EventFilterBar } from "@/components/fleet/EventFilterBar";
 import { LiveFeed } from "@/components/fleet/LiveFeed";
 import { EventDetailDrawer } from "@/components/fleet/EventDetailDrawer";
@@ -14,7 +13,15 @@ import type { ContextFilters } from "@/types/context";
 import { FEED_MAX_EVENTS, PAUSE_QUEUE_MAX_EVENTS } from "@/lib/constants";
 import { eventsCache } from "@/hooks/useSessionEvents";
 
-export type ViewMode = "swimlane" | "bars";
+/**
+ * Timeline view mode. The "bars" stacked-histogram variant was
+ * removed in the April 2026 cleanup -- at the fixed 900px canvas
+ * width it never conveyed meaningful information compared to the
+ * swimlane's per-session event dots. The type alias is kept as a
+ * single literal so downstream components don't need to be
+ * retyped to `"swimlane"` everywhere at once.
+ */
+export type ViewMode = "swimlane";
 export type TimeRange = "1m" | "5m" | "15m" | "30m" | "1h";
 
 const TIME_RANGES: TimeRange[] = ["1m", "5m", "15m", "30m", "1h"];
@@ -144,7 +151,6 @@ export function Fleet() {
     return set;
   }, [flavors, contextFilters, sessionMatchesContext]);
 
-  const [viewMode, setViewMode] = useState<ViewMode>("swimlane");
   const [timeRange, setTimeRange] = useState<TimeRange>("1m");
   const [expandedFlavor, setExpandedFlavor] = useState<string | null>(null);
   const [selectedEvent, setSelectedEvent] = useState<AgentEvent | null>(null);
@@ -287,12 +293,7 @@ export function Fleet() {
         contextFilters={contextFilters}
         onContextFilter={handleContextFilter}
         onClearContext={handleClearContext}
-      >
-        <DirectivesPanel
-          flavorFilter={flavorFilter}
-          selectedSessionId={selectedSessionId}
-        />
-      </FleetPanel>
+      />
 
       <div className="flex flex-1 flex-col overflow-hidden">
         {/* Fleet header */}
@@ -303,32 +304,6 @@ export function Fleet() {
             borderBottom: "1px solid var(--border-subtle)",
           }}
         >
-          {/* View mode toggle */}
-          <div className="flex gap-0.5">
-            {(["swimlane", "bars"] as const).map((mode) => (
-              <button
-                key={mode}
-                className="rounded px-2.5 py-[3px] text-xs capitalize transition-colors"
-                style={
-                  viewMode === mode
-                    ? {
-                        background: "var(--bg-elevated)",
-                        color: "var(--text)",
-                        border: "1px solid var(--border-strong)",
-                      }
-                    : {
-                        background: "transparent",
-                        color: "var(--text-muted)",
-                        border: "1px solid transparent",
-                      }
-                }
-                onClick={() => setViewMode(mode)}
-              >
-                {mode === "swimlane" ? "Swimlane" : "Bars"}
-              </button>
-            ))}
-          </div>
-
           {/* Time range */}
           <div className="flex gap-0.5">
             {TIME_RANGES.map((range) => (
@@ -458,7 +433,6 @@ export function Fleet() {
           <Timeline
             flavors={sortedFlavors}
             flavorFilter={flavorFilter}
-            viewMode={viewMode}
             timeRange={timeRange}
             expandedFlavor={expandedFlavor}
             onExpandFlavor={handleExpandFlavor}

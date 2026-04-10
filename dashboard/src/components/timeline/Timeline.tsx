@@ -110,7 +110,7 @@ export function Timeline({
       style={{ overflowX: "auto", overflowY: "clip" }}
       data-testid="timeline-scroll"
     >
-      <div style={{ width: innerWidth, minWidth: "100%" }}>
+      <div style={{ width: innerWidth, minWidth: "100%", position: "relative" }}>
         {/* Shared time axis. Sticky on the vertical axis so it stays
             pinned at the top of the right panel as flavor rows scroll
             past. The container's parent (Fleet.tsx) provides vertical
@@ -124,6 +124,9 @@ export function Timeline({
             background: "var(--bg)",
           }}
         >
+          {/* Left spacer above the flavor labels column. Sticky
+              horizontally so it stays pinned over the labels when the
+              user scrolls right. */}
           <div
             className="shrink-0"
             style={{
@@ -136,7 +139,7 @@ export function Timeline({
               borderRight: "1px solid var(--border)",
             }}
           />
-          <div style={{ width: timelineWidth }}>
+          <div style={{ width: timelineWidth, flexShrink: 0 }}>
             <TimeAxis
               start={start}
               end={scaleEnd}
@@ -146,7 +149,10 @@ export function Timeline({
           </div>
         </div>
 
-        {/* FLAVORS section header (FIX 4) */}
+        {/* FLAVORS section header. Sticky horizontally so the label
+            stays at the left edge of the viewport regardless of how
+            far the user has scrolled into the timeline. (FIX 4 +
+            wide-range regression fix.) */}
         <div
           style={{
             display: "flex",
@@ -155,6 +161,13 @@ export function Timeline({
             paddingLeft: 12,
             borderBottom: "1px solid var(--border-subtle)",
             background: "var(--bg)",
+            position: "sticky",
+            left: 0,
+            zIndex: 3,
+            // The sticky element must extend the full content width
+            // so the bottom border draws all the way across the
+            // timeline rather than stopping at LEFT_PANEL_WIDTH.
+            width: innerWidth,
           }}
         >
           <span
@@ -165,13 +178,19 @@ export function Timeline({
               color: "var(--text-muted)",
               textTransform: "uppercase",
               fontFamily: "var(--font-ui)",
+              // The span itself sits at viewport-left because the
+              // parent is sticky-left.
+              position: "sticky",
+              left: 12,
             }}
           >
             Flavors
           </span>
         </div>
 
-        {/* Flavor rows */}
+        {/* Flavor rows. Each SwimLane receives timelineWidth directly
+            and is responsible for its own internal flex layout
+            (sticky 240px left + timelineWidth right). */}
         {filteredFlavors.map((f) => (
           <SwimLane
             key={f.flavor}
@@ -185,7 +204,7 @@ export function Timeline({
             viewMode={viewMode}
             start={start}
             end={scaleEnd}
-            width={innerWidth}
+            timelineWidth={timelineWidth}
             activeFilter={activeFilter}
             sessionVersions={sessionVersions}
           />

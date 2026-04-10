@@ -2,6 +2,7 @@ import { useMemo, memo } from "react";
 import type { ScaleTime } from "d3-scale";
 import type { Session, AgentEvent } from "@/lib/types";
 import type { ViewMode } from "@/pages/Fleet";
+import { LEFT_PANEL_WIDTH } from "@/lib/constants";
 import { EventNode } from "./EventNode";
 import { BarView } from "./BarView";
 import { useSessionEvents } from "@/hooks/useSessionEvents";
@@ -22,12 +23,19 @@ interface SessionEventRowProps {
   viewMode: ViewMode;
   start: Date;
   end: Date;
-  width: number;
+  /**
+   * Width of the event-circles area in pixels. The right panel is
+   * sized exactly to this value so xScale.range = [0, timelineWidth]
+   * and circles cannot escape into adjacent layout space. Renamed
+   * from `width` to make the contract explicit and prevent the
+   * double-subtraction bug that broke wide-range layouts.
+   */
+  timelineWidth: number;
   activeFilter?: string | null;
   version?: number;
 }
 
-function SessionEventRowComponent({ session, scale, onClick, viewMode, start, end, width, activeFilter, version = 0 }: SessionEventRowProps) {
+function SessionEventRowComponent({ session, scale, onClick, viewMode, start, end, timelineWidth, activeFilter, version = 0 }: SessionEventRowProps) {
   const isActive = session.state === "active";
   const { events, loading } = useSessionEvents(session.session_id, isActive, version);
   const badge = stateBadgeColors[session.state] ?? stateBadgeColors.closed;
@@ -57,13 +65,16 @@ function SessionEventRowComponent({ session, scale, onClick, viewMode, start, en
     >
       {/* Left panel — 240px, indented, sticky for horizontal scroll */}
       <div
-        className="flex h-full w-[240px] shrink-0 items-center gap-1.5 pl-7 pr-3"
+        className="flex h-full items-center gap-1.5 pl-7 pr-3"
         style={{
+          width: LEFT_PANEL_WIDTH,
+          flexShrink: 0,
           background: "var(--surface)",
           borderRight: "1px solid var(--border)",
           position: "sticky",
           left: 0,
           zIndex: 1,
+          overflow: "hidden",
         }}
       >
         {isActive && <div className="pulse-dot" />}
@@ -85,10 +96,18 @@ function SessionEventRowComponent({ session, scale, onClick, viewMode, start, en
         </span>
       </div>
 
-      {/* Right panel — events. Sized to the timeline width so circles
-          spread proportionally with the time range; the parent
-          container handles horizontal scroll. */}
-      <div className="relative h-full flex items-center px-1" style={{ width: width - 240 }}>
+      {/* Right panel — events. Sized to exactly timelineWidth so
+          xScale.range = [0, timelineWidth] and circles cannot escape
+          into adjacent layout space. overflow: hidden clips any
+          visual that would otherwise leak into the next row. */}
+      <div
+        className="relative h-full flex items-center px-1"
+        style={{
+          width: timelineWidth,
+          flexShrink: 0,
+          overflow: "hidden",
+        }}
+      >
         {loading && (
           <div className="flex items-center h-full gap-2 pl-4">
             {[0, 1, 2].map((i) => (
@@ -124,7 +143,7 @@ function SessionEventRowComponent({ session, scale, onClick, viewMode, start, en
             />
           ))}
         {!loading && viewMode === "bars" && (
-          <BarView events={events} start={start} end={end} width={Math.max(width, 100)} activeFilter={activeFilter} />
+          <BarView events={events} start={start} end={end} width={Math.max(timelineWidth, 100)} activeFilter={activeFilter} />
         )}
       </div>
     </div>
@@ -137,6 +156,7 @@ export const SessionEventRow = memo(SessionEventRowComponent, (prev, next) => {
   if (prev.viewMode !== next.viewMode) return false;
   if (prev.activeFilter !== next.activeFilter) return false;
   if (prev.version !== next.version) return false;
+  if (prev.timelineWidth !== next.timelineWidth) return false;
   // Only re-render for scale changes > 1 second
   const domainDelta = Math.abs(
     next.scale.domain()[1].getTime() - prev.scale.domain()[1].getTime()

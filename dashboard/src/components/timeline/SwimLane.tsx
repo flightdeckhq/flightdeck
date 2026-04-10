@@ -2,6 +2,7 @@ import { memo, useMemo } from "react";
 import type { ScaleTime } from "d3-scale";
 import type { Session, AgentEvent } from "@/lib/types";
 import type { ViewMode } from "@/pages/Fleet";
+import { LEFT_PANEL_WIDTH } from "@/lib/constants";
 import { ChevronRight } from "lucide-react";
 import { SessionEventRow } from "./SessionEventRow";
 import { EventNode } from "./EventNode";
@@ -20,7 +21,13 @@ interface SwimLaneProps {
   viewMode: ViewMode;
   start: Date;
   end: Date;
-  width: number;
+  /**
+   * Width of the event-circles area in pixels. The full row width is
+   * LEFT_PANEL_WIDTH + timelineWidth. The right (event circles) panel
+   * is sized exactly to this value so xScale.range = [0, timelineWidth]
+   * and circles cannot escape into adjacent layout space.
+   */
+  timelineWidth: number;
   activeFilter?: string | null;
   sessionVersions?: Record<string, number>;
 }
@@ -36,7 +43,7 @@ function SwimLaneComponent({
   viewMode,
   start,
   end,
-  width,
+  timelineWidth,
   activeFilter,
   sessionVersions,
 }: SwimLaneProps) {
@@ -78,13 +85,16 @@ function SwimLaneComponent({
         data-testid="swimlane-inactive"
       >
         <div
-          className="flex h-full w-[240px] shrink-0 items-center gap-2 px-3"
+          className="flex h-full items-center gap-2 px-3"
           style={{
+            width: LEFT_PANEL_WIDTH,
+            flexShrink: 0,
             background: "var(--surface)",
             borderRight: "1px solid var(--border-subtle)",
             position: "sticky",
             left: 0,
             zIndex: 2,
+            overflow: "hidden",
           }}
         >
           <span
@@ -102,7 +112,7 @@ function SwimLaneComponent({
         </div>
         <div
           className="relative h-full"
-          style={{ width: width - 240 }}
+          style={{ width: timelineWidth, flexShrink: 0 }}
         />
       </div>
     );
@@ -118,13 +128,16 @@ function SwimLaneComponent({
       >
         {/* Left panel — sticky so it stays pinned during horizontal scroll */}
         <div
-          className="flex h-full w-[240px] shrink-0 items-center gap-2 px-3"
+          className="flex h-full items-center gap-2 px-3"
           style={{
+            width: LEFT_PANEL_WIDTH,
+            flexShrink: 0,
             background: expanded ? "var(--bg-elevated)" : "var(--surface)",
             borderRight: "1px solid var(--border)",
             position: "sticky",
             left: 0,
             zIndex: 2,
+            overflow: "hidden",
           }}
         >
           <ChevronRight
@@ -143,10 +156,19 @@ function SwimLaneComponent({
           </span>
         </div>
 
-        {/* Right panel — aggregated events. Sized to the timeline
-            width so circles spread proportionally with the time range
-            and the parent container can scroll horizontally. */}
-        <div className="relative h-full flex items-center px-1" style={{ width: width - 240 }}>
+        {/* Right panel — aggregated events. Sized to exactly
+            timelineWidth so xScale.range = [0, timelineWidth] and
+            circles cannot escape into adjacent layout. overflow:
+            hidden clips any visual that would otherwise leak into
+            the next row. */}
+        <div
+          className="relative h-full flex items-center px-1"
+          style={{
+            width: timelineWidth,
+            flexShrink: 0,
+            overflow: "hidden",
+          }}
+        >
           {viewMode === "swimlane" ? (
             <AggregatedSwimLane
               sessions={sessions}
@@ -161,7 +183,7 @@ function SwimLaneComponent({
               sessions={sessions}
               start={start}
               end={end}
-              width={width - 240}
+              width={timelineWidth}
               activeFilter={activeFilter}
             />
           )}
@@ -182,14 +204,21 @@ function SwimLaneComponent({
       >
         {expanded && (
           <div className="py-1">
-            {/* SESSIONS sub-header (FIX 4) */}
+            {/* SESSIONS sub-header. Sticky-left so it stays pinned to
+                the viewport's left edge regardless of horizontal
+                scroll position. The full row spans the content width
+                so the bottom border draws across the timeline. */}
             <div
               style={{
                 display: "flex",
                 alignItems: "center",
                 height: 20,
-                paddingLeft: 32,
                 borderBottom: "1px solid var(--border-subtle)",
+                background: "var(--surface)",
+                position: "sticky",
+                left: 0,
+                zIndex: 2,
+                width: LEFT_PANEL_WIDTH + timelineWidth,
               }}
             >
               <span
@@ -200,6 +229,8 @@ function SwimLaneComponent({
                   color: "var(--text-muted)",
                   textTransform: "uppercase",
                   fontFamily: "var(--font-ui)",
+                  position: "sticky",
+                  left: 32,
                 }}
               >
                 Sessions
@@ -214,7 +245,7 @@ function SwimLaneComponent({
                 viewMode={viewMode}
                 start={start}
                 end={end}
-                width={width - 240}
+                timelineWidth={timelineWidth}
                 activeFilter={activeFilter}
                 version={sessionVersions?.[session.session_id] ?? 0}
               />
@@ -233,6 +264,7 @@ export const SwimLane = memo(SwimLaneComponent, (prev, next) => {
   if (prev.viewMode !== next.viewMode) return false;
   if (prev.activeFilter !== next.activeFilter) return false;
   if (prev.sessionVersions !== next.sessionVersions) return false;
+  if (prev.timelineWidth !== next.timelineWidth) return false;
   // Only re-render for scale changes > 1 second
   const domainDelta = Math.abs(
     next.scale.domain()[1].getTime() - prev.scale.domain()[1].getTime()

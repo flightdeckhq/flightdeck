@@ -100,7 +100,7 @@ describe("SwimLane inactive collapse", () => {
     viewMode: "swimlane" as const,
     start: new Date(Date.now() - 60_000),
     end: new Date(),
-    width: 1140,
+    timelineWidth: 900,
     activeFilter: null,
     sessionVersions: {},
   };

@@ -563,13 +563,48 @@ const META_LABEL_STYLE: React.CSSProperties = {
   fontFamily: "var(--font-ui)",
 };
 
+/**
+ * Flex container for the value slot. Keeps icons and text inline on
+ * one row, min-width: 0 lets the child text span shrink below its
+ * intrinsic width so the ellipsis fix below actually kicks in.
+ *
+ * Why this is a flex container and not a plain block with
+ * `text-overflow: ellipsis`: when an icon + text live together inside
+ * a block with `overflow: hidden`, the browser clips the overflowing
+ * content but `text-overflow` only paints an ellipsis for DIRECT
+ * overflowing text. Wrapping them in `inline-flex` turned the whole
+ * icon+text group into a single atomic inline box, which the parent
+ * then clipped mid-glyph without any ellipsis indicator (the
+ * "claude-sonnet-" bug). The fix is to make the value slot the flex
+ * container, hoist the icons to be flex siblings of the text, and
+ * attach the ellipsis styles to the text span directly -- now the
+ * text element itself has a non-zero computed width, is marked as
+ * `overflow: hidden; text-overflow: ellipsis`, and the browser can
+ * compute and paint the ellipsis.
+ */
 const META_VALUE_STYLE: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 4,
   fontSize: 12,
   fontFamily: "var(--font-mono)",
   color: "var(--text)",
-  whiteSpace: "nowrap",
+  minWidth: 0,
+};
+
+/**
+ * Style for a flex-shrinkable text span inside a MetadataCell value
+ * slot. Attach this to any text node that shares a cell with an icon
+ * (or that needs explicit ellipsis behaviour). min-width: 0 is the
+ * key piece: it overrides the flex-item default of `min-width: auto`,
+ * which would otherwise keep the span at its intrinsic content width
+ * and defeat the clip.
+ */
+const META_CLIP_STYLE: React.CSSProperties = {
   overflow: "hidden",
   textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+  minWidth: 0,
 };
 
 interface MetadataCellProps {
@@ -581,11 +616,23 @@ interface MetadataCellProps {
   testId?: string;
 }
 
+/**
+ * One cell in the metadata grid. String children are auto-wrapped in
+ * a clip-styled span; node / fragment children are rendered as-is so
+ * callers can inline icons alongside text (the text node inside still
+ * needs `META_CLIP_STYLE` applied explicitly).
+ */
 function MetadataCell({ label, children, title, testId }: MetadataCellProps) {
+  const content =
+    typeof children === "string" ? (
+      <span style={META_CLIP_STYLE}>{children}</span>
+    ) : (
+      children
+    );
   return (
     <div title={title} data-testid={testId} style={{ minWidth: 0 }}>
       <div style={META_LABEL_STYLE}>{label}</div>
-      <div style={META_VALUE_STYLE}>{children}</div>
+      <div style={META_VALUE_STYLE}>{content}</div>
     </div>
   );
 }
@@ -648,26 +695,11 @@ function MetadataBar({ session }: { session: SessionType }) {
         title={platformTooltip || undefined}
         testId="metadata-platform"
       >
-        <span
-          style={{
-            display: "inline-flex",
-            alignItems: "center",
-            gap: 4,
-          }}
-        >
-          {os && <OSIcon os={os} size={12} />}
-          {orchestration && (
-            <OrchestrationIcon orchestration={orchestration} size={12} />
-          )}
-          <span
-            style={{
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-            }}
-          >
-            {platformText}
-          </span>
-        </span>
+        {os && <OSIcon os={os} size={12} />}
+        {orchestration && (
+          <OrchestrationIcon orchestration={orchestration} size={12} />
+        )}
+        <span style={META_CLIP_STYLE}>{platformText}</span>
       </MetadataCell>
 
       <MetadataCell label="Started">
@@ -684,23 +716,10 @@ function MetadataBar({ session }: { session: SessionType }) {
 
       <MetadataCell label="Model" title={model ?? undefined}>
         {model ? (
-          <span
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 4,
-            }}
-          >
+          <>
             <ProviderLogo provider={getProvider(model)} size={12} />
-            <span
-              style={{
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-              }}
-            >
-              {truncateModel(model)}
-            </span>
-          </span>
+            <span style={META_CLIP_STYLE}>{truncateModel(model)}</span>
+          </>
         ) : (
           "—"
         )}

@@ -40,6 +40,87 @@ AGENTS = [
     {"flavor": "claude-code", "agent_type": "developer", "model": "claude-sonnet-4-6", "provider": "anthropic"},
 ]
 
+# Per-agent runtime context attached to each session_start. Matches
+# the shape of the sensor's context.py collector output so the
+# dashboard's CONTEXT sidebar and RUNTIME panel render the same way
+# they would in production. Spread across enough OS / arch /
+# orchestration / namespace / user combinations that every multi-
+# value facet clears the 2-distinct-values threshold the FleetPanel
+# uses to decide whether to show a facet group at all.
+AGENT_CONTEXTS: list[dict] = [
+    # research-agent (0-3): mix of k8s namespaces + a bare Docker dev box
+    {
+        "hostname": "k8s-prod-a1", "os": "Linux", "arch": "x86_64",
+        "python_version": "3.12.3", "user": "ci-runner",
+        "orchestration": "kubernetes", "k8s_namespace": "agents",
+        "k8s_node": "node-prod-1", "k8s_pod": "research-a1",
+        "git_commit": "abc1234", "git_branch": "main", "git_repo": "flightdeck",
+        "frameworks": ["langchain/0.1.12"],
+    },
+    {
+        "hostname": "k8s-prod-a2", "os": "Linux", "arch": "x86_64",
+        "python_version": "3.12.3", "user": "ci-runner",
+        "orchestration": "kubernetes", "k8s_namespace": "research",
+        "k8s_node": "node-prod-1", "k8s_pod": "research-a2",
+        "git_commit": "abc1234", "git_branch": "main", "git_repo": "flightdeck",
+        "frameworks": ["langchain/0.1.12"],
+    },
+    {
+        "hostname": "k8s-prod-b1", "os": "Linux", "arch": "arm64",
+        "python_version": "3.11.9", "user": "ci-runner",
+        "orchestration": "kubernetes", "k8s_namespace": "agents",
+        "k8s_node": "node-prod-2", "k8s_pod": "research-b1",
+        "git_commit": "def5678", "git_branch": "feat/crewai", "git_repo": "flightdeck",
+        "frameworks": ["crewai/0.42.0", "langchain/0.1.12"],
+    },
+    {
+        "hostname": "mac-laptop-alice", "os": "Darwin", "arch": "x86_64",
+        "python_version": "3.12.3", "user": "alice",
+        "orchestration": "docker",
+        "git_commit": "abc1234", "git_branch": "main", "git_repo": "flightdeck",
+    },
+    # code-agent (4-7): docker-compose build pipeline + ECS + bare Mac
+    {
+        "hostname": "compose-build-1", "os": "Linux", "arch": "x86_64",
+        "python_version": "3.11.9", "user": "ci-runner",
+        "orchestration": "docker-compose", "compose_project": "build-pipeline",
+        "compose_service": "coder-1",
+        "git_commit": "abc1234", "git_branch": "main", "git_repo": "flightdeck",
+        "frameworks": ["autogen/0.2.34"],
+    },
+    {
+        "hostname": "compose-build-2", "os": "Linux", "arch": "x86_64",
+        "python_version": "3.11.9", "user": "ci-runner",
+        "orchestration": "docker-compose", "compose_project": "build-pipeline",
+        "compose_service": "coder-2",
+        "git_commit": "abc1234", "git_branch": "main", "git_repo": "flightdeck",
+    },
+    {
+        "hostname": "ecs-prod-3", "os": "Linux", "arch": "arm64",
+        "python_version": "3.12.3", "user": "ci-runner",
+        "orchestration": "aws-ecs", "ecs_task": "code-agent:42",
+        "git_commit": "def5678", "git_branch": "feat/crewai", "git_repo": "flightdeck",
+    },
+    {
+        "hostname": "mac-laptop-bob", "os": "Darwin", "arch": "arm64",
+        "python_version": "3.12.3", "user": "bob",
+        "git_commit": "abc1234", "git_branch": "main", "git_repo": "flightdeck",
+    },
+    # claude-code (8-9): dev laptops, Node.js runtime instead of Python
+    {
+        "hostname": "alice-mbp", "os": "Darwin", "arch": "arm64",
+        "node_version": "v22.11.0", "user": "alice",
+        "process_name": "claude-code",
+        "git_commit": "abc1234", "git_branch": "main", "git_repo": "flightdeck",
+    },
+    {
+        "hostname": "carol-win", "os": "Windows", "arch": "x86_64",
+        "node_version": "v24.14.0", "user": "carol",
+        "process_name": "claude-code",
+        "git_commit": "feedbeef", "git_branch": "feat/ui", "git_repo": "flightdeck",
+    },
+]
+
 RESEARCH_TOOLS = ["web_search", "bash", "read_file"]
 CODE_TOOLS = ["bash", "read_file", "write_file", "edit"]
 CLAUDE_CODE_TOOLS = ["Read", "Write", "Bash", "Glob", "Edit"]
@@ -111,13 +192,18 @@ def test_ui_demo() -> None:
     sessions: list[dict] = []
     for i, agent in enumerate(AGENTS):
         sid = str(uuid.uuid4())
+        ctx = AGENT_CONTEXTS[i]
         sessions.append({
             "session_id": sid,
             "flavor": agent["flavor"],
             "agent_type": agent["agent_type"],
             "model": agent["model"],
             "provider": agent["provider"],
-            "host": f"worker-{i + 1}",
+            # Use the context hostname so the drawer Host field and
+            # the swimlane hostname label show the same value for
+            # each demo session.
+            "host": ctx["hostname"],
+            "context": ctx,
             "tokens_used_session": 0,
         })
 
@@ -147,9 +233,14 @@ def test_ui_demo() -> None:
         # ---- PHASE 1: Start all 10 sessions ----
         print("\n=== PHASE 1: Starting 10 sessions ===")
         for s in sessions:
+            # session_start carries the per-session runtime context so
+            # the worker persists it once in sessions.context and the
+            # dashboard CONTEXT sidebar / RUNTIME drawer panel have
+            # real data to render.
             evt = make_event(
                 s["session_id"], s["flavor"], "session_start",
                 agent_type=s["agent_type"], host=s["host"], model=s["model"],
+                context=s["context"],
             )
             _safe_post(evt)
             print(f"  Started {s['session_id'][:8]} ({s['flavor']}) on {s['host']}")

@@ -1,4 +1,52 @@
-import type { AgentEvent } from "./types";
+import type { AgentEvent, EventPayloadFields } from "./types";
+
+/* ---- Directive activity color helper ---- */
+
+/**
+ * Resolve a CSS color variable for a directive activity entry.
+ *
+ * Used by the FleetPanel DIRECTIVE ACTIVITY sidebar and any other
+ * surface that needs to color-code directive events. Single source
+ * of truth for the directive color mapping -- do not inline these
+ * colors anywhere else.
+ *
+ * - directive_result success/acknowledged → green
+ * - directive_result error/timeout → red
+ * - directive (sent, no result yet) → purple
+ */
+export function getDirectiveResultColor(
+  eventType: string,
+  status: string | undefined,
+): string {
+  if (eventType === "directive_result") {
+    if (status === "success" || status === "acknowledged") {
+      return "var(--status-active)";
+    }
+    if (status === "error" || status === "timeout") {
+      return "var(--status-lost)";
+    }
+    return "var(--event-result)";
+  }
+  // event_type === "directive" or anything else falls back to purple
+  return "var(--event-directive)";
+}
+
+/**
+ * Build the inline status badge text+color for a directive activity row.
+ * Returns null when the event is a sent directive (no badge), or when
+ * the status is unknown.
+ */
+export function getDirectiveBadge(
+  payload: EventPayloadFields | undefined,
+): { label: string; color: string } | null {
+  const status = payload?.directive_status;
+  if (!status) return null;
+  if (status === "success") return { label: "✓ success", color: "var(--status-active)" };
+  if (status === "acknowledged") return { label: "✓ acknowledged", color: "var(--status-active)" };
+  if (status === "error") return { label: "✗ error", color: "var(--status-lost)" };
+  if (status === "timeout") return { label: "✗ timeout", color: "var(--status-lost)" };
+  return null;
+}
 
 /* ---- Event type badge config ---- */
 

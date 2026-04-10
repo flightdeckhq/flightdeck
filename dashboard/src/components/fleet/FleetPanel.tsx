@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { FlavorSummary, FeedEvent } from "@/lib/types";
-import { truncateSessionId } from "@/lib/events";
+import { truncateSessionId, getDirectiveResultColor, getDirectiveBadge } from "@/lib/events";
 import {
   Dialog,
   DialogTrigger,
@@ -95,23 +95,69 @@ export function FleetPanel({ flavors, onFlavorClick, activeFlavorFilter, directi
           <div className="space-y-0.5">
             {directiveEvents.map((fe, i) => {
               const evt = fe.event;
-              const isResult = evt.event_type === "directive_result";
-              const dotColor = isResult
-                ? "var(--event-result)"
-                : "var(--event-directive)";
-              const label = evt.tool_name ?? evt.event_type;
+              const payload = evt.payload;
+              const status = payload?.directive_status;
+              const dotColor = getDirectiveResultColor(evt.event_type, status);
+
+              // Top line: directive name (preferred) or directive_action,
+              // falling back to a generic label so the row never reads
+              // as a bare event_type.
+              const topLine =
+                evt.event_type === "directive_result"
+                  ? payload?.directive_name ?? payload?.directive_action ?? "directive result"
+                  : payload?.directive_action ?? evt.event_type;
+
+              const badge = getDirectiveBadge(payload);
 
               return (
-                <div key={`${fe.arrivedAt}-${i}`} className="flex items-center gap-2" style={{ height: 28 }}>
-                  <span className="inline-block rounded-full" style={{ width: 6, height: 6, background: dotColor, flexShrink: 0 }} />
+                <div
+                  key={`${fe.arrivedAt}-${i}`}
+                  className="flex items-center gap-2"
+                  style={{ height: 32 }}
+                >
+                  <span
+                    className="inline-block rounded-full"
+                    style={{
+                      width: 8,
+                      height: 8,
+                      background: dotColor,
+                      flexShrink: 0,
+                    }}
+                  />
                   <div className="flex-1 min-w-0">
-                    <div className="text-xs truncate" style={{ color: "var(--text)" }}>{label}</div>
-                    <div className="font-mono text-[11px] truncate" style={{ color: "var(--text-muted)" }}>
+                    <div
+                      className="font-mono text-xs truncate"
+                      style={{ color: "var(--text)" }}
+                    >
+                      {topLine}
+                    </div>
+                    <div
+                      className="text-[11px] truncate"
+                      style={{ color: "var(--text-muted)" }}
+                    >
                       {evt.flavor} · {truncateSessionId(evt.session_id)}
+                      {badge && (
+                        <>
+                          {" · "}
+                          <span
+                            className="font-semibold"
+                            style={{ color: badge.color, fontSize: 10 }}
+                          >
+                            {badge.label}
+                          </span>
+                        </>
+                      )}
                     </div>
                   </div>
-                  <span className="font-mono text-[11px] shrink-0" style={{ color: "var(--text-muted)" }}>
-                    {new Date(fe.arrivedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+                  <span
+                    className="font-mono text-[11px] shrink-0"
+                    style={{ color: "var(--text-muted)" }}
+                  >
+                    {new Date(fe.arrivedAt).toLocaleTimeString([], {
+                      hour: "2-digit",
+                      minute: "2-digit",
+                      second: "2-digit",
+                    })}
                   </span>
                 </div>
               );

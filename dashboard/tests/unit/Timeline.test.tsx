@@ -1,6 +1,10 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { Timeline } from "@/components/timeline/Timeline";
+import {
+  TIMELINE_BASE_WIDTH_PX,
+  timelineWidthFor,
+} from "@/lib/constants";
 import type { FlavorSummary } from "@/lib/types";
 
 // Mock useSessionEvents to avoid real API calls
@@ -109,5 +113,27 @@ describe("Timeline", () => {
   it("shows active count in flavor row", () => {
     render(<Timeline {...defaultProps} />);
     expect(screen.getByText("1 active")).toBeInTheDocument();
+  });
+
+  // ---- Proportional timeline width (CHANGE 1) ----
+
+  it("timelineWidthFor returns base width for 1m", () => {
+    expect(timelineWidthFor("1m")).toBe(TIMELINE_BASE_WIDTH_PX);
+  });
+
+  it("timelineWidthFor returns 60x base width for 1h", () => {
+    expect(timelineWidthFor("1h")).toBe(TIMELINE_BASE_WIDTH_PX * 60);
+  });
+
+  it("timelineWidthFor returns 360x base width for 6h", () => {
+    expect(timelineWidthFor("6h")).toBe(TIMELINE_BASE_WIDTH_PX * 360);
+  });
+
+  it("scroll container has overflow-x set", () => {
+    render(<Timeline {...defaultProps} timeRange="1h" />);
+    const scrollEl = screen.getByTestId("timeline-scroll");
+    // jsdom returns the inline style verbatim
+    expect(scrollEl.style.overflowX).toBe("auto");
+    expect(scrollEl.style.overflowY).toBe("hidden");
   });
 });

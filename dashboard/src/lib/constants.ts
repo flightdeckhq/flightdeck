@@ -51,3 +51,47 @@ export const FEED_COL_DEFAULTS = {
   detail: 400,
   time: 80,
 } as const;
+
+/**
+ * Base width of the timeline event-circles area at the 1m time range.
+ *
+ * Wider time ranges multiply this width so the pixel-per-second
+ * density stays constant -- a 1h range gets 60x this width and
+ * scrolls horizontally inside the right panel. See timelineWidthFor.
+ */
+export const TIMELINE_BASE_WIDTH_PX = 900;
+
+/** Reference range used to scale TIMELINE_BASE_WIDTH_PX. */
+export const TIMELINE_BASE_RANGE_MS = 60_000;
+
+/**
+ * Map from human-readable time range to absolute milliseconds. The
+ * Timeline component uses this to compute both the D3 time scale
+ * domain and the proportional timelineWidth.
+ */
+export const TIMELINE_RANGE_MS: Record<string, number> = {
+  "1m": 60_000,
+  "5m": 300_000,
+  "15m": 900_000,
+  "30m": 1_800_000,
+  "1h": 3_600_000,
+  "6h": 21_600_000,
+};
+
+/**
+ * Compute the timeline event-circles area width for a given range key.
+ *
+ * Returns TIMELINE_BASE_WIDTH_PX for "1m" and scales linearly with
+ * the range duration so events stay readable at every zoom level:
+ *
+ *   1m  →    900px
+ *   5m  →  4,500px
+ *   15m → 13,500px
+ *   30m → 27,000px
+ *   1h  → 54,000px
+ *   6h  → 324,000px
+ */
+export function timelineWidthFor(range: string): number {
+  const ms = TIMELINE_RANGE_MS[range] ?? TIMELINE_BASE_RANGE_MS;
+  return Math.round(TIMELINE_BASE_WIDTH_PX * (ms / TIMELINE_BASE_RANGE_MS));
+}

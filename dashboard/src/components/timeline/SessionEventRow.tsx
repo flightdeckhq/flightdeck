@@ -55,8 +55,17 @@ function SessionEventRowComponent({ session, scale, onClick, viewMode, start, en
       style={{ borderBottom: "1px solid var(--border-subtle)" }}
       onClick={() => onClick()}
     >
-      {/* Left panel — 240px, indented */}
-      <div className="flex h-full w-[240px] shrink-0 items-center gap-1.5 pl-7 pr-3">
+      {/* Left panel — 240px, indented, sticky for horizontal scroll */}
+      <div
+        className="flex h-full w-[240px] shrink-0 items-center gap-1.5 pl-7 pr-3"
+        style={{
+          background: "var(--surface)",
+          borderRight: "1px solid var(--border)",
+          position: "sticky",
+          left: 0,
+          zIndex: 1,
+        }}
+      >
         {isActive && <div className="pulse-dot" />}
         <span className="font-mono text-xs" style={{ color: "var(--text-secondary)" }}>
           {truncateSessionId(session.session_id)}
@@ -76,8 +85,10 @@ function SessionEventRowComponent({ session, scale, onClick, viewMode, start, en
         </span>
       </div>
 
-      {/* Right panel — events (overflow hidden prevents circles leaking into left panel) */}
-      <div className="relative h-full flex-1 flex items-center px-1 overflow-hidden">
+      {/* Right panel — events. Sized to the timeline width so circles
+          spread proportionally with the time range; the parent
+          container handles horizontal scroll. */}
+      <div className="relative h-full flex items-center px-1" style={{ width: width - 240 }}>
         {loading && (
           <div className="flex items-center h-full gap-2 pl-4">
             {[0, 1, 2].map((i) => (

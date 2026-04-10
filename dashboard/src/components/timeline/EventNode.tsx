@@ -4,7 +4,7 @@ import type { EventType } from "@/lib/types";
 import { truncateSessionId } from "@/lib/events";
 import {
   Zap, Wrench, AlertTriangle, XCircle, ArrowDown,
-  Play, Square, Check, Circle,
+  Play, Square, Check, Circle, X,
 } from "lucide-react";
 
 const eventTypeConfig: Record<
@@ -23,6 +23,11 @@ const eventTypeConfig: Record<
   directive_result: { cssVar: "var(--event-directive)", Icon: Check, label: "Directive Result" },
   heartbeat: { cssVar: "var(--event-lifecycle)", Icon: Circle, label: "Heartbeat" },
 };
+
+// Failed directive_result events (error/timeout) render with the
+// plain X glyph instead of the Check icon. X is bolder and more
+// readable than XCircle at the 20-24px circle sizes.
+const FAILED_DIRECTIVE_STATUSES = new Set(["error", "timeout"]);
 
 const defaultConfig = { cssVar: "var(--event-lifecycle)", Icon: Circle, label: "Event" };
 
@@ -71,6 +76,18 @@ function EventNodeComponent({
     ? directiveResultOverride(directiveStatus)
     : null;
   const color = override?.cssVar ?? config.cssVar;
+  // Failed directive_result events use the plain X glyph in place of
+  // the success Check. The tooltip label switches to "RESULT · status"
+  // for any directive_result event so the status is visible without
+  // opening the drawer.
+  const isFailedDirective =
+    eventType === "directive_result" &&
+    !!directiveStatus &&
+    FAILED_DIRECTIVE_STATUSES.has(directiveStatus);
+  const tooltipLabel =
+    eventType === "directive_result" && directiveStatus
+      ? `RESULT · ${directiveStatus}`
+      : config.label;
   const [hovered, setHovered] = useState(false);
   const [mounted, setMounted] = useState(false);
   const [tooltipPos, setTooltipPos] = useState<{ top: number; left: number } | null>(null);
@@ -92,7 +109,7 @@ function EventNodeComponent({
     setTooltipPos(null);
   }, []);
 
-  const IconComponent = config.Icon;
+  const IconComponent = isFailedDirective ? X : config.Icon;
   const finalOpacity = isVisible && mounted ? 1 : 0;
 
   return (
@@ -134,7 +151,7 @@ function EventNodeComponent({
             whiteSpace: "nowrap",
           }}
         >
-          <div style={{ color: "var(--text-secondary)" }}>{config.label}</div>
+          <div style={{ color: "var(--text-secondary)" }}>{tooltipLabel}</div>
           <div className="font-mono" style={{ color: "var(--text-muted)" }}>
             {flavor} / {truncateSessionId(sessionId)}
           </div>

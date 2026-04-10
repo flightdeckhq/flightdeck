@@ -62,4 +62,55 @@ describe("EventNode", () => {
     fireEvent.click(node);
     expect(onClick).toHaveBeenCalledWith("evt-42");
   });
+
+  // ---- Failed directive icon and tooltip (CHANGE 2) ----
+
+  it("directive_result error renders X icon (not XCircle, not Check)", () => {
+    const { container } = renderNode({
+      eventType: "directive_result",
+      directiveStatus: "error",
+    });
+    // lucide-react renders icons as <svg class="lucide lucide-NAME ...">
+    expect(container.querySelector("svg.lucide-x")).not.toBeNull();
+    expect(container.querySelector("svg.lucide-check")).toBeNull();
+    expect(container.querySelector("svg.lucide-circle-x")).toBeNull();
+  });
+
+  it("directive_result timeout renders X icon", () => {
+    const { container } = renderNode({
+      eventType: "directive_result",
+      directiveStatus: "timeout",
+    });
+    expect(container.querySelector("svg.lucide-x")).not.toBeNull();
+    expect(container.querySelector("svg.lucide-check")).toBeNull();
+  });
+
+  it("directive_result success keeps the Check icon", () => {
+    const { container } = renderNode({
+      eventType: "directive_result",
+      directiveStatus: "success",
+    });
+    expect(container.querySelector("svg.lucide-check")).not.toBeNull();
+    expect(container.querySelector("svg.lucide-x")).toBeNull();
+  });
+
+  it("directive_result tooltip shows 'RESULT · timeout' on hover", () => {
+    const { container, getByText } = renderNode({
+      eventType: "directive_result",
+      directiveStatus: "timeout",
+    });
+    const node = container.querySelector("[style*='background']") as HTMLElement;
+    fireEvent.mouseEnter(node);
+    expect(getByText("RESULT · timeout")).toBeInTheDocument();
+  });
+
+  it("directive_result tooltip shows 'RESULT · error' on hover", () => {
+    const { container, getByText } = renderNode({
+      eventType: "directive_result",
+      directiveStatus: "error",
+    });
+    const node = container.querySelector("[style*='background']") as HTMLElement;
+    fireEvent.mouseEnter(node);
+    expect(getByText("RESULT · error")).toBeInTheDocument();
+  });
 });

@@ -14,6 +14,15 @@ import (
 
 const maxRequestBodyBytes = 1 << 20 // 1MB
 
+// TODO(KI13)[Phase 5]: Ingestion accepts events for closed and lost
+// sessions. The handler does not check the session's terminal state
+// before publishing to NATS, so a sensor (or a buggy test) can keep
+// posting events to a session that has already received session_end.
+// The dashboard then renders circles past the END marker.
+// Fix: query the worker-side session state cache before publishing,
+// and reject events with HTTP 409 when the session is closed/lost.
+// See KNOWN_ISSUES.md KI13.
+
 // TokenValidator validates bearer tokens against stored hashes.
 type TokenValidator interface {
 	Validate(ctx context.Context, rawToken string) (bool, error)

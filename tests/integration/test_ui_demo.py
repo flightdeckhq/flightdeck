@@ -119,12 +119,18 @@ def test_ui_demo() -> None:
             "provider": agent["provider"],
             "host": f"worker-{i + 1}",
             "tokens_used_session": 0,
-            "active": True,
         })
 
     research_sessions = [s for s in sessions if s["flavor"] == "research-agent"]
     code_sessions = [s for s in sessions if s["flavor"] == "code-agent"]
     claude_sessions = [s for s in sessions if s["flavor"] == "claude-code"]
+
+    # Tracks session IDs that have received session_end (or had a
+    # shutdown directive acknowledged). The main event loop skips
+    # any session in this set so no LLM/tool circles are posted to
+    # a session after its END marker -- this used to leave dangling
+    # circles past the END circle in the swimlane.
+    inactive_sessions: set[str] = set()
 
     policy_id: str | None = None
     policy_created = False
@@ -220,15 +226,29 @@ def test_ui_demo() -> None:
                     directive_name="shutdown", directive_action="shutdown",
                     directive_status="acknowledged",
                 ))
-                research_sessions[0]["active"] = False
+                # Post session_end so the swimlane shows a clean END marker
+                # and mark the session inactive so the event loop stops
+                # posting to it from this tick onward.
+                _safe_post(make_event(
+                    target_sid, "research-agent", "session_end",
+                    agent_type="production", host=research_sessions[0]["host"],
+                ))
+                inactive_sessions.add(target_sid)
                 directive_sent = True
                 flow4_done = True
-                print(f"  ** Flow 4: shutdown acknowledged and session ending for {target_sid[:8]}")
+                print(f"  ** Flow 4: shutdown acknowledged and session ended for {target_sid[:8]}")
 
-            for s in sessions:
-                if not s["active"]:
-                    continue
+            # Filter sessions by inactive set BEFORE the per-session loop
+            # so events are only posted to currently-active sessions.
+            active_research = [s for s in research_sessions if s["session_id"] not in inactive_sessions]
+            active_code = [s for s in code_sessions if s["session_id"] not in inactive_sessions]
+            active_claude = [s for s in claude_sessions if s["session_id"] not in inactive_sessions]
 
+            if not (active_research or active_code or active_claude):
+                print("  All sessions inactive -- ending event loop early")
+                break
+
+            for s in active_research + active_code + active_claude:
                 flavor = s["flavor"]
 
                 # Reduced probabilities to avoid rate limiting
@@ -320,14 +340,16 @@ def test_ui_demo() -> None:
         # ---- PHASE 5: Graceful shutdown ----
         print("\n--- Shutting down all sessions ---")
         for s in sessions:
-            if s["active"]:
-                evt = make_event(
-                    s["session_id"], s["flavor"], "session_end",
-                    agent_type=s["agent_type"], host=s["host"],
-                )
-                _safe_post(evt)
-                print(f"  Ended session {s['session_id'][:8]}")
-                time.sleep(0.3)
+            if s["session_id"] in inactive_sessions:
+                continue
+            evt = make_event(
+                s["session_id"], s["flavor"], "session_end",
+                agent_type=s["agent_type"], host=s["host"],
+            )
+            _safe_post(evt)
+            inactive_sessions.add(s["session_id"])
+            print(f"  Ended session {s['session_id'][:8]}")
+            time.sleep(0.3)
 
     finally:
         if policy_id:

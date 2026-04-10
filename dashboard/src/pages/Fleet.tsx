@@ -341,8 +341,10 @@ export function Fleet() {
           onFilterChange={setActiveFilter}
         />
 
-        {/* Timeline area */}
-        <div className="flex-1 overflow-auto">
+        {/* Timeline area. Horizontal scroll lives inside Timeline
+            (proportional to the selected time range); only vertical
+            scroll bubbles up here. */}
+        <div className="flex-1" style={{ overflowY: "auto", overflowX: "hidden" }}>
           <Timeline
             flavors={flavors}
             flavorFilter={flavorFilter}

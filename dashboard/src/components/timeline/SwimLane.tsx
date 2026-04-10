@@ -48,12 +48,15 @@ function SwimLaneComponent({
         style={{ background: expanded ? "var(--bg-elevated)" : "var(--bg)" }}
         onClick={onToggleExpand}
       >
-        {/* Left panel */}
+        {/* Left panel — sticky so it stays pinned during horizontal scroll */}
         <div
           className="flex h-full w-[240px] shrink-0 items-center gap-2 px-3"
           style={{
-            background: "var(--surface)",
+            background: expanded ? "var(--bg-elevated)" : "var(--surface)",
             borderRight: "1px solid var(--border)",
+            position: "sticky",
+            left: 0,
+            zIndex: 2,
           }}
         >
           <ChevronRight
@@ -72,8 +75,10 @@ function SwimLaneComponent({
           </span>
         </div>
 
-        {/* Right panel — aggregated events (overflow hidden prevents circles leaking into left panel) */}
-        <div className="relative h-full flex-1 flex items-center px-1 overflow-hidden">
+        {/* Right panel — aggregated events. Sized to the timeline
+            width so circles spread proportionally with the time range
+            and the parent container can scroll horizontally. */}
+        <div className="relative h-full flex items-center px-1" style={{ width: width - 240 }}>
           {viewMode === "swimlane" ? (
             <AggregatedSwimLane
               sessions={sessions}

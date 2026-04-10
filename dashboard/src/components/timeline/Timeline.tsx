@@ -70,6 +70,19 @@ export function Timeline({
     [start, scaleEnd, timelineWidth]
   );
 
+  // X positions for the 6 vertical grid lines that drop down from
+  // the time axis labels through every flavor row. Same fractions
+  // as the labels in TimeAxis.tsx (0, 0.2, 0.4, 0.6, 0.8, 1.0). The
+  // i=5 entry sits at xScale(now) and is highlighted as the "now"
+  // line.
+  const gridLines = useMemo(() => {
+    return Array.from({ length: 6 }, (_, i) => {
+      const fraction = i / 5;
+      const msAgo = Math.round(rangeMs * (1 - fraction));
+      return scale(new Date(scaleEnd.getTime() - msAgo));
+    });
+  }, [scale, rangeMs, scaleEnd]);
+
   if (flavors.length === 0) {
     return (
       <div className="flex h-64 items-center justify-center text-text-muted">
@@ -98,6 +111,53 @@ export function Timeline({
       data-testid="timeline-scroll"
     >
       <div style={{ width: innerWidth, minWidth: "100%", position: "relative" }}>
+        {/* Vertical grid line overlay. Six lines at the same x
+            positions as the time axis labels, dropping from the top
+            of the inner content div to the bottom of the last
+            flavor row. Constrained to the right-panel area only
+            (left: LEFT_PANEL_WIDTH, width: timelineWidth) so the
+            240px label column stays clean. zIndex: 0 + DOM-first
+            ordering puts the overlay behind every other element;
+            event circles (zIndex 1+) and sticky panels paint on top.
+            pointerEvents: none keeps it from blocking circle clicks.
+            The time axis row's solid background covers the part of
+            the overlay that overlaps with the labels, so visually
+            the lines start at the bottom of the time axis and run
+            through every flavor row below. */}
+        <div
+          style={{
+            position: "absolute",
+            top: 0,
+            bottom: 0,
+            left: LEFT_PANEL_WIDTH,
+            width: timelineWidth,
+            pointerEvents: "none",
+            zIndex: 0,
+          }}
+          data-testid="timeline-grid-overlay"
+        >
+          {gridLines.map((x, i) => {
+            const isNow = i === 5;
+            return (
+              <div
+                key={i}
+                data-testid={isNow ? "grid-line-now" : `grid-line-${i}`}
+                style={{
+                  position: "absolute",
+                  left: x,
+                  top: 0,
+                  bottom: 0,
+                  width: 1,
+                  background: isNow
+                    ? "var(--accent)"
+                    : "var(--border-subtle)",
+                  opacity: isNow ? 0.6 : 0.3,
+                }}
+              />
+            );
+          })}
+        </div>
+
         {/* Shared time axis. Sticky on the vertical axis so it stays
             pinned at the top of the right panel as flavor rows scroll
             past. The container's parent (Fleet.tsx) provides vertical

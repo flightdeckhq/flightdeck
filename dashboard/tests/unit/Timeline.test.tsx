@@ -181,4 +181,44 @@ describe("Timeline", () => {
     expect(screen.getByTestId("axis-label-paused")).toHaveTextContent("paused");
     expect(screen.queryByTestId("axis-label-now")).toBeNull();
   });
+
+  // ---- Vertical grid lines ----
+
+  it("renders 6 vertical grid lines in the right panel overlay", () => {
+    render(<Timeline {...defaultProps} timeRange="5m" />);
+    const overlay = screen.getByTestId("timeline-grid-overlay");
+    // 5 non-now lines + 1 now line = 6 children total
+    const lineChildren = overlay.querySelectorAll(":scope > div");
+    expect(lineChildren).toHaveLength(6);
+  });
+
+  it("the rightmost grid line uses var(--accent) (the 'now' line)", () => {
+    render(<Timeline {...defaultProps} timeRange="5m" />);
+    const nowLine = screen.getByTestId("grid-line-now");
+    expect((nowLine as HTMLElement).style.background).toBe("var(--accent)");
+  });
+
+  it("non-now grid lines use var(--border-subtle)", () => {
+    render(<Timeline {...defaultProps} timeRange="5m" />);
+    // Index 0..4 are the non-now lines
+    for (let i = 0; i < 5; i++) {
+      const line = screen.getByTestId(`grid-line-${i}`);
+      expect((line as HTMLElement).style.background).toBe("var(--border-subtle)");
+    }
+  });
+
+  it("grid overlay has pointerEvents: none so it does not block clicks", () => {
+    render(<Timeline {...defaultProps} timeRange="5m" />);
+    const overlay = screen.getByTestId("timeline-grid-overlay");
+    expect((overlay as HTMLElement).style.pointerEvents).toBe("none");
+  });
+
+  it("grid overlay is positioned only over the right panel (left=240)", () => {
+    render(<Timeline {...defaultProps} timeRange="5m" />);
+    const overlay = screen.getByTestId("timeline-grid-overlay");
+    // 240px LEFT_PANEL_WIDTH offset keeps the lines out of the
+    // flavor labels column.
+    expect((overlay as HTMLElement).style.left).toBe("240px");
+    expect((overlay as HTMLElement).style.width).toBe("900px");
+  });
 });

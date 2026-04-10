@@ -12,7 +12,6 @@ import { isEventVisible } from "@/lib/events";
 
 interface SwimLaneProps {
   flavor: string;
-  activeCount: number;
   sessions: Session[];
   scale: ScaleTime<number, number>;
   onSessionClick: (sessionId: string, eventId?: string, event?: AgentEvent) => void;
@@ -34,7 +33,6 @@ interface SwimLaneProps {
 
 function SwimLaneComponent({
   flavor,
-  activeCount,
   sessions,
   scale,
   onSessionClick,
@@ -47,6 +45,17 @@ function SwimLaneComponent({
   activeFilter,
   sessionVersions,
 }: SwimLaneProps) {
+  // Live count = sessions that are currently active OR idle. The
+  // server-side `activeCount` prop only counts state="active", but
+  // for the swimlane header we want to count idle sessions as live
+  // too -- an idle agent is still alive and ready to make calls.
+  // Drives both the displayed number and its color (green when > 0,
+  // muted gray when 0).
+  const liveCount = useMemo(
+    () => sessions.filter((s) => s.state === "active" || s.state === "idle").length,
+    [sessions],
+  );
+
   // Pick a representative state suffix to display next to the flavor
   // name when no sessions are currently active or idle. Priority:
   // stale > closed > lost. Returns "" for active/idle flavors so the
@@ -64,15 +73,13 @@ function SwimLaneComponent({
   // flavors at the top) is preserved -- only the auto-collapse row
   // is removed.
   const stateSuffix = useMemo(() => {
-    if (sessions.some((s) => s.state === "active" || s.state === "idle")) {
-      return "";
-    }
+    if (liveCount > 0) return "";
     const states = new Set(sessions.map((s) => s.state));
     if (states.has("stale")) return "(stale)";
     if (states.has("closed")) return "(closed)";
     if (states.has("lost")) return "(lost)";
     return "";
-  }, [sessions]);
+  }, [liveCount, sessions]);
 
   return (
     <div style={{ borderBottom: "1px solid var(--border-subtle)" }}>
@@ -104,16 +111,32 @@ function SwimLaneComponent({
               transition: "transform 200ms ease",
             }}
           />
-          <span className="text-[13px] font-medium" style={{ color: "var(--text)" }}>
+          <span
+            className="text-[13px] font-medium"
+            style={{
+              color: "var(--text)",
+              minWidth: 0,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
             {flavor}
           </span>
-          <span className="font-mono text-[11px]" style={{ color: "var(--status-active)" }}>
-            {activeCount} active
+          <span
+            className="font-mono text-[11px]"
+            style={{
+              color: liveCount > 0 ? "var(--status-active)" : "var(--text-muted)",
+              flexShrink: 0,
+            }}
+            data-testid="swimlane-active-count"
+          >
+            {liveCount} active
           </span>
           {stateSuffix && (
             <span
               className="font-mono text-[11px]"
-              style={{ color: "var(--text-muted)" }}
+              style={{ color: "var(--text-muted)", flexShrink: 0 }}
               data-testid="swimlane-state-suffix"
             >
               {stateSuffix}

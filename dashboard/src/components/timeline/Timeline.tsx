@@ -200,7 +200,6 @@ export function Timeline({
           <SwimLane
             key={f.flavor}
             flavor={f.flavor}
-            activeCount={f.active_count}
             sessions={f.sessions}
             scale={scale}
             onSessionClick={onNodeClick}

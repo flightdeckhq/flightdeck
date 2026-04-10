@@ -119,7 +119,6 @@ describe("SwimLane state suffix", () => {
     render(
       <SwimLane
         flavor={flavor}
-        activeCount={0}
         sessions={sessions}
         {...baseProps}
       />,
@@ -134,7 +133,6 @@ describe("SwimLane state suffix", () => {
     render(
       <SwimLane
         flavor={flavor}
-        activeCount={0}
         sessions={sessions}
         {...baseProps}
       />,
@@ -152,7 +150,6 @@ describe("SwimLane state suffix", () => {
     render(
       <SwimLane
         flavor={flavor}
-        activeCount={0}
         sessions={sessions}
         {...baseProps}
       />,
@@ -167,7 +164,6 @@ describe("SwimLane state suffix", () => {
     const { container } = render(
       <SwimLane
         flavor={flavor}
-        activeCount={0}
         sessions={sessions}
         {...baseProps}
       />,
@@ -178,21 +174,39 @@ describe("SwimLane state suffix", () => {
     expect(screen.getByText("0 active")).toBeInTheDocument();
   });
 
-  it("an idle-only flavor renders without a state suffix", () => {
-    // Idle agents are alive -- they're still active enough to skip
-    // the suffix.
+  it("an idle-only flavor renders without a state suffix and counts as live", () => {
+    // Idle agents are alive -- liveCount includes idle, so the
+    // display shows "1 active" in green even though the upstream
+    // active_count is 0.
     const flavor = "all-idle";
     const sessions = [makeSession("s1", "idle", flavor)];
     render(
       <SwimLane
         flavor={flavor}
-        activeCount={0}
         sessions={sessions}
         {...baseProps}
       />,
     );
     expect(screen.queryByTestId("swimlane-state-suffix")).toBeNull();
-    expect(screen.getByText("0 active")).toBeInTheDocument();
+    const count = screen.getByTestId("swimlane-active-count");
+    expect(count).toHaveTextContent("1 active");
+    // Green when liveCount > 0
+    expect(count).toHaveStyle({ color: "var(--status-active)" });
+  });
+
+  it("a closed flavor shows '0 active' in muted gray", () => {
+    const flavor = "all-closed";
+    const sessions = [makeSession("s1", "closed", flavor)];
+    render(
+      <SwimLane
+        flavor={flavor}
+        sessions={sessions}
+        {...baseProps}
+      />,
+    );
+    const count = screen.getByTestId("swimlane-active-count");
+    expect(count).toHaveTextContent("0 active");
+    expect(count).toHaveStyle({ color: "var(--text-muted)" });
   });
 
   it("an active flavor renders without a state suffix", () => {
@@ -201,7 +215,6 @@ describe("SwimLane state suffix", () => {
     render(
       <SwimLane
         flavor={flavor}
-        activeCount={1}
         sessions={sessions}
         {...baseProps}
       />,

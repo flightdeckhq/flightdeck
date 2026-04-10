@@ -83,10 +83,62 @@ describe("SessionDrawer", () => {
     expect(screen.getByText("active")).toBeInTheDocument();
   });
 
-  it("metadata bar shows flavor and host separated by dots", () => {
+  it("metadata bar shows flavor and host with labels", () => {
     render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    expect(screen.getByTestId("session-metadata-bar")).toBeInTheDocument();
+    // Labels above each cell
+    expect(screen.getByText("Flavor")).toBeInTheDocument();
+    expect(screen.getByText("Host")).toBeInTheDocument();
+    expect(screen.getByText("Platform")).toBeInTheDocument();
+    expect(screen.getByText("Started")).toBeInTheDocument();
+    expect(screen.getByText("Duration")).toBeInTheDocument();
+    expect(screen.getByText("Tokens")).toBeInTheDocument();
+    expect(screen.getByText("Model")).toBeInTheDocument();
+    // Values
     expect(screen.getByText("test-agent")).toBeInTheDocument();
     expect(screen.getByText("worker-1")).toBeInTheDocument();
+  });
+
+  it("metadata Platform cell renders OS icon when context.os is present", () => {
+    mockSessionOverride = {
+      context: {
+        os: "Darwin",
+        arch: "arm64",
+      },
+    };
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    expect(screen.getByTestId("os-icon-darwin")).toBeInTheDocument();
+    // Platform text combines os + arch
+    const platform = screen.getByTestId("metadata-platform");
+    expect(platform.textContent).toContain("Darwin");
+    expect(platform.textContent).toContain("arm64");
+  });
+
+  it("metadata Platform cell renders orchestration icon when context.orchestration is present", () => {
+    mockSessionOverride = {
+      context: {
+        os: "Linux",
+        orchestration: "kubernetes",
+      },
+    };
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    expect(screen.getByTestId("os-icon-linux")).toBeInTheDocument();
+    expect(screen.getByTestId("orch-icon-kubernetes")).toBeInTheDocument();
+    const platform = screen.getByTestId("metadata-platform");
+    expect(platform.textContent).toContain("Kubernetes");
+  });
+
+  it("metadata Platform cell shows em-dash when context is missing", () => {
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    const platform = screen.getByTestId("metadata-platform");
+    expect(platform.textContent).toContain("—");
+  });
+
+  it("metadata Model cell strips date suffix from model name", () => {
+    mockSessionOverride = { model: "claude-haiku-4-5-20251001" };
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    expect(screen.getByText("claude-haiku-4-5")).toBeInTheDocument();
+    expect(screen.queryByText("claude-haiku-4-5-20251001")).not.toBeInTheDocument();
   });
 
   it("event row badge shows correct text per type", () => {
@@ -107,7 +159,11 @@ describe("SessionDrawer", () => {
     const rows = screen.getAllByTestId("event-row");
     // Reversed: row[0]=post_call (LLM CALL), row[1]=session_start (START)
     fireEvent.click(rows[0]);
-    expect(screen.getByText("Model")).toBeInTheDocument();
+    // "Model" appears in BOTH the metadata bar header AND the
+    // expanded event detail summary -- use getAllByText to assert at
+    // least one is present (the expanded one bumps the count from
+    // 1 → 2).
+    expect(screen.getAllByText("Model").length).toBeGreaterThanOrEqual(2);
     fireEvent.click(rows[0]);
   });
 
@@ -116,7 +172,7 @@ describe("SessionDrawer", () => {
     const rows = screen.getAllByTestId("event-row");
     // Reversed: row[0]=post_call, row[1]=session_start
     fireEvent.click(rows[0]);
-    expect(screen.getByText("Model")).toBeInTheDocument();
+    expect(screen.getAllByText("Model").length).toBeGreaterThanOrEqual(2);
     fireEvent.click(rows[1]);
     expect(screen.getByText("Event")).toBeInTheDocument();
   });

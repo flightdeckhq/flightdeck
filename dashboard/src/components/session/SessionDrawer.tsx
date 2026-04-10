@@ -16,6 +16,11 @@ import { createDirective } from "@/lib/api";
 import { getBadge, getEventDetail, getSummaryRows, truncateSessionId } from "@/lib/events";
 import { getProvider } from "@/lib/models";
 import { ProviderLogo } from "@/components/ui/provider-logo";
+import { OSIcon } from "@/components/ui/OSIcon";
+import {
+  OrchestrationIcon,
+  getOrchestrationLabel,
+} from "@/components/ui/OrchestrationIcon";
 import { SyntaxJson } from "@/components/ui/syntax-json";
 import { eventsCache } from "@/hooks/useSessionEvents";
 import type { AgentEvent, Session as SessionType } from "@/lib/types";
@@ -61,6 +66,30 @@ function formatDuration(startedAt: string): string {
   if (m < 60) return `${m}m ${s}s`;
   const h = Math.floor(m / 60);
   return `${h}h ${m % 60}m`;
+}
+
+/**
+ * Strip a trailing 8-digit YYYYMMDD release-date suffix from a model
+ * name. "claude-haiku-4-5-20251001" → "claude-haiku-4-5". Names that
+ * don't end in a date (e.g. "claude-sonnet-4-6") are returned
+ * unchanged. Used by the metadata-bar Model field so the value column
+ * stays narrow.
+ */
+function truncateModel(model: string): string {
+  return model.replace(/-\d{8}$/, "");
+}
+
+/**
+ * Read a typed string field off a session.context dict. Returns null
+ * for missing / non-string values so callers can use ?? "—" without
+ * leaking "undefined" or "[object Object]" into the UI.
+ */
+function ctxString(
+  context: Record<string, unknown> | undefined,
+  key: string,
+): string | null {
+  const v = context?.[key];
+  return typeof v === "string" && v.length > 0 ? v : null;
 }
 
 /**
@@ -342,29 +371,15 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
           {/* Mode 1: Session view */}
           {!activeDetailEvent && displayEvents.length > 0 && data && (
             <>
-              {/* Metadata bar */}
-              <div
-                className="flex h-8 shrink-0 items-center px-3 font-mono text-[11px]"
-                style={{ background: "var(--bg-elevated)", borderBottom: "1px solid var(--border-subtle)", color: "var(--text-secondary)" }}
-              >
-                <span>{data.session.flavor}</span>
-                {data.session.host && (
-                  <><span className="mx-1.5" style={{ color: "var(--text-muted)" }}>·</span><span>{data.session.host}</span></>
-                )}
-                <span className="mx-1.5" style={{ color: "var(--text-muted)" }}>·</span>
-                <span>{new Date(data.session.started_at).toLocaleTimeString()}</span>
-                <span className="mx-1.5" style={{ color: "var(--text-muted)" }}>·</span>
-                <span>{formatDuration(data.session.started_at)}</span>
-                <span className="mx-1.5" style={{ color: "var(--text-muted)" }}>·</span>
-                <span>{data.session.tokens_used.toLocaleString()} tok</span>
-                {data.session.model && (
-                  <>
-                    <span className="mx-1.5" style={{ color: "var(--text-muted)" }}>·</span>
-                    <ProviderLogo provider={getProvider(data.session.model)} size={12} />
-                    <span className="ml-1">{data.session.model}</span>
-                  </>
-                )}
-              </div>
+              {/* Metadata bar — labelled grid. Auto-fits items into a
+                  flowing two-row layout (identity on top, metrics
+                  below) so the bar doesn't wrap unreadably on the
+                  520px drawer. Each cell renders a small uppercase
+                  label above a mono value; OS / orchestration icons
+                  sit inline with the Platform field, the provider
+                  logo sits inline with the Model field. */}
+              <MetadataBar session={data.session} />
+
 
               {/* Runtime context panel — only renders when the session
                   has a non-empty `context` object (set once at sensor
@@ -532,6 +547,164 @@ function RuntimePanel({ context, expanded, onToggle }: RuntimePanelProps) {
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+/* ---- Metadata bar (labelled grid) ---- */
+
+const META_LABEL_STYLE: React.CSSProperties = {
+  fontSize: 10,
+  color: "var(--text-muted)",
+  textTransform: "uppercase",
+  letterSpacing: "0.06em",
+  marginBottom: 2,
+  whiteSpace: "nowrap",
+  fontFamily: "var(--font-ui)",
+};
+
+const META_VALUE_STYLE: React.CSSProperties = {
+  fontSize: 12,
+  fontFamily: "var(--font-mono)",
+  color: "var(--text)",
+  whiteSpace: "nowrap",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+};
+
+interface MetadataCellProps {
+  label: string;
+  children: React.ReactNode;
+  /** Optional native title attribute for hover tooltips. */
+  title?: string;
+  /** Optional testid forwarded to the cell wrapper. */
+  testId?: string;
+}
+
+function MetadataCell({ label, children, title, testId }: MetadataCellProps) {
+  return (
+    <div title={title} data-testid={testId} style={{ minWidth: 0 }}>
+      <div style={META_LABEL_STYLE}>{label}</div>
+      <div style={META_VALUE_STYLE}>{children}</div>
+    </div>
+  );
+}
+
+/**
+ * Labelled metadata grid rendered between the drawer header and the
+ * RUNTIME panel. Uses CSS Grid auto-fit so cells reflow into 1-3
+ * columns depending on available width without wrapping mid-value.
+ *
+ * The Platform cell shows the OSIcon + OrchestrationIcon if either
+ * has a value, plus a "Linux · x86_64 · Kubernetes" string. The Model
+ * cell shows the ProviderLogo plus a date-stripped model name. Cells
+ * with no data render an em-dash so the column structure stays
+ * legible across sessions with mixed context coverage.
+ */
+function MetadataBar({ session }: { session: SessionType }) {
+  const ctx = session.context as Record<string, unknown> | undefined;
+  const os = ctxString(ctx, "os");
+  const archStr = ctxString(ctx, "arch");
+  const orchestration = ctxString(ctx, "orchestration");
+  const pythonVersion = ctxString(ctx, "python_version");
+
+  const platformParts = [
+    os,
+    archStr,
+    orchestration ? getOrchestrationLabel(orchestration) : null,
+  ].filter(Boolean);
+  const platformText = platformParts.length > 0 ? platformParts.join(" · ") : "—";
+  const platformTooltip = [
+    os,
+    archStr,
+    orchestration ? getOrchestrationLabel(orchestration) : null,
+    pythonVersion ? `Python ${pythonVersion}` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
+  const model = session.model;
+
+  return (
+    <div
+      data-testid="session-metadata-bar"
+      style={{
+        display: "grid",
+        gridTemplateColumns: "repeat(auto-fit, minmax(96px, 1fr))",
+        gap: "6px 16px",
+        padding: "8px 12px",
+        background: "var(--bg-elevated)",
+        borderBottom: "1px solid var(--border-subtle)",
+      }}
+    >
+      <MetadataCell label="Flavor">{session.flavor}</MetadataCell>
+
+      <MetadataCell label="Host" title={session.host ?? undefined}>
+        {session.host ?? "—"}
+      </MetadataCell>
+
+      <MetadataCell
+        label="Platform"
+        title={platformTooltip || undefined}
+        testId="metadata-platform"
+      >
+        <span
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 4,
+          }}
+        >
+          {os && <OSIcon os={os} size={12} />}
+          {orchestration && (
+            <OrchestrationIcon orchestration={orchestration} size={12} />
+          )}
+          <span
+            style={{
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+            }}
+          >
+            {platformText}
+          </span>
+        </span>
+      </MetadataCell>
+
+      <MetadataCell label="Started">
+        {new Date(session.started_at).toLocaleTimeString()}
+      </MetadataCell>
+
+      <MetadataCell label="Duration">
+        {formatDuration(session.started_at)}
+      </MetadataCell>
+
+      <MetadataCell label="Tokens">
+        {session.tokens_used.toLocaleString()}
+      </MetadataCell>
+
+      <MetadataCell label="Model" title={model ?? undefined}>
+        {model ? (
+          <span
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 4,
+            }}
+          >
+            <ProviderLogo provider={getProvider(model)} size={12} />
+            <span
+              style={{
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+              }}
+            >
+              {truncateModel(model)}
+            </span>
+          </span>
+        ) : (
+          "—"
+        )}
+      </MetadataCell>
     </div>
   );
 }

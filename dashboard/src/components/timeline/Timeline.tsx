@@ -241,7 +241,11 @@ export function Timeline({
           {/* Left spacer above the flavor labels column. Sticky
               horizontally so it stays pinned over the labels when
               the user scrolls right. Width tracks the resizable
-              leftPanelWidth. */}
+              leftPanelWidth. This spacer hosts the resize handle:
+              the time-axis row itself is `position: sticky; top: 0`
+              against Fleet.tsx's outer scroll, so the handle stays
+              visible even when the user scrolls through many
+              flavor rows. */}
           <div
             className="shrink-0"
             style={{
@@ -253,7 +257,38 @@ export function Timeline({
               background: "var(--bg)",
               borderRight: "1px solid var(--border)",
             }}
-          />
+          >
+            {/* Drag handle for resizing the left panel. `position:
+                absolute` anchors it to the sticky parent so it
+                doesn't affect flex layout. Only one handle exists
+                in the whole Timeline -- the width state is shared
+                across every SwimLane below via props, so dragging
+                resizes every row simultaneously. */}
+            <div
+              data-testid="left-panel-resize-handle"
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Resize left panel"
+              style={{
+                position: "absolute",
+                right: 0,
+                top: 0,
+                bottom: 0,
+                width: 6,
+                cursor: "col-resize",
+                zIndex: 10,
+                background: "transparent",
+                transition: "background 0.1s",
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = "var(--accent)";
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = "transparent";
+              }}
+              onMouseDown={handleResizeStart}
+            />
+          </div>
           <div style={{ width: timelineWidth, flexShrink: 0 }}>
             <TimeAxis
               start={start}
@@ -267,12 +302,10 @@ export function Timeline({
 
         {/* FLAVORS section header.
             Flex row with the label slot sticky to the viewport's
-            left edge (width narrower than innerWidth so sticky has
-            room to take effect). The drag handle sits on the right
-            edge of the label slot -- it's `position: absolute` so it
-            doesn't affect the flex layout, and it hoovers hover
-            events to paint a 4px accent-coloured indicator while
-            the user is close to it. */}
+            left edge. The drag handle for resizing the left panel
+            lives on the time axis row's sticky spacer above (which
+            is vertically sticky so the handle stays visible even
+            when the user scrolls through many flavors). */}
         <div
           style={{
             display: "flex",
@@ -309,34 +342,6 @@ export function Timeline({
             >
               Flavors
             </span>
-            {/* Drag handle for resizing the left panel. Only needs
-                to exist on one row -- the width state is shared
-                across every SwimLane below via props, so dragging
-                here resizes every session row simultaneously. */}
-            <div
-              data-testid="left-panel-resize-handle"
-              role="separator"
-              aria-orientation="vertical"
-              aria-label="Resize left panel"
-              style={{
-                position: "absolute",
-                right: 0,
-                top: 0,
-                bottom: 0,
-                width: 4,
-                cursor: "col-resize",
-                zIndex: 10,
-                background: "transparent",
-                transition: "background 150ms ease",
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.background = "var(--accent)";
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.background = "transparent";
-              }}
-              onMouseDown={handleResizeStart}
-            />
           </div>
           <div style={{ width: timelineWidth, flexShrink: 0 }} />
         </div>

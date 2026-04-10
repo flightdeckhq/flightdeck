@@ -42,13 +42,15 @@ export const THEME_STORAGE_KEY = "flightdeck-theme";
  * session rows) in the Timeline component. The panel state lives in
  * Timeline.tsx's useState with localStorage persistence keyed by
  * LEFT_PANEL_WIDTH_KEY. Min/max are enforced on both initial load
- * and drag. DEFAULT is wider than the previous fixed 240px to give
- * hostnames and icons room to breathe by default; users who drag it
- * narrower get their choice persisted.
+ * and drag. DEFAULT is sized to fit typical 14-char hostnames like
+ * "mac-laptop-bob" or "compose-build-2" in the session row label
+ * slot without truncation (session number + icons + badge + tokens
+ * leave roughly 158px for the label at 320px). Users who drag it
+ * narrower or wider get their choice persisted.
  */
 export const LEFT_PANEL_MIN_WIDTH = 200;
-export const LEFT_PANEL_MAX_WIDTH = 480;
-export const LEFT_PANEL_DEFAULT_WIDTH = 280;
+export const LEFT_PANEL_MAX_WIDTH = 500;
+export const LEFT_PANEL_DEFAULT_WIDTH = 320;
 export const LEFT_PANEL_WIDTH_KEY = "flightdeck-left-panel-width";
 
 /**

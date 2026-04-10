@@ -19,8 +19,13 @@ import {
  * icons + hostname + state badge + token count without wrapping or
  * overflowing. The token count is the least critical field so it
  * hides first; drag the panel wider to bring it back.
+ *
+ * Raised from 260 to 300 after the default width grew to 320 so
+ * typical 14-char hostnames ("mac-laptop-bob", "compose-build-2")
+ * show in full at the default, and dragging down to ~290 starts
+ * trimming the token count first rather than the hostname.
  */
-const TOKEN_COUNT_MIN_WIDTH = 260;
+const TOKEN_COUNT_MIN_WIDTH = 300;
 
 const stateBadgeColors: Record<string, { bg: string; color: string }> = {
   active: { bg: "rgba(34,197,94,0.15)", color: "var(--status-active)" },

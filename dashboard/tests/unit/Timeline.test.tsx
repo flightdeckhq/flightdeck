@@ -219,10 +219,10 @@ describe("Timeline", () => {
   it("grid overlay is positioned only over the right panel at the default left panel width", () => {
     render(<Timeline {...defaultProps} timeRange="5m" />);
     const overlay = screen.getByTestId("timeline-grid-overlay");
-    // LEFT_PANEL_DEFAULT_WIDTH (280px) offset keeps the lines out of
+    // LEFT_PANEL_DEFAULT_WIDTH (320px) offset keeps the lines out of
     // the flavor labels column. The left panel is now resizable;
     // this test locks in the default without regression.
-    expect((overlay as HTMLElement).style.left).toBe("280px");
+    expect((overlay as HTMLElement).style.left).toBe("320px");
     expect((overlay as HTMLElement).style.width).toBe("900px");
   });
 
@@ -230,7 +230,7 @@ describe("Timeline", () => {
     localStorage.removeItem("flightdeck-left-panel-width");
     render(<Timeline {...defaultProps} />);
     const overlay = screen.getByTestId("timeline-grid-overlay");
-    expect((overlay as HTMLElement).style.left).toBe("280px");
+    expect((overlay as HTMLElement).style.left).toBe("320px");
   });
 
   it("reads the stored width from localStorage on mount", () => {
@@ -253,14 +253,17 @@ describe("Timeline", () => {
     localStorage.setItem("flightdeck-left-panel-width", "9999");
     render(<Timeline {...defaultProps} />);
     const overlay = screen.getByTestId("timeline-grid-overlay");
-    expect((overlay as HTMLElement).style.left).toBe("480px");
+    expect((overlay as HTMLElement).style.left).toBe("500px");
     localStorage.removeItem("flightdeck-left-panel-width");
   });
 
-  it("exposes a resize handle on the flavors header row", () => {
+  it("exposes a resize handle on the time axis sticky spacer", () => {
+    // The handle moved from the FLAVORS header to the time axis row's
+    // sticky left spacer so it stays visible during vertical scroll.
     render(<Timeline {...defaultProps} />);
     const handle = screen.getByTestId("left-panel-resize-handle");
     expect(handle).toBeInTheDocument();
     expect((handle as HTMLElement).style.cursor).toBe("col-resize");
+    expect((handle as HTMLElement).style.width).toBe("6px");
   });
 });

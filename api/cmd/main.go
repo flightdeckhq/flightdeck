@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/flightdeckhq/flightdeck/api/internal/auth"
 	"github.com/flightdeckhq/flightdeck/api/internal/config"
 	"github.com/flightdeckhq/flightdeck/api/internal/server"
 	"github.com/flightdeckhq/flightdeck/api/internal/store"
@@ -38,6 +39,7 @@ func main() {
 
 	s := store.New(pool)
 	hub := ws.NewHub(s)
+	validator := auth.NewValidator(pool)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -49,7 +51,7 @@ func main() {
 	go hub.ListenNotify(ctx, pool)
 
 	addr := fmt.Sprintf(":%s", cfg.Port)
-	srv := server.New(addr, s, hub, cfg.CORSOrigin)
+	srv := server.New(addr, s, hub, validator, cfg.CORSOrigin)
 
 	// Start server
 	go func() {

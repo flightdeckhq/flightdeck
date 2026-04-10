@@ -55,7 +55,8 @@ function EventNodeComponent({
   const iconSize = size <= 20 ? 11 : 13;
 
   useEffect(() => {
-    requestAnimationFrame(() => setMounted(true));
+    const id = requestAnimationFrame(() => setMounted(true));
+    return () => cancelAnimationFrame(id);
   }, []);
 
   const handleMouseEnter = useCallback((e: React.MouseEvent<HTMLDivElement>) => {

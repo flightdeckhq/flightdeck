@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // EventsParams defines filters for bulk event queries.
@@ -28,6 +30,11 @@ type EventsResponse struct {
 }
 
 // GetEvents returns events matching the given filters with pagination.
+//
+// The COUNT(*) and the data SELECT run inside a single read-only
+// REPEATABLE READ transaction so the returned `total` and `events`
+// are consistent with the same snapshot. Concurrent inserts cannot
+// produce a state where len(events) > total or has_more lies.
 func (s *Store) GetEvents(ctx context.Context, params EventsParams) (*EventsResponse, error) {
 	var conditions []string
 	var args []interface{}
@@ -59,10 +66,19 @@ func (s *Store) GetEvents(ctx context.Context, params EventsParams) (*EventsResp
 
 	where := "WHERE " + strings.Join(conditions, " AND ")
 
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{
+		IsoLevel:   pgx.RepeatableRead,
+		AccessMode: pgx.ReadOnly,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
 	// Count total
 	countSQL := fmt.Sprintf("SELECT COUNT(*) FROM events %s", where)
 	var total int
-	if err := s.pool.QueryRow(ctx, countSQL, args...).Scan(&total); err != nil {
+	if err := tx.QueryRow(ctx, countSQL, args...).Scan(&total); err != nil {
 		return nil, fmt.Errorf("count events: %w", err)
 	}
 
@@ -78,7 +94,7 @@ func (s *Store) GetEvents(ctx context.Context, params EventsParams) (*EventsResp
 	`, where, argIdx, argIdx+1)
 	args = append(args, params.Limit, params.Offset)
 
-	rows, err := s.pool.Query(ctx, querySQL, args...)
+	rows, err := tx.Query(ctx, querySQL, args...)
 	if err != nil {
 		return nil, fmt.Errorf("get events: %w", err)
 	}
@@ -96,8 +112,15 @@ func (s *Store) GetEvents(ctx context.Context, params EventsParams) (*EventsResp
 		}
 		events = append(events, e)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("events scan: %w", err)
+	}
 	if events == nil {
 		events = []Event{}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit tx: %w", err)
 	}
 
 	return &EventsResponse{

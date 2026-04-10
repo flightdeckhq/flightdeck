@@ -32,6 +32,7 @@ type Querier interface {
 	SyncDirectives(ctx context.Context, fingerprints []string) ([]string, error)
 	RegisterDirectives(ctx context.Context, directives []CustomDirective) error
 	GetCustomDirectives(ctx context.Context, flavor string) ([]CustomDirective, error)
+	CustomDirectiveExists(ctx context.Context, fingerprint, flavor string) (bool, error)
 	GetEvents(ctx context.Context, params EventsParams) (*EventsResponse, error)
 	QueryAnalytics(ctx context.Context, params AnalyticsParams) (*AnalyticsResponse, error)
 	Search(ctx context.Context, query string) (*SearchResults, error)
@@ -301,6 +302,9 @@ func (s *Store) GetSessionEvents(ctx context.Context, sessionID string) ([]Event
 		}
 		events = append(events, e)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("session events scan: %w", err)
+	}
 	return events, nil
 }
 
@@ -533,27 +537,42 @@ func (s *Store) GetEventContent(ctx context.Context, eventID string) (*EventCont
 
 // SyncDirectives checks which fingerprints are NOT registered in custom_directives.
 // It updates last_seen_at for found ones and returns the unknown fingerprints.
+//
+// The lookup and the last_seen_at update run in a single transaction so a
+// concurrent RegisterDirectives between them cannot cause unknowns to be
+// reported despite a parallel registration, or known fingerprints to skip
+// the timestamp bump.
 func (s *Store) SyncDirectives(ctx context.Context, fingerprints []string) ([]string, error) {
 	if len(fingerprints) == 0 {
 		return []string{}, nil
 	}
 
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("sync directives begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
 	// Find which fingerprints exist
-	rows, err := s.pool.Query(ctx, `
+	rows, err := tx.Query(ctx, `
 		SELECT fingerprint FROM custom_directives WHERE fingerprint = ANY($1)
 	`, fingerprints)
 	if err != nil {
 		return nil, fmt.Errorf("sync directives lookup: %w", err)
 	}
-	defer rows.Close()
 
 	found := make(map[string]bool)
 	for rows.Next() {
 		var fp string
 		if err := rows.Scan(&fp); err != nil {
+			rows.Close()
 			return nil, fmt.Errorf("scan fingerprint: %w", err)
 		}
 		found[fp] = true
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sync directives scan: %w", err)
 	}
 
 	// Update last_seen_at for found fingerprints
@@ -562,11 +581,15 @@ func (s *Store) SyncDirectives(ctx context.Context, fingerprints []string) ([]st
 		for fp := range found {
 			foundFPs = append(foundFPs, fp)
 		}
-		if _, err := s.pool.Exec(ctx, `
+		if _, err := tx.Exec(ctx, `
 			UPDATE custom_directives SET last_seen_at = NOW() WHERE fingerprint = ANY($1)
 		`, foundFPs); err != nil {
 			return nil, fmt.Errorf("sync directives update: %w", err)
 		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("sync directives commit: %w", err)
 	}
 
 	// Return unknown fingerprints
@@ -580,17 +603,27 @@ func (s *Store) SyncDirectives(ctx context.Context, fingerprints []string) ([]st
 }
 
 // RegisterDirectives inserts custom directives, updating last_seen_at on conflict.
+//
+// All upserts run inside a single transaction. After commit a NOTIFY is sent
+// on the flightdeck_fleet channel so the dashboard WebSocket hub broadcasts
+// a fleet update and the Directives page refreshes in real time.
 func (s *Store) RegisterDirectives(ctx context.Context, directives []CustomDirective) error {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return fmt.Errorf("register directives begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
 	for _, d := range directives {
 		var paramsJSON []byte
 		if d.Parameters != nil {
-			var err error
-			paramsJSON, err = json.Marshal(d.Parameters)
-			if err != nil {
-				return fmt.Errorf("marshal parameters for %s: %w", d.Fingerprint, err)
+			marshaled, mErr := json.Marshal(d.Parameters)
+			if mErr != nil {
+				return fmt.Errorf("marshal parameters for %s: %w", d.Fingerprint, mErr)
 			}
+			paramsJSON = marshaled
 		}
-		if _, err := s.pool.Exec(ctx, `
+		if _, err := tx.Exec(ctx, `
 			INSERT INTO custom_directives (fingerprint, name, description, flavor, parameters)
 			VALUES ($1, $2, $3, $4, $5)
 			ON CONFLICT (fingerprint) DO UPDATE SET last_seen_at = NOW()
@@ -598,7 +631,35 @@ func (s *Store) RegisterDirectives(ctx context.Context, directives []CustomDirec
 			return fmt.Errorf("register directive %s: %w", d.Fingerprint, err)
 		}
 	}
+
+	// Notify the dashboard hub so the Directives page updates in real time.
+	if _, err := tx.Exec(ctx, `SELECT pg_notify($1, $2)`,
+		"flightdeck_fleet", "directive_registered"); err != nil {
+		return fmt.Errorf("register directives notify: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("register directives commit: %w", err)
+	}
 	return nil
+}
+
+// CustomDirectiveExists returns true if a directive with the given
+// fingerprint is registered. If flavor is non-empty, the lookup is
+// scoped to that flavor.
+func (s *Store) CustomDirectiveExists(ctx context.Context, fingerprint, flavor string) (bool, error) {
+	var exists bool
+	err := s.pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM custom_directives
+			WHERE fingerprint = $1
+			  AND ($2 = '' OR flavor = $2)
+		)
+	`, fingerprint, flavor).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("custom directive exists %s: %w", fingerprint, err)
+	}
+	return exists, nil
 }
 
 // GetCustomDirectives returns all custom directives, optionally filtered by flavor.
@@ -642,6 +703,9 @@ func (s *Store) GetCustomDirectives(ctx context.Context, flavor string) ([]Custo
 			}
 		}
 		directives = append(directives, d)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("custom directives scan: %w", err)
 	}
 	return directives, nil
 }

@@ -107,6 +107,18 @@ export function Fleet() {
     setFeedEvents(feedFromHistory.slice(-FEED_MAX_EVENTS));
   }, [historicalEvents]);
 
+  // Recent directive events for the FleetPanel sidebar.
+  // MUST be declared before any conditional return to satisfy
+  // the Rules of Hooks (hook order must be stable across renders).
+  const directiveEvents = useMemo(() =>
+    feedEvents
+      .filter((fe) => fe.event.event_type === "directive" || fe.event.event_type === "directive_result")
+      .slice(-20)
+      .reverse()
+      .slice(0, 5),
+    [feedEvents]
+  );
+
   if (loading && flavors.length === 0) {
     return (
       <div className="flex h-full items-center justify-center text-text-muted">
@@ -122,15 +134,6 @@ export function Fleet() {
       </div>
     );
   }
-
-  const directiveEvents = useMemo(() =>
-    feedEvents
-      .filter((fe) => fe.event.event_type === "directive" || fe.event.event_type === "directive_result")
-      .slice(-20)
-      .reverse()
-      .slice(0, 5),
-    [feedEvents]
-  );
 
   function handleFlavorClick(flavor: string) {
     setFlavorFilter(flavorFilter === flavor ? null : flavor);
@@ -358,7 +361,17 @@ export function Fleet() {
           />
         </div>
 
-        {/* Live feed */}
+        {/* Live feed.
+            The header "▶ Resume" and "⚡ Return to live" buttons live
+            outside LiveFeed and are wired directly to handleResume
+            (FIFO drain) and handleReturnToLive (discard queue) above.
+            LiveFeed itself only owns the sort-triggered pause path:
+            clicking a non-time column auto-pauses, and the in-feed
+            "Return to live" link inside LiveFeed snaps back to live
+            and discards the queue. Sort-pause is analytical mode --
+            the user is reordering events to investigate, not waiting
+            for the buffered events. So onResume here is intentionally
+            wired to handleReturnToLive, not handleResume. */}
         <LiveFeed
           events={feedEvents}
           onEventClick={setSelectedEvent}

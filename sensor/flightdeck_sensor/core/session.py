@@ -551,8 +551,12 @@ class Session:
             self.event_queue.enqueue(ack)
             try:
                 self.event_queue.flush()
-            except Exception:
-                pass
+            except Exception as exc:
+                _log.warning(
+                    "[flightdeck] shutdown: failed to flush "
+                    "acknowledgement event: %s",
+                    exc,
+                )
             with self._lock:
                 self._shutdown_requested = True
                 self._shutdown_reason = directive.reason
@@ -577,8 +581,12 @@ class Session:
             self.event_queue.enqueue(ack)
             try:
                 self.event_queue.flush()
-            except Exception:
-                pass
+            except Exception as exc:
+                _log.warning(
+                    "[flightdeck] shutdown_flavor: failed to flush "
+                    "acknowledgement event: %s",
+                    exc,
+                )
             with self._lock:
                 self._shutdown_requested = True
                 self._shutdown_reason = directive.reason

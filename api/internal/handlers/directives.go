@@ -37,6 +37,8 @@ type DirectiveRequest struct {
 // @Param        directive  body      DirectiveRequest  true  "Directive definition"
 // @Success      201  {object}  store.Directive
 // @Failure      400  {object}  ErrorResponse
+// @Failure      404  {object}  ErrorResponse
+// @Failure      422  {object}  ErrorResponse
 // @Failure      500  {object}  ErrorResponse
 // @Router       /v1/directives [post]
 func CreateDirectiveHandler(s store.Querier) http.HandlerFunc {
@@ -101,6 +103,21 @@ func CreateDirectiveHandler(s store.Querier) http.HandlerFunc {
 
 		// Custom directive: fan out by flavor or target single session
 		if req.Action == "custom" {
+			// Verify the fingerprint is registered before creating any
+			// directive rows. Without this check the dashboard could
+			// create dangling directive rows that no sensor can execute
+			// (the sensor refuses unknown fingerprints, fail open).
+			exists, err := s.CustomDirectiveExists(r.Context(), req.Fingerprint, req.Flavor)
+			if err != nil {
+				slog.Error("custom directive exists check error", "err", err)
+				writeError(w, http.StatusInternalServerError, "internal server error")
+				return
+			}
+			if !exists {
+				writeError(w, http.StatusUnprocessableEntity, "unknown directive fingerprint")
+				return
+			}
+
 			payloadBytes, err := json.Marshal(customPayload{
 				DirectiveName: req.DirectiveName,
 				Fingerprint:   req.Fingerprint,

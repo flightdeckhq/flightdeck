@@ -11,7 +11,6 @@ import json
 import logging
 import queue
 import threading
-import time
 import urllib.request
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -245,9 +244,14 @@ class EventQueue:
         try:
             self._queue.put_nowait(payload)
         except queue.Full:
-            # Drop oldest, enqueue new
-            with contextlib.suppress(queue.Empty):
+            # Drop oldest, enqueue new. The dropped item must have
+            # task_done() called for it so flush()'s Queue.join()
+            # accounting stays correct.
+            try:
                 self._queue.get_nowait()
+                self._queue.task_done()
+            except queue.Empty:
+                pass
             with contextlib.suppress(queue.Full):
                 self._queue.put_nowait(payload)
             _log.warning(
@@ -255,19 +259,39 @@ class EventQueue:
                 _MAX_QUEUE_SIZE,
             )
 
-    def flush(self, timeout: float = 5.0) -> None:
-        """Drain remaining items synchronously.  Called on session end."""
-        deadline = time.monotonic() + timeout
-        while not self._queue.empty() and time.monotonic() < deadline:
+    def flush(self, timeout: float = 3.0) -> None:
+        """Block until all currently-queued items have been processed.
+
+        Uses ``Queue.join()`` to wait for the background drain thread
+        to call ``task_done()`` on every item that was in the queue
+        when ``flush()`` was called. The drain loop calls
+        ``task_done()`` after every attempt regardless of whether
+        the POST succeeded or failed, so this is guaranteed to make
+        progress as long as the drain thread is alive.
+
+        A timeout is enforced via a helper thread + Event so this
+        never blocks the caller (typically the shutdown path)
+        indefinitely. On timeout we log a warning and return so the
+        agent can continue exiting.
+        """
+        done = threading.Event()
+
+        def _waiter() -> None:
             try:
-                item = self._queue.get_nowait()
-                if item is _SENTINEL:
-                    break
-                self._client.post_event(item)  # type: ignore[arg-type]
-            except queue.Empty:
-                break
-            except Exception:
-                _log.debug("flush post_event failed", exc_info=True)
+                self._queue.join()
+            finally:
+                done.set()
+
+        threading.Thread(
+            target=_waiter,
+            daemon=True,
+            name="flightdeck-event-queue-flush",
+        ).start()
+        if not done.wait(timeout=timeout):
+            _log.warning(
+                "flush: timed out after %.1fs waiting for queue drain",
+                timeout,
+            )
 
     def close(self) -> None:
         """Stop the drain thread."""
@@ -279,15 +303,30 @@ class EventQueue:
     # ------------------------------------------------------------------
 
     def _drain_loop(self) -> None:
-        """Background thread: drain queue, post events."""
+        """Background thread: drain queue, post events.
+
+        Calls ``task_done()`` after every item -- success, failure,
+        and the sentinel -- so ``Queue.join()`` (used by ``flush()``)
+        always reflects the true number of unprocessed items.
+        """
         while True:
             try:
                 item = self._queue.get(timeout=1.0)
             except queue.Empty:
                 continue
-            if item is _SENTINEL:
-                break
             try:
-                self._client.post_event(item)  # type: ignore[arg-type]
-            except Exception:
-                _log.debug("drain post_event failed", exc_info=True)
+                if item is _SENTINEL:
+                    return
+                try:
+                    self._client.post_event(item)  # type: ignore[arg-type]
+                except Exception as exc:
+                    event_type = "unknown"
+                    if isinstance(item, dict):
+                        event_type = str(item.get("event_type", "unknown"))
+                    _log.warning(
+                        "drain: failed to post %s event: %s",
+                        event_type,
+                        exc,
+                    )
+            finally:
+                self._queue.task_done()

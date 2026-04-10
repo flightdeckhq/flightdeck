@@ -104,21 +104,47 @@ class TestEventQueue:
         finally:
             eq.close()
 
-    def test_flush_drains_remaining(self) -> None:
+    def test_flush_waits_for_drain(self) -> None:
+        """flush() must block until every queued item has been processed
+        by the background drain thread. With the Queue.join() pattern,
+        flush() relies on the drain loop calling task_done() after every
+        item, so when flush() returns, mock_client.post_event must have
+        been called for every enqueued item.
+        """
         mock_client = MagicMock(spec=ControlPlaneClient)
         mock_client.post_event.return_value = None
         eq = EventQueue(mock_client)
         try:
-            # Stop drain thread first so items stay in queue
-            eq.close()
-            # Re-enqueue items after drain thread has stopped
             for i in range(3):
                 eq.enqueue({"i": i})
             eq.flush(timeout=5.0)
-            assert mock_client.post_event.call_count >= 3
-        except Exception:
+            assert mock_client.post_event.call_count == 3
+        finally:
             eq.close()
-            raise
+
+    def test_flush_completes_even_when_post_raises(self) -> None:
+        """A failing POST must still call task_done() so flush() can
+        return rather than blocking until the timeout. This is the
+        guarantee that makes shutdown ack delivery reliable: even if
+        the control plane is unreachable, flush() returns promptly so
+        the agent can exit cleanly.
+        """
+        mock_client = MagicMock(spec=ControlPlaneClient)
+        mock_client.post_event.side_effect = ConnectionError("boom")
+        eq = EventQueue(mock_client)
+        try:
+            for i in range(3):
+                eq.enqueue({"i": i})
+            start = time.monotonic()
+            eq.flush(timeout=5.0)
+            elapsed = time.monotonic() - start
+            # All three POSTs were attempted
+            assert mock_client.post_event.call_count == 3
+            # And flush returned long before the 5s timeout (drain
+            # thread cleared the queue immediately on each failure)
+            assert elapsed < 2.0
+        finally:
+            eq.close()
 
 
 def test_parse_directive_malformed_missing_action() -> None:

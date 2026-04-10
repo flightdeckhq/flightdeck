@@ -28,6 +28,7 @@ fix in DECISIONS.md. Never leave a resolved TODO comment in the code.
 |------|------------|--------------------------------------|--------|-------|---------------------------------------------|-----------|
 | KI10 | Security   | SHA256 token auth without salt       | Low    | 5     | auth/token.go:Validate                      | D046      |
 | KI11 | Security   | No NATS auth in dev compose          | Low    | 5     | docker/docker-compose.yml:nats              | D047      |
+| KI12 | Security   | REST endpoints have no per-IP rate limit | Low | 5    | api/internal/server/server.go               | D048      |
 
 ## Resolved
 

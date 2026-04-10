@@ -316,6 +316,19 @@ func (m *mockStore) GetCustomDirectives(_ context.Context, flavor string) ([]sto
 	return result, nil
 }
 
+func (m *mockStore) CustomDirectiveExists(_ context.Context, fingerprint, flavor string) (bool, error) {
+	for _, cd := range m.customDirectives {
+		if cd.Fingerprint != fingerprint {
+			continue
+		}
+		if flavor != "" && cd.Flavor != flavor {
+			continue
+		}
+		return true, nil
+	}
+	return false, nil
+}
+
 func (m *mockStore) QueryAnalytics(_ context.Context, params store.AnalyticsParams) (*store.AnalyticsResponse, error) {
 	return &store.AnalyticsResponse{
 		Metric:      params.Metric,
@@ -1268,7 +1281,11 @@ func TestGetCustomDirectives(t *testing.T) {
 }
 
 func TestCreateCustomDirectiveAction(t *testing.T) {
-	s := &mockStore{}
+	s := &mockStore{
+		customDirectives: []store.CustomDirective{
+			{ID: "cd-reset", Fingerprint: "fp-reset", Name: "reset_cache", Flavor: "test"},
+		},
+	}
 	handler := handlers.CreateDirectiveHandler(store.WrapStore(s))
 	body := `{"action":"custom","session_id":"00000000-0000-0000-0000-000000000001","directive_name":"reset_cache","fingerprint":"fp-reset","parameters":{"force":true}}`
 	req := httptest.NewRequest("POST", "/v1/directives", bytes.NewBufferString(body))
@@ -1434,6 +1451,29 @@ func TestCreateCustomDirectiveMissingTarget(t *testing.T) {
 	_ = json.Unmarshal(w.Body.Bytes(), &resp)
 	if !contains(resp["error"].(string), "session_id or flavor is required") {
 		t.Errorf("expected error about session_id or flavor, got %v", resp["error"])
+	}
+}
+
+func TestCreateCustomDirectiveUnknownFingerprint(t *testing.T) {
+	// Empty store -- the supplied fingerprint does not exist.
+	s := &mockStore{}
+	handler := handlers.CreateDirectiveHandler(store.WrapStore(s))
+	body := `{"action":"custom","session_id":"00000000-0000-0000-0000-000000000001","directive_name":"reset","fingerprint":"fp-unknown"}`
+	req := httptest.NewRequest("POST", "/v1/directives", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Errorf("expected 422, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if !contains(resp["error"].(string), "unknown directive fingerprint") {
+		t.Errorf("expected error about unknown fingerprint, got %v", resp["error"])
+	}
+	// No directive row should have been created.
+	if len(s.directives) != 0 {
+		t.Errorf("expected 0 directives created on unknown fingerprint, got %d", len(s.directives))
 	}
 }
 

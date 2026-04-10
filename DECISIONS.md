@@ -1183,3 +1183,37 @@ look identical in the dashboard for the staleness window.
 works if the agent successfully posts another event after the directive,
 which is exactly what does not happen for shutdown.
 
+---
+
+## D073 -- Stopgap auth on sensor registration endpoints
+
+**Decision:** `POST /v1/directives/sync` and `POST /v1/directives/register`
+require a valid bearer token (validated against the `api_tokens` table
+via the existing SHA-256 hash lookup) as a stopgap until full Phase 5
+JWT auth lands. The validator lives in `api/internal/auth/token.go`
+and is wired in `api/internal/server/server.go` only on those two
+routes via `auth.Middleware`. All other query API endpoints (GET
+/v1/fleet, GET /v1/sessions, GET /v1/events, POST /v1/directives,
+etc.) remain unauthenticated, matching the pre-Phase 4.5 posture.
+
+**Reasoning:** Phase 4.5 introduced two endpoints that the sensor
+calls automatically with a bearer token (the same token it uses for
+ingestion). Leaving them unauthenticated would let any caller on the
+network register arbitrary custom directives or shadow legitimate
+handler names. The full JWT auth refactor is a Phase 5 deliverable
+and out of scope for the audit fix pass. Reusing the existing
+`api_tokens` validator gives us defence-in-depth on the new
+sensor-only routes today without changing the posture of the
+already-unauthenticated GET routes.
+
+The unit test handler suite mounts handlers directly without the
+server wrapper, so the existing handler tests are unaffected. The
+integration suite has two new tests (`test_sync_endpoint_requires_auth`
+and `test_register_endpoint_requires_auth`) that exercise the 401
+path on the live API.
+
+**Resolved in:** Phase 5 (full JWT auth on every query API endpoint
+will replace this stopgap).
+
+---
+

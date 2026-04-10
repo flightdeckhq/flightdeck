@@ -87,8 +87,13 @@ describe("sortFlavorsByActivity", () => {
   });
 });
 
-// FIX 3 -- part B: SwimLane inactive compact rendering
-describe("SwimLane inactive collapse", () => {
+// SwimLane rendering for closed/stale flavors. The previous compact
+// 28px branch was removed -- closed sessions still have historical
+// events that platform engineers need to see. Every flavor renders
+// at full 48px with a chevron and full event circles. The state
+// suffix ("(closed)" / "(stale)" / "(lost)") appears next to the
+// flavor name when no sessions are active or idle.
+describe("SwimLane state suffix", () => {
   const scale = scaleTime()
     .domain([new Date(Date.now() - 60_000), new Date()])
     .range([0, 900]);
@@ -105,7 +110,7 @@ describe("SwimLane inactive collapse", () => {
     sessionVersions: {},
   };
 
-  it("renders 28px compact row when all sessions are stale", () => {
+  it("never renders the compact inactive row anymore", () => {
     const flavor = "all-stale";
     const sessions = [
       makeSession("s1", "stale", flavor),
@@ -119,12 +124,11 @@ describe("SwimLane inactive collapse", () => {
         {...baseProps}
       />,
     );
-    const row = screen.getByTestId("swimlane-inactive");
-    expect(row).toBeInTheDocument();
-    expect((row as HTMLElement).style.height).toBe("28px");
+    // The compact 28px placeholder branch is removed.
+    expect(screen.queryByTestId("swimlane-inactive")).toBeNull();
   });
 
-  it("inactive row shows the (stale) summary", () => {
+  it("shows the (stale) suffix when all sessions are stale", () => {
     const flavor = "all-stale";
     const sessions = [makeSession("s1", "stale", flavor)];
     render(
@@ -135,10 +139,11 @@ describe("SwimLane inactive collapse", () => {
         {...baseProps}
       />,
     );
-    expect(screen.getByText("(stale)")).toBeInTheDocument();
+    const suffix = screen.getByTestId("swimlane-state-suffix");
+    expect(suffix).toHaveTextContent("(stale)");
   });
 
-  it("inactive row shows (closed) when all sessions closed", () => {
+  it("shows the (closed) suffix when all sessions are closed", () => {
     const flavor = "all-closed";
     const sessions = [
       makeSession("s1", "closed", flavor),
@@ -152,12 +157,13 @@ describe("SwimLane inactive collapse", () => {
         {...baseProps}
       />,
     );
-    expect(screen.getByText("(closed)")).toBeInTheDocument();
+    const suffix = screen.getByTestId("swimlane-state-suffix");
+    expect(suffix).toHaveTextContent("(closed)");
   });
 
-  it("inactive row has no expand chevron", () => {
-    const flavor = "all-stale";
-    const sessions = [makeSession("s1", "stale", flavor)];
+  it("a closed flavor still has the expand chevron and full row", () => {
+    const flavor = "all-closed";
+    const sessions = [makeSession("s1", "closed", flavor)];
     const { container } = render(
       <SwimLane
         flavor={flavor}
@@ -166,13 +172,15 @@ describe("SwimLane inactive collapse", () => {
         {...baseProps}
       />,
     );
-    // Active rows render a lucide ChevronRight; the inactive row
-    // must not.
-    expect(container.querySelector("svg.lucide-chevron-right")).toBeNull();
+    // Chevron is present (the row is fully rendered, expandable)
+    expect(container.querySelector("svg.lucide-chevron-right")).not.toBeNull();
+    // The 48px header has its "0 active" count
+    expect(screen.getByText("0 active")).toBeInTheDocument();
   });
 
-  it("an idle-only flavor is NOT inactive (still shows full row)", () => {
-    // Idle agents are alive -- they must remain fully visible.
+  it("an idle-only flavor renders without a state suffix", () => {
+    // Idle agents are alive -- they're still active enough to skip
+    // the suffix.
     const flavor = "all-idle";
     const sessions = [makeSession("s1", "idle", flavor)];
     render(
@@ -183,8 +191,21 @@ describe("SwimLane inactive collapse", () => {
         {...baseProps}
       />,
     );
-    expect(screen.queryByTestId("swimlane-inactive")).toBeNull();
-    // The full 48px row is rendered with the chevron
+    expect(screen.queryByTestId("swimlane-state-suffix")).toBeNull();
     expect(screen.getByText("0 active")).toBeInTheDocument();
+  });
+
+  it("an active flavor renders without a state suffix", () => {
+    const flavor = "all-active";
+    const sessions = [makeSession("s1", "active", flavor)];
+    render(
+      <SwimLane
+        flavor={flavor}
+        activeCount={1}
+        sessions={sessions}
+        {...baseProps}
+      />,
+    );
+    expect(screen.queryByTestId("swimlane-state-suffix")).toBeNull();
   });
 });

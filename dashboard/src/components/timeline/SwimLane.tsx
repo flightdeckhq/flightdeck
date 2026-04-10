@@ -47,76 +47,32 @@ function SwimLaneComponent({
   activeFilter,
   sessionVersions,
 }: SwimLaneProps) {
-  // A flavor is "inactive" when none of its sessions are active or
-  // idle -- only stale, closed, or lost. Inactive flavors render as
-  // a compact 28px row (no chevron, no event circles, muted text)
-  // so they sink to the bottom of the swimlane and stop blocking
-  // active flavors from view. (FIX 3 -- part B)
-  const isInactive = useMemo(
-    () =>
-      sessions.length > 0 &&
-      !sessions.some((s) => s.state === "active" || s.state === "idle"),
-    [sessions],
-  );
-
-  // Pick a single representative summary state for the inactive
-  // label so the user knows why the flavor is dim. Priority:
-  // stale > closed > lost.
-  const inactiveSummary = useMemo(() => {
-    if (!isInactive) return "";
+  // Pick a representative state suffix to display next to the flavor
+  // name when no sessions are currently active or idle. Priority:
+  // stale > closed > lost. Returns "" for active/idle flavors so the
+  // suffix is hidden in the common case.
+  //
+  // The previous implementation used this as a trigger to collapse
+  // the entire row to a compact 28px placeholder with no chevron and
+  // no event circles. That was wrong: closed sessions still have
+  // historical events from the last 1-30 minutes that platform
+  // engineers need to see when they zoom out the time range.
+  // Auto-collapse hid that data and made the swimlane unusable for
+  // historical views. The compact branch is gone -- every flavor
+  // renders at full 48px with full event circles and an expand
+  // chevron, regardless of session state. Sort-by-activity (active
+  // flavors at the top) is preserved -- only the auto-collapse row
+  // is removed.
+  const stateSuffix = useMemo(() => {
+    if (sessions.some((s) => s.state === "active" || s.state === "idle")) {
+      return "";
+    }
     const states = new Set(sessions.map((s) => s.state));
     if (states.has("stale")) return "(stale)";
     if (states.has("closed")) return "(closed)";
     if (states.has("lost")) return "(lost)";
-    return "(inactive)";
-  }, [isInactive, sessions]);
-
-  // Compact 28px inactive row -- no chevron, no event circles,
-  // muted text, subtle border. The collapsed view never expands.
-  if (isInactive) {
-    return (
-      <div
-        className="flex items-center"
-        style={{
-          height: 28,
-          borderBottom: "1px solid var(--border-subtle)",
-          background: "var(--bg)",
-        }}
-        data-testid="swimlane-inactive"
-      >
-        <div
-          className="flex h-full items-center gap-2 px-3"
-          style={{
-            width: LEFT_PANEL_WIDTH,
-            flexShrink: 0,
-            background: "var(--surface)",
-            borderRight: "1px solid var(--border-subtle)",
-            position: "sticky",
-            left: 0,
-            zIndex: 2,
-            overflow: "hidden",
-          }}
-        >
-          <span
-            className="text-[12px] font-mono"
-            style={{ color: "var(--text-muted)" }}
-          >
-            {flavor}
-          </span>
-          <span
-            className="font-mono text-[11px]"
-            style={{ color: "var(--text-muted)" }}
-          >
-            {inactiveSummary}
-          </span>
-        </div>
-        <div
-          className="relative h-full"
-          style={{ width: timelineWidth, flexShrink: 0 }}
-        />
-      </div>
-    );
-  }
+    return "";
+  }, [sessions]);
 
   return (
     <div style={{ borderBottom: "1px solid var(--border-subtle)" }}>
@@ -154,6 +110,15 @@ function SwimLaneComponent({
           <span className="font-mono text-[11px]" style={{ color: "var(--status-active)" }}>
             {activeCount} active
           </span>
+          {stateSuffix && (
+            <span
+              className="font-mono text-[11px]"
+              style={{ color: "var(--text-muted)" }}
+              data-testid="swimlane-state-suffix"
+            >
+              {stateSuffix}
+            </span>
+          )}
         </div>
 
         {/* Right panel — aggregated events. Sized to exactly

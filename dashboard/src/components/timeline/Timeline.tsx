@@ -1,8 +1,8 @@
-import { useMemo, useState, useEffect, useRef } from "react";
+import { useMemo, useState, useEffect } from "react";
 import { scaleTime } from "d3-scale";
 import type { FlavorSummary } from "@/lib/types";
 import type { ViewMode, TimeRange } from "@/pages/Fleet";
-import { TIMELINE_RANGE_MS, timelineWidthFor, LEFT_PANEL_WIDTH } from "@/lib/constants";
+import { TIMELINE_RANGE_MS, TIMELINE_WIDTH_PX, LEFT_PANEL_WIDTH } from "@/lib/constants";
 import { TimeAxis } from "./TimeAxis";
 import { SwimLane } from "./SwimLane";
 
@@ -59,26 +59,16 @@ export function Timeline({
   const scaleEnd = paused && pausedAt ? pausedAt : now;
   const start = useMemo(() => new Date(scaleEnd.getTime() - rangeMs), [scaleEnd, rangeMs]);
 
-  // Width of the event-circles area scales linearly with the time
-  // range so pixel-per-second density stays constant. The right
-  // panel becomes horizontally scrollable for ranges >= 5m.
-  const timelineWidth = timelineWidthFor(timeRange);
+  // Fixed canvas width for every range. The xScale maps the range
+  // domain to [0, TIMELINE_WIDTH_PX] -- wider time ranges produce
+  // denser circles, which is the correct trade-off. No horizontal
+  // scrollbar appears.
+  const timelineWidth = TIMELINE_WIDTH_PX;
 
   const scale = useMemo(
     () => scaleTime().domain([start, scaleEnd]).range([0, timelineWidth]),
     [start, scaleEnd, timelineWidth]
   );
-
-  // On mount and on every range change, scroll the right panel to
-  // its rightmost position so "now" is always visible. We do NOT
-  // force-scroll on pause or resume -- the user is investigating and
-  // the scroll position should be theirs.
-  const scrollRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollLeft = scrollRef.current.scrollWidth;
-    }
-  }, [timeRange]);
 
   if (flavors.length === 0) {
     return (
@@ -89,25 +79,15 @@ export function Timeline({
     );
   }
 
-  // Single horizontal scroll container that holds the time axis row
-  // plus every SwimLane. Each SwimLane's 240px left panel uses
-  // position: sticky; left: 0 to stay pinned during horizontal scroll;
-  // only the event-circles area scrolls. This keeps every flavor row
-  // in sync without manual scroll wiring.
+  // Fixed total content width = LEFT_PANEL_WIDTH + TIMELINE_WIDTH_PX.
+  // No horizontal scrollbar -- the entire timeline fits in the
+  // visible area at every range, since timelineWidth is constant.
   const innerWidth = timelineWidth + LEFT_PANEL_WIDTH;
 
   return (
     <div
-      ref={scrollRef}
       className="relative"
-      // overflow-y: clip (NOT hidden) so this container does NOT
-      // establish a vertical scrolling context. That lets the time
-      // axis row use position: sticky; top: 0 to stick against
-      // Fleet.tsx's outer vertical scroller as flavor rows scroll
-      // past underneath. With overflow-y: hidden, the sticky element
-      // would stick to this container's own (zero-height) scroll and
-      // appear to never move. (FIX 2)
-      style={{ overflowX: "auto", overflowY: "clip" }}
+      style={{ overflow: "hidden" }}
       data-testid="timeline-scroll"
     >
       <div style={{ width: innerWidth, minWidth: "100%", position: "relative" }}>

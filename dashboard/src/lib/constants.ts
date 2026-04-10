@@ -53,21 +53,23 @@ export const FEED_COL_DEFAULTS = {
 } as const;
 
 /**
- * Base width of the timeline event-circles area at the 1m time range.
+ * Fixed width of the timeline event-circles area.
  *
- * Wider time ranges multiply this width so the pixel-per-second
- * density stays constant -- a 1h range gets 60x this width and
- * scrolls horizontally inside the right panel. See timelineWidthFor.
+ * Every range (1m / 5m / 15m / 30m / 1h) renders to the same 900px
+ * canvas. The xScale maps [now - rangeMs, now] to [0, 900], so wider
+ * ranges produce denser circles. This is the correct trade-off:
+ * fixed pixel space, no horizontal scrollbar, label intervals adapt
+ * to the range. The previous proportional-width approach grew the
+ * canvas to 54,000px at 1h and 324,000px at 6h, which forced
+ * horizontal scroll, broke sticky-left layouts, and made historical
+ * views unusable.
  */
-export const TIMELINE_BASE_WIDTH_PX = 900;
-
-/** Reference range used to scale TIMELINE_BASE_WIDTH_PX. */
-export const TIMELINE_BASE_RANGE_MS = 60_000;
+export const TIMELINE_WIDTH_PX = 900;
 
 /**
  * Map from human-readable time range to absolute milliseconds. The
- * Timeline component uses this to compute both the D3 time scale
- * domain and the proportional timelineWidth.
+ * Timeline component uses this to compute the d3 time scale domain
+ * and to format the relative-time axis labels.
  */
 export const TIMELINE_RANGE_MS: Record<string, number> = {
   "1m": 60_000,
@@ -76,20 +78,3 @@ export const TIMELINE_RANGE_MS: Record<string, number> = {
   "30m": 1_800_000,
   "1h": 3_600_000,
 };
-
-/**
- * Compute the timeline event-circles area width for a given range key.
- *
- * Returns TIMELINE_BASE_WIDTH_PX for "1m" and scales linearly with
- * the range duration so events stay readable at every zoom level:
- *
- *   1m  →    900px
- *   5m  →  4,500px
- *   15m → 13,500px
- *   30m → 27,000px
- *   1h  → 54,000px
- */
-export function timelineWidthFor(range: string): number {
-  const ms = TIMELINE_RANGE_MS[range] ?? TIMELINE_BASE_RANGE_MS;
-  return Math.round(TIMELINE_BASE_WIDTH_PX * (ms / TIMELINE_BASE_RANGE_MS));
-}

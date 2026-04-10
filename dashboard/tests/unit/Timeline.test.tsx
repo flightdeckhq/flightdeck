@@ -1,10 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { Timeline } from "@/components/timeline/Timeline";
-import {
-  TIMELINE_BASE_WIDTH_PX,
-  timelineWidthFor,
-} from "@/lib/constants";
+import { TIMELINE_WIDTH_PX } from "@/lib/constants";
 import type { FlavorSummary } from "@/lib/types";
 
 // Mock useSessionEvents to avoid real API calls
@@ -115,26 +112,19 @@ describe("Timeline", () => {
     expect(screen.getByText("1 active")).toBeInTheDocument();
   });
 
-  // ---- Proportional timeline width (CHANGE 1) ----
+  // ---- Fixed timeline width ----
 
-  it("timelineWidthFor returns base width for 1m", () => {
-    expect(timelineWidthFor("1m")).toBe(TIMELINE_BASE_WIDTH_PX);
+  it("TIMELINE_WIDTH_PX is 900", () => {
+    expect(TIMELINE_WIDTH_PX).toBe(900);
   });
 
-  it("timelineWidthFor returns 60x base width for 1h", () => {
-    expect(timelineWidthFor("1h")).toBe(TIMELINE_BASE_WIDTH_PX * 60);
-  });
-
-  it("scroll container has overflow-x set", () => {
+  it("scroll container is overflow: hidden (no scrollbar)", () => {
     render(<Timeline {...defaultProps} timeRange="1h" />);
     const scrollEl = screen.getByTestId("timeline-scroll");
-    // jsdom returns the inline style verbatim
-    expect(scrollEl.style.overflowX).toBe("auto");
-    // overflow-y is "clip" (not "hidden") so it does NOT establish a
-    // vertical scroll context -- this lets the time axis row use
-    // position: sticky; top: 0 against the parent vertical scroller.
-    // FIX 2.
-    expect(scrollEl.style.overflowY).toBe("clip");
+    // The fixed-width canvas always fits in the visible viewport
+    // (240 + 900 = 1140px). overflow: hidden ensures no scrollbar
+    // appears even on narrow viewports.
+    expect(scrollEl.style.overflow).toBe("hidden");
   });
 
   // ---- Relative time axis labels ----

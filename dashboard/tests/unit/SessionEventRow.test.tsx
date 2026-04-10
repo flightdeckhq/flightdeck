@@ -146,4 +146,30 @@ describe("SessionEventRow", () => {
     });
     expect(screen.queryByTestId("session-row-hash")).not.toBeInTheDocument();
   });
+
+  it("hover tooltip stacks hostname on line 1 and session id on line 2 when hostname exists", () => {
+    const { container } = renderRow({
+      ...baseSession,
+      context: { hostname: "mac-laptop-alice" },
+    });
+    // Title attribute lives on the sticky left-panel container.
+    // Native browser tooltips render '\n' as a line break.
+    const sticky = container.querySelector(
+      '[title*="mac-laptop-alice"]',
+    ) as HTMLElement;
+    expect(sticky).not.toBeNull();
+    expect(sticky.getAttribute("title")).toBe(
+      `mac-laptop-alice\n${baseSession.session_id}`,
+    );
+  });
+
+  it("hover tooltip shows just the session id when there is no hostname", () => {
+    const { container } = renderRow({ ...baseSession, context: {} });
+    const sticky = container.querySelector(
+      `[title="${baseSession.session_id}"]`,
+    ) as HTMLElement;
+    expect(sticky).not.toBeNull();
+    // No newline when there's nothing to stack above.
+    expect(sticky.getAttribute("title")).toBe(baseSession.session_id);
+  });
 });

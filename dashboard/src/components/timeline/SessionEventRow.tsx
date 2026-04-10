@@ -160,7 +160,17 @@ function SessionEventRowComponent({
           overflow: "hidden",
           padding: "0 8px 0 28px",
         }}
-        title={session.session_id}
+        // When the row's primary label is the hostname, the hostname
+        // is the field most likely to be visually truncated, so put
+        // it on the first line of the tooltip with the full uuid
+        // below. Browser `title` attributes render "\n" as a line
+        // break in native tooltips. When there's no hostname the
+        // uuid IS the identity and there's nothing to stack above.
+        title={
+          ctxHostname
+            ? `${ctxHostname}\n${session.session_id}`
+            : session.session_id
+        }
       >
         <span
           data-testid="session-row-index"

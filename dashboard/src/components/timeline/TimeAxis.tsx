@@ -5,26 +5,34 @@ import type { TimeRange } from "@/pages/Fleet";
 import { formatTimeLabel } from "@/lib/time";
 
 /**
- * Per-range tick interval. The previous "tick count + width" approach
- * silently broke at large widths (the 6h range generated zero ticks
- * across 324,000px) and produced minute-level ticks at 5m even when
- * there was clearly room for 30s ticks. Explicit intervals give
- * consistent label density across every range.
+ * Per-range tick interval.
  *
- *   1m  → every 10s
- *   5m  → every 30s
- *   15m → every 1m
- *   30m → every 2m
- *   1h  → every 5m
- *   6h  → every 30m
+ * The proportional timeline width keeps pixel-per-second density
+ * constant (15 px/s, since base width is 900px for 60s). This means
+ * the visible viewport always shows the same amount of wall-clock
+ * time -- typically ~100 seconds for a ~1500px viewport -- regardless
+ * of the selected range. So the tick interval has to produce labels
+ * dense enough to fall inside that ~100s window.
+ *
+ * The previous spec used coarser intervals at wider ranges (every
+ * 30 minutes at 6h), which produced one label every 27,000 px and
+ * zero labels in the visible viewport almost all the time. The fixed
+ * intervals here always put 1-6 labels in any ~1500px window:
+ *
+ *   1m  → every 10s  →   6 ticks total, ~6 visible
+ *   5m  → every 30s  →  10 ticks total, ~3 visible
+ *   15m → every 1m   →  15 ticks total, ~1-2 visible
+ *   30m → every 1m   →  30 ticks total, ~1-2 visible
+ *   1h  → every 1m   →  60 ticks total, ~1-2 visible
+ *   6h  → every 1m   → 360 ticks total, ~1-2 visible
  */
 const TICK_INTERVAL: Record<TimeRange, TimeInterval> = {
   "1m": timeSecond.every(10) as TimeInterval,
   "5m": timeSecond.every(30) as TimeInterval,
   "15m": timeMinute.every(1) as TimeInterval,
-  "30m": timeMinute.every(2) as TimeInterval,
-  "1h": timeMinute.every(5) as TimeInterval,
-  "6h": timeMinute.every(30) as TimeInterval,
+  "30m": timeMinute.every(1) as TimeInterval,
+  "1h": timeMinute.every(1) as TimeInterval,
+  "6h": timeMinute.every(1) as TimeInterval,
 };
 
 const SHOW_SECONDS: Record<TimeRange, boolean> = {

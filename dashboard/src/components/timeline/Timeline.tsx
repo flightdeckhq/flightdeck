@@ -149,43 +149,60 @@ export function Timeline({
           </div>
         </div>
 
-        {/* FLAVORS section header. Sticky horizontally so the label
-            stays at the left edge of the viewport regardless of how
-            far the user has scrolled into the timeline. (FIX 4 +
-            wide-range regression fix.) */}
+        {/* FLAVORS section header.
+            The row is a flex container with width = innerWidth so the
+            bottom border draws across the full timeline. The 240px
+            label slot is `position: sticky; left: 0` -- it's NARROWER
+            than its containing block (innerWidth), so sticky has room
+            to actually take effect and pin the label text to the
+            viewport's left edge as the user scrolls horizontally. The
+            filler slot (width: timelineWidth) is non-sticky and just
+            extends the row so the border reaches the right side.
+
+            A previous version put `position: sticky; left: 0` on the
+            ROW directly with `width: innerWidth`. That doesn't work --
+            a sticky element with the same width as its containing
+            block has no horizontal room to stick within, so it just
+            scrolls along with the rest of the content and the label
+            text slid off the viewport at 5m+. */}
         <div
           style={{
             display: "flex",
             alignItems: "center",
             height: 24,
-            paddingLeft: 12,
             borderBottom: "1px solid var(--border-subtle)",
             background: "var(--bg)",
-            position: "sticky",
-            left: 0,
-            zIndex: 3,
-            // The sticky element must extend the full content width
-            // so the bottom border draws all the way across the
-            // timeline rather than stopping at LEFT_PANEL_WIDTH.
             width: innerWidth,
           }}
         >
-          <span
+          <div
             style={{
-              fontSize: 10,
-              fontWeight: 700,
-              letterSpacing: "0.08em",
-              color: "var(--text-muted)",
-              textTransform: "uppercase",
-              fontFamily: "var(--font-ui)",
-              // The span itself sits at viewport-left because the
-              // parent is sticky-left.
+              width: LEFT_PANEL_WIDTH,
+              flexShrink: 0,
               position: "sticky",
-              left: 12,
+              left: 0,
+              zIndex: 3,
+              background: "var(--bg)",
+              display: "flex",
+              alignItems: "center",
+              height: "100%",
+              paddingLeft: 12,
             }}
           >
-            Flavors
-          </span>
+            <span
+              style={{
+                fontSize: 10,
+                fontWeight: 700,
+                letterSpacing: "0.08em",
+                color: "var(--text-muted)",
+                textTransform: "uppercase",
+                fontFamily: "var(--font-ui)",
+              }}
+            >
+              Flavors
+            </span>
+          </div>
+          <div style={{ width: timelineWidth, flexShrink: 0 }} />
         </div>
 
         {/* Flavor rows. Each SwimLane receives timelineWidth directly

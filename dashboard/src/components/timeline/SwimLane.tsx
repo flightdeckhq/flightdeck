@@ -204,10 +204,13 @@ function SwimLaneComponent({
       >
         {expanded && (
           <div className="py-1">
-            {/* SESSIONS sub-header. Sticky-left so it stays pinned to
-                the viewport's left edge regardless of horizontal
-                scroll position. The full row spans the content width
-                so the bottom border draws across the timeline. */}
+            {/* SESSIONS sub-header.
+                Same flex pattern as the FLAVORS row above: a 240px
+                sticky-left label slot pinned to the viewport's left
+                edge, plus a filler that extends the row so the border
+                draws across the timeline. The 32px paddingLeft inside
+                the sticky slot indents the label to match the
+                indented session row labels below. */}
             <div
               style={{
                 display: "flex",
@@ -215,26 +218,37 @@ function SwimLaneComponent({
                 height: 20,
                 borderBottom: "1px solid var(--border-subtle)",
                 background: "var(--surface)",
-                position: "sticky",
-                left: 0,
-                zIndex: 2,
                 width: LEFT_PANEL_WIDTH + timelineWidth,
               }}
             >
-              <span
+              <div
                 style={{
-                  fontSize: 10,
-                  fontWeight: 700,
-                  letterSpacing: "0.08em",
-                  color: "var(--text-muted)",
-                  textTransform: "uppercase",
-                  fontFamily: "var(--font-ui)",
+                  width: LEFT_PANEL_WIDTH,
+                  flexShrink: 0,
                   position: "sticky",
-                  left: 32,
+                  left: 0,
+                  zIndex: 2,
+                  background: "var(--surface)",
+                  display: "flex",
+                  alignItems: "center",
+                  height: "100%",
+                  paddingLeft: 32,
                 }}
               >
-                Sessions
-              </span>
+                <span
+                  style={{
+                    fontSize: 10,
+                    fontWeight: 700,
+                    letterSpacing: "0.08em",
+                    color: "var(--text-muted)",
+                    textTransform: "uppercase",
+                    fontFamily: "var(--font-ui)",
+                  }}
+                >
+                  Sessions
+                </span>
+              </div>
+              <div style={{ width: timelineWidth, flexShrink: 0 }} />
             </div>
             {sessions.map((session) => (
               <SessionEventRow

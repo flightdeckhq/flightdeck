@@ -100,11 +100,11 @@ export function TimeAxis({ start, end, width, timeRange, paused = false }: TimeA
         );
       })}
 
-      {/* "now" vertical marker line at the right edge -- unchanged */}
-      <div
-        className="absolute top-0 h-full w-px"
-        style={{ left: width, background: "var(--status-active)", opacity: 0.6 }}
-      />
+      {/* The "now" vertical line is rendered by the grid line overlay
+          in Timeline.tsx so it spans the full height of the swimlane.
+          Previously this row also rendered its own short "now" marker
+          here, which doubled up with the grid line and made the line
+          appear thicker and more saturated. */}
     </div>
   );
 }

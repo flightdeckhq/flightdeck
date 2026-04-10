@@ -132,7 +132,12 @@ export function Timeline({
             left: LEFT_PANEL_WIDTH,
             width: timelineWidth,
             pointerEvents: "none",
-            zIndex: 0,
+            // zIndex 1 so the lines paint ABOVE the flavor row
+            // backgrounds (which are static/non-positioned and so
+            // paint in CSS group 3, before any positive z-index
+            // group). EventNode circles bump to zIndex 2 so they
+            // still render on top of the lines.
+            zIndex: 1,
           }}
           data-testid="timeline-grid-overlay"
         >
@@ -151,7 +156,7 @@ export function Timeline({
                   background: isNow
                     ? "var(--accent)"
                     : "var(--border-subtle)",
-                  opacity: isNow ? 0.6 : 0.3,
+                  opacity: isNow ? 0.5 : 0.3,
                 }}
               />
             );

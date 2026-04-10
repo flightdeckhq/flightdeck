@@ -122,7 +122,9 @@ function EventNodeComponent({
           border: "1.5px solid rgba(255,255,255,0.1)",
           transform: hovered ? "translateY(-50%) scale(1.25)" : "translateY(-50%) scale(1)",
           transition: "transform 150ms ease, opacity 300ms ease",
-          zIndex: hovered ? 10 : 1,
+          // zIndex 2 (was 1) so circles paint above the timeline
+          // grid line overlay which now sits at zIndex 1.
+          zIndex: hovered ? 10 : 2,
           opacity: finalOpacity,
           pointerEvents: isVisible ? "auto" : "none",
         }}

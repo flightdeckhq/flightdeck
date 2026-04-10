@@ -14,15 +14,36 @@ import { PolicyEventList } from "./PolicyEventList";
 import { createDirective } from "@/lib/api";
 import { X } from "lucide-react";
 
+/**
+ * Per-state session counts. Computed by Fleet.tsx via useMemo from
+ * the live flavors array so the SESSION STATES sidebar updates on
+ * every WebSocket fleet update. (FIX 1)
+ */
+export interface SessionStateCounts {
+  active: number;
+  idle: number;
+  stale: number;
+  closed: number;
+  lost: number;
+}
+
 interface FleetPanelProps {
   flavors: FlavorSummary[];
+  /**
+   * Pre-computed live session state counts. When provided, the
+   * sidebar reads from this prop directly rather than recomputing
+   * from flavors -- this guarantees the counts stay in sync with
+   * the flavors prop on every render. Optional so existing tests
+   * that pass only flavors continue to work.
+   */
+  sessionStateCounts?: SessionStateCounts;
   onFlavorClick?: (flavor: string) => void;
   activeFlavorFilter?: string | null;
   directiveEvents?: FeedEvent[];
   children?: React.ReactNode;
 }
 
-export function FleetPanel({ flavors, onFlavorClick, activeFlavorFilter, directiveEvents = [], children }: FleetPanelProps) {
+export function FleetPanel({ flavors, sessionStateCounts, onFlavorClick, activeFlavorFilter, directiveEvents = [], children }: FleetPanelProps) {
   const totalSessions = flavors.reduce((s, f) => s + f.session_count, 0);
   const totalActive = flavors.reduce((s, f) => s + f.active_count, 0);
   const totalTokens = flavors.reduce((s, f) => s + f.tokens_used_total, 0);
@@ -51,7 +72,7 @@ export function FleetPanel({ flavors, onFlavorClick, activeFlavorFilter, directi
         Session States
       </div>
       <div className="px-3 pb-3">
-        <SessionStateBar flavors={flavors} />
+        <SessionStateBar flavors={flavors} counts={sessionStateCounts} />
       </div>
 
       {/* Flavors */}

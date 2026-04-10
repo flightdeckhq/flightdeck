@@ -1,4 +1,4 @@
-import { useMemo, memo } from "react";
+import { memo, useMemo } from "react";
 import type { ScaleTime } from "d3-scale";
 import type { Session, AgentEvent } from "@/lib/types";
 import type { ViewMode } from "@/pages/Fleet";
@@ -40,6 +40,74 @@ function SwimLaneComponent({
   activeFilter,
   sessionVersions,
 }: SwimLaneProps) {
+  // A flavor is "inactive" when none of its sessions are active or
+  // idle -- only stale, closed, or lost. Inactive flavors render as
+  // a compact 28px row (no chevron, no event circles, muted text)
+  // so they sink to the bottom of the swimlane and stop blocking
+  // active flavors from view. (FIX 3 -- part B)
+  const isInactive = useMemo(
+    () =>
+      sessions.length > 0 &&
+      !sessions.some((s) => s.state === "active" || s.state === "idle"),
+    [sessions],
+  );
+
+  // Pick a single representative summary state for the inactive
+  // label so the user knows why the flavor is dim. Priority:
+  // stale > closed > lost.
+  const inactiveSummary = useMemo(() => {
+    if (!isInactive) return "";
+    const states = new Set(sessions.map((s) => s.state));
+    if (states.has("stale")) return "(stale)";
+    if (states.has("closed")) return "(closed)";
+    if (states.has("lost")) return "(lost)";
+    return "(inactive)";
+  }, [isInactive, sessions]);
+
+  // Compact 28px inactive row -- no chevron, no event circles,
+  // muted text, subtle border. The collapsed view never expands.
+  if (isInactive) {
+    return (
+      <div
+        className="flex items-center"
+        style={{
+          height: 28,
+          borderBottom: "1px solid var(--border-subtle)",
+          background: "var(--bg)",
+        }}
+        data-testid="swimlane-inactive"
+      >
+        <div
+          className="flex h-full w-[240px] shrink-0 items-center gap-2 px-3"
+          style={{
+            background: "var(--surface)",
+            borderRight: "1px solid var(--border-subtle)",
+            position: "sticky",
+            left: 0,
+            zIndex: 2,
+          }}
+        >
+          <span
+            className="text-[12px] font-mono"
+            style={{ color: "var(--text-muted)" }}
+          >
+            {flavor}
+          </span>
+          <span
+            className="font-mono text-[11px]"
+            style={{ color: "var(--text-muted)" }}
+          >
+            {inactiveSummary}
+          </span>
+        </div>
+        <div
+          className="relative h-full"
+          style={{ width: width - 240 }}
+        />
+      </div>
+    );
+  }
+
   return (
     <div style={{ borderBottom: "1px solid var(--border-subtle)" }}>
       {/* Collapsed flavor header — 48px */}
@@ -100,10 +168,11 @@ function SwimLaneComponent({
         </div>
       </div>
 
-      {/* Expanded session rows */}
+      {/* Expanded session rows. The +28 in maxHeight reserves space
+          for the SESSIONS sub-header (20px) plus the py-1 padding. */}
       <div
         style={{
-          maxHeight: expanded ? sessions.length * 40 + 8 : 0,
+          maxHeight: expanded ? sessions.length * 40 + 28 : 0,
           opacity: expanded ? 1 : 0,
           overflow: "hidden",
           transition: "max-height 300ms ease, opacity 200ms ease",
@@ -113,6 +182,29 @@ function SwimLaneComponent({
       >
         {expanded && (
           <div className="py-1">
+            {/* SESSIONS sub-header (FIX 4) */}
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                height: 20,
+                paddingLeft: 32,
+                borderBottom: "1px solid var(--border-subtle)",
+              }}
+            >
+              <span
+                style={{
+                  fontSize: 10,
+                  fontWeight: 700,
+                  letterSpacing: "0.08em",
+                  color: "var(--text-muted)",
+                  textTransform: "uppercase",
+                  fontFamily: "var(--font-ui)",
+                }}
+              >
+                Sessions
+              </span>
+            </div>
             {sessions.map((session) => (
               <SessionEventRow
                 key={session.session_id}

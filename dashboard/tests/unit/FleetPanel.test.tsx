@@ -109,4 +109,56 @@ describe("FleetPanel", () => {
     render(<FleetPanel flavors={mockFlavors} />);
     expect(screen.queryByText("(filtered)")).not.toBeInTheDocument();
   });
+
+  // FIX 1 -- counts must update live when flavors prop changes
+  it("session counts update when flavors prop changes", () => {
+    const fiveActive: FlavorSummary[] = [
+      {
+        flavor: "research-agent",
+        agent_type: "autonomous",
+        session_count: 5,
+        active_count: 5,
+        tokens_used_total: 0,
+        sessions: Array.from({ length: 5 }).map((_, i) => ({
+          session_id: `s${i}`, flavor: "research-agent", agent_type: "autonomous",
+          host: null, framework: null, model: null, state: "active" as const,
+          started_at: "", last_seen_at: "", ended_at: null, tokens_used: 0, token_limit: null,
+        })),
+      },
+    ];
+    const { rerender } = render(<FleetPanel flavors={fiveActive} />);
+    expect(screen.getByTestId("state-count-active")).toHaveTextContent("5");
+    expect(screen.getByTestId("state-count-idle")).toHaveTextContent("0");
+
+    // Transition 2 of the 5 sessions to idle and re-render with new
+    // flavors prop -- counts must reflect 3 active / 2 idle without
+    // remounting the component.
+    const twoIdle: FlavorSummary[] = [
+      {
+        ...fiveActive[0],
+        active_count: 3,
+        sessions: fiveActive[0].sessions.map((s, i) =>
+          i < 2 ? { ...s, state: "idle" as const } : s,
+        ),
+      },
+    ];
+    rerender(<FleetPanel flavors={twoIdle} />);
+    expect(screen.getByTestId("state-count-active")).toHaveTextContent("3");
+    expect(screen.getByTestId("state-count-idle")).toHaveTextContent("2");
+  });
+
+  it("uses sessionStateCounts prop when provided", () => {
+    // When the parent passes pre-computed counts, the bar reads them
+    // directly rather than re-deriving from flavors. This is the
+    // path Fleet.tsx uses to lift the computation up to where the
+    // flavors state lives. (FIX 1)
+    render(
+      <FleetPanel
+        flavors={inactiveFlavors}
+        sessionStateCounts={{ active: 7, idle: 1, stale: 0, closed: 0, lost: 0 }}
+      />,
+    );
+    expect(screen.getByTestId("state-count-active")).toHaveTextContent("7");
+    expect(screen.getByTestId("state-count-idle")).toHaveTextContent("1");
+  });
 });

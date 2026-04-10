@@ -100,13 +100,30 @@ export function Timeline({
     <div
       ref={scrollRef}
       className="relative"
-      style={{ overflowX: "auto", overflowY: "hidden" }}
+      // overflow-y: clip (NOT hidden) so this container does NOT
+      // establish a vertical scrolling context. That lets the time
+      // axis row use position: sticky; top: 0 to stick against
+      // Fleet.tsx's outer vertical scroller as flavor rows scroll
+      // past underneath. With overflow-y: hidden, the sticky element
+      // would stick to this container's own (zero-height) scroll and
+      // appear to never move. (FIX 2)
+      style={{ overflowX: "auto", overflowY: "clip" }}
       data-testid="timeline-scroll"
     >
       <div style={{ width: innerWidth, minWidth: "100%" }}>
-        {/* Shared time axis -- offset by the sticky left panel so it
-            starts at pixel 240 inside the scroll container. */}
-        <div className="flex">
+        {/* Shared time axis. Sticky on the vertical axis so it stays
+            pinned at the top of the right panel as flavor rows scroll
+            past. The container's parent (Fleet.tsx) provides vertical
+            scroll; this sticky positions against that scroll context. */}
+        <div
+          className="flex"
+          style={{
+            position: "sticky",
+            top: 0,
+            zIndex: 4,
+            background: "var(--bg)",
+          }}
+        >
           <div
             className="shrink-0"
             style={{
@@ -114,7 +131,7 @@ export function Timeline({
               height: 28,
               position: "sticky",
               left: 0,
-              zIndex: 3,
+              zIndex: 5,
               background: "var(--bg)",
               borderRight: "1px solid var(--border)",
             }}
@@ -127,6 +144,31 @@ export function Timeline({
               timeRange={timeRange}
             />
           </div>
+        </div>
+
+        {/* FLAVORS section header (FIX 4) */}
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            height: 24,
+            paddingLeft: 12,
+            borderBottom: "1px solid var(--border-subtle)",
+            background: "var(--bg)",
+          }}
+        >
+          <span
+            style={{
+              fontSize: 10,
+              fontWeight: 700,
+              letterSpacing: "0.08em",
+              color: "var(--text-muted)",
+              textTransform: "uppercase",
+              fontFamily: "var(--font-ui)",
+            }}
+          >
+            Flavors
+          </span>
         </div>
 
         {/* Flavor rows */}

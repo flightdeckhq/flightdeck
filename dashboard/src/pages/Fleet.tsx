@@ -9,7 +9,7 @@ import { LiveFeed } from "@/components/fleet/LiveFeed";
 import { EventDetailDrawer } from "@/components/fleet/EventDetailDrawer";
 import { Timeline } from "@/components/timeline/Timeline";
 import { SessionDrawer } from "@/components/session/SessionDrawer";
-import type { AgentEvent, FeedEvent } from "@/lib/types";
+import type { AgentEvent, FeedEvent, FlavorSummary } from "@/lib/types";
 import { FEED_MAX_EVENTS, PAUSE_QUEUE_MAX_EVENTS } from "@/lib/constants";
 import { eventsCache } from "@/hooks/useSessionEvents";
 
@@ -17,6 +17,31 @@ export type ViewMode = "swimlane" | "bars";
 export type TimeRange = "1m" | "5m" | "15m" | "30m" | "1h" | "6h";
 
 const TIME_RANGES: TimeRange[] = ["1m", "5m", "15m", "30m", "1h", "6h"];
+
+/**
+ * Sort flavors by activity priority so flavors with active or idle
+ * sessions always sit at the top of the swimlane and stale/closed
+ * ones sink to the bottom. Stable secondary order is alphabetical.
+ *
+ * Exported so unit tests can verify the ordering directly without
+ * mounting the full Fleet page (which would require mocking the
+ * WebSocket store and bulk events fetch). FIX 3 -- part A.
+ */
+export function sortFlavorsByActivity(flavors: FlavorSummary[]): FlavorSummary[] {
+  const priority = (states: string[]): number => {
+    if (states.includes("active")) return 0;
+    if (states.includes("idle")) return 1;
+    if (states.includes("stale")) return 2;
+    if (states.includes("lost")) return 3;
+    return 4;
+  };
+  return [...flavors].sort((a, b) => {
+    const pa = priority(a.sessions.map((s) => s.state));
+    const pb = priority(b.sessions.map((s) => s.state));
+    if (pa !== pb) return pa - pb;
+    return a.flavor.localeCompare(b.flavor);
+  });
+}
 
 export function Fleet() {
   const [feedEvents, setFeedEvents] = useState<FeedEvent[]>([]);
@@ -119,6 +144,30 @@ export function Fleet() {
     [feedEvents]
   );
 
+  // Session state counts derived from the live flavors array. This
+  // computation runs on every WebSocket message that updates flavors,
+  // so the SESSION STATES sidebar block stays current without any
+  // separate polling or local count state. (FIX 1 -- previously
+  // SessionStateBar computed counts from flavors itself, but a
+  // memoized parent could keep stale counts on screen between
+  // updates.)
+  const sessionStateCounts = useMemo(() => {
+    const counts = { active: 0, idle: 0, stale: 0, closed: 0, lost: 0 };
+    flavors.forEach((flavor) =>
+      flavor.sessions.forEach((s) => {
+        if (s.state in counts) {
+          counts[s.state as keyof typeof counts]++;
+        }
+      }),
+    );
+    return counts;
+  }, [flavors]);
+
+  // Sort flavors by activity priority. Re-sorts automatically on
+  // every flavors update via useMemo. See sortFlavorsByActivity
+  // above for the priority function. (FIX 3 -- part A)
+  const sortedFlavors = useMemo(() => sortFlavorsByActivity(flavors), [flavors]);
+
   if (loading && flavors.length === 0) {
     return (
       <div className="flex h-full items-center justify-center text-text-muted">
@@ -173,7 +222,8 @@ export function Fleet() {
   return (
     <div className="flex h-full">
       <FleetPanel
-        flavors={flavors}
+        flavors={sortedFlavors}
+        sessionStateCounts={sessionStateCounts}
         onFlavorClick={handleFlavorClick}
         activeFlavorFilter={flavorFilter}
         directiveEvents={directiveEvents}
@@ -346,7 +396,7 @@ export function Fleet() {
             scroll bubbles up here. */}
         <div className="flex-1" style={{ overflowY: "auto", overflowX: "hidden" }}>
           <Timeline
-            flavors={flavors}
+            flavors={sortedFlavors}
             flavorFilter={flavorFilter}
             viewMode={viewMode}
             timeRange={timeRange}

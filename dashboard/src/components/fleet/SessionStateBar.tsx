@@ -1,7 +1,22 @@
 import type { FlavorSummary } from "@/lib/types";
 
+interface SessionStateCounts {
+  active: number;
+  idle: number;
+  stale: number;
+  closed: number;
+  lost: number;
+}
+
 interface SessionStateBarProps {
   flavors: FlavorSummary[];
+  /**
+   * Optional pre-computed counts. When provided, the bar uses them
+   * directly so it stays in sync with the parent's useMemo result.
+   * Falls back to deriving from flavors when omitted (kept for
+   * existing tests). FIX 1.
+   */
+  counts?: SessionStateCounts;
 }
 
 const states = [
@@ -12,16 +27,8 @@ const states = [
   { key: "lost", label: "lost", colorVar: "var(--status-lost)" },
 ] as const;
 
-export function SessionStateBar({ flavors }: SessionStateBarProps) {
-  const counts = { active: 0, idle: 0, stale: 0, closed: 0, lost: 0 };
-
-  for (const f of flavors) {
-    for (const s of f.sessions) {
-      if (s.state in counts) {
-        counts[s.state as keyof typeof counts]++;
-      }
-    }
-  }
+export function SessionStateBar({ flavors, counts: countsProp }: SessionStateBarProps) {
+  const counts = countsProp ?? deriveCounts(flavors);
 
   return (
     <div className="flex gap-4">
@@ -41,4 +48,16 @@ export function SessionStateBar({ flavors }: SessionStateBarProps) {
       ))}
     </div>
   );
+}
+
+function deriveCounts(flavors: FlavorSummary[]): SessionStateCounts {
+  const counts: SessionStateCounts = { active: 0, idle: 0, stale: 0, closed: 0, lost: 0 };
+  for (const f of flavors) {
+    for (const s of f.sessions) {
+      if (s.state in counts) {
+        counts[s.state as keyof SessionStateCounts]++;
+      }
+    }
+  }
+  return counts;
 }

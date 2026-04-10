@@ -134,6 +134,10 @@ describe("Timeline", () => {
     const scrollEl = screen.getByTestId("timeline-scroll");
     // jsdom returns the inline style verbatim
     expect(scrollEl.style.overflowX).toBe("auto");
-    expect(scrollEl.style.overflowY).toBe("hidden");
+    // overflow-y is "clip" (not "hidden") so it does NOT establish a
+    // vertical scroll context -- this lets the time axis row use
+    // position: sticky; top: 0 against the parent vertical scroller.
+    // FIX 2.
+    expect(scrollEl.style.overflowY).toBe("clip");
   });
 });

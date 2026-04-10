@@ -153,10 +153,16 @@ export function Timeline({
                   top: 0,
                   bottom: 0,
                   width: 1,
+                  // var(--border) (medium brightness, between
+                  // --border-subtle and --border-strong) gives the
+                  // non-now lines enough contrast to be visible
+                  // through the row backgrounds without competing
+                  // with event circles. var(--border-default) does
+                  // not exist in the theme.
                   background: isNow
                     ? "var(--accent)"
-                    : "var(--border-subtle)",
-                  opacity: isNow ? 0.5 : 0.3,
+                    : "var(--border)",
+                  opacity: isNow ? 0.6 : 0.4,
                 }}
               />
             );

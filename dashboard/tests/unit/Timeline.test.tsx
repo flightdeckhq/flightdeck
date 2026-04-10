@@ -198,12 +198,15 @@ describe("Timeline", () => {
     expect((nowLine as HTMLElement).style.background).toBe("var(--accent)");
   });
 
-  it("non-now grid lines use var(--border-subtle)", () => {
+  it("non-now grid lines use var(--border)", () => {
     render(<Timeline {...defaultProps} timeRange="5m" />);
-    // Index 0..4 are the non-now lines
+    // Index 0..4 are the non-now lines. var(--border) is the
+    // medium-brightness border color (between --border-subtle and
+    // --border-strong) -- visible through row backgrounds without
+    // competing with event circles.
     for (let i = 0; i < 5; i++) {
       const line = screen.getByTestId(`grid-line-${i}`);
-      expect((line as HTMLElement).style.background).toBe("var(--border-subtle)");
+      expect((line as HTMLElement).style.background).toBe("var(--border)");
     }
   });
 

@@ -87,7 +87,14 @@ export function Timeline({
   return (
     <div
       className="relative"
-      style={{ overflow: "hidden" }}
+      // overflow-x: hidden clips circles that extend past the right
+      // edge of the fixed-width canvas. overflow-y: clip (NOT hidden)
+      // does not establish a scroll container, which lets the time
+      // axis row use position: sticky; top: 0 against Fleet.tsx's
+      // outer vertical scroller. With overflow: hidden, the sticky
+      // time axis would stick to this (zero-scroll) container and
+      // scroll away with the flavor rows instead.
+      style={{ overflowX: "hidden", overflowY: "clip" }}
       data-testid="timeline-scroll"
     >
       <div style={{ width: innerWidth, minWidth: "100%", position: "relative" }}>

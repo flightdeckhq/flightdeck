@@ -118,13 +118,16 @@ describe("Timeline", () => {
     expect(TIMELINE_WIDTH_PX).toBe(900);
   });
 
-  it("scroll container is overflow: hidden (no scrollbar)", () => {
+  it("scroll container clips both axes without becoming a scroll container", () => {
     render(<Timeline {...defaultProps} timeRange="1h" />);
     const scrollEl = screen.getByTestId("timeline-scroll");
-    // The fixed-width canvas always fits in the visible viewport
-    // (240 + 900 = 1140px). overflow: hidden ensures no scrollbar
-    // appears even on narrow viewports.
-    expect(scrollEl.style.overflow).toBe("hidden");
+    // overflow-x: hidden clips circles that extend past the right
+    // edge of the fixed-width canvas.
+    expect(scrollEl.style.overflowX).toBe("hidden");
+    // overflow-y: clip (NOT hidden) does not create a scroll
+    // container, so the sticky time axis stays pinned against
+    // Fleet.tsx's outer vertical scroller as flavor rows scroll past.
+    expect(scrollEl.style.overflowY).toBe("clip");
   });
 
   // ---- Relative time axis labels ----

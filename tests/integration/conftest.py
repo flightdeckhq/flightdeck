@@ -90,10 +90,61 @@ def post_heartbeat(session_id: str) -> dict[str, Any]:
 
 
 def get_fleet() -> dict[str, Any]:
-    """GET /v1/fleet from the query API."""
-    req = urllib.request.Request(f"{API_URL}/v1/fleet")
-    with urllib.request.urlopen(req, timeout=5) as resp:
-        return json.loads(resp.read())  # type: ignore[no-any-return]
+    """GET /v1/fleet from the query API.
+
+    Pages through every flavor until the response is exhausted, then
+    merges flavors that span page boundaries (the API groups sessions
+    by flavor inside each page; the same flavor can appear on the
+    next page with additional sessions). This is required so a
+    session whose flavor sorts alphabetically past the first 50 in
+    the fleet is still discoverable by callers like
+    session_exists_in_fleet and wait_for_session_in_fleet.
+    """
+    limit = 100
+    offset = 0
+    merged: dict[str, dict[str, Any]] = {}
+    flavor_order: list[str] = []
+    total = 0
+    while True:
+        url = f"{API_URL}/v1/fleet?limit={limit}&offset={offset}"
+        req = urllib.request.Request(url)
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read())
+        flavors = data.get("flavors", [])
+        total = data.get("total_session_count", total)
+        page_session_count = 0
+        for flavor in flavors:
+            page_session_count += len(flavor.get("sessions", []))
+            name = flavor.get("flavor", "")
+            if name not in merged:
+                merged[name] = dict(flavor)
+                flavor_order.append(name)
+            else:
+                # Same flavor straddled a page boundary -- append its
+                # additional sessions onto the existing merged entry.
+                merged[name].setdefault("sessions", []).extend(
+                    flavor.get("sessions", [])
+                )
+                merged[name]["session_count"] = (
+                    merged[name].get("session_count", 0)
+                    + flavor.get("session_count", 0)
+                )
+                merged[name]["active_count"] = (
+                    merged[name].get("active_count", 0)
+                    + flavor.get("active_count", 0)
+                )
+                merged[name]["tokens_used_total"] = (
+                    merged[name].get("tokens_used_total", 0)
+                    + flavor.get("tokens_used_total", 0)
+                )
+        if offset + limit >= total or page_session_count < limit:
+            break
+        offset += limit
+
+    return {
+        "flavors": [merged[name] for name in flavor_order],
+        "total_session_count": total,
+    }
 
 
 def get_session(session_id: str) -> dict[str, Any]:
@@ -103,17 +154,47 @@ def get_session(session_id: str) -> dict[str, Any]:
         return json.loads(resp.read())  # type: ignore[no-any-return]
 
 
+def _get_fleet_page(limit: int, offset: int) -> dict[str, Any]:
+    """GET /v1/fleet?limit=&offset= -- single page."""
+    url = f"{API_URL}/v1/fleet?limit={limit}&offset={offset}"
+    req = urllib.request.Request(url)
+    with urllib.request.urlopen(req, timeout=5) as resp:
+        return json.loads(resp.read())  # type: ignore[no-any-return]
+
+
 def wait_for_session_in_fleet(
     session_id: str, timeout: float = 5.0
 ) -> dict[str, Any] | None:
-    """Poll GET /v1/fleet until the session appears or timeout."""
+    """Poll GET /v1/fleet until the session appears or timeout.
+
+    Pages through all sessions on each poll so a session does not get
+    missed when accumulated test data pushes it past the default 50
+    session limit. Without pagination, the helper used to silently
+    return None for any session whose flavor sorted alphabetically
+    after the first 50 in the fleet, producing intermittent failures
+    in test_session_states.test_stale_after_no_signal that depended on
+    test ordering.
+    """
     deadline = time.time() + timeout
+    limit = 50
     while time.time() < deadline:
-        fleet = get_fleet()
-        for flavor in fleet.get("flavors", []):
-            for sess in flavor.get("sessions", []):
-                if sess.get("session_id") == session_id:
-                    return sess  # type: ignore[no-any-return]
+        offset = 0
+        while True:
+            data = _get_fleet_page(limit, offset)
+            flavors = data.get("flavors", [])
+            for flavor in flavors:
+                for sess in flavor.get("sessions", []):
+                    if sess.get("session_id") == session_id:
+                        return sess  # type: ignore[no-any-return]
+            # If fewer sessions returned than limit, this was the last page.
+            page_session_count = sum(
+                len(f.get("sessions", [])) for f in flavors
+            )
+            total = data.get("total_session_count", page_session_count)
+            if offset + limit >= total or page_session_count < limit:
+                break
+            offset += limit
+        # Not found on this poll -- wait and retry.
         time.sleep(0.5)
     return None
 

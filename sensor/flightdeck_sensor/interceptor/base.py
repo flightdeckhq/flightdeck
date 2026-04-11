@@ -238,8 +238,21 @@ def _post_call(
             estimated,
         )
 
-    resp_model = provider.get_model({})
-    # Try to get model from response
+    # Default to the model from the request kwargs (if known) so the
+    # event is correctly labelled when the response object does not
+    # expose ``.model`` directly. This matters for callers that route
+    # through the SDK's raw-response wrapper -- e.g. langchain-openai
+    # uses ``client.with_raw_response.create(**payload)`` which returns
+    # a ``LegacyAPIResponse``; ``getattr(response, "model", "")`` then
+    # returns ``""`` because the raw-response object does not surface
+    # the parsed ``model`` field. The request kwargs always carry the
+    # model the caller asked for, which is the right value to report
+    # for those paths.
+    resp_model = provider.get_model(call_kwargs or {})
+    # Try to get model from response object as an override -- this
+    # catches model substitutions (e.g. some providers may rewrite
+    # the requested model to a deployment alias) when the response
+    # object exposes ``.model`` as an attribute.
     with contextlib.suppress(Exception):
         resp_model = getattr(response, "model", "") or resp_model
 

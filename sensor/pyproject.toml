@@ -41,6 +41,16 @@ dev = [
     "respx>=0.20",
     "anthropic>=0.20",
     "openai>=1.0",
+    # Used by tests/integration/test_framework_patching.py to verify
+    # that flightdeck_sensor.patch() transparently intercepts LLM calls
+    # made through agent frameworks without any explicit wrap() call.
+    # The framework instantiates its own internal Anthropic / OpenAI
+    # client; the sensor's class-level patching descriptor wraps it
+    # on first .messages / .chat access. See Phase 4.5+ Phase 3.
+    "langchain-anthropic>=0.1",
+    "langchain-openai>=0.1",
+    "llama-index-llms-anthropic>=0.1",
+    "llama-index-llms-openai>=0.1",
 ]
 
 [tool.hatch.build.targets.wheel]

@@ -133,6 +133,80 @@ class SensorCompletions:
             return base.call_async(real_fn, kwargs, self._session, self._provider)
         return base.call(real_fn, kwargs, self._session, self._provider)
 
+    @property
+    def with_raw_response(self) -> _SensorCompletionsRawResponseWrapper:
+        """Return an intercept wrapper for ``chat.completions.with_raw_response``.
+
+        ``langchain-openai`` (1.x) uses
+        ``self.client.with_raw_response.create(**payload)`` to drive
+        every chat call -- where ``self.client`` is the chat.completions
+        resource (which the sensor's class-level patch wraps as a
+        SensorCompletions). Without this property, ``__getattr__`` would
+        fall through to ``self._real.with_raw_response``, which is the
+        cached_property on the underlying real ``Completions`` and
+        returns ``CompletionsWithRawResponse(real_completions)``. That
+        wrapper captures ``real_completions.create`` (the unwrapped
+        bound method) at construction time via
+        ``_legacy_response.to_raw_response_wrapper``, so subsequent
+        ``.create()`` calls bypass the sensor pipeline entirely.
+
+        The override here returns a small wrapper class whose
+        ``.create()`` runs the sensor pre/post intercept around the
+        captured raw-response create closure. The closure still injects
+        the ``X-Stainless-Raw-Response`` header so the framework gets
+        the same return shape it expects (``LegacyAPIResponse``).
+        """
+        return _SensorCompletionsRawResponseWrapper(
+            self._real.with_raw_response,
+            self._session,
+            self._provider,
+            is_async=self._is_async,
+        )
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._real, name)
+
+
+class _SensorCompletionsRawResponseWrapper:
+    """Sensor proxy for ``CompletionsWithRawResponse`` (langchain-openai path).
+
+    Wraps the SDK's ``CompletionsWithRawResponse`` instance and runs the
+    sensor's pre/post intercept around its ``create`` closure. The
+    closure is the result of
+    ``_legacy_response.to_raw_response_wrapper(real_completions.create)``
+    -- treating it as the ``real_fn`` passed into ``base.call`` /
+    ``base.call_async`` produces the same intercept behavior the
+    direct ``SensorCompletions.create`` path provides, while preserving
+    the SDK's raw-response return shape that langchain expects.
+
+    Pass-through ``__getattr__`` delegates ``.parse``, ``.retrieve``,
+    ``.update``, ``.list``, ``.delete`` etc to the underlying SDK
+    wrapper unchanged. Only ``.create`` is intercepted because that
+    is the only method that triggers an LLM call worth metering.
+    """
+
+    def __init__(
+        self,
+        real_wrapper: Any,
+        session: Session,
+        provider: OpenAIProvider,
+        *,
+        is_async: bool = False,
+    ) -> None:
+        self._real = real_wrapper
+        self._session = session
+        self._provider = provider
+        self._is_async = is_async
+
+    def create(self, **kwargs: Any) -> Any:
+        """Intercept the raw-response create closure with the sensor pipeline."""
+        real_fn = self._real.create
+        if self._is_async:
+            return base.call_async(
+                real_fn, kwargs, self._session, self._provider
+            )
+        return base.call(real_fn, kwargs, self._session, self._provider)
+
     def __getattr__(self, name: str) -> Any:
         return getattr(self._real, name)
 

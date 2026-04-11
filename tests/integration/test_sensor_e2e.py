@@ -466,40 +466,34 @@ def test_sensor_capture_prompts_true(
 
 
 # ======================================================================
-# Test 4 -- Custom directive: decorator → registry → init() → POST
+# Test 4 -- Custom directive registered AND triggered end-to-end
 # ======================================================================
 #
-# IMPORTANT: this test does NOT exercise the sensor's auto-sync path
-# (Session.start → ControlPlaneClient.sync_directives) end-to-end. The
-# sensor only knows ONE base URL (the ingestion URL). It builds the
-# sync URL as f"{base_url}/v1/directives/sync" which in dev becomes
-# http://localhost:4000/ingest/v1/directives/sync -- but the dev nginx
-# config only routes /ingest/* to the ingestion service, and the
-# /v1/directives/sync handler lives on the API service. The result is
-# a silent 404 caught by sync_directives' broad except block.
+# Strengthened in the Part 5 follow-up commit that fixed B-A (drain
+# thread now applies directives via the directive_callback wired
+# through Session.__init__) and B-D (directive_result events use the
+# worker-schema field names so directive_status / result / error
+# survive ingestion).
 #
-# This is a Critical finding documented in the Part 5 report. To make
-# the registration path observable, this test pre-registers the
-# directive via the auth-bearing /api/v1/directives/register endpoint
-# directly (the same path test_directives.py uses). The sensor's local
-# registry is still populated via the @directive decorator, the sensor
-# still calls sync (which fails open), and the rest of the path is
-# verified.
+# B-B is still open (KI14): the sensor's auto-sync URL routing
+# targets /ingest/v1/directives/sync which 404s in dev. The test
+# works around this by pre-registering the directive via the
+# auth-bearing /api/v1/directives/register endpoint directly. The
+# sensor's local registry is still populated via the @directive
+# decorator, init() still calls sync (which fails open), and the
+# rest of the path -- POST → drain → _apply_directive → handler
+# invocation → directive_result event in DB -- is verified.
 
 
-def test_sensor_custom_directive_registered(
+def test_sensor_custom_directive_registered_and_triggered(
     sensor_reset: None, unique_flavor: str,
 ) -> None:
-    """@directive decorator populates registry; manual API register makes
-    the directive triggerable; sensor.init() does not crash on a failing
-    sync; POST /v1/directives action=custom inserts a directive row.
-
-    The handler is NEVER actually invoked because directive delivery via
-    the post_call queue path is also broken (see module docstring).
-    """
+    """Decorator registers handler, POST custom directive, drain thread
+    applies it, handler runs, directive_result lands in DB."""
     import urllib.request
 
     flavor = unique_flavor
+    handler_calls: list[dict[str, Any]] = []
 
     @flightdeck_sensor.directive(
         name="e2e_test_action",
@@ -514,16 +508,16 @@ def test_sensor_custom_directive_registered(
         ],
     )
     def e2e_test_action(ctx: Any, value: str = "default_val") -> dict[str, Any]:
+        handler_calls.append({"value": value})
         return {"executed": True, "value": value}
 
     # The decorator must populate the local registry.
     assert "e2e_test_action" in _directive_registry
     fingerprint = _directive_registry["e2e_test_action"].fingerprint
 
-    # Pre-register the directive via /api/v1/directives/register (the
-    # auth-bearing path the existing test_directives.py suite uses).
-    # This works around the sensor URL routing bug for the duration of
-    # this test.
+    # KI14 workaround: pre-register the directive via the API directly
+    # so the fingerprint exists in custom_directives by the time the
+    # POST below runs (the sensor's sync_directives 404s in dev).
     register_body = {
         "flavor": flavor,
         "directives": [{
@@ -552,12 +546,11 @@ def test_sensor_custom_directive_registered(
     with respx.mock(assert_all_called=False) as rmock:
         _mock_anthropic_messages(rmock)
 
-        # Sensor init should not crash even though sync_directives 404s
-        # against the dev nginx routing. fail-open per design.
         flightdeck_sensor.init(server=INGESTION_URL, token=TOKEN)
+        session_id = flightdeck_sensor.get_status().session_id
 
         # Verify the directive is in the API list (placed there by the
-        # manual register above, not by the sensor).
+        # manual register above).
         req = urllib.request.Request(
             f"{API_URL}/v1/directives/custom?flavor={flavor}",
         )
@@ -568,8 +561,9 @@ def test_sensor_custom_directive_registered(
             f"expected e2e_test_action in /v1/directives/custom, got {names}"
         )
 
-        # POST /v1/directives action=custom against the sensor's session.
-        session_id = flightdeck_sensor.get_status().session_id
+        # POST the custom directive against the sensor's session BEFORE
+        # making the intercepted call so it is in the response envelope
+        # of the very next post_event call from the drain thread.
         code, _ = _post_directive({
             "action": "custom",
             "directive_name": "e2e_test_action",
@@ -586,31 +580,82 @@ def test_sensor_custom_directive_registered(
             f"expected 1 custom directive row, got {len(custom_rows)}"
         )
 
+        # Make an intercepted call. This enqueues a post_call event,
+        # the drain thread posts it, ingestion returns the pending
+        # custom directive in the response envelope, the drain thread
+        # invokes _apply_directive (B-A fix), which calls
+        # _execute_custom_directive, which calls the handler.
+        client = flightdeck_sensor.wrap(
+            anthropic.Anthropic(api_key="test-key")
+        )
+        client.messages.create(
+            model="claude-sonnet-4-6",
+            messages=[{"role": "user", "content": "trigger"}],
+            max_tokens=10,
+        )
+
+        # 1. Handler was actually called with the parameter from the
+        #    directive POST.
+        wait_until(
+            lambda: len(handler_calls) > 0,
+            timeout=15,
+            msg="custom directive handler was not invoked",
+        )
+        assert handler_calls == [{"value": "hello_from_e2e"}], (
+            f"unexpected handler invocations: {handler_calls}"
+        )
+
+        # 2. directive_result event landed in the DB with
+        #    directive_status="success" and the right directive_name
+        #    (B-D fix means these fields now survive ingestion).
+        def _result_in_db() -> bool:
+            for e in _query_events_for_flavor(flavor):
+                if e.get("event_type") != "directive_result":
+                    continue
+                payload = e.get("payload") or {}
+                if payload.get("directive_name") != "e2e_test_action":
+                    continue
+                if payload.get("directive_status") != "success":
+                    continue
+                return True
+            return False
+
+        wait_until(
+            _result_in_db,
+            timeout=15,
+            msg="directive_result(success) event for e2e_test_action not in DB",
+        )
+
+        # 3. Directive row is no longer pending -- ingestion's atomic
+        #    LookupPending UPDATE...RETURNING marked delivered_at when
+        #    the drain thread fetched it.
+        def _delivered() -> bool:
+            for d in _query_directives_for_session(session_id):
+                if d.get("action") == "custom" and d.get("delivered_at"):
+                    return True
+            return False
+
+        wait_until(
+            _delivered,
+            timeout=15,
+            msg="custom directive was not marked delivered",
+        )
+
 
 # ======================================================================
-# Test 5 -- Shutdown directive (delivered to ingestion, dropped by drain)
+# Test 5 -- Shutdown directive end-to-end
 # ======================================================================
 
 
 def test_sensor_shutdown_directive_delivered(
     sensor_reset: None, unique_flavor: str,
 ) -> None:
-    """POST shutdown → directive row inserted → sensor's post_call runs.
+    """POST shutdown → make call → drain delivers shutdown to session →
+    directive_result(acknowledged) lands in DB → teardown closes session.
 
-    NOTE: this test stops short of asserting "directive_result
-    acknowledged in DB" or "session transitions to closed" because the
-    sensor's drain thread (transport/client.py:_drain_loop) calls
-    ControlPlaneClient.post_event(item) and DISCARDS the returned
-    Directive. The drain has no Session reference and never calls
-    _apply_directive. Directives delivered in response envelopes for
-    queue-posted events (post_call, tool_call, directive_result) are
-    silently dropped. See the Part 5 finding "drain thread drops
-    queue-delivered directives" for the full bug report.
-
-    The assertions below cover what IS observable on the current code
-    path: the directive row is inserted, the sensor's post_call event
-    is processed by the workers (proving the drain thread ran), and
-    nothing crashes.
+    Strengthened in the Part 5 follow-up commit that fixed B-A. Before
+    the fix the drain thread silently dropped the shutdown directive
+    and the test could only verify "directive row inserted".
     """
     flavor = unique_flavor
     with respx.mock(assert_all_called=False) as rmock:
@@ -626,15 +671,6 @@ def test_sensor_shutdown_directive_delivered(
         })
         assert code == 201, f"expected 201, got {code}"
 
-        # Directive row inserted (no need to wait -- POST is synchronous
-        # against the API, the row exists by the time _post_directive
-        # returns).
-        rows = _query_directives_for_session(session_id)
-        shutdown_rows = [r for r in rows if r.get("action") == "shutdown"]
-        assert len(shutdown_rows) == 1, (
-            f"expected 1 shutdown directive row, got {len(shutdown_rows)}"
-        )
-
         client = flightdeck_sensor.wrap(
             anthropic.Anthropic(api_key="test-key")
         )
@@ -644,10 +680,43 @@ def test_sensor_shutdown_directive_delivered(
             max_tokens=10,
         )
 
-        # Verify the sensor's post_call event reached the workers --
-        # this proves the drain thread ran. Whether it ALSO applied
-        # the shutdown is the broken-by-design path noted above.
-        _wait_for_event_type(flavor, "post_call", timeout=15)
+        # Drain processes post_call → ingestion returns shutdown
+        # directive in envelope → drain calls _apply_directive →
+        # ack enqueued (directive_status="acknowledged") and
+        # _shutdown_requested=True. The ack lands in the DB on the
+        # drain loop's next iteration.
+        def _ack_in_db() -> bool:
+            for e in _query_events_for_flavor(flavor):
+                if e.get("event_type") != "directive_result":
+                    continue
+                payload = e.get("payload") or {}
+                if payload.get("directive_name") != "shutdown":
+                    continue
+                if payload.get("directive_status") != "acknowledged":
+                    continue
+                return True
+            return False
+
+        wait_until(
+            _ack_in_db,
+            timeout=15,
+            msg="shutdown acknowledgement event not in DB",
+        )
+
+        # teardown calls Session.end() which posts session_end
+        # synchronously; the workers then update sessions.state to
+        # "closed". Wait for that transition.
+        flightdeck_sensor.teardown()
+
+    def _state_closed() -> bool:
+        sess = _query_session_for_flavor(flavor)
+        return sess is not None and sess.get("state") == "closed"
+
+    wait_until(
+        _state_closed,
+        timeout=15,
+        msg=f"session for flavor {flavor} did not transition to closed",
+    )
 
 
 # ======================================================================
@@ -658,26 +727,26 @@ def test_sensor_shutdown_directive_delivered(
 def test_sensor_degrade_directive_via_policy_threshold(
     sensor_reset: None, unique_flavor: str,
 ) -> None:
-    """Server policy crosses degrade threshold → workers write degrade row.
+    """Server policy crosses degrade threshold → second intercepted call
+    uses the degraded model.
 
-    POST /v1/directives only accepts action ∈ {shutdown, shutdown_flavor,
-    custom} -- the user spec asked for a "POST degrade" path that does
-    not exist in the API. Degrade directives are only created server-
-    side by the workers' policy evaluator when the degrade_at_pct
-    threshold is crossed.
+    Strengthened in the Part 5 follow-up commit. The previous version
+    only verified that the workers wrote the degrade row. Now the test
+    actually drives a second LLM call and asserts the post_call event
+    in the DB has the degraded model name.
 
-    Same drain-thread caveat as the shutdown test: this verifies the
-    workers wrote the degrade row. The sensor's drain still discards
-    directives delivered in response envelopes, so the test does NOT
-    assert "second call uses degraded model" -- that requires the bug
-    fix tracked as a Part 5 finding.
+    The mock provider echoes the request's ``model`` field back into
+    the response so that the sensor's post_call event reports the
+    model the sensor actually sent (which after _pre_call's DEGRADE
+    swap is the degraded model).
     """
     flavor = unique_flavor
+    degraded_model = "claude-haiku-4-5-20251001"
 
-    # warn=5, degrade=15, block=100 -- the mock's 18 tokens crosses
-    # degrade (and warn) but not block. The Go PolicyEvaluator fires
-    # the degrade branch first and returns, so warn does NOT fire on
-    # the same evaluation.
+    # warn=5, degrade=15, block=100. The mock returns 18 tokens. After
+    # the first call tokens_used=18, projected for the second call is
+    # 18+10=28, pct=28% which crosses degrade (15%) but not block
+    # (100%). _pre_call swaps the model on the second call.
     code, policy_body = _post_policy({
         "scope": "flavor",
         "scope_value": flavor,
@@ -685,12 +754,19 @@ def test_sensor_degrade_directive_via_policy_threshold(
         "warn_at_pct": 5,
         "degrade_at_pct": 15,
         "block_at_pct": 100,
-        "degrade_to": "claude-haiku-4-5-20251001",
+        "degrade_to": degraded_model,
     })
     assert code == 201, f"expected 201 from policy create, got {code}"
 
+    def _echo_model_handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        model = body.get("model", "claude-sonnet-4-6")
+        return httpx.Response(200, json={**ANTHROPIC_RESPONSE, "model": model})
+
     with respx.mock(assert_all_called=False) as rmock:
-        _mock_anthropic_messages(rmock)
+        rmock.post("https://api.anthropic.com/v1/messages").mock(
+            side_effect=_echo_model_handler
+        )
 
         flightdeck_sensor.init(server=INGESTION_URL, token=TOKEN)
         session_id = flightdeck_sensor.get_status().session_id
@@ -698,16 +774,80 @@ def test_sensor_degrade_directive_via_policy_threshold(
         client = flightdeck_sensor.wrap(
             anthropic.Anthropic(api_key="test-key")
         )
+
+        # Call 1 -- triggers a post_call event that the workers'
+        # policy evaluator processes. After processing, the workers
+        # write a degrade directive into the directives table because
+        # the session's tokens_used (18) has crossed degrade_at_pct
+        # (15% of 100 = 15 tokens).
+        first = client.messages.create(
+            model="claude-sonnet-4-6",
+            messages=[{"role": "user", "content": "first"}],
+            max_tokens=10,
+        )
+        assert first.model == "claude-sonnet-4-6"
+
+        # Wait until the workers have written the degrade directive
+        # into the database.
+        degrade = _wait_for_directive_action(session_id, "degrade", timeout=15)
+        assert degrade["flavor"] == flavor
+        assert degrade.get("degrade_to") == degraded_model
+
+        # Call 2 -- the sensor's drain thread will pick up this
+        # post_call event, and ingestion will return the pending
+        # degrade directive in the response envelope. The drain
+        # thread (B-A fix) calls _apply_directive(DEGRADE) which
+        # arms PolicyCache._forced_degrade (B-E fix). Call 2 itself
+        # still goes out with sonnet because the swap only happens
+        # AFTER the directive is delivered.
         client.messages.create(
             model="claude-sonnet-4-6",
-            messages=[{"role": "user", "content": "trigger"}],
+            messages=[{"role": "user", "content": "second"}],
             max_tokens=10,
         )
 
-        _wait_for_event_type(flavor, "post_call", timeout=15)
-        degrade = _wait_for_directive_action(session_id, "degrade", timeout=15)
-        assert degrade["flavor"] == flavor
-        assert degrade.get("degrade_to") == "claude-haiku-4-5-20251001"
+        # Wait until the directive has been marked delivered, which
+        # is the proof point that the drain thread received and acted
+        # on it (delivered_at is populated by ingestion's atomic
+        # UPDATE...RETURNING when the drain pulled it).
+        def _directive_delivered() -> bool:
+            for d in _query_directives_for_session(session_id):
+                if d.get("action") == "degrade" and d.get("delivered_at"):
+                    return True
+            return False
+
+        wait_until(
+            _directive_delivered,
+            timeout=15,
+            msg="degrade directive was not marked delivered",
+        )
+
+        # Call 3 -- _pre_call now sees PolicyCache._forced_degrade
+        # and swaps the model to haiku. The mock echoes haiku back,
+        # so response.model is haiku, and the sensor's post_call
+        # event in the DB records model=haiku.
+        third = client.messages.create(
+            model="claude-sonnet-4-6",
+            messages=[{"role": "user", "content": "third"}],
+            max_tokens=10,
+        )
+        assert third.model == degraded_model, (
+            f"expected response model {degraded_model}, got {third.model}"
+        )
+
+        # And the sensor's post_call event for the third call records
+        # the degraded model in the DB.
+        def _post_call_with_degraded_model() -> bool:
+            for e in _query_events_for_flavor(flavor):
+                if e.get("event_type") == "post_call" and e.get("model") == degraded_model:
+                    return True
+            return False
+
+        wait_until(
+            _post_call_with_degraded_model,
+            timeout=15,
+            msg=f"no post_call event with model={degraded_model}",
+        )
 
     # Cleanup the policy row
     if policy_body.get("id"):

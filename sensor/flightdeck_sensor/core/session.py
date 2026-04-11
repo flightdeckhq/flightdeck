@@ -51,10 +51,13 @@ class Session:
         self.config = config
         self.client = client
 
-        # Lazy import to avoid circular dependency at module level.
-        from flightdeck_sensor.transport.client import EventQueue as LocalEventQueue
-
-        self.event_queue: EventQueue = event_queue or LocalEventQueue(client)
+        # All Session state must be initialised BEFORE the EventQueue
+        # so the drain thread (which starts inside EventQueue.__init__)
+        # can safely call ``self._apply_directive`` from the moment it
+        # is alive. Items only enter the queue after start(), so in
+        # practice the drain thread idles in queue.get() until the
+        # session is fully wired -- but the order here is the safe
+        # invariant.
         self.policy = PolicyCache(
             local_limit=config.limit,
             local_warn_at=config.warn_at,
@@ -77,6 +80,23 @@ class Session:
         # to the session_start event payload only. The control plane
         # stores it once in sessions.context and never updates it.
         self._context: dict[str, Any] = {}
+
+        # Lazy import to avoid circular dependency at module level.
+        from flightdeck_sensor.transport.client import EventQueue as LocalEventQueue
+
+        # Pass _apply_directive as the drain-thread directive callback so
+        # directives delivered in response envelopes for queue-posted
+        # events (post_call, tool_call, directive_result) actually get
+        # applied to the session. Without this callback, the drain
+        # thread would discard every directive returned from a
+        # post_call -- which is exactly the bug Phase 4.5 audit Part 5
+        # B-A documented. Tests / external callers can still pass an
+        # explicit ``event_queue`` to opt out (e.g. unit tests that
+        # mock the queue entirely).
+        self.event_queue: EventQueue = event_queue or LocalEventQueue(
+            client,
+            directive_callback=self._apply_directive,
+        )
 
     # ------------------------------------------------------------------
     # Public API
@@ -338,14 +358,28 @@ class Session:
         result: Any = None,
         error: str | None = None,
     ) -> dict[str, Any]:
-        """Build a directive_result event payload."""
-        return self._build_payload(
+        """Build a directive_result event payload for a custom directive.
+
+        Field names match the worker's ``consumer.EventPayload`` schema
+        (``directive_status`` / ``result`` / ``error``) so that
+        ``BuildEventExtra`` can persist them into ``events.payload``.
+        Previously this method emitted ``directive_success`` /
+        ``directive_result`` / ``directive_error``, none of which the
+        worker decoded -- causing the success flag, the handler return
+        value, and any handler error message to be silently dropped at
+        the ingestion boundary. Phase 4.5 audit B-D fix.
+        """
+        payload = self._build_payload(
             EventType.DIRECTIVE_RESULT,
             directive_name=directive_name,
-            directive_success=success,
-            directive_result=result,
-            directive_error=error,
+            directive_action="custom",
+            directive_status="success" if success else "error",
         )
+        if result is not None:
+            payload["result"] = result
+        if error is not None:
+            payload["error"] = error
+        return payload
 
     def _execute_custom_directive(self, directive: Directive) -> None:
         """Execute a custom directive handler by name.
@@ -560,7 +594,15 @@ class Session:
                 "[flightdeck] shutdown directive received: %s",
                 directive.reason,
             )
-            # Acknowledge shutdown before acting — flush synchronously
+            # Acknowledge shutdown before acting. flush() is synchronous
+            # only when we're NOT on the drain thread (e.g. when this
+            # method was called via the synchronous Session.start /
+            # Session.end path). Calling flush() from the drain thread
+            # itself would deadlock until the flush timeout because
+            # Queue.join() waits for unfinished_tasks=0 and the drain
+            # thread has not yet called task_done() for the item whose
+            # response triggered this callback. The ack will be
+            # processed on the drain loop's next iteration anyway.
             ack = self._build_payload(
                 EventType.DIRECTIVE_RESULT,
                 directive_name="shutdown",
@@ -572,14 +614,15 @@ class Session:
                 "reason": directive.reason or "directive received",
             }
             self.event_queue.enqueue(ack)
-            try:
-                self.event_queue.flush()
-            except Exception as exc:
-                _log.warning(
-                    "[flightdeck] shutdown: failed to flush "
-                    "acknowledgement event: %s",
-                    exc,
-                )
+            if not self.event_queue.is_drain_thread():
+                try:
+                    self.event_queue.flush()
+                except Exception as exc:
+                    _log.warning(
+                        "[flightdeck] shutdown: failed to flush "
+                        "acknowledgement event: %s",
+                        exc,
+                    )
             with self._lock:
                 self._shutdown_requested = True
                 self._shutdown_reason = directive.reason
@@ -590,7 +633,7 @@ class Session:
                 self.config.agent_flavor,
                 directive.reason,
             )
-            # Acknowledge shutdown_flavor before acting — flush synchronously
+            # Same drain-thread handling as the SHUTDOWN branch above.
             ack = self._build_payload(
                 EventType.DIRECTIVE_RESULT,
                 directive_name="shutdown_flavor",
@@ -602,14 +645,15 @@ class Session:
                 "reason": directive.reason or "fleet directive received",
             }
             self.event_queue.enqueue(ack)
-            try:
-                self.event_queue.flush()
-            except Exception as exc:
-                _log.warning(
-                    "[flightdeck] shutdown_flavor: failed to flush "
-                    "acknowledgement event: %s",
-                    exc,
-                )
+            if not self.event_queue.is_drain_thread():
+                try:
+                    self.event_queue.flush()
+                except Exception as exc:
+                    _log.warning(
+                        "[flightdeck] shutdown_flavor: failed to flush "
+                        "acknowledgement event: %s",
+                        exc,
+                    )
             with self._lock:
                 self._shutdown_requested = True
                 self._shutdown_reason = directive.reason

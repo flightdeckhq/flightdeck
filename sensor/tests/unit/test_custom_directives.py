@@ -272,25 +272,33 @@ def test_build_directive_context_no_model() -> None:
 
 
 def test_build_directive_result_event_success() -> None:
-    """directive_result event with success=True."""
+    """directive_result event with success=True uses worker-schema fields.
+
+    Field names must be directive_status / result / error so the worker's
+    BuildEventExtra can persist them into events.payload. See Phase 4.5
+    audit B-D fix in core/session.py:_build_directive_result_event.
+    """
     session, _ = _make_session()
     payload = session._build_directive_result_event("pause", success=True, result="done")
 
     assert payload["event_type"] == "directive_result"
     assert payload["directive_name"] == "pause"
-    assert payload["directive_success"] is True
-    assert payload["directive_result"] == "done"
-    assert payload["directive_error"] is None
+    assert payload["directive_action"] == "custom"
+    assert payload["directive_status"] == "success"
+    assert payload["result"] == "done"
+    assert "error" not in payload
 
 
 def test_build_directive_result_event_failure() -> None:
-    """directive_result event with success=False."""
+    """directive_result event with success=False uses worker-schema fields."""
     session, _ = _make_session()
     payload = session._build_directive_result_event("pause", success=False, error="timeout")
 
     assert payload["event_type"] == "directive_result"
-    assert payload["directive_success"] is False
-    assert payload["directive_error"] == "timeout"
+    assert payload["directive_action"] == "custom"
+    assert payload["directive_status"] == "error"
+    assert payload["error"] == "timeout"
+    assert "result" not in payload
 
 
 # ------------------------------------------------------------------
@@ -324,8 +332,8 @@ def test_execute_custom_directive_success() -> None:
 
         eq.enqueue.assert_called_once()
         payload = eq.enqueue.call_args[0][0]
-        assert payload["directive_success"] is True
-        assert payload["directive_result"] == "executed"
+        assert payload["directive_status"] == "success"
+        assert payload["result"] == "executed"
     finally:
         _directive_registry.pop(name, None)
 
@@ -345,8 +353,8 @@ def test_execute_custom_directive_handler_not_found() -> None:
 
     eq.enqueue.assert_called_once()
     payload = eq.enqueue.call_args[0][0]
-    assert payload["directive_success"] is False
-    assert payload["directive_error"] == "handler not found"
+    assert payload["directive_status"] == "error"
+    assert payload["error"] == "handler not found"
 
 
 def test_execute_custom_directive_fingerprint_mismatch() -> None:
@@ -374,8 +382,8 @@ def test_execute_custom_directive_fingerprint_mismatch() -> None:
 
         eq.enqueue.assert_called_once()
         payload = eq.enqueue.call_args[0][0]
-        assert payload["directive_success"] is False
-        assert "fingerprint mismatch" in payload["directive_error"]
+        assert payload["directive_status"] == "error"
+        assert "fingerprint mismatch" in payload["error"]
     finally:
         _directive_registry.pop(name, None)
 
@@ -411,8 +419,8 @@ def test_execute_custom_directive_handler_raises() -> None:
 
         eq.enqueue.assert_called_once()
         payload = eq.enqueue.call_args[0][0]
-        assert payload["directive_success"] is False
-        assert "handler exploded" in payload["directive_error"]
+        assert payload["directive_status"] == "error"
+        assert "handler exploded" in payload["error"]
     finally:
         _directive_registry.pop(name, None)
 
@@ -486,7 +494,7 @@ def test_apply_directive_dispatches_custom() -> None:
         eq.enqueue.assert_called_once()
         payload = eq.enqueue.call_args[0][0]
         assert payload["event_type"] == "directive_result"
-        assert payload["directive_success"] is True
+        assert payload["directive_status"] == "success"
     finally:
         _directive_registry.pop(name, None)
 

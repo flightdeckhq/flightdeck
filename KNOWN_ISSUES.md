@@ -30,6 +30,7 @@ fix in DECISIONS.md. Never leave a resolved TODO comment in the code.
 | KI11 | Security   | No NATS auth in dev compose          | Low    | 5     | docker/docker-compose.yml:nats              | D047      |
 | KI12 | Security   | REST endpoints have no per-IP rate limit | Low | 5    | api/internal/server/server.go               | D048      |
 | KI13 | API        | Ingestion accepts events for closed/lost sessions | Low | 5 | ingestion/internal/handlers/events.go    | -         |
+| KI14 | Sensor/API | sync_directives URL routing -- sensor targets ingestion base URL but `/v1/directives/{sync,register,custom}` and `/v1/policy` live on the API service. In dev, nginx does not forward these routes from `/ingest/*` to api, causing silent 404. The sensor's auto-register at `init()` and preflight policy fetch silently fail open. Needs architectural decision: separate `api_url` config param on `init()`, OR nginx proxy rules forwarding `/ingest/v1/directives/*` and `/ingest/v1/policy` to api, OR a single root `/v1/*` that nginx splits by path. | Medium | 5 | sensor/flightdeck_sensor/transport/client.py:sync_directives, sensor/flightdeck_sensor/core/session.py:_preflight_policy, docker/nginx/nginx.dev.conf | -         |
 
 ## Resolved
 

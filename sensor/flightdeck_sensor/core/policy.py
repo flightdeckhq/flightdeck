@@ -57,6 +57,14 @@ class PolicyCache:
 
         self._server_warned = False
         self._local_warned = False
+        # Set when the server delivers a DEGRADE directive via the
+        # response envelope. Bypasses the threshold check below: once
+        # the server has explicitly told the sensor to degrade, every
+        # subsequent call uses degrade_to regardless of token usage.
+        # See Phase 4.5 audit B-E. Cleared by ``update`` (which is
+        # called for POLICY_UPDATE directives) so a fresh policy can
+        # un-stick the forced state if the server retracts the degrade.
+        self._forced_degrade = False
         self._lock = threading.Lock()
 
     def check(self, tokens_used: int, estimated: int) -> PolicyResult:
@@ -65,10 +73,22 @@ class PolicyCache:
         Server-side thresholds can return BLOCK, DEGRADE, or WARN.
         Local thresholds only return WARN (never BLOCK/DEGRADE per D035).
         Most-restrictive fires first within each source.
+
+        A forced degrade (set by ``set_degrade_model`` after a DEGRADE
+        directive arrives from the server) bypasses the threshold
+        evaluation entirely -- once the server has explicitly told the
+        sensor to swap models, every subsequent call uses the
+        degraded model regardless of token usage.
         """
         projected = tokens_used + estimated
 
         with self._lock:
+            # Forced degrade short-circuit. The server has told us
+            # explicitly to swap; thresholds are not consulted because
+            # they may be unset (e.g. preflight policy fetch failed).
+            if self._forced_degrade and self.degrade_to:
+                return PolicyResult(PolicyDecision.DEGRADE, source="server")
+
             # Server-side evaluation (can BLOCK/DEGRADE/WARN)
             if self.token_limit is not None and self.token_limit > 0:
                 pct = (projected * 100) // self.token_limit
@@ -93,9 +113,16 @@ class PolicyCache:
             return PolicyResult(PolicyDecision.ALLOW)
 
     def set_degrade_model(self, model: str) -> None:
-        """Set the model to degrade to, thread-safe."""
+        """Set the model to degrade to and arm the forced-degrade flag.
+
+        Called by ``Session._apply_directive`` when a DEGRADE directive
+        arrives from the server. The forced flag makes ``check`` return
+        DEGRADE on every subsequent call; the next ``_pre_call`` swaps
+        the request kwargs to use the degraded model.
+        """
         with self._lock:
             self.degrade_to = model
+            self._forced_degrade = True
 
     def update(self, policy_dict: dict[str, Any]) -> None:
         """Atomically replace server-side fields from a directive payload."""
@@ -106,3 +133,6 @@ class PolicyCache:
             self.block_at_pct = policy_dict.get("block_at_pct", self.block_at_pct)
             self.degrade_to = policy_dict.get("degrade_to", self.degrade_to)
             self._server_warned = False
+            # Clear the forced-degrade flag so a fresh policy update can
+            # un-stick the state if the server retracts the degrade.
+            self._forced_degrade = False

@@ -2593,6 +2593,16 @@ with one click. Fleet-wide stop by flavor works simultaneously.
 - Body: `{action, session_id (or null), flavor (or null), reason, grace_period_ms}`
 - For flavor-wide: session_id is null, flavor is set
 - Returns 201 with directive record
+- **`action` field accepts only `shutdown`, `shutdown_flavor`, and
+  `custom`.** `degrade`, `warn`, and `policy_update` are NOT valid
+  values for this endpoint -- they are server-side directives
+  written by the workers' policy evaluator
+  (`workers/internal/processor/policy.go:Evaluate`) when a session
+  crosses its `degrade_at_pct`, `warn_at_pct`, or `block_at_pct`
+  threshold. Platform engineers cannot POST a degrade directive
+  directly; the only way to trigger one is to create a token policy
+  via `POST /v1/policies` and let the workers fire it on the next
+  post_call event that crosses the threshold. Phase 4.5 audit B-C.
 
 `api/internal/store/postgres.go` (extend)
 - `CreateDirective(directive Directive) error`

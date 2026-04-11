@@ -12,7 +12,7 @@ import logging
 import queue
 import threading
 import urllib.request
-from typing import Any
+from typing import Any, Callable
 from urllib.error import HTTPError, URLError
 
 from flightdeck_sensor.core.exceptions import DirectiveError
@@ -62,6 +62,14 @@ class ControlPlaneClient:
         Returns a list of fingerprints the server does not recognise.
         On any error, returns an empty list (fail open).
         """
+        # TODO(KI14)[Phase 5]: This URL is built against the ingestion
+        # base URL but /v1/directives/sync lives on the api service.
+        # In dev nginx routes /ingest/* to ingestion (which 404s) and
+        # the broad except below swallows the failure. Needs an
+        # architectural decision: separate api_url config, or nginx
+        # forwarding for /ingest/v1/directives/*, or a single /v1/*
+        # root. Same applies to register_directives below and to
+        # core/session.py:_preflight_policy.
         url = f"{self._base_url}/v1/directives/sync"
         body = json.dumps({"flavor": flavor, "directives": directives}).encode()
         req = urllib.request.Request(
@@ -221,10 +229,25 @@ class EventQueue:
     The interceptor calls :meth:`enqueue` which never blocks.
     A daemon thread drains the queue and calls
     :meth:`ControlPlaneClient.post_event`.
+
+    If *directive_callback* is provided, the drain thread invokes it
+    on every non-None ``Directive`` returned by ``post_event``. The
+    callback is invoked on the drain thread itself, so it must be
+    thread-safe and must not call ``EventQueue.flush()`` from inside
+    its body (use :meth:`is_drain_thread` to detect that case). When
+    no callback is provided, returned directives are silently
+    discarded -- this matches the legacy behaviour relied on by the
+    sensor unit-test fixtures that construct an ``EventQueue``
+    directly without a ``Session``.
     """
 
-    def __init__(self, client: ControlPlaneClient) -> None:
+    def __init__(
+        self,
+        client: ControlPlaneClient,
+        directive_callback: Callable[[Directive], None] | None = None,
+    ) -> None:
         self._client = client
+        self._directive_callback = directive_callback
         self._queue: queue.Queue[dict[str, Any] | object] = queue.Queue(
             maxsize=_MAX_QUEUE_SIZE,
         )
@@ -234,6 +257,17 @@ class EventQueue:
             name="flightdeck-event-queue",
         )
         self._thread.start()
+
+    def is_drain_thread(self) -> bool:
+        """True iff the calling thread is the background drain thread.
+
+        Used by the directive callback to avoid calling ``flush()``
+        on itself, which would deadlock until the flush timeout because
+        ``Queue.join()`` waits for ``unfinished_tasks == 0`` and the
+        drain thread has not yet called ``task_done()`` for the item
+        whose response triggered the callback.
+        """
+        return threading.current_thread() is self._thread
 
     # ------------------------------------------------------------------
     # Public API
@@ -303,11 +337,21 @@ class EventQueue:
     # ------------------------------------------------------------------
 
     def _drain_loop(self) -> None:
-        """Background thread: drain queue, post events.
+        """Background thread: drain queue, post events, apply directives.
+
+        For each item drained:
+
+        1. Call ``ControlPlaneClient.post_event``.
+        2. If a non-None directive is returned AND a directive
+           callback is configured, invoke the callback on this thread.
+           The callback (typically ``Session._apply_directive``) is
+           expected to be thread-safe and to skip its own
+           ``flush()`` call when ``is_drain_thread()`` is True.
 
         Calls ``task_done()`` after every item -- success, failure,
-        and the sentinel -- so ``Queue.join()`` (used by ``flush()``)
-        always reflects the true number of unprocessed items.
+        callback exception, and the sentinel -- so ``Queue.join()``
+        (used by ``flush()``) always reflects the true number of
+        unprocessed items.
         """
         while True:
             try:
@@ -317,8 +361,9 @@ class EventQueue:
             try:
                 if item is _SENTINEL:
                     return
+                directive: Directive | None = None
                 try:
-                    self._client.post_event(item)  # type: ignore[arg-type]
+                    directive = self._client.post_event(item)  # type: ignore[arg-type]
                 except Exception as exc:
                     event_type = "unknown"
                     if isinstance(item, dict):
@@ -328,5 +373,13 @@ class EventQueue:
                         event_type,
                         exc,
                     )
+                if directive is not None and self._directive_callback is not None:
+                    try:
+                        self._directive_callback(directive)
+                    except Exception as exc:
+                        _log.warning(
+                            "drain: directive callback raised, ignoring: %s",
+                            exc,
+                        )
             finally:
                 self._queue.task_done()

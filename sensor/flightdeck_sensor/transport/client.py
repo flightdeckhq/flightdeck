@@ -220,6 +220,14 @@ class ControlPlaneClient:
 # ------------------------------------------------------------------
 
 _MAX_QUEUE_SIZE = 1000
+
+# Cadence for the rate-limited drop-oldest warning emitted by
+# ``EventQueue.enqueue``. The first drop is logged immediately;
+# subsequent drops are summarized every ``_DROP_LOG_INTERVAL`` events.
+# A burst of 10000 drops therefore produces ~100 log lines instead of
+# 10000. Production agents that overrun their queue still get told,
+# but a stress test or a runaway producer cannot flood the log stream.
+_DROP_LOG_INTERVAL = 100
 _MAX_DIRECTIVE_QUEUE_SIZE = 1000
 _SENTINEL = object()
 
@@ -273,6 +281,17 @@ class EventQueue:
             name="flightdeck-event-queue",
         )
 
+        # Counters for the rate-limited drop-oldest warning. The
+        # warning was previously emitted on every overflow which, in
+        # a hot test loop or a high-traffic agent, can produce tens
+        # of thousands of identical log lines. We now emit the FIRST
+        # drop loudly and then summarize every _DROP_LOG_INTERVAL
+        # subsequent drops with a single line that reports the count
+        # since the last summary. The drop semantics themselves are
+        # unchanged.
+        self._drop_count = 0
+        self._drop_last_logged = 0
+
         # Directive queue + handler thread are only spun up when there
         # is a handler to invoke. Tests that build EventQueue directly
         # (no Session) get the legacy "discard directives" behaviour.
@@ -311,10 +330,32 @@ class EventQueue:
                 pass
             with contextlib.suppress(queue.Full):
                 self._queue.put_nowait(payload)
-            _log.warning(
-                "Event queue full (%d), dropped oldest event",
-                _MAX_QUEUE_SIZE,
-            )
+
+            # Rate-limited warning. The first drop is logged
+            # immediately so the operator hears about it; subsequent
+            # drops are summarized every _DROP_LOG_INTERVAL events.
+            # The previous unconditional warn produced 10000+ identical
+            # log lines under stress (CI integration suite, runaway
+            # producers) and drowned the rest of the agent log stream.
+            self._drop_count += 1
+            if self._drop_count == 1:
+                _log.warning(
+                    "Event queue full (%d), dropped oldest event "
+                    "(further drops will be summarized every %d)",
+                    _MAX_QUEUE_SIZE,
+                    _DROP_LOG_INTERVAL,
+                )
+                self._drop_last_logged = 1
+            elif self._drop_count - self._drop_last_logged >= _DROP_LOG_INTERVAL:
+                dropped_since = self._drop_count - self._drop_last_logged
+                _log.warning(
+                    "Event queue full (%d), dropped %d more events "
+                    "(total dropped: %d)",
+                    _MAX_QUEUE_SIZE,
+                    dropped_since,
+                    self._drop_count,
+                )
+                self._drop_last_logged = self._drop_count
 
     def flush(self, timeout: float = 3.0) -> None:
         """Block until every currently-queued event has been processed.

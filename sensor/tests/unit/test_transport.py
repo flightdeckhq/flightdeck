@@ -104,6 +104,55 @@ class TestEventQueue:
         finally:
             eq.close()
 
+    def test_queue_full_warning_is_rate_limited(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Burst of drops produces a bounded number of warnings.
+
+        The previous implementation logged ``Event queue full`` on
+        every overflow which produced 12k+ identical lines under a
+        Pattern-B stress test in CI. We now log the first drop loudly
+        and summarize subsequent drops every 100 events. This test
+        checks that 250 drops produce at most a handful of log lines
+        (vs 250 under the old behavior) so a runaway producer cannot
+        flood the agent log stream.
+        """
+        from flightdeck_sensor.transport.client import _DROP_LOG_INTERVAL
+
+        mock_client = MagicMock(spec=ControlPlaneClient)
+        mock_client.post_event.side_effect = lambda _: time.sleep(10)
+        eq = EventQueue(mock_client)
+        try:
+            # Pre-fill the queue so every subsequent enqueue triggers
+            # the drop-oldest path. Use _MAX_QUEUE_SIZE+5 to overshoot
+            # any items the drain thread may have consumed in flight.
+            for i in range(_MAX_QUEUE_SIZE + 5):
+                eq.enqueue({"i": i})
+
+            with caplog.at_level(
+                logging.WARNING, logger="flightdeck_sensor.transport.client"
+            ):
+                # 250 forced drops -- under _DROP_LOG_INTERVAL=100 this
+                # should emit the FIRST drop line + 2 summary lines.
+                # The exact count must be <= 5 with comfortable margin
+                # for any drain-thread interleaving.
+                for i in range(250):
+                    eq.enqueue({"overflow": i})
+
+            warn_lines = [
+                r for r in caplog.records if "Event queue full" in r.message
+            ]
+            assert len(warn_lines) <= 5, (
+                f"expected <= 5 rate-limited warnings, got {len(warn_lines)}: "
+                f"{[r.message for r in warn_lines]}"
+            )
+            # First warning explains the rate-limit cadence so future
+            # operators know what the summary lines mean.
+            assert "summarized every" in warn_lines[0].message
+            assert str(_DROP_LOG_INTERVAL) in warn_lines[0].message
+        finally:
+            eq.close()
+
     def test_flush_waits_for_drain(self) -> None:
         """flush() must block until every queued item has been processed
         by the background drain thread. With the Queue.join() pattern,

@@ -10,6 +10,8 @@ definitions:
         type: integer
       id:
         type: string
+      payload:
+        type: object
       reason:
         type: string
     type: object
@@ -78,6 +80,10 @@ paths:
             $ref: '#/definitions/handlers.ErrorResponse'
         "401":
           description: Unauthorized
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "429":
+          description: Too Many Requests
           schema:
             $ref: '#/definitions/handlers.ErrorResponse'
         "500":

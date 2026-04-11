@@ -40,15 +40,21 @@ type CustomDirectivesListResponse struct {
 
 // SyncDirectivesHandler handles POST /v1/directives/sync.
 //
+// Mounted behind ``auth.Middleware`` in ``server.New`` -- requests
+// without a valid bearer token are rejected with 401 before this
+// handler is called. See DECISIONS.md D073 for the auth stopgap.
+//
 // @Summary      Sync custom directive fingerprints
-// @Description  Checks which directive fingerprints are registered. Returns fingerprints not found.
+// @Description  Checks which directive fingerprints are registered. Returns fingerprints not found. Requires bearer token.
 // @Tags         custom-directives
 // @Accept       json
 // @Produce      json
-// @Param        body  body      SyncDirectivesRequest  true  "Sync request with flavor and fingerprints"
-// @Success      200   {object}  SyncDirectivesResponse
-// @Failure      400   {object}  ErrorResponse
-// @Failure      500   {object}  ErrorResponse
+// @Param        Authorization  header    string                 true  "Bearer token"
+// @Param        body           body      SyncDirectivesRequest  true  "Sync request with flavor and fingerprints"
+// @Success      200            {object}  SyncDirectivesResponse
+// @Failure      400            {object}  ErrorResponse
+// @Failure      401            {object}  ErrorResponse  "Missing or invalid bearer token"
+// @Failure      500            {object}  ErrorResponse
 // @Router       /v1/directives/sync [post]
 func SyncDirectivesHandler(s store.Querier) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -86,15 +92,21 @@ func SyncDirectivesHandler(s store.Querier) http.HandlerFunc {
 
 // RegisterDirectivesHandler handles POST /v1/directives/register.
 //
+// Mounted behind ``auth.Middleware`` in ``server.New`` -- requests
+// without a valid bearer token are rejected with 401 before this
+// handler is called. See DECISIONS.md D073 for the auth stopgap.
+//
 // @Summary      Register custom directives
-// @Description  Registers custom directive definitions. Updates last_seen_at on conflict.
+// @Description  Registers custom directive definitions. Updates last_seen_at on conflict. Requires bearer token.
 // @Tags         custom-directives
 // @Accept       json
 // @Produce      json
-// @Param        body  body      RegisterDirectivesRequest  true  "Registration request with directives"
-// @Success      200   {object}  RegisterDirectivesResponse
-// @Failure      400   {object}  ErrorResponse
-// @Failure      500   {object}  ErrorResponse
+// @Param        Authorization  header    string                     true  "Bearer token"
+// @Param        body           body      RegisterDirectivesRequest  true  "Registration request with directives"
+// @Success      200            {object}  RegisterDirectivesResponse
+// @Failure      400            {object}  ErrorResponse
+// @Failure      401            {object}  ErrorResponse  "Missing or invalid bearer token"
+// @Failure      500            {object}  ErrorResponse
 // @Router       /v1/directives/register [post]
 func RegisterDirectivesHandler(s store.Querier) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

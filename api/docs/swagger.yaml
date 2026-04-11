@@ -557,8 +557,13 @@ paths:
       consumes:
       - application/json
       description: Registers custom directive definitions. Updates last_seen_at on
-        conflict.
+        conflict. Requires bearer token.
       parameters:
+      - description: Bearer token
+        in: header
+        name: Authorization
+        required: true
+        type: string
       - description: Registration request with directives
         in: body
         name: body
@@ -576,6 +581,10 @@ paths:
           description: Bad Request
           schema:
             $ref: '#/definitions/handlers.ErrorResponse'
+        "401":
+          description: Missing or invalid bearer token
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
         "500":
           description: Internal Server Error
           schema:
@@ -588,8 +597,13 @@ paths:
       consumes:
       - application/json
       description: Checks which directive fingerprints are registered. Returns fingerprints
-        not found.
+        not found. Requires bearer token.
       parameters:
+      - description: Bearer token
+        in: header
+        name: Authorization
+        required: true
+        type: string
       - description: Sync request with flavor and fingerprints
         in: body
         name: body
@@ -605,6 +619,10 @@ paths:
             $ref: '#/definitions/handlers.SyncDirectivesResponse'
         "400":
           description: Bad Request
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "401":
+          description: Missing or invalid bearer token
           schema:
             $ref: '#/definitions/handlers.ErrorResponse'
         "500":

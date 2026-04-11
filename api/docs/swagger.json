@@ -214,7 +214,7 @@
         },
         "/v1/directives/register": {
             "post": {
-                "description": "Registers custom directive definitions. Updates last_seen_at on conflict.",
+                "description": "Registers custom directive definitions. Updates last_seen_at on conflict. Requires bearer token.",
                 "consumes": [
                     "application/json"
                 ],
@@ -226,6 +226,13 @@
                 ],
                 "summary": "Register custom directives",
                 "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Bearer token",
+                        "name": "Authorization",
+                        "in": "header",
+                        "required": true
+                    },
                     {
                         "description": "Registration request with directives",
                         "name": "body",
@@ -249,6 +256,12 @@
                             "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     },
+                    "401": {
+                        "description": "Missing or invalid bearer token",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
                     "500": {
                         "description": "Internal Server Error",
                         "schema": {
@@ -260,7 +273,7 @@
         },
         "/v1/directives/sync": {
             "post": {
-                "description": "Checks which directive fingerprints are registered. Returns fingerprints not found.",
+                "description": "Checks which directive fingerprints are registered. Returns fingerprints not found. Requires bearer token.",
                 "consumes": [
                     "application/json"
                 ],
@@ -272,6 +285,13 @@
                 ],
                 "summary": "Sync custom directive fingerprints",
                 "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Bearer token",
+                        "name": "Authorization",
+                        "in": "header",
+                        "required": true
+                    },
                     {
                         "description": "Sync request with flavor and fingerprints",
                         "name": "body",
@@ -291,6 +311,12 @@
                     },
                     "400": {
                         "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Missing or invalid bearer token",
                         "schema": {
                             "$ref": "#/definitions/handlers.ErrorResponse"
                         }

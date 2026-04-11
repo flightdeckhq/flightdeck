@@ -1455,12 +1455,21 @@ def test_pattern_b_custom_directive_during_traffic(
 
             def _worker() -> None:
                 try:
-                    while not stop.is_set():
+                    # See the matching ``stop.wait`` comment on the
+                    # _worker in test_pattern_b_shutdown_during_traffic
+                    # for the rationale -- ``Event.wait(timeout)`` is
+                    # the idiomatic "loop until cancelled with a tick"
+                    # primitive and the 5 ms tick keeps producer rate
+                    # below drain capacity so the directive_result ack
+                    # cannot be lost to a queue overflow on slow CI.
+                    while True:
                         client.messages.create(
                             model="claude-sonnet-4-6",
                             messages=[{"role": "user", "content": "x"}],
                             max_tokens=10,
                         )
+                        if stop.wait(0.005):
+                            return
                 except BaseException as exc:  # noqa: BLE001
                     with errors_lock:
                         errors.append(exc)

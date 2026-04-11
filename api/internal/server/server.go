@@ -6,13 +6,12 @@ import (
 	"net/http"
 	"time"
 
+	apidocs "github.com/flightdeckhq/flightdeck/api/docs"
 	"github.com/flightdeckhq/flightdeck/api/internal/auth"
 	"github.com/flightdeckhq/flightdeck/api/internal/handlers"
 	"github.com/flightdeckhq/flightdeck/api/internal/store"
 	"github.com/flightdeckhq/flightdeck/api/internal/ws"
 	httpSwagger "github.com/swaggo/http-swagger/v2"
-
-	_ "github.com/flightdeckhq/flightdeck/api/docs"
 )
 
 // TODO(KI12)[Phase 5]: REST endpoints have no per-IP rate limit.
@@ -90,7 +89,22 @@ func newServer(addr string, s store.Querier, hub *ws.Hub, validator *auth.Valida
 	mux.Handle("GET /v1/analytics", withRESTTimeout(handlers.AnalyticsHandler(s)))
 	mux.Handle("GET /v1/search", withRESTTimeout(handlers.SearchHandler(s)))
 	mux.Handle("GET /health", withRESTTimeout(handlers.HealthHandler()))
-	mux.Handle("GET /docs/", httpSwagger.WrapHandler)
+
+	// Swagger UI. The swag/v2 v2.0.0-rc5 + http-swagger v2.0.2
+	// runtime combination this project pins has a broken dynamic
+	// ``doc.json`` endpoint that returns 500 when the UI tries to
+	// fetch its spec. We work around it by serving the static
+	// ``swagger.json`` (embedded into the docs package via
+	// ``go:embed``) at a stable path and pointing httpSwagger at it.
+	// The Go-1.22 method-prefixed pattern ``GET /docs/swagger.json``
+	// is more specific than ``GET /docs/`` so it wins precedence.
+	mux.HandleFunc("GET /docs/swagger.json", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(apidocs.SwaggerJSON)
+	})
+	mux.Handle("GET /docs/", httpSwagger.Handler(
+		httpSwagger.URL("/api/docs/swagger.json"),
+	))
 
 	// /v1/stream is intentionally NOT wrapped in withRESTTimeout --
 	// WebSocket connections are long-lived and the timeout would kill

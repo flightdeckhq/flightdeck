@@ -14,6 +14,23 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// NotifyChannel is the Postgres LISTEN/NOTIFY channel that carries
+// real-time fleet updates from the writer (workers) and the directive
+// register path (this package) to the dashboard WebSocket hub.
+//
+// Producers (this package's RegisterDirectives, workers/writer.NotifyFleetChange)
+// and the consumer (api/internal/ws.Hub.listenOnce) MUST agree on this
+// channel name. The literal is duplicated in workers/internal/writer/notify.go
+// only because workers and api are separate Go modules.
+const NotifyChannel = "flightdeck_fleet"
+
+// NotifyDirectiveRegistered is the sentinel payload broadcast on
+// NotifyChannel after a successful directive registration. The hub
+// special-cases this literal (it has no JSON envelope) and re-broadcasts
+// a directives_changed message to WebSocket clients. Keep producer and
+// consumer in lock-step by referencing this constant on both sides.
+const NotifyDirectiveRegistered = "directive_registered"
+
 // Querier is the interface for fleet data access.
 // Implemented by Store (Postgres) and mocks in tests.
 type Querier interface {
@@ -688,7 +705,7 @@ func (s *Store) RegisterDirectives(ctx context.Context, directives []CustomDirec
 
 	// Notify the dashboard hub so the Directives page updates in real time.
 	if _, err := tx.Exec(ctx, `SELECT pg_notify($1, $2)`,
-		"flightdeck_fleet", "directive_registered"); err != nil {
+		NotifyChannel, NotifyDirectiveRegistered); err != nil {
 		return fmt.Errorf("register directives notify: %w", err)
 	}
 

@@ -15,11 +15,19 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-const notifyChannel = "flightdeck_fleet"
-
 const notifyReconnectDelay = 3 * time.Second
 
 const broadcastChannelBuffer = 256
+
+// Fleet update message types broadcast to dashboard WebSocket clients.
+// These appear in the ``type`` field of fleetUpdate / directivesChanged
+// payloads and are the wire contract with dashboard/src/store/fleet.ts.
+const (
+	msgTypeSessionStart     = "session_start"
+	msgTypeSessionEnd       = "session_end"
+	msgTypeSessionUpdate    = "session_update"
+	msgTypeDirectivesChange = "directives_changed"
+)
 
 // Client is a single WebSocket connection managed by the Hub.
 type Client struct {
@@ -154,17 +162,29 @@ func (h *Hub) listenOnce(ctx context.Context, pool *pgxpool.Pool) error {
 	}
 	defer conn.Release()
 
-	_, err = conn.Exec(ctx, "LISTEN "+notifyChannel)
+	_, err = conn.Exec(ctx, "LISTEN "+store.NotifyChannel)
 	if err != nil {
 		return fmt.Errorf("LISTEN failed: %w", err)
 	}
 
-	slog.Info("listening on Postgres NOTIFY", "channel", notifyChannel)
+	slog.Info("listening on Postgres NOTIFY", "channel", store.NotifyChannel)
 
 	for {
 		notification, err := conn.Conn().WaitForNotification(ctx)
 		if err != nil {
 			return fmt.Errorf("wait for notification: %w", err)
+		}
+
+		// Special-case the directive-registered sentinel emitted by
+		// store.RegisterDirectives. It is a literal non-JSON string with
+		// no session_id, so JSON-parsing it would spam the warn log on
+		// every directive registration. Re-broadcast as the typed
+		// directives_changed message so future client code can react to
+		// directive registration in real time.
+		if notification.Payload == store.NotifyDirectiveRegistered {
+			msg, _ := json.Marshal(map[string]string{"type": msgTypeDirectivesChange})
+			h.Broadcast(msg)
+			continue
 		}
 
 		// Parse the thin NOTIFY payload to get session_id
@@ -200,12 +220,12 @@ func (h *Hub) listenOnce(ctx context.Context, pool *pgxpool.Pool) error {
 		// Determine update type from event_type
 		var updateType string
 		switch np.EventType {
-		case "session_start":
-			updateType = "session_start"
-		case "session_end":
-			updateType = "session_end"
+		case msgTypeSessionStart:
+			updateType = msgTypeSessionStart
+		case msgTypeSessionEnd:
+			updateType = msgTypeSessionEnd
 		default:
-			updateType = "session_update"
+			updateType = msgTypeSessionUpdate
 		}
 
 		// Build and broadcast the enriched payload

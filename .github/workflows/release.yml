@@ -34,6 +34,13 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: sensor/dist/
+          # Idempotent publish: if a workflow re-run targets the same
+          # tag (e.g. retrying a release after a downstream Docker
+          # build failure) the version already exists on PyPI and
+          # would otherwise hard-fail the job. ``skip-existing: true``
+          # turns that into a no-op so publish-docker and
+          # github-release can still execute on the rerun.
+          skip-existing: true
 
   publish-docker:
     name: Build and push Docker images

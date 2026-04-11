@@ -14,11 +14,12 @@ from __future__ import annotations
 
 import json
 import subprocess
-import time
 import urllib.error
 import urllib.request
 import uuid
 from typing import Any
+
+import pytest
 
 from .conftest import (
     API_URL,
@@ -382,39 +383,10 @@ def test_directive_result_appears_in_timeline() -> None:
     )
 
 
-def test_shutdown_directive_delivered() -> None:
-    """Issuing a shutdown directive creates a row with delivered_at NULL until pickup."""
-    flavor = f"test-dir-shut-{uuid.uuid4().hex[:6]}"
-    sid = _start_session(flavor)
-
-    code, body = _post_directive_action({
-        "action": "shutdown",
-        "session_id": sid,
-        "reason": "test shutdown",
-    })
-    assert code == 201, f"shutdown directive returned {code}: {body}"
-
-    rows = _query_directives_for_session(sid)
-    shutdown_rows = [r for r in rows if r.get("action") == "shutdown"]
-    assert len(shutdown_rows) == 1, (
-        f"expected 1 shutdown directive row, got {len(shutdown_rows)}"
-    )
-    # The directive is pending until a sensor POST picks it up
-    assert shutdown_rows[0].get("delivered_at") is None, (
-        f"expected delivered_at=NULL before any pickup, got {shutdown_rows[0]}"
-    )
-
-    # Now POST any event for this session and verify the response
-    # envelope contains the directive
-    payload = make_event(sid, flavor, "post_call", tokens_total=10)
-    resp = post_event(payload)
-    directive = resp.get("directive")
-    assert directive is not None, (
-        f"expected directive in event response envelope, got {resp}"
-    )
-    assert directive.get("action") == "shutdown", (
-        f"expected action=shutdown in directive envelope, got {directive}"
-    )
+# test_shutdown_directive_delivered -- removed in Phase 4.5 audit Task 1.
+# Duplicate of test_killswitch.py::test_single_agent_kill, which already
+# verifies the same flow: POST shutdown → POST event → directive in
+# envelope → directive marked delivered.
 
 
 def test_directive_last_seen_updated() -> None:
@@ -508,30 +480,43 @@ def test_directive_filter_by_flavor() -> None:
         _delete_custom_directive_by_fingerprint(fp_b)
 
 
-def test_sync_endpoint_requires_auth() -> None:
-    """Sync endpoint without bearer token returns 401."""
-    body = {
-        "flavor": "test-noauth",
-        "directives": [{"name": "x", "fingerprint": _unique_fingerprint()}],
-    }
-    code, resp = _post_json("/v1/directives/sync", body, bearer=None)
-    assert code == 401, (
-        f"expected 401 without bearer token, got {code}: {resp}"
-    )
-
-
-def test_register_endpoint_requires_auth() -> None:
-    """Register endpoint without bearer token returns 401."""
-    body = {
-        "flavor": "test-noauth",
-        "directives": [{
-            "fingerprint": _unique_fingerprint(),
-            "name": "x",
-            "flavor": "test-noauth",
-            "parameters": {},
-        }],
-    }
-    code, resp = _post_json("/v1/directives/register", body, bearer=None)
+@pytest.mark.parametrize(
+    "path, body_factory",
+    [
+        (
+            "/v1/directives/sync",
+            lambda: {
+                "flavor": "test-noauth",
+                "directives": [
+                    {"name": "x", "fingerprint": _unique_fingerprint()},
+                ],
+            },
+        ),
+        (
+            "/v1/directives/register",
+            lambda: {
+                "flavor": "test-noauth",
+                "directives": [{
+                    "fingerprint": _unique_fingerprint(),
+                    "name": "x",
+                    "flavor": "test-noauth",
+                    "parameters": {},
+                }],
+            },
+        ),
+    ],
+    ids=["sync", "register"],
+)
+def test_sensor_endpoint_requires_auth(
+    path: str,
+    body_factory: Any,
+) -> None:
+    """Both sensor-facing endpoints (/v1/directives/sync and
+    /v1/directives/register) reject requests without a bearer token.
+    Phase 4.5 audit Task 1 -- merged from
+    test_sync_endpoint_requires_auth + test_register_endpoint_requires_auth.
+    """
+    code, resp = _post_json(path, body_factory(), bearer=None)
     assert code == 401, (
         f"expected 401 without bearer token, got {code}: {resp}"
     )

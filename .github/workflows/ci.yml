@@ -227,6 +227,10 @@ jobs:
         run: make dev
 
       - name: Run integration tests (fabricated + sensor e2e)
+        # Excludes manual tests via the -m "not manual" filter that
+        # the test-integration target carries. test_ui_demo.py is
+        # the only manual-marked test today; it is a 3-minute
+        # dashboard data-population tool, not a regression test.
         run: make test-integration
 
       - name: Run sensor e2e tests in isolation

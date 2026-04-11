@@ -17,7 +17,6 @@ from .conftest import (
     post_heartbeat,
     session_exists_in_fleet,
     wait_for_session_in_fleet,
-    wait_for_state,
     wait_until,
 )
 
@@ -133,18 +132,6 @@ def test_heartbeat_updates_last_seen() -> None:
     )
 
 
-def test_session_end_sets_closed() -> None:
-    """POST session_end → session state is closed in fleet response."""
-    sid = str(uuid.uuid4())
-    flavor = f"test-close-{uuid.uuid4().hex[:6]}"
-
-    post_event(make_event(sid, flavor, "session_start"))
-    wait_for_session_in_fleet(sid, timeout=5.0)
-
-    post_event(make_event(sid, flavor, "session_end"))
-
-    detail = wait_for_state(sid, "closed", timeout=10)
-    assert detail["session"]["state"] == "closed", (
-        f"expected session {sid} state=closed after session_end, "
-        f"got state={detail['session'].get('state')}"
-    )
+# test_session_end_sets_closed -- removed in Phase 4.5 audit Task 1.
+# Exact duplicate of test_session_states.py::test_session_transitions_to_closed
+# which already verifies session_end → state=closed AND ended_at is set.

@@ -1,10 +1,20 @@
-# TEMPORARY -- DELETE AFTER USE
-# UI demonstration test for Phase 4.5
-# Run: pytest tests/integration/test_ui_demo.py -v -s --no-header
-"""
-UI demonstration test. Runs 10 agents across 3 flavors for 3 minutes,
-producing realistic event traffic so the dashboard can be viewed in
-live action. DELETE THIS FILE AFTER USE.
+"""Manual UI demonstration tool -- NOT a CI test.
+
+Runs 10 agents across 3 flavors for ~3 minutes, producing realistic
+event traffic so the dashboard can be viewed in live action. Useful
+for screen recordings, walkthroughs, and visually verifying the
+dashboard against a populated stack.
+
+This file is marked ``@pytest.mark.manual`` so it is excluded from
+``make test-integration`` and from CI. To run it explicitly::
+
+    pytest tests/integration/test_ui_demo.py -v -s --no-header
+
+Phase 4.5 audit Task 1 reclassified this from a CI test to a manual
+data-population tool. The original "DELETE THIS FILE AFTER USE"
+comment was removed because the file is genuinely useful as a demo
+harness; gating it on the ``manual`` marker keeps it out of the CI
+budget without throwing away the work.
 """
 
 from __future__ import annotations
@@ -15,6 +25,8 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+
+import pytest
 
 from .conftest import (
     API_URL,
@@ -363,6 +375,7 @@ def register_custom_directives() -> int:
     return total
 
 
+@pytest.mark.manual
 def test_ui_demo() -> None:
     """
     UI demonstration test. Runs 10 agents across 3 flavors for 3 minutes.

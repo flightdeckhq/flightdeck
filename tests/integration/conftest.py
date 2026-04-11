@@ -411,3 +411,10 @@ def pytest_configure(config: pytest.Config) -> None:
         "markers",
         "slow: marks tests that require waiting for background reconciler (60s+)",
     )
+    config.addinivalue_line(
+        "markers",
+        "manual: marks tests that are NOT part of CI -- run manually only "
+        "(e.g. test_ui_demo.py is a dashboard data-population tool, not a "
+        "regression test). Excluded by `make test-integration` and CI via "
+        "`-m 'not manual'`. Phase 4.5 audit Task 1.",
+    )

@@ -17,7 +17,7 @@ test: ## Run all unit tests
 
 test-integration: ## Run integration tests (requires running stack)
 	$(MAKE) -C docker dev
-	cd tests/integration && pytest -v
+	cd tests/integration && pytest -v -m "not manual"
 
 test-e2e: ## Run sensor end-to-end tests only (requires running stack + respx)
 	$(MAKE) -C docker dev

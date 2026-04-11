@@ -27,8 +27,20 @@ from flightdeck_sensor.core.types import (
     SensorConfig,
     StatusResponse,
 )
-from flightdeck_sensor.interceptor.anthropic import GuardedAnthropic
-from flightdeck_sensor.interceptor.openai import GuardedOpenAI
+from flightdeck_sensor.interceptor.anthropic import (
+    GuardedAnthropic,
+    _OrigAnthropic,
+    _OrigAsyncAnthropic,
+    patch_anthropic_classes,
+    unpatch_anthropic_classes,
+)
+from flightdeck_sensor.interceptor.openai import (
+    GuardedOpenAI,
+    _OrigAsyncOpenAI,
+    _OrigOpenAI,
+    patch_openai_classes,
+    unpatch_openai_classes,
+)
 from flightdeck_sensor.transport.client import ControlPlaneClient
 
 Parameter = DirectiveParameter
@@ -63,7 +75,6 @@ _lock = threading.Lock()
 _patch_lock = threading.Lock()
 _session: Session | None = None
 _client: ControlPlaneClient | None = None
-_original_inits: dict[str, Any] = {}
 
 # Custom directive registry -- populated by @directive decorator
 _directive_registry: dict[str, DirectiveRegistration] = {}
@@ -226,15 +237,28 @@ def wrap(client: Any, quiet: bool = False) -> Any:
     """Wrap an Anthropic or OpenAI client for interception.
 
     ``init()`` must be called first.
+
+    If :func:`patch` has already been called, the client's class has
+    a class-level ``messages`` / ``chat`` descriptor installed and the
+    client's resource access is already intercepted -- in that case
+    ``wrap()`` is a no-op and returns the client unchanged. This
+    avoids double-wrapping.
     """
     session = _require_session("wrap")
 
     # Detect Anthropic client
     if _is_anthropic(client):
+        # If the class is already patched, the descriptor handles
+        # interception transparently and wrapping again would produce
+        # a GuardedMessages-of-GuardedMessages on first .messages access.
+        if hasattr(type(client), "_flightdeck_patched"):
+            return client
         return GuardedAnthropic(client, session)
 
     # Detect OpenAI client
     if _is_openai(client):
+        if hasattr(type(client), "_flightdeck_patched"):
+            return client
         return GuardedOpenAI(client, session)
 
     if not quiet:
@@ -249,7 +273,34 @@ def patch(
     quiet: bool = False,
     providers: list[str] | None = None,
 ) -> None:
-    """Monkey-patch SDK constructors so new clients are auto-wrapped.
+    """Class-level patch the Anthropic and OpenAI SDKs.
+
+    After ``patch()``, every instance of ``anthropic.Anthropic``,
+    ``anthropic.AsyncAnthropic``, ``openai.OpenAI``, and
+    ``openai.AsyncOpenAI`` -- including instances constructed
+    transparently by frameworks such as ``langchain-anthropic``,
+    ``langchain-openai``, ``llama-index-llms-anthropic``, and
+    ``llama-index-llms-openai`` -- will have its first ``.messages``
+    or ``.chat`` access return a flightdeck-managed proxy that posts
+    pre/post events for every LLM call.
+
+    The patch mutates each class object in place by replacing the
+    ``messages``/``chat`` ``cached_property`` descriptor with a custom
+    descriptor and tagging the class with a ``_flightdeck_patched``
+    sentinel attribute. ``isinstance(x, anthropic.Anthropic)`` and
+    captured references like ``from anthropic import Anthropic``
+    continue to work correctly because the class object's identity is
+    preserved.
+
+    **Idempotent**: calling ``patch()`` twice is a no-op on the second
+    call -- the descriptor is only installed if the class does not
+    already carry the ``_flightdeck_patched`` sentinel.
+
+    **Limitation**: instances of these classes that were constructed
+    BEFORE ``patch()`` was called and that already accessed
+    ``.messages`` / ``.chat`` once will have the unwrapped resource
+    cached in their ``__dict__`` and will not be intercepted. New
+    instances and new accesses on existing instances ARE intercepted.
 
     ``init()`` must be called first.
 
@@ -257,32 +308,33 @@ def patch(
         providers: list of provider names to patch. Default patches all
             available providers (``["anthropic", "openai"]``).
     """
-    session = _require_session("patch")
+    _require_session("patch")
     targets = providers or ["anthropic", "openai"]
 
     with _patch_lock:
         if "anthropic" in targets:
-            _patch_anthropic(session, quiet)
-
+            patch_anthropic_classes(quiet=quiet)
         if "openai" in targets:
-            _patch_openai(session, quiet)
+            patch_openai_classes(quiet=quiet)
 
 
 def unpatch() -> None:
-    """Reverse all monkey-patches applied by :func:`patch`."""
-    with _patch_lock:
-        for key, original in _original_inits.items():
-            parts = key.rsplit(".", 1)
-            if len(parts) == 2:
-                mod_name, attr = parts
-                try:
-                    import importlib
+    """Reverse all class-level patches applied by :func:`patch`.
 
-                    mod = importlib.import_module(mod_name)
-                    setattr(mod, attr, original)
-                except (ImportError, AttributeError):
-                    pass
-        _original_inits.clear()
+    Idempotent: safe to call without a preceding ``patch()``. Restores
+    the original ``cached_property`` descriptors and removes the
+    ``_flightdeck_patched`` sentinels.
+
+    Instances that have already accessed ``.messages`` / ``.chat``
+    after ``patch()`` was called keep the wrapped version cached in
+    their ``__dict__`` until the instance is garbage collected. This
+    is a known limitation -- documented in
+    :func:`unpatch_anthropic_classes` and
+    :func:`unpatch_openai_classes`.
+    """
+    with _patch_lock:
+        unpatch_anthropic_classes()
+        unpatch_openai_classes()
 
 
 def get_status() -> StatusResponse:
@@ -330,76 +382,19 @@ def _env_bool(key: str, default: bool) -> bool:
 
 
 def _is_anthropic(client: Any) -> bool:
-    try:
-        import anthropic
+    """Detect an Anthropic / AsyncAnthropic client via captured references.
 
-        return isinstance(client, (anthropic.Anthropic, anthropic.AsyncAnthropic))
-    except ImportError:
+    Uses the original class references captured at interceptor-module
+    import time so that ``isinstance`` checks survive ``patch()``
+    mutating the module attributes.
+    """
+    if _OrigAnthropic is None or _OrigAsyncAnthropic is None:
         return False
+    return isinstance(client, (_OrigAnthropic, _OrigAsyncAnthropic))
 
 
 def _is_openai(client: Any) -> bool:
-    try:
-        import openai
-
-        return isinstance(client, (openai.OpenAI, openai.AsyncOpenAI))
-    except ImportError:
+    """Detect an OpenAI / AsyncOpenAI client via captured references."""
+    if _OrigOpenAI is None or _OrigAsyncOpenAI is None:
         return False
-
-
-def _patch_anthropic(session: Session, quiet: bool) -> None:
-    try:
-        import anthropic
-    except ImportError:
-        if not quiet:
-            _log.debug("anthropic not installed; skipping patch")
-        return
-
-    orig_sync = anthropic.Anthropic
-    orig_async = anthropic.AsyncAnthropic
-
-    _original_inits["anthropic.Anthropic"] = orig_sync
-    _original_inits["anthropic.AsyncAnthropic"] = orig_async
-
-    def _make_sync(*args: Any, **kwargs: Any) -> GuardedAnthropic:
-        real = orig_sync(*args, **kwargs)
-        return GuardedAnthropic(real, session)
-
-    def _make_async(*args: Any, **kwargs: Any) -> GuardedAnthropic:
-        real = orig_async(*args, **kwargs)
-        return GuardedAnthropic(real, session)
-
-    anthropic.Anthropic = _make_sync  # type: ignore[assignment,misc]
-    anthropic.AsyncAnthropic = _make_async  # type: ignore[assignment,misc]
-
-    if not quiet:
-        _log.info("Patched anthropic.Anthropic and anthropic.AsyncAnthropic")
-
-
-def _patch_openai(session: Session, quiet: bool) -> None:
-    try:
-        import openai
-    except ImportError:
-        if not quiet:
-            _log.debug("openai not installed; skipping patch")
-        return
-
-    orig_sync = openai.OpenAI
-    orig_async = openai.AsyncOpenAI
-
-    _original_inits["openai.OpenAI"] = orig_sync
-    _original_inits["openai.AsyncOpenAI"] = orig_async
-
-    def _make_sync(*args: Any, **kwargs: Any) -> GuardedOpenAI:
-        real = orig_sync(*args, **kwargs)
-        return GuardedOpenAI(real, session)
-
-    def _make_async(*args: Any, **kwargs: Any) -> GuardedOpenAI:
-        real = orig_async(*args, **kwargs)
-        return GuardedOpenAI(real, session)
-
-    openai.OpenAI = _make_sync  # type: ignore[assignment,misc]
-    openai.AsyncOpenAI = _make_async  # type: ignore[assignment,misc]
-
-    if not quiet:
-        _log.info("Patched openai.OpenAI and openai.AsyncOpenAI")
+    return isinstance(client, (_OrigOpenAI, _OrigAsyncOpenAI))

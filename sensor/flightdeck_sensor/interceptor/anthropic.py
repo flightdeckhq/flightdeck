@@ -8,11 +8,11 @@ Two intercept paths exist for Anthropic clients:
    with :class:`_AnthropicMessagesDescriptor`. Every instance created
    anywhere -- including instances constructed inside frameworks like
    ``langchain-anthropic`` and ``llama-index-llms-anthropic`` -- has
-   its first ``.messages`` access produce a :class:`GuardedMessages`
+   its first ``.messages`` access produce a :class:`SensorMessages`
    wrapper. The wrapped resource is cached in ``instance.__dict__``
    so subsequent accesses bypass the descriptor entirely (matching
    ``functools.cached_property`` semantics).
-2. **Per-instance wrapping** -- :class:`GuardedAnthropic` wraps a
+2. **Per-instance wrapping** -- :class:`SensorAnthropic` wraps a
    single client instance via the public ``flightdeck_sensor.wrap()``
    API. Useful for code that wants to opt into observability for one
    specific client without enabling global patching.
@@ -28,20 +28,20 @@ Interception hierarchy for class-level patching::
     anthropic.Anthropic.messages              ← _AnthropicMessagesDescriptor
       └── on first __get__:
             real = orig_descriptor.func(instance)  # raw Messages
-            wrapped = GuardedMessages(real, session, provider, is_async)
+            wrapped = SensorMessages(real, session, provider, is_async)
             instance.__dict__['messages'] = wrapped
             return wrapped
 
 Interception hierarchy for per-instance wrapping::
 
-    GuardedAnthropic (wraps anthropic.Anthropic or AsyncAnthropic)
-      ├── @property messages  →  GuardedMessages
+    SensorAnthropic (wraps anthropic.Anthropic or AsyncAnthropic)
+      ├── @property messages  →  SensorMessages
       │   ├── create()        →  call() or call_async()
       │   ├── stream()        →  call_stream() or NotImplementedError (async)
       │   └── __getattr__     →  pass-through
-      ├── with_options()      →  new GuardedAnthropic
-      ├── with_raw_response   →  new GuardedAnthropic
-      ├── with_streaming_response → new GuardedAnthropic
+      ├── with_options()      →  new SensorAnthropic
+      ├── with_raw_response   →  new SensorAnthropic
+      ├── with_streaming_response → new SensorAnthropic
       └── __getattr__         →  pass-through
 """
 
@@ -98,7 +98,7 @@ def _is_async_client(client: Any) -> bool:
     return isinstance(client, _OrigAsyncAnthropic)
 
 
-class GuardedMessages:
+class SensorMessages:
     """Proxy for the ``messages`` resource on an Anthropic client.
 
     Intercepts ``create()`` and ``stream()`` -- everything else passes through.
@@ -150,7 +150,7 @@ class GuardedMessages:
         return getattr(self._real, name)
 
 
-class GuardedAnthropic:
+class SensorAnthropic:
     """Proxy for ``anthropic.Anthropic`` or ``anthropic.AsyncAnthropic``.
 
     ``.messages`` is a ``@property`` -- this is how interception works.
@@ -172,33 +172,33 @@ class GuardedAnthropic:
         )
 
     @property
-    def messages(self) -> GuardedMessages:
-        """Return a :class:`GuardedMessages` proxy that intercepts create/stream."""
-        return GuardedMessages(
+    def messages(self) -> SensorMessages:
+        """Return a :class:`SensorMessages` proxy that intercepts create/stream."""
+        return SensorMessages(
             self._client.messages,
             self._session,
             self._provider,
             is_async=self._is_async,
         )
 
-    def with_options(self, **kwargs: Any) -> GuardedAnthropic:
-        """Return a new GuardedAnthropic wrapping a client with updated options."""
+    def with_options(self, **kwargs: Any) -> SensorAnthropic:
+        """Return a new SensorAnthropic wrapping a client with updated options."""
         new_client = self._client.with_options(**kwargs)
-        return GuardedAnthropic(new_client, self._session, self._provider)
+        return SensorAnthropic(new_client, self._session, self._provider)
 
     @property
-    def with_raw_response(self) -> GuardedAnthropic:
-        """Return a new GuardedAnthropic wrapping the raw response client."""
-        return GuardedAnthropic(
+    def with_raw_response(self) -> SensorAnthropic:
+        """Return a new SensorAnthropic wrapping the raw response client."""
+        return SensorAnthropic(
             self._client.with_raw_response,
             self._session,
             self._provider,
         )
 
     @property
-    def with_streaming_response(self) -> GuardedAnthropic:
-        """Return a new GuardedAnthropic wrapping the streaming response client."""
-        return GuardedAnthropic(
+    def with_streaming_response(self) -> SensorAnthropic:
+        """Return a new SensorAnthropic wrapping the streaming response client."""
+        return SensorAnthropic(
             self._client.with_streaming_response,
             self._session,
             self._provider,
@@ -233,7 +233,7 @@ class _AnthropicMessagesDescriptor:
     On first access on a given instance, calls the original
     ``cached_property``'s underlying function to obtain the raw
     ``Messages`` (or ``AsyncMessages``) resource, wraps it in a
-    :class:`GuardedMessages` proxy bound to the active sensor session,
+    :class:`SensorMessages` proxy bound to the active sensor session,
     and stores the wrapped version in ``instance.__dict__[name]``.
     Subsequent accesses bypass the descriptor entirely because Python's
     attribute lookup checks ``instance.__dict__`` before non-data
@@ -279,7 +279,7 @@ class _AnthropicMessagesDescriptor:
         provider = AnthropicProvider(
             capture_prompts=session.config.capture_prompts,
         )
-        wrapped = GuardedMessages(
+        wrapped = SensorMessages(
             raw,
             session,
             provider,
@@ -364,7 +364,7 @@ def unpatch_anthropic_classes() -> None:
 
     **Limitation**: instances created BEFORE ``unpatch`` was called
     that have already accessed ``.messages`` once will have a wrapped
-    :class:`GuardedMessages` cached in their ``__dict__``. Those
+    :class:`SensorMessages` cached in their ``__dict__``. Those
     instances will continue to use the wrapped resource until the
     instance is garbage collected. Clearing the cache on arbitrary
     live instances is not feasible without a heavy gc traversal and

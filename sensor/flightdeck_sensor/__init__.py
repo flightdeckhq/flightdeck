@@ -28,14 +28,14 @@ from flightdeck_sensor.core.types import (
     StatusResponse,
 )
 from flightdeck_sensor.interceptor.anthropic import (
-    GuardedAnthropic,
+    SensorAnthropic,
     _OrigAnthropic,
     _OrigAsyncAnthropic,
     patch_anthropic_classes,
     unpatch_anthropic_classes,
 )
 from flightdeck_sensor.interceptor.openai import (
-    GuardedOpenAI,
+    SensorOpenAI,
     _OrigAsyncOpenAI,
     _OrigOpenAI,
     patch_openai_classes,
@@ -250,16 +250,16 @@ def wrap(client: Any, quiet: bool = False) -> Any:
     if _is_anthropic(client):
         # If the class is already patched, the descriptor handles
         # interception transparently and wrapping again would produce
-        # a GuardedMessages-of-GuardedMessages on first .messages access.
+        # a SensorMessages-of-SensorMessages on first .messages access.
         if hasattr(type(client), "_flightdeck_patched"):
             return client
-        return GuardedAnthropic(client, session)
+        return SensorAnthropic(client, session)
 
     # Detect OpenAI client
     if _is_openai(client):
         if hasattr(type(client), "_flightdeck_patched"):
             return client
-        return GuardedOpenAI(client, session)
+        return SensorOpenAI(client, session)
 
     if not quiet:
         _log.warning(

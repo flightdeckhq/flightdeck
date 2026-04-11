@@ -7,9 +7,9 @@ interceptor):
    mutates ``openai.OpenAI`` and ``openai.AsyncOpenAI`` in place,
    replacing the ``chat`` ``cached_property`` descriptor with
    :class:`_OpenAIChatDescriptor`. Every instance created anywhere
-   has its first ``.chat`` access produce a :class:`GuardedChat`
+   has its first ``.chat`` access produce a :class:`SensorChat`
    wrapper, cached in ``instance.__dict__`` for subsequent accesses.
-2. **Per-instance wrapping** via :class:`GuardedOpenAI` and the public
+2. **Per-instance wrapping** via :class:`SensorOpenAI` and the public
    ``flightdeck_sensor.wrap()`` API.
 
 Interception hierarchy for class-level patching::
@@ -18,21 +18,21 @@ Interception hierarchy for class-level patching::
     openai.OpenAI.chat                  ← _OpenAIChatDescriptor
       └── on first __get__:
             real = orig_descriptor.func(instance)  # raw Chat
-            wrapped = GuardedChat(real, session, provider, is_async)
+            wrapped = SensorChat(real, session, provider, is_async)
             instance.__dict__['chat'] = wrapped
             return wrapped
 
 Interception hierarchy for per-instance wrapping::
 
-    GuardedOpenAI (wraps openai.OpenAI or AsyncOpenAI)
-      ├── @property chat      →  GuardedChat
-      │   ├── @property completions  →  GuardedCompletions
+    SensorOpenAI (wraps openai.OpenAI or AsyncOpenAI)
+      ├── @property chat      →  SensorChat
+      │   ├── @property completions  →  SensorCompletions
       │   │   ├── create()           →  call(), call_async(), or call_stream()
       │   │   └── __getattr__        →  pass-through
       │   └── __getattr__    →  pass-through
-      ├── with_options()     →  new GuardedOpenAI
-      ├── with_raw_response  →  new GuardedOpenAI
-      ├── with_streaming_response → new GuardedOpenAI
+      ├── with_options()     →  new SensorOpenAI
+      ├── with_raw_response  →  new SensorOpenAI
+      ├── with_streaming_response → new SensorOpenAI
       └── __getattr__        →  pass-through
 
 When ``stream=True``, injects ``stream_options={"include_usage": True}``
@@ -82,7 +82,7 @@ def _is_async_client(client: Any) -> bool:
     return isinstance(client, _OrigAsyncOpenAI)
 
 
-class GuardedCompletions:
+class SensorCompletions:
     """Proxy for ``chat.completions`` -- intercepts ``create()``."""
 
     def __init__(
@@ -137,7 +137,7 @@ class GuardedCompletions:
         return getattr(self._real, name)
 
 
-class GuardedChat:
+class SensorChat:
     """Proxy for ``client.chat`` -- intercepts ``.completions``."""
 
     def __init__(
@@ -154,9 +154,9 @@ class GuardedChat:
         self._is_async = is_async
 
     @property
-    def completions(self) -> GuardedCompletions:
-        """Return a :class:`GuardedCompletions` proxy."""
-        return GuardedCompletions(
+    def completions(self) -> SensorCompletions:
+        """Return a :class:`SensorCompletions` proxy."""
+        return SensorCompletions(
             self._real.completions,
             self._session,
             self._provider,
@@ -167,7 +167,7 @@ class GuardedChat:
         return getattr(self._real, name)
 
 
-class GuardedOpenAI:
+class SensorOpenAI:
     """Proxy for ``openai.OpenAI`` or ``openai.AsyncOpenAI``.
 
     ``.chat`` is a ``@property`` -- this is how interception works.
@@ -188,33 +188,33 @@ class GuardedOpenAI:
         )
 
     @property
-    def chat(self) -> GuardedChat:
-        """Return a :class:`GuardedChat` proxy that intercepts completions."""
-        return GuardedChat(
+    def chat(self) -> SensorChat:
+        """Return a :class:`SensorChat` proxy that intercepts completions."""
+        return SensorChat(
             self._client.chat,
             self._session,
             self._provider,
             is_async=self._is_async,
         )
 
-    def with_options(self, **kwargs: Any) -> GuardedOpenAI:
-        """Return a new GuardedOpenAI wrapping a client with updated options."""
+    def with_options(self, **kwargs: Any) -> SensorOpenAI:
+        """Return a new SensorOpenAI wrapping a client with updated options."""
         new_client = self._client.with_options(**kwargs)
-        return GuardedOpenAI(new_client, self._session, self._provider)
+        return SensorOpenAI(new_client, self._session, self._provider)
 
     @property
-    def with_raw_response(self) -> GuardedOpenAI:
-        """Return a new GuardedOpenAI wrapping the raw response client."""
-        return GuardedOpenAI(
+    def with_raw_response(self) -> SensorOpenAI:
+        """Return a new SensorOpenAI wrapping the raw response client."""
+        return SensorOpenAI(
             self._client.with_raw_response,
             self._session,
             self._provider,
         )
 
     @property
-    def with_streaming_response(self) -> GuardedOpenAI:
-        """Return a new GuardedOpenAI wrapping the streaming response client."""
-        return GuardedOpenAI(
+    def with_streaming_response(self) -> SensorOpenAI:
+        """Return a new SensorOpenAI wrapping the streaming response client."""
+        return SensorOpenAI(
             self._client.with_streaming_response,
             self._session,
             self._provider,
@@ -263,7 +263,7 @@ class _OpenAIChatDescriptor:
     ``interceptor/anthropic.py``. On first access on a given instance,
     obtains the raw ``Chat`` (or ``AsyncChat``) resource by invoking
     the original ``cached_property``'s underlying function, wraps it
-    in a :class:`GuardedChat` proxy bound to the active session, and
+    in a :class:`SensorChat` proxy bound to the active session, and
     stores the wrapped version in ``instance.__dict__[name]`` so
     subsequent accesses bypass the descriptor.
 
@@ -296,7 +296,7 @@ class _OpenAIChatDescriptor:
         provider = OpenAIProvider(
             capture_prompts=session.config.capture_prompts,
         )
-        wrapped = GuardedChat(
+        wrapped = SensorChat(
             raw,
             session,
             provider,

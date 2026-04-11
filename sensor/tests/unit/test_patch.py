@@ -25,8 +25,8 @@ Tests in this file:
 * ``test_descriptor_caches_on_instance``: the descriptor populates
   ``instance.__dict__`` so subsequent accesses bypass it (matching
   cached_property behavior).
-* ``test_async_streaming_raises_not_implemented``: GuardedMessages
-  and GuardedCompletions reject async streaming with a clear error
+* ``test_async_streaming_raises_not_implemented``: SensorMessages
+  and SensorCompletions reject async streaming with a clear error
   rather than silently dispatching to the sync path.
 """
 
@@ -42,8 +42,8 @@ import openai
 
 import flightdeck_sensor
 from flightdeck_sensor.interceptor.anthropic import (
-    GuardedAnthropic,
-    GuardedMessages,
+    SensorAnthropic,
+    SensorMessages,
     _OrigAnthropic,
     _OrigAsyncAnthropic,
     _AnthropicMessagesDescriptor,
@@ -51,9 +51,9 @@ from flightdeck_sensor.interceptor.anthropic import (
     unpatch_anthropic_classes,
 )
 from flightdeck_sensor.interceptor.openai import (
-    GuardedChat,
-    GuardedCompletions,
-    GuardedOpenAI,
+    SensorChat,
+    SensorCompletions,
+    SensorOpenAI,
     _OpenAIChatDescriptor,
     _OrigOpenAI,
     _OrigAsyncOpenAI,
@@ -282,7 +282,7 @@ def test_descriptor_caches_messages_on_instance(sensor_init: Any) -> None:
     assert "messages" not in vars(client)
 
     msgs = client.messages
-    assert isinstance(msgs, GuardedMessages)
+    assert isinstance(msgs, SensorMessages)
     assert "messages" in vars(client)
     assert vars(client)["messages"] is msgs
 
@@ -297,7 +297,7 @@ def test_descriptor_caches_chat_on_instance(sensor_init: Any) -> None:
     assert "chat" not in vars(client)
 
     chat = client.chat
-    assert isinstance(chat, GuardedChat)
+    assert isinstance(chat, SensorChat)
     assert "chat" in vars(client)
     assert vars(client)["chat"] is chat
 
@@ -314,8 +314,8 @@ def test_wrap_is_noop_when_patched(sensor_init: Any) -> None:
     """wrap(client) returns the client unchanged when patch() is active.
 
     Otherwise calling wrap() after patch() would produce a
-    GuardedAnthropic that on .messages access wraps an already-wrapped
-    GuardedMessages -- a double-wrap that would post duplicate events.
+    SensorAnthropic that on .messages access wraps an already-wrapped
+    SensorMessages -- a double-wrap that would post duplicate events.
     """
     flightdeck_sensor.patch(quiet=True)
     client = anthropic.Anthropic(api_key="test-key")
@@ -326,15 +326,15 @@ def test_wrap_is_noop_when_patched(sensor_init: Any) -> None:
 
 
 def test_wrap_still_wraps_when_not_patched(sensor_init: Any) -> None:
-    """wrap() without patch() returns a GuardedAnthropic / GuardedOpenAI."""
+    """wrap() without patch() returns a SensorAnthropic / SensorOpenAI."""
     # No patch() call here.
     a_client = anthropic.Anthropic(api_key="test-key")
     a_wrapped = flightdeck_sensor.wrap(a_client)
-    assert isinstance(a_wrapped, GuardedAnthropic)
+    assert isinstance(a_wrapped, SensorAnthropic)
 
     o_client = openai.OpenAI(api_key="test-key")
     o_wrapped = flightdeck_sensor.wrap(o_client)
-    assert isinstance(o_wrapped, GuardedOpenAI)
+    assert isinstance(o_wrapped, SensorOpenAI)
 
 
 # ----------------------------------------------------------------------
@@ -343,7 +343,7 @@ def test_wrap_still_wraps_when_not_patched(sensor_init: Any) -> None:
 
 
 def test_async_anthropic_streaming_raises_not_implemented(sensor_init: Any) -> None:
-    """GuardedMessages.stream on an async client raises NotImplementedError.
+    """SensorMessages.stream on an async client raises NotImplementedError.
 
     The previous implementation silently dispatched async streaming
     to the sync ``base.call_stream`` path, which then misbehaved at
@@ -351,16 +351,16 @@ def test_async_anthropic_streaming_raises_not_implemented(sensor_init: Any) -> N
     """
     async_client = anthropic.AsyncAnthropic(api_key="test-key")
     wrapped = flightdeck_sensor.wrap(async_client)
-    assert isinstance(wrapped, GuardedAnthropic)
+    assert isinstance(wrapped, SensorAnthropic)
     with pytest.raises(NotImplementedError, match="Async streaming"):
         wrapped.messages.stream(model="claude-sonnet-4-6", messages=[])
 
 
 def test_async_openai_streaming_raises_not_implemented(sensor_init: Any) -> None:
-    """GuardedCompletions.create(stream=True) on async client raises."""
+    """SensorCompletions.create(stream=True) on async client raises."""
     async_client = openai.AsyncOpenAI(api_key="test-key")
     wrapped = flightdeck_sensor.wrap(async_client)
-    assert isinstance(wrapped, GuardedOpenAI)
+    assert isinstance(wrapped, SensorOpenAI)
     with pytest.raises(NotImplementedError, match="Async streaming"):
         wrapped.chat.completions.create(
             model="gpt-4o-mini",
@@ -391,7 +391,7 @@ def test_descriptor_no_session_then_init_anthropic() -> None:
     Verification: patch() with no init() yet -> first .messages
     access returns a raw Messages and instance.__dict__ stays
     EMPTY. Then init() -> next .messages access goes through the
-    descriptor again and returns a GuardedMessages.
+    descriptor again and returns a SensorMessages.
     """
     # Patch the classes WITHOUT calling init() first.
     # This is allowed: patch_anthropic_classes is callable directly
@@ -406,7 +406,7 @@ def test_descriptor_no_session_then_init_anthropic() -> None:
         # First access -- session is None, should return raw and NOT
         # populate the instance cache.
         msgs1 = client.messages
-        assert not isinstance(msgs1, GuardedMessages), (
+        assert not isinstance(msgs1, SensorMessages), (
             "descriptor should return raw when session is None"
         )
         assert "messages" not in vars(client), (
@@ -416,14 +416,14 @@ def test_descriptor_no_session_then_init_anthropic() -> None:
         )
 
         # Now init() and access again -- the descriptor must run again
-        # and produce a wrapped GuardedMessages.
+        # and produce a wrapped SensorMessages.
         flightdeck_sensor.init(
             server="http://localhost:4000/ingest",
             token="tok-test",
             quiet=True,
         )
         msgs2 = client.messages
-        assert isinstance(msgs2, GuardedMessages), (
+        assert isinstance(msgs2, SensorMessages), (
             "after init(), the descriptor must wrap on next access"
         )
         # And NOW it should be cached.
@@ -445,7 +445,7 @@ def test_descriptor_no_session_then_init_openai() -> None:
     try:
         client = openai.OpenAI(api_key="test-key")
         chat1 = client.chat
-        assert not isinstance(chat1, GuardedChat), (
+        assert not isinstance(chat1, SensorChat), (
             "descriptor should return raw when session is None"
         )
         assert "chat" not in vars(client)
@@ -456,7 +456,7 @@ def test_descriptor_no_session_then_init_openai() -> None:
             quiet=True,
         )
         chat2 = client.chat
-        assert isinstance(chat2, GuardedChat)
+        assert isinstance(chat2, SensorChat)
         assert "chat" in vars(client)
         assert vars(client)["chat"] is chat2
     finally:

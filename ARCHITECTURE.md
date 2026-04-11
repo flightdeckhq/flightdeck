@@ -85,8 +85,8 @@ flightdeck/
 │   │   │   └── retry.py        # Exponential backoff, unavailability policy enforcement
 │   │   ├── interceptor/
 │   │   │   ├── base.py         # call(), call_async(), call_stream(): provider-agnostic intercept
-│   │   │   ├── anthropic.py    # GuardedAnthropic: wraps sync + async Anthropic clients
-│   │   │   └── openai.py       # GuardedOpenAI: wraps sync + async OpenAI clients
+│   │   │   ├── anthropic.py    # SensorAnthropic: wraps sync + async Anthropic clients
+│   │   │   └── openai.py       # SensorOpenAI: wraps sync + async OpenAI clients
 │   │   └── providers/
 │   │       ├── protocol.py     # Provider Protocol: token estimation, usage extraction, content extraction
 │   │       ├── anthropic.py    # AnthropicProvider: handles system, messages, tools, response
@@ -2315,14 +2315,14 @@ their agent appear in the live dashboard timeline in real time.
 - Post-call: extract actual usage, reconcile, POST post_call event
 
 `sensor/flightdeck_sensor/interceptor/anthropic.py`
-- `GuardedMessages`: proxy for messages resource, intercepts create() and stream()
-- `GuardedAnthropic`: proxy for Anthropic/AsyncAnthropic clients
-- `.messages` as `@property` returning `GuardedMessages`
-- `with_options()`, `with_raw_response`, `with_streaming_response` all return new `GuardedAnthropic`
+- `SensorMessages`: proxy for messages resource, intercepts create() and stream()
+- `SensorAnthropic`: proxy for Anthropic/AsyncAnthropic clients
+- `.messages` as `@property` returning `SensorMessages`
+- `with_options()`, `with_raw_response`, `with_streaming_response` all return new `SensorAnthropic`
 - `__getattr__` passes everything else through
 
 `sensor/flightdeck_sensor/interceptor/openai.py`
-- `GuardedCompletions`, `GuardedChat`, `GuardedOpenAI`: same proxy pattern for OpenAI
+- `SensorCompletions`, `SensorChat`, `SensorOpenAI`: same proxy pattern for OpenAI
 - Streaming: inject `stream_options={"include_usage": True}` when `stream=True`
 
 `sensor/flightdeck_sensor/__init__.py`

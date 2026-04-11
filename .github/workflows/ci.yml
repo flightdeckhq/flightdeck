@@ -231,13 +231,17 @@ jobs:
         # the test-integration target carries. test_ui_demo.py is
         # the only manual-marked test today; it is a 3-minute
         # dashboard data-population tool, not a regression test.
+        #
+        # The test_sensor_e2e.py file is part of the integration
+        # directory, so its 20 e2e tests run inside this step. The
+        # previous workflow had a separate "Run sensor e2e tests in
+        # isolation" step that re-ran the same 20 tests via
+        # ``make test-e2e``; it was removed in B-L because pytest
+        # already prints per-test PASS/FAIL in this step's log and
+        # the duplicate doubled the slowest CI stage with no
+        # additional coverage. ``make test-e2e`` still works locally
+        # for targeted runs.
         run: make test-integration
-
-      - name: Run sensor e2e tests in isolation
-        # Same suite as test-integration but limited to the e2e file
-        # so a regression in the e2e harness shows up as its own
-        # failed step rather than being lost in the larger suite log.
-        run: make test-e2e
 
       - name: Dump stack logs on failure
         if: failure()

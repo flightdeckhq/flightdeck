@@ -104,6 +104,107 @@ class TestEventQueue:
         finally:
             eq.close()
 
+    def test_critical_events_survive_queue_pressure(self) -> None:
+        """B-L proof: a critical event delivered while the data-plane
+        queue is at capacity must still reach the wire.
+
+        This is the regression guard for the production bug Phase 4.5
+        audit B-L exposed: pre-B-L, the directive_result(acknowledged)
+        event for a SHUTDOWN went through the same enqueue path as a
+        routine post_call, so under producer pressure the drop-oldest
+        policy could discard it -- the dashboard then saw "agent
+        stopped responding" instead of "agent shut down cleanly".
+
+        Setup:
+        1. Build an EventQueue with a slow client so the drain thread
+           is stuck on the very first item it pops -- everything we
+           enqueue afterwards stays buffered.
+        2. Fill the data-plane queue past capacity to verify the
+           drop-oldest path is hot.
+        3. Enqueue a critical event via enqueue_critical.
+        4. Replace the slow client side-effect with a recorder so the
+           drain thread can finally make progress.
+        5. Wait for the recorder to see the critical event payload --
+           it must arrive even though the data-plane queue had 1000+
+           items in front of it.
+        """
+        from flightdeck_sensor.transport.client import _MAX_CRITICAL_QUEUE_SIZE
+
+        mock_client = MagicMock(spec=ControlPlaneClient)
+
+        # Phase 1: drain thread blocks on the very first event so the
+        # queue can saturate behind it. We use a threading.Event the
+        # test can flip to release the drain thread later.
+        release = __import__("threading").Event()
+
+        def _blocked_post(_: Any) -> None:
+            release.wait(timeout=10)
+            return None
+
+        mock_client.post_event.side_effect = _blocked_post
+
+        eq = EventQueue(mock_client)
+        try:
+            # Push enough events to overflow the data-plane queue. The
+            # drain thread is currently parked inside the first
+            # _blocked_post call, so put_nowait will fill the rest and
+            # then start dropping the oldest items.
+            for i in range(_MAX_QUEUE_SIZE + _MAX_CRITICAL_QUEUE_SIZE + 50):
+                eq.enqueue({"event_type": "post_call", "i": i})
+
+            # The critical ack must survive even though the data-plane
+            # queue is currently saturated. enqueue_critical never
+            # blocks and never raises -- it puts onto the priority
+            # queue which the drain thread checks BEFORE pulling each
+            # data-plane item.
+            eq.enqueue_critical({
+                "event_type": "directive_result",
+                "directive_name": "shutdown",
+                "directive_status": "acknowledged",
+            })
+
+            # Phase 2: swap in a recorder side-effect so we can observe
+            # what the drain thread actually delivers, then release
+            # the parked first call so the drain thread can make
+            # progress.
+            posted: list[dict[str, Any]] = []
+
+            def _recorder(item: dict[str, Any]) -> None:
+                posted.append(dict(item))
+                return None
+
+            mock_client.post_event.side_effect = _recorder
+            release.set()
+
+            # Wait until we see the critical event in the recorder.
+            # If the priority queue path is broken, the drain thread
+            # will burn through ~1000 dropped post_calls first and
+            # this loop will time out.
+            deadline = time.monotonic() + 5.0
+            seen_critical = False
+            while time.monotonic() < deadline:
+                if any(
+                    p.get("event_type") == "directive_result"
+                    and p.get("directive_name") == "shutdown"
+                    and p.get("directive_status") == "acknowledged"
+                    for p in posted
+                ):
+                    seen_critical = True
+                    break
+                time.sleep(0.05)
+
+            assert seen_critical, (
+                "critical directive_result(shutdown) was never "
+                "delivered by the drain thread despite "
+                "enqueue_critical -- the priority queue is not "
+                "actually being drained before the data-plane queue. "
+                f"Drain thread saw {len(posted)} events; first 5: "
+                f"{posted[:5]}"
+            )
+        finally:
+            release.set()  # in case the assertion failed before the swap
+            eq.close()
+
     def test_queue_full_warning_is_rate_limited(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:

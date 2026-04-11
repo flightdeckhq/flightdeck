@@ -1455,21 +1455,12 @@ def test_pattern_b_custom_directive_during_traffic(
 
             def _worker() -> None:
                 try:
-                    # See the matching ``stop.wait`` comment on the
-                    # _worker in test_pattern_b_shutdown_during_traffic
-                    # for the rationale -- ``Event.wait(timeout)`` is
-                    # the idiomatic "loop until cancelled with a tick"
-                    # primitive and the 5 ms tick keeps producer rate
-                    # below drain capacity so the directive_result ack
-                    # cannot be lost to a queue overflow on slow CI.
-                    while True:
+                    while not stop.is_set():
                         client.messages.create(
                             model="claude-sonnet-4-6",
                             messages=[{"role": "user", "content": "x"}],
                             max_tokens=10,
                         )
-                        if stop.wait(0.005):
-                            return
                 except BaseException as exc:  # noqa: BLE001
                     with errors_lock:
                         errors.append(exc)
@@ -1561,24 +1552,7 @@ def test_pattern_b_shutdown_during_traffic(
 
             def _worker() -> None:
                 try:
-                    # ``stop.wait(timeout)`` doubles as both the
-                    # cancellation check and the per-iteration delay:
-                    # it returns True the moment stop is set (even
-                    # mid-delay, no spurious 5 ms tail) and returns
-                    # False after the timeout otherwise. This is the
-                    # canonical Python "loop until cancelled with a
-                    # tick" pattern in ``threading``.
-                    #
-                    # Why throttle at all: each call generates two
-                    # events (pre/post). Without a tick, 4 workers fire
-                    # thousands of events/s through a respx-mocked
-                    # client and overflow the sensor's 1000-event
-                    # queue on a slow CI runner -- the directive_result
-                    # ack the assertion below waits for is dropped.
-                    # 5 ms tick = ~800 events/s aggregate, well within
-                    # drain capacity. The B-H property under test
-                    # (drain/directive thread isolation) is unaffected.
-                    while True:
+                    while not stop.is_set():
                         try:
                             client.messages.create(
                                 model="claude-sonnet-4-6",
@@ -1590,8 +1564,6 @@ def test_pattern_b_shutdown_during_traffic(
                                 shutdown_count[0] += 1
                             shutdown_seen.set()
                             return  # exit cleanly
-                        if stop.wait(0.005):
-                            return
                 except BaseException as exc:  # noqa: BLE001
                     errors.append(exc)
 
@@ -2070,15 +2042,7 @@ def test_pattern_b_degrade_seen_by_all_threads(
 
                 def _worker(thread_id: int) -> None:
                     try:
-                        # See the matching ``stop.wait`` comment on the
-                        # _worker in test_pattern_b_shutdown_during_traffic
-                        # for the rationale -- ``Event.wait(timeout)``
-                        # is the idiomatic "loop until cancelled with
-                        # a per-tick delay" primitive and the 5 ms
-                        # tick keeps producer rate inside drain
-                        # capacity so the directive_result ack cannot
-                        # be lost to a queue overflow on slow CI.
-                        while True:
+                        while not stop.is_set():
                             resp = client.messages.create(
                                 model="claude-sonnet-4-6",
                                 messages=[{
@@ -2094,8 +2058,6 @@ def test_pattern_b_degrade_seen_by_all_threads(
                                     phase2_results.append(
                                         (thread_id, resp.model)
                                     )
-                            if stop.wait(0.005):
-                                return
                     except BaseException as exc:  # noqa: BLE001
                         errors.append(exc)
 

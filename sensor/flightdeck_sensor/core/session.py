@@ -430,6 +430,15 @@ class Session:
             _log.warning("[flightdeck] custom directive payload validation failed: %s", exc)
             return
 
+        # All directive_result events emitted from this method use
+        # enqueue_critical (B-L priority queue). The dashboard surfaces
+        # the success flag, the handler's return value, and any error
+        # message; losing these to drop-oldest pressure on the
+        # data-plane queue would silently strand a custom directive in
+        # the "delivered, no result" state forever. Drop-newest on the
+        # critical queue (in the rare case it overflows) at least
+        # surfaces the loss as an ERROR log line so an operator can
+        # find out.
         reg = _directive_registry.get(name)
         if reg is None:
             _log.warning(
@@ -438,7 +447,7 @@ class Session:
             payload = self._build_directive_result_event(
                 name, success=False, error="handler not found"
             )
-            self.event_queue.enqueue(payload)
+            self.event_queue.enqueue_critical(payload)
             return
 
         if reg.fingerprint != fingerprint:
@@ -452,7 +461,7 @@ class Session:
             payload = self._build_directive_result_event(
                 name, success=False, error="fingerprint mismatch"
             )
-            self.event_queue.enqueue(payload)
+            self.event_queue.enqueue_critical(payload)
             return
 
         ctx = self._build_directive_context()
@@ -462,7 +471,7 @@ class Session:
             payload = self._build_directive_result_event(
                 name, success=True, result=result
             )
-            self.event_queue.enqueue(payload)
+            self.event_queue.enqueue_critical(payload)
         except TimeoutError:
             _log.warning(
                 "[flightdeck] custom directive '%s' timed out after 5s", name
@@ -470,7 +479,7 @@ class Session:
             payload = self._build_directive_result_event(
                 name, success=False, error="timeout"
             )
-            self.event_queue.enqueue(payload)
+            self.event_queue.enqueue_critical(payload)
         except Exception as exc:
             _log.warning(
                 "[flightdeck] custom directive '%s' raised: %s", name, exc
@@ -478,7 +487,7 @@ class Session:
             payload = self._build_directive_result_event(
                 name, success=False, error=str(exc)
             )
-            self.event_queue.enqueue(payload)
+            self.event_queue.enqueue_critical(payload)
 
     @staticmethod
     def _run_handler_with_timeout(
@@ -586,7 +595,12 @@ class Session:
 
         elif directive.action == DirectiveAction.DEGRADE:
             degrade_to = directive.payload.get("degrade_to", "")
-            # Acknowledge degrade before acting
+            # Acknowledge degrade before acting. enqueue_critical
+            # (B-L priority queue) ensures this ack survives even
+            # if the data-plane queue is currently saturated by
+            # routine post_call traffic -- the dashboard relies on
+            # this event to flip the model column for every
+            # subsequent call.
             with self._lock:
                 current_model = self._model or ""
             ack = self._build_payload(
@@ -600,7 +614,7 @@ class Session:
                 "from_model": current_model,
                 "to_model": degrade_to,
             }
-            self.event_queue.enqueue(ack)
+            self.event_queue.enqueue_critical(ack)
             self.policy.set_degrade_model(degrade_to)
             _log.info("[flightdeck] model degraded to: %s", degrade_to)
 
@@ -623,11 +637,19 @@ class Session:
                 directive.reason,
             )
             # Acknowledge shutdown before flipping the flag. flush()
-            # is now safe to call unconditionally because the B-H
+            # is safe to call unconditionally because the B-H
             # two-queue refactor moved _apply_directive off the drain
             # thread onto a dedicated directive handler thread. The
             # event queue's drain thread is independent and continues
             # to make progress on Queue.join().
+            #
+            # enqueue_critical (B-L) routes the ack onto the priority
+            # queue so it cannot be dropped to make room for routine
+            # post_call traffic that may have piled up while the agent
+            # was hitting its rate-limit ceiling. Without this, a
+            # busy multi-threaded agent could swallow its own shutdown
+            # ack and the dashboard would never know the kill was
+            # honored.
             ack = self._build_payload(
                 EventType.DIRECTIVE_RESULT,
                 directive_name="shutdown",
@@ -638,7 +660,7 @@ class Session:
                 "message": "agent shutting down",
                 "reason": directive.reason or "directive received",
             }
-            self.event_queue.enqueue(ack)
+            self.event_queue.enqueue_critical(ack)
             try:
                 self.event_queue.flush()
             except Exception as exc:
@@ -658,7 +680,8 @@ class Session:
                 directive.reason,
             )
             # Same architecture as the SHUTDOWN branch above -- safe
-            # synchronous flush via the B-H two-queue refactor.
+            # synchronous flush via the B-H two-queue refactor and
+            # priority routing of the ack via enqueue_critical (B-L).
             ack = self._build_payload(
                 EventType.DIRECTIVE_RESULT,
                 directive_name="shutdown_flavor",
@@ -669,7 +692,7 @@ class Session:
                 "message": "agent shutting down (fleet-wide)",
                 "reason": directive.reason or "fleet directive received",
             }
-            self.event_queue.enqueue(ack)
+            self.event_queue.enqueue_critical(ack)
             try:
                 self.event_queue.flush()
             except Exception as exc:

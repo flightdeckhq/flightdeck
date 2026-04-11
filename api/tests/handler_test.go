@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -278,7 +279,10 @@ func (m *mockStore) GetEvents(_ context.Context, params store.EventsParams) (*st
 		Total:   len(filtered),
 		Limit:   params.Limit,
 		Offset:  params.Offset,
-		HasMore: end < len(filtered),
+		// Mirror the production formula in store/events.go so the
+		// mock cannot drift from real semantics under future test
+		// changes. See the GetEvents godoc for the rationale.
+		HasMore: params.Offset+params.Limit <= len(filtered),
 	}, nil
 }
 
@@ -1631,5 +1635,59 @@ func TestGetEventsPagination(t *testing.T) {
 	}
 	if resp["offset"] != float64(0) {
 		t.Errorf("expected offset=0, got %v", resp["offset"])
+	}
+	// has_more must be present and reflect the new
+	// (Offset + Limit <= total) formula. The mock store returns 2
+	// events; with limit=1, offset=0 the page is the first event and
+	// 0 + 1 = 1 <= 2, so has_more must be true.
+	hasMore, ok := resp["has_more"].(bool)
+	if !ok {
+		t.Fatalf("expected has_more bool, got %T", resp["has_more"])
+	}
+	if !hasMore {
+		t.Error("expected has_more=true for limit=1 offset=0 with 2 events")
+	}
+}
+
+// TestGetEventsHasMoreFormula exercises the new HasMore formula
+// (Offset + Limit <= total) at three boundary positions: a strict
+// has-more case, the exact boundary, and an over-the-edge offset.
+func TestGetEventsHasMoreFormula(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.EventsListHandler(store.WrapStore(s))
+
+	cases := []struct {
+		name    string
+		limit   int
+		offset  int
+		hasMore bool
+	}{
+		// Mock returns 2 events. Offset+Limit <= total branches:
+		{name: "offset 0 limit 1 -> 0+1<=2 true", limit: 1, offset: 0, hasMore: true},
+		{name: "offset 1 limit 1 -> 1+1<=2 true (boundary)", limit: 1, offset: 1, hasMore: true},
+		{name: "offset 2 limit 1 -> 2+1<=2 false", limit: 1, offset: 2, hasMore: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			url := fmt.Sprintf(
+				"/v1/events?from=2026-01-01T00:00:00Z&limit=%d&offset=%d",
+				tc.limit, tc.offset,
+			)
+			req := httptest.NewRequest("GET", url, nil)
+			w := httptest.NewRecorder()
+			handler(w, req)
+			if w.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+			}
+			var resp map[string]any
+			_ = json.Unmarshal(w.Body.Bytes(), &resp)
+			got, ok := resp["has_more"].(bool)
+			if !ok {
+				t.Fatalf("expected has_more bool, got %T", resp["has_more"])
+			}
+			if got != tc.hasMore {
+				t.Errorf("has_more: expected %v, got %v", tc.hasMore, got)
+			}
+		})
 	}
 }

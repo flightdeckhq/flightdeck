@@ -1,4 +1,4 @@
-import { useMemo, useState, useEffect, useCallback } from "react";
+import { useMemo, useState, useEffect, useCallback, useRef } from "react";
 import { scaleTime } from "d3-scale";
 import type { FlavorSummary } from "@/lib/types";
 import type { TimeRange } from "@/pages/Fleet";
@@ -64,36 +64,46 @@ export function Timeline({
     }
   });
 
-  const handleResizeStart = useCallback(
-    (e: React.MouseEvent) => {
-      e.preventDefault();
-      const startX = e.clientX;
-      const startWidth = leftPanelWidth;
+  // Mirror leftPanelWidth into a ref so handleResizeStart can read
+  // the latest value at drag-start time WITHOUT taking leftPanelWidth
+  // as a useCallback dependency. The previous design had
+  // leftPanelWidth in deps -- which meant the callback identity
+  // changed on every drag frame, causing React to rebind the
+  // onMouseDown handler on every move. The ref approach removes the
+  // dep churn entirely; the in-progress drag still uses the
+  // closed-over startWidth so behavior is unchanged.
+  const leftPanelWidthRef = useRef(leftPanelWidth);
+  useEffect(() => {
+    leftPanelWidthRef.current = leftPanelWidth;
+  }, [leftPanelWidth]);
 
-      const onMove = (ev: MouseEvent) => {
-        const delta = ev.clientX - startX;
-        const next = Math.min(
-          LEFT_PANEL_MAX_WIDTH,
-          Math.max(LEFT_PANEL_MIN_WIDTH, startWidth + delta),
-        );
-        setLeftPanelWidth(next);
-        try {
-          localStorage.setItem(LEFT_PANEL_WIDTH_KEY, String(next));
-        } catch {
-          /* storage unavailable -- drag still works for this session */
-        }
-      };
+  const handleResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startWidth = leftPanelWidthRef.current;
 
-      const onUp = () => {
-        document.removeEventListener("mousemove", onMove);
-        document.removeEventListener("mouseup", onUp);
-      };
+    const onMove = (ev: MouseEvent) => {
+      const delta = ev.clientX - startX;
+      const next = Math.min(
+        LEFT_PANEL_MAX_WIDTH,
+        Math.max(LEFT_PANEL_MIN_WIDTH, startWidth + delta),
+      );
+      setLeftPanelWidth(next);
+      try {
+        localStorage.setItem(LEFT_PANEL_WIDTH_KEY, String(next));
+      } catch {
+        /* storage unavailable -- drag still works for this session */
+      }
+    };
 
-      document.addEventListener("mousemove", onMove);
-      document.addEventListener("mouseup", onUp);
-    },
-    [leftPanelWidth],
-  );
+    const onUp = () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    };
+
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  }, []);
 
   // Live-updating "now" — throttled to 10fps (100ms) for performance
   const [now, setNow] = useState(() => new Date());

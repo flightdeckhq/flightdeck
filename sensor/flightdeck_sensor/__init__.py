@@ -8,6 +8,7 @@ Two-line integration::
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import threading
@@ -190,10 +191,8 @@ def init(
         # attached. Set on the session BEFORE start() so the
         # session_start event payload includes it.
         runtime_ctx: dict[str, Any] = {}
-        try:
+        with contextlib.suppress(Exception):
             runtime_ctx = _collect_context()
-        except Exception:
-            pass
         _session.set_context(runtime_ctx)
 
         _session.start()

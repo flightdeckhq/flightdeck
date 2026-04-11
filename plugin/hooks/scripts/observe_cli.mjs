@@ -202,8 +202,8 @@ export function sanitizeToolInput(input) {
   const safe = {};
   if (input.file_path) safe.file_path = input.file_path;
   if (input.command) safe.command = String(input.command).slice(0, 200);
-  if (input.query) safe.query = input.query;
-  if (input.pattern) safe.pattern = input.pattern;
+  if (input.query) safe.query = String(input.query).slice(0, 200);
+  if (input.pattern) safe.pattern = String(input.pattern).slice(0, 200);
   if (input.prompt) safe.prompt = String(input.prompt).slice(0, 100);
   return Object.keys(safe).length > 0 ? safe : null;
 }

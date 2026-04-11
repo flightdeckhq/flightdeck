@@ -325,6 +325,18 @@ describe("observe_cli helpers", () => {
       assert.equal(result.query, "API endpoints");
       assert.equal(result.pattern, "**/*.ts");
     });
+
+    it("truncates query to 200 characters", () => {
+      const result = sanitizeToolInput({ query: "q".repeat(300) });
+      assert.equal(result.query.length, 200);
+      assert.equal(result.query, "q".repeat(200));
+    });
+
+    it("truncates pattern to 200 characters", () => {
+      const result = sanitizeToolInput({ pattern: "p".repeat(300) });
+      assert.equal(result.pattern.length, 200);
+      assert.equal(result.pattern, "p".repeat(200));
+    });
   });
 
   describe("EVENT_MAP", () => {

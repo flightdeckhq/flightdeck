@@ -36,6 +36,11 @@ type EventsResponse struct {
 // REPEATABLE READ transaction so the returned `total` and `events`
 // are consistent with the same snapshot. Concurrent inserts cannot
 // produce a state where len(events) > total or has_more lies.
+//
+// HasMore is computed from `Offset + Limit <= total` rather than from
+// `Offset + len(events) < total` so the semantics do not depend on
+// len(events) equalling Limit at every page boundary. Inside the
+// repeatable-read snapshot Total is fixed, so the comparison is exact.
 func (s *Store) GetEvents(ctx context.Context, params EventsParams) (*EventsResponse, error) {
 	var conditions []string
 	var args []interface{}
@@ -136,6 +141,6 @@ func (s *Store) GetEvents(ctx context.Context, params EventsParams) (*EventsResp
 		Total:   total,
 		Limit:   params.Limit,
 		Offset:  params.Offset,
-		HasMore: params.Offset+len(events) < total,
+		HasMore: params.Offset+params.Limit <= total,
 	}, nil
 }

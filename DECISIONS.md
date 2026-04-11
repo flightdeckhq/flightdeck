@@ -1470,3 +1470,45 @@ already serves that role. Duplicating it under a different
 navigation path would split the audience without adding value.
 
 ---
+
+## D080 -- Context JSONB PII fields deferred to Phase 5+
+
+**Decision:** The `sessions.context` JSONB column stores `user`,
+`hostname`, `working_dir` (Claude Code plugin only), `k8s_pod`,
+`k8s_namespace`, and `k8s_node` alongside the non-sensitive runtime
+fields (pid, os, arch, python_version, git_commit, git_branch,
+git_repo, frameworks, orchestration). In the current self-hosted v1
+deployment these are visible only to the deploying organization and
+present no third-party privacy or topology-leak risk -- the
+operator's own engineers see their own infrastructure metadata.
+
+In any future shared or multi-tenant Flightdeck deployment those same
+fields would constitute PII (`user`, `working_dir`) or
+infrastructure-topology leaks (`hostname`, `k8s_pod`, `k8s_namespace`,
+`k8s_node`) crossing tenant boundaries. Before any multi-tenant Phase
+is implemented, a context field scrubbing mechanism must be designed:
+either an opt-out list in `init()` config, server-side field
+filtering at ingestion / GetContextFacets, or a separate
+anonymized context store keyed off tenant id.
+
+**Reasoning:** v1 is explicitly self-hosted only per CLAUDE.md
+("Multi-tenant SaaS (self-hosted only in v1)"). Designing a scrubber
+now would be speculative scope creep and tie us to assumptions about
+the tenant model that does not yet exist. Recording the deferred
+concern here ensures future contributors evaluating multi-tenant work
+encounter this requirement before they ship anything.
+
+**Rejected alternative:** Strip the fields preemptively in v1.
+Rejected because the fields are operationally valuable for the
+self-hosted deployment use case (filter "show me everything running
+in the prod k8s namespace") and removing them would degrade today's
+UX in exchange for a hypothetical future tenant model.
+
+**Rejected alternative:** Hash or anonymize the fields in v1.
+Rejected because hashes break the facet-filtering UX (operators
+cannot meaningfully filter by `sha256(hostname)`).
+
+**Deferred to:** Phase 5+ (multi-tenant deployment is out of scope
+for v1). Surfaced by the Phase 4.5 audit (Hat 4 -- security review).
+
+---

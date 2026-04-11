@@ -33,10 +33,31 @@ const (
 
 // New creates the HTTP server with all routes registered.
 //
-// validator is used by the sensor-facing endpoints (/v1/directives/sync
-// and /v1/directives/register). When nil (e.g. in unit tests), those
-// endpoints are mounted without auth.
+// validator MUST be non-nil. The sensor-facing endpoints
+// (POST /v1/directives/sync and POST /v1/directives/register) are
+// mounted behind bearer-token auth via this validator (D073 stopgap).
+// Passing nil panics on construction so a future refactor cannot
+// silently disable authentication on those endpoints. Use
+// NewForTesting if you need an unauthenticated server in tests.
 func New(addr string, s store.Querier, hub *ws.Hub, validator *auth.Validator, corsOrigin string) *http.Server {
+	if validator == nil {
+		panic("server: validator must not be nil. Pass auth.NewValidator() in production or use NewForTesting() in tests.")
+	}
+	return newServer(addr, s, hub, validator, corsOrigin)
+}
+
+// NewForTesting builds a server with sync/register endpoints mounted
+// WITHOUT auth. Intended for tests that exercise handler wiring through
+// the real ServeMux without needing a Postgres-backed token validator.
+// Never call this from production code paths.
+func NewForTesting(addr string, s store.Querier, hub *ws.Hub, corsOrigin string) *http.Server {
+	return newServer(addr, s, hub, nil, corsOrigin)
+}
+
+// newServer is the unexported builder shared by New and NewForTesting.
+// validator may be nil; when nil the sync/register endpoints mount
+// without auth (NewForTesting only -- New panics before reaching here).
+func newServer(addr string, s store.Querier, hub *ws.Hub, validator *auth.Validator, corsOrigin string) *http.Server {
 	mux := http.NewServeMux()
 
 	// REST routes wrapped with a 30s timeout. The wrapper applies

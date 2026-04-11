@@ -152,7 +152,15 @@ export function Fleet() {
   }, [flavors, contextFilters, sessionMatchesContext]);
 
   const [timeRange, setTimeRange] = useState<TimeRange>("1m");
-  const [expandedFlavor, setExpandedFlavor] = useState<string | null>(null);
+  // Set of currently-expanded flavor names. Multiple flavors can be
+  // open at once -- the chevron toggle adds or removes a name from
+  // the set rather than overwriting a single value. The previous
+  // single-string state forced clicking a second flavor to collapse
+  // the first, which made it impossible to compare two flavors
+  // side-by-side.
+  const [expandedFlavors, setExpandedFlavors] = useState<Set<string>>(
+    () => new Set(),
+  );
   const [selectedEvent, setSelectedEvent] = useState<AgentEvent | null>(null);
   const [directEventDetail, setDirectEventDetail] = useState<AgentEvent | null>(null);
   const [activeFilter, setActiveFilter] = useState<string | null>(null);
@@ -264,7 +272,15 @@ export function Fleet() {
   }
 
   function handleExpandFlavor(flavor: string) {
-    setExpandedFlavor(expandedFlavor === flavor ? null : flavor);
+    setExpandedFlavors((prev) => {
+      const next = new Set(prev);
+      if (next.has(flavor)) {
+        next.delete(flavor);
+      } else {
+        next.add(flavor);
+      }
+      return next;
+    });
   }
 
   function handlePause() {
@@ -497,7 +513,7 @@ export function Fleet() {
             flavors={sortedFlavors}
             flavorFilter={flavorFilter}
             timeRange={timeRange}
-            expandedFlavor={expandedFlavor}
+            expandedFlavors={expandedFlavors}
             onExpandFlavor={handleExpandFlavor}
             onNodeClick={(id, _eventId, event) => {
               selectSession(id);

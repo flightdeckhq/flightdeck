@@ -61,7 +61,7 @@ const mockFlavors: FlavorSummary[] = [
 const defaultProps = {
   flavors: mockFlavors,
   timeRange: "5m" as const,
-  expandedFlavor: null as string | null,
+  expandedFlavors: new Set<string>(),
   onExpandFlavor: vi.fn(),
   onNodeClick: vi.fn(),
 };
@@ -100,10 +100,61 @@ describe("Timeline", () => {
 
   it("expanded flavor shows session sub-rows", () => {
     render(
-      <Timeline {...defaultProps} expandedFlavor="research-agent" />
+      <Timeline
+        {...defaultProps}
+        expandedFlavors={new Set(["research-agent"])}
+      />
     );
     // Session ID truncated to 8 chars should be visible
     expect(screen.getByText("s1")).toBeInTheDocument();
+  });
+
+  // FIX 4 -- expandedFlavors is now a Set so multiple flavors can be
+  // open at the same time. The previous single-string state forced a
+  // second click to collapse the first flavor, which made comparing
+  // two flavor swimlanes side-by-side impossible.
+  it("renders both flavors expanded simultaneously when both are in expandedFlavors", () => {
+    render(
+      <Timeline
+        {...defaultProps}
+        expandedFlavors={new Set(["research-agent", "coding-agent"])}
+      />,
+    );
+    // Both flavor headers are present.
+    expect(screen.getByText("research-agent")).toBeInTheDocument();
+    expect(screen.getByText("coding-agent")).toBeInTheDocument();
+    // Both session sub-rows render at the same time -- this is the
+    // regression guard. Under the old single-string state, only one
+    // of these would be visible.
+    expect(screen.getByText("s1")).toBeInTheDocument();
+    expect(screen.getByText("s2")).toBeInTheDocument();
+  });
+
+  // FIX 3 -- when a CONTEXT filter is active, flavors with zero
+  // matching sessions must not render at all (not even the header).
+  // The old behaviour kept the empty flavor header visible with a
+  // 0-row body, leaving an awkward gap.
+  it("hides flavors with zero matching sessions when matchingSessionIds is set", () => {
+    // matchingSessionIds includes only s1, so research-agent (which
+    // contains s1) should render and coding-agent (which contains
+    // only s2) must be hidden entirely.
+    render(
+      <Timeline
+        {...defaultProps}
+        matchingSessionIds={new Set(["s1"])}
+      />,
+    );
+    expect(screen.getByText("research-agent")).toBeInTheDocument();
+    expect(screen.queryByText("coding-agent")).not.toBeInTheDocument();
+  });
+
+  it("renders all flavors when matchingSessionIds is null", () => {
+    render(
+      <Timeline {...defaultProps} matchingSessionIds={null} />,
+    );
+    // Both flavors visible -- the cull only fires when filters are on.
+    expect(screen.getByText("research-agent")).toBeInTheDocument();
+    expect(screen.getByText("coding-agent")).toBeInTheDocument();
   });
 
   it("shows active count in flavor row", () => {

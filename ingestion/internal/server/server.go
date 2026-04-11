@@ -18,15 +18,24 @@ const (
 )
 
 // New creates the HTTP server with all routes registered.
+//
+// rateLimitPerMinute is the per-token sliding window cap applied to
+// POST /v1/events and POST /v1/heartbeat. Pass
+// handlers.DefaultRateLimitPerMinute for production semantics, or a
+// higher value (typically from FLIGHTDECK_RATE_LIMIT_PER_MINUTE in
+// dev compose) when running the integration suite. A non-positive
+// value falls back to the default inside NewRateLimiter so a
+// misconfigured env var cannot accidentally disable the limit.
 func New(
 	addr string,
 	validator handlers.TokenValidator,
 	publisher handlers.EventPublisher,
 	dirStore handlers.DirectiveLookup,
+	rateLimitPerMinute int,
 ) *http.Server {
 	mux := http.NewServeMux()
 
-	limiter := handlers.NewRateLimiter()
+	limiter := handlers.NewRateLimiter(rateLimitPerMinute)
 	mux.Handle("POST /v1/events", handlers.EventsHandler(validator, publisher, dirStore, limiter))
 	mux.Handle("POST /v1/heartbeat", handlers.HeartbeatHandler(validator, publisher, dirStore))
 	mux.Handle("GET /health", handlers.HealthHandler())

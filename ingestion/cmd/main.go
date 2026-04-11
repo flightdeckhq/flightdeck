@@ -82,7 +82,7 @@ func main() {
 	dirStore := &directiveAdapter{store: directive.NewStore(pool)}
 
 	addr := fmt.Sprintf(":%s", cfg.Port)
-	srv := server.New(addr, validator, publisher, dirStore)
+	srv := server.New(addr, validator, publisher, dirStore, cfg.RateLimitPerMinute)
 
 	// Start server
 	go func() {

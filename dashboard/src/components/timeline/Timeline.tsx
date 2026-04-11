@@ -17,7 +17,12 @@ interface TimelineProps {
   flavors: FlavorSummary[];
   flavorFilter?: string | null;
   timeRange: TimeRange;
-  expandedFlavor: string | null;
+  /**
+   * Set of currently-expanded flavor names. Multiple flavors can be
+   * open simultaneously. Owned by Fleet.tsx and toggled via
+   * onExpandFlavor below.
+   */
+  expandedFlavors: Set<string>;
   onExpandFlavor: (flavor: string) => void;
   onNodeClick: (sessionId: string, eventId?: string, event?: import("@/lib/types").AgentEvent) => void;
   activeFilter?: string | null;
@@ -26,9 +31,10 @@ interface TimelineProps {
   sessionVersions?: Record<string, number>;
   /**
    * Set of session IDs that match the active CONTEXT sidebar filter.
-   * null = no filters active, every session matches. Used to dim
-   * non-matching sessions in the swimlane (opacity 0.15 +
-   * pointer-events: none).
+   * null = no filters active, every session matches. Sessions not in
+   * the set are hidden inside SwimLane, AND any flavor whose sessions
+   * have zero overlap with this set is dropped entirely from the
+   * timeline -- see filteredFlavors below for the flavor-level cull.
    */
   matchingSessionIds?: Set<string> | null;
 }
@@ -37,7 +43,7 @@ export function Timeline({
   flavors,
   flavorFilter,
   timeRange,
-  expandedFlavor,
+  expandedFlavors,
   onExpandFlavor,
   onNodeClick,
   activeFilter,
@@ -123,9 +129,22 @@ export function Timeline({
   }, [paused]);
 
   const filteredFlavors = useMemo(() => {
-    if (!flavorFilter) return flavors;
-    return flavors.filter((f) => f.flavor === flavorFilter);
-  }, [flavors, flavorFilter]);
+    let result = flavors;
+    if (flavorFilter) {
+      result = result.filter((f) => f.flavor === flavorFilter);
+    }
+    // FIX 3 -- when a CONTEXT filter is active, drop any flavor whose
+    // sessions have zero overlap with matchingSessionIds. The flavor
+    // header used to render anyway and the user saw a label with no
+    // body underneath. Hiding the whole flavor row keeps the swimlane
+    // dense and matches the filter status bar count.
+    if (matchingSessionIds !== null) {
+      result = result.filter((f) =>
+        f.sessions.some((s) => matchingSessionIds.has(s.session_id)),
+      );
+    }
+    return result;
+  }, [flavors, flavorFilter, matchingSessionIds]);
 
   const rangeMs = TIMELINE_RANGE_MS[timeRange] ?? 60_000;
   const scaleEnd = paused && pausedAt ? pausedAt : now;
@@ -379,7 +398,7 @@ export function Timeline({
             sessions={f.sessions}
             scale={scale}
             onSessionClick={onNodeClick}
-            expanded={expandedFlavor === f.flavor}
+            expanded={expandedFlavors.has(f.flavor)}
             onToggleExpand={() => onExpandFlavor(f.flavor)}
             timelineWidth={timelineWidth}
             leftPanelWidth={leftPanelWidth}

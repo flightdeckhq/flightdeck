@@ -791,15 +791,40 @@ func (s *Store) GetCustomDirectives(ctx context.Context, flavor string) ([]Custo
 // excluded so a fleet without any context-bearing sessions returns
 // an empty map (not an error).
 //
+// Array-typed JSONB values (e.g. ``frameworks: ["langchain/0.1.12",
+// "crewai/0.42.0"]``) are unnested element-by-element so each
+// framework becomes its own facet entry. The previous implementation
+// used ``jsonb_each_text`` which stringifies arrays as a single
+// value -- the dashboard then showed
+// ``["langchain/0.1.12", "crewai/0.42.0"]`` as one bogus facet
+// instead of two distinct framework versions.
+//
 // Within each key, values are ordered by count descending so the
 // most common value sits at the top of its facet group.
 func (s *Store) GetContextFacets(ctx context.Context) (map[string][]ContextFacetValue, error) {
+	// CROSS JOIN LATERAL on a UNION ALL: scalar values take the
+	// ``#>> '{}'`` branch (extract as text) and array values take the
+	// ``jsonb_array_elements_text`` branch (one row per element). The
+	// jsonb_typeof guards make the two branches mutually exclusive,
+	// so a row's value contributes to exactly one branch and there
+	// is no double-counting.
 	rows, err := s.pool.Query(ctx, `
-		SELECT key, value, COUNT(*) AS count
-		FROM sessions, jsonb_each_text(context)
-		WHERE state IN ('active', 'idle', 'stale')
-		  AND context != '{}'::jsonb
-		GROUP BY key, value
+		WITH context_pairs AS (
+			SELECT key, value
+			FROM sessions, jsonb_each(context)
+			WHERE state IN ('active', 'idle', 'stale')
+			  AND context != '{}'::jsonb
+		)
+		SELECT key, val AS value, COUNT(*) AS count
+		FROM context_pairs,
+		     LATERAL (
+		         SELECT jsonb_array_elements_text(value) AS val
+		         WHERE jsonb_typeof(value) = 'array'
+		         UNION ALL
+		         SELECT value #>> '{}' AS val
+		         WHERE jsonb_typeof(value) <> 'array'
+		     ) expanded
+		GROUP BY key, val
 		ORDER BY key ASC, count DESC
 	`)
 	if err != nil {

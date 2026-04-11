@@ -6,9 +6,15 @@ import (
 )
 
 const (
-	rateLimitWindow   = time.Minute
-	rateLimitMax      = 1000
-	cleanupInterval   = 5 * time.Minute
+	rateLimitWindow = time.Minute
+	cleanupInterval = 5 * time.Minute
+	// DefaultRateLimitPerMinute is the per-token sliding window cap
+	// applied when no override is configured. Production deployments
+	// that do not set FLIGHTDECK_RATE_LIMIT_PER_MINUTE inherit this
+	// value via cmd/main.go -> NewRateLimiter, so the production
+	// behavior is unchanged. Tests and dev compose can pass higher
+	// values to avoid hammering the limit during fast test loops.
+	DefaultRateLimitPerMinute = 1000
 )
 
 type tokenWindow struct {
@@ -21,13 +27,25 @@ type RateLimiter struct {
 	windows map[string]*tokenWindow
 	mu      sync.RWMutex
 	stop    chan struct{}
+	max     int
 }
 
-// NewRateLimiter creates a RateLimiter and starts the cleanup goroutine.
-func NewRateLimiter() *RateLimiter {
+// NewRateLimiter creates a RateLimiter capped at ``max`` requests per
+// minute per token and starts the cleanup goroutine. Pass
+// DefaultRateLimitPerMinute (1000) for production semantics, or a
+// higher value in dev / test environments where the integration
+// suite shares one token across many tests run back-to-back.
+//
+// max <= 0 falls back to DefaultRateLimitPerMinute so a misconfigured
+// env var cannot disable the limiter entirely on accident.
+func NewRateLimiter(max int) *RateLimiter {
+	if max <= 0 {
+		max = DefaultRateLimitPerMinute
+	}
 	rl := &RateLimiter{
 		windows: make(map[string]*tokenWindow),
 		stop:    make(chan struct{}),
+		max:     max,
 	}
 	go rl.cleanupLoop()
 	return rl
@@ -63,7 +81,7 @@ func (rl *RateLimiter) Allow(tokenHash string) (bool, int) {
 	}
 	tw.timestamps = tw.timestamps[start:]
 
-	if len(tw.timestamps) >= rateLimitMax {
+	if len(tw.timestamps) >= rl.max {
 		// Calculate seconds until the oldest timestamp exits the window
 		resetAt := tw.timestamps[0].Add(rateLimitWindow)
 		retryAfter := int(time.Until(resetAt).Seconds()) + 1

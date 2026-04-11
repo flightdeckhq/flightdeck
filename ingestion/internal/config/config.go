@@ -15,6 +15,15 @@ type Config struct {
 	NatsURL             string
 	Env                 string
 	ShutdownTimeoutSecs int
+	// RateLimitPerMinute is the per-token sliding window cap on
+	// POST /v1/events and POST /v1/heartbeat. Defaults to
+	// handlers.DefaultRateLimitPerMinute (1000); the dev compose
+	// override sets it high so the integration test suite -- which
+	// shares one token across 50+ back-to-back tests -- never trips
+	// the limit. Production deployments that do not set
+	// FLIGHTDECK_RATE_LIMIT_PER_MINUTE inherit the default and behave
+	// exactly as before.
+	RateLimitPerMinute int
 }
 
 // Load reads configuration from environment variables.
@@ -26,6 +35,7 @@ func Load() Config {
 		NatsURL:             envOrDefault("FLIGHTDECK_NATS_URL", "nats://nats:4222"),
 		Env:                 envOrDefault("FLIGHTDECK_ENV", "development"),
 		ShutdownTimeoutSecs: envIntOrDefault("SHUTDOWN_TIMEOUT_SECS", 30),
+		RateLimitPerMinute:  envIntOrDefault("FLIGHTDECK_RATE_LIMIT_PER_MINUTE", 1000),
 	}
 	return cfg
 }

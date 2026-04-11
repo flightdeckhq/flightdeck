@@ -49,6 +49,15 @@ __all__ = [
 
 _log = logging.getLogger("flightdeck_sensor")
 
+# TODO(KI15)[Phase 5]: Module-level _session and _directive_registry are
+# process-wide singletons. The second init() call is a no-op and the
+# directive registry is shared across every Session, so multi-Session
+# patterns (one init per thread, multiple agents in one process) are
+# not supported in v1. Needs an architectural decision before Phase 5
+# multi-tenant work: Session-handle API, per-thread storage, or
+# per-flavor map. See KNOWN_ISSUES.md KI15 and Phase 4.5 audit Part 1
+# findings B-I/B-J.
+
 # Global state -- protected by _lock
 _lock = threading.Lock()
 _patch_lock = threading.Lock()

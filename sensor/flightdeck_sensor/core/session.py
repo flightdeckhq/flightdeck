@@ -84,18 +84,20 @@ class Session:
         # Lazy import to avoid circular dependency at module level.
         from flightdeck_sensor.transport.client import EventQueue as LocalEventQueue
 
-        # Pass _apply_directive as the drain-thread directive callback so
-        # directives delivered in response envelopes for queue-posted
-        # events (post_call, tool_call, directive_result) actually get
-        # applied to the session. Without this callback, the drain
-        # thread would discard every directive returned from a
-        # post_call -- which is exactly the bug Phase 4.5 audit Part 5
-        # B-A documented. Tests / external callers can still pass an
-        # explicit ``event_queue`` to opt out (e.g. unit tests that
-        # mock the queue entirely).
+        # Wire _apply_directive as the directive HANDLER (not the
+        # drain-thread callback). EventQueue's two-queue pattern
+        # (Phase 4.5 audit B-H) runs the handler on a dedicated
+        # ``flightdeck-directive-queue`` daemon thread, so:
+        #   * a slow custom handler cannot back up the event queue
+        #   * flush() called from inside _apply_directive (e.g. on
+        #     shutdown) does not deadlock, because the directive
+        #     handler thread is not the drain thread
+        # Tests / external callers can still pass an explicit
+        # ``event_queue`` to opt out (e.g. unit tests that mock the
+        # queue entirely).
         self.event_queue: EventQueue = event_queue or LocalEventQueue(
             client,
-            directive_callback=self._apply_directive,
+            directive_handler=self._apply_directive,
         )
 
     # ------------------------------------------------------------------
@@ -148,10 +150,19 @@ class Session:
         """
         self._context = context
 
-    def record_usage(self, usage: TokenUsage) -> None:
-        """Atomically increment session token counts."""
+    def record_usage(self, usage: TokenUsage) -> int:
+        """Atomically increment session token counts and return the new total.
+
+        Returning the post-increment value lets concurrent callers
+        capture **their own** contribution without re-reading
+        ``self._tokens_used`` after the lock is released, which would
+        otherwise let another thread's increment leak into this
+        thread's reported ``tokens_used_session`` (Phase 4.5 audit
+        B-G fix).
+        """
         with self._lock:
             self._tokens_used += usage.total
+            return self._tokens_used
 
     def record_model(self, model: str) -> None:
         """Record the model used in the most recent call."""
@@ -172,7 +183,7 @@ class Session:
         tool_name: str | None = None,
     ) -> Directive | None:
         """Post a call event and return any received directive."""
-        self.record_usage(usage)
+        session_total = self.record_usage(usage)
         self.record_model(model)
         return self._post_event(
             event_type,
@@ -180,6 +191,7 @@ class Session:
             tokens_input=usage.input_tokens,
             tokens_output=usage.output_tokens,
             tokens_total=usage.total,
+            tokens_used_session=session_total,
             latency_ms=latency_ms,
             tool_name=tool_name,
         )
@@ -193,7 +205,7 @@ class Session:
         tool_name: str | None = None,
     ) -> None:
         """Enqueue a call event (non-blocking).  Used on the hot path."""
-        self.record_usage(usage)
+        session_total = self.record_usage(usage)
         self.record_model(model)
         payload = self._build_payload(
             event_type,
@@ -201,6 +213,7 @@ class Session:
             tokens_input=usage.input_tokens,
             tokens_output=usage.output_tokens,
             tokens_total=usage.total,
+            tokens_used_session=session_total,
             latency_ms=latency_ms,
             tool_name=tool_name,
         )
@@ -594,15 +607,12 @@ class Session:
                 "[flightdeck] shutdown directive received: %s",
                 directive.reason,
             )
-            # Acknowledge shutdown before acting. flush() is synchronous
-            # only when we're NOT on the drain thread (e.g. when this
-            # method was called via the synchronous Session.start /
-            # Session.end path). Calling flush() from the drain thread
-            # itself would deadlock until the flush timeout because
-            # Queue.join() waits for unfinished_tasks=0 and the drain
-            # thread has not yet called task_done() for the item whose
-            # response triggered this callback. The ack will be
-            # processed on the drain loop's next iteration anyway.
+            # Acknowledge shutdown before flipping the flag. flush()
+            # is now safe to call unconditionally because the B-H
+            # two-queue refactor moved _apply_directive off the drain
+            # thread onto a dedicated directive handler thread. The
+            # event queue's drain thread is independent and continues
+            # to make progress on Queue.join().
             ack = self._build_payload(
                 EventType.DIRECTIVE_RESULT,
                 directive_name="shutdown",
@@ -614,15 +624,14 @@ class Session:
                 "reason": directive.reason or "directive received",
             }
             self.event_queue.enqueue(ack)
-            if not self.event_queue.is_drain_thread():
-                try:
-                    self.event_queue.flush()
-                except Exception as exc:
-                    _log.warning(
-                        "[flightdeck] shutdown: failed to flush "
-                        "acknowledgement event: %s",
-                        exc,
-                    )
+            try:
+                self.event_queue.flush()
+            except Exception as exc:
+                _log.warning(
+                    "[flightdeck] shutdown: failed to flush "
+                    "acknowledgement event: %s",
+                    exc,
+                )
             with self._lock:
                 self._shutdown_requested = True
                 self._shutdown_reason = directive.reason
@@ -633,7 +642,8 @@ class Session:
                 self.config.agent_flavor,
                 directive.reason,
             )
-            # Same drain-thread handling as the SHUTDOWN branch above.
+            # Same architecture as the SHUTDOWN branch above -- safe
+            # synchronous flush via the B-H two-queue refactor.
             ack = self._build_payload(
                 EventType.DIRECTIVE_RESULT,
                 directive_name="shutdown_flavor",
@@ -645,15 +655,14 @@ class Session:
                 "reason": directive.reason or "fleet directive received",
             }
             self.event_queue.enqueue(ack)
-            if not self.event_queue.is_drain_thread():
-                try:
-                    self.event_queue.flush()
-                except Exception as exc:
-                    _log.warning(
-                        "[flightdeck] shutdown_flavor: failed to flush "
-                        "acknowledgement event: %s",
-                        exc,
-                    )
+            try:
+                self.event_queue.flush()
+            except Exception as exc:
+                _log.warning(
+                    "[flightdeck] shutdown_flavor: failed to flush "
+                    "acknowledgement event: %s",
+                    exc,
+                )
             with self._lock:
                 self._shutdown_requested = True
                 self._shutdown_reason = directive.reason

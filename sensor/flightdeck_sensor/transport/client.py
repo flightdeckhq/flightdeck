@@ -216,58 +216,81 @@ class ControlPlaneClient:
 
 
 # ------------------------------------------------------------------
-# Non-blocking event queue
+# Non-blocking event queue + dedicated directive handler queue
 # ------------------------------------------------------------------
 
 _MAX_QUEUE_SIZE = 1000
+_MAX_DIRECTIVE_QUEUE_SIZE = 1000
 _SENTINEL = object()
 
 
 class EventQueue:
-    """Non-blocking event queue with background drain thread.
+    """Non-blocking event queue with two background threads.
 
-    The interceptor calls :meth:`enqueue` which never blocks.
-    A daemon thread drains the queue and calls
-    :meth:`ControlPlaneClient.post_event`.
+    Two queues, two threads:
 
-    If *directive_callback* is provided, the drain thread invokes it
-    on every non-None ``Directive`` returned by ``post_event``. The
-    callback is invoked on the drain thread itself, so it must be
-    thread-safe and must not call ``EventQueue.flush()`` from inside
-    its body (use :meth:`is_drain_thread` to detect that case). When
-    no callback is provided, returned directives are silently
-    discarded -- this matches the legacy behaviour relied on by the
-    sensor unit-test fixtures that construct an ``EventQueue``
-    directly without a ``Session``.
+    * **Event queue + drain thread.** ``enqueue()`` puts events here
+      (non-blocking). ``_drain_loop`` pulls events one at a time and
+      calls :meth:`ControlPlaneClient.post_event`. Whenever the
+      response envelope contains a non-None ``Directive``, the drain
+      thread hands it off to the directive queue and **immediately
+      continues draining events**. The drain thread NEVER executes
+      directive logic itself, so a slow custom handler cannot back up
+      the event queue.
+    * **Directive queue + directive handler thread.** When a
+      ``directive_handler`` callback is supplied, ``__init__`` starts
+      a second daemon thread (``flightdeck-directive-queue``) that
+      reads from the directive queue and invokes the handler one
+      directive at a time. Single-consumer means at-most-once
+      execution for free -- no dedup state needed.
+
+    This is the two-queue pattern mandated by Phase 4.5 audit B-H.
+    The previous design called the directive callback inline on the
+    drain thread, which let a slow handler stall the entire event
+    pipeline (silent event loss after 1000 backed-up events) and
+    forced an ``is_drain_thread()`` workaround on ``flush()`` that
+    introduced its own ack-loss race during shutdown.
+
+    If no ``directive_handler`` is supplied, the directive queue and
+    its thread are not created. Returned directives are silently
+    discarded. This matches the unit-test fixtures that construct an
+    ``EventQueue`` directly without a ``Session``.
     """
 
     def __init__(
         self,
         client: ControlPlaneClient,
-        directive_callback: Callable[[Directive], None] | None = None,
+        directive_handler: Callable[[Directive], None] | None = None,
     ) -> None:
         self._client = client
-        self._directive_callback = directive_callback
+        self._directive_handler = directive_handler
         self._queue: queue.Queue[dict[str, Any] | object] = queue.Queue(
             maxsize=_MAX_QUEUE_SIZE,
         )
-        self._thread = threading.Thread(
+        self._drain_thread = threading.Thread(
             target=self._drain_loop,
             daemon=True,
             name="flightdeck-event-queue",
         )
-        self._thread.start()
 
-    def is_drain_thread(self) -> bool:
-        """True iff the calling thread is the background drain thread.
+        # Directive queue + handler thread are only spun up when there
+        # is a handler to invoke. Tests that build EventQueue directly
+        # (no Session) get the legacy "discard directives" behaviour.
+        self._directive_queue: queue.Queue[Directive | object] | None = None
+        self._directive_thread: threading.Thread | None = None
+        if directive_handler is not None:
+            self._directive_queue = queue.Queue(
+                maxsize=_MAX_DIRECTIVE_QUEUE_SIZE,
+            )
+            self._directive_thread = threading.Thread(
+                target=self._directive_loop,
+                daemon=True,
+                name="flightdeck-directive-queue",
+            )
 
-        Used by the directive callback to avoid calling ``flush()``
-        on itself, which would deadlock until the flush timeout because
-        ``Queue.join()`` waits for ``unfinished_tasks == 0`` and the
-        drain thread has not yet called ``task_done()`` for the item
-        whose response triggered the callback.
-        """
-        return threading.current_thread() is self._thread
+        self._drain_thread.start()
+        if self._directive_thread is not None:
+            self._directive_thread.start()
 
     # ------------------------------------------------------------------
     # Public API
@@ -294,14 +317,18 @@ class EventQueue:
             )
 
     def flush(self, timeout: float = 3.0) -> None:
-        """Block until all currently-queued items have been processed.
+        """Block until every currently-queued event has been processed.
 
-        Uses ``Queue.join()`` to wait for the background drain thread
-        to call ``task_done()`` on every item that was in the queue
-        when ``flush()`` was called. The drain loop calls
-        ``task_done()`` after every attempt regardless of whether
-        the POST succeeded or failed, so this is guaranteed to make
-        progress as long as the drain thread is alive.
+        Waits on the EVENT queue only -- the directive queue is
+        internal control flow and waiting on it from inside a directive
+        handler would self-deadlock by exactly the same mechanism the
+        old ``is_drain_thread`` guard was working around. After the
+        B-H two-queue refactor, this method is safe to call from
+        anywhere except the drain thread itself; in particular, it
+        works correctly from inside ``Session._apply_directive``
+        because that method now runs on the directive handler thread,
+        which is independent of the drain thread, so ``Queue.join()``
+        on the event queue can make progress.
 
         A timeout is enforced via a helper thread + Event so this
         never blocks the caller (typically the shutdown path)
@@ -328,30 +355,33 @@ class EventQueue:
             )
 
     def close(self) -> None:
-        """Stop the drain thread."""
+        """Stop the drain thread and (if running) the directive handler."""
         self._queue.put(_SENTINEL)
-        self._thread.join(timeout=5)
+        self._drain_thread.join(timeout=5)
+        if self._directive_queue is not None and self._directive_thread is not None:
+            self._directive_queue.put(_SENTINEL)
+            self._directive_thread.join(timeout=5)
 
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
 
     def _drain_loop(self) -> None:
-        """Background thread: drain queue, post events, apply directives.
+        """Background thread: drain queue, post events, hand off directives.
 
         For each item drained:
 
         1. Call ``ControlPlaneClient.post_event``.
-        2. If a non-None directive is returned AND a directive
-           callback is configured, invoke the callback on this thread.
-           The callback (typically ``Session._apply_directive``) is
-           expected to be thread-safe and to skip its own
-           ``flush()`` call when ``is_drain_thread()`` is True.
+        2. If a non-None directive is returned AND a directive handler
+           is configured, ``put_nowait`` the directive onto the
+           directive queue and continue. The handler runs on a
+           separate thread; the drain thread is back at the top of
+           the loop within microseconds, ready to drain the next
+           event.
 
         Calls ``task_done()`` after every item -- success, failure,
-        callback exception, and the sentinel -- so ``Queue.join()``
-        (used by ``flush()``) always reflects the true number of
-        unprocessed items.
+        and the sentinel -- so ``Queue.join()`` (used by ``flush()``)
+        always reflects the true number of unprocessed events.
         """
         while True:
             try:
@@ -373,13 +403,51 @@ class EventQueue:
                         event_type,
                         exc,
                     )
-                if directive is not None and self._directive_callback is not None:
+                if directive is not None and self._directive_queue is not None:
                     try:
-                        self._directive_callback(directive)
-                    except Exception as exc:
-                        _log.warning(
-                            "drain: directive callback raised, ignoring: %s",
-                            exc,
+                        self._directive_queue.put_nowait(directive)
+                    except queue.Full:
+                        # Pathological case: a hung handler is blocking
+                        # the directive thread for so long that 1000
+                        # directives have backed up. Log loudly and
+                        # drop the new directive -- the alternative is
+                        # to drop the oldest, which could lose a
+                        # shutdown directive that has been waiting in
+                        # line for the handler to clear. Either choice
+                        # implies the agent is in serious trouble.
+                        _log.error(
+                            "drain: directive queue full (%d), "
+                            "dropping incoming directive: action=%s",
+                            _MAX_DIRECTIVE_QUEUE_SIZE,
+                            directive.action.value,
                         )
             finally:
                 self._queue.task_done()
+
+    def _directive_loop(self) -> None:
+        """Background thread: drain the directive queue.
+
+        Single-consumer, sequential processing. Each call to
+        ``self._directive_handler`` runs to completion before the next
+        directive is pulled. Exceptions are logged and swallowed --
+        the loop continues so a buggy handler can't kill the thread.
+        """
+        assert self._directive_queue is not None
+        assert self._directive_handler is not None
+        while True:
+            try:
+                item = self._directive_queue.get(timeout=1.0)
+            except queue.Empty:
+                continue
+            try:
+                if item is _SENTINEL:
+                    return
+                try:
+                    self._directive_handler(item)  # type: ignore[arg-type]
+                except Exception as exc:
+                    _log.warning(
+                        "directive handler raised, ignoring: %s",
+                        exc,
+                    )
+            finally:
+                self._directive_queue.task_done()

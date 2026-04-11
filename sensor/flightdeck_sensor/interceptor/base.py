@@ -263,18 +263,28 @@ def _post_call(
                 "captured_at": pc.captured_at,
             }
 
-    # Build payload with optional content
+    # Atomically increment the session token counter and capture the
+    # post-increment total in one critical section. The captured value
+    # is then passed explicitly into _build_payload as
+    # tokens_used_session so concurrent threads' contributions cannot
+    # leak into this thread's reported running total. Without this
+    # capture order, _build_payload would read self._tokens_used after
+    # other threads' record_usage calls had already advanced it,
+    # producing duplicate or skipped values on the dashboard token
+    # curve. Phase 4.5 audit B-G fix.
+    session_total = session.record_usage(usage)
+    session.record_model(resp_model)
+
     payload = session._build_payload(
         EventType.POST_CALL,
         model=resp_model,
         tokens_input=usage.input_tokens,
         tokens_output=usage.output_tokens,
         tokens_total=usage.total,
+        tokens_used_session=session_total,
         latency_ms=latency_ms,
     )
     if has_content:
         payload["has_content"] = True
         payload["content"] = content_dict
-    session.record_usage(usage)
-    session.record_model(resp_model)
     session.event_queue.enqueue(payload)

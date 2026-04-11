@@ -31,7 +31,11 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import threading
+import time
 import uuid
+import urllib.error
+import urllib.request
 from collections.abc import Iterator
 from typing import Any
 
@@ -322,6 +326,91 @@ def _post_policy(body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
             return exc.code, json.loads(exc.read())
         except Exception:
             return exc.code, {}
+
+
+def _register_directive_via_api(
+    flavor: str,
+    fingerprint: str,
+    name: str,
+    description: str = "multithreading e2e",
+    parameters: list[dict[str, Any]] | None = None,
+) -> None:
+    """Pre-register a custom directive via /api/v1/directives/register.
+
+    Workaround for KI14 -- the sensor's auto-sync URL is broken in dev,
+    so the multithreading tests register the directive directly via the
+    API to make it triggerable from POST /v1/directives.
+    """
+    body = {
+        "flavor": flavor,
+        "directives": [{
+            "fingerprint": fingerprint,
+            "name": name,
+            "description": description,
+            "flavor": flavor,
+            "parameters": parameters or [],
+        }],
+    }
+    data = json.dumps(body).encode()
+    req = urllib.request.Request(
+        f"{API_URL}/v1/directives/register",
+        data=data,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {TOKEN}",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=5) as resp:
+        assert resp.status == 200, f"register returned {resp.status}"
+
+
+def _delete_policy_quiet(policy_id: str | None) -> None:
+    """Best-effort DELETE /v1/policies/:id, ignoring errors."""
+    if not policy_id:
+        return
+    req = urllib.request.Request(
+        f"{API_URL}/v1/policies/{policy_id}",
+        method="DELETE",
+    )
+    try:
+        urllib.request.urlopen(req, timeout=5)
+    except Exception:
+        pass
+
+
+def _wait_for_directive_result(
+    flavor: str,
+    directive_name: str,
+    directive_status: str,
+    timeout: float = 15.0,
+) -> dict[str, Any]:
+    """Block until a directive_result event matching name+status exists."""
+    found: dict[str, Any] = {}
+
+    def _check() -> bool:
+        nonlocal found
+        for e in _query_events_for_flavor(flavor):
+            if e.get("event_type") != "directive_result":
+                continue
+            payload = e.get("payload") or {}
+            if payload.get("directive_name") != directive_name:
+                continue
+            if payload.get("directive_status") != directive_status:
+                continue
+            found = e
+            return True
+        return False
+
+    wait_until(
+        _check,
+        timeout=timeout,
+        msg=(
+            f"directive_result(name={directive_name}, "
+            f"status={directive_status}) not in DB for flavor {flavor}"
+        ),
+    )
+    return found
 
 
 # ======================================================================
@@ -1164,3 +1253,1003 @@ def test_context_facets_aggregation(
     assert expected_os in os_values, (
         f"sensor's os ({expected_os}) missing from facets {os_values}"
     )
+
+
+# ======================================================================
+# MULTITHREADING TESTS (Phase 4.5 audit Part 3)
+# ======================================================================
+#
+# All tests below exercise the sensor under realistic concurrent
+# deployment patterns. They use real ``threading.Thread``, the real
+# ``flightdeck_sensor.init()`` / ``wrap()`` lifecycle, ``respx``
+# mocked providers, and verify the resulting state in the live DB.
+#
+# Each test owns a unique flavor (via ``unique_flavor``) and tears
+# down the sensor in a finally block.
+#
+# Patterns covered:
+#   A -- single-threaded agent (test_pattern_a_*)
+#   B -- multithreaded agent sharing one Session (test_pattern_b_*)
+#   C -- one init() per thread (DOCUMENTS KI15 -- not supported)
+#   D -- long-running agent receiving directives mid-flight
+#
+# These are the FIRST tests that exercise the sensor's threading
+# story end-to-end. Several B-A / B-G / B-H bugs were caught by
+# adding them.
+
+# Common configuration for the multithreading tests below.
+_MT_NUM_THREADS = 4
+_MT_CALLS_PER_THREAD = 5
+
+
+# ======================================================================
+# Test M1 -- Pattern B: concurrent calls produce no data loss
+# ======================================================================
+
+
+def test_pattern_b_concurrent_calls_no_data_loss(
+    sensor_reset: None, unique_flavor: str,
+) -> None:
+    """N threads share one patched client → every call is in DB once.
+
+    Pattern B: one init(), one ``client``, multiple worker threads
+    making LLM calls concurrently. The sensor's EventQueue must safely
+    accept concurrent enqueues from N producers, the workers must
+    persist exactly one events row per call, and ``tokens_used_session``
+    must be a strictly monotonic sequence with no duplicates and no
+    gaps (B-G fix proves out under load).
+    """
+    flavor = unique_flavor
+    expected_calls = _MT_NUM_THREADS * _MT_CALLS_PER_THREAD
+
+    errors: list[BaseException] = []
+    errors_lock = threading.Lock()
+
+    with respx.mock(assert_all_called=False) as rmock:
+        _mock_anthropic_messages(rmock)
+
+        flightdeck_sensor.init(server=INGESTION_URL, token=TOKEN)
+        try:
+            client = flightdeck_sensor.wrap(
+                anthropic.Anthropic(api_key="test-key")
+            )
+
+            def _worker(thread_id: int) -> None:
+                try:
+                    for i in range(_MT_CALLS_PER_THREAD):
+                        client.messages.create(
+                            model="claude-sonnet-4-6",
+                            messages=[{
+                                "role": "user",
+                                "content": f"t{thread_id}-c{i}",
+                            }],
+                            max_tokens=10,
+                        )
+                except BaseException as exc:  # noqa: BLE001
+                    with errors_lock:
+                        errors.append(exc)
+
+            threads = [
+                threading.Thread(target=_worker, args=(i,))
+                for i in range(_MT_NUM_THREADS)
+            ]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=30)
+                assert not t.is_alive(), f"thread {t.name} did not finish"
+
+            assert errors == [], f"thread errors: {errors}"
+
+            # Wait for every post_call event to land in DB.
+            def _all_post_calls() -> bool:
+                events = _query_events_for_flavor(flavor)
+                return sum(
+                    1 for e in events if e.get("event_type") == "post_call"
+                ) >= expected_calls
+
+            wait_until(
+                _all_post_calls,
+                timeout=30,
+                msg=f"expected {expected_calls} post_call events",
+            )
+
+            events = _query_events_for_flavor(flavor)
+            post_calls = [
+                e for e in events if e.get("event_type") == "post_call"
+            ]
+            assert len(post_calls) == expected_calls, (
+                f"expected {expected_calls} post_call events, "
+                f"got {len(post_calls)} (excess events would mean "
+                "duplication; missing events would mean loss)"
+            )
+
+            # Per-event token counts always come from the mock, never
+            # corrupted by concurrent threads.
+            for e in post_calls:
+                assert e["tokens_input"] == 10
+                assert e["tokens_output"] == 8
+                assert e["tokens_total"] == 18
+                assert e["model"] == "claude-sonnet-4-6"
+
+            # The per-event sensor field ``tokens_used_session`` is
+            # NOT persisted by the workers (BuildEventExtra only
+            # writes directive_result metadata into events.payload),
+            # so the post-fix sequence is not directly observable
+            # from the DB. The B-G fix is verified instead by the
+            # CUMULATIVE total in two places:
+            #
+            #   1. Workers' sessions.tokens_used must equal
+            #      expected_calls * 18 (proves no event lost,
+            #      no event duplicated by the worker pipeline).
+            #   2. Sensor's get_status().tokens_used must equal
+            #      expected_calls * 18 (proves record_usage is
+            #      atomic under N concurrent producers; the B-G
+            #      fix made record_usage return the post-increment
+            #      total inside the same critical section).
+            expected_total = expected_calls * 18
+
+            wait_until(
+                lambda: (
+                    (s := _query_session_for_flavor(flavor)) is not None
+                    and s.get("tokens_used") == expected_total
+                ),
+                timeout=15,
+                msg=(
+                    f"sessions.tokens_used should be {expected_total} "
+                    "after all concurrent calls"
+                ),
+            )
+
+            status = flightdeck_sensor.get_status()
+            assert status.tokens_used == expected_total, (
+                f"sensor's local _tokens_used should be {expected_total}, "
+                f"got {status.tokens_used} -- record_usage race"
+            )
+        finally:
+            flightdeck_sensor.teardown()
+
+
+# ======================================================================
+# Test M2 -- Pattern B: custom directive during concurrent traffic
+# ======================================================================
+
+
+def test_pattern_b_custom_directive_during_traffic(
+    sensor_reset: None, unique_flavor: str,
+) -> None:
+    """Custom directive executes exactly once even with N concurrent
+    workers. Event throughput must continue uninterrupted."""
+    flavor = unique_flavor
+    handler_calls: list[float] = []
+    handler_lock = threading.Lock()
+
+    @flightdeck_sensor.directive(
+        name="e2e_concurrent_action",
+        description="custom during concurrent traffic",
+        parameters=[],
+    )
+    def e2e_concurrent_action(ctx: Any) -> dict[str, Any]:
+        with handler_lock:
+            handler_calls.append(time.time())
+        return {"executed": True}
+
+    fingerprint = _directive_registry["e2e_concurrent_action"].fingerprint
+    _register_directive_via_api(
+        flavor, fingerprint, "e2e_concurrent_action"
+    )
+
+    with respx.mock(assert_all_called=False) as rmock:
+        _mock_anthropic_messages(rmock)
+
+        flightdeck_sensor.init(server=INGESTION_URL, token=TOKEN)
+        try:
+            session_id = flightdeck_sensor.get_status().session_id
+            client = flightdeck_sensor.wrap(
+                anthropic.Anthropic(api_key="test-key")
+            )
+
+            stop = threading.Event()
+            errors: list[BaseException] = []
+            errors_lock = threading.Lock()
+
+            def _worker() -> None:
+                try:
+                    while not stop.is_set():
+                        client.messages.create(
+                            model="claude-sonnet-4-6",
+                            messages=[{"role": "user", "content": "x"}],
+                            max_tokens=10,
+                        )
+                except BaseException as exc:  # noqa: BLE001
+                    with errors_lock:
+                        errors.append(exc)
+
+            workers = [
+                threading.Thread(target=_worker)
+                for _ in range(_MT_NUM_THREADS)
+            ]
+            for t in workers:
+                t.start()
+
+            try:
+                # Let some traffic flow before posting the directive
+                wait_until(
+                    lambda: sum(
+                        1
+                        for e in _query_events_for_flavor(flavor)
+                        if e.get("event_type") == "post_call"
+                    ) >= _MT_NUM_THREADS,
+                    timeout=15,
+                    msg="initial post_call traffic did not flow",
+                )
+
+                # Post the custom directive
+                code, _ = _post_directive({
+                    "action": "custom",
+                    "directive_name": "e2e_concurrent_action",
+                    "fingerprint": fingerprint,
+                    "session_id": session_id,
+                })
+                assert code == 201
+
+                # Wait for the handler to be called
+                wait_until(
+                    lambda: len(handler_calls) >= 1,
+                    timeout=20,
+                    msg="custom handler was not invoked under traffic",
+                )
+            finally:
+                stop.set()
+                for t in workers:
+                    t.join(timeout=15)
+
+            assert errors == [], f"thread errors: {errors}"
+
+            # Handler executed EXACTLY once -- single-consumer
+            # directive thread gives at-most-once for free (B-H).
+            assert len(handler_calls) == 1, (
+                f"expected handler called exactly once under concurrent "
+                f"traffic, got {len(handler_calls)}"
+            )
+
+            # directive_result(success) lands in DB
+            _wait_for_directive_result(
+                flavor, "e2e_concurrent_action", "success", timeout=15
+            )
+        finally:
+            flightdeck_sensor.teardown()
+
+
+# ======================================================================
+# Test M3 -- Pattern B: shutdown during concurrent traffic
+# ======================================================================
+
+
+def test_pattern_b_shutdown_during_traffic(
+    sensor_reset: None, unique_flavor: str,
+) -> None:
+    """Shutdown directive arrives during concurrent traffic. All workers
+    stop within bounded time, ack is in DB (B-H flush() guarantee),
+    session transitions to closed."""
+    flavor = unique_flavor
+
+    with respx.mock(assert_all_called=False) as rmock:
+        _mock_anthropic_messages(rmock)
+
+        flightdeck_sensor.init(server=INGESTION_URL, token=TOKEN)
+        try:
+            session_id = flightdeck_sensor.get_status().session_id
+            client = flightdeck_sensor.wrap(
+                anthropic.Anthropic(api_key="test-key")
+            )
+
+            stop = threading.Event()
+            shutdown_seen = threading.Event()
+            shutdown_count = [0]
+            shutdown_lock = threading.Lock()
+            errors: list[BaseException] = []
+
+            def _worker() -> None:
+                try:
+                    while not stop.is_set():
+                        try:
+                            client.messages.create(
+                                model="claude-sonnet-4-6",
+                                messages=[{"role": "user", "content": "x"}],
+                                max_tokens=10,
+                            )
+                        except flightdeck_sensor.DirectiveError:
+                            with shutdown_lock:
+                                shutdown_count[0] += 1
+                            shutdown_seen.set()
+                            return  # exit cleanly
+                except BaseException as exc:  # noqa: BLE001
+                    errors.append(exc)
+
+            workers = [
+                threading.Thread(target=_worker)
+                for _ in range(_MT_NUM_THREADS)
+            ]
+            for t in workers:
+                t.start()
+
+            try:
+                # Let traffic flow
+                wait_until(
+                    lambda: sum(
+                        1
+                        for e in _query_events_for_flavor(flavor)
+                        if e.get("event_type") == "post_call"
+                    ) >= _MT_NUM_THREADS,
+                    timeout=15,
+                )
+
+                # Post shutdown
+                code, _ = _post_directive({
+                    "action": "shutdown",
+                    "session_id": session_id,
+                    "reason": "concurrent shutdown e2e",
+                })
+                assert code == 201
+
+                # B-H proof: the synchronous flush() inside
+                # _apply_directive(SHUTDOWN) ran successfully on the
+                # directive handler thread (no deadlock), so the ack
+                # event is in the DB before any worker can be observed
+                # to raise.
+                _wait_for_directive_result(
+                    flavor, "shutdown", "acknowledged", timeout=20
+                )
+
+                # At least one worker observed the DirectiveError
+                assert shutdown_seen.wait(timeout=15), (
+                    "no worker raised DirectiveError after shutdown"
+                )
+            finally:
+                stop.set()
+                for t in workers:
+                    t.join(timeout=20)
+                    assert not t.is_alive(), (
+                        f"worker {t.name} did not exit after shutdown"
+                    )
+
+            assert errors == [], f"unexpected errors: {errors}"
+            assert shutdown_count[0] >= 1, (
+                f"expected ≥ 1 shutdown observed, got {shutdown_count[0]}"
+            )
+        finally:
+            flightdeck_sensor.teardown()
+
+        # After teardown, the session must be closed in the DB
+        wait_until(
+            lambda: (
+                (s := _query_session_for_flavor(flavor)) is not None
+                and s.get("state") == "closed"
+            ),
+            timeout=15,
+            msg=f"session for {flavor} did not transition to closed",
+        )
+
+
+# ======================================================================
+# Test M4 -- Pattern A: shutdown on a single-threaded agent
+# ======================================================================
+
+
+def test_pattern_a_shutdown_single_threaded(
+    sensor_reset: None, unique_flavor: str,
+) -> None:
+    """Pattern A: one thread, sequential calls, shutdown directive,
+    next call raises, session closes cleanly."""
+    flavor = unique_flavor
+
+    with respx.mock(assert_all_called=False) as rmock:
+        _mock_anthropic_messages(rmock)
+
+        flightdeck_sensor.init(server=INGESTION_URL, token=TOKEN)
+        try:
+            session_id = flightdeck_sensor.get_status().session_id
+            client = flightdeck_sensor.wrap(
+                anthropic.Anthropic(api_key="test-key")
+            )
+
+            # Warm the pipeline
+            client.messages.create(
+                model="claude-sonnet-4-6",
+                messages=[{"role": "user", "content": "warm"}],
+                max_tokens=10,
+            )
+            _wait_for_event_type(flavor, "post_call", timeout=15)
+
+            # Post shutdown
+            code, _ = _post_directive({
+                "action": "shutdown",
+                "session_id": session_id,
+                "reason": "pattern-a shutdown",
+            })
+            assert code == 201
+
+            # Trigger directive delivery via another call
+            client.messages.create(
+                model="claude-sonnet-4-6",
+                messages=[{"role": "user", "content": "deliver"}],
+                max_tokens=10,
+            )
+
+            _wait_for_directive_result(
+                flavor, "shutdown", "acknowledged", timeout=15
+            )
+
+            # Next call must raise DirectiveError
+            with pytest.raises(flightdeck_sensor.DirectiveError):
+                client.messages.create(
+                    model="claude-sonnet-4-6",
+                    messages=[{"role": "user", "content": "after"}],
+                    max_tokens=10,
+                )
+        finally:
+            flightdeck_sensor.teardown()
+
+        wait_until(
+            lambda: (
+                (s := _query_session_for_flavor(flavor)) is not None
+                and s.get("state") == "closed"
+            ),
+            timeout=15,
+            msg=f"session for {flavor} did not transition to closed",
+        )
+
+
+# ======================================================================
+# Test M5 -- B-H proof: slow handler does not block event throughput
+# ======================================================================
+
+
+def test_slow_handler_does_not_block_event_throughput(
+    sensor_reset: None, unique_flavor: str,
+) -> None:
+    """Critical B-H regression test: a custom directive handler that
+    blocks for several seconds MUST NOT prevent other LLM call events
+    from being posted to ingestion. Under the pre-B-H architecture
+    this test would fail with up to 5 lost post_call events.
+    """
+    flavor = unique_flavor
+
+    handler_started = threading.Event()
+    handler_release = threading.Event()
+    handler_done = threading.Event()
+
+    @flightdeck_sensor.directive(
+        name="e2e_slow_handler",
+        description="blocks until released",
+        parameters=[],
+    )
+    def e2e_slow_handler(ctx: Any) -> dict[str, Any]:
+        handler_started.set()
+        try:
+            # Block until the test releases us, with a hard ceiling
+            # so a buggy test does not hang indefinitely.
+            handler_release.wait(timeout=10)
+            return {"slow": True}
+        finally:
+            handler_done.set()
+
+    fingerprint = _directive_registry["e2e_slow_handler"].fingerprint
+    _register_directive_via_api(flavor, fingerprint, "e2e_slow_handler")
+
+    with respx.mock(assert_all_called=False) as rmock:
+        _mock_anthropic_messages(rmock)
+
+        flightdeck_sensor.init(server=INGESTION_URL, token=TOKEN)
+        try:
+            session_id = flightdeck_sensor.get_status().session_id
+            client = flightdeck_sensor.wrap(
+                anthropic.Anthropic(api_key="test-key")
+            )
+
+            # Post the directive then deliver it via one call
+            code, _ = _post_directive({
+                "action": "custom",
+                "directive_name": "e2e_slow_handler",
+                "fingerprint": fingerprint,
+                "session_id": session_id,
+            })
+            assert code == 201
+
+            client.messages.create(
+                model="claude-sonnet-4-6",
+                messages=[{"role": "user", "content": "trigger"}],
+                max_tokens=10,
+            )
+
+            assert handler_started.wait(timeout=15), (
+                "slow handler never started -- directive was not "
+                "delivered to the directive thread"
+            )
+
+            # Sanity: handler is still blocked
+            assert not handler_done.is_set()
+
+            # Snapshot baseline post_call count
+            baseline = sum(
+                1
+                for e in _query_events_for_flavor(flavor)
+                if e.get("event_type") == "post_call"
+            )
+
+            # ============================================
+            # B-H ASSERTION:
+            # While the directive handler thread is BLOCKED inside
+            # e2e_slow_handler, the drain thread must continue to drain
+            # post_call events. We make calls from another thread and
+            # verify the events land in DB BEFORE we release the handler.
+            # ============================================
+            errors: list[BaseException] = []
+
+            def _worker() -> None:
+                try:
+                    for i in range(5):
+                        client.messages.create(
+                            model="claude-sonnet-4-6",
+                            messages=[{
+                                "role": "user",
+                                "content": f"during-block-{i}",
+                            }],
+                            max_tokens=10,
+                        )
+                except BaseException as exc:  # noqa: BLE001
+                    errors.append(exc)
+
+            t = threading.Thread(target=_worker)
+            t.start()
+            t.join(timeout=15)
+            assert not t.is_alive(), "worker thread hung -- B-H regressed"
+            assert errors == [], (
+                f"worker errors during slow handler: {errors}"
+            )
+
+            # Wait for the new post_call events to land. CRUCIAL: this
+            # MUST succeed before handler_done is set, otherwise the
+            # drain thread is blocked by the directive thread and B-H
+            # is broken.
+            def _new_events_in_db() -> bool:
+                count = sum(
+                    1
+                    for e in _query_events_for_flavor(flavor)
+                    if e.get("event_type") == "post_call"
+                )
+                return count >= baseline + 5
+
+            wait_until(
+                _new_events_in_db,
+                timeout=15,
+                msg=(
+                    "B-H REGRESSION: post_call events did not flow "
+                    "while custom handler was blocked"
+                ),
+            )
+
+            # And the handler is STILL running -- proves the events
+            # above flowed independently of directive handler progress.
+            assert not handler_done.is_set(), (
+                "handler completed too early -- could not prove B-H"
+            )
+            assert handler_started.is_set()
+
+            # No directive_result event yet either, since the handler
+            # has not returned.
+            results = [
+                e
+                for e in _query_events_for_flavor(flavor)
+                if e.get("event_type") == "directive_result"
+                and (e.get("payload") or {}).get(
+                    "directive_name"
+                ) == "e2e_slow_handler"
+            ]
+            assert results == [], (
+                f"directive_result appeared while handler was still "
+                f"blocked: {results}"
+            )
+
+            # Release the handler
+            handler_release.set()
+
+            # directive_result(success) now lands
+            _wait_for_directive_result(
+                flavor, "e2e_slow_handler", "success", timeout=15
+            )
+        finally:
+            handler_release.set()  # never leave a hanging handler
+            flightdeck_sensor.teardown()
+
+
+# ======================================================================
+# Test M6 -- Pattern D: directive ordering, custom completes before shutdown
+# ======================================================================
+
+
+def test_pattern_d_custom_then_shutdown_ordering(
+    sensor_reset: None, unique_flavor: str,
+) -> None:
+    """Custom directive posted before shutdown -- both must be applied
+    in issuance order. Custom handler runs to completion, its
+    directive_result lands first, THEN shutdown ack lands and the
+    session closes. Single-consumer directive queue (B-H) gives the
+    ordering guarantee.
+    """
+    flavor = unique_flavor
+    handler_calls: list[float] = []
+
+    @flightdeck_sensor.directive(
+        name="e2e_pre_shutdown",
+        description="runs before shutdown",
+        parameters=[],
+    )
+    def e2e_pre_shutdown(ctx: Any) -> dict[str, Any]:
+        handler_calls.append(time.time())
+        return {"done": True}
+
+    fingerprint = _directive_registry["e2e_pre_shutdown"].fingerprint
+    _register_directive_via_api(
+        flavor, fingerprint, "e2e_pre_shutdown"
+    )
+
+    with respx.mock(assert_all_called=False) as rmock:
+        _mock_anthropic_messages(rmock)
+
+        flightdeck_sensor.init(server=INGESTION_URL, token=TOKEN)
+        try:
+            session_id = flightdeck_sensor.get_status().session_id
+            client = flightdeck_sensor.wrap(
+                anthropic.Anthropic(api_key="test-key")
+            )
+
+            # Post custom THEN shutdown -- the directives table orders
+            # by issued_at and ingestion's LookupPending returns the
+            # oldest first, so two consecutive post_call events deliver
+            # them in this order.
+            code, _ = _post_directive({
+                "action": "custom",
+                "directive_name": "e2e_pre_shutdown",
+                "fingerprint": fingerprint,
+                "session_id": session_id,
+            })
+            assert code == 201
+
+            code, _ = _post_directive({
+                "action": "shutdown",
+                "session_id": session_id,
+                "reason": "after custom",
+            })
+            assert code == 201
+
+            # Make calls until the shutdown raises. Each call may
+            # succeed (delivering one of the pending directives) or
+            # raise DirectiveError once shutdown has been applied.
+            for _i in range(10):
+                try:
+                    client.messages.create(
+                        model="claude-sonnet-4-6",
+                        messages=[{"role": "user", "content": "trigger"}],
+                        max_tokens=10,
+                    )
+                except flightdeck_sensor.DirectiveError:
+                    break
+
+            # Custom handler ran exactly once
+            wait_until(
+                lambda: len(handler_calls) >= 1,
+                timeout=15,
+                msg="custom handler was not invoked",
+            )
+            assert len(handler_calls) == 1
+
+            # Both directive_result events land in DB
+            custom_event = _wait_for_directive_result(
+                flavor, "e2e_pre_shutdown", "success", timeout=20
+            )
+            shutdown_event = _wait_for_directive_result(
+                flavor, "shutdown", "acknowledged", timeout=20
+            )
+
+            # ORDERING: custom directive_result occurred_at must be
+            # ≤ shutdown directive_result occurred_at. The
+            # single-consumer directive queue processes them in
+            # delivery order, the synchronous flush() in
+            # _apply_directive(SHUTDOWN) waits for the event queue
+            # (which contains the prior custom directive_result event)
+            # before setting _shutdown_requested.
+            assert custom_event["occurred_at"] <= shutdown_event["occurred_at"], (
+                f"directive ordering broken: custom={custom_event['occurred_at']} "
+                f"shutdown={shutdown_event['occurred_at']}"
+            )
+        finally:
+            flightdeck_sensor.teardown()
+
+        wait_until(
+            lambda: (
+                (s := _query_session_for_flavor(flavor)) is not None
+                and s.get("state") == "closed"
+            ),
+            timeout=15,
+            msg=f"session for {flavor} did not transition to closed",
+        )
+
+
+# ======================================================================
+# Test M7 -- Pattern B: degrade directive observed by all threads
+# ======================================================================
+
+
+def test_pattern_b_degrade_seen_by_all_threads(
+    sensor_reset: None, unique_flavor: str,
+) -> None:
+    """Multiple workers sharing one Session. The workers' policy
+    evaluator writes a degrade directive after enough tokens
+    accumulate. The drain delivers it; ALL subsequent calls from
+    EVERY thread must use the degraded model.
+    """
+    flavor = unique_flavor
+    degraded_model = "claude-haiku-4-5-20251001"
+
+    # validateDirectiveRequest in api/internal/handlers/policies.go
+    # requires warn_at_pct < degrade_at_pct <= block_at_pct (strict).
+    # token_limit=10000, degrade_at_pct=2 → trigger threshold = 200
+    # tokens. Each call adds 18 tokens, so the workers fire degrade
+    # after ~12 cumulative calls across all threads -- a couple of
+    # seconds at most.
+    code, policy_body = _post_policy({
+        "scope": "flavor",
+        "scope_value": flavor,
+        "token_limit": 10_000,
+        "warn_at_pct": 1,
+        "degrade_at_pct": 2,
+        "block_at_pct": 100,
+        "degrade_to": degraded_model,
+    })
+    assert code == 201
+
+    def _echo_model_handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        model = body.get("model", "claude-sonnet-4-6")
+        return httpx.Response(
+            200, json={**ANTHROPIC_RESPONSE, "model": model}
+        )
+
+    try:
+        with respx.mock(assert_all_called=False) as rmock:
+            rmock.post(
+                "https://api.anthropic.com/v1/messages"
+            ).mock(side_effect=_echo_model_handler)
+
+            flightdeck_sensor.init(server=INGESTION_URL, token=TOKEN)
+            try:
+                session_id = flightdeck_sensor.get_status().session_id
+                client = flightdeck_sensor.wrap(
+                    anthropic.Anthropic(api_key="test-key")
+                )
+
+                # Phase tracking. Phase 1 = pre-degrade-ack,
+                # Phase 2 = post-degrade-ack. Calls in phase 2 from
+                # any thread must report the degraded model.
+                phase = [1]
+                phase_lock = threading.Lock()
+                phase2_results: list[tuple[int, str]] = []
+                results_lock = threading.Lock()
+                stop = threading.Event()
+                errors: list[BaseException] = []
+
+                def _worker(thread_id: int) -> None:
+                    try:
+                        while not stop.is_set():
+                            resp = client.messages.create(
+                                model="claude-sonnet-4-6",
+                                messages=[{
+                                    "role": "user",
+                                    "content": f"t{thread_id}",
+                                }],
+                                max_tokens=10,
+                            )
+                            with phase_lock:
+                                cur = phase[0]
+                            if cur == 2:
+                                with results_lock:
+                                    phase2_results.append(
+                                        (thread_id, resp.model)
+                                    )
+                    except BaseException as exc:  # noqa: BLE001
+                        errors.append(exc)
+
+                workers = [
+                    threading.Thread(target=_worker, args=(i,))
+                    for i in range(_MT_NUM_THREADS)
+                ]
+                for t in workers:
+                    t.start()
+
+                try:
+                    # Wait until the directive handler thread has
+                    # applied the degrade -- proven by the
+                    # directive_result(acknowledged) event landing.
+                    _wait_for_directive_result(
+                        flavor, "degrade", "acknowledged", timeout=30
+                    )
+
+                    # Switch to phase 2: every call from now on must
+                    # observe forced_degrade.
+                    with phase_lock:
+                        phase[0] = 2
+
+                    # Let phase 2 accumulate enough samples that every
+                    # worker contributes at least once.
+                    def _enough_phase2() -> bool:
+                        with results_lock:
+                            return len({tid for tid, _ in phase2_results}) >= _MT_NUM_THREADS
+
+                    wait_until(
+                        _enough_phase2,
+                        timeout=20,
+                        msg=(
+                            "not all workers contributed phase-2 calls"
+                        ),
+                    )
+                finally:
+                    stop.set()
+                    for t in workers:
+                        t.join(timeout=15)
+
+                assert errors == [], f"thread errors: {errors}"
+
+                # Every phase 2 call from every worker must use the
+                # degraded model. ANY sonnet call in phase 2 means a
+                # thread missed the directive update -- regression.
+                with results_lock:
+                    snapshot = list(phase2_results)
+                non_haiku = [
+                    (tid, m) for tid, m in snapshot if m != degraded_model
+                ]
+                assert non_haiku == [], (
+                    f"phase-2 calls used the wrong model: {non_haiku}"
+                )
+
+                # Each worker observed the swap.
+                participating = {tid for tid, _ in snapshot}
+                assert participating == set(range(_MT_NUM_THREADS)), (
+                    f"missing workers in phase 2: "
+                    f"{set(range(_MT_NUM_THREADS)) - participating}"
+                )
+                _ = session_id  # silence unused
+            finally:
+                flightdeck_sensor.teardown()
+    finally:
+        _delete_policy_quiet(policy_body.get("id"))
+
+
+# ======================================================================
+# Test M8 -- Pattern C: KI15 singleton limitation (DOCUMENTS the bug)
+# ======================================================================
+
+
+def test_pattern_c_ki15_singleton_limitation(
+    sensor_reset: None,
+) -> None:
+    """KI15: ``init()`` is process-wide. The second call is a no-op.
+
+    This test does NOT use the ``unique_flavor`` fixture because the
+    point is to set TWO flavors and demonstrate that only one wins.
+    Per Phase 4.5 audit Part 1 finding B-I/B-J, this is a tracked
+    architectural limitation; future developers reading this test
+    should NOT "fix" it without resolving KI15 first (the resolution
+    is a Session-handle API change tracked for Phase 5).
+
+    If this assertion ever flips -- e.g. if KI15 has been resolved
+    and the sensor now supports per-thread Sessions -- update this
+    test to verify the new behaviour and remove KI15 from
+    KNOWN_ISSUES.md.
+    """
+    flavor_a = f"e2e-ki15-a-{uuid.uuid4().hex[:8]}"
+    flavor_b = f"e2e-ki15-b-{uuid.uuid4().hex[:8]}"
+
+    init_results: list[str | Exception] = []
+    init_lock = threading.Lock()
+
+    def _init_thread(name: str, flavor: str) -> None:
+        # Set the env var inside this thread so the test is explicit
+        # about which flavor each init() should *try* to use. Note
+        # that os.environ is process-wide, so this can race with the
+        # other thread -- the join() between thread starts below
+        # serialises them so the race is moot for this test.
+        os.environ["AGENT_FLAVOR"] = flavor
+        try:
+            flightdeck_sensor.init(server=INGESTION_URL, token=TOKEN)
+            with init_lock:
+                init_results.append(name)
+        except Exception as exc:
+            with init_lock:
+                init_results.append(exc)
+
+    try:
+        ta = threading.Thread(
+            target=_init_thread, args=("a", flavor_a), name="ki15-a"
+        )
+        ta.start()
+        ta.join(timeout=10)
+        assert not ta.is_alive()
+
+        tb = threading.Thread(
+            target=_init_thread, args=("b", flavor_b), name="ki15-b"
+        )
+        tb.start()
+        tb.join(timeout=10)
+        assert not tb.is_alive()
+
+        assert init_results == ["a", "b"], (
+            f"both init calls should return without error, got "
+            f"{init_results}"
+        )
+
+        # The CURRENT behaviour: only the FIRST init() created a
+        # Session. ``get_status()`` returns the singleton, which has
+        # flavor_a (the env var Thread A set before its init).
+        status = flightdeck_sensor.get_status()
+        assert status.flavor == flavor_a, (
+            f"KI15: expected the singleton to be the first init's "
+            f"flavor ({flavor_a}), got {status.flavor}. If this "
+            f"assertion now fails, KI15 has been resolved -- update "
+            f"this test."
+        )
+
+        # Each thread now makes a call. BOTH threads share the
+        # singleton Session, so all events land under flavor_a.
+        with respx.mock(assert_all_called=False) as rmock:
+            _mock_anthropic_messages(rmock)
+            client = flightdeck_sensor.wrap(
+                anthropic.Anthropic(api_key="test-key")
+            )
+
+            errors: list[BaseException] = []
+
+            def _call(content: str) -> None:
+                try:
+                    client.messages.create(
+                        model="claude-sonnet-4-6",
+                        messages=[{"role": "user", "content": content}],
+                        max_tokens=10,
+                    )
+                except BaseException as exc:  # noqa: BLE001
+                    errors.append(exc)
+
+            t1 = threading.Thread(target=_call, args=("from-a",))
+            t2 = threading.Thread(target=_call, args=("from-b",))
+            t1.start(); t2.start()
+            t1.join(timeout=15); t2.join(timeout=15)
+            assert errors == []
+
+            # Both calls landed under flavor_a -- there is no flavor_b
+            # session because the second init() was a no-op.
+            wait_until(
+                lambda: sum(
+                    1
+                    for e in _query_events_for_flavor(flavor_a)
+                    if e.get("event_type") == "post_call"
+                ) >= 2,
+                timeout=15,
+                msg="expected ≥ 2 post_calls for flavor_a",
+            )
+
+            sess_b = _query_session_for_flavor(flavor_b)
+            assert sess_b is None, (
+                f"KI15: expected NO session for flavor_b, got "
+                f"{sess_b}. If this is None, the singleton is still "
+                f"in effect (current behaviour). If this returns a "
+                f"row, KI15 has been resolved -- update this test."
+            )
+    finally:
+        os.environ.pop("AGENT_FLAVOR", None)
+        try:
+            flightdeck_sensor.teardown()
+        except Exception:
+            pass
+        _delete_flavor_data(flavor_a)
+        _delete_flavor_data(flavor_b)

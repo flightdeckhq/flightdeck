@@ -1069,23 +1069,55 @@ that is not covered above. See DECISIONS.md D059-D072 for the rationale.
   `DirectivePayloadSchema`, looks up handler in `_directive_registry`,
   verifies fingerprint match, runs handler with a 5 second timeout via
   `_run_handler_with_timeout()`, then enqueues a `directive_result` event
-  with `directive_success`, `directive_result`, and `directive_error`.
+  with `directive_status` ("success" / "error"), `result`, and `error`.
   Never raises -- always fails open.
 - `_run_handler_with_timeout(handler, ctx, params)`: SIGALRM-based timeout
-  on Unix when running on the main thread. On Windows or non-main threads
-  the handler runs without a timeout (handlers are trusted).
+  on Unix when running on the main thread. On Windows OR on any
+  non-main thread the SIGALRM path is bypassed and the handler runs
+  without a timeout. After the Phase 4.5 audit B-H two-queue refactor,
+  custom directive handlers always run on the
+  `flightdeck-directive-queue` daemon thread (never the main thread),
+  so the SIGALRM timeout effectively never applies in production. A
+  badly written or hung handler can therefore stall the directive
+  queue indefinitely. **It cannot affect event throughput** because
+  the drain thread is independent (the entire point of the two-queue
+  pattern), so post_call events keep flowing to ingestion regardless
+  of how slow the handler is. This is a known limitation; replacing
+  SIGALRM with a `Thread + Event` based timeout is tracked for a
+  future hardening pass.
 - Acknowledgement events: in `_apply_directive()`, before acting on
   `SHUTDOWN`, `SHUTDOWN_FLAVOR`, or `DEGRADE`, the sensor enqueues a
   `directive_result` event with `directive_status="acknowledged"` and an
   action-specific result dict (e.g. `from_model`/`to_model` for degrade,
   `reason` for shutdown). For shutdown variants the sensor calls
   `EventQueue.flush()` synchronously before raising the shutdown flag so
-  the acknowledgement is not lost when the process exits.
+  the acknowledgement is not lost when the process exits. The
+  synchronous flush is safe because `_apply_directive` runs on the
+  dedicated directive handler thread (B-H), not the drain thread, so
+  `Queue.join()` on the event queue makes progress without
+  self-deadlock.
 
 `sensor/flightdeck_sensor/transport/client.py` (extend)
-- `EventQueue.flush(timeout=5.0)`: synchronously drains pending events up
-  to a deadline. Used by `Session.end()` and the shutdown branch of
-  `_apply_directive()`.
+- `EventQueue` now runs **two** background daemon threads (Phase 4.5
+  audit B-H two-queue pattern):
+  - `flightdeck-event-queue` (drain thread): pulls events from the
+    event queue, calls `ControlPlaneClient.post_event`, and on a
+    non-None directive in the response envelope hands the directive
+    off to the directive queue via `put_nowait`. The drain thread
+    NEVER calls `_apply_directive` directly. This guarantees that a
+    slow custom handler cannot back up the event queue or cause
+    silent post_call event loss.
+  - `flightdeck-directive-queue` (directive handler thread): drains
+    the directive queue and invokes the handler one directive at a
+    time. Single-consumer, so at-most-once execution is guaranteed
+    without any dedup state.
+  Started only when the `directive_handler` constructor argument is
+  non-None (Session always passes its `_apply_directive`); unit-test
+  fixtures that build `EventQueue` directly without a handler get
+  the legacy "discard directives" behaviour.
+- `EventQueue.flush(timeout=5.0)`: synchronously drains pending events
+  up to a deadline (event queue only). Used by `Session.end()` and
+  the shutdown / shutdown_flavor branches of `_apply_directive()`.
 - `ControlPlaneClient.sync_directives(flavor, directives)`: POST to
   `/v1/directives/sync`. Returns the list of unknown fingerprints from
   `SyncResponseSchema`.

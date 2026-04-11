@@ -1136,10 +1136,23 @@ that is not covered above. See DECISIONS.md D059-D072 for the rationale.
 - All three handlers carry full swaggo annotations.
 
 `api/internal/store/postgres.go` (extend)
-- `SyncDirectives(ctx, fingerprints)`: returns unknown fingerprints and
-  bumps `last_seen_at` for known ones.
-- `RegisterDirectives(ctx, directives)`: upsert with
-  `ON CONFLICT (fingerprint) DO UPDATE SET last_seen_at = NOW()`.
+- `SyncDirectives(ctx, fingerprints)`: lookup + `last_seen_at` bump in a
+  single `pgx.BeginTx` transaction so the "which fingerprints are known"
+  read and the bump update share one snapshot. Returns the fingerprints
+  not present in `custom_directives`.
+- `RegisterDirectives(ctx, directives)`: upserts each directive with
+  `ON CONFLICT (fingerprint) DO UPDATE SET last_seen_at = NOW()` inside
+  a single transaction. After the upserts and before commit, the same
+  transaction issues `pg_notify('flightdeck_fleet', 'directive_registered')`
+  so the dashboard WebSocket hub broadcasts a fleet update and the
+  `Directives` page / FleetPanel sidebar refresh in real time when the
+  sensor registers a brand new flavor's directives via `init()`.
+- `CustomDirectiveExists(ctx, fingerprint, flavor)`: existence check
+  used by `POST /v1/directives` to refuse `action="custom"` requests
+  whose fingerprint is not registered. Empty `flavor` is treated as a
+  wildcard so the same query works for both per-session and flavor-wide
+  custom directive triggers. Without this check the dashboard could
+  insert dangling directive rows that no sensor would execute.
 - `GetCustomDirectives(ctx, flavor)`: list query with optional flavor
   filter.
 - `CustomDirective` struct: id, fingerprint, name, description, flavor,

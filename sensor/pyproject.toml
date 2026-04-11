@@ -51,6 +51,15 @@ dev = [
     "langchain-openai>=0.1",
     "llama-index-llms-anthropic>=0.1",
     "llama-index-llms-openai>=0.1",
+    # CrewAI 1.14+ ships native provider classes that use the official
+    # openai/anthropic SDKs directly (NOT litellm). The default
+    # LLM(model=...).call(...) flow is intercepted via the sensor's
+    # OpenAI.chat / Anthropic.messages descriptors. Beta paths
+    # (responses API, beta.messages, beta.chat.completions.parse) are
+    # NOT intercepted -- documented as a known constraint in
+    # ARCHITECTURE.md "Framework limitations". See
+    # test_crewai_native_openai_patched_intercepts_call.
+    "crewai>=1.14",
 ]
 
 [tool.hatch.build.targets.wheel]

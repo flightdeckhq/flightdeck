@@ -401,7 +401,141 @@ def test_llama_index_openai_patched_intercepts_call(
 
 
 # ======================================================================
-# Test 5 -- captured reference still intercepted after patch()
+# Test 5 -- CrewAI native OpenAI provider (default code path)
+# ======================================================================
+#
+# CrewAI 1.14+ ships native provider classes
+# (``crewai.llms.providers.openai.completion.OpenAICompletion`` and
+# ``crewai.llms.providers.anthropic.completion.AnthropicCompletion``)
+# that use the official ``openai`` and ``anthropic`` Python SDKs
+# directly. They are NOT a litellm shim. The default ``crewai.LLM(model=...)``
+# constructor returns one of these native classes when the model
+# matches a supported provider (openai, anthropic, claude, azure,
+# google, gemini, bedrock, openrouter, deepseek, ollama, ...). litellm
+# is NOT a runtime dependency in CrewAI 1.14.
+#
+# Default call chain for ``LLM(model="gpt-4o-mini").call("...")``:
+#
+#   crewai.LLM.__new__
+#     → OpenAICompletion(model="gpt-4o-mini")
+#     → __init__ builds self._client = openai.OpenAI(...)
+#   llm.call("Hello")
+#     → OpenAICompletion.call
+#     → _call_completions  (default api="completions")
+#     → _handle_completion
+#     → self._client.chat.completions.create(**params)
+#     → SensorChat.completions  (via the patched OpenAI.chat descriptor)
+#     → SensorCompletions.create  (intercepted) ✓
+#
+# CrewAI's optional ``HTTPTransport`` (in
+# ``crewai/llms/hooks/transport.py``) sits at the httpx transport
+# layer BELOW the SDK and runs CrewAI's own interceptor framework.
+# It does NOT replace the SDK's ``messages.create`` /
+# ``chat.completions.create`` entry points -- it's installed via
+# ``http_client=`` kwarg on the SDK constructor and only intercepts
+# the underlying HTTP request. Both layers coexist: the sensor's
+# class-level patch fires at the resource-method layer (above), and
+# CrewAI's hooks fire at the transport layer (below). The sensor
+# pre/post events are emitted before and after the SDK call, which
+# in turn drives a request through CrewAI's transport.
+#
+# Empirically verified by reading
+# ``/site-packages/crewai/llms/providers/openai/completion.py`` line
+# by line and by running an actual ``LLM(model="gpt-4o-mini").call(...)``
+# against the live dev stack with a respx mock -- ``post_call|
+# gpt-4o-mini|18`` lands in the events table for a fresh flavor.
+#
+# **Partial coverage caveat -- CrewAI code paths NOT intercepted by
+# the class-level patch**:
+#
+#   1. ``OpenAICompletion`` with ``api="responses"`` instead of the
+#      default ``api="completions"``. This routes to
+#      ``self._client.responses.create(...)`` which is the new OpenAI
+#      Responses API at ``OpenAI.responses`` -- a separate
+#      cached_property from ``OpenAI.chat``. Our descriptor only
+#      patches ``chat``.
+#   2. ``OpenAICompletion`` structured output via the beta path:
+#      ``self._client.beta.chat.completions.parse(...)`` and
+#      ``self._client.beta.chat.completions.stream(...)``.
+#      ``OpenAI.beta`` is a separate cached_property we do not patch.
+#   3. ``AnthropicCompletion`` with ``betas`` set (e.g. for thinking
+#      configs or beta features). This routes to
+#      ``self._client.beta.messages.create(...)`` /
+#      ``.beta.messages.stream(...)`` -- ``Anthropic.beta`` is a
+#      separate cached_property we do not patch.
+#   4. Any future SDK resource that lands at a sibling
+#      cached_property (e.g. ``OpenAI.embeddings``,
+#      ``Anthropic.completions``).
+#
+# These are documented architectural constraints, not bugs to defer
+# to a KI. The class-level patching design is by-resource, not
+# by-client. Adding ``OpenAI.responses``, ``OpenAI.beta``,
+# ``Anthropic.beta``, etc. to the patched-resource list is a
+# straightforward extension when needed -- each new resource adds a
+# parallel descriptor following the existing pattern. Until a real
+# user reports CrewAI usage that goes through one of these paths,
+# extending the patch surface area is over-engineering. The default
+# ``LLM(model="...").call(...)`` flow is fully intercepted today.
+#
+# A symmetric note exists in ``ARCHITECTURE.md`` under "Framework
+# limitations".
+
+
+def test_crewai_native_openai_patched_intercepts_call(
+    sensor_reset: None, unique_flavor: str,
+) -> None:
+    """CrewAI's native OpenAICompletion is intercepted via patch().
+
+    Default ``crewai.LLM(model="gpt-4o-mini")`` returns
+    ``OpenAICompletion`` (not a litellm shim). The default ``call()``
+    routes through ``self._client.chat.completions.create(...)``
+    which the sensor's ``OpenAI.chat`` descriptor wraps as a
+    ``SensorChat`` on first access. The resulting ``SensorCompletions
+    .create`` runs the pre/post intercept and posts a ``post_call``
+    event to the live DB.
+
+    Verifies the same DB + fleet API contract as every other test in
+    this file. Uses ``LLM.call(...)`` directly rather than building a
+    full Agent/Task/Crew because the LLM call layer is what we are
+    actually intercepting -- the agent/task/crew abstraction adds
+    ~30 s of orchestration latency without exercising any additional
+    sensor surface area.
+    """
+    flavor = unique_flavor
+
+    os.environ["OPENAI_API_KEY"] = "test-key"
+    try:
+        with respx.mock(assert_all_called=False) as rmock:
+            _mock_openai_with_latency(rmock)
+
+            flightdeck_sensor.init(server=INGESTION_URL, token=TOKEN)
+            flightdeck_sensor.patch()
+
+            from crewai import LLM
+
+            llm = LLM(model="gpt-4o-mini")
+            # Sanity check: verify we got the native provider, not a
+            # litellm wrapper. If a future CrewAI release flips the
+            # default to litellm, this assertion fails loudly so a
+            # human investigates rather than silently losing coverage.
+            assert type(llm).__module__.startswith("crewai.llms.providers"), (
+                f"expected CrewAI native provider, got "
+                f"{type(llm).__module__}.{type(llm).__name__} -- "
+                f"if CrewAI changed its default routing this test "
+                f"needs updating"
+            )
+
+            response = llm.call("Hello from CrewAI")
+            assert response is not None
+
+            _assert_full_pipeline_event_chain(flavor, "gpt-4o-mini")
+            _assert_session_in_fleet_with_context(flavor)
+    finally:
+        os.environ.pop("OPENAI_API_KEY", None)
+
+
+# ======================================================================
+# Test 6 -- captured reference still intercepted after patch()
 # ======================================================================
 
 

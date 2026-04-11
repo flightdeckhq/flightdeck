@@ -2334,6 +2334,32 @@ their agent appear in the live dashboard timeline in real time.
 - `teardown()`: fires session_end, closes transport, resets global state
 - All symbols in `__all__`
 
+### Framework limitations
+
+`flightdeck_sensor.patch()` works by replacing the `messages` (Anthropic) and `chat` (OpenAI) `cached_property` descriptors on the SDK client classes with sensor descriptors. Any code path that accesses `client.messages.*` or `client.chat.*` is intercepted, including code paths inside agent frameworks that build their own SDK clients internally. The class-level patch handles captured references (`from anthropic import Anthropic` BEFORE `patch()`) because the descriptor mutates the actual class object in place.
+
+The class-level patch covers the **default** code paths used by every framework integration tested in `tests/integration/test_framework_patching.py`:
+
+- **langchain-anthropic** `ChatAnthropic.invoke()` → `client.messages.create()` ✓
+- **langchain-openai** `ChatOpenAI.invoke()` → `client.with_raw_response.create()` ✓ (`SensorCompletions.with_raw_response` is overridden to wrap the raw-response create closure)
+- **llama-index-llms-anthropic** `Anthropic.complete()` → `client.messages.create()` ✓
+- **llama-index-llms-openai** `OpenAI.complete()` → `client.chat.completions.create()` ✓
+- **CrewAI 1.14+** `LLM(model=...).call()` → `OpenAICompletion._call_completions` → `client.chat.completions.create()` ✓ (CrewAI uses native provider classes, not litellm)
+
+The class-level patch does **not** intercept the following paths even when the framework uses the SDK directly. These are documented architectural constraints of the by-resource patching design, not bugs to defer:
+
+| Code path | Framework that uses it (today) | Why not intercepted |
+|---|---|---|
+| `Anthropic.beta.messages.create` / `.beta.messages.stream` | CrewAI `AnthropicCompletion` when `betas` is set (e.g. thinking config) | `Anthropic.beta` is a separate `cached_property` from `Anthropic.messages`. The sensor descriptor only patches `messages`. |
+| `OpenAI.responses.create` (the new Responses API) | CrewAI `OpenAICompletion(api="responses")` | `OpenAI.responses` is a separate `cached_property` from `OpenAI.chat`. Default `api="completions"` is intercepted. |
+| `OpenAI.beta.chat.completions.parse` / `.stream` | CrewAI `OpenAICompletion` when structured output is requested via the beta path | `OpenAI.beta` is a separate `cached_property` from `OpenAI.chat`. |
+| `OpenAI.embeddings.*`, `Anthropic.completions.*`, `OpenAI.audio.*`, `OpenAI.images.*`, etc | None of the four frameworks tested today | Sibling resources at distinct `cached_property` slots. Each new resource needs a parallel descriptor following the existing pattern. |
+| Frameworks that bypass the SDK entirely (raw httpx, boto3 bedrock-runtime, vertexai, openrouter via direct httpx, litellm with HTTP backends) | CrewAI <1.14 used litellm; current 1.14+ does not | The sensor patches at the SDK class level. Code that doesn't go through `anthropic.Anthropic` / `openai.OpenAI` is invisible to the patch. Intercept at this level would require an httpx transport hook or framework-specific instrumentation, which is out of scope. |
+
+Extending the patch surface area to cover additional resources is straightforward: add a parallel descriptor following the `_AnthropicMessagesDescriptor` / `_OpenAIChatDescriptor` pattern in `sensor/flightdeck_sensor/interceptor/{anthropic,openai}.py`. Each new resource is one descriptor + one entry in `patch_*_classes`. Until a real user reports usage that goes through an unpatched path, extending the surface area is over-engineering. The default `LLM(model="...").call(...)` flow for every framework above is fully intercepted today.
+
+For frameworks that bypass the SDK entirely (current example: none of the four tested frameworks; potential future example: a framework that adopts litellm with an HTTP-only backend), interception would require a separate intercept layer such as an httpx transport wrapper or framework-specific instrumentation hooks. That work is out of scope for the class-level patching design and is not tracked as a Known Issue because it is a deliberate constraint of the chosen approach, not a deferred fix.
+
 `sensor/pyproject.toml`
 - Optional deps: `[anthropic]`, `[openai]` (includes tiktoken), `[dev]`
 - Zero required deps beyond Python 3.9+

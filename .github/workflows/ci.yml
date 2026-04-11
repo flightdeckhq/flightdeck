@@ -201,3 +201,56 @@ jobs:
 
       - name: Unit tests
         run: npm run test
+
+  integration:
+    name: Integration + sensor e2e
+    runs-on: ubuntu-latest
+    needs: [sensor, go, dashboard]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install sensor with dev + provider extras
+        working-directory: sensor
+        run: pip install -e ".[dev,anthropic,openai]"
+
+      - name: Boot the dev stack
+        # `make dev` returns once all services have been instructed to
+        # start. tests/integration/conftest.py:_wait_for_services then
+        # polls the /health endpoints with a 60 s ceiling, so the
+        # integration test process is responsible for waiting on the
+        # stack -- the workflow does not need a separate readiness
+        # probe here.
+        run: make dev
+
+      - name: Run integration tests (fabricated + sensor e2e)
+        # Excludes manual tests via the -m "not manual" filter that
+        # the test-integration target carries. test_ui_demo.py is
+        # the only manual-marked test today; it is a 3-minute
+        # dashboard data-population tool, not a regression test.
+        #
+        # The test_sensor_e2e.py file is part of the integration
+        # directory, so its 20 e2e tests run inside this step. The
+        # previous workflow had a separate "Run sensor e2e tests in
+        # isolation" step that re-ran the same 20 tests via
+        # ``make test-e2e``; it was removed in B-L because pytest
+        # already prints per-test PASS/FAIL in this step's log and
+        # the duplicate doubled the slowest CI stage with no
+        # additional coverage. ``make test-e2e`` still works locally
+        # for targeted runs.
+        run: make test-integration
+
+      - name: Dump stack logs on failure
+        if: failure()
+        run: |
+          docker compose -f docker/docker-compose.yml \
+            -f docker/docker-compose.dev.yml logs --tail=300 || true
+          docker compose -f docker/docker-compose.yml \
+            -f docker/docker-compose.dev.yml ps || true
+
+      - name: Tear down stack
+        if: always()
+        run: make down || true

@@ -104,21 +104,91 @@ class TestEventQueue:
         finally:
             eq.close()
 
-    def test_flush_drains_remaining(self) -> None:
+    def test_drop_warning_fires_once_per_drop(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Each forced drop emits its own warning -- no rate-limiting.
+
+        Regression guard: an earlier iteration of this code added a
+        rate-limited warning that summarized N drops in a single line.
+        That hid the real cardinality of dropped events from operators
+        and was reverted (KI16) -- the production design intent is
+        that the queue cannot fill in normal operation because real
+        LLM provider latency throttles the producer naturally, so a
+        drop is supposed to be loud and rare. This test asserts the
+        1:1 correspondence between drops and warnings so any future
+        attempt to silence them lands as a failed test.
+        """
+        mock_client = MagicMock(spec=ControlPlaneClient)
+        mock_client.post_event.side_effect = lambda _: time.sleep(10)
+        eq = EventQueue(mock_client)
+        try:
+            # Pre-fill so every subsequent enqueue triggers the
+            # drop-oldest path. The first N enqueues may themselves
+            # trigger drops if the drain thread pops one in flight,
+            # so we clear the captured log records below before the
+            # 10-drop measurement loop.
+            for i in range(_MAX_QUEUE_SIZE + 50):
+                eq.enqueue({"i": i})
+            caplog.clear()
+            with caplog.at_level(
+                logging.WARNING, logger="flightdeck_sensor.transport.client"
+            ):
+                # 10 forced drops -> expect 10 warning lines, no
+                # summarization, no rate-limiting.
+                for i in range(10):
+                    eq.enqueue({"overflow": i})
+            warn_lines = [
+                r for r in caplog.records if "Event queue full" in r.message
+            ]
+            assert len(warn_lines) == 10, (
+                f"expected one warning per drop (10 total), got "
+                f"{len(warn_lines)}: {[r.message for r in warn_lines]}"
+            )
+        finally:
+            eq.close()
+
+    def test_flush_waits_for_drain(self) -> None:
+        """flush() must block until every queued item has been processed
+        by the background drain thread. With the Queue.join() pattern,
+        flush() relies on the drain loop calling task_done() after every
+        item, so when flush() returns, mock_client.post_event must have
+        been called for every enqueued item.
+        """
         mock_client = MagicMock(spec=ControlPlaneClient)
         mock_client.post_event.return_value = None
         eq = EventQueue(mock_client)
         try:
-            # Stop drain thread first so items stay in queue
-            eq.close()
-            # Re-enqueue items after drain thread has stopped
             for i in range(3):
                 eq.enqueue({"i": i})
             eq.flush(timeout=5.0)
-            assert mock_client.post_event.call_count >= 3
-        except Exception:
+            assert mock_client.post_event.call_count == 3
+        finally:
             eq.close()
-            raise
+
+    def test_flush_completes_even_when_post_raises(self) -> None:
+        """A failing POST must still call task_done() so flush() can
+        return rather than blocking until the timeout. This is the
+        guarantee that makes shutdown ack delivery reliable: even if
+        the control plane is unreachable, flush() returns promptly so
+        the agent can exit cleanly.
+        """
+        mock_client = MagicMock(spec=ControlPlaneClient)
+        mock_client.post_event.side_effect = ConnectionError("boom")
+        eq = EventQueue(mock_client)
+        try:
+            for i in range(3):
+                eq.enqueue({"i": i})
+            start = time.monotonic()
+            eq.flush(timeout=5.0)
+            elapsed = time.monotonic() - start
+            # All three POSTs were attempted
+            assert mock_client.post_event.call_count == 3
+            # And flush returned long before the 5s timeout (drain
+            # thread cleared the queue immediately on each failure)
+            assert elapsed < 2.0
+        finally:
+            eq.close()
 
 
 def test_parse_directive_malformed_missing_action() -> None:

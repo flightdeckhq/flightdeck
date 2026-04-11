@@ -122,36 +122,8 @@ def test_directive_delivered_exactly_once() -> None:
     )
 
 
-def test_directive_not_redelivered_after_acknowledged() -> None:
-    """After a directive is marked delivered in the DB, it is never returned again."""
-    sid = str(uuid.uuid4())
-    flavor = f"killswitch-ack-{uuid.uuid4().hex[:6]}"
-
-    post_event(make_event(sid, flavor, "session_start"))
-    wait_until(
-        lambda: session_exists_in_fleet(sid),
-        timeout=10,
-        msg=f"session {sid} did not appear in fleet",
-    )
-
-    directive = post_directive(action="shutdown", session_id=sid, reason="test_ack")
-    directive_id = directive["id"]
-
-    # First event delivers the directive
-    first_envelope = post_event(make_event(sid, flavor, "post_call", tokens_total=5))
-    assert first_envelope.get("directive") is not None, (
-        f"directive missing from first response for session {sid}"
-    )
-
-    # Verify directive marked delivered in DB
-    wait_until(
-        lambda: directive_has_delivered_at(directive_id),
-        timeout=5,
-        msg=f"directive {directive_id} not marked delivered in DB",
-    )
-
-    # Second event should have no directive
-    second_envelope = post_event(make_event(sid, flavor, "post_call", tokens_total=5))
-    assert second_envelope.get("directive") is None, (
-        f"directive re-delivered after acknowledged: {second_envelope.get('directive')}"
-    )
+# test_directive_not_redelivered_after_acknowledged -- removed in Phase
+# 4.5 audit Task 1. Subset of test_directive_delivered_exactly_once
+# (which already verifies the second envelope is null) plus
+# test_single_agent_kill (which already verifies delivered_at via
+# directive_has_delivered_at). No unique coverage was being added.

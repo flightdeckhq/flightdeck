@@ -3,6 +3,7 @@ package processor
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"time"
@@ -41,6 +42,12 @@ func (sp *SessionProcessor) isTerminal(ctx context.Context, sessionID string) bo
 }
 
 // HandleSessionStart upserts the agent and creates a new session.
+//
+// The runtime context dict from e.Context is marshaled to JSON and
+// passed to UpsertSession, which writes it once into sessions.context
+// (JSONB) on insert. The ON CONFLICT branch deliberately does NOT
+// touch context so reconnects from the same session_id can't
+// overwrite the initial collection.
 func (sp *SessionProcessor) HandleSessionStart(ctx context.Context, e consumer.EventPayload) error {
 	if sp.isTerminal(ctx, e.SessionID) {
 		slog.Warn("skipping event for terminal session",
@@ -52,9 +59,22 @@ func (sp *SessionProcessor) HandleSessionStart(ctx context.Context, e consumer.E
 	if err := sp.w.UpsertAgent(ctx, e.Flavor, e.AgentType); err != nil {
 		return fmt.Errorf("session start: %w", err)
 	}
+	var contextJSON []byte
+	if len(e.Context) > 0 {
+		marshaled, mErr := json.Marshal(e.Context)
+		if mErr != nil {
+			slog.Warn("marshal session context",
+				"session_id", e.SessionID,
+				"err", mErr,
+			)
+		} else {
+			contextJSON = marshaled
+		}
+	}
 	if err := sp.w.UpsertSession(
 		ctx, e.SessionID, e.Flavor, e.AgentType,
 		e.Host, e.Framework, e.Model, "active",
+		contextJSON,
 	); err != nil {
 		return fmt.Errorf("session start: %w", err)
 	}

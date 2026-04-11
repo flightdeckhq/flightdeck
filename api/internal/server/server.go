@@ -6,46 +6,126 @@ import (
 	"net/http"
 	"time"
 
+	apidocs "github.com/flightdeckhq/flightdeck/api/docs"
+	"github.com/flightdeckhq/flightdeck/api/internal/auth"
 	"github.com/flightdeckhq/flightdeck/api/internal/handlers"
 	"github.com/flightdeckhq/flightdeck/api/internal/store"
 	"github.com/flightdeckhq/flightdeck/api/internal/ws"
 	httpSwagger "github.com/swaggo/http-swagger/v2"
-
-	_ "github.com/flightdeckhq/flightdeck/api/docs"
 )
 
+// TODO(KI12)[Phase 5]: REST endpoints have no per-IP rate limit.
+// The query API has no analogue to the ingestion-side per-token
+// sliding window rate limiter (D048). Add per-IP middleware in
+// Phase 5 alongside the JWT auth refactor. See DECISIONS.md D073
+// for the related sensor-endpoint stopgap.
+
 const (
-	serverReadTimeout  = 10 * time.Second
-	serverWriteTimeout = 10 * time.Second
-	serverIdleTimeout  = 120 * time.Second
+	serverReadTimeout = 15 * time.Second
+	// WriteTimeout intentionally omitted -- WebSocket connections are
+	// long-lived and a global write timeout kills them after N seconds.
+	// The WebSocket write pump controls its own per-message deadline.
+	// REST routes are protected by withRESTTimeout per-handler.
+	serverIdleTimeout = 120 * time.Second
+	restTimeout       = 30 * time.Second
 )
 
 // New creates the HTTP server with all routes registered.
-func New(addr string, s store.Querier, hub *ws.Hub, corsOrigin string) *http.Server {
+//
+// validator MUST be non-nil. The sensor-facing endpoints
+// (POST /v1/directives/sync and POST /v1/directives/register) are
+// mounted behind bearer-token auth via this validator (D073 stopgap).
+// Passing nil panics on construction so a future refactor cannot
+// silently disable authentication on those endpoints. Use
+// NewForTesting if you need an unauthenticated server in tests.
+func New(addr string, s store.Querier, hub *ws.Hub, validator *auth.Validator, corsOrigin string) *http.Server {
+	if validator == nil {
+		panic("server: validator must not be nil. Pass auth.NewValidator() in production or use NewForTesting() in tests.")
+	}
+	return newServer(addr, s, hub, validator, corsOrigin)
+}
+
+// NewForTesting builds a server with sync/register endpoints mounted
+// WITHOUT auth. Intended for tests that exercise handler wiring through
+// the real ServeMux without needing a Postgres-backed token validator.
+// Never call this from production code paths.
+func NewForTesting(addr string, s store.Querier, hub *ws.Hub, corsOrigin string) *http.Server {
+	return newServer(addr, s, hub, nil, corsOrigin)
+}
+
+// newServer is the unexported builder shared by New and NewForTesting.
+// validator may be nil; when nil the sync/register endpoints mount
+// without auth (NewForTesting only -- New panics before reaching here).
+func newServer(addr string, s store.Querier, hub *ws.Hub, validator *auth.Validator, corsOrigin string) *http.Server {
 	mux := http.NewServeMux()
 
-	mux.Handle("GET /v1/fleet", handlers.FleetHandler(s))
-	mux.Handle("GET /v1/sessions/", handlers.SessionsHandler(s))
-	mux.Handle("GET /v1/events/", handlers.ContentHandler(s))
-	mux.Handle("GET /v1/policy", handlers.EffectivePolicyHandler(s))
-	mux.Handle("GET /v1/policies", handlers.PoliciesListHandler(s))
-	mux.Handle("POST /v1/policies", handlers.PolicyCreateHandler(s))
-	mux.Handle("PUT /v1/policies/{id}", handlers.PolicyUpdateHandler(s))
-	mux.Handle("DELETE /v1/policies/{id}", handlers.PolicyDeleteHandler(s))
-	mux.Handle("POST /v1/directives", handlers.CreateDirectiveHandler(s))
-	mux.Handle("GET /v1/analytics", handlers.AnalyticsHandler(s))
-	mux.Handle("GET /v1/search", handlers.SearchHandler(s))
+	// REST routes wrapped with a 30s timeout. The wrapper applies
+	// http.TimeoutHandler so a hung pgx query cannot pin a request
+	// indefinitely.
+	mux.Handle("GET /v1/fleet", withRESTTimeout(handlers.FleetHandler(s)))
+	mux.Handle("GET /v1/sessions/", withRESTTimeout(handlers.SessionsHandler(s)))
+	mux.Handle("GET /v1/events/", withRESTTimeout(handlers.ContentHandler(s)))
+	mux.Handle("GET /v1/policy", withRESTTimeout(handlers.EffectivePolicyHandler(s)))
+	mux.Handle("GET /v1/policies", withRESTTimeout(handlers.PoliciesListHandler(s)))
+	mux.Handle("POST /v1/policies", withRESTTimeout(handlers.PolicyCreateHandler(s)))
+	mux.Handle("PUT /v1/policies/{id}", withRESTTimeout(handlers.PolicyUpdateHandler(s)))
+	mux.Handle("DELETE /v1/policies/{id}", withRESTTimeout(handlers.PolicyDeleteHandler(s)))
+	mux.Handle("POST /v1/directives", withRESTTimeout(handlers.CreateDirectiveHandler(s)))
+
+	// Sensor-facing endpoints: bearer token auth (stopgap until Phase 5
+	// JWT auth lands -- see DECISIONS.md D073). When validator is nil
+	// (unit tests) we mount the handler directly without auth.
+	syncHandler := http.Handler(handlers.SyncDirectivesHandler(s))
+	registerHandler := http.Handler(handlers.RegisterDirectivesHandler(s))
+	if validator != nil {
+		syncHandler = auth.Middleware(validator, syncHandler)
+		registerHandler = auth.Middleware(validator, registerHandler)
+	}
+	mux.Handle("POST /v1/directives/sync", withRESTTimeout(syncHandler))
+	mux.Handle("POST /v1/directives/register", withRESTTimeout(registerHandler))
+
+	mux.Handle("GET /v1/directives/custom", withRESTTimeout(handlers.GetCustomDirectivesHandler(s)))
+	mux.Handle("GET /v1/events", withRESTTimeout(handlers.EventsListHandler(s)))
+	mux.Handle("GET /v1/analytics", withRESTTimeout(handlers.AnalyticsHandler(s)))
+	mux.Handle("GET /v1/search", withRESTTimeout(handlers.SearchHandler(s)))
+	mux.Handle("GET /health", withRESTTimeout(handlers.HealthHandler()))
+
+	// Swagger UI. The swag/v2 v2.0.0-rc5 + http-swagger v2.0.2
+	// runtime combination this project pins has a broken dynamic
+	// ``doc.json`` endpoint that returns 500 when the UI tries to
+	// fetch its spec. We work around it by serving the static
+	// ``swagger.json`` (embedded into the docs package via
+	// ``go:embed``) at a stable path and pointing httpSwagger at it.
+	// The Go-1.22 method-prefixed pattern ``GET /docs/swagger.json``
+	// is more specific than ``GET /docs/`` so it wins precedence.
+	mux.HandleFunc("GET /docs/swagger.json", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(apidocs.SwaggerJSON)
+	})
+	mux.Handle("GET /docs/", httpSwagger.Handler(
+		httpSwagger.URL("/api/docs/swagger.json"),
+	))
+
+	// /v1/stream is intentionally NOT wrapped in withRESTTimeout --
+	// WebSocket connections are long-lived and the timeout would kill
+	// them after restTimeout. The WebSocket write pump owns its own
+	// per-message deadline.
 	mux.Handle("GET /v1/stream", handlers.StreamHandler(hub))
-	mux.Handle("GET /health", handlers.HealthHandler())
-	mux.Handle("GET /docs/", httpSwagger.WrapHandler)
 
 	return &http.Server{
-		Addr:         addr,
-		Handler:      withCORS(withLogging(withRecovery(mux)), corsOrigin),
-		ReadTimeout:  serverReadTimeout,
-		WriteTimeout: serverWriteTimeout,
-		IdleTimeout:  serverIdleTimeout,
+		Addr:        addr,
+		Handler:     withCORS(withLogging(withRecovery(mux)), corsOrigin),
+		ReadTimeout: serverReadTimeout,
+		IdleTimeout: serverIdleTimeout,
 	}
+}
+
+// withRESTTimeout wraps a handler in http.TimeoutHandler so any
+// non-WebSocket REST endpoint has a maximum response time. This
+// matters because the server-level WriteTimeout was removed to
+// keep the WebSocket stream alive.
+func withRESTTimeout(h http.Handler) http.Handler {
+	return http.TimeoutHandler(h, restTimeout, `{"error":"request timeout"}`)
 }
 
 func withRecovery(next http.Handler) http.Handler {

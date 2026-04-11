@@ -8,6 +8,24 @@ services:
     command: ["go", "run", "./cmd/"]
     volumes:
       - ../ingestion:/app
+    # The integration test suite shares one bearer token (tok_dev)
+    # across 50+ tests run back-to-back. The default 1000 req/min
+    # sliding window in handlers.NewRateLimiter is appropriate for
+    # production but is exhausted by a fast CI run, causing 429s
+    # that cascade into sensor e2e timeouts. Bump the cap to 1e6
+    # in dev/CI only -- production deployments that do not set
+    # FLIGHTDECK_RATE_LIMIT_PER_MINUTE inherit the 1000 default.
+    environment:
+      FLIGHTDECK_RATE_LIMIT_PER_MINUTE: "1000000"
+    # `go run` cold-start in CI downloads all modules then compiles --
+    # observed at 60-90 s on a fresh GitHub Actions runner. The base
+    # compose healthcheck only allows 10 s start_period + 5*5 s retries
+    # = 35 s, which is fine for a warm local workstation but trips on
+    # cold CI runs and brings down `make dev`. Override the start
+    # window to 120 s here -- production uses prebuilt images that
+    # boot in <2 s and inherit the tight base healthcheck unchanged.
+    healthcheck:
+      start_period: 120s
 
   workers:
     image: golang:1.26-alpine
@@ -23,6 +41,10 @@ services:
     command: ["go", "run", "./cmd/"]
     volumes:
       - ../api:/app
+    # See the matching comment on ``ingestion`` above. Same cold-start
+    # issue, same dev-only override.
+    healthcheck:
+      start_period: 120s
 
   dashboard:
     image: node:20-alpine
@@ -33,6 +55,8 @@ services:
       - dashboard_node_modules:/app/node_modules
     environment:
       VITE_API_BASE_URL: ""
+      CHOKIDAR_USEPOLLING: "true"
+      WATCHPACK_POLLING: "true"
 
 volumes:
   dashboard_node_modules:

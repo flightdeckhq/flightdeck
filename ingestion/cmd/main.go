@@ -38,12 +38,18 @@ func (a *directiveAdapter) LookupPending(ctx context.Context, sessionID string) 
 	if err != nil || d == nil {
 		return nil, err
 	}
+	// Payload is the JSONB blob for action="custom" directives
+	// (directive_name / fingerprint / parameters). Project it through
+	// so the sensor's DirectivePayloadSchema can validate and dispatch
+	// to the registered handler. Dropping it here was Phase 4.5 audit
+	// finding B-F.
 	return &handlers.DirectiveResponse{
 		ID:            d.ID,
 		Action:        d.Action,
 		Reason:        d.Reason,
 		DegradeTo:     d.DegradeTo,
 		GracePeriodMs: d.GracePeriodMs,
+		Payload:       d.Payload,
 	}, nil
 }
 
@@ -76,7 +82,7 @@ func main() {
 	dirStore := &directiveAdapter{store: directive.NewStore(pool)}
 
 	addr := fmt.Sprintf(":%s", cfg.Port)
-	srv := server.New(addr, validator, publisher, dirStore)
+	srv := server.New(addr, validator, publisher, dirStore, cfg.RateLimitPerMinute)
 
 	// Start server
 	go func() {

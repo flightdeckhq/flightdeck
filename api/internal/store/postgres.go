@@ -14,6 +14,23 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// NotifyChannel is the Postgres LISTEN/NOTIFY channel that carries
+// real-time fleet updates from the writer (workers) and the directive
+// register path (this package) to the dashboard WebSocket hub.
+//
+// Producers (this package's RegisterDirectives, workers/writer.NotifyFleetChange)
+// and the consumer (api/internal/ws.Hub.listenOnce) MUST agree on this
+// channel name. The literal is duplicated in workers/internal/writer/notify.go
+// only because workers and api are separate Go modules.
+const NotifyChannel = "flightdeck_fleet"
+
+// NotifyDirectiveRegistered is the sentinel payload broadcast on
+// NotifyChannel after a successful directive registration. The hub
+// special-cases this literal (it has no JSON envelope) and re-broadcasts
+// a directives_changed message to WebSocket clients. Keep producer and
+// consumer in lock-step by referencing this constant on both sides.
+const NotifyDirectiveRegistered = "directive_registered"
+
 // Querier is the interface for fleet data access.
 // Implemented by Store (Postgres) and mocks in tests.
 type Querier interface {
@@ -29,8 +46,14 @@ type Querier interface {
 	DeletePolicy(ctx context.Context, id string) error
 	CreateDirective(ctx context.Context, d Directive) (*Directive, error)
 	GetActiveSessionIDsByFlavor(ctx context.Context, flavor string) ([]string, error)
+	SyncDirectives(ctx context.Context, fingerprints []string) ([]string, error)
+	RegisterDirectives(ctx context.Context, directives []CustomDirective) error
+	GetCustomDirectives(ctx context.Context, flavor string) ([]CustomDirective, error)
+	CustomDirectiveExists(ctx context.Context, fingerprint, flavor string) (bool, error)
+	GetEvents(ctx context.Context, params EventsParams) (*EventsResponse, error)
 	QueryAnalytics(ctx context.Context, params AnalyticsParams) (*AnalyticsResponse, error)
 	Search(ctx context.Context, query string) (*SearchResults, error)
+	GetContextFacets(ctx context.Context) (map[string][]ContextFacetValue, error)
 }
 
 // WrapStore returns a Querier from any compatible implementation.
@@ -61,6 +84,12 @@ type Session struct {
 	TokensUsed int        `json:"tokens_used"`
 	TokenLimit *int       `json:"token_limit,omitempty"`
 
+	// Runtime context collected by the sensor at init() time and
+	// stored once in sessions.context (JSONB) on the session_start
+	// event. Carries hostname, OS, git, orchestration, frameworks,
+	// etc. -- see sensor/flightdeck_sensor/core/context.py.
+	Context map[string]any `json:"context,omitempty"`
+
 	// Active policy thresholds (nullable).
 	// Populated by GetSession via effective policy lookup.
 	// Null if no policy applies at any scope.
@@ -74,20 +103,36 @@ type Session struct {
 	HasPendingDirective bool `json:"has_pending_directive"`
 }
 
+// ContextFacetValue is a single (value, count) entry inside a context
+// facet group. The fleet response groups facets by key (e.g.
+// "git_branch") and lists each distinct value with the number of
+// active/idle/stale sessions that have it.
+type ContextFacetValue struct {
+	Value string `json:"value"`
+	Count int    `json:"count"`
+}
+
 // Event represents an event row for API responses.
+//
+// Payload carries per-event-type metadata that does not fit the
+// canonical schema columns -- in particular directive_name,
+// directive_action, directive_status, result, error, duration_ms
+// for directive_result events. Empty for events with no extra
+// metadata.
 type Event struct {
-	ID           string     `json:"id"`
-	SessionID    string     `json:"session_id"`
-	Flavor       string     `json:"flavor"`
-	EventType    string     `json:"event_type"`
-	Model        *string    `json:"model,omitempty"`
-	TokensInput  *int       `json:"tokens_input,omitempty"`
-	TokensOutput *int       `json:"tokens_output,omitempty"`
-	TokensTotal  *int       `json:"tokens_total,omitempty"`
-	LatencyMs    *int       `json:"latency_ms,omitempty"`
-	ToolName     *string    `json:"tool_name,omitempty"`
-	HasContent   bool       `json:"has_content"`
-	OccurredAt   time.Time  `json:"occurred_at"`
+	ID           string         `json:"id"`
+	SessionID    string         `json:"session_id"`
+	Flavor       string         `json:"flavor"`
+	EventType    string         `json:"event_type"`
+	Model        *string        `json:"model,omitempty"`
+	TokensInput  *int           `json:"tokens_input,omitempty"`
+	TokensOutput *int           `json:"tokens_output,omitempty"`
+	TokensTotal  *int           `json:"tokens_total,omitempty"`
+	LatencyMs    *int           `json:"latency_ms,omitempty"`
+	ToolName     *string        `json:"tool_name,omitempty"`
+	HasContent   bool           `json:"has_content"`
+	Payload      map[string]any `json:"payload,omitempty"`
+	OccurredAt   time.Time      `json:"occurred_at"`
 }
 
 // FlavorSummary groups sessions by flavor for the fleet view.
@@ -125,7 +170,8 @@ func (s *Store) GetFleet(ctx context.Context, limit, offset int, agentType strin
 	args = append(args, limit, offset)
 	rows, err := s.pool.Query(ctx, `
 		SELECT session_id::text, flavor, agent_type, host, framework, model,
-		       state, started_at, last_seen_at, ended_at, tokens_used, token_limit
+		       state, started_at, last_seen_at, ended_at, tokens_used, token_limit,
+		       context
 		FROM sessions
 		WHERE state != 'lost'`+agentFilter+`
 		ORDER BY flavor, started_at DESC
@@ -141,13 +187,21 @@ func (s *Store) GetFleet(ctx context.Context, limit, offset int, agentType strin
 
 	for rows.Next() {
 		var sess Session
+		var contextRaw []byte
 		if err := rows.Scan(
 			&sess.SessionID, &sess.Flavor, &sess.AgentType,
 			&sess.Host, &sess.Framework, &sess.Model,
 			&sess.State, &sess.StartedAt, &sess.LastSeenAt,
 			&sess.EndedAt, &sess.TokensUsed, &sess.TokenLimit,
+			&contextRaw,
 		); err != nil {
 			return nil, 0, fmt.Errorf("scan session: %w", err)
+		}
+		if len(contextRaw) > 0 {
+			var v map[string]any
+			if jsonErr := json.Unmarshal(contextRaw, &v); jsonErr == nil && len(v) > 0 {
+				sess.Context = v
+			}
 		}
 
 		fs, ok := flavorMap[sess.Flavor]
@@ -179,10 +233,12 @@ func (s *Store) GetFleet(ctx context.Context, limit, offset int, agentType strin
 // Policy lookup cascades: session scope > flavor scope > org scope.
 func (s *Store) GetSession(ctx context.Context, sessionID string) (*Session, error) {
 	var sess Session
+	var contextRaw []byte
 	err := s.pool.QueryRow(ctx, `
 		SELECT
 			s.session_id::text, s.flavor, s.agent_type, s.host, s.framework, s.model,
 			s.state, s.started_at, s.last_seen_at, s.ended_at, s.tokens_used, s.token_limit,
+			s.context,
 			COALESCE(ps.token_limit, pf.token_limit, po.token_limit) AS policy_token_limit,
 			COALESCE(ps.warn_at_pct, pf.warn_at_pct, po.warn_at_pct) AS warn_at_pct,
 			COALESCE(ps.degrade_at_pct, pf.degrade_at_pct, po.degrade_at_pct) AS degrade_at_pct,
@@ -201,6 +257,7 @@ func (s *Store) GetSession(ctx context.Context, sessionID string) (*Session, err
 		&sess.Host, &sess.Framework, &sess.Model,
 		&sess.State, &sess.StartedAt, &sess.LastSeenAt,
 		&sess.EndedAt, &sess.TokensUsed, &sess.TokenLimit,
+		&contextRaw,
 		&sess.PolicyTokenLimit, &sess.WarnAtPct, &sess.DegradeAtPct,
 		&sess.DegradeTo, &sess.BlockAtPct,
 	)
@@ -209,6 +266,12 @@ func (s *Store) GetSession(ctx context.Context, sessionID string) (*Session, err
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get session %s: %w", sessionID, err)
+	}
+	if len(contextRaw) > 0 {
+		var v map[string]any
+		if jsonErr := json.Unmarshal(contextRaw, &v); jsonErr == nil && len(v) > 0 {
+			sess.Context = v
+		}
 	}
 
 	// Check for pending shutdown directive.
@@ -271,11 +334,17 @@ func (s *Store) GetEffectivePolicy(ctx context.Context, flavor, sessionID string
 }
 
 // GetSessionEvents returns all events for a session in chronological order.
+//
+// The payload JSONB column is decoded into Event.Payload so callers
+// (the dashboard) can read directive_name / directive_status / result
+// without a separate /v1/events/:id/content fetch. NULL or empty
+// payload columns yield a nil map on the Event struct, which omits
+// the field from the JSON response.
 func (s *Store) GetSessionEvents(ctx context.Context, sessionID string) ([]Event, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT id::text, session_id::text, flavor, event_type, model,
 		       tokens_input, tokens_output, tokens_total, latency_ms,
-		       tool_name, has_content, occurred_at
+		       tool_name, has_content, payload, occurred_at
 		FROM events
 		WHERE session_id = $1::uuid
 		ORDER BY occurred_at ASC
@@ -288,14 +357,24 @@ func (s *Store) GetSessionEvents(ctx context.Context, sessionID string) ([]Event
 	var events []Event
 	for rows.Next() {
 		var e Event
+		var payloadRaw []byte
 		if err := rows.Scan(
 			&e.ID, &e.SessionID, &e.Flavor, &e.EventType, &e.Model,
 			&e.TokensInput, &e.TokensOutput, &e.TokensTotal, &e.LatencyMs,
-			&e.ToolName, &e.HasContent, &e.OccurredAt,
+			&e.ToolName, &e.HasContent, &payloadRaw, &e.OccurredAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan event: %w", err)
 		}
+		if len(payloadRaw) > 0 {
+			var v map[string]any
+			if jsonErr := json.Unmarshal(payloadRaw, &v); jsonErr == nil && len(v) > 0 {
+				e.Payload = v
+			}
+		}
 		events = append(events, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("session events scan: %w", err)
 	}
 	return events, nil
 }
@@ -405,16 +484,29 @@ func (s *Store) DeletePolicy(ctx context.Context, id string) error {
 
 // Directive represents a row in the directives table.
 type Directive struct {
-	ID            string     `json:"id"`
-	SessionID     *string    `json:"session_id"`
-	Flavor        *string    `json:"flavor"`
-	Action        string     `json:"action"`
-	Reason        *string    `json:"reason"`
-	DegradeTo     *string    `json:"degrade_to"`
-	GracePeriodMs int        `json:"grace_period_ms"`
-	IssuedBy      string     `json:"issued_by"`
-	IssuedAt      time.Time  `json:"issued_at"`
-	DeliveredAt   *time.Time `json:"delivered_at"`
+	ID            string           `json:"id"`
+	SessionID     *string          `json:"session_id"`
+	Flavor        *string          `json:"flavor"`
+	Action        string           `json:"action"`
+	Reason        *string          `json:"reason"`
+	DegradeTo     *string          `json:"degrade_to"`
+	GracePeriodMs int              `json:"grace_period_ms"`
+	IssuedBy      string           `json:"issued_by"`
+	IssuedAt      time.Time        `json:"issued_at"`
+	DeliveredAt   *time.Time       `json:"delivered_at"`
+	Payload       *json.RawMessage `json:"payload,omitempty" swaggertype:"object"`
+}
+
+// CustomDirective represents a row in the custom_directives table.
+type CustomDirective struct {
+	ID           string    `json:"id"`
+	Fingerprint  string    `json:"fingerprint"`
+	Name         string    `json:"name"`
+	Description  string    `json:"description"`
+	Flavor       string    `json:"flavor"`
+	Parameters   any       `json:"parameters"`
+	RegisteredAt time.Time `json:"registered_at"`
+	LastSeenAt   time.Time `json:"last_seen_at"`
 }
 
 // GetActiveSessionIDsByFlavor returns session IDs for active/idle sessions of a flavor.
@@ -442,14 +534,14 @@ func (s *Store) GetActiveSessionIDsByFlavor(ctx context.Context, flavor string) 
 func (s *Store) CreateDirective(ctx context.Context, d Directive) (*Directive, error) {
 	var result Directive
 	err := s.pool.QueryRow(ctx, `
-		INSERT INTO directives (session_id, flavor, action, reason, grace_period_ms, issued_by)
-		VALUES ($1, $2, $3, $4, $5, 'dashboard')
+		INSERT INTO directives (session_id, flavor, action, reason, grace_period_ms, issued_by, payload)
+		VALUES ($1, $2, $3, $4, $5, 'dashboard', $6)
 		RETURNING id::text, session_id::text, flavor, action, reason, degrade_to,
-		          grace_period_ms, issued_by, issued_at, delivered_at
-	`, d.SessionID, d.Flavor, d.Action, d.Reason, d.GracePeriodMs).Scan(
+		          grace_period_ms, issued_by, issued_at, delivered_at, payload
+	`, d.SessionID, d.Flavor, d.Action, d.Reason, d.GracePeriodMs, d.Payload).Scan(
 		&result.ID, &result.SessionID, &result.Flavor, &result.Action, &result.Reason,
 		&result.DegradeTo, &result.GracePeriodMs, &result.IssuedBy, &result.IssuedAt,
-		&result.DeliveredAt,
+		&result.DeliveredAt, &result.Payload,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create directive: %w", err)
@@ -512,4 +604,245 @@ func (s *Store) GetEventContent(ctx context.Context, eventID string) (*EventCont
 	}
 
 	return &ec, nil
+}
+
+// SyncDirectives checks which fingerprints are NOT registered in custom_directives.
+// It updates last_seen_at for found ones and returns the unknown fingerprints.
+//
+// The lookup and the last_seen_at update run in a single transaction so a
+// concurrent RegisterDirectives between them cannot cause unknowns to be
+// reported despite a parallel registration, or known fingerprints to skip
+// the timestamp bump.
+func (s *Store) SyncDirectives(ctx context.Context, fingerprints []string) ([]string, error) {
+	if len(fingerprints) == 0 {
+		return []string{}, nil
+	}
+
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("sync directives begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// Find which fingerprints exist
+	rows, err := tx.Query(ctx, `
+		SELECT fingerprint FROM custom_directives WHERE fingerprint = ANY($1)
+	`, fingerprints)
+	if err != nil {
+		return nil, fmt.Errorf("sync directives lookup: %w", err)
+	}
+
+	found := make(map[string]bool)
+	for rows.Next() {
+		var fp string
+		if err := rows.Scan(&fp); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("scan fingerprint: %w", err)
+		}
+		found[fp] = true
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sync directives scan: %w", err)
+	}
+
+	// Update last_seen_at for found fingerprints
+	if len(found) > 0 {
+		foundFPs := make([]string, 0, len(found))
+		for fp := range found {
+			foundFPs = append(foundFPs, fp)
+		}
+		if _, err := tx.Exec(ctx, `
+			UPDATE custom_directives SET last_seen_at = NOW() WHERE fingerprint = ANY($1)
+		`, foundFPs); err != nil {
+			return nil, fmt.Errorf("sync directives update: %w", err)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("sync directives commit: %w", err)
+	}
+
+	// Return unknown fingerprints
+	unknown := make([]string, 0)
+	for _, fp := range fingerprints {
+		if !found[fp] {
+			unknown = append(unknown, fp)
+		}
+	}
+	return unknown, nil
+}
+
+// RegisterDirectives inserts custom directives, updating last_seen_at on conflict.
+//
+// All upserts run inside a single transaction. After commit a NOTIFY is sent
+// on the flightdeck_fleet channel so the dashboard WebSocket hub broadcasts
+// a fleet update and the Directives page refreshes in real time.
+func (s *Store) RegisterDirectives(ctx context.Context, directives []CustomDirective) error {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return fmt.Errorf("register directives begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	for _, d := range directives {
+		var paramsJSON []byte
+		if d.Parameters != nil {
+			marshaled, mErr := json.Marshal(d.Parameters)
+			if mErr != nil {
+				return fmt.Errorf("marshal parameters for %s: %w", d.Fingerprint, mErr)
+			}
+			paramsJSON = marshaled
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO custom_directives (fingerprint, name, description, flavor, parameters)
+			VALUES ($1, $2, $3, $4, $5)
+			ON CONFLICT (fingerprint) DO UPDATE SET last_seen_at = NOW()
+		`, d.Fingerprint, d.Name, d.Description, d.Flavor, paramsJSON); err != nil {
+			return fmt.Errorf("register directive %s: %w", d.Fingerprint, err)
+		}
+	}
+
+	// Notify the dashboard hub so the Directives page updates in real time.
+	if _, err := tx.Exec(ctx, `SELECT pg_notify($1, $2)`,
+		NotifyChannel, NotifyDirectiveRegistered); err != nil {
+		return fmt.Errorf("register directives notify: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("register directives commit: %w", err)
+	}
+	return nil
+}
+
+// CustomDirectiveExists returns true if a directive with the given
+// fingerprint is registered. If flavor is non-empty, the lookup is
+// scoped to that flavor.
+func (s *Store) CustomDirectiveExists(ctx context.Context, fingerprint, flavor string) (bool, error) {
+	var exists bool
+	err := s.pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM custom_directives
+			WHERE fingerprint = $1
+			  AND ($2 = '' OR flavor = $2)
+		)
+	`, fingerprint, flavor).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("custom directive exists %s: %w", fingerprint, err)
+	}
+	return exists, nil
+}
+
+// GetCustomDirectives returns all custom directives, optionally filtered by flavor.
+func (s *Store) GetCustomDirectives(ctx context.Context, flavor string) ([]CustomDirective, error) {
+	var rows pgx.Rows
+	var err error
+	if flavor != "" {
+		rows, err = s.pool.Query(ctx, `
+			SELECT id::text, fingerprint, name, COALESCE(description, ''), flavor,
+			       parameters, registered_at, last_seen_at
+			FROM custom_directives WHERE flavor = $1
+			ORDER BY registered_at DESC
+		`, flavor)
+	} else {
+		rows, err = s.pool.Query(ctx, `
+			SELECT id::text, fingerprint, name, COALESCE(description, ''), flavor,
+			       parameters, registered_at, last_seen_at
+			FROM custom_directives
+			ORDER BY registered_at DESC
+		`)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get custom directives: %w", err)
+	}
+	defer rows.Close()
+
+	directives := make([]CustomDirective, 0)
+	for rows.Next() {
+		var d CustomDirective
+		var paramsRaw []byte
+		if err := rows.Scan(
+			&d.ID, &d.Fingerprint, &d.Name, &d.Description, &d.Flavor,
+			&paramsRaw, &d.RegisteredAt, &d.LastSeenAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan custom directive: %w", err)
+		}
+		if paramsRaw != nil {
+			var v any
+			if jsonErr := json.Unmarshal(paramsRaw, &v); jsonErr == nil {
+				d.Parameters = v
+			}
+		}
+		directives = append(directives, d)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("custom directives scan: %w", err)
+	}
+	return directives, nil
+}
+
+// GetContextFacets aggregates the runtime context dicts from every
+// non-lost session into a (key -> [(value, count)]) map. The result
+// powers the dashboard CONTEXT sidebar facet panel.
+//
+// Only non-terminal sessions (active / idle / stale) contribute --
+// closed and lost sessions are excluded so the panel reflects the
+// current fleet, not historical state. Empty contexts are also
+// excluded so a fleet without any context-bearing sessions returns
+// an empty map (not an error).
+//
+// Array-typed JSONB values (e.g. ``frameworks: ["langchain/0.1.12",
+// "crewai/0.42.0"]``) are unnested element-by-element so each
+// framework becomes its own facet entry. The previous implementation
+// used ``jsonb_each_text`` which stringifies arrays as a single
+// value -- the dashboard then showed
+// ``["langchain/0.1.12", "crewai/0.42.0"]`` as one bogus facet
+// instead of two distinct framework versions.
+//
+// Within each key, values are ordered by count descending so the
+// most common value sits at the top of its facet group.
+func (s *Store) GetContextFacets(ctx context.Context) (map[string][]ContextFacetValue, error) {
+	// CROSS JOIN LATERAL on a UNION ALL: scalar values take the
+	// ``#>> '{}'`` branch (extract as text) and array values take the
+	// ``jsonb_array_elements_text`` branch (one row per element). The
+	// jsonb_typeof guards make the two branches mutually exclusive,
+	// so a row's value contributes to exactly one branch and there
+	// is no double-counting.
+	rows, err := s.pool.Query(ctx, `
+		WITH context_pairs AS (
+			SELECT key, value
+			FROM sessions, jsonb_each(context)
+			WHERE state IN ('active', 'idle', 'stale')
+			  AND context != '{}'::jsonb
+		)
+		SELECT key, val AS value, COUNT(*) AS count
+		FROM context_pairs,
+		     LATERAL (
+		         SELECT jsonb_array_elements_text(value) AS val
+		         WHERE jsonb_typeof(value) = 'array'
+		         UNION ALL
+		         SELECT value #>> '{}' AS val
+		         WHERE jsonb_typeof(value) <> 'array'
+		     ) expanded
+		GROUP BY key, val
+		ORDER BY key ASC, count DESC
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("get context facets: %w", err)
+	}
+	defer rows.Close()
+
+	facets := make(map[string][]ContextFacetValue)
+	for rows.Next() {
+		var key, value string
+		var count int
+		if err := rows.Scan(&key, &value, &count); err != nil {
+			return nil, fmt.Errorf("scan context facet: %w", err)
+		}
+		facets[key] = append(facets[key], ContextFacetValue{Value: value, Count: count})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("context facets scan: %w", err)
+	}
+	return facets, nil
 }

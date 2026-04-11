@@ -1,5 +1,7 @@
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend } from "recharts";
 import type { AnalyticsSeries } from "@/lib/types";
+import { getProvider } from "@/lib/models";
+import { ProviderLogo } from "@/components/ui/provider-logo";
 
 const COLORS = [
   "var(--primary)",
@@ -47,7 +49,10 @@ export function DonutChart({ series }: DonutChartProps) {
         />
         <Legend
           formatter={(value: string) => (
-            <span style={{ color: "var(--text)", fontSize: 11 }}>{value}</span>
+            <span style={{ color: "var(--text)", fontSize: 11, display: "inline-flex", alignItems: "center", gap: 3 }}>
+              <ProviderLogo provider={getProvider(value)} size={11} />
+              {value}
+            </span>
           )}
         />
       </PieChart>

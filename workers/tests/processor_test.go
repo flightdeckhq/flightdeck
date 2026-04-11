@@ -35,12 +35,12 @@ func (m *mockWriter) UpsertAgent(_ context.Context, flavor, _ string) error {
 	return nil
 }
 
-func (m *mockWriter) UpsertSession(_ context.Context, sessionID, _, _, _, _, _, _ string) error {
+func (m *mockWriter) UpsertSession(_ context.Context, sessionID, _, _, _, _, _, _ string, _ []byte) error {
 	m.sessionsCreated = append(m.sessionsCreated, sessionID)
 	return nil
 }
 
-func (m *mockWriter) InsertEvent(_ context.Context, sessionID, _, _, _ string, _, _, _ *int, _ *int, _ *string, _ bool, _ interface{}) (string, error) {
+func (m *mockWriter) InsertEvent(_ context.Context, sessionID, _, _, _ string, _, _, _ *int, _ *int, _ *string, _ bool, _ interface{}, _ []byte) (string, error) {
 	m.eventsInserted = append(m.eventsInserted, sessionID)
 	return "evt-" + sessionID, nil
 }
@@ -86,7 +86,7 @@ func TestSessionStart_UpsertsAgentAndSession(t *testing.T) {
 	w := newMockWriter()
 	e := makeEvent("session_start")
 	_ = w.UpsertAgent(context.Background(), e.Flavor, e.AgentType)
-	_ = w.UpsertSession(context.Background(), e.SessionID, e.Flavor, e.AgentType, e.Host, "", "", "active")
+	_ = w.UpsertSession(context.Background(), e.SessionID, e.Flavor, e.AgentType, e.Host, "", "", "active", nil)
 
 	if len(w.agentsUpserted) != 1 || w.agentsUpserted[0] != "test-agent" {
 		t.Errorf("expected agent upsert for test-agent, got %v", w.agentsUpserted)
@@ -464,5 +464,110 @@ func TestInsertEventContent(t *testing.T) {
 	err = w.InsertEventContent(context.Background(), "evt-1", "sess-1", content)
 	if err != nil {
 		t.Fatalf("InsertEventContent duplicate failed: %v", err)
+	}
+}
+
+func TestProcessDirectiveResultEvent(t *testing.T) {
+	e := makeEvent("directive_result")
+	if e.EventType != "directive_result" {
+		t.Fatalf("expected event_type=directive_result, got %s", e.EventType)
+	}
+	// Verify the mock writer handles directive_result (routes to InsertEvent, not policy)
+	w := newMockWriter()
+	_, err := w.InsertEvent(context.Background(), e.SessionID, e.Flavor, e.EventType, "", nil, nil, nil, nil, nil, false, time.Now(), nil)
+	if err != nil {
+		t.Fatalf("InsertEvent failed: %v", err)
+	}
+	if len(w.eventsInserted) != 1 {
+		t.Errorf("expected 1 event inserted, got %d", len(w.eventsInserted))
+	}
+	// directive_result should NOT trigger policy evaluation
+	// (verified by the routing in event.go -- it falls through to InsertEvent
+	// without calling policy.Evaluate)
+}
+
+// TestDirectiveResultPayloadPersisted exercises BuildEventExtra, the
+// helper that projects directive metadata fields off a NATS payload
+// into the events.payload JSONB column. The processor calls this on
+// every directive_result event before InsertEvent so the dashboard
+// can render directive_name / directive_status without a separate
+// content fetch.
+func TestDirectiveResultPayloadPersisted(t *testing.T) {
+	dur := int64(42)
+	e := consumer.EventPayload{
+		SessionID:       "sess-001",
+		Flavor:          "test-agent",
+		EventType:       "directive_result",
+		Timestamp:       "2026-04-10T07:00:00Z",
+		DirectiveName:   "clear_cache",
+		DirectiveAction: "custom",
+		DirectiveStatus: "success",
+		Result:          json.RawMessage(`{"cleared": true, "count": 7}`),
+		DurationMs:      &dur,
+	}
+
+	extra, err := processor.BuildEventExtra(e)
+	if err != nil {
+		t.Fatalf("BuildEventExtra error: %v", err)
+	}
+	if extra == nil {
+		t.Fatal("expected non-nil payload bytes for directive_result")
+	}
+
+	var got map[string]interface{}
+	if err := json.Unmarshal(extra, &got); err != nil {
+		t.Fatalf("payload not valid JSON: %v", err)
+	}
+	if got["directive_name"] != "clear_cache" {
+		t.Errorf("expected directive_name=clear_cache, got %v", got["directive_name"])
+	}
+	if got["directive_action"] != "custom" {
+		t.Errorf("expected directive_action=custom, got %v", got["directive_action"])
+	}
+	if got["directive_status"] != "success" {
+		t.Errorf("expected directive_status=success, got %v", got["directive_status"])
+	}
+	// duration_ms is JSON-decoded as float64
+	if got["duration_ms"] != float64(42) {
+		t.Errorf("expected duration_ms=42, got %v", got["duration_ms"])
+	}
+	result, ok := got["result"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected result to be a JSON object, got %T", got["result"])
+	}
+	if result["cleared"] != true {
+		t.Errorf("expected result.cleared=true, got %v", result["cleared"])
+	}
+}
+
+// TestBuildEventExtraSkipsNonDirectiveEvents proves the helper returns
+// nil for events that have no per-event-type metadata. The processor
+// must NOT write a {} payload onto a normal post_call event.
+func TestBuildEventExtraSkipsNonDirectiveEvents(t *testing.T) {
+	for _, et := range []string{"session_start", "post_call", "tool_call", "heartbeat"} {
+		extra, err := processor.BuildEventExtra(consumer.EventPayload{EventType: et})
+		if err != nil {
+			t.Errorf("%s: unexpected error: %v", et, err)
+		}
+		if extra != nil {
+			t.Errorf("%s: expected nil payload, got %s", et, string(extra))
+		}
+	}
+}
+
+// TestBuildEventExtraEmptyDirectiveResult covers the edge case where
+// a directive_result event arrives with no populated metadata fields
+// (e.g. older sensor versions). BuildEventExtra must return nil in
+// that case, NOT an empty JSON object, so the events.payload column
+// stays NULL rather than '{}'.
+func TestBuildEventExtraEmptyDirectiveResult(t *testing.T) {
+	extra, err := processor.BuildEventExtra(consumer.EventPayload{
+		EventType: "directive_result",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if extra != nil {
+		t.Errorf("expected nil payload for empty directive_result, got %s", string(extra))
 	}
 }

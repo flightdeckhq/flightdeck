@@ -2,6 +2,7 @@ package processor
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"time"
@@ -10,6 +11,49 @@ import (
 	"github.com/flightdeckhq/flightdeck/workers/internal/writer"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// BuildEventExtra projects per-event-type metadata fields from a NATS
+// payload into the events.payload JSONB column. Returns nil for events
+// that have no extra metadata to persist (e.g. session_start, post_call,
+// tool_call). Returns a JSON-encoded map for directive_result events
+// containing directive_name, directive_action, directive_status,
+// result, error, duration_ms -- omitting any field that is empty/nil.
+//
+// This is an exported helper so it can be unit-tested directly without
+// needing to wire a mock writer through the Processor.
+func BuildEventExtra(e consumer.EventPayload) ([]byte, error) {
+	if e.EventType != "directive_result" {
+		return nil, nil
+	}
+	extra := make(map[string]interface{})
+	if e.DirectiveName != "" {
+		extra["directive_name"] = e.DirectiveName
+	}
+	if e.DirectiveAction != "" {
+		extra["directive_action"] = e.DirectiveAction
+	}
+	if e.DirectiveStatus != "" {
+		extra["directive_status"] = e.DirectiveStatus
+	}
+	if len(e.Result) > 0 {
+		// Result is a json.RawMessage -- decode and re-attach so the
+		// final encoded payload is a single document, not a string.
+		var v interface{}
+		if err := json.Unmarshal(e.Result, &v); err == nil {
+			extra["result"] = v
+		}
+	}
+	if e.Error != "" {
+		extra["error"] = e.Error
+	}
+	if e.DurationMs != nil {
+		extra["duration_ms"] = *e.DurationMs
+	}
+	if len(extra) == 0 {
+		return nil, nil
+	}
+	return json.Marshal(extra)
+}
 
 // Processor routes incoming events to the session processor, writer,
 // and policy evaluator.
@@ -51,6 +95,11 @@ func (p *Processor) Process(ctx context.Context, e consumer.EventPayload) error 
 		if err := p.session.HandlePostCall(ctx, e); err != nil {
 			return err
 		}
+	case "directive_result":
+		// Insert event but do NOT evaluate policy. Just update last_seen.
+		if err := p.session.HandlePostCall(ctx, e); err != nil {
+			return err
+		}
 	default:
 		return fmt.Errorf("unknown event_type: %s", e.EventType)
 	}
@@ -60,10 +109,15 @@ func (p *Processor) Process(ctx context.Context, e consumer.EventPayload) error 
 	if err != nil {
 		ts = time.Now().UTC()
 	}
+	extra, extraErr := BuildEventExtra(e)
+	if extraErr != nil {
+		// Non-fatal: log and proceed without payload metadata.
+		slog.Warn("build event extra error", "err", extraErr, "event_type", e.EventType)
+	}
 	eventID, err := p.w.InsertEvent(
 		ctx, e.SessionID, e.Flavor, e.EventType, e.Model,
 		e.TokensInput, e.TokensOutput, e.TokensTotal,
-		e.LatencyMs, e.ToolName, e.HasContent, ts,
+		e.LatencyMs, e.ToolName, e.HasContent, ts, extra,
 	)
 	if err != nil {
 		return err

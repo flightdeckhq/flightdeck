@@ -9,6 +9,9 @@ description = "In-process agent observability sensor for Flightdeck"
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.9"
+dependencies = [
+    "pydantic>=2.0",
+]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -32,6 +35,12 @@ dev = [
     "mypy>=1.8",
     "ruff>=0.3",
     "httpx>=0.25",
+    # Used by tests/integration/test_sensor_e2e.py to mock provider HTTP
+    # so the sensor can be exercised end-to-end against a live stack
+    # without real Anthropic / OpenAI tokens. See Phase 4.5 audit Part 5.
+    "respx>=0.20",
+    "anthropic>=0.20",
+    "openai>=1.0",
 ]
 
 [tool.hatch.build.targets.wheel]

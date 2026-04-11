@@ -212,7 +212,7 @@ func TestHeartbeatHandler_PendingDirective_ReturnsDirective(t *testing.T) {
 // --- Rate Limiter Tests ---
 
 func TestRateLimitAllowsUnderLimit(t *testing.T) {
-	limiter := handlers.NewRateLimiter()
+	limiter := handlers.NewRateLimiter(handlers.DefaultRateLimitPerMinute)
 	defer limiter.Close()
 
 	for i := range 999 {
@@ -224,7 +224,7 @@ func TestRateLimitAllowsUnderLimit(t *testing.T) {
 }
 
 func TestRateLimitBlocksOverLimit(t *testing.T) {
-	limiter := handlers.NewRateLimiter()
+	limiter := handlers.NewRateLimiter(handlers.DefaultRateLimitPerMinute)
 	defer limiter.Close()
 
 	for range 1000 {
@@ -241,7 +241,7 @@ func TestRateLimitBlocksOverLimit(t *testing.T) {
 }
 
 func TestRateLimitReturns429ViaHandler(t *testing.T) {
-	limiter := handlers.NewRateLimiter()
+	limiter := handlers.NewRateLimiter(handlers.DefaultRateLimitPerMinute)
 	defer limiter.Close()
 
 	handler := handlers.EventsHandler(
@@ -272,5 +272,48 @@ func TestRateLimitReturns429ViaHandler(t *testing.T) {
 	}
 	if w.Header().Get("Retry-After") == "" {
 		t.Error("expected Retry-After header")
+	}
+}
+
+// FIX 1 -- the per-token cap is configurable. The dev compose
+// override sets it high so the integration suite never hits 429.
+func TestRateLimitConfigurableCapHonored(t *testing.T) {
+	limiter := handlers.NewRateLimiter(5)
+	defer limiter.Close()
+
+	for range 5 {
+		allowed, _ := limiter.Allow("tok-hash")
+		if !allowed {
+			t.Fatal("requests under custom cap should be allowed")
+		}
+	}
+	allowed, _ := limiter.Allow("tok-hash")
+	if allowed {
+		t.Error("request over custom cap should be blocked")
+	}
+}
+
+// FIX 1 -- a misconfigured FLIGHTDECK_RATE_LIMIT_PER_MINUTE (zero or
+// negative) must NOT silently disable the limiter. NewRateLimiter
+// falls back to DefaultRateLimitPerMinute so production cannot end
+// up unlimited by accident.
+func TestRateLimitNonPositiveCapFallsBackToDefault(t *testing.T) {
+	for _, max := range []int{0, -1, -1000} {
+		limiter := handlers.NewRateLimiter(max)
+		// Allow exactly DefaultRateLimitPerMinute requests, then
+		// expect the next one to fail.
+		for range handlers.DefaultRateLimitPerMinute {
+			allowed, _ := limiter.Allow("tok-hash")
+			if !allowed {
+				limiter.Close()
+				t.Fatalf("max=%d: request should have been allowed under default cap", max)
+			}
+		}
+		allowed, _ := limiter.Allow("tok-hash")
+		if allowed {
+			limiter.Close()
+			t.Errorf("max=%d: request beyond default cap should have been blocked", max)
+		}
+		limiter.Close()
 	}
 }

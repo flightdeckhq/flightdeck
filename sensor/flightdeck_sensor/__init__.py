@@ -8,11 +8,13 @@ Two-line integration::
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import threading
-from typing import Any
+from typing import Any, Callable
 
+from flightdeck_sensor.core.context import collect as _collect_context
 from flightdeck_sensor.core.exceptions import (
     BudgetExceededError,
     ConfigurationError,
@@ -20,12 +22,16 @@ from flightdeck_sensor.core.exceptions import (
 )
 from flightdeck_sensor.core.session import Session
 from flightdeck_sensor.core.types import (
+    DirectiveParameter,
+    DirectiveRegistration,
     SensorConfig,
     StatusResponse,
 )
 from flightdeck_sensor.interceptor.anthropic import GuardedAnthropic
 from flightdeck_sensor.interceptor.openai import GuardedOpenAI
 from flightdeck_sensor.transport.client import ControlPlaneClient
+
+Parameter = DirectiveParameter
 
 __all__ = [
     "init",
@@ -34,6 +40,8 @@ __all__ = [
     "unpatch",
     "get_status",
     "teardown",
+    "directive",
+    "Parameter",
     "BudgetExceededError",
     "ConfigurationError",
     "DirectiveError",
@@ -41,12 +49,102 @@ __all__ = [
 
 _log = logging.getLogger("flightdeck_sensor")
 
+# TODO(KI15)[Phase 4.9]: Module-level _session and _directive_registry are
+# process-wide singletons. The second init() call is a no-op and the
+# directive registry is shared across every Session, so multi-Session
+# patterns (one init per thread, multiple agents in one process) are
+# not supported in v1. Needs an architectural decision before Phase 5
+# multi-tenant work: Session-handle API, per-thread storage, or
+# per-flavor map. See KNOWN_ISSUES.md KI15 and Phase 4.5 audit Part 1
+# findings B-I/B-J.
+
 # Global state -- protected by _lock
 _lock = threading.Lock()
 _patch_lock = threading.Lock()
 _session: Session | None = None
 _client: ControlPlaneClient | None = None
 _original_inits: dict[str, Any] = {}
+
+# Custom directive registry -- populated by @directive decorator
+_directive_registry: dict[str, DirectiveRegistration] = {}
+
+
+# ------------------------------------------------------------------
+# Custom directive registration
+# ------------------------------------------------------------------
+
+
+def _compute_fingerprint(
+    name: str, description: str, parameters: list[DirectiveParameter]
+) -> str:
+    """Compute a deterministic SHA-256 fingerprint for a directive schema."""
+    import base64
+    import hashlib
+    import json
+
+    payload = json.dumps(
+        {
+            "name": name,
+            "description": description,
+            "parameters": [
+                {
+                    "name": p.name,
+                    "type": p.type,
+                    "description": p.description,
+                    "options": p.options,
+                    "required": p.required,
+                    "default": p.default,
+                }
+                for p in parameters
+            ],
+        },
+        sort_keys=True,
+    )
+    return base64.b64encode(hashlib.sha256(payload.encode()).digest()).decode()
+
+
+def directive(
+    name: str,
+    description: str = "",
+    parameters: list[Parameter] | None = None,
+) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    """Decorator to register a function as a custom directive handler.
+
+    Example::
+
+        @flightdeck_sensor.directive("pause", description="Pause the agent")
+        def handle_pause(ctx, duration=30):
+            time.sleep(duration)
+
+    .. warning:: The ``parameters`` schema you declare here is used to
+       compute the directive fingerprint and to render the parameter
+       form on the dashboard. **It is NOT enforced at execution
+       time.** When the dashboard issues a directive, the
+       ``parameters`` dict in the request body is passed straight
+       through to your handler as ``**kwargs`` after only shape-level
+       validation (``directive_name: str``, ``fingerprint: str``,
+       ``parameters: dict``). The handler is responsible for
+       validating its own inputs -- if you declare ``value: int`` in
+       the schema, you should still defensively check ``isinstance(
+       value, int)`` inside the handler. Type mismatches that crash
+       the handler are caught by the runtime and logged, but bad
+       input data may produce surprising side effects before the
+       crash. Phase 4.5 audit Hat 4 finding.
+    """
+
+    def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
+        params = parameters or []
+        fp = _compute_fingerprint(name, description, params)
+        _directive_registry[name] = DirectiveRegistration(
+            name=name,
+            description=description,
+            parameters=params,
+            fingerprint=fp,
+            handler=fn,
+        )
+        return fn
+
+    return decorator
 
 
 # ------------------------------------------------------------------
@@ -111,6 +209,16 @@ def init(
             unavailable_policy=config.unavailable_policy,
         )
         _session = Session(config=config, client=_client)
+
+        # Best-effort runtime context collection. Never raises -- if
+        # any collector fails the agent continues with no context
+        # attached. Set on the session BEFORE start() so the
+        # session_start event payload includes it.
+        runtime_ctx: dict[str, Any] = {}
+        with contextlib.suppress(Exception):
+            runtime_ctx = _collect_context()
+        _session.set_context(runtime_ctx)
+
         _session.start()
 
 

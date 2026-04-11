@@ -1,8 +1,37 @@
 @import "./themes.css";
 
+/* Geist fonts loaded from node_modules */
+@font-face {
+  font-family: "Geist";
+  src: url("../../node_modules/geist/dist/fonts/geist-sans/Geist-Variable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "GeistMono";
+  src: url("../../node_modules/geist/dist/fonts/geist-mono/GeistMono-Variable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-display: swap;
+}
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* Active session pulsing indicator */
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+.pulse-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--node-active);
+  animation: pulse-dot 2s ease-in-out infinite;
+  flex-shrink: 0;
+}
 
 * {
   box-sizing: border-box;
@@ -11,19 +40,21 @@
 }
 
 body {
-  font-family:
-    "Inter",
-    -apple-system,
-    BlinkMacSystemFont,
-    "Segoe UI",
-    Roboto,
-    sans-serif;
-  background-color: var(--bg);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  background: var(--bg);
   color: var(--text);
+  -webkit-font-smoothing: antialiased;
   min-height: 100vh;
 }
 
-/* Scrollbar styling for neon dark */
+/* Mono class for identifiers, timestamps, hex values */
+.font-mono {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+/* Scrollbar styling */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
@@ -40,4 +71,14 @@ body {
 
 ::-webkit-scrollbar-thumb:hover {
   background: var(--text-muted);
+}
+
+/* Thin variant for nested scrollers (e.g. flavor list inside the
+   sidebar) where the default 6px scrollbar feels too heavy. */
+.thin-scrollbar::-webkit-scrollbar {
+  width: 4px;
+}
+.thin-scrollbar::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 2px;
 }

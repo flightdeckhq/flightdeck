@@ -11,14 +11,15 @@ import (
 
 // FleetResponse is the response body for GET /v1/fleet.
 type FleetResponse struct {
-	Flavors           []store.FlavorSummary `json:"flavors"`
-	TotalSessionCount int                   `json:"total_session_count"`
+	Flavors           []store.FlavorSummary                  `json:"flavors"`
+	TotalSessionCount int                                    `json:"total_session_count"`
+	ContextFacets     map[string][]store.ContextFacetValue   `json:"context_facets"`
 }
 
 // FleetHandler handles GET /v1/fleet.
 //
 // @Summary      Get fleet state
-// @Description  Returns sessions grouped by flavor, excluding lost sessions. Supports pagination via limit/offset on sessions.
+// @Description  Returns sessions grouped by flavor, excluding lost sessions. Includes runtime context facets aggregated across all non-terminal sessions for the dashboard CONTEXT sidebar.
 // @Tags         fleet
 // @Produce      json
 // @Param        limit       query  int     false  "Max sessions to return (default 50, max 200)"
@@ -50,10 +51,24 @@ func FleetHandler(s store.Querier) http.HandlerFunc {
 			return
 		}
 
+		// Context facets are best-effort. A failure here must NOT
+		// fail the fleet request -- log the error and return an
+		// empty map so the dashboard can render without the CONTEXT
+		// sidebar instead of breaking the whole page.
+		facets, facetsErr := s.GetContextFacets(r.Context())
+		if facetsErr != nil {
+			slog.Warn("get context facets error", "err", facetsErr)
+			facets = map[string][]store.ContextFacetValue{}
+		}
+		if facets == nil {
+			facets = map[string][]store.ContextFacetValue{}
+		}
+
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(FleetResponse{
 			Flavors:           flavors,
 			TotalSessionCount: totalCount,
+			ContextFacets:     facets,
 		})
 	}
 }

@@ -5,7 +5,7 @@ from __future__ import annotations
 import enum
 import uuid
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 
 class SessionState(enum.Enum):
@@ -31,6 +31,7 @@ class EventType(enum.Enum):
     POST_CALL = "post_call"
     TOOL_CALL = "tool_call"
     POLICY_WARN = "policy_warn"
+    DIRECTIVE_RESULT = "directive_result"
 
 
 class DirectiveAction(enum.Enum):
@@ -43,6 +44,7 @@ class DirectiveAction(enum.Enum):
     THROTTLE = "throttle"
     POLICY_UPDATE = "policy_update"
     CHECKPOINT = "checkpoint"
+    CUSTOM = "custom"
 
 
 class PolicyDecision(enum.Enum):
@@ -103,3 +105,36 @@ class StatusResponse:
     tokens_used: int
     token_limit: int | None
     pct_used: float | None
+
+
+@dataclass
+class DirectiveParameter:
+    """Schema for a single parameter accepted by a custom directive handler."""
+
+    name: str
+    type: str
+    description: str = ""
+    options: list[str] = field(default_factory=list)
+    required: bool = False
+    default: Any = None
+
+
+@dataclass
+class DirectiveRegistration:
+    """A custom directive handler registered via the ``@directive`` decorator."""
+
+    name: str
+    description: str
+    parameters: list[DirectiveParameter]
+    fingerprint: str
+    handler: Callable[..., Any]
+
+
+@dataclass
+class DirectiveContext:
+    """Execution context passed to custom directive handlers."""
+
+    session_id: str
+    flavor: str
+    tokens_used: int
+    model: str

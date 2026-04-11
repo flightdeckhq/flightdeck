@@ -122,7 +122,7 @@
         },
         "/v1/directives": {
             "post": {
-                "description": "Issues a shutdown directive to a single agent session or all sessions of a flavor",
+                "description": "Issues a shutdown or custom directive to a single agent session or all sessions of a flavor",
                 "consumes": [
                     "application/json"
                 ],
@@ -149,6 +149,247 @@
                         "description": "Created",
                         "schema": {
                             "$ref": "#/definitions/store.Directive"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "422": {
+                        "description": "Unprocessable Entity",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/directives/custom": {
+            "get": {
+                "description": "Returns all registered custom directives, optionally filtered by flavor.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "custom-directives"
+                ],
+                "summary": "List custom directives",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Filter by flavor",
+                        "name": "flavor",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.CustomDirectivesListResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/directives/register": {
+            "post": {
+                "description": "Registers custom directive definitions. Updates last_seen_at on conflict. Requires bearer token.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "custom-directives"
+                ],
+                "summary": "Register custom directives",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Bearer token",
+                        "name": "Authorization",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "description": "Registration request with directives",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handlers.RegisterDirectivesRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.RegisterDirectivesResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Missing or invalid bearer token",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/directives/sync": {
+            "post": {
+                "description": "Checks which directive fingerprints are registered. Returns fingerprints not found. Requires bearer token.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "custom-directives"
+                ],
+                "summary": "Sync custom directive fingerprints",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Bearer token",
+                        "name": "Authorization",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "description": "Sync request with flavor and fingerprints",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handlers.SyncDirectivesRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.SyncDirectivesResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Missing or invalid bearer token",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/events": {
+            "get": {
+                "description": "Returns events matching time range, flavor, event type, and session filters with pagination.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "events"
+                ],
+                "summary": "List events with filters",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Start time (ISO 8601)",
+                        "name": "from",
+                        "in": "query",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "End time (ISO 8601, defaults to now)",
+                        "name": "to",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by flavor",
+                        "name": "flavor",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by event type",
+                        "name": "event_type",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by session ID",
+                        "name": "session_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Max results (default 500, max 2000)",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Offset for pagination (default 0)",
+                        "name": "offset",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/store.EventsResponse"
                         }
                     },
                     "400": {
@@ -209,7 +450,7 @@
         },
         "/v1/fleet": {
             "get": {
-                "description": "Returns sessions grouped by flavor, excluding lost sessions. Supports pagination via limit/offset on sessions.",
+                "description": "Returns sessions grouped by flavor, excluding lost sessions. Includes runtime context facets aggregated across all non-terminal sessions for the dashboard CONTEXT sidebar.",
                 "produces": [
                     "application/json"
                 ],
@@ -577,10 +818,27 @@
         }
     },
     "definitions": {
+        "handlers.CustomDirectivesListResponse": {
+            "type": "object",
+            "properties": {
+                "directives": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/store.CustomDirective"
+                    }
+                }
+            }
+        },
         "handlers.DirectiveRequest": {
             "type": "object",
             "properties": {
                 "action": {
+                    "type": "string"
+                },
+                "directive_name": {
+                    "type": "string"
+                },
+                "fingerprint": {
                     "type": "string"
                 },
                 "flavor": {
@@ -588,6 +846,9 @@
                 },
                 "grace_period_ms": {
                     "type": "integer"
+                },
+                "parameters": {
+                    "type": "object"
                 },
                 "reason": {
                     "type": "string"
@@ -608,6 +869,15 @@
         "handlers.FleetResponse": {
             "type": "object",
             "properties": {
+                "context_facets": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/definitions/store.ContextFacetValue"
+                        }
+                    }
+                },
                 "flavors": {
                     "type": "array",
                     "items": {
@@ -645,6 +915,28 @@
                 }
             }
         },
+        "handlers.RegisterDirectivesRequest": {
+            "type": "object",
+            "properties": {
+                "directives": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/store.CustomDirective"
+                    }
+                },
+                "flavor": {
+                    "type": "string"
+                }
+            }
+        },
+        "handlers.RegisterDirectivesResponse": {
+            "type": "object",
+            "properties": {
+                "registered": {
+                    "type": "integer"
+                }
+            }
+        },
         "handlers.SessionResponse": {
             "type": "object",
             "properties": {
@@ -656,6 +948,39 @@
                 },
                 "session": {
                     "$ref": "#/definitions/store.Session"
+                }
+            }
+        },
+        "handlers.SyncDirectivesRequest": {
+            "type": "object",
+            "properties": {
+                "directives": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "fingerprint": {
+                                "type": "string"
+                            },
+                            "name": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                },
+                "flavor": {
+                    "type": "string"
+                }
+            }
+        },
+        "handlers.SyncDirectivesResponse": {
+            "type": "object",
+            "properties": {
+                "unknown_fingerprints": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
                 }
             }
         },
@@ -713,6 +1038,44 @@
                 }
             }
         },
+        "store.ContextFacetValue": {
+            "type": "object",
+            "properties": {
+                "count": {
+                    "type": "integer"
+                },
+                "value": {
+                    "type": "string"
+                }
+            }
+        },
+        "store.CustomDirective": {
+            "type": "object",
+            "properties": {
+                "description": {
+                    "type": "string"
+                },
+                "fingerprint": {
+                    "type": "string"
+                },
+                "flavor": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "last_seen_at": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "parameters": {},
+                "registered_at": {
+                    "type": "string"
+                }
+            }
+        },
         "store.DataPoint": {
             "type": "object",
             "properties": {
@@ -751,6 +1114,9 @@
                 "issued_by": {
                     "type": "string"
                 },
+                "payload": {
+                    "type": "object"
+                },
                 "reason": {
                     "type": "string"
                 },
@@ -782,6 +1148,10 @@
                 },
                 "occurred_at": {
                     "type": "string"
+                },
+                "payload": {
+                    "type": "object",
+                    "additionalProperties": {}
                 },
                 "session_id": {
                     "type": "string"
@@ -824,6 +1194,29 @@
                     "type": "string"
                 },
                 "tools": {}
+            }
+        },
+        "store.EventsResponse": {
+            "type": "object",
+            "properties": {
+                "events": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/store.Event"
+                    }
+                },
+                "has_more": {
+                    "type": "boolean"
+                },
+                "limit": {
+                    "type": "integer"
+                },
+                "offset": {
+                    "type": "integer"
+                },
+                "total": {
+                    "type": "integer"
+                }
             }
         },
         "store.FlavorSummary": {
@@ -975,6 +1368,11 @@
                 },
                 "block_at_pct": {
                     "type": "integer"
+                },
+                "context": {
+                    "description": "Runtime context collected by the sensor at init() time and\nstored once in sessions.context (JSONB) on the session_start\nevent. Carries hostname, OS, git, orchestration, frameworks,\netc. -- see sensor/flightdeck_sensor/core/context.py.",
+                    "type": "object",
+                    "additionalProperties": {}
                 },
                 "degrade_at_pct": {
                     "type": "integer"

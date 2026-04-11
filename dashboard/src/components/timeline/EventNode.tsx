@@ -1,82 +1,191 @@
-import { motion } from "framer-motion";
-import type { SessionState } from "@/lib/types";
+import { useEffect, useState, memo, useCallback } from "react";
+import { createPortal } from "react-dom";
+import type { EventType } from "@/lib/types";
+import { truncateSessionId } from "@/lib/events";
 import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
+  Zap, Wrench, AlertTriangle, XCircle, ArrowDown,
+  Play, Square, Check, Circle, X,
+} from "lucide-react";
 
-const stateColors: Record<SessionState, string> = {
-  active: "var(--node-active)",
-  idle: "var(--node-idle)",
-  stale: "var(--node-stale)",
-  closed: "var(--node-closed)",
-  lost: "var(--node-lost)",
+const eventTypeConfig: Record<
+  string,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  { cssVar: string; label: string; Icon: React.ComponentType<any> }
+> = {
+  pre_call: { cssVar: "var(--event-llm)", Icon: Zap, label: "LLM Call" },
+  post_call: { cssVar: "var(--event-llm)", Icon: Zap, label: "LLM Response" },
+  tool_call: { cssVar: "var(--event-tool)", Icon: Wrench, label: "Tool Call" },
+  policy_warn: { cssVar: "var(--event-warn)", Icon: AlertTriangle, label: "Policy Warn" },
+  policy_block: { cssVar: "var(--event-block)", Icon: XCircle, label: "Policy Block" },
+  policy_degrade: { cssVar: "var(--event-degrade)", Icon: ArrowDown, label: "Policy Degrade" },
+  session_start: { cssVar: "var(--event-lifecycle)", Icon: Play, label: "Session Start" },
+  session_end: { cssVar: "var(--event-lifecycle)", Icon: Square, label: "Session End" },
+  directive_result: { cssVar: "var(--event-directive)", Icon: Check, label: "Directive Result" },
+  heartbeat: { cssVar: "var(--event-lifecycle)", Icon: Circle, label: "Heartbeat" },
 };
 
-interface EventNodeProps {
+// Failed directive_result events (error/timeout) render with the
+// plain X glyph instead of the Check icon. X is bolder and more
+// readable than XCircle at the 20-24px circle sizes.
+const FAILED_DIRECTIVE_STATUSES = new Set(["error", "timeout"]);
+
+const defaultConfig = { cssVar: "var(--event-lifecycle)", Icon: Circle, label: "Event" };
+
+// Override colors for directive_result events based on directive_status.
+// success/acknowledged → green (status-active)
+// error/timeout → red (status-lost / event-block)
+// anything else → fall back to the base directive color
+function directiveResultOverride(
+  status: string | undefined,
+): { cssVar: string } | null {
+  if (!status) return null;
+  if (status === "success" || status === "acknowledged") {
+    return { cssVar: "var(--status-active)" };
+  }
+  if (status === "error" || status === "timeout") {
+    return { cssVar: "var(--event-block)" };
+  }
+  return null;
+}
+
+export interface EventNodeProps {
   x: number;
-  state: SessionState;
+  eventType: EventType | string;
   sessionId: string;
   flavor: string;
-  tokensUsed: number;
-  onClick: () => void;
+  model?: string | null;
+  toolName?: string | null;
+  tokensTotal?: number | null;
+  latencyMs?: number | null;
+  occurredAt: string;
+  eventId?: string;
+  onClick: (eventId?: string) => void;
+  size?: number;
+  isVisible?: boolean;
+  directiveName?: string;
+  directiveStatus?: string;
 }
 
-export function EventNode({
-  x,
-  state,
-  sessionId,
-  flavor,
-  tokensUsed,
-  onClick,
+function EventNodeComponent({
+  x, eventType, sessionId, flavor, model, toolName,
+  tokensTotal, latencyMs, occurredAt, eventId, onClick,
+  size = 24, isVisible = true, directiveName, directiveStatus,
 }: EventNodeProps) {
-  const color = stateColors[state];
-  const isActive = state === "active";
+  const config = eventTypeConfig[eventType] ?? defaultConfig;
+  const override = eventType === "directive_result"
+    ? directiveResultOverride(directiveStatus)
+    : null;
+  const color = override?.cssVar ?? config.cssVar;
+  // Failed directive_result events use the plain X glyph in place of
+  // the success Check. The tooltip label switches to "RESULT · status"
+  // for any directive_result event so the status is visible without
+  // opening the drawer.
+  const isFailedDirective =
+    eventType === "directive_result" &&
+    !!directiveStatus &&
+    FAILED_DIRECTIVE_STATUSES.has(directiveStatus);
+  const tooltipLabel =
+    eventType === "directive_result" && directiveStatus
+      ? `RESULT · ${directiveStatus}`
+      : config.label;
+  const [hovered, setHovered] = useState(false);
+  const [mounted, setMounted] = useState(false);
+  const [tooltipPos, setTooltipPos] = useState<{ top: number; left: number } | null>(null);
+  const iconSize = size <= 20 ? 11 : 13;
+
+  useEffect(() => {
+    const id = requestAnimationFrame(() => setMounted(true));
+    return () => cancelAnimationFrame(id);
+  }, []);
+
+  const handleMouseEnter = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    setTooltipPos({ top: rect.top - 8, left: rect.left + rect.width / 2 });
+    setHovered(true);
+  }, []);
+
+  const handleMouseLeave = useCallback(() => {
+    setHovered(false);
+    setTooltipPos(null);
+  }, []);
+
+  const IconComponent = isFailedDirective ? X : config.Icon;
+  const finalOpacity = isVisible && mounted ? 1 : 0;
 
   return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <motion.div
-          className="absolute top-1/2 -translate-y-1/2 cursor-pointer rounded-full"
+    <>
+      <div
+        className="absolute top-1/2 -translate-y-1/2 cursor-pointer rounded-full flex items-center justify-center flex-shrink-0"
+        style={{
+          left: x, width: size, height: size,
+          backgroundColor: color, color: "white",
+          border: "1.5px solid rgba(255,255,255,0.1)",
+          transform: hovered ? "translateY(-50%) scale(1.25)" : "translateY(-50%) scale(1)",
+          transition: "transform 150ms ease, opacity 300ms ease",
+          // zIndex 2 (was 1) so circles paint above the timeline
+          // grid line overlay which now sits at zIndex 1.
+          zIndex: hovered ? 10 : 2,
+          opacity: finalOpacity,
+          pointerEvents: isVisible ? "auto" : "none",
+        }}
+        onClick={(e) => { e.stopPropagation(); onClick(eventId); }}
+        onMouseEnter={handleMouseEnter}
+        onMouseLeave={handleMouseLeave}
+      >
+        <IconComponent size={iconSize} />
+      </div>
+
+      {/* Tooltip rendered in a portal to escape overflow:hidden */}
+      {hovered && tooltipPos && createPortal(
+        <div
           style={{
-            left: x,
-            width: 12,
-            height: 12,
-            backgroundColor: color,
+            position: "fixed",
+            top: tooltipPos.top,
+            left: tooltipPos.left,
+            transform: "translate(-50%, -100%)",
+            background: "var(--bg-elevated)",
+            border: "1px solid var(--border)",
+            borderRadius: 4,
+            padding: "6px 8px",
+            fontSize: 11,
+            pointerEvents: "none",
+            zIndex: 9999,
+            whiteSpace: "nowrap",
           }}
-          initial={{ scale: 0, opacity: 0 }}
-          animate={{
-            scale: 1,
-            opacity: 1,
-            boxShadow: isActive
-              ? [
-                  `0 0 4px ${color}`,
-                  `0 0 12px ${color}`,
-                  `0 0 4px ${color}`,
-                ]
-              : `0 0 4px ${color}`,
-          }}
-          transition={
-            isActive
-              ? { boxShadow: { repeat: Infinity, duration: 2 } }
-              : { duration: 0.3 }
-          }
-          whileHover={{
-            scale: 1.4,
-            boxShadow: `0 0 16px ${color}`,
-          }}
-          onClick={onClick}
-        />
-      </TooltipTrigger>
-      <TooltipContent>
-        <p className="font-mono text-xs">
-          {flavor} / {sessionId.slice(0, 8)}
-        </p>
-        <p className="text-text-muted">
-          {state} &middot; {tokensUsed.toLocaleString()} tokens
-        </p>
-      </TooltipContent>
-    </Tooltip>
+        >
+          <div style={{ color: "var(--text-secondary)" }}>{tooltipLabel}</div>
+          <div className="font-mono" style={{ color: "var(--text-muted)" }}>
+            {flavor} / {truncateSessionId(sessionId)}
+          </div>
+          {directiveName && (
+            <div style={{ color: "var(--text)" }}>
+              {directiveName}{directiveStatus ? ` · ${directiveStatus}` : ""}
+            </div>
+          )}
+          {model && <div style={{ color: "var(--text)" }}>{model}</div>}
+          {toolName && <div style={{ color: "var(--text)" }}>Tool: {toolName}</div>}
+          {tokensTotal != null && (
+            <div style={{ color: "var(--text)" }}>{tokensTotal.toLocaleString()} tokens</div>
+          )}
+          {latencyMs != null && (
+            <div style={{ color: "var(--text-muted)" }}>{latencyMs}ms</div>
+          )}
+          <div className="font-mono" style={{ color: "var(--text-muted)" }}>
+            {new Date(occurredAt).toLocaleTimeString()}
+          </div>
+        </div>,
+        document.body
+      )}
+    </>
   );
 }
+
+export const EventNode = memo(EventNodeComponent, (prev, next) => {
+  if (prev.x !== next.x) return false;
+  if (prev.isVisible !== next.isVisible) return false;
+  if (prev.eventId !== next.eventId) return false;
+  if (prev.size !== next.size) return false;
+  if (prev.directiveStatus !== next.directiveStatus) return false;
+  if (prev.directiveName !== next.directiveName) return false;
+  return true;
+});

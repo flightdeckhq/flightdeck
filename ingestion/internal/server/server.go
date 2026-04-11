@@ -6,10 +6,9 @@ import (
 	"net/http"
 	"time"
 
+	ingestiondocs "github.com/flightdeckhq/flightdeck/ingestion/docs"
 	"github.com/flightdeckhq/flightdeck/ingestion/internal/handlers"
 	httpSwagger "github.com/swaggo/http-swagger/v2"
-
-	_ "github.com/flightdeckhq/flightdeck/ingestion/docs"
 )
 
 const (
@@ -19,19 +18,41 @@ const (
 )
 
 // New creates the HTTP server with all routes registered.
+//
+// rateLimitPerMinute is the per-token sliding window cap applied to
+// POST /v1/events and POST /v1/heartbeat. Pass
+// handlers.DefaultRateLimitPerMinute for production semantics, or a
+// higher value (typically from FLIGHTDECK_RATE_LIMIT_PER_MINUTE in
+// dev compose) when running the integration suite. A non-positive
+// value falls back to the default inside NewRateLimiter so a
+// misconfigured env var cannot accidentally disable the limit.
 func New(
 	addr string,
 	validator handlers.TokenValidator,
 	publisher handlers.EventPublisher,
 	dirStore handlers.DirectiveLookup,
+	rateLimitPerMinute int,
 ) *http.Server {
 	mux := http.NewServeMux()
 
-	limiter := handlers.NewRateLimiter()
+	limiter := handlers.NewRateLimiter(rateLimitPerMinute)
 	mux.Handle("POST /v1/events", handlers.EventsHandler(validator, publisher, dirStore, limiter))
 	mux.Handle("POST /v1/heartbeat", handlers.HeartbeatHandler(validator, publisher, dirStore))
 	mux.Handle("GET /health", handlers.HealthHandler())
-	mux.Handle("GET /docs/", httpSwagger.WrapHandler)
+
+	// Swagger UI. Same workaround as the api server: the dynamic
+	// ``doc.json`` endpoint is broken under the swag/v2 v2.0.0-rc5 +
+	// http-swagger v2.0.2 runtime combination, so we serve the
+	// static ``swagger.json`` (embedded via ``go:embed``) at a
+	// stable path and configure httpSwagger to use it. See the
+	// matching api/internal/server/server.go for the same fix.
+	mux.HandleFunc("GET /docs/swagger.json", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(ingestiondocs.SwaggerJSON)
+	})
+	mux.Handle("GET /docs/", httpSwagger.Handler(
+		httpSwagger.URL("/ingest/docs/swagger.json"),
+	))
 
 	return &http.Server{
 		Addr:         addr,

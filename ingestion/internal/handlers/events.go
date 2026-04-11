@@ -14,6 +14,15 @@ import (
 
 const maxRequestBodyBytes = 1 << 20 // 1MB
 
+// TODO(KI13)[Phase 5]: Ingestion accepts events for closed and lost
+// sessions. The handler does not check the session's terminal state
+// before publishing to NATS, so a sensor (or a buggy test) can keep
+// posting events to a session that has already received session_end.
+// The dashboard then renders circles past the END marker.
+// Fix: query the worker-side session state cache before publishing,
+// and reject events with HTTP 409 when the session is closed/lost.
+// See KNOWN_ISSUES.md KI13.
+
 // TokenValidator validates bearer tokens against stored hashes.
 type TokenValidator interface {
 	Validate(ctx context.Context, rawToken string) (bool, error)
@@ -30,12 +39,21 @@ type DirectiveLookup interface {
 }
 
 // DirectiveResponse represents the directive payload returned in the response envelope.
+//
+// Payload is a JSONB blob carrying action-specific data -- for action="custom"
+// it contains directive_name / fingerprint / parameters which the sensor's
+// DirectivePayloadSchema validates before dispatching to the registered
+// handler. It must be projected through from directive.Directive in the
+// adapter; previously the adapter dropped it, leaving the sensor with an
+// empty payload and a Pydantic validation error on every custom directive.
+// Phase 4.5 audit B-F fix.
 type DirectiveResponse struct {
-	ID            string  `json:"id"`
-	Action        string  `json:"action"`
-	Reason        string  `json:"reason"`
-	DegradeTo     *string `json:"degrade_to,omitempty"`
-	GracePeriodMs int     `json:"grace_period_ms"`
+	ID            string           `json:"id"`
+	Action        string           `json:"action"`
+	Reason        string           `json:"reason"`
+	DegradeTo     *string          `json:"degrade_to,omitempty"`
+	GracePeriodMs int              `json:"grace_period_ms"`
+	Payload       *json.RawMessage `json:"payload,omitempty" swaggertype:"object"`
 }
 
 // EventResponse is the response envelope for POST /v1/events.

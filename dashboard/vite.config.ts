@@ -9,9 +9,46 @@ export default defineConfig({
       "@": path.resolve(__dirname, "./src"),
     },
   },
+  optimizeDeps: {
+    include: [
+      "react",
+      "react-dom",
+      "react-router-dom",
+      "recharts",
+      "d3-scale",
+      "d3-time",
+      "lucide-react",
+      "@radix-ui/react-select",
+      "@radix-ui/react-dialog",
+      "@radix-ui/react-tooltip",
+      "zustand",
+      "framer-motion",
+      "clsx",
+      "tailwind-merge",
+    ],
+  },
+  esbuild: {
+    target: "chrome90",
+  },
+  build: {
+    sourcemap: true,
+    chunkSizeWarningLimit: 1000,
+  },
   server: {
     port: 3000,
     host: true,
+    watch: {
+      usePolling: true,
+      interval: 1000,
+    },
+    warmup: {
+      clientFiles: [
+        "./src/pages/Fleet.tsx",
+        "./src/pages/Analytics.tsx",
+        "./src/components/timeline/Timeline.tsx",
+        "./src/components/fleet/LiveFeed.tsx",
+      ],
+    },
     proxy: {
       "/api": {
         target: "http://localhost:8081",

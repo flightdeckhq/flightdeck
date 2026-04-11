@@ -8,7 +8,12 @@ export type EventType =
   | "heartbeat"
   | "pre_call"
   | "post_call"
-  | "tool_call";
+  | "tool_call"
+  | "policy_warn"
+  | "policy_block"
+  | "policy_degrade"
+  | "directive"
+  | "directive_result";
 
 /** Agent flavor (persistent identity). */
 export interface Agent {
@@ -33,11 +38,37 @@ export interface Session {
   ended_at: string | null;
   tokens_used: number;
   token_limit: number | null;
+  /**
+   * Runtime context dict captured by the sensor at init() time.
+   * Stored once in sessions.context (JSONB) and never updated.
+   * See dashboard/src/types/context.ts for the facet types.
+   */
+  context?: Record<string, unknown>;
   has_pending_directive?: boolean;
   warn_at_pct?: number | null;
   degrade_at_pct?: number | null;
   degrade_to?: string | null;
   block_at_pct?: number | null;
+}
+
+/**
+ * Per-event-type metadata that does not fit the canonical schema columns.
+ *
+ * Currently only populated for `directive_result` events, where the
+ * sensor sends directive_name / directive_action / directive_status /
+ * result / error / duration_ms. The dashboard reads these fields from
+ * `event.payload` to render directive status without a separate
+ * /v1/events/:id/content fetch.
+ */
+export interface EventPayloadFields {
+  directive_name?: string;
+  directive_action?: string;
+  directive_status?: string;
+  // result is provider-specific JSON -- intentionally untyped
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  result?: any;
+  error?: string;
+  duration_ms?: number;
 }
 
 /** Event metadata (no prompt content inline). */
@@ -53,7 +84,14 @@ export interface AgentEvent {
   latency_ms: number | null;
   tool_name: string | null;
   has_content: boolean;
+  payload?: EventPayloadFields;
   occurred_at: string;
+}
+
+/** A feed event wraps an AgentEvent with a client-side arrival timestamp. */
+export interface FeedEvent {
+  arrivedAt: number;
+  event: AgentEvent;
 }
 
 /** Fleet state grouped by flavor, as returned by GET /v1/fleet. */
@@ -70,6 +108,12 @@ export interface FlavorSummary {
 export interface FleetResponse {
   flavors: FlavorSummary[];
   total_session_count: number;
+  /**
+   * Aggregated runtime context facets across all non-terminal
+   * sessions. Powers the CONTEXT sidebar filter panel. Empty
+   * object when no sessions have context.
+   */
+  context_facets: import("@/types/context").ContextFacets;
 }
 
 /** Session detail response from GET /v1/sessions/:id. */
@@ -82,6 +126,7 @@ export interface SessionDetail {
 export interface FleetUpdate {
   type: "session_update" | "session_start" | "session_end";
   session: Session;
+  last_event?: AgentEvent;
 }
 
 /** Token policy as returned by GET /v1/policies. */
@@ -189,6 +234,28 @@ export interface EventContent {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   response: any;
   captured_at: string;
+}
+
+/** Custom directive registered by a sensor. */
+export interface CustomDirective {
+  id: string;
+  fingerprint: string;
+  name: string;
+  description: string;
+  flavor: string;
+  parameters: CustomDirectiveParameter[];
+  registered_at: string;
+  last_seen_at: string;
+}
+
+/** A single parameter for a custom directive. */
+export interface CustomDirectiveParameter {
+  name: string;
+  type: "string" | "integer" | "boolean" | "float";
+  description: string;
+  options: string[];
+  required: boolean;
+  default: unknown;
 }
 
 /** Search result: agent summary. */

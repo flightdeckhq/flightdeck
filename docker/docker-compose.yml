@@ -102,9 +102,12 @@ services:
     ports:
       - "4000:4000"
     depends_on:
-      - dashboard
-      - api
-      - ingestion
+      api:
+        condition: service_healthy
+      ingestion:
+        condition: service_healthy
+      dashboard:
+        condition: service_started
 
 volumes:
   postgres_data:

@@ -893,3 +893,944 @@ to only the first session to make an LLM call after issuance. Fan-out at creatio
 time ensures every active session receives exactly one directive regardless of
 which session calls the ingestion API first.
 
+
+---
+
+## D059 -- Phase 4.5 UI redesign
+
+**Decision:** Fleet timeline redesigned to flavor → session → event hierarchy.
+Events are color+icon coded circles positioned on a shared time axis. Analytics
+rebalanced to include latency and agent type distribution, reducing token-heavy
+focus. Dense layout adopted throughout.
+
+**Changes:**
+- Event visual system: 7 CSS variable colors for event types (LLM, tool, warn,
+  block, degrade, directive, lifecycle) with icon characters per type
+- Fleet timeline: swim lanes with flavor headers (28px), session rows (32px),
+  time range selector (5m/15m/30m/1h/6h), flavor filter via sidebar click
+- Session drawer: 480px width, dense event list with expand-to-JSON,
+  event-type colored icons
+- Analytics: Row 1 full-width token time series, Row 2 top consumers + latency,
+  Row 3 sessions-by-model + policy events + agent type (3-column)
+- FleetPanel: tighter spacing (11px/13px fonts), clickable flavor filter
+
+**Reasoning:** The original UI was spacious but sparse -- too few data points
+visible without scrolling. Engineering dashboards need density. Every pixel should
+communicate status. The event color system provides instant visual classification
+without reading labels.
+
+
+---
+
+## D060 -- Custom directives
+
+**Decision:** Decorator-based registration at import time. SHA256+base64 fingerprint
+for versioning. Sync at init() -- sensor sends fingerprints, server returns unknown
+fingerprints, sensor registers full schema for unknown only. Known fingerprints get
+last_seen_at bumped. Execution in _apply_directive() before next LLM call, 5s timeout,
+fail open on error or timeout. Results posted as directive_result events in the session
+timeline.
+
+**Rejected:** YAML-only approach -- decorator is the primary interface. YAML is a
+future alternative for teams that cannot modify agent code.
+**Rejected:** Execution in a separate thread -- sensor is a library wrapper not an
+OS agent (rule 32).
+
+
+---
+
+## D061 -- Pydantic for sensor schema validation
+
+**Decision:** Pydantic v2 added to sensor runtime dependencies for validation of
+directive payloads, policy responses, and sync responses from the control plane.
+
+**Reasoning:** Manual `.get()` parsing has no type checking and silently accepts
+malformed payloads from the server. Pydantic gives clear ValidationError with
+field-level detail and fail-open behavior on parse failure. Go API handlers keep
+manual validation -- the existing approach is idiomatic and already well-tested.
+
+Parse sites using Pydantic:
+1. `transport/client.py _parse_directive()` — DirectiveResponseSchema
+2. `transport/client.py sync_directives()` — SyncResponseSchema
+3. `core/session.py _execute_custom_directive()` — DirectivePayloadSchema
+4. `core/session.py _preflight_policy()` — PolicyResponseSchema
+
+
+---
+
+## D062 -- Fleet redesign: flavor expand-in-place with dual view modes
+
+**Decision:** Fleet timeline redesigned from flat swimlanes to a flavor-centric
+expand-in-place model with two view modes (swimlane and bar).
+
+**Changes:**
+- Each flavor is a single collapsed row (48px). Click expands inline to show
+  individual session rows below. Only one flavor expanded at a time.
+- Swimlane mode: event circles positioned on a shared D3 time scale. 20px circles
+  in collapsed flavor rows, 24px circles in expanded session rows.
+- Bar mode: 24 equal-width time buckets, stacked bars showing event type distribution
+  (LLM, tool, policy, directive).
+- Fleet header bar (40px) with view mode toggle, time range selector (5m/15m/30m/1h/6h),
+  and live indicator.
+- Left sidebar redesigned: 240px, section headers (uppercase 11px tracked), session
+  state counts as large numbers (20px/700), flavor list with active border + accent glow.
+
+**Reasoning:** The flat swimlane layout showed all sessions simultaneously, which
+doesn't scale past 5-10 agents. The expand-in-place model keeps the fleet overview
+compact while allowing drill-down into any flavor. Bar mode gives a quick activity
+histogram when individual events are less important than volume patterns.
+
+---
+
+## D063 -- Geist font for UI and monospace
+
+**Decision:** Geist (sans) for UI text, GeistMono for identifiers, timestamps,
+and code. Installed via npm package `geist`.
+
+**Reasoning:** Free and open source (Vercel). Superior readability at small sizes
+(11-13px) compared to Inter. GeistMono has consistent character widths ideal for
+session IDs, token counts, and timestamps. Both fonts ship together in one package.
+
+---
+
+## D064 -- Live event feed
+
+**Decision:** Fixed 240px height live feed below the fleet timeline. Driven by
+existing fleet store and WebSocket NOTIFY. Cap at 500 events. Auto-scroll with
+manual pause detection. Clicking a row opens EventDetailDrawer for single-event
+detail including Prompts tab if capture enabled.
+
+**Reasoning:** The swimlane/bar views show temporal patterns. The feed shows the raw
+chronological log. Together they answer two complementary questions: what is the
+pattern, and what exactly happened. The EventDetailDrawer is independent from the
+SessionDrawer — both can be open simultaneously. The 500-event cap prevents memory
+growth in long-running dashboard sessions.
+
+---
+
+## D065 -- Event type filter bar
+
+**Decision:** Single-select pill filter above the time axis. Filters both swimlane
+circles and live feed rows simultaneously. Event types grouped into 5 semantic
+categories: LLM Calls (post_call, pre_call), Tools (tool_call), Policy
+(policy_warn, policy_block, policy_degrade), Directives (directive, directive_result),
+Session (session_start, session_end).
+
+**Reasoning:** A fleet with many agents produces hundreds of events per minute.
+Without filtering, the swimlane becomes a dense wall of circles and the feed
+scrolls too fast. Grouping by semantic category (not by raw event_type) matches
+how engineers think: "show me the LLM calls" not "show me post_call and pre_call".
+Opacity-based hiding in the swimlane preserves x position so layout does not shift
+when toggling filters. Inspired by agent-observe's filter bar.
+
+---
+
+## D066 -- Bulk events endpoint replaces per-session fetches
+
+**Decision:** `GET /v1/events` loads all events for a time range in one request.
+`eventsCache` is populated client-side by grouping events by session_id. Zero
+per-session HTTP requests after initial bulk load. WebSocket handles all real-time
+updates after load. Live feed and swimlane share the same data source.
+
+**Reasoning:** The original architecture fetched `GET /v1/sessions/:id` for each
+session individually — 10 sessions = 10 HTTP requests. With `useSessionEvents`
+called from both aggregated flavor rows and session rows, this doubled to ~20
+requests. The bulk endpoint reduces this to 1 request that returns all events
+within the selected time range. Client-side grouping by session_id populates the
+same `eventsCache` that the swimlane reads from. Time range changes re-fetch.
+Pagination via `offset` supports loading older events.
+
+---
+
+## D067 -- FeedEvent type with arrivedAt
+
+**Decision:** Live feed uses `FeedEvent` wrapper type with `arrivedAt:
+number` (`Date.now()` at WebSocket message receipt). Default display
+order is `arrivedAt` descending (newest first) via `sort()` with
+`arrivedAt` as the sort key. Column sorting is supported -- clicking
+any column header sorts by that column's value; clicking TIME returns
+to `arrivedAt` descending. Non-TIME sorts auto-pause the feed.
+`arrivedAt` is the canonical ordering field and the fallback when sort
+is reset.
+
+**Reasoning:** Sorting by `occurred_at` produced inconsistent results
+when events arrived out of order due to WebSocket batching. `arrivedAt`
+is monotonically increasing and reflects exactly when the dashboard
+received the event. Column sorting adds investigative value --
+engineers can sort by flavor or event type to find patterns.
+
+---
+
+## D068 -- Pause queue model for the live feed
+
+**Decision:** Pausing the fleet view freezes the D3 time scale at
+`pausedAt` and buffers incoming WebSocket events in a `pauseQueue:
+FeedEvent[]` capped at `PAUSE_QUEUE_MAX_EVENTS` (1000). Two resume paths:
+
+- **Resume**: drains the queue in FIFO order into `feedEvents` and shows
+  a 500ms `catchingUp` flag for the visual fade.
+- **Return to live**: discards the queue entirely and snaps the time
+  range back to live.
+
+The queue cap indicator is amber (`var(--status-idle)`) under the cap and
+orange (`var(--status-stale)`) at the cap, with text reading
+"Paused · N events buffered (oldest dropped)".
+
+**Reasoning:** Engineers investigating an incident need to freeze the
+view without losing events. The queue ensures no events are dropped
+during investigation. The cap prevents unbounded memory growth if the
+user pauses and walks away from the dashboard. Two resume paths cover
+the two real cases: "I'm done investigating, replay what I missed" and
+"I'm done investigating, snap me back to now".
+
+**Rejected alternative:** Unbounded queue -- unbounded memory.
+**Rejected alternative:** Drop events while paused -- loses information
+during the most important moment for an incident investigation.
+
+---
+
+## D069 -- SessionDrawer Mode 1 / Mode 2 derived from props
+
+**Decision:** `SessionDrawer` has two modes. Mode 1 (default) is the
+session event list. Mode 2 is single-event detail with back navigation.
+The active detail event is computed every render from props plus
+internal state:
+
+```ts
+activeDetailEvent =
+  directDismissed
+    ? internalDetailEvent
+    : (directEventDetail ?? internalDetailEvent);
+```
+
+`directEventDetail` is set by the parent (e.g. swimlane event click).
+`internalDetailEvent` is set by clicking "Open full detail" within the
+drawer. The Back button calls `onClearDirectEvent` so the parent knows
+the prop-fed detail was dismissed. Mode is rendered directly from
+`activeDetailEvent` truthiness.
+
+**Reasoning:** A race condition existed when copying the prop into state
+via `useEffect` -- the drawer rendered Mode 1 for one frame before
+`directEventDetail` was copied into state, causing a visible flash and
+sometimes never showing Mode 2 at all if the drawer mounted before the
+prop arrived. Deriving the mode directly from props eliminates the race.
+
+**Rejected alternative:** `useEffect` to copy `directEventDetail` into
+state -- racy.
+
+---
+
+## D070 -- Provider logo and model registry
+
+**Decision:** `dashboard/src/lib/models.ts` is the single source of
+truth for all known model names, split by provider into
+`ANTHROPIC_MODELS: Set<string>` and `OPENAI_MODELS: Set<string>`.
+`getProvider(model)` does a Set lookup first (`O(1)`, exact match) with
+prefix fallback (`claude-`, `gpt-`, `o1`, `o3`, `o4`) for models not yet
+in the registry. `ProviderLogo` renders the brand SVG inline with brand
+colors -- not CSS variables, brand colors are fixed.
+
+**Reasoning:** The policy degrade dropdown, `PromptViewer`,
+`SessionDrawer`, `LiveFeed`, and the analytics legend all needed
+provider detection. A single registry prevents divergence (e.g. Anthropic
+appearing under one logo in the feed and another in analytics). Inline
+SVGs avoid an extra network round-trip and CSP complications.
+
+**Rejected alternative:** Per-component provider detection -- diverges.
+**Rejected alternative:** Fetched logos from a CDN -- CSP risk and adds
+network latency to dashboard startup.
+
+---
+
+## D071 -- Bulk events load strategy
+
+**Decision:** Extends D066. After the dashboard loads, there are zero
+per-session HTTP requests. `useHistoricalEvents` fetches `GET /v1/events`
+on mount and on every `timeRange` change. The result is grouped by
+`session_id` to populate `eventsCache`, and is also used to seed
+`feedEvents` so the live feed is not empty on page load. After the
+initial bulk load, all real-time updates flow through the WebSocket
+into the same caches.
+
+**Reasoning:** D066 introduced the bulk endpoint. This decision records
+the matching client-side strategy: one historical fetch per time-range
+change, never per session, and the live feed is hydrated from the same
+data so the user never sees an empty "Live Feed" panel on page load.
+This also means new tabs do not generate a thundering herd of session
+fetches.
+
+---
+
+## D072 -- Directive acknowledgement events in the sensor
+
+**Decision:** Before acting on a `shutdown`, `shutdown_flavor`, or
+`degrade` directive, the sensor enqueues a `directive_result` event with
+`directive_status="acknowledged"` and an action-specific result dict
+(e.g. `from_model`/`to_model` for degrade, `reason` for shutdown). For
+shutdown variants the sensor calls `EventQueue.flush()` synchronously
+before raising the shutdown flag, so the acknowledgement is not lost
+when the process exits. Degrade does not need `flush()` because the
+agent continues running and the queue drains normally.
+
+**Reasoning:** Without acknowledgement events, a shutdown directive
+would send the agent away with no visible confirmation in the fleet
+view. Platform engineers issuing a kill switch need to see "the agent
+received this and acted" -- the RESULT ✓ circle in the swimlane is that
+confirmation. Without it, a stuck agent and a successfully killed agent
+look identical in the dashboard for the staleness window.
+
+**Rejected alternative:** Server-side ack on next sensor POST -- only
+works if the agent successfully posts another event after the directive,
+which is exactly what does not happen for shutdown.
+
+---
+
+## D073 -- Stopgap auth on sensor registration endpoints
+
+**Decision:** `POST /v1/directives/sync` and `POST /v1/directives/register`
+require a valid bearer token (validated against the `api_tokens` table
+via the existing SHA-256 hash lookup) as a stopgap until full Phase 5
+JWT auth lands. The validator lives in `api/internal/auth/token.go`
+and is wired in `api/internal/server/server.go` only on those two
+routes via `auth.Middleware`. All other query API endpoints (GET
+/v1/fleet, GET /v1/sessions, GET /v1/events, POST /v1/directives,
+etc.) remain unauthenticated, matching the pre-Phase 4.5 posture.
+
+**Reasoning:** Phase 4.5 introduced two endpoints that the sensor
+calls automatically with a bearer token (the same token it uses for
+ingestion). Leaving them unauthenticated would let any caller on the
+network register arbitrary custom directives or shadow legitimate
+handler names. The full JWT auth refactor is a Phase 5 deliverable
+and out of scope for the audit fix pass. Reusing the existing
+`api_tokens` validator gives us defence-in-depth on the new
+sensor-only routes today without changing the posture of the
+already-unauthenticated GET routes.
+
+The unit test handler suite mounts handlers directly without the
+server wrapper, so the existing handler tests are unaffected. The
+integration suite has two new tests (`test_sync_endpoint_requires_auth`
+and `test_register_endpoint_requires_auth`) that exercise the 401
+path on the live API.
+
+**Resolved in:** Phase 5 (full JWT auth on every query API endpoint
+will replace this stopgap).
+
+---
+
+## D074 -- Runtime context auto-collection at sensor init()
+
+**Decision:** The sensor collects a runtime environment snapshot once
+at `init()` time via a pluggable collector chain in
+`sensor/flightdeck_sensor/core/context.py` and attaches it to the
+`session_start` event payload. The control plane stores it in a new
+`sessions.context` JSONB column with set-once semantics (the worker
+writer deliberately omits `context` from the `ON CONFLICT DO UPDATE`
+clause). The API exposes facets via `GetContextFacets()` aggregating
+`jsonb_each_text(context)` across non-terminal sessions, and the
+dashboard renders them as a CONTEXT sidebar filter panel plus a
+collapsible RUNTIME panel in the session drawer.
+
+The collector chain is split into three phases:
+
+1. **Process / system** -- ProcessCollector, OSCollector, UserCollector,
+   PythonCollector, GitCollector. All run, results merge into the dict.
+2. **Orchestration** -- KubernetesCollector, DockerComposeCollector,
+   DockerCollector, AWSECSCollector, CloudRunCollector. Run in priority
+   order, **first match wins** (the loop breaks). This avoids ambiguous
+   "kubernetes AND docker" results inside k8s pods that also have
+   `/.dockerenv`.
+3. **Other** -- FrameworkCollector. Inspects `sys.modules` for known AI
+   frameworks (crewai, langchain, llama_index, autogen, haystack, dspy,
+   smolagents, pydantic_ai). It NEVER imports anything new -- if a
+   framework was not loaded by the agent before `init()` ran, we do not
+   claim it is in use.
+
+Every collector inherits from `BaseCollector`, whose `collect()` wraps
+`_gather()` in a try/except. The top-level `collect()` orchestrator
+wraps each collector call in a *second* try/except. The two layers of
+protection mean a single broken collector can never crash the sensor
+or block `init()`.
+
+The `GitCollector` shells out to `git` with a 500 ms timeout, strips
+embedded credentials from the remote URL via
+`re.sub(r"https?://[^@]+@", "https://", remote)`, and falls back
+silently when git is missing or the cwd is not a repo (the broad
+`except Exception` in `_run` also catches `FileNotFoundError` on
+Windows where `git.exe` may not be on PATH).
+
+**Reasoning rejected alternatives:**
+
+- *Per-event context* -- runtime environment is essentially static for
+  the lifetime of a process. Sending it on every event would bloat
+  payloads, increase NATS throughput, and force the worker writer to
+  re-evaluate "did anything change?" on every insert. Once at init() is
+  the right cardinality.
+- *Mutable context (UPDATE on conflict)* -- session reconnects can race
+  with stale collector data. Set-once means whatever the agent saw at
+  startup is the canonical record for that session, which is what
+  operators expect when filtering by k8s namespace or git commit.
+- *Update existing UpsertSession to recompute facets server-side* --
+  facets are an aggregation across many sessions and must scale with
+  fleet size, so they belong in their own query. The worker writer's
+  job is to write a single row, not to recompute global state.
+- *Eagerly importing frameworks to detect them* -- this would cause
+  side effects (FastAPI route registration, lazy ML model loads) and
+  could break the agent's own startup. `sys.modules` inspection is the
+  only safe option.
+- *Failing the fleet request when GetContextFacets errors* -- the
+  CONTEXT sidebar is best-effort UX. A facet aggregation failure (slow
+  query, transient DB hiccup) must NOT take down the timeline. The
+  handler logs a warning and returns an empty facet map.
+
+**Migration:** `docker/postgres/migrations/000006_add_context_to_sessions.{up,down}.sql`
+adds the column with `DEFAULT '{}'::jsonb` and a GIN index for facet
+queries. The down migration drops both.
+
+---
+
+## D075 -- Bars view mode removed
+
+**Decision:** The Timeline now has a single view mode: swimlane. The
+stacked bar histogram (BarView, BarView.tsx, AggregatedBarView in
+SwimLane) was removed entirely. The `ViewMode` type is now a single
+literal `"swimlane"` so downstream components can keep the prop name
+without re-typing every site at once.
+
+**Reasoning:** At the fixed 900px canvas width (D076) the histogram
+conveyed no information beyond the swimlane dots. The 24 stacked
+buckets just compressed event density into rectangles whose heights
+were dominated by the largest bucket -- which was always the same
+session, making the bars effectively a noisy proxy for the session
+list. The view-mode toggle button added UI complexity (one more
+control to learn, one more state to remember) for no operational
+value. Removing it lets the time range buttons own the timeline
+header bar uncontested.
+
+**Rejected alternative:** Keep BarView but hide the toggle behind a
+feature flag. Rejected because dead code rots; if no one uses it the
+maintenance burden grows over time.
+
+---
+
+## D076 -- Timeline fixed canvas width
+
+**Decision:** Timeline uses a fixed 900px canvas width
+(`TIMELINE_WIDTH_PX = 900`) for every time range. The xScale maps
+the selected range domain to `[0, 900]`, so wider time ranges
+produce denser circles. There is no horizontal scrollbar -- the
+entire timeline fits the visible area at every range.
+
+**Reasoning:** The original design tried proportional scaling
+(`timelineWidth = BASE * (rangeMs / BASE_RANGE)`). At 1h the canvas
+grew to 54,000px; at 6h to 324,000px. This caused cascading layout
+bugs:
+
+- Sticky-left flavor labels broke because the inner content div was
+  wider than the viewport, so `position: sticky; left: 0` had no
+  containing block to stick within and the labels scrolled away
+  with the rest of the timeline.
+- Horizontal scrollbar swallowed the time-axis labels, which had
+  nowhere to anchor.
+- Session row left panels lost their fixed widths inside the
+  growing parent.
+
+Fixed pixel space with denser circles is the correct trade-off: the
+information density is the same, the layout is stable, and the
+swimlane stays usable for historical views. The label intervals
+(formatRelativeLabel via D077) adapt to the range so the labels
+remain readable.
+
+**Rejected alternative:** Proportional width scaling. Rejected due
+to the cascade of layout bugs above.
+**Rejected alternative:** Horizontal scroll inside the swimlane
+only. Rejected because sticky-left positioning across nested scroll
+contexts is brittle and the dashboard's vertical scroll context
+(Fleet.tsx outer div) competed with the inner horizontal scroll.
+
+---
+
+## D077 -- Relative time-axis labels
+
+**Decision:** The TimeAxis component renders 6 evenly-spaced
+relative labels at fractions `[0.0, 0.2, 0.4, 0.6, 0.8, 1.0]` of
+the selected range. The label text is computed by
+`formatRelativeLabel(ms)` which picks the unit suffix (`s`, `m`, or
+`h`). The rightmost label is always `now`. No D3 tick generation,
+no absolute timestamps.
+
+For the 1m range: `60s 48s 36s 24s 12s now` (becomes `1m` for the
+leftmost when 60s rolls over).
+For the 1h range: `1h 48m 36m 24m 12m now`.
+
+**Reasoning:** D3's `timeSecond.every(N)` and `timeMinute.every(N)`
+tick generators broke at large widths -- the 6h range produced zero
+ticks because the smallest tick interval `timeHour.every(1)` only
+fits 6 labels and the algorithm rounded down. The fixed-fraction
+relative approach guarantees exactly 6 labels at every range, the
+intervals stay aligned with the grid line overlay, and the relative
+unit makes "how long ago was this event" immediately obvious
+without arithmetic against an absolute timestamp.
+
+**Rejected alternative:** D3 timeSecond/timeMinute tick intervals.
+Rejected because they broke at large widths (zero ticks at 6h, three
+ticks at 1h).
+**Rejected alternative:** Absolute timestamps (HH:MM:SS). Rejected
+because operators care about "12 seconds ago" and "5 minutes ago"
+when triaging an incident, not absolute wall-clock times that
+require mental arithmetic.
+
+---
+
+## D078 -- simple-icons for platform glyphs
+
+**Decision:** The dashboard uses the `simple-icons@^16.15.0` npm
+package as a devDependency for Apple, Linux, Kubernetes, Docker,
+and Google Cloud SVG paths. These five icons render via a shared
+`SimpleIconSvg` helper at the package's standard `viewBox="0 0 24
+24"`. Hand-crafted fallback SVGs at `viewBox="0 0 14 14"` cover
+Windows (four-square grid) and AWS ECS (hexagon), which are not
+available in simple-icons.
+
+Color overrides:
+- Apple uses `#909090` instead of `siApple.hex` (`#000000`) so it
+  renders visibly on dark backgrounds.
+- Linux uses `#E8914A` (Tux orange).
+- Kubernetes uses `#326CE5`, Docker `#2496ED`, Google Cloud
+  `#4285F4`, Windows `#0078D4`, AWS ECS `#FF9900`.
+
+**Reasoning:** Hand-crafting brand SVG paths at 14px is inaccurate
+-- the resulting glyphs look "off" compared to the official brand
+versions. simple-icons ships pixel-perfect paths maintained by the
+project. Test assertions lock in that the rendered `<path d>`
+matches `siApple.path` / `siLinux.path` / etc verbatim, so any
+future simple-icons upgrade that changes a brand path will fail
+fast in CI rather than silently swapping the visible glyph.
+
+Windows and AWS ECS keep hand-crafted fallbacks because:
+- Windows: simple-icons removed the Microsoft logo for trademark
+  reasons. No alternative entry exists.
+- AWS ECS: simple-icons has no per-service AWS icons, only generic
+  AWS-related entries that don't fit the ECS use case.
+
+**Rejected alternative:** Hand-crafted paths for all icons.
+Rejected because they look inaccurate at 14px next to hostnames in
+the swimlane.
+**Rejected alternative:** Lucide icons (square, server, box) as
+generic substitutes. Rejected because they don't visually
+communicate which platform the agent is running on.
+
+---
+
+## D079 -- Custom directives sidebar section removed
+
+**Decision:** The Custom Directives card that previously rendered
+inside `FleetPanel` (via the `DirectivesPanel` child) is removed
+entirely. Its empty state ("decorate a function with
+`@flightdeck_sensor.directive()` and call init() to register one")
+was developer documentation, not operational UI. The DIRECTIVE
+ACTIVITY section also hides its header AND body when there are no
+recent events -- no more "No directive activity yet" placeholder.
+
+Directive triggering moves to two operational locations:
+
+1. **SessionDrawer Directives tab** -- a third tab next to Timeline
+   and Prompts, conditionally rendered when the session's flavor
+   has registered custom directives. The tab content is a stack of
+   `DirectiveCard`s targeting that single session id.
+2. **FleetPanel flavor row Directives icon button** -- a Zap icon
+   button next to the Stop All icon button on each flavor row,
+   conditionally rendered when the flavor has registered
+   directives. Clicking opens a Dialog with one `DirectiveCard`
+   per directive, each configured to fan out to every active+idle
+   session of that flavor.
+
+The shared `DirectiveCard` component lives in
+`src/components/directives/DirectiveCard.tsx` and is parameterised
+on `sessionId` vs `flavor` (mutually exclusive) so the same
+component handles both single-session and fleet-wide triggers.
+
+**Reasoning:** A sidebar section that mostly displays "no directives
+registered, here's how to register one" is documentation occupying
+prime UI real estate. The relevant operational moment for a custom
+directive is "I'm looking at a specific session and want to send it
+a command" or "I'm looking at a flavor and want to send the command
+to every session of that flavor". Both moments are now one click
+away from the relevant context, instead of being three clicks away
+in a sidebar card.
+
+The DIRECTIVE ACTIVITY section is operational (shows recent
+directive results), so it's kept -- but its empty state was the
+same kind of "nothing here, here's the next step" filler and is
+also removed. The section now appears only when there is actual
+activity to report.
+
+**Rejected alternative:** Move the registered directive list to a
+new top-level page. Rejected because the existing /directives page
+already serves that role. Duplicating it under a different
+navigation path would split the audience without adding value.
+
+---
+
+## D080 -- Context JSONB PII fields deferred to Phase 5+
+
+**Decision:** The `sessions.context` JSONB column stores `user`,
+`hostname`, `working_dir` (Claude Code plugin only), `k8s_pod`,
+`k8s_namespace`, and `k8s_node` alongside the non-sensitive runtime
+fields (pid, os, arch, python_version, git_commit, git_branch,
+git_repo, frameworks, orchestration). In the current self-hosted v1
+deployment these are visible only to the deploying organization and
+present no third-party privacy or topology-leak risk -- the
+operator's own engineers see their own infrastructure metadata.
+
+In any future shared or multi-tenant Flightdeck deployment those same
+fields would constitute PII (`user`, `working_dir`) or
+infrastructure-topology leaks (`hostname`, `k8s_pod`, `k8s_namespace`,
+`k8s_node`) crossing tenant boundaries. Before any multi-tenant Phase
+is implemented, a context field scrubbing mechanism must be designed:
+either an opt-out list in `init()` config, server-side field
+filtering at ingestion / GetContextFacets, or a separate
+anonymized context store keyed off tenant id.
+
+**Reasoning:** v1 is explicitly self-hosted only per CLAUDE.md
+("Multi-tenant SaaS (self-hosted only in v1)"). Designing a scrubber
+now would be speculative scope creep and tie us to assumptions about
+the tenant model that does not yet exist. Recording the deferred
+concern here ensures future contributors evaluating multi-tenant work
+encounter this requirement before they ship anything.
+
+**Rejected alternative:** Strip the fields preemptively in v1.
+Rejected because the fields are operationally valuable for the
+self-hosted deployment use case (filter "show me everything running
+in the prod k8s namespace") and removing them would degrade today's
+UX in exchange for a hypothetical future tenant model.
+
+**Rejected alternative:** Hash or anonymize the fields in v1.
+Rejected because hashes break the facet-filtering UX (operators
+cannot meaningfully filter by `sha256(hostname)`).
+
+**Deferred to:** Phase 5+ (multi-tenant deployment is out of scope
+for v1). Surfaced by the Phase 4.5 audit (Hat 4 -- security review).
+
+---
+
+## D081 -- Two-queue directive architecture (B-H)
+
+**Decision:** The sensor's `EventQueue` runs **two** background
+daemon threads instead of one. The drain thread
+(`flightdeck-event-queue`) pulls events from the event queue,
+calls `ControlPlaneClient.post_event`, and on a non-None directive
+in the response envelope hands the directive off to a separate
+**directive queue** via `put_nowait` and immediately resumes
+draining. A second daemon thread
+(`flightdeck-directive-queue`) drains the directive queue and
+invokes the configured `directive_handler` (typically
+`Session._apply_directive`) one directive at a time.
+
+The drain thread NEVER executes directive logic. Directive
+delivery latency is decoupled from event throughput. Single-
+consumer directive processing gives at-most-once execution for
+free.
+
+**Reasoning -- the original B-A direct-callback approach was
+unsafe under load:**
+
+The first attempt at fixing B-A (the drain thread silently
+discarding directives because it had no Session reference) wired
+`Session._apply_directive` as a callback that the drain thread
+invoked inline. Each event the drain processed could trigger an
+arbitrary `_apply_directive` call before `task_done()` was reached.
+The Phase 4.5 audit Part 1 Section C investigation found three
+concrete failure modes:
+
+1. **Slow custom handler stalls the event queue.** A handler
+   running on the drain thread (e.g. `time.sleep(60)`, slow HTTP,
+   blocked lock) pinned the drain. Events from other threads kept
+   filling the queue via the non-blocking `enqueue`. After 1000
+   queued events the overflow path silently dropped the oldest
+   ones. At 100 events/sec a 60-second handler caused ~5,000 lost
+   events.
+
+2. **Shutdown ack `flush()` deadlock workaround introduced a new
+   bug.** The drain thread cannot safely call `Queue.join()` on
+   its own queue (it has not yet `task_done()`-ed the current
+   item, so `unfinished_tasks > 0` forever). The B-A patch
+   added an `is_drain_thread()` guard that **silently skipped**
+   the synchronous flush from inside `_apply_directive(SHUTDOWN)`,
+   trading the deadlock for an ack-loss race: if the agent
+   process exited between the drain returning and the next
+   iteration posting the ack, the operator's "did the agent
+   acknowledge the kill switch?" query returned no row.
+
+3. **Concurrent event throughput cratered during directive
+   execution.** While the drain thread was busy applying any
+   directive (custom, degrade, policy-update, anything), no other
+   thread's events could reach ingestion. Token enforcement on
+   the workers' side fell behind because the workers stopped
+   receiving post_call events. The async-queue invariant ("the
+   drain thread is always promptly available to drain the next
+   item") was violated.
+
+The two-queue refactor fixes all three:
+
+1. The drain thread's only directive-related work is a
+   single `put_nowait` (≤ 1 µs). Events keep flowing.
+2. `_apply_directive` runs on the directive handler thread,
+   which is **independent** of the drain thread. `flush()` from
+   inside `_apply_directive` waits on the event queue's
+   `Queue.join()`, the drain thread continues to drain the
+   event queue, `unfinished_tasks` reaches 0, `flush()` returns
+   synchronously without deadlock. The `is_drain_thread()` guard
+   was removed entirely.
+3. A single-consumer directive thread serialises directive
+   application without contending with the drain thread for any
+   shared state.
+
+**Constraints honoured:**
+
+- Drain thread NEVER blocks on directive logic.
+- `teardown()` stops both threads cleanly via sentinels and
+  `Thread.join(timeout=5)`. If a thread fails to exit within
+  the timeout, `close()` logs at error level (re-audit Hat 1
+  Minor finding).
+- `flush()` only waits on the event queue. Waiting on the
+  directive queue from inside the directive handler would
+  self-deadlock by exactly the same mechanism the original
+  `is_drain_thread()` guard was working around.
+- A buggy custom handler that calls `sys.exit()` or raises
+  `BaseException` no longer kills the directive thread silently;
+  the loop wraps `directive_handler()` in `except BaseException`
+  (re-audit Hat 4 Minor finding fix).
+
+**Rejected alternative:** Direct callback on the drain thread
+(B-A first attempt). Rejected for the three failure modes above.
+
+**Rejected alternative:** Bounded thread pool consuming the
+directive queue. Rejected because (a) at-most-once execution
+becomes a dedup problem, (b) handler ordering is no longer
+preserved, (c) custom handlers may rely on being single-threaded.
+
+**Resolved:** Phase 4.5 audit Part 2 (after the user-flagged
+unsafe-under-load investigation). Test
+`tests/integration/test_sensor_e2e.py::test_slow_handler_does_not_block_event_throughput`
+is the direct regression check.
+
+---
+
+## D082 -- `Session.record_usage` returns post-increment total (B-G)
+
+**Decision:** `Session.record_usage(usage)` now returns the
+post-increment value of `_tokens_used` as an `int`. The
+increment AND the read happen inside the same `with self._lock:`
+critical section. The interceptor's `_post_call` captures this
+return value and passes it explicitly into `_build_payload` as
+`tokens_used_session=session_total`, instead of letting
+`_build_payload` re-read `self._tokens_used` after other threads
+may have advanced it.
+
+**Reasoning:** Under concurrent traffic the previous order
+(build payload before incrementing) reported `tokens_used_session`
+values that were either off-by-one (single-threaded case: each
+event reported the pre-call total) or arbitrarily corrupted
+(multi-threaded case: reported the value after other threads'
+increments). The dashboard's per-session token curve was jagged
+or duplicated. The fix is local: capture the post-increment
+value atomically and pass it explicitly.
+
+**Verified by:** `test_pattern_b_concurrent_calls_no_data_loss`
+asserts the cumulative total in two places:
+`sessions.tokens_used` (workers' counter) and
+`get_status().tokens_used` (sensor's counter). Both must equal
+`expected_calls * 18` after 4 threads × 5 calls.
+
+**Rejected alternative:** Make `_build_payload` accept a
+`tokens_used_session_override` kwarg that replaces the locked
+read. Rejected as more invasive: explicit override at one call
+site (the interceptor) is clearer than a special-case kwarg.
+
+---
+
+## D083 -- `directive_result` event schema rename (B-D)
+
+**Decision:** `Session._build_directive_result_event` now emits
+field names that match the worker's `consumer.EventPayload`
+struct so that `BuildEventExtra` persists them into
+`events.payload`:
+
+| Old (silently dropped) | New |
+|---|---|
+| `directive_success: bool` | `directive_status: str` (`"success"` / `"error"`) |
+| `directive_result: Any` | `result: Any` |
+| `directive_error: str | None` | `error: str | None` |
+
+The payload also gains `directive_action: "custom"` for
+symmetry with the SHUTDOWN / DEGRADE acknowledgement events,
+which already use this field.
+
+**Reasoning:** Pre-fix, the worker's `BuildEventExtra` only
+decoded `directive_status`, `result`, `error`, etc. The sensor
+emitted `directive_success`, `directive_result`,
+`directive_error` -- none of which the worker decoded. Custom
+directive success flags, return values, and error messages were
+silently lost at the ingestion boundary, leaving custom
+directive results unobservable in the dashboard. Discovered while
+strengthening `test_sensor_custom_directive_registered_and_triggered`
+to assert `directive_status="success"` in the DB.
+
+**Verified by:** `test_sensor_custom_directive_registered_and_triggered`
+queries `events.payload->>'directive_status'` and asserts
+`"success"`.
+
+**Compatibility:** This is a wire change. Sensor versions
+emitting the OLD field names (`directive_success` etc.) will
+have their custom directive results silently dropped by current
+workers, which is the same behaviour they had before the fix --
+no regression. New sensors against old workers similarly drop
+the new field names. Acceptable because both sides ship from
+the same monorepo and are released together.
+
+---
+
+## D084 -- `PolicyCache._forced_degrade` flag (B-E)
+
+**Decision:** `PolicyCache` has a new `_forced_degrade: bool`
+flag that arms an unconditional DEGRADE decision in `check()`.
+`set_degrade_model(model)` (called by `Session._apply_directive`
+when a server DEGRADE directive arrives) sets the flag along
+with `degrade_to`. `update(policy_dict)` (called for
+`POLICY_UPDATE` directives) clears the flag so a fresh policy
+can un-stick the forced state if the server retracts the degrade.
+
+`check()` short-circuits at the top of the locked block: if
+`_forced_degrade and degrade_to`, returns
+`PolicyResult(DEGRADE, source="server")` regardless of token
+thresholds.
+
+**Reasoning:** Pre-fix, the workers' policy evaluator could
+issue a DEGRADE directive based on its own server-side
+cumulative count without ever populating the sensor's local
+`degrade_at_pct` cache. (Preflight policy fetch can fail
+silently per KI14, leaving the cache empty.) When the DEGRADE
+directive eventually arrived via the response envelope, the
+sensor's `set_degrade_model` only set `degrade_to` but
+`check()` still required `pct >= degrade_at_pct` to return
+DEGRADE -- and `degrade_at_pct` was at its default 90%, so the
+swap never happened. The sensor silently kept using the
+original model.
+
+The forced flag bypasses the threshold evaluation entirely:
+once the server has explicitly told the sensor to swap, the
+sensor swaps on every subsequent call until told otherwise.
+
+**Verified by:**
+`test_sensor_degrade_directive_via_policy_threshold` and
+`test_pattern_b_degrade_seen_by_all_threads` -- both assert
+that calls AFTER the directive_result(degrade=acknowledged)
+event use the degraded model.
+
+**Rejected alternative:** Always set `degrade_at_pct = 0` when
+a DEGRADE directive arrives. Rejected because it conflates
+"forced by directive" with "policy threshold of 0%", confusing
+operators reading the dashboard.
+
+---
+
+## D085 -- `DirectiveResponse.Payload` projection (B-F)
+
+**Decision:** `ingestion/internal/handlers/events.go:DirectiveResponse`
+now has a `Payload *json.RawMessage` field with
+`json:"payload,omitempty" swaggertype:"object"` so the JSONB
+blob attached to `action="custom"` directives in the
+`directives` table makes it back to the sensor in the response
+envelope. `omitempty` keeps the JSON envelope clean for
+non-custom directives (shutdown / degrade / etc.) which have
+no payload.
+
+`directiveAdapter.LookupPending` in `ingestion/cmd/main.go`
+projects `directive.Directive.Payload` (already a
+`*json.RawMessage` in the directive store) into the new field
+on the outgoing response.
+
+**Reasoning:** Pre-fix, the adapter dropped the `Payload`
+field while building the `handlers.DirectiveResponse` from
+`directive.Directive`. Custom directives reached the sensor
+with an empty `payload: {}` and Pydantic's
+`DirectivePayloadSchema` failed validation on the missing
+required `directive_name` and `fingerprint` fields. The handler
+was never invoked. Discovered while strengthening
+`test_sensor_custom_directive_registered_and_triggered` to
+assert the handler was actually called.
+
+**Verified by:**
+`test_sensor_custom_directive_registered_and_triggered` and
+`test_pattern_b_custom_directive_during_traffic` both assert
+the handler ran.
+
+---
+
+## D086 -- KI14 and KI15 deferred to Phase 5
+
+**Decision:** Two architectural limitations discovered during
+the Phase 4.5 audit are deferred to Phase 5 rather than fixed
+immediately. Both have TODO(KI14) / TODO(KI15) markers in code
+and Open-table entries in `KNOWN_ISSUES.md`.
+
+**KI14 -- sensor URL routing.** The sensor's
+`ControlPlaneClient` builds URLs as
+`f"{self._base_url}/v1/directives/sync"` (and similar for
+`/register`, `/policy`). With `init(server="http://localhost:4000/ingest")`
+the URL resolves to `/ingest/v1/directives/sync`, but the
+ingestion service does NOT host the directives sync handler --
+it lives on the api service. In dev nginx routes `/ingest/*`
+straight to ingestion which 404s. The sensor's broad
+`except Exception` swallows the failure and the auto-register /
+preflight policy paths silently fail open.
+
+Three possible fixes, each requiring an architectural decision:
+
+1. Add a separate `api_url` config param to `init()`.
+   Cleanest sensor-side fix; an API change for users.
+2. Add nginx forwarding rules for `/ingest/v1/directives/*`
+   and `/ingest/v1/policy` to the api service. Smallest change;
+   couples dev infra to the bug.
+3. Restructure the deployment so a single `/v1/*` root sits in
+   front of both services and nginx splits by path. Cleanest
+   long-term answer; bigger Helm chart change.
+
+Deferred because all three options require the supervisor to
+choose, and the existing tests work around the bug by
+pre-registering directives via `POST /api/v1/directives/register`
+directly.
+
+**KI15 -- sensor singleton.** The sensor maintains a
+process-wide singleton via the module-level `_session` global.
+The second `init()` call in any thread is a no-op with a
+warning. Pattern B (one init per thread, isolated Sessions)
+and Pattern C (multiple agents in one process) are not
+supported in v1. The `_directive_registry` global has the
+same scoping limitation.
+
+Three possible fixes, each requiring an architectural decision:
+
+1. Session-handle API change: `init()` returns a Session object
+   that callers must thread through `wrap(session, client)` and
+   `patch(session)` explicitly. Breaks the existing two-line
+   `init()` UX.
+2. Per-thread storage via `threading.local()`. Doesn't compose
+   with thread pools (the same OS thread serves multiple agent
+   contexts).
+3. Per-flavor map keyed by `AGENT_FLAVOR`. Couples isolation to
+   environment-variable lifecycle.
+
+Deferred because the typical multi-agent use case (CrewAI,
+LangGraph, etc.) currently works fine on one Session with a
+shared `AGENT_FLAVOR` -- every agent's calls flow through the
+same fleet identity. Per-agent Session isolation is an
+optional enhancement, not a v1 blocker. Documented as KI15.
+`tests/integration/test_sensor_e2e.py::test_pattern_c_ki15_singleton_limitation`
+asserts the current behaviour and is designed to fail loudly
+when KI15 is resolved, signalling that the test should be
+updated to verify the new isolated-Sessions semantics.
+
+**Resolved in:** Phase 5 (both items, separate work).
+
+---

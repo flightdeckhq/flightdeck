@@ -7,8 +7,11 @@ Requires `make dev` to be running.
 from __future__ import annotations
 
 import json
+import urllib.parse
 import urllib.request
 import uuid
+
+import pytest
 
 from .conftest import (
     API_URL,
@@ -26,9 +29,6 @@ def _search(query: str) -> dict:
     req = urllib.request.Request(url)
     with urllib.request.urlopen(req, timeout=5) as resp:
         return json.loads(resp.read())
-
-
-import urllib.parse
 
 
 def _setup_searchable(flavor: str, host: str, tool_name: str) -> str:
@@ -54,41 +54,44 @@ def _setup_searchable(flavor: str, host: str, tool_name: str) -> str:
     return sid
 
 
-def test_search_finds_agent_by_flavor() -> None:
-    """Search for a flavor name finds the agent."""
-    flavor = f"search-test-agent-{uuid.uuid4().hex[:6]}"
-    _setup_searchable(flavor, "host-a", "tool-a")
-
-    results = _search(flavor)
-    agent_flavors = [a["flavor"] for a in results.get("agents", [])]
-    assert flavor in agent_flavors, (
-        f"expected {flavor} in agents, got {agent_flavors}"
-    )
-
-
-def test_search_finds_session_by_host() -> None:
-    """Search for a host name finds the session."""
-    flavor = f"search-host-{uuid.uuid4().hex[:6]}"
-    host = f"search-test-host-{uuid.uuid4().hex[:6]}"
-    sid = _setup_searchable(flavor, host, "tool-b")
-
-    results = _search(host)
-    session_hosts = [s["host"] for s in results.get("sessions", [])]
-    assert host in session_hosts, (
-        f"expected {host} in session hosts, got {session_hosts}"
-    )
+@pytest.fixture(scope="module")
+def searchable_fixture() -> dict[str, str]:
+    """Module-scoped fixture: create one session whose flavor / host /
+    tool name are all unique strings, then let every search-by-X test
+    run against the same session. Saves the cost of two extra
+    session_start round trips per file (Phase 4.5 audit Task 1).
+    """
+    suffix = uuid.uuid4().hex[:6]
+    flavor = f"search-test-agent-{suffix}"
+    host = f"search-test-host-{suffix}"
+    tool = f"search-test-tool-{suffix}"
+    _setup_searchable(flavor, host, tool)
+    return {"flavor": flavor, "host": host, "tool": tool}
 
 
-def test_search_finds_event_by_tool() -> None:
-    """Search for a tool name finds the event."""
-    flavor = f"search-tool-{uuid.uuid4().hex[:6]}"
-    tool = f"search-test-tool-{uuid.uuid4().hex[:6]}"
-    _setup_searchable(flavor, "host-c", tool)
-
-    results = _search(tool)
-    event_tools = [e["tool_name"] for e in results.get("events", [])]
-    assert tool in event_tools, (
-        f"expected {tool} in event tool_names, got {event_tools}"
+@pytest.mark.parametrize(
+    "field, group_key, item_key",
+    [
+        ("flavor", "agents", "flavor"),
+        ("host", "sessions", "host"),
+        ("tool", "events", "tool_name"),
+    ],
+    ids=["by_flavor", "by_host", "by_tool"],
+)
+def test_search_finds_entity(
+    searchable_fixture: dict[str, str],
+    field: str,
+    group_key: str,
+    item_key: str,
+) -> None:
+    """Search for the unique value finds the matching row in the
+    expected result group. Three cases that previously lived as three
+    separate tests with three independent fixtures."""
+    needle = searchable_fixture[field]
+    results = _search(needle)
+    values = [item[item_key] for item in results.get(group_key, [])]
+    assert needle in values, (
+        f"expected {needle} in {group_key}.{item_key}, got {values}"
     )
 
 

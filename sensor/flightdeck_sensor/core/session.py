@@ -22,6 +22,8 @@ from flightdeck_sensor.core.policy import PolicyCache
 from flightdeck_sensor.core.types import (
     Directive,
     DirectiveAction,
+    DirectiveContext,
+    DirectiveRegistration,
     EventType,
     SensorConfig,
     SessionState,
@@ -49,10 +51,13 @@ class Session:
         self.config = config
         self.client = client
 
-        # Lazy import to avoid circular dependency at module level.
-        from flightdeck_sensor.transport.client import EventQueue as LocalEventQueue
-
-        self.event_queue: EventQueue = event_queue or LocalEventQueue(client)
+        # All Session state must be initialised BEFORE the EventQueue
+        # so the drain thread (which starts inside EventQueue.__init__)
+        # can safely call ``self._apply_directive`` from the moment it
+        # is alive. Items only enter the queue after start(), so in
+        # practice the drain thread idles in queue.get() until the
+        # session is fully wired -- but the order here is the safe
+        # invariant.
         self.policy = PolicyCache(
             local_limit=config.limit,
             local_warn_at=config.warn_at,
@@ -70,15 +75,46 @@ class Session:
         self._framework: str | None = None
         self._model: str | None = None
 
+        # Runtime context (hostname, OS, git, orchestration, frameworks
+        # ...). Set once via set_context() before start() and attached
+        # to the session_start event payload only. The control plane
+        # stores it once in sessions.context and never updates it.
+        self._context: dict[str, Any] = {}
+
+        # Lazy import to avoid circular dependency at module level.
+        from flightdeck_sensor.transport.client import EventQueue as LocalEventQueue
+
+        # Wire _apply_directive as the directive HANDLER (not the
+        # drain-thread callback). EventQueue's two-queue pattern
+        # (Phase 4.5 audit B-H) runs the handler on a dedicated
+        # ``flightdeck-directive-queue`` daemon thread, so:
+        #   * a slow custom handler cannot back up the event queue
+        #   * flush() called from inside _apply_directive (e.g. on
+        #     shutdown) does not deadlock, because the directive
+        #     handler thread is not the drain thread
+        # Tests / external callers can still pass an explicit
+        # ``event_queue`` to opt out (e.g. unit tests that mock the
+        # queue entirely).
+        self.event_queue: EventQueue = event_queue or LocalEventQueue(
+            client,
+            directive_handler=self._apply_directive,
+        )
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
     def start(self) -> None:
-        """Fire SESSION_START, register handlers, and fetch policy."""
+        """Fire SESSION_START, register handlers, fetch policy, and sync directives."""
         self._post_event(EventType.SESSION_START)
         self._register_handlers()
         self._preflight_policy()
+
+        from flightdeck_sensor import _directive_registry
+
+        if _directive_registry:
+            self._sync_directives(_directive_registry)
+
         if not self.config.quiet:
             _log.info(
                 "Flightdeck session started: flavor=%s session=%s",
@@ -105,10 +141,28 @@ class Session:
                 self._tokens_used,
             )
 
-    def record_usage(self, usage: TokenUsage) -> None:
-        """Atomically increment session token counts."""
+    def set_context(self, context: dict[str, Any]) -> None:
+        """Attach runtime context for inclusion in the session_start event.
+
+        Called once from ``init()`` after running the context
+        collectors. Set BEFORE :meth:`start` so the first event
+        payload carries the context dict.
+        """
+        self._context = context
+
+    def record_usage(self, usage: TokenUsage) -> int:
+        """Atomically increment session token counts and return the new total.
+
+        Returning the post-increment value lets concurrent callers
+        capture **their own** contribution without re-reading
+        ``self._tokens_used`` after the lock is released, which would
+        otherwise let another thread's increment leak into this
+        thread's reported ``tokens_used_session`` (Phase 4.5 audit
+        B-G fix).
+        """
         with self._lock:
             self._tokens_used += usage.total
+            return self._tokens_used
 
     def record_model(self, model: str) -> None:
         """Record the model used in the most recent call."""
@@ -129,7 +183,7 @@ class Session:
         tool_name: str | None = None,
     ) -> Directive | None:
         """Post a call event and return any received directive."""
-        self.record_usage(usage)
+        session_total = self.record_usage(usage)
         self.record_model(model)
         return self._post_event(
             event_type,
@@ -137,6 +191,7 @@ class Session:
             tokens_input=usage.input_tokens,
             tokens_output=usage.output_tokens,
             tokens_total=usage.total,
+            tokens_used_session=session_total,
             latency_ms=latency_ms,
             tool_name=tool_name,
         )
@@ -150,7 +205,7 @@ class Session:
         tool_name: str | None = None,
     ) -> None:
         """Enqueue a call event (non-blocking).  Used on the hot path."""
-        self.record_usage(usage)
+        session_total = self.record_usage(usage)
         self.record_model(model)
         payload = self._build_payload(
             event_type,
@@ -158,6 +213,7 @@ class Session:
             tokens_input=usage.input_tokens,
             tokens_output=usage.output_tokens,
             tokens_total=usage.total,
+            tokens_used_session=session_total,
             latency_ms=latency_ms,
             tool_name=tool_name,
         )
@@ -218,21 +274,237 @@ class Session:
             )
             with urllib.request.urlopen(req, timeout=_PREFLIGHT_TIMEOUT_SECS) as resp:
                 data = json.loads(resp.read().decode())
+                from pydantic import ValidationError
+
+                from flightdeck_sensor.core.schemas import PolicyResponseSchema
+
+                try:
+                    parsed = PolicyResponseSchema.model_validate(data)
+                except ValidationError:
+                    _log.warning("preflight policy validation failed, using empty cache")
+                    return
+
                 policy_fields: dict[str, Any] = {}
-                if "token_limit" in data:
-                    policy_fields["token_limit"] = data["token_limit"]
-                if "warn_at_pct" in data:
-                    policy_fields["warn_at_pct"] = data["warn_at_pct"]
-                if "degrade_at_pct" in data:
-                    policy_fields["degrade_at_pct"] = data["degrade_at_pct"]
-                if "degrade_to" in data:
-                    policy_fields["degrade_to"] = data["degrade_to"]
-                if "block_at_pct" in data:
-                    policy_fields["block_at_pct"] = data["block_at_pct"]
+                if parsed.token_limit is not None:
+                    policy_fields["token_limit"] = parsed.token_limit
+                if parsed.warn_at_pct is not None:
+                    policy_fields["warn_at_pct"] = parsed.warn_at_pct
+                if parsed.degrade_at_pct is not None:
+                    policy_fields["degrade_at_pct"] = parsed.degrade_at_pct
+                if parsed.degrade_to is not None:
+                    policy_fields["degrade_to"] = parsed.degrade_to
+                if parsed.block_at_pct is not None:
+                    policy_fields["block_at_pct"] = parsed.block_at_pct
                 if policy_fields:
                     self.policy.update(policy_fields)
         except Exception:
             _log.debug("preflight policy fetch failed, proceeding with empty cache", exc_info=True)
+
+    # ------------------------------------------------------------------
+    # Custom directives
+    # ------------------------------------------------------------------
+
+    def _sync_directives(
+        self, registry: dict[str, DirectiveRegistration]
+    ) -> None:
+        """Sync registered custom directives with the control plane.
+
+        Sends fingerprints to the server. For any the server does not
+        recognise, sends the full schema in a follow-up register call.
+        Fails open on any error.
+        """
+        try:
+            summaries = [
+                {"name": reg.name, "fingerprint": reg.fingerprint}
+                for reg in registry.values()
+            ]
+            unknown_fps = self.client.sync_directives(
+                self.config.agent_flavor, summaries
+            )
+            if unknown_fps:
+                unknown_set = set(unknown_fps)
+                to_register = [
+                    {
+                        "name": reg.name,
+                        "description": reg.description,
+                        "fingerprint": reg.fingerprint,
+                        "parameters": [
+                            {
+                                "name": p.name,
+                                "type": p.type,
+                                "description": p.description,
+                                "options": p.options,
+                                "required": p.required,
+                                "default": p.default,
+                            }
+                            for p in reg.parameters
+                        ],
+                    }
+                    for reg in registry.values()
+                    if reg.fingerprint in unknown_set
+                ]
+                if to_register:
+                    self.client.register_directives(
+                        self.config.agent_flavor, to_register
+                    )
+        except Exception:
+            _log.debug(
+                "directive sync failed, proceeding without sync", exc_info=True
+            )
+
+    def _build_directive_context(self) -> DirectiveContext:
+        """Build an execution context for a custom directive handler."""
+        with self._lock:
+            tokens = self._tokens_used
+            model = self._model or ""
+        return DirectiveContext(
+            session_id=self.config.session_id,
+            flavor=self.config.agent_flavor,
+            tokens_used=tokens,
+            model=model,
+        )
+
+    def _build_directive_result_event(
+        self,
+        directive_name: str,
+        success: bool,
+        result: Any = None,
+        error: str | None = None,
+    ) -> dict[str, Any]:
+        """Build a directive_result event payload for a custom directive.
+
+        Field names match the worker's ``consumer.EventPayload`` schema
+        (``directive_status`` / ``result`` / ``error``) so that
+        ``BuildEventExtra`` can persist them into ``events.payload``.
+        Previously this method emitted ``directive_success`` /
+        ``directive_result`` / ``directive_error``, none of which the
+        worker decoded -- causing the success flag, the handler return
+        value, and any handler error message to be silently dropped at
+        the ingestion boundary. Phase 4.5 audit B-D fix.
+        """
+        payload = self._build_payload(
+            EventType.DIRECTIVE_RESULT,
+            directive_name=directive_name,
+            directive_action="custom",
+            directive_status="success" if success else "error",
+        )
+        if result is not None:
+            payload["result"] = result
+        if error is not None:
+            payload["error"] = error
+        return payload
+
+    def _execute_custom_directive(self, directive: Directive) -> None:
+        """Execute a custom directive handler by name.
+
+        Looks up the handler in the global registry, verifies the
+        fingerprint matches, executes with a 5-second timeout
+        (SIGALRM on non-Windows when running on the main thread --
+        bypassed on the directive handler daemon thread, see B-K),
+        and posts a directive_result event. Never raises -- always
+        fails open.
+
+        **Parameter validation is shape-only.**
+        ``DirectivePayloadSchema`` validates the top-level shape of
+        the directive payload (``directive_name: str``,
+        ``fingerprint: str``, ``parameters: dict[str, Any]``), but
+        the values inside ``parameters`` are passed to the handler
+        unchanged via ``handler(ctx, **params)``. The
+        ``DirectiveParameter`` schema declared at registration time
+        (the ``parameters=[...]`` argument to
+        ``@flightdeck_sensor.directive``) is used to compute the
+        fingerprint and to render the dashboard form -- it is NOT
+        enforced on incoming directive parameters. Handlers must
+        validate their own inputs. Phase 4.5 audit Hat 4 finding.
+        """
+        from flightdeck_sensor import _directive_registry
+        from flightdeck_sensor.core.schemas import DirectivePayloadSchema
+
+        try:
+            from pydantic import ValidationError
+            parsed_payload = DirectivePayloadSchema.model_validate(directive.payload)
+            name = parsed_payload.directive_name
+            fingerprint = parsed_payload.fingerprint
+            params = parsed_payload.parameters
+        except (ValidationError, Exception) as exc:
+            _log.warning("[flightdeck] custom directive payload validation failed: %s", exc)
+            return
+
+        reg = _directive_registry.get(name)
+        if reg is None:
+            _log.warning(
+                "[flightdeck] custom directive '%s' not found in registry", name
+            )
+            payload = self._build_directive_result_event(
+                name, success=False, error="handler not found"
+            )
+            self.event_queue.enqueue(payload)
+            return
+
+        if reg.fingerprint != fingerprint:
+            _log.warning(
+                "[flightdeck] custom directive '%s' fingerprint mismatch "
+                "(expected %s, got %s)",
+                name,
+                reg.fingerprint,
+                fingerprint,
+            )
+            payload = self._build_directive_result_event(
+                name, success=False, error="fingerprint mismatch"
+            )
+            self.event_queue.enqueue(payload)
+            return
+
+        ctx = self._build_directive_context()
+
+        try:
+            result = self._run_handler_with_timeout(reg.handler, ctx, params)
+            payload = self._build_directive_result_event(
+                name, success=True, result=result
+            )
+            self.event_queue.enqueue(payload)
+        except TimeoutError:
+            _log.warning(
+                "[flightdeck] custom directive '%s' timed out after 5s", name
+            )
+            payload = self._build_directive_result_event(
+                name, success=False, error="timeout"
+            )
+            self.event_queue.enqueue(payload)
+        except Exception as exc:
+            _log.warning(
+                "[flightdeck] custom directive '%s' raised: %s", name, exc
+            )
+            payload = self._build_directive_result_event(
+                name, success=False, error=str(exc)
+            )
+            self.event_queue.enqueue(payload)
+
+    @staticmethod
+    def _run_handler_with_timeout(
+        handler: Any,
+        ctx: DirectiveContext,
+        params: dict[str, Any],
+    ) -> Any:
+        """Run a directive handler with a 5-second timeout.
+
+        Uses SIGALRM on non-Windows platforms. On Windows, runs without
+        a timeout (the handler is trusted to return quickly).
+        """
+        if os.name != "nt" and threading.current_thread() is threading.main_thread():
+            def _alarm_handler(signum: int, frame: Any) -> None:
+                raise TimeoutError("custom directive handler timed out")
+
+            old_handler = signal.signal(signal.SIGALRM, _alarm_handler)
+            signal.alarm(5)
+            try:
+                result: Any = handler(ctx, **params)
+            finally:
+                signal.alarm(0)
+                signal.signal(signal.SIGALRM, old_handler)
+            return result
+        else:
+            return handler(ctx, **params)
 
     # ------------------------------------------------------------------
     # Event posting
@@ -281,6 +553,14 @@ class Session:
             "content": None,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
+
+        # Attach runtime context only on session_start events. The
+        # control plane stores sessions.context once and never updates
+        # it on conflict, so sending it on every event would be
+        # wasteful network traffic.
+        if event_type == EventType.SESSION_START and self._context:
+            payload["context"] = self._context
+
         payload.update(extra)
         return payload
 
@@ -306,6 +586,21 @@ class Session:
 
         elif directive.action == DirectiveAction.DEGRADE:
             degrade_to = directive.payload.get("degrade_to", "")
+            # Acknowledge degrade before acting
+            with self._lock:
+                current_model = self._model or ""
+            ack = self._build_payload(
+                EventType.DIRECTIVE_RESULT,
+                directive_name="degrade",
+                directive_action="degrade",
+                directive_status="acknowledged",
+            )
+            ack["result"] = {
+                "message": "model degraded",
+                "from_model": current_model,
+                "to_model": degrade_to,
+            }
+            self.event_queue.enqueue(ack)
             self.policy.set_degrade_model(degrade_to)
             _log.info("[flightdeck] model degraded to: %s", degrade_to)
 
@@ -327,6 +622,31 @@ class Session:
                 "[flightdeck] shutdown directive received: %s",
                 directive.reason,
             )
+            # Acknowledge shutdown before flipping the flag. flush()
+            # is now safe to call unconditionally because the B-H
+            # two-queue refactor moved _apply_directive off the drain
+            # thread onto a dedicated directive handler thread. The
+            # event queue's drain thread is independent and continues
+            # to make progress on Queue.join().
+            ack = self._build_payload(
+                EventType.DIRECTIVE_RESULT,
+                directive_name="shutdown",
+                directive_action="shutdown",
+                directive_status="acknowledged",
+            )
+            ack["result"] = {
+                "message": "agent shutting down",
+                "reason": directive.reason or "directive received",
+            }
+            self.event_queue.enqueue(ack)
+            try:
+                self.event_queue.flush()
+            except Exception as exc:
+                _log.warning(
+                    "[flightdeck] shutdown: failed to flush "
+                    "acknowledgement event: %s",
+                    exc,
+                )
             with self._lock:
                 self._shutdown_requested = True
                 self._shutdown_reason = directive.reason
@@ -337,6 +657,27 @@ class Session:
                 self.config.agent_flavor,
                 directive.reason,
             )
+            # Same architecture as the SHUTDOWN branch above -- safe
+            # synchronous flush via the B-H two-queue refactor.
+            ack = self._build_payload(
+                EventType.DIRECTIVE_RESULT,
+                directive_name="shutdown_flavor",
+                directive_action="shutdown_flavor",
+                directive_status="acknowledged",
+            )
+            ack["result"] = {
+                "message": "agent shutting down (fleet-wide)",
+                "reason": directive.reason or "fleet directive received",
+            }
+            self.event_queue.enqueue(ack)
+            try:
+                self.event_queue.flush()
+            except Exception as exc:
+                _log.warning(
+                    "[flightdeck] shutdown_flavor: failed to flush "
+                    "acknowledgement event: %s",
+                    exc,
+                )
             with self._lock:
                 self._shutdown_requested = True
                 self._shutdown_reason = directive.reason
@@ -350,6 +691,9 @@ class Session:
             _log.warning(
                 "[flightdeck] directive action not yet implemented: checkpoint. Ignoring.",
             )
+
+        elif directive.action == DirectiveAction.CUSTOM:
+            self._execute_custom_directive(directive)
 
         else:
             _log.debug("[flightdeck] unknown directive action: %s", directive.action.value)

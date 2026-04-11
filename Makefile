@@ -1,4 +1,4 @@
-.PHONY: help build test test-integration lint dev dev-reset down logs release migrate-local-up migrate-local-status
+.PHONY: help build test test-integration test-e2e lint dev dev-reset down logs release migrate-local-up migrate-local-status
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-12s %s\n", $$1, $$2}'
@@ -18,6 +18,10 @@ test: ## Run all unit tests
 test-integration: ## Run integration tests (requires running stack)
 	$(MAKE) -C docker dev
 	cd tests/integration && pytest -v
+
+test-e2e: ## Run sensor end-to-end tests only (requires running stack + respx)
+	$(MAKE) -C docker dev
+	cd tests/integration && pytest -v test_sensor_e2e.py
 
 lint: ## Lint all components
 	$(MAKE) -C sensor lint

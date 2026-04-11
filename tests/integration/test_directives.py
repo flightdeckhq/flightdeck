@@ -435,18 +435,37 @@ def test_directive_last_seen_updated() -> None:
         assert match is not None, "registered directive missing from list"
         first_last_seen = match["last_seen_at"]
 
-        # Wait at least one second so the timestamp differs
-        time.sleep(1.1)
+        # Poll-and-resync until last_seen_at advances. Replaces a fixed
+        # time.sleep(1.1) -- we want to wait JUST long enough for the
+        # NOW() value inside the SyncDirectives transaction to be
+        # strictly greater than first_last_seen, and no longer. This
+        # is much faster than the worst case of the old fixed sleep,
+        # and removes a flake source from the suite (Phase 4.5 audit
+        # Section C).
+        latest: dict[str, Any] = {}
 
-        code, _ = _sync_directives(flavor, [fp])
-        assert code == 200
+        def _resync_and_check() -> bool:
+            nonlocal latest
+            code_, _body = _sync_directives(flavor, [fp])
+            if code_ != 200:
+                return False
+            code_, body_ = _list_custom_directives(flavor)
+            if code_ != 200:
+                return False
+            for d in body_.get("directives", []):
+                if d["fingerprint"] == fp:
+                    latest = d
+                    return d["last_seen_at"] > first_last_seen
+            return False
 
-        code, body = _list_custom_directives(flavor)
-        assert code == 200
-        match2 = next(
-            (d for d in body["directives"] if d["fingerprint"] == fp),
-            None,
+        wait_until(
+            _resync_and_check,
+            timeout=5,
+            interval=0.2,
+            msg="last_seen_at did not advance after re-sync",
         )
+
+        match2 = latest
         assert match2 is not None
         assert match2["last_seen_at"] > first_last_seen, (
             f"expected last_seen_at to advance after sync, "

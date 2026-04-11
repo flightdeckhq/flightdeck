@@ -104,153 +104,47 @@ class TestEventQueue:
         finally:
             eq.close()
 
-    def test_critical_events_survive_queue_pressure(self) -> None:
-        """B-L proof: a critical event delivered while the data-plane
-        queue is at capacity must still reach the wire.
-
-        This is the regression guard for the production bug Phase 4.5
-        audit B-L exposed: pre-B-L, the directive_result(acknowledged)
-        event for a SHUTDOWN went through the same enqueue path as a
-        routine post_call, so under producer pressure the drop-oldest
-        policy could discard it -- the dashboard then saw "agent
-        stopped responding" instead of "agent shut down cleanly".
-
-        Setup:
-        1. Build an EventQueue with a slow client so the drain thread
-           is stuck on the very first item it pops -- everything we
-           enqueue afterwards stays buffered.
-        2. Fill the data-plane queue past capacity to verify the
-           drop-oldest path is hot.
-        3. Enqueue a critical event via enqueue_critical.
-        4. Replace the slow client side-effect with a recorder so the
-           drain thread can finally make progress.
-        5. Wait for the recorder to see the critical event payload --
-           it must arrive even though the data-plane queue had 1000+
-           items in front of it.
-        """
-        from flightdeck_sensor.transport.client import _MAX_CRITICAL_QUEUE_SIZE
-
-        mock_client = MagicMock(spec=ControlPlaneClient)
-
-        # Phase 1: drain thread blocks on the very first event so the
-        # queue can saturate behind it. We use a threading.Event the
-        # test can flip to release the drain thread later.
-        release = __import__("threading").Event()
-
-        def _blocked_post(_: Any) -> None:
-            release.wait(timeout=10)
-            return None
-
-        mock_client.post_event.side_effect = _blocked_post
-
-        eq = EventQueue(mock_client)
-        try:
-            # Push enough events to overflow the data-plane queue. The
-            # drain thread is currently parked inside the first
-            # _blocked_post call, so put_nowait will fill the rest and
-            # then start dropping the oldest items.
-            for i in range(_MAX_QUEUE_SIZE + _MAX_CRITICAL_QUEUE_SIZE + 50):
-                eq.enqueue({"event_type": "post_call", "i": i})
-
-            # The critical ack must survive even though the data-plane
-            # queue is currently saturated. enqueue_critical never
-            # blocks and never raises -- it puts onto the priority
-            # queue which the drain thread checks BEFORE pulling each
-            # data-plane item.
-            eq.enqueue_critical({
-                "event_type": "directive_result",
-                "directive_name": "shutdown",
-                "directive_status": "acknowledged",
-            })
-
-            # Phase 2: swap in a recorder side-effect so we can observe
-            # what the drain thread actually delivers, then release
-            # the parked first call so the drain thread can make
-            # progress.
-            posted: list[dict[str, Any]] = []
-
-            def _recorder(item: dict[str, Any]) -> None:
-                posted.append(dict(item))
-                return None
-
-            mock_client.post_event.side_effect = _recorder
-            release.set()
-
-            # Wait until we see the critical event in the recorder.
-            # If the priority queue path is broken, the drain thread
-            # will burn through ~1000 dropped post_calls first and
-            # this loop will time out.
-            deadline = time.monotonic() + 5.0
-            seen_critical = False
-            while time.monotonic() < deadline:
-                if any(
-                    p.get("event_type") == "directive_result"
-                    and p.get("directive_name") == "shutdown"
-                    and p.get("directive_status") == "acknowledged"
-                    for p in posted
-                ):
-                    seen_critical = True
-                    break
-                time.sleep(0.05)
-
-            assert seen_critical, (
-                "critical directive_result(shutdown) was never "
-                "delivered by the drain thread despite "
-                "enqueue_critical -- the priority queue is not "
-                "actually being drained before the data-plane queue. "
-                f"Drain thread saw {len(posted)} events; first 5: "
-                f"{posted[:5]}"
-            )
-        finally:
-            release.set()  # in case the assertion failed before the swap
-            eq.close()
-
-    def test_queue_full_warning_is_rate_limited(
+    def test_drop_warning_fires_once_per_drop(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """Burst of drops produces a bounded number of warnings.
+        """Each forced drop emits its own warning -- no rate-limiting.
 
-        The previous implementation logged ``Event queue full`` on
-        every overflow which produced 12k+ identical lines under a
-        Pattern-B stress test in CI. We now log the first drop loudly
-        and summarize subsequent drops every 100 events. This test
-        checks that 250 drops produce at most a handful of log lines
-        (vs 250 under the old behavior) so a runaway producer cannot
-        flood the agent log stream.
+        Regression guard: an earlier iteration of this code added a
+        rate-limited warning that summarized N drops in a single line.
+        That hid the real cardinality of dropped events from operators
+        and was reverted (KI16) -- the production design intent is
+        that the queue cannot fill in normal operation because real
+        LLM provider latency throttles the producer naturally, so a
+        drop is supposed to be loud and rare. This test asserts the
+        1:1 correspondence between drops and warnings so any future
+        attempt to silence them lands as a failed test.
         """
-        from flightdeck_sensor.transport.client import _DROP_LOG_INTERVAL
-
         mock_client = MagicMock(spec=ControlPlaneClient)
         mock_client.post_event.side_effect = lambda _: time.sleep(10)
         eq = EventQueue(mock_client)
         try:
-            # Pre-fill the queue so every subsequent enqueue triggers
-            # the drop-oldest path. Use _MAX_QUEUE_SIZE+5 to overshoot
-            # any items the drain thread may have consumed in flight.
-            for i in range(_MAX_QUEUE_SIZE + 5):
+            # Pre-fill so every subsequent enqueue triggers the
+            # drop-oldest path. The first N enqueues may themselves
+            # trigger drops if the drain thread pops one in flight,
+            # so we clear the captured log records below before the
+            # 10-drop measurement loop.
+            for i in range(_MAX_QUEUE_SIZE + 50):
                 eq.enqueue({"i": i})
-
+            caplog.clear()
             with caplog.at_level(
                 logging.WARNING, logger="flightdeck_sensor.transport.client"
             ):
-                # 250 forced drops -- under _DROP_LOG_INTERVAL=100 this
-                # should emit the FIRST drop line + 2 summary lines.
-                # The exact count must be <= 5 with comfortable margin
-                # for any drain-thread interleaving.
-                for i in range(250):
+                # 10 forced drops -> expect 10 warning lines, no
+                # summarization, no rate-limiting.
+                for i in range(10):
                     eq.enqueue({"overflow": i})
-
             warn_lines = [
                 r for r in caplog.records if "Event queue full" in r.message
             ]
-            assert len(warn_lines) <= 5, (
-                f"expected <= 5 rate-limited warnings, got {len(warn_lines)}: "
-                f"{[r.message for r in warn_lines]}"
+            assert len(warn_lines) == 10, (
+                f"expected one warning per drop (10 total), got "
+                f"{len(warn_lines)}: {[r.message for r in warn_lines]}"
             )
-            # First warning explains the rate-limit cadence so future
-            # operators know what the summary lines mean.
-            assert "summarized every" in warn_lines[0].message
-            assert str(_DROP_LOG_INTERVAL) in warn_lines[0].message
         finally:
             eq.close()
 

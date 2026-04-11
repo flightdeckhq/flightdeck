@@ -49,7 +49,7 @@ __all__ = [
 
 _log = logging.getLogger("flightdeck_sensor")
 
-# TODO(KI15)[Phase 5]: Module-level _session and _directive_registry are
+# TODO(KI15)[Phase 4.9]: Module-level _session and _directive_registry are
 # process-wide singletons. The second init() call is a no-op and the
 # directive registry is shared across every Session, so multi-Session
 # patterns (one init per thread, multiple agents in one process) are

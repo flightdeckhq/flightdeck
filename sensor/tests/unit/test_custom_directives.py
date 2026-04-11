@@ -330,8 +330,8 @@ def test_execute_custom_directive_success() -> None:
         )
         session._execute_custom_directive(d)
 
-        eq.enqueue_critical.assert_called_once()
-        payload = eq.enqueue_critical.call_args[0][0]
+        eq.enqueue.assert_called_once()
+        payload = eq.enqueue.call_args[0][0]
         assert payload["directive_status"] == "success"
         assert payload["result"] == "executed"
     finally:
@@ -351,8 +351,8 @@ def test_execute_custom_directive_handler_not_found() -> None:
     )
     session._execute_custom_directive(d)
 
-    eq.enqueue_critical.assert_called_once()
-    payload = eq.enqueue_critical.call_args[0][0]
+    eq.enqueue.assert_called_once()
+    payload = eq.enqueue.call_args[0][0]
     assert payload["directive_status"] == "error"
     assert payload["error"] == "handler not found"
 
@@ -380,8 +380,8 @@ def test_execute_custom_directive_fingerprint_mismatch() -> None:
         )
         session._execute_custom_directive(d)
 
-        eq.enqueue_critical.assert_called_once()
-        payload = eq.enqueue_critical.call_args[0][0]
+        eq.enqueue.assert_called_once()
+        payload = eq.enqueue.call_args[0][0]
         assert payload["directive_status"] == "error"
         assert "fingerprint mismatch" in payload["error"]
     finally:
@@ -417,8 +417,8 @@ def test_execute_custom_directive_handler_raises() -> None:
         # Should not raise
         session._execute_custom_directive(d)
 
-        eq.enqueue_critical.assert_called_once()
-        payload = eq.enqueue_critical.call_args[0][0]
+        eq.enqueue.assert_called_once()
+        payload = eq.enqueue.call_args[0][0]
         assert payload["directive_status"] == "error"
         assert "handler exploded" in payload["error"]
     finally:
@@ -491,8 +491,8 @@ def test_apply_directive_dispatches_custom() -> None:
         )
         session._apply_directive(d)
 
-        eq.enqueue_critical.assert_called_once()
-        payload = eq.enqueue_critical.call_args[0][0]
+        eq.enqueue.assert_called_once()
+        payload = eq.enqueue.call_args[0][0]
         assert payload["event_type"] == "directive_result"
         assert payload["directive_status"] == "success"
     finally:

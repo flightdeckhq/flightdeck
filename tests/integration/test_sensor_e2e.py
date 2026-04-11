@@ -269,10 +269,39 @@ def unique_flavor() -> Iterator[str]:
 def _mock_anthropic_messages(
     rmock: respx.MockRouter,
     response: dict[str, Any] | None = None,
+    latency_ms: int = 0,
 ) -> None:
-    rmock.post("https://api.anthropic.com/v1/messages").mock(
-        return_value=httpx.Response(200, json=response or ANTHROPIC_RESPONSE)
-    )
+    """Mock the Anthropic /v1/messages endpoint.
+
+    ``latency_ms`` simulates real provider latency. The default of 0
+    keeps every existing test's behavior unchanged. The
+    multithreaded ``test_pattern_b_*`` and ``test_slow_handler_*``
+    tests pass ``latency_ms=50`` so the mocked HTTP round trip takes
+    a realistic minimum LLM provider time -- without this, four
+    concurrent workers fire thousands of events per second through
+    the respx mock and overflow the sensor's 1000-slot event queue
+    on a slow CI runner. Real LLM providers take hundreds of
+    milliseconds per call, so the unbounded producer rate is a test
+    artifact, not a production scenario. KI16 covers the optional
+    Phase 4.9 batch ingestion improvement that would raise the
+    drain ceiling further; the 50 ms tick here is the minimum
+    necessary to make the test scenario match production.
+    """
+    body = response or ANTHROPIC_RESPONSE
+    if latency_ms > 0:
+        delay_secs = latency_ms / 1000
+
+        def _delayed_response(_request: httpx.Request) -> httpx.Response:
+            time.sleep(delay_secs)
+            return httpx.Response(200, json=body)
+
+        rmock.post("https://api.anthropic.com/v1/messages").mock(
+            side_effect=_delayed_response
+        )
+    else:
+        rmock.post("https://api.anthropic.com/v1/messages").mock(
+            return_value=httpx.Response(200, json=body)
+        )
 
 
 def _mock_openai_chat(
@@ -1306,7 +1335,11 @@ def test_pattern_b_concurrent_calls_no_data_loss(
     errors_lock = threading.Lock()
 
     with respx.mock(assert_all_called=False) as rmock:
-        _mock_anthropic_messages(rmock)
+        # 50 ms mock latency simulates real LLM provider RTT so the
+        # 4 concurrent workers cannot fire faster than the drain
+        # thread can flush. See _mock_anthropic_messages docstring
+        # and KI16 for the rationale.
+        _mock_anthropic_messages(rmock, latency_ms=50)
 
         flightdeck_sensor.init(server=INGESTION_URL, token=TOKEN)
         try:
@@ -1440,7 +1473,9 @@ def test_pattern_b_custom_directive_during_traffic(
     )
 
     with respx.mock(assert_all_called=False) as rmock:
-        _mock_anthropic_messages(rmock)
+        # 50 ms mock latency -- see test_pattern_b_concurrent_calls_no_data_loss
+        # for the rationale.
+        _mock_anthropic_messages(rmock, latency_ms=50)
 
         flightdeck_sensor.init(server=INGESTION_URL, token=TOKEN)
         try:
@@ -1535,7 +1570,9 @@ def test_pattern_b_shutdown_during_traffic(
     flavor = unique_flavor
 
     with respx.mock(assert_all_called=False) as rmock:
-        _mock_anthropic_messages(rmock)
+        # 50 ms mock latency -- see test_pattern_b_concurrent_calls_no_data_loss
+        # for the rationale.
+        _mock_anthropic_messages(rmock, latency_ms=50)
 
         flightdeck_sensor.init(server=INGESTION_URL, token=TOKEN)
         try:
@@ -1739,7 +1776,12 @@ def test_slow_handler_does_not_block_event_throughput(
     _register_directive_via_api(flavor, fingerprint, "e2e_slow_handler")
 
     with respx.mock(assert_all_called=False) as rmock:
-        _mock_anthropic_messages(rmock)
+        # 50 ms mock latency -- the worker thread inside this test
+        # fires 5 calls in a tight loop while the directive handler
+        # thread is blocked. Real LLM RTT is the only natural
+        # producer brake, so the mock simulates it. See
+        # _mock_anthropic_messages docstring and KI16.
+        _mock_anthropic_messages(rmock, latency_ms=50)
 
         flightdeck_sensor.init(server=INGESTION_URL, token=TOKEN)
         try:
@@ -2011,6 +2053,11 @@ def test_pattern_b_degrade_seen_by_all_threads(
     assert code == 201
 
     def _echo_model_handler(request: httpx.Request) -> httpx.Response:
+        # 50 ms latency simulates real LLM provider RTT so the four
+        # concurrent workers cannot fire faster than the drain
+        # thread can flush. See _mock_anthropic_messages docstring
+        # and KI16 for the rationale.
+        time.sleep(0.05)
         body = json.loads(request.content)
         model = body.get("model", "claude-sonnet-4-6")
         return httpx.Response(

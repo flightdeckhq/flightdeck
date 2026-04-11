@@ -1118,13 +1118,96 @@ that is not covered above. See DECISIONS.md D059-D072 for the rationale.
 - `EventQueue.flush(timeout=5.0)`: synchronously drains pending events
   up to a deadline (event queue only). Used by `Session.end()` and
   the shutdown / shutdown_flavor branches of `_apply_directive()`.
+  **The directive queue is intentionally NOT waited on**: `flush()`
+  is typically called from inside `_apply_directive` running on the
+  directive handler thread, and `Queue.join()` on the directive
+  queue would self-deadlock because the current item has not yet
+  had `task_done()` called on it. The directive queue is internal
+  control flow; the event queue is the externally observable state
+  that operators care about flushing before shutdown. See D081.
 - `ControlPlaneClient.sync_directives(flavor, directives)`: POST to
   `/v1/directives/sync`. Returns the list of unknown fingerprints from
-  `SyncResponseSchema`.
+  `SyncResponseSchema`. **KI14**: in dev this URL resolves to the
+  ingestion service via `/ingest/v1/directives/sync` and 404s
+  because the handler lives on the API service. The broad
+  `except Exception` swallows the error and the sensor proceeds
+  without auto-registration. Tests work around this by registering
+  directives via `POST /api/v1/directives/register` directly. Same
+  applies to `register_directives` and to `_preflight_policy`.
 - `ControlPlaneClient.register_directives(flavor, directives)`: POST to
   `/v1/directives/register`. Fire-and-forget; logs failures.
 - `_parse_directive(body)`: now uses `DirectiveResponseSchema`. On
   `ValidationError`, logs a warning and returns `None` (fail open).
+
+### Sensor -- B-G token race fix and B-E forced degrade
+
+`sensor/flightdeck_sensor/core/session.py:Session.record_usage` (extend)
+- Returns the post-increment `_tokens_used` total (return type
+  changed from `None` to `int`). The increment AND the read happen
+  inside the same `with self._lock:` critical section so a
+  concurrent caller cannot read the value after another thread's
+  increment has bled into it.
+
+`sensor/flightdeck_sensor/interceptor/base.py:_post_call` (extend)
+- The order of operations is now (1) `record_usage` returns the
+  post-increment total atomically, (2) `record_model`, (3)
+  `_build_payload(..., tokens_used_session=session_total, ...)`
+  with the captured value passed explicitly. The previous order
+  built the payload before `record_usage`, which meant
+  `tokens_used_session` reported the pre-call total under
+  single-threaded use and reported a racy mix of all threads'
+  contributions under concurrent use. See D082.
+
+`sensor/flightdeck_sensor/core/policy.py:PolicyCache._forced_degrade`
+- New boolean flag that arms a forced DEGRADE decision in
+  `check()`. Set by `set_degrade_model(model)` when the sensor
+  receives a DEGRADE directive from the server. Cleared by
+  `update(policy_dict)` (called for `POLICY_UPDATE` directives) so
+  a fresh policy can un-stick the forced state if the server
+  retracts the degrade.
+- `check()` short-circuits at the top of the locked block: if
+  `_forced_degrade and degrade_to`, returns
+  `PolicyResult(DEGRADE, source="server")` regardless of token
+  thresholds. This is required because the workers' policy
+  evaluator may issue a DEGRADE directive based on its own
+  cumulative count without ever populating the sensor's local
+  `degrade_at_pct` cache (preflight policy fetch can fail
+  silently per KI14). See D084.
+
+### Sensor -- B-D directive_result schema rename
+
+`sensor/flightdeck_sensor/core/session.py:_build_directive_result_event`
+(extend)
+- Field names changed to match the worker's
+  `consumer.EventPayload` schema so `BuildEventExtra` can persist
+  them into `events.payload`:
+  - `directive_success: bool` → `directive_status: str`
+    (`"success"` or `"error"`)
+  - `directive_result: Any` → `result: Any`
+  - `directive_error: str | None` → `error: str | None`
+- Also adds `directive_action: "custom"` to the payload for
+  symmetry with the SHUTDOWN / DEGRADE acknowledgement events.
+- Pre-fix the worker decoded none of these fields and silently
+  dropped them at the ingestion boundary, leaving custom
+  directive results unobservable in the dashboard. See D083.
+
+### Ingestion -- B-F DirectiveResponse Payload projection
+
+`ingestion/internal/handlers/events.go:DirectiveResponse` (extend)
+- New field: `Payload *json.RawMessage \`json:"payload,omitempty" swaggertype:"object"\``.
+  Carries the JSONB blob for `action="custom"` directives
+  (`directive_name`, `fingerprint`, `parameters`) so the sensor's
+  `DirectivePayloadSchema` can validate it and dispatch to the
+  registered handler. `omitempty` keeps the JSON envelope clean
+  for non-custom directives (shutdown / degrade / etc.) which
+  have no payload.
+
+`ingestion/cmd/main.go:directiveAdapter.LookupPending` (extend)
+- Now projects `d.Payload` from `directive.Directive` into the
+  outgoing `handlers.DirectiveResponse`. Before this fix the
+  adapter dropped the payload silently and every custom directive
+  reaching the sensor failed Pydantic validation with an empty
+  payload. See D085.
 
 ### API -- Bulk Events Endpoint and Custom Directive Endpoints
 
@@ -1495,6 +1578,17 @@ DECISIONS.md D073-D079 for the rationale.
   passes the result into `session.set_context()` before
   `session.start()`. Failures in collect() are caught and
   default to an empty dict.
+- **KI15**: the `_session` and `_directive_registry` module-level
+  globals make the sensor a process-wide singleton. The second
+  `init()` call in any thread is a no-op with a warning. Pattern B
+  (one init per thread, isolated Sessions) and Pattern C (multiple
+  agents in one process, each with its own Session) are NOT
+  supported in v1. Resolution requires an architectural decision
+  (Session-handle API change, per-thread storage, or per-flavor
+  map). Tracked for Phase 5; see `KNOWN_ISSUES.md` and D086.
+  `tests/integration/test_sensor_e2e.py::test_pattern_c_ki15_singleton_limitation`
+  documents the current behaviour and will fail loudly when KI15 is
+  resolved, signalling that the test should be updated.
 
 ### Sensor → Ingestion -- session_start payload extension
 
@@ -2026,13 +2120,51 @@ tests/integration/
 ├── test_pipeline.py         # Full event pipeline end-to-end
 ├── test_enforcement.py      # Token enforcement thresholds
 ├── test_killswitch.py       # Single agent + fleet-wide kill
-├── test_policy.py           # Policy propagation via directive
-├── test_session_states.py   # All five state transitions
+├── test_directives.py       # /v1/directives/{sync,register,custom}, fan-out, auth
+├── test_session_states.py   # State transitions (active, closed)
 ├── test_prompt_capture.py   # Content stored when on, not stored when off
-└── test_analytics.py        # GROUP BY queries return correct aggregates
+├── test_search.py           # GET /v1/search across agents/sessions/events
+├── test_analytics.py        # GROUP BY queries return correct aggregates
+├── test_sensor_e2e.py       # REAL flightdeck_sensor against live stack (12 base + 8 multithreading)
+└── test_ui_demo.py          # Manual data-population tool, NOT part of CI (see below)
 ```
 
-Run: `make test-integration`
+Run: `make test-integration`. The target invokes
+`pytest -m "not manual" ...` so any test marked
+`@pytest.mark.manual` is excluded from automated runs. The only
+manual-marked test today is `test_ui_demo.py`, which generates
+3 minutes of realistic dashboard traffic for screen recordings;
+run it explicitly with
+`pytest tests/integration/test_ui_demo.py -v -s` (Phase 4.5
+audit Task 1).
+
+### Sensor end-to-end tests
+
+`tests/integration/test_sensor_e2e.py` is the only file in
+`tests/integration/` that exercises the REAL `flightdeck_sensor`
+library against the live `make dev` stack. Provider HTTP
+(`api.anthropic.com` / `api.openai.com`) is mocked with
+`respx`; everything else (sensor → ingestion → NATS → workers
+→ Postgres → query API) runs for real. Run in isolation via
+`make test-e2e` so a regression in the e2e harness shows up as
+its own failed CI step.
+
+The 20 tests cover four real-world deployment patterns:
+
+| Pattern | Description | Tests |
+|---|---|---|
+| **A — Single-threaded agent** | One `init()`, one thread, sequential LLM calls | `test_sensor_anthropic_full_pipeline`, `test_sensor_openai_full_pipeline`, `test_sensor_capture_prompts_true`, `test_sensor_custom_directive_registered_and_triggered`, `test_sensor_shutdown_directive_delivered`, `test_sensor_degrade_directive_via_policy_threshold`, `test_sensor_server_policy_warn_fires_directive`, `test_sensor_custom_directive_unknown_fingerprint`, `test_sensor_flavor_fanout_directive`, `test_sensor_context_collected_at_init`, `test_sensor_unavailable_continue`, `test_context_facets_aggregation`, `test_pattern_a_shutdown_single_threaded` |
+| **B — Multithreaded agent** | One `init()`, multiple threads sharing one patched client (web servers, async frameworks) | `test_pattern_b_concurrent_calls_no_data_loss`, `test_pattern_b_custom_directive_during_traffic`, `test_pattern_b_shutdown_during_traffic`, `test_pattern_b_degrade_seen_by_all_threads`, `test_slow_handler_does_not_block_event_throughput` (the critical B-H regression test) |
+| **C — One init() per thread** | Each thread tries to call `init()` independently. Currently NOT supported -- KI15. | `test_pattern_c_ki15_singleton_limitation` (documents the limitation, asserts that the second init is a no-op) |
+| **D — Long-running agent receiving directives mid-flight** | Custom directive ordering against shutdown | `test_pattern_d_custom_then_shutdown_ordering` |
+
+`test_slow_handler_does_not_block_event_throughput` is the
+direct proof that the two-queue B-H refactor is in place: it
+holds a custom directive handler on a `threading.Event` and
+asserts that 5 LLM call events from another thread land in the
+DB *before* the handler is released. Under the pre-B-H
+architecture (drain thread executing `_apply_directive` inline)
+this test would fail with up to 5 lost events.
 
 ### End-to-end (Playwright)
 

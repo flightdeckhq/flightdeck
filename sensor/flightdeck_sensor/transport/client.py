@@ -355,12 +355,34 @@ class EventQueue:
             )
 
     def close(self) -> None:
-        """Stop the drain thread and (if running) the directive handler."""
+        """Stop the drain thread and (if running) the directive handler.
+
+        Each thread is given 5 seconds to drain its sentinel and exit.
+        If a thread does not exit within the timeout the join returns
+        anyway and we log at error level so operators have an explicit
+        signal that the daemon thread will be killed by process
+        teardown rather than exiting cleanly. The most likely cause is
+        a custom directive handler that is still running when the
+        agent calls teardown() (B-K limitation -- handlers run with no
+        timeout on the directive thread).
+        """
         self._queue.put(_SENTINEL)
         self._drain_thread.join(timeout=5)
+        if self._drain_thread.is_alive():
+            _log.error(
+                "close: drain thread did not exit within 5s; "
+                "process teardown will kill it as a daemon"
+            )
         if self._directive_queue is not None and self._directive_thread is not None:
             self._directive_queue.put(_SENTINEL)
             self._directive_thread.join(timeout=5)
+            if self._directive_thread.is_alive():
+                _log.error(
+                    "close: directive handler thread did not exit "
+                    "within 5s -- a custom handler is likely still "
+                    "running. The thread will be killed by process "
+                    "teardown."
+                )
 
     # ------------------------------------------------------------------
     # Internals
@@ -429,8 +451,21 @@ class EventQueue:
 
         Single-consumer, sequential processing. Each call to
         ``self._directive_handler`` runs to completion before the next
-        directive is pulled. Exceptions are logged and swallowed --
-        the loop continues so a buggy handler can't kill the thread.
+        directive is pulled.
+
+        The handler invocation is wrapped in ``except BaseException``
+        rather than the usual ``except Exception``. The handler is
+        user-supplied code (a function decorated with
+        ``@flightdeck_sensor.directive``) that may misbehave -- a
+        defensive ``sys.exit()`` or any other ``BaseException``
+        subclass would silently kill this daemon thread under
+        ``except Exception`` and the directive queue would back up
+        with no recovery (Phase 4.5 audit Hat 4 finding). The wider
+        clause is safe in this daemon-thread context because Python
+        signals are delivered to the main thread, not background
+        threads, so the usual concern about catching
+        ``KeyboardInterrupt`` does not apply here. Exceptions are
+        logged and the loop continues.
         """
         assert self._directive_queue is not None
         assert self._directive_handler is not None
@@ -444,9 +479,10 @@ class EventQueue:
                     return
                 try:
                     self._directive_handler(item)  # type: ignore[arg-type]
-                except Exception as exc:
+                except BaseException as exc:  # noqa: BLE001
                     _log.warning(
-                        "directive handler raised, ignoring: %s",
+                        "directive handler raised %s, ignoring: %s",
+                        type(exc).__name__,
                         exc,
                     )
             finally:

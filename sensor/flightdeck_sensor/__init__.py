@@ -115,6 +115,21 @@ def directive(
         @flightdeck_sensor.directive("pause", description="Pause the agent")
         def handle_pause(ctx, duration=30):
             time.sleep(duration)
+
+    .. warning:: The ``parameters`` schema you declare here is used to
+       compute the directive fingerprint and to render the parameter
+       form on the dashboard. **It is NOT enforced at execution
+       time.** When the dashboard issues a directive, the
+       ``parameters`` dict in the request body is passed straight
+       through to your handler as ``**kwargs`` after only shape-level
+       validation (``directive_name: str``, ``fingerprint: str``,
+       ``parameters: dict``). The handler is responsible for
+       validating its own inputs -- if you declare ``value: int`` in
+       the schema, you should still defensively check ``isinstance(
+       value, int)`` inside the handler. Type mismatches that crash
+       the handler are caught by the runtime and logged, but bad
+       input data may produce surprising side effects before the
+       crash. Phase 4.5 audit Hat 4 finding.
     """
 
     def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:

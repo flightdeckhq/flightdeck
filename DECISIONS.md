@@ -1512,3 +1512,325 @@ cannot meaningfully filter by `sha256(hostname)`).
 for v1). Surfaced by the Phase 4.5 audit (Hat 4 -- security review).
 
 ---
+
+## D081 -- Two-queue directive architecture (B-H)
+
+**Decision:** The sensor's `EventQueue` runs **two** background
+daemon threads instead of one. The drain thread
+(`flightdeck-event-queue`) pulls events from the event queue,
+calls `ControlPlaneClient.post_event`, and on a non-None directive
+in the response envelope hands the directive off to a separate
+**directive queue** via `put_nowait` and immediately resumes
+draining. A second daemon thread
+(`flightdeck-directive-queue`) drains the directive queue and
+invokes the configured `directive_handler` (typically
+`Session._apply_directive`) one directive at a time.
+
+The drain thread NEVER executes directive logic. Directive
+delivery latency is decoupled from event throughput. Single-
+consumer directive processing gives at-most-once execution for
+free.
+
+**Reasoning -- the original B-A direct-callback approach was
+unsafe under load:**
+
+The first attempt at fixing B-A (the drain thread silently
+discarding directives because it had no Session reference) wired
+`Session._apply_directive` as a callback that the drain thread
+invoked inline. Each event the drain processed could trigger an
+arbitrary `_apply_directive` call before `task_done()` was reached.
+The Phase 4.5 audit Part 1 Section C investigation found three
+concrete failure modes:
+
+1. **Slow custom handler stalls the event queue.** A handler
+   running on the drain thread (e.g. `time.sleep(60)`, slow HTTP,
+   blocked lock) pinned the drain. Events from other threads kept
+   filling the queue via the non-blocking `enqueue`. After 1000
+   queued events the overflow path silently dropped the oldest
+   ones. At 100 events/sec a 60-second handler caused ~5,000 lost
+   events.
+
+2. **Shutdown ack `flush()` deadlock workaround introduced a new
+   bug.** The drain thread cannot safely call `Queue.join()` on
+   its own queue (it has not yet `task_done()`-ed the current
+   item, so `unfinished_tasks > 0` forever). The B-A patch
+   added an `is_drain_thread()` guard that **silently skipped**
+   the synchronous flush from inside `_apply_directive(SHUTDOWN)`,
+   trading the deadlock for an ack-loss race: if the agent
+   process exited between the drain returning and the next
+   iteration posting the ack, the operator's "did the agent
+   acknowledge the kill switch?" query returned no row.
+
+3. **Concurrent event throughput cratered during directive
+   execution.** While the drain thread was busy applying any
+   directive (custom, degrade, policy-update, anything), no other
+   thread's events could reach ingestion. Token enforcement on
+   the workers' side fell behind because the workers stopped
+   receiving post_call events. The async-queue invariant ("the
+   drain thread is always promptly available to drain the next
+   item") was violated.
+
+The two-queue refactor fixes all three:
+
+1. The drain thread's only directive-related work is a
+   single `put_nowait` (≤ 1 µs). Events keep flowing.
+2. `_apply_directive` runs on the directive handler thread,
+   which is **independent** of the drain thread. `flush()` from
+   inside `_apply_directive` waits on the event queue's
+   `Queue.join()`, the drain thread continues to drain the
+   event queue, `unfinished_tasks` reaches 0, `flush()` returns
+   synchronously without deadlock. The `is_drain_thread()` guard
+   was removed entirely.
+3. A single-consumer directive thread serialises directive
+   application without contending with the drain thread for any
+   shared state.
+
+**Constraints honoured:**
+
+- Drain thread NEVER blocks on directive logic.
+- `teardown()` stops both threads cleanly via sentinels and
+  `Thread.join(timeout=5)`. If a thread fails to exit within
+  the timeout, `close()` logs at error level (re-audit Hat 1
+  Minor finding).
+- `flush()` only waits on the event queue. Waiting on the
+  directive queue from inside the directive handler would
+  self-deadlock by exactly the same mechanism the original
+  `is_drain_thread()` guard was working around.
+- A buggy custom handler that calls `sys.exit()` or raises
+  `BaseException` no longer kills the directive thread silently;
+  the loop wraps `directive_handler()` in `except BaseException`
+  (re-audit Hat 4 Minor finding fix).
+
+**Rejected alternative:** Direct callback on the drain thread
+(B-A first attempt). Rejected for the three failure modes above.
+
+**Rejected alternative:** Bounded thread pool consuming the
+directive queue. Rejected because (a) at-most-once execution
+becomes a dedup problem, (b) handler ordering is no longer
+preserved, (c) custom handlers may rely on being single-threaded.
+
+**Resolved:** Phase 4.5 audit Part 2 (after the user-flagged
+unsafe-under-load investigation). Test
+`tests/integration/test_sensor_e2e.py::test_slow_handler_does_not_block_event_throughput`
+is the direct regression check.
+
+---
+
+## D082 -- `Session.record_usage` returns post-increment total (B-G)
+
+**Decision:** `Session.record_usage(usage)` now returns the
+post-increment value of `_tokens_used` as an `int`. The
+increment AND the read happen inside the same `with self._lock:`
+critical section. The interceptor's `_post_call` captures this
+return value and passes it explicitly into `_build_payload` as
+`tokens_used_session=session_total`, instead of letting
+`_build_payload` re-read `self._tokens_used` after other threads
+may have advanced it.
+
+**Reasoning:** Under concurrent traffic the previous order
+(build payload before incrementing) reported `tokens_used_session`
+values that were either off-by-one (single-threaded case: each
+event reported the pre-call total) or arbitrarily corrupted
+(multi-threaded case: reported the value after other threads'
+increments). The dashboard's per-session token curve was jagged
+or duplicated. The fix is local: capture the post-increment
+value atomically and pass it explicitly.
+
+**Verified by:** `test_pattern_b_concurrent_calls_no_data_loss`
+asserts the cumulative total in two places:
+`sessions.tokens_used` (workers' counter) and
+`get_status().tokens_used` (sensor's counter). Both must equal
+`expected_calls * 18` after 4 threads × 5 calls.
+
+**Rejected alternative:** Make `_build_payload` accept a
+`tokens_used_session_override` kwarg that replaces the locked
+read. Rejected as more invasive: explicit override at one call
+site (the interceptor) is clearer than a special-case kwarg.
+
+---
+
+## D083 -- `directive_result` event schema rename (B-D)
+
+**Decision:** `Session._build_directive_result_event` now emits
+field names that match the worker's `consumer.EventPayload`
+struct so that `BuildEventExtra` persists them into
+`events.payload`:
+
+| Old (silently dropped) | New |
+|---|---|
+| `directive_success: bool` | `directive_status: str` (`"success"` / `"error"`) |
+| `directive_result: Any` | `result: Any` |
+| `directive_error: str | None` | `error: str | None` |
+
+The payload also gains `directive_action: "custom"` for
+symmetry with the SHUTDOWN / DEGRADE acknowledgement events,
+which already use this field.
+
+**Reasoning:** Pre-fix, the worker's `BuildEventExtra` only
+decoded `directive_status`, `result`, `error`, etc. The sensor
+emitted `directive_success`, `directive_result`,
+`directive_error` -- none of which the worker decoded. Custom
+directive success flags, return values, and error messages were
+silently lost at the ingestion boundary, leaving custom
+directive results unobservable in the dashboard. Discovered while
+strengthening `test_sensor_custom_directive_registered_and_triggered`
+to assert `directive_status="success"` in the DB.
+
+**Verified by:** `test_sensor_custom_directive_registered_and_triggered`
+queries `events.payload->>'directive_status'` and asserts
+`"success"`.
+
+**Compatibility:** This is a wire change. Sensor versions
+emitting the OLD field names (`directive_success` etc.) will
+have their custom directive results silently dropped by current
+workers, which is the same behaviour they had before the fix --
+no regression. New sensors against old workers similarly drop
+the new field names. Acceptable because both sides ship from
+the same monorepo and are released together.
+
+---
+
+## D084 -- `PolicyCache._forced_degrade` flag (B-E)
+
+**Decision:** `PolicyCache` has a new `_forced_degrade: bool`
+flag that arms an unconditional DEGRADE decision in `check()`.
+`set_degrade_model(model)` (called by `Session._apply_directive`
+when a server DEGRADE directive arrives) sets the flag along
+with `degrade_to`. `update(policy_dict)` (called for
+`POLICY_UPDATE` directives) clears the flag so a fresh policy
+can un-stick the forced state if the server retracts the degrade.
+
+`check()` short-circuits at the top of the locked block: if
+`_forced_degrade and degrade_to`, returns
+`PolicyResult(DEGRADE, source="server")` regardless of token
+thresholds.
+
+**Reasoning:** Pre-fix, the workers' policy evaluator could
+issue a DEGRADE directive based on its own server-side
+cumulative count without ever populating the sensor's local
+`degrade_at_pct` cache. (Preflight policy fetch can fail
+silently per KI14, leaving the cache empty.) When the DEGRADE
+directive eventually arrived via the response envelope, the
+sensor's `set_degrade_model` only set `degrade_to` but
+`check()` still required `pct >= degrade_at_pct` to return
+DEGRADE -- and `degrade_at_pct` was at its default 90%, so the
+swap never happened. The sensor silently kept using the
+original model.
+
+The forced flag bypasses the threshold evaluation entirely:
+once the server has explicitly told the sensor to swap, the
+sensor swaps on every subsequent call until told otherwise.
+
+**Verified by:**
+`test_sensor_degrade_directive_via_policy_threshold` and
+`test_pattern_b_degrade_seen_by_all_threads` -- both assert
+that calls AFTER the directive_result(degrade=acknowledged)
+event use the degraded model.
+
+**Rejected alternative:** Always set `degrade_at_pct = 0` when
+a DEGRADE directive arrives. Rejected because it conflates
+"forced by directive" with "policy threshold of 0%", confusing
+operators reading the dashboard.
+
+---
+
+## D085 -- `DirectiveResponse.Payload` projection (B-F)
+
+**Decision:** `ingestion/internal/handlers/events.go:DirectiveResponse`
+now has a `Payload *json.RawMessage` field with
+`json:"payload,omitempty" swaggertype:"object"` so the JSONB
+blob attached to `action="custom"` directives in the
+`directives` table makes it back to the sensor in the response
+envelope. `omitempty` keeps the JSON envelope clean for
+non-custom directives (shutdown / degrade / etc.) which have
+no payload.
+
+`directiveAdapter.LookupPending` in `ingestion/cmd/main.go`
+projects `directive.Directive.Payload` (already a
+`*json.RawMessage` in the directive store) into the new field
+on the outgoing response.
+
+**Reasoning:** Pre-fix, the adapter dropped the `Payload`
+field while building the `handlers.DirectiveResponse` from
+`directive.Directive`. Custom directives reached the sensor
+with an empty `payload: {}` and Pydantic's
+`DirectivePayloadSchema` failed validation on the missing
+required `directive_name` and `fingerprint` fields. The handler
+was never invoked. Discovered while strengthening
+`test_sensor_custom_directive_registered_and_triggered` to
+assert the handler was actually called.
+
+**Verified by:**
+`test_sensor_custom_directive_registered_and_triggered` and
+`test_pattern_b_custom_directive_during_traffic` both assert
+the handler ran.
+
+---
+
+## D086 -- KI14 and KI15 deferred to Phase 5
+
+**Decision:** Two architectural limitations discovered during
+the Phase 4.5 audit are deferred to Phase 5 rather than fixed
+immediately. Both have TODO(KI14) / TODO(KI15) markers in code
+and Open-table entries in `KNOWN_ISSUES.md`.
+
+**KI14 -- sensor URL routing.** The sensor's
+`ControlPlaneClient` builds URLs as
+`f"{self._base_url}/v1/directives/sync"` (and similar for
+`/register`, `/policy`). With `init(server="http://localhost:4000/ingest")`
+the URL resolves to `/ingest/v1/directives/sync`, but the
+ingestion service does NOT host the directives sync handler --
+it lives on the api service. In dev nginx routes `/ingest/*`
+straight to ingestion which 404s. The sensor's broad
+`except Exception` swallows the failure and the auto-register /
+preflight policy paths silently fail open.
+
+Three possible fixes, each requiring an architectural decision:
+
+1. Add a separate `api_url` config param to `init()`.
+   Cleanest sensor-side fix; an API change for users.
+2. Add nginx forwarding rules for `/ingest/v1/directives/*`
+   and `/ingest/v1/policy` to the api service. Smallest change;
+   couples dev infra to the bug.
+3. Restructure the deployment so a single `/v1/*` root sits in
+   front of both services and nginx splits by path. Cleanest
+   long-term answer; bigger Helm chart change.
+
+Deferred because all three options require the supervisor to
+choose, and the existing tests work around the bug by
+pre-registering directives via `POST /api/v1/directives/register`
+directly.
+
+**KI15 -- sensor singleton.** The sensor maintains a
+process-wide singleton via the module-level `_session` global.
+The second `init()` call in any thread is a no-op with a
+warning. Pattern B (one init per thread, isolated Sessions)
+and Pattern C (multiple agents in one process) are not
+supported in v1. The `_directive_registry` global has the
+same scoping limitation.
+
+Three possible fixes, each requiring an architectural decision:
+
+1. Session-handle API change: `init()` returns a Session object
+   that callers must thread through `wrap(session, client)` and
+   `patch(session)` explicitly. Breaks the existing two-line
+   `init()` UX.
+2. Per-thread storage via `threading.local()`. Doesn't compose
+   with thread pools (the same OS thread serves multiple agent
+   contexts).
+3. Per-flavor map keyed by `AGENT_FLAVOR`. Couples isolation to
+   environment-variable lifecycle.
+
+Deferred because the typical multi-agent use case (CrewAI,
+LangGraph, etc.) currently works fine on one Session with a
+shared `AGENT_FLAVOR` -- every agent's calls flow through the
+same fleet identity. Per-agent Session isolation is an
+optional enhancement, not a v1 blocker. Documented as KI15.
+`tests/integration/test_sensor_e2e.py::test_pattern_c_ki15_singleton_limitation`
+asserts the current behaviour and is designed to fail loudly
+when KI15 is resolved, signalling that the test should be
+updated to verify the new isolated-Sessions semantics.
+
+**Resolved in:** Phase 5 (both items, separate work).
+
+---

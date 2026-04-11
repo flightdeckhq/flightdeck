@@ -28,7 +28,7 @@ pip install flightdeck-sensor
 import flightdeck_sensor
 
 flightdeck_sensor.init(
-    server="http://localhost:4000",
+    server="http://localhost:4000/ingest",
     token="tok_dev",
 )
 
@@ -36,6 +36,12 @@ flightdeck_sensor.init(
 import anthropic
 client = anthropic.Anthropic()
 ```
+
+The dev `make dev` stack exposes the ingestion API at
+`http://localhost:4000/ingest` via nginx. Production deployments
+behind their own gateway typically route a single root URL like
+`https://flightdeck.example.com` to the ingestion service; consult
+your Helm `values.yaml` for the externally-visible ingestion path.
 
 Works with OpenAI too. For frameworks (LangChain, CrewAI, LlamaIndex, AutoGen), add one more line:
 
@@ -118,6 +124,31 @@ Token consumption, session counts, policy events, latency, and model distributio
 **Search**
 Find any session, agent, or event across your entire fleet with Cmd+K.
 
+**Runtime context, automatically**
+On `init()` the sensor collects a snapshot of the agent's
+environment — hostname, OS, Python version, git commit/branch/repo,
+container orchestration (Kubernetes / Docker Compose / ECS /
+Cloud Run), and any in-process AI frameworks (LangChain, CrewAI,
+LlamaIndex, AutoGen, Haystack, DSPy, smolagents, pydantic_ai).
+Each session in the dashboard surfaces this in a collapsible
+**RUNTIME** panel inside the session drawer, plus a sidebar
+**CONTEXT** facet panel that lets operators filter the fleet by
+any context field (`os=Linux`, `k8s_namespace=research`,
+`git_branch=main`, etc.). Git remote URLs are credential-stripped
+before storage. The whole probe is best-effort: every collector
+is wrapped in two layers of `try/except` so a broken probe never
+crashes the agent.
+
+**Visual fleet glance**
+The fleet view is a swim-lane timeline with one row per agent
+flavor and one sub-row per running session, plus pause / catch-up
+controls, an event-type filter bar (LLM Calls / Tools / Policy /
+Directives / Session), provider logos for Anthropic and OpenAI
+calls, and OS / orchestration icons next to each session
+hostname. The left panel is resizable and the timeline width is
+fixed at 900 px so density scales with the time range, not the
+viewport.
+
 ---
 
 ## Claude Code plugin
@@ -165,6 +196,53 @@ FLIGHTDECK_UNAVAILABLE_POLICY=halt      # block new sessions until CP responds
 ```
 
 The sensor never sits in your agent's execution path. It reports out-of-band over HTTP. If the control plane goes down, your agents keep running.
+
+---
+
+## Threading model
+
+The sensor is safe to use from multithreaded agents. The
+intended deployment patterns are:
+
+| Pattern | Description | Status |
+|---|---|---|
+| **A — Single-threaded agent** | One `init()`, one thread, sequential LLM calls | ✓ Supported |
+| **B — Multithreaded agent** | One `init()`, many threads sharing one patched client | ✓ Supported (web servers, async frameworks) |
+| **C — Multi-agent in one process** | Multiple `init()` calls, one per "logical agent" | ⚠ See *Known limitations* below |
+
+Internally the sensor runs two background daemon threads. The
+first (`flightdeck-event-queue`) drains the event queue and
+posts events to the control plane. The second
+(`flightdeck-directive-queue`) processes directives received in
+event response envelopes — kill switches, custom directive
+handlers, model-degrade swaps, policy updates. The two queues
+are decoupled so a slow custom directive handler can never block
+LLM call event throughput. See `ARCHITECTURE.md` and DECISIONS
+D081 for the full design.
+
+---
+
+## Known limitations
+
+* **One `init()` per process.** The second `init()` call from
+  any thread is currently a no-op with a warning log. Pattern C
+  (multiple "logically separate" agents in one process, each
+  with its own Session) is not yet supported. The typical
+  multi-agent framework deployment (CrewAI, LangGraph, etc.)
+  works fine with one `init()` and a shared `AGENT_FLAVOR`,
+  because every agent's calls flow under the same fleet
+  identity. If you need per-thread Session isolation, follow
+  `KNOWN_ISSUES.md` KI15.
+* **Custom directive handler input validation is your job.** The
+  `parameters` schema you declare in `@flightdeck_sensor.directive`
+  is used to compute the directive fingerprint and to render the
+  dashboard form. It is **not** enforced at execution time --
+  the runtime only validates the directive payload's top-level
+  shape (`directive_name: str`, `fingerprint: str`,
+  `parameters: dict`). Your handler should defensively validate
+  its own inputs. Type errors inside the handler are caught and
+  logged but bad input data may produce surprising side effects
+  before the crash.
 
 ---
 

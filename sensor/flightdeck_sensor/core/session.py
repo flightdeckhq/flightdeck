@@ -399,8 +399,23 @@ class Session:
 
         Looks up the handler in the global registry, verifies the
         fingerprint matches, executes with a 5-second timeout
-        (SIGALRM on non-Windows), and posts a directive_result event.
-        Never raises -- always fails open.
+        (SIGALRM on non-Windows when running on the main thread --
+        bypassed on the directive handler daemon thread, see B-K),
+        and posts a directive_result event. Never raises -- always
+        fails open.
+
+        **Parameter validation is shape-only.**
+        ``DirectivePayloadSchema`` validates the top-level shape of
+        the directive payload (``directive_name: str``,
+        ``fingerprint: str``, ``parameters: dict[str, Any]``), but
+        the values inside ``parameters`` are passed to the handler
+        unchanged via ``handler(ctx, **params)``. The
+        ``DirectiveParameter`` schema declared at registration time
+        (the ``parameters=[...]`` argument to
+        ``@flightdeck_sensor.directive``) is used to compute the
+        fingerprint and to render the dashboard form -- it is NOT
+        enforced on incoming directive parameters. Handlers must
+        validate their own inputs. Phase 4.5 audit Hat 4 finding.
         """
         from flightdeck_sensor import _directive_registry
         from flightdeck_sensor.core.schemas import DirectivePayloadSchema

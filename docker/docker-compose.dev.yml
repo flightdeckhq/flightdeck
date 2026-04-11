@@ -8,6 +8,15 @@ services:
     command: ["go", "run", "./cmd/"]
     volumes:
       - ../ingestion:/app
+    # `go run` cold-start in CI downloads all modules then compiles --
+    # observed at 60-90 s on a fresh GitHub Actions runner. The base
+    # compose healthcheck only allows 10 s start_period + 5*5 s retries
+    # = 35 s, which is fine for a warm local workstation but trips on
+    # cold CI runs and brings down `make dev`. Override the start
+    # window to 120 s here -- production uses prebuilt images that
+    # boot in <2 s and inherit the tight base healthcheck unchanged.
+    healthcheck:
+      start_period: 120s
 
   workers:
     image: golang:1.26-alpine
@@ -23,6 +32,10 @@ services:
     command: ["go", "run", "./cmd/"]
     volumes:
       - ../api:/app
+    # See the matching comment on ``ingestion`` above. Same cold-start
+    # issue, same dev-only override.
+    healthcheck:
+      start_period: 120s
 
   dashboard:
     image: node:20-alpine

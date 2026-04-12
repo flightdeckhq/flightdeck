@@ -746,6 +746,100 @@
                 }
             }
         },
+        "/v1/sessions": {
+            "get": {
+                "description": "Returns sessions matching time range, state, flavor, model, and search filters with pagination and sort support.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "sessions"
+                ],
+                "summary": "List sessions with filters, search, and pagination",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Full-text search across flavor, host, model, hostname, os, git_branch",
+                        "name": "q",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Start time (ISO 8601, default: 7 days ago)",
+                        "name": "from",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "End time (ISO 8601, default: now)",
+                        "name": "to",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by state (repeatable: active, idle, stale, closed, lost)",
+                        "name": "state",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by flavor (repeatable)",
+                        "name": "flavor",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by model",
+                        "name": "model",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Sort field: started_at, duration, tokens_used, flavor (default: started_at)",
+                        "name": "sort",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Sort order: asc, desc (default: desc)",
+                        "name": "order",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Max results (default 25, max 100)",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Offset for pagination (default 0)",
+                        "name": "offset",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/store.SessionsResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/v1/sessions/{id}": {
             "get": {
                 "description": "Returns session metadata (including effective policy thresholds) and all events in chronological order",
@@ -1320,10 +1414,20 @@
         "store.SearchResultSession": {
             "type": "object",
             "properties": {
+                "context": {
+                    "type": "object",
+                    "additionalProperties": true
+                },
+                "ended_at": {
+                    "type": "string"
+                },
                 "flavor": {
                     "type": "string"
                 },
                 "host": {
+                    "type": "string"
+                },
+                "model": {
                     "type": "string"
                 },
                 "session_id": {
@@ -1334,6 +1438,12 @@
                 },
                 "state": {
                     "type": "string"
+                },
+                "token_limit": {
+                    "type": "integer"
+                },
+                "tokens_used": {
+                    "type": "integer"
                 }
             }
         },
@@ -1422,6 +1532,68 @@
                     "type": "integer"
                 },
                 "warn_at_pct": {
+                    "type": "integer"
+                }
+            }
+        },
+        "store.SessionListItem": {
+            "type": "object",
+            "properties": {
+                "context": {
+                    "type": "object",
+                    "additionalProperties": true
+                },
+                "duration_s": {
+                    "type": "number"
+                },
+                "ended_at": {
+                    "type": "string"
+                },
+                "flavor": {
+                    "type": "string"
+                },
+                "host": {
+                    "type": "string"
+                },
+                "model": {
+                    "type": "string"
+                },
+                "session_id": {
+                    "type": "string"
+                },
+                "started_at": {
+                    "type": "string"
+                },
+                "state": {
+                    "type": "string"
+                },
+                "token_limit": {
+                    "type": "integer"
+                },
+                "tokens_used": {
+                    "type": "integer"
+                }
+            }
+        },
+        "store.SessionsResponse": {
+            "type": "object",
+            "properties": {
+                "has_more": {
+                    "type": "boolean"
+                },
+                "limit": {
+                    "type": "integer"
+                },
+                "offset": {
+                    "type": "integer"
+                },
+                "sessions": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/store.SessionListItem"
+                    }
+                },
+                "total": {
                     "type": "integer"
                 }
             }

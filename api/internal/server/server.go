@@ -63,6 +63,7 @@ func newServer(addr string, s store.Querier, hub *ws.Hub, validator *auth.Valida
 	// http.TimeoutHandler so a hung pgx query cannot pin a request
 	// indefinitely.
 	mux.Handle("GET /v1/fleet", withRESTTimeout(handlers.FleetHandler(s)))
+	mux.Handle("GET /v1/sessions", withRESTTimeout(handlers.SessionsListHandler(s)))
 	mux.Handle("GET /v1/sessions/", withRESTTimeout(handlers.SessionsHandler(s)))
 	mux.Handle("GET /v1/events/", withRESTTimeout(handlers.ContentHandler(s)))
 	mux.Handle("GET /v1/policy", withRESTTimeout(handlers.EffectivePolicyHandler(s)))

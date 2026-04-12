@@ -328,9 +328,16 @@ definitions:
     type: object
   store.SearchResultSession:
     properties:
+      context:
+        additionalProperties: true
+        type: object
+      ended_at:
+        type: string
       flavor:
         type: string
       host:
+        type: string
+      model:
         type: string
       session_id:
         type: string
@@ -338,6 +345,10 @@ definitions:
         type: string
       state:
         type: string
+      token_limit:
+        type: integer
+      tokens_used:
+        type: integer
     type: object
   store.SearchResults:
     properties:
@@ -405,6 +416,47 @@ definitions:
       tokens_used:
         type: integer
       warn_at_pct:
+        type: integer
+    type: object
+  store.SessionListItem:
+    properties:
+      context:
+        additionalProperties: true
+        type: object
+      duration_s:
+        type: number
+      ended_at:
+        type: string
+      flavor:
+        type: string
+      host:
+        type: string
+      model:
+        type: string
+      session_id:
+        type: string
+      started_at:
+        type: string
+      state:
+        type: string
+      token_limit:
+        type: integer
+      tokens_used:
+        type: integer
+    type: object
+  store.SessionsResponse:
+    properties:
+      has_more:
+        type: boolean
+      limit:
+        type: integer
+      offset:
+        type: integer
+      sessions:
+        items:
+          $ref: '#/definitions/store.SessionListItem'
+        type: array
+      total:
         type: integer
     type: object
 host: localhost:8081
@@ -913,6 +965,70 @@ paths:
       summary: Cross-entity search
       tags:
       - search
+  /v1/sessions:
+    get:
+      description: Returns sessions matching time range, state, flavor, model, and
+        search filters with pagination and sort support.
+      parameters:
+      - description: Full-text search across flavor, host, model, hostname, os, git_branch
+        in: query
+        name: q
+        type: string
+      - description: 'Start time (ISO 8601, default: 7 days ago)'
+        in: query
+        name: from
+        type: string
+      - description: 'End time (ISO 8601, default: now)'
+        in: query
+        name: to
+        type: string
+      - description: 'Filter by state (repeatable: active, idle, stale, closed, lost)'
+        in: query
+        name: state
+        type: string
+      - description: Filter by flavor (repeatable)
+        in: query
+        name: flavor
+        type: string
+      - description: Filter by model
+        in: query
+        name: model
+        type: string
+      - description: 'Sort field: started_at, duration, tokens_used, flavor (default:
+          started_at)'
+        in: query
+        name: sort
+        type: string
+      - description: 'Sort order: asc, desc (default: desc)'
+        in: query
+        name: order
+        type: string
+      - description: Max results (default 25, max 100)
+        in: query
+        name: limit
+        type: integer
+      - description: Offset for pagination (default 0)
+        in: query
+        name: offset
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/store.SessionsResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      summary: List sessions with filters, search, and pagination
+      tags:
+      - sessions
   /v1/sessions/{id}:
     get:
       description: Returns session metadata (including effective policy thresholds)

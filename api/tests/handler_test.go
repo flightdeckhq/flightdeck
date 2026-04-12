@@ -240,9 +240,65 @@ func (m *mockStore) Search(_ context.Context, query string) (*store.SearchResult
 		}, nil
 	}
 	return &store.SearchResults{
-		Agents:   []store.SearchResultAgent{{Flavor: "test-agent", AgentType: "autonomous", LastSeen: "2026-04-08"}},
-		Sessions: []store.SearchResultSession{{SessionID: "s1", Flavor: "test-agent", Host: "host-1", State: "active", StartedAt: "2026-04-08"}},
-		Events:   []store.SearchResultEvent{{EventID: "e1", SessionID: "s1", EventType: "post_call", ToolName: "search", Model: "claude", OccurredAt: "2026-04-08"}},
+		Agents: []store.SearchResultAgent{{Flavor: "test-agent", AgentType: "autonomous", LastSeen: "2026-04-08"}},
+		Sessions: []store.SearchResultSession{{
+			SessionID: "s1", Flavor: "test-agent", Host: "host-1", State: "active", StartedAt: "2026-04-08",
+			Model: "claude-sonnet-4-6", TokensUsed: 3000, Context: map[string]interface{}{"os": "Linux", "hostname": "host-1"},
+		}},
+		Events: []store.SearchResultEvent{{EventID: "e1", SessionID: "s1", EventType: "post_call", ToolName: "search", Model: "claude", OccurredAt: "2026-04-08"}},
+	}, nil
+}
+
+func (m *mockStore) GetSessions(_ context.Context, params store.SessionsParams) (*store.SessionsResponse, error) {
+	sessions := []store.SessionListItem{
+		{SessionID: "s1", Flavor: "research-agent", State: "active", StartedAt: time.Now(), TokensUsed: 3000, Context: map[string]interface{}{"os": "Linux"}},
+		{SessionID: "s2", Flavor: "research-agent", State: "closed", StartedAt: time.Now().Add(-time.Hour), TokensUsed: 2000, Context: map[string]interface{}{"os": "Darwin"}},
+		{SessionID: "s3", Flavor: "dev-helper", State: "active", StartedAt: time.Now(), TokensUsed: 1000, Context: map[string]interface{}{}},
+	}
+	// Apply query filter (simple substring match for mock)
+	if params.Query != "" {
+		var filtered []store.SessionListItem
+		for _, s := range sessions {
+			if strings.Contains(strings.ToLower(s.Flavor), strings.ToLower(params.Query)) ||
+				strings.Contains(strings.ToLower(s.State), strings.ToLower(params.Query)) {
+				filtered = append(filtered, s)
+			}
+		}
+		sessions = filtered
+	}
+	// Apply state filter
+	if len(params.States) > 0 {
+		stateSet := make(map[string]bool)
+		for _, st := range params.States {
+			stateSet[st] = true
+		}
+		var filtered []store.SessionListItem
+		for _, s := range sessions {
+			if stateSet[s.State] {
+				filtered = append(filtered, s)
+			}
+		}
+		sessions = filtered
+	}
+	if sessions == nil {
+		sessions = []store.SessionListItem{}
+	}
+	total := len(sessions)
+	end := params.Offset + params.Limit
+	if end > total {
+		end = total
+	}
+	start := params.Offset
+	if start > total {
+		start = total
+	}
+	page := sessions[start:end]
+	return &store.SessionsResponse{
+		Sessions: page,
+		Total:    total,
+		Limit:    params.Limit,
+		Offset:   params.Offset,
+		HasMore:  params.Offset+params.Limit <= total,
 	}, nil
 }
 
@@ -1689,5 +1745,160 @@ func TestGetEventsHasMoreFormula(t *testing.T) {
 				t.Errorf("has_more: expected %v, got %v", tc.hasMore, got)
 			}
 		})
+	}
+}
+
+// --- Sessions List Tests ---
+
+func TestSessionsListHandler_DefaultParams(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.SessionsListHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/sessions", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp store.SessionsResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Total != 3 {
+		t.Errorf("expected total=3, got %d", resp.Total)
+	}
+	if resp.Limit != 25 {
+		t.Errorf("expected default limit=25, got %d", resp.Limit)
+	}
+	if resp.Offset != 0 {
+		t.Errorf("expected default offset=0, got %d", resp.Offset)
+	}
+}
+
+func TestSessionsListHandler_StateFilter(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.SessionsListHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/sessions?state=active", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp store.SessionsResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	for _, sess := range resp.Sessions {
+		if sess.State != "active" {
+			t.Errorf("expected all sessions to be active, got %s", sess.State)
+		}
+	}
+}
+
+func TestSessionsListHandler_InvalidState(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.SessionsListHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/sessions?state=bogus", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for invalid state, got %d", w.Code)
+	}
+}
+
+func TestSessionsListHandler_InvalidSort(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.SessionsListHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/sessions?sort=hacker", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for invalid sort, got %d", w.Code)
+	}
+}
+
+func TestSessionsListHandler_LimitExceedsMax(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.SessionsListHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/sessions?limit=200", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for limit>100, got %d", w.Code)
+	}
+}
+
+func TestSessionsListHandler_QueryFilter(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.SessionsListHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/sessions?q=research", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp store.SessionsResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	for _, sess := range resp.Sessions {
+		if !strings.Contains(strings.ToLower(sess.Flavor), "research") {
+			t.Errorf("expected filtered flavor to contain 'research', got %s", sess.Flavor)
+		}
+	}
+}
+
+func TestSessionsListHandler_IncludesContext(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.SessionsListHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/sessions", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var resp store.SessionsResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Sessions) == 0 {
+		t.Fatal("expected at least one session")
+	}
+	ctx := resp.Sessions[0].Context
+	if ctx == nil {
+		t.Fatal("expected non-nil context on first session")
+	}
+	if ctx["os"] != "Linux" {
+		t.Errorf("expected context.os=Linux, got %v", ctx["os"])
+	}
+}
+
+func TestSearchReturnsExtendedSessionFields(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.SearchHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/search?q=test", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var resp store.SearchResults
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Sessions) == 0 {
+		t.Fatal("expected at least one session result")
+	}
+	sess := resp.Sessions[0]
+	if sess.Model != "claude-sonnet-4-6" {
+		t.Errorf("expected model=claude-sonnet-4-6, got %s", sess.Model)
+	}
+	if sess.TokensUsed != 3000 {
+		t.Errorf("expected tokens_used=3000, got %d", sess.TokensUsed)
+	}
+	if sess.Context == nil {
+		t.Fatal("expected non-nil context")
+	}
+	if sess.Context["os"] != "Linux" {
+		t.Errorf("expected context.os=Linux, got %v", sess.Context["os"])
 	}
 }

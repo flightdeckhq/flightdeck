@@ -51,6 +51,7 @@ type Querier interface {
 	GetCustomDirectives(ctx context.Context, flavor string) ([]CustomDirective, error)
 	CustomDirectiveExists(ctx context.Context, fingerprint, flavor string) (bool, error)
 	GetEvents(ctx context.Context, params EventsParams) (*EventsResponse, error)
+	GetSessions(ctx context.Context, params SessionsParams) (*SessionsResponse, error)
 	QueryAnalytics(ctx context.Context, params AnalyticsParams) (*AnalyticsResponse, error)
 	Search(ctx context.Context, query string) (*SearchResults, error)
 	GetContextFacets(ctx context.Context) (map[string][]ContextFacetValue, error)

@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -16,12 +17,19 @@ type SearchResultAgent struct {
 }
 
 // SearchResultSession is a search hit on the sessions table.
+// Includes all fields needed to render a sessions table row in the
+// Investigate screen without a second round-trip per hit.
 type SearchResultSession struct {
-	SessionID string `json:"session_id"`
-	Flavor    string `json:"flavor"`
-	Host      string `json:"host"`
-	State     string `json:"state"`
-	StartedAt string `json:"started_at"`
+	SessionID  string                 `json:"session_id"`
+	Flavor     string                 `json:"flavor"`
+	Host       string                 `json:"host"`
+	State      string                 `json:"state"`
+	StartedAt  string                 `json:"started_at"`
+	EndedAt    *string                `json:"ended_at"`
+	Model      string                 `json:"model"`
+	TokensUsed int                    `json:"tokens_used"`
+	TokenLimit *int64                 `json:"token_limit"`
+	Context    map[string]interface{} `json:"context"`
 }
 
 // SearchResultEvent is a search hit on the events table.
@@ -81,12 +89,21 @@ func (s *Store) Search(ctx context.Context, query string) (*SearchResults, error
 		return nil
 	})
 
-	// Search sessions
+	// Search sessions -- matches across core columns and context JSONB
 	g.Go(func() error {
 		rows, err := s.pool.Query(ctx, `
-			SELECT session_id::text, flavor, COALESCE(host, ''), state, started_at::text
+			SELECT session_id::text, flavor, COALESCE(host, ''), state, started_at::text,
+			       ended_at::text, COALESCE(model, ''), tokens_used, token_limit, context
 			FROM sessions
-			WHERE session_id::text ILIKE $1 OR COALESCE(host, '') ILIKE $1
+			WHERE session_id::text ILIKE $1
+			   OR flavor ILIKE $1
+			   OR COALESCE(host, '') ILIKE $1
+			   OR COALESCE(model, '') ILIKE $1
+			   OR COALESCE(context->>'hostname', '') ILIKE $1
+			   OR COALESCE(context->>'os', '') ILIKE $1
+			   OR COALESCE(context->>'git_branch', '') ILIKE $1
+			   OR COALESCE(context->>'python_version', '') ILIKE $1
+			   OR COALESCE(context->'frameworks'::text, '') ILIKE $1
 			ORDER BY started_at DESC
 			LIMIT 5
 		`, pattern)
@@ -95,11 +112,26 @@ func (s *Store) Search(ctx context.Context, query string) (*SearchResults, error
 		}
 		defer rows.Close()
 		for rows.Next() {
-			var s SearchResultSession
-			if err := rows.Scan(&s.SessionID, &s.Flavor, &s.Host, &s.State, &s.StartedAt); err != nil {
+			var sr SearchResultSession
+			var endedAt *string
+			var contextRaw []byte
+			if err := rows.Scan(
+				&sr.SessionID, &sr.Flavor, &sr.Host, &sr.State, &sr.StartedAt,
+				&endedAt, &sr.Model, &sr.TokensUsed, &sr.TokenLimit, &contextRaw,
+			); err != nil {
 				return fmt.Errorf("scan session: %w", err)
 			}
-			results.Sessions = append(results.Sessions, s)
+			sr.EndedAt = endedAt
+			if len(contextRaw) > 0 {
+				var v map[string]interface{}
+				if jsonErr := json.Unmarshal(contextRaw, &v); jsonErr == nil {
+					sr.Context = v
+				}
+			}
+			if sr.Context == nil {
+				sr.Context = map[string]interface{}{}
+			}
+			results.Sessions = append(results.Sessions, sr)
 		}
 		return nil
 	})

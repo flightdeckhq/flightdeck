@@ -1767,7 +1767,7 @@ the handler ran.
 
 ---
 
-## D086 -- KI14 and KI15 deferred to Phase 5
+## D086 -- KI14 and KI15 deferred to Phase 5 (KI14 resolved in Phase 4.9)
 
 **Decision:** Two architectural limitations discovered during
 the Phase 4.5 audit are deferred to Phase 5 rather than fixed
@@ -1800,6 +1800,10 @@ Deferred because all three options require the supervisor to
 choose, and the existing tests work around the bug by
 pre-registering directives via `POST /api/v1/directives/register`
 directly.
+
+Resolved in: Phase 4.9
+Resolution: Option 1 chosen -- separate `api_url` param added to
+`init()`. See D088 for full details.
 
 **KI15 -- sensor singleton.** The sensor maintains a
 process-wide singleton via the module-level `_session` global.
@@ -1982,5 +1986,54 @@ vocabulary: the component is a "sensor," not a "guard."
 `GuardedStream` was retained because it IS a guard (it
 reconciles tokens on context-manager exit including early
 exit) and the "sensor" name would misrepresent its role.
+
+---
+
+## D088 -- KI14 resolved: separate api_url for control-plane calls
+
+**Decision:** Add an `api_url` parameter to `init()` so the sensor
+uses separate base URLs for ingestion (events, heartbeats) and
+control-plane operations (directive registration, directive sync,
+policy prefetch).
+
+**Problem:** The sensor built all URLs against a single `_base_url`
+from the `server` parameter. When `server` pointed to the ingestion
+service (e.g. `http://localhost:4000/ingest`), directive and policy
+calls hit `/ingest/v1/directives/*` and `/ingest/v1/policy` -- routes
+that do NOT exist on the ingestion service. The handlers live on the
+API service. Result: silent 404s on every directive registration and
+policy prefetch at `init()` time. The broad `except Exception` in
+the transport client swallowed the errors and the sensor proceeded
+without registering directives or loading policy.
+
+**Options considered:**
+
+1. **Nginx proxy rules** forwarding `/ingest/v1/directives/*` and
+   `/ingest/v1/policy` to the API service. Rejected: couples the fix
+   to a specific reverse-proxy configuration, breaks in deployments
+   without nginx, and muddies the architectural boundary between
+   ingestion (high-throughput fire-and-forget) and API (low-frequency
+   control plane).
+
+2. **Separate `api_url` parameter on `init()`** (chosen). The sensor
+   explicitly targets the correct service for each call type. Works
+   in all deployment environments. Default derivation
+   (`server.replace("/ingest", "/api")`) handles the common dev
+   setup without configuration.
+
+**What changed:**
+
+- `SensorConfig` gains `api_url: str` field (`core/types.py`)
+- `init()` gains `api_url: str | None = None` param; reads
+  `FLIGHTDECK_API_URL` env var; defaults to
+  `server.rstrip("/").replace("/ingest", "/api")`
+- `ControlPlaneClient.__init__` gains `api_url: str` param; stores
+  as `_api_url`; `sync_directives` and `register_directives` use
+  `_api_url` instead of `_base_url`
+- `Session._preflight_policy` uses `config.api_url` instead of
+  `config.server`
+- TODO(KI14) comment removed from `transport/client.py`
+
+Resolved in: Phase 4.9
 
 ---

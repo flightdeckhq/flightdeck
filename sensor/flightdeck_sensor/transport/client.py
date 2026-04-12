@@ -37,9 +37,11 @@ class ControlPlaneClient:
         self,
         server: str,
         token: str,
+        api_url: str = "",
         unavailable_policy: str = "continue",
     ) -> None:
         self._base_url = server.rstrip("/")
+        self._api_url = api_url.rstrip("/") if api_url else self._base_url
         self._token = token
         self._unavailable_policy = unavailable_policy
 
@@ -62,15 +64,7 @@ class ControlPlaneClient:
         Returns a list of fingerprints the server does not recognise.
         On any error, returns an empty list (fail open).
         """
-        # TODO(KI14)[Phase 4.9]: This URL is built against the ingestion
-        # base URL but /v1/directives/sync lives on the api service.
-        # In dev nginx routes /ingest/* to ingestion (which 404s) and
-        # the broad except below swallows the failure. Needs an
-        # architectural decision: separate api_url config, or nginx
-        # forwarding for /ingest/v1/directives/*, or a single /v1/*
-        # root. Same applies to register_directives below and to
-        # core/session.py:_preflight_policy.
-        url = f"{self._base_url}/v1/directives/sync"
+        url = f"{self._api_url}/v1/directives/sync"
         body = json.dumps({"flavor": flavor, "directives": directives}).encode()
         req = urllib.request.Request(
             url,
@@ -107,7 +101,7 @@ class ControlPlaneClient:
 
         Fire-and-forget: ignores all errors (fail open).
         """
-        url = f"{self._base_url}/v1/directives/register"
+        url = f"{self._api_url}/v1/directives/register"
         body = json.dumps({"flavor": flavor, "directives": directives}).encode()
         req = urllib.request.Request(
             url,

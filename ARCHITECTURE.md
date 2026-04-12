@@ -516,6 +516,7 @@ process.
 def init(
     server: str,
     token: str,
+    api_url: str | None = None,      # control-plane base URL -- see D088
     capture_prompts: bool = False,   # opt-in only -- see DECISIONS.md D019
     quiet: bool = False,
     limit: int | None = None,        # local WARN-only token threshold -- see D035
@@ -524,11 +525,17 @@ def init(
     """
     Initialize the sensor.
 
+    api_url is the base URL for control-plane calls (directive registration,
+    directive sync, policy prefetch). When None, derived from server by
+    replacing "/ingest" with "/api". Override via FLIGHTDECK_API_URL env var.
+    See DECISIONS.md D088.
+
     limit sets a local WARN-only token threshold. Never blocks. Never degrades.
     Most restrictive threshold wins when both local and server policies are active.
     See DECISIONS.md D035.
 
     Reads from environment (override init() params):
+        FLIGHTDECK_API_URL            -- control-plane base URL (overrides api_url)
         AGENT_FLAVOR                  -- persistent identity, e.g. "research-agent"
         AGENT_TYPE                    -- "autonomous", "supervised", or "batch"
         FLIGHTDECK_UNAVAILABLE_POLICY -- "continue" (default) or "halt"
@@ -1125,17 +1132,21 @@ that is not covered above. See DECISIONS.md D059-D072 for the rationale.
   had `task_done()` called on it. The directive queue is internal
   control flow; the event queue is the externally observable state
   that operators care about flushing before shutdown. See D081.
+- `ControlPlaneClient` uses two base URLs (D088):
+  - `_base_url` (from ``server``) for high-throughput ingestion:
+    ``POST /v1/events``, ``POST /v1/heartbeat``
+  - `_api_url` (from ``api_url``) for low-frequency control plane:
+    ``POST /v1/directives/sync``, ``POST /v1/directives/register``,
+    ``GET /v1/policy``
+  When ``api_url`` is not provided, it is derived from ``server`` by
+  replacing ``/ingest`` with ``/api``. This ensures directive
+  registration and policy prefetch reach the API service, which hosts
+  those handlers, rather than the ingestion service which does not.
 - `ControlPlaneClient.sync_directives(flavor, directives)`: POST to
-  `/v1/directives/sync`. Returns the list of unknown fingerprints from
-  `SyncResponseSchema`. **KI14**: in dev this URL resolves to the
-  ingestion service via `/ingest/v1/directives/sync` and 404s
-  because the handler lives on the API service. The broad
-  `except Exception` swallows the error and the sensor proceeds
-  without auto-registration. Tests work around this by registering
-  directives via `POST /api/v1/directives/register` directly. Same
-  applies to `register_directives` and to `_preflight_policy`.
+  ``{api_url}/v1/directives/sync``. Returns the list of unknown
+  fingerprints from `SyncResponseSchema`.
 - `ControlPlaneClient.register_directives(flavor, directives)`: POST to
-  `/v1/directives/register`. Fire-and-forget; logs failures.
+  ``{api_url}/v1/directives/register``. Fire-and-forget; logs failures.
 - `_parse_directive(body)`: now uses `DirectiveResponseSchema`. On
   `ValidationError`, logs a warning and returns `None` (fail open).
 

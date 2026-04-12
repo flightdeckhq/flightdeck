@@ -1,6 +1,6 @@
 module github.com/flightdeckhq/flightdeck/ingestion
 
-go 1.26
+go 1.26.2
 
 require (
 	github.com/jackc/pgx/v5 v5.7.2

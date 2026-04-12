@@ -1,6 +1,6 @@
 module github.com/flightdeckhq/flightdeck/workers
 
-go 1.26
+go 1.26.2
 
 require (
 	github.com/golang-migrate/migrate/v4 v4.19.1

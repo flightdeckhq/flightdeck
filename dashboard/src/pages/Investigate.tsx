@@ -192,12 +192,12 @@ function FacetIcon({ groupKey, value }: { groupKey: string; value: string }) {
 // State badge pill
 // ---------------------------------------------------------------------------
 
-const STATE_BADGE_STYLES: Record<string, { bg: string; color: string }> = {
+const STATE_BADGE_STYLES: Record<string, { bg: string; color: string; border?: string }> = {
   active: { bg: "color-mix(in srgb, var(--status-active) 15%, transparent)", color: "var(--status-active)" },
   idle: { bg: "color-mix(in srgb, var(--status-idle) 15%, transparent)", color: "var(--status-idle)" },
   stale: { bg: "color-mix(in srgb, var(--status-stale) 15%, transparent)", color: "var(--status-stale)" },
   lost: { bg: "color-mix(in srgb, var(--status-lost) 15%, transparent)", color: "var(--status-lost)" },
-  closed: { bg: "var(--border-subtle)", color: "var(--text-muted)" },
+  closed: { bg: "transparent", color: "var(--text-muted)", border: "1px solid var(--border)" },
 };
 
 function StateBadge({ state }: { state: string }) {
@@ -213,6 +213,7 @@ function StateBadge({ state }: { state: string }) {
         fontWeight: 500,
         background: s.bg,
         color: s.color,
+        border: s.border ?? "1px solid transparent",
       }}
     >
       <span
@@ -803,7 +804,7 @@ export function Investigate() {
                         ? "color-mix(in srgb, var(--primary) 10%, transparent)"
                         : undefined,
                     }}
-                    onMouseEnter={(e) => { if (selectedSessionId !== s.session_id) e.currentTarget.style.background = "var(--bg-elevated)"; }}
+                    onMouseEnter={(e) => { if (selectedSessionId !== s.session_id) e.currentTarget.style.background = "rgba(128,128,128,0.08)"; }}
                     onMouseLeave={(e) => { if (selectedSessionId !== s.session_id) e.currentTarget.style.background = ""; }}
                   >
                     <td className="truncate" style={{ padding: "0 12px", width: COL_WIDTHS.flavor, fontSize: 13, fontWeight: 500, color: "var(--text)" }}>{s.flavor}</td>

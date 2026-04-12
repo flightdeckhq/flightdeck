@@ -161,7 +161,8 @@ function FacetIcon({ groupKey, value }: { groupKey: string; value: string }) {
   if (groupKey === "state") {
     return (
       <span
-        className={cn("inline-block h-1.5 w-1.5 rounded-full shrink-0", STATE_COLORS[value] ?? "bg-text-muted")}
+        className={cn("inline-block rounded-full shrink-0", STATE_COLORS[value] ?? "bg-text-muted")}
+        style={{ width: 5, height: 5 }}
       />
     );
   }
@@ -188,6 +189,42 @@ function FacetIcon({ groupKey, value }: { groupKey: string; value: string }) {
 }
 
 // ---------------------------------------------------------------------------
+// State badge pill
+// ---------------------------------------------------------------------------
+
+const STATE_BADGE_STYLES: Record<string, { bg: string; color: string }> = {
+  active: { bg: "color-mix(in srgb, var(--status-active) 15%, transparent)", color: "var(--status-active)" },
+  idle: { bg: "color-mix(in srgb, var(--status-idle) 15%, transparent)", color: "var(--status-idle)" },
+  stale: { bg: "color-mix(in srgb, var(--status-stale) 15%, transparent)", color: "var(--status-stale)" },
+  lost: { bg: "color-mix(in srgb, var(--status-lost) 15%, transparent)", color: "var(--status-lost)" },
+  closed: { bg: "var(--border-subtle)", color: "var(--text-muted)" },
+};
+
+function StateBadge({ state }: { state: string }) {
+  const s = STATE_BADGE_STYLES[state] ?? STATE_BADGE_STYLES.closed;
+  return (
+    <span
+      className="inline-flex items-center"
+      style={{
+        gap: 5,
+        padding: "2px 8px",
+        borderRadius: 9999,
+        fontSize: 11,
+        fontWeight: 500,
+        background: s.bg,
+        color: s.color,
+      }}
+    >
+      <span
+        className="inline-block rounded-full"
+        style={{ width: 5, height: 5, background: s.color, flexShrink: 0 }}
+      />
+      {state}
+    </span>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Skeleton rows for loading state
 // ---------------------------------------------------------------------------
 
@@ -195,33 +232,33 @@ function SkeletonRows() {
   return (
     <>
       {[0, 1, 2, 3, 4].map((i) => (
-        <tr key={i} style={{ height: 48 }}>
-          <td className="px-3 py-3" style={{ width: COL_WIDTHS.flavor }}>
-            <div className="h-4 w-3/4 animate-pulse rounded" style={{ background: "var(--border)" }} />
+        <tr key={i} style={{ height: 44, borderBottom: "1px solid var(--border-subtle)" }}>
+          <td style={{ padding: "0 12px", width: COL_WIDTHS.flavor }}>
+            <div className="h-3.5 w-3/4 animate-pulse rounded" style={{ background: "var(--border)" }} />
           </td>
-          <td className="px-3 py-3" style={{ width: COL_WIDTHS.hostname }}>
-            <div className="h-4 w-2/3 animate-pulse rounded" style={{ background: "var(--border)" }} />
+          <td style={{ padding: "0 12px", width: COL_WIDTHS.hostname }}>
+            <div className="h-3.5 w-2/3 animate-pulse rounded" style={{ background: "var(--border)" }} />
           </td>
-          <td className="px-2 py-3" style={{ width: COL_WIDTHS.os }}>
-            <div className="h-4 w-4 animate-pulse rounded" style={{ background: "var(--border)" }} />
+          <td style={{ padding: "0 8px", width: COL_WIDTHS.os }}>
+            <div className="h-4 w-4 animate-pulse rounded" style={{ background: "var(--border)", margin: "0 auto" }} />
           </td>
-          <td className="px-2 py-3" style={{ width: COL_WIDTHS.orch }}>
-            <div className="h-4 w-4 animate-pulse rounded" style={{ background: "var(--border)" }} />
+          <td style={{ padding: "0 8px", width: COL_WIDTHS.orch }}>
+            <div className="h-4 w-4 animate-pulse rounded" style={{ background: "var(--border)", margin: "0 auto" }} />
           </td>
-          <td className="px-3 py-3" style={{ width: COL_WIDTHS.model }}>
-            <div className="h-4 w-3/4 animate-pulse rounded" style={{ background: "var(--border)" }} />
+          <td style={{ padding: "0 12px", width: COL_WIDTHS.model }}>
+            <div className="h-3.5 w-3/4 animate-pulse rounded" style={{ background: "var(--border)" }} />
           </td>
-          <td className="px-3 py-3" style={{ width: COL_WIDTHS.started }}>
-            <div className="h-4 w-2/3 animate-pulse rounded" style={{ background: "var(--border)" }} />
+          <td style={{ padding: "0 12px", width: COL_WIDTHS.started }}>
+            <div className="h-3.5 w-2/3 animate-pulse rounded" style={{ background: "var(--border)" }} />
           </td>
-          <td className="px-3 py-3" style={{ width: COL_WIDTHS.duration }}>
-            <div className="h-4 w-1/2 animate-pulse rounded" style={{ background: "var(--border)" }} />
+          <td style={{ padding: "0 12px", width: COL_WIDTHS.duration }}>
+            <div className="h-3.5 w-1/2 animate-pulse rounded" style={{ background: "var(--border)" }} />
           </td>
-          <td className="px-3 py-3" style={{ width: COL_WIDTHS.tokens }}>
-            <div className="h-4 w-1/2 animate-pulse rounded" style={{ background: "var(--border)" }} />
+          <td style={{ padding: "0 12px", width: COL_WIDTHS.tokens }}>
+            <div className="h-3.5 w-1/2 animate-pulse rounded" style={{ background: "var(--border)" }} />
           </td>
-          <td className="px-3 py-3" style={{ width: COL_WIDTHS.state }}>
-            <div className="h-4 w-2/3 animate-pulse rounded" style={{ background: "var(--border)" }} />
+          <td style={{ padding: "0 12px", width: COL_WIDTHS.state }}>
+            <div className="h-3.5 w-2/3 animate-pulse rounded" style={{ background: "var(--border)" }} />
           </td>
         </tr>
       ))}
@@ -450,13 +487,18 @@ export function Investigate() {
   // Render
   // -----------------------------------------------------------------------
 
-  const sortArrow = (col: string) => {
-    if (urlState.sort !== col) return null;
-    return (
-      <span style={{ color: "var(--primary)" }}>
-        {urlState.order === "asc" ? " \u2191" : " \u2193"}
-      </span>
-    );
+  const sortArrow = (col: string, sortable = true) => {
+    if (urlState.sort === col) {
+      return (
+        <span style={{ color: "var(--primary)" }}>
+          {urlState.order === "asc" ? " \u2191" : " \u2193"}
+        </span>
+      );
+    }
+    if (sortable) {
+      return <span style={{ color: "var(--text-disabled)", opacity: 0 }} className="group-hover:!opacity-100 transition-opacity duration-150">{" \u2195"}</span>;
+    }
+    return null;
   };
 
   const dateRange = useMemo(
@@ -484,11 +526,12 @@ export function Investigate() {
             onChange={(e) => handleSearchChange(e.target.value)}
             onKeyDown={handleSearchKeyDown}
             placeholder="Search flavor, model, hostname, git branch..."
-            className="h-10 w-full rounded-md text-sm placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-primary"
+            className="h-10 w-full rounded-md placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-primary"
             style={{
               border: "2px solid var(--border)",
               background: "var(--surface)",
               color: "var(--text)",
+              fontSize: 13,
               paddingLeft: 40,
               paddingRight: searchInput ? 36 : 12,
             }}
@@ -517,10 +560,11 @@ export function Investigate() {
         <div className="flex items-center gap-2 shrink-0">
           <button
             onClick={() => doFetch(urlState)}
-            className="flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs font-medium transition-colors duration-150 hover:bg-surface-hover"
+            className="flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 font-medium transition-colors duration-150 hover:bg-surface-hover"
             style={{
+              fontSize: 12,
               borderColor: "var(--border)",
-              color: "var(--text-secondary)",
+              color: "var(--text-muted)",
             }}
             aria-label="Refresh"
           >
@@ -528,14 +572,15 @@ export function Investigate() {
             Refresh
           </button>
           <div className="flex items-center gap-1.5">
-            <span className="text-[11px] whitespace-nowrap" style={{ color: "var(--text-muted)" }}>
+            <span className="whitespace-nowrap" style={{ fontSize: 12, color: "var(--text-muted)" }}>
               Auto-refresh:
             </span>
             <select
               value={autoRefreshMs}
               onChange={(e) => setAutoRefreshMs(Number(e.target.value))}
-              className="h-7 rounded-md border px-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-primary"
+              className="h-7 rounded-md border px-1.5 focus:outline-none focus:ring-1 focus:ring-primary"
               style={{
+                fontSize: 12,
                 borderColor: "var(--border)",
                 background: "var(--surface)",
                 color: "var(--text-secondary)",
@@ -548,7 +593,7 @@ export function Investigate() {
               ))}
             </select>
           </div>
-          <span className="text-[11px] whitespace-nowrap" style={{ color: "var(--text-muted)" }}>
+          <span className="whitespace-nowrap" style={{ fontSize: 12, color: "var(--text-muted)" }}>
             {lastUpdatedLabel}
           </span>
         </div>
@@ -558,23 +603,19 @@ export function Investigate() {
       <div className="flex flex-1 overflow-hidden">
         {/* Left sidebar */}
         <div
-          className="w-[220px] flex-shrink-0 overflow-y-auto border-r px-3 pt-3 pb-3"
-          style={{ borderColor: "var(--border)" }}
+          className="w-[220px] flex-shrink-0 overflow-y-auto"
+          style={{ borderRight: "1px solid var(--border-subtle)" }}
         >
           {facets.map((group, gi) => (
             <div key={group.key}>
-              {gi > 0 && (
-                <div
-                  className="mt-5 mb-2"
-                  style={{ borderTop: "1px solid color-mix(in srgb, var(--border) 30%, transparent)" }}
-                />
-              )}
               <div
-                className={cn("mb-1.5 font-semibold uppercase", gi === 0 && "mt-0")}
+                className="font-semibold uppercase"
                 style={{
-                  fontSize: "0.7rem",
+                  fontSize: 10,
+                  fontWeight: 600,
                   letterSpacing: "0.08em",
                   color: "var(--text-muted)",
+                  padding: gi === 0 ? "12px 12px 6px 12px" : "16px 12px 6px 12px",
                 }}
               >
                 {group.label}
@@ -588,20 +629,30 @@ export function Investigate() {
                   <button
                     key={v.value}
                     onClick={() => handleFacetClick(group.key, v.value)}
-                    className={cn(
-                      "flex w-full items-center rounded px-2 py-1 text-xs transition-colors duration-150 cursor-pointer",
-                      isActive
-                        ? "bg-primary/10 text-primary"
-                        : "text-text hover:bg-surface-hover"
-                    )}
+                    className="flex w-full items-center cursor-pointer transition-colors duration-150"
+                    style={{
+                      fontSize: 13,
+                      padding: "4px 12px",
+                      borderRadius: 4,
+                      color: isActive ? "var(--primary)" : "var(--text)",
+                      background: isActive ? "color-mix(in srgb, var(--primary) 15%, transparent)" : undefined,
+                    }}
+                    onMouseEnter={(e) => { if (!isActive) e.currentTarget.style.background = "var(--bg-elevated)"; }}
+                    onMouseLeave={(e) => { if (!isActive) e.currentTarget.style.background = ""; }}
                   >
-                    <span className="flex items-center gap-1.5 min-w-0 flex-1">
+                    <span className="flex items-center min-w-0 flex-1" style={{ gap: 8 }}>
                       <FacetIcon groupKey={group.key} value={v.value} />
                       <span className="truncate">{v.value}</span>
                     </span>
                     <span
-                      className="ml-2 shrink-0"
-                      style={{ color: "var(--text-muted)", fontSize: "0.7rem" }}
+                      className="shrink-0"
+                      style={{
+                        fontSize: 11,
+                        fontWeight: 500,
+                        color: "var(--text-muted)",
+                        marginLeft: "auto",
+                        fontVariantNumeric: "tabular-nums",
+                      }}
                     >
                       {v.count}
                     </span>
@@ -611,7 +662,7 @@ export function Investigate() {
             </div>
           ))}
           {facets.length === 0 && !loading && (
-            <div className="text-xs py-4 text-center" style={{ color: "var(--text-muted)" }}>
+            <div style={{ fontSize: 12, color: "var(--text-muted)", padding: "16px 12px", textAlign: "center" }}>
               No facets available
             </div>
           )}
@@ -676,63 +727,63 @@ export function Investigate() {
               <thead>
                 <tr
                   className="sticky top-0 z-10 text-left"
-                  style={{ background: "var(--surface)", borderBottom: "1px solid var(--border)" }}
+                  style={{ background: "var(--surface)", borderBottom: "1px solid var(--border)", height: 32 }}
                 >
                   <th
-                    className="cursor-pointer px-3 py-2.5 font-semibold uppercase transition-colors duration-150 hover:text-text"
-                    style={{ color: "var(--text-muted)", fontSize: "0.7rem", letterSpacing: "0.06em", width: COL_WIDTHS.flavor }}
+                    className="group cursor-pointer uppercase transition-colors duration-150 hover:text-text"
+                    style={{ color: "var(--text-muted)", fontSize: 10, fontWeight: 600, letterSpacing: "0.07em", padding: "0 12px", width: COL_WIDTHS.flavor }}
                     onClick={() => handleSort("flavor")}
                   >
                     Flavor{sortArrow("flavor")}
                   </th>
                   <th
-                    className="px-3 py-2.5 font-semibold uppercase"
-                    style={{ color: "var(--text-muted)", fontSize: "0.7rem", letterSpacing: "0.06em", width: COL_WIDTHS.hostname }}
+                    className="uppercase"
+                    style={{ color: "var(--text-muted)", fontSize: 10, fontWeight: 600, letterSpacing: "0.07em", padding: "0 12px", width: COL_WIDTHS.hostname }}
                   >
                     Hostname
                   </th>
                   <th
-                    className="px-2 py-2.5 font-semibold uppercase"
-                    style={{ color: "var(--text-muted)", fontSize: "0.7rem", letterSpacing: "0.06em", width: COL_WIDTHS.os }}
+                    className="uppercase"
+                    style={{ color: "var(--text-muted)", fontSize: 10, fontWeight: 600, letterSpacing: "0.07em", padding: "0 8px", width: COL_WIDTHS.os }}
                   >
                     OS
                   </th>
                   <th
-                    className="px-2 py-2.5 font-semibold uppercase"
-                    style={{ color: "var(--text-muted)", fontSize: "0.7rem", letterSpacing: "0.06em", width: COL_WIDTHS.orch }}
+                    className="uppercase"
+                    style={{ color: "var(--text-muted)", fontSize: 10, fontWeight: 600, letterSpacing: "0.07em", padding: "0 8px", width: COL_WIDTHS.orch }}
                   >
                     Orch
                   </th>
                   <th
-                    className="px-3 py-2.5 font-semibold uppercase"
-                    style={{ color: "var(--text-muted)", fontSize: "0.7rem", letterSpacing: "0.06em", width: COL_WIDTHS.model }}
+                    className="uppercase"
+                    style={{ color: "var(--text-muted)", fontSize: 10, fontWeight: 600, letterSpacing: "0.07em", padding: "0 12px", width: COL_WIDTHS.model }}
                   >
                     Model
                   </th>
                   <th
-                    className="cursor-pointer px-3 py-2.5 font-semibold uppercase transition-colors duration-150 hover:text-text"
-                    style={{ color: "var(--text-muted)", fontSize: "0.7rem", letterSpacing: "0.06em", width: COL_WIDTHS.started }}
+                    className="group cursor-pointer uppercase transition-colors duration-150 hover:text-text"
+                    style={{ color: "var(--text-muted)", fontSize: 10, fontWeight: 600, letterSpacing: "0.07em", padding: "0 12px", width: COL_WIDTHS.started }}
                     onClick={() => handleSort("started_at")}
                   >
                     Started{sortArrow("started_at")}
                   </th>
                   <th
-                    className="cursor-pointer px-3 py-2.5 font-semibold uppercase transition-colors duration-150 hover:text-text"
-                    style={{ color: "var(--text-muted)", fontSize: "0.7rem", letterSpacing: "0.06em", width: COL_WIDTHS.duration }}
+                    className="group cursor-pointer uppercase transition-colors duration-150 hover:text-text"
+                    style={{ color: "var(--text-muted)", fontSize: 10, fontWeight: 600, letterSpacing: "0.07em", padding: "0 12px", width: COL_WIDTHS.duration }}
                     onClick={() => handleSort("duration")}
                   >
                     Duration{sortArrow("duration")}
                   </th>
                   <th
-                    className="cursor-pointer px-3 py-2.5 font-semibold uppercase transition-colors duration-150 hover:text-text"
-                    style={{ color: "var(--text-muted)", fontSize: "0.7rem", letterSpacing: "0.06em", width: COL_WIDTHS.tokens }}
+                    className="group cursor-pointer uppercase transition-colors duration-150 hover:text-text"
+                    style={{ color: "var(--text-muted)", fontSize: 10, fontWeight: 600, letterSpacing: "0.07em", padding: "0 12px", width: COL_WIDTHS.tokens }}
                     onClick={() => handleSort("tokens_used")}
                   >
                     Tokens{sortArrow("tokens_used")}
                   </th>
                   <th
-                    className="px-3 py-2.5 font-semibold uppercase"
-                    style={{ color: "var(--text-muted)", fontSize: "0.7rem", letterSpacing: "0.06em", width: COL_WIDTHS.state }}
+                    className="uppercase"
+                    style={{ color: "var(--text-muted)", fontSize: 10, fontWeight: 600, letterSpacing: "0.07em", padding: "0 12px", width: COL_WIDTHS.state }}
                   >
                     State
                   </th>
@@ -744,34 +795,34 @@ export function Investigate() {
                   <tr
                     key={s.session_id}
                     onClick={() => setSelectedSessionId(s.session_id)}
-                    className={cn(
-                      "cursor-pointer transition-colors duration-150",
-                      selectedSessionId === s.session_id
-                        ? "bg-primary/10"
-                        : "hover:bg-surface-hover"
-                    )}
+                    className="cursor-pointer transition-colors duration-150"
                     style={{
-                      height: 48,
-                      borderBottom: "1px solid color-mix(in srgb, var(--border) 30%, transparent)",
+                      height: 44,
+                      borderBottom: "1px solid var(--border-subtle)",
+                      background: selectedSessionId === s.session_id
+                        ? "color-mix(in srgb, var(--primary) 10%, transparent)"
+                        : undefined,
                     }}
+                    onMouseEnter={(e) => { if (selectedSessionId !== s.session_id) e.currentTarget.style.background = "var(--bg-elevated)"; }}
+                    onMouseLeave={(e) => { if (selectedSessionId !== s.session_id) e.currentTarget.style.background = ""; }}
                   >
-                    <td className="px-3 py-3 font-medium truncate" style={{ width: COL_WIDTHS.flavor }}>{s.flavor}</td>
-                    <td className="px-3 py-3 truncate" style={{ color: "var(--text-secondary)", width: COL_WIDTHS.hostname }}>
+                    <td className="truncate" style={{ padding: "0 12px", width: COL_WIDTHS.flavor, fontSize: 13, fontWeight: 500, color: "var(--text)" }}>{s.flavor}</td>
+                    <td className="truncate" style={{ padding: "0 12px", width: COL_WIDTHS.hostname, fontSize: 12, color: "var(--text-secondary)" }}>
                       {(s.context?.hostname as string) ?? s.host ?? "\u2014"}
                     </td>
-                    <td className="px-2 py-3" style={{ width: COL_WIDTHS.os }}>
-                      <OSIcon os={(s.context?.os as string) ?? ""} size={14} />
+                    <td style={{ padding: "0 8px", width: COL_WIDTHS.os, textAlign: "center" }}>
+                      <OSIcon os={(s.context?.os as string) ?? ""} size={16} />
                     </td>
-                    <td className="px-2 py-3" style={{ width: COL_WIDTHS.orch }}>
+                    <td style={{ padding: "0 8px", width: COL_WIDTHS.orch, textAlign: "center" }}>
                       <OrchestrationIcon
                         orchestration={(s.context?.orchestration as string) ?? ""}
-                        size={14}
+                        size={16}
                       />
                     </td>
-                    <td className="px-3 py-3 font-mono text-[11px] truncate" style={{ color: "var(--text-secondary)", width: COL_WIDTHS.model }}>
+                    <td className="truncate" style={{ padding: "0 12px", width: COL_WIDTHS.model, fontSize: 12, color: "var(--text-secondary)" }}>
                       {s.model ?? "\u2014"}
                     </td>
-                    <td className="px-3 py-3 whitespace-nowrap" style={{ color: "var(--text-secondary)", width: COL_WIDTHS.started }}>
+                    <td className="whitespace-nowrap" style={{ padding: "0 12px", width: COL_WIDTHS.started, fontSize: 12, color: "var(--text-secondary)", fontVariantNumeric: "tabular-nums" }}>
                       {new Date(s.started_at).toLocaleString(undefined, {
                         month: "short",
                         day: "numeric",
@@ -779,31 +830,14 @@ export function Investigate() {
                         minute: "2-digit",
                       })}
                     </td>
-                    <td className="px-3 py-3" style={{ color: "var(--text-secondary)", width: COL_WIDTHS.duration }}>
+                    <td style={{ padding: "0 12px", width: COL_WIDTHS.duration, fontSize: 12, color: "var(--text-secondary)", fontVariantNumeric: "tabular-nums", fontFamily: "var(--font-mono)" }}>
                       {formatDuration(s.duration_s)}
                     </td>
-                    <td className="px-3 py-3 font-mono" style={{ color: "var(--text-secondary)", width: COL_WIDTHS.tokens }}>
+                    <td style={{ padding: "0 12px", width: COL_WIDTHS.tokens, fontSize: 12, color: "var(--text)", fontWeight: 500, fontVariantNumeric: "tabular-nums", fontFamily: "var(--font-mono)" }}>
                       {formatTokens(s.tokens_used)}
                     </td>
-                    <td className="px-3 py-3" style={{ width: COL_WIDTHS.state }}>
-                      <span
-                        className={cn(
-                          "inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-medium",
-                          s.state === "active" && "text-status-active",
-                          s.state === "idle" && "text-status-idle",
-                          s.state === "stale" && "text-status-stale",
-                          s.state === "closed" && "text-text-muted",
-                          s.state === "lost" && "text-status-lost"
-                        )}
-                      >
-                        <span
-                          className={cn(
-                            "h-1.5 w-1.5 rounded-full",
-                            STATE_COLORS[s.state] ?? "bg-text-muted"
-                          )}
-                        />
-                        {s.state}
-                      </span>
+                    <td style={{ padding: "0 12px", width: COL_WIDTHS.state }}>
+                      <StateBadge state={s.state} />
                     </td>
                   </tr>
                 ))}

@@ -311,18 +311,6 @@ def query_event_content(session_id: str) -> list[dict]:
     )
 
 
-def cleanup_flavor(flavor: str) -> None:
-    """Delete all DB rows for a flavor. Best-effort."""
-    try:
-        sid_sql = f"SELECT session_id FROM sessions WHERE flavor = '{flavor}'"
-        psql(f"DELETE FROM event_content WHERE session_id IN ({sid_sql})")
-        psql(f"DELETE FROM events WHERE flavor = '{flavor}'")
-        psql(f"DELETE FROM directives WHERE flavor = '{flavor}' OR session_id IN ({sid_sql})")
-        psql(f"DELETE FROM custom_directives WHERE flavor = '{flavor}'")
-        psql(f"DELETE FROM sessions WHERE flavor = '{flavor}'")
-        psql(f"DELETE FROM agents WHERE flavor = '{flavor}'")
-    except Exception:
-        pass
 
 
 # ---------------------------------------------------------------------------
@@ -424,7 +412,6 @@ def group_1_provider_interception() -> None:
         finally:
             force_reset_sensor()
             flightdeck_sensor.unpatch()
-            cleanup_flavor(flavor)
 
     # ------------------------------------------------------------------
     # 1b. Anthropic via wrap()
@@ -458,7 +445,6 @@ def group_1_provider_interception() -> None:
             check("1b. Anthropic wrap()", False, str(e))
         finally:
             force_reset_sensor()
-            cleanup_flavor(flavor)
 
     # ------------------------------------------------------------------
     # 1c. OpenAI chat via patch()
@@ -494,7 +480,6 @@ def group_1_provider_interception() -> None:
         finally:
             force_reset_sensor()
             flightdeck_sensor.unpatch()
-            cleanup_flavor(flavor)
 
     # ------------------------------------------------------------------
     # 1d. OpenAI chat via wrap()
@@ -525,7 +510,6 @@ def group_1_provider_interception() -> None:
             check("1d. OpenAI chat wrap()", False, str(e))
         finally:
             force_reset_sensor()
-            cleanup_flavor(flavor)
 
     # ------------------------------------------------------------------
     # 1e. OpenAI embeddings
@@ -558,7 +542,6 @@ def group_1_provider_interception() -> None:
         finally:
             force_reset_sensor()
             flightdeck_sensor.unpatch()
-            cleanup_flavor(flavor)
 
     # ------------------------------------------------------------------
     # 1f. Anthropic beta.messages via patch()
@@ -594,7 +577,6 @@ def group_1_provider_interception() -> None:
         finally:
             force_reset_sensor()
             flightdeck_sensor.unpatch()
-            cleanup_flavor(flavor)
 
     # ------------------------------------------------------------------
     # 1g. Anthropic streaming
@@ -630,7 +612,6 @@ def group_1_provider_interception() -> None:
             check("1g. Anthropic streaming", False, str(e))
         finally:
             force_reset_sensor()
-            cleanup_flavor(flavor)
 
     # ------------------------------------------------------------------
     # 1h. OpenAI streaming
@@ -670,7 +651,6 @@ def group_1_provider_interception() -> None:
         finally:
             force_reset_sensor()
             flightdeck_sensor.unpatch()
-            cleanup_flavor(flavor)
 
     # ------------------------------------------------------------------
     # 1i. Tool calls
@@ -734,7 +714,6 @@ def group_1_provider_interception() -> None:
             check("1i. Tool calls", False, str(e))
         finally:
             force_reset_sensor()
-            cleanup_flavor(flavor)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -787,7 +766,6 @@ def group_2_prompt_capture() -> None:
         check("2a. Capture ON", False, str(e))
     finally:
         force_reset_sensor()
-        cleanup_flavor(flavor)
 
     # ------------------------------------------------------------------
     # 2b. capture_prompts=False (default)
@@ -818,7 +796,6 @@ def group_2_prompt_capture() -> None:
         check("2b. Capture OFF", False, str(e))
     finally:
         force_reset_sensor()
-        cleanup_flavor(flavor)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -865,7 +842,6 @@ def group_3_local_policy() -> None:
         check("3a. Local WARN", False, str(e))
     finally:
         force_reset_sensor()
-        cleanup_flavor(flavor)
 
     # ------------------------------------------------------------------
     # 3b. BLOCK: init(limit=1). Pre-call estimate crosses the limit.
@@ -896,7 +872,6 @@ def group_3_local_policy() -> None:
         check("3b. Local BLOCK", False, str(e))
     finally:
         force_reset_sensor()
-        cleanup_flavor(flavor)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -951,7 +926,6 @@ def group_4_server_policy() -> None:
         force_reset_sensor()
         if policy_id:
             delete_policy(policy_id)
-        cleanup_flavor(flavor)
 
     # ------------------------------------------------------------------
     # 4b. Server DEGRADE
@@ -1009,7 +983,6 @@ def group_4_server_policy() -> None:
         force_reset_sensor()
         if policy_id:
             delete_policy(policy_id)
-        cleanup_flavor(flavor)
 
     # ------------------------------------------------------------------
     # 4c. Server BLOCK
@@ -1055,7 +1028,6 @@ def group_4_server_policy() -> None:
         force_reset_sensor()
         if policy_id:
             delete_policy(policy_id)
-        cleanup_flavor(flavor)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1118,7 +1090,6 @@ def group_5_kill_switch() -> None:
         check("5a. Single session shutdown", False, str(e))
     finally:
         force_reset_sensor()
-        cleanup_flavor(flavor)
 
     # ------------------------------------------------------------------
     # 5b. Flavor-wide shutdown
@@ -1176,7 +1147,6 @@ def group_6_custom_directives() -> None:
         check("6a. Directive registration", False, str(e))
     finally:
         force_reset_sensor()
-        cleanup_flavor(flavor)
 
     # ------------------------------------------------------------------
     # 6b. Directive execution
@@ -1226,7 +1196,6 @@ def group_6_custom_directives() -> None:
         check("6b. Directive execution", False, str(e))
     finally:
         force_reset_sensor()
-        cleanup_flavor(flavor)
 
     # ------------------------------------------------------------------
     # 6c. Directive with parameters
@@ -1279,7 +1248,6 @@ def group_6_custom_directives() -> None:
         check("6c. Directive with parameters", False, str(e))
     finally:
         force_reset_sensor()
-        cleanup_flavor(flavor)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1321,7 +1289,6 @@ def group_7_runtime_context() -> None:
         check("7a. Context fields", False, str(e))
     finally:
         force_reset_sensor()
-        cleanup_flavor(flavor)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1372,7 +1339,6 @@ def group_8_session_visibility() -> None:
         check("8a/8b. Session visibility", False, str(e))
     finally:
         force_reset_sensor()
-        cleanup_flavor(flavor)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1415,7 +1381,6 @@ def group_9_sensor_status() -> None:
         check("9a. get_status()", False, str(e))
     finally:
         force_reset_sensor()
-        cleanup_flavor(flavor)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1456,7 +1421,6 @@ def group_10_unavailability() -> None:
         check("10a. Continue policy", False, str(e))
     finally:
         force_reset_sensor()
-        # No cleanup_flavor needed -- data never reached the DB
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1506,8 +1470,6 @@ def group_11_multi_session() -> None:
         check("11a. Multi-session fleet", False, str(e))
     finally:
         force_reset_sensor()
-        for fl in flavors:
-            cleanup_flavor(fl)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1547,7 +1509,6 @@ def group_12_frameworks() -> None:
         finally:
             force_reset_sensor()
             flightdeck_sensor.unpatch()
-            cleanup_flavor(flavor)
 
     # ------------------------------------------------------------------
     # 12b. LangChain + OpenAI
@@ -1578,7 +1539,6 @@ def group_12_frameworks() -> None:
         finally:
             force_reset_sensor()
             flightdeck_sensor.unpatch()
-            cleanup_flavor(flavor)
 
     # ------------------------------------------------------------------
     # 12c. LlamaIndex + Anthropic
@@ -1609,7 +1569,6 @@ def group_12_frameworks() -> None:
         finally:
             force_reset_sensor()
             flightdeck_sensor.unpatch()
-            cleanup_flavor(flavor)
 
     # ------------------------------------------------------------------
     # 12d. LlamaIndex + OpenAI
@@ -1640,7 +1599,6 @@ def group_12_frameworks() -> None:
         finally:
             force_reset_sensor()
             flightdeck_sensor.unpatch()
-            cleanup_flavor(flavor)
 
     # ------------------------------------------------------------------
     # 12e. CrewAI
@@ -1671,7 +1629,6 @@ def group_12_frameworks() -> None:
         finally:
             force_reset_sensor()
             flightdeck_sensor.unpatch()
-            cleanup_flavor(flavor)
 
 
 # ═══════════════════════════════════════════════════════════════════════════

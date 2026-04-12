@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import {
   BarChart,
   Bar,
@@ -9,11 +10,17 @@ import {
 } from "recharts";
 import type { AnalyticsSeries } from "@/lib/types";
 
+function resolvePrimary(): string {
+  if (typeof document === "undefined") return "#7c3aed";
+  return getComputedStyle(document.documentElement).getPropertyValue("--chart-1").trim() || "#7c3aed";
+}
+
 interface RankingChartProps {
   series: AnalyticsSeries[];
 }
 
 export function RankingChart({ series }: RankingChartProps) {
+  const primaryColor = useMemo(resolvePrimary, []);
   const chartData = series
     .map((s) => ({ name: s.dimension, total: s.total }))
     .sort((a, b) => b.total - a.total);
@@ -49,7 +56,7 @@ export function RankingChart({ series }: RankingChartProps) {
             fontSize: 12,
           }}
         />
-        <Bar dataKey="total" fill="var(--primary)" radius={[0, 4, 4, 0]} />
+        <Bar dataKey="total" fill={primaryColor} radius={[0, 4, 4, 0]} />
       </BarChart>
     </ResponsiveContainer>
   );

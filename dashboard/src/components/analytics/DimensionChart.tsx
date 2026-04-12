@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import { useAnalytics } from "@/hooks/useAnalytics";
 import { DimensionPicker } from "./DimensionPicker";
 import { TimeSeriesChart } from "./TimeSeriesChart";
@@ -17,6 +18,7 @@ interface DimensionChartProps {
   from?: string;
   to?: string;
   granularity?: string;
+  className?: string;
 }
 
 export function DimensionChart({
@@ -28,6 +30,7 @@ export function DimensionChart({
   from,
   to,
   granularity,
+  className,
 }: DimensionChartProps) {
   const [groupBy, setGroupBy] = useState(defaultGroupBy);
 
@@ -39,7 +42,7 @@ export function DimensionChart({
   const { data, loading, error, refetch } = useAnalytics(params);
 
   return (
-    <Card className="flex flex-col">
+    <Card className={cn("flex flex-col", className)}>
       <CardHeader className="flex flex-row items-center justify-between">
         <CardTitle>{title}</CardTitle>
         <DimensionPicker value={groupBy} onGroupByChange={setGroupBy} />

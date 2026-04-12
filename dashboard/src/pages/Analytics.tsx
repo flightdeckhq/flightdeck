@@ -100,6 +100,7 @@ export function Analytics() {
             metric="sessions"
             defaultGroupBy="model"
             chartType="donut"
+            className="min-h-[280px]"
             range={range}
             from={from}
             to={to}
@@ -109,6 +110,7 @@ export function Analytics() {
             metric="policy_events"
             defaultGroupBy="flavor"
             chartType="area"
+            className="min-h-[280px]"
             range={range}
             from={from}
             to={to}
@@ -118,6 +120,7 @@ export function Analytics() {
             metric="sessions"
             defaultGroupBy="agent_type"
             chartType="donut"
+            className="min-h-[280px]"
             range={range}
             from={from}
             to={to}

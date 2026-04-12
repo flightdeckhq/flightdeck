@@ -87,6 +87,7 @@ export function Policies() {
         policies={policies}
         onEdit={openEdit}
         onDelete={handleDelete}
+        onCreate={openCreate}
         loading={loading}
       />
 

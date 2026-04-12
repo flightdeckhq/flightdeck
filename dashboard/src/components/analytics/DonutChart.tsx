@@ -1,26 +1,41 @@
+import { useMemo } from "react";
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend } from "recharts";
 import type { AnalyticsSeries } from "@/lib/types";
 import { getProvider } from "@/lib/models";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 
-const COLORS = [
-  "var(--primary)",
-  "var(--accent)",
-  "var(--warning)",
-  "var(--danger)",
-  "var(--node-idle)",
-  "var(--text-muted)",
+const COLOR_VARS = [
+  "--chart-1",
+  "--chart-2",
+  "--chart-3",
+  "--chart-4",
+  "--chart-5",
+  "--text-muted",
 ];
+
+function resolveColors(): string[] {
+  if (typeof document === "undefined") return COLOR_VARS.map(() => "#888");
+  const style = getComputedStyle(document.documentElement);
+  return COLOR_VARS.map((v) => style.getPropertyValue(v).trim() || "#888");
+}
 
 interface DonutChartProps {
   series: AnalyticsSeries[];
 }
 
 export function DonutChart({ series }: DonutChartProps) {
-  const chartData = series.map((s) => ({
-    name: s.dimension,
-    value: s.total,
-  }));
+  const colors = useMemo(resolveColors, []);
+  const chartData = series
+    .map((s) => ({ name: s.dimension, value: s.total }))
+    .filter((d) => d.value > 0);
+
+  if (chartData.length === 0) {
+    return (
+      <div className="flex h-[260px] items-center justify-center text-sm text-text-muted">
+        No data for this period
+      </div>
+    );
+  }
 
   return (
     <ResponsiveContainer width="100%" height={260}>
@@ -29,13 +44,13 @@ export function DonutChart({ series }: DonutChartProps) {
           data={chartData}
           cx="50%"
           cy="50%"
-          innerRadius={60}
-          outerRadius={90}
+          innerRadius="40%"
+          outerRadius="70%"
           paddingAngle={2}
           dataKey="value"
         >
           {chartData.map((_, i) => (
-            <Cell key={i} fill={COLORS[i % COLORS.length]} />
+            <Cell key={i} fill={colors[i % colors.length]} />
           ))}
         </Pie>
         <Tooltip

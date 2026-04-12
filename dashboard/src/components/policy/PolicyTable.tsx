@@ -7,11 +7,13 @@ import {
   DialogContent,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Shield } from "lucide-react";
 
 export interface PolicyTableProps {
   policies: Policy[];
   onEdit: (policy: Policy) => void;
   onDelete: (policy: Policy) => void;
+  onCreate?: () => void;
   loading: boolean;
 }
 
@@ -58,15 +60,25 @@ function SkeletonRows() {
   );
 }
 
-export function PolicyTable({ policies, onEdit, onDelete, loading }: PolicyTableProps) {
+export function PolicyTable({ policies, onEdit, onDelete, onCreate, loading }: PolicyTableProps) {
   const [deleteTarget, setDeleteTarget] = useState<Policy | null>(null);
 
   if (!loading && policies.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center py-16 text-text-muted">
-        <p className="text-sm">
-          No policies configured. Create one to start enforcing token budgets.
+      <div className="flex flex-col items-center justify-center py-16">
+        <Shield
+          size={40}
+          style={{ color: "var(--text-muted)", marginBottom: 12 }}
+        />
+        <p style={{ color: "var(--text)", fontSize: 15, fontWeight: 500, marginBottom: 4 }}>
+          No policies configured
         </p>
+        <p style={{ color: "var(--text-muted)", fontSize: 13, marginBottom: 16, textAlign: "center", maxWidth: 360 }}>
+          Create a policy to start enforcing token budgets across your agent fleet.
+        </p>
+        {onCreate && (
+          <Button onClick={onCreate}>Create Policy</Button>
+        )}
       </div>
     );
   }

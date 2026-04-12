@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useSearchParams } from "react-router-dom";
-import { Search, RefreshCw, X } from "lucide-react";
+import { Search, RefreshCw, X, LayoutGrid, GitBranch, Bot, Server } from "lucide-react";
 import { fetchSessions, type SessionsParams } from "@/lib/api";
 import type { SessionListItem, SessionState } from "@/lib/types";
 import { DateRangePicker, type DateRangeWithPreset } from "@/components/ui/DateRangePicker";
@@ -8,6 +8,8 @@ import { Pagination } from "@/components/ui/Pagination";
 import { SessionDrawer } from "@/components/session/SessionDrawer";
 import { OSIcon } from "@/components/ui/OSIcon";
 import { OrchestrationIcon } from "@/components/ui/OrchestrationIcon";
+import { ProviderLogo } from "@/components/ui/provider-logo";
+import { getProvider } from "@/lib/models";
 import { cn } from "@/lib/utils";
 
 // ---------------------------------------------------------------------------
@@ -66,8 +68,25 @@ const AUTO_REFRESH_OPTIONS = [
   { label: "5m", ms: 300_000 },
 ];
 
+const COL_WIDTHS = {
+  flavor: "18%",
+  hostname: "14%",
+  os: "4%",
+  orch: "4%",
+  model: "16%",
+  started: "14%",
+  duration: "8%",
+  tokens: "10%",
+  state: "12%",
+};
+
 function formatDuration(seconds: number): string {
   if (seconds < 60) return `${Math.round(seconds)}s`;
+  if (seconds < 600) {
+    const m = Math.floor(seconds / 60);
+    const s = Math.round(seconds % 60);
+    return s > 0 ? `${m}m ${s}s` : `${m}m`;
+  }
   if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
   const h = Math.floor(seconds / 3600);
   const m = Math.round((seconds % 3600) / 60);
@@ -82,11 +101,11 @@ function formatTokens(n: number): string {
 
 function timeAgo(ms: number): string {
   const s = Math.round(ms / 1000);
-  if (s < 5) return "just now";
-  if (s < 60) return `${s}s ago`;
+  if (s < 10) return "just now";
+  if (s < 60) return `Updated ${s}s ago`;
   const m = Math.round(s / 60);
-  if (m < 60) return `${m}m ago`;
-  return `${Math.round(m / 60)}h ago`;
+  if (m < 60) return `Updated ${m}m ago`;
+  return `Updated ${Math.round(m / 60)}h ago`;
 }
 
 // ---------------------------------------------------------------------------
@@ -135,6 +154,120 @@ function computeFacets(sessions: SessionListItem[]): FacetGroup[] {
 }
 
 // ---------------------------------------------------------------------------
+// Facet value icons
+// ---------------------------------------------------------------------------
+
+function FacetIcon({ groupKey, value }: { groupKey: string; value: string }) {
+  if (groupKey === "state") {
+    return (
+      <span
+        className={cn("inline-block rounded-full shrink-0", STATE_COLORS[value] ?? "bg-text-muted")}
+        style={{ width: 5, height: 5 }}
+      />
+    );
+  }
+  if (groupKey === "os") {
+    return <OSIcon os={value} size={12} />;
+  }
+  if (groupKey === "model") {
+    const provider = getProvider(value);
+    if (provider !== "unknown") {
+      return <ProviderLogo provider={provider} size={12} />;
+    }
+    return null;
+  }
+  if (groupKey === "flavor") {
+    return <Bot size={12} style={{ color: "var(--text-muted)", flexShrink: 0 }} />;
+  }
+  if (groupKey === "git_branch") {
+    return <GitBranch size={12} style={{ color: "var(--text-muted)", flexShrink: 0 }} />;
+  }
+  if (groupKey === "hostname") {
+    return <Server size={12} style={{ color: "var(--text-muted)", flexShrink: 0 }} />;
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// State badge pill
+// ---------------------------------------------------------------------------
+
+const STATE_BADGE_STYLES: Record<string, { bg: string; color: string; border?: string }> = {
+  active: { bg: "color-mix(in srgb, var(--status-active) 15%, transparent)", color: "var(--status-active)" },
+  idle: { bg: "color-mix(in srgb, var(--status-idle) 15%, transparent)", color: "var(--status-idle)" },
+  stale: { bg: "color-mix(in srgb, var(--status-stale) 15%, transparent)", color: "var(--status-stale)" },
+  lost: { bg: "color-mix(in srgb, var(--status-lost) 15%, transparent)", color: "var(--status-lost)" },
+  closed: { bg: "transparent", color: "var(--text-muted)", border: "1px solid var(--border)" },
+};
+
+function StateBadge({ state }: { state: string }) {
+  const s = STATE_BADGE_STYLES[state] ?? STATE_BADGE_STYLES.closed;
+  return (
+    <span
+      className="inline-flex items-center"
+      style={{
+        gap: 5,
+        padding: "2px 8px",
+        borderRadius: 9999,
+        fontSize: 11,
+        fontWeight: 500,
+        background: s.bg,
+        color: s.color,
+        border: s.border ?? "1px solid transparent",
+      }}
+    >
+      <span
+        className="inline-block rounded-full"
+        style={{ width: 5, height: 5, background: s.color, flexShrink: 0 }}
+      />
+      {state}
+    </span>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Skeleton rows for loading state
+// ---------------------------------------------------------------------------
+
+function SkeletonRows() {
+  return (
+    <>
+      {[0, 1, 2, 3, 4].map((i) => (
+        <tr key={i} style={{ height: 44, borderBottom: "1px solid var(--border-subtle)" }}>
+          <td style={{ padding: "0 12px", width: COL_WIDTHS.flavor }}>
+            <div className="h-3.5 w-3/4 animate-pulse rounded" style={{ background: "var(--border)" }} />
+          </td>
+          <td style={{ padding: "0 12px", width: COL_WIDTHS.hostname }}>
+            <div className="h-3.5 w-2/3 animate-pulse rounded" style={{ background: "var(--border)" }} />
+          </td>
+          <td style={{ padding: "0 8px", width: COL_WIDTHS.os }}>
+            <div className="h-4 w-4 animate-pulse rounded" style={{ background: "var(--border)", margin: "0 auto" }} />
+          </td>
+          <td style={{ padding: "0 8px", width: COL_WIDTHS.orch }}>
+            <div className="h-4 w-4 animate-pulse rounded" style={{ background: "var(--border)", margin: "0 auto" }} />
+          </td>
+          <td style={{ padding: "0 12px", width: COL_WIDTHS.model }}>
+            <div className="h-3.5 w-3/4 animate-pulse rounded" style={{ background: "var(--border)" }} />
+          </td>
+          <td style={{ padding: "0 12px", width: COL_WIDTHS.started }}>
+            <div className="h-3.5 w-2/3 animate-pulse rounded" style={{ background: "var(--border)" }} />
+          </td>
+          <td style={{ padding: "0 12px", width: COL_WIDTHS.duration }}>
+            <div className="h-3.5 w-1/2 animate-pulse rounded" style={{ background: "var(--border)" }} />
+          </td>
+          <td style={{ padding: "0 12px", width: COL_WIDTHS.tokens }}>
+            <div className="h-3.5 w-1/2 animate-pulse rounded" style={{ background: "var(--border)" }} />
+          </td>
+          <td style={{ padding: "0 12px", width: COL_WIDTHS.state }}>
+            <div className="h-3.5 w-2/3 animate-pulse rounded" style={{ background: "var(--border)" }} />
+          </td>
+        </tr>
+      ))}
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
@@ -150,6 +283,7 @@ export function Investigate() {
   // Search input (debounced)
   const [searchInput, setSearchInput] = useState(urlState.q);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>();
+  const searchRef = useRef<HTMLInputElement>(null);
 
   // Refresh state
   const [lastUpdated, setLastUpdated] = useState(Date.now());
@@ -257,6 +391,16 @@ export function Investigate() {
     [updateUrl]
   );
 
+  const handleSearchKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLInputElement>) => {
+      if (e.key === "Escape") {
+        handleSearchChange("");
+        searchRef.current?.blur();
+      }
+    },
+    [handleSearchChange]
+  );
+
   // Date range
   const handleDateChange = useCallback(
     (range: DateRangeWithPreset) => {
@@ -338,13 +482,24 @@ export function Investigate() {
   // Facets from current result set
   const facets = useMemo(() => computeFacets(sessions), [sessions]);
 
+  const hasActiveFilters = activeFilters.length > 0 || !!urlState.q;
+
   // -----------------------------------------------------------------------
   // Render
   // -----------------------------------------------------------------------
 
-  const sortArrow = (col: string) => {
-    if (urlState.sort !== col) return null;
-    return urlState.order === "asc" ? " \u2191" : " \u2193";
+  const sortArrow = (col: string, sortable = true) => {
+    if (urlState.sort === col) {
+      return (
+        <span style={{ color: "var(--primary)" }}>
+          {urlState.order === "asc" ? " \u2191" : " \u2193"}
+        </span>
+      );
+    }
+    if (sortable) {
+      return <span style={{ color: "var(--text-disabled)", opacity: 0 }} className="group-hover:!opacity-100 transition-opacity duration-150">{" \u2195"}</span>;
+    }
+    return null;
   };
 
   const dateRange = useMemo(
@@ -354,53 +509,83 @@ export function Investigate() {
 
   return (
     <div className="flex h-full flex-col overflow-hidden" style={{ background: "var(--bg)" }}>
-      {/* Header */}
+      {/* Top bar — single row */}
       <div
-        className="flex flex-col gap-2 border-b px-4 py-3"
+        className="flex items-center gap-3 border-b px-4 py-2.5"
         style={{ borderColor: "var(--border)" }}
       >
-        <div className="flex items-center gap-3">
-          <h1 className="text-[15px] font-semibold" style={{ color: "var(--text)" }}>
-            Investigate
-          </h1>
+        {/* Search bar */}
+        <div className="relative flex-1 min-w-0">
+          <Search
+            className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4"
+            style={{ color: "var(--text-muted)" }}
+          />
+          <input
+            ref={searchRef}
+            type="text"
+            value={searchInput}
+            onChange={(e) => handleSearchChange(e.target.value)}
+            onKeyDown={handleSearchKeyDown}
+            placeholder="Search flavor, model, hostname, git branch..."
+            className="h-10 w-full rounded-md placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-primary"
+            style={{
+              border: "2px solid var(--border)",
+              background: "var(--surface)",
+              color: "var(--text)",
+              fontSize: 13,
+              paddingLeft: 40,
+              paddingRight: searchInput ? 36 : 12,
+            }}
+          />
+          {searchInput && (
+            <button
+              onClick={() => handleSearchChange("")}
+              className="absolute right-3 top-1/2 -translate-y-1/2 flex h-5 w-5 items-center justify-center rounded-sm transition-colors duration-150 hover:bg-surface-hover"
+              aria-label="Clear search"
+            >
+              <X className="h-3.5 w-3.5" style={{ color: "var(--text-muted)" }} />
+            </button>
+          )}
         </div>
 
-        <div className="flex items-center gap-3 flex-wrap">
-          {/* Search */}
-          <div className="relative flex-1 max-w-md">
-            <Search
-              className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5"
-              style={{ color: "var(--text-muted)" }}
-            />
-            <input
-              type="text"
-              value={searchInput}
-              onChange={(e) => handleSearchChange(e.target.value)}
-              placeholder="Search flavor, model, hostname, git branch..."
-              className="h-8 w-full rounded-md border border-border bg-surface pl-8 pr-3 text-xs text-text placeholder:text-text-muted focus:outline-none focus:ring-1 focus:ring-primary"
-            />
-          </div>
-
-          {/* Date range */}
+        {/* Date range presets */}
+        <div className="shrink-0">
           <DateRangePicker
             value={dateRange}
             onChange={handleDateChange}
             defaultPreset="last7days"
           />
+        </div>
 
-          {/* Refresh */}
-          <div className="flex items-center gap-2 ml-auto">
-            <button
-              onClick={() => doFetch(urlState)}
-              className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs text-text-secondary hover:bg-surface-hover transition-colors"
-              aria-label="Refresh"
-            >
-              <RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} />
-            </button>
+        {/* Refresh controls */}
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            onClick={() => doFetch(urlState)}
+            className="flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 font-medium transition-colors duration-150 hover:bg-surface-hover"
+            style={{
+              fontSize: 12,
+              borderColor: "var(--border)",
+              color: "var(--text-muted)",
+            }}
+            aria-label="Refresh"
+          >
+            <RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} />
+            Refresh
+          </button>
+          <div className="flex items-center gap-1.5">
+            <span className="whitespace-nowrap" style={{ fontSize: 12, color: "var(--text-muted)" }}>
+              Auto-refresh:
+            </span>
             <select
               value={autoRefreshMs}
               onChange={(e) => setAutoRefreshMs(Number(e.target.value))}
-              className="h-7 rounded-md border border-border bg-surface px-1.5 text-xs text-text-secondary focus:outline-none focus:ring-1 focus:ring-primary"
+              className="h-7 rounded-md border px-1.5 focus:outline-none focus:ring-1 focus:ring-primary"
+              style={{
+                fontSize: 12,
+                borderColor: "var(--border)",
+                background: "var(--surface)",
+                color: "var(--text-secondary)",
+              }}
             >
               {AUTO_REFRESH_OPTIONS.map((opt) => (
                 <option key={opt.ms} value={opt.ms}>
@@ -408,60 +593,32 @@ export function Investigate() {
                 </option>
               ))}
             </select>
-            <span className="text-[11px] text-text-muted whitespace-nowrap">
-              {lastUpdatedLabel}
-            </span>
           </div>
+          <span className="whitespace-nowrap" style={{ fontSize: 12, color: "var(--text-muted)" }}>
+            {lastUpdatedLabel}
+          </span>
         </div>
-
-        {/* Active filter pills */}
-        {(activeFilters.length > 0 || urlState.q) && (
-          <div className="flex items-center gap-1.5 flex-wrap">
-            {urlState.q && (
-              <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-xs text-primary">
-                search:{urlState.q}
-                <button
-                  onClick={() => {
-                    updateUrl({ q: "", page: 1 });
-                    setSearchInput("");
-                  }}
-                  className="hover:text-text"
-                >
-                  <X className="h-3 w-3" />
-                </button>
-              </span>
-            )}
-            {activeFilters.map((f) => (
-              <span
-                key={f.label}
-                className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-xs text-primary"
-              >
-                {f.label}
-                <button onClick={f.onRemove} className="hover:text-text">
-                  <X className="h-3 w-3" />
-                </button>
-              </span>
-            ))}
-            <button
-              onClick={clearAllFilters}
-              className="text-xs text-text-muted hover:text-text transition-colors"
-            >
-              Clear all
-            </button>
-          </div>
-        )}
       </div>
 
       {/* Body: sidebar + table */}
       <div className="flex flex-1 overflow-hidden">
         {/* Left sidebar */}
         <div
-          className="w-[220px] flex-shrink-0 overflow-y-auto border-r p-3"
-          style={{ borderColor: "var(--border)" }}
+          className="w-[220px] flex-shrink-0 overflow-y-auto"
+          style={{ borderRight: "1px solid var(--border-subtle)" }}
         >
-          {facets.map((group) => (
-            <div key={group.key} className="mb-4">
-              <div className="mb-1.5 text-[10px] font-semibold tracking-wider text-text-muted">
+          {facets.map((group, gi) => (
+            <div key={group.key}>
+              <div
+                className="font-semibold uppercase"
+                style={{
+                  fontSize: 10,
+                  fontWeight: 600,
+                  letterSpacing: "0.08em",
+                  color: "var(--text-muted)",
+                  padding: gi === 0 ? "12px 12px 6px 12px" : "16px 12px 6px 12px",
+                }}
+              >
                 {group.label}
               </div>
               {group.values.slice(0, 10).map((v) => {
@@ -473,22 +630,40 @@ export function Investigate() {
                   <button
                     key={v.value}
                     onClick={() => handleFacetClick(group.key, v.value)}
-                    className={cn(
-                      "flex w-full items-center justify-between rounded px-1.5 py-0.5 text-xs transition-colors",
-                      isActive
-                        ? "bg-primary/10 text-primary"
-                        : "text-text-secondary hover:bg-surface-hover"
-                    )}
+                    className="flex w-full items-center cursor-pointer transition-colors duration-150"
+                    style={{
+                      fontSize: 13,
+                      padding: "4px 12px",
+                      borderRadius: 4,
+                      color: isActive ? "var(--primary)" : "var(--text)",
+                      background: isActive ? "color-mix(in srgb, var(--primary) 15%, transparent)" : undefined,
+                    }}
+                    onMouseEnter={(e) => { if (!isActive) e.currentTarget.style.background = "var(--bg-elevated)"; }}
+                    onMouseLeave={(e) => { if (!isActive) e.currentTarget.style.background = ""; }}
                   >
-                    <span className="truncate">{v.value}</span>
-                    <span className="ml-1 text-text-muted">{v.count}</span>
+                    <span className="flex items-center min-w-0 flex-1" style={{ gap: 8 }}>
+                      <FacetIcon groupKey={group.key} value={v.value} />
+                      <span className="truncate">{v.value}</span>
+                    </span>
+                    <span
+                      className="shrink-0"
+                      style={{
+                        fontSize: 11,
+                        fontWeight: 500,
+                        color: "var(--text-muted)",
+                        marginLeft: "auto",
+                        fontVariantNumeric: "tabular-nums",
+                      }}
+                    >
+                      {v.count}
+                    </span>
                   </button>
                 );
               })}
             </div>
           ))}
           {facets.length === 0 && !loading && (
-            <div className="text-xs text-text-muted py-4 text-center">
+            <div style={{ fontSize: 12, color: "var(--text-muted)", padding: "16px 12px", textAlign: "center" }}>
               No facets available
             </div>
           )}
@@ -496,89 +671,159 @@ export function Investigate() {
 
         {/* Main content */}
         <div className="flex flex-1 flex-col overflow-hidden">
+          {/* Active filter pills — above table, hidden when empty */}
+          {hasActiveFilters && (
+            <div
+              className="flex items-center gap-1.5 flex-wrap border-b px-4 py-2"
+              style={{ borderColor: "var(--border)" }}
+            >
+              {urlState.q && (
+                <span
+                  className="inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs"
+                  style={{
+                    background: "var(--primary-glow)",
+                    color: "var(--primary)",
+                  }}
+                >
+                  search:{urlState.q}
+                  <button
+                    onClick={() => {
+                      updateUrl({ q: "", page: 1 });
+                      setSearchInput("");
+                    }}
+                    className="hover:opacity-70 transition-opacity duration-150"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </span>
+              )}
+              {activeFilters.map((f) => (
+                <span
+                  key={f.label}
+                  className="inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs"
+                  style={{
+                    background: "var(--primary-glow)",
+                    color: "var(--primary)",
+                  }}
+                >
+                  {f.label}
+                  <button onClick={f.onRemove} className="hover:opacity-70 transition-opacity duration-150">
+                    <X className="h-3 w-3" />
+                  </button>
+                </span>
+              ))}
+              <button
+                onClick={clearAllFilters}
+                className="text-xs transition-colors duration-150 hover:underline"
+                style={{ color: "var(--text-muted)" }}
+              >
+                Clear all filters
+              </button>
+            </div>
+          )}
+
           {/* Table */}
           <div className="flex-1 overflow-auto">
-            <table className="w-full text-xs" style={{ color: "var(--text)" }}>
+            <table className="w-full text-xs" style={{ color: "var(--text)", tableLayout: "fixed" }}>
               <thead>
                 <tr
-                  className="sticky top-0 z-10 text-left text-[11px] font-medium"
-                  style={{ background: "var(--surface)", borderBottom: "1px solid var(--border)" }}
+                  className="sticky top-0 z-10 text-left"
+                  style={{ background: "var(--surface)", borderBottom: "1px solid var(--border)", height: 32 }}
                 >
                   <th
-                    className="cursor-pointer px-3 py-2 hover:text-text"
-                    style={{ color: "var(--text-secondary)" }}
+                    className="group cursor-pointer uppercase transition-colors duration-150 hover:text-text"
+                    style={{ color: "var(--text-muted)", fontSize: 10, fontWeight: 600, letterSpacing: "0.07em", padding: "0 12px", width: COL_WIDTHS.flavor }}
                     onClick={() => handleSort("flavor")}
                   >
                     Flavor{sortArrow("flavor")}
                   </th>
-                  <th className="px-3 py-2" style={{ color: "var(--text-secondary)" }}>
+                  <th
+                    className="uppercase"
+                    style={{ color: "var(--text-muted)", fontSize: 10, fontWeight: 600, letterSpacing: "0.07em", padding: "0 12px", width: COL_WIDTHS.hostname }}
+                  >
                     Hostname
                   </th>
-                  <th className="px-2 py-2 w-8" style={{ color: "var(--text-secondary)" }}>
+                  <th
+                    className="uppercase"
+                    style={{ color: "var(--text-muted)", fontSize: 10, fontWeight: 600, letterSpacing: "0.07em", padding: "0 8px", width: COL_WIDTHS.os }}
+                  >
                     OS
                   </th>
-                  <th className="px-2 py-2 w-8" style={{ color: "var(--text-secondary)" }}>
+                  <th
+                    className="uppercase"
+                    style={{ color: "var(--text-muted)", fontSize: 10, fontWeight: 600, letterSpacing: "0.07em", padding: "0 8px", width: COL_WIDTHS.orch }}
+                  >
                     Orch
                   </th>
-                  <th className="px-3 py-2" style={{ color: "var(--text-secondary)" }}>
+                  <th
+                    className="uppercase"
+                    style={{ color: "var(--text-muted)", fontSize: 10, fontWeight: 600, letterSpacing: "0.07em", padding: "0 12px", width: COL_WIDTHS.model }}
+                  >
                     Model
                   </th>
                   <th
-                    className="cursor-pointer px-3 py-2 hover:text-text"
-                    style={{ color: "var(--text-secondary)" }}
+                    className="group cursor-pointer uppercase transition-colors duration-150 hover:text-text"
+                    style={{ color: "var(--text-muted)", fontSize: 10, fontWeight: 600, letterSpacing: "0.07em", padding: "0 12px", width: COL_WIDTHS.started }}
                     onClick={() => handleSort("started_at")}
                   >
                     Started{sortArrow("started_at")}
                   </th>
                   <th
-                    className="cursor-pointer px-3 py-2 hover:text-text"
-                    style={{ color: "var(--text-secondary)" }}
+                    className="group cursor-pointer uppercase transition-colors duration-150 hover:text-text"
+                    style={{ color: "var(--text-muted)", fontSize: 10, fontWeight: 600, letterSpacing: "0.07em", padding: "0 12px", width: COL_WIDTHS.duration }}
                     onClick={() => handleSort("duration")}
                   >
                     Duration{sortArrow("duration")}
                   </th>
                   <th
-                    className="cursor-pointer px-3 py-2 hover:text-text"
-                    style={{ color: "var(--text-secondary)" }}
+                    className="group cursor-pointer uppercase transition-colors duration-150 hover:text-text"
+                    style={{ color: "var(--text-muted)", fontSize: 10, fontWeight: 600, letterSpacing: "0.07em", padding: "0 12px", width: COL_WIDTHS.tokens }}
                     onClick={() => handleSort("tokens_used")}
                   >
                     Tokens{sortArrow("tokens_used")}
                   </th>
-                  <th className="px-3 py-2" style={{ color: "var(--text-secondary)" }}>
+                  <th
+                    className="uppercase"
+                    style={{ color: "var(--text-muted)", fontSize: 10, fontWeight: 600, letterSpacing: "0.07em", padding: "0 12px", width: COL_WIDTHS.state }}
+                  >
                     State
                   </th>
                 </tr>
               </thead>
               <tbody>
+                {loading && sessions.length === 0 && <SkeletonRows />}
                 {sessions.map((s) => (
                   <tr
                     key={s.session_id}
                     onClick={() => setSelectedSessionId(s.session_id)}
-                    className={cn(
-                      "cursor-pointer border-b transition-colors",
-                      selectedSessionId === s.session_id
-                        ? "bg-primary/5"
-                        : "hover:bg-surface-hover"
-                    )}
-                    style={{ borderColor: "var(--border-subtle)" }}
+                    className="cursor-pointer transition-colors duration-150"
+                    style={{
+                      height: 44,
+                      borderBottom: "1px solid var(--border-subtle)",
+                      background: selectedSessionId === s.session_id
+                        ? "color-mix(in srgb, var(--primary) 10%, transparent)"
+                        : undefined,
+                    }}
+                    onMouseEnter={(e) => { if (selectedSessionId !== s.session_id) e.currentTarget.style.background = "rgba(128,128,128,0.08)"; }}
+                    onMouseLeave={(e) => { if (selectedSessionId !== s.session_id) e.currentTarget.style.background = ""; }}
                   >
-                    <td className="px-3 py-2 font-medium">{s.flavor}</td>
-                    <td className="px-3 py-2 text-text-secondary">
+                    <td className="truncate" style={{ padding: "0 12px", width: COL_WIDTHS.flavor, fontSize: 13, fontWeight: 500, color: "var(--text)" }}>{s.flavor}</td>
+                    <td className="truncate" style={{ padding: "0 12px", width: COL_WIDTHS.hostname, fontSize: 12, color: "var(--text-secondary)" }}>
                       {(s.context?.hostname as string) ?? s.host ?? "\u2014"}
                     </td>
-                    <td className="px-2 py-2">
-                      <OSIcon os={(s.context?.os as string) ?? ""} size={14} />
+                    <td style={{ padding: "0 8px", width: COL_WIDTHS.os, textAlign: "center" }}>
+                      <OSIcon os={(s.context?.os as string) ?? ""} size={16} />
                     </td>
-                    <td className="px-2 py-2">
+                    <td style={{ padding: "0 8px", width: COL_WIDTHS.orch, textAlign: "center" }}>
                       <OrchestrationIcon
                         orchestration={(s.context?.orchestration as string) ?? ""}
-                        size={14}
+                        size={16}
                       />
                     </td>
-                    <td className="px-3 py-2 text-text-secondary font-mono text-[11px]">
+                    <td className="truncate" style={{ padding: "0 12px", width: COL_WIDTHS.model, fontSize: 12, color: "var(--text-secondary)" }}>
                       {s.model ?? "\u2014"}
                     </td>
-                    <td className="px-3 py-2 text-text-secondary whitespace-nowrap">
+                    <td className="whitespace-nowrap" style={{ padding: "0 12px", width: COL_WIDTHS.started, fontSize: 12, color: "var(--text-secondary)", fontVariantNumeric: "tabular-nums" }}>
                       {new Date(s.started_at).toLocaleString(undefined, {
                         month: "short",
                         day: "numeric",
@@ -586,31 +831,14 @@ export function Investigate() {
                         minute: "2-digit",
                       })}
                     </td>
-                    <td className="px-3 py-2 text-text-secondary">
+                    <td style={{ padding: "0 12px", width: COL_WIDTHS.duration, fontSize: 12, color: "var(--text-secondary)", fontVariantNumeric: "tabular-nums", fontFamily: "var(--font-mono)" }}>
                       {formatDuration(s.duration_s)}
                     </td>
-                    <td className="px-3 py-2 text-text-secondary font-mono">
+                    <td style={{ padding: "0 12px", width: COL_WIDTHS.tokens, fontSize: 12, color: "var(--text)", fontWeight: 500, fontVariantNumeric: "tabular-nums", fontFamily: "var(--font-mono)" }}>
                       {formatTokens(s.tokens_used)}
                     </td>
-                    <td className="px-3 py-2">
-                      <span
-                        className={cn(
-                          "inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-medium",
-                          s.state === "active" && "text-status-active",
-                          s.state === "idle" && "text-status-idle",
-                          s.state === "stale" && "text-status-stale",
-                          s.state === "closed" && "text-text-muted",
-                          s.state === "lost" && "text-status-lost"
-                        )}
-                      >
-                        <span
-                          className={cn(
-                            "h-1.5 w-1.5 rounded-full",
-                            STATE_COLORS[s.state] ?? "bg-text-muted"
-                          )}
-                        />
-                        {s.state}
-                      </span>
+                    <td style={{ padding: "0 12px", width: COL_WIDTHS.state }}>
+                      <StateBadge state={s.state} />
                     </td>
                   </tr>
                 ))}
@@ -619,20 +847,23 @@ export function Investigate() {
 
             {/* Empty state */}
             {!loading && sessions.length === 0 && (
-              <div className="flex flex-col items-center justify-center py-16 text-text-muted">
-                <Search className="h-10 w-10 mb-3 opacity-30" />
-                {activeFilters.length > 0 || urlState.q ? (
-                  <>
-                    <p className="text-sm">No sessions match your filters.</p>
-                    <button
-                      onClick={clearAllFilters}
-                      className="mt-2 text-xs text-primary hover:underline"
-                    >
-                      Clear filters to see all sessions
-                    </button>
-                  </>
-                ) : (
-                  <p className="text-sm">No sessions found</p>
+              <div
+                className="flex flex-col items-center justify-center py-20"
+                style={{ color: "var(--text-muted)" }}
+              >
+                <LayoutGrid className="h-10 w-10 mb-3 opacity-30" />
+                <p className="text-sm font-medium">No sessions found</p>
+                <p className="text-xs mt-1 opacity-70">
+                  Try adjusting your filters or time range.
+                </p>
+                {hasActiveFilters && (
+                  <button
+                    onClick={clearAllFilters}
+                    className="mt-3 text-xs font-medium transition-colors duration-150 hover:underline"
+                    style={{ color: "var(--primary)" }}
+                  >
+                    Clear filters
+                  </button>
                 )}
               </div>
             )}
@@ -641,7 +872,7 @@ export function Investigate() {
           {/* Pagination */}
           {total > 0 && (
             <div
-              className="border-t px-4 py-2"
+              className="border-t px-4 py-2 shrink-0"
               style={{ borderColor: "var(--border)", background: "var(--surface)" }}
             >
               <Pagination

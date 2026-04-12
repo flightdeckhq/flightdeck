@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import {
   AreaChart,
   Area,
@@ -9,21 +10,30 @@ import {
 } from "recharts";
 import type { AnalyticsSeries } from "@/lib/types";
 
-/** Palette using CSS variable colors via getComputedStyle. */
-const SERIES_COLORS = [
-  "var(--primary)",
-  "var(--accent)",
-  "var(--warning)",
-  "var(--danger)",
-  "var(--node-idle)",
-  "var(--text-muted)",
+/** CSS variable names for the palette. Resolved at render time via
+ *  getComputedStyle so recharts receives actual hex/rgb values for
+ *  SVG fill and stroke attributes. */
+const SERIES_CSS_VARS = [
+  "--chart-1",
+  "--chart-2",
+  "--chart-3",
+  "--chart-4",
+  "--chart-5",
+  "--text-muted",
 ];
+
+function resolveColors(): string[] {
+  if (typeof document === "undefined") return SERIES_CSS_VARS.map(() => "#888");
+  const style = getComputedStyle(document.documentElement);
+  return SERIES_CSS_VARS.map((v) => style.getPropertyValue(v).trim() || "#888");
+}
 
 interface TimeSeriesChartProps {
   series: AnalyticsSeries[];
 }
 
 export function TimeSeriesChart({ series }: TimeSeriesChartProps) {
+  const colors = useMemo(resolveColors, []);
   // Build a unified dataset keyed by date
   const dateMap = new Map<string, Record<string, number>>();
 
@@ -74,8 +84,8 @@ export function TimeSeriesChart({ series }: TimeSeriesChartProps) {
             type="monotone"
             dataKey={s.dimension}
             stackId="1"
-            stroke={SERIES_COLORS[i % SERIES_COLORS.length]}
-            fill={SERIES_COLORS[i % SERIES_COLORS.length]}
+            stroke={colors[i % colors.length]}
+            fill={colors[i % colors.length]}
             fillOpacity={0.3}
           />
         ))}

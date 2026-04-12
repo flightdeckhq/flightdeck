@@ -174,6 +174,12 @@ class SensorMessages:
         return getattr(self._real, name)
 
 
+# TODO(KI17)[Phase 4.9]: SensorAnthropic has no .beta property, so
+# wrap() without patch() does not intercept client.beta.messages calls.
+# Fixing requires a SensorBeta wrapper class and a .beta @property here
+# that returns SensorBeta(self._client.beta, ...). patch() covers
+# beta.messages fully via _AnthropicBetaMessagesDescriptor on the Beta
+# class, so this only affects the wrap()-without-patch() code path.
 class SensorAnthropic:
     """Proxy for ``anthropic.Anthropic`` or ``anthropic.AsyncAnthropic``.
 

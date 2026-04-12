@@ -1,6 +1,7 @@
 import { Fragment, useState, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { X } from "lucide-react";
+import { X, Camera } from "lucide-react";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useSession } from "@/hooks/useSession";
 import { useFleetStore } from "@/store/fleet";
 import { DirectiveCard } from "@/components/directives/DirectiveCard";
@@ -301,6 +302,18 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
                   <span className="font-mono text-[13px]" style={{ color: "var(--text)" }}>
                     {truncateSessionId(session.session_id)}
                   </span>
+                  {session.capture_enabled && (
+                    <TooltipProvider>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <span style={{ display: "inline-flex", lineHeight: 0 }} aria-label="Prompt capture enabled">
+                            <Camera size={12} style={{ color: "var(--accent)" }} />
+                          </span>
+                        </TooltipTrigger>
+                        <TooltipContent>Prompt capture enabled</TooltipContent>
+                      </Tooltip>
+                    </TooltipProvider>
+                  )}
                   <span
                     className="rounded font-mono text-[10px] px-1.5 py-0.5"
                     style={{

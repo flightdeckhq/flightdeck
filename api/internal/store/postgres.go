@@ -102,6 +102,12 @@ type Session struct {
 
 	// HasPendingDirective is true when an undelivered shutdown directive exists.
 	HasPendingDirective bool `json:"has_pending_directive"`
+
+	// CaptureEnabled is true when at least one event in this session
+	// has has_content=true (i.e. prompt content was captured to
+	// event_content). Computed via EXISTS subquery so no schema
+	// change is required.
+	CaptureEnabled bool `json:"capture_enabled"`
 }
 
 // ContextFacetValue is a single (value, count) entry inside a context
@@ -244,7 +250,13 @@ func (s *Store) GetSession(ctx context.Context, sessionID string) (*Session, err
 			COALESCE(ps.warn_at_pct, pf.warn_at_pct, po.warn_at_pct) AS warn_at_pct,
 			COALESCE(ps.degrade_at_pct, pf.degrade_at_pct, po.degrade_at_pct) AS degrade_at_pct,
 			COALESCE(ps.degrade_to, pf.degrade_to, po.degrade_to) AS degrade_to,
-			COALESCE(ps.block_at_pct, pf.block_at_pct, po.block_at_pct) AS block_at_pct
+			COALESCE(ps.block_at_pct, pf.block_at_pct, po.block_at_pct) AS block_at_pct,
+			EXISTS(
+				SELECT 1 FROM events e
+				WHERE e.session_id = s.session_id
+				AND e.has_content = true
+				LIMIT 1
+			) AS capture_enabled
 		FROM sessions s
 		LEFT JOIN token_policies ps
 			ON ps.scope = 'session' AND ps.scope_value = s.session_id::text
@@ -261,6 +273,7 @@ func (s *Store) GetSession(ctx context.Context, sessionID string) (*Session, err
 		&contextRaw,
 		&sess.PolicyTokenLimit, &sess.WarnAtPct, &sess.DegradeAtPct,
 		&sess.DegradeTo, &sess.BlockAtPct,
+		&sess.CaptureEnabled,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil

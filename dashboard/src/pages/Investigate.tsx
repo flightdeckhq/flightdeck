@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useSearchParams } from "react-router-dom";
-import { Search, RefreshCw, X, LayoutGrid } from "lucide-react";
+import { Search, RefreshCw, X, LayoutGrid, GitBranch, Bot, Server } from "lucide-react";
 import { fetchSessions, type SessionsParams } from "@/lib/api";
 import type { SessionListItem, SessionState } from "@/lib/types";
 import { DateRangePicker, type DateRangeWithPreset } from "@/components/ui/DateRangePicker";
@@ -8,6 +8,8 @@ import { Pagination } from "@/components/ui/Pagination";
 import { SessionDrawer } from "@/components/session/SessionDrawer";
 import { OSIcon } from "@/components/ui/OSIcon";
 import { OrchestrationIcon } from "@/components/ui/OrchestrationIcon";
+import { ProviderLogo } from "@/components/ui/provider-logo";
+import { getProvider } from "@/lib/models";
 import { cn } from "@/lib/utils";
 
 // ---------------------------------------------------------------------------
@@ -149,6 +151,40 @@ function computeFacets(sessions: SessionListItem[]): FacetGroup[] {
     { key: "git_branch", label: "GIT BRANCH", values: toArr(branchCounts) },
     { key: "hostname", label: "HOSTNAME", values: toArr(hostCounts) },
   ].filter((g) => g.values.length > 0);
+}
+
+// ---------------------------------------------------------------------------
+// Facet value icons
+// ---------------------------------------------------------------------------
+
+function FacetIcon({ groupKey, value }: { groupKey: string; value: string }) {
+  if (groupKey === "state") {
+    return (
+      <span
+        className={cn("inline-block h-1.5 w-1.5 rounded-full shrink-0", STATE_COLORS[value] ?? "bg-text-muted")}
+      />
+    );
+  }
+  if (groupKey === "os") {
+    return <OSIcon os={value} size={12} />;
+  }
+  if (groupKey === "model") {
+    const provider = getProvider(value);
+    if (provider !== "unknown") {
+      return <ProviderLogo provider={provider} size={12} />;
+    }
+    return null;
+  }
+  if (groupKey === "flavor") {
+    return <Bot size={12} style={{ color: "var(--text-muted)", flexShrink: 0 }} />;
+  }
+  if (groupKey === "git_branch") {
+    return <GitBranch size={12} style={{ color: "var(--text-muted)", flexShrink: 0 }} />;
+  }
+  if (groupKey === "hostname") {
+    return <Server size={12} style={{ color: "var(--text-muted)", flexShrink: 0 }} />;
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -553,13 +589,16 @@ export function Investigate() {
                     key={v.value}
                     onClick={() => handleFacetClick(group.key, v.value)}
                     className={cn(
-                      "flex w-full items-center justify-between rounded px-2 py-1 text-xs transition-colors duration-150 cursor-pointer",
+                      "flex w-full items-center rounded px-2 py-1 text-xs transition-colors duration-150 cursor-pointer",
                       isActive
                         ? "bg-primary/10 text-primary"
                         : "text-text hover:bg-surface-hover"
                     )}
                   >
-                    <span className="truncate">{v.value}</span>
+                    <span className="flex items-center gap-1.5 min-w-0 flex-1">
+                      <FacetIcon groupKey={group.key} value={v.value} />
+                      <span className="truncate">{v.value}</span>
+                    </span>
                     <span
                       className="ml-2 shrink-0"
                       style={{ color: "var(--text-muted)", fontSize: "0.7rem" }}

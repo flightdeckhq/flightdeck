@@ -75,7 +75,18 @@ export function Directives() {
           value={flavorFilter ?? "__all__"}
           onValueChange={(v) => setFlavorFilter(v === "__all__" ? null : v)}
         >
-          <SelectTrigger className="h-7 w-48 text-xs">
+          <SelectTrigger
+            className="w-48"
+            style={{
+              height: 32,
+              border: "1px solid var(--border)",
+              borderRadius: 6,
+              background: "var(--surface)",
+              padding: "6px 10px",
+              fontSize: 13,
+              color: "var(--text)",
+            }}
+          >
             <SelectValue placeholder="All Flavors" />
           </SelectTrigger>
           <SelectContent>
@@ -93,7 +104,16 @@ export function Directives() {
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Search directives..."
           aria-label="Search directives"
-          className="h-7 rounded border border-border bg-surface px-2 text-xs text-text placeholder:text-text-muted focus:outline-none focus:ring-1 focus:ring-[var(--primary)]"
+          style={{
+            height: 32,
+            border: "1px solid var(--border)",
+            borderRadius: 6,
+            background: "var(--surface)",
+            padding: "6px 10px",
+            fontSize: 13,
+            color: "var(--text)",
+          }}
+          className="placeholder:text-text-muted focus:outline-none focus:border-[var(--primary)]"
         />
       </div>
 

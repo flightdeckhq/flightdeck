@@ -17,10 +17,17 @@ interface DonutChartProps {
 }
 
 export function DonutChart({ series }: DonutChartProps) {
-  const chartData = series.map((s) => ({
-    name: s.dimension,
-    value: s.total,
-  }));
+  const chartData = series
+    .map((s) => ({ name: s.dimension, value: s.total }))
+    .filter((d) => d.value > 0);
+
+  if (chartData.length === 0) {
+    return (
+      <div className="flex h-[260px] items-center justify-center text-sm text-text-muted">
+        No data for this period
+      </div>
+    );
+  }
 
   return (
     <ResponsiveContainer width="100%" height={260}>
@@ -29,8 +36,8 @@ export function DonutChart({ series }: DonutChartProps) {
           data={chartData}
           cx="50%"
           cy="50%"
-          innerRadius={60}
-          outerRadius={90}
+          innerRadius="40%"
+          outerRadius="70%"
           paddingAngle={2}
           dataKey="value"
         >

@@ -69,7 +69,9 @@ Framework calls flow through the same sensor pipeline as direct SDK calls -- ses
 
 ## Explicit wrapping with `wrap()`
 
-For cases where you want to wrap a specific client instance (without global `patch()`), use `wrap()`:
+If you have called `patch()`, you do **not** need `wrap()`. Every client is already intercepted at the class level. Calling `wrap()` after `patch()` is safe -- it detects that the class is already patched, returns the client unchanged, and produces no double interception and no error. It is simply redundant.
+
+`wrap()` exists for one specific scenario: you deliberately choose **not** to call `patch()` and want to instrument a single client instance explicitly.
 
 ```python
 import flightdeck_sensor
@@ -80,10 +82,11 @@ flightdeck_sensor.init(
     token="tok_dev",
 )
 
+# No patch() -- only this specific client is intercepted.
 client = flightdeck_sensor.wrap(anthropic.Anthropic())
 ```
 
-After `patch()` has been called, `wrap()` is a no-op -- it returns the client unchanged to prevent double-wrapping.
+Most users should use `patch()` instead. `wrap()` does not intercept clients that frameworks build internally, so framework calls will be invisible to the sensor unless `patch()` is also active.
 
 ## Start the control plane
 

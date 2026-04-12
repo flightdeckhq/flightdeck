@@ -3,7 +3,7 @@
 
 services:
   ingestion:
-    image: golang:1.26-alpine
+    image: golang:1.26.2-alpine
     working_dir: /app
     command: ["go", "run", "./cmd/"]
     volumes:
@@ -28,7 +28,7 @@ services:
       start_period: 120s
 
   workers:
-    image: golang:1.26-alpine
+    image: golang:1.26.2-alpine
     working_dir: /app
     command: ["go", "run", "./cmd/"]
     volumes:
@@ -36,7 +36,7 @@ services:
       - ./postgres/migrations:/migrations:ro
 
   api:
-    image: golang:1.26-alpine
+    image: golang:1.26.2-alpine
     working_dir: /app
     command: ["go", "run", "./cmd/"]
     volumes:

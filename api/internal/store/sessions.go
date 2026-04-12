@@ -122,7 +122,7 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 			OR COALESCE(s.context->>'os', '') ILIKE %[1]s
 			OR COALESCE(s.context->>'git_branch', '') ILIKE %[1]s
 			OR COALESCE(s.context->>'python_version', '') ILIKE %[1]s
-			OR COALESCE(s.context->'frameworks'::text, '') ILIKE %[1]s
+			OR COALESCE((s.context->'frameworks')::text, '') ILIKE %[1]s
 		)`, qPlaceholder))
 	}
 

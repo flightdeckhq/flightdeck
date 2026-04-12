@@ -1,4 +1,4 @@
-import type { FleetResponse, SessionDetail, Policy, PolicyRequest, DirectiveRequest, Directive, AnalyticsParams, AnalyticsResponse, EventContent, SearchResults, CustomDirective, AgentEvent } from "./types";
+import type { FleetResponse, SessionDetail, Policy, PolicyRequest, DirectiveRequest, Directive, AnalyticsParams, AnalyticsResponse, EventContent, SearchResults, CustomDirective, AgentEvent, SessionsResponse } from "./types";
 
 const BASE = import.meta.env.VITE_API_BASE_URL || "/api";
 
@@ -144,6 +144,40 @@ export function fetchBulkEvents(params: BulkEventsParams): Promise<BulkEventsRes
   if (params.limit) searchParams.set("limit", String(params.limit));
   if (params.offset) searchParams.set("offset", String(params.offset));
   return fetchJson<BulkEventsResponse>(`/v1/events?${searchParams.toString()}`);
+}
+
+export interface SessionsParams {
+  q?: string;
+  from?: string;
+  to?: string;
+  state?: string[];
+  flavor?: string[];
+  model?: string;
+  sort?: string;
+  order?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export async function fetchSessions(params: SessionsParams, signal?: AbortSignal): Promise<SessionsResponse> {
+  const sp = new URLSearchParams();
+  if (params.q) sp.set("q", params.q);
+  if (params.from) sp.set("from", params.from);
+  if (params.to) sp.set("to", params.to);
+  if (params.state) {
+    for (const s of params.state) sp.append("state", s);
+  }
+  if (params.flavor) {
+    for (const f of params.flavor) sp.append("flavor", f);
+  }
+  if (params.model) sp.set("model", params.model);
+  if (params.sort) sp.set("sort", params.sort);
+  if (params.order) sp.set("order", params.order);
+  if (params.limit) sp.set("limit", String(params.limit));
+  if (params.offset) sp.set("offset", String(params.offset));
+  const res = await fetch(`${BASE}/v1/sessions?${sp.toString()}`, { signal });
+  if (!res.ok) throw new Error(`API ${res.status}: GET /v1/sessions`);
+  return res.json() as Promise<SessionsResponse>;
 }
 
 export function fetchAnalytics(params: AnalyticsParams): Promise<AnalyticsResponse> {

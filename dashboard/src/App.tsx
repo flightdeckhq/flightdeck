@@ -5,6 +5,7 @@ import { Fleet } from "@/pages/Fleet";
 import { Policies } from "@/pages/Policies";
 import { Directives } from "@/pages/Directives";
 import { Analytics } from "@/pages/Analytics";
+import { Investigate } from "@/pages/Investigate";
 import { CommandPalette } from "@/components/search/CommandPalette";
 import { useTheme } from "@/hooks/useTheme";
 
@@ -26,6 +27,7 @@ function Nav({ onSearchClick }: { onSearchClick: () => void }) {
       <div className="ml-8 flex items-center gap-6">
         {[
           { to: "/", label: "Fleet", end: true },
+          { to: "/investigate", label: "Investigate" },
           { to: "/policies", label: "Policies" },
           { to: "/directives", label: "Directives" },
           { to: "/analytics", label: "Analytics" },
@@ -94,6 +96,7 @@ export default function App() {
         <div className="flex-1 overflow-hidden">
           <Routes>
             <Route path="/" element={<Fleet />} />
+            <Route path="/investigate" element={<Investigate />} />
             <Route path="/policies" element={<Policies />} />
             <Route path="/directives" element={<Directives />} />
             <Route path="/analytics" element={<Analytics />} />

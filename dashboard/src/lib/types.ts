@@ -265,13 +265,18 @@ export interface SearchResultAgent {
   last_seen: string;
 }
 
-/** Search result: session summary. */
+/** Search result: session summary (extended with fields for Investigate table). */
 export interface SearchResultSession {
   session_id: string;
   flavor: string;
   host: string;
   state: string;
   started_at: string;
+  ended_at: string | null;
+  model: string;
+  tokens_used: number;
+  token_limit: number | null;
+  context: Record<string, unknown>;
 }
 
 /** Search result: event summary. */
@@ -289,4 +294,28 @@ export interface SearchResults {
   agents: SearchResultAgent[];
   sessions: SearchResultSession[];
   events: SearchResultEvent[];
+}
+
+/** One row in the paginated sessions list from GET /v1/sessions. */
+export interface SessionListItem {
+  session_id: string;
+  flavor: string;
+  host: string | null;
+  model: string | null;
+  state: SessionState;
+  started_at: string;
+  ended_at: string | null;
+  duration_s: number;
+  tokens_used: number;
+  token_limit: number | null;
+  context: Record<string, unknown>;
+}
+
+/** Paginated response from GET /v1/sessions. */
+export interface SessionsResponse {
+  sessions: SessionListItem[];
+  total: number;
+  limit: number;
+  offset: number;
+  has_more: boolean;
 }

@@ -103,7 +103,7 @@ func (s *Store) Search(ctx context.Context, query string) (*SearchResults, error
 			   OR COALESCE(context->>'os', '') ILIKE $1
 			   OR COALESCE(context->>'git_branch', '') ILIKE $1
 			   OR COALESCE(context->>'python_version', '') ILIKE $1
-			   OR COALESCE(context->'frameworks'::text, '') ILIKE $1
+			   OR COALESCE((context->'frameworks')::text, '') ILIKE $1
 			ORDER BY started_at DESC
 			LIMIT 5
 		`, pattern)

@@ -2037,3 +2037,32 @@ without registering directives or loading policy.
 Resolved in: Phase 4.9
 
 ---
+
+## D089 -- Smoke test suite: plain Python, real API keys
+
+**Decision:** The smoke test suite (`tests/smoke/smoke_test.py`) uses
+plain Python with no test framework (no pytest, no unittest).
+
+**Why not pytest?** The smoke test runs real LLM API calls against a
+live stack. It must be runnable in any environment without installing
+test framework dependencies. A developer with `pip install
+flightdeck-sensor` and API keys can run `python tests/smoke/
+smoke_test.py` directly. The output is human-readable PASS/FAIL/SKIP
+per check, not pytest's verbose assertion rewriting.
+
+**Cost control:** Uses only claude-haiku-4-5-20251001 ($0.80/$4 per
+1M tokens) and gpt-4o-mini ($0.15/$0.60 per 1M). All prompts are
+"hi" with max_tokens=5 except where a richer response is needed
+(tool use, streaming). Estimated cost per full run: < $0.05.
+
+**KI15 workaround (multi-session, Group 11):** The sensor has a
+module-level singleton. Multiple concurrent init() calls in the
+same process are unreliable (second is a no-op). The smoke test
+runs multi-session scenarios sequentially: init → run → teardown →
+init → run → teardown. No overlapping init() calls.
+
+**KI17 noted (Group 1f):** beta.messages is tested only via
+patch(), not wrap(). wrap() does not intercept beta.messages due
+to the missing SensorBeta wrapper class.
+
+---

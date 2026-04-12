@@ -2149,6 +2149,23 @@ run it explicitly with
 `pytest tests/integration/test_ui_demo.py -v -s` (Phase 4.5
 audit Task 1).
 
+### Smoke tests
+
+```
+tests/smoke/
+└── smoke_test.py              # Real provider calls, no mocks, full stack
+```
+
+Run: `make test-smoke`. Requires `ANTHROPIC_API_KEY` and `OPENAI_API_KEY`
+environment variables. Uses real LLM calls (claude-haiku-4-5-20251001 and
+gpt-4o-mini, max_tokens=5) so cost per run is < $0.05. Plain Python
+(no pytest) -- executable directly with `python tests/smoke/smoke_test.py`.
+Covers 12 groups: provider interception (patch/wrap, streaming, tools,
+embeddings, beta.messages), prompt capture, local policy, server policy,
+kill switch, custom directives, runtime context, session visibility,
+sensor status, unavailability, multi-session fleet, and framework support
+(LangChain, LlamaIndex, CrewAI). See D089 for design decisions.
+
 ### Sensor end-to-end tests
 
 `tests/integration/test_sensor_e2e.py` is the only file in

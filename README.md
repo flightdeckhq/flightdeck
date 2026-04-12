@@ -322,6 +322,28 @@ The sensor is built on the foundation of [tokencap](https://github.com/pykul/tok
 
 ---
 
+## Smoke Tests
+
+The smoke test suite runs real LLM API calls against a live Flightdeck stack. No mocks.
+
+**Requirements:**
+- Running stack: `make dev`
+- Environment variables: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`
+- Sensor installed: `pip install -e sensor/`
+
+**Run:**
+```bash
+make test-smoke
+# or directly:
+python tests/smoke/smoke_test.py
+```
+
+**Cost:** < $0.05 per full run (haiku + gpt-4o-mini, max_tokens=5).
+
+**Coverage:** 12 groups, ~32 scenarios covering provider interception (patch/wrap, streaming, tools, embeddings, beta.messages), prompt capture, local and server policy enforcement, kill switch, custom directives, runtime context, session visibility, sensor status, unavailability, multi-session fleet, and framework support (LangChain, LlamaIndex, CrewAI). Scenarios that require missing API keys or packages are skipped gracefully.
+
+---
+
 ## Contributing
 
 Bug reports, provider requests, and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).

@@ -1,25 +1,41 @@
-"""OpenAI client proxy: intercepts chat.completions.create().
+"""OpenAI client proxy: intercepts chat.completions.create(),
+responses.create() and embeddings.create().
 
 Two intercept paths exist for OpenAI clients (mirroring the Anthropic
 interceptor):
 
 1. **Class-level patching (recommended)** -- :func:`patch_openai_classes`
    mutates ``openai.OpenAI`` and ``openai.AsyncOpenAI`` in place,
-   replacing the ``chat`` ``cached_property`` descriptor with
-   :class:`_OpenAIChatDescriptor`. Every instance created anywhere
-   has its first ``.chat`` access produce a :class:`SensorChat`
-   wrapper, cached in ``instance.__dict__`` for subsequent accesses.
+   replacing three ``cached_property`` descriptors on each class:
+
+   * ``chat`` → :class:`_OpenAIChatDescriptor` → :class:`SensorChat`
+   * ``responses`` → :class:`_OpenAIResponsesDescriptor` →
+     :class:`SensorResponses`
+   * ``embeddings`` → :class:`_OpenAIEmbeddingsDescriptor` →
+     :class:`SensorEmbeddings`
+
+   Each resource uses its own idempotency sentinel
+   (``_flightdeck_patched`` for chat, ``_flightdeck_patched_responses``
+   for responses, ``_flightdeck_patched_embeddings`` for embeddings)
+   so multiple resources on the same class can coexist. The chat
+   sentinel keeps the historical attribute name for backward
+   compatibility with :func:`flightdeck_sensor.wrap` which checks it
+   to decide whether a client is already patched.
 2. **Per-instance wrapping** via :class:`SensorOpenAI` and the public
    ``flightdeck_sensor.wrap()`` API.
 
 Interception hierarchy for class-level patching::
 
-    openai.OpenAI._flightdeck_patched   ← idempotency sentinel
-    openai.OpenAI.chat                  ← _OpenAIChatDescriptor
-      └── on first __get__:
-            real = orig_descriptor.func(instance)  # raw Chat
-            wrapped = SensorChat(real, session, provider, is_async)
-            instance.__dict__['chat'] = wrapped
+    openai.OpenAI._flightdeck_patched              ← chat sentinel
+    openai.OpenAI._flightdeck_patched_responses    ← responses sentinel
+    openai.OpenAI._flightdeck_patched_embeddings   ← embeddings sentinel
+    openai.OpenAI.chat                             ← _OpenAIChatDescriptor
+    openai.OpenAI.responses                        ← _OpenAIResponsesDescriptor
+    openai.OpenAI.embeddings                       ← _OpenAIEmbeddingsDescriptor
+      └── on first __get__ of each:
+            real = orig_descriptor.func(instance)  # raw resource
+            wrapped = Sensor{Chat,Responses,Embeddings}(real, ...)
+            instance.__dict__[name] = wrapped
             return wrapped
 
 Interception hierarchy for per-instance wrapping::
@@ -241,6 +257,96 @@ class SensorChat:
         return getattr(self._real, name)
 
 
+class SensorResponses:
+    """Proxy for ``client.responses`` -- intercepts ``create()``.
+
+    OpenAI's Responses API (March 2025 and recommended for all new
+    projects) lives at ``OpenAI.responses``, a direct sibling of
+    ``OpenAI.chat``. The intercept surface is a single ``create()``
+    method -- streaming is intentionally not special-cased here; a
+    ``stream=True`` call currently flows through ``base.call`` and the
+    returned stream object is passed through unchanged. Reconciled
+    token counts for streaming Responses calls are tracked as a
+    future enhancement, symmetric to the async-stream limitation in
+    ``SensorCompletions.create``.
+
+    Token usage extraction is handled by :class:`OpenAIProvider` which
+    falls back to ``usage.input_tokens`` / ``usage.output_tokens``
+    (the Responses API shape) when the chat shape is absent.
+    """
+
+    def __init__(
+        self,
+        real_responses: Any,
+        session: Session,
+        provider: OpenAIProvider,
+        *,
+        is_async: bool = False,
+    ) -> None:
+        self._real = real_responses
+        self._session = session
+        self._provider = provider
+        self._is_async = is_async
+
+    def create(self, **kwargs: Any) -> Any:
+        """Intercept responses.create() -- sync or async dispatch."""
+        real_fn = self._real.create
+        if self._is_async:
+            return base.call_async(
+                real_fn, kwargs, self._session, self._provider
+            )
+        return base.call(real_fn, kwargs, self._session, self._provider)
+
+    def __getattr__(self, name: str) -> Any:
+        # Pass through: parse, stream, retrieve, delete, cancel,
+        # connect, compact, input_items, input_tokens, with_raw_response,
+        # with_streaming_response.
+        return getattr(self._real, name)
+
+
+class SensorEmbeddings:
+    """Proxy for ``client.embeddings`` -- intercepts ``create()``.
+
+    Embeddings are common in RAG-heavy agent pipelines and counting
+    their tokens is important for full agent-workflow accounting.
+    The wrapper shape is identical to :class:`SensorResponses` -- only
+    ``create()`` is intercepted, everything else passes through.
+
+    Embeddings responses carry ``usage.prompt_tokens`` and
+    ``usage.total_tokens`` only (no ``completion_tokens``); the
+    existing chat path in :meth:`OpenAIProvider.extract_usage`
+    already returns ``(prompt_tokens, 0)`` in that case, which is
+    semantically correct -- embeddings produce vectors, not output
+    text.
+    """
+
+    def __init__(
+        self,
+        real_embeddings: Any,
+        session: Session,
+        provider: OpenAIProvider,
+        *,
+        is_async: bool = False,
+    ) -> None:
+        self._real = real_embeddings
+        self._session = session
+        self._provider = provider
+        self._is_async = is_async
+
+    def create(self, **kwargs: Any) -> Any:
+        """Intercept embeddings.create() -- sync or async dispatch."""
+        real_fn = self._real.create
+        if self._is_async:
+            return base.call_async(
+                real_fn, kwargs, self._session, self._provider
+            )
+        return base.call(real_fn, kwargs, self._session, self._provider)
+
+    def __getattr__(self, name: str) -> Any:
+        # Pass through: with_raw_response, with_streaming_response.
+        return getattr(self._real, name)
+
+
 class SensorOpenAI:
     """Proxy for ``openai.OpenAI`` or ``openai.AsyncOpenAI``.
 
@@ -383,20 +489,138 @@ class _OpenAIChatDescriptor:
         return wrapped
 
 
+class _OpenAIResponsesDescriptor:
+    """Replacement for the ``responses`` cached_property on OpenAI clients.
+
+    Structurally identical to :class:`_OpenAIChatDescriptor`; wraps the
+    raw ``Responses`` / ``AsyncResponses`` resource in a
+    :class:`SensorResponses` proxy bound to the active session.
+    """
+
+    def __init__(
+        self,
+        original: Any,
+        is_async: bool,
+    ) -> None:
+        self._original = original
+        self._is_async = is_async
+        self._attr_name: str | None = None
+
+    def __set_name__(self, owner: type, name: str) -> None:
+        self._attr_name = name
+
+    def __get__(self, instance: Any, owner: type | None = None) -> Any:
+        if instance is None:
+            return self
+
+        raw = self._original.func(instance)
+
+        session = _current_session()
+        if session is None:
+            return raw
+
+        provider = OpenAIProvider(
+            capture_prompts=session.config.capture_prompts,
+        )
+        wrapped = SensorResponses(
+            raw,
+            session,
+            provider,
+            is_async=self._is_async,
+        )
+
+        if self._attr_name is not None:
+            instance.__dict__[self._attr_name] = wrapped
+
+        return wrapped
+
+
+class _OpenAIEmbeddingsDescriptor:
+    """Replacement for the ``embeddings`` cached_property on OpenAI clients.
+
+    Structurally identical to :class:`_OpenAIChatDescriptor`; wraps the
+    raw ``Embeddings`` / ``AsyncEmbeddings`` resource in a
+    :class:`SensorEmbeddings` proxy.
+    """
+
+    def __init__(
+        self,
+        original: Any,
+        is_async: bool,
+    ) -> None:
+        self._original = original
+        self._is_async = is_async
+        self._attr_name: str | None = None
+
+    def __set_name__(self, owner: type, name: str) -> None:
+        self._attr_name = name
+
+    def __get__(self, instance: Any, owner: type | None = None) -> Any:
+        if instance is None:
+            return self
+
+        raw = self._original.func(instance)
+
+        session = _current_session()
+        if session is None:
+            return raw
+
+        provider = OpenAIProvider(
+            capture_prompts=session.config.capture_prompts,
+        )
+        wrapped = SensorEmbeddings(
+            raw,
+            session,
+            provider,
+            is_async=self._is_async,
+        )
+
+        if self._attr_name is not None:
+            instance.__dict__[self._attr_name] = wrapped
+
+        return wrapped
+
+
+# ----------------------------------------------------------------------
+# Resource patch table
+# ----------------------------------------------------------------------
+#
+# Each entry describes one resource on the OpenAI / AsyncOpenAI classes
+# that the class-level patch installs a descriptor for. The same table
+# drives both :func:`patch_openai_classes` and
+# :func:`unpatch_openai_classes` so the set of patched resources is
+# defined in exactly one place.
+#
+# ``sentinel_attr`` is the attribute used for idempotency. The chat
+# entry keeps the historical name ``_flightdeck_patched`` because
+# ``flightdeck_sensor.wrap()`` (and existing unit tests) check for it
+# to decide whether a client is already covered by the class-level
+# patch. The two new entries use per-resource sentinels so multiple
+# resources can coexist on the same class.
+
+_OPENAI_PATCH_RESOURCES: tuple[tuple[str, str, type], ...] = (
+    ("chat", "_flightdeck_patched", _OpenAIChatDescriptor),
+    ("responses", "_flightdeck_patched_responses", _OpenAIResponsesDescriptor),
+    ("embeddings", "_flightdeck_patched_embeddings", _OpenAIEmbeddingsDescriptor),
+)
+
+
 def patch_openai_classes(quiet: bool = False) -> None:
     """Class-level patch for ``openai.OpenAI`` and ``AsyncOpenAI``.
 
     Idempotent: a second call is a no-op. Mirrors the Anthropic
     counterpart in ``interceptor/anthropic.py``.
 
-    For each class:
+    For each (class, resource) pair:
 
-    1. Check ``hasattr(cls, '_flightdeck_patched')`` -- if present, skip.
-    2. Capture the original ``chat`` ``cached_property`` from
-       ``cls.__dict__``.
-    3. Store the captured original on ``cls._flightdeck_patched``.
-    4. Replace ``cls.chat`` with a fresh
-       :class:`_OpenAIChatDescriptor`.
+    1. Check ``hasattr(cls, sentinel_attr)`` -- if present, skip.
+    2. Capture the original ``cached_property`` from ``cls.__dict__``.
+    3. Store the captured original on the per-resource sentinel so
+       :func:`unpatch_openai_classes` can restore it.
+    4. Replace ``cls.<resource>`` with a fresh descriptor instance.
+
+    The three resources patched are ``chat``, ``responses`` and
+    ``embeddings``. See :data:`_OPENAI_PATCH_RESOURCES`.
 
     If ``openai`` is not installed this is a silent no-op.
     """
@@ -405,57 +629,102 @@ def patch_openai_classes(quiet: bool = False) -> None:
             _log.debug("openai not installed; skipping patch")
         return
 
-    _patch_one_class(_OrigOpenAI, is_async=False, quiet=quiet)
-    _patch_one_class(_OrigAsyncOpenAI, is_async=True, quiet=quiet)
+    for attr_name, sentinel_attr, descriptor_cls in _OPENAI_PATCH_RESOURCES:
+        _patch_one_resource(
+            _OrigOpenAI,
+            attr_name=attr_name,
+            sentinel_attr=sentinel_attr,
+            descriptor_cls=descriptor_cls,
+            is_async=False,
+            quiet=quiet,
+        )
+        _patch_one_resource(
+            _OrigAsyncOpenAI,
+            attr_name=attr_name,
+            sentinel_attr=sentinel_attr,
+            descriptor_cls=descriptor_cls,
+            is_async=True,
+            quiet=quiet,
+        )
 
 
-def _patch_one_class(cls: Any, *, is_async: bool, quiet: bool) -> None:
-    """Patch a single OpenAI / AsyncOpenAI class. Internal helper."""
-    if hasattr(cls, "_flightdeck_patched"):
+def _patch_one_resource(
+    cls: Any,
+    *,
+    attr_name: str,
+    sentinel_attr: str,
+    descriptor_cls: type,
+    is_async: bool,
+    quiet: bool,
+) -> None:
+    """Patch one resource attribute on one OpenAI / AsyncOpenAI class.
+
+    Parameterized form of the previous ``_patch_one_class`` so that
+    ``chat``, ``responses`` and ``embeddings`` all share the same
+    helper instead of three copy-pasted variants. Each resource has
+    its own idempotency sentinel attribute so multiple patched
+    resources coexist on the same class.
+    """
+    if hasattr(cls, sentinel_attr):
         return  # already patched, idempotent no-op
 
-    orig_descriptor = cls.__dict__.get("chat")
+    orig_descriptor = cls.__dict__.get(attr_name)
     if orig_descriptor is None:
         if not quiet:
             _log.warning(
-                "patch: %s has no 'chat' descriptor; skipping",
+                "patch: %s has no %r descriptor; skipping",
                 cls.__name__,
+                attr_name,
             )
         return
 
-    cls._flightdeck_patched = orig_descriptor
-    new_descriptor = _OpenAIChatDescriptor(
+    setattr(cls, sentinel_attr, orig_descriptor)
+    new_descriptor = descriptor_cls(
         orig_descriptor,
         is_async=is_async,
     )
-    new_descriptor._attr_name = "chat"
-    cls.chat = new_descriptor
+    new_descriptor._attr_name = attr_name
+    setattr(cls, attr_name, new_descriptor)
 
     if not quiet:
-        _log.info("Patched %s.chat descriptor", cls.__name__)
+        _log.info("Patched %s.%s descriptor", cls.__name__, attr_name)
 
 
 def unpatch_openai_classes() -> None:
     """Reverse :func:`patch_openai_classes`. Idempotent.
 
-    Restores the original ``chat`` ``cached_property`` on each class
-    and removes the ``_flightdeck_patched`` sentinel.
+    Restores the original ``cached_property`` for each patched
+    resource and removes the per-resource sentinel attributes.
 
     Same pre-existing-instance limitation as
     :func:`unpatch_anthropic_classes`: instances that have already
-    accessed ``.chat`` once retain the wrapped version in their
-    ``__dict__`` until garbage collected.
+    accessed a patched resource once retain the wrapped version in
+    their ``__dict__`` until garbage collected.
     """
     if not _OPENAI_AVAILABLE:
         return
-    _unpatch_one_class(_OrigOpenAI)
-    _unpatch_one_class(_OrigAsyncOpenAI)
+    for attr_name, sentinel_attr, _descriptor_cls in _OPENAI_PATCH_RESOURCES:
+        _unpatch_one_resource(
+            _OrigOpenAI,
+            attr_name=attr_name,
+            sentinel_attr=sentinel_attr,
+        )
+        _unpatch_one_resource(
+            _OrigAsyncOpenAI,
+            attr_name=attr_name,
+            sentinel_attr=sentinel_attr,
+        )
 
 
-def _unpatch_one_class(cls: Any) -> None:
-    """Unpatch a single OpenAI / AsyncOpenAI class. Internal helper."""
-    orig_descriptor = getattr(cls, "_flightdeck_patched", None)
+def _unpatch_one_resource(
+    cls: Any,
+    *,
+    attr_name: str,
+    sentinel_attr: str,
+) -> None:
+    """Unpatch one resource on one OpenAI / AsyncOpenAI class."""
+    orig_descriptor = getattr(cls, sentinel_attr, None)
     if orig_descriptor is None:
         return  # not patched, idempotent no-op
-    cls.chat = orig_descriptor
-    delattr(cls, "_flightdeck_patched")
+    setattr(cls, attr_name, orig_descriptor)
+    delattr(cls, sentinel_attr)

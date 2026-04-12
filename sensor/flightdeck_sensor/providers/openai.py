@@ -81,7 +81,23 @@ class OpenAIProvider:
     def extract_usage(self, response: Any) -> TokenUsage:
         """Extract actual token counts from an OpenAI response.
 
-        Handles both sync ``ChatCompletion`` objects and raw wrappers.
+        Handles three response shapes:
+
+        * Chat completions -- ``usage.prompt_tokens`` /
+          ``usage.completion_tokens``.
+        * Responses API (``client.responses.create``) --
+          ``usage.input_tokens`` / ``usage.output_tokens``. This is the
+          new OpenAI API introduced in March 2025 and the recommended
+          path for all new projects.
+        * Embeddings (``client.embeddings.create``) --
+          ``usage.prompt_tokens`` only (no completion counterpart);
+          the chat path is re-used and returns ``(prompt_tokens, 0)``,
+          which is semantically correct -- embeddings produce vectors,
+          not output text.
+
+        Chat-shape fields are read first so the hot path for
+        ``chat.completions.create`` stays unchanged. The Responses API
+        fields are only consulted when the chat fields are absent.
         Returns ``TokenUsage(0, 0)`` on any failure -- never raises.
         """
         try:
@@ -97,6 +113,21 @@ class OpenAIProvider:
 
             prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0
             completion_tokens = getattr(usage, "completion_tokens", 0) or 0
+
+            # Responses API fallback: its usage object uses
+            # input_tokens / output_tokens rather than
+            # prompt_tokens / completion_tokens. Only consult these
+            # when the chat fields were absent so a chat.completions
+            # response with a zero prompt_tokens (unlikely but
+            # possible) is never silently overwritten.
+            if prompt_tokens == 0 and completion_tokens == 0:
+                input_tokens = getattr(usage, "input_tokens", 0) or 0
+                output_tokens = getattr(usage, "output_tokens", 0) or 0
+                if input_tokens or output_tokens:
+                    return TokenUsage(
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                    )
 
             return TokenUsage(
                 input_tokens=prompt_tokens,

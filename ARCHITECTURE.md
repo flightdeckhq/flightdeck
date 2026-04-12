@@ -2315,15 +2315,19 @@ their agent appear in the live dashboard timeline in real time.
 - Post-call: extract actual usage, reconcile, POST post_call event
 
 `sensor/flightdeck_sensor/interceptor/anthropic.py`
-- `SensorMessages`: proxy for messages resource, intercepts create() and stream()
+- `SensorMessages`: proxy for `messages` and `beta.messages` resources, intercepts create() and stream()
 - `SensorAnthropic`: proxy for Anthropic/AsyncAnthropic clients
 - `.messages` as `@property` returning `SensorMessages`
 - `with_options()`, `with_raw_response`, `with_streaming_response` all return new `SensorAnthropic`
 - `__getattr__` passes everything else through
+- `_AnthropicMessagesDescriptor`: class-level `cached_property` replacement, installed on `Anthropic.messages`, `AsyncAnthropic.messages`, `Beta.messages` and `AsyncBeta.messages` by `patch_anthropic_classes()`
 
 `sensor/flightdeck_sensor/interceptor/openai.py`
 - `SensorCompletions`, `SensorChat`, `SensorOpenAI`: same proxy pattern for OpenAI
-- Streaming: inject `stream_options={"include_usage": True}` when `stream=True`
+- `SensorResponses`: proxy for `client.responses`, intercepts `create()` (sync + async)
+- `SensorEmbeddings`: proxy for `client.embeddings`, intercepts `create()` (sync + async)
+- Streaming (chat): inject `stream_options={"include_usage": True}` when `stream=True`
+- `_OpenAIChatDescriptor`, `_OpenAIResponsesDescriptor`, `_OpenAIEmbeddingsDescriptor`: class-level `cached_property` replacements, installed by `patch_openai_classes()` via the shared `_patch_one_resource` helper driven from the `_OPENAI_PATCH_RESOURCES` table. Per-resource idempotency sentinels: `_flightdeck_patched` (chat), `_flightdeck_patched_responses`, `_flightdeck_patched_embeddings`.
 
 `sensor/flightdeck_sensor/__init__.py`
 - `init(server, token, capture_prompts=False, limit=None, warn_at=0.8, quiet=False)`: creates global Session and ControlPlaneClient
@@ -2336,7 +2340,12 @@ their agent appear in the live dashboard timeline in real time.
 
 ### Framework limitations
 
-`flightdeck_sensor.patch()` works by replacing the `messages` (Anthropic) and `chat` (OpenAI) `cached_property` descriptors on the SDK client classes with sensor descriptors. Any code path that accesses `client.messages.*` or `client.chat.*` is intercepted, including code paths inside agent frameworks that build their own SDK clients internally. The class-level patch handles captured references (`from anthropic import Anthropic` BEFORE `patch()`) because the descriptor mutates the actual class object in place.
+`flightdeck_sensor.patch()` works by replacing the `cached_property` descriptors for a fixed set of resource slots on the SDK client classes with sensor descriptors. Any code path that accesses one of these resources is intercepted, including code paths inside agent frameworks that build their own SDK clients internally. The class-level patch handles captured references (`from anthropic import Anthropic` BEFORE `patch()`) because the descriptor mutates the actual class object in place.
+
+The patched resource slots are:
+
+- **Anthropic** — `Anthropic.messages`, `AsyncAnthropic.messages`, `Beta.messages`, `AsyncBeta.messages` (the `Beta` class lives at `anthropic.resources.beta.beta`; patching its `messages` cached_property is the leaf-level fix for `client.beta.messages.create` / `.stream`, which Claude 4 models — Opus 4.6, Sonnet 4.6 — use for adaptive thinking).
+- **OpenAI** — `OpenAI.chat`, `AsyncOpenAI.chat`, `OpenAI.responses`, `AsyncOpenAI.responses`, `OpenAI.embeddings`, `AsyncOpenAI.embeddings`. `responses` is OpenAI's recommended API for all new projects as of March 2025; `embeddings` is common in RAG-heavy agent pipelines.
 
 The class-level patch covers the **default** code paths used by every framework integration tested in `tests/integration/test_framework_patching.py`:
 
@@ -2346,17 +2355,22 @@ The class-level patch covers the **default** code paths used by every framework 
 - **llama-index-llms-openai** `OpenAI.complete()` → `client.chat.completions.create()` ✓
 - **CrewAI 1.14+** `LLM(model=...).call()` → `OpenAICompletion._call_completions` → `client.chat.completions.create()` ✓ (CrewAI uses native provider classes, not litellm)
 
-The class-level patch does **not** intercept the following paths even when the framework uses the SDK directly. These are documented architectural constraints of the by-resource patching design, not bugs to defer:
+In addition, the following resource entry points are also intercepted even though no currently-tested framework drives them by default — they are patched proactively because they are standard inference paths in production code (Claude 4 adaptive thinking, the OpenAI Responses API, and RAG embedding calls):
 
-| Code path | Framework that uses it (today) | Why not intercepted |
-|---|---|---|
-| `Anthropic.beta.messages.create` / `.beta.messages.stream` | CrewAI `AnthropicCompletion` when `betas` is set (e.g. thinking config) | `Anthropic.beta` is a separate `cached_property` from `Anthropic.messages`. The sensor descriptor only patches `messages`. |
-| `OpenAI.responses.create` (the new Responses API) | CrewAI `OpenAICompletion(api="responses")` | `OpenAI.responses` is a separate `cached_property` from `OpenAI.chat`. Default `api="completions"` is intercepted. |
-| `OpenAI.beta.chat.completions.parse` / `.stream` | CrewAI `OpenAICompletion` when structured output is requested via the beta path | `OpenAI.beta` is a separate `cached_property` from `OpenAI.chat`. |
-| `OpenAI.embeddings.*`, `Anthropic.completions.*`, `OpenAI.audio.*`, `OpenAI.images.*`, etc | None of the four frameworks tested today | Sibling resources at distinct `cached_property` slots. Each new resource needs a parallel descriptor following the existing pattern. |
-| Frameworks that bypass the SDK entirely (raw httpx, boto3 bedrock-runtime, vertexai, openrouter via direct httpx, litellm with HTTP backends) | CrewAI <1.14 used litellm; current 1.14+ does not | The sensor patches at the SDK class level. Code that doesn't go through `anthropic.Anthropic` / `openai.OpenAI` is invisible to the patch. Intercept at this level would require an httpx transport hook or framework-specific instrumentation, which is out of scope. |
+- **Anthropic `client.beta.messages.create` / `.stream`** ✓ — covered by `test_anthropic_beta_messages_intercepted`. Wraps `Beta.messages` / `AsyncBeta.messages` with the same `SensorMessages` proxy used for the top-level `messages` resource; the beta Messages class exposes the same `create()`/`stream()` surface and the HTTP call lands at the same `POST /v1/messages` route with an `anthropic-beta` header.
+- **OpenAI `client.responses.create`** ✓ — covered by `test_openai_responses_intercepted`. Wraps `OpenAI.responses` / `AsyncOpenAI.responses` with `SensorResponses`. `OpenAIProvider.extract_usage` has a fallback that reads `usage.input_tokens` / `usage.output_tokens` (the Responses shape) when the chat shape is absent, so `post_call` events carry correct token counts.
+- **OpenAI `client.embeddings.create`** ✓ — covered by `test_openai_embeddings_intercepted`. Wraps `OpenAI.embeddings` / `AsyncOpenAI.embeddings` with `SensorEmbeddings`. Embeddings responses carry only `usage.prompt_tokens` — `tokens_output` is recorded as zero on the `post_call` event, which is semantically correct: embeddings produce vectors, not output text.
 
-Extending the patch surface area to cover additional resources is straightforward: add a parallel descriptor following the `_AnthropicMessagesDescriptor` / `_OpenAIChatDescriptor` pattern in `sensor/flightdeck_sensor/interceptor/{anthropic,openai}.py`. Each new resource is one descriptor + one entry in `patch_*_classes`. Until a real user reports usage that goes through an unpatched path, extending the surface area is over-engineering. The default `LLM(model="...").call(...)` flow for every framework above is fully intercepted today.
+The class-level patch does **not** intercept the following paths even when the framework uses the SDK directly. These are deliberate out-of-scope resources with no relevance to agent fleet management or no clear LLM-call analog (audio transcription, image generation, content moderation classifiers, file uploads, fine-tuning job management, and the legacy `completions` API that modern frameworks no longer drive):
+
+| Code path | Why not intercepted |
+|---|---|
+| `OpenAI.beta.chat.completions.parse` / `.stream` | Structured-output path on a separate `OpenAI.beta` `cached_property`. Not yet observed in any framework's default flow. A future extension can add a parallel descriptor following the existing pattern. |
+| `OpenAI.audio.*`, `OpenAI.images.*`, `OpenAI.moderations.*`, `OpenAI.files.*`, `OpenAI.fine_tuning.*`, `OpenAI.completions.*` (legacy) | Utility resources -- speech transcription, image generation, content classification, file uploads, fine-tuning job management, legacy completions. None produce the kind of LLM inference event the sensor is designed to meter. Deliberately excluded from the patch surface. |
+| `Anthropic.completions.*` | Legacy Anthropic completions API. Superseded by `messages` / `beta.messages`. No modern framework drives it. |
+| Frameworks that bypass the SDK entirely (raw httpx, boto3 bedrock-runtime, vertexai, openrouter via direct httpx, litellm with HTTP backends) | The sensor patches at the SDK class level. Code that doesn't go through `anthropic.Anthropic` / `openai.OpenAI` is invisible to the patch. Intercept at this level would require an httpx transport hook or framework-specific instrumentation, which is out of scope. |
+
+Extending the patch surface area to cover additional resources is straightforward: add a parallel descriptor following the `_AnthropicMessagesDescriptor` / `_OpenAIChatDescriptor` pattern in `sensor/flightdeck_sensor/interceptor/{anthropic,openai}.py`. Each new OpenAI resource is one descriptor + one entry in the `_OPENAI_PATCH_RESOURCES` table (and a per-resource sentinel name); each new Anthropic resource on a new owner class is one call to `_patch_one_class` if it reuses the `SensorMessages` wrapper. Until a real user reports usage that goes through an unpatched path, extending the surface area further is over-engineering.
 
 For frameworks that bypass the SDK entirely (current example: none of the four tested frameworks; potential future example: a framework that adopts litellm with an HTTP-only backend), interception would require a separate intercept layer such as an httpx transport wrapper or framework-specific instrumentation hooks. That work is out of scope for the class-level patching design and is not tracked as a Known Issue because it is a deliberate constraint of the chosen approach, not a deferred fix.
 

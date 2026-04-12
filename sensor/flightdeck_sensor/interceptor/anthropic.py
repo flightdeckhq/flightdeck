@@ -3,15 +3,24 @@
 Two intercept paths exist for Anthropic clients:
 
 1. **Class-level patching (recommended)** -- :func:`patch_anthropic_classes`
-   mutates ``anthropic.Anthropic`` and ``anthropic.AsyncAnthropic`` in
-   place, replacing the ``messages`` ``cached_property`` descriptor
-   with :class:`_AnthropicMessagesDescriptor`. Every instance created
-   anywhere -- including instances constructed inside frameworks like
-   ``langchain-anthropic`` and ``llama-index-llms-anthropic`` -- has
-   its first ``.messages`` access produce a :class:`SensorMessages`
+   mutates ``anthropic.Anthropic``, ``anthropic.AsyncAnthropic``,
+   ``anthropic.resources.beta.beta.Beta`` and ``AsyncBeta`` in place,
+   replacing the ``messages`` ``cached_property`` descriptor on each
+   class with :class:`_AnthropicMessagesDescriptor`. Every instance
+   created anywhere -- including instances constructed inside
+   frameworks like ``langchain-anthropic`` and
+   ``llama-index-llms-anthropic`` -- has its first ``.messages`` (or
+   ``.beta.messages``) access produce a :class:`SensorMessages`
    wrapper. The wrapped resource is cached in ``instance.__dict__``
    so subsequent accesses bypass the descriptor entirely (matching
    ``functools.cached_property`` semantics).
+
+   The same descriptor class is installed on both the client class
+   (``Anthropic.messages``) and the beta class (``Beta.messages``) --
+   it is agnostic to which owner it lives on, and the beta
+   ``Messages`` / ``AsyncMessages`` resources expose the same
+   ``create()`` + ``stream()`` surface as the top-level ones, so a
+   single :class:`SensorMessages` wrapper covers both paths.
 2. **Per-instance wrapping** -- :class:`SensorAnthropic` wraps a
    single client instance via the public ``flightdeck_sensor.wrap()``
    API. Useful for code that wants to opt into observability for one
@@ -77,13 +86,28 @@ _log = logging.getLogger("flightdeck_sensor.interceptor.anthropic")
 
 try:
     import anthropic as _anthropic_module
+    from anthropic.resources.beta.beta import (
+        AsyncBeta as _OrigAsyncBetaImported,
+    )
+    from anthropic.resources.beta.beta import (
+        Beta as _OrigBetaImported,
+    )
     _OrigAnthropic: type | None = _anthropic_module.Anthropic
     _OrigAsyncAnthropic: type | None = _anthropic_module.AsyncAnthropic
+    # The Beta / AsyncBeta classes are imported at module load so the
+    # class-level patch targets the same class objects any caller (the
+    # SDK's own ``Anthropic.beta`` cached_property, user code, CrewAI,
+    # etc.) will instantiate at runtime. They are captured here for
+    # the same reason _OrigAnthropic is captured above.
+    _OrigBeta: type | None = _OrigBetaImported
+    _OrigAsyncBeta: type | None = _OrigAsyncBetaImported
     _ANTHROPIC_AVAILABLE = True
 except ImportError:
     _anthropic_module = None  # type: ignore[assignment]
     _OrigAnthropic = None
     _OrigAsyncAnthropic = None
+    _OrigBeta = None
+    _OrigAsyncBeta = None
     _ANTHROPIC_AVAILABLE = False
 
 
@@ -297,12 +321,13 @@ class _AnthropicMessagesDescriptor:
 
 
 def patch_anthropic_classes(quiet: bool = False) -> None:
-    """Class-level patch for ``anthropic.Anthropic`` and ``AsyncAnthropic``.
+    """Class-level patch for ``anthropic.Anthropic``, ``AsyncAnthropic``,
+    ``Beta`` and ``AsyncBeta``.
 
     Idempotent: a second call is a no-op. Safe to invoke from
     ``flightdeck_sensor.patch()``.
 
-    For each of the two classes:
+    For each of the four classes:
 
     1. Check ``hasattr(cls, '_flightdeck_patched')`` -- if present, skip.
     2. Capture the original ``messages`` ``cached_property`` from
@@ -312,6 +337,14 @@ def patch_anthropic_classes(quiet: bool = False) -> None:
     4. Replace ``cls.messages`` with a fresh
        :class:`_AnthropicMessagesDescriptor` instance bound to the
        async-ness of that class.
+
+    ``Beta`` / ``AsyncBeta`` are patched with the same descriptor
+    class: the beta ``Messages`` / ``AsyncMessages`` resource exposes
+    the same ``create()`` + ``stream()`` surface as the top-level one,
+    and the beta HTTP calls land at the same
+    ``https://api.anthropic.com/v1/messages`` route (with an
+    ``anthropic-beta`` header), so a single :class:`SensorMessages`
+    wrapper covers both paths.
 
     No ``__init__`` patching is needed -- the descriptor handles
     everything on first access. Anthropic clients construct cleanly
@@ -328,6 +361,8 @@ def patch_anthropic_classes(quiet: bool = False) -> None:
 
     _patch_one_class(_OrigAnthropic, is_async=False, quiet=quiet)
     _patch_one_class(_OrigAsyncAnthropic, is_async=True, quiet=quiet)
+    _patch_one_class(_OrigBeta, is_async=False, quiet=quiet)
+    _patch_one_class(_OrigAsyncBeta, is_async=True, quiet=quiet)
 
 
 def _patch_one_class(cls: Any, *, is_async: bool, quiet: bool) -> None:
@@ -374,6 +409,8 @@ def unpatch_anthropic_classes() -> None:
         return
     _unpatch_one_class(_OrigAnthropic)
     _unpatch_one_class(_OrigAsyncAnthropic)
+    _unpatch_one_class(_OrigBeta)
+    _unpatch_one_class(_OrigAsyncBeta)
 
 
 def _unpatch_one_class(cls: Any) -> None:

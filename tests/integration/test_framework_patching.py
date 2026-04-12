@@ -448,37 +448,27 @@ def test_llama_index_openai_patched_intercepts_call(
 # **Partial coverage caveat -- CrewAI code paths NOT intercepted by
 # the class-level patch**:
 #
-#   1. ``OpenAICompletion`` with ``api="responses"`` instead of the
-#      default ``api="completions"``. This routes to
-#      ``self._client.responses.create(...)`` which is the new OpenAI
-#      Responses API at ``OpenAI.responses`` -- a separate
-#      cached_property from ``OpenAI.chat``. Our descriptor only
-#      patches ``chat``.
-#   2. ``OpenAICompletion`` structured output via the beta path:
+#   1. ``OpenAICompletion`` structured output via the beta path:
 #      ``self._client.beta.chat.completions.parse(...)`` and
 #      ``self._client.beta.chat.completions.stream(...)``.
 #      ``OpenAI.beta`` is a separate cached_property we do not patch.
-#   3. ``AnthropicCompletion`` with ``betas`` set (e.g. for thinking
-#      configs or beta features). This routes to
-#      ``self._client.beta.messages.create(...)`` /
-#      ``.beta.messages.stream(...)`` -- ``Anthropic.beta`` is a
-#      separate cached_property we do not patch.
-#   4. Any future SDK resource that lands at a sibling
-#      cached_property (e.g. ``OpenAI.embeddings``,
-#      ``Anthropic.completions``).
+#   2. Any future SDK resource that lands at a sibling
+#      cached_property we have not added to the patch table (e.g.
+#      ``Anthropic.completions`` legacy, ``OpenAI.audio``,
+#      ``OpenAI.images``, etc -- deliberately excluded as
+#      out-of-scope utility resources).
 #
-# These are documented architectural constraints, not bugs to defer
-# to a KI. The class-level patching design is by-resource, not
-# by-client. Adding ``OpenAI.responses``, ``OpenAI.beta``,
-# ``Anthropic.beta``, etc. to the patched-resource list is a
-# straightforward extension when needed -- each new resource adds a
-# parallel descriptor following the existing pattern. Until a real
-# user reports CrewAI usage that goes through one of these paths,
-# extending the patch surface area is over-engineering. The default
-# ``LLM(model="...").call(...)`` flow is fully intercepted today.
+# The previously listed ``OpenAI.responses`` and
+# ``Anthropic.beta.messages`` paths are now intercepted as of the
+# Phase 3 patch extension; the tests
+# ``test_openai_responses_intercepted`` and
+# ``test_anthropic_beta_messages_intercepted`` below drive those
+# paths against the live stack.
 #
-# A symmetric note exists in ``ARCHITECTURE.md`` under "Framework
-# limitations".
+# These remaining gaps are documented architectural constraints,
+# not bugs to defer to a KI. The class-level patching design is
+# by-resource, not by-client. A symmetric note exists in
+# ``ARCHITECTURE.md`` under "Framework limitations".
 
 
 def test_crewai_native_openai_patched_intercepts_call(
@@ -697,3 +687,278 @@ def test_pre_existing_instance_not_intercepted(
         assert event_types == ["session_start"], (
             f"expected only session_start events, got {event_types}"
         )
+
+
+# ======================================================================
+# Test 7 -- anthropic.beta.messages intercepted
+# ======================================================================
+
+
+# The Responses API and the Anthropic Messages response shape mock
+# payloads live alongside the existing ANTHROPIC_RESPONSE /
+# OPENAI_RESPONSE fixtures in test_sensor_e2e.py. We define the
+# three new-resource payloads locally because they are specific to
+# this file and only these three tests need them.
+
+_ANTHROPIC_BETA_RESPONSE: dict[str, Any] = {
+    "id": "msg_beta_test123",
+    "type": "message",
+    "role": "assistant",
+    "content": [{"type": "text", "text": "Hello from mock Anthropic beta"}],
+    "model": "claude-opus-4-6",
+    "stop_reason": "end_turn",
+    "stop_sequence": None,
+    "usage": {"input_tokens": 10, "output_tokens": 8},
+}
+
+_OPENAI_RESPONSES_RESPONSE: dict[str, Any] = {
+    "id": "resp_test123",
+    "object": "response",
+    "created_at": 1234567890,
+    "model": "gpt-4.1",
+    "status": "completed",
+    "error": None,
+    "incomplete_details": None,
+    "instructions": None,
+    "max_output_tokens": None,
+    "metadata": {},
+    "parallel_tool_calls": True,
+    "previous_response_id": None,
+    "reasoning": {"effort": None, "summary": None},
+    "service_tier": "default",
+    "store": True,
+    "temperature": 1.0,
+    "text": {"format": {"type": "text"}},
+    "tool_choice": "auto",
+    "tools": [],
+    "top_p": 1.0,
+    "truncation": "disabled",
+    "user": None,
+    "output": [
+        {
+            "type": "message",
+            "id": "msg_resp_test123",
+            "status": "completed",
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "output_text",
+                    "text": "Hello from mock OpenAI responses",
+                    "annotations": [],
+                }
+            ],
+        }
+    ],
+    "output_text": "Hello from mock OpenAI responses",
+    # Responses API uses input_tokens / output_tokens, NOT
+    # prompt_tokens / completion_tokens. This exercises the fallback
+    # path added to OpenAIProvider.extract_usage in this phase.
+    "usage": {
+        "input_tokens": 10,
+        "input_tokens_details": {"cached_tokens": 0},
+        "output_tokens": 8,
+        "output_tokens_details": {"reasoning_tokens": 0},
+        "total_tokens": 18,
+    },
+}
+
+_OPENAI_EMBEDDINGS_RESPONSE: dict[str, Any] = {
+    "object": "list",
+    "model": "text-embedding-3-small",
+    "data": [
+        {
+            "object": "embedding",
+            "index": 0,
+            "embedding": [0.1, 0.2, 0.3, 0.4],
+        }
+    ],
+    # Embeddings carry prompt_tokens + total_tokens only. No
+    # completion_tokens, no input_tokens/output_tokens. The existing
+    # extract_usage chat path produces TokenUsage(prompt_tokens, 0)
+    # which is semantically correct -- embeddings have no output
+    # text to count.
+    "usage": {"prompt_tokens": 10, "total_tokens": 10},
+}
+
+
+def _mock_anthropic_beta_with_latency(rmock: respx.MockRouter) -> None:
+    """Mock the same /v1/messages route with the beta response body.
+
+    The Anthropic beta Messages API POSTs to exactly the same URL
+    (``https://api.anthropic.com/v1/messages``) as the top-level
+    messages API -- the only wire-level difference is the
+    ``anthropic-beta`` request header. respx ignores request headers
+    by default, so matching only on method + URL is sufficient.
+    """
+    def _delayed(_request: httpx.Request) -> httpx.Response:
+        time.sleep(0.05)
+        return httpx.Response(200, json=_ANTHROPIC_BETA_RESPONSE)
+
+    rmock.post("https://api.anthropic.com/v1/messages").mock(
+        side_effect=_delayed
+    )
+
+
+def _mock_openai_responses_with_latency(rmock: respx.MockRouter) -> None:
+    """Mock https://api.openai.com/v1/responses with 50 ms latency."""
+    def _delayed(_request: httpx.Request) -> httpx.Response:
+        time.sleep(0.05)
+        return httpx.Response(200, json=_OPENAI_RESPONSES_RESPONSE)
+
+    rmock.post("https://api.openai.com/v1/responses").mock(
+        side_effect=_delayed
+    )
+
+
+def _mock_openai_embeddings_with_latency(rmock: respx.MockRouter) -> None:
+    """Mock https://api.openai.com/v1/embeddings with 50 ms latency."""
+    def _delayed(_request: httpx.Request) -> httpx.Response:
+        time.sleep(0.05)
+        return httpx.Response(200, json=_OPENAI_EMBEDDINGS_RESPONSE)
+
+    rmock.post("https://api.openai.com/v1/embeddings").mock(
+        side_effect=_delayed
+    )
+
+
+def test_anthropic_beta_messages_intercepted(
+    sensor_reset: None, unique_flavor: str,
+) -> None:
+    """``client.beta.messages.create()`` is intercepted via patch().
+
+    The class-level patch installs
+    :class:`_AnthropicMessagesDescriptor` on the ``Beta`` class's
+    ``messages`` cached_property. On first access, the raw beta
+    ``Messages`` resource is wrapped in :class:`SensorMessages` and
+    the call goes through the sensor pre/post pipeline exactly like
+    a top-level ``client.messages.create`` call.
+
+    This path matters because Anthropic's Claude 4 family (Opus 4.6,
+    Sonnet 4.6) uses the beta API for extended / adaptive thinking,
+    which is no longer a niche beta feature -- it is an increasingly
+    standard inference path.
+    """
+    flavor = unique_flavor
+
+    with respx.mock(assert_all_called=False) as rmock:
+        _mock_anthropic_beta_with_latency(rmock)
+
+        flightdeck_sensor.init(server=INGESTION_URL, token=TOKEN)
+        flightdeck_sensor.patch()
+
+        client = anthropic.Anthropic(api_key="test-key")
+        response = client.beta.messages.create(
+            model="claude-opus-4-6",
+            messages=[{"role": "user", "content": "Hello"}],
+            max_tokens=100,
+        )
+        assert response.id == "msg_beta_test123"
+
+        _assert_full_pipeline_event_chain(flavor, "claude-opus-4-6")
+        _assert_session_in_fleet_with_context(flavor)
+
+
+# ======================================================================
+# Test 8 -- openai.responses.create intercepted
+# ======================================================================
+
+
+def test_openai_responses_intercepted(
+    sensor_reset: None, unique_flavor: str,
+) -> None:
+    """``client.responses.create()`` is intercepted via patch().
+
+    The Responses API (``OpenAI.responses``) is OpenAI's recommended
+    entry point for all new projects as of March 2025; future
+    features land here first. The class-level patch installs
+    :class:`_OpenAIResponsesDescriptor` on ``OpenAI.responses``
+    which wraps the raw ``Responses`` resource in
+    :class:`SensorResponses` on first access.
+
+    Also exercises the :meth:`OpenAIProvider.extract_usage` fallback
+    that reads ``input_tokens`` / ``output_tokens`` when the chat
+    shape (``prompt_tokens``/``completion_tokens``) is absent --
+    without that fallback the ``post_call`` event would land with
+    zero token counts.
+    """
+    flavor = unique_flavor
+
+    with respx.mock(assert_all_called=False) as rmock:
+        _mock_openai_responses_with_latency(rmock)
+
+        flightdeck_sensor.init(server=INGESTION_URL, token=TOKEN)
+        flightdeck_sensor.patch()
+
+        client = openai.OpenAI(api_key="test-key")
+        response = client.responses.create(
+            model="gpt-4.1",
+            input="Hello from responses API",
+        )
+        assert response.id == "resp_test123"
+
+        _assert_full_pipeline_event_chain(flavor, "gpt-4.1")
+        _assert_session_in_fleet_with_context(flavor)
+
+
+# ======================================================================
+# Test 9 -- openai.embeddings.create intercepted
+# ======================================================================
+
+
+def test_openai_embeddings_intercepted(
+    sensor_reset: None, unique_flavor: str,
+) -> None:
+    """``client.embeddings.create()`` is intercepted via patch().
+
+    Embeddings are common in RAG-heavy agent pipelines, so counting
+    their tokens is relevant for full agent-workflow accounting. The
+    class-level patch installs :class:`_OpenAIEmbeddingsDescriptor`
+    on ``OpenAI.embeddings`` which wraps the raw ``Embeddings``
+    resource in :class:`SensorEmbeddings` on first access.
+
+    Embeddings responses carry only ``usage.prompt_tokens`` and
+    ``usage.total_tokens`` -- there is no output text to count, so
+    the ``post_call`` ``tokens_output`` is expected to be zero. This
+    test therefore does NOT use
+    :func:`_assert_full_pipeline_event_chain` (which strictly asserts
+    the 10/8/18 chat shape) and instead verifies the subset of
+    fields available for embeddings: a ``post_call`` exists, its
+    ``model`` is set, and ``tokens_input`` matches the mock
+    ``prompt_tokens``.
+    """
+    flavor = unique_flavor
+
+    with respx.mock(assert_all_called=False) as rmock:
+        _mock_openai_embeddings_with_latency(rmock)
+
+        flightdeck_sensor.init(server=INGESTION_URL, token=TOKEN)
+        flightdeck_sensor.patch()
+
+        client = openai.OpenAI(api_key="test-key")
+        response = client.embeddings.create(
+            model="text-embedding-3-small",
+            input="Hello from embeddings",
+        )
+        # The SDK returns a CreateEmbeddingResponse; we just need
+        # some basic shape confirmation -- the DB events are the
+        # interception proof.
+        assert response.model == "text-embedding-3-small"
+        assert len(response.data) == 1
+
+        # Verify session_start + post_call land in the DB, with
+        # model present and tokens_input = 10 (prompt_tokens).
+        # tokens_output = 0 is expected for embeddings, not a bug.
+        _wait_for_event_type(flavor, "session_start", timeout=10)
+        post_call = _wait_for_event_type(flavor, "post_call", timeout=15)
+        assert post_call.get("model") == "text-embedding-3-small", (
+            f"post_call model missing: {post_call}"
+        )
+        assert post_call["tokens_input"] == 10, (
+            f"expected tokens_input=10, got {post_call.get('tokens_input')}"
+        )
+        assert post_call["tokens_output"] == 0, (
+            f"expected tokens_output=0 for embeddings, "
+            f"got {post_call.get('tokens_output')}"
+        )
+
+        _assert_session_in_fleet_with_context(flavor)

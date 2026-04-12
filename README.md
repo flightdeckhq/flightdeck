@@ -22,7 +22,7 @@ See every LLM call, tool use, and token spend across your entire fleet in real t
 pip install flightdeck-sensor
 ```
 
-## Add two lines
+## Quick start
 
 ```python
 import flightdeck_sensor
@@ -31,11 +31,16 @@ flightdeck_sensor.init(
     server="http://localhost:4000/ingest",
     token="tok_dev",
 )
+flightdeck_sensor.patch()
 
 # Your existing agent code. Nothing changes.
+# Every Anthropic and OpenAI client is intercepted automatically.
 import anthropic
 client = anthropic.Anthropic()
+response = client.messages.create(model="claude-sonnet-4-6", ...)
 ```
+
+`patch()` is the recommended way to use the sensor. After `init()` + `patch()`, every instance of `anthropic.Anthropic`, `openai.OpenAI` (and their async variants) -- including instances constructed internally by frameworks -- has its LLM call resources intercepted automatically. No `wrap()` call needed.
 
 The dev `make dev` stack exposes the ingestion API at
 `http://localhost:4000/ingest` via nginx. Production deployments
@@ -43,12 +48,45 @@ behind their own gateway typically route a single root URL like
 `https://flightdeck.example.com` to the ingestion service; consult
 your Helm `values.yaml` for the externally-visible ingestion path.
 
-Works with OpenAI too. For frameworks (LangChain, CrewAI, LlamaIndex, AutoGen), add one more line:
+## Supported resources
+
+| Provider  | Intercepted resources |
+|-----------|----------------------|
+| Anthropic | `client.messages.create/stream`, `client.beta.messages.create/stream` |
+| OpenAI    | `client.chat.completions.create` (sync, async, streaming), `client.responses.create`, `client.embeddings.create` |
+
+Resources NOT intercepted: `audio`, `images`, `moderations`, `files`, `fine_tuning`, legacy `completions`. These are utility resources with no relevance to agent fleet management.
+
+## Frameworks
+
+After `init()` + `patch()`, frameworks that use the official Anthropic or OpenAI SDKs internally are intercepted without any user-side wrapping:
+
+- **LangChain** — `langchain-anthropic` (`ChatAnthropic.invoke()`) and `langchain-openai` (`ChatOpenAI.invoke()`)
+- **LlamaIndex** — `llama-index-llms-anthropic` (`Anthropic.complete()`) and `llama-index-llms-openai` (`OpenAI.complete()`)
+- **CrewAI 1.14+** — `LLM(model=...).call()` via the native OpenAI/Anthropic provider classes
+
+Framework calls flow through the same sensor pipeline as direct SDK calls -- session events, token counts, and policy enforcement all apply automatically.
+
+## Explicit wrapping with `wrap()`
+
+If you have called `patch()`, you do **not** need `wrap()`. Every client is already intercepted at the class level. Calling `wrap()` after `patch()` is safe -- it detects that the class is already patched, returns the client unchanged, and produces no double interception and no error. It is simply redundant.
+
+`wrap()` exists for one specific scenario: you deliberately choose **not** to call `patch()` and want to instrument a single client instance explicitly.
 
 ```python
-flightdeck_sensor.patch()
-# Every client the framework builds is intercepted automatically.
+import flightdeck_sensor
+import anthropic
+
+flightdeck_sensor.init(
+    server="http://localhost:4000/ingest",
+    token="tok_dev",
+)
+
+# No patch() -- only this specific client is intercepted.
+client = flightdeck_sensor.wrap(anthropic.Anthropic())
 ```
+
+Most users should use `patch()` instead. `wrap()` does not intercept clients that frameworks build internally, so framework calls will be invisible to the sensor unless `patch()` is also active.
 
 ## Start the control plane
 
@@ -224,6 +262,13 @@ D081 for the full design.
 
 ## Known limitations
 
+* **Call `patch()` before constructing clients.** Instances that
+  accessed `.messages`, `.chat`, `.responses`, or `.embeddings`
+  before `patch()` was called have the raw, unwrapped resource
+  cached internally and will not be intercepted. In practice,
+  `init()` + `patch()` runs at the top of your agent's
+  entrypoint, well before any framework or user code constructs
+  LLM clients.
 * **One `init()` per process.** The second `init()` call from
   any thread is currently a no-op with a warning log. Pattern C
   (multiple "logically separate" agents in one process, each

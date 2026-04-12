@@ -152,7 +152,7 @@ To add a new LLM provider to the sensor:
    implementing the `Provider` protocol from `protocol.py`
 2. Implement `estimate_tokens()`, `extract_usage()`, `extract_content()`, and `get_model()`
 3. Create `sensor/flightdeck_sensor/interceptor/<provider>.py`
-   with the Guarded* proxy classes following the Anthropic or OpenAI patterns
+   with the Sensor* proxy classes following the Anthropic or OpenAI patterns
 4. Update `__init__.py` to detect and wrap the new client type
    in `wrap()` and `_patch_<provider>()` in `patch()`
 5. Add the provider to the optional dependencies in `pyproject.toml`

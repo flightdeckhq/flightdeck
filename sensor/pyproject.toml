@@ -41,6 +41,25 @@ dev = [
     "respx>=0.20",
     "anthropic>=0.20",
     "openai>=1.0",
+    # Used by tests/integration/test_framework_patching.py to verify
+    # that flightdeck_sensor.patch() transparently intercepts LLM calls
+    # made through agent frameworks without any explicit wrap() call.
+    # The framework instantiates its own internal Anthropic / OpenAI
+    # client; the sensor's class-level patching descriptor wraps it
+    # on first .messages / .chat access. See Phase 4.5+ Phase 3.
+    "langchain-anthropic>=0.1",
+    "langchain-openai>=0.1",
+    "llama-index-llms-anthropic>=0.1",
+    "llama-index-llms-openai>=0.1",
+    # CrewAI 1.14+ ships native provider classes that use the official
+    # openai/anthropic SDKs directly (NOT litellm). The default
+    # LLM(model=...).call(...) flow is intercepted via the sensor's
+    # OpenAI.chat / Anthropic.messages descriptors. Beta paths
+    # (responses API, beta.messages, beta.chat.completions.parse) are
+    # NOT intercepted -- documented as a known constraint in
+    # ARCHITECTURE.md "Framework limitations". See
+    # test_crewai_native_openai_patched_intercepts_call.
+    "crewai>=1.14",
 ]
 
 [tool.hatch.build.targets.wheel]

@@ -1834,3 +1834,153 @@ updated to verify the new isolated-Sessions semantics.
 **Resolved in:** Phase 5 (both items, separate work).
 
 ---
+
+## D087 -- Class-level SDK patching
+
+**Decision:** `flightdeck_sensor.patch()` mutates SDK client
+classes in place by replacing `functools.cached_property`
+descriptors with sensor-managed descriptors. It does NOT
+subclass the client, does NOT use import hooks, and does NOT
+replace module attributes with factory functions.
+
+Six classes are patched: `anthropic.Anthropic`,
+`anthropic.AsyncAnthropic`,
+`anthropic.resources.beta.beta.Beta`,
+`anthropic.resources.beta.beta.AsyncBeta`, `openai.OpenAI`,
+and `openai.AsyncOpenAI`. Five descriptor classes:
+
+| Descriptor | Installed on | Wraps in |
+|---|---|---|
+| `_AnthropicMessagesDescriptor` | `Anthropic.messages`, `AsyncAnthropic.messages` | `SensorMessages` |
+| `_AnthropicBetaMessagesDescriptor` | `Beta.messages`, `AsyncBeta.messages` | `SensorMessages` |
+| `_OpenAIChatDescriptor` | `OpenAI.chat`, `AsyncOpenAI.chat` | `SensorChat` |
+| `_OpenAIResponsesDescriptor` | `OpenAI.responses`, `AsyncOpenAI.responses` | `SensorResponses` |
+| `_OpenAIEmbeddingsDescriptor` | `OpenAI.embeddings`, `AsyncOpenAI.embeddings` | `SensorEmbeddings` |
+
+Each descriptor on first instance access (1) invokes the
+original `cached_property`'s underlying function to obtain the
+raw SDK resource, (2) wraps it in a sensor proxy bound to the
+active session, and (3) stores the wrapped version in
+`instance.__dict__[name]` so subsequent accesses bypass the
+descriptor (matching `functools.cached_property` semantics).
+If no sensor session is active (`_session is None`) the
+descriptor returns the raw resource WITHOUT populating the
+cache, so a later access after `init()` will wrap correctly.
+
+Idempotent: a second `patch()` is a no-op. Reversible:
+`unpatch()` restores the original descriptors. Per-resource
+sentinels store the originals: `_flightdeck_patched` (messages
+/ chat -- backward compatible with `wrap()`'s short-circuit
+check), `_flightdeck_patched_responses`,
+`_flightdeck_patched_embeddings`.
+
+**Why these resources and not others:**
+
+- `messages` / `beta.messages` (Anthropic): the only LLM
+  inference entry points on the Anthropic SDK. `beta.messages`
+  is where Claude 4 adaptive/extended thinking lives; it is
+  now a standard inference path, not a niche beta feature.
+- `chat.completions` (OpenAI): the primary LLM inference path
+  for every framework tested (LangChain, LlamaIndex, CrewAI).
+- `responses` (OpenAI): recommended API for all new OpenAI
+  projects since March 2025. Future OpenAI features land here
+  first. CrewAI supports it via `api="responses"`.
+- `embeddings` (OpenAI): common in RAG-heavy agent pipelines
+  and relevant for full-workflow token accounting.
+- **Deliberately NOT patched**: `audio`, `images`,
+  `moderations`, `files`, `fine_tuning`, legacy `completions`,
+  `OpenAI.beta.chat.completions.parse`/`.stream`. These are
+  utility resources (transcription, image generation, content
+  classification, file management, fine-tuning jobs, structured
+  output) with no LLM-inference analog relevant to agent fleet
+  management. Adding them would widen the patch surface with
+  no observability value. Each can be added in the future by
+  creating a parallel descriptor + entry in the patch table.
+
+**Reasoning -- the original closure-based approach was broken:**
+
+The pre-Phase 3 implementation (`_patch_anthropic` /
+`_patch_openai`) replaced the `anthropic.Anthropic` /
+`openai.OpenAI` MODULE ATTRIBUTES with factory function thunks
+that returned wrapped instances. This had three critical
+failure modes:
+
+1. **Phase 4.5 Finding 2 crash:** `_is_async_client` called
+   `isinstance(client, AsyncAnthropic)`. After `patch()`
+   replaced `anthropic.AsyncAnthropic` with a function,
+   `isinstance(x, function)` raised `TypeError`. This
+   crashed the sensor on every async Anthropic call.
+
+2. **Captured-reference bypass:** `from anthropic import
+   Anthropic` before `patch()` bound a reference to the real
+   class. After `patch()` replaced the MODULE attribute,
+   the captured reference still pointed at the original class.
+   Framework code that imported `Anthropic` at module load
+   time silently bypassed the patch entirely.
+
+3. **isinstance breakage:** after the thunk replaced the
+   class, `isinstance(client, anthropic.Anthropic)` returned
+   `False` for every wrapped instance, breaking SDK internals
+   and user code that relied on type checks.
+
+The class-level mutation approach fixes all three by design:
+`patch()` mutates the actual class object (not the module
+attribute), so captured references, isinstance checks, and
+type(client) all continue to work correctly. The class
+identity is preserved; only one non-data descriptor per
+patched resource is replaced.
+
+**Rejected alternative A -- Subclass Anthropic/OpenAI:**
+Create `FlightdeckAnthropic(anthropic.Anthropic)` with
+overridden `.messages` property. Replace `anthropic.Anthropic`
+with the subclass. Rejected because (a) it still replaces
+the module attribute, causing the same captured-reference and
+isinstance problems, (b) subclass construction is fragile
+against SDK `__init__` signature changes, and (c) there is no
+way to subclass `Beta` / `AsyncBeta` without also subclassing
+the client that returns them, creating a chain of patched
+constructors.
+
+**Rejected alternative C -- Import hook (`sys.meta_path`):**
+Install a custom `MetaPathFinder` that intercepts
+`import anthropic` / `import openai` and returns a module
+wrapper with patched classes. Rejected because (a) it only
+works if `patch()` is called before the first import --
+framework code often imports at module load before any user
+code runs, (b) import hooks add debugging complexity, and
+(c) the mechanism provides no advantage over direct class
+mutation for the problem being solved.
+
+**Pre-existing instance limitation:**
+
+Instances that accessed `.messages` / `.chat` /
+`.responses` / `.embeddings` BEFORE `patch()` ran have the
+raw, unwrapped resource cached in `instance.__dict__`. Python
+attribute lookup checks `instance.__dict__` before non-data
+descriptors on the class, so the descriptor is permanently
+bypassed for those instances. This is inherent to the
+`functools.cached_property` protocol and is documented in
+ARCHITECTURE.md. Walking arbitrary live instances to clear
+their `__dict__` caches would require a gc traversal and is
+not attempted. In practice, `patch()` is called at process
+startup before any framework constructs LLM clients, so this
+limitation does not affect production use.
+
+Covered by
+`test_pre_existing_instance_not_intercepted` in
+`tests/integration/test_framework_patching.py`.
+
+**GuardedAnthropic → SensorAnthropic rename:**
+
+The original Phase 1 per-instance wrapper classes were named
+`GuardedAnthropic`, `GuardedOpenAI`, `GuardedMessages`,
+`GuardedCompletions`, `GuardedChat`, and `GuardedStream`.
+"Guarded" came from the tokencap library's terminology
+(budget-guarding semantics). In Phase 3, all `Guarded*`
+classes were renamed to `Sensor*` to match the product
+vocabulary: the component is a "sensor," not a "guard."
+`GuardedStream` was retained because it IS a guard (it
+reconciles tokens on context-manager exit including early
+exit) and the "sensor" name would misrepresent its role.
+
+---

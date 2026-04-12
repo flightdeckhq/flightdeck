@@ -2302,7 +2302,7 @@ their agent appear in the live dashboard timeline in real time.
 `sensor/flightdeck_sensor/providers/openai.py`
 - `OpenAIProvider`: implements Provider Protocol
 - `estimate_tokens()`: uses tiktoken if installed, falls back to char//4
-- `extract_usage()`: reads response.usage.prompt_tokens, completion_tokens
+- `extract_usage()`: reads response.usage.prompt_tokens, completion_tokens (chat shape). Falls back to usage.input_tokens, output_tokens (Responses API shape) when the chat fields are absent.
 - `extract_content()`: returns None in Phase 1
 - `get_model()`: reads request_kwargs["model"]
 
@@ -2316,18 +2316,32 @@ their agent appear in the live dashboard timeline in real time.
 
 `sensor/flightdeck_sensor/interceptor/anthropic.py`
 - `SensorMessages`: proxy for `messages` and `beta.messages` resources, intercepts create() and stream()
-- `SensorAnthropic`: proxy for Anthropic/AsyncAnthropic clients
+- `SensorAnthropic`: per-instance proxy for Anthropic/AsyncAnthropic clients
 - `.messages` as `@property` returning `SensorMessages`
 - `with_options()`, `with_raw_response`, `with_streaming_response` all return new `SensorAnthropic`
 - `__getattr__` passes everything else through
-- `_AnthropicMessagesDescriptor`: class-level `cached_property` replacement, installed on `Anthropic.messages`, `AsyncAnthropic.messages`, `Beta.messages` and `AsyncBeta.messages` by `patch_anthropic_classes()`
+- `_AnthropicMessagesDescriptor`: class-level `cached_property` replacement for `Anthropic.messages` and `AsyncAnthropic.messages`
+- `_AnthropicBetaMessagesDescriptor(\_AnthropicMessagesDescriptor)`: subclass installed on `Beta.messages` and `AsyncBeta.messages` by `patch_anthropic_classes()`. Functionally identical -- the separate subclass makes the per-class install explicit in the code. Both wrap in `SensorMessages`.
+- Four client / resource classes patched: `Anthropic`, `AsyncAnthropic`, `Beta` (`anthropic.resources.beta.beta`), `AsyncBeta`. All via the same `_patch_one_class` helper with a `descriptor_cls` parameter.
+- Idempotency: `_flightdeck_patched` sentinel on each patched class stores the original `cached_property`. Safe across multiple `patch()`/`unpatch()` cycles.
+- Pre-existing instance limitation: instances that accessed `.messages` (or `.beta.messages`) BEFORE `patch()` have the raw resource cached in `instance.__dict__` and bypass the descriptor permanently. New instances and new accesses are wrapped correctly.
+- Session lookup: the descriptor calls `_current_session()` which reads the module-global `flightdeck_sensor._session` (KI15 singleton).
 
 `sensor/flightdeck_sensor/interceptor/openai.py`
-- `SensorCompletions`, `SensorChat`, `SensorOpenAI`: same proxy pattern for OpenAI
-- `SensorResponses`: proxy for `client.responses`, intercepts `create()` (sync + async)
-- `SensorEmbeddings`: proxy for `client.embeddings`, intercepts `create()` (sync + async)
-- Streaming (chat): inject `stream_options={"include_usage": True}` when `stream=True`
-- `_OpenAIChatDescriptor`, `_OpenAIResponsesDescriptor`, `_OpenAIEmbeddingsDescriptor`: class-level `cached_property` replacements, installed by `patch_openai_classes()` via the shared `_patch_one_resource` helper driven from the `_OPENAI_PATCH_RESOURCES` table. Per-resource idempotency sentinels: `_flightdeck_patched` (chat), `_flightdeck_patched_responses`, `_flightdeck_patched_embeddings`.
+- `SensorCompletions`: proxy for `chat.completions`, intercepts `create()`. Streaming: injects `stream_options={"include_usage": True}` when `stream=True`.
+- `SensorChat`: proxy for `client.chat`, returns `SensorCompletions` via `.completions` property.
+- `SensorResponses`: proxy for `client.responses`, intercepts `create()` (sync + async). OpenAI's Responses API (March 2025) uses `usage.input_tokens` / `usage.output_tokens` -- `OpenAIProvider.extract_usage` has a fallback for this shape.
+- `SensorEmbeddings`: proxy for `client.embeddings`, intercepts `create()` (sync + async). Embeddings carry `usage.prompt_tokens` only; `tokens_output` is zero.
+- `SensorOpenAI`: per-instance proxy for OpenAI/AsyncOpenAI clients. `.chat`, `.responses`, `.embeddings` as `@property` hooks returning their respective sensor wrappers. `with_options()`, `with_raw_response`, `with_streaming_response` return new `SensorOpenAI`. `__getattr__` passes everything else through.
+- Five descriptor types in total across both interceptor files:
+  - `_AnthropicMessagesDescriptor` (Anthropic, AsyncAnthropic)
+  - `_AnthropicBetaMessagesDescriptor` (Beta, AsyncBeta)
+  - `_OpenAIChatDescriptor` (OpenAI, AsyncOpenAI)
+  - `_OpenAIResponsesDescriptor` (OpenAI, AsyncOpenAI)
+  - `_OpenAIEmbeddingsDescriptor` (OpenAI, AsyncOpenAI)
+- OpenAI patch infrastructure: `_OPENAI_PATCH_RESOURCES` table drives `_patch_one_resource` helper so all three OpenAI resources use the same code path. Per-resource idempotency sentinels: `_flightdeck_patched` (chat, backward-compatible name), `_flightdeck_patched_responses`, `_flightdeck_patched_embeddings`.
+- Pre-existing instance limitation: same as Anthropic. Instances that accessed `.chat` / `.responses` / `.embeddings` before `patch()` retain raw resources in `instance.__dict__`.
+- Session lookup: same `_current_session()` → `flightdeck_sensor._session` pattern (KI15).
 
 `sensor/flightdeck_sensor/__init__.py`
 - `init(server, token, capture_prompts=False, limit=None, warn_at=0.8, quiet=False)`: creates global Session and ControlPlaneClient

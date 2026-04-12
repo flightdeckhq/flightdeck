@@ -320,6 +320,19 @@ class _AnthropicMessagesDescriptor:
         return wrapped
 
 
+class _AnthropicBetaMessagesDescriptor(_AnthropicMessagesDescriptor):
+    """Replacement for the ``messages`` cached_property on Beta classes.
+
+    Structurally identical to :class:`_AnthropicMessagesDescriptor` --
+    the beta ``Messages`` / ``AsyncMessages`` resource exposes the same
+    ``create()`` + ``stream()`` surface and is wrapped in the same
+    :class:`SensorMessages` proxy. A separate subclass exists so the
+    patched-resource table is explicit: ``_AnthropicMessagesDescriptor``
+    is installed on ``Anthropic`` / ``AsyncAnthropic`` and
+    ``_AnthropicBetaMessagesDescriptor`` on ``Beta`` / ``AsyncBeta``.
+    """
+
+
 def patch_anthropic_classes(quiet: bool = False) -> None:
     """Class-level patch for ``anthropic.Anthropic``, ``AsyncAnthropic``,
     ``Beta`` and ``AsyncBeta``.
@@ -359,14 +372,32 @@ def patch_anthropic_classes(quiet: bool = False) -> None:
             _log.debug("anthropic not installed; skipping patch")
         return
 
-    _patch_one_class(_OrigAnthropic, is_async=False, quiet=quiet)
-    _patch_one_class(_OrigAsyncAnthropic, is_async=True, quiet=quiet)
-    _patch_one_class(_OrigBeta, is_async=False, quiet=quiet)
-    _patch_one_class(_OrigAsyncBeta, is_async=True, quiet=quiet)
+    _patch_one_class(
+        _OrigAnthropic, is_async=False, quiet=quiet,
+        descriptor_cls=_AnthropicMessagesDescriptor,
+    )
+    _patch_one_class(
+        _OrigAsyncAnthropic, is_async=True, quiet=quiet,
+        descriptor_cls=_AnthropicMessagesDescriptor,
+    )
+    _patch_one_class(
+        _OrigBeta, is_async=False, quiet=quiet,
+        descriptor_cls=_AnthropicBetaMessagesDescriptor,
+    )
+    _patch_one_class(
+        _OrigAsyncBeta, is_async=True, quiet=quiet,
+        descriptor_cls=_AnthropicBetaMessagesDescriptor,
+    )
 
 
-def _patch_one_class(cls: Any, *, is_async: bool, quiet: bool) -> None:
-    """Patch a single Anthropic / AsyncAnthropic class. Internal helper."""
+def _patch_one_class(
+    cls: Any,
+    *,
+    is_async: bool,
+    quiet: bool,
+    descriptor_cls: type = _AnthropicMessagesDescriptor,
+) -> None:
+    """Patch a single Anthropic / AsyncAnthropic / Beta / AsyncBeta class."""
     if hasattr(cls, "_flightdeck_patched"):
         return  # already patched, idempotent no-op
 
@@ -380,7 +411,7 @@ def _patch_one_class(cls: Any, *, is_async: bool, quiet: bool) -> None:
         return
 
     cls._flightdeck_patched = orig_descriptor
-    new_descriptor = _AnthropicMessagesDescriptor(
+    new_descriptor = descriptor_cls(
         orig_descriptor,
         is_async=is_async,
     )

@@ -350,7 +350,8 @@ class SensorEmbeddings:
 class SensorOpenAI:
     """Proxy for ``openai.OpenAI`` or ``openai.AsyncOpenAI``.
 
-    ``.chat`` is a ``@property`` -- this is how interception works.
+    ``.chat``, ``.responses`` and ``.embeddings`` are ``@property``
+    hooks -- this is how per-instance interception works.
     ``__getattr__`` delegates everything else to the wrapped client.
     """
 
@@ -372,6 +373,26 @@ class SensorOpenAI:
         """Return a :class:`SensorChat` proxy that intercepts completions."""
         return SensorChat(
             self._client.chat,
+            self._session,
+            self._provider,
+            is_async=self._is_async,
+        )
+
+    @property
+    def responses(self) -> SensorResponses:
+        """Return a :class:`SensorResponses` proxy that intercepts create()."""
+        return SensorResponses(
+            self._client.responses,
+            self._session,
+            self._provider,
+            is_async=self._is_async,
+        )
+
+    @property
+    def embeddings(self) -> SensorEmbeddings:
+        """Return a :class:`SensorEmbeddings` proxy that intercepts create()."""
+        return SensorEmbeddings(
+            self._client.embeddings,
             self._session,
             self._provider,
             is_async=self._is_async,

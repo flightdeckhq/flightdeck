@@ -34,20 +34,38 @@ interface TimeSeriesChartProps {
 
 export function TimeSeriesChart({ series }: TimeSeriesChartProps) {
   const colors = useMemo(resolveColors, []);
-  // Build a unified dataset keyed by date
-  const dateMap = new Map<string, Record<string, number>>();
 
-  for (const s of series) {
-    for (const pt of s.data) {
-      const row = dateMap.get(pt.date) ?? {};
-      row[s.dimension] = pt.value;
-      dateMap.set(pt.date, row);
+  // Merge all series into a single date-keyed array. Every row contains
+  // a key for every dimension — null where that dimension has no data on
+  // that date. This gives recharts a continuous dataset so Area paths
+  // connect across the full date range instead of rendering isolated
+  // slivers per data point.
+  const chartData = useMemo(() => {
+    const dimensions = series.map((s) => s.dimension);
+    const dateMap = new Map<string, Record<string, number | null>>();
+
+    // Seed every date with null for all dimensions
+    for (const s of series) {
+      for (const pt of s.data) {
+        if (!dateMap.has(pt.date)) {
+          const row: Record<string, number | null> = {};
+          for (const d of dimensions) row[d] = null;
+          dateMap.set(pt.date, row);
+        }
+      }
     }
-  }
 
-  const chartData = Array.from(dateMap.entries())
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([date, values]) => ({ date, ...values }));
+    // Fill in actual values
+    for (const s of series) {
+      for (const pt of s.data) {
+        dateMap.get(pt.date)![s.dimension] = pt.value;
+      }
+    }
+
+    return Array.from(dateMap.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([date, values]) => ({ date, ...values }));
+  }, [series]);
 
   return (
     <ResponsiveContainer width="100%" height={260}>
@@ -83,7 +101,7 @@ export function TimeSeriesChart({ series }: TimeSeriesChartProps) {
             key={s.dimension}
             type="monotone"
             dataKey={s.dimension}
-            stackId="1"
+            connectNulls
             stroke={colors[i % colors.length]}
             fill={colors[i % colors.length]}
             fillOpacity={0.3}

@@ -311,6 +311,38 @@ describe("SessionDrawer", () => {
     expect(screen.getByText("START")).toBeInTheDocument();
   });
 
+  it("opens on the initialTab when supplied (e.g. 'prompts')", () => {
+    mockEventsOverride = eventsWithContent;
+    const { container } = render(
+      <SessionDrawer sessionId="s1" onClose={() => {}} initialTab="prompts" />
+    );
+    // Active tab gets a 2px accent border-bottom; the timeline tab
+    // should NOT have it because Prompts is the active tab now.
+    const promptsTab = screen.getByTestId("drawer-tab-prompts") as HTMLElement;
+    expect(promptsTab.style.borderBottom).toMatch(/var\(--accent\)/);
+    // Event feed (Timeline tab content) should be absent — the
+    // START row would only render under the Timeline tab.
+    expect(container.querySelector('[data-testid="event-row"]')).not.toBeInTheDocument();
+  });
+
+  it("re-applies initialTab when initialTab prop changes for the same session", () => {
+    mockEventsOverride = eventsWithContent;
+    const { rerender } = render(
+      <SessionDrawer sessionId="s1" onClose={() => {}} />
+    );
+    // Defaults to Timeline.
+    expect(
+      (screen.getByTestId("drawer-tab-timeline") as HTMLElement).style.borderBottom,
+    ).toMatch(/var\(--accent\)/);
+    // Caller now requests Prompts (e.g. user clicked the camera icon).
+    rerender(
+      <SessionDrawer sessionId="s1" onClose={() => {}} initialTab="prompts" />
+    );
+    expect(
+      (screen.getByTestId("drawer-tab-prompts") as HTMLElement).style.borderBottom,
+    ).toMatch(/var\(--accent\)/);
+  });
+
   it("has 520px width", () => {
     const { container } = render(
       <SessionDrawer sessionId="s1" onClose={() => {}} />

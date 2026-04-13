@@ -1,4 +1,4 @@
-import { Fragment, useState, useMemo } from "react";
+import { Fragment, useEffect, useState, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { X, Camera } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
@@ -28,7 +28,7 @@ import { SyntaxJson } from "@/components/ui/syntax-json";
 import { eventsCache } from "@/hooks/useSessionEvents";
 import type { AgentEvent, Session as SessionType } from "@/lib/types";
 
-type DrawerTab = "timeline" | "prompts" | "directives";
+export type DrawerTab = "timeline" | "prompts" | "directives";
 
 /* ---- State badge colors ---- */
 
@@ -194,9 +194,16 @@ interface SessionDrawerProps {
   directEventDetail?: AgentEvent | null;
   onClearDirectEvent?: () => void;
   version?: number;
+  /**
+   * Tab to show when the drawer opens. Re-applied whenever sessionId
+   * or initialTab changes, so callers (e.g. the Investigate camera
+   * icon) can deep-link directly into the Prompts tab without the
+   * user having to switch from Timeline manually.
+   */
+  initialTab?: DrawerTab;
 }
 
-export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDirectEvent, version = 0 }: SessionDrawerProps) {
+export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDirectEvent, version = 0, initialTab }: SessionDrawerProps) {
   const { data, loading } = useSession(sessionId);
   const customDirectives = useFleetStore((s) => s.customDirectives);
   const shuttingDown = useFleetStore((s) => s.shuttingDown);
@@ -205,7 +212,19 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
   const [killSent, setKillSent] = useState(false);
   const [killError, setKillError] = useState<string | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState<DrawerTab>("timeline");
+  const [activeTab, setActiveTab] = useState<DrawerTab>(initialTab ?? "timeline");
+
+  // Re-apply the caller-supplied initial tab whenever the drawer is
+  // re-opened on a different session, or the caller switches the
+  // requested tab. Without this, switching from Timeline -> Prompts
+  // via the Investigate camera icon would only work the first time
+  // -- subsequent opens would land on whatever tab the user last
+  // selected manually.
+  useEffect(() => {
+    if (sessionId && initialTab) {
+      setActiveTab(initialTab);
+    }
+  }, [sessionId, initialTab]);
   const [expandedEventId, setExpandedEventId] = useState<string | null>(null);
   const [selectedEventId, setSelectedEventId] = useState<string | null>(null);
   const [runtimeExpanded, setRuntimeExpanded] = useState(false);

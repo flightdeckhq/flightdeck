@@ -6,7 +6,7 @@ import { fetchSessions, type SessionsParams } from "@/lib/api";
 import type { SessionListItem, SessionState } from "@/lib/types";
 import { DateRangePicker, type DateRangeWithPreset } from "@/components/ui/DateRangePicker";
 import { Pagination } from "@/components/ui/Pagination";
-import { SessionDrawer } from "@/components/session/SessionDrawer";
+import { SessionDrawer, type DrawerTab } from "@/components/session/SessionDrawer";
 import { OSIcon } from "@/components/ui/OSIcon";
 import { OrchestrationIcon } from "@/components/ui/OrchestrationIcon";
 import { ProviderLogo } from "@/components/ui/provider-logo";
@@ -74,11 +74,11 @@ const COL_WIDTHS = {
   hostname: "13%",
   os: "4%",
   orch: "4%",
-  model: "15%",
-  started: "14%",
+  model: "14%",
+  started: "13%",
   duration: "8%",
-  tokens: "9%",
-  capture: "5%",
+  tokens: "8%",
+  capture: "8%",
   state: "12%",
 };
 
@@ -297,6 +297,11 @@ export function Investigate() {
 
   // Drawer state (ephemeral, not in URL)
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+  // Tab the drawer should land on. The camera-icon button in the
+  // capture column sets this to "prompts" so the drawer opens
+  // directly on captured prompts. Cleared on close so a subsequent
+  // row click defaults back to Timeline.
+  const [drawerInitialTab, setDrawerInitialTab] = useState<DrawerTab | undefined>(undefined);
 
   // Abort controller for in-flight requests
   const abortRef = useRef<AbortController>();
@@ -800,20 +805,14 @@ export function Investigate() {
                     Tokens{sortArrow("tokens_used")}
                   </th>
                   <th
-                    className="uppercase text-center"
-                    style={{ color: "var(--text-muted)", fontSize: 10, fontWeight: 600, letterSpacing: "0.07em", padding: "0 4px", width: COL_WIDTHS.capture }}
+                    className="uppercase"
+                    style={{ color: "var(--text-muted)", fontSize: 10, fontWeight: 600, letterSpacing: "0.07em", padding: "0 8px", width: COL_WIDTHS.capture }}
                     aria-label="Prompt capture"
                   >
-                    <TooltipProvider>
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <span style={{ display: "inline-block", lineHeight: 0, verticalAlign: "middle" }}>
-                            <Camera size={12} style={{ color: "var(--text-muted)" }} />
-                          </span>
-                        </TooltipTrigger>
-                        <TooltipContent>Prompt capture</TooltipContent>
-                      </Tooltip>
-                    </TooltipProvider>
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                      <Camera size={12} style={{ color: "var(--text-muted)" }} />
+                      Capture
+                    </span>
                   </th>
                   <th
                     className="uppercase"
@@ -828,7 +827,10 @@ export function Investigate() {
                 {sessions.map((s) => (
                   <tr
                     key={s.session_id}
-                    onClick={() => setSelectedSessionId(s.session_id)}
+                    onClick={() => {
+                      setDrawerInitialTab(undefined);
+                      setSelectedSessionId(s.session_id);
+                    }}
                     className="cursor-pointer transition-colors duration-150"
                     style={{
                       height: 44,
@@ -877,16 +879,37 @@ export function Investigate() {
                     <td style={{ padding: "0 12px", width: COL_WIDTHS.tokens, fontSize: 12, color: "var(--text)", fontWeight: 500, fontVariantNumeric: "tabular-nums", fontFamily: "var(--font-mono)" }}>
                       {formatTokens(s.tokens_used)}
                     </td>
-                    <td style={{ padding: "0 4px", width: COL_WIDTHS.capture, textAlign: "center" }}>
+                    <td style={{ padding: "0 8px", width: COL_WIDTHS.capture, textAlign: "center" }}>
                       {s.capture_enabled && (
                         <TooltipProvider>
                           <Tooltip>
                             <TooltipTrigger asChild>
-                              <span style={{ display: "inline-block", lineHeight: 0 }}>
-                                <Camera size={14} style={{ color: "var(--accent)" }} />
-                              </span>
+                              <button
+                                type="button"
+                                aria-label="View captured prompts"
+                                data-testid="capture-prompts-button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setDrawerInitialTab("prompts");
+                                  setSelectedSessionId(s.session_id);
+                                }}
+                                style={{
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  justifyContent: "center",
+                                  background: "transparent",
+                                  border: "none",
+                                  padding: 4,
+                                  borderRadius: 4,
+                                  cursor: "pointer",
+                                  lineHeight: 0,
+                                  color: "var(--accent)",
+                                }}
+                              >
+                                <Camera size={14} />
+                              </button>
                             </TooltipTrigger>
-                            <TooltipContent>Prompt capture enabled</TooltipContent>
+                            <TooltipContent>View captured prompts</TooltipContent>
                           </Tooltip>
                         </TooltipProvider>
                       )}
@@ -948,7 +971,11 @@ export function Investigate() {
       {/* Session drawer */}
       <SessionDrawer
         sessionId={selectedSessionId}
-        onClose={() => setSelectedSessionId(null)}
+        onClose={() => {
+          setSelectedSessionId(null);
+          setDrawerInitialTab(undefined);
+        }}
+        initialTab={drawerInitialTab}
       />
     </div>
   );

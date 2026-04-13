@@ -292,6 +292,7 @@ export function Investigate() {
   const [lastUpdated, setLastUpdated] = useState(Date.now());
   const [lastUpdatedLabel, setLastUpdatedLabel] = useState("just now");
   const [autoRefreshMs, setAutoRefreshMs] = useState(0);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const autoRefreshRef = useRef<ReturnType<typeof setInterval>>();
 
   // Drawer state (ephemeral, not in URL)
@@ -563,8 +564,16 @@ export function Investigate() {
         {/* Refresh controls */}
         <div className="flex items-center gap-2 shrink-0">
           <button
-            onClick={() => doFetch(urlState)}
-            className="flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 font-medium transition-colors duration-150 hover:bg-surface-hover"
+            onClick={async () => {
+              setIsRefreshing(true);
+              try {
+                await doFetch(urlState);
+              } finally {
+                setIsRefreshing(false);
+              }
+            }}
+            disabled={isRefreshing}
+            className="flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 font-medium transition-colors duration-150 hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-70"
             style={{
               fontSize: 12,
               borderColor: "var(--border)",
@@ -572,7 +581,12 @@ export function Investigate() {
             }}
             aria-label="Refresh"
           >
-            <RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} />
+            <RefreshCw
+              className={cn("h-3.5 w-3.5", isRefreshing && "animate-[spin_600ms_linear_infinite]")}
+              style={{
+                color: isRefreshing ? "var(--accent)" : undefined,
+              }}
+            />
             Refresh
           </button>
           <div className="flex items-center gap-1.5">
@@ -790,7 +804,16 @@ export function Investigate() {
                     style={{ color: "var(--text-muted)", fontSize: 10, fontWeight: 600, letterSpacing: "0.07em", padding: "0 4px", width: COL_WIDTHS.capture }}
                     aria-label="Prompt capture"
                   >
-                    <Camera size={12} style={{ display: "inline-block", verticalAlign: "middle", color: "var(--text-muted)" }} />
+                    <TooltipProvider>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <span style={{ display: "inline-block", lineHeight: 0, verticalAlign: "middle" }}>
+                            <Camera size={12} style={{ color: "var(--text-muted)" }} />
+                          </span>
+                        </TooltipTrigger>
+                        <TooltipContent>Prompt capture</TooltipContent>
+                      </Tooltip>
+                    </TooltipProvider>
                   </th>
                   <th
                     className="uppercase"

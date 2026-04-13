@@ -80,7 +80,7 @@ class ControlPlaneClient:
 
             from flightdeck_sensor.core.schemas import SyncResponseSchema
 
-            with urllib.request.urlopen(req, timeout=1) as resp:
+            with urllib.request.urlopen(req, timeout=_TIMEOUT_SECS) as resp:
                 data = json.loads(resp.read().decode())
                 try:
                     parsed = SyncResponseSchema.model_validate(data)
@@ -113,7 +113,7 @@ class ControlPlaneClient:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(req, timeout=1) as resp:
+            with urllib.request.urlopen(req, timeout=_TIMEOUT_SECS) as resp:
                 resp.read()
         except Exception:
             _log.debug("directives register failed, ignoring", exc_info=True)

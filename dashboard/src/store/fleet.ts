@@ -21,6 +21,15 @@ interface FleetState {
    * the first load() resolves.
    */
   customDirectives: CustomDirective[];
+  /**
+   * Session IDs with an in-flight shutdown directive. Populated
+   * client-side by the kill-switch / Stop All code paths the moment a
+   * shutdown is POSTed, so the UI can show a "shutting down"
+   * indicator before the next WebSocket update rebuilds the Session
+   * row with `has_pending_directive=true`. Cleared automatically when
+   * a session transitions to `closed` via applyUpdate.
+   */
+  shuttingDown: Set<string>;
   loading: boolean;
   error: string | null;
   selectedSessionId: string | null;
@@ -32,12 +41,15 @@ interface FleetState {
   setFlavorFilter: (flavor: string | null) => void;
   applyUpdate: (update: FleetUpdate) => void;
   selectSession: (id: string | null) => void;
+  markShuttingDown: (sessionId: string) => void;
+  markFlavorShuttingDown: (flavor: string) => void;
 }
 
 export const useFleetStore = create<FleetState>((set, get) => ({
   flavors: [],
   contextFacets: {},
   customDirectives: [],
+  shuttingDown: new Set<string>(),
   loading: false,
   error: null,
   selectedSessionId: null,
@@ -77,7 +89,7 @@ export const useFleetStore = create<FleetState>((set, get) => ({
   },
 
   applyUpdate: (update: FleetUpdate) => {
-    const { flavors } = get();
+    const { flavors, shuttingDown } = get();
     // Snapshot whether this flavor was already in the store BEFORE
     // we mutate flavors. A new flavor appearing via session_start is
     // a strong signal that the agent just called sensor.init() and
@@ -85,7 +97,20 @@ export const useFleetStore = create<FleetState>((set, get) => ({
     // would otherwise miss them until a hard refresh.
     const isNewFlavor = !flavors.some((f) => f.flavor === update.session.flavor);
     const updated = applySessionUpdate(flavors, update.session);
-    set({ flavors: updated });
+
+    // Clear the client-side "shutting down" mark the moment the
+    // session transitions to closed -- the UI no longer needs the
+    // pulsing indicator.
+    let nextShuttingDown = shuttingDown;
+    if (
+      update.session.state === "closed" &&
+      shuttingDown.has(update.session.session_id)
+    ) {
+      nextShuttingDown = new Set(shuttingDown);
+      nextShuttingDown.delete(update.session.session_id);
+    }
+
+    set({ flavors: updated, shuttingDown: nextShuttingDown });
 
     if (update.type === "session_start" && isNewFlavor) {
       // Best-effort: refetch the directive registry. The new
@@ -102,6 +127,25 @@ export const useFleetStore = create<FleetState>((set, get) => ({
   },
 
   selectSession: (id) => set({ selectedSessionId: id }),
+
+  markShuttingDown: (sessionId) => {
+    const next = new Set(get().shuttingDown);
+    next.add(sessionId);
+    set({ shuttingDown: next });
+  },
+
+  markFlavorShuttingDown: (flavor) => {
+    const next = new Set(get().shuttingDown);
+    for (const f of get().flavors) {
+      if (f.flavor !== flavor) continue;
+      for (const s of f.sessions) {
+        if (s.state === "active" || s.state === "idle") {
+          next.add(s.session_id);
+        }
+      }
+    }
+    set({ shuttingDown: next });
+  },
 }));
 
 function applySessionUpdate(

@@ -483,6 +483,7 @@ function FlavorItem({
   const [error, setError] = useState<string | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [directivesDialogOpen, setDirectivesDialogOpen] = useState(false);
+  const markFlavorShuttingDown = useFleetStore((s) => s.markFlavorShuttingDown);
 
   // "Live" sessions = active OR idle. Idle agents are still
   // killable -- they'll receive the shutdown directive on their next
@@ -508,6 +509,11 @@ function FlavorItem({
         reason: "manual_fleet_kill",
         grace_period_ms: 5000,
       });
+      // Mark every active/idle session of this flavor as shutting
+      // down so the SessionDrawer (or any other per-session view)
+      // shows the pulsing indicator immediately, before the
+      // WebSocket update reflects the directive server-side.
+      markFlavorShuttingDown(flavor.flavor);
       setSent(true);
       setDialogOpen(false);
       setTimeout(() => setSent(false), 2000);

@@ -61,7 +61,11 @@ vi.mock("@/hooks/useSession", () => ({
 // function that receives the state and returns a slice.
 vi.mock("@/store/fleet", () => ({
   useFleetStore: (selector: (state: unknown) => unknown) =>
-    selector({ customDirectives: mockCustomDirectives }),
+    selector({
+      customDirectives: mockCustomDirectives,
+      shuttingDown: new Set<string>(),
+      markShuttingDown: () => {},
+    }),
 }));
 
 vi.mock("@/lib/api", () => ({
@@ -228,6 +232,15 @@ describe("SessionDrawer", () => {
     const btn = screen.getByText("Shutdown pending");
     expect(btn).toBeInTheDocument();
     expect(btn.closest("button")).toBeDisabled();
+  });
+
+  it("shows pulsing indicator with status-lost styling when pending", () => {
+    mockSessionOverride = { state: "active", has_pending_directive: true };
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    const indicator = screen.getByTestId("shutdown-pending-indicator");
+    expect(indicator.className).toContain("animate-pulse");
+    expect(indicator).toBeDisabled();
+    expect(indicator.getAttribute("aria-label")).toBe("Shutdown in progress");
   });
 
   it("shows enabled Stop Agent button for active session", () => {

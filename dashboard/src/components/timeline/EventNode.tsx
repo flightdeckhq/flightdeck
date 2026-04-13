@@ -1,7 +1,8 @@
-import { useEffect, useState, memo, useCallback } from "react";
+import { useState, memo, useCallback } from "react";
 import { createPortal } from "react-dom";
 import type { EventType } from "@/lib/types";
 import { truncateSessionId } from "@/lib/events";
+import { cn } from "@/lib/utils";
 import {
   Zap, Wrench, AlertTriangle, XCircle, ArrowDown,
   Play, Square, Check, Circle, X,
@@ -89,14 +90,8 @@ function EventNodeComponent({
       ? `RESULT · ${directiveStatus}`
       : config.label;
   const [hovered, setHovered] = useState(false);
-  const [mounted, setMounted] = useState(false);
   const [tooltipPos, setTooltipPos] = useState<{ top: number; left: number } | null>(null);
   const iconSize = size <= 20 ? 11 : 13;
-
-  useEffect(() => {
-    const id = requestAnimationFrame(() => setMounted(true));
-    return () => cancelAnimationFrame(id);
-  }, []);
 
   const handleMouseEnter = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
@@ -110,22 +105,33 @@ function EventNodeComponent({
   }, []);
 
   const IconComponent = isFailedDirective ? X : config.Icon;
-  const finalOpacity = isVisible && mounted ? 1 : 0;
 
   return (
     <>
       <div
-        className="absolute top-1/2 -translate-y-1/2 cursor-pointer rounded-full flex items-center justify-center flex-shrink-0"
+        className={cn(
+          "absolute top-1/2 -translate-y-1/2 cursor-pointer rounded-full flex items-center justify-center flex-shrink-0",
+          // Transform transition is scoped to the hover state only.
+          // Keeping it on all 900+ circles as a permanent inline
+          // style meant React diffed the `transition` declaration
+          // on every rAF tick even though nothing was animating.
+          // The hover-in scale-up transitions smoothly; the
+          // hover-out snaps back instantly, which is acceptable at
+          // 150ms and keeps the render path cheap. Opacity
+          // transition (previously 300ms) removed entirely along
+          // with the rAF mount-fade -- circles now appear
+          // immediately when they render.
+          hovered && "transition-transform duration-150 ease-out",
+        )}
         style={{
           left: x, width: size, height: size,
           backgroundColor: color, color: "white",
           border: "1.5px solid rgba(255,255,255,0.1)",
           transform: hovered ? "translateY(-50%) scale(1.25)" : "translateY(-50%) scale(1)",
-          transition: "transform 150ms ease, opacity 300ms ease",
           // zIndex 2 (was 1) so circles paint above the timeline
           // grid line overlay which now sits at zIndex 1.
           zIndex: hovered ? 10 : 2,
-          opacity: finalOpacity,
+          opacity: isVisible ? 1 : 0,
           pointerEvents: isVisible ? "auto" : "none",
         }}
         onClick={(e) => { e.stopPropagation(); onClick(eventId); }}

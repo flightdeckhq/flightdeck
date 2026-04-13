@@ -147,8 +147,21 @@ export function Timeline({
   }, [flavors, flavorFilter, matchingSessionIds]);
 
   const rangeMs = TIMELINE_RANGE_MS[timeRange] ?? 60_000;
-  const scaleEnd = paused && pausedAt ? pausedAt : now;
-  const start = useMemo(() => new Date(scaleEnd.getTime() - rangeMs), [scaleEnd, rangeMs]);
+
+  // Floor the scale's right-hand domain to 1-second granularity.
+  // The rAF loop above still ticks `now` every 100ms so derived
+  // visuals (hover tooltips, transient layout) stay smooth, but
+  // feeding a stable primitive (ms epoch floored to 1s) into the
+  // scale memo keeps its identity stable for a full second. Before
+  // this floor, scale churned 10x/sec, which in turn invalidated
+  // every per-session `nodes` memo at the same cadence and defeated
+  // the SwimLane.memo custom equality that bails out for sub-second
+  // domain deltas. Events only arrive at human speed -- a 1-second
+  // step on the time axis is imperceptible.
+  const rawEndMs = paused && pausedAt ? pausedAt.getTime() : now.getTime();
+  const scaleEndMs = Math.floor(rawEndMs / 1000) * 1000;
+  const scaleEnd = useMemo(() => new Date(scaleEndMs), [scaleEndMs]);
+  const start = useMemo(() => new Date(scaleEndMs - rangeMs), [scaleEndMs, rangeMs]);
 
   // Fixed canvas width for every range. The xScale maps the range
   // domain to [0, TIMELINE_WIDTH_PX] -- wider time ranges produce
@@ -170,9 +183,9 @@ export function Timeline({
     return Array.from({ length: 6 }, (_, i) => {
       const fraction = i / 5;
       const msAgo = Math.round(rangeMs * (1 - fraction));
-      return scale(new Date(scaleEnd.getTime() - msAgo));
+      return scale(new Date(scaleEndMs - msAgo));
     });
-  }, [scale, rangeMs, scaleEnd]);
+  }, [scale, rangeMs, scaleEndMs]);
 
   if (flavors.length === 0) {
     return (

@@ -336,15 +336,7 @@ export const SwimLane = memo(SwimLaneComponent, (prev, next) => {
  * No new API or WebSocket subscriptions: AggregatedSessionEvents reads
  * the same per-session events cache populated by the per-flavor rows.
  */
-export function AllSwimLane({
-  flavors,
-  scale,
-  onSessionClick,
-  timelineWidth,
-  leftPanelWidth,
-  activeFilter,
-  sessionVersions,
-}: {
+interface AllSwimLaneProps {
   flavors: { flavor: string; sessions: Session[] }[];
   scale: ScaleTime<number, number>;
   onSessionClick: (sessionId: string, eventId?: string, event?: AgentEvent) => void;
@@ -352,7 +344,17 @@ export function AllSwimLane({
   leftPanelWidth: number;
   activeFilter?: string | null;
   sessionVersions?: Record<string, number>;
-}) {
+}
+
+function AllSwimLaneComponent({
+  flavors,
+  scale,
+  onSessionClick,
+  timelineWidth,
+  leftPanelWidth,
+  activeFilter,
+  sessionVersions,
+}: AllSwimLaneProps) {
   return (
     <div
       data-testid="swimlane-all"
@@ -419,6 +421,27 @@ export function AllSwimLane({
     </div>
   );
 }
+
+/**
+ * Memoised wrapper for the ALL row. Mirrors SwimLane.memo's custom
+ * equality: bail out for sub-second domain deltas so rAF-driven
+ * Timeline re-renders don't propagate into the ALL row's per-session
+ * event mapping. Without this, the ALL row re-rendered at the full
+ * rAF cadence (~10x/sec) while per-flavor SwimLanes dampened to ~1/s.
+ */
+export const AllSwimLane = memo(AllSwimLaneComponent, (prev, next) => {
+  if (prev.flavors !== next.flavors) return false;
+  if (prev.activeFilter !== next.activeFilter) return false;
+  if (prev.sessionVersions !== next.sessionVersions) return false;
+  if (prev.timelineWidth !== next.timelineWidth) return false;
+  if (prev.leftPanelWidth !== next.leftPanelWidth) return false;
+  if (prev.onSessionClick !== next.onSessionClick) return false;
+  const domainDelta = Math.abs(
+    next.scale.domain()[1].getTime() - prev.scale.domain()[1].getTime(),
+  );
+  if (domainDelta < 1000) return true;
+  return false;
+});
 
 /** Shows aggregated 20px event circles from all sessions of a flavor. */
 function AggregatedSwimLane({

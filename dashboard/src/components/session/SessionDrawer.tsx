@@ -1,6 +1,7 @@
 import { Fragment, useState, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { X } from "lucide-react";
+import { X, Camera } from "lucide-react";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useSession } from "@/hooks/useSession";
 import { useFleetStore } from "@/store/fleet";
 import { DirectiveCard } from "@/components/directives/DirectiveCard";
@@ -198,6 +199,8 @@ interface SessionDrawerProps {
 export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDirectEvent, version = 0 }: SessionDrawerProps) {
   const { data, loading } = useSession(sessionId);
   const customDirectives = useFleetStore((s) => s.customDirectives);
+  const shuttingDown = useFleetStore((s) => s.shuttingDown);
+  const markShuttingDown = useFleetStore((s) => s.markShuttingDown);
   const [killLoading, setKillLoading] = useState(false);
   const [killSent, setKillSent] = useState(false);
   const [killError, setKillError] = useState<string | null>(null);
@@ -244,7 +247,10 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
 
   const session = data?.session;
   const isTerminal = session?.state === "closed" || session?.state === "lost";
-  const hasPending = session?.has_pending_directive || killSent;
+  const isShuttingDown =
+    !!session && shuttingDown.has(session.session_id);
+  const hasPending =
+    session?.has_pending_directive || killSent || isShuttingDown;
   const showButton = session && !isTerminal;
 
   async function handleKill() {
@@ -258,6 +264,10 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
         reason: "manual_kill_switch",
         grace_period_ms: 5000,
       });
+      // Mark in the fleet store so every view (not just this drawer)
+      // sees the pending shutdown until the session transitions to
+      // closed via a WebSocket update.
+      markShuttingDown(session.session_id);
       setKillSent(true);
       setDialogOpen(false);
       setTimeout(() => setKillSent(false), 2000);
@@ -301,6 +311,18 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
                   <span className="font-mono text-[13px]" style={{ color: "var(--text)" }}>
                     {truncateSessionId(session.session_id)}
                   </span>
+                  {session.capture_enabled && (
+                    <TooltipProvider>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <span style={{ display: "inline-flex", lineHeight: 0 }} aria-label="Prompt capture enabled">
+                            <Camera size={12} style={{ color: "var(--accent)" }} />
+                          </span>
+                        </TooltipTrigger>
+                        <TooltipContent>Prompt capture enabled</TooltipContent>
+                      </Tooltip>
+                    </TooltipProvider>
+                  )}
                   <span
                     className="rounded font-mono text-[10px] px-1.5 py-0.5"
                     style={{
@@ -320,9 +342,26 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
               {showButton && (
                 <>
                   {hasPending ? (
-                    <Button size="sm" disabled className="opacity-60" title="A shutdown directive is already in flight">
-                      Shutdown pending
-                    </Button>
+                    <TooltipProvider>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button
+                            size="sm"
+                            disabled
+                            data-testid="shutdown-pending-indicator"
+                            aria-label="Shutdown in progress"
+                            className="opacity-80 pointer-events-none animate-pulse"
+                            style={{
+                              background: "var(--status-lost)",
+                              color: "white",
+                            }}
+                          >
+                            Shutdown pending
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>Shutdown in progress</TooltipContent>
+                      </Tooltip>
+                    </TooltipProvider>
                   ) : (
                     <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
                       <DialogTrigger asChild>

@@ -93,7 +93,13 @@ func (sp *SessionProcessor) HandleHeartbeat(ctx context.Context, e consumer.Even
 	return sp.w.UpdateLastSeen(ctx, e.SessionID)
 }
 
-// HandlePostCall updates token usage and last_seen_at.
+// HandlePostCall updates token usage, last_seen_at, and the session's
+// model field. The model column on sessions is not populated at
+// session_start (the sensor doesn't know it yet); it is updated here
+// from each post_call event so the API can return a non-null model
+// for sessions that have made LLM calls. Failures in the model update
+// are logged but do not abort processing -- the token update is
+// load-bearing.
 func (sp *SessionProcessor) HandlePostCall(ctx context.Context, e consumer.EventPayload) error {
 	if sp.isTerminal(ctx, e.SessionID) {
 		slog.Warn("skipping event for terminal session",
@@ -101,6 +107,11 @@ func (sp *SessionProcessor) HandlePostCall(ctx context.Context, e consumer.Event
 			"event_type", "post_call",
 		)
 		return nil
+	}
+	if e.Model != "" {
+		if err := sp.w.UpdateSessionModel(ctx, e.SessionID, e.Model); err != nil {
+			slog.Warn("update session model failed", "session_id", e.SessionID, "err", err)
+		}
 	}
 	delta := 0
 	if e.TokensTotal != nil {

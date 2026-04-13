@@ -11,7 +11,7 @@ import logging
 from typing import Any
 
 from flightdeck_sensor.core.types import TokenUsage
-from flightdeck_sensor.providers.protocol import PromptContent
+from flightdeck_sensor.providers.protocol import PromptContent, ToolInvocation
 
 _log = logging.getLogger("flightdeck_sensor.providers.openai")
 
@@ -181,3 +181,72 @@ class OpenAIProvider:
             return model
         except (KeyError, TypeError):
             return ""
+
+    def extract_tool_invocations(self, response: Any) -> list[ToolInvocation]:
+        """Parse OpenAI ``tool_calls`` from the response.
+
+        Chat completions: ``response.choices[0].message.tool_calls``
+        where each entry has ``type='function'`` and
+        ``function.name`` / ``function.arguments`` (JSON string).
+        Returns an empty list on any failure. Never raises.
+        """
+        try:
+            import json as _json
+
+            obj = response
+            if hasattr(obj, "parse") and callable(obj.parse):
+                with contextlib.suppress(Exception):
+                    obj = obj.parse()
+
+            choices = getattr(obj, "choices", None)
+            if not choices:
+                return []
+            first = choices[0]
+            message = getattr(first, "message", None) or (
+                first.get("message") if isinstance(first, dict) else None
+            )
+            if message is None:
+                return []
+            tool_calls = getattr(message, "tool_calls", None) or (
+                message.get("tool_calls") if isinstance(message, dict) else None
+            )
+            if not tool_calls:
+                return []
+
+            invocations: list[ToolInvocation] = []
+            for tc in tool_calls:
+                fn = getattr(tc, "function", None) or (
+                    tc.get("function") if isinstance(tc, dict) else None
+                )
+                if fn is None:
+                    continue
+                name = getattr(fn, "name", None) or (
+                    fn.get("name") if isinstance(fn, dict) else None
+                )
+                args_raw = getattr(fn, "arguments", None) or (
+                    fn.get("arguments") if isinstance(fn, dict) else None
+                )
+                tool_id = getattr(tc, "id", None) or (
+                    tc.get("id") if isinstance(tc, dict) else None
+                )
+                if not name:
+                    continue
+                parsed_input: dict[str, Any] = {}
+                if isinstance(args_raw, dict):
+                    parsed_input = args_raw
+                elif isinstance(args_raw, str) and args_raw:
+                    with contextlib.suppress(Exception):
+                        decoded = _json.loads(args_raw)
+                        if isinstance(decoded, dict):
+                            parsed_input = decoded
+                invocations.append(
+                    ToolInvocation(
+                        name=str(name),
+                        tool_input=parsed_input,
+                        tool_id=str(tool_id) if tool_id else None,
+                    )
+                )
+            return invocations
+        except Exception:
+            _log.debug("extract_tool_invocations failed", exc_info=True)
+            return []

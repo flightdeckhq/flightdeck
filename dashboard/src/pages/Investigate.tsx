@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useSearchParams } from "react-router-dom";
-import { Search, RefreshCw, X, LayoutGrid, GitBranch, Bot, Server } from "lucide-react";
+import { Search, RefreshCw, X, LayoutGrid, GitBranch, Bot, Server, Camera } from "lucide-react";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { fetchSessions, type SessionsParams } from "@/lib/api";
 import type { SessionListItem, SessionState } from "@/lib/types";
 import { DateRangePicker, type DateRangeWithPreset } from "@/components/ui/DateRangePicker";
@@ -69,14 +70,15 @@ const AUTO_REFRESH_OPTIONS = [
 ];
 
 const COL_WIDTHS = {
-  flavor: "18%",
-  hostname: "14%",
+  flavor: "16%",
+  hostname: "13%",
   os: "4%",
   orch: "4%",
-  model: "16%",
+  model: "15%",
   started: "14%",
   duration: "8%",
-  tokens: "10%",
+  tokens: "9%",
+  capture: "5%",
   state: "12%",
 };
 
@@ -258,6 +260,7 @@ function SkeletonRows() {
           <td style={{ padding: "0 12px", width: COL_WIDTHS.tokens }}>
             <div className="h-3.5 w-1/2 animate-pulse rounded" style={{ background: "var(--border)" }} />
           </td>
+          <td style={{ padding: "0 4px", width: COL_WIDTHS.capture }} />
           <td style={{ padding: "0 12px", width: COL_WIDTHS.state }}>
             <div className="h-3.5 w-2/3 animate-pulse rounded" style={{ background: "var(--border)" }} />
           </td>
@@ -289,6 +292,7 @@ export function Investigate() {
   const [lastUpdated, setLastUpdated] = useState(Date.now());
   const [lastUpdatedLabel, setLastUpdatedLabel] = useState("just now");
   const [autoRefreshMs, setAutoRefreshMs] = useState(0);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const autoRefreshRef = useRef<ReturnType<typeof setInterval>>();
 
   // Drawer state (ephemeral, not in URL)
@@ -560,8 +564,16 @@ export function Investigate() {
         {/* Refresh controls */}
         <div className="flex items-center gap-2 shrink-0">
           <button
-            onClick={() => doFetch(urlState)}
-            className="flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 font-medium transition-colors duration-150 hover:bg-surface-hover"
+            onClick={async () => {
+              setIsRefreshing(true);
+              try {
+                await doFetch(urlState);
+              } finally {
+                setIsRefreshing(false);
+              }
+            }}
+            disabled={isRefreshing}
+            className="flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 font-medium transition-colors duration-150 hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-70"
             style={{
               fontSize: 12,
               borderColor: "var(--border)",
@@ -569,7 +581,12 @@ export function Investigate() {
             }}
             aria-label="Refresh"
           >
-            <RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} />
+            <RefreshCw
+              className={cn("h-3.5 w-3.5", isRefreshing && "animate-[spin_600ms_linear_infinite]")}
+              style={{
+                color: isRefreshing ? "var(--accent)" : undefined,
+              }}
+            />
             Refresh
           </button>
           <div className="flex items-center gap-1.5">
@@ -783,6 +800,22 @@ export function Investigate() {
                     Tokens{sortArrow("tokens_used")}
                   </th>
                   <th
+                    className="uppercase text-center"
+                    style={{ color: "var(--text-muted)", fontSize: 10, fontWeight: 600, letterSpacing: "0.07em", padding: "0 4px", width: COL_WIDTHS.capture }}
+                    aria-label="Prompt capture"
+                  >
+                    <TooltipProvider>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <span style={{ display: "inline-block", lineHeight: 0, verticalAlign: "middle" }}>
+                            <Camera size={12} style={{ color: "var(--text-muted)" }} />
+                          </span>
+                        </TooltipTrigger>
+                        <TooltipContent>Prompt capture</TooltipContent>
+                      </Tooltip>
+                    </TooltipProvider>
+                  </th>
+                  <th
                     className="uppercase"
                     style={{ color: "var(--text-muted)", fontSize: 10, fontWeight: 600, letterSpacing: "0.07em", padding: "0 12px", width: COL_WIDTHS.state }}
                   >
@@ -821,7 +854,14 @@ export function Investigate() {
                       />
                     </td>
                     <td className="truncate" style={{ padding: "0 12px", width: COL_WIDTHS.model, fontSize: 12, color: "var(--text-secondary)" }}>
-                      {s.model ?? "\u2014"}
+                      {s.model ? (
+                        <span className="inline-flex items-center gap-1.5 min-w-0">
+                          <ProviderLogo provider={getProvider(s.model)} size={12} />
+                          <span className="truncate">{s.model}</span>
+                        </span>
+                      ) : (
+                        "\u2014"
+                      )}
                     </td>
                     <td className="whitespace-nowrap" style={{ padding: "0 12px", width: COL_WIDTHS.started, fontSize: 12, color: "var(--text-secondary)", fontVariantNumeric: "tabular-nums" }}>
                       {new Date(s.started_at).toLocaleString(undefined, {
@@ -836,6 +876,20 @@ export function Investigate() {
                     </td>
                     <td style={{ padding: "0 12px", width: COL_WIDTHS.tokens, fontSize: 12, color: "var(--text)", fontWeight: 500, fontVariantNumeric: "tabular-nums", fontFamily: "var(--font-mono)" }}>
                       {formatTokens(s.tokens_used)}
+                    </td>
+                    <td style={{ padding: "0 4px", width: COL_WIDTHS.capture, textAlign: "center" }}>
+                      {s.capture_enabled && (
+                        <TooltipProvider>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <span style={{ display: "inline-block", lineHeight: 0 }}>
+                                <Camera size={14} style={{ color: "var(--accent)" }} />
+                              </span>
+                            </TooltipTrigger>
+                            <TooltipContent>Prompt capture enabled</TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
+                      )}
                     </td>
                     <td style={{ padding: "0 12px", width: COL_WIDTHS.state }}>
                       <StateBadge state={s.state} />

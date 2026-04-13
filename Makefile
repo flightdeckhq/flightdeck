@@ -1,4 +1,4 @@
-.PHONY: help build test test-integration test-e2e lint dev dev-reset down logs release migrate-local-up migrate-local-status
+.PHONY: help build test test-integration test-e2e test-smoke test-smoke-deps lint dev dev-reset down logs release migrate-local-up migrate-local-status
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-12s %s\n", $$1, $$2}'
@@ -22,6 +22,13 @@ test-integration: ## Run integration tests (requires running stack)
 test-e2e: ## Run sensor end-to-end tests only (requires running stack + respx)
 	$(MAKE) -C docker dev
 	cd tests/integration && pytest -v test_sensor_e2e.py
+
+test-smoke-deps: ## Install Python deps required by the smoke test suite
+	pip install -e sensor/
+	pip install -r tests/smoke/requirements.txt
+
+test-smoke: test-smoke-deps ## Run smoke tests with real API keys (requires running stack + ANTHROPIC_API_KEY + OPENAI_API_KEY). See tests/smoke/README.md.
+	python3 tests/smoke/smoke_test.py
 
 lint: ## Lint all components
 	$(MAKE) -C sensor lint

@@ -263,7 +263,7 @@ class Session:
         """
         try:
             url = (
-                f"{self.config.server}/v1/policy"
+                f"{self.config.api_url}/v1/policy"
                 f"?flavor={self.config.agent_flavor}"
                 f"&session_id={self.config.session_id}"
             )

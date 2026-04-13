@@ -7,6 +7,11 @@ definitions:
           $ref: '#/definitions/store.CustomDirective'
         type: array
     type: object
+  handlers.DeleteCustomDirectivesResponse:
+    properties:
+      deleted:
+        type: integer
+    type: object
   handlers.DirectiveRequest:
     properties:
       action:
@@ -371,6 +376,13 @@ definitions:
         type: string
       block_at_pct:
         type: integer
+      capture_enabled:
+        description: |-
+          CaptureEnabled is true when at least one event in this session
+          has has_content=true (i.e. prompt content was captured to
+          event_content). Computed via EXISTS subquery so no schema
+          change is required.
+        type: boolean
       context:
         additionalProperties: {}
         description: |-
@@ -420,6 +432,8 @@ definitions:
     type: object
   store.SessionListItem:
     properties:
+      capture_enabled:
+        type: boolean
       context:
         additionalProperties: true
         type: object
@@ -582,6 +596,33 @@ paths:
       tags:
       - directives
   /v1/directives/custom:
+    delete:
+      description: Deletes custom_directives rows where name LIKE prefix%. Intended
+        for smoke test idempotency; not a production feature.
+      parameters:
+      - description: Name prefix to match (e.g. smoke_)
+        in: query
+        name: name_prefix
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/handlers.DeleteCustomDirectivesResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      summary: Delete custom directives by name prefix (dev/test only)
+      tags:
+      - custom-directives
     get:
       description: Returns all registered custom directives, optionally filtered by
         flavor.

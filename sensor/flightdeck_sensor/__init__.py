@@ -166,6 +166,7 @@ def directive(
 def init(
     server: str,
     token: str,
+    api_url: str | None = None,
     capture_prompts: bool = False,
     quiet: bool = False,
     limit: int | None = None,
@@ -173,12 +174,18 @@ def init(
 ) -> None:
     """Initialize the sensor and start the session.
 
+    ``api_url`` is the base URL for control-plane calls (directive
+    registration, directive sync, policy prefetch).  When *None*,
+    derived from *server* by replacing ``/ingest`` with ``/api``.
+    Override via ``FLIGHTDECK_API_URL`` env var.
+
     ``limit`` sets a local WARN-only token threshold. Never blocks. Never
     degrades. Most restrictive threshold wins when both local and server
     policies are active. See DECISIONS.md D035.
 
     Reads from environment (overrides parameters):
 
+    - ``FLIGHTDECK_API_URL`` -- control-plane base URL (overrides *api_url*)
     - ``AGENT_FLAVOR`` -- persistent identity (default: ``"unknown"``)
     - ``AGENT_TYPE`` -- ``"autonomous"``, ``"supervised"``, or ``"batch"``
     - ``FLIGHTDECK_UNAVAILABLE_POLICY`` -- ``"continue"`` or ``"halt"``
@@ -199,10 +206,17 @@ def init(
         if not resolved_token:
             raise ConfigurationError("token is required")
 
+        resolved_api_url = os.environ.get("FLIGHTDECK_API_URL") or api_url
+        if not resolved_api_url:
+            resolved_api_url = resolved_server.rstrip("/").replace(
+                "/ingest", "/api"
+            )
+
         capture = _env_bool("FLIGHTDECK_CAPTURE_PROMPTS", capture_prompts)
         config = SensorConfig(
             server=resolved_server,
             token=resolved_token,
+            api_url=resolved_api_url,
             capture_prompts=capture,
             unavailable_policy=os.environ.get(
                 "FLIGHTDECK_UNAVAILABLE_POLICY", "continue"
@@ -217,6 +231,7 @@ def init(
         _client = ControlPlaneClient(
             server=config.server,
             token=config.token,
+            api_url=config.api_url,
             unavailable_policy=config.unavailable_policy,
         )
         _session = Session(config=config, client=_client)

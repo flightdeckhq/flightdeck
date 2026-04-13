@@ -49,6 +49,11 @@ export interface Session {
   degrade_at_pct?: number | null;
   degrade_to?: string | null;
   block_at_pct?: number | null;
+  /**
+   * True when at least one event in this session has has_content=true.
+   * Computed by the API via EXISTS subquery; no schema change required.
+   */
+  capture_enabled?: boolean;
 }
 
 /**
@@ -309,6 +314,11 @@ export interface SessionListItem {
   tokens_used: number;
   token_limit: number | null;
   context: Record<string, unknown>;
+  /**
+   * True when at least one event in this session has has_content=true.
+   * Drives the camera icon in the Investigate table and the SessionDrawer.
+   */
+  capture_enabled?: boolean;
 }
 
 /** Paginated response from GET /v1/sessions. */

@@ -74,6 +74,7 @@ class SensorConfig:
 
     server: str
     token: str
+    api_url: str = ""
     capture_prompts: bool = False
     unavailable_policy: str = "continue"
     agent_flavor: str = "unknown"
@@ -82,6 +83,10 @@ class SensorConfig:
     quiet: bool = False
     limit: int | None = None
     warn_at: float = 0.8
+
+    def __post_init__(self) -> None:
+        if not self.api_url:
+            self.api_url = self.server
 
 
 @dataclass(frozen=True)

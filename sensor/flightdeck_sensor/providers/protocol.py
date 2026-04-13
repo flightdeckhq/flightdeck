@@ -40,6 +40,31 @@ class Provider(Protocol):
         """Extract the model name from request kwargs. Returns '' on failure."""
         ...
 
+    def extract_tool_invocations(self, response: Any) -> list[ToolInvocation]:
+        """Return the tool invocations the model emitted in ``response``.
+
+        Anthropic: ``response.content`` items with ``type='tool_use'``.
+        OpenAI: ``response.choices[0].message.tool_calls``.
+        Returns an empty list when the response has no tool calls or
+        the response shape cannot be parsed. Never raises.
+        """
+        ...
+
+
+@dataclass
+class ToolInvocation:
+    """A single tool/function call emitted by the model in a response.
+
+    The sensor's interceptor emits one ``tool_call`` event per entry
+    so the fleet view can track tool usage separately from the LLM
+    call itself. Provider terminology preserved: OpenAI tool_calls
+    and Anthropic tool_use blocks both map onto this shape.
+    """
+
+    name: str
+    tool_input: dict[str, Any]
+    tool_id: str | None = None
+
 
 @dataclass
 class PromptContent:

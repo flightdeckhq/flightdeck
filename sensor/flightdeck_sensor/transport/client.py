@@ -21,7 +21,14 @@ from flightdeck_sensor.transport.retry import with_retry
 
 _log = logging.getLogger("flightdeck_sensor.transport.client")
 
+# Hot-path timeout: events and heartbeat POSTs.
 _TIMEOUT_SECS = 10
+
+# Startup timeout: directive sync and registration at init() time.
+# Shorter than hot-path because these are fire-and-forget and fail
+# open anyway -- a slow or unreachable control plane must not block
+# the agent's boot path for 10s.
+_STARTUP_TIMEOUT_SECS = 3
 
 
 class ControlPlaneClient:
@@ -37,9 +44,11 @@ class ControlPlaneClient:
         self,
         server: str,
         token: str,
+        api_url: str = "",
         unavailable_policy: str = "continue",
     ) -> None:
         self._base_url = server.rstrip("/")
+        self._api_url = api_url.rstrip("/") if api_url else self._base_url
         self._token = token
         self._unavailable_policy = unavailable_policy
 
@@ -62,15 +71,7 @@ class ControlPlaneClient:
         Returns a list of fingerprints the server does not recognise.
         On any error, returns an empty list (fail open).
         """
-        # TODO(KI14)[Phase 4.9]: This URL is built against the ingestion
-        # base URL but /v1/directives/sync lives on the api service.
-        # In dev nginx routes /ingest/* to ingestion (which 404s) and
-        # the broad except below swallows the failure. Needs an
-        # architectural decision: separate api_url config, or nginx
-        # forwarding for /ingest/v1/directives/*, or a single /v1/*
-        # root. Same applies to register_directives below and to
-        # core/session.py:_preflight_policy.
-        url = f"{self._base_url}/v1/directives/sync"
+        url = f"{self._api_url}/v1/directives/sync"
         body = json.dumps({"flavor": flavor, "directives": directives}).encode()
         req = urllib.request.Request(
             url,
@@ -86,7 +87,7 @@ class ControlPlaneClient:
 
             from flightdeck_sensor.core.schemas import SyncResponseSchema
 
-            with urllib.request.urlopen(req, timeout=1) as resp:
+            with urllib.request.urlopen(req, timeout=_STARTUP_TIMEOUT_SECS) as resp:
                 data = json.loads(resp.read().decode())
                 try:
                     parsed = SyncResponseSchema.model_validate(data)
@@ -107,7 +108,7 @@ class ControlPlaneClient:
 
         Fire-and-forget: ignores all errors (fail open).
         """
-        url = f"{self._base_url}/v1/directives/register"
+        url = f"{self._api_url}/v1/directives/register"
         body = json.dumps({"flavor": flavor, "directives": directives}).encode()
         req = urllib.request.Request(
             url,
@@ -119,7 +120,7 @@ class ControlPlaneClient:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(req, timeout=1) as resp:
+            with urllib.request.urlopen(req, timeout=_STARTUP_TIMEOUT_SECS) as resp:
                 resp.read()
         except Exception:
             _log.debug("directives register failed, ignoring", exc_info=True)

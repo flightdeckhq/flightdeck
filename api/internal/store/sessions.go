@@ -29,17 +29,18 @@ type SessionsParams struct {
 // os, hostname, orchestration, git_branch, frameworks without a
 // second round-trip.
 type SessionListItem struct {
-	SessionID  string                 `json:"session_id"`
-	Flavor     string                 `json:"flavor"`
-	Host       *string                `json:"host"`
-	Model      *string                `json:"model"`
-	State      string                 `json:"state"`
-	StartedAt  time.Time              `json:"started_at"`
-	EndedAt    *time.Time             `json:"ended_at"`
-	DurationS  float64                `json:"duration_s"`
-	TokensUsed int                    `json:"tokens_used"`
-	TokenLimit *int64                 `json:"token_limit"`
-	Context    map[string]interface{} `json:"context"`
+	SessionID      string                 `json:"session_id"`
+	Flavor         string                 `json:"flavor"`
+	Host           *string                `json:"host"`
+	Model          *string                `json:"model"`
+	State          string                 `json:"state"`
+	StartedAt      time.Time              `json:"started_at"`
+	EndedAt        *time.Time             `json:"ended_at"`
+	DurationS      float64                `json:"duration_s"`
+	TokensUsed     int                    `json:"tokens_used"`
+	TokenLimit     *int64                 `json:"token_limit"`
+	Context        map[string]interface{} `json:"context"`
+	CaptureEnabled bool                   `json:"capture_enabled"`
 }
 
 // SessionsResponse is the paginated response for GET /v1/sessions.
@@ -167,7 +168,13 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 			EXTRACT(EPOCH FROM (COALESCE(s.ended_at, NOW()) - s.started_at)) AS duration_s,
 			s.tokens_used,
 			s.token_limit,
-			s.context
+			s.context,
+			EXISTS(
+				SELECT 1 FROM events e
+				WHERE e.session_id = s.session_id
+				AND e.has_content = true
+				LIMIT 1
+			) AS capture_enabled
 		FROM sessions s
 		%s
 		ORDER BY %s %s
@@ -197,6 +204,7 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 			&item.TokensUsed,
 			&item.TokenLimit,
 			&contextRaw,
+			&item.CaptureEnabled,
 		); err != nil {
 			return nil, fmt.Errorf("scan session: %w", err)
 		}

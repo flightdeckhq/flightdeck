@@ -301,3 +301,25 @@ def _post_call(
         payload["has_content"] = True
         payload["content"] = content_dict
     session.event_queue.enqueue(payload)
+
+    # Emit one tool_call event per tool invocation in the response.
+    # Supplementary to post_call (not a replacement) so dashboards can
+    # filter/aggregate tool usage independently of the underlying LLM
+    # call. Failures are swallowed -- tool extraction is best-effort
+    # and must not destabilise the hot path.
+    try:
+        invocations = provider.extract_tool_invocations(response)
+    except Exception:
+        _log.debug("extract_tool_invocations raised; skipping tool events", exc_info=True)
+        invocations = []
+    for inv in invocations:
+        try:
+            tool_payload = session._build_payload(
+                EventType.TOOL_CALL,
+                model=resp_model,
+                tool_name=inv.name,
+                tool_input=inv.tool_input,
+            )
+            session.event_queue.enqueue(tool_payload)
+        except Exception:
+            _log.debug("failed to enqueue tool_call event", exc_info=True)

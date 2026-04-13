@@ -46,10 +46,11 @@ type Querier interface {
 	DeletePolicy(ctx context.Context, id string) error
 	CreateDirective(ctx context.Context, d Directive) (*Directive, error)
 	GetActiveSessionIDsByFlavor(ctx context.Context, flavor string) ([]string, error)
-	SyncDirectives(ctx context.Context, fingerprints []string) ([]string, error)
+	SyncDirectives(ctx context.Context, flavor string, fingerprints []string) ([]string, error)
 	RegisterDirectives(ctx context.Context, directives []CustomDirective) error
 	GetCustomDirectives(ctx context.Context, flavor string) ([]CustomDirective, error)
 	CustomDirectiveExists(ctx context.Context, fingerprint, flavor string) (bool, error)
+	DeleteCustomDirectivesByNamePrefix(ctx context.Context, namePrefix string) (int64, error)
 	GetEvents(ctx context.Context, params EventsParams) (*EventsResponse, error)
 	GetSessions(ctx context.Context, params SessionsParams) (*SessionsResponse, error)
 	QueryAnalytics(ctx context.Context, params AnalyticsParams) (*AnalyticsResponse, error)
@@ -102,6 +103,12 @@ type Session struct {
 
 	// HasPendingDirective is true when an undelivered shutdown directive exists.
 	HasPendingDirective bool `json:"has_pending_directive"`
+
+	// CaptureEnabled is true when at least one event in this session
+	// has has_content=true (i.e. prompt content was captured to
+	// event_content). Computed via EXISTS subquery so no schema
+	// change is required.
+	CaptureEnabled bool `json:"capture_enabled"`
 }
 
 // ContextFacetValue is a single (value, count) entry inside a context
@@ -244,7 +251,13 @@ func (s *Store) GetSession(ctx context.Context, sessionID string) (*Session, err
 			COALESCE(ps.warn_at_pct, pf.warn_at_pct, po.warn_at_pct) AS warn_at_pct,
 			COALESCE(ps.degrade_at_pct, pf.degrade_at_pct, po.degrade_at_pct) AS degrade_at_pct,
 			COALESCE(ps.degrade_to, pf.degrade_to, po.degrade_to) AS degrade_to,
-			COALESCE(ps.block_at_pct, pf.block_at_pct, po.block_at_pct) AS block_at_pct
+			COALESCE(ps.block_at_pct, pf.block_at_pct, po.block_at_pct) AS block_at_pct,
+			EXISTS(
+				SELECT 1 FROM events e
+				WHERE e.session_id = s.session_id
+				AND e.has_content = true
+				LIMIT 1
+			) AS capture_enabled
 		FROM sessions s
 		LEFT JOIN token_policies ps
 			ON ps.scope = 'session' AND ps.scope_value = s.session_id::text
@@ -261,6 +274,7 @@ func (s *Store) GetSession(ctx context.Context, sessionID string) (*Session, err
 		&contextRaw,
 		&sess.PolicyTokenLimit, &sess.WarnAtPct, &sess.DegradeAtPct,
 		&sess.DegradeTo, &sess.BlockAtPct,
+		&sess.CaptureEnabled,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
@@ -607,16 +621,24 @@ func (s *Store) GetEventContent(ctx context.Context, eventID string) (*EventCont
 	return &ec, nil
 }
 
-// SyncDirectives checks which fingerprints are NOT registered in custom_directives.
-// It updates last_seen_at for found ones and returns the unknown fingerprints.
+// SyncDirectives checks which fingerprints are NOT registered for the
+// given flavor in custom_directives. It updates last_seen_at for found
+// ones and returns the unknown fingerprints.
+//
+// Uniqueness is scoped to (fingerprint, flavor) per D090, so a
+// fingerprint registered under a different flavor is still reported as
+// unknown for this flavor and the caller (sensor) will re-register it.
 //
 // The lookup and the last_seen_at update run in a single transaction so a
 // concurrent RegisterDirectives between them cannot cause unknowns to be
 // reported despite a parallel registration, or known fingerprints to skip
 // the timestamp bump.
-func (s *Store) SyncDirectives(ctx context.Context, fingerprints []string) ([]string, error) {
+func (s *Store) SyncDirectives(ctx context.Context, flavor string, fingerprints []string) ([]string, error) {
 	if len(fingerprints) == 0 {
 		return []string{}, nil
+	}
+	if flavor == "" {
+		return nil, fmt.Errorf("sync directives: flavor is required")
 	}
 
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
@@ -625,10 +647,11 @@ func (s *Store) SyncDirectives(ctx context.Context, fingerprints []string) ([]st
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	// Find which fingerprints exist
+	// Find which fingerprints exist for this flavor
 	rows, err := tx.Query(ctx, `
-		SELECT fingerprint FROM custom_directives WHERE fingerprint = ANY($1)
-	`, fingerprints)
+		SELECT fingerprint FROM custom_directives
+		WHERE flavor = $1 AND fingerprint = ANY($2)
+	`, flavor, fingerprints)
 	if err != nil {
 		return nil, fmt.Errorf("sync directives lookup: %w", err)
 	}
@@ -647,15 +670,16 @@ func (s *Store) SyncDirectives(ctx context.Context, fingerprints []string) ([]st
 		return nil, fmt.Errorf("sync directives scan: %w", err)
 	}
 
-	// Update last_seen_at for found fingerprints
+	// Update last_seen_at for found fingerprints (scoped to flavor)
 	if len(found) > 0 {
 		foundFPs := make([]string, 0, len(found))
 		for fp := range found {
 			foundFPs = append(foundFPs, fp)
 		}
 		if _, err := tx.Exec(ctx, `
-			UPDATE custom_directives SET last_seen_at = NOW() WHERE fingerprint = ANY($1)
-		`, foundFPs); err != nil {
+			UPDATE custom_directives SET last_seen_at = NOW()
+			WHERE flavor = $1 AND fingerprint = ANY($2)
+		`, flavor, foundFPs); err != nil {
 			return nil, fmt.Errorf("sync directives update: %w", err)
 		}
 	}
@@ -698,7 +722,7 @@ func (s *Store) RegisterDirectives(ctx context.Context, directives []CustomDirec
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO custom_directives (fingerprint, name, description, flavor, parameters)
 			VALUES ($1, $2, $3, $4, $5)
-			ON CONFLICT (fingerprint) DO UPDATE SET last_seen_at = NOW()
+			ON CONFLICT (fingerprint, flavor) DO UPDATE SET last_seen_at = NOW()
 		`, d.Fingerprint, d.Name, d.Description, d.Flavor, paramsJSON); err != nil {
 			return fmt.Errorf("register directive %s: %w", d.Fingerprint, err)
 		}
@@ -732,6 +756,26 @@ func (s *Store) CustomDirectiveExists(ctx context.Context, fingerprint, flavor s
 		return false, fmt.Errorf("custom directive exists %s: %w", fingerprint, err)
 	}
 	return exists, nil
+}
+
+// DeleteCustomDirectivesByNamePrefix deletes all rows from custom_directives
+// whose name starts with the given prefix. Returns the number of rows
+// deleted. Intended as a dev/test utility to keep the smoke test suite
+// idempotent across runs on a shared Postgres volume -- the sensor
+// registers directives by fingerprint and cross-flavor collisions can
+// leave stale rows pinned to an older flavor on re-runs. Production
+// callers should not rely on this.
+func (s *Store) DeleteCustomDirectivesByNamePrefix(ctx context.Context, namePrefix string) (int64, error) {
+	if namePrefix == "" {
+		return 0, fmt.Errorf("name prefix is required")
+	}
+	tag, err := s.pool.Exec(ctx, `
+		DELETE FROM custom_directives WHERE name LIKE $1
+	`, namePrefix+"%")
+	if err != nil {
+		return 0, fmt.Errorf("delete custom directives: %w", err)
+	}
+	return tag.RowsAffected(), nil
 }
 
 // GetCustomDirectives returns all custom directives, optionally filtered by flavor.

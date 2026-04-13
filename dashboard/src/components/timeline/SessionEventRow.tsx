@@ -10,6 +10,8 @@ import {
   OrchestrationIcon,
   getOrchestrationLabel,
 } from "@/components/ui/OrchestrationIcon";
+import { Camera } from "lucide-react";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 
 /**
  * Threshold at which the token count is dropped from the row left
@@ -253,6 +255,18 @@ function SessionEventRowComponent({
         >
           {session.state}
         </span>
+        {session.capture_enabled && (
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span style={{ display: "inline-flex", lineHeight: 0, flexShrink: 0 }} aria-label="Prompt capture enabled">
+                  <Camera size={12} style={{ color: "var(--accent)" }} />
+                </span>
+              </TooltipTrigger>
+              <TooltipContent>Prompt capture enabled</TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+        )}
         {showTokens && (
           <span
             data-testid="session-row-tokens"

@@ -1767,7 +1767,7 @@ the handler ran.
 
 ---
 
-## D086 -- KI14 and KI15 deferred to Phase 5
+## D086 -- KI14 and KI15 deferred to Phase 5 (KI14 resolved in Phase 4.9)
 
 **Decision:** Two architectural limitations discovered during
 the Phase 4.5 audit are deferred to Phase 5 rather than fixed
@@ -1800,6 +1800,10 @@ Deferred because all three options require the supervisor to
 choose, and the existing tests work around the bug by
 pre-registering directives via `POST /api/v1/directives/register`
 directly.
+
+Resolved in: Phase 4.9
+Resolution: Option 1 chosen -- separate `api_url` param added to
+`init()`. See D088 for full details.
 
 **KI15 -- sensor singleton.** The sensor maintains a
 process-wide singleton via the module-level `_session` global.
@@ -1982,5 +1986,119 @@ vocabulary: the component is a "sensor," not a "guard."
 `GuardedStream` was retained because it IS a guard (it
 reconciles tokens on context-manager exit including early
 exit) and the "sensor" name would misrepresent its role.
+
+---
+
+## D088 -- KI14 resolved: separate api_url for control-plane calls
+
+**Decision:** Add an `api_url` parameter to `init()` so the sensor
+uses separate base URLs for ingestion (events, heartbeats) and
+control-plane operations (directive registration, directive sync,
+policy prefetch).
+
+**Problem:** The sensor built all URLs against a single `_base_url`
+from the `server` parameter. When `server` pointed to the ingestion
+service (e.g. `http://localhost:4000/ingest`), directive and policy
+calls hit `/ingest/v1/directives/*` and `/ingest/v1/policy` -- routes
+that do NOT exist on the ingestion service. The handlers live on the
+API service. Result: silent 404s on every directive registration and
+policy prefetch at `init()` time. The broad `except Exception` in
+the transport client swallowed the errors and the sensor proceeded
+without registering directives or loading policy.
+
+**Options considered:**
+
+1. **Nginx proxy rules** forwarding `/ingest/v1/directives/*` and
+   `/ingest/v1/policy` to the API service. Rejected: couples the fix
+   to a specific reverse-proxy configuration, breaks in deployments
+   without nginx, and muddies the architectural boundary between
+   ingestion (high-throughput fire-and-forget) and API (low-frequency
+   control plane).
+
+2. **Separate `api_url` parameter on `init()`** (chosen). The sensor
+   explicitly targets the correct service for each call type. Works
+   in all deployment environments. Default derivation
+   (`server.replace("/ingest", "/api")`) handles the common dev
+   setup without configuration.
+
+**What changed:**
+
+- `SensorConfig` gains `api_url: str` field (`core/types.py`)
+- `init()` gains `api_url: str | None = None` param; reads
+  `FLIGHTDECK_API_URL` env var; defaults to
+  `server.rstrip("/").replace("/ingest", "/api")`
+- `ControlPlaneClient.__init__` gains `api_url: str` param; stores
+  as `_api_url`; `sync_directives` and `register_directives` use
+  `_api_url` instead of `_base_url`
+- `Session._preflight_policy` uses `config.api_url` instead of
+  `config.server`
+- TODO(KI14) comment removed from `transport/client.py`
+
+Resolved in: Phase 4.9
+
+---
+
+## D089 -- Smoke test suite: plain Python, real API keys
+
+**Decision:** The smoke test suite (`tests/smoke/smoke_test.py`) uses
+plain Python with no test framework (no pytest, no unittest).
+
+**Why not pytest?** The smoke test runs real LLM API calls against a
+live stack. It must be runnable in any environment without installing
+test framework dependencies. A developer with `pip install
+flightdeck-sensor` and API keys can run `python tests/smoke/
+smoke_test.py` directly. The output is human-readable PASS/FAIL/SKIP
+per check, not pytest's verbose assertion rewriting.
+
+**Cost control:** Uses only claude-haiku-4-5-20251001 ($0.80/$4 per
+1M tokens) and gpt-4o-mini ($0.15/$0.60 per 1M). All prompts are
+"hi" with max_tokens=5 except where a richer response is needed
+(tool use, streaming). Estimated cost per full run: < $0.05.
+
+**KI15 workaround (multi-session, Group 11):** The sensor has a
+module-level singleton. Multiple concurrent init() calls in the
+same process are unreliable (second is a no-op). The smoke test
+runs multi-session scenarios sequentially: init → run → teardown →
+init → run → teardown. No overlapping init() calls.
+
+**KI17 noted (Group 1f):** beta.messages is tested only via
+patch(), not wrap(). wrap() does not intercept beta.messages due
+to the missing SensorBeta wrapper class.
+
+---
+
+## D090 -- Custom directive fingerprint scoped to flavor
+
+**Problem:** The `custom_directives` table had a global
+`UNIQUE(fingerprint)` constraint. The sensor computes the fingerprint
+as SHA-256 of `(name, description, parameters)` only -- flavor is not
+in the hash. Two different flavors registering a directive with the
+same name and schema therefore produced the same fingerprint and
+clobbered each other's flavor attribution silently: the first
+registration wins, subsequent flavors see their sync return
+`unknown=[]` and skip registration, and the `ON CONFLICT (fingerprint)
+DO UPDATE SET last_seen_at = NOW()` upsert does not overwrite the
+`flavor` column either. `GET /v1/directives/custom?flavor=<new>` then
+returns no rows for the later flavor even though its sensor is live.
+
+**Decision:** Replace the global `UNIQUE(fingerprint)` with a composite
+`UNIQUE(fingerprint, flavor)`. The fingerprint continues to track
+schema versioning **within a flavor**; cross-flavor collision is no
+longer possible. `SyncDirectives` now filters by `(fingerprint, flavor)`
+so a fingerprint is only "known" if it exists for *this* flavor.
+`RegisterDirectives` uses the composite key in its `ON CONFLICT`
+clause and still updates `last_seen_at` on conflict.
+
+**Rejected alternative:** Include flavor in the fingerprint hash
+itself. Rejected because the fingerprint is meaningful on its own as
+a schema identity -- mixing identity (flavor) and content (schema)
+into one hash makes it harder to reason about schema evolution and
+forces the sensor to recompute fingerprints per flavor. Keeping the
+hash purely schema-derived and scoping uniqueness at the storage
+layer is the cleaner separation.
+
+**Migration:** `000007_directive_fingerprint_flavor_key.{up,down}.sql`.
+Up drops the existing unique constraint on `fingerprint` and adds
+`UNIQUE (fingerprint, flavor)`. Down is the exact inverse.
 
 ---

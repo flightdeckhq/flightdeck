@@ -132,6 +132,25 @@ func (w *Writer) InsertEventContent(ctx context.Context, eventID, sessionID stri
 	return nil
 }
 
+// UpdateSessionModel updates the session's model field. Idempotent and
+// backward-compatible: when *model* is empty, the existing value is
+// preserved (NULLIF maps "" to NULL, and COALESCE keeps the prior value).
+// Sessions with no post_call event keep model = NULL.
+func (w *Writer) UpdateSessionModel(ctx context.Context, sessionID, model string) error {
+	if model == "" {
+		return nil
+	}
+	_, err := w.pool.Exec(ctx, `
+		UPDATE sessions
+		SET model = COALESCE(NULLIF($2, ''), model)
+		WHERE session_id = $1::uuid
+	`, sessionID, model)
+	if err != nil {
+		return fmt.Errorf("update model for %s: %w", sessionID, err)
+	}
+	return nil
+}
+
 // UpdateTokensUsed atomically increments tokens_used on a session.
 func (w *Writer) UpdateTokensUsed(ctx context.Context, sessionID string, delta int) error {
 	_, err := w.pool.Exec(ctx, `

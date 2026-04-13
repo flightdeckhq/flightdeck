@@ -86,6 +86,7 @@ func newServer(addr string, s store.Querier, hub *ws.Hub, validator *auth.Valida
 	mux.Handle("POST /v1/directives/register", withRESTTimeout(registerHandler))
 
 	mux.Handle("GET /v1/directives/custom", withRESTTimeout(handlers.GetCustomDirectivesHandler(s)))
+	mux.Handle("DELETE /v1/directives/custom", withRESTTimeout(handlers.DeleteCustomDirectivesHandler(s)))
 	mux.Handle("GET /v1/events", withRESTTimeout(handlers.EventsListHandler(s)))
 	mux.Handle("GET /v1/analytics", withRESTTimeout(handlers.AnalyticsHandler(s)))
 	mux.Handle("GET /v1/search", withRESTTimeout(handlers.SearchHandler(s)))

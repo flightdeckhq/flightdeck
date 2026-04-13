@@ -68,6 +68,10 @@ func SyncDirectivesHandler(s store.Querier) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "directives array is required")
 			return
 		}
+		if req.Flavor == "" {
+			writeError(w, http.StatusBadRequest, "flavor is required")
+			return
+		}
 
 		fingerprints := make([]string, len(req.Directives))
 		for i, d := range req.Directives {
@@ -78,7 +82,7 @@ func SyncDirectivesHandler(s store.Querier) http.HandlerFunc {
 			fingerprints[i] = d.Fingerprint
 		}
 
-		unknown, err := s.SyncDirectives(r.Context(), fingerprints)
+		unknown, err := s.SyncDirectives(r.Context(), req.Flavor, fingerprints)
 		if err != nil {
 			slog.Error("sync directives error", "err", err)
 			writeError(w, http.StatusInternalServerError, "internal server error")
@@ -148,6 +152,46 @@ func RegisterDirectivesHandler(s store.Querier) http.HandlerFunc {
 
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(RegisterDirectivesResponse{Registered: len(req.Directives)})
+	}
+}
+
+// DeleteCustomDirectivesResponse is the response for DELETE /v1/directives/custom.
+type DeleteCustomDirectivesResponse struct {
+	Deleted int64 `json:"deleted"`
+}
+
+// DeleteCustomDirectivesHandler handles DELETE /v1/directives/custom.
+//
+// Dev/test utility. Deletes all custom_directives rows whose name starts
+// with the ``name_prefix`` query parameter. Used by the smoke test suite
+// to reset state between runs on a shared Postgres volume.
+//
+// @Summary      Delete custom directives by name prefix (dev/test only)
+// @Description  Deletes custom_directives rows where name LIKE prefix%. Intended for smoke test idempotency; not a production feature.
+// @Tags         custom-directives
+// @Produce      json
+// @Param        name_prefix  query     string  true  "Name prefix to match (e.g. smoke_)"
+// @Success      200          {object}  DeleteCustomDirectivesResponse
+// @Failure      400          {object}  ErrorResponse
+// @Failure      500          {object}  ErrorResponse
+// @Router       /v1/directives/custom [delete]
+func DeleteCustomDirectivesHandler(s store.Querier) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		prefix := r.URL.Query().Get("name_prefix")
+		if prefix == "" {
+			writeError(w, http.StatusBadRequest, "name_prefix query parameter is required")
+			return
+		}
+
+		deleted, err := s.DeleteCustomDirectivesByNamePrefix(r.Context(), prefix)
+		if err != nil {
+			slog.Error("delete custom directives error", "err", err)
+			writeError(w, http.StatusInternalServerError, "internal server error")
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(DeleteCustomDirectivesResponse{Deleted: deleted})
 	}
 }
 

@@ -342,9 +342,12 @@ func (m *mockStore) GetEvents(_ context.Context, params store.EventsParams) (*st
 	}, nil
 }
 
-func (m *mockStore) SyncDirectives(_ context.Context, fingerprints []string) ([]string, error) {
+func (m *mockStore) SyncDirectives(_ context.Context, flavor string, fingerprints []string) ([]string, error) {
 	found := make(map[string]bool)
 	for _, cd := range m.customDirectives {
+		if cd.Flavor != flavor {
+			continue
+		}
 		found[cd.Fingerprint] = true
 	}
 	var unknown []string
@@ -386,6 +389,23 @@ func (m *mockStore) GetCustomDirectives(_ context.Context, flavor string) ([]sto
 		result = []store.CustomDirective{}
 	}
 	return result, nil
+}
+
+func (m *mockStore) DeleteCustomDirectivesByNamePrefix(_ context.Context, namePrefix string) (int64, error) {
+	if namePrefix == "" {
+		return 0, nil
+	}
+	kept := make([]store.CustomDirective, 0, len(m.customDirectives))
+	var deleted int64
+	for _, cd := range m.customDirectives {
+		if len(cd.Name) >= len(namePrefix) && cd.Name[:len(namePrefix)] == namePrefix {
+			deleted++
+			continue
+		}
+		kept = append(kept, cd)
+	}
+	m.customDirectives = kept
+	return deleted, nil
 }
 
 func (m *mockStore) CustomDirectiveExists(_ context.Context, fingerprint, flavor string) (bool, error) {
@@ -1509,7 +1529,7 @@ func TestSyncDirectivesEmptyArray(t *testing.T) {
 func TestSyncDirectivesMissingFingerprint(t *testing.T) {
 	s := &mockStore{}
 	handler := handlers.SyncDirectivesHandler(store.WrapStore(s))
-	req := httptest.NewRequest("POST", "/v1/directives/sync", bytes.NewBufferString(`{"directives":[{"name":"x","fingerprint":""}]}`))
+	req := httptest.NewRequest("POST", "/v1/directives/sync", bytes.NewBufferString(`{"flavor":"test-agent","directives":[{"name":"x","fingerprint":""}]}`))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	handler(w, req)

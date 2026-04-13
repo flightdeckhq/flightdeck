@@ -21,7 +21,14 @@ function makeEvent(overrides: Partial<AgentEvent> & { id: string }): AgentEvent 
 }
 
 function makeFeedEvent(event: Partial<AgentEvent> & { id: string }, arrivedAt?: number): FeedEvent {
-  return { arrivedAt: arrivedAt ?? Date.now(), event: makeEvent(event) };
+  const t = arrivedAt ?? Date.now();
+  // Mirror arrivedAt into occurred_at so tests that assert "newest
+  // first by arrivedAt" keep their intent after the sort moved to the
+  // server-assigned occurred_at (Bug 1 fix in LiveFeed.tsx).
+  return {
+    arrivedAt: t,
+    event: makeEvent({ occurred_at: new Date(t).toISOString(), ...event }),
+  };
 }
 
 const mockFeedEvents: FeedEvent[] = [

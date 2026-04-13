@@ -50,7 +50,14 @@ function getInitialColWidths(): ColWidths {
 
 function getSortValue(fe: FeedEvent, col: SortCol): string | number {
   switch (col) {
-    case "time": return fe.arrivedAt;
+    // Sort by the server-assigned occurred_at (not the WebSocket arrival
+    // timestamp): workers drain events concurrently so NOTIFY order can
+    // diverge from true chronological order under kill-switch / rapid
+    // teardown load. Falling back to arrivedAt only if the event lacks
+    // occurred_at (shouldn't happen, but keeps the sort total).
+    case "time": return fe.event.occurred_at
+      ? new Date(fe.event.occurred_at).getTime()
+      : fe.arrivedAt;
     case "flavor": return fe.event.flavor ?? "";
     case "session": return fe.event.session_id ?? "";
     case "type": return TYPE_ORDER[fe.event.event_type] ?? 99;

@@ -27,15 +27,31 @@ export type TimeRange = "1m" | "5m" | "15m" | "30m" | "1h";
 const TIME_RANGES: TimeRange[] = ["1m", "5m", "15m", "30m", "1h"];
 
 /**
+ * Grace period (ms) during which a flavor whose sessions have all
+ * just closed still sorts near the top. Without this, rapid agent
+ * turnover causes the swimlane to reshuffle every few seconds and
+ * the operator loses track of what just ran.
+ */
+const CLOSED_GRACE_MS = 60_000;
+
+/**
  * Sort flavors by activity priority so flavors with active or idle
  * sessions always sit at the top of the swimlane and stale/closed
  * ones sink to the bottom. Stable secondary order is alphabetical.
+ *
+ * Within the "all closed" bucket, flavors whose most recent session
+ * ended within the last CLOSED_GRACE_MS sort above the rest, most
+ * recently closed first. Alphabetical order kicks in only for
+ * flavors whose most recent close is older than the grace window.
  *
  * Exported so unit tests can verify the ordering directly without
  * mounting the full Fleet page (which would require mocking the
  * WebSocket store and bulk events fetch). FIX 3 -- part A.
  */
-export function sortFlavorsByActivity(flavors: FlavorSummary[]): FlavorSummary[] {
+export function sortFlavorsByActivity(
+  flavors: FlavorSummary[],
+  now: number = Date.now(),
+): FlavorSummary[] {
   const priority = (states: string[]): number => {
     if (states.includes("active")) return 0;
     if (states.includes("idle")) return 1;
@@ -43,10 +59,36 @@ export function sortFlavorsByActivity(flavors: FlavorSummary[]): FlavorSummary[]
     if (states.includes("lost")) return 3;
     return 4;
   };
+  // Most recent ended_at across all sessions for this flavor (ms).
+  // Returns -Infinity if no session has an ended_at (e.g. still live
+  // or never fully ended).
+  const mostRecentClose = (f: FlavorSummary): number => {
+    let latest = -Infinity;
+    for (const s of f.sessions) {
+      if (!s.ended_at) continue;
+      const t = new Date(s.ended_at).getTime();
+      if (Number.isFinite(t) && t > latest) latest = t;
+    }
+    return latest;
+  };
   return [...flavors].sort((a, b) => {
     const pa = priority(a.sessions.map((s) => s.state));
     const pb = priority(b.sessions.map((s) => s.state));
     if (pa !== pb) return pa - pb;
+
+    // For fully-closed flavors (priority 4): apply grace period.
+    // Anything closed within the last CLOSED_GRACE_MS floats to the
+    // top of the closed bucket (most recent first); older closed
+    // flavors fall back to alphabetical.
+    if (pa === 4) {
+      const ra = mostRecentClose(a);
+      const rb = mostRecentClose(b);
+      const aRecent = now - ra < CLOSED_GRACE_MS;
+      const bRecent = now - rb < CLOSED_GRACE_MS;
+      if (aRecent && !bRecent) return -1;
+      if (!aRecent && bRecent) return 1;
+      if (aRecent && bRecent) return rb - ra;
+    }
     return a.flavor.localeCompare(b.flavor);
   });
 }

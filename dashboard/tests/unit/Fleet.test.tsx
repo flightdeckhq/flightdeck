@@ -74,6 +74,35 @@ describe("sortFlavorsByActivity", () => {
     expect(sorted.map((f) => f.flavor)).toEqual(["alpha", "beta"]);
   });
 
+  it("recently-closed flavor stays above older-closed during 60s grace", () => {
+    // Two fully-closed flavors. "z-recent" closed 10s ago; "a-old"
+    // closed 2 minutes ago. Even though "a-old" sorts first
+    // alphabetically, the grace period floats "z-recent" above it.
+    const now = Date.UTC(2026, 3, 13, 12, 0, 0);
+    const recent = makeSession("r", "closed", "z-recent");
+    recent.ended_at = new Date(now - 10_000).toISOString();
+    const old = makeSession("o", "closed", "a-old");
+    old.ended_at = new Date(now - 120_000).toISOString();
+    const sorted = sortFlavorsByActivity(
+      [makeFlavor("a-old", [old]), makeFlavor("z-recent", [recent])],
+      now,
+    );
+    expect(sorted.map((f) => f.flavor)).toEqual(["z-recent", "a-old"]);
+  });
+
+  it("two flavors closed within the grace window order by most-recent first", () => {
+    const now = Date.UTC(2026, 3, 13, 12, 0, 0);
+    const a = makeSession("a", "closed", "alpha");
+    a.ended_at = new Date(now - 5_000).toISOString();
+    const b = makeSession("b", "closed", "beta");
+    b.ended_at = new Date(now - 40_000).toISOString();
+    const sorted = sortFlavorsByActivity(
+      [makeFlavor("alpha", [a]), makeFlavor("beta", [b])],
+      now,
+    );
+    expect(sorted.map((f) => f.flavor)).toEqual(["alpha", "beta"]);
+  });
+
   it("an active session anywhere in the flavor wins the priority", () => {
     // Mixed flavor with one active + several closed sessions still
     // counts as an active flavor.

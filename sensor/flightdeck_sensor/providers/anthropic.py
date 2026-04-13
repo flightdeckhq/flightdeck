@@ -11,7 +11,7 @@ import logging
 from typing import Any
 
 from flightdeck_sensor.core.types import TokenUsage
-from flightdeck_sensor.providers.protocol import PromptContent
+from flightdeck_sensor.providers.protocol import PromptContent, ToolInvocation
 
 _log = logging.getLogger("flightdeck_sensor.providers.anthropic")
 
@@ -141,3 +141,52 @@ class AnthropicProvider:
             return model
         except (KeyError, TypeError):
             return ""
+
+    def extract_tool_invocations(self, response: Any) -> list[ToolInvocation]:
+        """Parse Anthropic ``tool_use`` blocks from the response content.
+
+        Anthropic returns a list of content blocks; tool invocations
+        have ``type='tool_use'`` with ``name`` and ``input`` fields.
+        Supports both sync ``Message`` objects (pydantic) and raw
+        response wrappers via ``.parse()``. Returns an empty list on
+        any failure. Never raises.
+        """
+        try:
+            obj = response
+            if hasattr(obj, "parse") and callable(obj.parse):
+                with contextlib.suppress(Exception):
+                    obj = obj.parse()
+
+            content = getattr(obj, "content", None)
+            if not content:
+                return []
+
+            invocations: list[ToolInvocation] = []
+            for block in content:
+                block_type = getattr(block, "type", None) or (
+                    block.get("type") if isinstance(block, dict) else None
+                )
+                if block_type != "tool_use":
+                    continue
+                name = getattr(block, "name", None) or (
+                    block.get("name") if isinstance(block, dict) else None
+                )
+                tool_input = getattr(block, "input", None) or (
+                    block.get("input") if isinstance(block, dict) else None
+                )
+                tool_id = getattr(block, "id", None) or (
+                    block.get("id") if isinstance(block, dict) else None
+                )
+                if not name:
+                    continue
+                invocations.append(
+                    ToolInvocation(
+                        name=str(name),
+                        tool_input=dict(tool_input) if isinstance(tool_input, dict) else {},
+                        tool_id=str(tool_id) if tool_id else None,
+                    )
+                )
+            return invocations
+        except Exception:
+            _log.debug("extract_tool_invocations failed", exc_info=True)
+            return []

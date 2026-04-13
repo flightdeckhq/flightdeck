@@ -665,6 +665,7 @@ def group_1_provider_interception() -> None:
     _scenario_1g_anthropic_streaming()
     _scenario_1h_openai_streaming()
     _scenario_1i_anthropic_tool_calls()
+    _scenario_1j_openai_tool_calls()
 
 
 def _scenario_1a_anthropic_patch() -> None:
@@ -926,7 +927,89 @@ def _scenario_1i_anthropic_tool_calls() -> None:
 
         events = db.events_for_flavor(flavor)
         post_calls = [e for e in events if e["event_type"] == EventType.POST_CALL]
+        tool_calls = [e for e in events if e["event_type"] == EventType.TOOL_CALL]
         report.check("1i. tool call post_call events", len(post_calls) >= 1)
+        report.check(
+            "1i. tool_call event emitted by sensor",
+            len(tool_calls) >= 1,
+            f"got {len(tool_calls)} tool_call events",
+        )
+        if tool_calls:
+            names = {e.get("tool_name") for e in tool_calls}
+            report.check(
+                "1i. tool_call tool_name=get_weather",
+                "get_weather" in names,
+                f"got tool_names={names}",
+            )
+
+
+def _scenario_1j_openai_tool_calls() -> None:
+    """1j. OpenAI function/tool calling. Issues a prompt that forces a
+    tool_call, replies with a tool_result message, and verifies both a
+    post_call event AND a tool_call event with the right tool_name land
+    in the DB."""
+    if not HAS_OPENAI_KEY:
+        report.skip("1j. OpenAI tool calls", "OPENAI_API_KEY not set")
+        return
+    import flightdeck_sensor
+    with scenario("1j. OpenAI tool calls", prefix="1j") as flavor:
+        sensor_init(flavor)
+        client = flightdeck_sensor.wrap(openai_client())
+        tools = [{
+            "type": "function",
+            "function": {
+                "name": "get_weather",
+                "description": "Get the weather for a city",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"city": {"type": "string"}},
+                    "required": ["city"],
+                },
+            },
+        }]
+        resp = client.chat.completions.create(
+            model=Config.OPENAI_MODEL, max_tokens=100,
+            messages=[{"role": "user", "content": "What's the weather in Paris?"}],
+            tools=tools, tool_choice="auto",
+        )
+        msg = resp.choices[0].message
+        tool_calls_resp = getattr(msg, "tool_calls", None) or []
+        if tool_calls_resp:
+            tc = tool_calls_resp[0]
+            # Send a tool_result follow-up so the full round trip is
+            # exercised; matches the Anthropic scenario above.
+            client.chat.completions.create(
+                model=Config.OPENAI_MODEL, max_tokens=50,
+                messages=[
+                    {"role": "user", "content": "What's the weather in Paris?"},
+                    {"role": "assistant", "tool_calls": [
+                        {"id": tc.id, "type": "function", "function": {
+                            "name": tc.function.name, "arguments": tc.function.arguments,
+                        }},
+                    ]},
+                    {"role": "tool", "tool_call_id": tc.id, "content": "Sunny, 22C"},
+                ],
+            )
+        time.sleep(Config.DRAIN_WAIT_S)
+        flightdeck_sensor.teardown()
+        time.sleep(Config.SHORT_WAIT_S)
+
+        events = db.events_for_flavor(flavor)
+        post_calls = [e for e in events if e["event_type"] == EventType.POST_CALL]
+        tool_events = [e for e in events if e["event_type"] == EventType.TOOL_CALL]
+        report.check("1j. OpenAI post_call events", len(post_calls) >= 1)
+        report.check(
+            "1j. OpenAI tool_call event emitted",
+            len(tool_events) >= 1,
+            f"got {len(tool_events)} tool_call events",
+        )
+        if tool_events:
+            names = {e.get("tool_name") for e in tool_events}
+            report.check(
+                "1j. OpenAI tool_call tool_name=get_weather",
+                "get_weather" in names,
+                f"got tool_names={names}",
+            )
 
 
 # ----------------------------------------------------------------------------
@@ -1750,6 +1833,177 @@ def _invoke_crewai() -> None:
     LLM(model=f"openai/{Config.OPENAI_MODEL}").call("hi")
 
 
+# ----------------------------------------------------------------------------
+# GROUP 13 -- Framework Tool Calls (sensor emits tool_call per invocation)
+# ----------------------------------------------------------------------------
+
+def group_13_framework_tool_calls() -> None:
+    report.section("GROUP 13: Framework Tool Calls")
+    _framework_tool_scenario(
+        scenario_name="13a. LangChain + Anthropic tool call", prefix="13a",
+        package="langchain_anthropic", needs_key=HAS_ANTHROPIC_KEY,
+        provider="anthropic", invoke=_invoke_langchain_anthropic_tool,
+    )
+    _framework_tool_scenario(
+        scenario_name="13b. LangChain + OpenAI tool call", prefix="13b",
+        package="langchain_openai", needs_key=HAS_OPENAI_KEY,
+        provider="openai", invoke=_invoke_langchain_openai_tool,
+    )
+    _framework_tool_scenario(
+        scenario_name="13c. LlamaIndex + Anthropic tool call", prefix="13c",
+        package="llama_index", needs_key=HAS_ANTHROPIC_KEY,
+        provider="anthropic", invoke=_invoke_llamaindex_anthropic_tool,
+    )
+    _framework_tool_scenario(
+        scenario_name="13d. LlamaIndex + OpenAI tool call", prefix="13d",
+        package="llama_index", needs_key=HAS_OPENAI_KEY,
+        provider="openai", invoke=_invoke_llamaindex_openai_tool,
+    )
+    _framework_tool_scenario(
+        scenario_name="13e. CrewAI tool call", prefix="13e",
+        package="crewai", needs_key=HAS_OPENAI_KEY,
+        provider="openai", invoke=_invoke_crewai_tool,
+    )
+
+
+def _framework_tool_scenario(
+    *,
+    scenario_name: str,
+    prefix: str,
+    package: str,
+    needs_key: bool,
+    provider: str,
+    invoke: Callable[[], None],
+) -> None:
+    """Like _framework_scenario but asserts at least one tool_call event
+    landed (not just post_call). Skips cleanly on missing package or
+    missing API key."""
+    if not importlib.util.find_spec(package):
+        report.skip(scenario_name, f"{package} not installed")
+        return
+    if not needs_key:
+        env_var = "ANTHROPIC_API_KEY" if provider == "anthropic" else "OPENAI_API_KEY"
+        report.skip(scenario_name, f"{env_var} not set")
+        return
+    import flightdeck_sensor
+    with scenario(scenario_name, prefix=prefix) as flavor:
+        try:
+            sensor_init(flavor)
+            flightdeck_sensor.patch(providers=[provider])
+            invoke()
+            time.sleep(Config.DRAIN_WAIT_S)
+            flightdeck_sensor.teardown()
+            time.sleep(Config.SHORT_WAIT_S)
+
+            events = db.events_for_flavor(flavor)
+            tool_events = [
+                e for e in events if e["event_type"] == EventType.TOOL_CALL
+            ]
+            short = scenario_name.split(". ", 1)[-1]
+            report.check(
+                f"{prefix}. {short} -- tool_call event emitted",
+                len(tool_events) >= 1,
+                f"got {len(tool_events)} tool_call events",
+            )
+        finally:
+            flightdeck_sensor.unpatch()
+
+
+# Tool definitions per framework. Each framework expects its provider's
+# native tool schema. The prompt forces the tool call to avoid flaky
+# "model decides not to use the tool" runs.
+
+_ANTHROPIC_WEATHER_TOOL = {
+    "name": "get_weather",
+    "description": "Look up the current weather for a city. Use this whenever asked about weather.",
+    "input_schema": {
+        "type": "object",
+        "properties": {"city": {"type": "string"}},
+        "required": ["city"],
+    },
+}
+
+_OPENAI_WEATHER_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "get_weather",
+        "description": "Look up the current weather for a city. Use this whenever asked about weather.",
+        "parameters": {
+            "type": "object",
+            "properties": {"city": {"type": "string"}},
+            "required": ["city"],
+        },
+    },
+}
+
+_WEATHER_PROMPT = "What's the weather in Paris? Use the tool."
+
+
+def _invoke_langchain_anthropic_tool() -> None:
+    from langchain_anthropic import ChatAnthropic
+    llm = ChatAnthropic(
+        model=Config.ANTHROPIC_MODEL,
+        max_tokens=Config.HI_MAX_TOKENS * 20,
+    )
+    llm.bind_tools([_ANTHROPIC_WEATHER_TOOL]).invoke(_WEATHER_PROMPT)
+
+
+def _invoke_langchain_openai_tool() -> None:
+    from langchain_openai import ChatOpenAI
+    llm = ChatOpenAI(
+        model=Config.OPENAI_MODEL,
+        max_tokens=Config.HI_MAX_TOKENS * 20,
+    )
+    llm.bind_tools([_OPENAI_WEATHER_TOOL]).invoke(_WEATHER_PROMPT)
+
+
+def _invoke_llamaindex_anthropic_tool() -> None:
+    from llama_index.core.tools import FunctionTool
+    from llama_index.llms.anthropic import Anthropic as LlamaAnthropic
+
+    def get_weather(city: str) -> str:
+        """Look up the current weather for a city."""
+        return f"Sunny, 22C in {city}"
+
+    tool = FunctionTool.from_defaults(fn=get_weather)
+    llm = LlamaAnthropic(
+        model=Config.ANTHROPIC_MODEL,
+        max_tokens=Config.HI_MAX_TOKENS * 20,
+    )
+    llm.chat_with_tools(tools=[tool], user_msg=_WEATHER_PROMPT)
+
+
+def _invoke_llamaindex_openai_tool() -> None:
+    from llama_index.core.tools import FunctionTool
+    from llama_index.llms.openai import OpenAI as LlamaOpenAI
+
+    def get_weather(city: str) -> str:
+        """Look up the current weather for a city."""
+        return f"Sunny, 22C in {city}"
+
+    tool = FunctionTool.from_defaults(fn=get_weather)
+    llm = LlamaOpenAI(
+        model=Config.OPENAI_MODEL,
+        max_tokens=Config.HI_MAX_TOKENS * 20,
+    )
+    llm.chat_with_tools(tools=[tool], user_msg=_WEATHER_PROMPT)
+
+
+def _invoke_crewai_tool() -> None:
+    # CrewAI native tool via the decorator; LLM.call() will invoke the
+    # underlying OpenAI SDK which the sensor patch intercepts. Keeping
+    # the scope to the LLM.call layer mirrors
+    # test_crewai_native_openai_patched_intercepts_call in the
+    # integration suite -- full Agent/Task/Crew orchestration adds
+    # ~30s of latency without exercising additional sensor surface.
+    from crewai import LLM
+    llm = LLM(
+        model=f"openai/{Config.OPENAI_MODEL}",
+        max_tokens=Config.HI_MAX_TOKENS * 20,
+    )
+    llm.call(_WEATHER_PROMPT, tools=[_OPENAI_WEATHER_TOOL])
+
+
 # ============================================================================
 # MAIN
 # ============================================================================
@@ -1769,6 +2023,7 @@ GROUPS: dict[int, tuple[str, Callable[[], None]]] = {
     10: ("Unavailability Policy", group_10_unavailability),
     11: ("Multi-Session Fleet", group_11_multi_session),
     12: ("Framework Support", group_12_frameworks),
+    13: ("Framework Tool Calls", group_13_framework_tool_calls),
 }
 
 

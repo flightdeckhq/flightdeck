@@ -1,0 +1,36 @@
+# Flightdeck smoke test dependencies.
+#
+# Install into the venv used to run the smoke suite:
+#
+#     pip install -e sensor/
+#     pip install -r tests/smoke/requirements.txt
+#
+# Or via the Makefile target:
+#
+#     make test-smoke-deps    # install these
+#     make test-smoke         # install + run
+#
+# Versions are pinned with >= lower bounds (not exact) so local dev
+# environments tolerate compatible upgrades. Only pin tighter if a
+# regression in a newer release requires it.
+
+# Native provider SDKs (required; smoke test cannot run without them
+# because Groups 1-11 exercise them directly).
+anthropic>=0.91.0
+openai>=2.30.0
+
+# Agent frameworks (optional; Group 12 / 13 scenarios skip cleanly
+# when the corresponding package is not installed).
+langchain-anthropic>=1.4.0
+langchain-openai>=1.1.12
+llama-index-llms-anthropic>=0.11.2
+llama-index-llms-openai>=0.7.5
+
+# CrewAI pins an old langchain-openai (<0.0.6) which transitively
+# requires tiktoken<0.6.0 -- that version has no Python 3.14 wheel and
+# fails to build from source. Left out by default; install manually if
+# your Python runtime supports it:
+#
+#     pip install crewai
+#
+# The 13e scenario skips cleanly when crewai is not importable.

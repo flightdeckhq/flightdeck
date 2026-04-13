@@ -342,9 +342,12 @@ func (m *mockStore) GetEvents(_ context.Context, params store.EventsParams) (*st
 	}, nil
 }
 
-func (m *mockStore) SyncDirectives(_ context.Context, fingerprints []string) ([]string, error) {
+func (m *mockStore) SyncDirectives(_ context.Context, flavor string, fingerprints []string) ([]string, error) {
 	found := make(map[string]bool)
 	for _, cd := range m.customDirectives {
+		if cd.Flavor != flavor {
+			continue
+		}
 		found[cd.Fingerprint] = true
 	}
 	var unknown []string
@@ -1526,7 +1529,7 @@ func TestSyncDirectivesEmptyArray(t *testing.T) {
 func TestSyncDirectivesMissingFingerprint(t *testing.T) {
 	s := &mockStore{}
 	handler := handlers.SyncDirectivesHandler(store.WrapStore(s))
-	req := httptest.NewRequest("POST", "/v1/directives/sync", bytes.NewBufferString(`{"directives":[{"name":"x","fingerprint":""}]}`))
+	req := httptest.NewRequest("POST", "/v1/directives/sync", bytes.NewBufferString(`{"flavor":"test-agent","directives":[{"name":"x","fingerprint":""}]}`))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	handler(w, req)

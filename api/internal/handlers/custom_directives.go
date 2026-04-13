@@ -68,6 +68,10 @@ func SyncDirectivesHandler(s store.Querier) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "directives array is required")
 			return
 		}
+		if req.Flavor == "" {
+			writeError(w, http.StatusBadRequest, "flavor is required")
+			return
+		}
 
 		fingerprints := make([]string, len(req.Directives))
 		for i, d := range req.Directives {
@@ -78,7 +82,7 @@ func SyncDirectivesHandler(s store.Querier) http.HandlerFunc {
 			fingerprints[i] = d.Fingerprint
 		}
 
-		unknown, err := s.SyncDirectives(r.Context(), fingerprints)
+		unknown, err := s.SyncDirectives(r.Context(), req.Flavor, fingerprints)
 		if err != nil {
 			slog.Error("sync directives error", "err", err)
 			writeError(w, http.StatusInternalServerError, "internal server error")

@@ -46,7 +46,7 @@ type Querier interface {
 	DeletePolicy(ctx context.Context, id string) error
 	CreateDirective(ctx context.Context, d Directive) (*Directive, error)
 	GetActiveSessionIDsByFlavor(ctx context.Context, flavor string) ([]string, error)
-	SyncDirectives(ctx context.Context, fingerprints []string) ([]string, error)
+	SyncDirectives(ctx context.Context, flavor string, fingerprints []string) ([]string, error)
 	RegisterDirectives(ctx context.Context, directives []CustomDirective) error
 	GetCustomDirectives(ctx context.Context, flavor string) ([]CustomDirective, error)
 	CustomDirectiveExists(ctx context.Context, fingerprint, flavor string) (bool, error)
@@ -621,16 +621,24 @@ func (s *Store) GetEventContent(ctx context.Context, eventID string) (*EventCont
 	return &ec, nil
 }
 
-// SyncDirectives checks which fingerprints are NOT registered in custom_directives.
-// It updates last_seen_at for found ones and returns the unknown fingerprints.
+// SyncDirectives checks which fingerprints are NOT registered for the
+// given flavor in custom_directives. It updates last_seen_at for found
+// ones and returns the unknown fingerprints.
+//
+// Uniqueness is scoped to (fingerprint, flavor) per D090, so a
+// fingerprint registered under a different flavor is still reported as
+// unknown for this flavor and the caller (sensor) will re-register it.
 //
 // The lookup and the last_seen_at update run in a single transaction so a
 // concurrent RegisterDirectives between them cannot cause unknowns to be
 // reported despite a parallel registration, or known fingerprints to skip
 // the timestamp bump.
-func (s *Store) SyncDirectives(ctx context.Context, fingerprints []string) ([]string, error) {
+func (s *Store) SyncDirectives(ctx context.Context, flavor string, fingerprints []string) ([]string, error) {
 	if len(fingerprints) == 0 {
 		return []string{}, nil
+	}
+	if flavor == "" {
+		return nil, fmt.Errorf("sync directives: flavor is required")
 	}
 
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
@@ -639,10 +647,11 @@ func (s *Store) SyncDirectives(ctx context.Context, fingerprints []string) ([]st
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	// Find which fingerprints exist
+	// Find which fingerprints exist for this flavor
 	rows, err := tx.Query(ctx, `
-		SELECT fingerprint FROM custom_directives WHERE fingerprint = ANY($1)
-	`, fingerprints)
+		SELECT fingerprint FROM custom_directives
+		WHERE flavor = $1 AND fingerprint = ANY($2)
+	`, flavor, fingerprints)
 	if err != nil {
 		return nil, fmt.Errorf("sync directives lookup: %w", err)
 	}
@@ -661,15 +670,16 @@ func (s *Store) SyncDirectives(ctx context.Context, fingerprints []string) ([]st
 		return nil, fmt.Errorf("sync directives scan: %w", err)
 	}
 
-	// Update last_seen_at for found fingerprints
+	// Update last_seen_at for found fingerprints (scoped to flavor)
 	if len(found) > 0 {
 		foundFPs := make([]string, 0, len(found))
 		for fp := range found {
 			foundFPs = append(foundFPs, fp)
 		}
 		if _, err := tx.Exec(ctx, `
-			UPDATE custom_directives SET last_seen_at = NOW() WHERE fingerprint = ANY($1)
-		`, foundFPs); err != nil {
+			UPDATE custom_directives SET last_seen_at = NOW()
+			WHERE flavor = $1 AND fingerprint = ANY($2)
+		`, flavor, foundFPs); err != nil {
 			return nil, fmt.Errorf("sync directives update: %w", err)
 		}
 	}
@@ -712,7 +722,7 @@ func (s *Store) RegisterDirectives(ctx context.Context, directives []CustomDirec
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO custom_directives (fingerprint, name, description, flavor, parameters)
 			VALUES ($1, $2, $3, $4, $5)
-			ON CONFLICT (fingerprint) DO UPDATE SET last_seen_at = NOW()
+			ON CONFLICT (fingerprint, flavor) DO UPDATE SET last_seen_at = NOW()
 		`, d.Fingerprint, d.Name, d.Description, d.Flavor, paramsJSON); err != nil {
 			return fmt.Errorf("register directive %s: %w", d.Fingerprint, err)
 		}

@@ -814,22 +814,29 @@ CREATE INDEX directives_flavor_pending_idx
 ```sql
 CREATE TABLE custom_directives (
     id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    fingerprint   TEXT NOT NULL UNIQUE,
+    fingerprint   TEXT NOT NULL,
     name          TEXT NOT NULL,
     description   TEXT,
     flavor        TEXT NOT NULL,
     parameters    JSONB,
     registered_at TIMESTAMPTZ DEFAULT now(),
-    last_seen_at  TIMESTAMPTZ DEFAULT now()
+    last_seen_at  TIMESTAMPTZ DEFAULT now(),
+    UNIQUE (fingerprint, flavor)
 );
 
 CREATE INDEX custom_directives_flavor_idx ON custom_directives(flavor);
 CREATE INDEX custom_directives_fp_idx ON custom_directives(fingerprint);
 ```
 
-Custom directives are registered by the sensor at init() via fingerprint sync.
-The `directives` table also has a `payload JSONB` column for custom directive
-parameters (added in migration 000005).
+Custom directives are registered by the sensor at init() via fingerprint
+sync. The fingerprint is a SHA-256 of ``(name, description, parameters)``
+and tracks schema versioning **within a flavor**. Uniqueness is the
+composite `(fingerprint, flavor)` so two flavors can independently
+register directives with identical schemas without clobbering each
+other's flavor attribution. See DECISIONS.md D090.
+
+The `directives` table also has a `payload JSONB` column for custom
+directive parameters (added in migration 000005).
 
 ---
 

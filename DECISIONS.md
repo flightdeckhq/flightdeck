@@ -2066,3 +2066,39 @@ patch(), not wrap(). wrap() does not intercept beta.messages due
 to the missing SensorBeta wrapper class.
 
 ---
+
+## D090 -- Custom directive fingerprint scoped to flavor
+
+**Problem:** The `custom_directives` table had a global
+`UNIQUE(fingerprint)` constraint. The sensor computes the fingerprint
+as SHA-256 of `(name, description, parameters)` only -- flavor is not
+in the hash. Two different flavors registering a directive with the
+same name and schema therefore produced the same fingerprint and
+clobbered each other's flavor attribution silently: the first
+registration wins, subsequent flavors see their sync return
+`unknown=[]` and skip registration, and the `ON CONFLICT (fingerprint)
+DO UPDATE SET last_seen_at = NOW()` upsert does not overwrite the
+`flavor` column either. `GET /v1/directives/custom?flavor=<new>` then
+returns no rows for the later flavor even though its sensor is live.
+
+**Decision:** Replace the global `UNIQUE(fingerprint)` with a composite
+`UNIQUE(fingerprint, flavor)`. The fingerprint continues to track
+schema versioning **within a flavor**; cross-flavor collision is no
+longer possible. `SyncDirectives` now filters by `(fingerprint, flavor)`
+so a fingerprint is only "known" if it exists for *this* flavor.
+`RegisterDirectives` uses the composite key in its `ON CONFLICT`
+clause and still updates `last_seen_at` on conflict.
+
+**Rejected alternative:** Include flavor in the fingerprint hash
+itself. Rejected because the fingerprint is meaningful on its own as
+a schema identity -- mixing identity (flavor) and content (schema)
+into one hash makes it harder to reason about schema evolution and
+forces the sensor to recompute fingerprints per flavor. Keeping the
+hash purely schema-derived and scoping uniqueness at the storage
+layer is the cleaner separation.
+
+**Migration:** `000007_directive_fingerprint_flavor_key.{up,down}.sql`.
+Up drops the existing unique constraint on `fingerprint` and adds
+`UNIQUE (fingerprint, flavor)`. Down is the exact inverse.
+
+---

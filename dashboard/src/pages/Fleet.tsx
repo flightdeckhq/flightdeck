@@ -26,6 +26,14 @@ export type TimeRange = "1m" | "5m" | "15m" | "30m" | "1h";
 
 const TIME_RANGES: TimeRange[] = ["1m", "5m", "15m", "30m", "1h"];
 
+const TIME_RANGE_MS: Record<TimeRange, number> = {
+  "1m": 60_000,
+  "5m": 5 * 60_000,
+  "15m": 15 * 60_000,
+  "30m": 30 * 60_000,
+  "1h": 60 * 60_000,
+};
+
 /**
  * Grace period (ms) during which a flavor whose sessions have all
  * just closed still sorts near the top. Without this, rapid agent
@@ -194,6 +202,16 @@ export function Fleet() {
   }, [flavors, contextFilters, sessionMatchesContext]);
 
   const [timeRange, setTimeRange] = useState<TimeRange>("1m");
+
+  // Wall-clock tick. Re-renders once per second so the token window
+  // filter below (Bug 4) ages events out of the rolling window even
+  // when no new events are arriving. Pure client-side; no extra
+  // backend calls.
+  const [now, setNow] = useState<number>(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
   // Set of currently-expanded flavor names. Multiple flavors can be
   // open at once -- the chevron toggle adds or removes a name from
   // the set rather than overwriting a single value. The previous
@@ -280,18 +298,23 @@ export function Fleet() {
   // above for the priority function. (FIX 3 -- part A)
   const sortedFlavors = useMemo(() => sortFlavorsByActivity(flavors), [flavors]);
 
-  // Tokens scoped to the currently selected time range. The Fleet
-  // Overview "Tokens (1h)" row reads this. feedEvents is hydrated
-  // from useHistoricalEvents on every timeRange change, so the sum
-  // updates automatically without an explicit dependency on
-  // timeRange.
+  // Tokens scoped to the currently selected time range. Filters
+  // feedEvents by occurred_at > now - timeRangeMs so events outside
+  // the rolling window are excluded from the total. Depends on the
+  // 1-second `now` tick so the number decrements as events age out,
+  // regardless of whether new events are arriving. (Bug 4)
   const scopedTokens = useMemo(() => {
+    const cutoff = now - TIME_RANGE_MS[timeRange];
     let total = 0;
     for (const fe of feedEvents) {
+      const occurredAt = fe.event.occurred_at
+        ? new Date(fe.event.occurred_at).getTime()
+        : fe.arrivedAt;
+      if (occurredAt <= cutoff) continue;
       total += fe.event.tokens_total ?? 0;
     }
     return total;
-  }, [feedEvents]);
+  }, [feedEvents, timeRange, now]);
 
   if (loading && flavors.length === 0) {
     return (

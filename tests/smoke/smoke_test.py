@@ -1190,47 +1190,135 @@ def _scenario_5a_single_session_shutdown() -> None:
                      f"{target.get('delivered_at') if target else 'row missing'}")
 
 
-def _scenario_5b_flavor_wide_shutdown() -> None:
-    """5b. Flavor-wide shutdown via sequential sessions (KI15 workaround).
-    Directives persist in the DB until delivered. We POST a
-    shutdown_flavor before session B starts; B picks it up on its first
-    LLM call envelope and closes."""
-    import flightdeck_sensor
-    from flightdeck_sensor.core.exceptions import DirectiveError
-    with scenario("5b. Flavor-wide shutdown", prefix="5b") as flavor:
-        # Session A: establishes flavor + agent row
-        sensor_init(flavor)
-        client = flightdeck_sensor.wrap(anthropic_client())
-        hi_message_anthropic(client)
-        time.sleep(Config.SHORT_WAIT_S)
-        flightdeck_sensor.teardown()
-        time.sleep(Config.SHORT_WAIT_S)
+# Worker script for 5b. Each subprocess runs one sensor session that
+# makes LLM calls in a loop until the shutdown_flavor directive fires
+# (DirectiveError on the next call). Uses a subprocess (not a thread)
+# because the sensor uses a process-wide singleton -- two concurrent
+# init() calls in the same process would collide (KI15).
+_SHUTDOWN_FLAVOR_WORKER = r"""
+import os
+import sys
+import time
 
-        directive = post_directive(action=DirectiveAction.SHUTDOWN_FLAVOR, flavor=flavor, reason="smoke-5b")
-        report.check("5b. shutdown_flavor directive created", "id" in directive)
-        time.sleep(Config.SHORT_WAIT_S)
+os.environ["AGENT_FLAVOR"] = sys.argv[1]
 
-        # Session B: same flavor, expects the pending directive
-        force_reset_sensor()
-        sensor_init(flavor)
-        client = flightdeck_sensor.wrap(anthropic_client())
+import flightdeck_sensor
+from flightdeck_sensor.core.exceptions import DirectiveError
+import anthropic
+
+flightdeck_sensor.init(
+    server="http://localhost:4000/ingest",
+    token="tok_dev",
+)
+try:
+    client = flightdeck_sensor.wrap(anthropic.Anthropic())
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
         try:
-            hi_message_anthropic(client)
+            client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=5,
+                messages=[{"role": "user", "content": "hi"}],
+            )
         except DirectiveError:
-            pass
-        sid_b = flightdeck_sensor.get_status().session_id
-        time.sleep(Config.DRAIN_WAIT_S)
-        flightdeck_sensor.teardown()
-        time.sleep(Config.DRAIN_WAIT_S)
+            break
+        time.sleep(1)
+finally:
+    flightdeck_sensor.teardown()
+"""
 
-        state_b = wait_for_session_state(sid_b, SessionState.CLOSED, timeout=10)
-        report.check("5b. session B closed by shutdown_flavor",
-                     state_b == SessionState.CLOSED, f"got state={state_b}")
 
-        delivered = [d for d in db.directives_for_flavor(flavor)
-                     if d.get("action") == DirectiveAction.SHUTDOWN_FLAVOR and d.get("delivered_at")]
-        report.check("5b. shutdown_flavor delivered row exists", len(delivered) >= 1,
-                     f"flavor rows: {len(db.directives_for_flavor(flavor))}, delivered: {len(delivered)}")
+def _wait_for_active_sessions(flavor: str, n: int, timeout: float = 30.0) -> list[str]:
+    """Poll /v1/sessions until at least ``n`` distinct active sessions
+    exist for ``flavor``. Returns the list of session_ids (may be longer
+    than n). Returns whatever was observed last on timeout."""
+    holder: dict = {"sids": []}
+
+    def _check() -> bool:
+        try:
+            resp = api.get(
+                f"/v1/sessions?flavor={flavor}&state=active&limit=20"
+            )
+        except Exception:
+            return False
+        sids = [
+            s.get("session_id") for s in resp.get("sessions", [])
+            if s.get("state") == SessionState.ACTIVE and s.get("session_id")
+        ]
+        holder["sids"] = sids
+        return len(sids) >= n
+
+    wait_until(_check, timeout=timeout, description=f"{n} active sessions for {flavor}")
+    return holder.get("sids", [])
+
+
+def _scenario_5b_flavor_wide_shutdown() -> None:
+    """5b. Flavor-wide shutdown with two concurrent sessions.
+
+    Spawns two subprocess workers sharing the same flavor, waits for
+    both to be live in the fleet, POSTs a shutdown_flavor directive,
+    and verifies both sessions close. shutdown_flavor fans out to
+    every active session under the flavor -- if only one is targeted
+    we are only re-testing 5a.
+    """
+    with scenario("5b. Flavor-wide shutdown", prefix="5b") as flavor:
+        env = {**os.environ}
+        proc_a = subprocess.Popen(
+            [sys.executable, "-c", _SHUTDOWN_FLAVOR_WORKER, flavor],
+            env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        proc_b = subprocess.Popen(
+            [sys.executable, "-c", _SHUTDOWN_FLAVOR_WORKER, flavor],
+            env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        try:
+            sids = _wait_for_active_sessions(flavor, n=2, timeout=30.0)
+            report.check(
+                "5b. two active sessions for flavor",
+                len(sids) >= 2, f"got {len(sids)}: {sids}",
+            )
+            sid_a = sids[0] if len(sids) > 0 else None
+            sid_b = sids[1] if len(sids) > 1 else None
+
+            directive = post_directive(
+                action=DirectiveAction.SHUTDOWN_FLAVOR,
+                flavor=flavor, reason="smoke-5b",
+            )
+            report.check("5b. shutdown_flavor directive created", "id" in directive)
+
+            state_a = wait_for_session_state(sid_a, SessionState.CLOSED, timeout=45) if sid_a else None
+            state_b = wait_for_session_state(sid_b, SessionState.CLOSED, timeout=45) if sid_b else None
+            report.check(
+                "5b. session A closed by shutdown_flavor",
+                state_a == SessionState.CLOSED, f"got state={state_a}",
+            )
+            report.check(
+                "5b. session B closed by shutdown_flavor",
+                state_b == SessionState.CLOSED, f"got state={state_b}",
+            )
+
+            # shutdown_flavor fans out into one action='shutdown' row per
+            # active session (see api/internal/handlers/directives.go).
+            # Both fanned-out rows should be marked delivered.
+            fanout = [d for d in db.directives_for_flavor(flavor)
+                      if d.get("action") == DirectiveAction.SHUTDOWN]
+            delivered = [d for d in fanout if d.get("delivered_at")]
+            report.check(
+                "5b. fan-out created one directive per session",
+                len(fanout) >= 2,
+                f"got {len(fanout)} shutdown rows for flavor",
+            )
+            report.check(
+                "5b. both fan-out rows delivered", len(delivered) >= 2,
+                f"delivered {len(delivered)}/{len(fanout)}",
+            )
+        finally:
+            for p in (proc_a, proc_b):
+                try:
+                    p.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    p.kill()
+                    p.wait(timeout=5)
 
 
 # ----------------------------------------------------------------------------

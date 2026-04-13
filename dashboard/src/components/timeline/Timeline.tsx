@@ -11,7 +11,8 @@ import {
   LEFT_PANEL_WIDTH_KEY,
 } from "@/lib/constants";
 import { TimeAxis } from "./TimeAxis";
-import { SwimLane, AllSwimLane } from "./SwimLane";
+import { AllSwimLane } from "./SwimLane";
+import { VirtualizedSwimLane } from "./VirtualizedSwimLane";
 
 interface TimelineProps {
   flavors: FlavorSummary[];
@@ -419,12 +420,19 @@ export function Timeline({
           <div style={{ width: timelineWidth, flexShrink: 0 }} />
         </div>
 
-        {/* Flavor rows. Each SwimLane receives both leftPanelWidth
-            and timelineWidth as props so its internal flex layout
-            (sticky left + timeline right) stays in sync with the
-            resizable left column. */}
+        {/* Flavor rows. Wrapped in VirtualizedSwimLane so rows
+            scrolled out of the Fleet panel unmount to a same-height
+            spacer. At 50+ flavors a smoke test fleet was exceeding
+            9,000 DOM nodes and 80 ms of style-recalc per tick --
+            memoization alone couldn't fix that because the absolute
+            DOM footprint was the bottleneck. Expansion state lives
+            in Fleet's `expandedFlavors` Set, so the unmount
+            round-trip is lossless. The ALL row above is NOT
+            virtualized -- it's always the top row and would defeat
+            its own purpose if it flickered between spacer and real
+            content. */}
         {filteredFlavors.map((f) => (
-          <SwimLane
+          <VirtualizedSwimLane
             key={f.flavor}
             flavor={f.flavor}
             sessions={f.sessions}

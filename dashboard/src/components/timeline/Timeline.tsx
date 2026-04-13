@@ -11,7 +11,7 @@ import {
   LEFT_PANEL_WIDTH_KEY,
 } from "@/lib/constants";
 import { TimeAxis } from "./TimeAxis";
-import { SwimLane } from "./SwimLane";
+import { SwimLane, AllSwimLane } from "./SwimLane";
 
 interface TimelineProps {
   flavors: FlavorSummary[];
@@ -326,6 +326,25 @@ export function Timeline({
             />
           </div>
         </div>
+
+        {/* ALL aggregate row.
+            Sits above the FLAVORS section as a single non-expandable
+            lane that merges every session's events into one timeline.
+            Reads from the unfiltered `flavors` prop (NOT
+            filteredFlavors) so it always shows the whole fleet
+            regardless of the CONTEXT sidebar filter -- it's a
+            fleet-wide overview, not a filtered subset. The event-type
+            filter (`activeFilter`) still applies inside each circle
+            via EventNode.isVisible. */}
+        <AllSwimLane
+          flavors={flavors}
+          scale={scale}
+          onSessionClick={onNodeClick}
+          timelineWidth={timelineWidth}
+          leftPanelWidth={leftPanelWidth}
+          activeFilter={activeFilter}
+          sessionVersions={sessionVersions}
+        />
 
         {/* FLAVORS section header.
             Flex row with the label slot sticky to the viewport's

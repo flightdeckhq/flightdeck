@@ -318,6 +318,108 @@ export const SwimLane = memo(SwimLaneComponent, (prev, next) => {
   return false;
 });
 
+/**
+ * Aggregate "ALL" row that sits above the FLAVORS section. Renders a
+ * single non-expandable lane whose event circles are merged from every
+ * session across every flavor, so operators get a fleet-wide view of
+ * activity without scanning each flavor row.
+ *
+ * Unlike SwimLane, this row:
+ *   - has no expand chevron, no active count, no kill controls
+ *   - is shorter (36px vs 48px) to signal "summary, not a flavor"
+ *   - is NOT affected by the CONTEXT sidebar filter (always shows
+ *     everything -- it's a fleet-wide overview)
+ *   - DOES respect the event-type filter bar, like SwimLane does,
+ *     because dimming filtered event types is a per-circle concern
+ *     handled inside EventNode via `isVisible`
+ *
+ * No new API or WebSocket subscriptions: AggregatedSessionEvents reads
+ * the same per-session events cache populated by the per-flavor rows.
+ */
+export function AllSwimLane({
+  flavors,
+  scale,
+  onSessionClick,
+  timelineWidth,
+  leftPanelWidth,
+  activeFilter,
+  sessionVersions,
+}: {
+  flavors: { flavor: string; sessions: Session[] }[];
+  scale: ScaleTime<number, number>;
+  onSessionClick: (sessionId: string, eventId?: string, event?: AgentEvent) => void;
+  timelineWidth: number;
+  leftPanelWidth: number;
+  activeFilter?: string | null;
+  sessionVersions?: Record<string, number>;
+}) {
+  return (
+    <div
+      data-testid="swimlane-all"
+      style={{
+        display: "flex",
+        alignItems: "center",
+        height: 36,
+        borderBottom: "1px solid var(--border-subtle)",
+        background: "var(--bg)",
+      }}
+    >
+      <div
+        style={{
+          width: leftPanelWidth,
+          flexShrink: 0,
+          height: "100%",
+          background: "var(--surface)",
+          borderRight: "1px solid var(--border)",
+          position: "sticky",
+          left: 0,
+          zIndex: 2,
+          display: "flex",
+          alignItems: "center",
+          paddingLeft: 12,
+        }}
+      >
+        <span
+          data-testid="swimlane-all-label"
+          style={{
+            fontSize: 10,
+            fontWeight: 700,
+            letterSpacing: "0.08em",
+            color: "var(--text-muted)",
+            textTransform: "uppercase",
+            fontFamily: "var(--font-ui)",
+          }}
+        >
+          All
+        </span>
+      </div>
+      <div
+        className="relative flex items-center px-1"
+        style={{
+          width: timelineWidth,
+          flexShrink: 0,
+          height: "100%",
+          overflow: "hidden",
+        }}
+      >
+        {flavors.flatMap((f) =>
+          f.sessions.map((session) => (
+            <AggregatedSessionEvents
+              key={`${f.flavor}:${session.session_id}`}
+              session={session}
+              scale={scale}
+              onSessionClick={onSessionClick}
+              flavor={f.flavor}
+              activeFilter={activeFilter}
+              version={sessionVersions?.[session.session_id] ?? 0}
+            />
+          )),
+        )}
+      </div>
+    </div>
+  );
+}
+
 /** Shows aggregated 20px event circles from all sessions of a flavor. */
 function AggregatedSwimLane({
   sessions,

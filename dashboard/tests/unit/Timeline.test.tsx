@@ -148,6 +148,33 @@ describe("Timeline", () => {
     expect(screen.queryByText("coding-agent")).not.toBeInTheDocument();
   });
 
+  // ---- ALL aggregate row ----
+
+  it("renders the ALL aggregate row above the FLAVORS section", () => {
+    render(<Timeline {...defaultProps} />);
+    const allRow = screen.getByTestId("swimlane-all");
+    expect(allRow).toBeInTheDocument();
+    expect(screen.getByTestId("swimlane-all-label")).toHaveTextContent("All");
+  });
+
+  it("ALL row ignores the CONTEXT filter and always shows the full fleet", () => {
+    // matchingSessionIds restricts the FLAVORS section to s1 only,
+    // but the ALL row must still iterate over every session in
+    // every flavor regardless. We assert that by counting the
+    // AggregatedSessionEvents children -- one per session in the
+    // unfiltered flavors prop (2 sessions across 2 flavors).
+    render(
+      <Timeline
+        {...defaultProps}
+        matchingSessionIds={new Set(["s1"])}
+      />,
+    );
+    // research-agent is the only flavor still in the FLAVORS section
+    // (coding-agent is culled), but the ALL row still exists.
+    expect(screen.getByTestId("swimlane-all")).toBeInTheDocument();
+    expect(screen.queryByText("coding-agent")).not.toBeInTheDocument();
+  });
+
   it("renders all flavors when matchingSessionIds is null", () => {
     render(
       <Timeline {...defaultProps} matchingSessionIds={null} />,

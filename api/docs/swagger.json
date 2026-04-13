@@ -210,6 +210,45 @@
                         }
                     }
                 }
+            },
+            "delete": {
+                "description": "Deletes custom_directives rows where name LIKE prefix%. Intended for smoke test idempotency; not a production feature.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "custom-directives"
+                ],
+                "summary": "Delete custom directives by name prefix (dev/test only)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Name prefix to match (e.g. smoke_)",
+                        "name": "name_prefix",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.DeleteCustomDirectivesResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    }
+                }
             }
         },
         "/v1/directives/register": {
@@ -923,6 +962,14 @@
                 }
             }
         },
+        "handlers.DeleteCustomDirectivesResponse": {
+            "type": "object",
+            "properties": {
+                "deleted": {
+                    "type": "integer"
+                }
+            }
+        },
         "handlers.DirectiveRequest": {
             "type": "object",
             "properties": {
@@ -1479,6 +1526,10 @@
                 "block_at_pct": {
                     "type": "integer"
                 },
+                "capture_enabled": {
+                    "description": "CaptureEnabled is true when at least one event in this session\nhas has_content=true (i.e. prompt content was captured to\nevent_content). Computed via EXISTS subquery so no schema\nchange is required.",
+                    "type": "boolean"
+                },
                 "context": {
                     "description": "Runtime context collected by the sensor at init() time and\nstored once in sessions.context (JSONB) on the session_start\nevent. Carries hostname, OS, git, orchestration, frameworks,\netc. -- see sensor/flightdeck_sensor/core/context.py.",
                     "type": "object",
@@ -1539,6 +1590,9 @@
         "store.SessionListItem": {
             "type": "object",
             "properties": {
+                "capture_enabled": {
+                    "type": "boolean"
+                },
                 "context": {
                     "type": "object",
                     "additionalProperties": true

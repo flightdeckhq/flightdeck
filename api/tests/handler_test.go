@@ -388,6 +388,23 @@ func (m *mockStore) GetCustomDirectives(_ context.Context, flavor string) ([]sto
 	return result, nil
 }
 
+func (m *mockStore) DeleteCustomDirectivesByNamePrefix(_ context.Context, namePrefix string) (int64, error) {
+	if namePrefix == "" {
+		return 0, nil
+	}
+	kept := make([]store.CustomDirective, 0, len(m.customDirectives))
+	var deleted int64
+	for _, cd := range m.customDirectives {
+		if len(cd.Name) >= len(namePrefix) && cd.Name[:len(namePrefix)] == namePrefix {
+			deleted++
+			continue
+		}
+		kept = append(kept, cd)
+	}
+	m.customDirectives = kept
+	return deleted, nil
+}
+
 func (m *mockStore) CustomDirectiveExists(_ context.Context, fingerprint, flavor string) (bool, error) {
 	for _, cd := range m.customDirectives {
 		if cd.Fingerprint != fingerprint {

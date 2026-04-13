@@ -50,6 +50,7 @@ type Querier interface {
 	RegisterDirectives(ctx context.Context, directives []CustomDirective) error
 	GetCustomDirectives(ctx context.Context, flavor string) ([]CustomDirective, error)
 	CustomDirectiveExists(ctx context.Context, fingerprint, flavor string) (bool, error)
+	DeleteCustomDirectivesByNamePrefix(ctx context.Context, namePrefix string) (int64, error)
 	GetEvents(ctx context.Context, params EventsParams) (*EventsResponse, error)
 	GetSessions(ctx context.Context, params SessionsParams) (*SessionsResponse, error)
 	QueryAnalytics(ctx context.Context, params AnalyticsParams) (*AnalyticsResponse, error)
@@ -745,6 +746,26 @@ func (s *Store) CustomDirectiveExists(ctx context.Context, fingerprint, flavor s
 		return false, fmt.Errorf("custom directive exists %s: %w", fingerprint, err)
 	}
 	return exists, nil
+}
+
+// DeleteCustomDirectivesByNamePrefix deletes all rows from custom_directives
+// whose name starts with the given prefix. Returns the number of rows
+// deleted. Intended as a dev/test utility to keep the smoke test suite
+// idempotent across runs on a shared Postgres volume -- the sensor
+// registers directives by fingerprint and cross-flavor collisions can
+// leave stale rows pinned to an older flavor on re-runs. Production
+// callers should not rely on this.
+func (s *Store) DeleteCustomDirectivesByNamePrefix(ctx context.Context, namePrefix string) (int64, error) {
+	if namePrefix == "" {
+		return 0, fmt.Errorf("name prefix is required")
+	}
+	tag, err := s.pool.Exec(ctx, `
+		DELETE FROM custom_directives WHERE name LIKE $1
+	`, namePrefix+"%")
+	if err != nil {
+		return 0, fmt.Errorf("delete custom directives: %w", err)
+	}
+	return tag.RowsAffected(), nil
 }
 
 // GetCustomDirectives returns all custom directives, optionally filtered by flavor.

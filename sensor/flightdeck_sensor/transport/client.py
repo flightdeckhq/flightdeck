@@ -21,7 +21,14 @@ from flightdeck_sensor.transport.retry import with_retry
 
 _log = logging.getLogger("flightdeck_sensor.transport.client")
 
+# Hot-path timeout: events and heartbeat POSTs.
 _TIMEOUT_SECS = 10
+
+# Startup timeout: directive sync and registration at init() time.
+# Shorter than hot-path because these are fire-and-forget and fail
+# open anyway -- a slow or unreachable control plane must not block
+# the agent's boot path for 10s.
+_STARTUP_TIMEOUT_SECS = 3
 
 
 class ControlPlaneClient:
@@ -80,7 +87,7 @@ class ControlPlaneClient:
 
             from flightdeck_sensor.core.schemas import SyncResponseSchema
 
-            with urllib.request.urlopen(req, timeout=_TIMEOUT_SECS) as resp:
+            with urllib.request.urlopen(req, timeout=_STARTUP_TIMEOUT_SECS) as resp:
                 data = json.loads(resp.read().decode())
                 try:
                     parsed = SyncResponseSchema.model_validate(data)
@@ -113,7 +120,7 @@ class ControlPlaneClient:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(req, timeout=_TIMEOUT_SECS) as resp:
+            with urllib.request.urlopen(req, timeout=_STARTUP_TIMEOUT_SECS) as resp:
                 resp.read()
         except Exception:
             _log.debug("directives register failed, ignoring", exc_info=True)

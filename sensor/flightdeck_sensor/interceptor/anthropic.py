@@ -48,6 +48,8 @@ Interception hierarchy for per-instance wrapping::
       │   ├── create()        →  call() or call_async()
       │   ├── stream()        →  call_stream() or NotImplementedError (async)
       │   └── __getattr__     →  pass-through
+      ├── @property beta      →  SensorBeta            (KI17 fix)
+      │   └── @property messages → SensorMessages
       ├── with_options()      →  new SensorAnthropic
       ├── with_raw_response   →  new SensorAnthropic
       ├── with_streaming_response → new SensorAnthropic
@@ -174,12 +176,50 @@ class SensorMessages:
         return getattr(self._real, name)
 
 
-# TODO(KI17)[Phase 4.9]: SensorAnthropic has no .beta property, so
-# wrap() without patch() does not intercept client.beta.messages calls.
-# Fixing requires a SensorBeta wrapper class and a .beta @property here
-# that returns SensorBeta(self._client.beta, ...). patch() covers
-# beta.messages fully via _AnthropicBetaMessagesDescriptor on the Beta
-# class, so this only affects the wrap()-without-patch() code path.
+class SensorBeta:
+    """Proxy for ``client.beta`` on an Anthropic / AsyncAnthropic client.
+
+    Mirrors :class:`SensorMessages` for the beta path so ``wrap()``
+    has full parity with ``patch()`` for ``beta.messages.create()``
+    and ``.stream()`` calls. Without this wrapper, code that did
+    ``client = wrap(anthropic.Anthropic())`` and then
+    ``client.beta.messages.create(...)`` bypassed the sensor
+    entirely (KI17, resolved per D087).
+
+    Pass-through for any other ``beta.*`` attribute the SDK exposes;
+    only ``beta.messages`` is intercepted because that is the only
+    LLM-inference entry point on the beta surface (matches the
+    descriptor table in D087).
+    """
+
+    def __init__(
+        self,
+        real_beta: Any,
+        session: Session,
+        provider: AnthropicProvider,
+        *,
+        is_async: bool = False,
+    ) -> None:
+        self._real = real_beta
+        self._session = session
+        self._provider = provider
+        self._is_async = is_async
+
+    @property
+    def messages(self) -> SensorMessages:
+        """Return a :class:`SensorMessages` proxy for ``beta.messages``."""
+        return SensorMessages(
+            self._real.messages,
+            self._session,
+            self._provider,
+            is_async=self._is_async,
+        )
+
+    def __getattr__(self, name: str) -> Any:
+        # Pass through: prompt_caching, models, etc.
+        return getattr(self._real, name)
+
+
 class SensorAnthropic:
     """Proxy for ``anthropic.Anthropic`` or ``anthropic.AsyncAnthropic``.
 
@@ -206,6 +246,17 @@ class SensorAnthropic:
         """Return a :class:`SensorMessages` proxy that intercepts create/stream."""
         return SensorMessages(
             self._client.messages,
+            self._session,
+            self._provider,
+            is_async=self._is_async,
+        )
+
+    @property
+    def beta(self) -> SensorBeta:
+        """Return a :class:`SensorBeta` proxy so ``client.beta.messages``
+        is intercepted on the ``wrap()`` code path (KI17 fix per D087)."""
+        return SensorBeta(
+            self._client.beta,
             self._session,
             self._provider,
             is_async=self._is_async,

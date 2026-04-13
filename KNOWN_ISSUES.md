@@ -30,9 +30,6 @@ fix in DECISIONS.md. Never leave a resolved TODO comment in the code.
 | KI11 | Security   | No NATS auth in dev compose          | Low    | 5     | docker/docker-compose.yml:nats              | D047      |
 | KI12 | Security   | REST endpoints have no per-IP rate limit | Low | 5    | api/internal/server/server.go               | D048      |
 | KI13 | API        | Ingestion accepts events for closed/lost sessions | Low | 5 | ingestion/internal/handlers/events.go    | -         |
-| KI15 | Sensor   | Module-level Session singleton. The sensor maintains a single `_session` global; the second `init()` call in a process is a no-op with a warning. Pattern B (one init per thread, isolated Sessions) and Pattern C (multiple agents in one process, each with its own Session) are not supported -- every thread shares the first init's flavor / token / policy cache. The `_directive_registry` is global with the same scoping limitation: two `@directive` decorators with the same name overwrite each other. Needs an architectural decision (Session-handle API change, per-thread storage, or per-flavor map keyed by AGENT_FLAVOR). Phase 4.5 audit Part 1 finding B-I/B-J. | Medium | 4.9 | sensor/flightdeck_sensor/__init__.py (`_session`, `_directive_registry`, `init`) | -         |
-| KI16 | Sensor/Ingestion | The drain thread does one HTTP POST per event sequentially. Under pathological synthetic load (e.g. respx-mocked tests with zero provider latency, or any future scenario with sub-millisecond producer rate) the 1000-slot event queue can fill and the drop-oldest fallback fires. In production this cannot occur because real LLM provider latency (hundreds of ms per call) throttles event generation naturally -- four concurrent workers fire ~10 events/s, well within drain capacity. Phase 4.9 may optionally add micro-batching (50-100 events per POST in a short time window) to reduce HTTP overhead and provide headroom for future high-throughput use cases. | Low | 4.9 | sensor/flightdeck_sensor/transport/client.py:enqueue | -         |
-| KI17 | Sensor | `wrap()` without `patch()` does not intercept `beta.messages` calls. `SensorAnthropic` has no `.beta` property so a user who calls `wrap(anthropic.Anthropic())` without calling `patch()` will not have `beta.messages` calls intercepted. `patch()` is the recommended path and covers `beta.messages` fully via the `_AnthropicBetaMessagesDescriptor` on the `Beta` class. Fixing requires adding a `SensorBeta` wrapper class and a `SensorAnthropic.beta` `@property` that returns it. | Low | 4.9 | sensor/flightdeck_sensor/interceptor/anthropic.py:SensorAnthropic | D087 |
 
 ## Resolved
 
@@ -51,3 +48,6 @@ fix in DECISIONS.md. Never leave a resolved TODO comment in the code.
 | KI08  | API        | WebSocket broadcast fan-out          | Phase 4     | D044      |
 | KI09  | Sensor     | SIGKILL phantom session state        | Phase 3     | D039      |
 | KI14  | Sensor/API | sync_directives URL routing          | Phase 4.9   | D088      |
+| KI15  | Sensor     | Module-level Session singleton (won't-fix v1) | Phase 4.9 | D091 |
+| KI16  | Sensor/Ingestion | Single-POST drain thread (won't-fix v1)  | Phase 4.9 | D091 |
+| KI17  | Sensor     | wrap() did not intercept beta.messages | Phase 4.9 | D087      |

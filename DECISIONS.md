@@ -1987,6 +1987,13 @@ vocabulary: the component is a "sensor," not a "guard."
 reconciles tokens on context-manager exit including early
 exit) and the "sensor" name would misrepresent its role.
 
+**Resolved in:** Phase 4.9 -- KI17 closed. The
+`wrap()`-without-`patch()` path previously did not intercept
+`client.beta.messages` because `SensorAnthropic` had no `.beta`
+property. Added `SensorBeta` wrapper plus `SensorAnthropic.beta`
+`@property` so both code paths now have parity. `wrap()` covers
+`messages` and `beta.messages` without requiring `patch()`.
+
 ---
 
 ## D088 -- KI14 resolved: separate api_url for control-plane calls
@@ -2100,5 +2107,70 @@ layer is the cleaner separation.
 **Migration:** `000007_directive_fingerprint_flavor_key.{up,down}.sql`.
 Up drops the existing unique constraint on `fingerprint` and adds
 `UNIQUE (fingerprint, flavor)`. Down is the exact inverse.
+
+---
+
+## D091 -- KI15 and KI16 closed as v1 won't-fix
+
+**Decision:** Both deferred items are accepted as permanent v1
+limitations. No code change; documentation only. Removed from the
+KNOWN_ISSUES.md Open table, moved to Resolved with this entry as
+the resolution record.
+
+**KI15 -- module-level Session singleton.**
+
+Previous framing (D086) listed three candidate fixes -- a
+Session-handle API, `threading.local`, or a per-flavor map -- and
+deferred to a Supervisor decision. The decision: **none of them
+land in v1.** The right answer for users who genuinely need
+isolated agent sessions is to run separate processes, one sensor
+per process, exactly as the smoke test already demonstrates in
+`tests/smoke/smoke_test.py::_scenario_5b_flavor_wide_shutdown`
+(two `subprocess.Popen` workers, each with its own
+`flightdeck_sensor.init()`). This works today, has zero shared
+state by construction, and matches how the v1 deployment story
+recommends running agents (one container = one agent =
+optionally one process).
+
+A handle-based API would change the two-line `init()` UX that the
+sensor's adoption story rests on, and would force every framework
+adapter (LangChain, LlamaIndex, CrewAI) to thread a Session object
+through abstractions they don't expose. `threading.local` doesn't
+compose with thread pools (one OS thread can serve many agent
+contexts in CrewAI / asyncio executors). A per-flavor map keys
+isolation to environment variables, which means env mutation at
+runtime silently switches sessions.
+
+Multi-Session-in-one-process is therefore deferred to v2 alongside
+the multi-tenant SaaS work tracked in CLAUDE.md "Out of scope."
+The existing test
+`tests/integration/test_sensor_e2e.py::test_pattern_c_ki15_singleton_limitation`
+remains as the assertion-of-current-behaviour and the canary that
+will fail loudly if the singleton constraint is ever relaxed.
+
+**KI16 -- single-POST drain thread.**
+
+Previously framed as "Phase 4.9 may optionally add micro-batching
+(50-100 events per POST)." The decision: **no micro-batching in
+v1.**
+
+Justification matches the existing TODO body: real LLM provider
+latency (hundreds of ms per call) throttles event generation
+naturally. Four concurrent workers fire at most ~10 events/s; the
+drain thread clears each in ~5-10 ms via one HTTP POST. The
+1000-slot queue only fills under pathological synthetic load (the
+old respx-mocked tests at zero latency, which the suite already
+mitigates with a 50 ms `side_effect` delay). Production cannot
+generate enough event rate to exercise the fallback. Adding
+batching would introduce a buffering window (data-loss surface on
+process crash), would require ingestion-side multi-event payload
+support, and would complicate the per-event response envelope used
+for directive delivery (`POST /v1/events` returns a single
+directive per call -- batching breaks that contract).
+
+If a future workload demands sustained >100 events/s per process
+(none in scope for v1), a separate ingestion path can be added at
+that time. For now the existing behaviour is correct and the
+fallback is acceptable.
 
 ---

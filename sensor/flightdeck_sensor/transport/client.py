@@ -300,19 +300,12 @@ class EventQueue:
     def enqueue(self, payload: dict[str, Any]) -> None:
         """Put *payload* on queue.  Never blocks.  Never raises.
 
-        TODO(KI16)[Phase 4.9]: The drop-oldest fallback below is
-        acceptable in production because real LLM provider calls
-        take hundreds of milliseconds, which throttles event
-        generation naturally -- four concurrent workers fire at
-        most ~10 events/s and the drain thread (one HTTP POST per
-        event at ~5-10 ms) easily clears them. The 1000-slot queue
-        only fills under pathological synthetic load (e.g.
-        respx-mocked tests with zero provider latency, which the
-        multithreading e2e tests now compensate for via a 50 ms
-        side_effect delay on the mock). Phase 4.9 may optionally
-        add micro-batching (50-100 events per POST) to raise the
-        drain ceiling further and provide headroom for future
-        high-throughput use cases. See KNOWN_ISSUES.md KI16.
+        The drop-oldest fallback below is the v1 behaviour: real
+        LLM provider latency (hundreds of ms per call) throttles
+        event generation naturally, so the 1000-slot queue only
+        fills under pathological synthetic load. Micro-batching
+        was considered and rejected for v1 -- see DECISIONS.md
+        D091 for the trade-offs.
         """
         try:
             self._queue.put_nowait(payload)

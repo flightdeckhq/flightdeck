@@ -43,6 +43,7 @@ import openai
 import flightdeck_sensor
 from flightdeck_sensor.interceptor.anthropic import (
     SensorAnthropic,
+    SensorBeta,
     SensorMessages,
     _OrigAnthropic,
     _OrigAsyncAnthropic,
@@ -335,6 +336,110 @@ def test_wrap_still_wraps_when_not_patched(sensor_init: Any) -> None:
     o_client = openai.OpenAI(api_key="test-key")
     o_wrapped = flightdeck_sensor.wrap(o_client)
     assert isinstance(o_wrapped, SensorOpenAI)
+
+
+# ----------------------------------------------------------------------
+# KI17: SensorBeta gives wrap() parity with patch() for beta.messages
+# ----------------------------------------------------------------------
+
+
+def test_wrap_intercepts_beta_messages_via_sensor_beta(sensor_init: Any) -> None:
+    """wrap() returns a SensorAnthropic whose .beta is a SensorBeta whose
+    .messages is a SensorMessages. KI17 fix -- previously the chain was
+    SensorAnthropic.beta.messages, where .beta passed through to the raw
+    Beta resource and bypassed sensor interception entirely.
+    """
+    client = anthropic.Anthropic(api_key="test-key")
+    wrapped = flightdeck_sensor.wrap(client)
+    assert isinstance(wrapped, SensorAnthropic)
+    assert isinstance(wrapped.beta, SensorBeta)
+    assert isinstance(wrapped.beta.messages, SensorMessages)
+
+
+def test_sensor_beta_messages_uses_sync_path_for_sync_client(
+    sensor_init: Any,
+) -> None:
+    """A wrapped sync Anthropic client produces a SensorBeta and a
+    SensorMessages whose ``is_async`` is False, so beta.messages.create
+    routes through ``base.call`` (sync) not ``base.call_async``.
+    """
+    client = anthropic.Anthropic(api_key="test-key")
+    wrapped = flightdeck_sensor.wrap(client)
+    sm = wrapped.beta.messages
+    assert sm._is_async is False  # pyright: ignore[reportPrivateUsage]
+
+
+def test_sensor_beta_messages_uses_async_path_for_async_client(
+    sensor_init: Any,
+) -> None:
+    """The same chain on an AsyncAnthropic produces a SensorMessages
+    with ``is_async`` True so async beta calls reach ``base.call_async``.
+    """
+    client = anthropic.AsyncAnthropic(api_key="test-key")
+    wrapped = flightdeck_sensor.wrap(client)
+    assert isinstance(wrapped, SensorAnthropic)
+    sm = wrapped.beta.messages
+    assert sm._is_async is True  # pyright: ignore[reportPrivateUsage]
+
+
+def test_sensor_beta_passes_through_unknown_attrs(sensor_init: Any) -> None:
+    """SensorBeta proxies any non-messages attribute to the raw Beta.
+    The Anthropic SDK exposes other namespaces under client.beta (e.g.
+    ``models``); we don't intercept those, but they must remain
+    accessible through the wrapped client.
+    """
+    client = anthropic.Anthropic(api_key="test-key")
+    wrapped = flightdeck_sensor.wrap(client)
+    raw_beta = client.beta
+    sb = wrapped.beta
+    # __getattr__ pass-through: sb.<X> for any X that exists on raw_beta
+    # returns the same object the raw beta would have returned.
+    if hasattr(raw_beta, "models"):
+        assert sb.models is raw_beta.models
+
+
+def test_sensor_beta_messages_create_routes_through_intercept(
+    sensor_init: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End-to-end: SensorBeta.messages.create() reaches base.call().
+    Patching the call hook to a sentinel proves the intercept fires
+    and receives the correct real_fn (the underlying client's
+    beta.messages.create) and the original kwargs.
+    """
+    from flightdeck_sensor.interceptor import anthropic as _anthropic_mod
+    from flightdeck_sensor.interceptor import base as _base_mod
+
+    client = anthropic.Anthropic(api_key="test-key")
+    wrapped = flightdeck_sensor.wrap(client)
+    sentinel = object()
+    captured: dict[str, Any] = {}
+
+    def fake_call(real_fn: Any, kwargs: dict[str, Any], _s: Any, _p: Any) -> Any:
+        captured["real_fn"] = real_fn
+        captured["kwargs"] = kwargs
+        return sentinel
+
+    # SensorMessages.create resolves base.call via the module reference
+    # imported at the top of interceptor/anthropic.py. Patch on that
+    # imported module reference, not just the source module.
+    monkeypatch.setattr(_base_mod, "call", fake_call)
+    monkeypatch.setattr(_anthropic_mod.base, "call", fake_call)
+
+    sm = wrapped.beta.messages
+    result = sm.create(
+        model="claude-sonnet-4-6",
+        max_tokens=10,
+        messages=[{"role": "user", "content": "hi"}],
+    )
+    assert result is sentinel
+    # The captured real_fn is the bound `create` method on the raw
+    # beta.messages resource. Bound methods are not identity-stable
+    # across attribute lookups, so compare by qualified name + the
+    # underlying function instead.
+    real_fn = captured["real_fn"]
+    assert getattr(real_fn, "__self__", None) is client.beta.messages
+    assert getattr(real_fn, "__func__", None) is type(client.beta.messages).create
+    assert captured["kwargs"]["model"] == "claude-sonnet-4-6"
 
 
 # ----------------------------------------------------------------------

@@ -12,31 +12,31 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// devTokenName is the reserved name of the seed row written by
+// devAccessTokenName is the reserved name of the seed row written by
 // migration 000010. The CRUD API refuses to mutate this row so the
 // ENVIRONMENT=dev gate stays the only way to enable or disable
 // tok_dev -- operators cannot silently rename or delete it. See
 // DECISIONS.md D095.
-const devTokenName = "Development Token"
+const devAccessTokenName = "Development Token"
 
-// ErrDevTokenProtected is returned when a caller tries to delete or
+// ErrDevAccessTokenProtected is returned when a caller tries to delete or
 // rename the seed tok_dev row. Handlers translate this into an HTTP
 // 403 so the dashboard can surface a clear message.
-var ErrDevTokenProtected = errors.New("tok_dev row is protected: delete or rename is not allowed")
+var ErrDevAccessTokenProtected = errors.New("tok_dev row is protected: delete or rename is not allowed")
 
-// ErrTokenNameRequired is returned when CreateToken or RenameToken
+// ErrAccessTokenNameRequired is returned when CreateAccessToken or RenameAccessToken
 // is called with an empty name.
-var ErrTokenNameRequired = errors.New("token name is required")
+var ErrAccessTokenNameRequired = errors.New("token name is required")
 
-// ErrTokenNotFound signals that a DELETE / PATCH targeted a token id
+// ErrAccessTokenNotFound signals that a DELETE / PATCH targeted a token id
 // that does not exist. Handlers translate it into 404.
-var ErrTokenNotFound = errors.New("token not found")
+var ErrAccessTokenNotFound = errors.New("token not found")
 
-// TokenRow is the public projection of an api_tokens row. Hash and
+// AccessTokenRow is the public projection of an access_tokens row. Hash and
 // salt are intentionally absent -- the caller never has a reason to
 // see them, and the handlers return only this struct so a leaked
 // response body cannot expose the stored material.
-type TokenRow struct {
+type AccessTokenRow struct {
 	ID         string     `json:"id"`
 	Name       string     `json:"name"`
 	Prefix     string     `json:"prefix"`
@@ -44,11 +44,11 @@ type TokenRow struct {
 	LastUsedAt *time.Time `json:"last_used_at"`
 }
 
-// CreatedTokenResponse is what POST /v1/tokens returns ONCE to the
+// CreatedAccessTokenResponse is what POST /v1/tokens returns ONCE to the
 // caller. The RawToken field carries the only copy of the plaintext
 // that will ever leave the platform -- subsequent GETs never expose
 // it. See the Authentication section of ARCHITECTURE.md.
-type CreatedTokenResponse struct {
+type CreatedAccessTokenResponse struct {
 	ID        string    `json:"id"`
 	Name      string    `json:"name"`
 	Prefix    string    `json:"prefix"`
@@ -56,12 +56,12 @@ type CreatedTokenResponse struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-// ListTokens returns every api_tokens row sorted by creation time.
+// ListAccessTokens returns every access_tokens row sorted by creation time.
 // The output excludes token_hash and salt.
-func (s *Store) ListTokens(ctx context.Context) ([]TokenRow, error) {
+func (s *Store) ListAccessTokens(ctx context.Context) ([]AccessTokenRow, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT id::text, name, prefix, created_at, last_used_at
-		FROM api_tokens
+		FROM access_tokens
 		ORDER BY created_at DESC
 	`)
 	if err != nil {
@@ -69,9 +69,9 @@ func (s *Store) ListTokens(ctx context.Context) ([]TokenRow, error) {
 	}
 	defer rows.Close()
 
-	out := make([]TokenRow, 0)
+	out := make([]AccessTokenRow, 0)
 	for rows.Next() {
-		var t TokenRow
+		var t AccessTokenRow
 		if err := rows.Scan(&t.ID, &t.Name, &t.Prefix, &t.CreatedAt, &t.LastUsedAt); err != nil {
 			return nil, fmt.Errorf("scan token: %w", err)
 		}
@@ -83,7 +83,7 @@ func (s *Store) ListTokens(ctx context.Context) ([]TokenRow, error) {
 	return out, nil
 }
 
-// CreateToken mints a new opaque bearer token and returns the
+// CreateAccessToken mints a new opaque bearer token and returns the
 // plaintext together with the stored-row projection.
 //
 // Generation follows DECISIONS.md D095:
@@ -94,12 +94,12 @@ func (s *Store) ListTokens(ctx context.Context) ([]TokenRow, error) {
 //   - prefix    = first 8 chars of plaintext
 //
 // The plaintext is never written to the database -- only the hash
-// and salt are -- and the caller receives it via CreatedTokenResponse
+// and salt are -- and the caller receives it via CreatedAccessTokenResponse
 // exactly once, on the POST response. Losing it requires creating a
 // new token.
-func (s *Store) CreateToken(ctx context.Context, name string) (*CreatedTokenResponse, error) {
+func (s *Store) CreateAccessToken(ctx context.Context, name string) (*CreatedAccessTokenResponse, error) {
 	if name == "" {
-		return nil, ErrTokenNameRequired
+		return nil, ErrAccessTokenNameRequired
 	}
 
 	// 16 random bytes for the token body → 32 hex chars after the
@@ -127,7 +127,7 @@ func (s *Store) CreateToken(ctx context.Context, name string) (*CreatedTokenResp
 		createdAt time.Time
 	)
 	err := s.pool.QueryRow(ctx, `
-		INSERT INTO api_tokens (name, token_hash, salt, prefix)
+		INSERT INTO access_tokens (name, token_hash, salt, prefix)
 		VALUES ($1, $2, $3, $4)
 		RETURNING id::text, created_at
 	`, name, hash, salt, prefix).Scan(&id, &createdAt)
@@ -135,7 +135,7 @@ func (s *Store) CreateToken(ctx context.Context, name string) (*CreatedTokenResp
 		return nil, fmt.Errorf("insert token: %w", err)
 	}
 
-	return &CreatedTokenResponse{
+	return &CreatedAccessTokenResponse{
 		ID:        id,
 		Name:      name,
 		Prefix:    prefix,
@@ -144,51 +144,51 @@ func (s *Store) CreateToken(ctx context.Context, name string) (*CreatedTokenResp
 	}, nil
 }
 
-// DeleteToken removes an api_tokens row by id. The tok_dev seed row
-// is protected -- attempts return ErrDevTokenProtected so the handler
-// can surface 403. Missing ids return ErrTokenNotFound → 404.
-func (s *Store) DeleteToken(ctx context.Context, id string) error {
-	protected, err := s.isDevTokenID(ctx, id)
+// DeleteAccessToken removes an access_tokens row by id. The tok_dev seed row
+// is protected -- attempts return ErrDevAccessTokenProtected so the handler
+// can surface 403. Missing ids return ErrAccessTokenNotFound → 404.
+func (s *Store) DeleteAccessToken(ctx context.Context, id string) error {
+	protected, err := s.isDevAccessTokenID(ctx, id)
 	if err != nil {
 		return err
 	}
 	if protected {
-		return ErrDevTokenProtected
+		return ErrDevAccessTokenProtected
 	}
-	tag, err := s.pool.Exec(ctx, `DELETE FROM api_tokens WHERE id = $1::uuid`, id)
+	tag, err := s.pool.Exec(ctx, `DELETE FROM access_tokens WHERE id = $1::uuid`, id)
 	if err != nil {
 		return fmt.Errorf("delete token: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
-		return ErrTokenNotFound
+		return ErrAccessTokenNotFound
 	}
 	return nil
 }
 
-// RenameToken updates the name field on an api_tokens row and returns
+// RenameAccessToken updates the name field on an access_tokens row and returns
 // the updated projection. Same dev-row and missing-row rules as
-// DeleteToken.
-func (s *Store) RenameToken(ctx context.Context, id, newName string) (*TokenRow, error) {
+// DeleteAccessToken.
+func (s *Store) RenameAccessToken(ctx context.Context, id, newName string) (*AccessTokenRow, error) {
 	if newName == "" {
-		return nil, ErrTokenNameRequired
+		return nil, ErrAccessTokenNameRequired
 	}
-	protected, err := s.isDevTokenID(ctx, id)
+	protected, err := s.isDevAccessTokenID(ctx, id)
 	if err != nil {
 		return nil, err
 	}
 	if protected {
-		return nil, ErrDevTokenProtected
+		return nil, ErrDevAccessTokenProtected
 	}
 
-	var t TokenRow
+	var t AccessTokenRow
 	err = s.pool.QueryRow(ctx, `
-		UPDATE api_tokens
+		UPDATE access_tokens
 		SET name = $2
 		WHERE id = $1::uuid
 		RETURNING id::text, name, prefix, created_at, last_used_at
 	`, id, newName).Scan(&t.ID, &t.Name, &t.Prefix, &t.CreatedAt, &t.LastUsedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, ErrTokenNotFound
+		return nil, ErrAccessTokenNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("rename token: %w", err)
@@ -196,20 +196,20 @@ func (s *Store) RenameToken(ctx context.Context, id, newName string) (*TokenRow,
 	return &t, nil
 }
 
-// isDevTokenID reports whether the given id refers to the seeded
-// "Development Token" row. Returns ErrTokenNotFound if the id does
+// isDevAccessTokenID reports whether the given id refers to the seeded
+// "Development Token" row. Returns ErrAccessTokenNotFound if the id does
 // not exist so the caller can short-circuit the 404 path without an
 // extra round-trip.
-func (s *Store) isDevTokenID(ctx context.Context, id string) (bool, error) {
+func (s *Store) isDevAccessTokenID(ctx context.Context, id string) (bool, error) {
 	var name string
 	err := s.pool.QueryRow(ctx,
-		`SELECT name FROM api_tokens WHERE id = $1::uuid`, id,
+		`SELECT name FROM access_tokens WHERE id = $1::uuid`, id,
 	).Scan(&name)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return false, ErrTokenNotFound
+		return false, ErrAccessTokenNotFound
 	}
 	if err != nil {
 		return false, fmt.Errorf("lookup token name: %w", err)
 	}
-	return name == devTokenName, nil
+	return name == devAccessTokenName, nil
 }

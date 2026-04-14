@@ -170,6 +170,16 @@ def init(
 ) -> None:
     """Initialize the sensor and start the session.
 
+    ``token`` here is a Flightdeck **access token** (an ``ftd_...``
+    opaque string minted via ``POST /v1/access-tokens``, or the
+    literal ``tok_dev`` seed when the server is running with
+    ``ENVIRONMENT=dev``). It is NOT an LLM token count -- the
+    platform also tracks input/output token totals on sessions, but
+    those live under ``tokens_input`` / ``tokens_output`` fields
+    and never flow through this parameter. The kwarg name (and the
+    ``FLIGHTDECK_TOKEN`` env var) deliberately stayed as ``token``
+    after the D096 rename so existing integrations don't break.
+
     ``api_url`` is the base URL for control-plane calls (directive
     registration, directive sync, policy prefetch).  When *None*,
     derived from *server* by replacing ``/ingest`` with ``/api``.

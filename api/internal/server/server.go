@@ -98,10 +98,10 @@ func newServer(addr string, s store.Querier, hub *ws.Hub, validator *auth.Valida
 	// the delete/rename handlers additionally refuse the seed tok_dev
 	// row with a 403. The POST response is the only place the
 	// plaintext token is ever exposed.
-	mux.Handle("GET /v1/tokens", gate(handlers.TokensListHandler(s)))
-	mux.Handle("POST /v1/tokens", gate(handlers.TokenCreateHandler(s)))
-	mux.Handle("DELETE /v1/tokens/{id}", gate(handlers.TokenDeleteHandler(s)))
-	mux.Handle("PATCH /v1/tokens/{id}", gate(handlers.TokenRenameHandler(s)))
+	mux.Handle("GET /v1/access-tokens", gate(handlers.AccessTokensListHandler(s)))
+	mux.Handle("POST /v1/access-tokens", gate(handlers.AccessTokenCreateHandler(s)))
+	mux.Handle("DELETE /v1/access-tokens/{id}", gate(handlers.AccessTokenDeleteHandler(s)))
+	mux.Handle("PATCH /v1/access-tokens/{id}", gate(handlers.AccessTokenRenameHandler(s)))
 
 	mux.Handle("GET /health", withRESTTimeout(handlers.HealthHandler()))
 

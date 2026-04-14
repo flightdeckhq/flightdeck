@@ -2,26 +2,28 @@ import type { FleetResponse, SessionDetail, Policy, PolicyRequest, DirectiveRequ
 
 const BASE = import.meta.env.VITE_API_BASE_URL || "/api";
 
-// D095: every dashboard request is authenticated with a bearer
-// token. Phase 5 Part 1b hardcodes tok_dev -- the Settings page in
-// Phase 5 Part 2 will swap this for a user-selected token read from
-// localStorage. The ENVIRONMENT=dev gate on the API service means
-// production deployments reject tok_dev at the middleware; shipping
-// this fallback in a prod build is a non-issue because the server
-// will 401 it anyway, but the Part 2 work still needs to replace
-// this before a dashboard bundle is shipped to end users.
-export const API_TOKEN = "tok_dev";
+// D095/D096: every dashboard request is authenticated with an access
+// token. "Access token" is the D096 rename -- the product also tracks
+// LLM input/output token counts on sessions, so "token" alone is
+// ambiguous. Phase 5 Part 1b hardcodes tok_dev; the Settings page in
+// Phase 5 Part 2 will swap this for a user-selected access token
+// read from localStorage. The ENVIRONMENT=dev gate on the API service
+// means production deployments reject tok_dev at the middleware;
+// shipping this fallback in a prod build is a non-issue because the
+// server will 401 it anyway, but the Part 2 work still needs to
+// replace this before a dashboard bundle is shipped to end users.
+export const ACCESS_TOKEN = "tok_dev";
 
-// WS_TOKEN_QUERY is the query-string form used by the WebSocket
-// /v1/stream endpoint. Browsers cannot set Authorization on a
-// WebSocket upgrade, so the server accepts the token via ``?token=``
-// as an alternative.
-export const WS_TOKEN_QUERY = `token=${encodeURIComponent(API_TOKEN)}`;
+// WS_ACCESS_TOKEN_QUERY is the query-string form used by the
+// WebSocket /v1/stream endpoint. Browsers cannot set Authorization
+// on a WebSocket upgrade, so the server accepts the access token via
+// ``?token=`` as an alternative.
+export const WS_ACCESS_TOKEN_QUERY = `token=${encodeURIComponent(ACCESS_TOKEN)}`;
 
 function authHeaders(init?: HeadersInit): Headers {
   const h = new Headers(init);
   if (!h.has("Authorization")) {
-    h.set("Authorization", `Bearer ${API_TOKEN}`);
+    h.set("Authorization", `Bearer ${ACCESS_TOKEN}`);
   }
   return h;
 }

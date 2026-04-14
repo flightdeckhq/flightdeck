@@ -41,7 +41,7 @@ type SessionListItem struct {
 	TokenLimit     *int64                 `json:"token_limit"`
 	Context        map[string]interface{} `json:"context"`
 	CaptureEnabled bool                   `json:"capture_enabled"`
-	// D095: attribution for the api_tokens row that opened this
+	// D095: attribution for the access_tokens row that opened this
 	// session. TokenID is nullable because revocation clears the FK
 	// (ON DELETE SET NULL); TokenName is preserved for auditability
 	// so the UI can still render "Created via: Staging K8s (revoked)"

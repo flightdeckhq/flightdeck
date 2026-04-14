@@ -38,6 +38,207 @@ const docTemplate = `{
                 }
             }
         },
+        "/v1/access-tokens": {
+            "get": {
+                "description": "Returns every access_tokens row. Hash and salt are never exposed; the raw token itself is available only on the POST response at creation time (D095).",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "access-tokens"
+                ],
+                "summary": "List access tokens",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/store.AccessTokenRow"
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "description": "Mints an opaque ftd_ bearer token. The plaintext token is returned exactly once in the response; the platform cannot recover it afterwards. See DECISIONS.md D095.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "access-tokens"
+                ],
+                "summary": "Create an access token",
+                "parameters": [
+                    {
+                        "description": "Token name",
+                        "name": "token",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handlers.CreateAccessTokenRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/store.CreatedAccessTokenResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/access-tokens/{id}": {
+            "delete": {
+                "description": "Deletes the access_tokens row. The seeded Development Token row is protected and returns 403. Sessions previously authenticated with the token keep their token_name for auditability (sessions.token_id is set to NULL via ON DELETE SET NULL). See DECISIONS.md D095.",
+                "tags": [
+                    "access-tokens"
+                ],
+                "summary": "Revoke an access token",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Token ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    }
+                }
+            },
+            "patch": {
+                "description": "Updates the name field on the access_tokens row. Historical sessions keep their original token_name snapshot. The Development Token row is protected and returns 403.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "access-tokens"
+                ],
+                "summary": "Rename an access token",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Token ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "New name",
+                        "name": "token",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handlers.RenameAccessTokenRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/store.AccessTokenRow"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/v1/analytics": {
             "get": {
                 "description": "Flexible GROUP BY analytics endpoint. Returns time series data grouped by dimension.",
@@ -968,211 +1169,10 @@ const docTemplate = `{
                     }
                 }
             }
-        },
-        "/v1/tokens": {
-            "get": {
-                "description": "Returns every api_tokens row. Hash and salt are never exposed; the raw token itself is available only on the POST response at creation time (D095).",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "tokens"
-                ],
-                "summary": "List API tokens",
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "array",
-                            "items": {
-                                "$ref": "#/definitions/store.TokenRow"
-                            }
-                        }
-                    },
-                    "401": {
-                        "description": "Unauthorized",
-                        "schema": {
-                            "$ref": "#/definitions/handlers.ErrorResponse"
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "$ref": "#/definitions/handlers.ErrorResponse"
-                        }
-                    }
-                }
-            },
-            "post": {
-                "description": "Mints an opaque ftd_ bearer token. The plaintext token is returned exactly once in the response; the platform cannot recover it afterwards. See DECISIONS.md D095.",
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "tokens"
-                ],
-                "summary": "Create an API token",
-                "parameters": [
-                    {
-                        "description": "Token name",
-                        "name": "token",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "$ref": "#/definitions/handlers.CreateTokenRequest"
-                        }
-                    }
-                ],
-                "responses": {
-                    "201": {
-                        "description": "Created",
-                        "schema": {
-                            "$ref": "#/definitions/store.CreatedTokenResponse"
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "$ref": "#/definitions/handlers.ErrorResponse"
-                        }
-                    },
-                    "401": {
-                        "description": "Unauthorized",
-                        "schema": {
-                            "$ref": "#/definitions/handlers.ErrorResponse"
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "$ref": "#/definitions/handlers.ErrorResponse"
-                        }
-                    }
-                }
-            }
-        },
-        "/v1/tokens/{id}": {
-            "delete": {
-                "description": "Deletes the api_tokens row. The seeded Development Token row is protected and returns 403. Sessions previously authenticated with the token keep their token_name for auditability (sessions.token_id is set to NULL via ON DELETE SET NULL). See DECISIONS.md D095.",
-                "tags": [
-                    "tokens"
-                ],
-                "summary": "Revoke an API token",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Token ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "204": {
-                        "description": "No Content"
-                    },
-                    "401": {
-                        "description": "Unauthorized",
-                        "schema": {
-                            "$ref": "#/definitions/handlers.ErrorResponse"
-                        }
-                    },
-                    "403": {
-                        "description": "Forbidden",
-                        "schema": {
-                            "$ref": "#/definitions/handlers.ErrorResponse"
-                        }
-                    },
-                    "404": {
-                        "description": "Not Found",
-                        "schema": {
-                            "$ref": "#/definitions/handlers.ErrorResponse"
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "$ref": "#/definitions/handlers.ErrorResponse"
-                        }
-                    }
-                }
-            },
-            "patch": {
-                "description": "Updates the name field on the api_tokens row. Historical sessions keep their original token_name snapshot. The Development Token row is protected and returns 403.",
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "tokens"
-                ],
-                "summary": "Rename an API token",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Token ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "description": "New name",
-                        "name": "token",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "$ref": "#/definitions/handlers.RenameTokenRequest"
-                        }
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/store.TokenRow"
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "$ref": "#/definitions/handlers.ErrorResponse"
-                        }
-                    },
-                    "401": {
-                        "description": "Unauthorized",
-                        "schema": {
-                            "$ref": "#/definitions/handlers.ErrorResponse"
-                        }
-                    },
-                    "403": {
-                        "description": "Forbidden",
-                        "schema": {
-                            "$ref": "#/definitions/handlers.ErrorResponse"
-                        }
-                    },
-                    "404": {
-                        "description": "Not Found",
-                        "schema": {
-                            "$ref": "#/definitions/handlers.ErrorResponse"
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "$ref": "#/definitions/handlers.ErrorResponse"
-                        }
-                    }
-                }
-            }
         }
     },
     "definitions": {
-        "handlers.CreateTokenRequest": {
+        "handlers.CreateAccessTokenRequest": {
             "type": "object",
             "properties": {
                 "name": {
@@ -1307,7 +1307,7 @@ const docTemplate = `{
                 }
             }
         },
-        "handlers.RenameTokenRequest": {
+        "handlers.RenameAccessTokenRequest": {
             "type": "object",
             "properties": {
                 "name": {
@@ -1365,6 +1365,26 @@ const docTemplate = `{
                     "items": {
                         "type": "string"
                     }
+                }
+            }
+        },
+        "store.AccessTokenRow": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "last_used_at": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "prefix": {
+                    "type": "string"
                 }
             }
         },
@@ -1433,7 +1453,7 @@ const docTemplate = `{
                 }
             }
         },
-        "store.CreatedTokenResponse": {
+        "store.CreatedAccessTokenResponse": {
             "type": "object",
             "properties": {
                 "created_at": {
@@ -1885,7 +1905,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "token_id": {
-                    "description": "D095: attribution for the api_tokens row that opened this\nsession. TokenID is nullable because revocation clears the FK\n(ON DELETE SET NULL); TokenName is preserved for auditability\nso the UI can still render \"Created via: Staging K8s (revoked)\"\nlong after the token row is gone.",
+                    "description": "D095: attribution for the access_tokens row that opened this\nsession. TokenID is nullable because revocation clears the FK\n(ON DELETE SET NULL); TokenName is preserved for auditability\nso the UI can still render \"Created via: Staging K8s (revoked)\"\nlong after the token row is gone.",
                     "type": "string"
                 },
                 "token_limit": {
@@ -1919,26 +1939,6 @@ const docTemplate = `{
                 },
                 "total": {
                     "type": "integer"
-                }
-            }
-        },
-        "store.TokenRow": {
-            "type": "object",
-            "properties": {
-                "created_at": {
-                    "type": "string"
-                },
-                "id": {
-                    "type": "string"
-                },
-                "last_used_at": {
-                    "type": "string"
-                },
-                "name": {
-                    "type": "string"
-                },
-                "prefix": {
-                    "type": "string"
                 }
             }
         }

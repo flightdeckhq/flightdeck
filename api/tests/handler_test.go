@@ -27,7 +27,7 @@ type mockStore struct {
 	customDirectives []store.CustomDirective
 	contextFacets    map[string][]store.ContextFacetValue
 	contextFacetsErr error
-	tokens           []store.TokenRow
+	tokens           []store.AccessTokenRow
 }
 
 func (m *mockStore) GetContextFacets(_ context.Context) (map[string][]store.ContextFacetValue, error) {
@@ -212,55 +212,55 @@ func (m *mockStore) DeletePolicy(_ context.Context, id string) error {
 
 // --- Token CRUD (D095) ---
 
-func (m *mockStore) ListTokens(_ context.Context) ([]store.TokenRow, error) {
-	return append([]store.TokenRow(nil), m.tokens...), nil
+func (m *mockStore) ListAccessTokens(_ context.Context) ([]store.AccessTokenRow, error) {
+	return append([]store.AccessTokenRow(nil), m.tokens...), nil
 }
 
-func (m *mockStore) CreateToken(_ context.Context, name string) (*store.CreatedTokenResponse, error) {
+func (m *mockStore) CreateAccessToken(_ context.Context, name string) (*store.CreatedAccessTokenResponse, error) {
 	if name == "" {
-		return nil, store.ErrTokenNameRequired
+		return nil, store.ErrAccessTokenNameRequired
 	}
-	created := &store.CreatedTokenResponse{
+	created := &store.CreatedAccessTokenResponse{
 		ID:        fmt.Sprintf("tok-%d", len(m.tokens)+1),
 		Name:      name,
 		Prefix:    "ftd_mock",
 		RawToken:  "ftd_mock" + name,
 		CreatedAt: time.Now(),
 	}
-	m.tokens = append(m.tokens, store.TokenRow{
+	m.tokens = append(m.tokens, store.AccessTokenRow{
 		ID: created.ID, Name: name, Prefix: created.Prefix, CreatedAt: created.CreatedAt,
 	})
 	return created, nil
 }
 
-func (m *mockStore) DeleteToken(_ context.Context, id string) error {
+func (m *mockStore) DeleteAccessToken(_ context.Context, id string) error {
 	for i, t := range m.tokens {
 		if t.ID == id {
 			if t.Name == "Development Token" {
-				return store.ErrDevTokenProtected
+				return store.ErrDevAccessTokenProtected
 			}
 			m.tokens = append(m.tokens[:i], m.tokens[i+1:]...)
 			return nil
 		}
 	}
-	return store.ErrTokenNotFound
+	return store.ErrAccessTokenNotFound
 }
 
-func (m *mockStore) RenameToken(_ context.Context, id, newName string) (*store.TokenRow, error) {
+func (m *mockStore) RenameAccessToken(_ context.Context, id, newName string) (*store.AccessTokenRow, error) {
 	if newName == "" {
-		return nil, store.ErrTokenNameRequired
+		return nil, store.ErrAccessTokenNameRequired
 	}
 	for i := range m.tokens {
 		if m.tokens[i].ID == id {
 			if m.tokens[i].Name == "Development Token" {
-				return nil, store.ErrDevTokenProtected
+				return nil, store.ErrDevAccessTokenProtected
 			}
 			m.tokens[i].Name = newName
 			out := m.tokens[i]
 			return &out, nil
 		}
 	}
-	return nil, store.ErrTokenNotFound
+	return nil, store.ErrAccessTokenNotFound
 }
 
 func (m *mockStore) CreateDirective(_ context.Context, d store.Directive) (*store.Directive, error) {
@@ -2019,15 +2019,15 @@ func TestSearchReturnsExtendedSessionFields(t *testing.T) {
 // --- Token CRUD (D095) ---
 
 func TestTokensListHandler_ReturnsRows(t *testing.T) {
-	s := &mockStore{tokens: []store.TokenRow{{ID: "a", Name: "Dev", Prefix: "ftd_aaaa"}}}
-	handler := handlers.TokensListHandler(store.WrapStore(s))
+	s := &mockStore{tokens: []store.AccessTokenRow{{ID: "a", Name: "Dev", Prefix: "ftd_aaaa"}}}
+	handler := handlers.AccessTokensListHandler(store.WrapStore(s))
 	req := httptest.NewRequest("GET", "/v1/tokens", nil)
 	w := httptest.NewRecorder()
 	handler(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
-	var out []store.TokenRow
+	var out []store.AccessTokenRow
 	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
 		t.Fatal(err)
 	}
@@ -2038,7 +2038,7 @@ func TestTokensListHandler_ReturnsRows(t *testing.T) {
 
 func TestTokenCreateHandler_ReturnsPlaintextOnce(t *testing.T) {
 	s := &mockStore{}
-	handler := handlers.TokenCreateHandler(store.WrapStore(s))
+	handler := handlers.AccessTokenCreateHandler(store.WrapStore(s))
 	req := httptest.NewRequest("POST", "/v1/tokens",
 		bytes.NewBufferString(`{"name":"Production K8s"}`))
 	w := httptest.NewRecorder()
@@ -2046,7 +2046,7 @@ func TestTokenCreateHandler_ReturnsPlaintextOnce(t *testing.T) {
 	if w.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d", w.Code)
 	}
-	var out store.CreatedTokenResponse
+	var out store.CreatedAccessTokenResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
 		t.Fatal(err)
 	}
@@ -2057,9 +2057,9 @@ func TestTokenCreateHandler_ReturnsPlaintextOnce(t *testing.T) {
 		t.Errorf("expected name passthrough, got %q", out.Name)
 	}
 	// Subsequent list must NOT include the raw token field -- only
-	// the projection. Json-decoding into TokenRow (which has no
+	// the projection. Json-decoding into AccessTokenRow (which has no
 	// RawToken field) proves we get the safe shape back.
-	listHandler := handlers.TokensListHandler(store.WrapStore(s))
+	listHandler := handlers.AccessTokensListHandler(store.WrapStore(s))
 	listReq := httptest.NewRequest("GET", "/v1/tokens", nil)
 	listW := httptest.NewRecorder()
 	listHandler(listW, listReq)
@@ -2073,7 +2073,7 @@ func TestTokenCreateHandler_ReturnsPlaintextOnce(t *testing.T) {
 
 func TestTokenCreateHandler_EmptyName400(t *testing.T) {
 	s := &mockStore{}
-	handler := handlers.TokenCreateHandler(store.WrapStore(s))
+	handler := handlers.AccessTokenCreateHandler(store.WrapStore(s))
 	req := httptest.NewRequest("POST", "/v1/tokens", bytes.NewBufferString(`{"name":""}`))
 	w := httptest.NewRecorder()
 	handler(w, req)
@@ -2083,9 +2083,9 @@ func TestTokenCreateHandler_EmptyName400(t *testing.T) {
 }
 
 func TestTokenDeleteHandler_DevTokenReturns403(t *testing.T) {
-	s := &mockStore{tokens: []store.TokenRow{{ID: "dev", Name: "Development Token"}}}
+	s := &mockStore{tokens: []store.AccessTokenRow{{ID: "dev", Name: "Development Token"}}}
 	mux := http.NewServeMux()
-	mux.Handle("DELETE /v1/tokens/{id}", handlers.TokenDeleteHandler(store.WrapStore(s)))
+	mux.Handle("DELETE /v1/tokens/{id}", handlers.AccessTokenDeleteHandler(store.WrapStore(s)))
 	req := httptest.NewRequest("DELETE", "/v1/tokens/dev", nil)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
@@ -2100,7 +2100,7 @@ func TestTokenDeleteHandler_DevTokenReturns403(t *testing.T) {
 func TestTokenDeleteHandler_UnknownIdReturns404(t *testing.T) {
 	s := &mockStore{}
 	mux := http.NewServeMux()
-	mux.Handle("DELETE /v1/tokens/{id}", handlers.TokenDeleteHandler(store.WrapStore(s)))
+	mux.Handle("DELETE /v1/tokens/{id}", handlers.AccessTokenDeleteHandler(store.WrapStore(s)))
 	req := httptest.NewRequest("DELETE", "/v1/tokens/missing", nil)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
@@ -2110,12 +2110,12 @@ func TestTokenDeleteHandler_UnknownIdReturns404(t *testing.T) {
 }
 
 func TestTokenDeleteHandler_DeletesRealToken(t *testing.T) {
-	s := &mockStore{tokens: []store.TokenRow{
+	s := &mockStore{tokens: []store.AccessTokenRow{
 		{ID: "real", Name: "Production"},
 		{ID: "dev", Name: "Development Token"},
 	}}
 	mux := http.NewServeMux()
-	mux.Handle("DELETE /v1/tokens/{id}", handlers.TokenDeleteHandler(store.WrapStore(s)))
+	mux.Handle("DELETE /v1/tokens/{id}", handlers.AccessTokenDeleteHandler(store.WrapStore(s)))
 	req := httptest.NewRequest("DELETE", "/v1/tokens/real", nil)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
@@ -2128,9 +2128,9 @@ func TestTokenDeleteHandler_DeletesRealToken(t *testing.T) {
 }
 
 func TestTokenRenameHandler_DevToken403(t *testing.T) {
-	s := &mockStore{tokens: []store.TokenRow{{ID: "dev", Name: "Development Token"}}}
+	s := &mockStore{tokens: []store.AccessTokenRow{{ID: "dev", Name: "Development Token"}}}
 	mux := http.NewServeMux()
-	mux.Handle("PATCH /v1/tokens/{id}", handlers.TokenRenameHandler(store.WrapStore(s)))
+	mux.Handle("PATCH /v1/tokens/{id}", handlers.AccessTokenRenameHandler(store.WrapStore(s)))
 	req := httptest.NewRequest("PATCH", "/v1/tokens/dev", bytes.NewBufferString(`{"name":"Renamed"}`))
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
@@ -2140,16 +2140,16 @@ func TestTokenRenameHandler_DevToken403(t *testing.T) {
 }
 
 func TestTokenRenameHandler_RenamesRealToken(t *testing.T) {
-	s := &mockStore{tokens: []store.TokenRow{{ID: "real", Name: "Old"}}}
+	s := &mockStore{tokens: []store.AccessTokenRow{{ID: "real", Name: "Old"}}}
 	mux := http.NewServeMux()
-	mux.Handle("PATCH /v1/tokens/{id}", handlers.TokenRenameHandler(store.WrapStore(s)))
+	mux.Handle("PATCH /v1/tokens/{id}", handlers.AccessTokenRenameHandler(store.WrapStore(s)))
 	req := httptest.NewRequest("PATCH", "/v1/tokens/real", bytes.NewBufferString(`{"name":"New"}`))
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
 		t.Errorf("expected 200, got %d", w.Code)
 	}
-	var got store.TokenRow
+	var got store.AccessTokenRow
 	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}

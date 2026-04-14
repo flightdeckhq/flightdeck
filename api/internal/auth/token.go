@@ -1,7 +1,7 @@
 // Package auth provides Bearer token validation for the query API.
 //
 // Mirrors ingestion/internal/auth in behavior -- the two services
-// share the api_tokens table and must agree byte-for-byte on which
+// share the access_tokens table and must agree byte-for-byte on which
 // tokens are accepted. The only difference is the surface: ingestion
 // handlers consume ValidationResult directly so they can inject the
 // resolved token id/name into the NATS payload for session_start
@@ -95,7 +95,7 @@ func (a *pgxRowsAdapter) Err() error             { return a.rows.Err() }
 
 type envLookup func(string) string
 
-// Validator checks bearer tokens against salted hashes in api_tokens.
+// Validator checks bearer tokens against salted hashes in access_tokens.
 type Validator struct {
 	db    dbQuerier
 	cache map[string]cacheEntry
@@ -123,7 +123,7 @@ func newValidatorWithDB(db dbQuerier, env envLookup) *Validator {
 	}
 }
 
-// Validate resolves rawToken against api_tokens per the D095 algorithm.
+// Validate resolves rawToken against access_tokens per the D095 algorithm.
 func (v *Validator) Validate(ctx context.Context, rawToken string) (ValidationResult, error) {
 	if rawToken == "" {
 		return ValidationResult{}, nil
@@ -160,7 +160,7 @@ func (v *Validator) resolve(ctx context.Context, rawToken string) (ValidationRes
 		}
 		var id, name string
 		err := v.db.QueryRow(ctx,
-			`SELECT id::text, name FROM api_tokens WHERE name = 'Development Token' LIMIT 1`,
+			`SELECT id::text, name FROM access_tokens WHERE name = 'Development Token' LIMIT 1`,
 		).Scan(&id, &name)
 		if err != nil {
 			return ValidationResult{}, fmt.Errorf("lookup tok_dev row: %w", err)
@@ -172,7 +172,7 @@ func (v *Validator) resolve(ctx context.Context, rawToken string) (ValidationRes
 	if strings.HasPrefix(rawToken, productionPrefix) && len(rawToken) >= prefixLen {
 		prefix := rawToken[:prefixLen]
 		rows, err := v.db.Query(ctx,
-			`SELECT id::text, name, token_hash, salt FROM api_tokens WHERE prefix = $1`,
+			`SELECT id::text, name, token_hash, salt FROM access_tokens WHERE prefix = $1`,
 			prefix,
 		)
 		if err != nil {
@@ -201,7 +201,7 @@ func (v *Validator) resolve(ctx context.Context, rawToken string) (ValidationRes
 
 func (v *Validator) touchLastUsed(ctx context.Context, id string) error {
 	return v.db.Exec(ctx,
-		`UPDATE api_tokens SET last_used_at = NOW() WHERE id = $1::uuid`,
+		`UPDATE access_tokens SET last_used_at = NOW() WHERE id = $1::uuid`,
 		id,
 	)
 }

@@ -1,7 +1,7 @@
 // Package auth provides Bearer token validation for the ingestion API.
 //
 // Tokens are opaque strings stored as SHA256(salt || raw_token) in the
-// api_tokens table. See DECISIONS.md D095 and the Authentication
+// access_tokens table. See DECISIONS.md D095 and the Authentication
 // section of ARCHITECTURE.md for the full model.
 package auth
 
@@ -30,7 +30,7 @@ const (
 )
 
 // ValidationResult is the outcome of resolving a Bearer token against
-// api_tokens. When Valid is true the caller receives the row's id and
+// access_tokens. When Valid is true the caller receives the row's id and
 // human-readable name, which the events handler injects into the NATS
 // payload for session_start events so the worker can persist them onto
 // the new session row (D095). When Valid is false, Reason is an
@@ -99,7 +99,7 @@ func (a *pgxRowsAdapter) Err() error              { return a.rows.Err() }
 // leaking state into the real process environment.
 type envLookup func(string) string
 
-// Validator checks bearer tokens against salted hashes in api_tokens.
+// Validator checks bearer tokens against salted hashes in access_tokens.
 // Valid results are cached in-memory for cacheTTL to keep the hot path
 // off the database for repeat clients. Invalid tokens are NOT cached
 // so a rejected attempt always re-hits the DB -- this matches the
@@ -135,13 +135,13 @@ func newValidatorWithDB(db dbQuerier, env envLookup) *Validator {
 	}
 }
 
-// Validate resolves rawToken against api_tokens per the D095 algorithm.
+// Validate resolves rawToken against access_tokens per the D095 algorithm.
 //
 //  1. raw == "tok_dev"  → accepted only when ENVIRONMENT=dev. When the
 //     guard rejects, ValidationResult.Reason carries the operator-
 //     facing message so the handler can surface it verbatim in the
 //     401 body.
-//  2. raw starts with "ftd_" → narrow on api_tokens.prefix (first 8
+//  2. raw starts with "ftd_" → narrow on access_tokens.prefix (first 8
 //     chars of the raw token), then compute SHA256(salt || raw) per
 //     candidate row and compare in constant time. Update
 //     last_used_at on match.
@@ -195,7 +195,7 @@ func (v *Validator) resolve(ctx context.Context, rawToken string) (ValidationRes
 		}
 		var id, name string
 		err := v.db.QueryRow(ctx,
-			`SELECT id::text, name FROM api_tokens WHERE name = 'Development Token' LIMIT 1`,
+			`SELECT id::text, name FROM access_tokens WHERE name = 'Development Token' LIMIT 1`,
 		).Scan(&id, &name)
 		if err != nil {
 			return ValidationResult{}, fmt.Errorf("lookup tok_dev row: %w", err)
@@ -212,7 +212,7 @@ func (v *Validator) resolve(ctx context.Context, rawToken string) (ValidationRes
 	if strings.HasPrefix(rawToken, productionPrefix) && len(rawToken) >= prefixLen {
 		prefix := rawToken[:prefixLen]
 		rows, err := v.db.Query(ctx,
-			`SELECT id::text, name, token_hash, salt FROM api_tokens WHERE prefix = $1`,
+			`SELECT id::text, name, token_hash, salt FROM access_tokens WHERE prefix = $1`,
 			prefix,
 		)
 		if err != nil {
@@ -243,7 +243,7 @@ func (v *Validator) resolve(ctx context.Context, rawToken string) (ValidationRes
 
 func (v *Validator) touchLastUsed(ctx context.Context, id string) error {
 	return v.db.Exec(ctx,
-		`UPDATE api_tokens SET last_used_at = NOW() WHERE id = $1::uuid`,
+		`UPDATE access_tokens SET last_used_at = NOW() WHERE id = $1::uuid`,
 		id,
 	)
 }

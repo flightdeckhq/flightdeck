@@ -30,6 +30,12 @@ test-smoke-deps: ## Install Python deps required by the smoke test suite
 test-smoke: test-smoke-deps ## Run smoke tests with real API keys (requires running stack + ANTHROPIC_API_KEY + OPENAI_API_KEY). See tests/smoke/README.md.
 	python3 tests/smoke/smoke_test.py
 
+test-e2e: ## Run Playwright E2E tests (requires make dev)
+	cd dashboard && npx playwright test
+
+test-e2e-ui: ## Run Playwright E2E tests with UI
+	cd dashboard && npx playwright test --ui
+
 lint: ## Lint all components
 	$(MAKE) -C sensor lint
 	$(MAKE) -C ingestion lint

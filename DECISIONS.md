@@ -2370,3 +2370,63 @@ deleted.
 - `workers/internal/writer/postgres.go`
 
 ---
+
+## D096 -- Rename "token" to "access token" for auth credentials
+
+**Problem:** After Phase 5 D095 shipped, the term "token" in the
+codebase and UI became ambiguous. Flightdeck already tracks LLM
+input/output tokens (`tokens_input`, `tokens_output`, `tokens_used`,
+`token_limit`, policy `warn_at_pct`/`degrade_at_pct`/`block_at_pct`
+thresholds in LLM tokens), and the D095 auth credentials are also
+called "tokens". Operators reading "token" in a log line or a policy
+threshold could not tell which kind was meant without context.
+
+**Decision:** Consistently rename the auth-credential concept to
+**access token** throughout the codebase.
+
+**Renamed:**
+
+- Database table: `api_tokens` → `access_tokens` (migration 000012).
+  The FK column `sessions.token_id` and the denormalized
+  `sessions.token_name` column deliberately keep their names --
+  renaming would ripple through every reader with no semantic gain,
+  and the FK still points at the renamed table by OID.
+- Go types: `TokenRow`, `CreatedTokenResponse`, `TokenValidator`
+  (sentinel errors too) → `AccessTokenRow`,
+  `CreatedAccessTokenResponse`, etc. Store methods
+  (`ListTokens`/`CreateToken`/`DeleteToken`/`RenameToken`) and
+  handlers (`TokensListHandler` ...) gained the `Access` infix.
+- API routes: `/v1/tokens` → `/v1/access-tokens` (all four verbs).
+- Dashboard: the `API_TOKEN` constant in `lib/api.ts` is now
+  `ACCESS_TOKEN`; the `WS_TOKEN_QUERY` helper is `WS_ACCESS_TOKEN_QUERY`.
+- Files: `api/internal/store/tokens.go` →
+  `api/internal/store/access_tokens.go` (same for the handler file).
+
+**Not renamed** (deliberate):
+
+- `sensor.init(token=...)` kwarg and the `FLIGHTDECK_TOKEN` env var.
+  These are public surface on the sensor SDK; renaming would break
+  every existing integration for no internal benefit. The init()
+  docstring now clarifies that the value is a Flightdeck access
+  token (ftd_...), not an LLM token count.
+- The NATS payload fields `token_id` / `token_name` emitted by the
+  ingestion API for session_start events. The worker consumes them
+  under the same names when populating `sessions.token_id` /
+  `sessions.token_name`, and renaming would require a coordinated
+  schema change across ingestion and workers for zero semantic gain.
+- LLM token fields: `tokens_input`, `tokens_output`, `tokens_used`,
+  `token_limit`, `tokens_total`, `token_policies`, `token_hash`,
+  `token_limit_session` (NATS payload). These are correct already --
+  they refer to LLM tokens.
+
+**Code locations:**
+
+- `docker/postgres/migrations/000012_rename_access_tokens.up.sql`
+- `api/internal/auth/token.go`, `ingestion/internal/auth/token.go`
+- `api/internal/store/access_tokens.go`
+- `api/internal/handlers/access_tokens.go`
+- `api/internal/server/server.go`
+- `dashboard/src/lib/api.ts`, `dashboard/src/hooks/useFleet.ts`
+- `sensor/flightdeck_sensor/__init__.py` (docstring clarification)
+
+---

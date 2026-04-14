@@ -24,7 +24,7 @@ const maxRequestBodyBytes = 1 << 20 // 1MB
 // and reject events with HTTP 409 when the session is closed/lost.
 // See KNOWN_ISSUES.md KI13.
 
-// TokenValidator resolves bearer tokens to an api_tokens row. The
+// TokenValidator resolves bearer tokens to an access_tokens row. The
 // resolved (id, name) are injected into the NATS payload for
 // session_start events so the worker's UpsertSession can persist them
 // onto the new session row (D095).

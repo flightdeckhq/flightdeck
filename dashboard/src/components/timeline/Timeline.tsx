@@ -112,10 +112,42 @@ export function Timeline({
     document.addEventListener("mouseup", onUp);
   }, []);
 
-  // Live-updating "now" — throttled to 10fps (100ms) for performance
+  // Count sessions that can still produce events. Closed / lost
+  // sessions are frozen history -- if the whole fleet is in that
+  // state, the timeline has nothing new to show, so the rAF tick
+  // below short-circuits and the Timeline re-render cadence drops
+  // from 10/sec to zero. Drives both this early-out and the eventual
+  // AllSwimLane hide (via its own prop check).
+  const liveSessionCount = useMemo(
+    () =>
+      flavors.reduce(
+        (acc, f) =>
+          acc +
+          f.sessions.filter(
+            (s) =>
+              s.state === "active" ||
+              s.state === "idle" ||
+              s.state === "stale",
+          ).length,
+        0,
+      ),
+    [flavors],
+  );
+
+  // Live-updating "now" — throttled to 10fps (100ms) for performance.
+  // Skips the rAF loop entirely when paused OR when no sessions are
+  // live. With zero active agents, re-rendering the timeline 10x/sec
+  // only shifts the "now" cursor by 100ms each frame; it cannot
+  // surface any new events because there are none. A one-shot setNow
+  // when liveSessionCount hits zero snaps the cursor to the current
+  // wall clock and then stops.
   const [now, setNow] = useState(() => new Date());
   useEffect(() => {
     if (paused) return;
+    if (liveSessionCount === 0) {
+      setNow(new Date());
+      return;
+    }
     let rafId: number;
     let lastUpdate = 0;
     const tick = (timestamp: number) => {
@@ -127,7 +159,7 @@ export function Timeline({
     };
     rafId = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(rafId);
-  }, [paused]);
+  }, [paused, liveSessionCount]);
 
   const filteredFlavors = useMemo(() => {
     let result = flavors;

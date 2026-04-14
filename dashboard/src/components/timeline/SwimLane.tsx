@@ -355,6 +355,20 @@ function AllSwimLaneComponent({
   activeFilter,
   sessionVersions,
 }: AllSwimLaneProps) {
+  // Hide the ALL row when nothing in the fleet is alive. A fleet of
+  // only closed / lost sessions has no "current activity" to summarise
+  // -- rendering the row still cost one AggregatedSessionEvents per
+  // session with full DOM-level event circles, which dominated style
+  // recalc on the 50-session smoke test. Active|idle|stale are the
+  // states that can still produce new events; anything else means the
+  // ALL row would be a static historical collage the user doesn't need.
+  const hasLiveSession = flavors.some((f) =>
+    f.sessions.some(
+      (s) => s.state === "active" || s.state === "idle" || s.state === "stale",
+    ),
+  );
+  if (!hasLiveSession) return null;
+
   return (
     <div
       data-testid="swimlane-all"
@@ -494,9 +508,23 @@ function AggregatedSessionEvents({
   const isActive = session.state === "active";
   const { events } = useSessionEvents(session.session_id, isActive, version);
 
-  const nodes = useMemo(
-    () =>
-      events.map((event) => ({
+  // Clip events to the current scale domain before building nodes.
+  // useSessionEvents caches every event ever fetched for a session, so
+  // without this filter a 50-session fleet at a 1-minute view could
+  // render thousands of EventNodes whose x positions lie outside the
+  // 0..timelineWidth canvas -- the circles were clipped visually by
+  // overflow:hidden but still cost full style recalc. Filtering here
+  // keeps them out of the DOM entirely.
+  const nodes = useMemo(() => {
+    const [domainStart, domainEnd] = scale.domain();
+    const startMs = domainStart.getTime();
+    const endMs = domainEnd.getTime();
+    return events
+      .filter((event) => {
+        const t = new Date(event.occurred_at).getTime();
+        return t >= startMs && t <= endMs;
+      })
+      .map((event) => ({
         id: event.id,
         x: scale(new Date(event.occurred_at)),
         eventType: event.event_type,
@@ -507,9 +535,8 @@ function AggregatedSessionEvents({
         occurredAt: event.occurred_at,
         directiveName: event.payload?.directive_name,
         directiveStatus: event.payload?.directive_status,
-      })),
-    [events, scale]
-  );
+      }));
+  }, [events, scale]);
 
   return (
     <>

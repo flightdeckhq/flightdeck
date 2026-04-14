@@ -110,9 +110,22 @@ function SessionEventRowComponent({
 
   const primaryLabel = ctxHostname ?? truncateSessionId(session.session_id);
 
-  const eventNodes = useMemo(
-    () =>
-      events.map((event) => ({
+  // Clip events to the current scale domain before mapping to nodes.
+  // Cached events outside [domainStart, domainEnd] produce x positions
+  // outside the 900px canvas and are clipped by overflow:hidden, but
+  // still carry full style-recalc cost. Dropping them here is the main
+  // reason the 50-session smoke test went from ~9k DOM nodes to under
+  // 3k without any visible change on screen.
+  const eventNodes = useMemo(() => {
+    const [domainStart, domainEnd] = scale.domain();
+    const startMs = domainStart.getTime();
+    const endMs = domainEnd.getTime();
+    return events
+      .filter((event) => {
+        const t = new Date(event.occurred_at).getTime();
+        return t >= startMs && t <= endMs;
+      })
+      .map((event) => ({
         id: event.id,
         x: scale(new Date(event.occurred_at)),
         eventType: event.event_type,
@@ -123,9 +136,8 @@ function SessionEventRowComponent({
         occurredAt: event.occurred_at,
         directiveName: event.payload?.directive_name,
         directiveStatus: event.payload?.directive_status,
-      })),
-    [events, scale]
-  );
+      }));
+  }, [events, scale]);
 
   const truncatedSid = truncateSessionId(session.session_id);
   const showTokens = leftPanelWidth >= TOKEN_COUNT_MIN_WIDTH;

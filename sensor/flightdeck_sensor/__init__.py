@@ -165,6 +165,7 @@ def init(
     quiet: bool = False,
     limit: int | None = None,
     warn_at: float = 0.8,
+    session_id: str | None = None,
 ) -> None:
     """Initialize the sensor and start the session.
 
@@ -177,9 +178,22 @@ def init(
     degrades. Most restrictive threshold wins when both local and server
     policies are active. See DECISIONS.md D035.
 
+    ``session_id`` is an optional caller-supplied identifier. When
+    provided (or when ``FLIGHTDECK_SESSION_ID`` is set, which takes
+    precedence over the kwarg in line with ``FLIGHTDECK_SERVER`` /
+    ``AGENT_FLAVOR``), the sensor uses the caller's value verbatim
+    instead of generating a UUID. If a session with that ID already
+    exists in the control plane, the backend attaches this execution
+    to the prior session; the sensor logs INFO on the first response
+    that confirms attachment. Primary use case: orchestrators
+    (Temporal workflows, Airflow DAGs) that re-run the same logical
+    workflow and want a single correlatable session in the fleet view.
+    See DECISIONS.md D094.
+
     Reads from environment (overrides parameters):
 
     - ``FLIGHTDECK_API_URL`` -- control-plane base URL (overrides *api_url*)
+    - ``FLIGHTDECK_SESSION_ID`` -- session id hint (overrides *session_id*)
     - ``AGENT_FLAVOR`` -- persistent identity (default: ``"unknown"``)
     - ``AGENT_TYPE`` -- ``"autonomous"``, ``"supervised"``, or ``"batch"``
     - ``FLIGHTDECK_UNAVAILABLE_POLICY`` -- ``"continue"`` or ``"halt"``
@@ -207,20 +221,47 @@ def init(
             )
 
         capture = _env_bool("FLIGHTDECK_CAPTURE_PROMPTS", capture_prompts)
-        config = SensorConfig(
-            server=resolved_server,
-            token=resolved_token,
-            api_url=resolved_api_url,
-            capture_prompts=capture,
-            unavailable_policy=os.environ.get(
+
+        # session_id resolution follows the same env-wins pattern as
+        # FLIGHTDECK_SERVER / AGENT_FLAVOR: env var overrides kwarg,
+        # and a falsy env var falls through to the kwarg. An empty
+        # string from either source is treated as "not provided" so a
+        # misconfigured shell (FLIGHTDECK_SESSION_ID="") still auto-
+        # generates a UUID rather than posting a session_start with a
+        # blank session_id that the ingestion API rejects.
+        resolved_session_id = (
+            os.environ.get("FLIGHTDECK_SESSION_ID") or session_id or None
+        )
+        if resolved_session_id:
+            _log.warning(
+                "Custom session_id provided: '%s'. This ID will be used "
+                "as-is and will not be auto-generated. If a session with "
+                "this ID already exists, the backend will attach this "
+                "agent to it.",
+                resolved_session_id,
+            )
+
+        config_kwargs: dict[str, Any] = {
+            "server": resolved_server,
+            "token": resolved_token,
+            "api_url": resolved_api_url,
+            "capture_prompts": capture,
+            "unavailable_policy": os.environ.get(
                 "FLIGHTDECK_UNAVAILABLE_POLICY", "continue"
             ),
-            agent_flavor=os.environ.get("AGENT_FLAVOR", "unknown"),
-            agent_type=os.environ.get("AGENT_TYPE", "autonomous"),
-            quiet=quiet,
-            limit=limit,
-            warn_at=warn_at,
-        )
+            "agent_flavor": os.environ.get("AGENT_FLAVOR", "unknown"),
+            "agent_type": os.environ.get("AGENT_TYPE", "autonomous"),
+            "quiet": quiet,
+            "limit": limit,
+            "warn_at": warn_at,
+        }
+        # Only pass session_id when the caller asked for a specific
+        # value; otherwise let SensorConfig's default_factory generate
+        # a fresh UUID as before. Passing session_id=None would
+        # overwrite the factory output with None.
+        if resolved_session_id:
+            config_kwargs["session_id"] = resolved_session_id
+        config = SensorConfig(**config_kwargs)
 
         _client = ControlPlaneClient(
             server=config.server,

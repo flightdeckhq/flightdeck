@@ -31,12 +31,13 @@ func New(
 	validator handlers.TokenValidator,
 	publisher handlers.EventPublisher,
 	dirStore handlers.DirectiveLookup,
+	sessAttacher handlers.SessionAttacher,
 	rateLimitPerMinute int,
 ) *http.Server {
 	mux := http.NewServeMux()
 
 	limiter := handlers.NewRateLimiter(rateLimitPerMinute)
-	mux.Handle("POST /v1/events", handlers.EventsHandler(validator, publisher, dirStore, limiter))
+	mux.Handle("POST /v1/events", handlers.EventsHandler(validator, publisher, dirStore, sessAttacher, limiter))
 	mux.Handle("POST /v1/heartbeat", handlers.HeartbeatHandler(validator, publisher, dirStore))
 	mux.Handle("GET /health", handlers.HealthHandler())
 

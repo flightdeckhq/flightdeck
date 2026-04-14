@@ -107,7 +107,7 @@ def test_capture_off_event_payload_clean() -> None:
         quiet=True,
     )
     client = MagicMock()
-    client.post_event.return_value = None
+    client.post_event.return_value = (None, False)
     session = Session(config=config, client=client)
 
     payload = session._build_payload(EventType.POST_CALL, tokens_total=100)

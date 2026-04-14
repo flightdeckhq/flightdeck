@@ -45,7 +45,7 @@ def _make_session(
         quiet=quiet,
     )
     client = MagicMock(spec=ControlPlaneClient)
-    client.post_event.return_value = None
+    client.post_event.return_value = (None, False)
     client.sync_directives.return_value = []
     client.register_directives.return_value = None
     session = Session(config=config, client=client)

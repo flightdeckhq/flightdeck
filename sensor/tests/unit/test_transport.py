@@ -22,8 +22,9 @@ from flightdeck_sensor.transport.retry import with_retry
 def test_post_event_returns_none_on_null_directive(mock_control_plane: Any) -> None:
     mock_control_plane["set_response"]({"status": "ok", "directive": None})
     client = ControlPlaneClient(mock_control_plane["url"], "tok")
-    result = client.post_event({"session_id": "123", "event_type": "post_call"})
-    assert result is None
+    directive, attached = client.post_event({"session_id": "123", "event_type": "post_call"})
+    assert directive is None
+    assert attached is False
 
 
 def test_post_event_returns_directive_when_present(mock_control_plane: Any) -> None:
@@ -32,17 +33,39 @@ def test_post_event_returns_directive_when_present(mock_control_plane: Any) -> N
         "directive": {"action": "shutdown", "reason": "kill_switch", "grace_period_ms": 3000},
     })
     client = ControlPlaneClient(mock_control_plane["url"], "tok")
-    result = client.post_event({"session_id": "123", "event_type": "post_call"})
-    assert result is not None
-    assert isinstance(result, Directive)
-    assert result.action == DirectiveAction.SHUTDOWN
-    assert result.reason == "kill_switch"
+    directive, attached = client.post_event({"session_id": "123", "event_type": "post_call"})
+    assert directive is not None
+    assert isinstance(directive, Directive)
+    assert directive.action == DirectiveAction.SHUTDOWN
+    assert directive.reason == "kill_switch"
+    assert attached is False
+
+
+def test_post_event_returns_attached_true_when_backend_attaches(
+    mock_control_plane: Any,
+) -> None:
+    """D094: ingestion sets attached=true on session_start envelopes
+    whose session_id maps to an existing sessions row. The sensor
+    surfaces the flag alongside the directive so Session._post_event
+    can emit the INFO log."""
+    mock_control_plane["set_response"]({
+        "status": "ok",
+        "directive": None,
+        "attached": True,
+    })
+    client = ControlPlaneClient(mock_control_plane["url"], "tok")
+    directive, attached = client.post_event(
+        {"session_id": "abc", "event_type": "session_start"}
+    )
+    assert directive is None
+    assert attached is True
 
 
 def test_connectivity_failure_continue_returns_none() -> None:
     client = ControlPlaneClient("http://127.0.0.1:1", "tok", unavailable_policy="continue")
-    result = client.post_event({"session_id": "x", "event_type": "post_call"})
-    assert result is None
+    directive, attached = client.post_event({"session_id": "x", "event_type": "post_call"})
+    assert directive is None
+    assert attached is False
 
 
 def test_connectivity_failure_halt_raises() -> None:
@@ -91,7 +114,7 @@ class TestEventQueue:
     def test_queue_full_drops_oldest(self, caplog: pytest.LogCaptureFixture) -> None:
         mock_client = MagicMock(spec=ControlPlaneClient)
         # Slow client so drain thread doesn't empty the queue
-        mock_client.post_event.side_effect = lambda _: time.sleep(10)
+        mock_client.post_event.side_effect = lambda _: (time.sleep(10), None, False)[1:]
         eq = EventQueue(mock_client)
         try:
             # Fill to capacity (drain thread may consume one, so overshoot)
@@ -120,7 +143,7 @@ class TestEventQueue:
         attempt to silence them lands as a failed test.
         """
         mock_client = MagicMock(spec=ControlPlaneClient)
-        mock_client.post_event.side_effect = lambda _: time.sleep(10)
+        mock_client.post_event.side_effect = lambda _: (time.sleep(10), None, False)[1:]
         eq = EventQueue(mock_client)
         try:
             # Pre-fill so every subsequent enqueue triggers the
@@ -156,7 +179,7 @@ class TestEventQueue:
         been called for every enqueued item.
         """
         mock_client = MagicMock(spec=ControlPlaneClient)
-        mock_client.post_event.return_value = None
+        mock_client.post_event.return_value = (None, False)
         eq = EventQueue(mock_client)
         try:
             for i in range(3):

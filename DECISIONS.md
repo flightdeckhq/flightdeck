@@ -2174,3 +2174,83 @@ that time. For now the existing behaviour is correct and the
 fallback is acceptable.
 
 ---
+
+## D094 -- Optional session_id hint in init() with backend attachment
+
+**Problem:** Agents spawned repeatedly by orchestrators (Temporal
+workflows, Airflow DAGs, cron-driven batch jobs) get a different
+sensor-generated UUID on every run. The fleet view therefore
+treats every re-run as a brand-new session with no relationship to
+its predecessor, and operators cannot ask "how did this workflow
+do last time?" or "show me the full token cost across all runs of
+this pipeline" without out-of-band joins.
+
+**Decision:** `flightdeck_sensor.init()` accepts an optional
+`session_id` parameter. The caller supplies either the kwarg or
+the `FLIGHTDECK_SESSION_ID` environment variable (env wins over
+kwarg, matching the existing `FLIGHTDECK_SERVER` /
+`AGENT_FLAVOR` pattern). When provided, the sensor uses the
+caller-supplied value verbatim instead of generating a UUID and
+logs a single WARNING at `init()` to make the behaviour visible:
+
+    Custom session_id provided: '{value}'. This ID will be used
+    as-is and will not be auto-generated. If a session with this
+    ID already exists, the backend will attach this agent to it.
+
+The ingestion API owns the attach decision. On arrival of a
+`session_start` event, a new `ingestion/internal/session.Store`
+(mirroring the existing `directive.Store` pattern) runs a
+synchronous check against the `sessions` table:
+
+- Row does not exist → no-op, `attached=false`. The worker will
+  create it as usual.
+- Row exists in `{closed, lost}` → state flips to `active`,
+  `last_attached_at = NOW()`. `started_at` and `ended_at` are
+  deliberately preserved so the original lifetime stays in the
+  DB. `attached=true`.
+- Row exists in `{active, idle, stale}` → `last_attached_at` is
+  stamped. No state change. `attached=true`.
+
+The ingestion response envelope gains a top-level
+`"attached": boolean` field. The sensor's `ControlPlaneClient`
+surfaces it alongside the parsed directive; `Session._post_event`
+logs `"Attached to existing session {id}."` at INFO on the first
+envelope that carries `attached=true` and latches a per-process
+guard so subsequent envelopes do not duplicate the line.
+
+The worker's `HandleSessionStart` no longer skips terminal
+sessions (KI13 behaviour kept for every other event type). The
+ingestion path has already committed the state flip by the time
+the worker consumes the NATS message, so `UpsertSession`'s ON
+CONFLICT branch runs as a regular refresh. Heartbeat, post_call,
+and session_end still honour `isTerminal` -- attachment is a
+session_start-only transition, not a general "un-close" for the
+whole event stream.
+
+**Schema.** Migration `000008_add_last_attached_at_to_sessions`
+adds `last_attached_at TIMESTAMPTZ` (nullable) plus a partial
+index that only covers non-NULL values. The column stays NULL
+for sessions that have never been re-attached; the dashboard
+treats NULL as "this is the first run" and renders no separator.
+
+**Out of scope.** The attach flow does not support changing
+flavor / agent_type / host mid-session: those columns are
+`COALESCE`d by `UpsertSession` in the worker and the caller is
+expected to keep them consistent across runs. Multi-tenant
+session-id collisions (same UUID, different tenant) are
+prevented by the existing one-tenant-per-deployment model (v1
+is self-hosted).
+
+**Risks considered and dismissed.** Clearing `ended_at` on revive
+would make historical queries ambiguous about how long the prior
+run took; preserving it keeps the DB truthful. Preserving
+`started_at` instead of resetting keeps "session age" metrics
+stable across attachments. Letting the worker (not ingestion)
+decide the attach state would mean the response envelope shipped
+before the decision was made, making `attached` best-effort and
+unreliable. The synchronous ingestion check is worth the one
+extra read+write per session_start because session_start is rare
+(once per process) and the alternative leaks implementation timing
+into caller visibility.
+
+---

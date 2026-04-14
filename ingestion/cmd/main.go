@@ -24,6 +24,7 @@ import (
 	"github.com/flightdeckhq/flightdeck/ingestion/internal/handlers"
 	inats "github.com/flightdeckhq/flightdeck/ingestion/internal/nats"
 	"github.com/flightdeckhq/flightdeck/ingestion/internal/server"
+	"github.com/flightdeckhq/flightdeck/ingestion/internal/session"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go"
 )
@@ -80,9 +81,10 @@ func main() {
 
 	validator := auth.NewValidator(pool)
 	dirStore := &directiveAdapter{store: directive.NewStore(pool)}
+	sessAttacher := session.NewStore(pool)
 
 	addr := fmt.Sprintf(":%s", cfg.Port)
-	srv := server.New(addr, validator, publisher, dirStore, cfg.RateLimitPerMinute)
+	srv := server.New(addr, validator, publisher, dirStore, sessAttacher, cfg.RateLimitPerMinute)
 
 	// Start server
 	go func() {

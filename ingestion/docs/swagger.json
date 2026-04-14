@@ -1,205 +1,261 @@
 {
-    "swagger": "2.0",
+    "components": {
+        "schemas": {
+            "handlers.DirectiveResponse": {
+                "properties": {
+                    "action": {
+                        "type": "string"
+                    },
+                    "degrade_to": {
+                        "type": "string"
+                    },
+                    "grace_period_ms": {
+                        "type": "integer"
+                    },
+                    "id": {
+                        "type": "string"
+                    },
+                    "payload": {
+                        "type": "object"
+                    },
+                    "reason": {
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "handlers.ErrorResponse": {
+                "properties": {
+                    "error": {
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "handlers.EventResponse": {
+                "properties": {
+                    "attached": {
+                        "type": "boolean"
+                    },
+                    "directive": {
+                        "$ref": "#/components/schemas/handlers.DirectiveResponse"
+                    },
+                    "status": {
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            }
+        }
+    },
     "info": {
         "description": "Receives sensor events and delivers directives to agents",
         "title": "Flightdeck Ingestion API",
-        "contact": {},
         "version": "0.1.0"
     },
-    "host": "localhost:8080",
-    "basePath": "/",
+    "externalDocs": {
+        "description": "",
+        "url": ""
+    },
     "paths": {
         "/health": {
             "get": {
                 "description": "Returns service health status",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "health"
-                ],
-                "summary": "Health check",
                 "responses": {
                     "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "additionalProperties": {
-                                "type": "string"
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "additionalProperties": {
+                                        "type": "string"
+                                    },
+                                    "type": "object"
+                                }
                             }
-                        }
+                        },
+                        "description": "OK"
                     }
-                }
+                },
+                "summary": "Health check",
+                "tags": [
+                    "health"
+                ]
             }
         },
         "/v1/events": {
             "post": {
-                "description": "Validates bearer token, publishes event to NATS, returns directive envelope",
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "events"
-                ],
-                "summary": "Submit agent event",
+                "description": "Validates bearer token, publishes event to NATS, returns directive envelope. On session_start events, also reports whether the session was attached to a pre-existing row (D094).",
                 "parameters": [
                     {
-                        "type": "string",
                         "description": "Bearer token",
-                        "name": "Authorization",
                         "in": "header",
-                        "required": true
-                    },
-                    {
-                        "description": "Event payload",
-                        "name": "event",
-                        "in": "body",
+                        "name": "Authorization",
                         "required": true,
                         "schema": {
-                            "type": "object"
+                            "type": "string"
                         }
                     }
                 ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object"
+                            }
+                        },
+                        "text/plain": {
+                            "schema": {
+                                "title": "event",
+                                "type": "object"
+                            }
+                        }
+                    },
+                    "description": "Event payload",
+                    "required": true
+                },
                 "responses": {
                     "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/handlers.EventResponse"
-                        }
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/handlers.EventResponse"
+                                }
+                            }
+                        },
+                        "description": "OK"
                     },
                     "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "$ref": "#/definitions/handlers.ErrorResponse"
-                        }
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/handlers.ErrorResponse"
+                                }
+                            }
+                        },
+                        "description": "Bad Request"
                     },
                     "401": {
-                        "description": "Unauthorized",
-                        "schema": {
-                            "$ref": "#/definitions/handlers.ErrorResponse"
-                        }
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/handlers.ErrorResponse"
+                                }
+                            }
+                        },
+                        "description": "Unauthorized"
                     },
                     "429": {
-                        "description": "Too Many Requests",
-                        "schema": {
-                            "$ref": "#/definitions/handlers.ErrorResponse"
-                        }
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/handlers.ErrorResponse"
+                                }
+                            }
+                        },
+                        "description": "Too Many Requests"
                     },
                     "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "$ref": "#/definitions/handlers.ErrorResponse"
-                        }
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/handlers.ErrorResponse"
+                                }
+                            }
+                        },
+                        "description": "Internal Server Error"
                     }
-                }
+                },
+                "summary": "Submit agent event",
+                "tags": [
+                    "events"
+                ]
             }
         },
         "/v1/heartbeat": {
             "post": {
                 "description": "Validates bearer token, publishes heartbeat to NATS, returns directive envelope",
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "heartbeat"
-                ],
-                "summary": "Agent heartbeat",
                 "parameters": [
                     {
-                        "type": "string",
                         "description": "Bearer token",
-                        "name": "Authorization",
                         "in": "header",
-                        "required": true
-                    },
-                    {
-                        "description": "Heartbeat payload with session_id",
-                        "name": "heartbeat",
-                        "in": "body",
+                        "name": "Authorization",
                         "required": true,
                         "schema": {
-                            "type": "object"
+                            "type": "string"
                         }
                     }
                 ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object"
+                            }
+                        },
+                        "text/plain": {
+                            "schema": {
+                                "title": "heartbeat",
+                                "type": "object"
+                            }
+                        }
+                    },
+                    "description": "Heartbeat payload with session_id",
+                    "required": true
+                },
                 "responses": {
                     "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "additionalProperties": true
-                        }
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "additionalProperties": {},
+                                    "type": "object"
+                                }
+                            }
+                        },
+                        "description": "OK"
                     },
                     "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "$ref": "#/definitions/handlers.ErrorResponse"
-                        }
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/handlers.ErrorResponse"
+                                }
+                            }
+                        },
+                        "description": "Bad Request"
                     },
                     "401": {
-                        "description": "Unauthorized",
-                        "schema": {
-                            "$ref": "#/definitions/handlers.ErrorResponse"
-                        }
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/handlers.ErrorResponse"
+                                }
+                            }
+                        },
+                        "description": "Unauthorized"
                     },
                     "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "$ref": "#/definitions/handlers.ErrorResponse"
-                        }
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/handlers.ErrorResponse"
+                                }
+                            }
+                        },
+                        "description": "Internal Server Error"
                     }
-                }
+                },
+                "summary": "Agent heartbeat",
+                "tags": [
+                    "heartbeat"
+                ]
             }
         }
     },
-    "definitions": {
-        "handlers.DirectiveResponse": {
-            "type": "object",
-            "properties": {
-                "action": {
-                    "type": "string"
-                },
-                "degrade_to": {
-                    "type": "string"
-                },
-                "grace_period_ms": {
-                    "type": "integer"
-                },
-                "id": {
-                    "type": "string"
-                },
-                "payload": {
-                    "type": "object"
-                },
-                "reason": {
-                    "type": "string"
-                }
-            }
-        },
-        "handlers.ErrorResponse": {
-            "type": "object",
-            "properties": {
-                "error": {
-                    "type": "string"
-                }
-            }
-        },
-        "handlers.EventResponse": {
-            "type": "object",
-            "properties": {
-                "directive": {
-                    "$ref": "#/definitions/handlers.DirectiveResponse"
-                },
-                "status": {
-                    "type": "string"
-                }
-            }
+    "openapi": "3.1.0",
+    "servers": [
+        {
+            "url": "localhost:8080/"
         }
-    }
+    ]
 }

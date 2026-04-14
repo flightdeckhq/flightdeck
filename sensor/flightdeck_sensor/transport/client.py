@@ -56,8 +56,25 @@ class ControlPlaneClient:
     # Public API
     # ------------------------------------------------------------------
 
-    def post_event(self, payload: dict[str, Any]) -> Directive | None:
-        """POST an event to ``/v1/events`` and return any embedded directive."""
+    def post_event(
+        self, payload: dict[str, Any]
+    ) -> tuple[Directive | None, bool]:
+        """POST an event to ``/v1/events``.
+
+        Returns ``(directive, attached)``:
+
+        * ``directive`` -- any directive embedded in the response
+          envelope, or ``None``.
+        * ``attached`` -- the ingestion response's ``attached`` flag.
+          ``True`` when the backend matched this sensor's
+          ``session_id`` to a pre-existing row in ``sessions``. Only
+          ever ``True`` on the ``session_start`` response envelope
+          (later events hit an already-active row and the flag is
+          reset to ``False`` there) -- callers must therefore treat
+          the first ``True`` as the attachment confirmation. Missing
+          field defaults to ``False`` for backward compatibility with
+          older ingestion deployments.
+        """
         return self._post("/v1/events", payload)
 
     def sync_directives(
@@ -132,8 +149,10 @@ class ControlPlaneClient:
     # Internals
     # ------------------------------------------------------------------
 
-    def _post(self, path: str, body: dict[str, Any]) -> Directive | None:
-        """POST JSON and parse the response envelope for a directive."""
+    def _post(
+        self, path: str, body: dict[str, Any]
+    ) -> tuple[Directive | None, bool]:
+        """POST JSON and parse the response envelope for directive + attached."""
         url = f"{self._base_url}{path}"
         data = json.dumps(body).encode()
         req = urllib.request.Request(
@@ -149,9 +168,11 @@ class ControlPlaneClient:
         try:
             raw = with_retry(lambda: self._do_request(req))
         except (URLError, OSError, TimeoutError, ConnectionError) as exc:
-            return self._handle_unavailable(exc)
+            return self._handle_unavailable(exc), False
 
-        return self._parse_directive(raw)
+        directive = self._parse_directive(raw)
+        attached = bool(raw.get("attached", False))
+        return directive, attached
 
     def _do_request(self, req: urllib.request.Request) -> dict[str, Any]:
         """Execute a single HTTP request and return the parsed JSON body.
@@ -424,7 +445,15 @@ class EventQueue:
                     return
                 directive: Directive | None = None
                 try:
-                    directive = self._client.post_event(item)  # type: ignore[arg-type]
+                    # The drain thread processes async events only
+                    # (not the synchronous session_start POST issued
+                    # by Session._post_event). The ``attached`` flag
+                    # therefore only ever arrives on the drain path
+                    # if the backend protocol is extended, and the
+                    # async path has no session handle to log it on.
+                    # Discard here; Session._post_event is the sole
+                    # consumer of the attach confirmation.
+                    directive, _ = self._client.post_event(item)  # type: ignore[arg-type]
                 except Exception as exc:
                     event_type = "unknown"
                     if isinstance(item, dict):

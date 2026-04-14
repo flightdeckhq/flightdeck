@@ -521,6 +521,7 @@ def init(
     quiet: bool = False,
     limit: int | None = None,        # local WARN-only token threshold -- see D035
     warn_at: float = 0.8,            # fire WARN at this fraction of limit
+    session_id: str | None = None,   # optional session-id hint -- see D094
 ) -> None:
     """
     Initialize the sensor.
@@ -534,8 +535,16 @@ def init(
     Most restrictive threshold wins when both local and server policies are active.
     See DECISIONS.md D035.
 
+    session_id is an optional caller-supplied identifier. When set (or when
+    FLIGHTDECK_SESSION_ID is exported, which takes precedence), the sensor
+    uses the caller's value verbatim instead of generating a UUID. If a
+    session with that ID already exists, the backend attaches this execution
+    to the prior row; see "Session attachment flow" below. See DECISIONS.md
+    D094.
+
     Reads from environment (override init() params):
         FLIGHTDECK_API_URL            -- control-plane base URL (overrides api_url)
+        FLIGHTDECK_SESSION_ID         -- session-id hint (overrides session_id)
         AGENT_FLAVOR                  -- persistent identity, e.g. "research-agent"
         AGENT_TYPE                    -- "autonomous", "supervised", or "batch"
         FLIGHTDECK_UNAVAILABLE_POLICY -- "continue" (default) or "halt"
@@ -648,7 +657,7 @@ The worker stores this in `event_content` and sets `has_content=true` on the eve
 ### Ingestion API response
 
 ```json
-{ "status": "ok", "directive": null }
+{ "status": "ok", "directive": null, "attached": false }
 ```
 
 ```json
@@ -658,7 +667,8 @@ The worker stores this in `event_content` and sets `has_content=true` on the eve
     "action": "shutdown",
     "reason": "kill_switch_activated",
     "grace_period_ms": 5000
-  }
+  },
+  "attached": false
 }
 ```
 
@@ -666,6 +676,67 @@ Directives are delivered in the HTTP response envelope of the sensor's next
 `POST /v1/events` call. Delivery latency equals the time between LLM calls.
 Idle agents (no active LLM calls) will not receive directives until they make
 their next LLM call.
+
+The `attached` boolean is set to `true` exclusively on `session_start`
+responses whose `session_id` matches a pre-existing `sessions` row -- closed,
+lost, active, idle, or stale. See DECISIONS.md D094 and "Session attachment
+flow" below. All non-`session_start` responses return `attached: false`.
+
+### Session attachment flow
+
+Orchestrators such as Temporal, Airflow, and cron-driven batch systems
+spawn a fresh sensor process every time the same logical workflow runs.
+Without a stable identifier, each run shows up as a brand new session
+in the fleet view and operators cannot answer "how did this workflow
+do compared to last time?" The session-attachment flow gives the
+caller an optional hint that the control plane honours end-to-end:
+
+1. **Sensor -- `init()` accepts `session_id`.** The caller passes
+   a stable ID (e.g. the Temporal workflow id) via the kwarg OR
+   exports `FLIGHTDECK_SESSION_ID`. The env var wins over the kwarg,
+   same precedence as `FLIGHTDECK_SERVER` / `AGENT_FLAVOR`. When a
+   custom ID is in play, `init()` emits a single WARNING so operators
+   can see the behaviour is active.
+2. **Ingestion -- synchronous attachment check on `session_start`.**
+   On arrival of a `session_start` event the ingestion API calls
+   `session.Store.Attach(session_id)` against Postgres BEFORE
+   publishing the NATS envelope. If the row exists in `{closed, lost}`
+   the store flips state to `active` and stamps
+   `last_attached_at = NOW()`. If the row exists in `{active, idle,
+   stale}` the store only stamps `last_attached_at`. `started_at`
+   and `ended_at` are never touched. If the row does not exist the
+   store is a no-op and the worker will create it downstream as
+   before.
+3. **Ingestion response envelope -- `attached: true` when the row
+   pre-existed.** The handler sets `attached=true` on the envelope
+   whenever `Store.Attach` reported a match. A brand-new session
+   returns `attached: false`. Non-`session_start` events always
+   return `attached: false`.
+4. **Sensor -- INFO log on the first attached response.** The
+   transport client surfaces `attached` alongside the parsed
+   directive. `Session._post_event` logs
+   `"Attached to existing session {id}."` at INFO level the first
+   time the flag is true and latches a per-process guard so
+   subsequent envelopes do not duplicate the log.
+5. **Dashboard -- run separator anchored on `last_attached_at`.**
+   The session drawer detects every `session_start` event after the
+   first and draws a subtle horizontal rule labeled
+   "New execution attached · {timestamp}" between the prior run's
+   events and the new run's events. The timestamp comes from the
+   event row; `last_attached_at` on the session itself is the
+   authoritative "last time any execution attached" anchor.
+
+The race between step 2 (synchronous) and the worker's
+`HandleSessionStart` (asynchronous, via NATS) is bounded: the
+ingestion API locks the answer ("attached=true, revive row") in the
+HTTP response the instant the state flip completes. By the time the
+worker consumes the event, the row is already `active`, and the
+worker's `UpsertSession` ON CONFLICT branch is a no-op refresh --
+`last_attached_at` is not touched by the worker path. See the KI13
+note in `ingestion/internal/handlers/events.go`: the worker formerly
+skipped all events for terminal sessions; `session_start` is now
+allowed to pass through specifically because the attach transition
+has already been committed upstream.
 
 ---
 
@@ -701,15 +772,28 @@ CREATE TABLE sessions (
     tokens_used     INTEGER NOT NULL DEFAULT 0,
     token_limit     INTEGER,
     metadata        JSONB,
-    context         JSONB NOT NULL DEFAULT '{}'::jsonb
+    context         JSONB NOT NULL DEFAULT '{}'::jsonb,
+    last_attached_at TIMESTAMPTZ       -- nullable, set by ingestion on attach
 );
 
-CREATE INDEX sessions_flavor_idx      ON sessions(flavor);
-CREATE INDEX sessions_state_idx       ON sessions(state);
-CREATE INDEX sessions_last_seen_idx   ON sessions(last_seen_at);
-CREATE INDEX sessions_started_idx     ON sessions(started_at);
-CREATE INDEX sessions_context_gin     ON sessions USING GIN (context);
+CREATE INDEX sessions_flavor_idx         ON sessions(flavor);
+CREATE INDEX sessions_state_idx          ON sessions(state);
+CREATE INDEX sessions_last_seen_idx      ON sessions(last_seen_at);
+CREATE INDEX sessions_started_idx        ON sessions(started_at);
+CREATE INDEX sessions_context_gin        ON sessions USING GIN (context);
+CREATE INDEX sessions_last_attached_idx  ON sessions(last_attached_at)
+    WHERE last_attached_at IS NOT NULL;
 ```
+
+The `last_attached_at` column is set by the ingestion API whenever a
+`session_start` event arrives for a session that already exists in the
+table. It stays NULL for the first `session_start` of a new session
+(the initial creation is not an "attach"). The dashboard's session
+drawer uses it to draw a run-separator between the events of the
+previous execution and the events that follow -- see DECISIONS.md
+D094 and "Session attachment flow" below. `started_at` and `ended_at`
+are deliberately NOT touched on attach so the original session
+lifetime remains in the DB.
 
 The `context` column stores the runtime environment snapshot collected
 once by the sensor at `init()` time -- hostname, OS, Python version, git

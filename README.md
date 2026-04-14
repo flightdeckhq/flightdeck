@@ -30,6 +30,11 @@ import flightdeck_sensor
 flightdeck_sensor.init(
     server="http://localhost:4000/ingest",
     token="tok_dev",
+    # Optional: supply a stable session_id (or export
+    # FLIGHTDECK_SESSION_ID) so orchestrator re-runs attach to the
+    # existing session instead of creating a new one every time.
+    # See DECISIONS.md D094.
+    # session_id="my-workflow-run-id",
 )
 flightdeck_sensor.patch()
 

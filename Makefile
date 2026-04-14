@@ -23,12 +23,17 @@ test-e2e: ## Run sensor end-to-end tests only (requires running stack + respx)
 	$(MAKE) -C docker dev
 	cd tests/integration && pytest -v test_sensor_e2e.py
 
-test-smoke-deps: ## Install Python deps required by the smoke test suite
-	pip install -e sensor/
-	pip install -r tests/smoke/requirements.txt
+test-smoke-deps: tests/smoke/.venv-py312/bin/python ## Install smoke test deps into the dedicated Python 3.12 venv
+	tests/smoke/.venv-py312/bin/pip install -e sensor/
+	tests/smoke/.venv-py312/bin/pip install -r tests/smoke/requirements.txt
+	tests/smoke/.venv-py312/bin/pip install crewai langgraph langgraph-prebuilt
+
+tests/smoke/.venv-py312/bin/python: ## Create Python 3.12 venv for smoke tests (crewai pins tiktoken<0.6 which has no 3.14 wheel)
+	python3.12 -m venv tests/smoke/.venv-py312
+	tests/smoke/.venv-py312/bin/pip install --upgrade pip
 
 test-smoke: test-smoke-deps ## Run smoke tests with real API keys (requires running stack + ANTHROPIC_API_KEY + OPENAI_API_KEY). See tests/smoke/README.md.
-	python3 tests/smoke/smoke_test.py
+	tests/smoke/.venv-py312/bin/python tests/smoke/smoke_test.py
 
 test-e2e: ## Run Playwright E2E tests (requires make dev)
 	cd dashboard && npx playwright test

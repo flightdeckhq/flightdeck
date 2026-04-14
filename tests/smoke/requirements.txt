@@ -26,11 +26,15 @@ langchain-openai>=1.1.12
 llama-index-llms-anthropic>=0.11.2
 llama-index-llms-openai>=0.7.5
 
-# CrewAI pins an old langchain-openai (<0.0.6) which transitively
-# requires tiktoken<0.6.0 -- that version has no Python 3.14 wheel and
-# fails to build from source. Left out by default; install manually if
-# your Python runtime supports it:
+# CrewAI and LangGraph require Python <= 3.13 (CrewAI pins
+# tiktoken<0.6 which has no 3.14 wheel). They are installed into the
+# dedicated Python 3.12 venv at tests/smoke/.venv-py312/ by
+# `make test-smoke-deps`, NOT via pip install on your default
+# interpreter. See tests/smoke/README.md.
 #
-#     pip install crewai
+# Manual install into that venv:
+#     tests/smoke/.venv-py312/bin/pip install crewai langgraph langgraph-prebuilt
 #
-# The 13e scenario skips cleanly when crewai is not importable.
+# The 12e / 12f-h / 13e scenarios skip cleanly when the corresponding
+# package is not importable, so running the suite on Python 3.14
+# without the venv still produces a useful report.

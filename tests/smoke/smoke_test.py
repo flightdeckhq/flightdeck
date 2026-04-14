@@ -1771,6 +1771,16 @@ def group_12_frameworks() -> None:
         package="crewai", needs_key=HAS_OPENAI_KEY,
         provider="openai", invoke=_invoke_crewai,
     )
+    _framework_scenario(
+        scenario_name="12f. LangGraph + Anthropic", prefix="12f",
+        package="langgraph", needs_key=HAS_ANTHROPIC_KEY,
+        provider="anthropic", invoke=_invoke_langgraph_anthropic,
+    )
+    _framework_scenario(
+        scenario_name="12g. LangGraph + OpenAI", prefix="12g",
+        package="langgraph", needs_key=HAS_OPENAI_KEY,
+        provider="openai", invoke=_invoke_langgraph_openai,
+    )
 
 
 def _framework_scenario(
@@ -1833,6 +1843,56 @@ def _invoke_crewai() -> None:
     LLM(model=f"openai/{Config.OPENAI_MODEL}").call("hi")
 
 
+def _invoke_langgraph_anthropic() -> None:
+    # LangGraph routes LLM calls through LangChain's ChatAnthropic,
+    # which patch() already intercepts. A minimal StateGraph with one
+    # node exercises the full graph-compile-invoke path without any
+    # extra framework surface.
+    from langgraph.graph import StateGraph, START, END
+    from langchain_anthropic import ChatAnthropic
+    from typing_extensions import TypedDict
+
+    class State(TypedDict):
+        text: str
+
+    llm = ChatAnthropic(
+        model=Config.ANTHROPIC_MODEL, max_tokens=Config.HI_MAX_TOKENS,
+    )
+
+    def call(state: State) -> State:
+        llm.invoke(state["text"])
+        return state
+
+    graph = StateGraph(State)
+    graph.add_node("call", call)
+    graph.add_edge(START, "call")
+    graph.add_edge("call", END)
+    graph.compile().invoke({"text": "hi"})
+
+
+def _invoke_langgraph_openai() -> None:
+    from langgraph.graph import StateGraph, START, END
+    from langchain_openai import ChatOpenAI
+    from typing_extensions import TypedDict
+
+    class State(TypedDict):
+        text: str
+
+    llm = ChatOpenAI(
+        model=Config.OPENAI_MODEL, max_tokens=Config.HI_MAX_TOKENS,
+    )
+
+    def call(state: State) -> State:
+        llm.invoke(state["text"])
+        return state
+
+    graph = StateGraph(State)
+    graph.add_node("call", call)
+    graph.add_edge(START, "call")
+    graph.add_edge("call", END)
+    graph.compile().invoke({"text": "hi"})
+
+
 # ----------------------------------------------------------------------------
 # GROUP 13 -- Framework Tool Calls (sensor emits tool_call per invocation)
 # ----------------------------------------------------------------------------
@@ -1863,6 +1923,11 @@ def group_13_framework_tool_calls() -> None:
         scenario_name="13e. CrewAI tool call", prefix="13e",
         package="crewai", needs_key=HAS_OPENAI_KEY,
         provider="openai", invoke=_invoke_crewai_tool,
+    )
+    _framework_tool_scenario(
+        scenario_name="12h. LangGraph tool call", prefix="12h",
+        package="langgraph", needs_key=HAS_OPENAI_KEY,
+        provider="openai", invoke=_invoke_langgraph_tool,
     )
 
 
@@ -2002,6 +2067,31 @@ def _invoke_crewai_tool() -> None:
         max_tokens=Config.HI_MAX_TOKENS * 20,
     )
     llm.call(_WEATHER_PROMPT, tools=[_OPENAI_WEATHER_TOOL])
+
+
+def _invoke_langgraph_tool() -> None:
+    # Minimal tool-calling agent via langgraph.prebuilt.create_react_agent.
+    # The prebuilt agent already wires a ToolNode + LLM loop internally,
+    # so this scenario doesn't need a hand-written StateGraph. The LLM
+    # call still goes through the patched ChatOpenAI, and the ToolNode
+    # invokes the @tool-decorated function which produces the sensor's
+    # tool_call event through the provider-level tool_use / tool_calls
+    # intercept.
+    from langgraph.prebuilt import create_react_agent
+    from langchain_core.tools import tool
+    from langchain_openai import ChatOpenAI
+
+    @tool
+    def get_weather(city: str) -> str:
+        """Look up the current weather for a city."""
+        return f"Sunny, 22C in {city}"
+
+    llm = ChatOpenAI(
+        model=Config.OPENAI_MODEL,
+        max_tokens=Config.HI_MAX_TOKENS * 20,
+    )
+    agent = create_react_agent(llm, [get_weather])
+    agent.invoke({"messages": [{"role": "user", "content": _WEATHER_PROMPT}]})
 
 
 # ----------------------------------------------------------------------------

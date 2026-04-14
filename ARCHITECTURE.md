@@ -2704,6 +2704,7 @@ The class-level patch covers the **default** code paths used by every framework 
 - **llama-index-llms-anthropic** `Anthropic.complete()` → `client.messages.create()` ✓
 - **llama-index-llms-openai** `OpenAI.complete()` → `client.chat.completions.create()` ✓
 - **CrewAI 1.14+** `LLM(model=...).call()` → `OpenAICompletion._call_completions` → `client.chat.completions.create()` ✓ (CrewAI uses native provider classes, not litellm)
+- **LangGraph 1.1+** `StateGraph(...).compile().invoke(...)` → each node that calls `ChatAnthropic`/`ChatOpenAI` / bound tools → routes through the same LangChain model abstractions patched above, so the existing `patch()` intercepts LangGraph-driven calls with no extra code. `ToolNode` tool invocations produce the sensor's `tool_call` events via the same provider-level tool_use / tool_calls interception. LangGraph requires Python ≥ 3.10 (CrewAI dependency chain pins Python ≤ 3.13 via `tiktoken<0.6`). A `LangGraphClassifier` is wired into `core/context.py::FrameworkCollector` so `session_start.context.frameworks` reports `"langgraph/<version>"` when the module is loaded.
 
 In addition, the following resource entry points are also intercepted even though no currently-tested framework drives them by default — they are patched proactively because they are standard inference paths in production code (Claude 4 adaptive thinking, the OpenAI Responses API, and RAG embedding calls):
 

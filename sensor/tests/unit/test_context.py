@@ -241,6 +241,18 @@ def test_frameworks_no_version(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "haystack" in result["frameworks"]
 
 
+def test_langgraph_detected(monkeypatch: pytest.MonkeyPatch) -> None:
+    """LangGraph loaded into sys.modules is reported by the
+    LangGraphClassifier so session_start.context.frameworks
+    distinguishes LangGraph-driven agents from bare LangChain."""
+    fake = type(sys)("langgraph")
+    fake.__version__ = "1.1.6"  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "langgraph", fake)
+
+    result = FrameworkCollector().collect()
+    assert "langgraph/1.1.6" in result["frameworks"]
+
+
 def test_frameworks_never_imports() -> None:
     """If no framework is in sys.modules, the result is empty -- the
     classifier MUST NOT import anything new."""
@@ -249,6 +261,7 @@ def test_frameworks_never_imports() -> None:
     targets = [
         "crewai",
         "langchain",
+        "langgraph",
         "llama_index",
         "autogen",
         "haystack",

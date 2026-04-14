@@ -35,38 +35,51 @@ set. Missing dependencies never produce a `FAIL`.
   scenarios skip)
 - `OPENAI_API_KEY` in the environment (otherwise OpenAI scenarios
   skip)
-- `flightdeck-sensor` installed in editable mode:
-  ```
-  pip install -e sensor/
-  ```
-- Smoke test dependencies:
-  ```
-  pip install -r tests/smoke/requirements.txt
-  ```
+- Python 3.12 available on `$PATH` as `python3.12` (used for the
+  dedicated smoke venv -- see "Python 3.12 venv" below).
 - `tok_dev` bearer token seeded in Postgres (the default `init.sql`
   does this; `make dev-reset` re-seeds if the volume is wiped).
 
-## Running
+## Python 3.12 venv
 
-Straight shot:
+The smoke suite ships a dedicated venv at
+`tests/smoke/.venv-py312/` so CrewAI and LangGraph (both of which
+pin `tiktoken<0.6`, which has no Python 3.14 wheel) can be installed
+cleanly. `make test-smoke` and `make test-smoke-deps` both target
+this venv automatically; your system Python is untouched.
 
-```bash
-make dev                          # start the stack if it's not up
-pip install -e sensor/
-pip install -r tests/smoke/requirements.txt
-python tests/smoke/smoke_test.py
-```
-
-Or via the all-in-one Makefile target (installs deps, then runs):
-
-```bash
-make test-smoke
-```
-
-Just the install step:
+First-time setup (one command creates the venv + installs every
+dependency including crewai and langgraph):
 
 ```bash
 make test-smoke-deps
+```
+
+This runs:
+
+```bash
+python3.12 -m venv tests/smoke/.venv-py312
+tests/smoke/.venv-py312/bin/pip install -e sensor/
+tests/smoke/.venv-py312/bin/pip install -r tests/smoke/requirements.txt
+tests/smoke/.venv-py312/bin/pip install crewai langgraph langgraph-prebuilt
+```
+
+The venv is gitignored. Delete and recreate it with
+`rm -rf tests/smoke/.venv-py312 && make test-smoke-deps`.
+
+## Running
+
+Straight shot via Makefile:
+
+```bash
+make dev                  # start the stack if it's not up
+make test-smoke           # installs venv deps if missing, then runs
+```
+
+Direct invocation (after `make test-smoke-deps`):
+
+```bash
+tests/smoke/.venv-py312/bin/python tests/smoke/smoke_test.py
 ```
 
 ### Selecting groups
@@ -102,15 +115,14 @@ streaming, framework invocations that force a tool call).
 | 1 | One or more `FAIL` |
 | 2 | Stack unhealthy / config error (e.g. Docker not running) |
 
-## CrewAI note
+## CrewAI and LangGraph note
 
-`crewai` is listed as an optional extra in `requirements.txt`. On
-Python 3.14 its transitive dependency `tiktoken<0.6.0` has no
-prebuilt wheel and fails to build from source, so the default
-install skips it. Install manually on a supported runtime:
-
-```bash
-pip install crewai
-```
+Both pin `tiktoken<0.6.0` transitively, which has no prebuilt wheel
+for Python 3.14 and fails to build from source. The
+`tests/smoke/.venv-py312/` venv solves this by using Python 3.12 for
+the smoke suite only; `make test-smoke-deps` installs both packages
+into that venv. The 12e / 12f / 12g / 12h / 13e scenarios still skip
+cleanly if you run the suite with a different interpreter that does
+not have them installed.
 
 Group 12e and 13e skip cleanly when `crewai` is not importable.

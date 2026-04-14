@@ -332,7 +332,7 @@ function SessionEventRowComponent({
                 const fullEvent = events.find((e) => e.id === eid);
                 onClick(eid, fullEvent);
               }}
-              size={24}
+              size={22}
               isVisible={isEventVisible(node.eventType, activeFilter)}
             />
           ))}

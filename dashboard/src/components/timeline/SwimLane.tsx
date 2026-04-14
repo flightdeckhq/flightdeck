@@ -559,7 +559,7 @@ function AggregatedSessionEvents({
             const fullEvent = events.find((e) => e.id === eid);
             onSessionClick(session.session_id, eid, fullEvent);
           }}
-          size={20}
+          size={22}
           isVisible={isEventVisible(node.eventType, activeFilter)}
         />
       ))}

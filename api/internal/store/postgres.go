@@ -864,14 +864,19 @@ func (s *Store) GetCustomDirectives(ctx context.Context, flavor string) ([]Custo
 }
 
 // GetContextFacets aggregates the runtime context dicts from every
-// non-lost session into a (key -> [(value, count)]) map. The result
-// powers the dashboard CONTEXT sidebar facet panel.
+// session the fleet view surfaces into a (key -> [(value, count)])
+// map. The result powers the dashboard CONTEXT sidebar facet panel.
 //
-// Only non-terminal sessions (active / idle / stale) contribute --
-// closed and lost sessions are excluded so the panel reflects the
-// current fleet, not historical state. Empty contexts are also
-// excluded so a fleet without any context-bearing sessions returns
-// an empty map (not an error).
+// State filter: the only excluded rows are those with an empty
+// context (no runtime data to contribute). Closed and lost sessions
+// are INCLUDED -- the CONTEXT panel describes the composition of
+// the fleet (what frameworks/OSes/git branches this deployment has
+// ever run) rather than a snapshot of live agents. See
+// DECISIONS.md D097. Previously the query restricted to
+// ``state IN ('active', 'idle', 'stale')`` which caused the whole
+// panel to vanish the moment every session closed -- a surprising
+// UX that hid useful composition data from operators running
+// post-hoc investigations.
 //
 // Array-typed JSONB values (e.g. ``frameworks: ["langchain/0.1.12",
 // "crewai/0.42.0"]``) are unnested element-by-element so each
@@ -894,8 +899,7 @@ func (s *Store) GetContextFacets(ctx context.Context) (map[string][]ContextFacet
 		WITH context_pairs AS (
 			SELECT key, value
 			FROM sessions, jsonb_each(context)
-			WHERE state IN ('active', 'idle', 'stale')
-			  AND context != '{}'::jsonb
+			WHERE context != '{}'::jsonb
 		)
 		SELECT key, val AS value, COUNT(*) AS count
 		FROM context_pairs,

@@ -2430,3 +2430,44 @@ threshold could not tell which kind was meant without context.
 - `sensor/flightdeck_sensor/__init__.py` (docstring clarification)
 
 ---
+
+## D097 -- CONTEXT facets cover all session states, not just live
+
+**Problem:** `GetContextFacets` (store/postgres.go) restricted the
+aggregation to `WHERE state IN ('active', 'idle', 'stale')`. The
+CONTEXT sidebar on the Fleet page therefore disappeared the moment
+every session on the box closed -- which is the normal resting
+state of a dev stack between smoke test runs. Operators opening
+the dashboard after a batch of runs found no framework / OS / git
+branch breakdown at all, even though the underlying data was
+still in the `sessions` table.
+
+**Decision:** Drop the state restriction. The CONTEXT panel now
+aggregates every session whose `context` JSONB is non-empty,
+regardless of state (matches `GetFleet`, which excludes only
+`lost`; closed sessions remain visible in the fleet list, and
+their context data remains useful for composition questions like
+"what frameworks has this install ever seen"). `{}::jsonb` rows
+are still excluded because they have no values to facet on.
+
+**Why this is correct rather than a regression:** the CONTEXT
+panel is a description of **fleet composition**, not a live-ness
+indicator. The Fleet view itself shows closed sessions (grey
+state pills, historical tokens), so having the sidebar hide the
+moment those are the only rows left is a UX defect. The
+state-based live-ness filter belongs on the flavor row state
+column and the event feed, not on context aggregation.
+
+**Time windowing:** GetFleet has no time window filter, so
+GetContextFacets does not add one either -- the goal per the
+Phase 5 task brief is "same session population that the Fleet
+view shows". If a time window is later introduced on the Fleet
+endpoint, GetContextFacets should gain the matching parameter.
+
+**Code locations:**
+
+- `api/internal/store/postgres.go::GetContextFacets`
+- `api/internal/store/postgres_test.go::TestGetContextFacetsUnnestArrayValues`
+  (test SQL mirrored to match)
+
+---

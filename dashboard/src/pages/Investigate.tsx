@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useSearchParams } from "react-router-dom";
-import { Search, RefreshCw, X, LayoutGrid, GitBranch, Bot, Server, Camera } from "lucide-react";
+import { Search, RefreshCw, X, LayoutGrid, GitBranch, Bot, Boxes, Server, Camera } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { fetchSessions, type SessionsParams } from "@/lib/api";
 import type { SessionListItem, SessionState } from "@/lib/types";
@@ -28,6 +28,7 @@ function parseUrlState(sp: URLSearchParams) {
     to: sp.get("to") ?? new Date().toISOString(),
     states: sp.getAll("state") as SessionState[],
     flavors: sp.getAll("flavor"),
+    frameworks: sp.getAll("framework"),
     model: sp.get("model") ?? "",
     sort: sp.get("sort") ?? "started_at",
     order: (sp.get("order") ?? "desc") as "asc" | "desc",
@@ -43,6 +44,7 @@ function buildUrlParams(s: ReturnType<typeof parseUrlState>): URLSearchParams {
   if (s.to) p.set("to", s.to);
   for (const st of s.states) p.append("state", st);
   for (const fl of s.flavors) p.append("flavor", fl);
+  for (const fw of s.frameworks) p.append("framework", fw);
   if (s.model) p.set("model", s.model);
   if (s.sort !== "started_at") p.set("sort", s.sort);
   if (s.order !== "desc") p.set("order", s.order);
@@ -135,6 +137,7 @@ interface FacetSources {
   state?: SessionListItem[];
   flavor?: SessionListItem[];
   model?: SessionListItem[];
+  framework?: SessionListItem[];
 }
 
 function computeFacets(
@@ -144,6 +147,7 @@ function computeFacets(
   const stateCounts = new Map<string, number>();
   const flavorCounts = new Map<string, number>();
   const modelCounts = new Map<string, number>();
+  const frameworkCounts = new Map<string, number>();
   const osCounts = new Map<string, number>();
   const branchCounts = new Map<string, number>();
   const hostCounts = new Map<string, number>();
@@ -168,11 +172,23 @@ function computeFacets(
       if (s.model) modelCounts.set(s.model, (modelCounts.get(s.model) ?? 0) + 1);
     }
   }
+  if (sources.framework) {
+    for (const s of sources.framework) {
+      for (const fw of (s.context?.frameworks as string[] | undefined) ?? []) {
+        frameworkCounts.set(fw, (frameworkCounts.get(fw) ?? 0) + 1);
+      }
+    }
+  }
 
   for (const s of sessions) {
     if (!sources.state) stateCounts.set(s.state, (stateCounts.get(s.state) ?? 0) + 1);
     if (!sources.flavor) flavorCounts.set(s.flavor, (flavorCounts.get(s.flavor) ?? 0) + 1);
     if (!sources.model && s.model) modelCounts.set(s.model, (modelCounts.get(s.model) ?? 0) + 1);
+    if (!sources.framework) {
+      for (const fw of (s.context?.frameworks as string[] | undefined) ?? []) {
+        frameworkCounts.set(fw, (frameworkCounts.get(fw) ?? 0) + 1);
+      }
+    }
     const os = s.context?.os as string | undefined;
     if (os) osCounts.set(os, (osCounts.get(os) ?? 0) + 1);
     const branch = s.context?.git_branch as string | undefined;
@@ -190,6 +206,7 @@ function computeFacets(
     { key: "state", label: "STATE", values: toArr(stateCounts) },
     { key: "flavor", label: "FLAVOR", values: toArr(flavorCounts) },
     { key: "model", label: "MODEL", values: toArr(modelCounts) },
+    { key: "framework", label: "FRAMEWORK", values: toArr(frameworkCounts) },
     { key: "os", label: "OS", values: toArr(osCounts) },
     { key: "git_branch", label: "GIT BRANCH", values: toArr(branchCounts) },
     { key: "hostname", label: "HOSTNAME", values: toArr(hostCounts) },
@@ -221,6 +238,9 @@ function FacetIcon({ groupKey, value }: { groupKey: string; value: string }) {
   }
   if (groupKey === "flavor") {
     return <Bot size={12} style={{ color: "var(--text-muted)", flexShrink: 0 }} />;
+  }
+  if (groupKey === "framework") {
+    return <Boxes size={12} style={{ color: "var(--text-muted)", flexShrink: 0 }} />;
   }
   if (groupKey === "git_branch") {
     return <GitBranch size={12} style={{ color: "var(--text-muted)", flexShrink: 0 }} />;
@@ -374,6 +394,7 @@ export function Investigate() {
         to: state.to,
         state: state.states.length > 0 ? state.states : undefined,
         flavor: state.flavors.length > 0 ? state.flavors : undefined,
+        framework: state.frameworks.length > 0 ? state.frameworks : undefined,
         model: state.model || undefined,
         sort: state.sort,
         order: state.order,
@@ -402,14 +423,18 @@ export function Investigate() {
         model: state.model
           ? fetchSessions({ ...facetBase, model: undefined }, controller.signal)
           : null,
+        framework: state.frameworks.length > 0
+          ? fetchSessions({ ...facetBase, framework: undefined }, controller.signal)
+          : null,
       };
 
       try {
-        const [resp, stateResp, flavorResp, modelResp] = await Promise.all([
+        const [resp, stateResp, flavorResp, modelResp, frameworkResp] = await Promise.all([
           fetchSessions(baseParams, controller.signal),
           aux.state,
           aux.flavor,
           aux.model,
+          aux.framework,
         ]);
         setSessions(resp.sessions);
         setTotal(resp.total);
@@ -417,6 +442,7 @@ export function Investigate() {
           state: stateResp?.sessions,
           flavor: flavorResp?.sessions,
           model: modelResp?.sessions,
+          framework: frameworkResp?.sessions,
         });
         setLastUpdated(Date.now());
       } catch (err) {
@@ -534,6 +560,12 @@ export function Investigate() {
         updateUrl({ flavors: next, page: 1 });
       } else if (group === "model") {
         updateUrl({ model: urlState.model === value ? "" : value, page: 1 });
+      } else if (group === "framework") {
+        const current = urlState.frameworks;
+        const next = current.includes(value)
+          ? current.filter((f) => f !== value)
+          : [...current, value];
+        updateUrl({ frameworks: next, page: 1 });
       }
       // os, git_branch, hostname use the q search for now
     },
@@ -563,11 +595,18 @@ export function Investigate() {
         onRemove: () => updateUrl({ model: "", page: 1 }),
       });
     }
+    for (const fw of urlState.frameworks) {
+      pills.push({
+        label: `framework:${fw}`,
+        onRemove: () =>
+          updateUrl({ frameworks: urlState.frameworks.filter((f) => f !== fw), page: 1 }),
+      });
+    }
     return pills;
   }, [urlState, updateUrl]);
 
   const clearAllFilters = useCallback(() => {
-    updateUrl({ states: [], flavors: [], model: "", q: "", page: 1 });
+    updateUrl({ states: [], flavors: [], frameworks: [], model: "", q: "", page: 1 });
     setSearchInput("");
   }, [updateUrl]);
 
@@ -737,7 +776,8 @@ export function Investigate() {
                 const isActive =
                   (group.key === "state" && urlState.states.includes(v.value as SessionState)) ||
                   (group.key === "flavor" && urlState.flavors.includes(v.value)) ||
-                  (group.key === "model" && urlState.model === v.value);
+                  (group.key === "model" && urlState.model === v.value) ||
+                  (group.key === "framework" && urlState.frameworks.includes(v.value));
                 return (
                   <button
                     key={v.value}

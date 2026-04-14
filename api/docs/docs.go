@@ -1035,6 +1035,12 @@ const docTemplate = `{
                     },
                     {
                         "type": "string",
+                        "description": "Filter by framework name/version matching sessions.context.frameworks[] (repeatable: langgraph/1.1.6, crewai/1.14.1, ...)",
+                        "name": "framework",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
                         "description": "Filter by model",
                         "name": "model",
                         "in": "query"

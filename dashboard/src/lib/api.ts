@@ -183,6 +183,13 @@ export interface SessionsParams {
   to?: string;
   state?: string[];
   flavor?: string[];
+  /**
+   * Filter on sessions.context.frameworks[] -- repeatable. Values
+   * are the full name/version strings emitted by the sensor's
+   * FrameworkCollector (e.g. "langgraph/1.1.6"). Server side this
+   * maps to the ?| JSONB-array-contains-any operator.
+   */
+  framework?: string[];
   model?: string;
   sort?: string;
   order?: string;
@@ -200,6 +207,9 @@ export async function fetchSessions(params: SessionsParams, signal?: AbortSignal
   }
   if (params.flavor) {
     for (const f of params.flavor) sp.append("flavor", f);
+  }
+  if (params.framework) {
+    for (const fw of params.framework) sp.append("framework", fw);
   }
   if (params.model) sp.set("model", params.model);
   if (params.sort) sp.set("sort", params.sort);

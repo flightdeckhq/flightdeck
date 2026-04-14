@@ -17,6 +17,10 @@ type SessionsParams struct {
 	Query   string   // Full-text search (ILIKE across multiple fields)
 	States  []string // active, idle, stale, closed, lost
 	Flavors []string
+	// Frameworks filters on sessions.context->'frameworks' (JSONB
+	// array of strings like "langgraph/1.1.6"). Multi-value: any
+	// match across the array passes (``?|`` operator).
+	Frameworks []string
 	Model   string
 	Sort    string // started_at, duration, tokens_used, flavor
 	Order   string // asc, desc
@@ -112,6 +116,19 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 	if params.Model != "" {
 		conditions = append(conditions, fmt.Sprintf("s.model = $%d", argIdx))
 		args = append(args, params.Model)
+		argIdx++
+	}
+
+	// Framework filter: any element of sessions.context->'frameworks'
+	// matches any name in the supplied list. The ?| operator requires
+	// a text[] right-hand side, so we pass the slice as a single
+	// positional arg and cast server-side. A session with a missing
+	// or empty frameworks array never matches, which is the intent.
+	if len(params.Frameworks) > 0 {
+		conditions = append(conditions, fmt.Sprintf(
+			"COALESCE(s.context->'frameworks', '[]'::jsonb) ?| $%d::text[]", argIdx,
+		))
+		args = append(args, params.Frameworks)
 		argIdx++
 	}
 

@@ -1223,6 +1223,11 @@ paths:
         in: query
         name: flavor
         type: string
+      - description: 'Filter by framework name/version matching sessions.context.frameworks[]
+          (repeatable: langgraph/1.1.6, crewai/1.14.1, ...)'
+        in: query
+        name: framework
+        type: string
       - description: Filter by model
         in: query
         name: model

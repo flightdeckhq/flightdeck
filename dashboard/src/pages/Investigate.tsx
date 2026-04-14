@@ -120,7 +120,27 @@ interface FacetGroup {
   values: { value: string; count: number }[];
 }
 
-function computeFacets(sessions: SessionListItem[]): FacetGroup[] {
+/**
+ * Per-dimension "facet source" map. When a filter is active on
+ * state/flavor/model, the page runs a parallel fetch that drops that
+ * single dimension's filter (keeping all others) and stores the
+ * resulting sessions here. computeFacets then uses dim-specific
+ * sources for the STATE / FLAVOR / MODEL facets so the user still
+ * sees every value in the current context (sticky facets pattern).
+ * Other dimensions (os / git_branch / hostname) always compute from
+ * the fully-filtered main result -- those have no active-dim filter
+ * to strip, and cross-filtering on them is correct as-is.
+ */
+interface FacetSources {
+  state?: SessionListItem[];
+  flavor?: SessionListItem[];
+  model?: SessionListItem[];
+}
+
+function computeFacets(
+  sessions: SessionListItem[],
+  sources: FacetSources = {},
+): FacetGroup[] {
   const stateCounts = new Map<string, number>();
   const flavorCounts = new Map<string, number>();
   const modelCounts = new Map<string, number>();
@@ -128,10 +148,31 @@ function computeFacets(sessions: SessionListItem[]): FacetGroup[] {
   const branchCounts = new Map<string, number>();
   const hostCounts = new Map<string, number>();
 
+  // Per-dim override helpers: when a dim's source is present, tally
+  // THAT source into the matching map and skip the main loop's entry
+  // for that dim. This way a selected flavor doesn't collapse the
+  // FLAVOR facet to a single row while still allowing MODEL / OS /
+  // etc. to reflect the fully-filtered main result.
+  if (sources.state) {
+    for (const s of sources.state) {
+      stateCounts.set(s.state, (stateCounts.get(s.state) ?? 0) + 1);
+    }
+  }
+  if (sources.flavor) {
+    for (const s of sources.flavor) {
+      flavorCounts.set(s.flavor, (flavorCounts.get(s.flavor) ?? 0) + 1);
+    }
+  }
+  if (sources.model) {
+    for (const s of sources.model) {
+      if (s.model) modelCounts.set(s.model, (modelCounts.get(s.model) ?? 0) + 1);
+    }
+  }
+
   for (const s of sessions) {
-    stateCounts.set(s.state, (stateCounts.get(s.state) ?? 0) + 1);
-    flavorCounts.set(s.flavor, (flavorCounts.get(s.flavor) ?? 0) + 1);
-    if (s.model) modelCounts.set(s.model, (modelCounts.get(s.model) ?? 0) + 1);
+    if (!sources.state) stateCounts.set(s.state, (stateCounts.get(s.state) ?? 0) + 1);
+    if (!sources.flavor) flavorCounts.set(s.flavor, (flavorCounts.get(s.flavor) ?? 0) + 1);
+    if (!sources.model && s.model) modelCounts.set(s.model, (modelCounts.get(s.model) ?? 0) + 1);
     const os = s.context?.os as string | undefined;
     if (os) osCounts.set(os, (osCounts.get(os) ?? 0) + 1);
     const branch = s.context?.git_branch as string | undefined;
@@ -283,6 +324,14 @@ export function Investigate() {
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
 
+  // Sticky facet sources. Populated by parallel aux fetches that drop
+  // the matching dimension's filter so the sidebar can render ALL
+  // values of an actively-filtered dimension (the selected value
+  // stays highlighted via urlState.* below). Cleared when the
+  // corresponding filter turns off so the next render falls back to
+  // the main result's tally.
+  const [facetSources, setFacetSources] = useState<FacetSources>({});
+
   // Search input (debounced)
   const [searchInput, setSearchInput] = useState(urlState.q);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>();
@@ -319,22 +368,56 @@ export function Investigate() {
       abortRef.current = controller;
 
       setLoading(true);
+      const baseParams: SessionsParams = {
+        q: state.q || undefined,
+        from: state.from,
+        to: state.to,
+        state: state.states.length > 0 ? state.states : undefined,
+        flavor: state.flavors.length > 0 ? state.flavors : undefined,
+        model: state.model || undefined,
+        sort: state.sort,
+        order: state.order,
+        limit: state.perPage,
+        offset: (state.page - 1) * state.perPage,
+      };
+
+      // Sticky-facet aux fetches -- one per actively-filtered
+      // dimension, each with that dimension's filter stripped. They
+      // share the main fetch's AbortController so a stale render
+      // (user toggles fast) cancels all four legs together. We ask
+      // for more rows than the table page so facet counts are not
+      // capped by pagination; 500 matches the GetSessions hard cap
+      // on the server. Drawer refresh (skipIfDrawerOpen) already
+      // short-circuits before we get here, so these only fire on
+      // top-level URL-state changes.
+      const FACET_LIMIT = 500;
+      const facetBase = { ...baseParams, limit: FACET_LIMIT, offset: 0 };
+      const aux = {
+        state: state.states.length > 0
+          ? fetchSessions({ ...facetBase, state: undefined }, controller.signal)
+          : null,
+        flavor: state.flavors.length > 0
+          ? fetchSessions({ ...facetBase, flavor: undefined }, controller.signal)
+          : null,
+        model: state.model
+          ? fetchSessions({ ...facetBase, model: undefined }, controller.signal)
+          : null,
+      };
+
       try {
-        const params: SessionsParams = {
-          q: state.q || undefined,
-          from: state.from,
-          to: state.to,
-          state: state.states.length > 0 ? state.states : undefined,
-          flavor: state.flavors.length > 0 ? state.flavors : undefined,
-          model: state.model || undefined,
-          sort: state.sort,
-          order: state.order,
-          limit: state.perPage,
-          offset: (state.page - 1) * state.perPage,
-        };
-        const resp = await fetchSessions(params, controller.signal);
+        const [resp, stateResp, flavorResp, modelResp] = await Promise.all([
+          fetchSessions(baseParams, controller.signal),
+          aux.state,
+          aux.flavor,
+          aux.model,
+        ]);
         setSessions(resp.sessions);
         setTotal(resp.total);
+        setFacetSources({
+          state: stateResp?.sessions,
+          flavor: flavorResp?.sessions,
+          model: modelResp?.sessions,
+        });
         setLastUpdated(Date.now());
       } catch (err) {
         if ((err as Error).name !== "AbortError") {
@@ -488,8 +571,15 @@ export function Investigate() {
     setSearchInput("");
   }, [updateUrl]);
 
-  // Facets from current result set
-  const facets = useMemo(() => computeFacets(sessions), [sessions]);
+  // Facets from current result set. Actively-filtered dimensions
+  // (state / flavor / model) pull their values from the per-dim aux
+  // sources populated in doFetch so selecting a flavor doesn't
+  // collapse the FLAVOR facet to a single row. See the FacetSources
+  // comment near the top of the file for the full sticky-facet model.
+  const facets = useMemo(
+    () => computeFacets(sessions, facetSources),
+    [sessions, facetSources],
+  );
 
   const hasActiveFilters = activeFilters.length > 0 || !!urlState.q;
 

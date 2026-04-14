@@ -8,19 +8,28 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/flightdeckhq/flightdeck/ingestion/internal/auth"
 	"github.com/flightdeckhq/flightdeck/ingestion/internal/handlers"
 )
 
 // --- Mocks ---
 
 type mockValidator struct {
-	valid    bool
+	valid     bool
+	id        string
+	name      string
+	reason    string
 	callCount int
 }
 
-func (m *mockValidator) Validate(_ context.Context, _ string) (bool, error) {
+func (m *mockValidator) Validate(_ context.Context, _ string) (auth.ValidationResult, error) {
 	m.callCount++
-	return m.valid, nil
+	return auth.ValidationResult{
+		Valid:  m.valid,
+		ID:     m.id,
+		Name:   m.name,
+		Reason: m.reason,
+	}, nil
 }
 
 type mockPublisher struct{ published [][]byte }
@@ -395,6 +404,102 @@ func TestEventsHandler_SessionStart_ExistingSession_AttachedTrue(t *testing.T) {
 	_ = json.Unmarshal(w.Body.Bytes(), &resp)
 	if attached, _ := resp["attached"].(bool); !attached {
 		t.Errorf("expected attached=true for existing session, got %v", resp["attached"])
+	}
+}
+
+// D095: ingestion injects the resolved token id+name into the NATS
+// payload for session_start events so workers can persist them onto
+// the session row. Other event types are passed through untouched.
+func TestEventsHandler_SessionStart_InjectsTokenIDAndName(t *testing.T) {
+	pub := &mockPublisher{}
+	handler := handlers.EventsHandler(
+		&mockValidator{valid: true, id: "tok-uuid-1", name: "Production K8s"},
+		pub,
+		&mockDirStore{directive: nil},
+		&mockSessAttacher{attached: false},
+		nil,
+	)
+	body := `{"session_id":"abc-123","event_type":"session_start","flavor":"test"}`
+	req := httptest.NewRequest("POST", "/v1/events", bytes.NewBufferString(body))
+	req.Header.Set("Authorization", "Bearer ftd_whatever")
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if len(pub.published) != 1 {
+		t.Fatalf("expected 1 publish, got %d", len(pub.published))
+	}
+	var published map[string]any
+	if err := json.Unmarshal(pub.published[0], &published); err != nil {
+		t.Fatalf("decode published payload: %v", err)
+	}
+	if got, _ := published["token_id"].(string); got != "tok-uuid-1" {
+		t.Errorf("expected token_id=tok-uuid-1 in published payload, got %v", published["token_id"])
+	}
+	if got, _ := published["token_name"].(string); got != "Production K8s" {
+		t.Errorf("expected token_name='Production K8s' in published payload, got %v", published["token_name"])
+	}
+}
+
+// D095: post_call (and any non-session_start event) must NOT carry
+// token_id / token_name in the published payload -- the worker
+// deliberately ignores those fields outside HandleSessionStart and
+// stamping them on every event would waste bandwidth on the hot path.
+func TestEventsHandler_NonSessionStart_OmitsTokenFields(t *testing.T) {
+	pub := &mockPublisher{}
+	handler := handlers.EventsHandler(
+		&mockValidator{valid: true, id: "tok-uuid-1", name: "Production K8s"},
+		pub,
+		&mockDirStore{directive: nil},
+		nil,
+		nil,
+	)
+	body := `{"session_id":"abc-123","event_type":"post_call","flavor":"test"}`
+	req := httptest.NewRequest("POST", "/v1/events", bytes.NewBufferString(body))
+	req.Header.Set("Authorization", "Bearer ftd_whatever")
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var published map[string]any
+	_ = json.Unmarshal(pub.published[0], &published)
+	if _, ok := published["token_id"]; ok {
+		t.Errorf("post_call must not carry token_id, got %v", published["token_id"])
+	}
+	if _, ok := published["token_name"]; ok {
+		t.Errorf("post_call must not carry token_name, got %v", published["token_name"])
+	}
+}
+
+// D095: when the validator surfaces a Reason (e.g. tok_dev rejected
+// outside dev mode), the handler must put that reason verbatim in
+// the 401 body so operators see the actionable message.
+func TestEventsHandler_RejectionReasonSurfacedIn401(t *testing.T) {
+	const reason = "tok_dev is only valid in development mode. Create a production token in the Settings page."
+	handler := handlers.EventsHandler(
+		&mockValidator{valid: false, reason: reason},
+		&mockPublisher{},
+		&mockDirStore{},
+		nil,
+		nil,
+	)
+	body := `{"session_id":"abc","event_type":"post_call"}`
+	req := httptest.NewRequest("POST", "/v1/events", bytes.NewBufferString(body))
+	req.Header.Set("Authorization", "Bearer tok_dev")
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", w.Code)
+	}
+	var resp map[string]string
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["error"] != reason {
+		t.Errorf("expected error=%q, got %q", reason, resp["error"])
 	}
 }
 

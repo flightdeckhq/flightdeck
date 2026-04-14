@@ -623,6 +623,105 @@ class PromptContent:
 
 ---
 
+## Authentication
+
+Every sensor and dashboard request is authenticated with a Bearer
+token. Tokens are opaque strings minted by the platform; they carry
+no claims and are validated by hash lookup against `api_tokens`.
+See DECISIONS.md D095.
+
+### Token format
+
+```
+ftd_<32 random hex chars>
+```
+
+- `ftd_` prefix identifies a Flightdeck-issued production token.
+- 32 random hex chars = 16 bytes of entropy from `crypto/rand`.
+- The first 8 characters (e.g. `ftd_a3f8`) are stored in the
+  `prefix` column so the auth middleware can narrow the candidate
+  row set before iterating per-row salted hashes.
+
+`tok_dev` is the single legacy fixed token, seeded into `api_tokens`
+by migration `000010` for development. It is accepted only when the
+ingestion / API service reads `ENVIRONMENT=dev` from the environment
+at validation time; every other context returns 401 with:
+
+```json
+{"error": "tok_dev is only valid in development mode. Create a production token in the Settings page."}
+```
+
+### Storage
+
+`api_tokens` stores the salted SHA-256 of the raw token, never the
+token itself:
+
+```sql
+CREATE TABLE api_tokens (
+    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name         TEXT NOT NULL,
+    token_hash   TEXT NOT NULL UNIQUE,  -- hex(SHA256(salt || raw_token))
+    salt         TEXT NOT NULL,         -- 16 random bytes as hex
+    prefix       TEXT NOT NULL,         -- first 8 chars of raw_token
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_used_at TIMESTAMPTZ
+);
+
+CREATE INDEX api_tokens_prefix_idx ON api_tokens (prefix);
+```
+
+- `salt` is 16 random bytes per token, encoded as 32 hex chars.
+- `token_hash = hex(SHA256(salt_string || raw_token_string))`.
+- `last_used_at` is stamped on every successful validation so stale
+  tokens are discoverable in the Settings UI.
+
+The raw token is returned to the caller exactly once, at creation
+time via `POST /v1/tokens`. The platform cannot recover a raw token
+from storage afterwards -- losing it requires creating a new one.
+
+### Validation algorithm
+
+On every authenticated request:
+
+1. Extract the Bearer token from the `Authorization` header.
+2. If the raw token equals `tok_dev`:
+   - If `ENVIRONMENT=dev`: accept and return the seeded
+     `Development Token` row's `(id, name)`.
+   - Otherwise: return `401` with the message above.
+3. Else if the raw token begins with `ftd_`:
+   - Take the first 8 chars as `prefix` and fetch every row from
+     `api_tokens` with a matching prefix.
+   - For each candidate: compute
+     `SHA256(row.salt || raw_token)` and compare (constant-time) to
+     `row.token_hash`. On match, stamp `last_used_at` and return
+     the matched row's `(id, name)`.
+   - No match: `401`.
+4. Any other token format: `401`.
+
+The resolved `(token_id, token_name)` is attached to the request
+context. For `session_start` events the ingestion API injects those
+values into the NATS payload so the worker's `UpsertSession` can
+persist them onto the new session row. Subsequent events on the
+same session do not rewrite the token fields -- a session belongs
+to whichever token opened it.
+
+### Token management API
+
+The dashboard Settings page drives token CRUD via:
+
+```
+GET    /v1/tokens     -- list all tokens (never returns hash or salt or raw token)
+POST   /v1/tokens     -- create a token; response includes the raw token ONCE
+DELETE /v1/tokens/:id -- revoke
+PATCH  /v1/tokens/:id -- rename
+```
+
+The seeded `Development Token` row is not deletable or renameable
+via these endpoints -- attempts return `403`. It can only be
+disabled globally by unsetting `ENVIRONMENT=dev`.
+
+---
+
 ## Event Payload Schema
 
 ### Sensor → Ingestion API (`POST /v1/events`)
@@ -792,7 +891,9 @@ CREATE TABLE sessions (
     tokens_used     INTEGER NOT NULL DEFAULT 0,
     token_limit     INTEGER,
     metadata        JSONB,
-    context         JSONB NOT NULL DEFAULT '{}'::jsonb
+    context         JSONB NOT NULL DEFAULT '{}'::jsonb,
+    token_id        UUID REFERENCES api_tokens(id) ON DELETE SET NULL,
+    token_name      TEXT
 );
 
 CREATE INDEX sessions_flavor_idx         ON sessions(flavor);
@@ -800,7 +901,16 @@ CREATE INDEX sessions_state_idx          ON sessions(state);
 CREATE INDEX sessions_last_seen_idx      ON sessions(last_seen_at);
 CREATE INDEX sessions_started_idx        ON sessions(started_at);
 CREATE INDEX sessions_context_gin        ON sessions USING GIN (context);
+CREATE INDEX sessions_token_id_idx       ON sessions(token_id);
 ```
+
+`token_id` is the FK to the `api_tokens` row whose raw bearer token
+authenticated the `session_start` event that created this session.
+`token_name` denormalizes the token's human label so dashboards can
+render it without joining, and so the label survives token revocation
+(the FK is `ON DELETE SET NULL` -- revoking a token clears `token_id`
+on all historical sessions but leaves `token_name` intact for
+auditability). See DECISIONS.md D095.
 
 `started_at` and `ended_at` are deliberately NOT touched when an
 agent re-attaches to an existing session so the original lifetime
@@ -1009,6 +1119,11 @@ Current migrations:
 | 000004 | Add `custom_directives` table |
 | 000005 | Add `payload` JSONB column to directives |
 | 000006 | Add `context` JSONB column + GIN index to sessions (D074) |
+| 000007 | Scope `custom_directives` fingerprint uniqueness to flavor (D090) |
+| 000008 | Add `last_attached_at` column to sessions (superseded by 000009) |
+| 000009 | Add `session_attachments` table (D094) |
+| 000010 | Replace minimal `api_tokens` with salted schema and reseed (D095) |
+| 000011 | Add `token_id` FK + `token_name` column to sessions (D095) |
 
 ---
 

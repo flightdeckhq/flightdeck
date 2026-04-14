@@ -684,6 +684,13 @@ acceptable for the dev seed token only.
 **Address in:** Phase 5 (production hardening).
 **Code location:** `ingestion/internal/auth/token.go:Validate`
 
+**Resolved in:** Phase 5
+**Resolution:** Replaced with opaque `ftd_` tokens stored as
+`SHA256(salt || raw_token)` with a 16-byte per-token salt. The
+hardcoded `tok_dev` seed is now only accepted when the service reads
+`ENVIRONMENT=dev`; production deployments must mint real tokens via
+the Settings UI. See D095.
+
 ---
 
 ## D047 -- No NATS auth in dev compose (accepted trade-off)
@@ -2274,5 +2281,92 @@ unreliable. The synchronous ingestion check is worth the one
 extra read+write per session_start because session_start is rare
 (once per process) and the alternative leaks implementation timing
 into caller visibility.
+
+---
+
+## D095 -- Opaque token auth with SHA256+salt replacing hardcoded tok_dev
+
+**Problem:** KI10 -- token auth used SHA256 without a salt and relied
+on a single hardcoded `tok_dev` string seeded by `init.sql`. There
+was no management UI, no way to rotate credentials, and the same
+value was shared across every sensor, dashboard user, and
+integration test. Leaking the `api_tokens` table would expose every
+token in the fleet; a stolen laptop or misconfigured dashboard
+install would grant permanent access because the platform had no
+way to revoke or rename a token.
+
+**Decision:** Replace the fixed-string model with opaque tokens.
+
+- **Token format:** `ftd_` prefix + 32 random hex chars (16 bytes
+  of `crypto/rand`). The `ftd_` prefix makes tokens identifiable in
+  logs and by grep; the random suffix is the secret.
+- **Storage:** `api_tokens` now stores `(id, name, token_hash,
+  salt, prefix, created_at, last_used_at)`. `token_hash` is
+  `hex(SHA256(salt || raw_token))`; `salt` is 16 random bytes per
+  token encoded as hex. Only the hash and salt are stored -- raw
+  tokens are never persisted. `prefix` is the first 8 chars of the
+  raw token and is used to narrow candidate rows before the
+  per-row hash comparison.
+- **`tok_dev` dev-mode gate:** migration `000010` reseeds the
+  table with a single `Development Token` row whose raw value is
+  `tok_dev`. The auth middleware accepts it only when the service
+  reads `ENVIRONMENT=dev`; otherwise it returns `401` with a body
+  instructing the caller to create a real token in the Settings
+  page. Production deployments deliberately omit the env var so
+  the seed becomes inert without having to delete the row.
+- **Session attribution:** `sessions` gains `token_id` (FK to
+  `api_tokens.id`, `ON DELETE SET NULL`) and `token_name` (denorm).
+  The ingestion API resolves the authenticating token on every
+  request and injects `(token_id, token_name)` into the NATS
+  payload for `session_start` events; the worker persists them
+  onto the session row. `token_name` survives revocation for
+  historical auditability.
+- **Dev-seed hash derivation** (reproducible):
+  - `salt = "d0d0cafed00dfaceb00bba5eba11f001"` (16 bytes, hex)
+  - `token_hash = hex(SHA256("d0d0cafed00dfaceb00bba5eba11f001tok_dev"))`
+  - `            = 0c805243ecd4f6f59bec56235a1901d97ad8cf0771020f2d44da428827f1145e`
+  - `prefix = "tok_dev_"` (literal 8-char fallback; middleware
+    short-circuits on `raw == "tok_dev"` before the prefix lookup).
+
+**Why not bcrypt/argon2?** Considered, but the validation path
+runs on every sensor event and dashboard poll. bcrypt at a safe
+cost parameter is milliseconds per call; SHA256+salt is
+microseconds, and the secret material is 16 bytes of CSPRNG
+output so key-stretching adds no practical defense against
+brute force. The threat model here is DB exfiltration, which a
+per-token salt already neutralizes for randomly-generated tokens.
+
+**Why not JWT?** JWTs carry claims we don't need (no RBAC in v1),
+require key management the platform doesn't have, and make
+revocation harder rather than easier. Opaque DB-backed tokens
+revoke by deleting a row.
+
+**Why denormalize `token_name` onto `sessions`?** Two reasons.
+First, the session drawer wants to render "Created via: $NAME"
+without a join against `api_tokens` -- that join becomes
+expensive once production fleets have many tokens and many
+sessions. Second, revoking a token (`DELETE FROM api_tokens`) is
+a normal operator action; `ON DELETE SET NULL` on `token_id`
+preserves the historical label so we can still show "Created via:
+Staging K8s (revoked)" in the UI months after the token was
+deleted.
+
+**Phase 5 split:**
+
+- Part 1a (this change): schema + auth middleware + session
+  wiring + KI10 resolution.
+- Part 1b: `/v1/tokens` CRUD endpoints, Settings UI on the
+  dashboard, sensor integration with user-created tokens.
+
+**Resolves:** KI10.
+**Code locations:**
+
+- `docker/postgres/migrations/000010_api_tokens.up.sql`
+- `docker/postgres/migrations/000011_sessions_token.up.sql`
+- `ingestion/internal/auth/token.go`
+- `api/internal/auth/token.go`
+- `ingestion/internal/handlers/events.go`
+- `workers/internal/processor/session.go`
+- `workers/internal/writer/postgres.go`
 
 ---

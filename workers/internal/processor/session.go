@@ -79,6 +79,7 @@ func (sp *SessionProcessor) HandleSessionStart(ctx context.Context, e consumer.E
 		ctx, e.SessionID, e.Flavor, e.AgentType,
 		e.Host, e.Framework, e.Model, "active",
 		contextJSON,
+		e.TokenID, e.TokenName,
 	); err != nil {
 		return fmt.Errorf("session start: %w", err)
 	}

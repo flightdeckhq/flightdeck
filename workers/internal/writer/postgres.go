@@ -55,21 +55,37 @@ func (w *Writer) UpsertSession(
 	ctx context.Context,
 	sessionID, flavor, agentType, host, framework, model, state string,
 	contextJSON []byte,
+	tokenID, tokenName string,
 ) error {
 	if contextJSON == nil {
 		contextJSON = []byte("{}")
 	}
+	// tokenID is a nullable UUID FK; the NULLIF('') dance keeps the
+	// insert path generic for sessions created before Phase 5 or for
+	// any future code path that doesn't resolve a token (there are
+	// none today, but a defensive NULL is cheaper than a panic). The
+	// ON CONFLICT branch deliberately does NOT overwrite token_id /
+	// token_name: a session belongs to whichever token opened it,
+	// and subsequent session_start attachments (D094 re-attach)
+	// intentionally keep the original attribution.
 	_, err := w.pool.Exec(ctx, `
-		INSERT INTO sessions (session_id, flavor, agent_type, host, framework, model, state, started_at, last_seen_at, context)
-		VALUES ($1::uuid, $2, $3, NULLIF($4, ''), NULLIF($5, ''), NULLIF($6, ''), $7, NOW(), NOW(), $8)
+		INSERT INTO sessions (
+			session_id, flavor, agent_type, host, framework, model, state,
+			started_at, last_seen_at, context, token_id, token_name
+		)
+		VALUES (
+			$1::uuid, $2, $3, NULLIF($4, ''), NULLIF($5, ''), NULLIF($6, ''), $7,
+			NOW(), NOW(), $8,
+			NULLIF($9, '')::uuid, NULLIF($10, '')
+		)
 		ON CONFLICT (session_id) DO UPDATE
 		SET state = EXCLUDED.state,
 		    last_seen_at = NOW(),
 		    host = COALESCE(EXCLUDED.host, sessions.host),
 		    framework = COALESCE(EXCLUDED.framework, sessions.framework),
 		    model = COALESCE(EXCLUDED.model, sessions.model)
-		    -- context intentionally NOT updated on conflict
-	`, sessionID, flavor, agentType, host, framework, model, state, contextJSON)
+		    -- context, token_id, token_name intentionally NOT updated on conflict
+	`, sessionID, flavor, agentType, host, framework, model, state, contextJSON, tokenID, tokenName)
 	if err != nil {
 		return fmt.Errorf("upsert session %s: %w", sessionID, err)
 	}

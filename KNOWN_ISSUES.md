@@ -26,7 +26,6 @@ fix in DECISIONS.md. Never leave a resolved TODO comment in the code.
 
 | ID   | Component  | Concern                              | Risk   | Phase | File                                        | DECISIONS |
 |------|------------|--------------------------------------|--------|-------|---------------------------------------------|-----------|
-| KI10 | Security   | SHA256 token auth without salt       | Low    | 5     | auth/token.go:Validate                      | D046      |
 | KI11 | Security   | No NATS auth in dev compose          | Low    | 5     | docker/docker-compose.yml:nats              | D047      |
 | KI12 | Security   | REST endpoints have no per-IP rate limit | Low | 5    | api/internal/server/server.go               | D048      |
 | KI13 | API        | Ingestion accepts events for closed/lost sessions | Low | 5 | ingestion/internal/handlers/events.go    | -         |
@@ -51,3 +50,4 @@ fix in DECISIONS.md. Never leave a resolved TODO comment in the code.
 | KI15  | Sensor     | Module-level Session singleton (won't-fix v1) | Phase 4.9 | D091 |
 | KI16  | Sensor/Ingestion | Single-POST drain thread (won't-fix v1)  | Phase 4.9 | D091 |
 | KI17  | Sensor     | wrap() did not intercept beta.messages | Phase 4.9 | D087      |
+| KI10  | Security   | SHA256 token auth without salt       | Phase 5     | D046, D095 |

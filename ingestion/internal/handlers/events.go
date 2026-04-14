@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/flightdeckhq/flightdeck/ingestion/internal/auth"
 	inats "github.com/flightdeckhq/flightdeck/ingestion/internal/nats"
 )
 
@@ -23,9 +24,12 @@ const maxRequestBodyBytes = 1 << 20 // 1MB
 // and reject events with HTTP 409 when the session is closed/lost.
 // See KNOWN_ISSUES.md KI13.
 
-// TokenValidator validates bearer tokens against stored hashes.
+// TokenValidator resolves bearer tokens to an api_tokens row. The
+// resolved (id, name) are injected into the NATS payload for
+// session_start events so the worker's UpsertSession can persist them
+// onto the new session row (D095).
 type TokenValidator interface {
-	Validate(ctx context.Context, rawToken string) (bool, error)
+	Validate(ctx context.Context, rawToken string) (auth.ValidationResult, error)
 }
 
 // EventPublisher publishes event payloads to the message queue.
@@ -108,14 +112,18 @@ func EventsHandler(
 			writeError(w, http.StatusUnauthorized, "missing or invalid authorization")
 			return
 		}
-		valid, err := validator.Validate(ctx, token)
+		result, err := validator.Validate(ctx, token)
 		if err != nil {
 			slog.Error("token validation error", "err", err)
 			writeError(w, http.StatusInternalServerError, "internal server error")
 			return
 		}
-		if !valid {
-			writeError(w, http.StatusUnauthorized, "invalid token")
+		if !result.Valid {
+			reason := result.Reason
+			if reason == "" {
+				reason = "invalid token"
+			}
+			writeError(w, http.StatusUnauthorized, reason)
 			return
 		}
 
@@ -148,6 +156,24 @@ func EventsHandler(
 		if sessionID == "" || eventType == "" {
 			writeError(w, http.StatusBadRequest, "session_id and event_type are required")
 			return
+		}
+
+		// On session_start, attach the resolved token id/name so the
+		// worker's UpsertSession can persist them onto the new session
+		// row (D095). Subsequent events carry no token fields -- a
+		// session belongs to whichever token opened it. We re-encode
+		// the payload only in the session_start branch to avoid paying
+		// the marshal cost on the hot post_call/heartbeat path.
+		if eventType == "session_start" && result.ID != "" {
+			payload["token_id"] = result.ID
+			payload["token_name"] = result.Name
+			if rebuilt, mErr := json.Marshal(payload); mErr == nil {
+				body = rebuilt
+			} else {
+				slog.Error("re-marshal session_start payload with token",
+					"session_id", sessionID, "err", mErr,
+				)
+			}
 		}
 
 		// Synchronous session-attachment check for session_start.

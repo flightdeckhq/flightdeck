@@ -344,6 +344,15 @@ interface AllSwimLaneProps {
   leftPanelWidth: number;
   activeFilter?: string | null;
   sessionVersions?: Record<string, number>;
+  /**
+   * True when any session (regardless of state) has at least one
+   * cached event inside the current [scaleStart, scaleEnd] domain.
+   * Timeline.tsx computes this once for the whole fleet and hands it
+   * down so the ALL row's hide rule matches what the user sees -- a
+   * row full of circles from closed sessions still surfaces, and an
+   * empty time window hides even while sessions are active.
+   */
+  hasVisibleEventsInWindow: boolean;
 }
 
 function AllSwimLaneComponent({
@@ -354,20 +363,16 @@ function AllSwimLaneComponent({
   leftPanelWidth,
   activeFilter,
   sessionVersions,
+  hasVisibleEventsInWindow,
 }: AllSwimLaneProps) {
-  // Hide the ALL row when nothing in the fleet is alive. A fleet of
-  // only closed / lost sessions has no "current activity" to summarise
-  // -- rendering the row still cost one AggregatedSessionEvents per
-  // session with full DOM-level event circles, which dominated style
-  // recalc on the 50-session smoke test. Active|idle|stale are the
-  // states that can still produce new events; anything else means the
-  // ALL row would be a static historical collage the user doesn't need.
-  const hasLiveSession = flavors.some((f) =>
-    f.sessions.some(
-      (s) => s.state === "active" || s.state === "idle" || s.state === "stale",
-    ),
-  );
-  if (!hasLiveSession) return null;
+  // Hide the ALL row only when there is literally nothing to draw in
+  // the current [scaleStart, scaleEnd] domain. The previous rule
+  // gated on liveSessionCount (active|idle|stale) and incorrectly
+  // hid the row while closed-session circles were still inside the
+  // visible window -- which is exactly when operators need the
+  // fleet-wide summary to stay visible. See Timeline.tsx for the
+  // shared hasVisibleEventsInWindow calculation.
+  if (!hasVisibleEventsInWindow) return null;
 
   return (
     <div
@@ -450,6 +455,7 @@ export const AllSwimLane = memo(AllSwimLaneComponent, (prev, next) => {
   if (prev.timelineWidth !== next.timelineWidth) return false;
   if (prev.leftPanelWidth !== next.leftPanelWidth) return false;
   if (prev.onSessionClick !== next.onSessionClick) return false;
+  if (prev.hasVisibleEventsInWindow !== next.hasVisibleEventsInWindow) return false;
   const domainDelta = Math.abs(
     next.scale.domain()[1].getTime() - prev.scale.domain()[1].getTime(),
   );

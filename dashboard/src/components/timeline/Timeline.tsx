@@ -13,6 +13,7 @@ import {
 import { TimeAxis } from "./TimeAxis";
 import { AllSwimLane } from "./SwimLane";
 import { VirtualizedSwimLane } from "./VirtualizedSwimLane";
+import { eventsCache } from "@/hooks/useSessionEvents";
 
 interface TimelineProps {
   flavors: FlavorSummary[];
@@ -112,39 +113,76 @@ export function Timeline({
     document.addEventListener("mouseup", onUp);
   }, []);
 
-  // Count sessions that can still produce events. Closed / lost
-  // sessions are frozen history -- if the whole fleet is in that
-  // state, the timeline has nothing new to show, so the rAF tick
-  // below short-circuits and the Timeline re-render cadence drops
-  // from 10/sec to zero. Drives both this early-out and the eventual
-  // AllSwimLane hide (via its own prop check).
-  const liveSessionCount = useMemo(
-    () =>
-      flavors.reduce(
-        (acc, f) =>
-          acc +
-          f.sessions.filter(
-            (s) =>
-              s.state === "active" ||
-              s.state === "idle" ||
-              s.state === "stale",
-          ).length,
-        0,
-      ),
-    [flavors],
-  );
-
   // Live-updating "now" — throttled to 10fps (100ms) for performance.
-  // Skips the rAF loop entirely when paused OR when no sessions are
-  // live. With zero active agents, re-rendering the timeline 10x/sec
-  // only shifts the "now" cursor by 100ms each frame; it cannot
-  // surface any new events because there are none. A one-shot setNow
-  // when liveSessionCount hits zero snaps the cursor to the current
-  // wall clock and then stops.
+  // The tick is kept alive as long as there is at least one event
+  // circle inside the current [scaleStart, scaleEnd] domain across
+  // any session in the fleet; see hasVisibleEventsInWindow below.
+  // The previous implementation gated this on liveSessionCount
+  // (number of active/idle/stale sessions), which froze the clock
+  // whenever every session was closed/lost -- even while closed-
+  // session circles were still visible. Those frozen circles then
+  // failed to scroll out of the time window because the time window
+  // itself stopped advancing. Keying off visible events instead
+  // makes the clock track whatever is actually being drawn.
   const [now, setNow] = useState(() => new Date());
+
+  // scaleEndMs / rangeMs are derived below from `now`; forward-
+  // declare them at their final values so the visibility memo can
+  // depend on them. They are declared inside useMemo below too, but
+  // we need their primitive ms form for this dependency list. See
+  // rawEndMs / scaleEndMs computation a few lines down.
+  const rangeMs = TIMELINE_RANGE_MS[timeRange] ?? 60_000;
+  const rawEndMs = paused && pausedAt ? pausedAt.getTime() : now.getTime();
+  const scaleEndMs = Math.floor(rawEndMs / 1000) * 1000;
+
+  // True when any session in the fleet has at least one cached event
+  // whose occurred_at lands inside the current [scaleStart, scaleEnd]
+  // domain. Drives:
+  //   1. the rAF tick's stop condition (visible circles must keep
+  //      scrolling with the time window), and
+  //   2. the AllSwimLane visibility gate passed below (the ALL row
+  //      should hide only when the window is completely empty, not
+  //      when all sessions happen to be closed).
+  //
+  // Reads straight from the module-level eventsCache populated by
+  // useSessionEvents -- no new API calls, no new state. sessionVersions
+  // is a dep so WebSocket-injected events force a recompute.
+  const hasVisibleEventsInWindow = useMemo(() => {
+    const startMs = scaleEndMs - rangeMs;
+    // Upper bound uses `t >= startMs` only, not a hard `t <= scaleEndMs`.
+    // scaleEndMs is floored to 1-second granularity (see comment further
+    // down), so an event whose occurred_at lands in the current (partial)
+    // second would otherwise fail the check and the ALL row would flicker
+    // off between the floor boundary and the next tick. A just-arrived
+    // WebSocket event with t slightly past scaleEndMs also counts here,
+    // which is what lets the rAF restart when new activity arrives after
+    // the timeline has gone idle.
+    for (const f of flavors) {
+      for (const s of f.sessions) {
+        const cached = eventsCache.get(s.session_id);
+        if (!cached) continue;
+        for (const e of cached) {
+          const t = new Date(e.occurred_at).getTime();
+          if (t >= startMs) return true;
+        }
+      }
+    }
+    return false;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [flavors, sessionVersions, scaleEndMs, rangeMs]);
+
   useEffect(() => {
     if (paused) return;
-    if (liveSessionCount === 0) {
+    if (!hasVisibleEventsInWindow) {
+      // Nothing to animate right now. Snap `now` to the wall clock
+      // once so scaleEnd catches up -- this is what lets a fresh
+      // WebSocket event (which bumps sessionVersions → re-renders →
+      // hasVisibleEventsInWindow recomputes with the snapped
+      // scaleEnd) flip the flag back to true and restart the rAF.
+      // Without this snap, scaleEnd would stay frozen at the value
+      // it held when rAF last stopped, and a new event arriving at
+      // wall-clock would sit just outside [scaleStart, scaleEnd]
+      // forever.
       setNow(new Date());
       return;
     }
@@ -159,7 +197,7 @@ export function Timeline({
     };
     rafId = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(rafId);
-  }, [paused, liveSessionCount]);
+  }, [paused, hasVisibleEventsInWindow]);
 
   const filteredFlavors = useMemo(() => {
     let result = flavors;
@@ -179,8 +217,6 @@ export function Timeline({
     return result;
   }, [flavors, flavorFilter, matchingSessionIds]);
 
-  const rangeMs = TIMELINE_RANGE_MS[timeRange] ?? 60_000;
-
   // Floor the scale's right-hand domain to 1-second granularity.
   // The rAF loop above still ticks `now` every 100ms so derived
   // visuals (hover tooltips, transient layout) stay smooth, but
@@ -191,8 +227,9 @@ export function Timeline({
   // the SwimLane.memo custom equality that bails out for sub-second
   // domain deltas. Events only arrive at human speed -- a 1-second
   // step on the time axis is imperceptible.
-  const rawEndMs = paused && pausedAt ? pausedAt.getTime() : now.getTime();
-  const scaleEndMs = Math.floor(rawEndMs / 1000) * 1000;
+  // rangeMs / rawEndMs / scaleEndMs are declared above because
+  // hasVisibleEventsInWindow depends on them; scaleEnd (Date object)
+  // stays here next to its consumers.
   const scaleEnd = useMemo(() => new Date(scaleEndMs), [scaleEndMs]);
   const start = useMemo(() => new Date(scaleEndMs - rangeMs), [scaleEndMs, rangeMs]);
 
@@ -390,6 +427,7 @@ export function Timeline({
           leftPanelWidth={leftPanelWidth}
           activeFilter={activeFilter}
           sessionVersions={sessionVersions}
+          hasVisibleEventsInWindow={hasVisibleEventsInWindow}
         />
 
         {/* FLAVORS section header.

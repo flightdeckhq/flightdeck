@@ -4,11 +4,35 @@ import { Timeline } from "@/components/timeline/Timeline";
 import { TIMELINE_WIDTH_PX } from "@/lib/constants";
 import type { FlavorSummary } from "@/lib/types";
 
-// Mock useSessionEvents to avoid real API calls
-vi.mock("@/hooks/useSessionEvents", () => ({
-  useSessionEvents: () => ({ events: [], loading: false }),
-  attachmentsCache: new Map(),
-}));
+// Mock useSessionEvents to avoid real API calls. eventsCache is
+// seeded with a recent event for every mock session so Timeline's
+// hasVisibleEventsInWindow check returns true and the ALL row
+// renders -- matching the behavior these tests originally asserted
+// under the old liveSessionCount gate.
+vi.mock("@/hooks/useSessionEvents", () => {
+  const nowIso = new Date().toISOString();
+  const stub = {
+    id: "evt-mock",
+    event_type: "post_call",
+    occurred_at: nowIso,
+    model: null,
+    tokens_input: null,
+    tokens_output: null,
+    tokens_total: null,
+    latency_ms: null,
+    tool_name: null,
+    has_content: false,
+    payload: null,
+  };
+  return {
+    useSessionEvents: () => ({ events: [], loading: false }),
+    attachmentsCache: new Map(),
+    eventsCache: new Map([
+      ["s1", [{ ...stub, session_id: "s1", flavor: "research-agent" }]],
+      ["s2", [{ ...stub, session_id: "s2", flavor: "coding-agent" }]],
+    ]),
+  };
+});
 
 const mockFlavors: FlavorSummary[] = [
   {

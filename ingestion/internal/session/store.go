@@ -67,9 +67,18 @@ func (s *Store) Attach(ctx context.Context, sessionID string) (bool, string, err
 	// off session_attachments, so we don't need to clear ended_at to
 	// distinguish runs. See DECISIONS.md D094.
 	if priorState == "closed" || priorState == "lost" {
+		// Clear ended_at on revive so the session no longer looks
+		// "finished at time X" while state=active. Without this, the
+		// session carries a contradictory (state=active, ended_at is
+		// set) pair, and downstream consumers that key off ended_at
+		// (e.g. "has this session finished?") see stale values from
+		// the previous run. started_at is still preserved so the
+		// original lifetime remains discoverable via
+		// session_attachments.
 		if _, err := s.pool.Exec(ctx, `
 			UPDATE sessions
-			SET state = 'active'
+			SET state = 'active',
+			    ended_at = NULL
 			WHERE session_id = $1::uuid
 		`, sessionID); err != nil {
 			return false, priorState, fmt.Errorf("revive session %s: %w", sessionID, err)

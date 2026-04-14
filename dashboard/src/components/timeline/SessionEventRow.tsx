@@ -1,7 +1,7 @@
 import { useMemo, memo } from "react";
 import type { ScaleTime } from "d3-scale";
 import type { Session, AgentEvent } from "@/lib/types";
-import { SESSION_ROW_HEIGHT } from "@/lib/constants";
+import { SESSION_ROW_HEIGHT, EVENT_CIRCLE_SIZE } from "@/lib/constants";
 import { EventNode } from "./EventNode";
 import { useSessionEvents } from "@/hooks/useSessionEvents";
 import { isEventVisible, truncateSessionId } from "@/lib/events";
@@ -332,7 +332,7 @@ function SessionEventRowComponent({
                 const fullEvent = events.find((e) => e.id === eid);
                 onClick(eid, fullEvent);
               }}
-              size={22}
+              size={EVENT_CIRCLE_SIZE}
               isVisible={isEventVisible(node.eventType, activeFilter)}
             />
           ))}

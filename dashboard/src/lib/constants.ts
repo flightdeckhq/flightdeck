@@ -63,6 +63,18 @@ export const LEFT_PANEL_WIDTH_KEY = "flightdeck-left-panel-width";
  */
 export const SESSION_ROW_HEIGHT = 48;
 
+/**
+ * Diameter in pixels of every event circle in the swimlane. Used by
+ * SessionEventRow (expanded session rows), AggregatedSessionEvents
+ * (collapsed flavor rows and the ALL row) -- everything. Previously
+ * split between 20px on aggregated rows and 24px on session rows,
+ * which looked jarring when a flavor was expanded and the two sizes
+ * sat directly above and below each other. 22px is the midpoint and
+ * stays above EventNode's icon-size threshold (<=20 → 11px, else
+ * 13px) so icon legibility matches the old 24px circles.
+ */
+export const EVENT_CIRCLE_SIZE = 22;
+
 /** LocalStorage key for live feed column widths. */
 export const FEED_COL_WIDTHS_KEY = "flightdeck-feed-col-widths";
 

@@ -1,7 +1,7 @@
 import { memo, useMemo } from "react";
 import type { ScaleTime } from "d3-scale";
 import type { Session, AgentEvent } from "@/lib/types";
-import { SESSION_ROW_HEIGHT } from "@/lib/constants";
+import { SESSION_ROW_HEIGHT, EVENT_CIRCLE_SIZE } from "@/lib/constants";
 import { ChevronRight } from "lucide-react";
 import { SessionEventRow } from "./SessionEventRow";
 import { EventNode } from "./EventNode";
@@ -559,7 +559,7 @@ function AggregatedSessionEvents({
             const fullEvent = events.find((e) => e.id === eid);
             onSessionClick(session.session_id, eid, fullEvent);
           }}
-          size={22}
+          size={EVENT_CIRCLE_SIZE}
           isVisible={isEventVisible(node.eventType, activeFilter)}
         />
       ))}

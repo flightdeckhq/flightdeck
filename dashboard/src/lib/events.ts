@@ -70,8 +70,63 @@ export const eventBadgeConfig: Record<string, BadgeConfig> = {
 
 export const defaultBadge: BadgeConfig = { cssVar: "var(--event-lifecycle)", label: "EVENT" };
 
+/**
+ * Badge for a session_start event whose timestamp lines up with an
+ * entry in the session's attachments array (D094). Amber, distinct
+ * from the default lifecycle blue, not alarming. Used by the drawer
+ * EventFeed and surfaced as the swimlane circle colour via EventNode's
+ * isAttachment prop.
+ */
+export const attachBadge: BadgeConfig = {
+  cssVar: "var(--status-warn)",
+  label: "ATTACH",
+};
+
 export function getBadge(eventType: string): BadgeConfig {
   return eventBadgeConfig[eventType] ?? defaultBadge;
+}
+
+/**
+ * Match window in milliseconds for deciding whether a session_start
+ * event is an attachment. The ingestion API records the attachment
+ * timestamp at NOW() when the HTTP request hits the attach store, and
+ * the session_start event itself carries the sensor-side
+ * `timestamp` field which is set before the request leaves the
+ * sensor's process. Network latency + clock skew between the two
+ * fits comfortably inside ±2 s.
+ */
+export const ATTACH_MATCH_WINDOW_MS = 2000;
+
+/**
+ * Decide whether `event` is a session_start that corresponds to a
+ * recorded re-attachment in `attachments`.
+ *
+ * - Only session_start events are eligible; anything else returns
+ *   false trivially.
+ * - An event matches an attachment when |occurred_at - attached_at|
+ *   ≤ ATTACH_MATCH_WINDOW_MS.
+ * - The very first session_start (the original) has no matching
+ *   attachment row and therefore returns false unchanged.
+ *
+ * Linear scan against `attachments` is fine -- sessions typically
+ * have 0..10 attachments even for aggressive orchestrators.
+ */
+export function isAttachmentStartEvent(
+  event: { event_type: string; occurred_at: string },
+  attachments: string[] | undefined,
+): boolean {
+  if (event.event_type !== "session_start") return false;
+  if (!attachments || attachments.length === 0) return false;
+  const eventMs = new Date(event.occurred_at).getTime();
+  if (Number.isNaN(eventMs)) return false;
+  for (const att of attachments) {
+    const attMs = new Date(att).getTime();
+    if (Number.isNaN(attMs)) continue;
+    if (Math.abs(attMs - eventMs) <= ATTACH_MATCH_WINDOW_MS) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /* ---- Event detail text ---- */

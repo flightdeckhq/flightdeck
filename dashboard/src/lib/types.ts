@@ -125,6 +125,14 @@ export interface FleetResponse {
 export interface SessionDetail {
   session: Session;
   events: AgentEvent[];
+  /**
+   * Chronological list of timestamps where an agent re-attached to
+   * this session using the same session_id. Excludes the initial
+   * session_start. Populated by the ingestion session store (D094);
+   * empty for sessions that have only ever run once. Consumed by the
+   * drawer's ATTACH badge and the swimlane's amber start circle.
+   */
+  attachments?: string[];
 }
 
 /** WebSocket message pushed on fleet state change. */

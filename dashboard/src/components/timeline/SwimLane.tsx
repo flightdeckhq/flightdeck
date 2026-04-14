@@ -5,8 +5,8 @@ import { SESSION_ROW_HEIGHT, EVENT_CIRCLE_SIZE } from "@/lib/constants";
 import { ChevronRight } from "lucide-react";
 import { SessionEventRow } from "./SessionEventRow";
 import { EventNode } from "./EventNode";
-import { useSessionEvents } from "@/hooks/useSessionEvents";
-import { isEventVisible } from "@/lib/events";
+import { useSessionEvents, attachmentsCache } from "@/hooks/useSessionEvents";
+import { isAttachmentStartEvent, isEventVisible } from "@/lib/events";
 
 interface SwimLaneProps {
   flavor: string;
@@ -515,10 +515,15 @@ function AggregatedSessionEvents({
   // 0..timelineWidth canvas -- the circles were clipped visually by
   // overflow:hidden but still cost full style recalc. Filtering here
   // keeps them out of the DOM entirely.
+  //
+  // Attachments are sampled inside the memo on the same fetch path
+  // as events so a fresh cache populates both atomically. See
+  // SessionEventRow for the same pattern.
   const nodes = useMemo(() => {
     const [domainStart, domainEnd] = scale.domain();
     const startMs = domainStart.getTime();
     const endMs = domainEnd.getTime();
+    const attachments = attachmentsCache.get(session.session_id) ?? [];
     return events
       .filter((event) => {
         const t = new Date(event.occurred_at).getTime();
@@ -535,8 +540,10 @@ function AggregatedSessionEvents({
         occurredAt: event.occurred_at,
         directiveName: event.payload?.directive_name,
         directiveStatus: event.payload?.directive_status,
+        isAttachment: isAttachmentStartEvent(event, attachments),
       }));
-  }, [events, scale]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [events, scale, session.session_id, version]);
 
   return (
     <>
@@ -561,6 +568,7 @@ function AggregatedSessionEvents({
           }}
           size={EVENT_CIRCLE_SIZE}
           isVisible={isEventVisible(node.eventType, activeFilter)}
+          isAttachment={node.isAttachment}
         />
       ))}
     </>

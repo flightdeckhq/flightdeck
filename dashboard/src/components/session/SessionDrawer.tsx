@@ -16,7 +16,7 @@ import {
 import { TokenUsageBar } from "./TokenUsageBar";
 import { PromptViewer } from "./PromptViewer";
 import { createDirective } from "@/lib/api";
-import { getBadge, getEventDetail, getSummaryRows, truncateSessionId } from "@/lib/events";
+import { attachBadge, getBadge, getEventDetail, getSummaryRows, isAttachmentStartEvent, truncateSessionId } from "@/lib/events";
 import { getProvider } from "@/lib/models";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import { OSIcon } from "@/components/ui/OSIcon";
@@ -512,6 +512,7 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
                 {activeTab === "timeline" && (
                   <EventFeed
                     events={displayEvents}
+                    attachments={data?.attachments ?? []}
                     expandedEventId={expandedEventId}
                     onToggleExpand={(id) => setExpandedEventId(expandedEventId === id ? null : id)}
                     onViewPrompts={handleViewPrompts}
@@ -852,13 +853,14 @@ function MetadataBar({ session }: { session: SessionType }) {
 
 interface EventFeedProps {
   events: AgentEvent[];
+  attachments: string[];
   expandedEventId: string | null;
   onToggleExpand: (id: string) => void;
   onViewPrompts: () => void;
   onOpenDetail?: (event: AgentEvent) => void;
 }
 
-function EventFeed({ events, expandedEventId, onToggleExpand, onViewPrompts, onOpenDetail }: EventFeedProps) {
+function EventFeed({ events, attachments, expandedEventId, onToggleExpand, onViewPrompts, onOpenDetail }: EventFeedProps) {
   if (events.length === 0) {
     return (
       <div className="py-8 text-center text-xs text-text-muted">
@@ -870,7 +872,8 @@ function EventFeed({ events, expandedEventId, onToggleExpand, onViewPrompts, onO
   return (
     <div className="flex flex-col">
       {events.map((event) => {
-        const badge = getBadge(event.event_type);
+        const isAttachment = isAttachmentStartEvent(event, attachments);
+        const badge = isAttachment ? attachBadge : getBadge(event.event_type);
         const isExpanded = expandedEventId === event.id;
         const detail = getEventDetail(event);
 
@@ -892,6 +895,17 @@ function EventFeed({ events, expandedEventId, onToggleExpand, onViewPrompts, onO
                   borderRadius: 3,
                 }}
                 data-testid="event-badge"
+                // Native title attribute gives us the D094-specified
+                // hover tooltip without pulling in the shadcn Tooltip
+                // provider for a single row. The attribute is only
+                // meaningful on ATTACH rows; leaving it undefined on
+                // the rest keeps the DOM clean for any screen reader
+                // walking unattached badges.
+                title={
+                  isAttachment
+                    ? "Agent re-attached with the same session ID"
+                    : undefined
+                }
               >
                 {badge.label}
               </span>

@@ -3,8 +3,8 @@ import type { ScaleTime } from "d3-scale";
 import type { Session, AgentEvent } from "@/lib/types";
 import { SESSION_ROW_HEIGHT, EVENT_CIRCLE_SIZE } from "@/lib/constants";
 import { EventNode } from "./EventNode";
-import { useSessionEvents } from "@/hooks/useSessionEvents";
-import { isEventVisible, truncateSessionId } from "@/lib/events";
+import { useSessionEvents, attachmentsCache } from "@/hooks/useSessionEvents";
+import { isAttachmentStartEvent, isEventVisible, truncateSessionId } from "@/lib/events";
 import { OSIcon } from "@/components/ui/OSIcon";
 import {
   OrchestrationIcon,
@@ -116,10 +116,18 @@ function SessionEventRowComponent({
   // still carry full style-recalc cost. Dropping them here is the main
   // reason the 50-session smoke test went from ~9k DOM nodes to under
   // 3k without any visible change on screen.
+  // Attachment list for this session -- populated by useSession /
+  // useSessionEvents on fetch. Read inside the memo so the outer
+  // reference doesn't invalidate on every render (the module map
+  // returns a fresh fallback [] each time `.get()` misses, which
+  // would defeat the memo's reference-equality guard). The version
+  // prop already gates re-renders on fresh cache data, so sampling
+  // the map inside the memo picks up updates correctly.
   const eventNodes = useMemo(() => {
     const [domainStart, domainEnd] = scale.domain();
     const startMs = domainStart.getTime();
     const endMs = domainEnd.getTime();
+    const attachments = attachmentsCache.get(session.session_id) ?? [];
     return events
       .filter((event) => {
         const t = new Date(event.occurred_at).getTime();
@@ -136,8 +144,14 @@ function SessionEventRowComponent({
         occurredAt: event.occurred_at,
         directiveName: event.payload?.directive_name,
         directiveStatus: event.payload?.directive_status,
+        isAttachment: isAttachmentStartEvent(event, attachments),
       }));
-  }, [events, scale]);
+    // version is captured indirectly via `events` (useSessionEvents
+    // threads version into its memoed `events` output). attachments
+    // ride on the same fetch path, so the event list reference is
+    // sufficient to re-run this memo when attachments change too.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [events, scale, session.session_id, version]);
 
   const truncatedSid = truncateSessionId(session.session_id);
   const showTokens = leftPanelWidth >= TOKEN_COUNT_MIN_WIDTH;
@@ -334,6 +348,7 @@ function SessionEventRowComponent({
               }}
               size={EVENT_CIRCLE_SIZE}
               isVisible={isEventVisible(node.eventType, activeFilter)}
+              isAttachment={node.isAttachment}
             />
           ))}
       </div>

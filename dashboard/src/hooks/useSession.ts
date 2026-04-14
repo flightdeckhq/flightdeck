@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { fetchSession } from "@/lib/api";
 import type { SessionDetail } from "@/lib/types";
-import { eventsCache } from "./useSessionEvents";
+import { attachmentsCache, eventsCache } from "./useSessionEvents";
 
 // Cache session metadata so reopening the same drawer doesn't re-fetch
 const sessionCache = new Map<string, SessionDetail>();
@@ -44,6 +44,12 @@ export function useSession(sessionId: string | null) {
             eventsCache.set(sessionId, detail.events);
           }
         }
+        // Mirror attachments into the shared cache so SessionEventRow
+        // and AggregatedSessionEvents can colour their session_start
+        // circles amber without each having to round-trip the API
+        // themselves. Always set (including empty array) so callers
+        // can tell "not fetched" from "fetched with no attachments".
+        attachmentsCache.set(sessionId, detail.attachments ?? []);
       })
       .catch((e: Error) => setError(e.message))
       .finally(() => setLoading(false));

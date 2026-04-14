@@ -7,6 +7,7 @@ import type { FlavorSummary } from "@/lib/types";
 // Mock useSessionEvents to avoid real API calls
 vi.mock("@/hooks/useSessionEvents", () => ({
   useSessionEvents: () => ({ events: [], loading: false }),
+  attachmentsCache: new Map(),
 }));
 
 const mockFlavors: FlavorSummary[] = [

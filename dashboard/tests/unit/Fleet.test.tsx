@@ -8,6 +8,7 @@ import type { FlavorSummary, Session, SessionState } from "@/lib/types";
 
 vi.mock("@/hooks/useSessionEvents", () => ({
   useSessionEvents: () => ({ events: [], loading: false }),
+  attachmentsCache: new Map(),
 }));
 
 function makeSession(id: string, state: SessionState, flavor = "f"): Session {

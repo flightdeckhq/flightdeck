@@ -65,18 +65,34 @@ export interface EventNodeProps {
   isVisible?: boolean;
   directiveName?: string;
   directiveStatus?: string;
+  /**
+   * When true, override the session_start lifecycle colour with
+   * var(--status-warn) and flip the tooltip label to
+   * "Session attached". Caller is responsible for passing this only
+   * when the event_type is session_start AND it matched the session's
+   * attachments array -- see lib/events.ts::isAttachmentStartEvent.
+   * Follows the directive_result override pattern already in this
+   * file so there's one consistent way to colour-swap a circle.
+   */
+  isAttachment?: boolean;
 }
 
 function EventNodeComponent({
   x, eventType, sessionId, flavor, model, toolName,
   tokensTotal, latencyMs, occurredAt, eventId, onClick,
   size = 24, isVisible = true, directiveName, directiveStatus,
+  isAttachment = false,
 }: EventNodeProps) {
   const config = eventTypeConfig[eventType] ?? defaultConfig;
   const override = eventType === "directive_result"
     ? directiveResultOverride(directiveStatus)
     : null;
-  const color = override?.cssVar ?? config.cssVar;
+  // Attachment recolour: applies only to session_start circles. Sits
+  // below directive_result in priority because the two event types
+  // are disjoint -- a session_start is never a directive_result.
+  const attachColor =
+    isAttachment && eventType === "session_start" ? "var(--status-warn)" : null;
+  const color = attachColor ?? override?.cssVar ?? config.cssVar;
   // Failed directive_result events use the plain X glyph in place of
   // the success Check. The tooltip label switches to "RESULT · status"
   // for any directive_result event so the status is visible without
@@ -86,7 +102,9 @@ function EventNodeComponent({
     !!directiveStatus &&
     FAILED_DIRECTIVE_STATUSES.has(directiveStatus);
   const tooltipLabel =
-    eventType === "directive_result" && directiveStatus
+    isAttachment && eventType === "session_start"
+      ? "Session attached"
+      : eventType === "directive_result" && directiveStatus
       ? `RESULT · ${directiveStatus}`
       : config.label;
   const [hovered, setHovered] = useState(false);
@@ -193,5 +211,6 @@ export const EventNode = memo(EventNodeComponent, (prev, next) => {
   if (prev.size !== next.size) return false;
   if (prev.directiveStatus !== next.directiveStatus) return false;
   if (prev.directiveName !== next.directiveName) return false;
+  if (prev.isAttachment !== next.isAttachment) return false;
   return true;
 });

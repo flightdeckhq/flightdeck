@@ -1260,6 +1260,72 @@ When capture is disabled for a session, the Prompts tab shows:
 
 ---
 
+## Settings Page
+
+**Route:** `/settings`
+**Nav:** rightmost item in the top nav bar — a lucide-react `Settings`
+gear icon, placed immediately before the theme toggle. No text label.
+
+The Settings page is organised into sections; Phase 5 Part 2 ships one:
+
+### Access Tokens section
+
+**Subtitle:** "Manage access tokens for connecting agents and
+services to Flightdeck."
+
+**Create button** (top right of the section): opens the two-step
+`CreateAccessTokenDialog`.
+
+**Dev mode banner** (amber, above the table): shown only when the
+server's reply to `GET /v1/access-tokens` contains exactly one row
+and that row's `name` equals `"Development Token"`. The dashboard
+cannot read `ENVIRONMENT` from the server, so the single-seed-row
+state is used as a proxy: once an operator provisions any real
+`ftd_` token, the banner disappears. Banner copy:
+"Development mode is active. tok_dev is accepted by all services.
+Create a production access token before deploying."
+
+**Table columns:**
+
+| Column    | Content |
+|-----------|---------|
+| Name      | Inline-editable label. Click the name or the pencil icon to edit, `Enter` to save (`PATCH /v1/access-tokens/:id`), `Escape` to cancel, blur commits. The seeded `Development Token` row renders a muted amber `DEV` badge next to its name and is not editable. |
+| Prefix    | Monospace `tok_dev_` or `ftd_xxxx`. |
+| Created   | Relative time (e.g. "3 days ago"). |
+| Last Used | Relative time, or `Never` when `last_used_at` is `NULL`. |
+| Actions   | Rename (pencil) and Delete (trash) icon buttons. On the `Development Token` row both are disabled and carry a tooltip "The development token cannot be modified". |
+
+**Create flow** (two-step modal):
+
+1. *Name step* — title `Create Access Token`, single text input,
+   Cancel and Create buttons. Empty names show an inline "Name is
+   required" error; submission calls `POST /v1/access-tokens`.
+2. *Created step* — title `Access Token Created`. Amber warning box:
+   "This token will not be shown again. Copy it now and store it
+   securely." Full `ftd_...` plaintext rendered in a monospace row
+   next to a Copy button that writes to `navigator.clipboard` and
+   shows a checkmark for 2s. A Usage snippet below shows the
+   `FLIGHTDECK_TOKEN` env var and the equivalent Python
+   `flightdeck_sensor.init(...)` call. A Done button closes the
+   dialog and refreshes the table.
+
+**Delete flow** (inline confirmation, no modal): clicking the trash
+icon replaces the row's action buttons with `Delete?` + a red
+Confirm button + a Cancel button. Confirm calls
+`DELETE /v1/access-tokens/:id` and the row disappears; the
+`Development Token` row returns `403` server-side and the button is
+already disabled client-side.
+
+**Rename flow** (inline): the name cell becomes a text input focused
+on click. `Enter` saves, `Escape` cancels, blur commits. A small
+spinner shows while the `PATCH` is in flight.
+
+All four fetches go through `apiFetch` in `dashboard/src/lib/api.ts`
+so the bearer token wiring is uniform; error states render an inline
+red strip at the top of the section rather than a toast.
+
+---
+
 ## Phase 4.5 Additions
 
 Phase 4.5 is a UI redesign and feature pass that adds custom directives,

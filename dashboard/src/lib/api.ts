@@ -1,4 +1,4 @@
-import type { FleetResponse, SessionDetail, Policy, PolicyRequest, DirectiveRequest, Directive, AnalyticsParams, AnalyticsResponse, EventContent, SearchResults, CustomDirective, AgentEvent, SessionsResponse } from "./types";
+import type { FleetResponse, SessionDetail, Policy, PolicyRequest, DirectiveRequest, Directive, AnalyticsParams, AnalyticsResponse, EventContent, SearchResults, CustomDirective, AgentEvent, SessionsResponse, AccessToken, CreatedAccessToken } from "./types";
 
 const BASE = import.meta.env.VITE_API_BASE_URL || "/api";
 
@@ -215,4 +215,46 @@ export function fetchAnalytics(params: AnalyticsParams): Promise<AnalyticsRespon
     if (value) searchParams.set(key, value);
   });
   return fetchJson<AnalyticsResponse>(`/v1/analytics?${searchParams.toString()}`);
+}
+
+// ---- Access tokens (D095/D096) --------------------------------------
+//
+// All four endpoints run through apiFetch so the dev-time ACCESS_TOKEN
+// header is attached. Errors propagate as thrown Error so the Settings
+// page can render targeted inline messages per flow (create/rename/
+// delete) rather than one global toast.
+
+export function fetchAccessTokens(): Promise<AccessToken[]> {
+  return fetchJson<AccessToken[]>("/v1/access-tokens");
+}
+
+export async function createAccessToken(name: string): Promise<CreatedAccessToken> {
+  const res = await apiFetch("/v1/access-tokens", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  if (!res.ok) {
+    throw new Error(`API ${res.status}: POST /v1/access-tokens`);
+  }
+  return res.json() as Promise<CreatedAccessToken>;
+}
+
+export async function deleteAccessToken(id: string): Promise<void> {
+  const res = await apiFetch(`/v1/access-tokens/${id}`, { method: "DELETE" });
+  if (!res.ok) {
+    throw new Error(`API ${res.status}: DELETE /v1/access-tokens/${id}`);
+  }
+}
+
+export async function renameAccessToken(id: string, name: string): Promise<AccessToken> {
+  const res = await apiFetch(`/v1/access-tokens/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  if (!res.ok) {
+    throw new Error(`API ${res.status}: PATCH /v1/access-tokens/${id}`);
+  }
+  return res.json() as Promise<AccessToken>;
 }

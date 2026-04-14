@@ -495,13 +495,55 @@ describe("SessionDrawer", () => {
     expect(attachBadges.length).toBe(1);
     expect(startBadges.length).toBe(1);
 
-    // The ATTACH badge must carry the D094-specified native tooltip
-    // so operators hovering over it see the semantics without having
-    // to consult docs. The original START keeps no special title.
-    expect(attachBadges[0].getAttribute("title")).toBe(
-      "Agent re-attached with the same session ID",
-    );
-    expect(startBadges[0].getAttribute("title")).toBeNull();
+    // The ATTACH badge must use the amber warning colour on both
+    // background and text, matching the pill shape of START/END.
+    // --warning is the actual amber token in themes.css; the earlier
+    // --status-warn pointed at nothing, so color-mix resolved to
+    // transparent and the pill looked like plain text.
+    const styleAttr = attachBadges[0].getAttribute("style") ?? "";
+    expect(styleAttr).toContain("var(--warning)");
+    expect(styleAttr).toContain("color-mix(in srgb, var(--warning) 15%");
+  });
+
+  it("ATTACH badge surfaces the D094 tooltip on hover via Radix Tooltip", async () => {
+    // Radix Tooltip renders its content in a portal only while the
+    // trigger has pointer focus, so we drive a real hover + poll for
+    // the content to appear. getByRole('tooltip') is the reliable
+    // handle -- Radix adds role="tooltip" to the content element.
+    mockEventsOverride = [
+      {
+        id: "e-attach",
+        session_id: "s1",
+        flavor: "test",
+        event_type: "session_start" as const,
+        model: null,
+        tokens_input: null,
+        tokens_output: null,
+        tokens_total: null,
+        latency_ms: null,
+        tool_name: null,
+        has_content: false,
+        occurred_at: "2026-04-07T10:02:00Z",
+      },
+    ];
+    mockAttachments = ["2026-04-07T10:02:01Z"];
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+
+    const badge = screen.getAllByTestId("event-badge")
+      .find((el) => el.textContent === "ATTACH");
+    expect(badge).toBeDefined();
+    fireEvent.pointerEnter(badge!);
+    fireEvent.focus(badge!);
+    // Radix renders the tooltip content in both the visible portal
+    // and a hidden aria-describedby clone, so multiple matches is
+    // the expected healthy state. getAllByText avoids the single-
+    // match restriction of getByText.
+    await waitFor(() => {
+      expect(
+        screen.getAllByText("Agent re-attached with the same session ID")
+          .length,
+      ).toBeGreaterThan(0);
+    });
   });
 
   it("session_start without matching attachment keeps the START badge", () => {

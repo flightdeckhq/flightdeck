@@ -76,9 +76,16 @@ export const defaultBadge: BadgeConfig = { cssVar: "var(--event-lifecycle)", lab
  * from the default lifecycle blue, not alarming. Used by the drawer
  * EventFeed and surfaced as the swimlane circle colour via EventNode's
  * isAttachment prop.
+ *
+ * Uses var(--warning), which is the actual amber token defined in
+ * themes.css -- the earlier iteration pointed at var(--status-warn)
+ * (no such token), so color-mix silently resolved to transparent and
+ * the pill lost its background. --warning is #eab308 in neon dark
+ * and #ca8a04 in clean light; both themes give enough contrast for a
+ * 15% background tint against the drawer surface.
  */
 export const attachBadge: BadgeConfig = {
-  cssVar: "var(--status-warn)",
+  cssVar: "var(--warning)",
   label: "ATTACH",
 };
 

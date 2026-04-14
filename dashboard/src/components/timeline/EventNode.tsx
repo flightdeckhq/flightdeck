@@ -67,12 +67,13 @@ export interface EventNodeProps {
   directiveStatus?: string;
   /**
    * When true, override the session_start lifecycle colour with
-   * var(--status-warn) and flip the tooltip label to
-   * "Session attached". Caller is responsible for passing this only
-   * when the event_type is session_start AND it matched the session's
-   * attachments array -- see lib/events.ts::isAttachmentStartEvent.
-   * Follows the directive_result override pattern already in this
-   * file so there's one consistent way to colour-swap a circle.
+   * var(--warning) (the project amber) and flip the tooltip label
+   * to "Session attached". Caller is responsible for passing this
+   * only when the event_type is session_start AND it matched the
+   * session's attachments array -- see
+   * lib/events.ts::isAttachmentStartEvent. Follows the
+   * directive_result override pattern already in this file so
+   * there's one consistent way to colour-swap a circle.
    */
   isAttachment?: boolean;
 }
@@ -91,7 +92,7 @@ function EventNodeComponent({
   // below directive_result in priority because the two event types
   // are disjoint -- a session_start is never a directive_result.
   const attachColor =
-    isAttachment && eventType === "session_start" ? "var(--status-warn)" : null;
+    isAttachment && eventType === "session_start" ? "var(--warning)" : null;
   const color = attachColor ?? override?.cssVar ?? config.cssVar;
   // Failed directive_result events use the plain X glyph in place of
   // the success Check. The tooltip label switches to "RESULT · status"

@@ -886,29 +886,42 @@ function EventFeed({ events, attachments, expandedEventId, onToggleExpand, onVie
               onClick={() => onToggleExpand(event.id)}
               data-testid="event-row"
             >
-              <span
-                className="flex h-[18px] w-[88px] shrink-0 items-center justify-center rounded font-mono text-[10px] font-semibold uppercase"
-                style={{
-                  background: `color-mix(in srgb, ${badge.cssVar} 15%, transparent)`,
-                  color: badge.cssVar,
-                  border: `1px solid color-mix(in srgb, ${badge.cssVar} 30%, transparent)`,
-                  borderRadius: 3,
-                }}
-                data-testid="event-badge"
-                // Native title attribute gives us the D094-specified
-                // hover tooltip without pulling in the shadcn Tooltip
-                // provider for a single row. The attribute is only
-                // meaningful on ATTACH rows; leaving it undefined on
-                // the rest keeps the DOM clean for any screen reader
-                // walking unattached badges.
-                title={
-                  isAttachment
-                    ? "Agent re-attached with the same session ID"
-                    : undefined
-                }
-              >
-                {badge.label}
-              </span>
+              {isAttachment ? (
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span
+                        className="flex h-[18px] w-[88px] shrink-0 items-center justify-center rounded font-mono text-[10px] font-semibold uppercase"
+                        style={{
+                          background: `color-mix(in srgb, ${badge.cssVar} 15%, transparent)`,
+                          color: badge.cssVar,
+                          border: `1px solid color-mix(in srgb, ${badge.cssVar} 30%, transparent)`,
+                          borderRadius: 3,
+                        }}
+                        data-testid="event-badge"
+                      >
+                        {badge.label}
+                      </span>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      Agent re-attached with the same session ID
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              ) : (
+                <span
+                  className="flex h-[18px] w-[88px] shrink-0 items-center justify-center rounded font-mono text-[10px] font-semibold uppercase"
+                  style={{
+                    background: `color-mix(in srgb, ${badge.cssVar} 15%, transparent)`,
+                    color: badge.cssVar,
+                    border: `1px solid color-mix(in srgb, ${badge.cssVar} 30%, transparent)`,
+                    borderRadius: 3,
+                  }}
+                  data-testid="event-badge"
+                >
+                  {badge.label}
+                </span>
+              )}
               <span className="flex-1 truncate text-[13px] flex items-center gap-1" style={{ color: "var(--text)" }}>
                 {(event.event_type === "post_call" || event.event_type === "pre_call") && event.model && (
                   <ProviderLogo provider={getProvider(event.model)} size={12} />

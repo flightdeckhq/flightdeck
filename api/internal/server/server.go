@@ -59,37 +59,40 @@ func NewForTesting(addr string, s store.Querier, hub *ws.Hub, corsOrigin string)
 func newServer(addr string, s store.Querier, hub *ws.Hub, validator *auth.Validator, corsOrigin string) *http.Server {
 	mux := http.NewServeMux()
 
-	// REST routes wrapped with a 30s timeout. The wrapper applies
-	// http.TimeoutHandler so a hung pgx query cannot pin a request
-	// indefinitely.
-	mux.Handle("GET /v1/fleet", withRESTTimeout(handlers.FleetHandler(s)))
-	mux.Handle("GET /v1/sessions", withRESTTimeout(handlers.SessionsListHandler(s)))
-	mux.Handle("GET /v1/sessions/", withRESTTimeout(handlers.SessionsHandler(s)))
-	mux.Handle("GET /v1/events/", withRESTTimeout(handlers.ContentHandler(s)))
-	mux.Handle("GET /v1/policy", withRESTTimeout(handlers.EffectivePolicyHandler(s)))
-	mux.Handle("GET /v1/policies", withRESTTimeout(handlers.PoliciesListHandler(s)))
-	mux.Handle("POST /v1/policies", withRESTTimeout(handlers.PolicyCreateHandler(s)))
-	mux.Handle("PUT /v1/policies/{id}", withRESTTimeout(handlers.PolicyUpdateHandler(s)))
-	mux.Handle("DELETE /v1/policies/{id}", withRESTTimeout(handlers.PolicyDeleteHandler(s)))
-	mux.Handle("POST /v1/directives", withRESTTimeout(handlers.CreateDirectiveHandler(s)))
-
-	// Sensor-facing endpoints: bearer token auth (stopgap until Phase 5
-	// JWT auth lands -- see DECISIONS.md D073). When validator is nil
-	// (unit tests) we mount the handler directly without auth.
-	syncHandler := http.Handler(handlers.SyncDirectivesHandler(s))
-	registerHandler := http.Handler(handlers.RegisterDirectivesHandler(s))
-	if validator != nil {
-		syncHandler = auth.Middleware(validator, syncHandler)
-		registerHandler = auth.Middleware(validator, registerHandler)
+	// gate wraps REST handlers with the 30s timeout AND the Phase 5
+	// bearer-token auth middleware. Phase 5 D095: every /v1 endpoint
+	// must present a valid token. /health and /docs/ remain open so
+	// container healthchecks and the Swagger UI still work without
+	// credentials. The WebSocket /v1/stream is gated separately --
+	// http.TimeoutHandler is incompatible with hijacking, but auth
+	// must still apply; see below.
+	gate := func(h http.Handler) http.Handler {
+		if validator != nil {
+			h = auth.Middleware(validator, h)
+		}
+		return withRESTTimeout(h)
 	}
-	mux.Handle("POST /v1/directives/sync", withRESTTimeout(syncHandler))
-	mux.Handle("POST /v1/directives/register", withRESTTimeout(registerHandler))
 
-	mux.Handle("GET /v1/directives/custom", withRESTTimeout(handlers.GetCustomDirectivesHandler(s)))
-	mux.Handle("DELETE /v1/directives/custom", withRESTTimeout(handlers.DeleteCustomDirectivesHandler(s)))
-	mux.Handle("GET /v1/events", withRESTTimeout(handlers.EventsListHandler(s)))
-	mux.Handle("GET /v1/analytics", withRESTTimeout(handlers.AnalyticsHandler(s)))
-	mux.Handle("GET /v1/search", withRESTTimeout(handlers.SearchHandler(s)))
+	// REST routes -- all require a valid bearer token (D095).
+	mux.Handle("GET /v1/fleet", gate(handlers.FleetHandler(s)))
+	mux.Handle("GET /v1/sessions", gate(handlers.SessionsListHandler(s)))
+	mux.Handle("GET /v1/sessions/", gate(handlers.SessionsHandler(s)))
+	mux.Handle("GET /v1/events/", gate(handlers.ContentHandler(s)))
+	mux.Handle("GET /v1/policy", gate(handlers.EffectivePolicyHandler(s)))
+	mux.Handle("GET /v1/policies", gate(handlers.PoliciesListHandler(s)))
+	mux.Handle("POST /v1/policies", gate(handlers.PolicyCreateHandler(s)))
+	mux.Handle("PUT /v1/policies/{id}", gate(handlers.PolicyUpdateHandler(s)))
+	mux.Handle("DELETE /v1/policies/{id}", gate(handlers.PolicyDeleteHandler(s)))
+	mux.Handle("POST /v1/directives", gate(handlers.CreateDirectiveHandler(s)))
+
+	mux.Handle("POST /v1/directives/sync", gate(handlers.SyncDirectivesHandler(s)))
+	mux.Handle("POST /v1/directives/register", gate(handlers.RegisterDirectivesHandler(s)))
+
+	mux.Handle("GET /v1/directives/custom", gate(handlers.GetCustomDirectivesHandler(s)))
+	mux.Handle("DELETE /v1/directives/custom", gate(handlers.DeleteCustomDirectivesHandler(s)))
+	mux.Handle("GET /v1/events", gate(handlers.EventsListHandler(s)))
+	mux.Handle("GET /v1/analytics", gate(handlers.AnalyticsHandler(s)))
+	mux.Handle("GET /v1/search", gate(handlers.SearchHandler(s)))
 	mux.Handle("GET /health", withRESTTimeout(handlers.HealthHandler()))
 
 	// Swagger UI. The swag/v2 v2.0.0-rc5 + http-swagger v2.0.2

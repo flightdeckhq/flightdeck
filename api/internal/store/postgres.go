@@ -57,6 +57,10 @@ type Querier interface {
 	QueryAnalytics(ctx context.Context, params AnalyticsParams) (*AnalyticsResponse, error)
 	Search(ctx context.Context, query string) (*SearchResults, error)
 	GetContextFacets(ctx context.Context) (map[string][]ContextFacetValue, error)
+	ListTokens(ctx context.Context) ([]TokenRow, error)
+	CreateToken(ctx context.Context, name string) (*CreatedTokenResponse, error)
+	DeleteToken(ctx context.Context, id string) error
+	RenameToken(ctx context.Context, id, newName string) (*TokenRow, error)
 }
 
 // WrapStore returns a Querier from any compatible implementation.

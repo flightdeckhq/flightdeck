@@ -934,16 +934,231 @@ const docTemplate = `{
         },
         "/v1/stream": {
             "get": {
-                "description": "WebSocket connection for real-time fleet state updates. Upgrades HTTP to WebSocket.",
+                "description": "WebSocket connection for real-time fleet state updates. Upgrades HTTP to WebSocket. Accepts bearer token via the Authorization header OR ` + "`" + `` + "`" + `?token=` + "`" + `` + "`" + ` query parameter (browsers cannot set headers on the WS upgrade).",
                 "tags": [
                     "stream"
                 ],
                 "summary": "Real-time fleet stream",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Bearer token, alternative to Authorization header",
+                        "name": "token",
+                        "in": "query"
+                    }
+                ],
                 "responses": {
                     "101": {
                         "description": "Switching Protocols",
                         "schema": {
                             "type": "string"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/tokens": {
+            "get": {
+                "description": "Returns every api_tokens row. Hash and salt are never exposed; the raw token itself is available only on the POST response at creation time (D095).",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "tokens"
+                ],
+                "summary": "List API tokens",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/store.TokenRow"
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "description": "Mints an opaque ftd_ bearer token. The plaintext token is returned exactly once in the response; the platform cannot recover it afterwards. See DECISIONS.md D095.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "tokens"
+                ],
+                "summary": "Create an API token",
+                "parameters": [
+                    {
+                        "description": "Token name",
+                        "name": "token",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handlers.CreateTokenRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/store.CreatedTokenResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/tokens/{id}": {
+            "delete": {
+                "description": "Deletes the api_tokens row. The seeded Development Token row is protected and returns 403. Sessions previously authenticated with the token keep their token_name for auditability (sessions.token_id is set to NULL via ON DELETE SET NULL). See DECISIONS.md D095.",
+                "tags": [
+                    "tokens"
+                ],
+                "summary": "Revoke an API token",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Token ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    }
+                }
+            },
+            "patch": {
+                "description": "Updates the name field on the api_tokens row. Historical sessions keep their original token_name snapshot. The Development Token row is protected and returns 403.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "tokens"
+                ],
+                "summary": "Rename an API token",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Token ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "New name",
+                        "name": "token",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handlers.RenameTokenRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/store.TokenRow"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     },
                     "500": {
@@ -957,6 +1172,14 @@ const docTemplate = `{
         }
     },
     "definitions": {
+        "handlers.CreateTokenRequest": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string"
+                }
+            }
+        },
         "handlers.CustomDirectivesListResponse": {
             "type": "object",
             "properties": {
@@ -1084,6 +1307,14 @@ const docTemplate = `{
                 }
             }
         },
+        "handlers.RenameTokenRequest": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string"
+                }
+            }
+        },
         "handlers.SessionResponse": {
             "type": "object",
             "properties": {
@@ -1198,6 +1429,26 @@ const docTemplate = `{
                     "type": "integer"
                 },
                 "value": {
+                    "type": "string"
+                }
+            }
+        },
+        "store.CreatedTokenResponse": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "prefix": {
+                    "type": "string"
+                },
+                "token": {
                     "type": "string"
                 }
             }
@@ -1633,8 +1884,15 @@ const docTemplate = `{
                 "state": {
                     "type": "string"
                 },
+                "token_id": {
+                    "description": "D095: attribution for the api_tokens row that opened this\nsession. TokenID is nullable because revocation clears the FK\n(ON DELETE SET NULL); TokenName is preserved for auditability\nso the UI can still render \"Created via: Staging K8s (revoked)\"\nlong after the token row is gone.",
+                    "type": "string"
+                },
                 "token_limit": {
                     "type": "integer"
+                },
+                "token_name": {
+                    "type": "string"
                 },
                 "tokens_used": {
                     "type": "integer"
@@ -1661,6 +1919,26 @@ const docTemplate = `{
                 },
                 "total": {
                     "type": "integer"
+                }
+            }
+        },
+        "store.TokenRow": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "last_used_at": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "prefix": {
+                    "type": "string"
                 }
             }
         }

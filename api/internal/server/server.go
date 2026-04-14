@@ -93,6 +93,16 @@ func newServer(addr string, s store.Querier, hub *ws.Hub, validator *auth.Valida
 	mux.Handle("GET /v1/events", gate(handlers.EventsListHandler(s)))
 	mux.Handle("GET /v1/analytics", gate(handlers.AnalyticsHandler(s)))
 	mux.Handle("GET /v1/search", gate(handlers.SearchHandler(s)))
+
+	// Token management (D095). All four require a valid bearer token;
+	// the delete/rename handlers additionally refuse the seed tok_dev
+	// row with a 403. The POST response is the only place the
+	// plaintext token is ever exposed.
+	mux.Handle("GET /v1/tokens", gate(handlers.TokensListHandler(s)))
+	mux.Handle("POST /v1/tokens", gate(handlers.TokenCreateHandler(s)))
+	mux.Handle("DELETE /v1/tokens/{id}", gate(handlers.TokenDeleteHandler(s)))
+	mux.Handle("PATCH /v1/tokens/{id}", gate(handlers.TokenRenameHandler(s)))
+
 	mux.Handle("GET /health", withRESTTimeout(handlers.HealthHandler()))
 
 	// Swagger UI. The swag/v2 v2.0.0-rc5 + http-swagger v2.0.2
@@ -114,8 +124,11 @@ func newServer(addr string, s store.Querier, hub *ws.Hub, validator *auth.Valida
 	// /v1/stream is intentionally NOT wrapped in withRESTTimeout --
 	// WebSocket connections are long-lived and the timeout would kill
 	// them after restTimeout. The WebSocket write pump owns its own
-	// per-message deadline.
-	mux.Handle("GET /v1/stream", handlers.StreamHandler(hub))
+	// per-message deadline. Auth is handled inside the handler (D095)
+	// because the upgrade handshake needs to accept the token via
+	// either the Authorization header or a ?token= query parameter,
+	// and the generic auth.Middleware only checks the header path.
+	mux.Handle("GET /v1/stream", handlers.StreamHandler(hub, validator))
 
 	return &http.Server{
 		Addr:        addr,

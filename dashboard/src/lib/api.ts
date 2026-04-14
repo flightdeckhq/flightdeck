@@ -2,8 +2,41 @@ import type { FleetResponse, SessionDetail, Policy, PolicyRequest, DirectiveRequ
 
 const BASE = import.meta.env.VITE_API_BASE_URL || "/api";
 
-async function fetchJson<T>(path: string): Promise<T> {
-  const res = await fetch(`${BASE}${path}`);
+// D095: every dashboard request is authenticated with a bearer
+// token. Phase 5 Part 1b hardcodes tok_dev -- the Settings page in
+// Phase 5 Part 2 will swap this for a user-selected token read from
+// localStorage. The ENVIRONMENT=dev gate on the API service means
+// production deployments reject tok_dev at the middleware; shipping
+// this fallback in a prod build is a non-issue because the server
+// will 401 it anyway, but the Part 2 work still needs to replace
+// this before a dashboard bundle is shipped to end users.
+export const API_TOKEN = "tok_dev";
+
+// WS_TOKEN_QUERY is the query-string form used by the WebSocket
+// /v1/stream endpoint. Browsers cannot set Authorization on a
+// WebSocket upgrade, so the server accepts the token via ``?token=``
+// as an alternative.
+export const WS_TOKEN_QUERY = `token=${encodeURIComponent(API_TOKEN)}`;
+
+function authHeaders(init?: HeadersInit): Headers {
+  const h = new Headers(init);
+  if (!h.has("Authorization")) {
+    h.set("Authorization", `Bearer ${API_TOKEN}`);
+  }
+  return h;
+}
+
+// apiFetch is the single fetch wrapper used by every call site in
+// this module. Callers pass the same options they would to the
+// global fetch; the wrapper injects the Authorization header (D095)
+// and resolves the base URL. Keep all /api/* fetches routed through
+// here so token rotation is a one-line change.
+export async function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  return fetch(`${BASE}${path}`, { ...init, headers: authHeaders(init.headers) });
+}
+
+async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await apiFetch(path, init);
   if (!res.ok) {
     throw new Error(`API ${res.status}: ${path}`);
   }
@@ -29,7 +62,7 @@ export async function fetchPolicies(): Promise<Policy[]> {
 }
 
 export async function createPolicy(data: PolicyRequest): Promise<Policy> {
-  const res = await fetch(`${BASE}/v1/policies`, {
+  const res = await apiFetch(`/v1/policies`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
@@ -41,7 +74,7 @@ export async function createPolicy(data: PolicyRequest): Promise<Policy> {
 }
 
 export async function updatePolicy(id: string, data: PolicyRequest): Promise<Policy> {
-  const res = await fetch(`${BASE}/v1/policies/${id}`, {
+  const res = await apiFetch(`/v1/policies/${id}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
@@ -53,7 +86,7 @@ export async function updatePolicy(id: string, data: PolicyRequest): Promise<Pol
 }
 
 export async function deletePolicy(id: string): Promise<void> {
-  const res = await fetch(`${BASE}/v1/policies/${id}`, {
+  const res = await apiFetch(`/v1/policies/${id}`, {
     method: "DELETE",
   });
   if (!res.ok) {
@@ -62,7 +95,7 @@ export async function deletePolicy(id: string): Promise<void> {
 }
 
 export async function createDirective(data: DirectiveRequest): Promise<Directive> {
-  const res = await fetch(`${BASE}/v1/directives`, {
+  const res = await apiFetch(`/v1/directives`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
@@ -82,11 +115,7 @@ export async function fetchEventContent(eventId: string): Promise<EventContent |
 }
 
 export async function fetchSearch(query: string, signal?: AbortSignal): Promise<SearchResults> {
-  const res = await fetch(`${BASE}/v1/search?q=${encodeURIComponent(query)}`, { signal });
-  if (!res.ok) {
-    throw new Error(`API ${res.status}: /v1/search`);
-  }
-  return res.json() as Promise<SearchResults>;
+  return fetchJson<SearchResults>(`/v1/search?q=${encodeURIComponent(query)}`, { signal });
 }
 
 export async function fetchFlavors(): Promise<string[]> {
@@ -108,7 +137,7 @@ export async function triggerCustomDirective(data: {
   flavor?: string;
   parameters?: Record<string, unknown>;
 }): Promise<void> {
-  const res = await fetch(`${BASE}/v1/directives`, {
+  const res = await apiFetch(`/v1/directives`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
@@ -175,9 +204,7 @@ export async function fetchSessions(params: SessionsParams, signal?: AbortSignal
   if (params.order) sp.set("order", params.order);
   if (params.limit) sp.set("limit", String(params.limit));
   if (params.offset) sp.set("offset", String(params.offset));
-  const res = await fetch(`${BASE}/v1/sessions?${sp.toString()}`, { signal });
-  if (!res.ok) throw new Error(`API ${res.status}: GET /v1/sessions`);
-  return res.json() as Promise<SessionsResponse>;
+  return fetchJson<SessionsResponse>(`/v1/sessions?${sp.toString()}`, { signal });
 }
 
 export function fetchAnalytics(params: AnalyticsParams): Promise<AnalyticsResponse> {

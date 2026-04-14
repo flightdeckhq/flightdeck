@@ -2228,10 +2228,32 @@ session_start-only transition, not a general "un-close" for the
 whole event stream.
 
 **Schema.** Migration `000008_add_last_attached_at_to_sessions`
-adds `last_attached_at TIMESTAMPTZ` (nullable) plus a partial
-index that only covers non-NULL values. The column stays NULL
-for sessions that have never been re-attached; the dashboard
-treats NULL as "this is the first run" and renders no separator.
+initially added a single `last_attached_at TIMESTAMPTZ` column on
+`sessions`. **Migration `000009_session_attachments` superseded that
+design** before it shipped: the column only preserved the most
+recent attachment timestamp, which threw away the full history of
+how often an orchestrator-driven agent had re-attached. The 000009
+migration drops the column and replaces it with a dedicated
+`session_attachments(id, session_id, attached_at)` table plus a
+`(session_id, attached_at)` index. The ingestion attach store
+now `INSERT`s one row per arrival instead of `UPDATE`ing a column,
+and `GET /v1/sessions/:id` returns `attachments: []time` so the
+dashboard drawer can draw one run separator per recorded
+attachment rather than only the most recent. A session with zero
+rows in `session_attachments` is a session that has only ever run
+once.
+
+**UUID validation.** The sensor validates `session_id` (kwarg OR
+`FLIGHTDECK_SESSION_ID` env var) via `uuid.UUID(value)` at `init()`
+time. On parse failure -- e.g. the caller passed a raw Temporal
+workflow id -- the sensor logs a warning and falls back to
+auto-generating a UUID so the agent still boots. The sessions
+table column is UUID-typed, so an unvalidated non-UUID would fail
+at worker time and drop every event for the agent. Callers with
+string-typed identifiers (Temporal workflow_id, Airflow
+dag_run_id) must hash into a deterministic UUID first, e.g.
+`uuid.uuid5(FLIGHTDECK_NS, workflow_id)`. See the Temporal
+example in `sensor/README.md`.
 
 **Out of scope.** The attach flow does not support changing
 flavor / agent_type / host mid-session: those columns are

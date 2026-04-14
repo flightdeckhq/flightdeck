@@ -247,23 +247,24 @@ def test_init_custom_session_id_emits_warning(
     so operators can see attachment semantics kicked in."""
     import flightdeck_sensor
 
-    # Make sure no stale env var from a sibling test bleeds in.
+    # A valid UUID is required -- non-UUID inputs hit the separate
+    # _is_valid_uuid fallback path and never surface this warning.
+    sid = "11111111-1111-4111-8111-111111111111"
     monkeypatch.delenv("FLIGHTDECK_SESSION_ID", raising=False)
-    # Keep init() from reaching the network -- stub the session.
     flightdeck_sensor.teardown()
     with caplog.at_level(logging.WARNING, logger="flightdeck_sensor"):
         try:
             flightdeck_sensor.init(
                 server="http://127.0.0.1:1",
                 token="tok",
-                session_id="workflow-run-42",
+                session_id=sid,
                 quiet=True,
             )
         finally:
             flightdeck_sensor.teardown()
     messages = [r.message for r in caplog.records]
     assert any(
-        "Custom session_id provided: 'workflow-run-42'" in m
+        f"Custom session_id provided: '{sid}'" in m
         and "used as-is" in m
         and "backend will attach" in m
         for m in messages
@@ -294,22 +295,64 @@ def test_init_no_session_id_does_not_warn(
     )
 
 
+def test_init_non_uuid_session_id_falls_back_and_warns(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A caller-supplied session_id that is not a valid UUID must NOT
+    be used verbatim -- the sessions table column is UUID-typed and
+    the event would later be dropped at worker time. The sensor logs
+    a warning with the documented wording and falls back to an
+    auto-generated UUID so the agent still boots."""
+    import flightdeck_sensor
+
+    monkeypatch.delenv("FLIGHTDECK_SESSION_ID", raising=False)
+    flightdeck_sensor.teardown()
+    with caplog.at_level(logging.WARNING, logger="flightdeck_sensor"):
+        try:
+            flightdeck_sensor.init(
+                server="http://127.0.0.1:1",
+                token="tok",
+                session_id="my-temporal-workflow-id",
+                quiet=True,
+            )
+            assert flightdeck_sensor._session is not None
+            sid = flightdeck_sensor._session.config.session_id
+        finally:
+            flightdeck_sensor.teardown()
+
+    # Exact wording: "Custom session_id '{value}' is not a valid UUID.
+    # A random session ID will be generated instead."
+    assert any(
+        "Custom session_id 'my-temporal-workflow-id' is not a valid UUID" in r.message
+        and "random session ID will be generated" in r.message
+        for r in caplog.records
+    ), f"expected invalid-uuid warning, got: {[r.message for r in caplog.records]}"
+
+    # Fallback UUID must itself be a valid UUID and must not equal the
+    # caller-supplied string.
+    import uuid as _uuid
+    _uuid.UUID(sid)  # raises if not a UUID
+    assert sid != "my-temporal-workflow-id"
+
+
 def test_init_env_var_overrides_kwarg(monkeypatch: pytest.MonkeyPatch) -> None:
     """FLIGHTDECK_SESSION_ID env var wins over the init() kwarg, same
     pattern as FLIGHTDECK_SERVER and AGENT_FLAVOR (D094)."""
     import flightdeck_sensor
 
+    env_sid = "22222222-2222-4222-8222-222222222222"
+    kwarg_sid = "33333333-3333-4333-8333-333333333333"
     flightdeck_sensor.teardown()
-    monkeypatch.setenv("FLIGHTDECK_SESSION_ID", "env-wins")
+    monkeypatch.setenv("FLIGHTDECK_SESSION_ID", env_sid)
     try:
         flightdeck_sensor.init(
             server="http://127.0.0.1:1",
             token="tok",
-            session_id="kwarg-loses",
+            session_id=kwarg_sid,
             quiet=True,
         )
         assert flightdeck_sensor._session is not None
-        assert flightdeck_sensor._session.config.session_id == "env-wins"
+        assert flightdeck_sensor._session.config.session_id == env_sid
     finally:
         flightdeck_sensor.teardown()
 

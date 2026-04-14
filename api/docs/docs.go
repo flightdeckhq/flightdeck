@@ -1087,6 +1087,12 @@ const docTemplate = `{
         "handlers.SessionResponse": {
             "type": "object",
             "properties": {
+                "attachments": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
                 "events": {
                     "type": "array",
                     "items": {

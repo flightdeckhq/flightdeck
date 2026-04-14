@@ -84,6 +84,10 @@ definitions:
     type: object
   handlers.SessionResponse:
     properties:
+      attachments:
+        items:
+          type: string
+        type: array
       events:
         items:
           $ref: '#/definitions/store.Event'

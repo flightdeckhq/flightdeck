@@ -120,6 +120,10 @@ func (m *mockStore) GetSessionEvents(_ context.Context, _ string) ([]store.Event
 	}, nil
 }
 
+func (m *mockStore) GetSessionAttachments(_ context.Context, _ string) ([]time.Time, error) {
+	return nil, nil
+}
+
 func (m *mockStore) GetEventContent(_ context.Context, eventID string) (*store.EventContent, error) {
 	if eventID == "evt-with-content" {
 		sys := "You are a helpful assistant."

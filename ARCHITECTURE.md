@@ -718,25 +718,45 @@ caller an optional hint that the control plane honours end-to-end:
    `"Attached to existing session {id}."` at INFO level the first
    time the flag is true and latches a per-process guard so
    subsequent envelopes do not duplicate the log.
-5. **Dashboard -- run separator anchored on `last_attached_at`.**
-   The session drawer detects every `session_start` event after the
-   first and draws a subtle horizontal rule labeled
-   "New execution attached · {timestamp}" between the prior run's
-   events and the new run's events. The timestamp comes from the
-   event row; `last_attached_at` on the session itself is the
-   authoritative "last time any execution attached" anchor.
+5. **Dashboard -- run separator per recorded attachment.**
+   `GET /v1/sessions/:id` returns an `attachments: []time` array.
+   The session drawer walks the array in order and draws a subtle
+   horizontal rule labeled "New execution attached · {timestamp}"
+   for each entry. Sessions with an empty array render no
+   separators.
 
 The race between step 2 (synchronous) and the worker's
 `HandleSessionStart` (asynchronous, via NATS) is bounded: the
-ingestion API locks the answer ("attached=true, revive row") in the
-HTTP response the instant the state flip completes. By the time the
-worker consumes the event, the row is already `active`, and the
-worker's `UpsertSession` ON CONFLICT branch is a no-op refresh --
-`last_attached_at` is not touched by the worker path. See the KI13
-note in `ingestion/internal/handlers/events.go`: the worker formerly
+ingestion API locks the answer ("attached=true, revive row, record
+row in `session_attachments`") in the HTTP response the instant the
+attach commits. By the time the worker consumes the event, the row
+is already `active`, and the worker's `UpsertSession` ON CONFLICT
+branch is a no-op refresh -- the worker path never touches
+`session_attachments`. See the KI13 note in
+`ingestion/internal/handlers/events.go`: the worker formerly
 skipped all events for terminal sessions; `session_start` is now
 allowed to pass through specifically because the attach transition
 has already been committed upstream.
+
+### Session detail API response
+
+`GET /v1/sessions/{id}` returns:
+
+```json
+{
+  "session":     { ...Session fields... },
+  "events":      [ ...Event... ],
+  "attachments": ["2026-04-14T08:00:00Z", "2026-04-14T09:30:00Z"]
+}
+```
+
+`attachments` is chronological (oldest first) and contains one
+entry per re-attachment recorded in the `session_attachments`
+table. A brand-new session that has only run once returns
+`attachments: []`. The list endpoint (`GET /v1/sessions`) does NOT
+include attachments -- it would force a join on every row of a
+large fleet view. Consumers that need attachment history fetch the
+detail endpoint on demand.
 
 ---
 
@@ -772,8 +792,7 @@ CREATE TABLE sessions (
     tokens_used     INTEGER NOT NULL DEFAULT 0,
     token_limit     INTEGER,
     metadata        JSONB,
-    context         JSONB NOT NULL DEFAULT '{}'::jsonb,
-    last_attached_at TIMESTAMPTZ       -- nullable, set by ingestion on attach
+    context         JSONB NOT NULL DEFAULT '{}'::jsonb
 );
 
 CREATE INDEX sessions_flavor_idx         ON sessions(flavor);
@@ -781,19 +800,37 @@ CREATE INDEX sessions_state_idx          ON sessions(state);
 CREATE INDEX sessions_last_seen_idx      ON sessions(last_seen_at);
 CREATE INDEX sessions_started_idx        ON sessions(started_at);
 CREATE INDEX sessions_context_gin        ON sessions USING GIN (context);
-CREATE INDEX sessions_last_attached_idx  ON sessions(last_attached_at)
-    WHERE last_attached_at IS NOT NULL;
 ```
 
-The `last_attached_at` column is set by the ingestion API whenever a
-`session_start` event arrives for a session that already exists in the
-table. It stays NULL for the first `session_start` of a new session
-(the initial creation is not an "attach"). The dashboard's session
-drawer uses it to draw a run-separator between the events of the
-previous execution and the events that follow -- see DECISIONS.md
-D094 and "Session attachment flow" below. `started_at` and `ended_at`
-are deliberately NOT touched on attach so the original session
-lifetime remains in the DB.
+`started_at` and `ended_at` are deliberately NOT touched when an
+agent re-attaches to an existing session so the original lifetime
+remains in the DB. Re-attachment history lives in a dedicated
+`session_attachments` table (below) instead of a single
+`last_attached_at` column -- the column would throw away all but
+the most recent attachment, and the dashboard drawer needs the
+full list to draw one run separator per execution.
+
+### session_attachments
+
+```sql
+CREATE TABLE session_attachments (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    session_id  UUID NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+    attached_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX session_attachments_session_idx
+    ON session_attachments(session_id, attached_at);
+```
+
+One row is inserted every time a `session_start` event arrives for
+a `session_id` that already has a `sessions` row -- terminal or
+live. The initial creation of a brand-new session does NOT insert
+here; a session with zero attachment rows is a session that has
+only ever run once. `GET /v1/sessions/:id` surfaces the timestamps
+as an `attachments` array so the dashboard drawer can render a
+"New execution attached · {timestamp}" separator between the
+events of each run. See DECISIONS.md D094.
 
 The `context` column stores the runtime environment snapshot collected
 once by the sensor at `init()` time -- hostname, OS, Python version, git

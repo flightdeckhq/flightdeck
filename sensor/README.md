@@ -14,11 +14,24 @@ Supply the hint via either the `session_id=` kwarg or the
 `FLIGHTDECK_SESSION_ID` environment variable. The env var takes
 precedence.
 
+The value MUST parse as a canonical UUID (any version) -- the
+sessions table column is UUID-typed. If you pass a non-UUID the
+sensor logs a warning and falls back to auto-generating one.
+Orchestrators that use string identifiers (Temporal workflow_id,
+Airflow dag_run_id) should hash the identifier into a deterministic
+UUID with `uuid.uuid5`.
+
 ### Temporal workflow example
 
 ```python
+import uuid
 import flightdeck_sensor as fd
 from temporalio import workflow
+
+# Pick any fixed namespace UUID for your deployment. The same
+# workflow_id + namespace always produces the same session UUID,
+# so re-runs of the same workflow all map to the same sessions row.
+FLIGHTDECK_NS = uuid.UUID("00000000-0000-0000-0000-000000000001")
 
 @workflow.defn
 class MyWorkflow:
@@ -28,7 +41,7 @@ class MyWorkflow:
         fd.init(
             server="http://flightdeck.internal/ingest",
             token="ftd_...",
-            session_id=ctx.workflow_id,
+            session_id=str(uuid.uuid5(FLIGHTDECK_NS, ctx.workflow_id)),
         )
         # If this workflow_id has run before, the backend attaches
         # this execution to the existing session automatically; the

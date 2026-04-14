@@ -12,6 +12,7 @@ import contextlib
 import logging
 import os
 import threading
+import uuid
 from typing import Any, Callable
 
 from flightdeck_sensor.core.context import collect as _collect_context
@@ -232,6 +233,21 @@ def init(
         resolved_session_id = (
             os.environ.get("FLIGHTDECK_SESSION_ID") or session_id or None
         )
+        if resolved_session_id and not _is_valid_uuid(resolved_session_id):
+            # The sessions table column is UUID-typed; accepting a
+            # non-UUID here would trip Postgres at worker time and
+            # drop every event for this agent. Warn loudly and fall
+            # back to auto-generation so the agent still boots. The
+            # common source of this is orchestrators (Temporal
+            # workflow_id, Airflow dag_run_id) that are strings, not
+            # UUIDs -- callers need to hash them into a UUID before
+            # passing, e.g. uuid.uuid5(NAMESPACE_URL, workflow_id).
+            _log.warning(
+                "Custom session_id '%s' is not a valid UUID. A random "
+                "session ID will be generated instead.",
+                resolved_session_id,
+            )
+            resolved_session_id = None
         if resolved_session_id:
             _log.warning(
                 "Custom session_id provided: '%s'. This ID will be used "
@@ -420,6 +436,22 @@ def _require_session(caller: str) -> Session:
                 f"{caller}() called before init(). Call flightdeck_sensor.init() first."
             )
         return _session
+
+
+def _is_valid_uuid(value: str) -> bool:
+    """Return True when *value* parses as a canonical UUID string.
+
+    The sessions table uses Postgres ``UUID`` which accepts any valid
+    UUID (any version), so the check is deliberately permissive about
+    version -- only the string shape matters. ``uuid.UUID(value)``
+    already validates hex chars, hyphen placement, and length; any
+    failure raises ``ValueError`` which we swallow and return False.
+    """
+    try:
+        uuid.UUID(value)
+        return True
+    except (ValueError, AttributeError, TypeError):
+        return False
 
 
 def _env_bool(key: str, default: bool) -> bool:

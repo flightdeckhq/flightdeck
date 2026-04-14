@@ -37,6 +37,7 @@ type Querier interface {
 	GetFleet(ctx context.Context, limit, offset int, agentType string) ([]FlavorSummary, int, error)
 	GetSession(ctx context.Context, sessionID string) (*Session, error)
 	GetSessionEvents(ctx context.Context, sessionID string) ([]Event, error)
+	GetSessionAttachments(ctx context.Context, sessionID string) ([]time.Time, error)
 	GetEventContent(ctx context.Context, eventID string) (*EventContent, error)
 	GetEffectivePolicy(ctx context.Context, flavor, sessionID string) (*Policy, error)
 	GetPolicies(ctx context.Context) ([]Policy, error)
@@ -392,6 +393,38 @@ func (s *Store) GetSessionEvents(ctx context.Context, sessionID string) ([]Event
 		return nil, fmt.Errorf("session events scan: %w", err)
 	}
 	return events, nil
+}
+
+// GetSessionAttachments returns every recorded attachment timestamp
+// for a session in chronological order. The initial session creation
+// is not an attachment, so a session that has only ever run once
+// returns an empty slice. Used by the dashboard session drawer to
+// draw a run separator per attachment and by GET /v1/sessions/{id} to
+// surface the full attachment history.
+func (s *Store) GetSessionAttachments(ctx context.Context, sessionID string) ([]time.Time, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT attached_at
+		FROM session_attachments
+		WHERE session_id = $1::uuid
+		ORDER BY attached_at ASC
+	`, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("get attachments for %s: %w", sessionID, err)
+	}
+	defer rows.Close()
+
+	var out []time.Time
+	for rows.Next() {
+		var t time.Time
+		if err := rows.Scan(&t); err != nil {
+			return nil, fmt.Errorf("scan attachment: %w", err)
+		}
+		out = append(out, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("attachments scan: %w", err)
+	}
+	return out, nil
 }
 
 // GetPolicies returns all policies ordered by creation date (newest first).

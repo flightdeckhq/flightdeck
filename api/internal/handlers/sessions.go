@@ -5,14 +5,23 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/flightdeckhq/flightdeck/api/internal/store"
 )
 
 // SessionResponse is the response body for GET /v1/sessions/{id}.
+//
+// Attachments is the full history of re-attachments recorded for this
+// session (one row per session_start arrival whose session_id matched
+// an existing row). It excludes the initial session_start that
+// created the row. Empty when the session has only ever run once;
+// carries one entry per re-execution for orchestrator-driven agents
+// that reuse a stable session_id. See DECISIONS.md D094.
 type SessionResponse struct {
-	Session *store.Session `json:"session"`
-	Events  []store.Event  `json:"events"`
+	Session     *store.Session `json:"session"`
+	Events      []store.Event  `json:"events"`
+	Attachments []time.Time    `json:"attachments"`
 }
 
 // SessionsHandler handles GET /v1/sessions/{id}.
@@ -53,10 +62,24 @@ func SessionsHandler(s store.Querier) http.HandlerFunc {
 			return
 		}
 
+		// Attachments failure is non-fatal: the session + events are
+		// load-bearing for the drawer; the attachment list only adds
+		// run separators. Log and continue with an empty slice so a
+		// transient DB hiccup doesn't black out the whole drawer.
+		attachments, attErr := s.GetSessionAttachments(r.Context(), id)
+		if attErr != nil {
+			slog.Warn("get session attachments error", "id", id, "err", attErr)
+			attachments = nil
+		}
+		if attachments == nil {
+			attachments = []time.Time{}
+		}
+
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(SessionResponse{
-			Session: session,
-			Events:  events,
+			Session:     session,
+			Events:      events,
+			Attachments: attachments,
 		})
 	}
 }

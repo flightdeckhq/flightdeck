@@ -64,30 +64,28 @@ func (s *Store) Attach(ctx context.Context, sessionID string) (bool, string, err
 
 	// Revive closed/lost → active. started_at and ended_at stay as they
 	// were on the original close; the dashboard's run separator draws
-	// off last_attached_at, so we don't need to clear ended_at to
-	// distinguish runs. See D094 question 2 in the pre-phase-5
-	// exchange.
+	// off session_attachments, so we don't need to clear ended_at to
+	// distinguish runs. See DECISIONS.md D094.
 	if priorState == "closed" || priorState == "lost" {
 		if _, err := s.pool.Exec(ctx, `
 			UPDATE sessions
-			SET state = 'active',
-			    last_attached_at = NOW()
+			SET state = 'active'
 			WHERE session_id = $1::uuid
 		`, sessionID); err != nil {
 			return false, priorState, fmt.Errorf("revive session %s: %w", sessionID, err)
 		}
-		return true, priorState, nil
 	}
 
-	// Already live (active/idle/stale) -- the agent is re-attaching
-	// mid-lifecycle. Just stamp last_attached_at so the dashboard run
-	// separator can still anchor to this moment.
+	// Record this attachment. One row per session_start arrival, so
+	// the API can return the full history of when an orchestrator-
+	// driven agent re-attached. Migration 000009 replaced the earlier
+	// single-column last_attached_at design with this table because
+	// the column only preserved the most recent timestamp.
 	if _, err := s.pool.Exec(ctx, `
-		UPDATE sessions
-		SET last_attached_at = NOW()
-		WHERE session_id = $1::uuid
+		INSERT INTO session_attachments (session_id)
+		VALUES ($1::uuid)
 	`, sessionID); err != nil {
-		return false, priorState, fmt.Errorf("touch last_attached_at for %s: %w", sessionID, err)
+		return false, priorState, fmt.Errorf("record attachment for %s: %w", sessionID, err)
 	}
 	return true, priorState, nil
 }

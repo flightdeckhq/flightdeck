@@ -120,6 +120,10 @@ func (m *mockStore) GetSessionEvents(_ context.Context, _ string) ([]store.Event
 	}, nil
 }
 
+func (m *mockStore) GetSessionAttachments(_ context.Context, _ string) ([]time.Time, error) {
+	return nil, nil
+}
+
 func (m *mockStore) GetEventContent(_ context.Context, eventID string) (*store.EventContent, error) {
 	if eventID == "evt-with-content" {
 		sys := "You are a helpful assistant."
@@ -628,6 +632,41 @@ func TestSessionsHandler_ReturnsEventsInOrder(t *testing.T) {
 	events, ok := resp["events"].([]any)
 	if !ok || len(events) != 2 {
 		t.Errorf("expected 2 events, got %v", resp["events"])
+	}
+}
+
+// D094: the session detail response must always include the
+// "attachments" key -- empty array for sessions that have only ever
+// run once, chronological list of ISO-8601 timestamps otherwise.
+// Missing key is a contract break; the dashboard drawer relies on it
+// to decide whether to draw run separators.
+func TestSessionsHandler_IncludesAttachmentsArray(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.SessionsHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/sessions/sess-001", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (body=%s)", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid JSON: %v body=%s", err, w.Body.String())
+	}
+	att, ok := resp["attachments"]
+	if !ok {
+		t.Fatalf("response missing attachments key: %s", w.Body.String())
+	}
+	// Must be an array, not null. encoding/json emits null for a nil
+	// Go slice, which breaks the frontend. SessionsHandler normalises
+	// to []time.Time{} before encoding to guarantee "[]" on the wire.
+	arr, ok := att.([]any)
+	if !ok {
+		t.Fatalf("attachments is not a JSON array: %T %v", att, att)
+	}
+	if len(arr) != 0 {
+		t.Errorf("expected empty attachments for mock store, got %v", arr)
 	}
 }
 

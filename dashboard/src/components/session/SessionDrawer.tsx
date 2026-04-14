@@ -1,4 +1,4 @@
-import { Fragment, useState, useMemo } from "react";
+import { Fragment, useEffect, useState, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { X, Camera } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
@@ -16,7 +16,7 @@ import {
 import { TokenUsageBar } from "./TokenUsageBar";
 import { PromptViewer } from "./PromptViewer";
 import { createDirective } from "@/lib/api";
-import { getBadge, getEventDetail, getSummaryRows, truncateSessionId } from "@/lib/events";
+import { attachBadge, getBadge, getEventDetail, getSummaryRows, isAttachmentStartEvent, truncateSessionId } from "@/lib/events";
 import { getProvider } from "@/lib/models";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import { OSIcon } from "@/components/ui/OSIcon";
@@ -28,7 +28,7 @@ import { SyntaxJson } from "@/components/ui/syntax-json";
 import { eventsCache } from "@/hooks/useSessionEvents";
 import type { AgentEvent, Session as SessionType } from "@/lib/types";
 
-type DrawerTab = "timeline" | "prompts" | "directives";
+export type DrawerTab = "timeline" | "prompts" | "directives";
 
 /* ---- State badge colors ---- */
 
@@ -194,9 +194,16 @@ interface SessionDrawerProps {
   directEventDetail?: AgentEvent | null;
   onClearDirectEvent?: () => void;
   version?: number;
+  /**
+   * Tab to show when the drawer opens. Re-applied whenever sessionId
+   * or initialTab changes, so callers (e.g. the Investigate camera
+   * icon) can deep-link directly into the Prompts tab without the
+   * user having to switch from Timeline manually.
+   */
+  initialTab?: DrawerTab;
 }
 
-export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDirectEvent, version = 0 }: SessionDrawerProps) {
+export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDirectEvent, version = 0, initialTab }: SessionDrawerProps) {
   const { data, loading } = useSession(sessionId);
   const customDirectives = useFleetStore((s) => s.customDirectives);
   const shuttingDown = useFleetStore((s) => s.shuttingDown);
@@ -205,7 +212,19 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
   const [killSent, setKillSent] = useState(false);
   const [killError, setKillError] = useState<string | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState<DrawerTab>("timeline");
+  const [activeTab, setActiveTab] = useState<DrawerTab>(initialTab ?? "timeline");
+
+  // Re-apply the caller-supplied initial tab whenever the drawer is
+  // re-opened on a different session, or the caller switches the
+  // requested tab. Without this, switching from Timeline -> Prompts
+  // via the Investigate camera icon would only work the first time
+  // -- subsequent opens would land on whatever tab the user last
+  // selected manually.
+  useEffect(() => {
+    if (sessionId && initialTab) {
+      setActiveTab(initialTab);
+    }
+  }, [sessionId, initialTab]);
   const [expandedEventId, setExpandedEventId] = useState<string | null>(null);
   const [selectedEventId, setSelectedEventId] = useState<string | null>(null);
   const [runtimeExpanded, setRuntimeExpanded] = useState(false);
@@ -493,6 +512,7 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
                 {activeTab === "timeline" && (
                   <EventFeed
                     events={displayEvents}
+                    attachments={data?.attachments ?? []}
                     expandedEventId={expandedEventId}
                     onToggleExpand={(id) => setExpandedEventId(expandedEventId === id ? null : id)}
                     onViewPrompts={handleViewPrompts}
@@ -833,13 +853,14 @@ function MetadataBar({ session }: { session: SessionType }) {
 
 interface EventFeedProps {
   events: AgentEvent[];
+  attachments: string[];
   expandedEventId: string | null;
   onToggleExpand: (id: string) => void;
   onViewPrompts: () => void;
   onOpenDetail?: (event: AgentEvent) => void;
 }
 
-function EventFeed({ events, expandedEventId, onToggleExpand, onViewPrompts, onOpenDetail }: EventFeedProps) {
+function EventFeed({ events, attachments, expandedEventId, onToggleExpand, onViewPrompts, onOpenDetail }: EventFeedProps) {
   if (events.length === 0) {
     return (
       <div className="py-8 text-center text-xs text-text-muted">
@@ -851,7 +872,8 @@ function EventFeed({ events, expandedEventId, onToggleExpand, onViewPrompts, onO
   return (
     <div className="flex flex-col">
       {events.map((event) => {
-        const badge = getBadge(event.event_type);
+        const isAttachment = isAttachmentStartEvent(event, attachments);
+        const badge = isAttachment ? attachBadge : getBadge(event.event_type);
         const isExpanded = expandedEventId === event.id;
         const detail = getEventDetail(event);
 
@@ -864,18 +886,42 @@ function EventFeed({ events, expandedEventId, onToggleExpand, onViewPrompts, onO
               onClick={() => onToggleExpand(event.id)}
               data-testid="event-row"
             >
-              <span
-                className="flex h-[18px] w-[88px] shrink-0 items-center justify-center rounded font-mono text-[10px] font-semibold uppercase"
-                style={{
-                  background: `color-mix(in srgb, ${badge.cssVar} 15%, transparent)`,
-                  color: badge.cssVar,
-                  border: `1px solid color-mix(in srgb, ${badge.cssVar} 30%, transparent)`,
-                  borderRadius: 3,
-                }}
-                data-testid="event-badge"
-              >
-                {badge.label}
-              </span>
+              {isAttachment ? (
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span
+                        className="flex h-[18px] w-[88px] shrink-0 items-center justify-center rounded font-mono text-[10px] font-semibold uppercase"
+                        style={{
+                          background: `color-mix(in srgb, ${badge.cssVar} 15%, transparent)`,
+                          color: badge.cssVar,
+                          border: `1px solid color-mix(in srgb, ${badge.cssVar} 30%, transparent)`,
+                          borderRadius: 3,
+                        }}
+                        data-testid="event-badge"
+                      >
+                        {badge.label}
+                      </span>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      Agent re-attached with the same session ID
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              ) : (
+                <span
+                  className="flex h-[18px] w-[88px] shrink-0 items-center justify-center rounded font-mono text-[10px] font-semibold uppercase"
+                  style={{
+                    background: `color-mix(in srgb, ${badge.cssVar} 15%, transparent)`,
+                    color: badge.cssVar,
+                    border: `1px solid color-mix(in srgb, ${badge.cssVar} 30%, transparent)`,
+                    borderRadius: 3,
+                  }}
+                  data-testid="event-badge"
+                >
+                  {badge.label}
+                </span>
+              )}
               <span className="flex-1 truncate text-[13px] flex items-center gap-1" style={{ color: "var(--text)" }}>
                 {(event.event_type === "post_call" || event.event_type === "pre_call") && event.model && (
                   <ProviderLogo provider={getProvider(event.model)} size={12} />

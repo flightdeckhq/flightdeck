@@ -41,7 +41,18 @@ func (sp *SessionProcessor) isTerminal(ctx context.Context, sessionID string) bo
 	return state == "closed" || state == "lost"
 }
 
-// HandleSessionStart upserts the agent and creates a new session.
+// HandleSessionStart upserts the agent and creates (or revives) a session.
+//
+// D094: session_start events are the only events allowed to land on a
+// terminal (closed/lost) session row. The ingestion API has already
+// revived the row synchronously -- flipping state back to active and
+// stamping last_attached_at -- so by the time this runs the row is
+// state=active and UpsertSession's ON CONFLICT branch only has to
+// refresh last_seen_at and the optional identity fields. Skipping
+// session_start here (the old KI13 behaviour) would undo the
+// attachment because the response envelope has already been sent to
+// the sensor. Heartbeat / post_call / session_end still honour
+// isTerminal below -- attachment is a session_start-only transition.
 //
 // The runtime context dict from e.Context is marshaled to JSON and
 // passed to UpsertSession, which writes it once into sessions.context
@@ -49,13 +60,6 @@ func (sp *SessionProcessor) isTerminal(ctx context.Context, sessionID string) bo
 // touch context so reconnects from the same session_id can't
 // overwrite the initial collection.
 func (sp *SessionProcessor) HandleSessionStart(ctx context.Context, e consumer.EventPayload) error {
-	if sp.isTerminal(ctx, e.SessionID) {
-		slog.Warn("skipping event for terminal session",
-			"session_id", e.SessionID,
-			"event_type", "session_start",
-		)
-		return nil
-	}
 	if err := sp.w.UpsertAgent(ctx, e.Flavor, e.AgentType); err != nil {
 		return fmt.Errorf("session start: %w", err)
 	}

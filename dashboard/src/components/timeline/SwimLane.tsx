@@ -1,12 +1,12 @@
 import { memo, useMemo } from "react";
 import type { ScaleTime } from "d3-scale";
 import type { Session, AgentEvent } from "@/lib/types";
-import { SESSION_ROW_HEIGHT } from "@/lib/constants";
+import { SESSION_ROW_HEIGHT, EVENT_CIRCLE_SIZE } from "@/lib/constants";
 import { ChevronRight } from "lucide-react";
 import { SessionEventRow } from "./SessionEventRow";
 import { EventNode } from "./EventNode";
-import { useSessionEvents } from "@/hooks/useSessionEvents";
-import { isEventVisible } from "@/lib/events";
+import { useSessionEvents, attachmentsCache } from "@/hooks/useSessionEvents";
+import { isAttachmentStartEvent, isEventVisible } from "@/lib/events";
 
 interface SwimLaneProps {
   flavor: string;
@@ -318,6 +318,145 @@ export const SwimLane = memo(SwimLaneComponent, (prev, next) => {
   return false;
 });
 
+/**
+ * Aggregate "ALL" row that sits above the FLAVORS section. Renders a
+ * single non-expandable lane whose event circles are merged from every
+ * session across every flavor, so operators get a fleet-wide view of
+ * activity without scanning each flavor row.
+ *
+ * Unlike SwimLane, this row:
+ *   - has no expand chevron, no active count, no kill controls
+ *   - is shorter (36px vs 48px) to signal "summary, not a flavor"
+ *   - is NOT affected by the CONTEXT sidebar filter (always shows
+ *     everything -- it's a fleet-wide overview)
+ *   - DOES respect the event-type filter bar, like SwimLane does,
+ *     because dimming filtered event types is a per-circle concern
+ *     handled inside EventNode via `isVisible`
+ *
+ * No new API or WebSocket subscriptions: AggregatedSessionEvents reads
+ * the same per-session events cache populated by the per-flavor rows.
+ */
+interface AllSwimLaneProps {
+  flavors: { flavor: string; sessions: Session[] }[];
+  scale: ScaleTime<number, number>;
+  onSessionClick: (sessionId: string, eventId?: string, event?: AgentEvent) => void;
+  timelineWidth: number;
+  leftPanelWidth: number;
+  activeFilter?: string | null;
+  sessionVersions?: Record<string, number>;
+}
+
+function AllSwimLaneComponent({
+  flavors,
+  scale,
+  onSessionClick,
+  timelineWidth,
+  leftPanelWidth,
+  activeFilter,
+  sessionVersions,
+}: AllSwimLaneProps) {
+  // Hide the ALL row when nothing in the fleet is alive. A fleet of
+  // only closed / lost sessions has no "current activity" to summarise
+  // -- rendering the row still cost one AggregatedSessionEvents per
+  // session with full DOM-level event circles, which dominated style
+  // recalc on the 50-session smoke test. Active|idle|stale are the
+  // states that can still produce new events; anything else means the
+  // ALL row would be a static historical collage the user doesn't need.
+  const hasLiveSession = flavors.some((f) =>
+    f.sessions.some(
+      (s) => s.state === "active" || s.state === "idle" || s.state === "stale",
+    ),
+  );
+  if (!hasLiveSession) return null;
+
+  return (
+    <div
+      data-testid="swimlane-all"
+      style={{
+        display: "flex",
+        alignItems: "center",
+        height: 36,
+        borderBottom: "1px solid var(--border-subtle)",
+        background: "var(--bg)",
+      }}
+    >
+      <div
+        style={{
+          width: leftPanelWidth,
+          flexShrink: 0,
+          height: "100%",
+          background: "var(--surface)",
+          borderRight: "1px solid var(--border)",
+          position: "sticky",
+          left: 0,
+          zIndex: 2,
+          display: "flex",
+          alignItems: "center",
+          paddingLeft: 12,
+        }}
+      >
+        <span
+          data-testid="swimlane-all-label"
+          style={{
+            fontSize: 10,
+            fontWeight: 700,
+            letterSpacing: "0.08em",
+            color: "var(--text-muted)",
+            textTransform: "uppercase",
+            fontFamily: "var(--font-ui)",
+          }}
+        >
+          All
+        </span>
+      </div>
+      <div
+        className="relative flex items-center px-1"
+        style={{
+          width: timelineWidth,
+          flexShrink: 0,
+          height: "100%",
+          overflow: "hidden",
+        }}
+      >
+        {flavors.flatMap((f) =>
+          f.sessions.map((session) => (
+            <AggregatedSessionEvents
+              key={`${f.flavor}:${session.session_id}`}
+              session={session}
+              scale={scale}
+              onSessionClick={onSessionClick}
+              flavor={f.flavor}
+              activeFilter={activeFilter}
+              version={sessionVersions?.[session.session_id] ?? 0}
+            />
+          )),
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Memoised wrapper for the ALL row. Mirrors SwimLane.memo's custom
+ * equality: bail out for sub-second domain deltas so rAF-driven
+ * Timeline re-renders don't propagate into the ALL row's per-session
+ * event mapping. Without this, the ALL row re-rendered at the full
+ * rAF cadence (~10x/sec) while per-flavor SwimLanes dampened to ~1/s.
+ */
+export const AllSwimLane = memo(AllSwimLaneComponent, (prev, next) => {
+  if (prev.flavors !== next.flavors) return false;
+  if (prev.activeFilter !== next.activeFilter) return false;
+  if (prev.sessionVersions !== next.sessionVersions) return false;
+  if (prev.timelineWidth !== next.timelineWidth) return false;
+  if (prev.leftPanelWidth !== next.leftPanelWidth) return false;
+  if (prev.onSessionClick !== next.onSessionClick) return false;
+  const domainDelta = Math.abs(
+    next.scale.domain()[1].getTime() - prev.scale.domain()[1].getTime(),
+  );
+  if (domainDelta < 1000) return true;
+  return false;
+});
+
 /** Shows aggregated 20px event circles from all sessions of a flavor. */
 function AggregatedSwimLane({
   sessions,
@@ -369,9 +508,28 @@ function AggregatedSessionEvents({
   const isActive = session.state === "active";
   const { events } = useSessionEvents(session.session_id, isActive, version);
 
-  const nodes = useMemo(
-    () =>
-      events.map((event) => ({
+  // Clip events to the current scale domain before building nodes.
+  // useSessionEvents caches every event ever fetched for a session, so
+  // without this filter a 50-session fleet at a 1-minute view could
+  // render thousands of EventNodes whose x positions lie outside the
+  // 0..timelineWidth canvas -- the circles were clipped visually by
+  // overflow:hidden but still cost full style recalc. Filtering here
+  // keeps them out of the DOM entirely.
+  //
+  // Attachments are sampled inside the memo on the same fetch path
+  // as events so a fresh cache populates both atomically. See
+  // SessionEventRow for the same pattern.
+  const nodes = useMemo(() => {
+    const [domainStart, domainEnd] = scale.domain();
+    const startMs = domainStart.getTime();
+    const endMs = domainEnd.getTime();
+    const attachments = attachmentsCache.get(session.session_id) ?? [];
+    return events
+      .filter((event) => {
+        const t = new Date(event.occurred_at).getTime();
+        return t >= startMs && t <= endMs;
+      })
+      .map((event) => ({
         id: event.id,
         x: scale(new Date(event.occurred_at)),
         eventType: event.event_type,
@@ -382,9 +540,10 @@ function AggregatedSessionEvents({
         occurredAt: event.occurred_at,
         directiveName: event.payload?.directive_name,
         directiveStatus: event.payload?.directive_status,
-      })),
-    [events, scale]
-  );
+        isAttachment: isAttachmentStartEvent(event, attachments),
+      }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [events, scale, session.session_id, version]);
 
   return (
     <>
@@ -407,8 +566,9 @@ function AggregatedSessionEvents({
             const fullEvent = events.find((e) => e.id === eid);
             onSessionClick(session.session_id, eid, fullEvent);
           }}
-          size={20}
+          size={EVENT_CIRCLE_SIZE}
           isVisible={isEventVisible(node.eventType, activeFilter)}
+          isAttachment={node.isAttachment}
         />
       ))}
     </>

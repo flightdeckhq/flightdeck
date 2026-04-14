@@ -41,6 +41,7 @@ const warnEvent = { id: "e5", session_id: "s1", flavor: "test", event_type: "pol
 let mockSessionOverride: Record<string, unknown> = {};
 let mockEventsOverride: typeof baseEvents | null = null;
 let mockCustomDirectives: CustomDirective[] = [];
+let mockAttachments: string[] = [];
 
 vi.mock("@/hooks/useSession", () => ({
   useSession: (id: string | null) => {
@@ -49,6 +50,7 @@ vi.mock("@/hooks/useSession", () => ({
       data: {
         session: { ...baseSession, ...mockSessionOverride },
         events: mockEventsOverride ?? baseEvents,
+        attachments: mockAttachments,
       },
       loading: false,
       error: null,
@@ -82,6 +84,7 @@ beforeEach(() => {
   mockSessionOverride = {};
   mockEventsOverride = null;
   mockCustomDirectives = [];
+  mockAttachments = [];
   vi.clearAllMocks();
 });
 
@@ -311,6 +314,38 @@ describe("SessionDrawer", () => {
     expect(screen.getByText("START")).toBeInTheDocument();
   });
 
+  it("opens on the initialTab when supplied (e.g. 'prompts')", () => {
+    mockEventsOverride = eventsWithContent;
+    const { container } = render(
+      <SessionDrawer sessionId="s1" onClose={() => {}} initialTab="prompts" />
+    );
+    // Active tab gets a 2px accent border-bottom; the timeline tab
+    // should NOT have it because Prompts is the active tab now.
+    const promptsTab = screen.getByTestId("drawer-tab-prompts") as HTMLElement;
+    expect(promptsTab.style.borderBottom).toMatch(/var\(--accent\)/);
+    // Event feed (Timeline tab content) should be absent — the
+    // START row would only render under the Timeline tab.
+    expect(container.querySelector('[data-testid="event-row"]')).not.toBeInTheDocument();
+  });
+
+  it("re-applies initialTab when initialTab prop changes for the same session", () => {
+    mockEventsOverride = eventsWithContent;
+    const { rerender } = render(
+      <SessionDrawer sessionId="s1" onClose={() => {}} />
+    );
+    // Defaults to Timeline.
+    expect(
+      (screen.getByTestId("drawer-tab-timeline") as HTMLElement).style.borderBottom,
+    ).toMatch(/var\(--accent\)/);
+    // Caller now requests Prompts (e.g. user clicked the camera icon).
+    rerender(
+      <SessionDrawer sessionId="s1" onClose={() => {}} initialTab="prompts" />
+    );
+    expect(
+      (screen.getByTestId("drawer-tab-prompts") as HTMLElement).style.borderBottom,
+    ).toMatch(/var\(--accent\)/);
+  });
+
   it("has 520px width", () => {
     const { container } = render(
       <SessionDrawer sessionId="s1" onClose={() => {}} />
@@ -422,6 +457,104 @@ describe("SessionDrawer", () => {
     // Reversed: first badge should be LLM CALL (newest), last should be START (oldest)
     expect(badges[0].textContent).toBe("LLM CALL");
     expect(badges[badges.length - 1].textContent).toBe("START");
+  });
+
+  // ---- D094 ATTACH badge ----
+
+  it("session_start matching the attachments array renders an ATTACH badge and original keeps START", () => {
+    // e1 is the original session_start at 10:00:00. Add a second
+    // session_start (e_attach) at 10:02:00 that matches an entry in
+    // the attachments array within the ±2s window. The drawer must
+    // render ATTACH for the second and keep START for the first.
+    mockEventsOverride = [
+      baseEvents[0],
+      baseEvents[1],
+      {
+        id: "e-attach",
+        session_id: "s1",
+        flavor: "test",
+        event_type: "session_start" as const,
+        model: null,
+        tokens_input: null,
+        tokens_output: null,
+        tokens_total: null,
+        latency_ms: null,
+        tool_name: null,
+        has_content: false,
+        occurred_at: "2026-04-07T10:02:00Z",
+      },
+    ];
+    mockAttachments = ["2026-04-07T10:02:01Z"];
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+
+    // Expect at least one ATTACH badge and at least one START badge.
+    const attachBadges = screen.getAllByTestId("event-badge")
+      .filter((el) => el.textContent === "ATTACH");
+    const startBadges = screen.getAllByTestId("event-badge")
+      .filter((el) => el.textContent === "START");
+    expect(attachBadges.length).toBe(1);
+    expect(startBadges.length).toBe(1);
+
+    // The ATTACH badge must use the amber warning colour on both
+    // background and text, matching the pill shape of START/END.
+    // --warning is the actual amber token in themes.css; the earlier
+    // --status-warn pointed at nothing, so color-mix resolved to
+    // transparent and the pill looked like plain text.
+    const styleAttr = attachBadges[0].getAttribute("style") ?? "";
+    expect(styleAttr).toContain("var(--warning)");
+    expect(styleAttr).toContain("color-mix(in srgb, var(--warning) 15%");
+  });
+
+  it("ATTACH badge surfaces the D094 tooltip on hover via Radix Tooltip", async () => {
+    // Radix Tooltip renders its content in a portal only while the
+    // trigger has pointer focus, so we drive a real hover + poll for
+    // the content to appear. getByRole('tooltip') is the reliable
+    // handle -- Radix adds role="tooltip" to the content element.
+    mockEventsOverride = [
+      {
+        id: "e-attach",
+        session_id: "s1",
+        flavor: "test",
+        event_type: "session_start" as const,
+        model: null,
+        tokens_input: null,
+        tokens_output: null,
+        tokens_total: null,
+        latency_ms: null,
+        tool_name: null,
+        has_content: false,
+        occurred_at: "2026-04-07T10:02:00Z",
+      },
+    ];
+    mockAttachments = ["2026-04-07T10:02:01Z"];
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+
+    const badge = screen.getAllByTestId("event-badge")
+      .find((el) => el.textContent === "ATTACH");
+    expect(badge).toBeDefined();
+    fireEvent.pointerEnter(badge!);
+    fireEvent.focus(badge!);
+    // Radix renders the tooltip content in both the visible portal
+    // and a hidden aria-describedby clone, so multiple matches is
+    // the expected healthy state. getAllByText avoids the single-
+    // match restriction of getByText.
+    await waitFor(() => {
+      expect(
+        screen.getAllByText("Agent re-attached with the same session ID")
+          .length,
+      ).toBeGreaterThan(0);
+    });
+  });
+
+  it("session_start without matching attachment keeps the START badge", () => {
+    // Attachments array is empty: every session_start is the
+    // original. The only session_start in baseEvents must render as
+    // START, never ATTACH.
+    mockAttachments = [];
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    const badges = screen.getAllByTestId("event-badge");
+    expect(badges.some((b) => b.textContent === "ATTACH")).toBe(false);
+    expect(badges.some((b) => b.textContent === "START")).toBe(true);
   });
 
   // ---- Directives tab ----

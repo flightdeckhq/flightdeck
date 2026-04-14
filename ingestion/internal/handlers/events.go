@@ -38,6 +38,14 @@ type DirectiveLookup interface {
 	LookupPending(ctx context.Context, sessionID string) (*DirectiveResponse, error)
 }
 
+// SessionAttacher reports whether a session_start event is attaching
+// to a pre-existing session row, and (for terminal rows) revives the
+// row synchronously so the sensor's next event lands on state=active.
+// See ingestion/internal/session/store.go and DECISIONS.md D094.
+type SessionAttacher interface {
+	Attach(ctx context.Context, sessionID string) (attached bool, priorState string, err error)
+}
+
 // DirectiveResponse represents the directive payload returned in the response envelope.
 //
 // Payload is a JSONB blob carrying action-specific data -- for action="custom"
@@ -57,15 +65,22 @@ type DirectiveResponse struct {
 }
 
 // EventResponse is the response envelope for POST /v1/events.
+//
+// Attached surfaces the D094 backend-attachment decision to the sensor.
+// It is set exclusively on session_start responses (non-session_start
+// event types always return Attached=false). When true, the sensor's
+// Session._post_event logs a single INFO line so operators can trace
+// which agent executions reused a prior session_id.
 type EventResponse struct {
 	Status    string             `json:"status"`
 	Directive *DirectiveResponse `json:"directive,omitempty"`
+	Attached  bool               `json:"attached"`
 }
 
 // EventsHandler handles POST /v1/events.
 //
 // @Summary      Submit agent event
-// @Description  Validates bearer token, publishes event to NATS, returns directive envelope
+// @Description  Validates bearer token, publishes event to NATS, returns directive envelope. On session_start events, also reports whether the session was attached to a pre-existing row (D094).
 // @Tags         events
 // @Accept       json
 // @Produce      json
@@ -81,6 +96,7 @@ func EventsHandler(
 	validator TokenValidator,
 	publisher EventPublisher,
 	dirStore DirectiveLookup,
+	sessAttacher SessionAttacher,
 	limiter *RateLimiter,
 ) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -134,6 +150,37 @@ func EventsHandler(
 			return
 		}
 
+		// Synchronous session-attachment check for session_start.
+		// Runs BEFORE NATS publish so that the decision is locked in
+		// the moment the ingestion API commits to the response -- a
+		// worker that hasn't yet consumed the event cannot change
+		// what we already told the sensor. For any non-session_start
+		// event type, attached is forced to false (D094: "Only
+		// session_start responses carry attached=true").
+		//
+		// On DB error we log and fall through with attached=false
+		// rather than failing the request: the attach flag is
+		// informational, the event payload itself must still flow to
+		// the worker.
+		attached := false
+		if eventType == "session_start" && sessAttacher != nil {
+			att, priorState, err := sessAttacher.Attach(ctx, sessionID)
+			if err != nil {
+				slog.Error("session attach lookup failed",
+					"session_id", sessionID,
+					"err", err,
+				)
+			} else {
+				attached = att
+				if att && (priorState == "closed" || priorState == "lost") {
+					slog.Info("session revived",
+						"session_id", sessionID,
+						"prior_state", priorState,
+					)
+				}
+			}
+		}
+
 		// Publish to NATS
 		subject := inats.SubjectForEventType(eventType)
 		if err := publisher.Publish(subject, body); err != nil {
@@ -144,6 +191,7 @@ func EventsHandler(
 
 		// Look up pending directive
 		resp := buildResponse(ctx, dirStore, sessionID)
+		resp["attached"] = attached
 
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(resp)

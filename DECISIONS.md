@@ -1987,6 +1987,13 @@ vocabulary: the component is a "sensor," not a "guard."
 reconciles tokens on context-manager exit including early
 exit) and the "sensor" name would misrepresent its role.
 
+**Resolved in:** Phase 4.9 -- KI17 closed. The
+`wrap()`-without-`patch()` path previously did not intercept
+`client.beta.messages` because `SensorAnthropic` had no `.beta`
+property. Added `SensorBeta` wrapper plus `SensorAnthropic.beta`
+`@property` so both code paths now have parity. `wrap()` covers
+`messages` and `beta.messages` without requiring `patch()`.
+
 ---
 
 ## D088 -- KI14 resolved: separate api_url for control-plane calls
@@ -2100,5 +2107,172 @@ layer is the cleaner separation.
 **Migration:** `000007_directive_fingerprint_flavor_key.{up,down}.sql`.
 Up drops the existing unique constraint on `fingerprint` and adds
 `UNIQUE (fingerprint, flavor)`. Down is the exact inverse.
+
+---
+
+## D091 -- KI15 and KI16 closed as v1 won't-fix
+
+**Decision:** Both deferred items are accepted as permanent v1
+limitations. No code change; documentation only. Removed from the
+KNOWN_ISSUES.md Open table, moved to Resolved with this entry as
+the resolution record.
+
+**KI15 -- module-level Session singleton.**
+
+Previous framing (D086) listed three candidate fixes -- a
+Session-handle API, `threading.local`, or a per-flavor map -- and
+deferred to a Supervisor decision. The decision: **none of them
+land in v1.** The right answer for users who genuinely need
+isolated agent sessions is to run separate processes, one sensor
+per process, exactly as the smoke test already demonstrates in
+`tests/smoke/smoke_test.py::_scenario_5b_flavor_wide_shutdown`
+(two `subprocess.Popen` workers, each with its own
+`flightdeck_sensor.init()`). This works today, has zero shared
+state by construction, and matches how the v1 deployment story
+recommends running agents (one container = one agent =
+optionally one process).
+
+A handle-based API would change the two-line `init()` UX that the
+sensor's adoption story rests on, and would force every framework
+adapter (LangChain, LlamaIndex, CrewAI) to thread a Session object
+through abstractions they don't expose. `threading.local` doesn't
+compose with thread pools (one OS thread can serve many agent
+contexts in CrewAI / asyncio executors). A per-flavor map keys
+isolation to environment variables, which means env mutation at
+runtime silently switches sessions.
+
+Multi-Session-in-one-process is therefore deferred to v2 alongside
+the multi-tenant SaaS work tracked in CLAUDE.md "Out of scope."
+The existing test
+`tests/integration/test_sensor_e2e.py::test_pattern_c_ki15_singleton_limitation`
+remains as the assertion-of-current-behaviour and the canary that
+will fail loudly if the singleton constraint is ever relaxed.
+
+**KI16 -- single-POST drain thread.**
+
+Previously framed as "Phase 4.9 may optionally add micro-batching
+(50-100 events per POST)." The decision: **no micro-batching in
+v1.**
+
+Justification matches the existing TODO body: real LLM provider
+latency (hundreds of ms per call) throttles event generation
+naturally. Four concurrent workers fire at most ~10 events/s; the
+drain thread clears each in ~5-10 ms via one HTTP POST. The
+1000-slot queue only fills under pathological synthetic load (the
+old respx-mocked tests at zero latency, which the suite already
+mitigates with a 50 ms `side_effect` delay). Production cannot
+generate enough event rate to exercise the fallback. Adding
+batching would introduce a buffering window (data-loss surface on
+process crash), would require ingestion-side multi-event payload
+support, and would complicate the per-event response envelope used
+for directive delivery (`POST /v1/events` returns a single
+directive per call -- batching breaks that contract).
+
+If a future workload demands sustained >100 events/s per process
+(none in scope for v1), a separate ingestion path can be added at
+that time. For now the existing behaviour is correct and the
+fallback is acceptable.
+
+---
+
+## D094 -- Optional session_id hint in init() with backend attachment
+
+**Problem:** Agents spawned repeatedly by orchestrators (Temporal
+workflows, Airflow DAGs, cron-driven batch jobs) get a different
+sensor-generated UUID on every run. The fleet view therefore
+treats every re-run as a brand-new session with no relationship to
+its predecessor, and operators cannot ask "how did this workflow
+do last time?" or "show me the full token cost across all runs of
+this pipeline" without out-of-band joins.
+
+**Decision:** `flightdeck_sensor.init()` accepts an optional
+`session_id` parameter. The caller supplies either the kwarg or
+the `FLIGHTDECK_SESSION_ID` environment variable (env wins over
+kwarg, matching the existing `FLIGHTDECK_SERVER` /
+`AGENT_FLAVOR` pattern). When provided, the sensor uses the
+caller-supplied value verbatim instead of generating a UUID and
+logs a single WARNING at `init()` to make the behaviour visible:
+
+    Custom session_id provided: '{value}'. This ID will be used
+    as-is and will not be auto-generated. If a session with this
+    ID already exists, the backend will attach this agent to it.
+
+The ingestion API owns the attach decision. On arrival of a
+`session_start` event, a new `ingestion/internal/session.Store`
+(mirroring the existing `directive.Store` pattern) runs a
+synchronous check against the `sessions` table:
+
+- Row does not exist → no-op, `attached=false`. The worker will
+  create it as usual.
+- Row exists in `{closed, lost}` → state flips to `active`,
+  `last_attached_at = NOW()`. `started_at` and `ended_at` are
+  deliberately preserved so the original lifetime stays in the
+  DB. `attached=true`.
+- Row exists in `{active, idle, stale}` → `last_attached_at` is
+  stamped. No state change. `attached=true`.
+
+The ingestion response envelope gains a top-level
+`"attached": boolean` field. The sensor's `ControlPlaneClient`
+surfaces it alongside the parsed directive; `Session._post_event`
+logs `"Attached to existing session {id}."` at INFO on the first
+envelope that carries `attached=true` and latches a per-process
+guard so subsequent envelopes do not duplicate the line.
+
+The worker's `HandleSessionStart` no longer skips terminal
+sessions (KI13 behaviour kept for every other event type). The
+ingestion path has already committed the state flip by the time
+the worker consumes the NATS message, so `UpsertSession`'s ON
+CONFLICT branch runs as a regular refresh. Heartbeat, post_call,
+and session_end still honour `isTerminal` -- attachment is a
+session_start-only transition, not a general "un-close" for the
+whole event stream.
+
+**Schema.** Migration `000008_add_last_attached_at_to_sessions`
+initially added a single `last_attached_at TIMESTAMPTZ` column on
+`sessions`. **Migration `000009_session_attachments` superseded that
+design** before it shipped: the column only preserved the most
+recent attachment timestamp, which threw away the full history of
+how often an orchestrator-driven agent had re-attached. The 000009
+migration drops the column and replaces it with a dedicated
+`session_attachments(id, session_id, attached_at)` table plus a
+`(session_id, attached_at)` index. The ingestion attach store
+now `INSERT`s one row per arrival instead of `UPDATE`ing a column,
+and `GET /v1/sessions/:id` returns `attachments: []time` so the
+dashboard drawer can draw one run separator per recorded
+attachment rather than only the most recent. A session with zero
+rows in `session_attachments` is a session that has only ever run
+once.
+
+**UUID validation.** The sensor validates `session_id` (kwarg OR
+`FLIGHTDECK_SESSION_ID` env var) via `uuid.UUID(value)` at `init()`
+time. On parse failure -- e.g. the caller passed a raw Temporal
+workflow id -- the sensor logs a warning and falls back to
+auto-generating a UUID so the agent still boots. The sessions
+table column is UUID-typed, so an unvalidated non-UUID would fail
+at worker time and drop every event for the agent. Callers with
+string-typed identifiers (Temporal workflow_id, Airflow
+dag_run_id) must hash into a deterministic UUID first, e.g.
+`uuid.uuid5(FLIGHTDECK_NS, workflow_id)`. See the Temporal
+example in `sensor/README.md`.
+
+**Out of scope.** The attach flow does not support changing
+flavor / agent_type / host mid-session: those columns are
+`COALESCE`d by `UpsertSession` in the worker and the caller is
+expected to keep them consistent across runs. Multi-tenant
+session-id collisions (same UUID, different tenant) are
+prevented by the existing one-tenant-per-deployment model (v1
+is self-hosted).
+
+**Risks considered and dismissed.** Clearing `ended_at` on revive
+would make historical queries ambiguous about how long the prior
+run took; preserving it keeps the DB truthful. Preserving
+`started_at` instead of resetting keeps "session age" metrics
+stable across attachments. Letting the worker (not ingestion)
+decide the attach state would mean the response envelope shipped
+before the decision was made, making `attached` best-effort and
+unreliable. The synchronous ingestion check is worth the one
+extra read+write per session_start because session_start is rare
+(once per process) and the alternative leaks implementation timing
+into caller visibility.
 
 ---

@@ -34,6 +34,7 @@ from .conftest import (
     create_policy,
     delete_policy,
     get_fleet,
+    get_session_detail,
     get_session_event_count,
     make_event,
     post_directive,
@@ -458,6 +459,96 @@ def test_ui_demo() -> None:
             wait_for_session_in_fleet(s["session_id"], timeout=10.0)
         print("  All 10 sessions visible in fleet")
 
+        # ---- PHASE 1.5: Orchestrator-driven re-attachments ----
+        #
+        # Simulates a Temporal / Airflow workflow that re-runs the same
+        # logical job under a stable session_id (D094). Each end/start
+        # cycle appends one row to session_attachments; after N cycles
+        # GET /v1/sessions/:id returns {..., attachments: [t1, ..., tN]}
+        # and the drawer draws one "New execution attached" separator
+        # per row. This populates the UI with enough history to see
+        # the separator rendering without needing a real orchestrator.
+        #
+        # Picks two sessions from the cohort -- one research, one code
+        # -- so both providers' drawers show the behaviour. The
+        # research pick gets 3 attachments, the code pick gets 4, so
+        # screenshots differ between the two. Events posted during
+        # each run are lightweight (one post_call + one tool_call) so
+        # the drawer timeline shows distinct event clusters per run
+        # separated by the horizontal rule.
+        #
+        # Spacing: a small sleep between session_end and the next
+        # session_start gives the worker's HandleSessionEnd a chance
+        # to commit state=closed before the next session_start
+        # attaches, so the ingestion-side revive branch exercises the
+        # full closed → active transition (not just the silent
+        # touch-last_attached branch). It is not required for
+        # correctness -- the attach INSERT happens unconditionally.
+        print("\n=== PHASE 1.5: Orchestrator re-attachment cycles ===")
+        attach_targets = [
+            (research_sessions[3], 3),  # 3 attachments → 4 total runs
+            (code_sessions[3], 4),       # 4 attachments → 5 total runs
+        ]
+
+        def _run_events_briefly(sess: dict) -> None:
+            """One post_call + one tool_call so each run has a small
+            visible event cluster in the drawer timeline."""
+            ti = random.randint(200, 500)
+            to = random.randint(80, 200)
+            tt = ti + to
+            sess["tokens_used_session"] += tt
+            _safe_post(make_event(
+                sess["session_id"], sess["flavor"], "post_call",
+                agent_type=sess["agent_type"], host=sess["host"],
+                model=sess["model"],
+                tokens_input=ti, tokens_output=to, tokens_total=tt,
+                tokens_used_session=sess["tokens_used_session"],
+                latency_ms=random.randint(300, 1200),
+            ))
+            tool = (
+                random.choice(RESEARCH_TOOLS)
+                if sess["flavor"] == "research-agent"
+                else random.choice(CODE_TOOLS)
+            )
+            _safe_post(make_event(
+                sess["session_id"], sess["flavor"], "tool_call",
+                agent_type=sess["agent_type"], host=sess["host"],
+                tool_name=tool,
+                latency_ms=random.randint(50, 400),
+                tokens_input=0, tokens_output=0, tokens_total=0,
+                tokens_used_session=sess["tokens_used_session"],
+            ))
+
+        for target, attach_count in attach_targets:
+            # The initial session_start from PHASE 1 already created
+            # the row with zero attachments. Each end → start pair
+            # below appends one row to session_attachments.
+            _run_events_briefly(target)
+            for cycle in range(attach_count):
+                _safe_post(make_event(
+                    target["session_id"], target["flavor"], "session_end",
+                    agent_type=target["agent_type"], host=target["host"],
+                ))
+                # Small gap so the worker commits state=closed before
+                # the next session_start races in.
+                time.sleep(0.6)
+                resp = post_event(make_event(
+                    target["session_id"], target["flavor"], "session_start",
+                    agent_type=target["agent_type"], host=target["host"],
+                    model=target["model"], context=target["context"],
+                ))
+                print(
+                    f"  {target['session_id'][:8]} ({target['flavor']}) "
+                    f"cycle {cycle + 1}/{attach_count}: "
+                    f"attached={resp.get('attached')}"
+                )
+                _run_events_briefly(target)
+                time.sleep(0.3)
+            print(
+                f"  ** {target['session_id'][:8]} finished with "
+                f"{attach_count} attachment rows"
+            )
+
         # ---- PHASE 2: Event loop (180 seconds) ----
         print("\n=== PHASE 2: Event loop (180s) ===")
         start = time.monotonic()
@@ -664,6 +755,34 @@ def test_ui_demo() -> None:
         total_events += get_session_event_count(s["session_id"])
 
     assert total_events > 50, f"Expected > 50 events, got {total_events}"
+
+    # Verify D094 attachment history landed in the detail endpoint.
+    # The drawer uses this array to draw run separators, so any break
+    # in the pipeline (ingestion attach store, worker session revive,
+    # api Querier.GetSessionAttachments) surfaces here. Non-fatal:
+    # print instead of assert so a demo run with a stale binary still
+    # finishes and the token / event assertions above still catch the
+    # rest of the regressions.
+    attach_targets = [
+        (research_sessions[3]["session_id"], 3),
+        (code_sessions[3]["session_id"], 4),
+    ]
+    for sid, expected_count in attach_targets:
+        try:
+            detail = get_session_detail(sid)
+            got = detail.get("attachments", [])
+            print(
+                f"  attachments[{sid[:8]}] = {len(got)} rows "
+                f"(expected {expected_count})"
+            )
+            if len(got) != expected_count:
+                print(
+                    f"  WARN: attachment count mismatch for {sid[:8]} -- "
+                    f"verify the api container was rebuilt against the "
+                    f"latest handler + Querier wiring."
+                )
+        except Exception as exc:
+            print(f"  WARN: fetch attachments for {sid[:8]} failed: {exc}")
 
     research_tokens = sum(s["tokens_used_session"] for s in research_sessions)
     code_tokens = sum(s["tokens_used_session"] for s in code_sessions)

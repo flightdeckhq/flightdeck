@@ -75,6 +75,13 @@ class Session:
         self._framework: str | None = None
         self._model: str | None = None
 
+        # Set by _post_event on the first response envelope where the
+        # ingestion API reports attached=true (always the session_start
+        # response per D094). Guards the INFO log so it fires exactly
+        # once per process even if a future protocol extension sends
+        # attached=true on subsequent events.
+        self._attached_logged = False
+
         # Runtime context (hostname, OS, git, orchestration, frameworks
         # ...). Set once via set_context() before start() and attached
         # to the session_start event payload only. The control plane
@@ -517,7 +524,22 @@ class Session:
     ) -> Directive | None:
         """Build the full event payload and POST it to the control plane."""
         payload = self._build_payload(event_type, **extra)
-        directive = self.client.post_event(payload)
+        directive, attached = self.client.post_event(payload)
+        # Per D094, the ingestion response's ``attached`` flag only
+        # ever surfaces true on the session_start envelope (the
+        # synchronous lookup runs exactly once, at session_start
+        # arrival). Guarding on _attached_logged keeps the behaviour
+        # defensive: if a future ingestion version sets the flag on
+        # more envelopes, we still log the confirmation exactly once
+        # per sensor process rather than flooding the log at call
+        # cadence.
+        if attached and not self._attached_logged:
+            self._attached_logged = True
+            if not self.config.quiet:
+                _log.info(
+                    "Attached to existing session %s.",
+                    self.config.session_id,
+                )
         if directive is not None:
             self._apply_directive(directive)
         return directive

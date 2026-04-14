@@ -429,7 +429,11 @@ describe("observe_cli end-to-end (new fields)", () => {
     assert.equal(capture.bodies().at(-1).event_type, "tool_call");
   });
 
-  it("tool_input is captured and serialised as JSON string", async () => {
+  it("tool_input is null by default (capture off)", async () => {
+    // FIX 3b: capture is opt-in. Without
+    // FLIGHTDECK_CAPTURE_TOOL_INPUTS=true the dashboard should
+    // never see command/file_path/query strings, mirroring the
+    // capture_prompts default in the Python sensor (D019).
     const input = JSON.stringify({
       hook_event_name: "PostToolUse",
       tool_name: "Bash",
@@ -445,12 +449,32 @@ describe("observe_cli end-to-end (new fields)", () => {
     const body = capture.bodies().at(-1);
     assert.equal(body.event_type, "tool_call");
     assert.equal(body.tool_name, "Bash");
+    assert.equal(body.tool_input, null);
+  });
+
+  it("tool_input is captured when FLIGHTDECK_CAPTURE_TOOL_INPUTS=true", async () => {
+    const input = JSON.stringify({
+      hook_event_name: "PostToolUse",
+      tool_name: "Bash",
+      tool_input: { command: "ls -la /etc" },
+    });
+    const env = {
+      FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
+      FLIGHTDECK_TOKEN: "tok_test",
+      FLIGHTDECK_CAPTURE_TOOL_INPUTS: "true",
+    };
+    const result = await runScript(input, env);
+    assert.equal(result.code, 0);
+
+    const body = capture.bodies().at(-1);
+    assert.equal(body.event_type, "tool_call");
+    assert.equal(body.tool_name, "Bash");
     assert.equal(typeof body.tool_input, "string");
     const parsed = JSON.parse(body.tool_input);
     assert.equal(parsed.command, "ls -la /etc");
   });
 
-  it("strips secret-bearing fields from tool_input", async () => {
+  it("strips secret-bearing fields from tool_input when capture is on", async () => {
     // The dashboard must never see file content -- only path. This
     // test sends both fields and verifies content does not appear
     // anywhere in the serialised tool_input.
@@ -465,6 +489,7 @@ describe("observe_cli end-to-end (new fields)", () => {
     const env = {
       FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
       FLIGHTDECK_TOKEN: "tok_test",
+      FLIGHTDECK_CAPTURE_TOOL_INPUTS: "true",
     };
     const result = await runScript(input, env);
     assert.equal(result.code, 0);
@@ -477,7 +502,11 @@ describe("observe_cli end-to-end (new fields)", () => {
     assert.equal(parsed.file_path, "/src/secret.ts");
   });
 
-  it("flags Task tool calls as subagent invocations", async () => {
+  it("flags Task tool calls as subagent invocations and stamps parent_session_id", async () => {
+    // FIX 3c: a Task tool call is the spawn point of a sub-agent.
+    // The event payload includes parent_session_id = current session
+    // so any downstream sub-agent rollup can correlate child sessions
+    // back to the parent that issued the Task.
     const input = JSON.stringify({
       hook_event_name: "PostToolUse",
       tool_name: "Task",
@@ -493,9 +522,11 @@ describe("observe_cli end-to-end (new fields)", () => {
     const body = capture.bodies().at(-1);
     assert.equal(body.tool_name, "Task");
     assert.equal(body.is_subagent_call, true);
+    assert.equal(typeof body.parent_session_id, "string");
+    assert.equal(body.parent_session_id, body.session_id);
   });
 
-  it("non-Task tool calls are not flagged as subagent", async () => {
+  it("non-Task tool calls are not flagged as subagent and have null parent_session_id", async () => {
     const input = JSON.stringify({
       hook_event_name: "PostToolUse",
       tool_name: "Read",
@@ -509,6 +540,7 @@ describe("observe_cli end-to-end (new fields)", () => {
 
     const body = capture.bodies().at(-1);
     assert.equal(body.is_subagent_call, false);
+    assert.equal(body.parent_session_id, null);
   });
 
   it("PostToolUse populates latency_ms; PreToolUse leaves it null", async () => {

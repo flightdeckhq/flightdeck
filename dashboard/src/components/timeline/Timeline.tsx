@@ -11,7 +11,8 @@ import {
   LEFT_PANEL_WIDTH_KEY,
 } from "@/lib/constants";
 import { TimeAxis } from "./TimeAxis";
-import { SwimLane } from "./SwimLane";
+import { AllSwimLane } from "./SwimLane";
+import { VirtualizedSwimLane } from "./VirtualizedSwimLane";
 
 interface TimelineProps {
   flavors: FlavorSummary[];
@@ -111,10 +112,42 @@ export function Timeline({
     document.addEventListener("mouseup", onUp);
   }, []);
 
-  // Live-updating "now" — throttled to 10fps (100ms) for performance
+  // Count sessions that can still produce events. Closed / lost
+  // sessions are frozen history -- if the whole fleet is in that
+  // state, the timeline has nothing new to show, so the rAF tick
+  // below short-circuits and the Timeline re-render cadence drops
+  // from 10/sec to zero. Drives both this early-out and the eventual
+  // AllSwimLane hide (via its own prop check).
+  const liveSessionCount = useMemo(
+    () =>
+      flavors.reduce(
+        (acc, f) =>
+          acc +
+          f.sessions.filter(
+            (s) =>
+              s.state === "active" ||
+              s.state === "idle" ||
+              s.state === "stale",
+          ).length,
+        0,
+      ),
+    [flavors],
+  );
+
+  // Live-updating "now" — throttled to 10fps (100ms) for performance.
+  // Skips the rAF loop entirely when paused OR when no sessions are
+  // live. With zero active agents, re-rendering the timeline 10x/sec
+  // only shifts the "now" cursor by 100ms each frame; it cannot
+  // surface any new events because there are none. A one-shot setNow
+  // when liveSessionCount hits zero snaps the cursor to the current
+  // wall clock and then stops.
   const [now, setNow] = useState(() => new Date());
   useEffect(() => {
     if (paused) return;
+    if (liveSessionCount === 0) {
+      setNow(new Date());
+      return;
+    }
     let rafId: number;
     let lastUpdate = 0;
     const tick = (timestamp: number) => {
@@ -126,7 +159,7 @@ export function Timeline({
     };
     rafId = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(rafId);
-  }, [paused]);
+  }, [paused, liveSessionCount]);
 
   const filteredFlavors = useMemo(() => {
     let result = flavors;
@@ -147,8 +180,21 @@ export function Timeline({
   }, [flavors, flavorFilter, matchingSessionIds]);
 
   const rangeMs = TIMELINE_RANGE_MS[timeRange] ?? 60_000;
-  const scaleEnd = paused && pausedAt ? pausedAt : now;
-  const start = useMemo(() => new Date(scaleEnd.getTime() - rangeMs), [scaleEnd, rangeMs]);
+
+  // Floor the scale's right-hand domain to 1-second granularity.
+  // The rAF loop above still ticks `now` every 100ms so derived
+  // visuals (hover tooltips, transient layout) stay smooth, but
+  // feeding a stable primitive (ms epoch floored to 1s) into the
+  // scale memo keeps its identity stable for a full second. Before
+  // this floor, scale churned 10x/sec, which in turn invalidated
+  // every per-session `nodes` memo at the same cadence and defeated
+  // the SwimLane.memo custom equality that bails out for sub-second
+  // domain deltas. Events only arrive at human speed -- a 1-second
+  // step on the time axis is imperceptible.
+  const rawEndMs = paused && pausedAt ? pausedAt.getTime() : now.getTime();
+  const scaleEndMs = Math.floor(rawEndMs / 1000) * 1000;
+  const scaleEnd = useMemo(() => new Date(scaleEndMs), [scaleEndMs]);
+  const start = useMemo(() => new Date(scaleEndMs - rangeMs), [scaleEndMs, rangeMs]);
 
   // Fixed canvas width for every range. The xScale maps the range
   // domain to [0, TIMELINE_WIDTH_PX] -- wider time ranges produce
@@ -170,9 +216,9 @@ export function Timeline({
     return Array.from({ length: 6 }, (_, i) => {
       const fraction = i / 5;
       const msAgo = Math.round(rangeMs * (1 - fraction));
-      return scale(new Date(scaleEnd.getTime() - msAgo));
+      return scale(new Date(scaleEndMs - msAgo));
     });
-  }, [scale, rangeMs, scaleEnd]);
+  }, [scale, rangeMs, scaleEndMs]);
 
   if (flavors.length === 0) {
     return (
@@ -327,6 +373,25 @@ export function Timeline({
           </div>
         </div>
 
+        {/* ALL aggregate row.
+            Sits above the FLAVORS section as a single non-expandable
+            lane that merges every session's events into one timeline.
+            Reads from the unfiltered `flavors` prop (NOT
+            filteredFlavors) so it always shows the whole fleet
+            regardless of the CONTEXT sidebar filter -- it's a
+            fleet-wide overview, not a filtered subset. The event-type
+            filter (`activeFilter`) still applies inside each circle
+            via EventNode.isVisible. */}
+        <AllSwimLane
+          flavors={flavors}
+          scale={scale}
+          onSessionClick={onNodeClick}
+          timelineWidth={timelineWidth}
+          leftPanelWidth={leftPanelWidth}
+          activeFilter={activeFilter}
+          sessionVersions={sessionVersions}
+        />
+
         {/* FLAVORS section header.
             Flex row with the label slot sticky to the viewport's
             left edge. The drag handle for resizing the left panel
@@ -387,12 +452,19 @@ export function Timeline({
           <div style={{ width: timelineWidth, flexShrink: 0 }} />
         </div>
 
-        {/* Flavor rows. Each SwimLane receives both leftPanelWidth
-            and timelineWidth as props so its internal flex layout
-            (sticky left + timeline right) stays in sync with the
-            resizable left column. */}
+        {/* Flavor rows. Wrapped in VirtualizedSwimLane so rows
+            scrolled out of the Fleet panel unmount to a same-height
+            spacer. At 50+ flavors a smoke test fleet was exceeding
+            9,000 DOM nodes and 80 ms of style-recalc per tick --
+            memoization alone couldn't fix that because the absolute
+            DOM footprint was the bottleneck. Expansion state lives
+            in Fleet's `expandedFlavors` Set, so the unmount
+            round-trip is lossless. The ALL row above is NOT
+            virtualized -- it's always the top row and would defeat
+            its own purpose if it flickered between spacer and real
+            content. */}
         {filteredFlavors.map((f) => (
-          <SwimLane
+          <VirtualizedSwimLane
             key={f.flavor}
             flavor={f.flavor}
             sessions={f.sessions}

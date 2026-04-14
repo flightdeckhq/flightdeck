@@ -42,7 +42,7 @@ def _make_session_and_provider(
         agent_flavor="test", agent_type="autonomous", quiet=True,
     )
     client = MagicMock(spec=ControlPlaneClient)
-    client.post_event.return_value = None
+    client.post_event.return_value = (None, False)
     session = Session(config=config, client=client)
     session.policy = PolicyCache(token_limit=token_limit, block_at_pct=block_at_pct)
     provider = AnthropicProvider()

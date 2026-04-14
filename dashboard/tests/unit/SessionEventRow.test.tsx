@@ -6,6 +6,7 @@ import type { Session } from "@/lib/types";
 
 vi.mock("@/hooks/useSessionEvents", () => ({
   useSessionEvents: () => ({ events: [], loading: false }),
+  attachmentsCache: new Map(),
 }));
 
 const baseSession: Session = {

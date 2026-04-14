@@ -57,6 +57,47 @@ def stack() -> None:
     _wait_for_services()
 
 
+# ---------------------------------------------------------------------------
+# Session lifecycle tracking
+#
+# Most integration tests POST synthetic events (they do not drive the real
+# sensor), so without help every test session would stay in state=active
+# forever and never accumulate runtime context. Two helpers here close
+# both gaps:
+#
+#   * ``DEFAULT_TEST_CONTEXT`` -- a synthetic context dict auto-attached
+#     to every ``session_start`` event built via ``make_event`` (unless
+#     the caller passes ``context=...`` explicitly).
+#   * ``_session_lifecycle`` autouse fixture -- POSTs a ``session_end``
+#     event for every session_id seen in the test, except those that
+#     already received one explicitly. This keeps dashboard data clean
+#     across test runs and exercises the closed-state code path that
+#     production sensors hit on teardown.
+# ---------------------------------------------------------------------------
+
+DEFAULT_TEST_CONTEXT: dict[str, Any] = {
+    "os": "Linux",
+    "arch": "x86_64",
+    "hostname": "integration-test-host",
+    "user": "integration",
+    "python_version": "3.13.0",
+    "pid": 12345,
+    "process_name": "pytest",
+    "git_branch": "integration-tests",
+    "git_commit": "deadbee",
+    "git_repo": "flightdeck",
+    "orchestration": "docker-compose",
+    "compose_project": "flightdeck-tests",
+    "frameworks": ["integration-suite/1.0"],
+}
+
+# Session IDs created in the current test, mapped to their flavor, so the
+# cleanup fixture can POST session_end. Reset before each test by the
+# autouse fixture below.
+_session_tracker: dict[str, str] = {}
+_ended_sessions: set[str] = set()
+
+
 def post_event(payload: dict[str, Any]) -> dict[str, Any]:
     """POST an event to the ingestion API and return the response."""
     data = json.dumps(payload).encode()
@@ -70,7 +111,12 @@ def post_event(payload: dict[str, Any]) -> dict[str, Any]:
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=5) as resp:
-        return json.loads(resp.read())  # type: ignore[no-any-return]
+        body = json.loads(resp.read())
+    if payload.get("event_type") == "session_end":
+        sid = payload.get("session_id")
+        if isinstance(sid, str):
+            _ended_sessions.add(sid)
+    return body  # type: ignore[no-any-return]
 
 
 def post_heartbeat(session_id: str) -> dict[str, Any]:
@@ -228,6 +274,9 @@ def make_event(
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
     payload.update(extra)
+    if event_type == "session_start" and "context" not in payload:
+        payload["context"] = dict(DEFAULT_TEST_CONTEXT)
+    _session_tracker[session_id] = flavor
     return payload
 
 
@@ -404,6 +453,62 @@ def directive_has_delivered_at(directive_id: str) -> bool:
         capture_output=True, text=True, timeout=10,
     )
     return result.stdout.strip() == "t"
+
+
+@pytest.fixture(autouse=True)
+def _session_lifecycle() -> Any:
+    """Track sessions created during a test and POST session_end on teardown.
+
+    Production sensors close their session on teardown via ``Session.end()``
+    which posts ``session_end``. Integration tests bypass the sensor and
+    POST synthetic events directly, so without this fixture every test
+    session would remain in state=active forever and accumulate stale
+    rows in the dashboard. The fixture clears the per-test tracker, runs
+    the test, then POSTs ``session_end`` for every session_id observed
+    that has not already been ended explicitly.
+
+    Failures during cleanup are swallowed -- a teardown error must not
+    mask the actual test result. The cleanup pass is best-effort.
+    """
+    _session_tracker.clear()
+    _ended_sessions.clear()
+    try:
+        yield
+    finally:
+        for sid, flavor in list(_session_tracker.items()):
+            if sid in _ended_sessions:
+                continue
+            try:
+                # Build the payload directly -- calling make_event() here
+                # would re-register the session_id in the tracker (already
+                # being drained) and pull in DEFAULT_TEST_CONTEXT, which
+                # only belongs on session_start.
+                payload = {
+                    "session_id": sid,
+                    "flavor": flavor,
+                    "agent_type": "autonomous",
+                    "event_type": "session_end",
+                    "host": "test-host",
+                    "framework": None,
+                    "model": None,
+                    "tokens_input": None,
+                    "tokens_output": None,
+                    "tokens_total": None,
+                    "tokens_used_session": 0,
+                    "token_limit_session": None,
+                    "latency_ms": None,
+                    "tool_name": None,
+                    "tool_input": None,
+                    "tool_result": None,
+                    "has_content": False,
+                    "content": None,
+                    "timestamp": time.strftime(
+                        "%Y-%m-%dT%H:%M:%SZ", time.gmtime()
+                    ),
+                }
+                post_event(payload)
+            except Exception:
+                pass
 
 
 def pytest_configure(config: pytest.Config) -> None:

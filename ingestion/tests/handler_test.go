@@ -36,6 +36,21 @@ func (m *mockDirStore) LookupPending(_ context.Context, _ string) (*handlers.Dir
 	return m.directive, nil
 }
 
+// mockSessAttacher satisfies handlers.SessionAttacher. attached and
+// priorState drive the fake response; err simulates DB failure so the
+// handler's fallback path (attached=false, no panic) can be asserted.
+type mockSessAttacher struct {
+	attached   bool
+	priorState string
+	err        error
+	called     []string
+}
+
+func (m *mockSessAttacher) Attach(_ context.Context, sessionID string) (bool, string, error) {
+	m.called = append(m.called, sessionID)
+	return m.attached, m.priorState, m.err
+}
+
 // --- Tests ---
 
 func TestHealthHandler_Returns200(t *testing.T) {
@@ -59,6 +74,7 @@ func TestEventsHandler_MissingAuth_Returns401(t *testing.T) {
 		&mockPublisher{},
 		&mockDirStore{},
 		nil,
+		nil,
 	)
 	body := `{"session_id":"abc","event_type":"post_call"}`
 	req := httptest.NewRequest("POST", "/v1/events", bytes.NewBufferString(body))
@@ -75,6 +91,7 @@ func TestEventsHandler_InvalidToken_Returns401(t *testing.T) {
 		&mockValidator{valid: false},
 		&mockPublisher{},
 		&mockDirStore{},
+		nil,
 		nil,
 	)
 	body := `{"session_id":"abc","event_type":"post_call"}`
@@ -94,6 +111,7 @@ func TestEventsHandler_MalformedPayload_Returns400(t *testing.T) {
 		&mockPublisher{},
 		&mockDirStore{},
 		nil,
+		nil,
 	)
 	req := httptest.NewRequest("POST", "/v1/events", bytes.NewBufferString("not json"))
 	req.Header.Set("Authorization", "Bearer valid-token")
@@ -111,6 +129,7 @@ func TestEventsHandler_ValidToken_Returns200WithNullDirective(t *testing.T) {
 		&mockValidator{valid: true},
 		pub,
 		&mockDirStore{directive: nil},
+		nil,
 		nil,
 	)
 	body := `{"session_id":"abc-123","event_type":"post_call","flavor":"test"}`
@@ -142,6 +161,7 @@ func TestEventsHandler_PendingDirective_Returns200WithDirective(t *testing.T) {
 		&mockDirStore{directive: &handlers.DirectiveResponse{
 			Action: "shutdown", Reason: "kill", GracePeriodMs: 5000,
 		}},
+		nil,
 		nil,
 	)
 	body := `{"session_id":"abc-123","event_type":"post_call","flavor":"test"}`
@@ -248,6 +268,7 @@ func TestRateLimitReturns429ViaHandler(t *testing.T) {
 		&mockValidator{valid: true},
 		&mockPublisher{},
 		&mockDirStore{directive: nil},
+		nil,
 		limiter,
 	)
 
@@ -315,5 +336,95 @@ func TestRateLimitNonPositiveCapFallsBackToDefault(t *testing.T) {
 			t.Errorf("max=%d: request beyond default cap should have been blocked", max)
 		}
 		limiter.Close()
+	}
+}
+
+// --- D094: session attachment tests ---
+
+// Brand-new session_id → attacher returns attached=false, handler
+// passes that through to the envelope unchanged.
+func TestEventsHandler_SessionStart_NewSession_AttachedFalse(t *testing.T) {
+	attacher := &mockSessAttacher{attached: false}
+	handler := handlers.EventsHandler(
+		&mockValidator{valid: true},
+		&mockPublisher{},
+		&mockDirStore{directive: nil},
+		attacher,
+		nil,
+	)
+	body := `{"session_id":"abc-123","event_type":"session_start","flavor":"test"}`
+	req := httptest.NewRequest("POST", "/v1/events", bytes.NewBufferString(body))
+	req.Header.Set("Authorization", "Bearer valid-token")
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if attached, _ := resp["attached"].(bool); attached {
+		t.Errorf("expected attached=false for new session, got %v", resp["attached"])
+	}
+	if len(attacher.called) != 1 || attacher.called[0] != "abc-123" {
+		t.Errorf("expected one Attach call for abc-123, got %v", attacher.called)
+	}
+}
+
+// Pre-existing session_id in any live/terminal state → attacher
+// returns attached=true, handler surfaces it.
+func TestEventsHandler_SessionStart_ExistingSession_AttachedTrue(t *testing.T) {
+	attacher := &mockSessAttacher{attached: true, priorState: "closed"}
+	handler := handlers.EventsHandler(
+		&mockValidator{valid: true},
+		&mockPublisher{},
+		&mockDirStore{directive: nil},
+		attacher,
+		nil,
+	)
+	body := `{"session_id":"existing-id","event_type":"session_start","flavor":"test"}`
+	req := httptest.NewRequest("POST", "/v1/events", bytes.NewBufferString(body))
+	req.Header.Set("Authorization", "Bearer valid-token")
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if attached, _ := resp["attached"].(bool); !attached {
+		t.Errorf("expected attached=true for existing session, got %v", resp["attached"])
+	}
+}
+
+// Non-session_start events must never consult the attacher and must
+// report attached=false (D094: only session_start responses carry
+// attached=true).
+func TestEventsHandler_NonSessionStart_DoesNotAttach(t *testing.T) {
+	attacher := &mockSessAttacher{attached: true}
+	handler := handlers.EventsHandler(
+		&mockValidator{valid: true},
+		&mockPublisher{},
+		&mockDirStore{directive: nil},
+		attacher,
+		nil,
+	)
+	body := `{"session_id":"abc-123","event_type":"post_call","flavor":"test"}`
+	req := httptest.NewRequest("POST", "/v1/events", bytes.NewBufferString(body))
+	req.Header.Set("Authorization", "Bearer valid-token")
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if attached, _ := resp["attached"].(bool); attached {
+		t.Errorf("post_call must return attached=false, got %v", resp["attached"])
+	}
+	if len(attacher.called) != 0 {
+		t.Errorf("attacher must not be called for non-session_start events, got %v", attacher.called)
 	}
 }

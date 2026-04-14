@@ -56,8 +56,25 @@ class ControlPlaneClient:
     # Public API
     # ------------------------------------------------------------------
 
-    def post_event(self, payload: dict[str, Any]) -> Directive | None:
-        """POST an event to ``/v1/events`` and return any embedded directive."""
+    def post_event(
+        self, payload: dict[str, Any]
+    ) -> tuple[Directive | None, bool]:
+        """POST an event to ``/v1/events``.
+
+        Returns ``(directive, attached)``:
+
+        * ``directive`` -- any directive embedded in the response
+          envelope, or ``None``.
+        * ``attached`` -- the ingestion response's ``attached`` flag.
+          ``True`` when the backend matched this sensor's
+          ``session_id`` to a pre-existing row in ``sessions``. Only
+          ever ``True`` on the ``session_start`` response envelope
+          (later events hit an already-active row and the flag is
+          reset to ``False`` there) -- callers must therefore treat
+          the first ``True`` as the attachment confirmation. Missing
+          field defaults to ``False`` for backward compatibility with
+          older ingestion deployments.
+        """
         return self._post("/v1/events", payload)
 
     def sync_directives(
@@ -132,8 +149,10 @@ class ControlPlaneClient:
     # Internals
     # ------------------------------------------------------------------
 
-    def _post(self, path: str, body: dict[str, Any]) -> Directive | None:
-        """POST JSON and parse the response envelope for a directive."""
+    def _post(
+        self, path: str, body: dict[str, Any]
+    ) -> tuple[Directive | None, bool]:
+        """POST JSON and parse the response envelope for directive + attached."""
         url = f"{self._base_url}{path}"
         data = json.dumps(body).encode()
         req = urllib.request.Request(
@@ -149,9 +168,11 @@ class ControlPlaneClient:
         try:
             raw = with_retry(lambda: self._do_request(req))
         except (URLError, OSError, TimeoutError, ConnectionError) as exc:
-            return self._handle_unavailable(exc)
+            return self._handle_unavailable(exc), False
 
-        return self._parse_directive(raw)
+        directive = self._parse_directive(raw)
+        attached = bool(raw.get("attached", False))
+        return directive, attached
 
     def _do_request(self, req: urllib.request.Request) -> dict[str, Any]:
         """Execute a single HTTP request and return the parsed JSON body.
@@ -300,19 +321,12 @@ class EventQueue:
     def enqueue(self, payload: dict[str, Any]) -> None:
         """Put *payload* on queue.  Never blocks.  Never raises.
 
-        TODO(KI16)[Phase 4.9]: The drop-oldest fallback below is
-        acceptable in production because real LLM provider calls
-        take hundreds of milliseconds, which throttles event
-        generation naturally -- four concurrent workers fire at
-        most ~10 events/s and the drain thread (one HTTP POST per
-        event at ~5-10 ms) easily clears them. The 1000-slot queue
-        only fills under pathological synthetic load (e.g.
-        respx-mocked tests with zero provider latency, which the
-        multithreading e2e tests now compensate for via a 50 ms
-        side_effect delay on the mock). Phase 4.9 may optionally
-        add micro-batching (50-100 events per POST) to raise the
-        drain ceiling further and provide headroom for future
-        high-throughput use cases. See KNOWN_ISSUES.md KI16.
+        The drop-oldest fallback below is the v1 behaviour: real
+        LLM provider latency (hundreds of ms per call) throttles
+        event generation naturally, so the 1000-slot queue only
+        fills under pathological synthetic load. Micro-batching
+        was considered and rejected for v1 -- see DECISIONS.md
+        D091 for the trade-offs.
         """
         try:
             self._queue.put_nowait(payload)
@@ -431,7 +445,15 @@ class EventQueue:
                     return
                 directive: Directive | None = None
                 try:
-                    directive = self._client.post_event(item)  # type: ignore[arg-type]
+                    # The drain thread processes async events only
+                    # (not the synchronous session_start POST issued
+                    # by Session._post_event). The ``attached`` flag
+                    # therefore only ever arrives on the drain path
+                    # if the backend protocol is extended, and the
+                    # async path has no session handle to log it on.
+                    # Discard here; Session._post_event is the sole
+                    # consumer of the attach confirmation.
+                    directive, _ = self._client.post_event(item)  # type: ignore[arg-type]
                 except Exception as exc:
                     event_type = "unknown"
                     if isinstance(item, dict):

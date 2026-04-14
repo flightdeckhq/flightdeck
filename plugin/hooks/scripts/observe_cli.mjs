@@ -5,7 +5,7 @@
 
 import { execSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync, openSync, closeSync } from "node:fs";
 import {
   arch,
   hostname as osHostname,
@@ -38,7 +38,11 @@ export const EVENT_MAP = {
  * Resolve a stable session ID. Order of preference:
  *   1. CLAUDE_SESSION_ID env var (set by Claude Code)
  *   2. ANTHROPIC_CLAUDE_SESSION_ID env var (alternative name)
- *   3. File-based ID scoped to the current working directory
+ *   3. File-based ID scoped to the current working directory --
+ *      atomic via O_CREAT|O_EXCL so concurrent hook processes always
+ *      converge on the same id (FIX 3a, was racy: two simultaneous
+ *      first-time invocations could each `writeFileSync` a different
+ *      id, last-write-wins, splitting the session).
  *   4. Last-resort sha256(cwd) hash
  *
  * The file fallback exists because every hook invocation runs as a
@@ -59,18 +63,42 @@ export function getSessionId() {
 
   try {
     mkdirSync(dir, { recursive: true });
+
+    // Fast path: file already exists.
     try {
       const existing = readFileSync(file, "utf8").trim();
       if (existing) return existing;
     } catch {
-      // File does not exist yet -- fall through and create one.
+      // Fall through to creation.
     }
-    const id = createHash("sha256")
-      .update(`${Date.now()}-${cwd}`)
+
+    // Atomic create: O_CREAT|O_EXCL ('wx' flag) succeeds only if the
+    // file did not exist a moment ago. If two hook processes race here
+    // exactly one wins; the loser gets EEXIST and re-reads the file
+    // the winner just wrote.
+    const candidate = createHash("sha256")
+      .update(`${Date.now()}-${process.pid}-${cwd}`)
       .digest("hex")
       .slice(0, 32);
-    writeFileSync(file, id);
-    return id;
+    try {
+      const fd = openSync(file, "wx");
+      try {
+        writeFileSync(fd, candidate);
+      } finally {
+        closeSync(fd);
+      }
+      return candidate;
+    } catch (err) {
+      if (err && err.code === "EEXIST") {
+        try {
+          const winner = readFileSync(file, "utf8").trim();
+          if (winner) return winner;
+        } catch {
+          /* fall through to last-resort hash */
+        }
+      }
+      throw err;
+    }
   } catch {
     // Filesystem unavailable -- last-resort cwd hash gives stability
     // across multiple invocations in the same working directory at
@@ -356,17 +384,34 @@ async function main() {
   // sessions.context.
   await ensureSessionStarted(server, token, sessionId, basePayload);
 
-  const sanitizedInput = hookEvent.tool_input
-    ? sanitizeToolInput(hookEvent.tool_input)
-    : null;
+  // Tool-input capture is opt-in (FIX 3b). Off by default so the
+  // dashboard never sees command/file_path/query strings unless the
+  // operator explicitly turns capture on, mirroring capture_prompts in
+  // the Python sensor (D019).
+  const captureToolInputs =
+    process.env.FLIGHTDECK_CAPTURE_TOOL_INPUTS === "true" ||
+    process.env.FLIGHTDECK_CAPTURE_TOOL_INPUTS === "1";
+
+  let toolInputJson = null;
+  if (captureToolInputs && hookEvent.tool_input) {
+    const sanitized = sanitizeToolInput(hookEvent.tool_input);
+    if (sanitized) toolInputJson = JSON.stringify(sanitized);
+  }
+
+  const isSubagentCall = toolName === "Task";
 
   const payload = {
     ...basePayload,
     event_type: eventType,
     tool_name: toolName,
-    tool_input: sanitizedInput ? JSON.stringify(sanitizedInput) : null,
+    tool_input: toolInputJson,
     tool_result: null,
-    is_subagent_call: toolName === "Task",
+    is_subagent_call: isSubagentCall,
+    // FIX 3c: a Task tool call is the spawn point of a sub-agent.
+    // Stamp the current session as the parent so any downstream
+    // sub-agent emission (or future server-side rollup) can correlate
+    // child sessions back to the parent that issued the Task.
+    parent_session_id: isSubagentCall ? sessionId : null,
     latency_ms: hookName === "PostToolUse" ? Date.now() - startTime : null,
     timestamp: new Date().toISOString(),
   };

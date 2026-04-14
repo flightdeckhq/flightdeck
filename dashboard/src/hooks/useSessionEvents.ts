@@ -6,6 +6,14 @@ import type { AgentEvent } from "@/lib/types";
 // Exported so Fleet.tsx can inject WebSocket events directly.
 export const eventsCache = new Map<string, AgentEvent[]>();
 
+// Module-level cache: sessionId → attachment timestamp strings, newest
+// last. Populated alongside eventsCache on the shared fetchSession
+// path so swimlane renders (which don't open the drawer) still have
+// access to the attachment list for ATTACH-circle recolouring.
+// Empty map entry means "no attachments yet"; missing key means "not
+// fetched yet" -- treat both as no attachments at render time.
+export const attachmentsCache = new Map<string, string[]>();
+
 // Track which sessions have been fetched to prevent duplicate requests.
 // Once a session is in this set, it will NEVER be fetched again.
 const fetchedSessions = new Set<string>();
@@ -42,6 +50,10 @@ export function useSessionEvents(sessionId: string, _isActive = false, version =
           eventsCache.set(sessionId, evts);
           setTick((t) => t + 1); // force re-read from cache
         }
+        // Cache attachments unconditionally (including the empty
+        // array) so callers can distinguish "not yet fetched" from
+        // "fetched, no attachments".
+        attachmentsCache.set(sessionId, detail.attachments ?? []);
       })
       .catch(() => {
         // On error, allow retry next mount

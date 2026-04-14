@@ -2004,6 +2004,225 @@ def _invoke_crewai_tool() -> None:
     llm.call(_WEATHER_PROMPT, tools=[_OPENAI_WEATHER_TOOL])
 
 
+# ----------------------------------------------------------------------------
+# GROUP 14 -- Session Attachment (D094)
+# ----------------------------------------------------------------------------
+
+@contextmanager
+def _capture_sensor_warnings() -> Iterator[list[logging.LogRecord]]:
+    """Attach a list-backed handler to the flightdeck_sensor logger so a
+    scenario can assert on WARNING-level records emitted during a block."""
+    logger = logging.getLogger("flightdeck_sensor")
+    records: list[logging.LogRecord] = []
+
+    class _ListHandler(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            records.append(record)
+
+    handler = _ListHandler(level=logging.WARNING)
+    prev_level = logger.level
+    logger.addHandler(handler)
+    logger.setLevel(logging.WARNING)
+    try:
+        yield records
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(prev_level)
+
+
+def _run_attach_cycle(flavor: str, session_id: str) -> None:
+    """init(session_id=...) + one Anthropic call + teardown. Waits for
+    the session row to reach ``closed`` so the next cycle exercises
+    the true re-attach path (ingestion sees a terminal row)."""
+    import flightdeck_sensor
+    force_reset_sensor()
+    sensor_init(flavor, session_id=session_id)
+    client = flightdeck_sensor.wrap(anthropic_client())
+    hi_message_anthropic(client)
+    time.sleep(Config.DRAIN_WAIT_S)
+    flightdeck_sensor.teardown()
+    wait_for_session_state(session_id, SessionState.CLOSED, timeout=10)
+
+
+def group_14_session_attachment() -> None:
+    report.section("GROUP 14: Session Attachment")
+    if not HAS_ANTHROPIC_KEY:
+        for sid in (
+            "14a. Custom session_id hint",
+            "14b. Session reattachment",
+            "14c. Multiple reattachments",
+            "14d. Invalid UUID fallback",
+            "14e. FLIGHTDECK_SESSION_ID env var",
+        ):
+            report.skip(sid, "ANTHROPIC_API_KEY not set")
+        return
+    _scenario_14a_custom_session_id()
+    _scenario_14b_reattachment()
+    _scenario_14c_multiple_reattachments()
+    _scenario_14d_invalid_uuid_fallback()
+    _scenario_14e_session_id_env_var()
+
+
+def _scenario_14a_custom_session_id() -> None:
+    """14a. init(session_id=<valid UUID>) uses the caller-supplied UUID
+    verbatim. The sensor also logs a WARNING announcing the custom id."""
+    import flightdeck_sensor
+    sid = str(uuid4())
+    with scenario("14a. Custom session_id hint", prefix="14a") as flavor:
+        with _capture_sensor_warnings() as records:
+            sensor_init(flavor, session_id=sid)
+            status_sid = flightdeck_sensor.get_status().session_id
+            client = flightdeck_sensor.wrap(anthropic_client())
+            hi_message_anthropic(client)
+            time.sleep(Config.DRAIN_WAIT_S)
+            flightdeck_sensor.teardown()
+            time.sleep(Config.SHORT_WAIT_S)
+
+        report.check("14a. status session_id == provided UUID", status_sid == sid,
+                     f"got {status_sid}")
+        detail = wait_for_session_record(sid)
+        api_sid = (detail or {}).get("session", {}).get("session_id")
+        report.check("14a. session in API with exact UUID", api_sid == sid,
+                     f"got {api_sid}")
+        report.check(
+            "14a. custom session_id warning logged",
+            any(f"Custom session_id provided: '{sid}'" in r.getMessage() for r in records),
+            f"records: {[r.getMessage() for r in records]}",
+        )
+
+
+def _scenario_14b_reattachment() -> None:
+    """14b. Two cycles with the same UUID produce one session row whose
+    attachments list has exactly one entry, and post_call events from
+    both runs are associated with that session."""
+    sid = str(uuid4())
+    with scenario("14b. Session reattachment", prefix="14b") as flavor:
+        _run_attach_cycle(flavor, sid)
+        _run_attach_cycle(flavor, sid)
+        time.sleep(Config.DRAIN_WAIT_S)
+
+        # One session row, matching UUID.
+        sessions = api.get(f"/v1/sessions?flavor={flavor}&limit=10").get("sessions", [])
+        matching = [s for s in sessions if s["session_id"] == sid]
+        report.check("14b. single session row for UUID", len(matching) == 1,
+                     f"got {len(matching)}: {[s['session_id'] for s in sessions]}")
+
+        detail = wait_for_session_record(sid)
+        attachments = (detail or {}).get("attachments", [])
+        report.check("14b. attachments length == 1", len(attachments) == 1,
+                     f"got {len(attachments)}: {attachments}")
+
+        events = db.events_for_flavor(flavor)
+        session_post_calls = [
+            e for e in events
+            if e["event_type"] == EventType.POST_CALL and e.get("session_id") == sid
+        ]
+        report.check("14b. post_call from both runs", len(session_post_calls) >= 2,
+                     f"got {len(session_post_calls)}")
+        combined_tokens = sum((e.get("tokens_total") or 0) for e in session_post_calls)
+        report.check("14b. combined tokens_total > 0", combined_tokens > 0,
+                     f"got {combined_tokens}")
+
+
+def _scenario_14c_multiple_reattachments() -> None:
+    """14c. Three cycles with the same UUID produce two attachment rows
+    (first cycle is the initial create, cycles 2 and 3 each attach)."""
+    sid = str(uuid4())
+    with scenario("14c. Multiple reattachments", prefix="14c") as flavor:
+        _run_attach_cycle(flavor, sid)
+        _run_attach_cycle(flavor, sid)
+        _run_attach_cycle(flavor, sid)
+        time.sleep(Config.DRAIN_WAIT_S)
+
+        def _two_attachments() -> bool:
+            detail = wait_for_session_record(sid, timeout=1)
+            return len(((detail or {}).get("attachments") or [])) == 2
+
+        wait_until(_two_attachments, timeout=10,
+                   description=f"2 attachments for {sid[:8]}")
+
+        detail = wait_for_session_record(sid)
+        attachments = (detail or {}).get("attachments", [])
+        report.check("14c. attachments length == 2", len(attachments) == 2,
+                     f"got {len(attachments)}: {attachments}")
+
+
+def _scenario_14d_invalid_uuid_fallback() -> None:
+    """14d. init(session_id="not-a-uuid") must warn and fall back to an
+    auto-generated UUID. The session reaching the API must carry the
+    generated UUID, never the invalid literal."""
+    import flightdeck_sensor
+    bad = "not-a-uuid"
+    with scenario("14d. Invalid UUID fallback", prefix="14d") as flavor:
+        with _capture_sensor_warnings() as records:
+            sensor_init(flavor, session_id=bad)
+            fallback_sid = flightdeck_sensor.get_status().session_id
+            time.sleep(Config.DRAIN_WAIT_S)
+            flightdeck_sensor.teardown()
+            time.sleep(Config.SHORT_WAIT_S)
+
+        report.check("14d. fallback session_id is a valid UUID",
+                     _smoke_is_valid_uuid(fallback_sid),
+                     f"got {fallback_sid}")
+        report.check("14d. fallback != invalid literal", fallback_sid != bad)
+        report.check(
+            "14d. invalid-UUID warning logged",
+            any(f"Custom session_id '{bad}' is not a valid UUID" in r.getMessage()
+                for r in records),
+            f"records: {[r.getMessage() for r in records]}",
+        )
+
+        # The generated UUID is what the session_start event carries.
+        # "not-a-uuid" must never land as a session_id on any event.
+        events = db.events_for_flavor(flavor)
+        bad_sid_events = [e for e in events if e.get("session_id") == bad]
+        report.check("14d. no events with invalid literal as session_id",
+                     len(bad_sid_events) == 0,
+                     f"found {len(bad_sid_events)} events with session_id='{bad}'")
+
+
+def _scenario_14e_session_id_env_var() -> None:
+    """14e. FLIGHTDECK_SESSION_ID env var overrides (actually sets when
+    absent from kwargs) the session_id used by init(). The sensor must
+    pick the env var up exactly. Env var is restored in `finally`."""
+    import flightdeck_sensor
+    sid = str(uuid4())
+    prev = os.environ.get("FLIGHTDECK_SESSION_ID")
+    with scenario("14e. FLIGHTDECK_SESSION_ID env var", prefix="14e") as flavor:
+        try:
+            os.environ["FLIGHTDECK_SESSION_ID"] = sid
+            sensor_init(flavor)  # no session_id kwarg
+            status_sid = flightdeck_sensor.get_status().session_id
+            client = flightdeck_sensor.wrap(anthropic_client())
+            hi_message_anthropic(client)
+            time.sleep(Config.DRAIN_WAIT_S)
+            flightdeck_sensor.teardown()
+            time.sleep(Config.SHORT_WAIT_S)
+
+            report.check("14e. status session_id == env var UUID",
+                         status_sid == sid, f"got {status_sid}")
+            detail = wait_for_session_record(sid)
+            api_sid = (detail or {}).get("session", {}).get("session_id")
+            report.check("14e. session in API with env var UUID",
+                         api_sid == sid, f"got {api_sid}")
+        finally:
+            if prev is None:
+                os.environ.pop("FLIGHTDECK_SESSION_ID", None)
+            else:
+                os.environ["FLIGHTDECK_SESSION_ID"] = prev
+
+
+def _smoke_is_valid_uuid(value: str) -> bool:
+    """Lightweight UUID check mirroring sensor._is_valid_uuid -- kept
+    local to avoid importing a private sensor helper."""
+    import uuid as _uuid
+    try:
+        _uuid.UUID(value)
+        return True
+    except (ValueError, AttributeError, TypeError):
+        return False
+
+
 # ============================================================================
 # MAIN
 # ============================================================================
@@ -2024,6 +2243,7 @@ GROUPS: dict[int, tuple[str, Callable[[], None]]] = {
     11: ("Multi-Session Fleet", group_11_multi_session),
     12: ("Framework Support", group_12_frameworks),
     13: ("Framework Tool Calls", group_13_framework_tool_calls),
+    14: ("Session Attachment", group_14_session_attachment),
 }
 
 

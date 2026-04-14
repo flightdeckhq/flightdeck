@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import atexit
+import logging
 import signal
 from unittest.mock import MagicMock, patch
 
@@ -25,7 +26,7 @@ def _make_session(
         server=server, token=token, agent_flavor="test", agent_type="autonomous", quiet=quiet
     )
     client = MagicMock(spec=ControlPlaneClient)
-    client.post_event.return_value = None
+    client.post_event.return_value = (None, False)
     session = Session(config=config, client=client)
     return session, client
 
@@ -231,3 +232,156 @@ def test_get_status_returns_correct_fields() -> None:
     assert status.token_limit == 10000
     assert status.pct_used is not None
     assert status.pct_used == 8.0  # (800 / 10000) * 100
+
+
+# ------------------------------------------------------------------
+# D094 -- session_id hint + backend attachment
+# ------------------------------------------------------------------
+
+
+def test_init_custom_session_id_emits_warning(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When a caller supplies session_id (kwarg or env var), init()
+    logs a single WARNING with the exact wording documented in D094
+    so operators can see attachment semantics kicked in."""
+    import flightdeck_sensor
+
+    # A valid UUID is required -- non-UUID inputs hit the separate
+    # _is_valid_uuid fallback path and never surface this warning.
+    sid = "11111111-1111-4111-8111-111111111111"
+    monkeypatch.delenv("FLIGHTDECK_SESSION_ID", raising=False)
+    flightdeck_sensor.teardown()
+    with caplog.at_level(logging.WARNING, logger="flightdeck_sensor"):
+        try:
+            flightdeck_sensor.init(
+                server="http://127.0.0.1:1",
+                token="tok",
+                session_id=sid,
+                quiet=True,
+            )
+        finally:
+            flightdeck_sensor.teardown()
+    messages = [r.message for r in caplog.records]
+    assert any(
+        f"Custom session_id provided: '{sid}'" in m
+        and "used as-is" in m
+        and "backend will attach" in m
+        for m in messages
+    ), f"expected attachment warning, got: {messages}"
+
+
+def test_init_no_session_id_does_not_warn(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Default init() (UUID auto-generated) must not emit the custom-
+    session-id warning -- otherwise every vanilla agent startup spams
+    the log."""
+    import flightdeck_sensor
+
+    monkeypatch.delenv("FLIGHTDECK_SESSION_ID", raising=False)
+    flightdeck_sensor.teardown()
+    with caplog.at_level(logging.WARNING, logger="flightdeck_sensor"):
+        try:
+            flightdeck_sensor.init(
+                server="http://127.0.0.1:1",
+                token="tok",
+                quiet=True,
+            )
+        finally:
+            flightdeck_sensor.teardown()
+    assert not any(
+        "Custom session_id provided" in r.message for r in caplog.records
+    )
+
+
+def test_init_non_uuid_session_id_falls_back_and_warns(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A caller-supplied session_id that is not a valid UUID must NOT
+    be used verbatim -- the sessions table column is UUID-typed and
+    the event would later be dropped at worker time. The sensor logs
+    a warning with the documented wording and falls back to an
+    auto-generated UUID so the agent still boots."""
+    import flightdeck_sensor
+
+    monkeypatch.delenv("FLIGHTDECK_SESSION_ID", raising=False)
+    flightdeck_sensor.teardown()
+    with caplog.at_level(logging.WARNING, logger="flightdeck_sensor"):
+        try:
+            flightdeck_sensor.init(
+                server="http://127.0.0.1:1",
+                token="tok",
+                session_id="my-temporal-workflow-id",
+                quiet=True,
+            )
+            assert flightdeck_sensor._session is not None
+            sid = flightdeck_sensor._session.config.session_id
+        finally:
+            flightdeck_sensor.teardown()
+
+    # Exact wording: "Custom session_id '{value}' is not a valid UUID.
+    # A random session ID will be generated instead."
+    assert any(
+        "Custom session_id 'my-temporal-workflow-id' is not a valid UUID" in r.message
+        and "random session ID will be generated" in r.message
+        for r in caplog.records
+    ), f"expected invalid-uuid warning, got: {[r.message for r in caplog.records]}"
+
+    # Fallback UUID must itself be a valid UUID and must not equal the
+    # caller-supplied string.
+    import uuid as _uuid
+    _uuid.UUID(sid)  # raises if not a UUID
+    assert sid != "my-temporal-workflow-id"
+
+
+def test_init_env_var_overrides_kwarg(monkeypatch: pytest.MonkeyPatch) -> None:
+    """FLIGHTDECK_SESSION_ID env var wins over the init() kwarg, same
+    pattern as FLIGHTDECK_SERVER and AGENT_FLAVOR (D094)."""
+    import flightdeck_sensor
+
+    env_sid = "22222222-2222-4222-8222-222222222222"
+    kwarg_sid = "33333333-3333-4333-8333-333333333333"
+    flightdeck_sensor.teardown()
+    monkeypatch.setenv("FLIGHTDECK_SESSION_ID", env_sid)
+    try:
+        flightdeck_sensor.init(
+            server="http://127.0.0.1:1",
+            token="tok",
+            session_id=kwarg_sid,
+            quiet=True,
+        )
+        assert flightdeck_sensor._session is not None
+        assert flightdeck_sensor._session.config.session_id == env_sid
+    finally:
+        flightdeck_sensor.teardown()
+
+
+def test_post_event_attached_logs_info_once(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Session._post_event emits the 'Attached to existing session'
+    INFO line on the first response envelope that carries
+    attached=true, and not on subsequent ones."""
+    from flightdeck_sensor.core.types import EventType
+
+    session, client = _make_session(quiet=False)
+    # First call: backend confirms attachment.
+    client.post_event.return_value = (None, True)
+    with caplog.at_level(logging.INFO, logger="flightdeck_sensor.core.session"):
+        session._post_event(EventType.SESSION_START)
+    info_lines = [
+        r.message for r in caplog.records if "Attached to existing session" in r.message
+    ]
+    assert len(info_lines) == 1, f"expected 1 attach INFO, got {info_lines}"
+
+    # Second call: same flag still true, but we've already logged --
+    # must not fire again.
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger="flightdeck_sensor.core.session"):
+        session._post_event(EventType.POST_CALL)
+    info_lines = [
+        r.message for r in caplog.records if "Attached to existing session" in r.message
+    ]
+    assert info_lines == []
+    session.end()

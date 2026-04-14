@@ -12,6 +12,7 @@ import contextlib
 import logging
 import os
 import threading
+import uuid
 from typing import Any, Callable
 
 from flightdeck_sensor.core.context import collect as _collect_context
@@ -61,16 +62,10 @@ __all__ = [
 
 _log = logging.getLogger("flightdeck_sensor")
 
-# TODO(KI15)[Phase 4.9]: Module-level _session and _directive_registry are
-# process-wide singletons. The second init() call is a no-op and the
-# directive registry is shared across every Session, so multi-Session
-# patterns (one init per thread, multiple agents in one process) are
-# not supported in v1. Needs an architectural decision before Phase 5
-# multi-tenant work: Session-handle API, per-thread storage, or
-# per-flavor map. See KNOWN_ISSUES.md KI15 and Phase 4.5 audit Part 1
-# findings B-I/B-J.
-
-# Global state -- protected by _lock
+# Global state -- protected by _lock.
+# v1 design: process-wide singleton. Multi-session-in-one-process is a
+# v2 concern; users who need isolated sessions should run separate
+# processes (one sensor per process). See DECISIONS.md D091.
 _lock = threading.Lock()
 _patch_lock = threading.Lock()
 _session: Session | None = None
@@ -171,6 +166,7 @@ def init(
     quiet: bool = False,
     limit: int | None = None,
     warn_at: float = 0.8,
+    session_id: str | None = None,
 ) -> None:
     """Initialize the sensor and start the session.
 
@@ -183,9 +179,22 @@ def init(
     degrades. Most restrictive threshold wins when both local and server
     policies are active. See DECISIONS.md D035.
 
+    ``session_id`` is an optional caller-supplied identifier. When
+    provided (or when ``FLIGHTDECK_SESSION_ID`` is set, which takes
+    precedence over the kwarg in line with ``FLIGHTDECK_SERVER`` /
+    ``AGENT_FLAVOR``), the sensor uses the caller's value verbatim
+    instead of generating a UUID. If a session with that ID already
+    exists in the control plane, the backend attaches this execution
+    to the prior session; the sensor logs INFO on the first response
+    that confirms attachment. Primary use case: orchestrators
+    (Temporal workflows, Airflow DAGs) that re-run the same logical
+    workflow and want a single correlatable session in the fleet view.
+    See DECISIONS.md D094.
+
     Reads from environment (overrides parameters):
 
     - ``FLIGHTDECK_API_URL`` -- control-plane base URL (overrides *api_url*)
+    - ``FLIGHTDECK_SESSION_ID`` -- session id hint (overrides *session_id*)
     - ``AGENT_FLAVOR`` -- persistent identity (default: ``"unknown"``)
     - ``AGENT_TYPE`` -- ``"autonomous"``, ``"supervised"``, or ``"batch"``
     - ``FLIGHTDECK_UNAVAILABLE_POLICY`` -- ``"continue"`` or ``"halt"``
@@ -213,20 +222,62 @@ def init(
             )
 
         capture = _env_bool("FLIGHTDECK_CAPTURE_PROMPTS", capture_prompts)
-        config = SensorConfig(
-            server=resolved_server,
-            token=resolved_token,
-            api_url=resolved_api_url,
-            capture_prompts=capture,
-            unavailable_policy=os.environ.get(
+
+        # session_id resolution follows the same env-wins pattern as
+        # FLIGHTDECK_SERVER / AGENT_FLAVOR: env var overrides kwarg,
+        # and a falsy env var falls through to the kwarg. An empty
+        # string from either source is treated as "not provided" so a
+        # misconfigured shell (FLIGHTDECK_SESSION_ID="") still auto-
+        # generates a UUID rather than posting a session_start with a
+        # blank session_id that the ingestion API rejects.
+        resolved_session_id = (
+            os.environ.get("FLIGHTDECK_SESSION_ID") or session_id or None
+        )
+        if resolved_session_id and not _is_valid_uuid(resolved_session_id):
+            # The sessions table column is UUID-typed; accepting a
+            # non-UUID here would trip Postgres at worker time and
+            # drop every event for this agent. Warn loudly and fall
+            # back to auto-generation so the agent still boots. The
+            # common source of this is orchestrators (Temporal
+            # workflow_id, Airflow dag_run_id) that are strings, not
+            # UUIDs -- callers need to hash them into a UUID before
+            # passing, e.g. uuid.uuid5(NAMESPACE_URL, workflow_id).
+            _log.warning(
+                "Custom session_id '%s' is not a valid UUID. A random "
+                "session ID will be generated instead.",
+                resolved_session_id,
+            )
+            resolved_session_id = None
+        if resolved_session_id:
+            _log.warning(
+                "Custom session_id provided: '%s'. This ID will be used "
+                "as-is and will not be auto-generated. If a session with "
+                "this ID already exists, the backend will attach this "
+                "agent to it.",
+                resolved_session_id,
+            )
+
+        config_kwargs: dict[str, Any] = {
+            "server": resolved_server,
+            "token": resolved_token,
+            "api_url": resolved_api_url,
+            "capture_prompts": capture,
+            "unavailable_policy": os.environ.get(
                 "FLIGHTDECK_UNAVAILABLE_POLICY", "continue"
             ),
-            agent_flavor=os.environ.get("AGENT_FLAVOR", "unknown"),
-            agent_type=os.environ.get("AGENT_TYPE", "autonomous"),
-            quiet=quiet,
-            limit=limit,
-            warn_at=warn_at,
-        )
+            "agent_flavor": os.environ.get("AGENT_FLAVOR", "unknown"),
+            "agent_type": os.environ.get("AGENT_TYPE", "autonomous"),
+            "quiet": quiet,
+            "limit": limit,
+            "warn_at": warn_at,
+        }
+        # Only pass session_id when the caller asked for a specific
+        # value; otherwise let SensorConfig's default_factory generate
+        # a fresh UUID as before. Passing session_id=None would
+        # overwrite the factory output with None.
+        if resolved_session_id:
+            config_kwargs["session_id"] = resolved_session_id
+        config = SensorConfig(**config_kwargs)
 
         _client = ControlPlaneClient(
             server=config.server,
@@ -385,6 +436,22 @@ def _require_session(caller: str) -> Session:
                 f"{caller}() called before init(). Call flightdeck_sensor.init() first."
             )
         return _session
+
+
+def _is_valid_uuid(value: str) -> bool:
+    """Return True when *value* parses as a canonical UUID string.
+
+    The sessions table uses Postgres ``UUID`` which accepts any valid
+    UUID (any version), so the check is deliberately permissive about
+    version -- only the string shape matters. ``uuid.UUID(value)``
+    already validates hex chars, hyphen placement, and length; any
+    failure raises ``ValueError`` which we swallow and return False.
+    """
+    try:
+        uuid.UUID(value)
+        return True
+    except (ValueError, AttributeError, TypeError):
+        return False
 
 
 def _env_bool(key: str, default: bool) -> bool:

@@ -57,6 +57,17 @@ type EventPayload struct {
 	// Present only on session_start events. Stored once in
 	// sessions.context (JSONB) and never updated on conflict.
 	Context map[string]interface{} `json:"context,omitempty"`
+
+	// Token attribution (D095). Injected by the ingestion API on
+	// session_start events only -- the API resolves the authenticating
+	// access_tokens row and stamps the id/name into the payload before
+	// publishing to NATS. UpsertSession persists them onto the new
+	// session row so the dashboard can render "Created via: $NAME"
+	// without joining access_tokens and so the label survives token
+	// revocation. Other event types leave these fields empty and the
+	// worker does not touch the session's token columns.
+	TokenID   string `json:"token_id,omitempty"`
+	TokenName string `json:"token_name,omitempty"`
 }
 
 // Processor processes a single event payload.

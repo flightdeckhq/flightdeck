@@ -27,6 +27,7 @@ type mockStore struct {
 	customDirectives []store.CustomDirective
 	contextFacets    map[string][]store.ContextFacetValue
 	contextFacetsErr error
+	tokens           []store.AccessTokenRow
 }
 
 func (m *mockStore) GetContextFacets(_ context.Context) (map[string][]store.ContextFacetValue, error) {
@@ -207,6 +208,59 @@ func (m *mockStore) DeletePolicy(_ context.Context, id string) error {
 		}
 	}
 	return pgx.ErrNoRows
+}
+
+// --- Token CRUD (D095) ---
+
+func (m *mockStore) ListAccessTokens(_ context.Context) ([]store.AccessTokenRow, error) {
+	return append([]store.AccessTokenRow(nil), m.tokens...), nil
+}
+
+func (m *mockStore) CreateAccessToken(_ context.Context, name string) (*store.CreatedAccessTokenResponse, error) {
+	if name == "" {
+		return nil, store.ErrAccessTokenNameRequired
+	}
+	created := &store.CreatedAccessTokenResponse{
+		ID:        fmt.Sprintf("tok-%d", len(m.tokens)+1),
+		Name:      name,
+		Prefix:    "ftd_mock",
+		RawToken:  "ftd_mock" + name,
+		CreatedAt: time.Now(),
+	}
+	m.tokens = append(m.tokens, store.AccessTokenRow{
+		ID: created.ID, Name: name, Prefix: created.Prefix, CreatedAt: created.CreatedAt,
+	})
+	return created, nil
+}
+
+func (m *mockStore) DeleteAccessToken(_ context.Context, id string) error {
+	for i, t := range m.tokens {
+		if t.ID == id {
+			if t.Name == "Development Token" {
+				return store.ErrDevAccessTokenProtected
+			}
+			m.tokens = append(m.tokens[:i], m.tokens[i+1:]...)
+			return nil
+		}
+	}
+	return store.ErrAccessTokenNotFound
+}
+
+func (m *mockStore) RenameAccessToken(_ context.Context, id, newName string) (*store.AccessTokenRow, error) {
+	if newName == "" {
+		return nil, store.ErrAccessTokenNameRequired
+	}
+	for i := range m.tokens {
+		if m.tokens[i].ID == id {
+			if m.tokens[i].Name == "Development Token" {
+				return nil, store.ErrDevAccessTokenProtected
+			}
+			m.tokens[i].Name = newName
+			out := m.tokens[i]
+			return &out, nil
+		}
+	}
+	return nil, store.ErrAccessTokenNotFound
 }
 
 func (m *mockStore) CreateDirective(_ context.Context, d store.Directive) (*store.Directive, error) {
@@ -689,7 +743,7 @@ func TestStreamHandler_ReceivesBroadcast(t *testing.T) {
 	go hub.Run(ctx)
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/stream", handlers.StreamHandler(hub))
+	mux.HandleFunc("/v1/stream", handlers.StreamHandler(hub, nil))
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
@@ -1959,5 +2013,249 @@ func TestSearchReturnsExtendedSessionFields(t *testing.T) {
 	}
 	if sess.Context["os"] != "Linux" {
 		t.Errorf("expected context.os=Linux, got %v", sess.Context["os"])
+	}
+}
+
+// --- Token CRUD (D095) ---
+
+func TestTokensListHandler_ReturnsRows(t *testing.T) {
+	s := &mockStore{tokens: []store.AccessTokenRow{{ID: "a", Name: "Dev", Prefix: "ftd_aaaa"}}}
+	handler := handlers.AccessTokensListHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/tokens", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var out []store.AccessTokenRow
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 1 || out[0].ID != "a" {
+		t.Errorf("expected 1 row with id=a, got %+v", out)
+	}
+}
+
+func TestTokenCreateHandler_ReturnsPlaintextOnce(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.AccessTokenCreateHandler(store.WrapStore(s))
+	req := httptest.NewRequest("POST", "/v1/tokens",
+		bytes.NewBufferString(`{"name":"Production K8s"}`))
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", w.Code)
+	}
+	var out store.CreatedAccessTokenResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.RawToken == "" {
+		t.Error("expected raw token in create response")
+	}
+	if out.Name != "Production K8s" {
+		t.Errorf("expected name passthrough, got %q", out.Name)
+	}
+	// Subsequent list must NOT include the raw token field -- only
+	// the projection. Json-decoding into AccessTokenRow (which has no
+	// RawToken field) proves we get the safe shape back.
+	listHandler := handlers.AccessTokensListHandler(store.WrapStore(s))
+	listReq := httptest.NewRequest("GET", "/v1/tokens", nil)
+	listW := httptest.NewRecorder()
+	listHandler(listW, listReq)
+	if !strings.Contains(listW.Body.String(), out.ID) {
+		t.Error("expected new token id in subsequent list response")
+	}
+	if strings.Contains(listW.Body.String(), out.RawToken) {
+		t.Errorf("list response must not leak raw token, body=%s", listW.Body.String())
+	}
+}
+
+func TestTokenCreateHandler_EmptyName400(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.AccessTokenCreateHandler(store.WrapStore(s))
+	req := httptest.NewRequest("POST", "/v1/tokens", bytes.NewBufferString(`{"name":""}`))
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestTokenDeleteHandler_DevTokenReturns403(t *testing.T) {
+	s := &mockStore{tokens: []store.AccessTokenRow{{ID: "dev", Name: "Development Token"}}}
+	mux := http.NewServeMux()
+	mux.Handle("DELETE /v1/tokens/{id}", handlers.AccessTokenDeleteHandler(store.WrapStore(s)))
+	req := httptest.NewRequest("DELETE", "/v1/tokens/dev", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Errorf("expected 403, got %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "Development Token") {
+		t.Errorf("expected mention of Development Token in body, got %s", w.Body.String())
+	}
+}
+
+func TestTokenDeleteHandler_UnknownIdReturns404(t *testing.T) {
+	s := &mockStore{}
+	mux := http.NewServeMux()
+	mux.Handle("DELETE /v1/tokens/{id}", handlers.AccessTokenDeleteHandler(store.WrapStore(s)))
+	req := httptest.NewRequest("DELETE", "/v1/tokens/missing", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d", w.Code)
+	}
+}
+
+func TestTokenDeleteHandler_DeletesRealToken(t *testing.T) {
+	s := &mockStore{tokens: []store.AccessTokenRow{
+		{ID: "real", Name: "Production"},
+		{ID: "dev", Name: "Development Token"},
+	}}
+	mux := http.NewServeMux()
+	mux.Handle("DELETE /v1/tokens/{id}", handlers.AccessTokenDeleteHandler(store.WrapStore(s)))
+	req := httptest.NewRequest("DELETE", "/v1/tokens/real", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusNoContent {
+		t.Errorf("expected 204, got %d", w.Code)
+	}
+	if len(s.tokens) != 1 || s.tokens[0].ID != "dev" {
+		t.Errorf("expected only dev token to remain, got %+v", s.tokens)
+	}
+}
+
+func TestTokenRenameHandler_DevToken403(t *testing.T) {
+	s := &mockStore{tokens: []store.AccessTokenRow{{ID: "dev", Name: "Development Token"}}}
+	mux := http.NewServeMux()
+	mux.Handle("PATCH /v1/tokens/{id}", handlers.AccessTokenRenameHandler(store.WrapStore(s)))
+	req := httptest.NewRequest("PATCH", "/v1/tokens/dev", bytes.NewBufferString(`{"name":"Renamed"}`))
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Errorf("expected 403, got %d", w.Code)
+	}
+}
+
+func TestTokenRenameHandler_RenamesRealToken(t *testing.T) {
+	s := &mockStore{tokens: []store.AccessTokenRow{{ID: "real", Name: "Old"}}}
+	mux := http.NewServeMux()
+	mux.Handle("PATCH /v1/tokens/{id}", handlers.AccessTokenRenameHandler(store.WrapStore(s)))
+	req := httptest.NewRequest("PATCH", "/v1/tokens/real", bytes.NewBufferString(`{"name":"New"}`))
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+	var got store.AccessTokenRow
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Name != "New" {
+		t.Errorf("expected name=New, got %q", got.Name)
+	}
+}
+
+// --- DeleteCustomDirectivesHandler ---
+
+func TestDeleteCustomDirectivesHandler_DeletesMatchingPrefix(t *testing.T) {
+	s := &mockStore{customDirectives: []store.CustomDirective{
+		{ID: "1", Name: "smoke_foo", Flavor: "f"},
+		{ID: "2", Name: "smoke_bar", Flavor: "f"},
+		{ID: "3", Name: "prod_keep", Flavor: "f"},
+	}}
+	handler := handlers.DeleteCustomDirectivesHandler(store.WrapStore(s))
+	req := httptest.NewRequest("DELETE", "/v1/directives/custom?name_prefix=smoke_", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var resp handlers.DeleteCustomDirectivesResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Deleted != 2 {
+		t.Errorf("expected deleted=2, got %d", resp.Deleted)
+	}
+	if len(s.customDirectives) != 1 {
+		t.Errorf("expected 1 remaining directive, got %d", len(s.customDirectives))
+	}
+}
+
+func TestDeleteCustomDirectivesHandler_RequiresNamePrefix(t *testing.T) {
+	handler := handlers.DeleteCustomDirectivesHandler(store.WrapStore(&mockStore{}))
+	req := httptest.NewRequest("DELETE", "/v1/directives/custom", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+// --- PolicyUpdateHandler branch coverage ---
+
+func TestPolicyUpdateHandler_MissingID(t *testing.T) {
+	handler := handlers.PolicyUpdateHandler(store.WrapStore(&mockStore{}))
+	req := httptest.NewRequest("PUT", "/v1/policies/", bytes.NewBufferString(`{}`))
+	// No path value set -- handler reads r.PathValue("id") == "".
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestPolicyUpdateHandler_NotFound(t *testing.T) {
+	handler := handlers.PolicyUpdateHandler(store.WrapStore(&mockStore{}))
+	req := httptest.NewRequest("PUT", "/v1/policies/missing", bytes.NewBufferString(
+		`{"scope":"flavor","scope_value":"x","token_limit":100}`,
+	))
+	req.SetPathValue("id", "missing")
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d", w.Code)
+	}
+}
+
+func TestPolicyUpdateHandler_InvalidJSON(t *testing.T) {
+	limit := int64(100)
+	s := &mockStore{policies: []store.Policy{{ID: "p", Scope: "flavor", ScopeValue: "x", TokenLimit: &limit}}}
+	handler := handlers.PolicyUpdateHandler(store.WrapStore(s))
+	req := httptest.NewRequest("PUT", "/v1/policies/p", bytes.NewBufferString(`{not-json`))
+	req.SetPathValue("id", "p")
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestPolicyUpdateHandler_InvalidRequest(t *testing.T) {
+	limit := int64(100)
+	s := &mockStore{policies: []store.Policy{{ID: "p", Scope: "flavor", ScopeValue: "x", TokenLimit: &limit}}}
+	handler := handlers.PolicyUpdateHandler(store.WrapStore(s))
+	body := `{"scope":"flavor","scope_value":"x","token_limit":100,"warn_at_pct":0}`
+	req := httptest.NewRequest("PUT", "/v1/policies/p", bytes.NewBufferString(body))
+	req.SetPathValue("id", "p")
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+// --- PolicyDeleteHandler missing-id branch ---
+
+func TestPolicyDeleteHandler_MissingID(t *testing.T) {
+	handler := handlers.PolicyDeleteHandler(store.WrapStore(&mockStore{}))
+	req := httptest.NewRequest("DELETE", "/v1/policies/", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
 	}
 }

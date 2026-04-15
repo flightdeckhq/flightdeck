@@ -106,7 +106,11 @@ export function Fleet() {
   const [pauseQueue, setPauseQueue] = useState<FeedEvent[]>([]);
   const [paused, setPaused] = useState(false);
   const [pausedAt, setPausedAt] = useState<Date | null>(null);
-  const [catchingUp, setCatchingUp] = useState(false);
+  // Virtual clock for DVR-style catch-up after Resume. Null = live
+  // (use wall clock). A non-null value is a ms-epoch that advances at
+  // >=1x wall-clock speed until it reaches Date.now(), at which point
+  // it snaps back to null and the timeline is "live" again.
+  const [virtualNow, setVirtualNow] = useState<number | null>(null);
   const pausedRef = useRef(false);
   const [sessionVersions, setSessionVersions] = useState<Record<string, number>>({});
   // Monotonic counter ensures every FeedEvent has a unique arrivedAt even
@@ -130,11 +134,16 @@ export function Fleet() {
     // React 18 automatic batching handles multiple setState calls in the same tick.
     if (pausedRef.current) {
       setPauseQueue((prev) => {
+        if (prev.some((p) => p.event.id === event.id)) return prev;
         const next = [...prev, fe];
         return next.length > PAUSE_QUEUE_MAX_EVENTS ? next.slice(-PAUSE_QUEUE_MAX_EVENTS) : next;
       });
     } else {
-      setFeedEvents((prev) => [...prev, fe].slice(-FEED_MAX_EVENTS));
+      setFeedEvents((prev) =>
+        prev.some((p) => p.event.id === event.id)
+          ? prev
+          : [...prev, fe].slice(-FEED_MAX_EVENTS),
+      );
     }
   }, []);
 
@@ -212,6 +221,47 @@ export function Fleet() {
     const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
   }, []);
+
+  // Virtual clock ticker. Advances `virtualNow` forward toward wall
+  // clock using a dynamic catch-up rate: 1x for short gaps (smooth
+  // playback), 4x for medium gaps, and gap/30s for long gaps so the
+  // timeline is always live within ~30 seconds regardless of how long
+  // the user was paused. Uses performance.now() deltas so a tab
+  // backgrounded mid-catch-up resumes accurately on wake.
+  useEffect(() => {
+    if (virtualNow === null) return;
+    let rafId: number;
+    let lastFrame = performance.now();
+    const step = (frame: number) => {
+      const wallDelta = frame - lastFrame;
+      lastFrame = frame;
+      setVirtualNow((v) => {
+        if (v === null) return null;
+        const wall = Date.now();
+        const gap = wall - v;
+        if (gap <= 500) return null; // caught up — snap to live
+        let rate: number;
+        if (gap <= 10_000) rate = 1;
+        else if (gap <= 60_000) rate = 4;
+        else rate = gap / 30_000;
+        const next = Math.min(wall, v + wallDelta * rate);
+        return wall - next <= 500 ? null : next;
+      });
+      rafId = requestAnimationFrame(step);
+    };
+    rafId = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(rafId);
+  }, [virtualNow !== null]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Single source of truth for "what time is shown". Drives the
+  // swimlane scale domain (via <Timeline>), the live feed cutoff,
+  // and the token counter so all three surfaces stay locked together
+  // across pause / catch-up / live transitions.
+  const effectiveNowMs = useMemo(() => {
+    if (paused && pausedAt) return pausedAt.getTime();
+    if (virtualNow !== null) return virtualNow;
+    return now;
+  }, [paused, pausedAt, virtualNow, now]);
   // Set of currently-expanded flavor names. Multiple flavors can be
   // open at once -- the chevron toggle adds or removes a name from
   // the set rather than overwriting a single value. The previous
@@ -259,7 +309,11 @@ export function Fleet() {
       arrivedAt: new Date(event.occurred_at).getTime(),
       event,
     }));
-    setFeedEvents(feedFromHistory.slice(-FEED_MAX_EVENTS));
+    setFeedEvents((prev) => {
+      const seen = new Set(prev.map((fe) => fe.event.id));
+      const merged = [...prev, ...feedFromHistory.filter((fe) => !seen.has(fe.event.id))];
+      return merged.slice(-FEED_MAX_EVENTS);
+    });
   }, [historicalEvents]);
 
   // Recent directive events for the FleetPanel sidebar.
@@ -304,17 +358,40 @@ export function Fleet() {
   // 1-second `now` tick so the number decrements as events age out,
   // regardless of whether new events are arriving. (Bug 4)
   const scopedTokens = useMemo(() => {
-    const cutoff = now - TIME_RANGE_MS[timeRange];
+    const cutoff = effectiveNowMs - TIME_RANGE_MS[timeRange];
     let total = 0;
     for (const fe of feedEvents) {
       const occurredAt = fe.event.occurred_at
         ? new Date(fe.event.occurred_at).getTime()
         : fe.arrivedAt;
-      if (occurredAt <= cutoff) continue;
+      if (occurredAt <= cutoff || occurredAt > effectiveNowMs) continue;
       total += fe.event.tokens_total ?? 0;
     }
     return total;
-  }, [feedEvents, timeRange, now]);
+  }, [feedEvents, timeRange, effectiveNowMs]);
+
+  // Live feed events scoped to the active time window. Mirrors the
+  // scopedTokens cutoff so the feed shows the same events that
+  // contribute to the token total. Re-evaluates whenever
+  // effectiveNowMs changes -- 1Hz wall tick in live mode, rAF cadence
+  // during catch-up, frozen while paused. Upper bound `<= effectiveNow`
+  // is what lets queued events appear gradually during catch-up: an
+  // event whose occurred_at hasn't yet been reached by the virtual
+  // clock is held back until the clock passes it. CONTEXT sidebar
+  // filter is applied after the time window.
+  const scopedFeedEvents = useMemo(() => {
+    const cutoff = effectiveNowMs - TIME_RANGE_MS[timeRange];
+    const inWindow = feedEvents.filter((fe) => {
+      const t = fe.event.occurred_at
+        ? new Date(fe.event.occurred_at).getTime()
+        : fe.arrivedAt;
+      return t > cutoff && t <= effectiveNowMs;
+    });
+    if (matchingSessionIds === null) return inWindow;
+    return inWindow.filter((fe) =>
+      matchingSessionIds.has(fe.event.session_id),
+    );
+  }, [feedEvents, timeRange, effectiveNowMs, matchingSessionIds]);
 
   if (loading && flavors.length === 0) {
     return (
@@ -349,31 +426,42 @@ export function Fleet() {
   }
 
   function handlePause() {
+    // Anchor the pause to effectiveNowMs, not wall clock: pausing
+    // during catch-up must freeze the virtual clock where it is,
+    // otherwise the timeline would teleport forward to Date.now().
+    setPausedAt(new Date(effectiveNowMs));
     setPaused(true);
     pausedRef.current = true;
-    setPausedAt(new Date());
+    setVirtualNow(null);
   }
 
   function handleResume() {
-    // Drain queue into feedEvents in FIFO order
-    setCatchingUp(true);
+    if (!pausedAt) return;
+    // Drain queue into feedEvents -- scopedFeedEvents' upper-bound
+    // filter will hold these back from the feed until the virtual
+    // clock passes each event's occurred_at.
     setFeedEvents((prev) => [...prev, ...pauseQueue].slice(-FEED_MAX_EVENTS));
     setPauseQueue([]);
+    setVirtualNow(pausedAt.getTime());
     setPaused(false);
     pausedRef.current = false;
     setPausedAt(null);
-    setTimeout(() => setCatchingUp(false), 500);
   }
 
   function handleReturnToLive() {
-    // Discard queue entirely
+    // Jump straight to live: discard queue, cancel any catch-up
+    // in progress, snap the effective clock back to wall clock.
     setPauseQueue([]);
     setPaused(false);
     pausedRef.current = false;
     setPausedAt(null);
+    setVirtualNow(null);
     setTimeRange("1m");
-    setCatchingUp(false);
   }
+
+  // True while the virtual clock is still catching up to wall clock.
+  // Derived so it cannot drift out of sync with virtualNow.
+  const catchingUp = virtualNow !== null;
 
   return (
     <div className="flex h-full">
@@ -426,7 +514,12 @@ export function Fleet() {
             ))}
           </div>
 
-          {/* Pause controls */}
+          {/* Pause controls -- three states drive the visible buttons:
+                paused        → Resume + Return to Live
+                catching up   → Return to Live only (Pause is suppressed;
+                                the user can still auto-pause via sort)
+                live          → Pause only
+              Matches the button-state spec for DVR playback. */}
           {paused ? (
             <div className="flex gap-1.5">
               <button
@@ -458,6 +551,21 @@ export function Fleet() {
                 ⚡ Return to live
               </button>
             </div>
+          ) : catchingUp ? (
+            <button
+              className="rounded px-2.5 py-[3px] text-xs font-semibold transition-colors"
+              style={{
+                background: "var(--accent-glow)",
+                color: "var(--accent)",
+                border: "1px solid var(--accent-border)",
+                borderRadius: 4,
+                cursor: "pointer",
+              }}
+              onClick={handleReturnToLive}
+              data-testid="return-to-live-btn"
+            >
+              ⚡ Return to live
+            </button>
           ) : (
             <button
               className="rounded px-2.5 py-[3px] text-xs transition-colors"
@@ -475,7 +583,7 @@ export function Fleet() {
             </button>
           )}
 
-          {/* Live indicator */}
+          {/* Status indicator -- same three-way state as the buttons. */}
           <div className="ml-auto flex items-center gap-1.5">
             {paused ? (
               <>
@@ -501,6 +609,21 @@ export function Fleet() {
                       : `${pauseQueue.length} events waiting`}
                   </span>
                 )}
+              </>
+            ) : catchingUp ? (
+              <>
+                <div
+                  className="h-1.5 w-1.5 rounded-full"
+                  style={{ background: "var(--accent)" }}
+                  data-testid="catching-up-dot"
+                />
+                <span
+                  className="font-mono text-[11px]"
+                  style={{ color: "var(--accent)" }}
+                  data-testid="catching-up-label"
+                >
+                  Catching up to live…
+                </span>
               </>
             ) : (
               <>
@@ -587,6 +710,7 @@ export function Fleet() {
             activeFilter={activeFilter}
             paused={paused}
             pausedAt={pausedAt}
+            effectiveNowMs={effectiveNowMs}
             sessionVersions={sessionVersions}
             matchingSessionIds={matchingSessionIds}
           />
@@ -604,13 +728,7 @@ export function Fleet() {
             for the buffered events. So onResume here is intentionally
             wired to handleReturnToLive, not handleResume. */}
         <LiveFeed
-          events={
-            matchingSessionIds === null
-              ? feedEvents
-              : feedEvents.filter((fe) =>
-                  matchingSessionIds.has(fe.event.session_id),
-                )
-          }
+          events={scopedFeedEvents}
           onEventClick={setSelectedEvent}
           activeFilter={activeFilter}
           onFilterChange={setActiveFilter}

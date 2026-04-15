@@ -337,3 +337,25 @@ export interface SessionsResponse {
   offset: number;
   has_more: boolean;
 }
+
+/** One row in the GET /v1/access-tokens response (D095/D096). */
+export interface AccessToken {
+  id: string;
+  name: string;
+  prefix: string;
+  created_at: string;
+  last_used_at: string | null;
+}
+
+/**
+ * Response body for POST /v1/access-tokens. The `token` field is the
+ * plaintext access token and is returned to the caller exactly once
+ * on creation -- it is never exposed by any other endpoint.
+ */
+export interface CreatedAccessToken {
+  id: string;
+  name: string;
+  prefix: string;
+  token: string;
+  created_at: string;
+}

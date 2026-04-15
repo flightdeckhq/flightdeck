@@ -1,11 +1,12 @@
 import { useState, useCallback } from "react";
 import { BrowserRouter, Routes, Route, NavLink } from "react-router-dom";
-import { Search, Sun, Moon } from "lucide-react";
+import { Search, Settings as SettingsIcon, Sun, Moon } from "lucide-react";
 import { Fleet } from "@/pages/Fleet";
 import { Policies } from "@/pages/Policies";
 import { Directives } from "@/pages/Directives";
 import { Analytics } from "@/pages/Analytics";
 import { Investigate } from "@/pages/Investigate";
+import { Settings } from "@/pages/Settings";
 import { CommandPalette } from "@/components/search/CommandPalette";
 import { useTheme } from "@/hooks/useTheme";
 
@@ -66,6 +67,25 @@ function Nav({ onSearchClick }: { onSearchClick: () => void }) {
             {navigator.platform.includes("Mac") ? "\u2318" : "Ctrl"}K
           </kbd>
         </button>
+        <NavLink
+          to="/settings"
+          className={({ isActive }) =>
+            `flex h-8 w-8 items-center justify-center rounded transition-colors hover:bg-surface-hover ${
+              isActive ? "text-text" : "text-text-secondary"
+            }`
+          }
+          aria-label="Settings"
+          data-testid="nav-settings"
+        >
+          {({ isActive }) => (
+            <SettingsIcon
+              size={16}
+              style={{
+                color: isActive ? "var(--text)" : "var(--text-secondary)",
+              }}
+            />
+          )}
+        </NavLink>
         <button
           onClick={toggleTheme}
           className="flex h-8 w-8 items-center justify-center rounded transition-colors hover:bg-surface-hover"
@@ -100,6 +120,7 @@ export default function App() {
             <Route path="/policies" element={<Policies />} />
             <Route path="/directives" element={<Directives />} />
             <Route path="/analytics" element={<Analytics />} />
+            <Route path="/settings" element={<Settings />} />
           </Routes>
         </div>
         <CommandPalette open={searchOpen} onOpenChange={setSearchOpen} />

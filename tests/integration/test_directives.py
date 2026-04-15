@@ -38,17 +38,26 @@ from .conftest import (
 # ----------------------------------------------------------------------
 
 
+_UNSET = object()
+
+
 def _post_json(
     path: str,
     body: dict[str, Any],
     *,
-    bearer: str | None = None,
+    bearer: Any = _UNSET,
 ) -> tuple[int, dict[str, Any]]:
-    """POST JSON to the API and return (status, body). Never raises on 4xx."""
+    """POST JSON to the API and return (status, body). Never raises on 4xx.
+
+    Defaults to sending the shared ``TOKEN`` bearer. Pass ``bearer=None``
+    to omit the Authorization header entirely (used by the auth
+    regression test to verify a 401 without credentials).
+    """
     data = json.dumps(body).encode()
     headers = {"Content-Type": "application/json"}
-    if bearer is not None:
-        headers["Authorization"] = f"Bearer {bearer}"
+    token = TOKEN if bearer is _UNSET else bearer
+    if token is not None:
+        headers["Authorization"] = f"Bearer {token}"
     req = urllib.request.Request(
         f"{API_URL}{path}",
         data=data,
@@ -68,7 +77,10 @@ def _post_json(
 
 def _get_json(path: str) -> tuple[int, dict[str, Any]]:
     """GET JSON from the API and return (status, body)."""
-    req = urllib.request.Request(f"{API_URL}{path}")
+    req = urllib.request.Request(
+        f"{API_URL}{path}",
+        headers={"Authorization": f"Bearer {TOKEN}"},
+    )
     try:
         with urllib.request.urlopen(req, timeout=5) as resp:
             return resp.status, json.loads(resp.read())

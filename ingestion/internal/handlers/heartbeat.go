@@ -34,14 +34,18 @@ func HeartbeatHandler(
 			writeError(w, http.StatusUnauthorized, "missing or invalid authorization")
 			return
 		}
-		valid, err := validator.Validate(r.Context(), token)
+		result, err := validator.Validate(r.Context(), token)
 		if err != nil {
 			slog.Error("token validation error", "err", err)
 			writeError(w, http.StatusInternalServerError, "internal server error")
 			return
 		}
-		if !valid {
-			writeError(w, http.StatusUnauthorized, "invalid token")
+		if !result.Valid {
+			reason := result.Reason
+			if reason == "" {
+				reason = "invalid token"
+			}
+			writeError(w, http.StatusUnauthorized, reason)
 			return
 		}
 

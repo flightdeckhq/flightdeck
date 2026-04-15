@@ -14,6 +14,7 @@ import uuid
 from .conftest import (
     get_session_event_count,
     API_URL,
+    auth_headers,
     make_event,
     post_event,
     session_exists_in_fleet,
@@ -24,7 +25,10 @@ from .conftest import (
 def _get_event_content(event_id: str) -> dict | None:
     """GET /api/v1/events/:id/content. Returns None on 404."""
     try:
-        req = urllib.request.Request(f"{API_URL}/v1/events/{event_id}/content")
+        req = urllib.request.Request(
+            f"{API_URL}/v1/events/{event_id}/content",
+            headers=auth_headers(),
+        )
         with urllib.request.urlopen(req, timeout=5) as resp:
             return json.loads(resp.read())
     except urllib.error.HTTPError as e:

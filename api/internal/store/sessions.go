@@ -17,6 +17,10 @@ type SessionsParams struct {
 	Query   string   // Full-text search (ILIKE across multiple fields)
 	States  []string // active, idle, stale, closed, lost
 	Flavors []string
+	// Frameworks filters on sessions.context->'frameworks' (JSONB
+	// array of strings like "langgraph/1.1.6"). Multi-value: any
+	// match across the array passes (``?|`` operator).
+	Frameworks []string
 	Model   string
 	Sort    string // started_at, duration, tokens_used, flavor
 	Order   string // asc, desc
@@ -41,6 +45,13 @@ type SessionListItem struct {
 	TokenLimit     *int64                 `json:"token_limit"`
 	Context        map[string]interface{} `json:"context"`
 	CaptureEnabled bool                   `json:"capture_enabled"`
+	// D095: attribution for the access_tokens row that opened this
+	// session. TokenID is nullable because revocation clears the FK
+	// (ON DELETE SET NULL); TokenName is preserved for auditability
+	// so the UI can still render "Created via: Staging K8s (revoked)"
+	// long after the token row is gone.
+	TokenID   *string `json:"token_id"`
+	TokenName *string `json:"token_name"`
 }
 
 // SessionsResponse is the paginated response for GET /v1/sessions.
@@ -105,6 +116,19 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 	if params.Model != "" {
 		conditions = append(conditions, fmt.Sprintf("s.model = $%d", argIdx))
 		args = append(args, params.Model)
+		argIdx++
+	}
+
+	// Framework filter: any element of sessions.context->'frameworks'
+	// matches any name in the supplied list. The ?| operator requires
+	// a text[] right-hand side, so we pass the slice as a single
+	// positional arg and cast server-side. A session with a missing
+	// or empty frameworks array never matches, which is the intent.
+	if len(params.Frameworks) > 0 {
+		conditions = append(conditions, fmt.Sprintf(
+			"COALESCE(s.context->'frameworks', '[]'::jsonb) ?| $%d::text[]", argIdx,
+		))
+		args = append(args, params.Frameworks)
 		argIdx++
 	}
 
@@ -174,7 +198,9 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 				WHERE e.session_id = s.session_id
 				AND e.has_content = true
 				LIMIT 1
-			) AS capture_enabled
+			) AS capture_enabled,
+			s.token_id::text,
+			s.token_name
 		FROM sessions s
 		%s
 		ORDER BY %s %s
@@ -205,6 +231,8 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 			&item.TokenLimit,
 			&contextRaw,
 			&item.CaptureEnabled,
+			&item.TokenID,
+			&item.TokenName,
 		); err != nil {
 			return nil, fmt.Errorf("scan session: %w", err)
 		}

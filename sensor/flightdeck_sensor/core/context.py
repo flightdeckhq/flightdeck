@@ -267,6 +267,17 @@ class LangChainClassifier(BaseClassifier):
     module = "langchain"
 
 
+class LangGraphClassifier(BaseClassifier):
+    # LangGraph builds on LangChain and routes its LLM calls through
+    # the same ChatAnthropic / ChatOpenAI abstractions, so the
+    # existing patch() already intercepts LangGraph-driven calls.
+    # This classifier exists so the session_start context accurately
+    # reports LangGraph vs bare LangChain in the dashboard CONTEXT
+    # panel and for framework analytics. See ARCHITECTURE.md.
+    name = "langgraph"
+    module = "langgraph"
+
+
 class LlamaIndexClassifier(BaseClassifier):
     name = "llama_index"
     module = "llama_index"
@@ -301,6 +312,7 @@ class FrameworkCollector(BaseCollector):
     CLASSIFIERS: list[BaseClassifier] = [
         CrewAIClassifier(),
         LangChainClassifier(),
+        LangGraphClassifier(),
         LlamaIndexClassifier(),
         AutoGenClassifier(),
         HaystackClassifier(),

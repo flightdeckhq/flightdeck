@@ -324,6 +324,63 @@ def test_langchain_openai_patched_intercepts_call(
 
 
 # ======================================================================
+# Test 2b -- LangGraph via LangChain (ChatOpenAI)
+# ======================================================================
+
+
+def test_langgraph_patched_intercepts_call(
+    sensor_reset: None, unique_flavor: str,
+) -> None:
+    """LangGraph routes its LLM calls through LangChain's ChatOpenAI /
+    ChatAnthropic, so the existing patch() already intercepts them.
+    Verifies by compiling and invoking a one-node StateGraph that
+    calls ChatOpenAI and asserting the full event chain reaches the
+    DB under this flavor.
+
+    Skips when either langgraph or langchain-openai isn't installed
+    -- the Python 3.14 default dev env doesn't ship crewai's tiktoken
+    dep, but langgraph installs cleanly, so this test usually runs.
+    """
+    try:
+        from langgraph.graph import StateGraph, START, END
+        from langchain_openai import ChatOpenAI
+        from typing_extensions import TypedDict
+    except ImportError as exc:
+        pytest.skip(f"LangGraph / langchain_openai not installed: {exc}")
+
+    flavor = unique_flavor
+
+    os.environ["OPENAI_API_KEY"] = "test-key"
+    try:
+        with respx.mock(assert_all_called=False) as rmock:
+            _mock_openai_with_latency(rmock)
+
+            flightdeck_sensor.init(server=INGESTION_URL, token=TOKEN)
+            flightdeck_sensor.patch()
+
+            class State(TypedDict):
+                text: str
+
+            llm = ChatOpenAI(model="gpt-4o")
+
+            def call_node(state: State) -> State:
+                llm.invoke(state["text"])
+                return state
+
+            graph = StateGraph(State)
+            graph.add_node("call", call_node)
+            graph.add_edge(START, "call")
+            graph.add_edge("call", END)
+            result = graph.compile().invoke({"text": "Hello from langgraph"})
+            assert result is not None
+
+            _assert_full_pipeline_event_chain(flavor, "gpt-4o")
+            _assert_session_in_fleet_with_context(flavor)
+    finally:
+        os.environ.pop("OPENAI_API_KEY", None)
+
+
+# ======================================================================
 # Test 3 -- llama-index-llms-anthropic
 # ======================================================================
 

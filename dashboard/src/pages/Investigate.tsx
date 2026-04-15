@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useSearchParams } from "react-router-dom";
-import { Search, RefreshCw, X, LayoutGrid, GitBranch, Bot, Server, Camera } from "lucide-react";
+import { Search, RefreshCw, X, LayoutGrid, GitBranch, Bot, Boxes, Server, Camera } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { fetchSessions, type SessionsParams } from "@/lib/api";
 import type { SessionListItem, SessionState } from "@/lib/types";
@@ -28,6 +28,7 @@ function parseUrlState(sp: URLSearchParams) {
     to: sp.get("to") ?? new Date().toISOString(),
     states: sp.getAll("state") as SessionState[],
     flavors: sp.getAll("flavor"),
+    frameworks: sp.getAll("framework"),
     model: sp.get("model") ?? "",
     sort: sp.get("sort") ?? "started_at",
     order: (sp.get("order") ?? "desc") as "asc" | "desc",
@@ -43,6 +44,7 @@ function buildUrlParams(s: ReturnType<typeof parseUrlState>): URLSearchParams {
   if (s.to) p.set("to", s.to);
   for (const st of s.states) p.append("state", st);
   for (const fl of s.flavors) p.append("flavor", fl);
+  for (const fw of s.frameworks) p.append("framework", fw);
   if (s.model) p.set("model", s.model);
   if (s.sort !== "started_at") p.set("sort", s.sort);
   if (s.order !== "desc") p.set("order", s.order);
@@ -120,18 +122,73 @@ interface FacetGroup {
   values: { value: string; count: number }[];
 }
 
-function computeFacets(sessions: SessionListItem[]): FacetGroup[] {
+/**
+ * Per-dimension "facet source" map. When a filter is active on
+ * state/flavor/model, the page runs a parallel fetch that drops that
+ * single dimension's filter (keeping all others) and stores the
+ * resulting sessions here. computeFacets then uses dim-specific
+ * sources for the STATE / FLAVOR / MODEL facets so the user still
+ * sees every value in the current context (sticky facets pattern).
+ * Other dimensions (os / git_branch / hostname) always compute from
+ * the fully-filtered main result -- those have no active-dim filter
+ * to strip, and cross-filtering on them is correct as-is.
+ */
+interface FacetSources {
+  state?: SessionListItem[];
+  flavor?: SessionListItem[];
+  model?: SessionListItem[];
+  framework?: SessionListItem[];
+}
+
+function computeFacets(
+  sessions: SessionListItem[],
+  sources: FacetSources = {},
+): FacetGroup[] {
   const stateCounts = new Map<string, number>();
   const flavorCounts = new Map<string, number>();
   const modelCounts = new Map<string, number>();
+  const frameworkCounts = new Map<string, number>();
   const osCounts = new Map<string, number>();
   const branchCounts = new Map<string, number>();
   const hostCounts = new Map<string, number>();
 
+  // Per-dim override helpers: when a dim's source is present, tally
+  // THAT source into the matching map and skip the main loop's entry
+  // for that dim. This way a selected flavor doesn't collapse the
+  // FLAVOR facet to a single row while still allowing MODEL / OS /
+  // etc. to reflect the fully-filtered main result.
+  if (sources.state) {
+    for (const s of sources.state) {
+      stateCounts.set(s.state, (stateCounts.get(s.state) ?? 0) + 1);
+    }
+  }
+  if (sources.flavor) {
+    for (const s of sources.flavor) {
+      flavorCounts.set(s.flavor, (flavorCounts.get(s.flavor) ?? 0) + 1);
+    }
+  }
+  if (sources.model) {
+    for (const s of sources.model) {
+      if (s.model) modelCounts.set(s.model, (modelCounts.get(s.model) ?? 0) + 1);
+    }
+  }
+  if (sources.framework) {
+    for (const s of sources.framework) {
+      for (const fw of (s.context?.frameworks as string[] | undefined) ?? []) {
+        frameworkCounts.set(fw, (frameworkCounts.get(fw) ?? 0) + 1);
+      }
+    }
+  }
+
   for (const s of sessions) {
-    stateCounts.set(s.state, (stateCounts.get(s.state) ?? 0) + 1);
-    flavorCounts.set(s.flavor, (flavorCounts.get(s.flavor) ?? 0) + 1);
-    if (s.model) modelCounts.set(s.model, (modelCounts.get(s.model) ?? 0) + 1);
+    if (!sources.state) stateCounts.set(s.state, (stateCounts.get(s.state) ?? 0) + 1);
+    if (!sources.flavor) flavorCounts.set(s.flavor, (flavorCounts.get(s.flavor) ?? 0) + 1);
+    if (!sources.model && s.model) modelCounts.set(s.model, (modelCounts.get(s.model) ?? 0) + 1);
+    if (!sources.framework) {
+      for (const fw of (s.context?.frameworks as string[] | undefined) ?? []) {
+        frameworkCounts.set(fw, (frameworkCounts.get(fw) ?? 0) + 1);
+      }
+    }
     const os = s.context?.os as string | undefined;
     if (os) osCounts.set(os, (osCounts.get(os) ?? 0) + 1);
     const branch = s.context?.git_branch as string | undefined;
@@ -149,6 +206,7 @@ function computeFacets(sessions: SessionListItem[]): FacetGroup[] {
     { key: "state", label: "STATE", values: toArr(stateCounts) },
     { key: "flavor", label: "FLAVOR", values: toArr(flavorCounts) },
     { key: "model", label: "MODEL", values: toArr(modelCounts) },
+    { key: "framework", label: "FRAMEWORK", values: toArr(frameworkCounts) },
     { key: "os", label: "OS", values: toArr(osCounts) },
     { key: "git_branch", label: "GIT BRANCH", values: toArr(branchCounts) },
     { key: "hostname", label: "HOSTNAME", values: toArr(hostCounts) },
@@ -180,6 +238,9 @@ function FacetIcon({ groupKey, value }: { groupKey: string; value: string }) {
   }
   if (groupKey === "flavor") {
     return <Bot size={12} style={{ color: "var(--text-muted)", flexShrink: 0 }} />;
+  }
+  if (groupKey === "framework") {
+    return <Boxes size={12} style={{ color: "var(--text-muted)", flexShrink: 0 }} />;
   }
   if (groupKey === "git_branch") {
     return <GitBranch size={12} style={{ color: "var(--text-muted)", flexShrink: 0 }} />;
@@ -283,6 +344,14 @@ export function Investigate() {
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
 
+  // Sticky facet sources. Populated by parallel aux fetches that drop
+  // the matching dimension's filter so the sidebar can render ALL
+  // values of an actively-filtered dimension (the selected value
+  // stays highlighted via urlState.* below). Cleared when the
+  // corresponding filter turns off so the next render falls back to
+  // the main result's tally.
+  const [facetSources, setFacetSources] = useState<FacetSources>({});
+
   // Search input (debounced)
   const [searchInput, setSearchInput] = useState(urlState.q);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>();
@@ -319,22 +388,62 @@ export function Investigate() {
       abortRef.current = controller;
 
       setLoading(true);
+      const baseParams: SessionsParams = {
+        q: state.q || undefined,
+        from: state.from,
+        to: state.to,
+        state: state.states.length > 0 ? state.states : undefined,
+        flavor: state.flavors.length > 0 ? state.flavors : undefined,
+        framework: state.frameworks.length > 0 ? state.frameworks : undefined,
+        model: state.model || undefined,
+        sort: state.sort,
+        order: state.order,
+        limit: state.perPage,
+        offset: (state.page - 1) * state.perPage,
+      };
+
+      // Sticky-facet aux fetches -- one per actively-filtered
+      // dimension, each with that dimension's filter stripped. They
+      // share the main fetch's AbortController so a stale render
+      // (user toggles fast) cancels all four legs together. We ask
+      // for more rows than the table page so facet counts are not
+      // capped by pagination; 500 matches the GetSessions hard cap
+      // on the server. Drawer refresh (skipIfDrawerOpen) already
+      // short-circuits before we get here, so these only fire on
+      // top-level URL-state changes.
+      const FACET_LIMIT = 500;
+      const facetBase = { ...baseParams, limit: FACET_LIMIT, offset: 0 };
+      const aux = {
+        state: state.states.length > 0
+          ? fetchSessions({ ...facetBase, state: undefined }, controller.signal)
+          : null,
+        flavor: state.flavors.length > 0
+          ? fetchSessions({ ...facetBase, flavor: undefined }, controller.signal)
+          : null,
+        model: state.model
+          ? fetchSessions({ ...facetBase, model: undefined }, controller.signal)
+          : null,
+        framework: state.frameworks.length > 0
+          ? fetchSessions({ ...facetBase, framework: undefined }, controller.signal)
+          : null,
+      };
+
       try {
-        const params: SessionsParams = {
-          q: state.q || undefined,
-          from: state.from,
-          to: state.to,
-          state: state.states.length > 0 ? state.states : undefined,
-          flavor: state.flavors.length > 0 ? state.flavors : undefined,
-          model: state.model || undefined,
-          sort: state.sort,
-          order: state.order,
-          limit: state.perPage,
-          offset: (state.page - 1) * state.perPage,
-        };
-        const resp = await fetchSessions(params, controller.signal);
+        const [resp, stateResp, flavorResp, modelResp, frameworkResp] = await Promise.all([
+          fetchSessions(baseParams, controller.signal),
+          aux.state,
+          aux.flavor,
+          aux.model,
+          aux.framework,
+        ]);
         setSessions(resp.sessions);
         setTotal(resp.total);
+        setFacetSources({
+          state: stateResp?.sessions,
+          flavor: flavorResp?.sessions,
+          model: modelResp?.sessions,
+          framework: frameworkResp?.sessions,
+        });
         setLastUpdated(Date.now());
       } catch (err) {
         if ((err as Error).name !== "AbortError") {
@@ -451,6 +560,12 @@ export function Investigate() {
         updateUrl({ flavors: next, page: 1 });
       } else if (group === "model") {
         updateUrl({ model: urlState.model === value ? "" : value, page: 1 });
+      } else if (group === "framework") {
+        const current = urlState.frameworks;
+        const next = current.includes(value)
+          ? current.filter((f) => f !== value)
+          : [...current, value];
+        updateUrl({ frameworks: next, page: 1 });
       }
       // os, git_branch, hostname use the q search for now
     },
@@ -480,16 +595,30 @@ export function Investigate() {
         onRemove: () => updateUrl({ model: "", page: 1 }),
       });
     }
+    for (const fw of urlState.frameworks) {
+      pills.push({
+        label: `framework:${fw}`,
+        onRemove: () =>
+          updateUrl({ frameworks: urlState.frameworks.filter((f) => f !== fw), page: 1 }),
+      });
+    }
     return pills;
   }, [urlState, updateUrl]);
 
   const clearAllFilters = useCallback(() => {
-    updateUrl({ states: [], flavors: [], model: "", q: "", page: 1 });
+    updateUrl({ states: [], flavors: [], frameworks: [], model: "", q: "", page: 1 });
     setSearchInput("");
   }, [updateUrl]);
 
-  // Facets from current result set
-  const facets = useMemo(() => computeFacets(sessions), [sessions]);
+  // Facets from current result set. Actively-filtered dimensions
+  // (state / flavor / model) pull their values from the per-dim aux
+  // sources populated in doFetch so selecting a flavor doesn't
+  // collapse the FLAVOR facet to a single row. See the FacetSources
+  // comment near the top of the file for the full sticky-facet model.
+  const facets = useMemo(
+    () => computeFacets(sessions, facetSources),
+    [sessions, facetSources],
+  );
 
   const hasActiveFilters = activeFilters.length > 0 || !!urlState.q;
 
@@ -647,7 +776,8 @@ export function Investigate() {
                 const isActive =
                   (group.key === "state" && urlState.states.includes(v.value as SessionState)) ||
                   (group.key === "flavor" && urlState.flavors.includes(v.value)) ||
-                  (group.key === "model" && urlState.model === v.value);
+                  (group.key === "model" && urlState.model === v.value) ||
+                  (group.key === "framework" && urlState.frameworks.includes(v.value));
                 return (
                   <button
                     key={v.value}

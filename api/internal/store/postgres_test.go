@@ -111,8 +111,7 @@ func TestGetContextFacetsUnnestArrayValues(t *testing.T) {
 		WITH context_pairs AS (
 			SELECT key, value
 			FROM `+schema+`.sessions, jsonb_each(context)
-			WHERE state IN ('active', 'idle', 'stale')
-			  AND context != '{}'::jsonb
+			WHERE context != '{}'::jsonb
 		)
 		SELECT key, val AS value, COUNT(*) AS count
 		FROM context_pairs,

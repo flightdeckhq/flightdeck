@@ -684,6 +684,13 @@ acceptable for the dev seed token only.
 **Address in:** Phase 5 (production hardening).
 **Code location:** `ingestion/internal/auth/token.go:Validate`
 
+**Resolved in:** Phase 5
+**Resolution:** Replaced with opaque `ftd_` tokens stored as
+`SHA256(salt || raw_token)` with a 16-byte per-token salt. The
+hardcoded `tok_dev` seed is now only accepted when the service reads
+`ENVIRONMENT=dev`; production deployments must mint real tokens via
+the Settings UI. See D095.
+
 ---
 
 ## D047 -- No NATS auth in dev compose (accepted trade-off)
@@ -2274,5 +2281,193 @@ unreliable. The synchronous ingestion check is worth the one
 extra read+write per session_start because session_start is rare
 (once per process) and the alternative leaks implementation timing
 into caller visibility.
+
+---
+
+## D095 -- Opaque token auth with SHA256+salt replacing hardcoded tok_dev
+
+**Problem:** KI10 -- token auth used SHA256 without a salt and relied
+on a single hardcoded `tok_dev` string seeded by `init.sql`. There
+was no management UI, no way to rotate credentials, and the same
+value was shared across every sensor, dashboard user, and
+integration test. Leaking the `api_tokens` table would expose every
+token in the fleet; a stolen laptop or misconfigured dashboard
+install would grant permanent access because the platform had no
+way to revoke or rename a token.
+
+**Decision:** Replace the fixed-string model with opaque tokens.
+
+- **Token format:** `ftd_` prefix + 32 random hex chars (16 bytes
+  of `crypto/rand`). The `ftd_` prefix makes tokens identifiable in
+  logs and by grep; the random suffix is the secret.
+- **Storage:** `api_tokens` now stores `(id, name, token_hash,
+  salt, prefix, created_at, last_used_at)`. `token_hash` is
+  `hex(SHA256(salt || raw_token))`; `salt` is 16 random bytes per
+  token encoded as hex. Only the hash and salt are stored -- raw
+  tokens are never persisted. `prefix` is the first 8 chars of the
+  raw token and is used to narrow candidate rows before the
+  per-row hash comparison.
+- **`tok_dev` dev-mode gate:** migration `000010` reseeds the
+  table with a single `Development Token` row whose raw value is
+  `tok_dev`. The auth middleware accepts it only when the service
+  reads `ENVIRONMENT=dev`; otherwise it returns `401` with a body
+  instructing the caller to create a real token in the Settings
+  page. Production deployments deliberately omit the env var so
+  the seed becomes inert without having to delete the row.
+- **Session attribution:** `sessions` gains `token_id` (FK to
+  `api_tokens.id`, `ON DELETE SET NULL`) and `token_name` (denorm).
+  The ingestion API resolves the authenticating token on every
+  request and injects `(token_id, token_name)` into the NATS
+  payload for `session_start` events; the worker persists them
+  onto the session row. `token_name` survives revocation for
+  historical auditability.
+- **Dev-seed hash derivation** (reproducible):
+  - `salt = "d0d0cafed00dfaceb00bba5eba11f001"` (16 bytes, hex)
+  - `token_hash = hex(SHA256("d0d0cafed00dfaceb00bba5eba11f001tok_dev"))`
+  - `            = 0c805243ecd4f6f59bec56235a1901d97ad8cf0771020f2d44da428827f1145e`
+  - `prefix = "tok_dev_"` (literal 8-char fallback; middleware
+    short-circuits on `raw == "tok_dev"` before the prefix lookup).
+
+**Why not bcrypt/argon2?** Considered, but the validation path
+runs on every sensor event and dashboard poll. bcrypt at a safe
+cost parameter is milliseconds per call; SHA256+salt is
+microseconds, and the secret material is 16 bytes of CSPRNG
+output so key-stretching adds no practical defense against
+brute force. The threat model here is DB exfiltration, which a
+per-token salt already neutralizes for randomly-generated tokens.
+
+**Why not JWT?** JWTs carry claims we don't need (no RBAC in v1),
+require key management the platform doesn't have, and make
+revocation harder rather than easier. Opaque DB-backed tokens
+revoke by deleting a row.
+
+**Why denormalize `token_name` onto `sessions`?** Two reasons.
+First, the session drawer wants to render "Created via: $NAME"
+without a join against `api_tokens` -- that join becomes
+expensive once production fleets have many tokens and many
+sessions. Second, revoking a token (`DELETE FROM api_tokens`) is
+a normal operator action; `ON DELETE SET NULL` on `token_id`
+preserves the historical label so we can still show "Created via:
+Staging K8s (revoked)" in the UI months after the token was
+deleted.
+
+**Phase 5 split:**
+
+- Part 1a (this change): schema + auth middleware + session
+  wiring + KI10 resolution.
+- Part 1b: `/v1/tokens` CRUD endpoints, Settings UI on the
+  dashboard, sensor integration with user-created tokens.
+
+**Resolves:** KI10.
+**Code locations:**
+
+- `docker/postgres/migrations/000010_api_tokens.up.sql`
+- `docker/postgres/migrations/000011_sessions_token.up.sql`
+- `ingestion/internal/auth/token.go`
+- `api/internal/auth/token.go`
+- `ingestion/internal/handlers/events.go`
+- `workers/internal/processor/session.go`
+- `workers/internal/writer/postgres.go`
+
+---
+
+## D096 -- Rename "token" to "access token" for auth credentials
+
+**Problem:** After Phase 5 D095 shipped, the term "token" in the
+codebase and UI became ambiguous. Flightdeck already tracks LLM
+input/output tokens (`tokens_input`, `tokens_output`, `tokens_used`,
+`token_limit`, policy `warn_at_pct`/`degrade_at_pct`/`block_at_pct`
+thresholds in LLM tokens), and the D095 auth credentials are also
+called "tokens". Operators reading "token" in a log line or a policy
+threshold could not tell which kind was meant without context.
+
+**Decision:** Consistently rename the auth-credential concept to
+**access token** throughout the codebase.
+
+**Renamed:**
+
+- Database table: `api_tokens` → `access_tokens` (migration 000012).
+  The FK column `sessions.token_id` and the denormalized
+  `sessions.token_name` column deliberately keep their names --
+  renaming would ripple through every reader with no semantic gain,
+  and the FK still points at the renamed table by OID.
+- Go types: `TokenRow`, `CreatedTokenResponse`, `TokenValidator`
+  (sentinel errors too) → `AccessTokenRow`,
+  `CreatedAccessTokenResponse`, etc. Store methods
+  (`ListTokens`/`CreateToken`/`DeleteToken`/`RenameToken`) and
+  handlers (`TokensListHandler` ...) gained the `Access` infix.
+- API routes: `/v1/tokens` → `/v1/access-tokens` (all four verbs).
+- Dashboard: the `API_TOKEN` constant in `lib/api.ts` is now
+  `ACCESS_TOKEN`; the `WS_TOKEN_QUERY` helper is `WS_ACCESS_TOKEN_QUERY`.
+- Files: `api/internal/store/tokens.go` →
+  `api/internal/store/access_tokens.go` (same for the handler file).
+
+**Not renamed** (deliberate):
+
+- `sensor.init(token=...)` kwarg and the `FLIGHTDECK_TOKEN` env var.
+  These are public surface on the sensor SDK; renaming would break
+  every existing integration for no internal benefit. The init()
+  docstring now clarifies that the value is a Flightdeck access
+  token (ftd_...), not an LLM token count.
+- The NATS payload fields `token_id` / `token_name` emitted by the
+  ingestion API for session_start events. The worker consumes them
+  under the same names when populating `sessions.token_id` /
+  `sessions.token_name`, and renaming would require a coordinated
+  schema change across ingestion and workers for zero semantic gain.
+- LLM token fields: `tokens_input`, `tokens_output`, `tokens_used`,
+  `token_limit`, `tokens_total`, `token_policies`, `token_hash`,
+  `token_limit_session` (NATS payload). These are correct already --
+  they refer to LLM tokens.
+
+**Code locations:**
+
+- `docker/postgres/migrations/000012_rename_access_tokens.up.sql`
+- `api/internal/auth/token.go`, `ingestion/internal/auth/token.go`
+- `api/internal/store/access_tokens.go`
+- `api/internal/handlers/access_tokens.go`
+- `api/internal/server/server.go`
+- `dashboard/src/lib/api.ts`, `dashboard/src/hooks/useFleet.ts`
+- `sensor/flightdeck_sensor/__init__.py` (docstring clarification)
+
+---
+
+## D097 -- CONTEXT facets cover all session states, not just live
+
+**Problem:** `GetContextFacets` (store/postgres.go) restricted the
+aggregation to `WHERE state IN ('active', 'idle', 'stale')`. The
+CONTEXT sidebar on the Fleet page therefore disappeared the moment
+every session on the box closed -- which is the normal resting
+state of a dev stack between smoke test runs. Operators opening
+the dashboard after a batch of runs found no framework / OS / git
+branch breakdown at all, even though the underlying data was
+still in the `sessions` table.
+
+**Decision:** Drop the state restriction. The CONTEXT panel now
+aggregates every session whose `context` JSONB is non-empty,
+regardless of state (matches `GetFleet`, which excludes only
+`lost`; closed sessions remain visible in the fleet list, and
+their context data remains useful for composition questions like
+"what frameworks has this install ever seen"). `{}::jsonb` rows
+are still excluded because they have no values to facet on.
+
+**Why this is correct rather than a regression:** the CONTEXT
+panel is a description of **fleet composition**, not a live-ness
+indicator. The Fleet view itself shows closed sessions (grey
+state pills, historical tokens), so having the sidebar hide the
+moment those are the only rows left is a UX defect. The
+state-based live-ness filter belongs on the flavor row state
+column and the event feed, not on context aggregation.
+
+**Time windowing:** GetFleet has no time window filter, so
+GetContextFacets does not add one either -- the goal per the
+Phase 5 task brief is "same session population that the Fleet
+view shows". If a time window is later introduced on the Fleet
+endpoint, GetContextFacets should gain the matching parameter.
+
+**Code locations:**
+
+- `api/internal/store/postgres.go::GetContextFacets`
+- `api/internal/store/postgres_test.go::TestGetContextFacetsUnnestArrayValues`
+  (test SQL mirrored to match)
 
 ---

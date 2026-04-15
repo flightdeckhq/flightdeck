@@ -44,6 +44,10 @@ services:
       FLIGHTDECK_POSTGRES_URL: postgres://flightdeck:flightdeck_dev@postgres:5432/flightdeck?sslmode=disable
       FLIGHTDECK_NATS_URL: nats://nats:4222
       FLIGHTDECK_ENV: development
+      # D095: tok_dev is only accepted when ENVIRONMENT=dev. The dev
+      # compose deliberately opts in; production deployments omit this
+      # env var so the seed token becomes inert.
+      ENVIRONMENT: dev
       SHUTDOWN_TIMEOUT_SECS: "30"
     depends_on:
       postgres:
@@ -79,6 +83,8 @@ services:
       FLIGHTDECK_PORT: "8081"
       FLIGHTDECK_POSTGRES_URL: postgres://flightdeck:flightdeck_dev@postgres:5432/flightdeck?sslmode=disable
       FLIGHTDECK_ENV: development
+      # D095: tok_dev only works when ENVIRONMENT=dev.
+      ENVIRONMENT: dev
       SHUTDOWN_TIMEOUT_SECS: "30"
     depends_on:
       postgres:

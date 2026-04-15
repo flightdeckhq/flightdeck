@@ -407,7 +407,7 @@ flightdeck/
 │                      │    │   /v1/policies               │
 │ Auth: validates      │    │ POST /v1/directives          │
 │   bearer token       │    │ GET /v1/analytics            │
-│   (reads api_tokens) │    │ WS  /v1/stream               │
+│   (reads access_tkns)│    │ WS  /v1/stream               │
 │                      │    │ GET /docs/                   │
 │                      │    │                              │
 │                      │    │ LISTEN flightdeck_fleet      │
@@ -458,7 +458,7 @@ flightdeck/
 │    token_policies                                       │
 │                                                          │
 │  Seed data only:                                        │
-│    api_tokens                                           │
+│    access_tokens  (was: api_tokens, renamed in D096)    │
 │                                                          │
 │  NOTIFY channel: flightdeck_fleet                       │
 │    Workers send NOTIFY after every event write          │
@@ -468,7 +468,7 @@ flightdeck/
 Data flows:
 
   Ingestion API → Postgres:
-    READ  api_tokens      (auth on every request)
+    READ  access_tokens   (auth on every request)
     READ  sessions        (directive flavor lookup)
     READ+WRITE directives (lookup pending + mark delivered)
 
@@ -620,6 +620,105 @@ class PromptContent:
     event_id: str
     captured_at: str             # ISO 8601 UTC
 ```
+
+---
+
+## Authentication
+
+Every sensor and dashboard request is authenticated with a Bearer
+token. Tokens are opaque strings minted by the platform; they carry
+no claims and are validated by hash lookup against `access_tokens`.
+See DECISIONS.md D095.
+
+### Token format
+
+```
+ftd_<32 random hex chars>
+```
+
+- `ftd_` prefix identifies a Flightdeck-issued production token.
+- 32 random hex chars = 16 bytes of entropy from `crypto/rand`.
+- The first 8 characters (e.g. `ftd_a3f8`) are stored in the
+  `prefix` column so the auth middleware can narrow the candidate
+  row set before iterating per-row salted hashes.
+
+`tok_dev` is the single legacy fixed token, seeded into `access_tokens`
+by migration `000010` for development. It is accepted only when the
+ingestion / API service reads `ENVIRONMENT=dev` from the environment
+at validation time; every other context returns 401 with:
+
+```json
+{"error": "tok_dev is only valid in development mode. Create a production token in the Settings page."}
+```
+
+### Storage
+
+`access_tokens` stores the salted SHA-256 of the raw token, never the
+token itself:
+
+```sql
+CREATE TABLE access_tokens (
+    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name         TEXT NOT NULL,
+    token_hash   TEXT NOT NULL UNIQUE,  -- hex(SHA256(salt || raw_token))
+    salt         TEXT NOT NULL,         -- 16 random bytes as hex
+    prefix       TEXT NOT NULL,         -- first 8 chars of raw_token
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_used_at TIMESTAMPTZ
+);
+
+CREATE INDEX access_tokens_prefix_idx ON access_tokens (prefix);
+```
+
+- `salt` is 16 random bytes per token, encoded as 32 hex chars.
+- `token_hash = hex(SHA256(salt_string || raw_token_string))`.
+- `last_used_at` is stamped on every successful validation so stale
+  tokens are discoverable in the Settings UI.
+
+The raw token is returned to the caller exactly once, at creation
+time via `POST /v1/access-tokens`. The platform cannot recover a raw token
+from storage afterwards -- losing it requires creating a new one.
+
+### Validation algorithm
+
+On every authenticated request:
+
+1. Extract the Bearer token from the `Authorization` header.
+2. If the raw token equals `tok_dev`:
+   - If `ENVIRONMENT=dev`: accept and return the seeded
+     `Development Token` row's `(id, name)`.
+   - Otherwise: return `401` with the message above.
+3. Else if the raw token begins with `ftd_`:
+   - Take the first 8 chars as `prefix` and fetch every row from
+     `access_tokens` with a matching prefix.
+   - For each candidate: compute
+     `SHA256(row.salt || raw_token)` and compare (constant-time) to
+     `row.token_hash`. On match, stamp `last_used_at` and return
+     the matched row's `(id, name)`.
+   - No match: `401`.
+4. Any other token format: `401`.
+
+The resolved `(token_id, token_name)` is attached to the request
+context. For `session_start` events the ingestion API injects those
+values into the NATS payload so the worker's `UpsertSession` can
+persist them onto the new session row. Subsequent events on the
+same session do not rewrite the token fields -- a session belongs
+to whichever token opened it.
+
+### Token management API
+
+The dashboard Settings page drives token CRUD via:
+
+```
+GET    /v1/tokens     -- list all tokens (never returns hash or salt or raw token)
+POST   /v1/tokens     -- create a token; response includes the raw token ONCE
+DELETE /v1/tokens/:id -- revoke
+PATCH  /v1/tokens/:id -- rename
+```
+
+The seeded `Development Token` row is not deletable or renameable
+via these endpoints -- attempts return `403`. It can only be
+disabled globally by unsetting `ENVIRONMENT=dev`.
 
 ---
 
@@ -792,7 +891,9 @@ CREATE TABLE sessions (
     tokens_used     INTEGER NOT NULL DEFAULT 0,
     token_limit     INTEGER,
     metadata        JSONB,
-    context         JSONB NOT NULL DEFAULT '{}'::jsonb
+    context         JSONB NOT NULL DEFAULT '{}'::jsonb,
+    token_id        UUID REFERENCES access_tokens(id) ON DELETE SET NULL,
+    token_name      TEXT
 );
 
 CREATE INDEX sessions_flavor_idx         ON sessions(flavor);
@@ -800,7 +901,16 @@ CREATE INDEX sessions_state_idx          ON sessions(state);
 CREATE INDEX sessions_last_seen_idx      ON sessions(last_seen_at);
 CREATE INDEX sessions_started_idx        ON sessions(started_at);
 CREATE INDEX sessions_context_gin        ON sessions USING GIN (context);
+CREATE INDEX sessions_token_id_idx       ON sessions(token_id);
 ```
+
+`token_id` is the FK to the `access_tokens` row whose raw bearer token
+authenticated the `session_start` event that created this session.
+`token_name` denormalizes the token's human label so dashboards can
+render it without joining, and so the label survives token revocation
+(the FK is `ON DELETE SET NULL` -- revoking a token clears `token_id`
+on all historical sessions but leaves `token_name` intact for
+auditability). See DECISIONS.md D095.
 
 `started_at` and `ended_at` are deliberately NOT touched when an
 agent re-attaches to an existing session so the original lifetime
@@ -978,8 +1088,7 @@ File naming convention:
 Every migration must have a down file that is the exact inverse of the
 up file. Rule 33 enforces this. Never modify `init.sql` for schema
 changes -- always add a new migration pair. `init.sql` contains seed
-data only (and the `api_tokens` table which is needed before migrations
-run).
+data only. The `access_tokens` table is bootstrapped here so the seed INSERT runs before migrations; migration 000010 then replaces the schema, and 000012 renames the table from `api_tokens`.
 
 To add a schema change:
 
@@ -1009,6 +1118,12 @@ Current migrations:
 | 000004 | Add `custom_directives` table |
 | 000005 | Add `payload` JSONB column to directives |
 | 000006 | Add `context` JSONB column + GIN index to sessions (D074) |
+| 000007 | Scope `custom_directives` fingerprint uniqueness to flavor (D090) |
+| 000008 | Add `last_attached_at` column to sessions (superseded by 000009) |
+| 000009 | Add `session_attachments` table (D094) |
+| 000010 | Replace minimal `api_tokens` with salted schema and reseed (D095) |
+| 000011 | Add `token_id` FK + `token_name` column to sessions (D095) |
+| 000012 | Rename `api_tokens` → `access_tokens` (D096) |
 
 ---
 
@@ -1142,6 +1257,72 @@ Provider terminology is preserved exactly:
 
 When capture is disabled for a session, the Prompts tab shows:
 "Prompt capture is not enabled for this deployment."
+
+---
+
+## Settings Page
+
+**Route:** `/settings`
+**Nav:** rightmost item in the top nav bar — a lucide-react `Settings`
+gear icon, placed immediately before the theme toggle. No text label.
+
+The Settings page is organised into sections; Phase 5 Part 2 ships one:
+
+### Access Tokens section
+
+**Subtitle:** "Manage access tokens for connecting agents and
+services to Flightdeck."
+
+**Create button** (top right of the section): opens the two-step
+`CreateAccessTokenDialog`.
+
+**Dev mode banner** (amber, above the table): shown only when the
+server's reply to `GET /v1/access-tokens` contains exactly one row
+and that row's `name` equals `"Development Token"`. The dashboard
+cannot read `ENVIRONMENT` from the server, so the single-seed-row
+state is used as a proxy: once an operator provisions any real
+`ftd_` token, the banner disappears. Banner copy:
+"Development mode is active. tok_dev is accepted by all services.
+Create a production access token before deploying."
+
+**Table columns:**
+
+| Column    | Content |
+|-----------|---------|
+| Name      | Inline-editable label. Click the name or the pencil icon to edit, `Enter` to save (`PATCH /v1/access-tokens/:id`), `Escape` to cancel, blur commits. The seeded `Development Token` row renders a muted amber `DEV` badge next to its name and is not editable. |
+| Prefix    | Monospace `tok_dev_` or `ftd_xxxx`. |
+| Created   | Relative time (e.g. "3 days ago"). |
+| Last Used | Relative time, or `Never` when `last_used_at` is `NULL`. |
+| Actions   | Rename (pencil) and Delete (trash) icon buttons. On the `Development Token` row both are disabled and carry a tooltip "The development token cannot be modified". |
+
+**Create flow** (two-step modal):
+
+1. *Name step* — title `Create Access Token`, single text input,
+   Cancel and Create buttons. Empty names show an inline "Name is
+   required" error; submission calls `POST /v1/access-tokens`.
+2. *Created step* — title `Access Token Created`. Amber warning box:
+   "This token will not be shown again. Copy it now and store it
+   securely." Full `ftd_...` plaintext rendered in a monospace row
+   next to a Copy button that writes to `navigator.clipboard` and
+   shows a checkmark for 2s. A Usage snippet below shows the
+   `FLIGHTDECK_TOKEN` env var and the equivalent Python
+   `flightdeck_sensor.init(...)` call. A Done button closes the
+   dialog and refreshes the table.
+
+**Delete flow** (inline confirmation, no modal): clicking the trash
+icon replaces the row's action buttons with `Delete?` + a red
+Confirm button + a Cancel button. Confirm calls
+`DELETE /v1/access-tokens/:id` and the row disappears; the
+`Development Token` row returns `403` server-side and the button is
+already disabled client-side.
+
+**Rename flow** (inline): the name cell becomes a text input focused
+on click. `Enter` saves, `Escape` cancels, blur commits. A small
+spinner shows while the `PATCH` is in flight.
+
+All four fetches go through `apiFetch` in `dashboard/src/lib/api.ts`
+so the bearer token wiring is uniform; error states render an inline
+red strip at the top of the section rather than a toast.
 
 ---
 
@@ -1789,8 +1970,9 @@ record for that session.
   `POST /v1/directives/sync` and `POST /v1/directives/register`
   (the two sensor-facing custom-directive endpoints). Every
   other endpoint remains unauthenticated -- this is the D073
-  stopgap until full Phase 5 JWT auth lands. The middleware
-  reuses the same SHA-256 lookup against `api_tokens` that
+  stopgap that Phase 5 (D095/D096) superseded by gating every /v1/*
+  route with access token auth. The middleware
+  reuses the same SHA-256 lookup against the `access_tokens` (legacy `api_tokens`) row that
   ingestion uses, so the sensor's existing token works without
   any extra plumbing.
 
@@ -2161,10 +2343,8 @@ postgres:
 |---|---|---|
 | `FLIGHTDECK_PORT` | `8081` | HTTP listen port |
 | `FLIGHTDECK_POSTGRES_URL` | required | Postgres DSN |
-| `FLIGHTDECK_ENV` | `development` | `development` disables auth |
-| `FLIGHTDECK_JWT_SECRET` | required in prod | JWT signing key |
-| `FLIGHTDECK_ADMIN_EMAIL` | required in prod | Admin email |
-| `FLIGHTDECK_ADMIN_PASSWORD` | required in prod | Admin password (hashed in memory) |
+| `FLIGHTDECK_ENV` | `development` | Legacy free-form label (service startup log only) |
+| `ENVIRONMENT` | unset | Set to `dev` to accept the seed `tok_dev` access token. Omit in production so the seed row becomes inert (D095). |
 | `SHUTDOWN_TIMEOUT_SECS` | `30` | Graceful shutdown timeout |
 
 ### flightdeck-sensor (agent environment)
@@ -2293,6 +2473,22 @@ embeddings, beta.messages), prompt capture, local policy, server policy,
 kill switch, custom directives, runtime context, session visibility,
 sensor status, unavailability, multi-session fleet, and framework support
 (LangChain, LlamaIndex, CrewAI). See D089 for design decisions.
+
+#### Policy enforcement coverage
+
+Token policy enforcement is exercised at two tiers. The integration
+suite (`tests/integration/test_policy.py` and `test_enforcement.py`)
+drives the workers' `PolicyEvaluator` with fabricated `post_call`
+events through the live ingestion pipeline and asserts on directive
+rows written by the workers (`warn` / `degrade` / `shutdown`) --
+fast, deterministic, and zero-cost because no provider is called.
+The smoke suite GROUP 3 and GROUP 4 cover the same thresholds plus
+mid-session policy updates, deletions, and sensor-side fail-open
+behaviour against a real Anthropic call, so the full sensor →
+ingestion → workers → directives → sensor response envelope path is
+exercised end to end. Keep both in sync when adding a new policy
+behaviour: a bug that shows up only under a real LLM belongs in
+smoke; a bug that needs speed / determinism belongs in integration.
 
 ### Sensor end-to-end tests
 
@@ -2524,6 +2720,7 @@ The class-level patch covers the **default** code paths used by every framework 
 - **llama-index-llms-anthropic** `Anthropic.complete()` → `client.messages.create()` ✓
 - **llama-index-llms-openai** `OpenAI.complete()` → `client.chat.completions.create()` ✓
 - **CrewAI 1.14+** `LLM(model=...).call()` → `OpenAICompletion._call_completions` → `client.chat.completions.create()` ✓ (CrewAI uses native provider classes, not litellm)
+- **LangGraph 1.1+** `StateGraph(...).compile().invoke(...)` → each node that calls `ChatAnthropic`/`ChatOpenAI` / bound tools → routes through the same LangChain model abstractions patched above, so the existing `patch()` intercepts LangGraph-driven calls with no extra code. `ToolNode` tool invocations produce the sensor's `tool_call` events via the same provider-level tool_use / tool_calls interception. LangGraph requires Python ≥ 3.10 (CrewAI dependency chain pins Python ≤ 3.13 via `tiktoken<0.6`). A `LangGraphClassifier` is wired into `core/context.py::FrameworkCollector` so `session_start.context.frameworks` reports `"langgraph/<version>"` when the module is loaded.
 
 In addition, the following resource entry points are also intercepted even though no currently-tested framework drives them by default — they are patched proactively because they are standard inference paths in production code (Claude 4 adaptive thinking, the OpenAI Responses API, and RAG embedding calls):
 
@@ -3222,13 +3419,31 @@ The production deployment is secure, HA, and auditable.
 `helm/templates/rbac.yaml` -- ServiceAccount, Role, RoleBinding per component
 `helm/Makefile` -- `lint`, `template`, `install`, `upgrade`, `uninstall` targets
 
-`api/internal/server/server.go` (extend)
-- JWT auth middleware: validates Authorization Bearer header in production mode
-- Auth disabled entirely in development mode
-- `POST /v1/auth/login`: email + password → JWT (24h) + refresh token
-- `POST /v1/auth/refresh`: refresh token → new JWT
+`docker/postgres/migrations/` (extend)
+- `000010_api_tokens`: replace minimal api_tokens with salted schema (D095)
+- `000011_sessions_token`: add `token_id` FK + `token_name` to sessions (D095)
+- `000012_rename_access_tokens`: rename `api_tokens` → `access_tokens` (D096)
 
-`dashboard/src/pages/Login.tsx` -- login form, shown in production mode only
+`api/internal/auth/token.go` / `ingestion/internal/auth/token.go`
+- Opaque access token auth (ftd_ prefix, SHA256+salt, access_tokens table)
+- `tok_dev` seed accepted only when the service reads `ENVIRONMENT=dev`;
+  rejected with 401 otherwise
+- Query API wraps every /v1/* route (except /health and /docs/) in the
+  middleware; WebSocket /v1/stream accepts the token via `?token=`
+  because browsers cannot set Authorization on the upgrade handshake
+
+`api/internal/handlers/access_tokens.go` + `api/internal/store/access_tokens.go`
+- `GET    /v1/access-tokens` -- list rows (no hash / salt / plaintext)
+- `POST   /v1/access-tokens` -- mint a new token; plaintext returned ONCE
+- `DELETE /v1/access-tokens/:id` -- revoke (dev-seed row protected: 403)
+- `PATCH  /v1/access-tokens/:id` -- rename (dev-seed row protected: 403)
+
+`dashboard/src/pages/Settings.tsx` -- access token CRUD UI (Part 2)
+- List, create, revoke, rename
+- Plaintext surfaced exactly once at creation, then hidden
+- Token name badge rendered on sessions in Fleet, Investigate, and
+  the session drawer so operators can trace which access token opened
+  each session
 
 `docker/docker-compose.prod.yml` -- TLS via nginx, restricted ports
 `docker/nginx/nginx.prod.conf` -- port 443, port 80 redirect, HSTS header
@@ -3253,9 +3468,13 @@ The production deployment is secure, HA, and auditable.
 * `helm template helm/ --values helm/values.prod.yaml` produces valid Kubernetes YAML
 * `helm install flightdeck helm/ --dry-run` completes without errors
 * All deployments have correct resource requests, liveness probes, readiness probes
-* JWT auth blocks unauthenticated requests in production mode
-* JWT auth is a no-op in development mode (existing tests still pass unchanged)
-* Login page renders in production mode, not in development mode
+* `tok_dev` accepted when `ENVIRONMENT=dev` is set, rejected with 401 otherwise
+* `ftd_` access tokens validated against the `access_tokens` table in both
+  the ingestion and API services (same validator logic, same cache semantics)
+* Access token CRUD endpoints (`/v1/access-tokens`) gated by the middleware;
+  dev-seed row is non-deletable and non-renameable (403)
+* Settings page can create, list, revoke, and rename access tokens end to end
+* Plaintext access token returned exactly once on creation, never exposed again
 * All Playwright E2E tests pass in both themes
 * `make test` passes with zero failures
 * `make test-integration` passes all integration tests

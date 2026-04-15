@@ -33,3 +33,4 @@ Thumbs.db
 
 # Claude
 .claude/
+tests/smoke/.venv-py312/

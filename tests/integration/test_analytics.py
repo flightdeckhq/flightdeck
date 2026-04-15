@@ -12,6 +12,7 @@ import uuid
 
 from .conftest import (
     API_URL,
+    auth_headers,
     get_session_event_count,
     make_event,
     post_event,
@@ -24,7 +25,7 @@ def _get_analytics(**params: str) -> dict:
     """GET /api/v1/analytics with given query params."""
     qs = "&".join(f"{k}={v}" for k, v in params.items())
     url = f"{API_URL}/v1/analytics?{qs}"
-    req = urllib.request.Request(url)
+    req = urllib.request.Request(url, headers=auth_headers())
     with urllib.request.urlopen(req, timeout=5) as resp:
         return json.loads(resp.read())
 

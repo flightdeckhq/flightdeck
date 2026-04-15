@@ -322,7 +322,10 @@ def _post_directive(body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     req = urllib.request.Request(
         f"{API_URL}/v1/directives",
         data=data,
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {TOKEN}",
+        },
         method="POST",
     )
     try:
@@ -344,7 +347,10 @@ def _post_policy(body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     req = urllib.request.Request(
         f"{API_URL}/v1/policies",
         data=data,
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {TOKEN}",
+        },
         method="POST",
     )
     try:
@@ -400,6 +406,7 @@ def _delete_policy_quiet(policy_id: str | None) -> None:
         return
     req = urllib.request.Request(
         f"{API_URL}/v1/policies/{policy_id}",
+        headers={"Authorization": f"Bearer {TOKEN}"},
         method="DELETE",
     )
     try:
@@ -671,6 +678,7 @@ def test_sensor_custom_directive_registered_and_triggered(
         # manual register above).
         req = urllib.request.Request(
             f"{API_URL}/v1/directives/custom?flavor={flavor}",
+            headers={"Authorization": f"Bearer {TOKEN}"},
         )
         with urllib.request.urlopen(req, timeout=5) as resp:
             body = json.loads(resp.read())
@@ -972,6 +980,7 @@ def test_sensor_degrade_directive_via_policy_threshold(
         import urllib.request
         req = urllib.request.Request(
             f"{API_URL}/v1/policies/{policy_body['id']}",
+            headers={"Authorization": f"Bearer {TOKEN}"},
             method="DELETE",
         )
         try:
@@ -1040,6 +1049,7 @@ def test_sensor_server_policy_warn_fires_directive(
         import urllib.request
         req = urllib.request.Request(
             f"{API_URL}/v1/policies/{policy_body['id']}",
+            headers={"Authorization": f"Bearer {TOKEN}"},
             method="DELETE",
         )
         try:
@@ -1270,7 +1280,10 @@ def test_context_facets_aggregation(
     expected_os = ctx.get("os")
     assert expected_os, "context.os not collected"
 
-    req = urllib.request.Request(f"{API_URL}/v1/fleet")
+    req = urllib.request.Request(
+        f"{API_URL}/v1/fleet",
+        headers={"Authorization": f"Bearer {TOKEN}"},
+    )
     with urllib.request.urlopen(req, timeout=5) as resp:
         fleet = json.loads(resp.read())
 

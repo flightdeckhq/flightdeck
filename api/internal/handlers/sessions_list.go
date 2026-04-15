@@ -43,6 +43,7 @@ var validSessionSorts = map[string]bool{
 // @Param        to      query     string  false  "End time (ISO 8601, default: now)"
 // @Param        state   query     string  false  "Filter by state (repeatable: active, idle, stale, closed, lost)"
 // @Param        flavor  query     string  false  "Filter by flavor (repeatable)"
+// @Param        framework query   string  false  "Filter by framework name/version matching sessions.context.frameworks[] (repeatable: langgraph/1.1.6, crewai/1.14.1, ...)"
 // @Param        model   query     string  false  "Filter by model"
 // @Param        sort    query     string  false  "Sort field: started_at, duration, tokens_used, flavor (default: started_at)"
 // @Param        order   query     string  false  "Sort order: asc, desc (default: desc)"
@@ -108,6 +109,21 @@ func SessionsListHandler(s store.Querier) http.HandlerFunc {
 			}
 		}
 
+		// Parse framework filter (repeatable). Values are the full
+		// name/version strings emitted by the sensor's
+		// FrameworkClassifier (e.g. "langgraph/1.1.6"). We do NOT
+		// validate against a known set -- a typo here just yields an
+		// empty result, same as any other filter.
+		var frameworks []string
+		for _, f := range q["framework"] {
+			for _, v := range strings.Split(f, ",") {
+				v = strings.TrimSpace(v)
+				if v != "" {
+					frameworks = append(frameworks, v)
+				}
+			}
+		}
+
 		// Sort validation
 		sort := q.Get("sort")
 		if sort == "" {
@@ -160,9 +176,10 @@ func SessionsListHandler(s store.Querier) http.HandlerFunc {
 			From:    from,
 			To:      to,
 			Query:   search,
-			States:  states,
-			Flavors: flavors,
-			Model:   q.Get("model"),
+			States:     states,
+			Flavors:    flavors,
+			Frameworks: frameworks,
+			Model:      q.Get("model"),
 			Sort:    sort,
 			Order:   order,
 			Limit:   limit,

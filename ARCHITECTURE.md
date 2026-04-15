@@ -2474,6 +2474,22 @@ kill switch, custom directives, runtime context, session visibility,
 sensor status, unavailability, multi-session fleet, and framework support
 (LangChain, LlamaIndex, CrewAI). See D089 for design decisions.
 
+#### Policy enforcement coverage
+
+Token policy enforcement is exercised at two tiers. The integration
+suite (`tests/integration/test_policy.py` and `test_enforcement.py`)
+drives the workers' `PolicyEvaluator` with fabricated `post_call`
+events through the live ingestion pipeline and asserts on directive
+rows written by the workers (`warn` / `degrade` / `shutdown`) --
+fast, deterministic, and zero-cost because no provider is called.
+The smoke suite GROUP 3 and GROUP 4 cover the same thresholds plus
+mid-session policy updates, deletions, and sensor-side fail-open
+behaviour against a real Anthropic call, so the full sensor →
+ingestion → workers → directives → sensor response envelope path is
+exercised end to end. Keep both in sync when adding a new policy
+behaviour: a bug that shows up only under a real LLM belongs in
+smoke; a bug that needs speed / determinism belongs in integration.
+
 ### Sensor end-to-end tests
 
 `tests/integration/test_sensor_e2e.py` is the only file in

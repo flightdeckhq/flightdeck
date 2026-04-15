@@ -271,6 +271,14 @@ class APIClient:
         with urllib.request.urlopen(req, timeout=self._timeout) as resp:
             return json.loads(resp.read().decode())
 
+    def put(self, path: str, body: dict) -> dict:
+        data = json.dumps(body).encode()
+        req = urllib.request.Request(
+            f"{self._base_url}{path}", data=data, headers=self._headers(), method="PUT",
+        )
+        with urllib.request.urlopen(req, timeout=self._timeout) as resp:
+            return json.loads(resp.read().decode())
+
     def delete(self, path: str) -> None:
         """DELETE that swallows all errors. Used for cleanup."""
         try:
@@ -520,6 +528,32 @@ def delete_policy(policy_id: str) -> None:
     """Best-effort policy deletion. Used in finally blocks so a fail in
     cleanup never masks a real failure."""
     api.delete(f"/v1/policies/{policy_id}")
+
+
+def update_policy(
+    policy_id: str,
+    *,
+    scope: str,
+    scope_value: str,
+    token_limit: int,
+    warn_at_pct: int | None = None,
+    degrade_at_pct: int | None = None,
+    degrade_to: str | None = None,
+    block_at_pct: int | None = None,
+) -> dict:
+    """PUT /v1/policies/:id. The handler requires the full policy body."""
+    body: dict[str, Any] = {
+        "scope": scope, "scope_value": scope_value, "token_limit": token_limit,
+    }
+    for key, val in [
+        ("warn_at_pct", warn_at_pct),
+        ("degrade_at_pct", degrade_at_pct),
+        ("degrade_to", degrade_to),
+        ("block_at_pct", block_at_pct),
+    ]:
+        if val is not None:
+            body[key] = val
+    return api.put(f"/v1/policies/{policy_id}", body)
 
 
 def post_directive(
@@ -1133,10 +1167,17 @@ def group_4_server_policy() -> None:
         report.skip("4a. Server WARN", "ANTHROPIC_API_KEY not set")
         report.skip("4b. Server DEGRADE", "ANTHROPIC_API_KEY not set")
         report.skip("4c. Server BLOCK", "ANTHROPIC_API_KEY not set")
+        report.skip("4d. Policy update blocks mid-session", "ANTHROPIC_API_KEY not set")
+        report.skip("4e. Policy deleted fails open", "ANTHROPIC_API_KEY not set")
+        report.skip("4f. on_unavailable=continue with unreachable server",
+                    "ANTHROPIC_API_KEY not set")
         return
     _scenario_4a_server_warn()
     _scenario_4b_server_degrade()
     _scenario_4c_server_block()
+    _scenario_4d_policy_update_blocks()
+    _scenario_4e_policy_deleted_fails_open()
+    _scenario_4f_on_unavailable_continue()
 
 
 def _scenario_4a_server_warn() -> None:
@@ -1221,6 +1262,154 @@ def _scenario_4c_server_block() -> None:
             report.check("4c. BudgetExceededError raised", True)
         finally:
             delete_policy(policy["id"])
+
+
+def _scenario_4d_policy_update_blocks() -> None:
+    """4d. Policy updated mid-session to a tighter limit is picked up by
+    the next agent run. The sensor fetches the effective policy once at
+    session start (``_preflight_policy`` in core/session.py), so a mid-
+    session PUT does not take effect within the same session -- the
+    next ``init()`` re-reads it and blocks on pre-flight."""
+    import flightdeck_sensor
+    from flightdeck_sensor.core.exceptions import BudgetExceededError
+    with scenario("4d. Policy update blocks mid-session", prefix="4d") as flavor:
+        policy = create_policy(
+            scope=PolicyScope.FLAVOR, scope_value=flavor,
+            token_limit=500, warn_at_pct=1,
+        )
+        try:
+            sensor_init(flavor)
+            client = flightdeck_sensor.wrap(anthropic_client())
+            resp1 = hi_message_anthropic(client)
+            report.check("4d. first call succeeds under high limit",
+                         resp1 is not None)
+            time.sleep(Config.DRAIN_WAIT_S)
+            flightdeck_sensor.teardown()
+            time.sleep(Config.SHORT_WAIT_S)
+
+            # Tighten the policy to an effectively-immediate block.
+            update_policy(
+                policy["id"], scope=PolicyScope.FLAVOR, scope_value=flavor,
+                token_limit=100, block_at_pct=1,
+            )
+            time.sleep(Config.SHORT_WAIT_S)
+
+            # New sensor session re-fetches the effective policy on
+            # pre-flight and should block the very first call.
+            sensor_init(flavor)
+            client = flightdeck_sensor.wrap(anthropic_client())
+            blocked = False
+            try:
+                hi_message_anthropic(client)
+            except BudgetExceededError:
+                blocked = True
+            report.check(
+                "4d. next session blocked after policy update",
+                blocked,
+                "sensor re-reads effective policy on pre-flight",
+            )
+            flightdeck_sensor.teardown()
+            time.sleep(Config.SHORT_WAIT_S)
+        finally:
+            delete_policy(policy["id"])
+
+
+def _scenario_4e_policy_deleted_fails_open() -> None:
+    """4e. Policy deleted while session active -- the next call must
+    succeed. D035 fail-open: absence of a policy is not an error."""
+    import flightdeck_sensor
+    from flightdeck_sensor.core.exceptions import BudgetExceededError
+    with scenario("4e. Policy deleted fails open", prefix="4e") as flavor:
+        policy = create_policy(
+            scope=PolicyScope.FLAVOR, scope_value=flavor,
+            token_limit=100, block_at_pct=1,
+        )
+        try:
+            # Baseline: confirm the BLOCK policy is in effect.
+            sensor_init(flavor)
+            client = flightdeck_sensor.wrap(anthropic_client())
+            blocked_before = False
+            try:
+                hi_message_anthropic(client)
+            except BudgetExceededError:
+                blocked_before = True
+            report.check(
+                "4e. baseline block fires while policy exists",
+                blocked_before,
+            )
+            flightdeck_sensor.teardown()
+            time.sleep(Config.SHORT_WAIT_S)
+
+            # Delete the policy. A fresh sensor init should now fetch
+            # no effective policy, so the next call must succeed.
+            delete_policy(policy["id"])
+            time.sleep(Config.SHORT_WAIT_S)
+
+            sensor_init(flavor)
+            client = flightdeck_sensor.wrap(anthropic_client())
+            try:
+                resp = hi_message_anthropic(client)
+                report.check(
+                    "4e. call succeeds after policy deletion (fail-open)",
+                    resp is not None,
+                )
+            except BudgetExceededError:
+                report.check(
+                    "4e. call succeeds after policy deletion (fail-open)",
+                    False,
+                    "BudgetExceededError raised -- expected fail-open",
+                )
+            flightdeck_sensor.teardown()
+            time.sleep(Config.SHORT_WAIT_S)
+        finally:
+            # Already deleted above; delete_policy swallows 404s.
+            delete_policy(policy["id"])
+
+
+def _scenario_4f_on_unavailable_continue() -> None:
+    """4f. FLIGHTDECK_UNAVAILABLE_POLICY=continue with an unreachable
+    server: init() must not raise and the agent continues. The sensor
+    kwarg equivalent is the env var -- init() forwards it into
+    SensorConfig. The LLM call is issued unwrapped because there is no
+    reachable control plane to register directives against."""
+    import flightdeck_sensor
+    force_reset_sensor()
+    prev = os.environ.get("FLIGHTDECK_UNAVAILABLE_POLICY")
+    os.environ["FLIGHTDECK_UNAVAILABLE_POLICY"] = "continue"
+    try:
+        # Deliberately unreachable: port 1 rejects every connect.
+        init_ok = False
+        try:
+            flightdeck_sensor.init(
+                server="http://127.0.0.1:1", token=Config.AUTH_TOKEN,
+            )
+            init_ok = True
+        except Exception as exc:
+            report.check(
+                "4f. init() does not raise when server unreachable",
+                False, repr(exc),
+            )
+        if init_ok:
+            report.check(
+                "4f. init() does not raise when server unreachable", True,
+            )
+            try:
+                resp = hi_message_anthropic(anthropic_client())
+                report.check(
+                    "4f. raw LLM call succeeds (fail-open)",
+                    resp is not None,
+                )
+            except Exception as exc:
+                report.check(
+                    "4f. raw LLM call succeeds (fail-open)",
+                    False, repr(exc),
+                )
+    finally:
+        if prev is None:
+            os.environ.pop("FLIGHTDECK_UNAVAILABLE_POLICY", None)
+        else:
+            os.environ["FLIGHTDECK_UNAVAILABLE_POLICY"] = prev
+        force_reset_sensor()
 
 
 # ----------------------------------------------------------------------------

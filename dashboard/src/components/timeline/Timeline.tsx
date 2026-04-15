@@ -30,6 +30,15 @@ interface TimelineProps {
   activeFilter?: string | null;
   paused?: boolean;
   pausedAt?: Date | null;
+  /**
+   * "Effective now" in ms-epoch form, owned by Fleet. When provided,
+   * it replaces the local `now` tick + rAF fallback below -- Fleet's
+   * single source of truth drives the scale domain's right edge, the
+   * live feed cutoff, and the token counter in lockstep. Optional so
+   * existing unit tests that mount <Timeline> directly without Fleet
+   * keep working via the wall-clock fallback.
+   */
+  effectiveNowMs?: number;
   sessionVersions?: Record<string, number>;
   /**
    * Set of session IDs that match the active CONTEXT sidebar filter.
@@ -51,6 +60,7 @@ export function Timeline({
   activeFilter,
   paused,
   pausedAt,
+  effectiveNowMs,
   sessionVersions,
   matchingSessionIds = null,
 }: TimelineProps) {
@@ -132,7 +142,15 @@ export function Timeline({
   // we need their primitive ms form for this dependency list. See
   // rawEndMs / scaleEndMs computation a few lines down.
   const rangeMs = TIMELINE_RANGE_MS[timeRange] ?? 60_000;
-  const rawEndMs = paused && pausedAt ? pausedAt.getTime() : now.getTime();
+  // Prefer Fleet's effectiveNowMs (pause / catch-up / live all
+  // collapse into a single ms-epoch there). Fall back to the local
+  // paused/pausedAt/now chain for standalone test mounts.
+  const rawEndMs =
+    effectiveNowMs !== undefined
+      ? effectiveNowMs
+      : paused && pausedAt
+        ? pausedAt.getTime()
+        : now.getTime();
   const scaleEndMs = Math.floor(rawEndMs / 1000) * 1000;
 
   // True when any session in the fleet has at least one cached event
@@ -173,6 +191,10 @@ export function Timeline({
 
   useEffect(() => {
     if (paused) return;
+    // Fleet drives re-renders via effectiveNowMs; the local rAF is
+    // a no-op in that path. Unit tests that mount Timeline directly
+    // still hit the fallback below.
+    if (effectiveNowMs !== undefined) return;
     if (!hasVisibleEventsInWindow) {
       // Nothing to animate right now. Snap `now` to the wall clock
       // once so scaleEnd catches up -- this is what lets a fresh
@@ -197,7 +219,7 @@ export function Timeline({
     };
     rafId = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(rafId);
-  }, [paused, hasVisibleEventsInWindow]);
+  }, [paused, hasVisibleEventsInWindow, effectiveNowMs]);
 
   const filteredFlavors = useMemo(() => {
     let result = flavors;

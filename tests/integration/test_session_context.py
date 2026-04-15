@@ -24,6 +24,7 @@ import uuid
 from .conftest import (
     API_URL,
     DEFAULT_TEST_CONTEXT,
+    auth_headers,
     get_session_detail,
     make_event,
     post_event,
@@ -35,7 +36,7 @@ from .conftest import (
 def _get_session_from_list(session_id: str) -> dict | None:
     """Fetch a single session from the paginated /v1/sessions list."""
     url = f"{API_URL}/v1/sessions?session_id={session_id}&limit=10"
-    req = urllib.request.Request(url)
+    req = urllib.request.Request(url, headers=auth_headers())
     with urllib.request.urlopen(req, timeout=5) as resp:
         data = json.loads(resp.read())
     for s in data.get("sessions", []):

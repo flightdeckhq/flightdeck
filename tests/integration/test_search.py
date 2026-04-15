@@ -15,6 +15,7 @@ import pytest
 
 from .conftest import (
     API_URL,
+    auth_headers,
     get_session_event_count,
     make_event,
     post_event,
@@ -26,7 +27,7 @@ from .conftest import (
 def _search(query: str) -> dict:
     """GET /api/v1/search?q=query."""
     url = f"{API_URL}/v1/search?q={urllib.parse.quote(query)}"
-    req = urllib.request.Request(url)
+    req = urllib.request.Request(url, headers=auth_headers())
     with urllib.request.urlopen(req, timeout=5) as resp:
         return json.loads(resp.read())
 

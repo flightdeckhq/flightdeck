@@ -98,16 +98,28 @@ _session_tracker: dict[str, str] = {}
 _ended_sessions: set[str] = set()
 
 
+def auth_headers(json_body: bool = False) -> dict[str, str]:
+    """Return the standard headers for an authenticated API request.
+
+    All ingestion and API /v1 endpoints require a bearer token (D095);
+    every helper below composes its request headers through this
+    function so the token is added in exactly one place. Pass
+    ``json_body=True`` when the request carries a JSON body so the
+    Content-Type header is also set.
+    """
+    headers = {"Authorization": f"Bearer {TOKEN}"}
+    if json_body:
+        headers["Content-Type"] = "application/json"
+    return headers
+
+
 def post_event(payload: dict[str, Any]) -> dict[str, Any]:
     """POST an event to the ingestion API and return the response."""
     data = json.dumps(payload).encode()
     req = urllib.request.Request(
         f"{INGESTION_URL}/v1/events",
         data=data,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {TOKEN}",
-        },
+        headers=auth_headers(json_body=True),
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=5) as resp:
@@ -125,10 +137,7 @@ def post_heartbeat(session_id: str) -> dict[str, Any]:
     req = urllib.request.Request(
         f"{INGESTION_URL}/v1/heartbeat",
         data=data,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {TOKEN}",
-        },
+        headers=auth_headers(json_body=True),
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=5) as resp:
@@ -153,7 +162,9 @@ def get_fleet() -> dict[str, Any]:
     total = 0
     while True:
         url = f"{API_URL}/v1/fleet?limit={limit}&offset={offset}"
-        req = urllib.request.Request(url)
+        req = urllib.request.Request(
+            url, headers=auth_headers()
+        )
         with urllib.request.urlopen(req, timeout=5) as resp:
             data = json.loads(resp.read())
         flavors = data.get("flavors", [])
@@ -195,7 +206,10 @@ def get_fleet() -> dict[str, Any]:
 
 def get_session(session_id: str) -> dict[str, Any]:
     """GET /v1/sessions/:id from the query API."""
-    req = urllib.request.Request(f"{API_URL}/v1/sessions/{session_id}")
+    req = urllib.request.Request(
+        f"{API_URL}/v1/sessions/{session_id}",
+        headers=auth_headers(),
+    )
     with urllib.request.urlopen(req, timeout=5) as resp:
         return json.loads(resp.read())  # type: ignore[no-any-return]
 
@@ -203,7 +217,9 @@ def get_session(session_id: str) -> dict[str, Any]:
 def _get_fleet_page(limit: int, offset: int) -> dict[str, Any]:
     """GET /v1/fleet?limit=&offset= -- single page."""
     url = f"{API_URL}/v1/fleet?limit={limit}&offset={offset}"
-    req = urllib.request.Request(url)
+    req = urllib.request.Request(
+        url, headers=auth_headers()
+    )
     with urllib.request.urlopen(req, timeout=5) as resp:
         return json.loads(resp.read())  # type: ignore[no-any-return]
 
@@ -303,7 +319,7 @@ def create_policy(
     req = urllib.request.Request(
         f"{API_URL}/v1/policies",
         data=data,
-        headers={"Content-Type": "application/json"},
+        headers=auth_headers(json_body=True),
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=5) as resp:
@@ -314,6 +330,7 @@ def delete_policy(policy_id: str) -> None:
     """Delete a token policy via DELETE /api/v1/policies/:id."""
     req = urllib.request.Request(
         f"{API_URL}/v1/policies/{policy_id}",
+        headers=auth_headers(),
         method="DELETE",
     )
     try:
@@ -325,7 +342,10 @@ def delete_policy(policy_id: str) -> None:
 
 def get_session_detail(session_id: str) -> dict[str, Any]:
     """GET /api/v1/sessions/:id -- returns session with events and policy fields."""
-    req = urllib.request.Request(f"{API_URL}/v1/sessions/{session_id}")
+    req = urllib.request.Request(
+        f"{API_URL}/v1/sessions/{session_id}",
+        headers=auth_headers(),
+    )
     with urllib.request.urlopen(req, timeout=5) as resp:
         return json.loads(resp.read())  # type: ignore[no-any-return]
 
@@ -431,7 +451,7 @@ def post_directive(
     req = urllib.request.Request(
         f"{API_URL}/v1/directives",
         data=data,
-        headers={"Content-Type": "application/json"},
+        headers=auth_headers(json_body=True),
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=5) as resp:

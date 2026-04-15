@@ -1,18 +1,16 @@
 # Flightdeck
 
-**Observability and control for AI agent fleets.**
+**See what your AI agents are doing. Control them when you need to.**
 
-Flightdeck is a self-hosted control plane for teams running AI agents in production. Drop a one-line sensor into your agent, and every LLM call, tool use, and token spend streams to a live dashboard. Stop any agent, enforce token budgets, and push custom actions to a running fleet — without redeploying.
+One line of code streams every LLM call, tool use, and token spend from your agents to a live dashboard. Stop any agent, enforce budgets, and push custom actions to running code — no redeploy required.
 
-- **See it** — live timeline of every agent, every call, across your whole fleet.
-- **Control it** — kill switch, budget enforcement, and custom directives pushed to running agents.
-- **Understand it** — full prompt and response capture (opt-in), with provider-native rendering.
+Use it on your laptop while you're building an agent. Use it in production across a fleet of a thousand. Same sensor, same dashboard.
 
 ---
 
-<!-- Fleet view demo — replace with actual recording -->
-![Fleet view](docs/assets/fleet-demo.gif)
-*Live fleet view — events stream in as agents run. Click any session to inspect every call.*
+<!-- Dashboard demo — replace with actual recording -->
+![Live view](docs/assets/fleet-demo.gif)
+*Every agent, every call, as they happen. Click any session to drill in.*
 
 <!-- Session drawer demo — replace with actual recording -->
 ![Session drawer](docs/assets/session-demo.gif)
@@ -144,7 +142,16 @@ Developer sessions carry a `DEV` badge; toggle production / developer / both in 
 
 ## Identity
 
-Every session has two identities: a persistent **flavor** and an ephemeral **session ID**. Set the flavor via environment variable — ideally injected by your Helm chart:
+Every session has two identities: a persistent **flavor** and an ephemeral **session ID**. Set the flavor via environment variable.
+
+**Locally, while you're building:**
+
+```bash
+export AGENT_FLAVOR=my-experiment
+python my_agent.py
+```
+
+**In production, inject it via your Helm chart:**
 
 ```yaml
 env:

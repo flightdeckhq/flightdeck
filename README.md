@@ -75,6 +75,7 @@ The dev stack exposes the ingestion API at `http://localhost:4000/ingest` via ng
 | Framework   | Minimum version | Entrypoints covered |
 |-------------|-----------------|---------------------|
 | LangChain   | any             | `ChatAnthropic.invoke()`, `ChatOpenAI.invoke()` via `langchain-anthropic` / `langchain-openai` |
+| LangGraph   | any             | Any graph that drives its LLM nodes through `ChatAnthropic` / `ChatOpenAI`, including `langgraph.prebuilt.create_react_agent` tool loops. Intercepted transitively via LangChain. |
 | LlamaIndex  | any             | `Anthropic.complete()`, `OpenAI.complete()` via `llama-index-llms-*` |
 | CrewAI      | 1.14+           | `LLM(model=...).call()` via the native OpenAI/Anthropic provider classes |
 
@@ -125,7 +126,7 @@ def clear_cache(context, cache_type="all"):
 
 **Search.** `Cmd+K` jumps to any session, agent, or event across the fleet.
 
-**Runtime context, automatic.** On `init()` the sensor snapshots the agent's environment — hostname, OS, Python version, git commit/branch/repo, container orchestration (Kubernetes, Docker Compose, ECS, Cloud Run), and in-process AI frameworks (LangChain, CrewAI, LlamaIndex, AutoGen, Haystack, DSPy, smolagents, pydantic_ai). Every collector is best-effort; git remote URLs are credential-stripped before storage. Filter the fleet by any context field (`os=Linux`, `k8s_namespace=research`, `git_branch=main`).
+**Runtime context, automatic.** On `init()` the sensor snapshots the agent's environment — hostname, OS, Python version, git commit/branch/repo, container orchestration (Kubernetes, Docker Compose, ECS, Cloud Run), and in-process AI frameworks (LangChain, LangGraph, CrewAI, LlamaIndex, AutoGen, Haystack, DSPy, smolagents, pydantic_ai). Every collector is best-effort; git remote URLs are credential-stripped before storage. Filter the fleet by any context field (`os=Linux`, `k8s_namespace=research`, `git_branch=main`).
 
 ---
 

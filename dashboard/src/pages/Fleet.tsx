@@ -325,6 +325,27 @@ export function Fleet() {
     return total;
   }, [feedEvents, timeRange, now]);
 
+  // Live feed events scoped to the active time window. Mirrors the
+  // scopedTokens cutoff so the feed shows the same events that
+  // contribute to the token total. Re-evaluates on every 1-second
+  // `now` tick so old events age out even when nothing new is
+  // arriving; the CONTEXT sidebar filter is applied after the time
+  // window so narrowing the time range hides matching-but-stale
+  // events too.
+  const scopedFeedEvents = useMemo(() => {
+    const cutoff = now - TIME_RANGE_MS[timeRange];
+    const inWindow = feedEvents.filter((fe) => {
+      const t = fe.event.occurred_at
+        ? new Date(fe.event.occurred_at).getTime()
+        : fe.arrivedAt;
+      return t > cutoff;
+    });
+    if (matchingSessionIds === null) return inWindow;
+    return inWindow.filter((fe) =>
+      matchingSessionIds.has(fe.event.session_id),
+    );
+  }, [feedEvents, timeRange, now, matchingSessionIds]);
+
   if (loading && flavors.length === 0) {
     return (
       <div className="flex h-full items-center justify-center text-text-muted">
@@ -613,13 +634,7 @@ export function Fleet() {
             for the buffered events. So onResume here is intentionally
             wired to handleReturnToLive, not handleResume. */}
         <LiveFeed
-          events={
-            matchingSessionIds === null
-              ? feedEvents
-              : feedEvents.filter((fe) =>
-                  matchingSessionIds.has(fe.event.session_id),
-                )
-          }
+          events={scopedFeedEvents}
           onEventClick={setSelectedEvent}
           activeFilter={activeFilter}
           onFilterChange={setActiveFilter}

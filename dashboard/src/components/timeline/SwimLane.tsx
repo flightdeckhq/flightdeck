@@ -310,11 +310,19 @@ export const SwimLane = memo(SwimLaneComponent, (prev, next) => {
   if (prev.timelineWidth !== next.timelineWidth) return false;
   if (prev.leftPanelWidth !== next.leftPanelWidth) return false;
   if (prev.matchingSessionIds !== next.matchingSessionIds) return false;
-  // Only re-render for scale changes > 1 second
-  const domainDelta = Math.abs(
+  // Only re-render for scale changes > 1 second. Compare BOTH ends of
+  // the domain: `scaleEnd` drifts in lockstep with wall-clock time, but
+  // `start = scaleEnd - rangeMs` jumps by minutes when the user switches
+  // time window. Gating on scaleEnd alone froze the swimlane after a
+  // 1h→1m switch because scaleEnd barely moved, so the memo bailed out
+  // and the new (tighter) domain never reached the clip/x-position memo.
+  const domainDeltaEnd = Math.abs(
     next.scale.domain()[1].getTime() - prev.scale.domain()[1].getTime()
   );
-  if (domainDelta < 1000) return true;
+  const domainDeltaStart = Math.abs(
+    next.scale.domain()[0].getTime() - prev.scale.domain()[0].getTime()
+  );
+  if (domainDeltaEnd < 1000 && domainDeltaStart < 1000) return true;
   return false;
 });
 
@@ -456,10 +464,15 @@ export const AllSwimLane = memo(AllSwimLaneComponent, (prev, next) => {
   if (prev.leftPanelWidth !== next.leftPanelWidth) return false;
   if (prev.onSessionClick !== next.onSessionClick) return false;
   if (prev.hasVisibleEventsInWindow !== next.hasVisibleEventsInWindow) return false;
-  const domainDelta = Math.abs(
+  // Both domain ends must be stable; see the SwimLane memo above for
+  // why checking only scaleEnd froze the row after time-range changes.
+  const domainDeltaEnd = Math.abs(
     next.scale.domain()[1].getTime() - prev.scale.domain()[1].getTime(),
   );
-  if (domainDelta < 1000) return true;
+  const domainDeltaStart = Math.abs(
+    next.scale.domain()[0].getTime() - prev.scale.domain()[0].getTime(),
+  );
+  if (domainDeltaEnd < 1000 && domainDeltaStart < 1000) return true;
   return false;
 });
 

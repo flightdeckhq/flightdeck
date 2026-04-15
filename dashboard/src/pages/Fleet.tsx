@@ -130,11 +130,16 @@ export function Fleet() {
     // React 18 automatic batching handles multiple setState calls in the same tick.
     if (pausedRef.current) {
       setPauseQueue((prev) => {
+        if (prev.some((p) => p.event.id === event.id)) return prev;
         const next = [...prev, fe];
         return next.length > PAUSE_QUEUE_MAX_EVENTS ? next.slice(-PAUSE_QUEUE_MAX_EVENTS) : next;
       });
     } else {
-      setFeedEvents((prev) => [...prev, fe].slice(-FEED_MAX_EVENTS));
+      setFeedEvents((prev) =>
+        prev.some((p) => p.event.id === event.id)
+          ? prev
+          : [...prev, fe].slice(-FEED_MAX_EVENTS),
+      );
     }
   }, []);
 
@@ -259,7 +264,11 @@ export function Fleet() {
       arrivedAt: new Date(event.occurred_at).getTime(),
       event,
     }));
-    setFeedEvents(feedFromHistory.slice(-FEED_MAX_EVENTS));
+    setFeedEvents((prev) => {
+      const seen = new Set(prev.map((fe) => fe.event.id));
+      const merged = [...prev, ...feedFromHistory.filter((fe) => !seen.has(fe.event.id))];
+      return merged.slice(-FEED_MAX_EVENTS);
+    });
   }, [historicalEvents]);
 
   // Recent directive events for the FleetPanel sidebar.

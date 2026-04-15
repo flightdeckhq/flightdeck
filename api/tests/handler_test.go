@@ -2157,3 +2157,105 @@ func TestTokenRenameHandler_RenamesRealToken(t *testing.T) {
 		t.Errorf("expected name=New, got %q", got.Name)
 	}
 }
+
+// --- DeleteCustomDirectivesHandler ---
+
+func TestDeleteCustomDirectivesHandler_DeletesMatchingPrefix(t *testing.T) {
+	s := &mockStore{customDirectives: []store.CustomDirective{
+		{ID: "1", Name: "smoke_foo", Flavor: "f"},
+		{ID: "2", Name: "smoke_bar", Flavor: "f"},
+		{ID: "3", Name: "prod_keep", Flavor: "f"},
+	}}
+	handler := handlers.DeleteCustomDirectivesHandler(store.WrapStore(s))
+	req := httptest.NewRequest("DELETE", "/v1/directives/custom?name_prefix=smoke_", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var resp handlers.DeleteCustomDirectivesResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Deleted != 2 {
+		t.Errorf("expected deleted=2, got %d", resp.Deleted)
+	}
+	if len(s.customDirectives) != 1 {
+		t.Errorf("expected 1 remaining directive, got %d", len(s.customDirectives))
+	}
+}
+
+func TestDeleteCustomDirectivesHandler_RequiresNamePrefix(t *testing.T) {
+	handler := handlers.DeleteCustomDirectivesHandler(store.WrapStore(&mockStore{}))
+	req := httptest.NewRequest("DELETE", "/v1/directives/custom", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+// --- PolicyUpdateHandler branch coverage ---
+
+func TestPolicyUpdateHandler_MissingID(t *testing.T) {
+	handler := handlers.PolicyUpdateHandler(store.WrapStore(&mockStore{}))
+	req := httptest.NewRequest("PUT", "/v1/policies/", bytes.NewBufferString(`{}`))
+	// No path value set -- handler reads r.PathValue("id") == "".
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestPolicyUpdateHandler_NotFound(t *testing.T) {
+	handler := handlers.PolicyUpdateHandler(store.WrapStore(&mockStore{}))
+	req := httptest.NewRequest("PUT", "/v1/policies/missing", bytes.NewBufferString(
+		`{"scope":"flavor","scope_value":"x","token_limit":100}`,
+	))
+	req.SetPathValue("id", "missing")
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d", w.Code)
+	}
+}
+
+func TestPolicyUpdateHandler_InvalidJSON(t *testing.T) {
+	limit := int64(100)
+	s := &mockStore{policies: []store.Policy{{ID: "p", Scope: "flavor", ScopeValue: "x", TokenLimit: &limit}}}
+	handler := handlers.PolicyUpdateHandler(store.WrapStore(s))
+	req := httptest.NewRequest("PUT", "/v1/policies/p", bytes.NewBufferString(`{not-json`))
+	req.SetPathValue("id", "p")
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestPolicyUpdateHandler_InvalidRequest(t *testing.T) {
+	limit := int64(100)
+	s := &mockStore{policies: []store.Policy{{ID: "p", Scope: "flavor", ScopeValue: "x", TokenLimit: &limit}}}
+	handler := handlers.PolicyUpdateHandler(store.WrapStore(s))
+	body := `{"scope":"flavor","scope_value":"x","token_limit":100,"warn_at_pct":0}`
+	req := httptest.NewRequest("PUT", "/v1/policies/p", bytes.NewBufferString(body))
+	req.SetPathValue("id", "p")
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+// --- PolicyDeleteHandler missing-id branch ---
+
+func TestPolicyDeleteHandler_MissingID(t *testing.T) {
+	handler := handlers.PolicyDeleteHandler(store.WrapStore(&mockStore{}))
+	req := httptest.NewRequest("DELETE", "/v1/policies/", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}

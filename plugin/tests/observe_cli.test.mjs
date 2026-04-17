@@ -107,8 +107,9 @@ describe("observe_cli.mjs", () => {
     clearAllPluginMarkers();
   });
 
-  it("maps PreToolUse to pre_call", async () => {
+  it("drops PreToolUse -- tool_call from PostToolUse is sufficient", async () => {
     clearAllPluginMarkers();
+    const before = capture.bodies().length;
     const input = JSON.stringify({
       hook_event_name: "PreToolUse",
       tool_name: "Bash",
@@ -120,17 +121,90 @@ describe("observe_cli.mjs", () => {
     };
     const result = await runScript(input, env);
     assert.equal(result.code, 0);
+    // No events should be POSTed for PreToolUse -- we dropped it to
+    // match the Python sensor's one-tool_call-per-invocation semantics.
+    assert.equal(capture.bodies().length, before);
+  });
 
-    // First invocation emits a synthetic session_start backstop before
-    // the real hook event. The pre_call is the last body.
-    const body = capture.bodies().at(-1);
-    assert.equal(body.event_type, "pre_call");
-    assert.equal(body.flavor, "claude-code");
-    assert.equal(body.agent_type, "developer");
-    assert.equal(body.framework, "claude-code");
-    assert.equal(body.tool_name, "Bash");
-    assert.equal(body.has_content, false);
-    assert.equal(body.content, null);
+  it("UserPromptSubmit skips pre_call emission when model is unresolved (D098)", async () => {
+    clearAllPluginMarkers();
+    // No SessionStart, no transcript -- model is unresolvable. The
+    // plugin must NOT emit a pre_call that would render as "unknown".
+    const before = capture.bodies().length;
+    const input = JSON.stringify({
+      hook_event_name: "UserPromptSubmit",
+      session_id: "sess-ups-no-model",
+      prompt: "hello",
+    });
+    const result = await runScript(input, {
+      FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
+      FLIGHTDECK_TOKEN: "tok_test",
+    });
+    assert.equal(result.code, 0);
+    // Only the SessionStart backstop should have posted -- no pre_call.
+    const newBodies = capture.bodies().slice(before);
+    assert.ok(
+      !newBodies.some((b) => b.event_type === "pre_call"),
+      "expected no pre_call; model was unresolvable",
+    );
+  });
+
+  it("UserPromptSubmit emits pre_call when model is cached by a prior Stop (D098)", async () => {
+    clearAllPluginMarkers();
+    // Simulate a prior Stop that cached the model for this session.
+    const transcriptPath = writeTranscript([
+      {
+        type: "user",
+        timestamp: "2026-04-17T10:00:00Z",
+        message: { role: "user", content: "warmup" },
+      },
+      {
+        type: "assistant",
+        timestamp: "2026-04-17T10:00:01Z",
+        message: {
+          id: "msg_warmup",
+          model: "claude-sonnet-4-6",
+          content: [{ type: "text", text: "hi" }],
+          usage: { input_tokens: 5, output_tokens: 2 },
+        },
+      },
+    ]);
+    try {
+      // Fire Stop so the plugin caches the model.
+      await runScript(
+        JSON.stringify({
+          hook_event_name: "Stop",
+          session_id: "sess-ups-cached",
+          transcript_path: transcriptPath,
+        }),
+        {
+          FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
+          FLIGHTDECK_TOKEN: "tok_test",
+        },
+      );
+      const before = capture.bodies().length;
+      // Now UserPromptSubmit for a NEW prompt in the same session --
+      // transcript still has the old assistant record so readLatestTurn
+      // resolves the model; even if it didn't, the Stop cache would.
+      await runScript(
+        JSON.stringify({
+          hook_event_name: "UserPromptSubmit",
+          session_id: "sess-ups-cached",
+          transcript_path: transcriptPath,
+          prompt: "next question",
+        }),
+        {
+          FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
+          FLIGHTDECK_TOKEN: "tok_test",
+        },
+      );
+      const newBodies = capture.bodies().slice(before);
+      const preCall = newBodies.find((b) => b.event_type === "pre_call");
+      assert.ok(preCall, "expected a pre_call emitted from UserPromptSubmit");
+      assert.equal(preCall.model, "claude-sonnet-4-6");
+    } finally {
+      rmSync(dirname(transcriptPath), { recursive: true, force: true });
+    }
   });
 
   it("maps PostToolUse to tool_call with tool_name", async () => {
@@ -236,9 +310,9 @@ describe("observe_cli.mjs", () => {
   it("logs connection-refused once per session and keeps exiting zero", async () => {
     clearAllPluginMarkers();
     const input = JSON.stringify({
-      hook_event_name: "PreToolUse",
-      tool_name: "Read",
+      hook_event_name: "SessionStart",
       session_id: "sess-refused-1",
+      source: "startup",
     });
     // Port 1 is reserved; connection is refused by the kernel.
     const env = {
@@ -589,14 +663,17 @@ describe("observe_cli helpers", () => {
   });
 
   describe("EVENT_MAP", () => {
-    it("includes the full v1 hook coverage (D098)", () => {
+    it("covers the v1 hook set (D098)", () => {
       assert.equal(EVENT_MAP.SessionStart, "session_start");
       assert.equal(EVENT_MAP.UserPromptSubmit, "pre_call");
-      assert.equal(EVENT_MAP.PreToolUse, "pre_call");
       assert.equal(EVENT_MAP.PostToolUse, "tool_call");
       assert.equal(EVENT_MAP.Stop, "post_call");
       assert.equal(EVENT_MAP.SessionEnd, "session_end");
       assert.equal(EVENT_MAP.PreCompact, "tool_call");
+    });
+
+    it("does NOT map PreToolUse (double-report avoidance)", () => {
+      assert.equal(EVENT_MAP.PreToolUse, undefined);
     });
   });
 });
@@ -614,12 +691,12 @@ describe("observe_cli end-to-end (new fields)", () => {
     clearAllPluginMarkers();
   });
 
-  it("first hook invocation emits session_start with context", async () => {
+  it("SessionStart emits session_start with context", async () => {
     const input = JSON.stringify({
-      hook_event_name: "PreToolUse",
-      tool_name: "Read",
-      tool_input: { file_path: "/src/app.ts" },
+      hook_event_name: "SessionStart",
       session_id: "sess-first-1",
+      source: "startup",
+      model: "claude-sonnet-4-6",
     });
     const env = {
       FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
@@ -629,7 +706,9 @@ describe("observe_cli end-to-end (new fields)", () => {
     assert.equal(result.code, 0);
 
     const bodies = capture.bodies();
-    const sessionStart = bodies.find((b) => b.event_type === "session_start");
+    const sessionStart = bodies.find(
+      (b) => b.event_type === "session_start" && b.session_id === "sess-first-1",
+    );
     assert.ok(sessionStart, "expected a session_start event");
     assert.equal(typeof sessionStart.context, "object");
     assert.equal(sessionStart.context.process_name, "claude-code");
@@ -639,7 +718,7 @@ describe("observe_cli end-to-end (new fields)", () => {
     );
   });
 
-  it("subsequent invocations in the same session skip session_start", async () => {
+  it("subsequent hooks in the same session skip the session_start backstop", async () => {
     const before = capture.bodies().length;
     const input = JSON.stringify({
       hook_event_name: "PostToolUse",
@@ -754,7 +833,7 @@ describe("observe_cli end-to-end (new fields)", () => {
     assert.equal(body.parent_session_id, body.session_id);
   });
 
-  it("PostToolUse populates latency_ms; PreToolUse leaves it null", async () => {
+  it("PostToolUse populates latency_ms", async () => {
     const post = await runScript(
       JSON.stringify({
         hook_event_name: "PostToolUse",
@@ -770,20 +849,5 @@ describe("observe_cli end-to-end (new fields)", () => {
     const postBody = capture.bodies().at(-1);
     assert.equal(typeof postBody.latency_ms, "number");
     assert.ok(postBody.latency_ms >= 0);
-
-    const pre = await runScript(
-      JSON.stringify({
-        hook_event_name: "PreToolUse",
-        tool_name: "Read",
-        session_id: "sess-lat-1",
-      }),
-      {
-        FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
-        FLIGHTDECK_TOKEN: "tok_test",
-      },
-    );
-    assert.equal(pre.code, 0);
-    const preBody = capture.bodies().at(-1);
-    assert.equal(preBody.latency_ms, null);
   });
 });

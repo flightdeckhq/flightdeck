@@ -387,13 +387,15 @@ export function computeLatencyMs(userTurn, assistantLastTimestamp) {
 // Event-type mapping.
 // ---------------------------------------------------------------------
 
-// Maps Claude Code hook names to Flightdeck event_types. `null` values
-// mean the hook is handled with a custom path (e.g. Stop derives
-// post_call from the transcript).
+// Maps Claude Code hook names to Flightdeck event_types. Notably
+// PreToolUse is intentionally absent -- PostToolUse already emits a
+// tool_call per invocation, matching the Python sensor's post-hoc
+// tool_call extraction. A parallel pre-tool event would double-report
+// every tool use and render as "unknown model" in the dashboard since
+// pre-tool hooks do not know which LLM call triggered them.
 export const EVENT_MAP = {
   SessionStart: "session_start",
   UserPromptSubmit: "pre_call",
-  PreToolUse: "pre_call",
   PostToolUse: "tool_call",
   Stop: "post_call",
   SessionEnd: "session_end",
@@ -471,6 +473,47 @@ async function postEvent(server, token, sessionId, payload) {
   } finally {
     clearTimeout(timeout);
   }
+}
+
+// ---------------------------------------------------------------------
+// Per-session model cache -- SessionStart's `model` field survives on
+// disk so UserPromptSubmit can populate pre_call.model without waiting
+// for the assistant response to land in the transcript. Without this,
+// LLM pre_calls all carry model=null and the dashboard renders them
+// as "unknown".
+// ---------------------------------------------------------------------
+
+function modelCachePath(sessionId) {
+  return join(tmpdir(), "flightdeck-plugin", `model-${sessionId}.txt`);
+}
+
+function cacheSessionModel(sessionId, model) {
+  if (!model) return;
+  try {
+    mkdirSync(join(tmpdir(), "flightdeck-plugin"), { recursive: true });
+    writeFileSync(modelCachePath(sessionId), String(model));
+  } catch {
+    /* silent */
+  }
+}
+
+function readCachedModel(sessionId) {
+  try {
+    return readFileSync(modelCachePath(sessionId), "utf8").trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve the model for the upcoming LLM turn. Prefers the most recent
+ * assistant record in the transcript (captures mid-session model
+ * switches), falls back to the SessionStart-cached model, and finally
+ * to the hook payload itself.
+ */
+function resolvePreCallModel(sessionId, hookEvent, transcriptPath) {
+  const latest = readLatestTurn(transcriptPath);
+  return latest?.model || readCachedModel(sessionId) || hookEvent.model || null;
 }
 
 // ---------------------------------------------------------------------
@@ -628,12 +671,14 @@ async function main() {
   };
 
   // SessionStart: real first hook. Emit session_start with the model
-  // and context, mark the dedup file so later hooks skip the synthetic
-  // session_start path.
+  // and context, cache the model for subsequent UserPromptSubmit hooks,
+  // and mark the dedup file so later hooks skip the backstop.
   if (hookName === "SessionStart") {
     const turn = getLatestTurn();
+    const model = hookEvent.model || turn?.model || null;
+    cacheSessionModel(sessionId, model);
     await ensureSessionStarted(cfg.server, cfg.token, sessionId, basePayload, {
-      model: hookEvent.model || turn?.model || null,
+      model,
       claudeCodeVersion: turn?.claudeCodeVersion || hookEvent.version || null,
     });
     return;
@@ -653,10 +698,12 @@ async function main() {
       const latencyMs = computeLatencyMs(turn.userTurn, turn.lastTimestamp);
       const hasContent = cfg.capturePrompts;
       const content = hasContent ? buildContent(turn) : null;
+      const resolvedModel = turn.model || basePayload.model;
+      cacheSessionModel(sessionId, resolvedModel);
       await postEvent(cfg.server, cfg.token, sessionId, {
         ...basePayload,
         event_type: "post_call",
-        model: turn.model || basePayload.model,
+        model: resolvedModel,
         tool_name: null,
         tool_input: null,
         is_subagent_call: false,
@@ -692,7 +739,9 @@ async function main() {
   // post_call. Multi-turn tool-use conversations produce multiple
   // assistant message.ids and Stop only fires once at the end, so we
   // must iterate every group and dedup via the per-messageId marker
-  // file rather than emitting only the latest.
+  // file rather than emitting only the latest. We also cache the
+  // latest model so any future UserPromptSubmit can label its pre_call
+  // correctly (SessionStart does not carry model on Claude Code v2.1.x).
   if (hookName === "Stop") {
     const turns = getTurns();
     for (const turn of turns) {
@@ -701,10 +750,12 @@ async function main() {
       const latencyMs = computeLatencyMs(turn.userTurn, turn.lastTimestamp);
       const hasContent = cfg.capturePrompts;
       const content = hasContent ? buildContent(turn) : null;
+      const resolvedModel = turn.model || basePayload.model;
+      cacheSessionModel(sessionId, resolvedModel);
       const payload = {
         ...basePayload,
         event_type: "post_call",
-        model: turn.model || basePayload.model,
+        model: resolvedModel,
         tool_name: null,
         tool_input: null,
         is_subagent_call: false,
@@ -719,14 +770,24 @@ async function main() {
     return;
   }
 
-  // UserPromptSubmit: user hit enter on a prompt. Emit pre_call for the
-  // upcoming LLM turn. Content is the raw prompt when capture is on.
+  // UserPromptSubmit: user hit enter on a prompt. Emit pre_call for
+  // the upcoming LLM turn, but only when we can resolve a concrete
+  // model. Resolution order: (1) most recent assistant in the
+  // transcript, (2) cached model from a prior post_call this session,
+  // (3) hook payload. If all three are empty the dashboard would
+  // render the pre_call as "unknown", so we skip the emission entirely
+  // and rely on the Stop-emitted post_call (which always has a model
+  // because it reads usage directly from the transcript). First-turn
+  // prompts in a brand-new session thus have no pre_call; second and
+  // subsequent prompts are labelled correctly.
   if (hookName === "UserPromptSubmit") {
+    const model = resolvePreCallModel(sessionId, hookEvent, transcriptPath);
+    if (!model) return;
     const hasContent = cfg.capturePrompts && typeof hookEvent.prompt === "string";
     const content = hasContent
       ? {
           provider: "anthropic",
-          model: basePayload.model || "",
+          model,
           system: null,
           messages: [{ role: "user", content: hookEvent.prompt }],
           tools: [],
@@ -736,6 +797,7 @@ async function main() {
     const payload = {
       ...basePayload,
       event_type: "pre_call",
+      model,
       tool_name: null,
       tool_input: null,
       is_subagent_call: false,

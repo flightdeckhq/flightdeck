@@ -88,18 +88,22 @@ export function parseBool(value, fallback) {
  *     the tool name which is far less useful for a developer
  *     inspecting their own work. Teams that want it off flip the env
  *     var.
- *   * ``capturePrompts`` defaults OFF because prompt / response
- *     content is sensitive. Strictly opt-in (matches the Python
- *     sensor's ``capture_prompts=False`` default).
+ *   * ``capturePrompts`` defaults ON for the Claude Code plugin --
+ *     developers running ``claude`` locally are observing their own
+ *     session, and the Prompts tab is empty without captured LLM
+ *     call content. The Python sensor keeps ``capture_prompts=False``
+ *     as its default because it runs in production where prompts
+ *     may carry PII and proprietary context (D019, D103). Users can
+ *     opt out on the plugin with ``FLIGHTDECK_CAPTURE_PROMPTS=false``.
  */
-function resolveConfig(env = process.env) {
+export function resolveConfig(env = process.env) {
   const server = (env.FLIGHTDECK_SERVER ?? "").trim() || "http://localhost:4000";
   const token = (env.FLIGHTDECK_TOKEN ?? "").trim() || "tok_dev";
   return {
     server,
     token,
     captureToolInputs: parseBool(env.FLIGHTDECK_CAPTURE_TOOL_INPUTS, true),
-    capturePrompts: parseBool(env.FLIGHTDECK_CAPTURE_PROMPTS, false),
+    capturePrompts: parseBool(env.FLIGHTDECK_CAPTURE_PROMPTS, true),
   };
 }
 
@@ -914,8 +918,9 @@ async function main() {
   // real tool input + output (previously tool_call events always had
   // has_content=false, so the drawer rendered shallow metadata only).
   // Privacy tiers: input is gated on captureToolInputs (default ON);
-  // output is gated on capturePrompts (default OFF), matching the
-  // split used for LLM prompt/response content.
+  // output is gated on capturePrompts (default ON for the plugin,
+  // OFF for the Python sensor -- see resolveConfig rationale and
+  // DECISIONS.md D103).
   let content = null;
   let hasContent = false;
   if (cfg.captureToolInputs && toolName && sanitizedInput) {

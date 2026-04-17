@@ -16,6 +16,7 @@ import {
   parseBool,
   readLatestTurn,
   readTurns,
+  resolveConfig,
   sanitizeToolInput,
   tokensFromUsage,
 } from "../hooks/scripts/observe_cli.mjs";
@@ -288,9 +289,13 @@ describe("observe_cli.mjs", () => {
       session_id: "sess-stop-1",
       transcript_path: transcriptPath,
     });
+    // Pin CAPTURE_PROMPTS=false so this test stays focused on token +
+    // model mapping regardless of the default (which is now ON for
+    // the plugin -- see DECISIONS.md D103).
     const env = {
       FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
       FLIGHTDECK_TOKEN: "tok_test",
+      FLIGHTDECK_CAPTURE_PROMPTS: "false",
     };
     const result = await runScript(input, env);
     assert.equal(result.code, 0);
@@ -304,7 +309,7 @@ describe("observe_cli.mjs", () => {
     assert.equal(body.tokens_cache_read, 100);
     assert.equal(body.tokens_cache_creation, 50);
     assert.equal(body.latency_ms, 2500);
-    assert.equal(body.has_content, false); // CAPTURE_PROMPTS default off
+    assert.equal(body.has_content, false);
     rmSync(dirname(transcriptPath), { recursive: true, force: true });
   });
 
@@ -536,6 +541,28 @@ describe("observe_cli helpers", () => {
         assert.equal(parseBool(v, true), true, `${v} must fall back to true`);
         assert.equal(parseBool(v, false), false, `${v} must fall back to false`);
       }
+    });
+  });
+
+  describe("resolveConfig", () => {
+    it("defaults capturePrompts to TRUE when FLIGHTDECK_CAPTURE_PROMPTS is unset (D103)", () => {
+      // Plugin-only flip: developers observing their own Claude Code
+      // session need the Prompts tab populated with LLM call content.
+      // The Python sensor keeps capture_prompts=False (D019) --
+      // different product surfaces, different safe defaults.
+      assert.equal(resolveConfig({}).capturePrompts, true);
+    });
+
+    it("honours explicit opt-out via FLIGHTDECK_CAPTURE_PROMPTS=false", () => {
+      const cfg = resolveConfig({ FLIGHTDECK_CAPTURE_PROMPTS: "false" });
+      assert.equal(cfg.capturePrompts, false);
+    });
+
+    it("honours explicit opt-in via FLIGHTDECK_CAPTURE_PROMPTS=true", () => {
+      // No-op for the new default, but kept so an accidental default
+      // flip in the other direction still leaves the env var wired up.
+      const cfg = resolveConfig({ FLIGHTDECK_CAPTURE_PROMPTS: "true" });
+      assert.equal(cfg.capturePrompts, true);
     });
   });
 

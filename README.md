@@ -183,7 +183,7 @@ claude --plugin-dir /path/to/flightdeck/plugin
 
 `--plugin-dir` loads the plugin for the session without a marketplace install. A marketplace-installable build is not published yet.
 
-Sessions carry `flavor=claude-code`, `agent_type=developer`, and render with a `DEV` badge. By default no prompt content, file content, or tool input is captured; set `FLIGHTDECK_CAPTURE_TOOL_INPUTS=true` to capture a sanitised whitelist. See [plugin/README.md](plugin/README.md) for the full event list and privacy controls.
+Sessions carry `flavor=claude-code`, `agent_type=developer`, and render with a `DEV` badge. Tool inputs and LLM call content are captured by default so the Prompts tab is populated without extra setup -- the developer is observing their own session, not production traffic. Set `FLIGHTDECK_CAPTURE_PROMPTS=false` or `FLIGHTDECK_CAPTURE_TOOL_INPUTS=false` to opt out. Raw file bodies written by `Write` / `Edit` are never forwarded; tool inputs go through a sanitised whitelist. See [plugin/README.md](plugin/README.md) for the full event list and privacy controls.
 
 ---
 

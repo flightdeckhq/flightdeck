@@ -2765,3 +2765,149 @@ solving a demonstrated problem.
 - `api/internal/store/pricing_test.go` (six loader tests)
 
 ---
+
+## D103 -- Claude Code plugin captures prompts by default (split from sensor)
+
+**Date:** 2026-04-17
+**Phase:** 5
+
+**Context.** D019 established `capture_prompts=False` as the Python
+sensor's default: prompts in production may carry PII, proprietary
+instructions, and customer context, and a platform that captured
+them by default would fail every serious security review. That
+rationale is sound for the sensor. It stopped being sound once the
+Claude Code plugin shipped, because the plugin observes a different
+population: a developer running `claude` locally against their own
+session. Supervisor verified on 2026-04-17 that a live claude-code
+session (`a1d4f7a5`) had an empty Prompts tab -- the plugin
+inherited the sensor's off-by-default and every `post_call` payload
+left the wire with `content: null`, `messages: []`, `response: []`.
+The 1ced241 fix populated content for `tool_call` events only; LLM
+calls stayed empty because of the plugin default.
+
+**Decision.** Flip `capturePrompts` default to `true` in the Claude
+Code plugin (`plugin/hooks/scripts/observe_cli.mjs::resolveConfig`).
+`FLIGHTDECK_CAPTURE_PROMPTS=false` remains a first-class opt-out,
+honoured identically to the old default. The Python sensor's
+`capture_prompts` default stays `False` -- D019 is unchanged, the
+sensor observes production systems with a different privacy
+calculus.
+
+**Why split instead of unify.** The two surfaces serve disjoint use
+cases:
+
+- **Python sensor** -- runs inside a production or staging agent
+  process, observing traffic the operator does not own. The prompts
+  may be customer data; the operator owes an explicit opt-in.
+- **Claude Code plugin** -- runs in a developer's own shell,
+  observing their own conversation with `claude`. The prompts are
+  the developer's own work. An empty Prompts tab actively hurts
+  the product without privacy benefit.
+
+Unifying on either default breaks one of the two. Splitting is
+narrow: the plugin's `resolveConfig` is the only place that
+interprets the plugin env var, and its rationale comment documents
+both defaults side-by-side so a future contributor does not assume
+they should match.
+
+**Rejected alternatives.**
+
+- **Keep default off; document loudly.** Rejected: already tried
+  (plugin/README.md had the knob documented before the Prompts tab
+  was even built). Users do not read env var tables before
+  installing a plugin and then wonder why a feature that looks
+  broken is actually opt-in.
+- **Prompt the user on first run for a yes/no.** Rejected: the
+  plugin has no interactive UI -- hooks fire as detached child
+  processes. Anything that asked for input would block Claude Code.
+- **Require setup in a config file.** Rejected: the plugin's whole
+  appeal is "install and it works." A zero-config default that
+  leaves the core feature broken is worse than a slightly more
+  opinionated default that matches the expectation.
+
+**Privacy posture.** Even with the flip, the plugin never forwards
+raw file bodies written by `Write` / `Edit` -- `sanitizeToolInput`
+drops those regardless. Tool inputs go through the sanitised
+whitelist, and `FLIGHTDECK_CAPTURE_PROMPTS=false` still zeroes every
+content field on every event type, matching the sensor's off state
+exactly.
+
+**Tradeoff.** A developer who installs the plugin on a machine that
+proxies to a production-scale `claude` deployment (rare but
+possible) would stream LLM content unless they set the opt-out.
+Documented in plugin/README.md Privacy section; accepted cost of
+fixing the developer-observing-own-session default.
+
+**Code locations.**
+
+- `plugin/hooks/scripts/observe_cli.mjs::resolveConfig` (default
+  `capturePrompts=true`; rationale comment references D019 and D103)
+- `plugin/hooks/scripts/observe_cli.mjs` (tool_call privacy-tier
+  comment updated to call out the plugin/sensor split)
+- `plugin/README.md` (env var table + Privacy section)
+- `README.md` (Claude Code plugin section)
+- `plugin/tests/observe_cli.test.mjs::resolveConfig` (default, opt-in,
+  opt-out tests)
+
+---
+
+## D104 -- `sessions.context` is a write-once column
+
+**Date:** 2026-04-17
+**Phase:** 5
+
+**Context.** Flagged during the 95be150 kill-switch gating
+investigation. `workers/internal/writer/postgres.go::UpsertSession`
+uses `ON CONFLICT (session_id) DO UPDATE` but intentionally does
+NOT include the `context` column in the update list (see the
+comment at L87). Rationale at the time: the first event carries the
+richest context collector output, and later events stamp less
+(e.g. a `tool_call` payload's context is narrower than
+`SessionStart`). Overwriting on every event risked regressing a
+session's context to a smaller snapshot than the one it already had.
+
+**Why this matters now.** The kill-switch gating incident exposed
+the implication. A pre-f0fa302 claude-code session's context row
+predated the `supports_directives: false` flag and, because of the
+write-once rule, never picked it up. The dashboard showed a Stop
+button on that session even though the code gate was intact --
+because the gate lives in `context`, which was frozen at the
+pre-flag snapshot. The fix in 95be150 added an
+`isClaudeCodeSession(session)` fallback in
+`dashboard/src/lib/directives.ts::sessionSupportsDirectives`. That
+fallback works only because `flavor` and `framework` are top-level
+session columns (populated from every event), not buried in
+`context`. Any future context-only flag will NOT have that escape
+hatch.
+
+**Decision.** Preserve the write-once behaviour -- the original
+rationale (the first context snapshot is the richest) still holds
+-- and make the implication a first-class planning step. Any new
+session-context flag must ship with one of:
+
+1. **A top-level column or event field** so it can be read from
+   any event, not only the first one. (Preferred when the flag
+   gates UI behaviour like the kill switch.)
+2. **A one-shot backfill migration** that updates `sessions.context`
+   for existing rows that predate the flag. Only when the flag
+   must live in `context` for schema reasons.
+3. **Explicit prospective-only documentation**: the flag applies
+   to sessions started after it shipped; older sessions are treated
+   as unset. Only when the flag is cosmetic and the stale path is
+   acceptable.
+
+**Rejected alternative.** Flip `UpsertSession` to merge context on
+update (e.g. `context = events.context || sessions.context` in JSONB).
+Rejected: merging is ambiguous when keys collide, and a narrower
+`tool_call` event's context would sometimes *shrink* a session's
+record instead of enriching it. The write-once rule avoids that
+whole class of regression.
+
+**Code locations.**
+
+- `workers/internal/writer/postgres.go::UpsertSession` (the L87
+  comment -- kept as the canonical in-code note)
+- `dashboard/src/lib/directives.ts::sessionSupportsDirectives`
+  (the 95be150 fallback, precedent for option 1 above)
+
+---

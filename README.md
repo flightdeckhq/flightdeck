@@ -71,6 +71,7 @@ After `init()` + `patch()`, frameworks that build Anthropic or OpenAI clients in
 | Framework    | Path covered                                                                             |
 |--------------|------------------------------------------------------------------------------------------|
 | LangChain    | `langchain-anthropic` (`ChatAnthropic.invoke`), `langchain-openai` (`ChatOpenAI.invoke`) |
+| LangGraph    | Covered transitively via LangChain. Any graph routing through `ChatAnthropic` or `ChatOpenAI` is intercepted, including `langgraph.prebuilt.create_react_agent` tool loops. |
 | LlamaIndex   | `llama-index-llms-anthropic` and `llama-index-llms-openai` (`.complete`)                 |
 | CrewAI 1.14+ | `LLM(model=...).call()` via the native Anthropic and OpenAI provider classes            |
 

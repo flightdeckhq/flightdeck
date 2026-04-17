@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState, useMemo } from "react";
+import { Fragment, useEffect, useRef, useState, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { X, FileText } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
@@ -230,6 +230,14 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
   }, [sessionId, initialTab]);
   const [expandedEventId, setExpandedEventId] = useState<string | null>(null);
   const [selectedEventId, setSelectedEventId] = useState<string | null>(null);
+  // Event id passed through from a Timeline "View Prompts →" click.
+  // PromptsTab uses this to scroll the matching list row into view and
+  // apply the highlight treatment so the user sees immediately which
+  // event they just jumped from. Distinct from selectedEventId, which
+  // drills into PromptViewer detail view; focus is a list-level state.
+  const [focusedPromptEventId, setFocusedPromptEventId] = useState<
+    string | null
+  >(null);
   const [runtimeExpanded, setRuntimeExpanded] = useState(false);
 
   // Filter the fleet-wide custom directive list down to ones
@@ -305,9 +313,15 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
     }
   }
 
-  function handleViewPrompts() {
+  function handleViewPrompts(eventId: string) {
     setActiveTab("prompts");
     setExpandedEventId(null);
+    // Land on the list view with the clicked event highlighted and
+    // scrolled into view. Clearing selectedEventId guarantees
+    // PromptsTab renders the list (selectedEventId drills into
+    // PromptViewer detail) -- focus is purely list-level.
+    setSelectedEventId(null);
+    setFocusedPromptEventId(eventId);
   }
 
   const stateBadge = stateBadgeStyles[session?.state ?? "closed"] ?? stateBadgeStyles.closed;
@@ -572,7 +586,16 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
                   <PromptsTab
                     events={drawerEvents}
                     selectedEventId={selectedEventId}
-                    onSelectEvent={setSelectedEventId}
+                    focusedEventId={focusedPromptEventId}
+                    onSelectEvent={(id) => {
+                      setSelectedEventId(id);
+                      // Dismiss the focused-row treatment once the
+                      // user chooses to drill into any event (detail
+                      // view takes over) or steps back to the list.
+                      if (id !== focusedPromptEventId) {
+                        setFocusedPromptEventId(null);
+                      }
+                    }}
                   />
                 )}
                 {activeTab === "directives" && (
@@ -900,12 +923,18 @@ function MetadataBar({ session }: { session: SessionType }) {
 
 /* ---- Event feed (Timeline tab) ---- */
 
+/**
+ * Zero-arg signature was previously used here; the caller in
+ * SessionDrawer dropped the event id entirely, so "View Prompts →"
+ * always landed on the generic list. The one-arg signature threads
+ * the clicked event's id through to PromptsTab as focusedEventId.
+ */
 interface EventFeedProps {
   events: AgentEvent[];
   attachments: string[];
   expandedEventId: string | null;
   onToggleExpand: (id: string) => void;
-  onViewPrompts: () => void;
+  onViewPrompts: (eventId: string) => void;
   onOpenDetail?: (event: AgentEvent) => void;
 }
 
@@ -986,7 +1015,9 @@ function EventFeed({ events, attachments, expandedEventId, onToggleExpand, onVie
             {isExpanded && (
               <ExpandedEvent
                 event={event}
-                onViewPrompts={event.has_content ? onViewPrompts : undefined}
+                onViewPrompts={
+                  event.has_content ? () => onViewPrompts(event.id) : undefined
+                }
                 onOpenDetail={onOpenDetail ? () => onOpenDetail(event) : undefined}
               />
             )}
@@ -1112,11 +1143,39 @@ function EventDetailView({ event, session, onBack }: { event: AgentEvent; sessio
 interface PromptsTabProps {
   events: AgentEvent[];
   selectedEventId: string | null;
+  /**
+   * Event id the user came from via a Timeline "View Prompts →"
+   * click. When set (and no selectedEventId drilling into detail),
+   * the matching list row scrolls into view and renders with the
+   * accent-glow highlight so the user sees the origin event
+   * immediately. Distinct from selectedEventId, which replaces the
+   * list with PromptViewer.
+   */
+  focusedEventId: string | null;
   onSelectEvent: (id: string | null) => void;
 }
 
-function PromptsTab({ events, selectedEventId, onSelectEvent }: PromptsTabProps) {
+function PromptsTab({
+  events,
+  selectedEventId,
+  focusedEventId,
+  onSelectEvent,
+}: PromptsTabProps) {
   const contentEvents = events.filter((e) => e.has_content && e.event_type === "post_call");
+  const rowRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+
+  // Scroll the focused row into view once the list is mounted. block:
+  // "center" keeps the row visually centred, not flush with the top
+  // where it can be clipped by the tab bar. Runs only when the
+  // focused id changes -- re-rendering the same focus after state
+  // churn shouldn't re-scroll the user mid-scroll.
+  useEffect(() => {
+    if (!focusedEventId || selectedEventId) return;
+    const node = rowRefs.current[focusedEventId];
+    if (node) {
+      node.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  }, [focusedEventId, selectedEventId]);
 
   if (contentEvents.length === 0) {
     return (
@@ -1141,11 +1200,27 @@ function PromptsTab({ events, selectedEventId, onSelectEvent }: PromptsTabProps)
     <div className="flex flex-col">
       {contentEvents.map((event) => {
         const badge = getBadge(event.event_type);
+        const isFocused = event.id === focusedEventId;
         return (
           <button
             key={event.id}
+            ref={(el) => {
+              rowRefs.current[event.id] = el;
+            }}
+            data-testid={`prompts-row-${event.id}`}
+            data-focused={isFocused ? "true" : undefined}
             className="flex items-center gap-2 px-3 py-2 text-left text-xs transition-colors hover:bg-surface-hover"
-            style={{ borderBottom: "1px solid var(--border-subtle)" }}
+            style={{
+              borderBottom: "1px solid var(--border-subtle)",
+              // Same accent-glow + accent-left treatment the fleet
+              // sidebar uses for its active flavor row, so the
+              // highlight reads as "selected / focused" and reuses
+              // existing visual language.
+              background: isFocused ? "var(--accent-glow)" : undefined,
+              borderLeft: isFocused
+                ? "2px solid var(--accent)"
+                : "2px solid transparent",
+            }}
             onClick={() => onSelectEvent(event.id)}
           >
             <span className="flex h-[18px] w-[88px] shrink-0 items-center justify-center rounded font-mono text-[10px] font-semibold uppercase"

@@ -222,6 +222,72 @@ describe("SessionDrawer", () => {
     expect(screen.queryByText("View Prompts →")).not.toBeInTheDocument();
   });
 
+  it("View Prompts click switches to Prompts tab and highlights the focused row", () => {
+    // The regression this test guards against: the zero-arg
+    // handleViewPrompts dropped the clicked event id, so PromptsTab
+    // always landed on the generic list with no row highlighted and
+    // no scroll. The fix threads event.id through as focusedEventId.
+    mockEventsOverride = eventsWithContent;
+    // Stub scrollIntoView -- jsdom doesn't implement it and the
+    // useEffect in PromptsTab would otherwise crash the test run.
+    const scrollSpy = vi.fn();
+    Element.prototype.scrollIntoView = scrollSpy;
+
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    const rows = screen.getAllByTestId("event-row");
+    // Reversed: row[0]=e3 (has_content=true, the focus target).
+    fireEvent.click(rows[0]);
+    fireEvent.click(screen.getByText("View Prompts →"));
+
+    // Focus row carries the selected treatment via data-focused="true"
+    // and the accent border-left; both are pulled from the same
+    // design vocabulary the fleet sidebar uses for its active flavor.
+    const focusRow = screen.getByTestId("prompts-row-e3");
+    expect(focusRow.getAttribute("data-focused")).toBe("true");
+    expect(focusRow.style.borderLeft).toContain("var(--accent)");
+    expect(focusRow.style.background).toContain("var(--accent-glow)");
+
+    // scrollIntoView was called on the focused row's button element.
+    expect(scrollSpy).toHaveBeenCalled();
+    const call = scrollSpy.mock.calls[0];
+    expect(call[0]).toMatchObject({ behavior: "smooth", block: "center" });
+  });
+
+  it("unfocused prompt rows have no highlight treatment", () => {
+    // Make sure the focus CSS is scoped to exactly one row.
+    mockEventsOverride = [
+      ...eventsWithContent,
+      {
+        id: "e6",
+        session_id: "s1",
+        flavor: "test",
+        event_type: "post_call" as const,
+        model: "claude-sonnet-4-20250514",
+        tokens_input: 10,
+        tokens_output: 5,
+        tokens_total: 15,
+        latency_ms: 100,
+        tool_name: null,
+        has_content: true,
+        occurred_at: "2026-04-07T10:05:00Z",
+      },
+    ];
+    Element.prototype.scrollIntoView = vi.fn();
+
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    const rows = screen.getAllByTestId("event-row");
+    // Find the e3 row and click View Prompts.
+    // Reversed order: row[0]=e6, row[1]=e3, row[2..]=...
+    fireEvent.click(rows[1]);
+    fireEvent.click(screen.getByText("View Prompts →"));
+
+    const focusRow = screen.getByTestId("prompts-row-e3");
+    const otherRow = screen.getByTestId("prompts-row-e6");
+    expect(focusRow.getAttribute("data-focused")).toBe("true");
+    expect(otherRow.getAttribute("data-focused")).toBeNull();
+    expect(otherRow.style.background).toBe("");
+  });
+
   it("does not show kill button for closed session", () => {
     mockSessionOverride = { state: "closed" };
     render(<SessionDrawer sessionId="s1" onClose={() => {}} />);

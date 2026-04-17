@@ -63,6 +63,11 @@ export function parseUrlState(sp: URLSearchParams) {
     contextGitCommits: sp.getAll("git_commit"),
     contextGitRepos: sp.getAll("git_repo"),
     contextOrchestrations: sp.getAll("orchestration"),
+    // ``session`` carries the session id of an open drawer so a
+    // deep-link (e.g. clicking a result in the global search modal)
+    // routes the user into Investigate AND pops the drawer in one
+    // navigation. Empty string when no drawer is pinned to the URL.
+    session: sp.get("session") ?? "",
     model: sp.get("model") ?? "",
     sort: sp.get("sort") ?? "started_at",
     order: (sp.get("order") ?? "desc") as "asc" | "desc",
@@ -91,6 +96,7 @@ export function buildUrlParams(s: ReturnType<typeof parseUrlState>): URLSearchPa
   for (const gc of s.contextGitCommits) p.append("git_commit", gc);
   for (const gr of s.contextGitRepos) p.append("git_repo", gr);
   for (const oc of s.contextOrchestrations) p.append("orchestration", oc);
+  if (s.session) p.set("session", s.session);
   if (s.model) p.set("model", s.model);
   if (s.sort !== "started_at") p.set("sort", s.sort);
   if (s.order !== "desc") p.set("order", s.order);
@@ -547,8 +553,14 @@ export function Investigate() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const autoRefreshRef = useRef<ReturnType<typeof setInterval>>();
 
-  // Drawer state (ephemeral, not in URL)
-  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+  // Drawer state. Initialised from the ``session`` URL param so a
+  // deep-link from the global search modal (or a shared URL) opens
+  // the drawer on mount. The local state stays authoritative during
+  // row clicks; the URL is synced after the initial mount via the
+  // effect below so rapid drawer open/close doesn't thrash history.
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(
+    urlState.session || null,
+  );
   // Tab the drawer should land on. The camera-icon button in the
   // capture column sets this to "prompts" so the drawer opens
   // directly on captured prompts. Cleared on close so a subsequent
@@ -699,6 +711,23 @@ export function Investigate() {
     doFetch(urlState);
     return () => abortRef.current?.abort();
   }, [urlState, doFetch]);
+
+  // URL-param -> drawer state sync. Fires when an external navigation
+  // (global search click, shared link, browser history) changes the
+  // ``session`` param out from under us. Local drawer state stays
+  // authoritative for row clicks; this effect only applies changes
+  // that originated in the URL. Guarded against self-triggering by
+  // comparing the param against the current local state first.
+  useEffect(() => {
+    const fromUrl = urlState.session || null;
+    if (fromUrl !== selectedSessionId) {
+      setSelectedSessionId(fromUrl);
+    }
+    // selectedSessionId is deliberately NOT a dependency -- we only
+    // react to URL changes here; the state-to-URL direction lives on
+    // the close handler further down.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [urlState.session]);
 
   // "Last updated" label tick
   useEffect(() => {
@@ -1495,6 +1524,14 @@ export function Investigate() {
         onClose={() => {
           setSelectedSessionId(null);
           setDrawerInitialTab(undefined);
+          // If the drawer was opened via the ``session`` URL param
+          // (global search deep-link, shared link), strip the param
+          // so closing the drawer doesn't leave a stale id in the
+          // URL. Safe when the param wasn't set -- updateUrl only
+          // writes keys that actually change.
+          if (urlState.session) {
+            updateUrl({ session: "", page: urlState.page });
+          }
         }}
         initialTab={drawerInitialTab}
       />

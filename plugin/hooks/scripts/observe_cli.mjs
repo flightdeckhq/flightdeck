@@ -902,13 +902,45 @@ async function main() {
     hookEvent.tool ||
     null;
 
-  let toolInputJson = null;
-  if (cfg.captureToolInputs && hookEvent.tool_input) {
-    const sanitized = sanitizeToolInput(hookEvent.tool_input);
-    if (sanitized) toolInputJson = JSON.stringify(sanitized);
-  }
+  const sanitizedInput =
+    cfg.captureToolInputs && hookEvent.tool_input
+      ? sanitizeToolInput(hookEvent.tool_input)
+      : null;
+  const toolInputJson = sanitizedInput ? JSON.stringify(sanitizedInput) : null;
 
   const isSubagentCall = toolName === "Task";
+
+  // Build event_content payload so the drawer's Prompts tab can show
+  // real tool input + output (previously tool_call events always had
+  // has_content=false, so the drawer rendered shallow metadata only).
+  // Privacy tiers: input is gated on captureToolInputs (default ON);
+  // output is gated on capturePrompts (default OFF), matching the
+  // split used for LLM prompt/response content.
+  let content = null;
+  let hasContent = false;
+  if (cfg.captureToolInputs && toolName && sanitizedInput) {
+    const tools = [{ type: "tool_use", name: toolName, input: sanitizedInput }];
+    const response = [];
+    if (cfg.capturePrompts && hookEvent.tool_response != null) {
+      const out =
+        typeof hookEvent.tool_response === "string"
+          ? hookEvent.tool_response
+          : JSON.stringify(hookEvent.tool_response);
+      response.push({
+        type: "tool_result",
+        content: out.length > 2000 ? out.slice(0, 2000) + "\u2026" : out,
+      });
+    }
+    content = {
+      provider: "anthropic",
+      model: readCachedModel(sessionId) || basePayload.model || "",
+      system: null,
+      messages: [],
+      tools,
+      response,
+    };
+    hasContent = true;
+  }
 
   const payload = {
     ...basePayload,
@@ -920,6 +952,8 @@ async function main() {
     parent_session_id: isSubagentCall ? sessionId : null,
     latency_ms: hookName === "PostToolUse" ? Date.now() - startTime : null,
     timestamp: new Date().toISOString(),
+    has_content: hasContent,
+    content,
   };
   await postEvent(cfg.server, cfg.token, sessionId, payload);
 }

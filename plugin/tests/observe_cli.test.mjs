@@ -940,6 +940,80 @@ describe("observe_cli end-to-end (new fields)", () => {
     assert.equal(body.tool_input, null);
   });
 
+  // The regression these three tests guard: tool_call events used to
+  // leave has_content=false and content=null even with the capture
+  // flag on, so the dashboard drawer's Prompts tab had nothing to
+  // render. The fix writes a content payload shaped like the post_call
+  // one (tools[] for input, response[] for output) so the Prompts tab
+  // can show real tool invocations.
+
+  it("tool_call emits content.tools with sanitised input when captureToolInputs is on", async () => {
+    const input = JSON.stringify({
+      hook_event_name: "PostToolUse",
+      tool_name: "Bash",
+      tool_input: { command: "ls -la /etc" },
+      session_id: "sess-content-tools-1",
+    });
+    const env = {
+      FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
+      FLIGHTDECK_TOKEN: "tok_test",
+    };
+    const result = await runScript(input, env);
+    assert.equal(result.code, 0);
+    const body = capture.bodies().at(-1);
+    assert.equal(body.has_content, true);
+    assert.equal(body.content.provider, "anthropic");
+    assert.deepEqual(body.content.messages, []);
+    assert.equal(body.content.tools.length, 1);
+    assert.equal(body.content.tools[0].type, "tool_use");
+    assert.equal(body.content.tools[0].name, "Bash");
+    assert.equal(body.content.tools[0].input.command, "ls -la /etc");
+    // Output is only captured with CAPTURE_PROMPTS -- without it the
+    // response array is empty, input-only.
+    assert.deepEqual(body.content.response, []);
+  });
+
+  it("tool_call captures tool_response in content.response when capturePrompts is also on", async () => {
+    const input = JSON.stringify({
+      hook_event_name: "PostToolUse",
+      tool_name: "Read",
+      tool_input: { file_path: "/tmp/x" },
+      tool_response: "file contents here",
+      session_id: "sess-content-response-1",
+    });
+    const env = {
+      FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
+      FLIGHTDECK_TOKEN: "tok_test",
+      FLIGHTDECK_CAPTURE_PROMPTS: "true",
+    };
+    const result = await runScript(input, env);
+    assert.equal(result.code, 0);
+    const body = capture.bodies().at(-1);
+    assert.equal(body.has_content, true);
+    assert.equal(body.content.response.length, 1);
+    assert.equal(body.content.response[0].type, "tool_result");
+    assert.equal(body.content.response[0].content, "file contents here");
+  });
+
+  it("tool_call has_content stays false when captureToolInputs is off", async () => {
+    const input = JSON.stringify({
+      hook_event_name: "PostToolUse",
+      tool_name: "Bash",
+      tool_input: { command: "ls" },
+      session_id: "sess-no-content-1",
+    });
+    const env = {
+      FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
+      FLIGHTDECK_TOKEN: "tok_test",
+      FLIGHTDECK_CAPTURE_TOOL_INPUTS: "false",
+    };
+    const result = await runScript(input, env);
+    assert.equal(result.code, 0);
+    const body = capture.bodies().at(-1);
+    assert.equal(body.has_content, false);
+    assert.equal(body.content, null);
+  });
+
   it("Stop with CAPTURE_PROMPTS=true attaches content payload (D100)", async () => {
     const transcriptPath = writeTranscript([
       {

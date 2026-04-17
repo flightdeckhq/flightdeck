@@ -1161,7 +1161,15 @@ function PromptsTab({
   focusedEventId,
   onSelectEvent,
 }: PromptsTabProps) {
-  const contentEvents = events.filter((e) => e.has_content && e.event_type === "post_call");
+  // post_call carries prompt+response for an LLM turn; tool_call now
+  // also carries content when the plugin has captureToolInputs on
+  // (tools[] = sanitised tool input, response[] = tool_result when
+  // capturePrompts is also on). Both belong in the Prompts tab.
+  const contentEvents = events.filter(
+    (e) =>
+      e.has_content &&
+      (e.event_type === "post_call" || e.event_type === "tool_call"),
+  );
   const rowRefs = useRef<Record<string, HTMLButtonElement | null>>({});
 
   // Scroll the focused row into view once the list is mounted. block:

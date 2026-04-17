@@ -161,8 +161,10 @@ Developer Claude Code sessions appear in the fleet view alongside production age
 ```bash
 export FLIGHTDECK_SERVER="http://localhost:4000"
 export FLIGHTDECK_TOKEN="tok_dev"
-claude plugin install /path/to/flightdeck/plugin
+claude --plugin-dir /path/to/flightdeck/plugin
 ```
+
+`--plugin-dir` loads the plugin for the session without a marketplace install. A marketplace-installable build is not published yet.
 
 Sessions carry `flavor=claude-code`, `agent_type=developer`, and render with a `DEV` badge. By default no prompt content, file content, or tool input is captured; set `FLIGHTDECK_CAPTURE_TOOL_INPUTS=true` to capture a sanitised whitelist. See [plugin/README.md](plugin/README.md) for the full event list and privacy controls.
 

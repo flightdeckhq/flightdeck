@@ -289,7 +289,7 @@ flightdeck/
 │   ├── Makefile
 │   ├── package.json
 │   ├── .claude-plugin/
-│   │   └── manifest.json
+│   │   └── plugin.json
 │   ├── hooks/
 │   │   ├── hooks.json          # PreToolUse, PostToolUse, Stop, SubagentSpawn hooks
 │   │   └── scripts/
@@ -3345,8 +3345,8 @@ appear in the fleet alongside production agents.
 `plugin/hooks/hooks.json`
 - PreToolUse, PostToolUse, Stop hooks defined with observe_cli.mjs script path
 
-`plugin/.claude-plugin/manifest.json`
-- Plugin name, description, version, hook definitions
+`plugin/.claude-plugin/plugin.json`
+- Plugin name, description, version. Hook definitions live in `hooks/hooks.json` by Claude Code convention.
 
 `dashboard/src/pages/Fleet.tsx` (extend)
 - Filter toggle: Production / Developer / All

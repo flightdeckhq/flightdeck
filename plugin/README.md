@@ -13,14 +13,16 @@ export FLIGHTDECK_TOKEN="tok_dev"
 
 ## Installation
 
+The plugin is not yet published to a marketplace. Load it from the local repo for the session:
+
 ```bash
-claude plugin install flightdeck
+claude --plugin-dir /path/to/flightdeck/plugin
 ```
 
-Or install from a local path:
+Validate the manifest and hook config before first use:
 
 ```bash
-claude plugin install /path/to/flightdeck/plugin
+claude plugin validate /path/to/flightdeck/plugin
 ```
 
 ## Environment variables

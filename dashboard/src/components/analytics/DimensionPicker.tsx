@@ -7,7 +7,7 @@ import {
 } from "@/components/ui/select";
 
 export const DIMENSIONS = [
-  { value: "flavor", label: "Flavor" },
+  { value: "flavor", label: "Agent" },
   { value: "model", label: "Model" },
   { value: "framework", label: "Framework" },
   { value: "host", label: "Host" },

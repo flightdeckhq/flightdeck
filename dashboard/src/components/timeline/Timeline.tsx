@@ -492,7 +492,7 @@ export function Timeline({
                 fontFamily: "var(--font-ui)",
               }}
             >
-              Flavors
+              Agents
               {matchingSessionIds !== null && (
                 <span
                   data-testid="flavors-filtered-suffix"

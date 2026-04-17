@@ -58,7 +58,7 @@ export function TokenUsageOverTime({
                 groupBy === option ? "pointer-events-none" : undefined,
               )}
             >
-              By {option}
+              By {option === "flavor" ? "agent" : option}
             </Button>
           ))}
         </div>

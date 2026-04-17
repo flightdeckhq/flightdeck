@@ -119,7 +119,7 @@ export function FleetPanel({
           changes the time range upstream because feedEvents
           repopulates from the new historical fetch. */}
       <div className="space-y-1 px-3 pb-3">
-        <SidebarRow label="Flavors" value={flavors.length} />
+        <SidebarRow label="Agents" value={flavors.length} />
         <SidebarRow label="Sessions" value={totalSessions} />
         <SidebarRow label="Active" value={totalActive} valueColor="var(--status-active)" />
         <SidebarRow
@@ -138,7 +138,7 @@ export function FleetPanel({
 
       {/* Flavors */}
       <div className="px-3 pb-2 pt-2 text-xs font-semibold uppercase tracking-[0.06em]" style={{ color: "var(--text-secondary)" }}>
-        Flavors
+        Agents
         {activeFlavorFilter && (
           <span className="ml-1 font-normal" style={{ color: "var(--primary)" }}>
             (filtered)
@@ -623,7 +623,7 @@ function FlavorItem({
             </DialogTitle>
             <p className="text-sm text-text-muted">
               Each directive fans out to every active session of this
-              flavor. Parameters apply to all sessions uniformly.
+              agent. Parameters apply to all sessions uniformly.
             </p>
             <div className="max-h-[60vh] overflow-y-auto pt-2">
               {directives.map((d) => (

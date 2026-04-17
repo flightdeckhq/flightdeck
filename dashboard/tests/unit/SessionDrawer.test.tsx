@@ -108,7 +108,7 @@ describe("SessionDrawer", () => {
     render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
     expect(screen.getByTestId("session-metadata-bar")).toBeInTheDocument();
     // Labels above the always-rendered cells
-    expect(screen.getByText("Flavor")).toBeInTheDocument();
+    expect(screen.getByText("Agent")).toBeInTheDocument();
     expect(screen.getByText("Host")).toBeInTheDocument();
     expect(screen.getByText("Started")).toBeInTheDocument();
     expect(screen.getByText("Duration")).toBeInTheDocument();

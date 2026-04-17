@@ -842,7 +842,7 @@ function MetadataBar({ session }: { session: SessionType }) {
         borderBottom: "1px solid var(--border-subtle)",
       }}
     >
-      <MetadataCell label="Flavor">{session.flavor}</MetadataCell>
+      <MetadataCell label="Agent">{session.flavor}</MetadataCell>
 
       <MetadataCell label="Host" title={session.host ?? undefined}>
         {session.host ?? "—"}

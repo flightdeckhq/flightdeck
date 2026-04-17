@@ -368,7 +368,7 @@ export function computeFacets(
 
   return [
     { key: "state", label: "STATE", values: toArr(stateCounts) },
-    { key: "flavor", label: "FLAVOR", values: toArr(flavorCounts) },
+    { key: "flavor", label: "AGENT", values: toArr(flavorCounts) },
     { key: "agent_type", label: "AGENT TYPE", values: toArr(agentTypeCounts) },
     { key: "model", label: "MODEL", values: toArr(modelCounts) },
     { key: "framework", label: "FRAMEWORK", values: toArr(frameworkCounts) },
@@ -914,7 +914,7 @@ export function Investigate() {
     }
     for (const fl of urlState.flavors) {
       pills.push({
-        label: `flavor:${fl}`,
+        label: `agent:${fl}`,
         onRemove: () =>
           updateUrl({ flavors: urlState.flavors.filter((f) => f !== fl), page: 1 }),
       });
@@ -1047,7 +1047,7 @@ export function Investigate() {
             value={searchInput}
             onChange={(e) => handleSearchChange(e.target.value)}
             onKeyDown={handleSearchKeyDown}
-            placeholder="Search flavor, model, hostname, git branch..."
+            placeholder="Search agent, model, hostname, git branch..."
             className="h-10 w-full rounded-md placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-primary"
             style={{
               border: "2px solid var(--border)",
@@ -1281,7 +1281,7 @@ export function Investigate() {
                     style={{ color: "var(--text-muted)", fontSize: 10, fontWeight: 600, letterSpacing: "0.07em", padding: "0 12px", width: COL_WIDTHS.flavor }}
                     onClick={() => handleSort("flavor")}
                   >
-                    Flavor{sortArrow("flavor")}
+                    Agent{sortArrow("flavor")}
                   </th>
                   <th
                     className="uppercase"

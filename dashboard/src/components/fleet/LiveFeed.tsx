@@ -158,7 +158,7 @@ export function LiveFeed({ events, onEventClick, activeFilter, onFilterChange, i
     ) : null;
 
   const headerCols: { key: SortCol; label: string; width: number; align?: string }[] = [
-    { key: "flavor", label: "Flavor", width: colWidths.flavor },
+    { key: "flavor", label: "Agent", width: colWidths.flavor },
     { key: "session", label: "Session", width: colWidths.session },
     { key: "type", label: "Type", width: colWidths.type },
     { key: "detail", label: "Detail", width: colWidths.detail },

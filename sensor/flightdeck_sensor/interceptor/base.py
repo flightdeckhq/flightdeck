@@ -294,6 +294,8 @@ def _post_call(
         tokens_input=usage.input_tokens,
         tokens_output=usage.output_tokens,
         tokens_total=usage.total,
+        tokens_cache_read=usage.cache_read_tokens,
+        tokens_cache_creation=usage.cache_creation_tokens,
         tokens_used_session=session_total,
         latency_ms=latency_ms,
     )

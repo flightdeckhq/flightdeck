@@ -133,19 +133,21 @@ type ContextFacetValue struct {
 // for directive_result events. Empty for events with no extra
 // metadata.
 type Event struct {
-	ID           string         `json:"id"`
-	SessionID    string         `json:"session_id"`
-	Flavor       string         `json:"flavor"`
-	EventType    string         `json:"event_type"`
-	Model        *string        `json:"model,omitempty"`
-	TokensInput  *int           `json:"tokens_input,omitempty"`
-	TokensOutput *int           `json:"tokens_output,omitempty"`
-	TokensTotal  *int           `json:"tokens_total,omitempty"`
-	LatencyMs    *int           `json:"latency_ms,omitempty"`
-	ToolName     *string        `json:"tool_name,omitempty"`
-	HasContent   bool           `json:"has_content"`
-	Payload      map[string]any `json:"payload,omitempty"`
-	OccurredAt   time.Time      `json:"occurred_at"`
+	ID                  string         `json:"id"`
+	SessionID           string         `json:"session_id"`
+	Flavor              string         `json:"flavor"`
+	EventType           string         `json:"event_type"`
+	Model               *string        `json:"model,omitempty"`
+	TokensInput         *int           `json:"tokens_input,omitempty"`
+	TokensOutput        *int           `json:"tokens_output,omitempty"`
+	TokensTotal         *int           `json:"tokens_total,omitempty"`
+	TokensCacheRead     int64          `json:"tokens_cache_read"`     // D098
+	TokensCacheCreation int64          `json:"tokens_cache_creation"` // D098
+	LatencyMs           *int           `json:"latency_ms,omitempty"`
+	ToolName            *string        `json:"tool_name,omitempty"`
+	HasContent          bool           `json:"has_content"`
+	Payload             map[string]any `json:"payload,omitempty"`
+	OccurredAt          time.Time      `json:"occurred_at"`
 }
 
 // FlavorSummary groups sessions by flavor for the fleet view.
@@ -363,8 +365,9 @@ func (s *Store) GetEffectivePolicy(ctx context.Context, flavor, sessionID string
 func (s *Store) GetSessionEvents(ctx context.Context, sessionID string) ([]Event, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT id::text, session_id::text, flavor, event_type, model,
-		       tokens_input, tokens_output, tokens_total, latency_ms,
-		       tool_name, has_content, payload, occurred_at
+		       tokens_input, tokens_output, tokens_total,
+		       tokens_cache_read, tokens_cache_creation,
+		       latency_ms, tool_name, has_content, payload, occurred_at
 		FROM events
 		WHERE session_id = $1::uuid
 		ORDER BY occurred_at ASC
@@ -380,8 +383,9 @@ func (s *Store) GetSessionEvents(ctx context.Context, sessionID string) ([]Event
 		var payloadRaw []byte
 		if err := rows.Scan(
 			&e.ID, &e.SessionID, &e.Flavor, &e.EventType, &e.Model,
-			&e.TokensInput, &e.TokensOutput, &e.TokensTotal, &e.LatencyMs,
-			&e.ToolName, &e.HasContent, &payloadRaw, &e.OccurredAt,
+			&e.TokensInput, &e.TokensOutput, &e.TokensTotal,
+			&e.TokensCacheRead, &e.TokensCacheCreation,
+			&e.LatencyMs, &e.ToolName, &e.HasContent, &payloadRaw, &e.OccurredAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan event: %w", err)
 		}

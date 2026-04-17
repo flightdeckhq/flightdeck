@@ -91,8 +91,9 @@ func (s *Store) GetEvents(ctx context.Context, params EventsParams) (*EventsResp
 	// Fetch page
 	querySQL := fmt.Sprintf(`
 		SELECT id::text, session_id::text, flavor, event_type, model,
-		       tokens_input, tokens_output, tokens_total, latency_ms,
-		       tool_name, has_content, payload, occurred_at
+		       tokens_input, tokens_output, tokens_total,
+		       tokens_cache_read, tokens_cache_creation,
+		       latency_ms, tool_name, has_content, payload, occurred_at
 		FROM events
 		%s
 		ORDER BY occurred_at ASC
@@ -112,8 +113,9 @@ func (s *Store) GetEvents(ctx context.Context, params EventsParams) (*EventsResp
 		var payloadRaw []byte
 		if err := rows.Scan(
 			&e.ID, &e.SessionID, &e.Flavor, &e.EventType, &e.Model,
-			&e.TokensInput, &e.TokensOutput, &e.TokensTotal, &e.LatencyMs,
-			&e.ToolName, &e.HasContent, &payloadRaw, &e.OccurredAt,
+			&e.TokensInput, &e.TokensOutput, &e.TokensTotal,
+			&e.TokensCacheRead, &e.TokensCacheCreation,
+			&e.LatencyMs, &e.ToolName, &e.HasContent, &payloadRaw, &e.OccurredAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan event: %w", err)
 		}

@@ -58,10 +58,21 @@ class PolicyDecision(enum.Enum):
 
 @dataclass(frozen=True)
 class TokenUsage:
-    """Token counts from a single LLM call."""
+    """Token counts from a single LLM call.
+
+    ``input_tokens`` is the full input sum (uncached + cache_read + cache_creation)
+    so policy/budget arithmetic stays numerically identical to the pre-D098
+    behaviour. ``cache_read_tokens`` and ``cache_creation_tokens`` are the
+    Anthropic cache-specific breakdown surfaced as separate fields so cache
+    economics survive into analytics; they are already included in the
+    ``input_tokens`` sum and must not be added to ``total`` a second time.
+    OpenAI responses populate the cache fields with 0.
+    """
 
     input_tokens: int = 0
     output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_creation_tokens: int = 0
 
     @property
     def total(self) -> int:

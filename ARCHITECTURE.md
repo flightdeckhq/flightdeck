@@ -954,20 +954,22 @@ conflict (set-once semantics). The API aggregates it into facets via
 
 ```sql
 CREATE TABLE events (
-    id              UUID DEFAULT gen_random_uuid(),
-    session_id      UUID NOT NULL REFERENCES sessions(session_id),
-    flavor          TEXT NOT NULL,
-    event_type      TEXT NOT NULL,
-    model           TEXT,
-    tokens_input    INTEGER,
-    tokens_output   INTEGER,
-    tokens_total    INTEGER,
-    latency_ms      INTEGER,
-    tool_name       TEXT,
-    has_content     BOOLEAN NOT NULL DEFAULT FALSE,
-    source          TEXT,               -- "local" or "server" on policy_warn events, NULL otherwise
-    payload         JSONB,
-    occurred_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    id                      UUID DEFAULT gen_random_uuid(),
+    session_id              UUID NOT NULL REFERENCES sessions(session_id),
+    flavor                  TEXT NOT NULL,
+    event_type              TEXT NOT NULL,
+    model                   TEXT,
+    tokens_input            INTEGER,
+    tokens_output           INTEGER,
+    tokens_total            INTEGER,
+    tokens_cache_read       BIGINT NOT NULL DEFAULT 0,  -- cached prompt tokens (D098)
+    tokens_cache_creation   BIGINT NOT NULL DEFAULT 0,  -- tokens written to cache (D098)
+    latency_ms              INTEGER,
+    tool_name               TEXT,
+    has_content             BOOLEAN NOT NULL DEFAULT FALSE,
+    source                  TEXT,               -- "local" or "server" on policy_warn events, NULL otherwise
+    payload                 JSONB,
+    occurred_at             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (id, occurred_at)
 );
 

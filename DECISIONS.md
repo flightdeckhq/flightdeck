@@ -2471,3 +2471,83 @@ endpoint, GetContextFacets should gain the matching parameter.
   (test SQL mirrored to match)
 
 ---
+
+## D098 -- Cache token columns on events + Claude Code emits real tokens
+
+**Date:** 2026-04-17
+**Phase:** 5
+
+**Context.** The Claude Code plugin reported every LLM call with
+`tokens_input=0`, `tokens_output=0`, `tokens_total=0`, `model=null`. The
+plugin docstring claimed Claude Code hooks could not expose token counts.
+That claim is incomplete: hooks receive `transcript_path` on every
+invocation, and the JSONL transcript carries the full Anthropic API
+response envelope for every assistant turn, including the `usage` object
+and the model name. "Tokens = 0" was a plugin limitation, not a platform
+constraint. Meanwhile the Python sensor's `AnthropicProvider.extract_usage`
+folded `cache_read_input_tokens` and `cache_creation_input_tokens` into
+`tokens_input`, erasing the cache breakdown from analytics even for the
+sensors that did report tokens.
+
+**Decision.**
+
+1. Add two columns to `events`: `tokens_cache_read BIGINT NOT NULL
+   DEFAULT 0` and `tokens_cache_creation BIGINT NOT NULL DEFAULT 0`.
+   Migration `000013_cache_tokens_on_events`. Default 0 is safe for
+   every existing row; every caller now writes both.
+2. Keep `tokens_input` as the full-input sum (uncached + cache_read +
+   cache_creation) so existing analytics and token-budget enforcement
+   stay numerically identical. The new columns are additive visibility.
+3. Update the Python sensor's `TokenUsage` dataclass to carry both new
+   fields and update `AnthropicProvider.extract_usage` to populate them
+   from the Anthropic response's `cache_read_input_tokens` and
+   `cache_creation_input_tokens` attributes.
+4. The Claude Code plugin tails the JSONL transcript on every `Stop`
+   hook, groups assistant records by `message.id`, and emits a
+   `post_call` event carrying model, token counts (all four fields),
+   and per-turn latency. This makes Claude Code sessions first-class in
+   analytics, cost estimation, policy enforcement, and latency metrics
+   with no special-casing on the backend.
+
+**Rejected alternatives.**
+
+- **Emit a new event_type for Claude Code LLM turns.** Rejected: the
+  Python sensor's `pre_call`/`post_call` contract already fits
+  perfectly, and adding a new event_type would require analytics,
+  policy, and dashboard changes that would not otherwise be needed.
+- **Change `tokens_input` to mean uncached-only.** Rejected: every
+  historical row would need backfill, analytics queries would report
+  lower numbers than before the migration, and policy budgets tuned
+  against the old definition would silently become more permissive.
+- **Put cache fields in the events.payload JSONB.** Rejected: cache
+  economics are high-value analytics; JSONB is for per-event-type
+  metadata that does not deserve a column. A query like "show me cache
+  hit rate by flavor" should not need `payload ->> 'tokens_cache_read'`.
+
+**Plugin side-effects resolved in the same phase.**
+
+- `Stop` hook mapping was `session_end`, which is incorrect: Claude
+  Code's `Stop` fires after every assistant turn, not at session
+  teardown. `Stop` now maps to `post_call`. Real session teardown
+  comes from `SessionEnd`.
+- Synthetic first-hook `session_start` replaced by the real
+  `SessionStart` hook. Source (`startup` / `resume` / `clear` /
+  `compact`) and `model` now come from the hook payload.
+- `SubagentStart` and `SubagentStop` hooks emit child `session_start`
+  and `session_end` events with `parent_session_id`, so Task
+  sub-agents appear as proper child sessions in the fleet.
+
+**Code locations.**
+
+- `docker/postgres/migrations/000013_cache_tokens_on_events.{up,down}.sql`
+- `sensor/flightdeck_sensor/core/types.py::TokenUsage`
+- `sensor/flightdeck_sensor/providers/anthropic.py::extract_usage`
+- `sensor/flightdeck_sensor/core/session.py::_build_payload`
+- `sensor/flightdeck_sensor/interceptor/base.py::_post_call`
+- `workers/internal/consumer/nats.go::EventPayload`
+- `workers/internal/writer/postgres.go::InsertEvent`
+- `workers/internal/processor/event.go::Process`
+- `api/internal/store/postgres.go::Event`
+- `plugin/hooks/scripts/observe_cli.mjs::{transcriptReader, EVENT_MAP}`
+
+---

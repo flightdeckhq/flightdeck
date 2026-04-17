@@ -117,6 +117,7 @@ func (p *Processor) Process(ctx context.Context, e consumer.EventPayload) error 
 	eventID, err := p.w.InsertEvent(
 		ctx, e.SessionID, e.Flavor, e.EventType, e.Model,
 		e.TokensInput, e.TokensOutput, e.TokensTotal,
+		e.TokensCacheRead, e.TokensCacheCreation,
 		e.LatencyMs, e.ToolName, e.HasContent, ts, extra,
 	)
 	if err != nil {

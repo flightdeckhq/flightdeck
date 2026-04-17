@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { FleetPanel } from "@/components/fleet/FleetPanel";
 import type { CustomDirective, FlavorSummary } from "@/lib/types";
+import { FLEET_SIDEBAR_WIDTH_KEY } from "@/lib/constants";
 
 vi.mock("@/lib/api", () => ({
   createDirective: vi.fn(() => Promise.resolve({ id: "dir-1" })),
@@ -51,6 +52,7 @@ const inactiveFlavors: FlavorSummary[] = [
 describe("FleetPanel", () => {
   beforeEach(() => {
     mockCustomDirectives = [];
+    localStorage.clear();
   });
 
   it("Custom Directives sidebar section is gone", () => {
@@ -267,6 +269,11 @@ describe("FleetPanel", () => {
         ],
       },
     ];
+    // Widen the sidebar past FLEET_PILL_HIDE_MIN_WIDTH (300) so the
+    // specific-pill-wins rule can be observed. At the 240 default
+    // pills are suppressed by the narrow-width degradation, which is
+    // covered separately in FleetSidebar-resize.test.tsx.
+    localStorage.setItem(FLEET_SIDEBAR_WIDTH_KEY, "350");
     render(<FleetPanel flavors={claudeCodeFlavor} />);
     expect(screen.getByTestId("coding-agent-badge")).toBeInTheDocument();
     expect(screen.queryByTestId("flavor-dev-badge")).not.toBeInTheDocument();
@@ -297,6 +304,9 @@ describe("FleetPanel", () => {
         ],
       },
     ];
+    // Widen past the pill-hide threshold; see the claude-code test
+    // above for the rationale.
+    localStorage.setItem(FLEET_SIDEBAR_WIDTH_KEY, "350");
     render(<FleetPanel flavors={customDeveloperFlavor} />);
     expect(screen.getByTestId("flavor-dev-badge")).toBeInTheDocument();
     expect(screen.queryByTestId("coding-agent-badge")).not.toBeInTheDocument();

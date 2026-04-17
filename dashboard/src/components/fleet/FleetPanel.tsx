@@ -1,7 +1,14 @@
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CustomDirective, FlavorSummary, FeedEvent } from "@/lib/types";
 import type { ContextFacets, ContextFilters } from "@/types/context";
 import { truncateSessionId, getDirectiveResultColor, getDirectiveBadge } from "@/lib/events";
+import {
+  FLEET_SIDEBAR_MIN_WIDTH,
+  FLEET_SIDEBAR_MAX_WIDTH,
+  FLEET_SIDEBAR_DEFAULT_WIDTH,
+  FLEET_SIDEBAR_WIDTH_KEY,
+  FLEET_PILL_HIDE_MIN_WIDTH,
+} from "@/lib/constants";
 import {
   Dialog,
   DialogTrigger,
@@ -100,13 +107,76 @@ export function FleetPanel({
     return map;
   }, [customDirectives]);
 
+  // Resizable sidebar width, persisted to localStorage. Lazy init
+  // reads the stored value, falls back to the default on missing /
+  // invalid / out-of-range / storage-unavailable, and clamps any
+  // legitimate value to [MIN, MAX] so a stale entry can't break the
+  // layout. See constants.ts for the threshold rationale.
+  const [sidebarWidth, setSidebarWidth] = useState<number>(() => {
+    try {
+      const stored = localStorage.getItem(FLEET_SIDEBAR_WIDTH_KEY);
+      if (stored == null) return FLEET_SIDEBAR_DEFAULT_WIDTH;
+      const n = parseInt(stored, 10);
+      if (Number.isNaN(n)) return FLEET_SIDEBAR_DEFAULT_WIDTH;
+      return Math.min(
+        FLEET_SIDEBAR_MAX_WIDTH,
+        Math.max(FLEET_SIDEBAR_MIN_WIDTH, n),
+      );
+    } catch {
+      return FLEET_SIDEBAR_DEFAULT_WIDTH;
+    }
+  });
+
+  // Mirror width into a ref so handleResizeStart can read the
+  // current value at drag-start without depending on it and
+  // rebinding the handler every frame. Same trick Timeline uses.
+  const sidebarWidthRef = useRef(sidebarWidth);
+  useEffect(() => {
+    sidebarWidthRef.current = sidebarWidth;
+  }, [sidebarWidth]);
+
+  const handleResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startWidth = sidebarWidthRef.current;
+
+    const onMove = (ev: MouseEvent) => {
+      const delta = ev.clientX - startX;
+      const next = Math.min(
+        FLEET_SIDEBAR_MAX_WIDTH,
+        Math.max(FLEET_SIDEBAR_MIN_WIDTH, startWidth + delta),
+      );
+      setSidebarWidth(next);
+    };
+
+    const onUp = () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      // Supervisor-specified: persist on release only, not on every
+      // move, to avoid localStorage write thrash during a drag.
+      try {
+        localStorage.setItem(
+          FLEET_SIDEBAR_WIDTH_KEY,
+          String(sidebarWidthRef.current),
+        );
+      } catch {
+        /* storage unavailable -- width applies for this session */
+      }
+    };
+
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  }, []);
+
   return (
     <div
-      className="flex w-[240px] shrink-0 flex-col overflow-y-auto"
+      className="relative flex shrink-0 flex-col overflow-y-auto overflow-x-hidden"
       style={{
+        width: sidebarWidth,
         background: "var(--surface)",
         borderRight: "1px solid var(--border)",
       }}
+      data-testid="fleet-sidebar"
     >
       {/* Fleet Overview */}
       <div className="px-3 pb-2 pt-4 text-xs font-semibold uppercase tracking-[0.06em]" style={{ color: "var(--text-secondary)" }}>
@@ -181,6 +251,7 @@ export function FleetPanel({
             isActive={activeFlavorFilter === f.flavor}
             onFlavorClick={onFlavorClick}
             directives={customDirectivesByFlavor[f.flavor] ?? []}
+            sidebarWidth={sidebarWidth}
           />
         ))}
         {flavors.length > 6 && (
@@ -307,6 +378,36 @@ export function FleetPanel({
       />
 
       {children}
+
+      {/* Drag handle for resizing the sidebar. Pattern mirrors
+          Timeline.tsx's left-panel resize handle: 6px hit area,
+          absolute-positioned against the sticky flex column, accent
+          on hover. Width persists on mouseup only (see
+          handleResizeStart onUp above). */}
+      <div
+        data-testid="fleet-sidebar-resize-handle"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize fleet sidebar"
+        style={{
+          position: "absolute",
+          right: 0,
+          top: 0,
+          bottom: 0,
+          width: 6,
+          cursor: "col-resize",
+          zIndex: 10,
+          background: "transparent",
+          transition: "background 0.1s",
+        }}
+        onMouseEnter={(e) => {
+          e.currentTarget.style.background = "var(--accent)";
+        }}
+        onMouseLeave={(e) => {
+          e.currentTarget.style.background = "transparent";
+        }}
+        onMouseDown={handleResizeStart}
+      />
     </div>
   );
 }
@@ -468,6 +569,7 @@ function FlavorItem({
   isActive,
   onFlavorClick,
   directives = [],
+  sidebarWidth = FLEET_SIDEBAR_DEFAULT_WIDTH,
 }: {
   flavor: FlavorSummary;
   isActive?: boolean;
@@ -480,6 +582,15 @@ function FlavorItem({
    * than a single session).
    */
   directives?: CustomDirective[];
+  /**
+   * Live sidebar width (px). Drives the graceful-narrow-width
+   * degradation: below FLEET_PILL_HIDE_MIN_WIDTH the CODING AGENT
+   * and DEV pills are suppressed so the agent name (primary
+   * identifier) gets the row's horizontal space. Optional so
+   * existing tests that pre-date the resizable sidebar continue
+   * to mount without supplying it.
+   */
+  sidebarWidth?: number;
 }) {
   const [loading, setLoading] = useState(false);
   const [sent, setSent] = useState(false);
@@ -551,7 +662,12 @@ function FlavorItem({
         {flavor.flavor === "claude-code" && (
           <ClaudeCodeLogo size={14} className="shrink-0" />
         )}
-        <span className="font-mono truncate">{flavor.flavor}</span>
+        <span
+          className="font-mono truncate"
+          title={flavor.flavor}
+        >
+          {flavor.flavor}
+        </span>
         {/* Specific pill wins: CODING AGENT identifies the tool
             category (hook-based coding agent, observer-only) and
             subsumes the more generic DEV signal. The icon rule at
@@ -560,21 +676,26 @@ function FlavorItem({
             always flip together. Custom AGENT_FLAVOR overrides are
             deferred -- if that becomes common, broaden both rules
             together to ``isClaudeCodeSession(session)`` aggregated
-            across ``flavor.sessions``. */}
-        {flavor.flavor === "claude-code" ? (
-          <CodingAgentBadge />
-        ) : flavor.agent_type === "developer" ? (
-          <span
-            data-testid="flavor-dev-badge"
-            className="rounded px-1 py-0.5 text-[11px] font-semibold uppercase"
-            style={{
-              background: "var(--accent-glow)",
-              color: "var(--primary)",
-            }}
-          >
-            DEV
-          </span>
-        ) : null}
+            across ``flavor.sessions``.
+
+            Below FLEET_PILL_HIDE_MIN_WIDTH both pills suppress so
+            the agent name (primary identifier) keeps the row's
+            horizontal space. Icon and count stay at all widths. */}
+        {sidebarWidth >= FLEET_PILL_HIDE_MIN_WIDTH &&
+          (flavor.flavor === "claude-code" ? (
+            <CodingAgentBadge />
+          ) : flavor.agent_type === "developer" ? (
+            <span
+              data-testid="flavor-dev-badge"
+              className="rounded px-1 py-0.5 text-[11px] font-semibold uppercase"
+              style={{
+                background: "var(--accent-glow)",
+                color: "var(--primary)",
+              }}
+            >
+              DEV
+            </span>
+          ) : null)}
         <span className="text-[11px] font-mono" style={{ color: "var(--text-muted)" }}>
           ({flavor.active_count})
         </span>

@@ -2,7 +2,7 @@ import { describe, it, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -83,6 +83,41 @@ function startCaptureServer() {
       resolve({ server, port, bodies: () => captured });
     });
   });
+}
+
+/**
+ * Start a server that always responds with the given HTTP status code
+ * and counts every request. Used by the graceful-fail tests to
+ * verify the plugin treats HTTP non-2xx the same as connection
+ * refused: log once, flag the session unreachable, drop subsequent
+ * POSTs.
+ */
+function startFailingServer(status) {
+  return new Promise((resolve) => {
+    let requestCount = 0;
+    const server = createServer((req, res) => {
+      requestCount++;
+      // Drain the body so the client sees a clean response.
+      req.on("data", () => {});
+      req.on("end", () => {
+        res.writeHead(status, { "Content-Type": "application/json" });
+        res.end(`{"error":"test ${status}"}`);
+      });
+    });
+    server.listen(0, "127.0.0.1", () => {
+      const port = server.address().port;
+      resolve({ server, port, requestCount: () => requestCount });
+    });
+  });
+}
+
+/**
+ * Path of the per-session unreachable flag. Mirrors the path
+ * computation in observe_cli.mjs so tests can inspect it without
+ * coupling to the plugin module internals.
+ */
+function unreachableFlagPathForTest(sessionId) {
+  return join(tmpdir(), "flightdeck-plugin", `unreachable-${sessionId}.flag`);
 }
 
 // Write a synthetic JSONL transcript with one LLM turn (user → assistant
@@ -307,7 +342,119 @@ describe("observe_cli.mjs", () => {
     assert.ok(capture.bodies().length > 0);
   });
 
-  it("logs connection-refused once per session and keeps exiting zero", async () => {
+  it("HTTP 500 response triggers canonical unreachable log and flag file", async () => {
+    clearAllPluginMarkers();
+    const failing = await startFailingServer(500);
+    try {
+      const sid = "sess-http-500-1";
+      const input = JSON.stringify({
+        hook_event_name: "SessionStart",
+        session_id: sid,
+        source: "startup",
+      });
+      const env = {
+        FLIGHTDECK_SERVER: `http://127.0.0.1:${failing.port}`,
+        FLIGHTDECK_TOKEN: "tok_test",
+      };
+      const result = await runScript(input, env);
+      assert.equal(result.code, 0, "hook must exit 0 on 5xx");
+      assert.match(
+        result.stderr,
+        /^\[flightdeck\] cannot reach http:\/\/127\.0\.0\.1:\d+: HTTP 500\. events dropped for this session\.$/m,
+      );
+      // Exactly one server request: the initial POST that got the 500.
+      assert.equal(failing.requestCount(), 1);
+      // Flag file must be present so subsequent hooks skip the POST.
+      let flagContents = null;
+      try {
+        flagContents = readFileSync(unreachableFlagPathForTest(sid), "utf8");
+      } catch {
+        /* missing file -> fail assert below */
+      }
+      assert.ok(
+        flagContents && flagContents.length > 0,
+        `expected unreachable flag file at ${unreachableFlagPathForTest(sid)}`,
+      );
+    } finally {
+      failing.server.close();
+    }
+  });
+
+  it("HTTP 401 (auth) is also flagged and not retried", async () => {
+    clearAllPluginMarkers();
+    const failing = await startFailingServer(401);
+    try {
+      const sid = "sess-http-401-1";
+      const input = JSON.stringify({
+        hook_event_name: "SessionStart",
+        session_id: sid,
+        source: "startup",
+      });
+      const env = {
+        FLIGHTDECK_SERVER: `http://127.0.0.1:${failing.port}`,
+        FLIGHTDECK_TOKEN: "tok_test",
+      };
+      const result = await runScript(input, env);
+      assert.equal(result.code, 0);
+      assert.match(
+        result.stderr,
+        /HTTP 401/,
+        "stderr should mention HTTP 401",
+      );
+      assert.equal(failing.requestCount(), 1, "plugin must not retry 4xx");
+    } finally {
+      failing.server.close();
+    }
+  });
+
+  it("subsequent hooks in an unreachable session do not hit the server", async () => {
+    clearAllPluginMarkers();
+    const failing = await startFailingServer(500);
+    try {
+      const sid = "sess-unreachable-dedup-1";
+      const env = {
+        FLIGHTDECK_SERVER: `http://127.0.0.1:${failing.port}`,
+        FLIGHTDECK_TOKEN: "tok_test",
+      };
+      // First hook: triggers the one-shot log and writes the flag.
+      await runScript(
+        JSON.stringify({
+          hook_event_name: "SessionStart",
+          session_id: sid,
+          source: "startup",
+        }),
+        env,
+      );
+      const firstCount = failing.requestCount();
+      assert.equal(firstCount, 1);
+
+      // Second hook in the same session: should short-circuit and not
+      // hit the server.
+      const second = await runScript(
+        JSON.stringify({
+          hook_event_name: "PostToolUse",
+          tool_name: "Bash",
+          session_id: sid,
+        }),
+        env,
+      );
+      assert.equal(second.code, 0);
+      assert.equal(
+        failing.requestCount(),
+        firstCount,
+        "second hook must not POST once the session is flagged unreachable",
+      );
+      // And no duplicate log line on stderr.
+      assert.ok(
+        !second.stderr.includes("cannot reach"),
+        "second hook must not re-log the unreachable message",
+      );
+    } finally {
+      failing.server.close();
+    }
+  });
+
+  it("logs connection-refused in the canonical format and exits zero", async () => {
     clearAllPluginMarkers();
     const input = JSON.stringify({
       hook_event_name: "SessionStart",
@@ -321,10 +468,10 @@ describe("observe_cli.mjs", () => {
     };
     const result = await runScript(input, env);
     assert.equal(result.code, 0);
-    assert.ok(
-      result.stderr.includes("cannot reach") ||
-        result.stderr.includes("POST failed"),
-      `expected cannot-reach or POST failed, got: ${result.stderr}`,
+    assert.match(
+      result.stderr,
+      /^\[flightdeck\] cannot reach http:\/\/127\.0\.0\.1:1: .+\. events dropped for this session\.$/m,
+      `stderr did not match canonical format, got: ${JSON.stringify(result.stderr)}`,
     );
   });
 
@@ -362,26 +509,33 @@ describe("observe_cli.mjs", () => {
 
 describe("observe_cli helpers", () => {
   describe("parseBool", () => {
-    it("parses standard truthy values", () => {
-      assert.equal(parseBool("true", false), true);
-      assert.equal(parseBool("1", false), true);
-      assert.equal(parseBool("yes", false), true);
-      assert.equal(parseBool("TRUE", false), true);
-      assert.equal(parseBool("On", false), true);
+    it("accepts true-ish strings regardless of case", () => {
+      for (const v of ["true", "TRUE", "True", "1", "yes", "YES", "on", "ON"]) {
+        assert.equal(parseBool(v, false), true, `expected ${v} to parse as true`);
+      }
     });
 
-    it("parses standard falsy values", () => {
-      assert.equal(parseBool("false", true), false);
-      assert.equal(parseBool("0", true), false);
-      assert.equal(parseBool("no", true), false);
-      assert.equal(parseBool("off", true), false);
+    it("accepts false-ish strings regardless of case", () => {
+      for (const v of ["false", "FALSE", "0", "no", "NO", "off", "OFF"]) {
+        assert.equal(parseBool(v, true), false, `expected ${v} to parse as false`);
+      }
     });
 
-    it("returns fallback on null / undefined / garbage", () => {
-      assert.equal(parseBool(null, true), true);
-      assert.equal(parseBool(undefined, false), false);
-      assert.equal(parseBool("maybe", true), true);
+    it("returns fallback on empty / null / undefined", () => {
+      assert.equal(parseBool("", true), true);
       assert.equal(parseBool("", false), false);
+      assert.equal(parseBool(undefined, true), true);
+      assert.equal(parseBool(null, false), false);
+      // Whitespace-only strings are no signal either way.
+      assert.equal(parseBool("   ", true), true);
+      assert.equal(parseBool("\t\n", false), false);
+    });
+
+    it("returns fallback on unrecognised values (never guesses)", () => {
+      for (const v of ["garbage", "maybe", "2", "enable", "disable", "on-ish"]) {
+        assert.equal(parseBool(v, true), true, `${v} must fall back to true`);
+        assert.equal(parseBool(v, false), false, `${v} must fall back to false`);
+      }
     });
   });
 
@@ -432,6 +586,15 @@ describe("observe_cli helpers", () => {
     it("stamps claude-code version in frameworks when passed", () => {
       const ctx = collectContext({ claudeCodeVersion: "2.1.112" });
       assert.ok(ctx.frameworks.includes("claude-code/2.1.112"));
+    });
+
+    it("marks context.supports_directives=false so the UI hides the kill switch", () => {
+      // Claude Code hooks fire after the event; the plugin cannot
+      // interrupt execution the way the Python sensor can. Every
+      // session_start payload must carry this flag so the dashboard
+      // stops showing a Stop button that would silently no-op.
+      const ctx = collectContext();
+      assert.equal(ctx.supports_directives, false);
     });
 
     it("detects kubernetes orchestration from env", () => {
@@ -716,6 +879,9 @@ describe("observe_cli end-to-end (new fields)", () => {
     assert.ok(
       sessionStart.context.frameworks.some((f) => f.startsWith("claude-code")),
     );
+    // The posted context must carry supports_directives=false so the
+    // dashboard hides the kill switch for Claude Code sessions.
+    assert.equal(sessionStart.context.supports_directives, false);
   });
 
   it("subsequent hooks in the same session skip the session_start backstop", async () => {

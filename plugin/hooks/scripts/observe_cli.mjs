@@ -49,18 +49,55 @@ const TIMEOUT_MS = 2000;
 // Env var resolution + defaults (D100 zero-config flow).
 // ---------------------------------------------------------------------
 
-export function parseBool(raw, fallback) {
-  if (raw == null) return fallback;
-  const s = String(raw).trim().toLowerCase();
-  if (["true", "1", "yes", "on"].includes(s)) return true;
-  if (["false", "0", "no", "off"].includes(s)) return false;
+/**
+ * Parse a string as a boolean, with an explicit fallback for the
+ * "nothing here to interpret" cases: undefined, null, empty string,
+ * and any value that doesn't clearly mean true or false. We fall back
+ * to the default rather than guessing so a typo (e.g.
+ * FLIGHTDECK_CAPTURE_PROMPTS=ture) preserves the documented default
+ * behaviour instead of silently flipping.
+ */
+export function parseBool(value, fallback) {
+  if (value === undefined || value === null || value === "") {
+    return fallback;
+  }
+  const v = String(value).trim().toLowerCase();
+  if (v === "") return fallback;
+  if (v === "true" || v === "1" || v === "yes" || v === "on") return true;
+  if (v === "false" || v === "0" || v === "no" || v === "off") return false;
   return fallback;
 }
 
+/**
+ * Resolve the plugin's four configuration knobs. Defaults target a
+ * local ``make dev`` stack so ``claude --plugin-dir <path>`` works
+ * with zero configuration for a developer who has just brought up the
+ * stack. Production teams override via shell rc or a wrapper script.
+ *
+ * Rationale for each default:
+ *   * ``server`` points at the dev nginx (localhost:4000). Any
+ *     whitespace-only env var is treated as unset so a user who sets
+ *     ``FLIGHTDECK_SERVER=""`` in a script does not silently break.
+ *   * ``token`` defaults to ``tok_dev``, the seed token the dev
+ *     compose stack accepts when ``ENVIRONMENT=dev``. Production
+ *     deployments do not set ``ENVIRONMENT=dev`` so the seed token
+ *     becomes inert there.
+ *   * ``captureToolInputs`` defaults ON because the plugin only
+ *     captures a sanitised whitelist (file paths, short command and
+ *     query strings, <=200 chars). Without it tool events carry only
+ *     the tool name which is far less useful for a developer
+ *     inspecting their own work. Teams that want it off flip the env
+ *     var.
+ *   * ``capturePrompts`` defaults OFF because prompt / response
+ *     content is sensitive. Strictly opt-in (matches the Python
+ *     sensor's ``capture_prompts=False`` default).
+ */
 function resolveConfig(env = process.env) {
+  const server = (env.FLIGHTDECK_SERVER ?? "").trim() || "http://localhost:4000";
+  const token = (env.FLIGHTDECK_TOKEN ?? "").trim() || "tok_dev";
   return {
-    server: env.FLIGHTDECK_SERVER || "http://localhost:4000",
-    token: env.FLIGHTDECK_TOKEN || "tok_dev",
+    server,
+    token,
     captureToolInputs: parseBool(env.FLIGHTDECK_CAPTURE_TOOL_INPUTS, true),
     capturePrompts: parseBool(env.FLIGHTDECK_CAPTURE_PROMPTS, false),
   };
@@ -208,6 +245,15 @@ export function collectContext(extras = {}) {
   const version = extras.claudeCodeVersion;
   frameworks.push(version ? `claude-code/${version}` : "claude-code");
   ctx.frameworks = frameworks;
+
+  // Mark hook-based sessions as observer-only so the dashboard hides
+  // the kill-switch UI. Claude Code hooks fire after the event has
+  // already happened and the plugin never sits in the agent's hot
+  // path, so a "Stop Agent" click would be a silent no-op. Python
+  // sensor sessions omit this field entirely and the dashboard
+  // treats "unset" as directive-capable. See dashboard/src/lib/
+  // directives.ts.
+  ctx.supports_directives = false;
 
   return ctx;
 }
@@ -403,59 +449,72 @@ export const EVENT_MAP = {
 };
 
 // ---------------------------------------------------------------------
-// HTTP POST helper + connection-refused one-shot log.
+// HTTP POST helper + one-shot unreachable-session logging.
+//
+// The plugin must never block Claude Code on a broken or missing
+// Flightdeck stack. Every failure path -- connection refused, DNS
+// failure, HTTP non-2xx, abort timeout -- writes a single stderr line
+// the first time it happens in a session and then silently drops
+// every subsequent POST for that session via a flag file at
+// tmpdir()/flightdeck-plugin/unreachable-<sessionId>.flag. Hook
+// process still returns 0 so Claude Code sees the hook as healthy.
 // ---------------------------------------------------------------------
 
-function refusedMarkerPath(sessionId) {
-  return join(tmpdir(), "flightdeck-plugin", `refused-${sessionId}.txt`);
+function unreachableFlagPath(sessionId) {
+  return join(tmpdir(), "flightdeck-plugin", `unreachable-${sessionId}.flag`);
 }
 
-function logRefusedOnce(sessionId, server) {
-  const marker = refusedMarkerPath(sessionId);
+function isSessionMarkedUnreachable(sessionId) {
   try {
-    readFileSync(marker, "utf8");
-    return; // already logged
+    readFileSync(unreachableFlagPath(sessionId), "utf8");
+    return true;
   } catch {
-    /* fall through */
+    return false;
   }
+}
+
+/**
+ * Log once per session that the Flightdeck stack cannot be reached,
+ * then drop a flag file so subsequent hooks skip the POST path
+ * entirely (avoids one log line per hook invocation on a broken
+ * stack). The message format is stable -- it is documented in the
+ * plugin README troubleshooting section and in tests.
+ */
+function logUnreachableOnce(sessionId, server, shortError) {
+  if (isSessionMarkedUnreachable(sessionId)) return;
   process.stderr.write(
-    `flightdeck: cannot reach ${server}; skipping event POSTs for this session. ` +
-      `Is the stack up? (make dev)\n`,
+    `[flightdeck] cannot reach ${server}: ${shortError}. events dropped for this session.\n`,
   );
   try {
     mkdirSync(join(tmpdir(), "flightdeck-plugin"), { recursive: true });
-    writeFileSync(marker, new Date().toISOString());
+    writeFileSync(unreachableFlagPath(sessionId), new Date().toISOString());
   } catch {
-    /* silent */
+    /* silent -- the flag is an optimisation, not a correctness gate */
   }
 }
 
-function isConnectionRefused(err) {
-  if (!err) return false;
-  const msg = (err.message || "").toLowerCase();
+// ``fetch failed`` is the generic umbrella Node uses to wrap underlying
+// network errors whose ``cause.code`` we also check explicitly. Keeping
+// both the string substring test and the code check covers libuv
+// errors that surface through either path.
+function shortErrorFrom(err) {
+  if (!err) return "unknown error";
   const code = err.cause?.code || err.code;
-  return (
-    code === "ECONNREFUSED" ||
-    code === "ENOTFOUND" ||
-    code === "EAI_AGAIN" ||
-    msg.includes("econnrefused") ||
-    msg.includes("fetch failed")
-  );
+  if (code) return String(code);
+  if (err.name === "AbortError") return "timeout";
+  return (err.message || "unknown error").split("\n")[0];
 }
 
 async function postEvent(server, token, sessionId, payload) {
-  // Short-circuit when we've already seen connection refused for this
-  // session. Avoids one fetch-failure log per hook invocation.
-  try {
-    readFileSync(refusedMarkerPath(sessionId), "utf8");
-    return;
-  } catch {
-    /* fall through */
-  }
+  // Short-circuit every future POST for a session already flagged
+  // unreachable -- a broken stack at turn 1 is still broken at turn 10.
+  if (isSessionMarkedUnreachable(sessionId)) return;
+
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  let response = null;
   try {
-    await fetch(`${server}/ingest/v1/events`, {
+    response = await fetch(`${server}/ingest/v1/events`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -465,13 +524,21 @@ async function postEvent(server, token, sessionId, payload) {
       signal: controller.signal,
     });
   } catch (err) {
-    if (isConnectionRefused(err)) {
-      logRefusedOnce(sessionId, server);
-    } else {
-      process.stderr.write(`flightdeck: POST failed: ${err.message}\n`);
-    }
+    // Network-level failure: connection refused, DNS miss, abort
+    // timeout, fetch rejection. Collapse to a one-shot log.
+    logUnreachableOnce(sessionId, server, shortErrorFrom(err));
+    return;
   } finally {
     clearTimeout(timeout);
+  }
+
+  // HTTP-level failure: auth, payload validation, server error. fetch()
+  // returns normally for these so the catch above does not fire. Treat
+  // 4xx and 5xx the same way -- log once, drop subsequent POSTs. We do
+  // NOT retry; the sensor is fire-and-forget and a downed stack may
+  // stay down for longer than any sensible retry schedule.
+  if (!response.ok) {
+    logUnreachableOnce(sessionId, server, `HTTP ${response.status}`);
   }
 }
 

@@ -172,6 +172,77 @@ describe("FleetPanel", () => {
     });
   });
 
+  it("hides Stop All for a flavor where every live session is observer-only", () => {
+    // Pure claude-code flavor: every live session carries
+    // context.supports_directives=false, so the kill switch is a
+    // silent no-op and must not appear.
+    const claudeCodeFlavor: FlavorSummary[] = [
+      {
+        flavor: "claude-code",
+        agent_type: "developer",
+        session_count: 2,
+        active_count: 2,
+        tokens_used_total: 0,
+        sessions: [
+          {
+            session_id: "cc1", flavor: "claude-code", agent_type: "developer",
+            host: null, framework: null, model: null,
+            state: "active", started_at: "", last_seen_at: "", ended_at: null,
+            tokens_used: 0, token_limit: null,
+            context: { supports_directives: false },
+          },
+          {
+            session_id: "cc2", flavor: "claude-code", agent_type: "developer",
+            host: null, framework: null, model: null,
+            state: "idle", started_at: "", last_seen_at: "", ended_at: null,
+            tokens_used: 0, token_limit: null,
+            context: { supports_directives: false },
+          },
+        ],
+      },
+    ];
+    render(<FleetPanel flavors={claudeCodeFlavor} />);
+    expect(
+      screen.queryByTestId("flavor-stop-all-button-claude-code"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("keeps Stop All for a mixed flavor (at least one directive-capable session)", () => {
+    // Unusual but legal: one sensor-backed session, one hook-based
+    // session under the same flavor name. Directive will reach the
+    // sensor session; the hook-based one silently ignores it. UI
+    // keeps the button because part of the cohort can still be stopped.
+    const mixedFlavor: FlavorSummary[] = [
+      {
+        flavor: "mixed-flavor",
+        agent_type: "autonomous",
+        session_count: 2,
+        active_count: 2,
+        tokens_used_total: 0,
+        sessions: [
+          {
+            session_id: "m1", flavor: "mixed-flavor", agent_type: "autonomous",
+            host: null, framework: null, model: null,
+            state: "active", started_at: "", last_seen_at: "", ended_at: null,
+            tokens_used: 0, token_limit: null,
+            // Sensor session: no supports_directives field = directive-capable.
+          },
+          {
+            session_id: "m2", flavor: "mixed-flavor", agent_type: "autonomous",
+            host: null, framework: null, model: null,
+            state: "active", started_at: "", last_seen_at: "", ended_at: null,
+            tokens_used: 0, token_limit: null,
+            context: { supports_directives: false },
+          },
+        ],
+      },
+    ];
+    render(<FleetPanel flavors={mixedFlavor} />);
+    expect(
+      screen.getByTestId("flavor-stop-all-button-mixed-flavor"),
+    ).toBeInTheDocument();
+  });
+
   it("calls onFlavorClick when flavor name is clicked", () => {
     const onFlavorClick = vi.fn();
     render(<FleetPanel flavors={mockFlavors} onFlavorClick={onFlavorClick} />);

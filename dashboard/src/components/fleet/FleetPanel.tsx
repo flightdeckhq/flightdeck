@@ -13,6 +13,7 @@ import { Button } from "@/components/ui/button";
 import { SessionStateBar } from "./SessionStateBar";
 import { PolicyEventList } from "./PolicyEventList";
 import { createDirective } from "@/lib/api";
+import { flavorHasDirectiveCapableSession } from "@/lib/directives";
 import { DirectiveCard } from "@/components/directives/DirectiveCard";
 import { useFleetStore } from "@/store/fleet";
 import { OctagonX, X, Zap } from "lucide-react";
@@ -498,6 +499,12 @@ function FlavorItem({
   );
   const hasLive = liveSessions.length > 0;
   const hasDirectives = directives.length > 0;
+  // Hide the Stop All button when every live session of this flavor is
+  // observer-only (Claude Code and every future hook-based plugin).
+  // A mixed flavor keeps the button because the shutdown_flavor
+  // directive will still reach whichever sessions poll for directives.
+  // See DECISIONS.md D103 / dashboard/src/lib/directives.ts.
+  const canStopFlavor = flavorHasDirectiveCapableSession(flavor.sessions);
 
   async function handleStopAll() {
     setLoading(true);
@@ -620,7 +627,7 @@ function FlavorItem({
           </DialogContent>
         </Dialog>
       )}
-      {hasLive && !sent && (
+      {hasLive && canStopFlavor && !sent && (
         <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
           <DialogTrigger asChild>
             <button

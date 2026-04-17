@@ -16,6 +16,7 @@ import {
 import { TokenUsageBar } from "./TokenUsageBar";
 import { PromptViewer } from "./PromptViewer";
 import { createDirective } from "@/lib/api";
+import { sessionSupportsDirectives } from "@/lib/directives";
 import { attachBadge, getBadge, getEventDetail, getSummaryRows, isAttachmentStartEvent, truncateSessionId } from "@/lib/events";
 import { getProvider } from "@/lib/models";
 import { ProviderLogo } from "@/components/ui/provider-logo";
@@ -270,7 +271,12 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
     !!session && shuttingDown.has(session.session_id);
   const hasPending =
     session?.has_pending_directive || killSent || isShuttingDown;
-  const showButton = session && !isTerminal;
+  // Hide the Stop Agent button for observer-only sessions (Claude Code
+  // and any future hook-based plugin). Those sessions never poll for
+  // directives, so the kill switch would silently no-op and mislead
+  // the operator. See dashboard/src/lib/directives.ts.
+  const supportsStop = !session || sessionSupportsDirectives(session);
+  const showButton = session && !isTerminal && supportsStop;
 
   async function handleKill() {
     if (!session) return;

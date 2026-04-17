@@ -246,6 +246,21 @@ describe("SessionDrawer", () => {
     expect(indicator.getAttribute("aria-label")).toBe("Shutdown in progress");
   });
 
+  it("hides Stop Agent button for observer-only sessions (claude-code)", () => {
+    // Claude Code hooks fire after the event; the plugin cannot
+    // interrupt the agent. context.supports_directives=false must
+    // hide the kill switch so operators aren't misled into clicking
+    // a button that silently no-ops.
+    mockSessionOverride = {
+      state: "active",
+      has_pending_directive: false,
+      context: { supports_directives: false },
+    };
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    expect(screen.queryByText("Stop Agent")).not.toBeInTheDocument();
+    expect(screen.queryByText("Shutdown pending")).not.toBeInTheDocument();
+  });
+
   it("shows enabled Stop Agent button for active session", () => {
     mockSessionOverride = { state: "active", has_pending_directive: false };
     render(<SessionDrawer sessionId="s1" onClose={() => {}} />);

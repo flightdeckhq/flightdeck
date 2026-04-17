@@ -15,6 +15,7 @@ import {
   getSessionId,
   parseBool,
   readLatestTurn,
+  readTurns,
   sanitizeToolInput,
   tokensFromUsage,
 } from "../hooks/scripts/observe_cli.mjs";
@@ -452,6 +453,61 @@ describe("observe_cli helpers", () => {
     it("returns null when assistant precedes user (clock skew)", () => {
       const userTurn = { timestamp: "2026-04-17T10:00:02Z" };
       assert.equal(computeLatencyMs(userTurn, "2026-04-17T10:00:01Z"), null);
+    });
+  });
+
+  describe("readTurns", () => {
+    it("returns [] for missing transcript", () => {
+      assert.deepEqual(readTurns("/tmp/does-not-exist-999.jsonl"), []);
+    });
+
+    it("returns one entry per assistant message.id in order", () => {
+      const path = writeTranscript([
+        {
+          type: "user",
+          timestamp: "2026-04-17T10:00:00Z",
+          message: { role: "user", content: "run ls" },
+        },
+        {
+          type: "assistant",
+          timestamp: "2026-04-17T10:00:01Z",
+          message: {
+            id: "msg_turn_1",
+            model: "claude-sonnet-4-6",
+            content: [{ type: "tool_use", name: "Bash", input: {} }],
+            usage: { input_tokens: 5, output_tokens: 10 },
+          },
+        },
+        {
+          type: "user",
+          timestamp: "2026-04-17T10:00:02Z",
+          message: {
+            role: "user",
+            content: [{ type: "tool_result", tool_use_id: "x" }],
+          },
+        },
+        {
+          type: "assistant",
+          timestamp: "2026-04-17T10:00:03Z",
+          message: {
+            id: "msg_turn_2",
+            model: "claude-sonnet-4-6",
+            content: [{ type: "text", text: "done" }],
+            usage: { input_tokens: 7, output_tokens: 4 },
+          },
+        },
+      ]);
+      try {
+        const turns = readTurns(path);
+        assert.equal(turns.length, 2);
+        assert.equal(turns[0].messageId, "msg_turn_1");
+        assert.equal(turns[1].messageId, "msg_turn_2");
+        // Second turn's user-turn is the tool_result record (most recent
+        // user-role line before it), so latency can be measured against it.
+        assert.equal(Array.isArray(turns[1].userTurn.content), true);
+      } finally {
+        rmSync(dirname(path), { recursive: true, force: true });
+      }
     });
   });
 

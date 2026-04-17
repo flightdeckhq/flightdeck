@@ -233,32 +233,39 @@ export function sanitizeToolInput(input) {
 // ---------------------------------------------------------------------
 
 /**
- * Read a JSONL transcript and return the most recent LLM turn.
+ * Read a JSONL transcript and return every LLM turn, in order.
  *
  * One LLM call can span multiple assistant JSONL records (one per
  * streamed content block -- thinking, text, tool_use). All records
  * that belong to the same call share the same `message.id`. The final
  * record's `usage` object is the authoritative accumulated usage. We
- * group by `message.id` in order, keep the last record's usage, and
- * pair the group with the most recent user turn that preceded it for
- * latency calculation.
+ * group by `message.id` in order and pair each group with the most
+ * recent user-role turn that preceded it (for latency calculation).
  *
- * Returns null when the transcript has no assistant records yet (e.g.
- * first Stop hook fires before the JSONL is flushed -- unlikely but
- * defensive).
+ * Multi-LLM-turn conversations (assistant makes a tool call, gets a
+ * tool_result user-role reply, makes another LLM call) produce one
+ * entry in the returned array per LLM call, not per user prompt. That
+ * matches the Python sensor's one-post_call-per-LLM-call semantics.
+ *
+ * Returns [] when the transcript is missing or has no assistant records.
  */
-export function readLatestTurn(transcriptPath) {
-  if (!transcriptPath) return null;
+export function readTurns(transcriptPath) {
+  if (!transcriptPath) return [];
   let raw;
   try {
     raw = readFileSync(transcriptPath, "utf8");
   } catch {
-    return null;
+    return [];
   }
   const lines = raw.split("\n").filter((l) => l.length > 0);
+  // "Last user-role record we saw" -- both real prompts and tool_result
+  // injections. We track it per-record rather than per-prompt because
+  // every new assistant turn (including follow-up turns after a
+  // tool_result) wants its latency measured against the immediately
+  // preceding user-role record, which is the tool_result reply when
+  // the assistant is continuing a tool-use loop.
   let lastUser = null;
   let lastClaudeVersion = null;
-  // Map message.id -> { model, timestamp, usage, contentBlocks[] }
   const groups = new Map();
   const groupOrder = [];
   for (const line of lines) {
@@ -273,15 +280,18 @@ export function readLatestTurn(transcriptPath) {
       lastClaudeVersion = rec.version;
     }
     if (rec.type === "user") {
-      // A "user" line is either the real user prompt (message.content
-      // is a string) or a tool-result injection (content is an array
-      // of tool_result blocks). Only plain-string user turns count as
-      // the trigger for LLM latency. Tool-result replies are part of
-      // an in-flight turn and we keep rolling forward.
       const content = rec.message?.content;
-      if (typeof content === "string") {
+      // Normalise to a string for downstream content capture -- either
+      // the raw prompt or a short description of the tool_result reply.
+      const userContent =
+        typeof content === "string"
+          ? content
+          : Array.isArray(content)
+            ? content
+            : null;
+      if (userContent !== null) {
         lastUser = {
-          content,
+          content: userContent,
           timestamp: rec.timestamp,
           promptId: rec.promptId,
         };
@@ -311,19 +321,31 @@ export function readLatestTurn(transcriptPath) {
       }
     }
   }
-  if (groupOrder.length === 0) return null;
-  const latestId = groupOrder[groupOrder.length - 1];
-  const group = groups.get(latestId);
-  return {
-    messageId: group.messageId,
-    model: group.model,
-    firstTimestamp: group.firstTimestamp,
-    lastTimestamp: group.lastTimestamp,
-    usage: group.usage || {},
-    contentBlocks: group.contentBlocks,
-    userTurn: group.userAtStart,
-    claudeCodeVersion: lastClaudeVersion,
-  };
+  const out = [];
+  for (const id of groupOrder) {
+    const group = groups.get(id);
+    out.push({
+      messageId: group.messageId,
+      model: group.model,
+      firstTimestamp: group.firstTimestamp,
+      lastTimestamp: group.lastTimestamp,
+      usage: group.usage || {},
+      contentBlocks: group.contentBlocks,
+      userTurn: group.userAtStart,
+      claudeCodeVersion: lastClaudeVersion,
+    });
+  }
+  return out;
+}
+
+/**
+ * Convenience wrapper: return the most recent turn, or null. Kept for
+ * callers that only want the final turn (e.g. version-probe on
+ * SessionStart).
+ */
+export function readLatestTurn(transcriptPath) {
+  const turns = readTurns(transcriptPath);
+  return turns.length > 0 ? turns.at(-1) : null;
 }
 
 /**
@@ -594,19 +616,22 @@ async function main() {
   // Read transcript lazily -- some hooks don't need it and the file
   // may not exist yet (first-hook SessionStart before the JSONL is
   // flushed).
-  let cachedTurn = null;
-  const getTurn = () => {
-    if (cachedTurn === undefined) return cachedTurn;
-    if (cachedTurn !== null) return cachedTurn;
-    cachedTurn = readLatestTurn(transcriptPath);
-    return cachedTurn;
+  let cachedTurns = null;
+  const getTurns = () => {
+    if (cachedTurns !== null) return cachedTurns;
+    cachedTurns = readTurns(transcriptPath);
+    return cachedTurns;
+  };
+  const getLatestTurn = () => {
+    const turns = getTurns();
+    return turns.length > 0 ? turns.at(-1) : null;
   };
 
   // SessionStart: real first hook. Emit session_start with the model
   // and context, mark the dedup file so later hooks skip the synthetic
   // session_start path.
   if (hookName === "SessionStart") {
-    const turn = getTurn();
+    const turn = getLatestTurn();
     await ensureSessionStarted(cfg.server, cfg.token, sessionId, basePayload, {
       model: hookEvent.model || turn?.model || null,
       claudeCodeVersion: turn?.claudeCodeVersion || hookEvent.version || null,
@@ -614,8 +639,34 @@ async function main() {
     return;
   }
 
-  // SessionEnd: real session teardown. Emit session_end.
+  // SessionEnd: real session teardown. Before emitting session_end,
+  // flush any LLM turns that the Stop hook didn't get to see -- in
+  // `claude -p` mode Claude Code fires Stop once before the final
+  // tool-loop turn is flushed to the transcript, so a post_call for
+  // the final turn can still be missing when SessionEnd arrives.
+  // Dedup via the per-messageId marker keeps this idempotent with Stop.
   if (hookName === "SessionEnd") {
+    const turns = readTurns(hookEvent.transcript_path);
+    for (const turn of turns) {
+      if (!markEmittedTurn(turn.messageId)) continue;
+      const tokens = tokensFromUsage(turn.usage);
+      const latencyMs = computeLatencyMs(turn.userTurn, turn.lastTimestamp);
+      const hasContent = cfg.capturePrompts;
+      const content = hasContent ? buildContent(turn) : null;
+      await postEvent(cfg.server, cfg.token, sessionId, {
+        ...basePayload,
+        event_type: "post_call",
+        model: turn.model || basePayload.model,
+        tool_name: null,
+        tool_input: null,
+        is_subagent_call: false,
+        latency_ms: latencyMs,
+        timestamp: turn.lastTimestamp || new Date().toISOString(),
+        ...tokens,
+        has_content: hasContent,
+        content,
+      });
+    }
     const payload = {
       ...basePayload,
       event_type: "session_end",
@@ -637,33 +688,34 @@ async function main() {
     claudeCodeVersion: hookEvent.version || null,
   });
 
-  // Stop: the last LLM turn is now in the transcript. Read it, emit a
-  // post_call with real tokens / model / latency, and optionally
-  // attach content when FLIGHTDECK_CAPTURE_PROMPTS is on.
+  // Stop: every un-emitted LLM turn in the transcript becomes a
+  // post_call. Multi-turn tool-use conversations produce multiple
+  // assistant message.ids and Stop only fires once at the end, so we
+  // must iterate every group and dedup via the per-messageId marker
+  // file rather than emitting only the latest.
   if (hookName === "Stop") {
-    const turn = getTurn();
-    if (!turn) return; // transcript not ready; Claude Code will fire another hook.
-    if (!markEmittedTurn(turn.messageId)) return; // already emitted
-
-    const tokens = tokensFromUsage(turn.usage);
-    const latencyMs = computeLatencyMs(turn.userTurn, turn.lastTimestamp);
-    const hasContent = cfg.capturePrompts;
-    const content = hasContent ? buildContent(turn) : null;
-
-    const payload = {
-      ...basePayload,
-      event_type: "post_call",
-      model: turn.model || basePayload.model,
-      tool_name: null,
-      tool_input: null,
-      is_subagent_call: false,
-      latency_ms: latencyMs,
-      timestamp: turn.lastTimestamp || new Date().toISOString(),
-      ...tokens,
-      has_content: hasContent,
-      content,
-    };
-    await postEvent(cfg.server, cfg.token, sessionId, payload);
+    const turns = getTurns();
+    for (const turn of turns) {
+      if (!markEmittedTurn(turn.messageId)) continue; // already emitted
+      const tokens = tokensFromUsage(turn.usage);
+      const latencyMs = computeLatencyMs(turn.userTurn, turn.lastTimestamp);
+      const hasContent = cfg.capturePrompts;
+      const content = hasContent ? buildContent(turn) : null;
+      const payload = {
+        ...basePayload,
+        event_type: "post_call",
+        model: turn.model || basePayload.model,
+        tool_name: null,
+        tool_input: null,
+        is_subagent_call: false,
+        latency_ms: latencyMs,
+        timestamp: turn.lastTimestamp || new Date().toISOString(),
+        ...tokens,
+        has_content: hasContent,
+        content,
+      };
+      await postEvent(cfg.server, cfg.token, sessionId, payload);
+    }
     return;
   }
 

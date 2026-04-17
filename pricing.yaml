@@ -1,0 +1,151 @@
+# Flightdeck model pricing table.
+#
+# Prices are USD per 1,000,000 tokens, taken from provider public list
+# prices. Last verified: 2026-04-17.
+#
+# To add or update an entry: see CONTRIBUTING.md ("Updating pricing
+# data"). Include a link to the provider's pricing page in your PR.
+#
+# Cache ratios (uniform across all models that report cache tokens):
+#   cache_read     = input * 0.10  (90% discount)
+#   cache_creation = input * 1.25  (25% premium)
+# These ratios are applied in api/internal/store/pricing.go. If a
+# provider ever publishes different ratios, open an issue first -- it
+# requires a code-level schema change, not a pricing.yaml edit.
+#
+# `provider` must be one of: anthropic, openai, google, xai, mistral,
+# meta, other. `input` and `output` must be >= 0. `model_id` is the
+# exact string the sensor emits on events.model. Duplicates are
+# rejected at load time.
+
+version: 1
+updated: 2026-04-17
+
+models:
+  # Anthropic (anthropic.com/pricing)
+  - model_id: claude-opus-4-6
+    provider: anthropic
+    input: 5.00
+    output: 25.00
+
+  - model_id: claude-opus-4-5-20251101
+    provider: anthropic
+    input: 5.00
+    output: 25.00
+
+  - model_id: claude-opus-4-20250514
+    provider: anthropic
+    input: 5.00
+    output: 25.00
+
+  - model_id: claude-3-opus-20240229
+    provider: anthropic
+    input: 15.00
+    output: 75.00
+    notes: Legacy Opus 3 pricing (Anthropic still bills at the launch rate)
+
+  - model_id: claude-sonnet-4-6
+    provider: anthropic
+    input: 3.00
+    output: 15.00
+
+  - model_id: claude-sonnet-4-5-20250929
+    provider: anthropic
+    input: 3.00
+    output: 15.00
+
+  - model_id: claude-sonnet-4-20250514
+    provider: anthropic
+    input: 3.00
+    output: 15.00
+
+  - model_id: claude-3-5-sonnet-20241022
+    provider: anthropic
+    input: 3.00
+    output: 15.00
+
+  - model_id: claude-haiku-4-5
+    provider: anthropic
+    input: 1.00
+    output: 5.00
+
+  - model_id: claude-haiku-4-5-20251001
+    provider: anthropic
+    input: 1.00
+    output: 5.00
+
+  - model_id: claude-3-5-haiku-20241022
+    provider: anthropic
+    input: 0.80
+    output: 4.00
+
+  # OpenAI (openai.com/pricing)
+  - model_id: gpt-4o
+    provider: openai
+    input: 2.50
+    output: 10.00
+
+  - model_id: gpt-4o-mini
+    provider: openai
+    input: 0.15
+    output: 0.60
+
+  - model_id: gpt-4.1
+    provider: openai
+    input: 2.00
+    output: 8.00
+
+  - model_id: gpt-4.1-mini
+    provider: openai
+    input: 0.40
+    output: 1.60
+
+  - model_id: gpt-4.1-nano
+    provider: openai
+    input: 0.10
+    output: 0.40
+
+  - model_id: gpt-4-turbo
+    provider: openai
+    input: 10.00
+    output: 30.00
+
+  - model_id: o1
+    provider: openai
+    input: 15.00
+    output: 60.00
+
+  - model_id: o1-mini
+    provider: openai
+    input: 3.00
+    output: 12.00
+
+  - model_id: o3
+    provider: openai
+    input: 2.00
+    output: 8.00
+
+  - model_id: o3-pro
+    provider: openai
+    input: 20.00
+    output: 80.00
+
+  - model_id: o3-mini
+    provider: openai
+    input: 1.10
+    output: 4.40
+
+  - model_id: o4-mini
+    provider: openai
+    input: 1.10
+    output: 4.40
+
+  - model_id: text-embedding-3-small
+    provider: openai
+    input: 0.02
+    output: 0.00
+
+  - model_id: text-embedding-3-large
+    provider: openai
+    input: 0.13
+    output: 0.00

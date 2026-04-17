@@ -2625,3 +2625,143 @@ sensors that did report tokens.
 - `plugin/hooks/scripts/observe_cli.mjs::{transcriptReader, EVENT_MAP}`
 
 ---
+
+## D101 -- Cache-aware cost estimation formula
+
+**Date:** 2026-04-17
+**Phase:** 5
+
+**Context.** D099 shipped `estimated_cost` with a two-term formula:
+`tokens_input * input_price + tokens_output * output_price`. D100
+added `tokens_cache_read` and `tokens_cache_creation` to the events
+schema because the pre-D100 plugin was reporting `tokens_input=0` for
+Claude Code sessions. Once the cache columns started carrying real
+numbers, the old cost formula became visibly wrong: Claude Code's
+cached system prompt dominates every turn, so a cache-blind formula
+inflates estimated cost by roughly 60% or more for a typical session.
+The same overstatement applies to any other cache-heavy Anthropic
+deployment (LangChain + long context, agentic loops with stable tools).
+
+**Decision.** Replace the two-term formula with a four-term formula:
+
+```
+(tokens_input - tokens_cache_read - tokens_cache_creation) * input_rate
+  + tokens_cache_read     * input_rate * 0.10
+  + tokens_cache_creation * input_rate * 1.25
+  + tokens_output         * output_rate
+```
+
+The ratios (`0.10` for reads, `1.25` for writes) come from Anthropic's
+published pricing and are exposed as the `cacheReadRatio` and
+`cacheCreationRatio` constants in `api/internal/store/pricing.go`.
+They apply uniformly across every model that reports cache tokens.
+Providers that don't report cache tokens contribute `0` to both cache
+columns, so the cache_read and cache_creation terms vanish and the
+formula collapses to the old two-term expression. **No regression for
+non-Anthropic providers.**
+
+**Rejected alternatives.**
+
+- **Redefine `tokens_input` to mean uncached-only.** Rejected: breaks
+  the Python sensor contract (D100 explicitly keeps `tokens_input` as
+  the full-input sum), breaks every policy that uses `tokens_total`
+  for budget enforcement, and would need a migration backfill. Adding
+  cache-awareness only at the cost metric keeps policy arithmetic
+  stable.
+- **Move the ratios to pricing.yaml as per-model fields.** Rejected for
+  v1: Anthropic publishes them uniformly and no other provider
+  publishes any ratio today. If a provider ever diverges, extend
+  `ModelPricing` with optional cache ratios and default to the current
+  uniform values -- that's a code change, not a YAML change, which is
+  the right signal for "this is a semantic extension."
+- **Compute cost in Go post-query.** Rejected: a single SQL aggregate
+  keeps the cost metric consistent with every other dimension and
+  avoids per-bucket round-trips over long time windows.
+
+**Tradeoff.** The ratios are hard-coded constants. A future provider
+that publishes non-Anthropic-style cache pricing would require a
+`ModelPricing` schema bump. Documented in the comment on both
+constants so the next contributor sees the plan.
+
+**Code locations.**
+
+- `api/internal/store/pricing.go::BuildCostAggregateSQL`
+- `api/internal/store/pricing.go::{cacheReadRatio,cacheCreationRatio}`
+- `api/internal/store/pricing_test.go::TestBuildCostAggregateSQL_CacheAwareFormula`
+- `api/internal/store/pricing_test.go::TestBuildCostAggregateSQL_CollapsesWhenNoCacheTokens`
+
+---
+
+## D102 -- Externalize pricing data to `pricing.yaml`
+
+**Date:** 2026-04-17
+**Phase:** 5
+
+**Context.** D099 put the pricing table in a Go map literal inside
+`api/internal/store/pricing.go`. Every price change required a Go
+edit, a compile, a container rebuild, and a release. Providers adjust
+list prices on their own cadence (typically quarterly, sometimes
+more often), so the release-gated workflow was friction for
+contributors and guaranteed the table would drift from current
+pricing.
+
+**Decision.** Move the pricing table to `pricing.yaml` at the repo
+root. Load at service startup via `store.LoadPricing` from
+`api/internal/store/pricing_loader.go`. Path resolution order:
+
+1. `FLIGHTDECK_PRICING_PATH` environment variable, if set
+2. `/etc/flightdeck/pricing.yaml` (production container default --
+   the api Dockerfile COPYs the repo's pricing.yaml to this path)
+3. `./pricing.yaml` relative to the process working directory (dev)
+
+**Validation at load time.** Duplicate `model_id` rejected. Negative
+`input` or `output` rejected. Unknown `provider` strings rejected
+(valid set mirrors `ProviderCaseSQL`). Empty models list rejected.
+
+**Fallback.** On any load failure the loader logs a WARN and installs
+a small safety map (`claude-sonnet-4-6`, `claude-haiku-4-5`, `gpt-4o`,
+`gpt-4o-mini`) so the service still boots. Cost estimation for
+other models contributes `$0` to the SUM, which the handler already
+surfaces via `partial_estimate=true`. The service **never** crashes
+on a bad pricing file -- cost is a display feature, not a correctness
+feature.
+
+**Rejected alternatives.**
+
+- **JSON instead of YAML.** Rejected: comments matter. The pricing
+  file wants inline notes ("Legacy Opus 3 pricing", source links)
+  and a header explaining the cache-ratio convention. YAML supports
+  comments; JSON doesn't.
+- **Database-backed pricing.** Rejected for v1: adds a migration, an
+  admin UI, and a new read path just to get features the filesystem
+  already provides. `pricing.yaml` is version-controlled, reviewed
+  like code, and every deployment knows exactly which prices it's
+  using.
+- **Hot reload on every request.** Rejected: pricing is stable
+  minute-to-minute. Restart-to-apply is cheap and obvious.
+
+**Tradeoff.** One more file to ship with the binary. Dockerfile
+`COPY pricing.yaml /etc/flightdeck/pricing.yaml` bakes it into the
+image so a production deploy picks it up with no extra setup. The
+docker-compose dev overlay mounts `../pricing.yaml` over the baked-in
+copy so a dev operator can edit prices and `restart api` without a
+rebuild.
+
+**Future work.** `POST /v1/admin/reload-pricing` admin-gated endpoint
+so production operators can push a price update without a restart.
+Not in scope for this commit -- a container restart is cheap and
+obvious, and reload-without-restart adds an auth surface area without
+solving a demonstrated problem.
+
+**Code locations.**
+
+- `pricing.yaml` (repo root)
+- `api/internal/store/pricing_loader.go`
+- `api/internal/store/pricing.go::modelPricing` (now populated from YAML)
+- `api/cmd/main.go::main` (calls `store.LoadPricing()`)
+- `api/Dockerfile` (`COPY pricing.yaml /etc/flightdeck/pricing.yaml`)
+- `docker/docker-compose.yml::api.volumes`
+- `docker/docker-compose.dev.yml::api.volumes`
+- `api/internal/store/pricing_test.go` (six loader tests)
+
+---

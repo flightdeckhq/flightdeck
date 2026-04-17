@@ -159,6 +159,79 @@ To add a new LLM provider to the sensor:
 6. Write unit tests covering estimation, extraction, and interception
 7. Update `ARCHITECTURE.md` with the new provider
 
+## Updating pricing data
+
+Model list prices live in [`pricing.yaml`](pricing.yaml) at the repo
+root. Edit that file to add a model or update a price — no Go code
+changes and no release needed.
+
+### Steps
+
+1. Open `pricing.yaml` at the repo root.
+2. **To add a model:** append an entry with:
+   - `model_id` — the exact string the sensor emits on `events.model`
+     (match case and punctuation)
+   - `provider` — one of `anthropic`, `openai`, `google`, `xai`,
+     `mistral`, `meta`, `other`
+   - `input` — USD per 1M input tokens
+   - `output` — USD per 1M output tokens
+3. **To update a price:** edit the matching entry.
+4. Bump the `updated:` field at the top of the file to today's date.
+5. Run the store tests locally to confirm the file parses and the
+   validation passes:
+   ```bash
+   cd api && go test ./internal/store/... -run TestParsePricingFile -count=1
+   ```
+6. In your PR description, include a link to the provider's pricing
+   page as the source for every change. We need a verifiable origin
+   for every price.
+7. Title the PR `pricing: update <model>` or `pricing: add <model>`.
+
+### Cache ratios
+
+Cache-aware cost uses Anthropic's published ratios, applied uniformly
+to every model that reports cache tokens:
+
+```
+cache_read     = input * 0.10   (90% discount)
+cache_creation = input * 1.25   (25% premium)
+```
+
+These ratios live as constants in `api/internal/store/pricing.go`
+(`cacheReadRatio`, `cacheCreationRatio`) — not in `pricing.yaml`. If a
+provider publishes different ratios in the future, **open an issue
+first**. Per-model cache ratios require a `ModelPricing` schema
+expansion, not a `pricing.yaml` edit.
+
+### Validation rules enforced at load time
+
+- No duplicate `model_id`
+- `input >= 0`
+- `output >= 0`
+- `provider` must be in the known set
+
+A malformed `pricing.yaml` logs a WARN at service startup and falls
+back to a tiny safety map (`claude-sonnet-4-6`, `claude-haiku-4-5`,
+`gpt-4o`, `gpt-4o-mini`) so the service still boots. Fix the file
+before merging — the safety map is a guardrail, not an operating
+mode.
+
+### Path resolution
+
+Service startup tries these in order, first match wins:
+
+1. `FLIGHTDECK_PRICING_PATH` env var
+2. `/etc/flightdeck/pricing.yaml` (production container default)
+3. `./pricing.yaml` (dev default, relative to the process working dir)
+
+The API Dockerfile copies `pricing.yaml` to `/etc/flightdeck/` at
+build time, and the docker-compose dev overlay mounts the repo copy
+over that path so local edits take effect on `docker compose restart
+api` without a rebuild.
+
+See DECISIONS.md D101 (cache-aware formula) and D102 (externalized
+pricing data) for design rationale.
+
 ## Reporting Bugs
 
 Open an issue at https://github.com/flightdeckhq/flightdeck/issues with:

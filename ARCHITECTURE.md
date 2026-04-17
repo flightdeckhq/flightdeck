@@ -1266,6 +1266,106 @@ like `tokens`, `latency_*`, or `estimated_cost`.
 
 ---
 
+## Cost estimation
+
+Cost estimation is a display feature, not a billing system. It
+approximates what an operator would see on each provider's invoice so
+a dashboard operator can catch unexpected spend, compare flavors, or
+notice when a session suddenly doubles its burn. The numbers come from
+public list prices and a cache-aware per-event formula.
+
+**Data flow:**
+
+```
+pricing.yaml                          (repo root, source of truth)
+    │
+    ▼
+store.LoadPricing()                   (called from api/cmd/main.go)
+    │  parse + validate + fall back to safety map on failure
+    ▼
+modelPricing map                      (api/internal/store/pricing.go)
+    │
+    ▼
+BuildCostAggregateSQL("e.model")      (called from metricSpecs())
+    │  emits one CASE branch per model
+    ▼
+COALESCE(SUM(...), 0)                 (substituted into the analytics
+    │                                  SQL as the aggregate for
+    │                                  metric=estimated_cost)
+    ▼
+GET /v1/analytics?metric=estimated_cost
+    │
+    ▼
+CostChart + StackedSeriesChart        (dashboard)
+```
+
+**Formula.** Per event row, cost is:
+
+```
+(tokens_input - tokens_cache_read - tokens_cache_creation) * input_rate
+  + tokens_cache_read     * input_rate  * 0.10
+  + tokens_cache_creation * input_rate  * 1.25
+  + tokens_output         * output_rate
+```
+
+`input_rate` and `output_rate` come from the CASE expression
+`BuildCostAggregateSQL` generates from the pricing map. Rates are USD
+per token (price per million divided by 1,000,000).
+
+**Cache ratios** are uniform across every model and defined as
+package-level constants in `api/internal/store/pricing.go`:
+
+- `cacheReadRatio = 0.10` (Anthropic's 90% discount on cache reads)
+- `cacheCreationRatio = 1.25` (25% write premium)
+
+Providers that do not report cache tokens (OpenAI and every non-
+Anthropic provider today) populate `tokens_cache_read` and
+`tokens_cache_creation` with `0`, so the cache_read and cache_creation
+terms vanish and the formula collapses to `tokens_input * input_rate +
+tokens_output * output_rate` — the pre-D101 expression. Adding a new
+cache-reporting provider with the same ratios is a pricing.yaml edit;
+a provider with different ratios requires a `ModelPricing` schema
+expansion. See DECISIONS.md D101.
+
+**Why the formula lives in SQL rather than Go post-query:** a single
+pass over the aggregate, groups by any of the
+`flavor / model / framework / host / agent_type / team / provider`
+dimensions without Go-side restructuring, and stays consistent with
+every other analytics metric (tokens, latency, session count).
+Post-query cost computation in Go would require re-fetching every
+post_call row per bucket — orders of magnitude slower for long time
+ranges — and would fragment the metric dispatch that currently lives
+entirely in `metricSpecs()`.
+
+**Unknown model fallback.** When the pricing map has no entry for a
+model, the generated `CASE` falls through to `ELSE 0`, so that model's
+tokens contribute zero to the SUM. The handler separately probes for
+unpriced-model rows in the window and flips
+`AnalyticsResponse.PartialEstimate` to true so the dashboard can
+render an amber "some models excluded" banner above the cost chart.
+Full failure mode is covered in D099.
+
+**Path resolution for `pricing.yaml`** (in order, first match wins):
+
+1. `$FLIGHTDECK_PRICING_PATH` env var
+2. `/etc/flightdeck/pricing.yaml` (the production container default;
+   `api/Dockerfile` COPYs the repo's pricing.yaml here)
+3. `./pricing.yaml` relative to the process working directory (dev
+   default)
+
+On load failure — missing file, YAML parse error, validation error —
+the loader logs a WARN and installs a safety map covering four
+well-known models so cost estimation produces something sensible even
+on a misconfigured stack. The service never crashes on a bad pricing
+file. See D102.
+
+**Future work:** a reload endpoint (`POST /v1/admin/reload-pricing`,
+admin-token-gated) so price updates don't require an API restart. Not
+implemented today; operators either redeploy the api image or
+`docker compose restart api` to pick up edits.
+
+---
+
 ## Session Drawer -- Prompt Viewer
 
 When `capture_prompts=true` for a session, the session drawer shows a

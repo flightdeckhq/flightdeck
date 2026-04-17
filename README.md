@@ -140,7 +140,24 @@ The function appears in the dashboard the moment an agent calls `init()`. Result
 
 ### Analytics
 
-Token consumption, session counts, policy event volume, latency, and model distribution on a shared time range. Every chart has a group-by control spanning `flavor`, `model`, `framework`, `host`, `agent_type`, and `team`. Every chart reads from the same endpoint (`GET /v1/analytics`), so the global time range applies to all of them at once.
+Token consumption, session counts, policy event volume, latency, and model distribution on a shared time range. Every chart has a group-by control spanning `flavor`, `model`, `framework`, `host`, `agent_type`, `team`, and `provider`. Every chart reads from the same endpoint (`GET /v1/analytics`), so the global time range applies to all of them at once.
+
+### Estimated cost
+
+Flightdeck computes an estimated cost per session from public list prices. The per-event formula is:
+
+```
+(tokens_input - tokens_cache_read - tokens_cache_creation) * input_price
+  + tokens_cache_read     * input_price * 0.10
+  + tokens_cache_creation * input_price * 1.25
+  + tokens_output         * output_price
+```
+
+Cache ratios follow Anthropic's published structure (90% discount on reads, 25% premium on writes) and apply uniformly to every model that reports cache tokens. OpenAI and other providers that don't report cache tokens contribute 0 to the cache terms, so the formula collapses to `tokens_input * input_price + tokens_output * output_price`.
+
+Pricing data lives in [`pricing.yaml`](pricing.yaml) at the repo root and is loaded at API startup. To change a price: edit the YAML, open a PR with a link to the provider's pricing page. See [CONTRIBUTING.md](CONTRIBUTING.md#updating-pricing-data).
+
+These are estimates. Actual billing will differ. Not included: volume discounts, enterprise commitments, negotiated rates, cached-token rebates beyond the published ratio. Treat the cost chart as a sanity check, never as an invoice.
 
 ### Search
 

@@ -29,6 +29,11 @@ import (
 func main() {
 	cfg := config.Load()
 
+	// Load the model pricing table from pricing.yaml. Falls back to a
+	// small safety map on any load failure -- the service must not
+	// crash on a bad pricing file. See DECISIONS.md D102.
+	store.LoadPricing()
+
 	// Postgres
 	pool, err := pgxpool.New(context.Background(), cfg.PostgresURL)
 	if err != nil {

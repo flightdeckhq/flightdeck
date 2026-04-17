@@ -28,49 +28,17 @@ type ModelPricing struct {
 	OutputPerMTok float64
 }
 
-// modelPricing is the authoritative table. Keep in sync with
-// provider list pricing pages; add a comment pointing at the source
-// for each block. Prices are USD per 1M tokens. Keys are the exact
-// model strings the sensor emits on `events.model`.
+// modelPricing is the live pricing table. Populated at service startup
+// by LoadPricing (pricing_loader.go) from pricing.yaml at the repo
+// root. The initial value is the small safety map defined in
+// pricing_loader.go so a process that never calls LoadPricing (unit
+// tests, some embedded use) still produces non-zero cost for the
+// handful of models covered by the safety map.
 //
-// Updated: April 2026. See D099 for maintenance policy.
-//
-// Anthropic pricing notes: Opus 4.x (the 4-5 / 4-6 generation) is
-// $5/$25 per million tokens, a 67% reduction versus the legacy Opus 3
-// and the Opus 4.0/4.1 launch prices of $15/$75. The old $15/$75 tier
-// is retained only for `claude-3-opus-20240229`, which Anthropic still
-// bills at the legacy rate. Haiku 4.5 moved to $1/$5 over its earlier
-// $0.80/$4 figure.
-var modelPricing = map[string]ModelPricing{
-	// Anthropic list prices (anthropic.com/pricing)
-	"claude-opus-4-6":            {5.00, 25.00},
-	"claude-opus-4-5-20251101":   {5.00, 25.00},
-	"claude-opus-4-20250514":     {5.00, 25.00},
-	"claude-3-opus-20240229":     {15.00, 75.00},
-	"claude-sonnet-4-6":          {3.00, 15.00},
-	"claude-sonnet-4-5-20250929": {3.00, 15.00},
-	"claude-sonnet-4-20250514":   {3.00, 15.00},
-	"claude-3-5-sonnet-20241022": {3.00, 15.00},
-	"claude-haiku-4-5":           {1.00, 5.00},
-	"claude-haiku-4-5-20251001":  {1.00, 5.00},
-	"claude-3-5-haiku-20241022":  {0.80, 4.00},
-
-	// OpenAI list prices (openai.com/pricing)
-	"gpt-4o":      {2.50, 10.00},
-	"gpt-4o-mini": {0.15, 0.60},
-	"gpt-4.1":     {2.00, 8.00},
-	"gpt-4.1-mini": {0.40, 1.60},
-	"gpt-4.1-nano": {0.10, 0.40},
-	"gpt-4-turbo": {10.00, 30.00},
-	"o1":          {15.00, 60.00},
-	"o1-mini":     {3.00, 12.00},
-	"o3":          {2.00, 8.00},
-	"o3-pro":      {20.00, 80.00},
-	"o3-mini":     {1.10, 4.40},
-	"o4-mini":     {1.10, 4.40},
-	"text-embedding-3-small": {0.02, 0.00},
-	"text-embedding-3-large": {0.13, 0.00},
-}
+// Full table lives in pricing.yaml -- a PR editing that file is the
+// supported way to add or update a model. See CONTRIBUTING.md
+// ("Updating pricing data") and DECISIONS.md D102.
+var modelPricing = cloneMap(safetyPricing)
 
 // KnownPricedModels returns the set of models with a pricing entry.
 // Used by the analytics store to decide whether the response's
@@ -85,24 +53,53 @@ func KnownPricedModels() []string {
 	return out
 }
 
+// cacheReadRatio is the multiplier applied to cache-read input tokens
+// relative to the uncached input rate. Anthropic bills cache reads at
+// 10% of the input list price (90% discount). Applied uniformly to
+// every model that reports cache tokens; providers that do not report
+// cache tokens contribute 0 to the cache_read term and the formula
+// collapses naturally to the pre-D101 behaviour. If a provider ever
+// publishes a different cache-read ratio, this becomes a per-model
+// override on ModelPricing -- not a pricing.yaml edit. See D101.
+const cacheReadRatio = 0.10
+
+// cacheCreationRatio is the multiplier applied to cache-creation input
+// tokens. Anthropic bills cache writes at 125% of the input list
+// price (25% premium). Same uniform-across-models design as
+// cacheReadRatio; see D101.
+const cacheCreationRatio = 1.25
+
 // BuildCostAggregateSQL generates the SQL aggregate expression for
-// `metric=estimated_cost`. The returned expression is a single
-// `COALESCE(SUM(...), 0)` that computes, per row,
+// ``metric=estimated_cost``. The returned expression is a single
+// ``COALESCE(SUM(...), 0)`` that computes, per row,
 //
-//	tokens_input * (input_rate_for_model) +
-//	tokens_output * (output_rate_for_model)
+//	(tokens_input - tokens_cache_read - tokens_cache_creation)
+//	    * input_rate_for_model
+//	+ tokens_cache_read
+//	    * input_rate_for_model * cacheReadRatio
+//	+ tokens_cache_creation
+//	    * input_rate_for_model * cacheCreationRatio
+//	+ tokens_output
+//	    * output_rate_for_model
 //
-// where the rates are looked up via a `CASE ... WHEN 'model' THEN
-// rate` generated from `modelPricing`. Models missing from the map
-// fall through to `0`, which is what makes the metric fail open for
+// where the rates are looked up via ``CASE ... WHEN 'model' THEN rate``
+// generated from the active modelPricing map. Models missing from the
+// map fall through to 0, which is what makes the metric fail open for
 // unknown models (the handler separately flags the response with
-// `partial_estimate`).
+// ``partial_estimate``).
+//
+// For providers that do not report cache tokens (OpenAI and everything
+// non-Anthropic today), ``tokens_cache_read`` and
+// ``tokens_cache_creation`` are 0 so the cache_read and cache_creation
+// terms vanish and uncached = tokens_input, collapsing the formula
+// back to the pre-D101 two-term expression. No regression for non-
+// cache-reporting providers.
 //
 // The expression is a bare aggregate -- the caller supplies FROM /
-// WHERE / GROUP BY. All values are constants generated at startup
-// so there is no SQL-injection surface; the function takes no user
-// input. Prices are USD per million tokens, so the multiplier is
-// price / 1_000_000.
+// WHERE / GROUP BY. All values are constants generated at startup so
+// there is no SQL-injection surface; the function takes no user input.
+// Prices are USD per million tokens, so the multiplier is
+// price / 1_000_000. See DECISIONS.md D101.
 func BuildCostAggregateSQL(modelColumn string) string {
 	// Sort keys for stable SQL output (eases debugging and snapshot
 	// tests).
@@ -117,8 +114,6 @@ func BuildCostAggregateSQL(modelColumn string) string {
 	outputCases.WriteString("CASE " + modelColumn)
 	for _, m := range models {
 		p := modelPricing[m]
-		// Escape single quotes by doubling, though none of the
-		// current model keys contain quotes.
 		safe := strings.ReplaceAll(m, "'", "''")
 		fmt.Fprintf(&inputCases, " WHEN '%s' THEN %.10f", safe, p.InputPerMTok/1_000_000)
 		fmt.Fprintf(&outputCases, " WHEN '%s' THEN %.10f", safe, p.OutputPerMTok/1_000_000)
@@ -126,12 +121,24 @@ func BuildCostAggregateSQL(modelColumn string) string {
 	inputCases.WriteString(" ELSE 0 END")
 	outputCases.WriteString(" ELSE 0 END")
 
+	inputRate := inputCases.String()
+	outputRate := outputCases.String()
+
+	// uncached = tokens_input - cache_read - cache_creation. Wrapped in
+	// COALESCE at every column reference so NULL tokens_input rows
+	// (historical events before the column was populated) do not
+	// propagate NULL into the aggregate and zero the whole SUM.
 	return fmt.Sprintf(
 		"COALESCE(SUM("+
-			"COALESCE(tokens_input, 0) * (%s) + "+
-			"COALESCE(tokens_output, 0) * (%s)"+
+			"(COALESCE(tokens_input, 0) - COALESCE(tokens_cache_read, 0) - COALESCE(tokens_cache_creation, 0)) * (%s) + "+
+			"COALESCE(tokens_cache_read, 0)     * (%s) * %.4f + "+
+			"COALESCE(tokens_cache_creation, 0) * (%s) * %.4f + "+
+			"COALESCE(tokens_output, 0)         * (%s)"+
 			"), 0)",
-		inputCases.String(), outputCases.String(),
+		inputRate,
+		inputRate, cacheReadRatio,
+		inputRate, cacheCreationRatio,
+		outputRate,
 	)
 }
 

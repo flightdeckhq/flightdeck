@@ -86,6 +86,12 @@ services:
       # D095: tok_dev only works when ENVIRONMENT=dev.
       ENVIRONMENT: dev
       SHUTDOWN_TIMEOUT_SECS: "30"
+    volumes:
+      # D102: mount the repo-level pricing.yaml into the production
+      # default path so a dev operator can edit prices and restart the
+      # api without rebuilding the image. Production deployments that
+      # use the baked-in copy instead can drop this mount.
+      - ../pricing.yaml:/etc/flightdeck/pricing.yaml:ro
     depends_on:
       postgres:
         condition: service_healthy

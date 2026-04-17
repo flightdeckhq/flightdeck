@@ -141,8 +141,8 @@ type Event struct {
 	TokensInput         *int           `json:"tokens_input,omitempty"`
 	TokensOutput        *int           `json:"tokens_output,omitempty"`
 	TokensTotal         *int           `json:"tokens_total,omitempty"`
-	TokensCacheRead     int64          `json:"tokens_cache_read"`     // D098
-	TokensCacheCreation int64          `json:"tokens_cache_creation"` // D098
+	TokensCacheRead     int64          `json:"tokens_cache_read"`     // D100
+	TokensCacheCreation int64          `json:"tokens_cache_creation"` // D100
 	LatencyMs           *int           `json:"latency_ms,omitempty"`
 	ToolName            *string        `json:"tool_name,omitempty"`
 	HasContent          bool           `json:"has_content"`

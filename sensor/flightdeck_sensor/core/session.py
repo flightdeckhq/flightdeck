@@ -565,7 +565,7 @@ class Session:
             "tokens_input": None,
             "tokens_output": None,
             "tokens_total": None,
-            # D098: cache-token breakdown. Default 0 so the worker always
+            # D100: cache-token breakdown. Default 0 so the worker always
             # receives a non-null value for the NOT NULL DEFAULT 0 columns.
             "tokens_cache_read": 0,
             "tokens_cache_creation": 0,

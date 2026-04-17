@@ -57,7 +57,7 @@ def test_anthropic_extract_usage_sums_cache_tokens(mock_anthropic_response: Magi
     # input_tokens=100 + cache_read=10 + cache_write=5 = 115
     assert usage.input_tokens == 115
     assert usage.output_tokens == 50
-    # D098: cache tokens also surfaced separately so analytics can break them
+    # D100: cache tokens also surfaced separately so analytics can break them
     # out without losing the billed-total semantics of input_tokens.
     assert usage.cache_read_tokens == 10
     assert usage.cache_creation_tokens == 5

@@ -48,7 +48,8 @@ execution path.
 
 - Proxy or intercept LLM traffic at the network layer
 - Capture prompt content unless explicitly enabled per deployment
-- Calculate dollar costs (token counts only in v1)
+- Issue a billable invoice (the `estimated_cost` metric is an approximation
+  based on provider list prices; see DECISIONS.md D099)
 - Send notifications via Slack, email, or PagerDuty (v2)
 - Orchestrate or tell agents what to do
 
@@ -962,8 +963,8 @@ CREATE TABLE events (
     tokens_input            INTEGER,
     tokens_output           INTEGER,
     tokens_total            INTEGER,
-    tokens_cache_read       BIGINT NOT NULL DEFAULT 0,  -- cached prompt tokens (D098)
-    tokens_cache_creation   BIGINT NOT NULL DEFAULT 0,  -- tokens written to cache (D098)
+    tokens_cache_read       BIGINT NOT NULL DEFAULT 0,  -- cached prompt tokens (D100)
+    tokens_cache_creation   BIGINT NOT NULL DEFAULT 0,  -- tokens written to cache (D100)
     latency_ms              INTEGER,
     tool_name               TEXT,
     has_content             BOOLEAN NOT NULL DEFAULT FALSE,
@@ -1220,10 +1221,48 @@ Every chart has:
 - The global time range picker at the top applies to all charts
 
 Available dimensions for any group-by: `flavor`, `model`, `framework`,
-`host`, `agent_type`, `team`
+`host`, `agent_type`, `team`, `provider`
 
 Available metrics for any chart: `tokens`, `sessions`, `latency_avg`,
-`policy_events`
+`latency_p50`, `latency_p95`, `policy_events`, `estimated_cost`
+
+The `provider` dimension is derived at query time from the model name
+via a SQL `CASE` expression (`claude-*` → anthropic, `gpt-*` / `o1-*` /
+`o3-*` / `o4-*` / `text-embedding-*` / `dall-e-*` → openai, `gemini-*`
+→ google, `grok-*` → xai, `mistral-*` / `mixtral-*` → mistral,
+`llama-*` → meta, else `other`). There is no `events.provider` column
+today; adding one plus a backfill is a future improvement so the
+mapping does not live in SQL. See DECISIONS.md D098.
+
+`estimated_cost` multiplies each event's `tokens_input` and
+`tokens_output` by list-price per model from a static pricing table
+(`api/internal/store/pricing.go`) using a generated SQL CASE. Models
+not in the table contribute $0 — the UI surfaces a "partial estimate"
+warning. Not a billed amount. See D099.
+
+`latency_p50` and `latency_p95` use Postgres `PERCENTILE_CONT` ordered-
+set aggregates on `events.latency_ms` and fall back to 0 via
+`COALESCE` when no events exist in the bucket.
+
+Dimensions that live on `sessions` (`framework`, `host`, `agent_type`)
+are accessed via a `JOIN` against `sessions` when the metric's base
+table is `events` -- previously these silently failed to resolve on
+event-based metrics (tokens / latency / policy_events).
+
+`framework` is a special case: the sensor emits multiple framework
+versions per session as a JSONB array under
+`sessions.context->'frameworks'` (e.g. `["langchain/0.1.12",
+"crewai/0.42.0"]`). The analytics query therefore unnests the array
+with `LEFT JOIN LATERAL jsonb_array_elements_text(context->'frameworks')`
+and groups on the per-element alias. `LEFT JOIN` (not `CROSS`) so
+sessions with an empty or missing array still produce one `'unknown'`
+row instead of being dropped from totals. A session tagged with two
+frameworks legitimately contributes to each framework's bucket -- so
+summed totals across frameworks can exceed the distinct session count,
+which is the correct answer for a multi-valued dimension. The same
+lateral unnest is joined onto the events base (via the existing
+sessions JOIN) when `framework` is paired with event-based metrics
+like `tokens`, `latency_*`, or `estimated_cost`.
 
 ---
 
@@ -3395,8 +3434,8 @@ appear in the fleet alongside production agents.
 **Goal:** Platform engineer deploys Flightdeck to Kubernetes with one command.
 The production deployment is secure, HA, and auditable.
 
-> **For Claude Code:** Do not implement TimescaleDB migration, dollar cost
-> conversion, or notification infrastructure during this phase.
+> **For Claude Code:** Do not implement TimescaleDB migration or notification
+> infrastructure during this phase.
 
 **Deliverables:**
 
@@ -3490,7 +3529,9 @@ The production deployment is secure, HA, and auditable.
 - Not a proxy. Never intercepts LLM traffic.
 - Not a content inspector by default. Prompt capture is opt-in.
 - Not an orchestrator. Never tells agents what to do.
-- Not a cost calculator. Token counts only. Dollar conversion is v2.
+- Not a billing system. `estimated_cost` is an approximation from public list
+  prices; actual invoices differ (volume discounts, enterprise commitments,
+  cached-token rebates).
 - Not a notification platform. No Slack/email/PagerDuty. That is v2.
 
 ---

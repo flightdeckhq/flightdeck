@@ -37,7 +37,7 @@ type EventPayload struct {
 	TokensInput     *int            `json:"tokens_input"`
 	TokensOutput    *int            `json:"tokens_output"`
 	TokensTotal     *int            `json:"tokens_total"`
-	// D098: Anthropic cache-token breakdown. Populated by the Python sensor's
+	// D100: Anthropic cache-token breakdown. Populated by the Python sensor's
 	// AnthropicProvider.extract_usage and by the Claude Code plugin's
 	// transcript reader. Absent on OpenAI events and on non-LLM events.
 	TokensCacheRead     *int64      `json:"tokens_cache_read,omitempty"`

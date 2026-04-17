@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useSearchParams } from "react-router-dom";
-import { Search, RefreshCw, X, LayoutGrid, GitBranch, Bot, Boxes, Server, Camera } from "lucide-react";
+import { Search, RefreshCw, X, LayoutGrid, GitBranch, Bot, Boxes, Server, FileText } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { fetchSessions, type SessionsParams } from "@/lib/api";
 import type { SessionListItem, SessionState } from "@/lib/types";
@@ -936,13 +936,31 @@ export function Investigate() {
                   </th>
                   <th
                     className="uppercase"
-                    style={{ color: "var(--text-muted)", fontSize: 10, fontWeight: 600, letterSpacing: "0.07em", padding: "0 8px", width: COL_WIDTHS.capture }}
+                    style={{
+                      color: "var(--text-muted)",
+                      fontSize: 10,
+                      fontWeight: 600,
+                      letterSpacing: "0.07em",
+                      padding: "0 8px",
+                      width: COL_WIDTHS.capture,
+                      whiteSpace: "normal",
+                      verticalAlign: "middle",
+                    }}
                     aria-label="Prompt capture"
                   >
-                    <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-                      <Camera size={12} style={{ color: "var(--text-muted)" }} />
-                      Capture
-                    </span>
+                    <div className="flex items-center justify-center gap-1.5">
+                      <FileText
+                        size={12}
+                        strokeWidth={2}
+                        className="shrink-0 self-center"
+                        style={{ color: "var(--text-muted)" }}
+                      />
+                      <span className="leading-tight">
+                        PROMPT
+                        <br />
+                        CAPTURE
+                      </span>
+                    </div>
                   </th>
                   <th
                     className="uppercase"
@@ -1036,10 +1054,10 @@ export function Investigate() {
                                   color: "var(--accent)",
                                 }}
                               >
-                                <Camera size={14} />
+                                <FileText size={12} strokeWidth={2.25} />
                               </button>
                             </TooltipTrigger>
-                            <TooltipContent>View captured prompts</TooltipContent>
+                            <TooltipContent>Prompts captured</TooltipContent>
                           </Tooltip>
                         </TooltipProvider>
                       )}

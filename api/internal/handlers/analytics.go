@@ -11,15 +11,22 @@ import (
 )
 
 var validMetrics = map[string]bool{
-	"tokens": true, "sessions": true, "latency_avg": true, "policy_events": true,
+	"tokens":         true,
+	"sessions":       true,
+	"latency_avg":    true,
+	"latency_p50":    true,
+	"latency_p95":    true,
+	"policy_events":  true,
+	"estimated_cost": true,
 }
 
 var validGroupBy = map[string]bool{
-	"flavor": true, "model": true, "framework": true, "host": true, "agent_type": true, "team": true,
+	"flavor": true, "model": true, "framework": true, "host": true,
+	"agent_type": true, "team": true, "provider": true,
 }
 
 var validRanges = map[string]bool{
-	"7d": true, "30d": true, "90d": true, "custom": true,
+	"today": true, "7d": true, "30d": true, "90d": true, "custom": true,
 }
 
 var validGranularities = map[string]bool{
@@ -32,15 +39,16 @@ var validGranularities = map[string]bool{
 // @Description  Flexible GROUP BY analytics endpoint. Returns time series data grouped by dimension.
 // @Tags         analytics
 // @Produce      json
-// @Param        metric           query  string  false  "Metric: tokens, sessions, latency_avg, policy_events (default: tokens)"
-// @Param        group_by         query  string  false  "Dimension: flavor, model, framework, host, agent_type, team (default: flavor)"
-// @Param        range            query  string  false  "Time range: 7d, 30d, 90d, custom (default: 30d)"
+// @Param        metric           query  string  false  "Metric: tokens, sessions, latency_avg, latency_p50, latency_p95, policy_events, estimated_cost (default: tokens)"
+// @Param        group_by         query  string  false  "Dimension: flavor, model, framework, host, agent_type, team, provider (default: flavor)"
+// @Param        range            query  string  false  "Time range: today, 7d, 30d, 90d, custom (default: 30d)"
 // @Param        from             query  string  false  "Start time ISO 8601 (required when range=custom)"
 // @Param        to               query  string  false  "End time ISO 8601 (required when range=custom)"
 // @Param        granularity      query  string  false  "Granularity: hour, day, week (default: day)"
 // @Param        filter_flavor    query  string  false  "Filter to specific flavor"
 // @Param        filter_model     query  string  false  "Filter to specific model"
 // @Param        filter_agent_type query string  false  "Filter to specific agent_type"
+// @Param        filter_provider  query  string  false  "Filter to specific provider (anthropic, openai, google, xai, mistral, meta, other)"
 // @Success      200  {object}  store.AnalyticsResponse
 // @Failure      400  {object}  ErrorResponse
 // @Failure      500  {object}  ErrorResponse
@@ -54,7 +62,7 @@ func AnalyticsHandler(s store.Querier) http.HandlerFunc {
 			metric = "tokens"
 		}
 		if !validMetrics[metric] {
-			writeError(w, http.StatusBadRequest, "invalid metric: must be one of tokens, sessions, latency_avg, policy_events")
+			writeError(w, http.StatusBadRequest, "invalid metric: must be one of tokens, sessions, latency_avg, latency_p50, latency_p95, policy_events, estimated_cost")
 			return
 		}
 
@@ -63,7 +71,7 @@ func AnalyticsHandler(s store.Querier) http.HandlerFunc {
 			groupBy = "flavor"
 		}
 		if !validGroupBy[groupBy] {
-			writeError(w, http.StatusBadRequest, "invalid group_by: must be one of flavor, model, framework, host, agent_type, team")
+			writeError(w, http.StatusBadRequest, "invalid group_by: must be one of flavor, model, framework, host, agent_type, team, provider")
 			return
 		}
 
@@ -72,7 +80,7 @@ func AnalyticsHandler(s store.Querier) http.HandlerFunc {
 			rangeParam = "30d"
 		}
 		if !validRanges[rangeParam] {
-			writeError(w, http.StatusBadRequest, "invalid range: must be one of 7d, 30d, 90d, custom")
+			writeError(w, http.StatusBadRequest, "invalid range: must be one of today, 7d, 30d, 90d, custom")
 			return
 		}
 
@@ -116,6 +124,7 @@ func AnalyticsHandler(s store.Querier) http.HandlerFunc {
 			FilterFlavor:    q.Get("filter_flavor"),
 			FilterModel:     q.Get("filter_model"),
 			FilterAgentType: q.Get("filter_agent_type"),
+			FilterProvider:  q.Get("filter_provider"),
 		}
 
 		result, err := s.QueryAnalytics(r.Context(), params)

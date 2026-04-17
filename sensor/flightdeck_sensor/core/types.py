@@ -61,7 +61,7 @@ class TokenUsage:
     """Token counts from a single LLM call.
 
     ``input_tokens`` is the full input sum (uncached + cache_read + cache_creation)
-    so policy/budget arithmetic stays numerically identical to the pre-D098
+    so policy/budget arithmetic stays numerically identical to the pre-D100
     behaviour. ``cache_read_tokens`` and ``cache_creation_tokens`` are the
     Anthropic cache-specific breakdown surfaced as separate fields so cache
     economics survive into analytics; they are already included in the

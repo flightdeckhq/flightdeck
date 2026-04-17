@@ -21,6 +21,8 @@ definitions:
         type: string
       metric:
         type: string
+      partial_estimate:
+        type: boolean
       range:
         type: string
       series:
@@ -140,10 +142,10 @@ definitions:
       session_id:
         type: string
       tokens_cache_creation:
-        description: D098
+        description: D100
         type: integer
       tokens_cache_read:
-        description: D098
+        description: D100
         type: integer
       tokens_input:
         type: integer
@@ -698,17 +700,17 @@ paths:
       description: Flexible GROUP BY analytics endpoint. Returns time series data
         grouped by dimension.
       parameters:
-      - description: 'Metric: tokens, sessions, latency_avg, policy_events (default:
-          tokens)'
+      - description: 'Metric: tokens, sessions, latency_avg, latency_p50, latency_p95,
+          policy_events, estimated_cost (default: tokens)'
         in: query
         name: metric
         type: string
-      - description: 'Dimension: flavor, model, framework, host, agent_type, team
-          (default: flavor)'
+      - description: 'Dimension: flavor, model, framework, host, agent_type, team,
+          provider (default: flavor)'
         in: query
         name: group_by
         type: string
-      - description: 'Time range: 7d, 30d, 90d, custom (default: 30d)'
+      - description: 'Time range: today, 7d, 30d, 90d, custom (default: 30d)'
         in: query
         name: range
         type: string
@@ -735,6 +737,11 @@ paths:
       - description: Filter to specific agent_type
         in: query
         name: filter_agent_type
+        type: string
+      - description: Filter to specific provider (anthropic, openai, google, xai,
+          mistral, meta, other)
+        in: query
+        name: filter_provider
         type: string
       produces:
       - application/json

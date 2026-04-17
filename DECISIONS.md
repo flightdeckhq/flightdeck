@@ -2472,7 +2472,81 @@ endpoint, GetContextFacets should gain the matching parameter.
 
 ---
 
-## D098 -- Cache token columns on events + Claude Code emits real tokens
+## D098 -- Analytics `provider` dimension via SQL `CASE` on model name
+
+**Problem:** Analytics v2 wants a provider breakdown (anthropic /
+openai / google / xai / mistral / meta / other). The `events` table
+has `model` but no `provider` column. The `event_content.provider`
+column is populated only when `capture_prompts=true` (D094 opt-in)
+and is therefore sparse or empty in most deployments -- not suitable
+as the authoritative provider source.
+
+**Options considered:**
+1. Add `events.provider TEXT NOT NULL DEFAULT 'unknown'` via a new
+   migration, have the sensor set it from the intercepted client
+   class (Anthropic / OpenAI SDK), plus a one-off backfill that
+   infers provider from `model` for historical rows.
+2. Derive provider at query time via a SQL `CASE` expression over
+   `model`.
+
+**Decision:** Option 2 for v1. The query-time CASE expression is
+added to `validGroupByColumns` in `api/internal/store/analytics.go`
+alongside the other whitelisted group-by columns, and keyed as
+`"provider"`. The mapping is also mirrored in
+`dashboard/src/lib/models.ts::getProvider` for client-side UI work
+(provider logos, colours) -- both must stay in sync when a new
+model family lands.
+
+**Tradeoff:** The mapping lives in two places (SQL + TS). A future
+improvement (not v1) is to add a real `events.provider` column,
+have the sensor populate it at `post_call` time, and drop the SQL
+CASE branch. Until then, rolling out a new provider family (e.g.
+Cohere) requires editing both the SQL expression and the TS helper.
+
+**Code locations:**
+
+- `api/internal/store/analytics.go::validGroupByColumns["provider"]`
+- `dashboard/src/lib/models.ts::getProvider`
+
+---
+
+## D099 -- Analytics `estimated_cost` metric with static pricing table
+
+**Problem:** Operators want a "how much are we spending" view.
+Computing this server-side needs per-model pricing. We do not
+want a live pricing feed (no upstream contract, no refresh
+schedule) and we do not want per-customer discount tables
+(self-hosted v1 has no tenant model).
+
+**Decision:** Ship a static, hand-maintained pricing map in
+`api/internal/store/pricing.go` keyed by exact model name. Values
+are `(input_per_mtok, output_per_mtok)` in USD, taken from public
+list prices as of the commit date. The query builds a SQL `CASE`
+from the map and computes
+`SUM(tokens_input * input_rate + tokens_output * output_rate)` per
+time bucket. Models missing from the map contribute $0; the API
+response exposes a `partial_estimate` flag so the dashboard can
+show a disclaimer.
+
+**UI disclosure:** The Analytics page renders an amber-toned
+disclaimer above the cost chart stating the numbers are based on
+public list prices and exclude volume discounts, enterprise
+commitments, and cached-token rebates.
+
+**Tradeoff:** Accuracy decays as providers change prices. The
+pricing table is a normal source file -- it moves with commits,
+not a service restart. A quarterly refresh is the expected
+maintenance cadence. Treat reported figures as approximate and
+never as billable.
+
+**Code locations:**
+
+- `api/internal/store/pricing.go` (new)
+- `api/internal/store/analytics.go::QueryAnalytics` (cost metric path)
+
+---
+
+## D100 -- Cache token columns on events + Claude Code emits real tokens
 
 **Date:** 2026-04-17
 **Phase:** 5

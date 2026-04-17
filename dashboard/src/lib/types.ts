@@ -201,6 +201,7 @@ export interface AnalyticsParams {
   filter_flavor?: string;
   filter_model?: string;
   filter_agent_type?: string;
+  filter_provider?: string;
 }
 
 /** A single time-series data point. */
@@ -230,6 +231,10 @@ export interface AnalyticsResponse {
   granularity: string;
   series: AnalyticsSeries[];
   totals: AnalyticsTotals;
+  /** True when metric=estimated_cost and the window contains post_call
+   *  rows for models without a pricing entry. UI shows a partial-
+   *  estimate disclaimer when set. See DECISIONS.md D099. */
+  partial_estimate?: boolean;
 }
 
 /** Prompt content for a single event, from GET /v1/events/:id/content. */

@@ -126,7 +126,7 @@ describe("observe_cli.mjs", () => {
     assert.equal(capture.bodies().length, before);
   });
 
-  it("UserPromptSubmit skips pre_call emission when model is unresolved (D098)", async () => {
+  it("UserPromptSubmit skips pre_call emission when model is unresolved (D100)", async () => {
     clearAllPluginMarkers();
     // No SessionStart, no transcript -- model is unresolvable. The
     // plugin must NOT emit a pre_call that would render as "unknown".
@@ -149,7 +149,7 @@ describe("observe_cli.mjs", () => {
     );
   });
 
-  it("UserPromptSubmit emits pre_call when model is cached by a prior Stop (D098)", async () => {
+  it("UserPromptSubmit emits pre_call when model is cached by a prior Stop (D100)", async () => {
     clearAllPluginMarkers();
     // Simulate a prior Stop that cached the model for this session.
     const transcriptPath = writeTranscript([
@@ -225,7 +225,7 @@ describe("observe_cli.mjs", () => {
     assert.equal(body.tool_name, "Read");
   });
 
-  it("maps Stop to post_call with transcript tokens and model (D098)", async () => {
+  it("maps Stop to post_call with transcript tokens and model (D100)", async () => {
     const transcriptPath = writeTranscript([
       {
         type: "user",
@@ -288,7 +288,7 @@ describe("observe_cli.mjs", () => {
     assert.equal(body.event_type, "session_end");
   });
 
-  it("defaults FLIGHTDECK_SERVER/TOKEN when unset (zero-config path, D098)", async () => {
+  it("defaults FLIGHTDECK_SERVER/TOKEN when unset (zero-config path, D100)", async () => {
     // Point at the capture server but leave TOKEN unset so we verify
     // the default `tok_dev` is sent.
     clearAllPluginMarkers();
@@ -663,7 +663,7 @@ describe("observe_cli helpers", () => {
   });
 
   describe("EVENT_MAP", () => {
-    it("covers the v1 hook set (D098)", () => {
+    it("covers the v1 hook set (D100)", () => {
       assert.equal(EVENT_MAP.SessionStart, "session_start");
       assert.equal(EVENT_MAP.UserPromptSubmit, "pre_call");
       assert.equal(EVENT_MAP.PostToolUse, "tool_call");
@@ -774,7 +774,7 @@ describe("observe_cli end-to-end (new fields)", () => {
     assert.equal(body.tool_input, null);
   });
 
-  it("Stop with CAPTURE_PROMPTS=true attaches content payload (D098)", async () => {
+  it("Stop with CAPTURE_PROMPTS=true attaches content payload (D100)", async () => {
     const transcriptPath = writeTranscript([
       {
         type: "user",

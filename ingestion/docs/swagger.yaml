@@ -1,60 +1,60 @@
-basePath: /
-definitions:
-  internal_handlers.DirectiveResponse:
-    properties:
-      action:
-        type: string
-      degrade_to:
-        type: string
-      grace_period_ms:
-        type: integer
-      id:
-        type: string
-      payload:
-        type: object
-      reason:
-        type: string
-    type: object
-  internal_handlers.ErrorResponse:
-    properties:
-      error:
-        type: string
-    type: object
-  internal_handlers.EventResponse:
-    properties:
-      attached:
-        type: boolean
-      directive:
-        $ref: '#/definitions/internal_handlers.DirectiveResponse'
-      status:
-        type: string
-    type: object
-host: localhost:8080
+components:
+  schemas:
+    handlers.DirectiveResponse:
+      properties:
+        action:
+          type: string
+        degrade_to:
+          type: string
+        grace_period_ms:
+          type: integer
+        id:
+          type: string
+        payload:
+          type: object
+        reason:
+          type: string
+      type: object
+    handlers.ErrorResponse:
+      properties:
+        error:
+          type: string
+      type: object
+    handlers.EventResponse:
+      properties:
+        attached:
+          type: boolean
+        directive:
+          $ref: '#/components/schemas/handlers.DirectiveResponse'
+        status:
+          type: string
+      type: object
+externalDocs:
+  description: ""
+  url: ""
 info:
-  contact: {}
   description: Receives sensor events and delivers directives to agents
   title: Flightdeck Ingestion API
   version: 0.1.0
+openapi: 3.1.0
 paths:
   /health:
     get:
       description: Returns service health status
-      produces:
-      - application/json
       responses:
         "200":
+          content:
+            application/json:
+              schema:
+                additionalProperties:
+                  type: string
+                type: object
           description: OK
-          schema:
-            additionalProperties:
-              type: string
-            type: object
       summary: Health check
       tags:
       - health
   /v1/events:
     post:
-      consumes:
-      - application/json
       description: Validates bearer token, publishes event to NATS, returns directive
         envelope. On session_start events, also reports whether the session was attached
         to a pre-existing row (D094).
@@ -63,43 +63,55 @@ paths:
         in: header
         name: Authorization
         required: true
-        type: string
-      - description: Event payload
-        in: body
-        name: event
-        required: true
         schema:
-          type: object
-      produces:
-      - application/json
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+          text/plain:
+            schema:
+              title: event
+              type: object
+        description: Event payload
+        required: true
       responses:
         "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/handlers.EventResponse'
           description: OK
-          schema:
-            $ref: '#/definitions/internal_handlers.EventResponse'
         "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/handlers.ErrorResponse'
           description: Bad Request
-          schema:
-            $ref: '#/definitions/internal_handlers.ErrorResponse'
         "401":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/handlers.ErrorResponse'
           description: Unauthorized
-          schema:
-            $ref: '#/definitions/internal_handlers.ErrorResponse'
         "429":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/handlers.ErrorResponse'
           description: Too Many Requests
-          schema:
-            $ref: '#/definitions/internal_handlers.ErrorResponse'
         "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/handlers.ErrorResponse'
           description: Internal Server Error
-          schema:
-            $ref: '#/definitions/internal_handlers.ErrorResponse'
       summary: Submit agent event
       tags:
       - events
   /v1/heartbeat:
     post:
-      consumes:
-      - application/json
       description: Validates bearer token, publishes heartbeat to NATS, returns directive
         envelope
       parameters:
@@ -107,34 +119,47 @@ paths:
         in: header
         name: Authorization
         required: true
-        type: string
-      - description: Heartbeat payload with session_id
-        in: body
-        name: heartbeat
-        required: true
         schema:
-          type: object
-      produces:
-      - application/json
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+          text/plain:
+            schema:
+              title: heartbeat
+              type: object
+        description: Heartbeat payload with session_id
+        required: true
       responses:
         "200":
+          content:
+            application/json:
+              schema:
+                additionalProperties: {}
+                type: object
           description: OK
-          schema:
-            additionalProperties: true
-            type: object
         "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/handlers.ErrorResponse'
           description: Bad Request
-          schema:
-            $ref: '#/definitions/internal_handlers.ErrorResponse'
         "401":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/handlers.ErrorResponse'
           description: Unauthorized
-          schema:
-            $ref: '#/definitions/internal_handlers.ErrorResponse'
         "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/handlers.ErrorResponse'
           description: Internal Server Error
-          schema:
-            $ref: '#/definitions/internal_handlers.ErrorResponse'
       summary: Agent heartbeat
       tags:
       - heartbeat
-swagger: "2.0"
+servers:
+- url: localhost:8080/

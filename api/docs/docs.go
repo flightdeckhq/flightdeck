@@ -252,19 +252,19 @@ const docTemplate = `{
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "Metric: tokens, sessions, latency_avg, policy_events (default: tokens)",
+                        "description": "Metric: tokens, sessions, latency_avg, latency_p50, latency_p95, policy_events, estimated_cost (default: tokens)",
                         "name": "metric",
                         "in": "query"
                     },
                     {
                         "type": "string",
-                        "description": "Dimension: flavor, model, framework, host, agent_type, team (default: flavor)",
+                        "description": "Dimension: flavor, model, framework, host, agent_type, team, provider (default: flavor)",
                         "name": "group_by",
                         "in": "query"
                     },
                     {
                         "type": "string",
-                        "description": "Time range: 7d, 30d, 90d, custom (default: 30d)",
+                        "description": "Time range: today, 7d, 30d, 90d, custom (default: 30d)",
                         "name": "range",
                         "in": "query"
                     },
@@ -302,6 +302,12 @@ const docTemplate = `{
                         "type": "string",
                         "description": "Filter to specific agent_type",
                         "name": "filter_agent_type",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter to specific provider (anthropic, openai, google, xai, mistral, meta, other)",
+                        "name": "filter_provider",
                         "in": "query"
                     }
                 ],
@@ -1210,6 +1216,9 @@ const docTemplate = `{
                 "metric": {
                     "type": "string"
                 },
+                "partial_estimate": {
+                    "type": "boolean"
+                },
                 "range": {
                     "type": "string"
                 },
@@ -1391,11 +1400,11 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "tokens_cache_creation": {
-                    "description": "D098",
+                    "description": "D100",
                     "type": "integer"
                 },
                 "tokens_cache_read": {
-                    "description": "D098",
+                    "description": "D100",
                     "type": "integer"
                 },
                 "tokens_input": {

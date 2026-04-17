@@ -64,6 +64,19 @@
   --chart-4: #eab308;
   --chart-5: #f97316;
 
+  /* Provider palette (D098). Keep in sync with PROVIDER_COLOR in
+     dashboard/src/lib/models.ts and the SQL CASE expression in
+     api/internal/store/analytics.go. */
+  --chart-openai: #06b6d4;
+  --chart-google: #eab308;
+  --chart-xai: #f97316;
+  --chart-mistral: #ef4444;
+  --chart-meta: #22c55e;
+
+  /* Cost disclaimer tone -- amber on dark theme. */
+  --color-warn-soft: rgba(234, 179, 8, 0.12);
+  --color-warn-border: rgba(234, 179, 8, 0.35);
+
   /* Fonts */
   --font-ui: "Geist", system-ui, sans-serif;
   --font-mono: "GeistMono", ui-monospace, monospace;
@@ -134,6 +147,19 @@
   --chart-3: #16a34a;
   --chart-4: #ca8a04;
   --chart-5: #ea580c;
+
+  /* Provider palette (D098). Keep in sync with PROVIDER_COLOR in
+     dashboard/src/lib/models.ts and the SQL CASE expression in
+     api/internal/store/analytics.go. */
+  --chart-openai: #0891b2;
+  --chart-google: #ca8a04;
+  --chart-xai: #ea580c;
+  --chart-mistral: #dc2626;
+  --chart-meta: #16a34a;
+
+  /* Cost disclaimer tone -- amber on light theme. */
+  --color-warn-soft: rgba(202, 138, 4, 0.08);
+  --color-warn-border: rgba(202, 138, 4, 0.3);
 
   /* Fonts */
   --font-ui: "Geist", system-ui, sans-serif;

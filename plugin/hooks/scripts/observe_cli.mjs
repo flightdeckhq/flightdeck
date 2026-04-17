@@ -10,7 +10,7 @@
 //     response envelope for every assistant turn, including model name,
 //     usage object (input/output/cache tokens), and the message body.
 //     The plugin reads that file to emit real post_call events rather
-//     than the old "tokens_total = 0" placeholder (D098).
+//     than the old "tokens_total = 0" placeholder (D100).
 //   * Every hook is a fresh Node child process. State that must survive
 //     across invocations (session id, session-start de-dup, Stop dedup
 //     per message.id, connection-refused one-shot log) lives on disk
@@ -46,7 +46,7 @@ import { fileURLToPath } from "node:url";
 const TIMEOUT_MS = 2000;
 
 // ---------------------------------------------------------------------
-// Env var resolution + defaults (D098 zero-config flow).
+// Env var resolution + defaults (D100 zero-config flow).
 // ---------------------------------------------------------------------
 
 export function parseBool(raw, fallback) {
@@ -204,7 +204,7 @@ export function collectContext(extras = {}) {
 
   // Identify Claude Code itself in context.frameworks so the FRAMEWORK
   // facet in Investigate picks it up alongside sensor-reported frameworks
-  // (D098). Version comes from the transcript when available.
+  // (D100). Version comes from the transcript when available.
   const version = extras.claudeCodeVersion;
   frameworks.push(version ? `claude-code/${version}` : "claude-code");
   ctx.frameworks = frameworks;
@@ -350,7 +350,7 @@ export function readLatestTurn(transcriptPath) {
 
 /**
  * Compute token fields from a transcript usage object, matching the
- * Python sensor's AnthropicProvider semantics (D098):
+ * Python sensor's AnthropicProvider semantics (D100):
  *   tokens_input = uncached + cache_read + cache_creation
  *   tokens_cache_read / tokens_cache_creation surfaced separately
  *   tokens_output = output_tokens
@@ -577,7 +577,7 @@ function markEmittedTurn(messageId) {
 }
 
 // ---------------------------------------------------------------------
-// Build content payload for prompt capture (D098). Mirrors the Python
+// Build content payload for prompt capture (D100). Mirrors the Python
 // sensor's AnthropicProvider.extract_content shape: provider, model,
 // messages (user turn), tools (assistant tool_use blocks), response
 // (assistant text + thinking blocks). system is null -- Claude Code's

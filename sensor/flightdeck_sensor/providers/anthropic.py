@@ -76,7 +76,7 @@ class AnthropicProvider:
         total so policy/budget arithmetic sees every billed input token, AND
         also reported as separate ``cache_read_tokens`` /
         ``cache_creation_tokens`` fields on :class:`TokenUsage` so cache
-        economics are visible in analytics (D098).
+        economics are visible in analytics (D100).
         """
         try:
             obj = response

@@ -176,4 +176,70 @@ describe("DimensionChart", () => {
     );
     expect(screen.getByTestId("pie-chart")).toBeInTheDocument();
   });
+
+  it("hides the dimension picker when showDimensionPicker=false", () => {
+    mockData = {
+      metric: "sessions",
+      group_by: "framework",
+      range: "30d",
+      granularity: "day",
+      series: [{ dimension: "langchain/0.1.12", total: 3, data: [{ date: "2026-04-01", value: 3 }] }],
+      totals: { grand_total: 3, period_change_pct: 0 },
+    };
+    render(
+      <DimensionChart
+        title="Framework Distribution"
+        metric="sessions"
+        defaultGroupBy="framework"
+        chartType="donut"
+        range="30d"
+        showDimensionPicker={false}
+      />
+    );
+    expect(screen.getByText("Framework Distribution")).toBeInTheDocument();
+    expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
+  });
+
+  it("renders a dynamic title via renderTitle using the current dimension label", async () => {
+    mockData = {
+      metric: "latency_avg",
+      group_by: "model",
+      range: "30d",
+      granularity: "day",
+      series: [{ dimension: "claude-sonnet-4-6", total: 420, data: [{ date: "2026-04-01", value: 420 }] }],
+      totals: { grand_total: 420, period_change_pct: 0 },
+    };
+    render(
+      <DimensionChart
+        title="fallback"
+        renderTitle={(dimLabel) => `Avg Latency by ${dimLabel}`}
+        metric="latency_avg"
+        defaultGroupBy="model"
+        chartType="area"
+        range="30d"
+      />
+    );
+    expect(screen.getByText("Avg Latency by Model")).toBeInTheDocument();
+  });
+
+  it("falls back to the static title when renderTitle is not supplied", () => {
+    mockData = {
+      metric: "tokens",
+      group_by: "flavor",
+      range: "30d",
+      granularity: "day",
+      series: [{ dimension: "coder", total: 100, data: [{ date: "2026-04-01", value: 100 }] }],
+      totals: { grand_total: 100, period_change_pct: 0 },
+    };
+    render(
+      <DimensionChart
+        title="Static title"
+        metric="tokens"
+        defaultGroupBy="flavor"
+        chartType="area"
+        range="30d"
+      />
+    );
+    expect(screen.getByText("Static title")).toBeInTheDocument();
+  });
 });

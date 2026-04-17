@@ -29,6 +29,7 @@ import { ProviderLogo } from "@/components/ui/provider-logo";
 import { ClaudeCodeLogo } from "@/components/ui/claude-code-logo";
 import { CodingAgentBadge } from "@/components/ui/coding-agent-badge";
 import { getProvider, isClaudeCodeSession } from "@/lib/models";
+import { truncateSessionId } from "@/lib/events";
 import { cn } from "@/lib/utils";
 
 // ---------------------------------------------------------------------------
@@ -124,6 +125,10 @@ const AUTO_REFRESH_OPTIONS = [
 ];
 
 const COL_WIDTHS = {
+  // Fixed pixel width keeps the SESSION column narrow at any viewport
+  // (supervisor: "don't let it grow"); the percent columns divide the
+  // remaining space the usual way.
+  session: "100px",
   flavor: "16%",
   hostname: "13%",
   os: "4%",
@@ -486,6 +491,9 @@ function SkeletonRows() {
     <>
       {[0, 1, 2, 3, 4].map((i) => (
         <tr key={i} style={{ height: 44, borderBottom: "1px solid var(--border-subtle)" }}>
+          <td style={{ padding: "0 12px", width: COL_WIDTHS.session }}>
+            <div className="h-3.5 w-2/3 animate-pulse rounded" style={{ background: "var(--border)" }} />
+          </td>
           <td style={{ padding: "0 12px", width: COL_WIDTHS.flavor }}>
             <div className="h-3.5 w-3/4 animate-pulse rounded" style={{ background: "var(--border)" }} />
           </td>
@@ -1277,6 +1285,12 @@ export function Investigate() {
                   style={{ background: "var(--surface)", borderBottom: "1px solid var(--border)", height: 32 }}
                 >
                   <th
+                    className="uppercase"
+                    style={{ color: "var(--text-muted)", fontSize: 10, fontWeight: 600, letterSpacing: "0.07em", padding: "0 12px", width: COL_WIDTHS.session }}
+                  >
+                    Session
+                  </th>
+                  <th
                     className="group cursor-pointer uppercase transition-colors duration-150 hover:text-text"
                     style={{ color: "var(--text-muted)", fontSize: 10, fontWeight: 600, letterSpacing: "0.07em", padding: "0 12px", width: COL_WIDTHS.flavor }}
                     onClick={() => handleSort("flavor")}
@@ -1384,6 +1398,19 @@ export function Investigate() {
                     onMouseEnter={(e) => { if (selectedSessionId !== s.session_id) e.currentTarget.style.background = "rgba(128,128,128,0.08)"; }}
                     onMouseLeave={(e) => { if (selectedSessionId !== s.session_id) e.currentTarget.style.background = ""; }}
                   >
+                    <td
+                      className="truncate"
+                      style={{
+                        padding: "0 12px",
+                        width: COL_WIDTHS.session,
+                        fontFamily: "var(--font-mono)",
+                        fontSize: 12,
+                        color: "var(--text-secondary)",
+                      }}
+                      data-testid={`investigate-row-session-${s.session_id}`}
+                    >
+                      {truncateSessionId(s.session_id)}
+                    </td>
                     <td className="truncate" style={{ padding: "0 12px", width: COL_WIDTHS.flavor, fontSize: 13, fontWeight: 500, color: "var(--text)" }}>
                       <span style={{ display: "inline-flex", alignItems: "center", gap: 6, minWidth: 0 }}>
                         {isClaudeCodeSession(s) && (

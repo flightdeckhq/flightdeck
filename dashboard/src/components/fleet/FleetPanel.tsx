@@ -583,12 +583,12 @@ function FlavorItem({
    */
   directives?: CustomDirective[];
   /**
-   * Live sidebar width (px). Drives the graceful-narrow-width
-   * degradation: below FLEET_PILL_HIDE_MIN_WIDTH the CODING AGENT
-   * and DEV pills are suppressed so the agent name (primary
-   * identifier) gets the row's horizontal space. Optional so
-   * existing tests that pre-date the resizable sidebar continue
-   * to mount without supplying it.
+   * Live sidebar width (px). Only consulted to apply the defensive
+   * FLEET_PILL_HIDE_MIN_WIDTH floor below which pills are suppressed
+   * entirely. Gradual narrow-width degradation is handled by the
+   * pill's own flex-shrink + ellipsis styling above. Optional so
+   * existing tests that pre-date the resizable sidebar continue to
+   * mount without supplying it.
    */
   sidebarWidth?: number;
 }) {
@@ -664,6 +664,7 @@ function FlavorItem({
         )}
         <span
           className="font-mono truncate"
+          style={{ flexShrink: 1 }}
           title={flavor.flavor}
         >
           {flavor.flavor}
@@ -673,17 +674,28 @@ function FlavorItem({
             subsumes the more generic DEV signal. The icon rule at
             the ClaudeCodeLogo render above uses the same
             ``flavor === "claude-code"`` check so the icon and pill
-            always flip together. Custom AGENT_FLAVOR overrides are
-            deferred -- if that becomes common, broaden both rules
-            together to ``isClaudeCodeSession(session)`` aggregated
-            across ``flavor.sessions``.
+            always flip together.
 
-            Below FLEET_PILL_HIDE_MIN_WIDTH both pills suppress so
-            the agent name (primary identifier) keeps the row's
-            horizontal space. Icon and count stay at all widths. */}
+            Narrow-width strategy: the pill is the flex-shrink target
+            (shrink factor 100 vs name's 1), with min-width:0 and
+            overflow:hidden text-overflow:ellipsis so its text is
+            what gets clipped as the sidebar narrows. The name keeps
+            the default shrink of 1 so it only starts trimming after
+            the pill has collapsed to zero content width. The hard
+            FLEET_PILL_HIDE_MIN_WIDTH floor (150) is below the
+            sidebar MIN (180) so in practice the gate is always true;
+            the pill always renders, just with progressively fewer
+            visible characters. */}
         {sidebarWidth >= FLEET_PILL_HIDE_MIN_WIDTH &&
           (flavor.flavor === "claude-code" ? (
-            <CodingAgentBadge />
+            <CodingAgentBadge
+              style={{
+                flexShrink: 100,
+                minWidth: 0,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+              }}
+            />
           ) : flavor.agent_type === "developer" ? (
             <span
               data-testid="flavor-dev-badge"
@@ -691,7 +703,13 @@ function FlavorItem({
               style={{
                 background: "var(--accent-glow)",
                 color: "var(--primary)",
+                flexShrink: 100,
+                minWidth: 0,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
               }}
+              title="DEV"
             >
               DEV
             </span>

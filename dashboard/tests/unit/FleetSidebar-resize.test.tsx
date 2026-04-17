@@ -215,61 +215,81 @@ describe("FleetPanel sidebar width: resize handle", () => {
   });
 });
 
-describe("FleetPanel sidebar width: narrow-width pill degradation", () => {
-  it("hides both pills at the 240 default (below the 300 threshold)", () => {
-    render(<FleetPanel flavors={mkFlavors()} />);
-    // Default is 240, which is below FLEET_PILL_HIDE_MIN_WIDTH (300).
-    expect(FLEET_SIDEBAR_DEFAULT_WIDTH).toBeLessThan(
+describe("FleetPanel sidebar width: gradual pill truncation", () => {
+  // The FLEET_PILL_HIDE_MIN_WIDTH hard floor is set below the sidebar
+  // MIN so in normal operation the gate is always true and pills
+  // render at every reachable width -- they just truncate to an
+  // ellipsis as the sidebar narrows. These assertions read the pill's
+  // inline style directly because jsdom does not run Tailwind; the
+  // truncation CSS is deliberately kept inline so tests can observe
+  // it.
+
+  it("renders both pills at the 240 default with ellipsis styling", () => {
+    // The supervisor's regression: pill used to hide at 240. The
+    // correct behaviour is that the pill stays rendered and shrinks
+    // first while the agent name stays full.
+    expect(FLEET_SIDEBAR_DEFAULT_WIDTH).toBeGreaterThan(
       FLEET_PILL_HIDE_MIN_WIDTH,
     );
-    expect(
-      screen.queryByTestId("coding-agent-badge"),
-    ).not.toBeInTheDocument();
-    expect(screen.queryByTestId("flavor-dev-badge")).not.toBeInTheDocument();
-    // Icon and name still render.
-    expect(screen.getByText("claude-code")).toBeInTheDocument();
-    expect(screen.getByText("research-agent")).toBeInTheDocument();
-  });
-
-  it("shows pills once dragged to the pill threshold", () => {
     render(<FleetPanel flavors={mkFlavors()} />);
-    const handle = screen.getByTestId("fleet-sidebar-resize-handle");
-    act(() => {
-      fireEvent.mouseDown(handle, { clientX: 240 });
-    });
-    // Drag to exactly FLEET_PILL_HIDE_MIN_WIDTH (300). The gate is
-    // ``sidebarWidth >= threshold`` so pills appear at equality.
-    act(() => {
-      fireEvent.mouseMove(document, {
-        clientX: 240 + (FLEET_PILL_HIDE_MIN_WIDTH - FLEET_SIDEBAR_DEFAULT_WIDTH),
-      });
-    });
-    act(() => {
-      fireEvent.mouseUp(document);
-    });
-    expect(screen.getByTestId("coding-agent-badge")).toBeInTheDocument();
-    // research-agent has agent_type=developer and is not claude-code,
-    // so it takes the DEV branch of the same gate.
-    expect(screen.getByTestId("flavor-dev-badge")).toBeInTheDocument();
-    // Names still render in full.
-    expect(screen.getByText("claude-code")).toBeInTheDocument();
-    expect(screen.getByText("research-agent")).toBeInTheDocument();
+    const codingPill = screen.getByTestId("coding-agent-badge");
+    const devPill = screen.getByTestId("flavor-dev-badge");
+    expect(codingPill).toBeInTheDocument();
+    expect(devPill).toBeInTheDocument();
+    // Pills carry the shrink-first + ellipsis inline styles so narrow
+    // widths clip the pill text rather than the agent name.
+    for (const pill of [codingPill, devPill]) {
+      expect(pill.style.flexShrink).toBe("100");
+      // jsdom normalises numeric 0 to "0" while browsers render "0px".
+      expect(parseFloat(pill.style.minWidth || "0")).toBe(0);
+      expect(pill.style.overflow).toBe("hidden");
+      expect(pill.style.textOverflow).toBe("ellipsis");
+    }
   });
 
-  it("shows pills comfortably above threshold (350)", () => {
-    localStorage.setItem(FLEET_SIDEBAR_WIDTH_KEY, "350");
+  it("renders pills at a wide width (500) with the same truncation styles", () => {
+    localStorage.setItem(FLEET_SIDEBAR_WIDTH_KEY, "500");
     render(<FleetPanel flavors={mkFlavors()} />);
     expect(screen.getByTestId("coding-agent-badge")).toBeInTheDocument();
     expect(screen.getByTestId("flavor-dev-badge")).toBeInTheDocument();
   });
 
-  it("hides pills when the user has dragged narrower than default", () => {
-    localStorage.setItem(FLEET_SIDEBAR_WIDTH_KEY, "200");
+  it("renders pills at the sidebar MIN (180) — still above pill floor", () => {
+    // FLEET_PILL_HIDE_MIN_WIDTH (150) is below sidebar MIN (180) by
+    // design, so even the narrowest reachable sidebar still shows the
+    // pill. At this width ellipsis does the heavy lifting.
+    localStorage.setItem(FLEET_SIDEBAR_WIDTH_KEY, "180");
     render(<FleetPanel flavors={mkFlavors()} />);
-    expect(
-      screen.queryByTestId("coding-agent-badge"),
-    ).not.toBeInTheDocument();
-    expect(screen.queryByTestId("flavor-dev-badge")).not.toBeInTheDocument();
+    expect(screen.getByTestId("coding-agent-badge")).toBeInTheDocument();
+    expect(screen.getByTestId("flavor-dev-badge")).toBeInTheDocument();
+  });
+
+  it("agent name shrinks slower than the pill", () => {
+    render(<FleetPanel flavors={mkFlavors()} />);
+    const ccName = screen.getByText("claude-code");
+    const pill = screen.getByTestId("coding-agent-badge");
+    // Name shrink = 1, pill shrink = 100 -> pill shrinks 100x faster,
+    // so the pill truncates first while the name stays intact.
+    expect(ccName.style.flexShrink).toBe("1");
+    expect(pill.style.flexShrink).toBe("100");
+  });
+
+  it("CodingAgentBadge carries a descriptive title for hover disclosure", () => {
+    render(<FleetPanel flavors={mkFlavors()} />);
+    const pill = screen.getByTestId("coding-agent-badge");
+    const title = pill.getAttribute("title") ?? "";
+    // The existing title is more informative than the literal pill
+    // text; the supervisor asked for "full text on hover", which this
+    // strictly over-delivers.
+    expect(title.length).toBeGreaterThan(0);
+    expect(title.toLowerCase()).toContain("coding agent");
+  });
+
+  it("DEV pill carries a title attribute", () => {
+    render(<FleetPanel flavors={mkFlavors()} />);
+    expect(screen.getByTestId("flavor-dev-badge").getAttribute("title")).toBe(
+      "DEV",
+    );
   });
 
   it("every flavor name carries a title attribute for the hover tooltip", () => {

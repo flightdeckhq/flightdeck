@@ -10,7 +10,7 @@ import {
   OrchestrationIcon,
   getOrchestrationLabel,
 } from "@/components/ui/OrchestrationIcon";
-import { Camera } from "lucide-react";
+import { FileText } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 
 /**
@@ -286,7 +286,7 @@ function SessionEventRowComponent({
             <Tooltip>
               <TooltipTrigger asChild>
                 <span style={{ display: "inline-flex", lineHeight: 0, flexShrink: 0 }} aria-label="Prompt capture enabled">
-                  <Camera size={12} style={{ color: "var(--accent)" }} />
+                  <FileText size={12} strokeWidth={2.25} style={{ color: "var(--accent)" }} />
                 </span>
               </TooltipTrigger>
               <TooltipContent>Prompt capture enabled</TooltipContent>

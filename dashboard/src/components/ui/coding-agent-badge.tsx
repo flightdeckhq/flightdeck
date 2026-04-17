@@ -12,9 +12,18 @@
  *  pill family rather than two disparate chips. */
 export function CodingAgentBadge({
   className,
+  style,
   testId,
 }: {
   className?: string;
+  /**
+   * Extra inline styles merged over the badge's own (background,
+   * colour, letter-spacing, nowrap). Used by FleetPanel to inject
+   * flex-shrink + overflow-ellipsis so the pill is the shrink-first
+   * target in a constrained row. Callers should not override the
+   * visual identity props; this is an escape hatch for layout CSS.
+   */
+  style?: React.CSSProperties;
   testId?: string;
 }) {
   return (
@@ -29,6 +38,7 @@ export function CodingAgentBadge({
         color: "var(--primary)",
         letterSpacing: "0.04em",
         whiteSpace: "nowrap",
+        ...style,
       }}
       title="Hook-based coding agent (Claude Code). Observer-only; kill switch does not apply."
     >

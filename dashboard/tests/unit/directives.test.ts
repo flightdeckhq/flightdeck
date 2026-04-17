@@ -65,6 +65,29 @@ describe("sessionSupportsDirectives", () => {
       ),
     ).toBe(true);
   });
+
+  it("returns false for a claude-code flavor even without the explicit flag", () => {
+    // Second-line defence for pre-flag Claude Code sessions. Context
+    // is set once on session_start and never updated
+    // (workers/internal/writer/postgres.go: ON CONFLICT does NOT
+    // touch the context column), so a session started before the
+    // plugin fix keeps a context row without supports_directives
+    // forever. Flavor identification keeps the kill switch hidden.
+    const s = { ...mkSession("pre-flag", "active"), flavor: "claude-code" };
+    expect(sessionSupportsDirectives(s)).toBe(false);
+  });
+
+  it("returns false when context.frameworks tags claude-code but flavor is renamed", () => {
+    // Operator-renamed flavor with claude-code/<version> still in the
+    // framework list. isClaudeCodeSession picks this up.
+    const s = {
+      ...mkSession("renamed", "active", {
+        frameworks: ["claude-code/1.2.3"],
+      }),
+      flavor: "custom-rename",
+    };
+    expect(sessionSupportsDirectives(s)).toBe(false);
+  });
 });
 
 describe("flavorHasDirectiveCapableSession", () => {

@@ -11,18 +11,30 @@
 // its kill switch.
 
 import type { Session } from "@/lib/types";
+import { isClaudeCodeSession } from "@/lib/models";
 
 /**
  * True when the session can receive and act on a directive. Hook-based
  * plugins set ``context.supports_directives: false``; the Python sensor
  * does not set the field at all, so we default to true.
+ *
+ * Second-line defence for hook-based plugins whose session_start
+ * predates the ``supports_directives`` flag (or whose context row was
+ * written by an older plugin build -- ``sessions.context`` is set once
+ * on insert and never updated, so stale rows stay stale forever). Any
+ * session that ``isClaudeCodeSession`` recognises by flavor or by a
+ * ``claude-code`` framework tag is treated as observer-only regardless
+ * of the supports_directives flag. Prevents the kill-switch button
+ * from resurrecting on pre-flag Claude Code sessions.
  */
 export function sessionSupportsDirectives(session: {
+  flavor?: string;
   context?: Record<string, unknown>;
 }): boolean {
   const ctx = session.context;
-  if (!ctx) return true;
-  return ctx.supports_directives !== false;
+  if (ctx && ctx.supports_directives === false) return false;
+  if (isClaudeCodeSession(session)) return false;
+  return true;
 }
 
 /**

@@ -1117,4 +1117,304 @@ describe("observe_cli end-to-end (new fields)", () => {
     assert.equal(typeof postBody.latency_ms, "number");
     assert.ok(postBody.latency_ms >= 0);
   });
+
+  // Mid-turn flush: PostToolUse emits post_call events for any
+  // un-emitted turns in the transcript, so the dashboard shows LLM
+  // activity in real time instead of batching at Stop. Dedup (per
+  // assistant message.id marker file) keeps Stop/SessionEnd idempotent.
+
+  it("PostToolUse flushes pending post_calls mid-turn before the tool_call", async () => {
+    clearAllPluginMarkers();
+    const transcriptPath = writeTranscript([
+      {
+        type: "user",
+        timestamp: "2026-04-17T10:00:00.000Z",
+        message: { role: "user", content: "do some work" },
+      },
+      {
+        type: "assistant",
+        timestamp: "2026-04-17T10:00:01.000Z",
+        message: {
+          id: "msg_iter_1",
+          model: "claude-sonnet-4-6",
+          content: [{ type: "tool_use", id: "tu1", name: "Read", input: {} }],
+          usage: { input_tokens: 10, output_tokens: 5 },
+        },
+      },
+    ]);
+    const before = capture.bodies().length;
+    const result = await runScript(
+      JSON.stringify({
+        hook_event_name: "PostToolUse",
+        session_id: "sess-flush-1",
+        transcript_path: transcriptPath,
+        tool_name: "Read",
+      }),
+      {
+        FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
+        FLIGHTDECK_TOKEN: "tok_test",
+        FLIGHTDECK_CAPTURE_PROMPTS: "false",
+      },
+    );
+    assert.equal(result.code, 0);
+    const posted = capture.bodies().slice(before);
+    const types = posted.map((b) => b.event_type);
+    const firstPostCallIdx = types.indexOf("post_call");
+    const firstToolCallIdx = types.indexOf("tool_call");
+    assert.ok(firstPostCallIdx >= 0, "expected post_call to be flushed");
+    assert.ok(firstToolCallIdx >= 0, "expected tool_call to still emit");
+    assert.ok(
+      firstPostCallIdx < firstToolCallIdx,
+      "post_call must precede the tool_call it triggered",
+    );
+    const postCall = posted[firstPostCallIdx];
+    assert.equal(postCall.model, "claude-sonnet-4-6");
+    assert.equal(postCall.tokens_output, 5);
+    rmSync(dirname(transcriptPath), { recursive: true, force: true });
+  });
+
+  it("Stop no-ops on turns already flushed by a prior PostToolUse", async () => {
+    clearAllPluginMarkers();
+    const transcriptPath = writeTranscript([
+      {
+        type: "user",
+        timestamp: "2026-04-17T10:00:00.000Z",
+        message: { role: "user", content: "flush then stop" },
+      },
+      {
+        type: "assistant",
+        timestamp: "2026-04-17T10:00:01.000Z",
+        message: {
+          id: "msg_only_1",
+          model: "claude-sonnet-4-6",
+          content: [{ type: "tool_use", id: "tu1", name: "Read", input: {} }],
+          usage: { input_tokens: 3, output_tokens: 2 },
+        },
+      },
+    ]);
+    const env = {
+      FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
+      FLIGHTDECK_TOKEN: "tok_test",
+      FLIGHTDECK_CAPTURE_PROMPTS: "false",
+    };
+    await runScript(
+      JSON.stringify({
+        hook_event_name: "PostToolUse",
+        session_id: "sess-dedup-1",
+        transcript_path: transcriptPath,
+        tool_name: "Read",
+      }),
+      env,
+    );
+    const before = capture.bodies().length;
+    await runScript(
+      JSON.stringify({
+        hook_event_name: "Stop",
+        session_id: "sess-dedup-1",
+        transcript_path: transcriptPath,
+      }),
+      env,
+    );
+    const newBodies = capture.bodies().slice(before);
+    const postCalls = newBodies.filter((b) => b.event_type === "post_call");
+    assert.equal(
+      postCalls.length,
+      0,
+      "Stop should dedup the already-flushed turn",
+    );
+    rmSync(dirname(transcriptPath), { recursive: true, force: true });
+  });
+
+  it("Stop still emits post_call for a turn with no tool calls", async () => {
+    clearAllPluginMarkers();
+    const transcriptPath = writeTranscript([
+      {
+        type: "user",
+        timestamp: "2026-04-17T10:00:00.000Z",
+        message: { role: "user", content: "just talk" },
+      },
+      {
+        type: "assistant",
+        timestamp: "2026-04-17T10:00:00.500Z",
+        message: {
+          id: "msg_plain_1",
+          model: "claude-sonnet-4-6",
+          content: [{ type: "text", text: "ok" }],
+          usage: { input_tokens: 4, output_tokens: 1 },
+        },
+      },
+    ]);
+    const before = capture.bodies().length;
+    const result = await runScript(
+      JSON.stringify({
+        hook_event_name: "Stop",
+        session_id: "sess-stop-notool",
+        transcript_path: transcriptPath,
+      }),
+      {
+        FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
+        FLIGHTDECK_TOKEN: "tok_test",
+        FLIGHTDECK_CAPTURE_PROMPTS: "false",
+      },
+    );
+    assert.equal(result.code, 0);
+    const postCalls = capture
+      .bodies()
+      .slice(before)
+      .filter((b) => b.event_type === "post_call");
+    assert.equal(postCalls.length, 1);
+    assert.equal(postCalls[0].tokens_output, 1);
+    rmSync(dirname(transcriptPath), { recursive: true, force: true });
+  });
+
+  it("Two-iteration turn emits one post_call per LLM call, in order, no dupes", async () => {
+    clearAllPluginMarkers();
+    // Simulate three JSONL states the transcript passes through during
+    // a two-iteration tool-use turn ending with a text-only final turn:
+    //   state A: msg_A (tool_use)           -- after first LLM call
+    //   state B: msg_A + msg_B (tool_use)   -- after second LLM call
+    //   state C: msg_A + msg_B + msg_C      -- after final LLM call (text)
+    const userRec = {
+      type: "user",
+      timestamp: "2026-04-17T10:00:00.000Z",
+      message: { role: "user", content: "two-iter" },
+    };
+    const msgA = {
+      type: "assistant",
+      timestamp: "2026-04-17T10:00:01.000Z",
+      message: {
+        id: "msg_A",
+        model: "claude-sonnet-4-6",
+        content: [{ type: "tool_use", id: "tu_a", name: "Read", input: {} }],
+        usage: { input_tokens: 10, output_tokens: 5 },
+      },
+    };
+    const toolResultA = {
+      type: "user",
+      timestamp: "2026-04-17T10:00:02.000Z",
+      message: {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "tu_a", content: "ok" }],
+      },
+    };
+    const msgB = {
+      type: "assistant",
+      timestamp: "2026-04-17T10:00:03.000Z",
+      message: {
+        id: "msg_B",
+        model: "claude-sonnet-4-6",
+        content: [{ type: "tool_use", id: "tu_b", name: "Glob", input: {} }],
+        usage: { input_tokens: 20, output_tokens: 7 },
+      },
+    };
+    const toolResultB = {
+      type: "user",
+      timestamp: "2026-04-17T10:00:04.000Z",
+      message: {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "tu_b", content: "ok" }],
+      },
+    };
+    const msgC = {
+      type: "assistant",
+      timestamp: "2026-04-17T10:00:05.000Z",
+      message: {
+        id: "msg_C",
+        model: "claude-sonnet-4-6",
+        content: [{ type: "text", text: "done" }],
+        usage: { input_tokens: 30, output_tokens: 3 },
+      },
+    };
+    const dir = mkdtempSync(join(tmpdir(), "flightdeck-transcript-"));
+    const transcriptPath = join(dir, "session.jsonl");
+    const env = {
+      FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
+      FLIGHTDECK_TOKEN: "tok_test",
+      FLIGHTDECK_CAPTURE_PROMPTS: "false",
+    };
+    const writeState = (records) => {
+      writeFileSync(
+        transcriptPath,
+        records.map((r) => JSON.stringify(r)).join("\n") + "\n",
+      );
+    };
+
+    const before = capture.bodies().length;
+
+    // State A: first PostToolUse fires after first LLM call + tool exec.
+    writeState([userRec, msgA]);
+    await runScript(
+      JSON.stringify({
+        hook_event_name: "PostToolUse",
+        session_id: "sess-two-iter",
+        transcript_path: transcriptPath,
+        tool_name: "Read",
+      }),
+      env,
+    );
+
+    // State B: second PostToolUse after the second LLM call + tool exec.
+    writeState([userRec, msgA, toolResultA, msgB]);
+    await runScript(
+      JSON.stringify({
+        hook_event_name: "PostToolUse",
+        session_id: "sess-two-iter",
+        transcript_path: transcriptPath,
+        tool_name: "Glob",
+      }),
+      env,
+    );
+
+    // State C: Stop fires after the final (text-only) LLM call.
+    writeState([userRec, msgA, toolResultA, msgB, toolResultB, msgC]);
+    await runScript(
+      JSON.stringify({
+        hook_event_name: "Stop",
+        session_id: "sess-two-iter",
+        transcript_path: transcriptPath,
+      }),
+      env,
+    );
+
+    const posted = capture.bodies().slice(before);
+    const postCalls = posted.filter((b) => b.event_type === "post_call");
+    const toolCalls = posted.filter((b) => b.event_type === "tool_call");
+    assert.equal(postCalls.length, 3, "one post_call per LLM call");
+    assert.equal(toolCalls.length, 2, "one tool_call per tool iteration");
+    // Order matches transcript order (timestamps strictly increasing).
+    const ts = postCalls.map((b) => Date.parse(b.timestamp));
+    assert.ok(ts[0] < ts[1] && ts[1] < ts[2], "post_call order matches turns");
+    // Token counts come from the right transcript records.
+    assert.equal(postCalls[0].tokens_output, 5); // msg_A
+    assert.equal(postCalls[1].tokens_output, 7); // msg_B
+    assert.equal(postCalls[2].tokens_output, 3); // msg_C
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("PostToolUse tool_call still emits when transcript is missing", async () => {
+    clearAllPluginMarkers();
+    const before = capture.bodies().length;
+    // No transcript_path -- readTurns returns [] silently, flush is a no-op
+    // and the tool_call emission path must proceed unaffected.
+    const result = await runScript(
+      JSON.stringify({
+        hook_event_name: "PostToolUse",
+        session_id: "sess-no-transcript",
+        tool_name: "Read",
+      }),
+      {
+        FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
+        FLIGHTDECK_TOKEN: "tok_test",
+      },
+    );
+    assert.equal(result.code, 0);
+    const posted = capture.bodies().slice(before);
+    const toolCall = posted.find((b) => b.event_type === "tool_call");
+    assert.ok(toolCall, "tool_call must still be emitted");
+    assert.equal(toolCall.tool_name, "Read");
+    assert.equal(
+      posted.filter((b) => b.event_type === "post_call").length,
+      0,
+    );
+  });
 });

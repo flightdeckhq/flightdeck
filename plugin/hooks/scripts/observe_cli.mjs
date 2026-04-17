@@ -681,6 +681,46 @@ function buildContent(turn) {
 }
 
 // ---------------------------------------------------------------------
+// Emit one post_call per un-emitted transcript turn.
+//
+// Called from Stop, SessionEnd, and PostToolUse. markEmittedTurn dedup
+// (per assistant message.id) keeps emission idempotent across the three
+// call sites. PostToolUse flushes mid-turn so the dashboard shows LLM
+// activity in real time instead of waiting for the turn to end at Stop.
+// ---------------------------------------------------------------------
+
+async function flushPostCallTurns({
+  cfg,
+  sessionId,
+  basePayload,
+  turns,
+  capturePrompts,
+}) {
+  for (const turn of turns) {
+    if (!markEmittedTurn(turn.messageId)) continue;
+    const tokens = tokensFromUsage(turn.usage);
+    const latencyMs = computeLatencyMs(turn.userTurn, turn.lastTimestamp);
+    const hasContent = capturePrompts;
+    const content = hasContent ? buildContent(turn) : null;
+    const resolvedModel = turn.model || basePayload.model;
+    cacheSessionModel(sessionId, resolvedModel);
+    await postEvent(cfg.server, cfg.token, sessionId, {
+      ...basePayload,
+      event_type: "post_call",
+      model: resolvedModel,
+      tool_name: null,
+      tool_input: null,
+      is_subagent_call: false,
+      latency_ms: latencyMs,
+      timestamp: turn.lastTimestamp || new Date().toISOString(),
+      ...tokens,
+      has_content: hasContent,
+      content,
+    });
+  }
+}
+
+// ---------------------------------------------------------------------
 // Main entry point.
 // ---------------------------------------------------------------------
 
@@ -756,35 +796,20 @@ async function main() {
   }
 
   // SessionEnd: real session teardown. Before emitting session_end,
-  // flush any LLM turns that the Stop hook didn't get to see -- in
+  // flush any LLM turns not yet emitted by Stop or PostToolUse -- in
   // `claude -p` mode Claude Code fires Stop once before the final
   // tool-loop turn is flushed to the transcript, so a post_call for
   // the final turn can still be missing when SessionEnd arrives.
-  // Dedup via the per-messageId marker keeps this idempotent with Stop.
+  // Dedup via the per-messageId marker keeps this idempotent with
+  // Stop and PostToolUse.
   if (hookName === "SessionEnd") {
-    const turns = readTurns(hookEvent.transcript_path);
-    for (const turn of turns) {
-      if (!markEmittedTurn(turn.messageId)) continue;
-      const tokens = tokensFromUsage(turn.usage);
-      const latencyMs = computeLatencyMs(turn.userTurn, turn.lastTimestamp);
-      const hasContent = cfg.capturePrompts;
-      const content = hasContent ? buildContent(turn) : null;
-      const resolvedModel = turn.model || basePayload.model;
-      cacheSessionModel(sessionId, resolvedModel);
-      await postEvent(cfg.server, cfg.token, sessionId, {
-        ...basePayload,
-        event_type: "post_call",
-        model: resolvedModel,
-        tool_name: null,
-        tool_input: null,
-        is_subagent_call: false,
-        latency_ms: latencyMs,
-        timestamp: turn.lastTimestamp || new Date().toISOString(),
-        ...tokens,
-        has_content: hasContent,
-        content,
-      });
-    }
+    await flushPostCallTurns({
+      cfg,
+      sessionId,
+      basePayload,
+      turns: getTurns(),
+      capturePrompts: cfg.capturePrompts,
+    });
     const payload = {
       ...basePayload,
       event_type: "session_end",
@@ -810,34 +835,19 @@ async function main() {
   // post_call. Multi-turn tool-use conversations produce multiple
   // assistant message.ids and Stop only fires once at the end, so we
   // must iterate every group and dedup via the per-messageId marker
-  // file rather than emitting only the latest. We also cache the
-  // latest model so any future UserPromptSubmit can label its pre_call
-  // correctly (SessionStart does not carry model on Claude Code v2.1.x).
+  // file. PostToolUse flushes most of these mid-turn; Stop acts as the
+  // final backstop for the last assistant turn (no tool follow-up).
+  // cacheSessionModel inside the helper keeps pre_call labelling right
+  // for subsequent UserPromptSubmit hooks on older Claude Code versions
+  // that do not carry model on SessionStart.
   if (hookName === "Stop") {
-    const turns = getTurns();
-    for (const turn of turns) {
-      if (!markEmittedTurn(turn.messageId)) continue; // already emitted
-      const tokens = tokensFromUsage(turn.usage);
-      const latencyMs = computeLatencyMs(turn.userTurn, turn.lastTimestamp);
-      const hasContent = cfg.capturePrompts;
-      const content = hasContent ? buildContent(turn) : null;
-      const resolvedModel = turn.model || basePayload.model;
-      cacheSessionModel(sessionId, resolvedModel);
-      const payload = {
-        ...basePayload,
-        event_type: "post_call",
-        model: resolvedModel,
-        tool_name: null,
-        tool_input: null,
-        is_subagent_call: false,
-        latency_ms: latencyMs,
-        timestamp: turn.lastTimestamp || new Date().toISOString(),
-        ...tokens,
-        has_content: hasContent,
-        content,
-      };
-      await postEvent(cfg.server, cfg.token, sessionId, payload);
-    }
+    await flushPostCallTurns({
+      cfg,
+      sessionId,
+      basePayload,
+      turns: getTurns(),
+      capturePrompts: cfg.capturePrompts,
+    });
     return;
   }
 
@@ -895,6 +905,32 @@ async function main() {
     };
     await postEvent(cfg.server, cfg.token, sessionId, payload);
     return;
+  }
+
+  // PostToolUse: flush any un-emitted LLM turns from the transcript
+  // before emitting the tool_call. The assistant record that triggered
+  // this tool invocation is already in the transcript by the time
+  // PostToolUse fires, so its post_call becomes visible in the
+  // dashboard in real time rather than batching at Stop. Ordering:
+  // post_call (LLM decision) precedes tool_call (tool execution),
+  // matching transcript order. markEmittedTurn dedup keeps Stop and
+  // SessionEnd idempotent. Wrapped in try/catch so a transcript read
+  // failure cannot block the tool_call emission -- readTurns already
+  // returns [] on read errors, but belt-and-suspenders.
+  if (hookName === "PostToolUse") {
+    try {
+      await flushPostCallTurns({
+        cfg,
+        sessionId,
+        basePayload,
+        turns: getTurns(),
+        capturePrompts: cfg.capturePrompts,
+      });
+    } catch (err) {
+      process.stderr.write(
+        `flightdeck: post_call flush on PostToolUse failed: ${err?.message || err}\n`,
+      );
+    }
   }
 
   // PreToolUse / PostToolUse: tool-lifecycle events. Keep the same

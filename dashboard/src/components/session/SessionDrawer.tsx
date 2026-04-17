@@ -467,7 +467,11 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
                     background: "var(--accent-glow)",
                   }}
                 >
-                  <ClaudeCodeLogo size={20} />
+                  {/* The visible "Claude Code" label sits right next
+                      to the icon, so we suppress the icon's own
+                      tooltip/aria-label to avoid screen readers
+                      announcing the tool name twice. */}
+                  <ClaudeCodeLogo size={20} title="" />
                   <span
                     className="text-[13px] font-semibold"
                     style={{ color: "var(--text)" }}

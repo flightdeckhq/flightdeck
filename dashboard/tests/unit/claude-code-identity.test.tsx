@@ -1,6 +1,12 @@
 import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
-import { ClaudeCodeLogo, ClaudeCodeIconSvg } from "@/components/ui/claude-code-logo";
+import {
+  CLAUDE_CODE_TOOLTIP,
+  ClaudeCodeIconSvg,
+  ClaudeCodeLogo,
+} from "@/components/ui/claude-code-logo";
+import { CodingAgentBadge } from "@/components/ui/coding-agent-badge";
+import { ProviderLogo } from "@/components/ui/provider-logo";
 import { CLAUDE_CODE_ICON } from "@/components/ui/provider-icons";
 import {
   getClaudeCodeVersion,
@@ -27,9 +33,30 @@ describe("ClaudeCodeLogo", () => {
     expect(svg?.getAttribute("height")).toBe("24");
   });
 
-  it("carries an aria-label for screen readers", () => {
-    render(<ClaudeCodeLogo size={14} />);
-    expect(screen.getByLabelText("Claude Code")).toBeInTheDocument();
+  it("emits a <title> and aria-label for hover tooltip + a11y", () => {
+    const { container } = render(<ClaudeCodeLogo size={14} />);
+    const title = container.querySelector("svg > title");
+    expect(title?.textContent).toBe(CLAUDE_CODE_TOOLTIP);
+    expect(screen.getByLabelText(CLAUDE_CODE_TOOLTIP)).toBeInTheDocument();
+  });
+
+  it("honours custom title prop", () => {
+    const { container } = render(
+      <ClaudeCodeLogo size={14} title="Different label" />,
+    );
+    const title = container.querySelector("svg > title");
+    expect(title?.textContent).toBe("Different label");
+  });
+
+  it("suppresses tooltip when title=''", () => {
+    const { container } = render(<ClaudeCodeLogo size={14} title="" />);
+    // Drawer case: adjacent visible label makes the icon redundant
+    // for screen readers, so the title child is omitted and the svg
+    // is marked aria-hidden.
+    expect(container.querySelector("svg > title")).toBeNull();
+    expect(container.querySelector("svg")?.getAttribute("aria-hidden")).toBe(
+      "true",
+    );
   });
 });
 
@@ -52,6 +79,56 @@ describe("ClaudeCodeIconSvg", () => {
     const path = inner.querySelector("path");
     expect(path?.getAttribute("d")).toBe(CLAUDE_CODE_ICON.path);
     expect(path?.getAttribute("fill-rule")).toBe("evenodd");
+  });
+
+  it("emits an SVG <title> tooltip", () => {
+    const { container } = render(
+      <svg>
+        <ClaudeCodeIconSvg x={0} y={0} size={14} />
+      </svg>,
+    );
+    const title = container.querySelector("svg svg > title");
+    expect(title?.textContent).toBe(CLAUDE_CODE_TOOLTIP);
+  });
+});
+
+describe("ProviderLogo tooltips", () => {
+  it("adds a <title> naming the provider on bespoke marks", () => {
+    const { container } = render(<ProviderLogo provider="anthropic" />);
+    const title = container.querySelector("svg > title");
+    expect(title?.textContent).toBe("Anthropic");
+  });
+
+  it("adds a <title> on the Sparkles fallback too", () => {
+    // google has no bespoke mark (PROVIDER_ICONS[google] === null) so
+    // the fallback Sparkles renders. Previously silent -- the title
+    // ensures hover still explains what the icon represents.
+    const { container } = render(<ProviderLogo provider="google" />);
+    const title = container.querySelector("title");
+    expect(title?.textContent).toBe("Google");
+  });
+
+  it("honours title='' opt-out for adjacent-label callers", () => {
+    const { container } = render(
+      <ProviderLogo provider="anthropic" title="" />,
+    );
+    expect(container.querySelector("svg > title")).toBeNull();
+  });
+});
+
+describe("CodingAgentBadge", () => {
+  it("renders the Coding agent pill", () => {
+    render(<CodingAgentBadge />);
+    expect(screen.getByTestId("coding-agent-badge")).toHaveTextContent(
+      "Coding agent",
+    );
+  });
+
+  it("carries a title tooltip explaining the observer-only caveat", () => {
+    render(<CodingAgentBadge />);
+    const pill = screen.getByTestId("coding-agent-badge");
+    expect(pill.getAttribute("title")).toMatch(/coding agent/i);
+    expect(pill.getAttribute("title")).toMatch(/kill switch/i);
   });
 });
 

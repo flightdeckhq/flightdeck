@@ -30,16 +30,22 @@ export interface ProviderIcon {
   fillRule?: "evenodd" | "nonzero";
 }
 
-/** Claude Code visual identity. Rounded-square terminal outline with
- *  a "``>``" chevron inside -- visually distinct from the Anthropic
- *  star glyph so a fleet operator can tell at a glance which sessions
- *  came from the Claude Code plugin versus direct Anthropic SDK use.
+/** Claude Code visual identity. A rounded-square terminal frame with
+ *  a ``>`` chevron prompt and an underscore cursor inside -- reads
+ *  literally as "terminal / CLI" which is Claude Code's primary
+ *  interface. Swap-in for the earlier abstract chevron-in-square
+ *  glyph, which Supervisor feedback flagged as cryptic at 12-14px.
  *
- *  The path stacks two subpaths:
- *    1. A rounded-square ring (outer clockwise, inner counter-clockwise)
- *    2. A filled chevron pointing right
- *  Rendered with ``fill-rule=evenodd`` so the inner subpath punches
- *  a hole in the outer and the chevron stays solid.
+ *  The path stacks four subpaths rendered with ``fill-rule=evenodd``:
+ *    1. Outer rounded square (the outer edge of the frame)
+ *    2. Inner rounded square (punches the hole that turns the outer
+ *       into a 1.5px ring)
+ *    3. Solid ``>`` chevron positioned upper-centre
+ *    4. Solid ``_`` underscore positioned bottom-right of the chevron
+ *  Because the chevron and underscore lie INSIDE the inner rectangle,
+ *  they're enclosed by three subpaths (outer + inner + themselves)
+ *  so even-odd winding counts them as fill; the "empty" terminal
+ *  interior between glyphs has two crossings and stays hollow.
  *
  *  Color is the same Anthropic warm tone as the ``anthropic`` entry
  *  above -- Claude Code *is* Anthropic's terminal agent, so the brand
@@ -49,11 +55,13 @@ export const CLAUDE_CODE_ICON: ProviderIcon = {
   fillRule: "evenodd",
   path:
     // Outer rounded square (clockwise)
-    "M6 3h12a3 3 0 0 1 3 3v12a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3V6a3 3 0 0 1 3-3z " +
-    // Inner rounded square (counter-clockwise -> cuts a 1.5px border)
+    "M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z " +
+    // Inner rounded square (cuts the frame hole)
     "M6 4.5A1.5 1.5 0 0 0 4.5 6v12A1.5 1.5 0 0 0 6 19.5h12a1.5 1.5 0 0 0 1.5-1.5V6A1.5 1.5 0 0 0 18 4.5H6z " +
-    // Chevron "Claude-Code-typed-this" prompt glyph
-    "M10.22 8.22a.75.75 0 0 1 1.06 0l3.25 3.25a.75.75 0 0 1 0 1.06l-3.25 3.25a.75.75 0 1 1-1.06-1.06L12.94 12l-2.72-2.72a.75.75 0 0 1 0-1.06z",
+    // ``>`` chevron, centred near (8.5, 12)
+    "M6.75 9.1L10.5 12L6.75 14.9L5.95 13.85L8.6 12L5.95 10.15z " +
+    // ``_`` underscore, sitting to the right of the chevron
+    "M11.5 14.25H17V15.5H11.5z",
   color: { light: "#D4763B", dark: "#E8915A" },
 };
 

@@ -11,6 +11,7 @@ import { OSIcon } from "@/components/ui/OSIcon";
 import { OrchestrationIcon } from "@/components/ui/OrchestrationIcon";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import { ClaudeCodeLogo } from "@/components/ui/claude-code-logo";
+import { CodingAgentBadge } from "@/components/ui/coding-agent-badge";
 import { getProvider, isClaudeCodeSession } from "@/lib/models";
 import { cn } from "@/lib/utils";
 
@@ -1051,11 +1052,12 @@ export function Investigate() {
                     onMouseLeave={(e) => { if (selectedSessionId !== s.session_id) e.currentTarget.style.background = ""; }}
                   >
                     <td className="truncate" style={{ padding: "0 12px", width: COL_WIDTHS.flavor, fontSize: 13, fontWeight: 500, color: "var(--text)" }}>
-                      <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: 6, minWidth: 0 }}>
                         {isClaudeCodeSession(s) && (
-                          <ClaudeCodeLogo size={12} className="shrink-0" />
+                          <ClaudeCodeLogo size={14} className="shrink-0" />
                         )}
                         <span className="truncate">{s.flavor}</span>
+                        {isClaudeCodeSession(s) && <CodingAgentBadge />}
                       </span>
                     </td>
                     <td className="truncate" style={{ padding: "0 12px", width: COL_WIDTHS.hostname, fontSize: 12, color: "var(--text-secondary)" }}>

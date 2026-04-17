@@ -128,3 +128,147 @@ describe("PromptViewer", () => {
     expect(container.querySelector(".animate-spin")).toBeInTheDocument();
   });
 });
+
+describe("PromptViewer tool_call content", () => {
+  beforeEach(async () => {
+    mockFetchResult = mockContent;
+    vi.clearAllMocks();
+    // Re-install the default fetch mock -- the final test in the first
+    // describe block overrides it with a never-resolving promise and
+    // vi.clearAllMocks() does not restore the original implementation.
+    const api = await import("@/lib/api");
+    vi.mocked(api.fetchEventContent).mockImplementation(() =>
+      Promise.resolve(mockFetchResult),
+    );
+  });
+
+  it("parses and renders structured fields for tool_result with JSON content", async () => {
+    mockFetchResult = {
+      ...mockContent,
+      tools: [{ type: "tool_use", name: "Bash", input: { command: "echo hi" } }],
+      response: [
+        {
+          type: "tool_result",
+          content: JSON.stringify({
+            stdout: "hello\nworld",
+            stderr: "",
+            interrupted: false,
+            isImage: false,
+          }),
+        },
+      ],
+    };
+    render(<PromptViewer eventId="e1" />);
+    await waitFor(() =>
+      expect(screen.getByText("Response")).toBeInTheDocument(),
+    );
+    expect(screen.getByTestId("tool-result-parsed")).toBeInTheDocument();
+    // Multi-line stdout renders in a pre block (contains "hello\nworld")
+    expect(screen.getByText(/hello/)).toBeInTheDocument();
+    // Empty stderr renders as "(empty)" rather than being hidden
+    expect(screen.getByText("(empty)")).toBeInTheDocument();
+    // Booleans render as plain text; both interrupted and isImage -> "false"
+    expect(screen.getAllByText("false").length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("falls back to raw string when tool_result content is plain text", async () => {
+    mockFetchResult = {
+      ...mockContent,
+      tools: [{ type: "tool_use", name: "Read", input: { file_path: "/a" } }],
+      response: [{ type: "tool_result", content: "this is just text" }],
+    };
+    render(<PromptViewer eventId="e1" />);
+    await waitFor(() =>
+      expect(screen.getByText("Response")).toBeInTheDocument(),
+    );
+    expect(screen.getByTestId("tool-result-raw")).toBeInTheDocument();
+    expect(screen.getByText("this is just text")).toBeInTheDocument();
+    expect(screen.queryByTestId("tool-result-parsed")).not.toBeInTheDocument();
+  });
+
+  it("does not crash when tool_result content is malformed JSON", async () => {
+    mockFetchResult = {
+      ...mockContent,
+      tools: [{ type: "tool_use", name: "Bash", input: {} }],
+      response: [{ type: "tool_result", content: '{"stdout":"broken' }],
+    };
+    render(<PromptViewer eventId="e1" />);
+    await waitFor(() =>
+      expect(screen.getByText("Response")).toBeInTheDocument(),
+    );
+    expect(screen.getByTestId("tool-result-raw")).toBeInTheDocument();
+    expect(screen.getByText('{"stdout":"broken')).toBeInTheDocument();
+  });
+
+  it("shows truncated indicator when tool_result content ends with ellipsis", async () => {
+    mockFetchResult = {
+      ...mockContent,
+      tools: [{ type: "tool_use", name: "Bash", input: {} }],
+      response: [
+        { type: "tool_result", content: '{"stdout":"some output\u2026' },
+      ],
+    };
+    render(<PromptViewer eventId="e1" />);
+    await waitFor(() =>
+      expect(screen.getByText("Response")).toBeInTheDocument(),
+    );
+    expect(screen.getByTestId("tool-result-truncated")).toBeInTheDocument();
+  });
+
+  it("renders tool_use input as key/value list in Tools section", async () => {
+    mockFetchResult = {
+      ...mockContent,
+      tools: [
+        { type: "tool_use", name: "Glob", input: { pattern: "**/*.ts" } },
+      ],
+      response: [],
+    };
+    render(<PromptViewer eventId="e1" />);
+    await waitFor(() =>
+      expect(screen.getByText("Tools")).toBeInTheDocument(),
+    );
+    expect(screen.getByText("Glob")).toBeInTheDocument();
+    expect(screen.getByTestId("tool-use-input")).toBeInTheDocument();
+    expect(screen.getByText("**/*.ts")).toBeInTheDocument();
+    expect(screen.getByText("pattern:")).toBeInTheDocument();
+  });
+
+  it("renders only the name pill when tool_use has no input", async () => {
+    mockFetchResult = {
+      ...mockContent,
+      tools: [{ type: "tool_use", name: "Glob" }],
+      response: [],
+    };
+    render(<PromptViewer eventId="e1" />);
+    await waitFor(() =>
+      expect(screen.getByText("Tools")).toBeInTheDocument(),
+    );
+    expect(screen.getByText("Glob")).toBeInTheDocument();
+    expect(screen.queryByTestId("tool-use-input")).not.toBeInTheDocument();
+  });
+
+  it("Pretty and Raw tabs render different DOM for tool_result response", async () => {
+    mockFetchResult = {
+      ...mockContent,
+      tools: [{ type: "tool_use", name: "Bash", input: {} }],
+      response: [
+        {
+          type: "tool_result",
+          content: JSON.stringify({
+            stdout: "ok",
+            stderr: "",
+            interrupted: false,
+            isImage: false,
+          }),
+        },
+      ],
+    };
+    render(<PromptViewer eventId="e1" />);
+    await waitFor(() =>
+      expect(screen.getByText("Response")).toBeInTheDocument(),
+    );
+    expect(screen.getByTestId("tool-result-parsed")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("raw"));
+    expect(screen.queryByTestId("tool-result-parsed")).not.toBeInTheDocument();
+  });
+});

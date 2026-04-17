@@ -15,6 +15,7 @@ import { PolicyEventList } from "./PolicyEventList";
 import { createDirective } from "@/lib/api";
 import { flavorHasDirectiveCapableSession } from "@/lib/directives";
 import { ClaudeCodeLogo } from "@/components/ui/claude-code-logo";
+import { CodingAgentBadge } from "@/components/ui/coding-agent-badge";
 import { DirectiveCard } from "@/components/directives/DirectiveCard";
 import { useFleetStore } from "@/store/fleet";
 import { OctagonX, X, Zap } from "lucide-react";
@@ -551,8 +552,20 @@ function FlavorItem({
           <ClaudeCodeLogo size={14} className="shrink-0" />
         )}
         <span className="font-mono truncate">{flavor.flavor}</span>
-        {flavor.agent_type === "developer" && (
+        {/* Specific pill wins: CODING AGENT identifies the tool
+            category (hook-based coding agent, observer-only) and
+            subsumes the more generic DEV signal. The icon rule at
+            the ClaudeCodeLogo render above uses the same
+            ``flavor === "claude-code"`` check so the icon and pill
+            always flip together. Custom AGENT_FLAVOR overrides are
+            deferred -- if that becomes common, broaden both rules
+            together to ``isClaudeCodeSession(session)`` aggregated
+            across ``flavor.sessions``. */}
+        {flavor.flavor === "claude-code" ? (
+          <CodingAgentBadge />
+        ) : flavor.agent_type === "developer" ? (
           <span
+            data-testid="flavor-dev-badge"
             className="rounded px-1 py-0.5 text-[11px] font-semibold uppercase"
             style={{
               background: "var(--accent-glow)",
@@ -561,7 +574,7 @@ function FlavorItem({
           >
             DEV
           </span>
-        )}
+        ) : null}
         <span className="text-[11px] font-mono" style={{ color: "var(--text-muted)" }}>
           ({flavor.active_count})
         </span>

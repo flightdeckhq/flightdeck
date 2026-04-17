@@ -17,6 +17,8 @@ import { TokenUsageBar } from "./TokenUsageBar";
 import { PromptViewer } from "./PromptViewer";
 import { createDirective } from "@/lib/api";
 import { sessionSupportsDirectives } from "@/lib/directives";
+import { ClaudeCodeLogo } from "@/components/ui/claude-code-logo";
+import { getClaudeCodeVersion, isClaudeCodeSession } from "@/lib/models";
 import { attachBadge, getBadge, getEventDetail, getSummaryRows, isAttachmentStartEvent, truncateSessionId } from "@/lib/events";
 import { getProvider } from "@/lib/models";
 import { ProviderLogo } from "@/components/ui/provider-logo";
@@ -448,6 +450,43 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
           {/* Mode 1: Session view */}
           {!activeDetailEvent && displayEvents.length > 0 && data && (
             <>
+              {/* Claude Code session badge — only renders for sessions
+                  produced by the Claude Code plugin. Sits above the
+                  metadata bar so a platform engineer opening the drawer
+                  immediately sees "this is a developer Claude Code
+                  session" rather than having to infer it from the
+                  flavor text. Version is pulled from
+                  context.frameworks["claude-code/<ver>"]; absent
+                  versions collapse to just "Claude Code". */}
+              {isClaudeCodeSession(data.session) && (
+                <div
+                  data-testid="claude-code-badge"
+                  className="flex items-center gap-2 px-4 py-2"
+                  style={{
+                    borderBottom: "1px solid var(--border-subtle)",
+                    background: "var(--accent-glow)",
+                  }}
+                >
+                  <ClaudeCodeLogo size={20} />
+                  <span
+                    className="text-[13px] font-semibold"
+                    style={{ color: "var(--text)" }}
+                  >
+                    Claude Code
+                  </span>
+                  {(() => {
+                    const v = getClaudeCodeVersion(data.session);
+                    return v ? (
+                      <span
+                        className="font-mono text-[11px]"
+                        style={{ color: "var(--text-muted)" }}
+                      >
+                        v{v}
+                      </span>
+                    ) : null;
+                  })()}
+                </div>
+              )}
               {/* Metadata bar — labelled grid. Auto-fits items into a
                   flowing two-row layout (identity on top, metrics
                   below) so the bar doesn't wrap unreadably on the

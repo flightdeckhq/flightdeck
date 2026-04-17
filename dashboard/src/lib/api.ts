@@ -184,6 +184,13 @@ export interface SessionsParams {
   state?: string[];
   flavor?: string[];
   /**
+   * Filter by sessions.agent_type. Repeatable: OR within the group,
+   * AND with every other filter. Values are free-form text and
+   * unvalidated at the API layer -- a typo just yields an empty
+   * result.
+   */
+  agent_type?: string[];
+  /**
    * Filter on sessions.context.frameworks[] -- repeatable. Values
    * are the full name/version strings emitted by the sensor's
    * FrameworkCollector (e.g. "langgraph/1.1.6"). Server side this
@@ -207,6 +214,9 @@ export async function fetchSessions(params: SessionsParams, signal?: AbortSignal
   }
   if (params.flavor) {
     for (const f of params.flavor) sp.append("flavor", f);
+  }
+  if (params.agent_type) {
+    for (const a of params.agent_type) sp.append("agent_type", a);
   }
   if (params.framework) {
     for (const fw of params.framework) sp.append("framework", fw);

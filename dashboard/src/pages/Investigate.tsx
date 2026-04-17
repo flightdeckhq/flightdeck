@@ -10,7 +10,8 @@ import { SessionDrawer, type DrawerTab } from "@/components/session/SessionDrawe
 import { OSIcon } from "@/components/ui/OSIcon";
 import { OrchestrationIcon } from "@/components/ui/OrchestrationIcon";
 import { ProviderLogo } from "@/components/ui/provider-logo";
-import { getProvider } from "@/lib/models";
+import { ClaudeCodeLogo } from "@/components/ui/claude-code-logo";
+import { getProvider, isClaudeCodeSession } from "@/lib/models";
 import { cn } from "@/lib/utils";
 
 // ---------------------------------------------------------------------------
@@ -28,6 +29,7 @@ function parseUrlState(sp: URLSearchParams) {
     to: sp.get("to") ?? new Date().toISOString(),
     states: sp.getAll("state") as SessionState[],
     flavors: sp.getAll("flavor"),
+    agentTypes: sp.getAll("agent_type"),
     frameworks: sp.getAll("framework"),
     model: sp.get("model") ?? "",
     sort: sp.get("sort") ?? "started_at",
@@ -44,6 +46,7 @@ function buildUrlParams(s: ReturnType<typeof parseUrlState>): URLSearchParams {
   if (s.to) p.set("to", s.to);
   for (const st of s.states) p.append("state", st);
   for (const fl of s.flavors) p.append("flavor", fl);
+  for (const at of s.agentTypes) p.append("agent_type", at);
   for (const fw of s.frameworks) p.append("framework", fw);
   if (s.model) p.set("model", s.model);
   if (s.sort !== "started_at") p.set("sort", s.sort);
@@ -138,9 +141,10 @@ interface FacetSources {
   flavor?: SessionListItem[];
   model?: SessionListItem[];
   framework?: SessionListItem[];
+  agent_type?: SessionListItem[];
 }
 
-function computeFacets(
+export function computeFacets(
   sessions: SessionListItem[],
   sources: FacetSources = {},
 ): FacetGroup[] {
@@ -148,6 +152,7 @@ function computeFacets(
   const flavorCounts = new Map<string, number>();
   const modelCounts = new Map<string, number>();
   const frameworkCounts = new Map<string, number>();
+  const agentTypeCounts = new Map<string, number>();
   const osCounts = new Map<string, number>();
   const branchCounts = new Map<string, number>();
   const hostCounts = new Map<string, number>();
@@ -179,6 +184,16 @@ function computeFacets(
       }
     }
   }
+  if (sources.agent_type) {
+    for (const s of sources.agent_type) {
+      if (s.agent_type) {
+        agentTypeCounts.set(
+          s.agent_type,
+          (agentTypeCounts.get(s.agent_type) ?? 0) + 1,
+        );
+      }
+    }
+  }
 
   for (const s of sessions) {
     if (!sources.state) stateCounts.set(s.state, (stateCounts.get(s.state) ?? 0) + 1);
@@ -188,6 +203,12 @@ function computeFacets(
       for (const fw of (s.context?.frameworks as string[] | undefined) ?? []) {
         frameworkCounts.set(fw, (frameworkCounts.get(fw) ?? 0) + 1);
       }
+    }
+    if (!sources.agent_type && s.agent_type) {
+      agentTypeCounts.set(
+        s.agent_type,
+        (agentTypeCounts.get(s.agent_type) ?? 0) + 1,
+      );
     }
     const os = s.context?.os as string | undefined;
     if (os) osCounts.set(os, (osCounts.get(os) ?? 0) + 1);
@@ -207,6 +228,7 @@ function computeFacets(
     { key: "flavor", label: "FLAVOR", values: toArr(flavorCounts) },
     { key: "model", label: "MODEL", values: toArr(modelCounts) },
     { key: "framework", label: "FRAMEWORK", values: toArr(frameworkCounts) },
+    { key: "agent_type", label: "AGENT TYPE", values: toArr(agentTypeCounts) },
     { key: "os", label: "OS", values: toArr(osCounts) },
     { key: "git_branch", label: "GIT BRANCH", values: toArr(branchCounts) },
     { key: "hostname", label: "HOSTNAME", values: toArr(hostCounts) },
@@ -241,6 +263,14 @@ function FacetIcon({ groupKey, value }: { groupKey: string; value: string }) {
   }
   if (groupKey === "framework") {
     return <Boxes size={12} style={{ color: "var(--text-muted)", flexShrink: 0 }} />;
+  }
+  if (groupKey === "agent_type") {
+    // agent_type values are free-form text (developer / autonomous /
+    // supervised / batch today, possibly new values tomorrow) so we
+    // render the same generic "bot" glyph as the FLAVOR facet rather
+    // than special-casing each value. The value text itself carries
+    // the identity -- the icon is a visual anchor for the row.
+    return <Bot size={12} style={{ color: "var(--text-muted)", flexShrink: 0 }} />;
   }
   if (groupKey === "git_branch") {
     return <GitBranch size={12} style={{ color: "var(--text-muted)", flexShrink: 0 }} />;
@@ -394,6 +424,7 @@ export function Investigate() {
         to: state.to,
         state: state.states.length > 0 ? state.states : undefined,
         flavor: state.flavors.length > 0 ? state.flavors : undefined,
+        agent_type: state.agentTypes.length > 0 ? state.agentTypes : undefined,
         framework: state.frameworks.length > 0 ? state.frameworks : undefined,
         model: state.model || undefined,
         sort: state.sort,
@@ -426,15 +457,26 @@ export function Investigate() {
         framework: state.frameworks.length > 0
           ? fetchSessions({ ...facetBase, framework: undefined }, controller.signal)
           : null,
+        agent_type: state.agentTypes.length > 0
+          ? fetchSessions({ ...facetBase, agent_type: undefined }, controller.signal)
+          : null,
       };
 
       try {
-        const [resp, stateResp, flavorResp, modelResp, frameworkResp] = await Promise.all([
+        const [
+          resp,
+          stateResp,
+          flavorResp,
+          modelResp,
+          frameworkResp,
+          agentTypeResp,
+        ] = await Promise.all([
           fetchSessions(baseParams, controller.signal),
           aux.state,
           aux.flavor,
           aux.model,
           aux.framework,
+          aux.agent_type,
         ]);
         setSessions(resp.sessions);
         setTotal(resp.total);
@@ -443,6 +485,7 @@ export function Investigate() {
           flavor: flavorResp?.sessions,
           model: modelResp?.sessions,
           framework: frameworkResp?.sessions,
+          agent_type: agentTypeResp?.sessions,
         });
         setLastUpdated(Date.now());
       } catch (err) {
@@ -566,6 +609,12 @@ export function Investigate() {
           ? current.filter((f) => f !== value)
           : [...current, value];
         updateUrl({ frameworks: next, page: 1 });
+      } else if (group === "agent_type") {
+        const current = urlState.agentTypes;
+        const next = current.includes(value)
+          ? current.filter((a) => a !== value)
+          : [...current, value];
+        updateUrl({ agentTypes: next, page: 1 });
       }
       // os, git_branch, hostname use the q search for now
     },
@@ -602,11 +651,21 @@ export function Investigate() {
           updateUrl({ frameworks: urlState.frameworks.filter((f) => f !== fw), page: 1 }),
       });
     }
+    for (const at of urlState.agentTypes) {
+      pills.push({
+        label: `agent_type:${at}`,
+        onRemove: () =>
+          updateUrl({
+            agentTypes: urlState.agentTypes.filter((a) => a !== at),
+            page: 1,
+          }),
+      });
+    }
     return pills;
   }, [urlState, updateUrl]);
 
   const clearAllFilters = useCallback(() => {
-    updateUrl({ states: [], flavors: [], frameworks: [], model: "", q: "", page: 1 });
+    updateUrl({ states: [], flavors: [], agentTypes: [], frameworks: [], model: "", q: "", page: 1 });
     setSearchInput("");
   }, [updateUrl]);
 
@@ -777,7 +836,8 @@ export function Investigate() {
                   (group.key === "state" && urlState.states.includes(v.value as SessionState)) ||
                   (group.key === "flavor" && urlState.flavors.includes(v.value)) ||
                   (group.key === "model" && urlState.model === v.value) ||
-                  (group.key === "framework" && urlState.frameworks.includes(v.value));
+                  (group.key === "framework" && urlState.frameworks.includes(v.value)) ||
+                  (group.key === "agent_type" && urlState.agentTypes.includes(v.value));
                 return (
                   <button
                     key={v.value}
@@ -990,7 +1050,14 @@ export function Investigate() {
                     onMouseEnter={(e) => { if (selectedSessionId !== s.session_id) e.currentTarget.style.background = "rgba(128,128,128,0.08)"; }}
                     onMouseLeave={(e) => { if (selectedSessionId !== s.session_id) e.currentTarget.style.background = ""; }}
                   >
-                    <td className="truncate" style={{ padding: "0 12px", width: COL_WIDTHS.flavor, fontSize: 13, fontWeight: 500, color: "var(--text)" }}>{s.flavor}</td>
+                    <td className="truncate" style={{ padding: "0 12px", width: COL_WIDTHS.flavor, fontSize: 13, fontWeight: 500, color: "var(--text)" }}>
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                        {isClaudeCodeSession(s) && (
+                          <ClaudeCodeLogo size={12} className="shrink-0" />
+                        )}
+                        <span className="truncate">{s.flavor}</span>
+                      </span>
+                    </td>
                     <td className="truncate" style={{ padding: "0 12px", width: COL_WIDTHS.hostname, fontSize: 12, color: "var(--text-secondary)" }}>
                       {(s.context?.hostname as string) ?? s.host ?? "\u2014"}
                     </td>

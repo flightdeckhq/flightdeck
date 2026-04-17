@@ -109,6 +109,21 @@ func SessionsListHandler(s store.Querier) http.HandlerFunc {
 			}
 		}
 
+		// Parse agent_type filter (repeatable). Values are unvalidated
+		// against a fixed set -- new agent_type values can land without
+		// a migration; a typo just yields an empty result like every
+		// other text filter. Backs the AGENT TYPE facet on the
+		// Investigate page.
+		var agentTypes []string
+		for _, a := range q["agent_type"] {
+			for _, v := range strings.Split(a, ",") {
+				v = strings.TrimSpace(v)
+				if v != "" {
+					agentTypes = append(agentTypes, v)
+				}
+			}
+		}
+
 		// Parse framework filter (repeatable). Values are the full
 		// name/version strings emitted by the sensor's
 		// FrameworkClassifier (e.g. "langgraph/1.1.6"). We do NOT
@@ -178,6 +193,7 @@ func SessionsListHandler(s store.Querier) http.HandlerFunc {
 			Query:   search,
 			States:     states,
 			Flavors:    flavors,
+			AgentTypes: agentTypes,
 			Frameworks: frameworks,
 			Model:      q.Get("model"),
 			Sort:    sort,

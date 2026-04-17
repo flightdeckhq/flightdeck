@@ -100,3 +100,54 @@ export function providerLabel(dimension: string): string {
   }
   return dimension;
 }
+
+// ---------------------------------------------------------------------
+// Claude Code session detection
+// ---------------------------------------------------------------------
+
+/**
+ * True when a session originated from the Claude Code plugin. Detects
+ * via ``flavor="claude-code"`` (the plugin's default; can in theory be
+ * overridden by the operator via ``AGENT_FLAVOR``) OR via any entry in
+ * ``context.frameworks`` starting with ``"claude-code"`` (the plugin
+ * always stamps one of those). The OR makes the helper resilient to a
+ * fleet where somebody renamed the flavor but the framework tag still
+ * reveals the origin.
+ */
+export function isClaudeCodeSession(session: {
+  flavor?: string;
+  context?: Record<string, unknown>;
+}): boolean {
+  if (session.flavor === "claude-code") return true;
+  const frameworks = session.context?.frameworks;
+  if (Array.isArray(frameworks)) {
+    for (const fw of frameworks) {
+      if (typeof fw === "string" && fw.startsWith("claude-code")) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Return the Claude Code client version string when the session carries
+ * a ``claude-code/<version>`` entry in ``context.frameworks``, or null
+ * otherwise. The plugin reads the version from the transcript JSONL's
+ * ``message.version`` field; older Claude Code releases or transcripts
+ * missing the field leave the helper with a bare ``"claude-code"``
+ * entry and this function returns null.
+ */
+export function getClaudeCodeVersion(session: {
+  context?: Record<string, unknown>;
+}): string | null {
+  const frameworks = session.context?.frameworks;
+  if (!Array.isArray(frameworks)) return null;
+  for (const fw of frameworks) {
+    if (typeof fw !== "string") continue;
+    if (fw === "claude-code") continue;
+    if (fw.startsWith("claude-code/")) {
+      const v = fw.slice("claude-code/".length);
+      return v || null;
+    }
+  }
+  return null;
+}

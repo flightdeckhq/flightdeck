@@ -61,7 +61,7 @@ export function ProviderIconSvg({
   }
   return (
     <svg x={x} y={y} width={size} height={size} viewBox={icon.viewBox} opacity={opacity}>
-      <path d={icon.path} fill={fill} />
+      <path d={icon.path} fill={fill} fillRule={icon.fillRule} />
     </svg>
   );
 }

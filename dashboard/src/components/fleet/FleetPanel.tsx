@@ -14,6 +14,7 @@ import { SessionStateBar } from "./SessionStateBar";
 import { PolicyEventList } from "./PolicyEventList";
 import { createDirective } from "@/lib/api";
 import { flavorHasDirectiveCapableSession } from "@/lib/directives";
+import { ClaudeCodeLogo } from "@/components/ui/claude-code-logo";
 import { DirectiveCard } from "@/components/directives/DirectiveCard";
 import { useFleetStore } from "@/store/fleet";
 import { OctagonX, X, Zap } from "lucide-react";
@@ -546,6 +547,9 @@ function FlavorItem({
       onClick={() => onFlavorClick?.(flavor.flavor)}
     >
       <div className="flex items-center gap-2 min-w-0">
+        {flavor.flavor === "claude-code" && (
+          <ClaudeCodeLogo size={14} className="shrink-0" />
+        )}
         <span className="font-mono truncate">{flavor.flavor}</span>
         {flavor.agent_type === "developer" && (
           <span

@@ -22,7 +22,40 @@ export interface ProviderIcon {
   viewBox: string;
   path: string;
   color: string | { light: string; dark: string };
+  /** Optional fill-rule override. Icons whose ``path`` encodes a
+   *  negative-space cutout (e.g. the Claude Code terminal outline with
+   *  a chevron inside) need ``evenodd`` so SVG XORs the subpaths.
+   *  Default (omitted) is nonzero, which is what every provider brand
+   *  mark below relies on. */
+  fillRule?: "evenodd" | "nonzero";
 }
+
+/** Claude Code visual identity. Rounded-square terminal outline with
+ *  a "``>``" chevron inside -- visually distinct from the Anthropic
+ *  star glyph so a fleet operator can tell at a glance which sessions
+ *  came from the Claude Code plugin versus direct Anthropic SDK use.
+ *
+ *  The path stacks two subpaths:
+ *    1. A rounded-square ring (outer clockwise, inner counter-clockwise)
+ *    2. A filled chevron pointing right
+ *  Rendered with ``fill-rule=evenodd`` so the inner subpath punches
+ *  a hole in the outer and the chevron stays solid.
+ *
+ *  Color is the same Anthropic warm tone as the ``anthropic`` entry
+ *  above -- Claude Code *is* Anthropic's terminal agent, so the brand
+ *  family reads consistently while the glyph signals the tool. */
+export const CLAUDE_CODE_ICON: ProviderIcon = {
+  viewBox: "0 0 24 24",
+  fillRule: "evenodd",
+  path:
+    // Outer rounded square (clockwise)
+    "M6 3h12a3 3 0 0 1 3 3v12a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3V6a3 3 0 0 1 3-3z " +
+    // Inner rounded square (counter-clockwise -> cuts a 1.5px border)
+    "M6 4.5A1.5 1.5 0 0 0 4.5 6v12A1.5 1.5 0 0 0 6 19.5h12a1.5 1.5 0 0 0 1.5-1.5V6A1.5 1.5 0 0 0 18 4.5H6z " +
+    // Chevron "Claude-Code-typed-this" prompt glyph
+    "M10.22 8.22a.75.75 0 0 1 1.06 0l3.25 3.25a.75.75 0 0 1 0 1.06l-3.25 3.25a.75.75 0 1 1-1.06-1.06L12.94 12l-2.72-2.72a.75.75 0 0 1 0-1.06z",
+  color: { light: "#D4763B", dark: "#E8915A" },
+};
 
 export const PROVIDER_ICONS: Record<Provider, ProviderIcon | null> = {
   anthropic: {

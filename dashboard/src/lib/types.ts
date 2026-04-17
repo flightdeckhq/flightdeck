@@ -318,6 +318,12 @@ export interface SearchResults {
 export interface SessionListItem {
   session_id: string;
   flavor: string;
+  /**
+   * developer / autonomous / supervised / batch. Populated from the
+   * sessions.agent_type column. Drives the AGENT TYPE facet on the
+   * Investigate page.
+   */
+  agent_type: string;
   host: string | null;
   model: string | null;
   state: SessionState;

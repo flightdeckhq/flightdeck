@@ -45,7 +45,7 @@ export function ProviderLogo({ provider, size = 14, className }: ProviderLogoPro
       className={className}
       style={{ color: fill, display: "inline-block", verticalAlign: "middle" }}
     >
-      <path d={icon.path} />
+      <path d={icon.path} fillRule={icon.fillRule} />
     </svg>
   );
 }

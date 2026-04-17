@@ -139,6 +139,24 @@ func SessionsListHandler(s store.Querier) http.HandlerFunc {
 			}
 		}
 
+		// Parse generic scalar-key context filters. We iterate the
+		// closed whitelist rather than looping over ``q`` so an
+		// unrecognised query param (typo, injection attempt) is
+		// silently ignored instead of forwarded to the store where
+		// the helper would panic. Values are comma-splittable for
+		// "user=a,b" shorthand and repeatable for "user=a&user=b".
+		contextFilters := map[string][]string{}
+		for _, key := range store.AllowedContextFilterKeys {
+			for _, raw := range q[key] {
+				for _, v := range strings.Split(raw, ",") {
+					v = strings.TrimSpace(v)
+					if v != "" {
+						contextFilters[key] = append(contextFilters[key], v)
+					}
+				}
+			}
+		}
+
 		// Sort validation
 		sort := q.Get("sort")
 		if sort == "" {
@@ -188,18 +206,19 @@ func SessionsListHandler(s store.Querier) http.HandlerFunc {
 		search := q.Get("q")
 
 		params := store.SessionsParams{
-			From:    from,
-			To:      to,
-			Query:   search,
-			States:     states,
-			Flavors:    flavors,
-			AgentTypes: agentTypes,
-			Frameworks: frameworks,
-			Model:      q.Get("model"),
-			Sort:    sort,
-			Order:   order,
-			Limit:   limit,
-			Offset:  offset,
+			From:           from,
+			To:             to,
+			Query:          search,
+			States:         states,
+			Flavors:        flavors,
+			AgentTypes:     agentTypes,
+			Frameworks:     frameworks,
+			ContextFilters: contextFilters,
+			Model:          q.Get("model"),
+			Sort:           sort,
+			Order:          order,
+			Limit:          limit,
+			Offset:         offset,
 		}
 
 		result, err := s.GetSessions(r.Context(), params)

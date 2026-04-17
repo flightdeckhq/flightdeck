@@ -197,6 +197,27 @@ export interface SessionsParams {
    * maps to the ?| JSONB-array-contains-any operator.
    */
   framework?: string[];
+  /**
+   * Generic scalar-key context filters. Every key listed here maps
+   * to a repeatable query param on ``/v1/sessions`` and a
+   * ``context->>'<key>' IN (...)`` WHERE fragment on the server.
+   * Keys outside this whitelist are silently dropped by the handler
+   * -- safe against typos and injection. Keep in sync with
+   * api/internal/store/sessions.go::AllowedContextFilterKeys.
+   */
+  user?: string[];
+  os?: string[];
+  arch?: string[];
+  hostname?: string[];
+  process_name?: string[];
+  node_version?: string[];
+  python_version?: string[];
+  git_branch?: string[];
+  /** Filter-only (no facet). Powers deep-link triage of a single
+   *  commit across the fleet. */
+  git_commit?: string[];
+  git_repo?: string[];
+  orchestration?: string[];
   model?: string;
   sort?: string;
   order?: string;
@@ -220,6 +241,27 @@ export async function fetchSessions(params: SessionsParams, signal?: AbortSignal
   }
   if (params.framework) {
     for (const fw of params.framework) sp.append("framework", fw);
+  }
+  // Generic scalar-key context filters. Iterated via the shared key
+  // list so adding a new key is a one-line change here plus the
+  // whitelist update on the server.
+  for (const key of [
+    "user",
+    "os",
+    "arch",
+    "hostname",
+    "process_name",
+    "node_version",
+    "python_version",
+    "git_branch",
+    "git_commit",
+    "git_repo",
+    "orchestration",
+  ] as const) {
+    const values = params[key];
+    if (values) {
+      for (const v of values) sp.append(key, v);
+    }
   }
   if (params.model) sp.set("model", params.model);
   if (params.sort) sp.set("sort", params.sort);

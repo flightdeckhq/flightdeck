@@ -1,6 +1,22 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useSearchParams } from "react-router-dom";
-import { Search, RefreshCw, X, LayoutGrid, GitBranch, Bot, Boxes, Server, FileText } from "lucide-react";
+import {
+  Search,
+  RefreshCw,
+  X,
+  LayoutGrid,
+  GitBranch,
+  Bot,
+  Boxes,
+  Server,
+  FileText,
+  User,
+  Cpu,
+  Terminal,
+  Package,
+  Container,
+  GitCommit,
+} from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { fetchSessions, type SessionsParams } from "@/lib/api";
 import type { SessionListItem, SessionState } from "@/lib/types";
@@ -19,7 +35,7 @@ import { cn } from "@/lib/utils";
 // URL state helpers
 // ---------------------------------------------------------------------------
 
-function parseUrlState(sp: URLSearchParams) {
+export function parseUrlState(sp: URLSearchParams) {
   const page = Math.max(1, parseInt(sp.get("page") ?? "1", 10) || 1);
   const perPage = [25, 50, 100].includes(parseInt(sp.get("per_page") ?? "", 10))
     ? parseInt(sp.get("per_page")!, 10)
@@ -32,6 +48,21 @@ function parseUrlState(sp: URLSearchParams) {
     flavors: sp.getAll("flavor"),
     agentTypes: sp.getAll("agent_type"),
     frameworks: sp.getAll("framework"),
+    // Scalar context filters. The key list here must stay in sync
+    // with api/internal/store/sessions.go::AllowedContextFilterKeys
+    // and with buildUrlParams below. git_commit is filter-only (no
+    // facet) but round-trips through the URL the same way.
+    contextUsers: sp.getAll("user"),
+    contextOS: sp.getAll("os"),
+    contextArch: sp.getAll("arch"),
+    contextHostnames: sp.getAll("hostname"),
+    contextProcessNames: sp.getAll("process_name"),
+    contextNodeVersions: sp.getAll("node_version"),
+    contextPythonVersions: sp.getAll("python_version"),
+    contextGitBranches: sp.getAll("git_branch"),
+    contextGitCommits: sp.getAll("git_commit"),
+    contextGitRepos: sp.getAll("git_repo"),
+    contextOrchestrations: sp.getAll("orchestration"),
     model: sp.get("model") ?? "",
     sort: sp.get("sort") ?? "started_at",
     order: (sp.get("order") ?? "desc") as "asc" | "desc",
@@ -40,7 +71,7 @@ function parseUrlState(sp: URLSearchParams) {
   };
 }
 
-function buildUrlParams(s: ReturnType<typeof parseUrlState>): URLSearchParams {
+export function buildUrlParams(s: ReturnType<typeof parseUrlState>): URLSearchParams {
   const p = new URLSearchParams();
   if (s.q) p.set("q", s.q);
   if (s.from) p.set("from", s.from);
@@ -49,6 +80,17 @@ function buildUrlParams(s: ReturnType<typeof parseUrlState>): URLSearchParams {
   for (const fl of s.flavors) p.append("flavor", fl);
   for (const at of s.agentTypes) p.append("agent_type", at);
   for (const fw of s.frameworks) p.append("framework", fw);
+  for (const u of s.contextUsers) p.append("user", u);
+  for (const o of s.contextOS) p.append("os", o);
+  for (const a of s.contextArch) p.append("arch", a);
+  for (const h of s.contextHostnames) p.append("hostname", h);
+  for (const pn of s.contextProcessNames) p.append("process_name", pn);
+  for (const nv of s.contextNodeVersions) p.append("node_version", nv);
+  for (const pv of s.contextPythonVersions) p.append("python_version", pv);
+  for (const gb of s.contextGitBranches) p.append("git_branch", gb);
+  for (const gc of s.contextGitCommits) p.append("git_commit", gc);
+  for (const gr of s.contextGitRepos) p.append("git_repo", gr);
+  for (const oc of s.contextOrchestrations) p.append("orchestration", oc);
   if (s.model) p.set("model", s.model);
   if (s.sort !== "started_at") p.set("sort", s.sort);
   if (s.order !== "desc") p.set("order", s.order);
@@ -143,6 +185,57 @@ interface FacetSources {
   model?: SessionListItem[];
   framework?: SessionListItem[];
   agent_type?: SessionListItem[];
+  // Per-key overrides for scalar context facets. Each key, when
+  // populated, contributes its session list to THAT facet only --
+  // keeps an actively-filtered facet from collapsing to a single row
+  // while the rest of the sidebar still reflects the fully filtered
+  // result. Keys mirror AllowedContextFilterKeys on the server.
+  user?: SessionListItem[];
+  os?: SessionListItem[];
+  arch?: SessionListItem[];
+  hostname?: SessionListItem[];
+  process_name?: SessionListItem[];
+  node_version?: SessionListItem[];
+  python_version?: SessionListItem[];
+  git_branch?: SessionListItem[];
+  git_repo?: SessionListItem[];
+  orchestration?: SessionListItem[];
+}
+
+/** Scalar context keys that render as facets in the Investigate
+ *  sidebar. Ordering is the canonical sidebar order. git_commit is
+ *  filter-only (no facet) so it is absent. Must stay in sync with the
+ *  server's AllowedContextFilterKeys minus git_commit. */
+export const CONTEXT_FACET_KEYS = [
+  "os",
+  "arch",
+  "hostname",
+  "user",
+  "process_name",
+  "node_version",
+  "python_version",
+  "git_branch",
+  "git_repo",
+  "orchestration",
+] as const;
+
+type ContextFacetKey = (typeof CONTEXT_FACET_KEYS)[number];
+
+function readScalarContext(
+  session: SessionListItem,
+  key: ContextFacetKey,
+): string | undefined {
+  // context.hostname is authoritative for the HOSTNAME facet; the
+  // sessions.host column is a legacy fallback for sessions predating
+  // the context collector. Prefer context, fall through to host when
+  // context is missing that key.
+  if (key === "hostname") {
+    const ctx = session.context?.hostname;
+    if (typeof ctx === "string" && ctx) return ctx;
+    return session.host ?? undefined;
+  }
+  const v = session.context?.[key];
+  return typeof v === "string" && v ? v : undefined;
 }
 
 export function computeFacets(
@@ -154,9 +247,20 @@ export function computeFacets(
   const modelCounts = new Map<string, number>();
   const frameworkCounts = new Map<string, number>();
   const agentTypeCounts = new Map<string, number>();
-  const osCounts = new Map<string, number>();
-  const branchCounts = new Map<string, number>();
-  const hostCounts = new Map<string, number>();
+  // Scalar context counts. Initialised once per key so downstream code
+  // can address them via the same key string the facets emit under.
+  const ctxCounts: Record<ContextFacetKey, Map<string, number>> = {
+    os: new Map(),
+    arch: new Map(),
+    hostname: new Map(),
+    user: new Map(),
+    process_name: new Map(),
+    node_version: new Map(),
+    python_version: new Map(),
+    git_branch: new Map(),
+    git_repo: new Map(),
+    orchestration: new Map(),
+  };
 
   // Per-dim override helpers: when a dim's source is present, tally
   // THAT source into the matching map and skip the main loop's entry
@@ -195,6 +299,17 @@ export function computeFacets(
       }
     }
   }
+  // Sticky-source pass for scalar context facets. A key whose source
+  // override is present consumes THAT list; the main-loop branch
+  // below skips it to avoid double-counting.
+  for (const key of CONTEXT_FACET_KEYS) {
+    const src = sources[key];
+    if (!src) continue;
+    for (const s of src) {
+      const v = readScalarContext(s, key);
+      if (v) ctxCounts[key].set(v, (ctxCounts[key].get(v) ?? 0) + 1);
+    }
+  }
 
   for (const s of sessions) {
     if (!sources.state) stateCounts.set(s.state, (stateCounts.get(s.state) ?? 0) + 1);
@@ -211,12 +326,11 @@ export function computeFacets(
         (agentTypeCounts.get(s.agent_type) ?? 0) + 1,
       );
     }
-    const os = s.context?.os as string | undefined;
-    if (os) osCounts.set(os, (osCounts.get(os) ?? 0) + 1);
-    const branch = s.context?.git_branch as string | undefined;
-    if (branch) branchCounts.set(branch, (branchCounts.get(branch) ?? 0) + 1);
-    const hostname = (s.context?.hostname ?? s.host) as string | undefined;
-    if (hostname) hostCounts.set(hostname, (hostCounts.get(hostname) ?? 0) + 1);
+    for (const key of CONTEXT_FACET_KEYS) {
+      if (sources[key]) continue;
+      const v = readScalarContext(s, key);
+      if (v) ctxCounts[key].set(v, (ctxCounts[key].get(v) ?? 0) + 1);
+    }
   }
 
   const toArr = (m: Map<string, number>) =>
@@ -224,15 +338,35 @@ export function computeFacets(
       .sort((a, b) => b[1] - a[1])
       .map(([value, count]) => ({ value, count }));
 
+  // Sidebar order: lifecycle (STATE), identity (FLAVOR / AGENT TYPE /
+  // MODEL / FRAMEWORK), runtime (OS / ARCH / HOSTNAME), operator
+  // (USER / PROCESS_NAME / NODE / PYTHON VERSION), git, orchestration.
+  // Matches the canonical order in the Phase 3 addendum #2 brief.
+  const CTX_LABELS: Record<ContextFacetKey, string> = {
+    os: "OS",
+    arch: "ARCH",
+    hostname: "HOSTNAME",
+    user: "USER",
+    process_name: "PROCESS_NAME",
+    node_version: "NODE VERSION",
+    python_version: "PYTHON VERSION",
+    git_branch: "GIT BRANCH",
+    git_repo: "GIT REPO",
+    orchestration: "ORCHESTRATION",
+  };
+  const scalarCtxGroups = CONTEXT_FACET_KEYS.map((k) => ({
+    key: k,
+    label: CTX_LABELS[k],
+    values: toArr(ctxCounts[k]),
+  }));
+
   return [
     { key: "state", label: "STATE", values: toArr(stateCounts) },
     { key: "flavor", label: "FLAVOR", values: toArr(flavorCounts) },
+    { key: "agent_type", label: "AGENT TYPE", values: toArr(agentTypeCounts) },
     { key: "model", label: "MODEL", values: toArr(modelCounts) },
     { key: "framework", label: "FRAMEWORK", values: toArr(frameworkCounts) },
-    { key: "agent_type", label: "AGENT TYPE", values: toArr(agentTypeCounts) },
-    { key: "os", label: "OS", values: toArr(osCounts) },
-    { key: "git_branch", label: "GIT BRANCH", values: toArr(branchCounts) },
-    { key: "hostname", label: "HOSTNAME", values: toArr(hostCounts) },
+    ...scalarCtxGroups,
   ].filter((g) => g.values.length > 0);
 }
 
@@ -278,6 +412,24 @@ function FacetIcon({ groupKey, value }: { groupKey: string; value: string }) {
   }
   if (groupKey === "hostname") {
     return <Server size={12} style={{ color: "var(--text-muted)", flexShrink: 0 }} />;
+  }
+  if (groupKey === "arch") {
+    return <Cpu size={12} style={{ color: "var(--text-muted)", flexShrink: 0 }} />;
+  }
+  if (groupKey === "user") {
+    return <User size={12} style={{ color: "var(--text-muted)", flexShrink: 0 }} />;
+  }
+  if (groupKey === "process_name") {
+    return <Terminal size={12} style={{ color: "var(--text-muted)", flexShrink: 0 }} />;
+  }
+  if (groupKey === "node_version" || groupKey === "python_version") {
+    return <Package size={12} style={{ color: "var(--text-muted)", flexShrink: 0 }} />;
+  }
+  if (groupKey === "git_repo") {
+    return <GitCommit size={12} style={{ color: "var(--text-muted)", flexShrink: 0 }} />;
+  }
+  if (groupKey === "orchestration") {
+    return <Container size={12} style={{ color: "var(--text-muted)", flexShrink: 0 }} />;
   }
   return null;
 }
@@ -428,24 +580,40 @@ export function Investigate() {
         agent_type: state.agentTypes.length > 0 ? state.agentTypes : undefined,
         framework: state.frameworks.length > 0 ? state.frameworks : undefined,
         model: state.model || undefined,
+        // Scalar context filters, driven from URL state. Each param
+        // only materialises when non-empty so the server does not
+        // see ``?user=&os=`` no-op blanks.
+        user: state.contextUsers.length > 0 ? state.contextUsers : undefined,
+        os: state.contextOS.length > 0 ? state.contextOS : undefined,
+        arch: state.contextArch.length > 0 ? state.contextArch : undefined,
+        hostname: state.contextHostnames.length > 0 ? state.contextHostnames : undefined,
+        process_name: state.contextProcessNames.length > 0 ? state.contextProcessNames : undefined,
+        node_version: state.contextNodeVersions.length > 0 ? state.contextNodeVersions : undefined,
+        python_version: state.contextPythonVersions.length > 0 ? state.contextPythonVersions : undefined,
+        git_branch: state.contextGitBranches.length > 0 ? state.contextGitBranches : undefined,
+        git_commit: state.contextGitCommits.length > 0 ? state.contextGitCommits : undefined,
+        git_repo: state.contextGitRepos.length > 0 ? state.contextGitRepos : undefined,
+        orchestration: state.contextOrchestrations.length > 0 ? state.contextOrchestrations : undefined,
         sort: state.sort,
         order: state.order,
         limit: state.perPage,
         offset: (state.page - 1) * state.perPage,
       };
 
-      // Sticky-facet aux fetches -- one per actively-filtered
-      // dimension, each with that dimension's filter stripped. They
-      // share the main fetch's AbortController so a stale render
-      // (user toggles fast) cancels all four legs together. We ask
-      // for more rows than the table page so facet counts are not
-      // capped by pagination; 500 matches the GetSessions hard cap
-      // on the server. Drawer refresh (skipIfDrawerOpen) already
-      // short-circuits before we get here, so these only fire on
-      // top-level URL-state changes.
+      // Sticky-facet aux fetches. One per actively-filtered dimension
+      // (any filter list non-empty or model non-blank), each with THAT
+      // dimension's filter stripped so the facet itself doesn't
+      // collapse to a single row. Fan-out is proportional to active
+      // filters -- typical interactive use is 1-2; even a worst-case
+      // "every facet filtered" run stays bounded by the number of
+      // facet keys. All fetches share the main controller so a stale
+      // render cancels them together. FACET_LIMIT matches GetSessions'
+      // hard cap on the server; drawer refresh short-circuits before
+      // we reach this block so the fan-out only happens on URL-state
+      // changes.
       const FACET_LIMIT = 500;
       const facetBase = { ...baseParams, limit: FACET_LIMIT, offset: 0 };
-      const aux = {
+      const auxPromises: Record<string, Promise<Awaited<ReturnType<typeof fetchSessions>>> | null> = {
         state: state.states.length > 0
           ? fetchSessions({ ...facetBase, state: undefined }, controller.signal)
           : null,
@@ -461,33 +629,59 @@ export function Investigate() {
         agent_type: state.agentTypes.length > 0
           ? fetchSessions({ ...facetBase, agent_type: undefined }, controller.signal)
           : null,
+        user: state.contextUsers.length > 0
+          ? fetchSessions({ ...facetBase, user: undefined }, controller.signal)
+          : null,
+        os: state.contextOS.length > 0
+          ? fetchSessions({ ...facetBase, os: undefined }, controller.signal)
+          : null,
+        arch: state.contextArch.length > 0
+          ? fetchSessions({ ...facetBase, arch: undefined }, controller.signal)
+          : null,
+        hostname: state.contextHostnames.length > 0
+          ? fetchSessions({ ...facetBase, hostname: undefined }, controller.signal)
+          : null,
+        process_name: state.contextProcessNames.length > 0
+          ? fetchSessions({ ...facetBase, process_name: undefined }, controller.signal)
+          : null,
+        node_version: state.contextNodeVersions.length > 0
+          ? fetchSessions({ ...facetBase, node_version: undefined }, controller.signal)
+          : null,
+        python_version: state.contextPythonVersions.length > 0
+          ? fetchSessions({ ...facetBase, python_version: undefined }, controller.signal)
+          : null,
+        git_branch: state.contextGitBranches.length > 0
+          ? fetchSessions({ ...facetBase, git_branch: undefined }, controller.signal)
+          : null,
+        git_repo: state.contextGitRepos.length > 0
+          ? fetchSessions({ ...facetBase, git_repo: undefined }, controller.signal)
+          : null,
+        orchestration: state.contextOrchestrations.length > 0
+          ? fetchSessions({ ...facetBase, orchestration: undefined }, controller.signal)
+          : null,
       };
 
       try {
-        const [
-          resp,
-          stateResp,
-          flavorResp,
-          modelResp,
-          frameworkResp,
-          agentTypeResp,
-        ] = await Promise.all([
-          fetchSessions(baseParams, controller.signal),
-          aux.state,
-          aux.flavor,
-          aux.model,
-          aux.framework,
-          aux.agent_type,
-        ]);
+        const resp = await fetchSessions(baseParams, controller.signal);
+        // Await every aux fetch in parallel, filtering nulls. Resolve
+        // each into { key, sessions } so the source map stays keyed.
+        const auxEntries = await Promise.all(
+          (Object.keys(auxPromises) as (keyof typeof auxPromises)[]).map(
+            async (k) => {
+              const p = auxPromises[k];
+              if (!p) return [k, undefined] as const;
+              const r = await p;
+              return [k, r.sessions] as const;
+            },
+          ),
+        );
+        const sources: FacetSources = {};
+        for (const [k, sess] of auxEntries) {
+          if (sess) (sources as Record<string, SessionListItem[]>)[k] = sess;
+        }
         setSessions(resp.sessions);
         setTotal(resp.total);
-        setFacetSources({
-          state: stateResp?.sessions,
-          flavor: flavorResp?.sessions,
-          model: modelResp?.sessions,
-          framework: frameworkResp?.sessions,
-          agent_type: agentTypeResp?.sessions,
-        });
+        setFacetSources(sources);
         setLastUpdated(Date.now());
       } catch (err) {
         if ((err as Error).name !== "AbortError") {
@@ -616,8 +810,65 @@ export function Investigate() {
           ? current.filter((a) => a !== value)
           : [...current, value];
         updateUrl({ agentTypes: next, page: 1 });
+      } else {
+        // Scalar context facets. Lookup table keeps the per-facet
+        // boilerplate (urlState slot, toggle, URL key) in one place
+        // so adding a new facet is a one-row change here plus the
+        // whitelist updates in parseUrlState / buildUrlParams.
+        const ctxKeyToField: Record<
+          string,
+          { get: () => string[]; set: (next: string[]) => void }
+        > = {
+          os: {
+            get: () => urlState.contextOS,
+            set: (next) => updateUrl({ contextOS: next, page: 1 }),
+          },
+          arch: {
+            get: () => urlState.contextArch,
+            set: (next) => updateUrl({ contextArch: next, page: 1 }),
+          },
+          hostname: {
+            get: () => urlState.contextHostnames,
+            set: (next) => updateUrl({ contextHostnames: next, page: 1 }),
+          },
+          user: {
+            get: () => urlState.contextUsers,
+            set: (next) => updateUrl({ contextUsers: next, page: 1 }),
+          },
+          process_name: {
+            get: () => urlState.contextProcessNames,
+            set: (next) => updateUrl({ contextProcessNames: next, page: 1 }),
+          },
+          node_version: {
+            get: () => urlState.contextNodeVersions,
+            set: (next) => updateUrl({ contextNodeVersions: next, page: 1 }),
+          },
+          python_version: {
+            get: () => urlState.contextPythonVersions,
+            set: (next) => updateUrl({ contextPythonVersions: next, page: 1 }),
+          },
+          git_branch: {
+            get: () => urlState.contextGitBranches,
+            set: (next) => updateUrl({ contextGitBranches: next, page: 1 }),
+          },
+          git_repo: {
+            get: () => urlState.contextGitRepos,
+            set: (next) => updateUrl({ contextGitRepos: next, page: 1 }),
+          },
+          orchestration: {
+            get: () => urlState.contextOrchestrations,
+            set: (next) => updateUrl({ contextOrchestrations: next, page: 1 }),
+          },
+        };
+        const field = ctxKeyToField[group];
+        if (field) {
+          const current = field.get();
+          const next = current.includes(value)
+            ? current.filter((x) => x !== value)
+            : [...current, value];
+          field.set(next);
+        }
       }
-      // os, git_branch, hostname use the q search for now
     },
     [urlState, updateUrl]
   );
@@ -662,11 +913,54 @@ export function Investigate() {
           }),
       });
     }
+    // Scalar context pills. Iterated via a tuple list so the label
+    // shape ("user:alice") and the remove-by-filter plumbing share a
+    // single expression -- adding a new facet is a one-row change.
+    const ctxPills: Array<[string, string[], (next: string[]) => void]> = [
+      ["os", urlState.contextOS, (n) => updateUrl({ contextOS: n, page: 1 })],
+      ["arch", urlState.contextArch, (n) => updateUrl({ contextArch: n, page: 1 })],
+      ["hostname", urlState.contextHostnames, (n) => updateUrl({ contextHostnames: n, page: 1 })],
+      ["user", urlState.contextUsers, (n) => updateUrl({ contextUsers: n, page: 1 })],
+      ["process_name", urlState.contextProcessNames, (n) => updateUrl({ contextProcessNames: n, page: 1 })],
+      ["node_version", urlState.contextNodeVersions, (n) => updateUrl({ contextNodeVersions: n, page: 1 })],
+      ["python_version", urlState.contextPythonVersions, (n) => updateUrl({ contextPythonVersions: n, page: 1 })],
+      ["git_branch", urlState.contextGitBranches, (n) => updateUrl({ contextGitBranches: n, page: 1 })],
+      ["git_commit", urlState.contextGitCommits, (n) => updateUrl({ contextGitCommits: n, page: 1 })],
+      ["git_repo", urlState.contextGitRepos, (n) => updateUrl({ contextGitRepos: n, page: 1 })],
+      ["orchestration", urlState.contextOrchestrations, (n) => updateUrl({ contextOrchestrations: n, page: 1 })],
+    ];
+    for (const [key, values, setter] of ctxPills) {
+      for (const v of values) {
+        pills.push({
+          label: `${key}:${v}`,
+          onRemove: () => setter(values.filter((x) => x !== v)),
+        });
+      }
+    }
     return pills;
   }, [urlState, updateUrl]);
 
   const clearAllFilters = useCallback(() => {
-    updateUrl({ states: [], flavors: [], agentTypes: [], frameworks: [], model: "", q: "", page: 1 });
+    updateUrl({
+      states: [],
+      flavors: [],
+      agentTypes: [],
+      frameworks: [],
+      contextUsers: [],
+      contextOS: [],
+      contextArch: [],
+      contextHostnames: [],
+      contextProcessNames: [],
+      contextNodeVersions: [],
+      contextPythonVersions: [],
+      contextGitBranches: [],
+      contextGitCommits: [],
+      contextGitRepos: [],
+      contextOrchestrations: [],
+      model: "",
+      q: "",
+      page: 1,
+    });
     setSearchInput("");
   }, [updateUrl]);
 
@@ -838,7 +1132,17 @@ export function Investigate() {
                   (group.key === "flavor" && urlState.flavors.includes(v.value)) ||
                   (group.key === "model" && urlState.model === v.value) ||
                   (group.key === "framework" && urlState.frameworks.includes(v.value)) ||
-                  (group.key === "agent_type" && urlState.agentTypes.includes(v.value));
+                  (group.key === "agent_type" && urlState.agentTypes.includes(v.value)) ||
+                  (group.key === "os" && urlState.contextOS.includes(v.value)) ||
+                  (group.key === "arch" && urlState.contextArch.includes(v.value)) ||
+                  (group.key === "hostname" && urlState.contextHostnames.includes(v.value)) ||
+                  (group.key === "user" && urlState.contextUsers.includes(v.value)) ||
+                  (group.key === "process_name" && urlState.contextProcessNames.includes(v.value)) ||
+                  (group.key === "node_version" && urlState.contextNodeVersions.includes(v.value)) ||
+                  (group.key === "python_version" && urlState.contextPythonVersions.includes(v.value)) ||
+                  (group.key === "git_branch" && urlState.contextGitBranches.includes(v.value)) ||
+                  (group.key === "git_repo" && urlState.contextGitRepos.includes(v.value)) ||
+                  (group.key === "orchestration" && urlState.contextOrchestrations.includes(v.value));
                 return (
                   <button
                     key={v.value}

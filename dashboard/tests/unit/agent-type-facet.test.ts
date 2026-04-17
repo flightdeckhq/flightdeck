@@ -91,25 +91,26 @@ describe("computeFacets -- AGENT TYPE", () => {
     expect(agentType).toBeUndefined();
   });
 
-  it("places AGENT TYPE between FRAMEWORK and OS in the facet order", () => {
-    // The facet order drives the sidebar layout. Operators scanning
-    // top-to-bottom expect identity (flavor/model/framework) above
-    // environment (os/git/host). agent_type belongs on the identity
-    // side of that divide, just under FRAMEWORK.
+  it("places AGENT TYPE between FLAVOR and MODEL in the canonical order", () => {
+    // Phase 3 addendum #2 reordered the facet sidebar so that the
+    // identity tier (STATE / FLAVOR / AGENT TYPE / MODEL / FRAMEWORK)
+    // sits above the runtime tier (OS / ARCH / HOSTNAME / USER / ...).
+    // AGENT TYPE lives between FLAVOR and MODEL now.
     const sessions = [
       {
         ...mkSession("a", "claude-code", "developer"),
+        model: "claude-sonnet-4-6",
         context: { frameworks: ["claude-code"], os: "Linux" },
       },
     ];
     const order = computeFacets(sessions).map((g) => g.key);
-    const fw = order.indexOf("framework");
+    const fl = order.indexOf("flavor");
     const at = order.indexOf("agent_type");
-    const os = order.indexOf("os");
-    expect(fw).toBeGreaterThan(-1);
+    const md = order.indexOf("model");
+    expect(fl).toBeGreaterThan(-1);
     expect(at).toBeGreaterThan(-1);
-    expect(os).toBeGreaterThan(-1);
-    expect(at).toBeGreaterThan(fw);
-    expect(at).toBeLessThan(os);
+    expect(md).toBeGreaterThan(-1);
+    expect(at).toBeGreaterThan(fl);
+    expect(at).toBeLessThan(md);
   });
 });

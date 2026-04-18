@@ -1,118 +1,166 @@
 # Flightdeck Plugin for Claude Code
 
-Reports Claude Code tool calls and session lifecycle to your Flightdeck control plane.
+A Claude Code plugin that surfaces every LLM call, tool use, and token spend from your sessions into the Flightdeck dashboard in real time. Zero configuration for the local `make dev` stack; one env var to point at a hosted Flightdeck instance. No persistent daemon, no background process, no hot-path interception. The plugin runs only when a Claude Code hook fires, posts the event, and exits.
 
-## Prerequisites
+## Quickstart
 
-Set these environment variables before starting Claude Code:
-
-```bash
-export FLIGHTDECK_SERVER="http://localhost:4000"
-export FLIGHTDECK_TOKEN="tok_dev"
-```
-
-## Installation
-
-The plugin is not yet published to a marketplace. Load it from the local repo for the session:
+Prereq: a running Flightdeck stack. The fastest path is `make dev` in the Flightdeck repo (dashboard on `http://localhost:4000`, seeded token `tok_dev`).
 
 ```bash
 claude --plugin-dir /path/to/flightdeck/plugin
 ```
 
-Validate the manifest and hook config before first use:
+Start using Claude Code normally. Open the dashboard. Your session appears in the Fleet view within a few seconds, tagged `flavor=claude-code`, and events stream in as you work. No env vars required for the default dev stack.
+
+Hosted Flightdeck or a non-default port? Set two vars before invoking `claude`:
 
 ```bash
-claude plugin validate /path/to/flightdeck/plugin
+export FLIGHTDECK_SERVER="https://flightdeck.example.com"
+export FLIGHTDECK_TOKEN="ftd_..."
 ```
 
-## Environment variables
+## What gets captured
 
-| Variable | Required | Default | What it does |
-|---|---|---|---|
-| `FLIGHTDECK_SERVER` | yes | -- | Base URL of your Flightdeck stack (e.g. `http://localhost:4000`). Hooks fire `POST $FLIGHTDECK_SERVER/ingest/v1/events`. |
-| `FLIGHTDECK_TOKEN` | yes | -- | Bearer token used in the `Authorization` header. `tok_dev` in the dev compose. |
-| `FLIGHTDECK_CAPTURE_TOOL_INPUTS` | no | `true` | Captures a sanitised whitelist of tool input fields (`file_path`, `command`, `query`, `pattern`, `prompt`) on each `tool_call` event. Set to `false` to strip tool inputs from plugin events. |
-| `FLIGHTDECK_CAPTURE_PROMPTS` | no | `true` | Captures LLM call content (user prompts, assistant response, tool uses) on `post_call` events, and tool outputs on `tool_call` events. On by default for the plugin because a developer running `claude` locally is observing their own session; the Python sensor keeps `capture_prompts=False` for the same knob because it observes production traffic (DECISIONS.md D019, D103). Set to `false` to opt out. |
-| `CLAUDE_SESSION_ID` | no | -- | If set by Claude Code, used as the session id verbatim. Falls back to a stable cwd-keyed id (see Session identity below). |
-| `ANTHROPIC_CLAUDE_SESSION_ID` | no | -- | Alternative name for the same purpose. |
+By default, every Claude Code session produces:
 
-## What it reports
+- **Session metadata** on session start: flavor (`claude-code`), hostname, OS, Node version, git commit/branch/repo, orchestration (docker-compose / kubernetes if detected), and the frameworks list.
+- **Every LLM call** (both `pre_call` on user prompt submit and `post_call` on assistant turn completion) with token counts from the Claude Code JSONL transcript: `tokens_input`, `tokens_output`, `tokens_cache_read`, `tokens_cache_creation`, plus model name and latency.
+- **Every tool call** with a sanitised whitelist of the tool arguments (file paths, short command and query strings, up to 200 chars each) and the tool result.
+- **Session lifecycle**: `session_start` at first hook, `session_end` when Claude Code exits.
 
-| Hook event | Flightdeck event_type(s) | Notes |
-|---|---|---|
-| First hook invocation per session | `session_start` | Includes runtime context (hostname, os, git branch, orchestration) and `supports_directives=false`. Sent exactly once per session id. |
-| `PreToolUse` | `pre_call` | `tool_name` populated; `tool_input` only when capture is on. |
-| `PostToolUse` | `post_call` (flushed) + `tool_call` | Flushes any un-emitted assistant turns from the transcript as `post_call` events first (D107), then emits the `tool_call` itself. Mid-turn LLM activity surfaces in real time instead of batching at `Stop`. Per-`message.id` disk-marker dedup keeps this idempotent with `Stop`. |
-| `Stop` | `post_call` (backstop) | Emits `post_call` for the final assistant turn that had no tool follow-up. Any turns already flushed by `PostToolUse` are skipped via the dedup marker. |
-| `SessionEnd` | `post_call` (last-turn flush) + `session_end` | Final sweep of the transcript in case `Stop` fired before the last turn was flushed, then the session-teardown event. |
-| `PreCompact` | `tool_call` | Synthetic `tool_name=compact_context` so the dashboard timeline shows the compaction event. |
-
-Every event carries `flavor=claude-code`, `agent_type=developer`, and `framework=claude-code`.
-
-## Session identity
-
-The plugin needs a stable session id across every hook invocation in a Claude Code conversation, but each hook runs as its own Node child process so a `process.pid` fallback would create one session per tool call. Resolution order:
-
-1. `CLAUDE_SESSION_ID` env var (if set by Claude Code).
-2. `ANTHROPIC_CLAUDE_SESSION_ID` env var.
-3. **File-based id, scoped to the current working directory.** A file under `tmpdir()/flightdeck-plugin/session-<sha256(cwd)[:16]>.txt` holds the id. The first hook in a new cwd creates the file atomically (`O_CREAT|O_EXCL`); concurrent first-time invocations converge on the winner's id. Different cwds get different sessions, so multi-project users don't collide.
-4. Last-resort `sha256(cwd)` hash if the filesystem is unreadable.
-
-## Sub-agent tracking
-
-When the `Task` tool fires, the current session becomes a parent. The `tool_call` event carries:
-
-- `is_subagent_call: true`
-- `parent_session_id: <current session id>`
-
-A future sub-agent emitter can correlate its own `session_start` events back to the parent via this field.
+Two independent privacy knobs control what content leaves your machine: `captureToolInputs` (default ON) governs the tool-arg whitelist, and `capturePrompts` (default ON) governs the LLM prompt/response content and tool results. Either can be turned off without affecting the other. See the env var table below and the Privacy section.
 
 ## Privacy
 
-The plugin is tuned for the developer-observing-their-own-session case: a sanitised whitelist of tool inputs (`FLIGHTDECK_CAPTURE_TOOL_INPUTS=true`) and LLM call content (`FLIGHTDECK_CAPTURE_PROMPTS=true`) are both captured by default so the dashboard Prompts tab shows real activity without any extra setup. This is the inverse of the Python sensor's default (`capture_prompts=False`), which is sized for production observability where prompts may carry PII and proprietary context. Different product surfaces, different safe defaults -- see DECISIONS.md D019 and D103.
+**Prompt content is captured by default.** This is the opposite of the Python sensor default (`capture_prompts=False`). The reasoning is specific to Claude Code: you are observing your own session on your own machine, and an empty Prompts tab makes the feature useless without improving privacy. See DECISIONS.md D103.
 
-Even with both knobs on, the plugin never forwards raw file bodies written by `Write` / `Edit`. Tool inputs are restricted to a whitelist -- `file_path`, `command` (≤ 200 chars), `query` (≤ 200 chars), `pattern` (≤ 200 chars), `prompt` (≤ 100 chars). Every other field is dropped at the source and never reaches the network. Set `FLIGHTDECK_CAPTURE_PROMPTS=false` to strip LLM call content from events; set `FLIGHTDECK_CAPTURE_TOOL_INPUTS=false` to strip tool inputs. Both can be turned off independently.
+To disable either capture knob:
 
-Token counts are read from Claude Code's JSONL transcript on every `Stop` hook and emitted with the same breakdown (`tokens_input`, `tokens_output`, `tokens_cache_read`, `tokens_cache_creation`) that the Python sensor emits for direct SDK calls. See DECISIONS.md D100.
+```bash
+export FLIGHTDECK_CAPTURE_PROMPTS=false       # strip LLM prompt/response content
+export FLIGHTDECK_CAPTURE_TOOL_INPUTS=false   # strip sanitised tool arguments
+```
+
+Guarantees that hold regardless of the knob settings:
+
+- Raw file bodies written by `Write` and `Edit` are never forwarded. The sanitiser drops the body field at the source; it never reaches the network.
+- Tool arguments outside the whitelist (`file_path`, `command`, `query`, `pattern`, `prompt`) are dropped.
+- String values are truncated (`prompt` at 100 chars, everything else at 200 chars).
+- `FLIGHTDECK_CAPTURE_PROMPTS=false` zeroes every content field on every event type. The event still ships (so you see the session and token counts on the dashboard), but no prompt or response body is attached.
+
+## Environment variables
+
+| Variable | Default | What it does |
+|---|---|---|
+| `FLIGHTDECK_SERVER` | `http://localhost:4000` | Base URL of your Flightdeck stack. Hooks fire `POST $FLIGHTDECK_SERVER/ingest/v1/events`. |
+| `FLIGHTDECK_TOKEN` | `tok_dev` | Bearer token used in the `Authorization` header. The dev compose accepts `tok_dev` when `ENVIRONMENT=dev`; production deployments leave that unset and require an `ftd_` token minted from the Settings page. |
+| `FLIGHTDECK_CAPTURE_TOOL_INPUTS` | `true` | Captures a sanitised whitelist of tool input fields on each `tool_call` event. Set to `false` to strip tool inputs. |
+| `FLIGHTDECK_CAPTURE_PROMPTS` | `true` | Captures LLM prompts, assistant responses, and tool results. Set to `false` to strip all content bodies from plugin events while keeping metadata and token counts. |
+| `CLAUDE_SESSION_ID` | unset | Override the session id. The plugin normally reads `session_id` off the hook event payload itself, which matches what Claude Code uses internally. |
+| `ANTHROPIC_CLAUDE_SESSION_ID` | unset | Alternative name for `CLAUDE_SESSION_ID`. |
+
+## What gets reported, when
+
+Each row is what the dashboard shows for a given Claude Code hook.
+
+| Claude Code hook | Dashboard events |
+|---|---|
+| SessionStart | `session_start` with runtime context (hostname, git, frameworks, `supports_directives=false`). Sent once per session id. |
+| UserPromptSubmit | `pre_call` with cached model name and the user prompt (if `capturePrompts=true`). |
+| PostToolUse | Any un-emitted assistant turns from the transcript flush as `post_call` events first (token counts, model, response body when capture is on), then the tool execution itself emits a `tool_call`. Mid-turn LLM activity surfaces in real time. |
+| Stop | `post_call` backstop for the final assistant turn that had no tool follow-up. Turns already flushed by PostToolUse are skipped via per-message dedup. |
+| SessionEnd | Final transcript sweep (any last-turn `post_call` missed by Stop) followed by `session_end`. |
+| PreCompact | Synthetic `tool_call` with `tool_name=compact_context` so the timeline shows when Claude Code compacted its context window. |
+
+Every event carries `flavor=claude-code`, `agent_type=developer`, and `framework=claude-code`.
+
+Sub-agent tracking: when the `Task` tool fires, the `tool_call` event sets `is_subagent_call=true` and `parent_session_id=<current session id>` so a future sub-agent emitter can correlate.
+
+## Observer-class limitation
+
+The plugin is observation-only. It reports what Claude Code does; it cannot change what Claude Code does.
+
+- No Stop Agent button on claude-code sessions in the dashboard.
+- No kill switch, no mid-call interruption.
+- No token-budget enforcement, no model degradation, no policy blocking.
+
+The plugin sets `context.supports_directives=false` on session start so the dashboard hides directive UI for these sessions rather than showing controls that silently fail. This is a deliberate trade-off: the plugin is non-intrusive by design and can never interfere with your Claude Code work. If you need kill-switch or policy-enforcement behavior on actual production agents, use the Python sensor (which sits in the LLM call path and can act on returned directives). See DECISIONS.md D109.
 
 ## Troubleshooting
 
-### Hook reports `/bin/sh: 1: node: not found`
+### "I don't see my session at all"
 
-Claude Code invokes hooks through `/bin/sh`, which does not do WSL's automatic `.exe` extension lookup. If your WSL install only has the Windows-side `node.exe` on `PATH`, the bare `node` invocation in `hooks.json` will fail. The symptom looks like:
-
-```
-● Ran 1 stop hook (ctrl+o to expand)
-  ⎿ Stop hook error: Failed with non-blocking status code:
-    /bin/sh: 1: node: not found
-```
-
-Fix: install Node.js natively inside your WSL distribution. Recommended options, any of which resolves the issue:
+Quick health check:
 
 ```bash
-# via nvm (preferred -- keeps Node versions scoped per user)
-curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
-nvm install --lts
-
-# or via the NodeSource apt repo (requires sudo)
-curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -
-sudo apt install -y nodejs
+curl -s -o /dev/null -w "%{http_code}\n" "$FLIGHTDECK_SERVER/ingest/health"
 ```
 
-After install, confirm `/bin/sh -c 'node --version'` prints a version. The plugin does not require a specific Node version; v20+ is known-good. See the Phase 2 incident notes in `CLAUDE.md` for the root-cause history.
+Expected: `200`. If you get `000`, `502`, or `504`, the ingestion endpoint isn't reachable; check `FLIGHTDECK_SERVER` and that the stack is actually running (`docker ps` should show `docker-ingestion-1` healthy). If you get `401` or `403`, the token is wrong.
 
-### "cannot reach" stderr line on every claude run
+### "cannot reach" stderr line on every Claude run
 
 ```
 [flightdeck] cannot reach http://localhost:4000: ECONNREFUSED. events dropped for this session.
 ```
 
-The plugin logs one line per failed POST, with at most two lines per hook invocation (one for `ensureSessionStarted` and one for the event itself). Either the stack is not running (`make dev` in the Flightdeck repo), or `FLIGHTDECK_SERVER` points at the wrong host. Claude Code itself is not affected -- the plugin fails open and exits 0 so hooks remain healthy.
+The plugin logs one line per failed POST, capped at two lines per hook invocation (one for the session-start check and one for the event). Either the stack is not running, or `FLIGHTDECK_SERVER` points at the wrong host. Claude Code itself is unaffected: the plugin fails open and exits 0 so hooks remain healthy.
 
-### Server was down when Claude Code started -- events resume on recovery
+### Server was down when Claude Code started; events resume on recovery
 
-Each hook invocation is a fresh Node process with no disk-persisted mute state, so the plugin retries its POST on every hook. When the Flightdeck stack comes back up mid-session, the next hook's POST lands automatically. The server lazy-creates the session row from that first post-recovery event (D106) so the session appears in the dashboard with tokens counted from the moment the stack recovered. No manual intervention or `rm -rf $TMPDIR/flightdeck-plugin` is needed.
+Each hook invocation is a fresh Node process with no disk-persisted mute state. When the Flightdeck stack comes back up mid-session, the next hook's POST lands automatically. The server lazy-creates the session row from that first post-recovery event (see DECISIONS.md D106) so the session appears in the dashboard with tokens counted from the recovery point onward. No manual cleanup of `$TMPDIR/flightdeck-plugin` is needed.
+
+Outage-window events (LLM calls that fired while the server was unreachable) are not retroactively recovered; the plugin is intentionally unbuffered so it cannot block Claude Code on a stuck queue. You lose the pre-recovery events and gain every post-recovery event.
+
+### Prompts aren't being captured
+
+Check `FLIGHTDECK_CAPTURE_PROMPTS`. If it's `false` or `0` or `off`, prompt content is stripped even though events still ship. The dashboard Prompts tab shows "Prompt capture is not enabled for this deployment" in that case. Set the var to `true` (or unset it) and start a new Claude Code session; old sessions won't retroactively grow content.
+
+### Mid-turn tokens don't update in real time
+
+Token counts surface on `post_call` events. The plugin flushes `post_call` on every `PostToolUse` (see D107), so turns that include tool calls surface immediately. Turns with no tool calls (e.g. a plain text response) only produce a `post_call` on `Stop`, which fires after Claude Code finishes responding. This is expected: without a tool use there is no earlier hook to flush on.
 
 ### Sessions appear with no LLM calls
 
-Most `post_call` events now land via the `PostToolUse` mid-turn flush (D107), with `Stop` and `SessionEnd` acting as backstops for the final turn that had no tool follow-up. If you still see missing LLM calls, make sure the `SessionEnd` hook is wired in `plugin/hooks/hooks.json`, that Claude Code's JSONL transcript is readable at the path the hooks pass in, and that the session did not exit via `SIGKILL` before the last hook could run.
+Most `post_call` events land via the PostToolUse flush. `Stop` and `SessionEnd` act as backstops for the final turn that had no tool follow-up. If turns are still missing:
+
+- Make sure `SessionEnd` is wired in `plugin/hooks/hooks.json` (the plugin ships with all six hooks; a custom `hooks.json` override might have dropped some).
+- Check that Claude Code's JSONL transcript is readable at the path the hooks pass in.
+- Confirm the session did not exit via `SIGKILL` before the last hook could run.
+
+### Hook reports `/bin/sh: 1: node: not found`
+
+Claude Code invokes hooks through `/bin/sh`, which does not do WSL's automatic `.exe` extension lookup. If your WSL install only has the Windows-side `node.exe` on PATH, the bare `node` invocation in `hooks.json` fails. Install Node.js natively inside WSL:
+
+```bash
+# via nvm (preferred, per-user)
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
+nvm install --lts
+
+# or via NodeSource apt (system-wide)
+curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -
+sudo apt install -y nodejs
+```
+
+Confirm with `/bin/sh -c 'node --version'`. The plugin works with Node v20+.
+
+## How it works
+
+Fire-and-forget HTTP. Claude Code invokes each hook as a detached child process. The plugin reads the hook event from stdin, resolves session identity (preferring the `session_id` Claude Code passes on the hook payload so transcripts line up), builds an event payload, POSTs it to `$FLIGHTDECK_SERVER/ingest/v1/events`, and exits. On failure the plugin logs one stderr line and exits 0. Claude Code never blocks on the plugin.
+
+Session identity resolution order: hook event payload `session_id`, then `CLAUDE_SESSION_ID` / `ANTHROPIC_CLAUDE_SESSION_ID` env vars, then a file under `$TMPDIR/flightdeck-plugin/session-<sha256(cwd)[:16]>.txt` for concurrent first-time invocations to converge on. Different working directories get different sessions.
+
+No background threads. No polling. The only state the plugin persists across hook invocations is a small set of markers in `$TMPDIR/flightdeck-plugin/`:
+
+- `session-<hash>.txt`: the session id for a given cwd.
+- `started-<sid>.txt`: marks that session_start was attempted (so subsequent hooks don't duplicate).
+- `model-<sid>.txt`: caches the model name so `pre_call` events on older Claude Code versions can carry a non-null model.
+- `emitted-<messageId>.txt`: per-message dedup so Stop / SessionEnd don't re-emit turns that PostToolUse already flushed.
+
+All of these are safe to delete; the plugin recreates what it needs on the next hook.
+
+For the deeper architecture (ingestion pipeline, session state machine, NOTIFY/WebSocket push, revive/create semantics), see ARCHITECTURE.md.
+
+## Uninstall
+
+Remove the plugin with whatever Claude Code loader you used to install it (`claude --plugin-dir` is session-scoped and drops at exit; marketplace installs use `claude plugin remove`). Event history stays on the Flightdeck side until you delete it from the dashboard or let retention expire.

@@ -388,6 +388,34 @@ describe("SessionDrawer", () => {
     expect(badges.length).toBeGreaterThanOrEqual(1);
   });
 
+  it("sorts Prompts tab rows newest-first to match Timeline", () => {
+    // Regression guard for the mismatch reported on e4a0b990:
+    // Timeline rendered descending but PromptsTab rendered ascending
+    // because it received the un-reversed drawerEvents. Both tabs
+    // should now consume the same displayEvents (reversed) array.
+    mockEventsOverride = [
+      { id: "p1", session_id: "s1", flavor: "test", event_type: "post_call" as const, model: "m", tokens_input: 1, tokens_output: 1, tokens_total: 2, latency_ms: 1, tool_name: null, has_content: true, occurred_at: "2026-04-07T10:00:00Z" },
+      { id: "p2", session_id: "s1", flavor: "test", event_type: "post_call" as const, model: "m", tokens_input: 1, tokens_output: 1, tokens_total: 2, latency_ms: 1, tool_name: null, has_content: true, occurred_at: "2026-04-07T10:01:00Z" },
+      { id: "p3", session_id: "s1", flavor: "test", event_type: "post_call" as const, model: "m", tokens_input: 1, tokens_output: 1, tokens_total: 2, latency_ms: 1, tool_name: null, has_content: true, occurred_at: "2026-04-07T10:02:00Z" },
+    ];
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    fireEvent.click(screen.getByText("Prompts"));
+    // rowRefs are registered by id; the rendered button elements
+    // carry data-testid="prompts-row-<id>". Asking the DOM for all
+    // three returns them in document order, which is render order.
+    const rows = [
+      screen.getByTestId("prompts-row-p1"),
+      screen.getByTestId("prompts-row-p2"),
+      screen.getByTestId("prompts-row-p3"),
+    ];
+    const positions = rows.map((r) =>
+      Array.from(r.parentElement!.children).indexOf(r),
+    );
+    // Newest first: p3 (10:02) should come before p2 (10:01) before p1 (10:00).
+    expect(positions[2]).toBeLessThan(positions[1]);
+    expect(positions[1]).toBeLessThan(positions[0]);
+  });
+
   it("switches back to Timeline tab", () => {
     render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
     fireEvent.click(screen.getByText("Prompts"));

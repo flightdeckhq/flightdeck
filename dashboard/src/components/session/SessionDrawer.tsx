@@ -584,7 +584,7 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
                 )}
                 {activeTab === "prompts" && (
                   <PromptsTab
-                    events={drawerEvents}
+                    events={displayEvents}
                     selectedEventId={selectedEventId}
                     focusedEventId={focusedPromptEventId}
                     onSelectEvent={(id) => {

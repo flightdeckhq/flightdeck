@@ -1,5 +1,7 @@
 # Flightdeck
 
+Observability and control for AI agent fleets.
+
 Flightdeck ingests events from sensor-instrumented agents and the Claude Code plugin, stores them in Postgres, and serves a dashboard, a query API, and a WebSocket push channel.
 
 ---
@@ -14,7 +16,7 @@ Flightdeck ingests events from sensor-instrumented agents and the Claude Code pl
 
 ---
 
-## Try it in two minutes
+## Quickstart
 
 Start the stack:
 
@@ -91,7 +93,7 @@ flightdeck_sensor.init(server="...", token="...", capture_prompts=True)
 
 Provider shape is preserved. Anthropic sessions display `system`, `messages`, `tools`, and `response` as separate fields. OpenAI sessions display `messages` (system role included), `tools`, and `response`. No cross-provider normalization.
 
-### Runtime context, automatic
+### Runtime context
 
 On `init()` the sensor captures hostname, OS, Python version, git commit / branch / repo, container orchestration (Kubernetes, Docker Compose, ECS, Cloud Run), and any in-process AI frameworks (LangChain, CrewAI, LlamaIndex, AutoGen, Haystack, DSPy, smolagents, pydantic_ai). Git remote URLs are credential-stripped before storage.
 

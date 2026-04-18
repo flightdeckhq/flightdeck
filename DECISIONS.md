@@ -2911,3 +2911,168 @@ whole class of regression.
   (the 95be150 fallback, precedent for option 1 above)
 
 ---
+
+## D105 -- Revive stale/lost sessions on any event; raise lost threshold to 30 min
+
+**Date:** 2026-04-18
+**Phase:** 5
+
+**Context.** Claude Code plugin session `e4a0b990` transitioned to
+`state=lost` while hooks were still actively firing. Ingestion
+continued accepting events (`tokens_used` on the events table
+reached 2.4M) but the session row froze at `last_seen_at =
+2026-04-18T05:32:28Z` and `tokens_used = 2,786,973` for the rest
+of the conversation. Downstream symptoms: the Fleet page showed
+"0 Agents, 0 Sessions" (fleet query filters `state != 'lost'`),
+the live token counter was stuck, and the Investigate page
+rendered the session as finished even though work was still
+happening.
+
+**Investigation.** Two defects composed into the user-visible
+failure:
+
+1. **Timeout mismatch.** The reconciler flipped `active → stale`
+   at 2 min silence and `stale → lost` at 10 min silence.
+   Interactive Claude Code sessions routinely pause for longer
+   than that between turns -- a Supervisor reading a report took
+   a 1407-second gap (23m27s) between two events on
+   `e4a0b990`, exceeding the 10-min lost threshold twice over.
+   Python sensor sessions never hit this because non-interactive
+   agents emit events every few seconds throughout a run.
+
+2. **One-way door.** Every non-`session_start` handler in
+   `workers/internal/processor/session.go` started with
+   `isTerminal()` -- an early-return that warn-logged and
+   silently dropped the event for any session in state
+   `closed` or `lost`. `session_start` had a carve-out because
+   the ingestion-side D094 path already revived terminal rows
+   synchronously. No other event type had a recovery path. Once
+   a plugin session crossed `lost`, every subsequent
+   `post_call`, `tool_call`, `pre_call`, `heartbeat`, and
+   `session_end` was dropped at the handler; the session was
+   permanently invisible to the dashboard, even though the
+   `events` table kept accumulating rows.
+
+**Decision.** D105 is D094 generalised to all event types. D094
+answered the question "the sensor sent a session_start for an id
+the control plane already knows about -- what do we do?" with
+"flip terminal -> active and record an attachment." D105 answers
+the broader question "the sensor sent anything at all for an id
+the control plane currently thinks is terminal -- what do we do?"
+with the same answer for `stale`/`lost` (flip to active, advance
+last_seen_at) and a principled "no" for `closed` (which is not a
+timeout-driven terminal; the user deliberately ended the session).
+
+Two changes:
+
+1. **Remove the one-way door.** Non-`session_start` handlers
+   now run a terminal guard (`handleTerminalGuard` in
+   `processor/session.go`) instead of the old `isTerminal`
+   early-return. The guard:
+     - `closed` -> warn + skip (the user explicitly ended the
+       session; reviving a `closed` session would contradict an
+       explicit exit).
+     - `stale` / `lost` -> warn "reviving stale/lost session on
+       <event_type>", call `writer.ReviveIfRevivable` which
+       runs `UPDATE sessions SET state='active',
+       last_seen_at=NOW() WHERE session_id=$1 AND state IN
+       ('stale', 'lost')`, then fall through to the event's
+       normal side effects (token increment, close on
+       session_end, etc.).
+     - `active` / `idle` / unknown / non-existent -> no-op,
+       continue as before.
+
+   `HandleSessionEnd` is the one exception -- it skips on
+   `closed` but does not run the revive path for `stale`/
+   `lost`. `CloseSession` already transitions any non-closed
+   state straight to `closed` with `ended_at = NOW()` in a
+   single UPDATE, so a revive-then-close flicker through
+   `active` would be an unnecessary intermediate state.
+
+2. **Raise `lostThreshold` 10 min -> 30 min** in
+   `workers/internal/writer/postgres.go`. Revival closes the
+   correctness gap, but without a longer threshold the
+   dashboard still briefly shows a legitimately-active session
+   as `lost` until the next event arrives and triggers the
+   revive. 30 min covers typical interactive user think-time
+   windows without hiding genuinely abandoned sessions for too
+   long. `staleThreshold` stays at 2 min -- `stale` is still a
+   useful intermediate "quiet but probably alive" signal for
+   operators.
+
+**Rejected alternatives.**
+
+- **Plugin-side idle heartbeat.** Rejected: violates CLAUDE.md
+  rule 32 ("sensor is a library wrapper, not an OS agent ...
+  never add background threads, polling loops, or daemon
+  threads"). The whole point of the plugin architecture is that
+  there is no persistent process to carry a timer.
+- **Per-flavor threshold** (e.g. `claude-code` gets 30 min,
+  `python-sensor` keeps 10 min). Rejected: premature
+  configuration surface. One threshold that covers the
+  interactive case is simpler and Python sensors are not harmed
+  by a longer threshold -- their events keep `last_seen_at`
+  fresh regardless.
+- **Mirror D094 literally by routing non-session_start events
+  through ingestion's `session.Store.Attach`.** Rejected: that
+  path also writes `session_attachments` rows (one per
+  re-attachment), which is semantically a session_start concern
+  (a new orchestrator run attaching to a prior session id). A
+  simple `UPDATE ... WHERE state IN ('stale', 'lost')` on the
+  worker side matches the same three load-bearing columns
+  (`state`, `last_seen_at`, plus the reconciler-sweep
+  guardrail) without the attachment-audit noise.
+
+- **Extract a single shared "revive a terminal session" helper
+  so D094 and D105 share one primitive.** Tempting: three places
+  now know how to revive (`session.Store.Attach` in ingestion,
+  `UpsertSession` ON CONFLICT in the worker, and
+  `ReviveIfRevivable` in the worker). They mirror each other,
+  they do not share. Rejected for this commit: each path has a
+  different scope (D094 also writes `session_attachments` and
+  clears `ended_at`; D094 worker-side also refreshes identity
+  columns; D105 touches only state + last_seen_at). Collapsing
+  them would mean a single function with a multi-axis
+  configuration surface. Documented in the function-level
+  comment on `ReviveIfRevivable` -- if a future column (e.g. a
+  `revived_at` timestamp) is added, it must be applied to all
+  three places. Revisit if/when a fourth revival path shows up.
+
+**Schema change footprint.** Zero. Deliberately not adding a
+`previous_state` column, a revival-history table, or any audit
+schema. The `events` table already records every event that
+caused a revive (operators can query for `event_type` around the
+session's current `last_seen_at` to reconstruct the revival).
+Keeping the change to two files + constants makes it easy to
+tune the threshold later.
+
+**Interaction with KI13.** `KNOWN_ISSUES.md` still lists KI13
+("ingestion accepts events for closed/lost sessions") as open.
+D105 changes the downstream behaviour for `lost` (revive is now
+correct), but the `closed` case is still a boundary question
+(should a `closed` session's events be 4xx'd at ingestion, or
+accepted and dropped silently at the worker?). KI13 remains
+open; this entry documents the shift from "silent drop
+everywhere" to "silent drop on closed only, revive on
+stale/lost".
+
+**Live evidence.** Session `e4a0b990-a5b7-420b-809f-1b5ff07684c9`
+on `feat/phase-5-tokens`: 142 events over ~43 min, one 23m27s
+gap (`05:32:28Z -> 05:55:55Z`) during a Supervisor read,
+reconciler-driven transition to `lost` at ~05:42:28Z,
+`last_seen_at` and `tokens_used` frozen thereafter despite
+74 subsequent events landing in the `events` table.
+
+**Code locations.**
+
+- `workers/internal/writer/postgres.go` -- `lostThreshold`
+  constant; new `ReviveIfRevivable` helper.
+- `workers/internal/processor/session.go` -- `handleTerminalGuard`
+  replaces `isTerminal` across `HandleHeartbeat`,
+  `HandlePostCall`, `HandleSessionEnd`.
+- `tests/integration/test_session_states.py` -- revival
+  coverage (stale+lost revive on post_call/tool_call; closed
+  stays closed; session_end on lost lands as closed;
+  30-min threshold verified via backdated `last_seen_at`).
+
+---

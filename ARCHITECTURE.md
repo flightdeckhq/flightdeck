@@ -836,7 +836,14 @@ branch is a no-op refresh -- the worker path never touches
 `ingestion/internal/handlers/events.go`: the worker formerly
 skipped all events for terminal sessions; `session_start` is now
 allowed to pass through specifically because the attach transition
-has already been committed upstream.
+has already been committed upstream. D105 broadened the carve-out
+further -- every non-session_start event now revives a `stale` or
+`lost` session to `active` and advances `last_seen_at` before its
+normal side effects run; only `closed` sessions are still skipped
+(user explicitly ended the session). Revival on any event type is
+why interactive Claude Code plugin sessions, which naturally pause
+for minutes during user think-time, no longer disappear from the
+dashboard after a reconciler sweep.
 
 ### Session detail API response
 
@@ -2994,8 +3001,9 @@ For frameworks that bypass the SDK entirely (current example: none of the four t
 - `HandleHeartbeat()`: update last_seen_at, evaluate stale threshold
 - `HandlePostCall()`: update tokens_used, update last_seen_at
 - `HandleSessionEnd()`: set state=closed, set ended_at
-- Background reconciler: runs every 60s, sets stale (>2min no signal), lost (>10min no close)
-- SIGKILL bypasses all handlers. Affected sessions transition to stale after 2 minutes and lost after 10 minutes via the background reconciler. This is untrappable by design (see D039).
+- Background reconciler: runs every 60s, sets stale (>2min no signal), lost (>30min no close)
+- Every non-session_start handler runs a terminal guard before its write: `closed` sessions are skipped with a warn log; `stale` and `lost` sessions are revived to `active` with `last_seen_at` advanced, then the event's normal side effects proceed. This extends D094's session_start attach-on-terminal semantics to every event type. See DECISIONS.md D105.
+- SIGKILL bypasses all handlers. Affected sessions transition to stale after 2 minutes and lost after 30 minutes via the background reconciler; the next event from any re-attached process revives the session. This is untrappable by design (see D039 and D105).
 
 `workers/internal/processor/policy.go`
 - `PolicyEvaluator`: checks token thresholds against sessions table after each post_call
@@ -3021,7 +3029,8 @@ For frameworks that bypass the SDK entirely (current example: none of the four t
 - Heartbeat updates last_seen_at
 - PostCall increments tokens_used correctly
 - SessionEnd sets state=closed
-- Background reconciler sets stale after 2min, lost after 10min
+- Background reconciler sets stale after 2min, lost after 30min
+- Non-session_start events revive stale/lost sessions (D105); closed sessions stay closed
 - PolicyEvaluator writes directive when block_at_pct crossed
 
 ---

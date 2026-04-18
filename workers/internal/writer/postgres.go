@@ -13,7 +13,12 @@ import (
 
 const (
 	staleThreshold = "2 minutes"
-	lostThreshold  = "10 minutes"
+	// lostThreshold was 10 minutes; raised to 30 minutes in D105 to
+	// cover typical interactive user think-time on the Claude Code
+	// plugin without hiding legitimately-active sessions from the
+	// fleet view. Revival on any event (D105) closes the correctness
+	// gap; this threshold narrows the "appears lost" window.
+	lostThreshold = "30 minutes"
 )
 
 // Writer performs all Postgres writes for the worker pipeline.
@@ -201,6 +206,46 @@ func (w *Writer) UpdateLastSeen(ctx context.Context, sessionID string) error {
 		return fmt.Errorf("update last_seen for %s: %w", sessionID, err)
 	}
 	return nil
+}
+
+// ReviveIfRevivable flips a stale or lost session back to active and
+// advances last_seen_at. D105 generalises D094's session_start
+// attach-on-terminal semantics to every event type: every
+// non-session_start handler runs this before its normal side effects,
+// so sessions that go stale/lost during interactive idle windows
+// resume on the next event instead of freezing forever.
+//
+// Three places know how to revive a session. They mirror each other
+// rather than share a helper; any change to the revival contract
+// (columns touched, state predicate) must be applied to all three:
+//
+//  1. Ingestion: ``session.Store.Attach`` (D094) runs synchronously on
+//     ``session_start`` so the HTTP response can report ``attached=true``.
+//     Scope: closed, lost -> active; records a session_attachments row.
+//  2. Worker, ``UpsertSession`` ON CONFLICT branch (D094 worker side).
+//     Scope: any prior state -> whatever the session_start event asks
+//     for (always ``active``), with identity-column refresh.
+//  3. Worker, ``ReviveIfRevivable`` (this function, D105). Scope:
+//     stale, lost -> active. No identity refresh, no attachment row.
+//
+// Scope of this helper:
+//   - state IN ('stale', 'lost') -> UPDATE, returns (true, nil).
+//   - state IN ('active', 'idle', 'closed') -> no-op, returns (false, nil).
+//     closed stays terminal (user explicitly ended the session) and is
+//     enforced at the handler layer, not here.
+//   - session row does not exist -> no-op, returns (false, nil).
+func (w *Writer) ReviveIfRevivable(ctx context.Context, sessionID string) (bool, error) {
+	tag, err := w.pool.Exec(ctx, `
+		UPDATE sessions
+		SET state = 'active',
+		    last_seen_at = NOW()
+		WHERE session_id = $1::uuid
+		  AND state IN ('stale', 'lost')
+	`, sessionID)
+	if err != nil {
+		return false, fmt.Errorf("revive session %s: %w", sessionID, err)
+	}
+	return tag.RowsAffected() > 0, nil
 }
 
 // CloseSession sets state=closed and ended_at on a session.

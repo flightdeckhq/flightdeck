@@ -33,7 +33,7 @@ fix in DECISIONS.md. Never leave a resolved TODO comment in the code.
 
 | ID    | Component  | Concern                              | Resolved in | DECISIONS |
 |-------|------------|--------------------------------------|-------------|-----------|
-| KI13  | API        | Ingestion accepts events for closed/lost sessions -- closed as WAI via worker-authoritative state machine | Phase 5 | D105 + D106 |
+| KI13  | API        | Ingestion accepts events for closed/lost sessions -- lost branch fixed by D105 revive-on-any-event; closed branch kept as WAI via worker-authoritative handleSessionGuard | Phase 5 | D105 + D106 |
 | KI18  | Plugin     | Unreachable-flag persisted for session lifetime; plugin stopped sending after any single HTTP failure | Phase 5     | D106 (server) + 4a (plugin) |
 | KI-R1 | Sensor     | Hot path blocking on event POST      | Phase 1     | D037      |
 | KI-R2 | API        | LISTEN connection no reconnect       | Phase 1     | D038      |

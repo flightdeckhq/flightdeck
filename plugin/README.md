@@ -38,12 +38,14 @@ claude plugin validate /path/to/flightdeck/plugin
 
 ## What it reports
 
-| Hook event | Flightdeck event_type | Notes |
+| Hook event | Flightdeck event_type(s) | Notes |
 |---|---|---|
-| First hook invocation per session | `session_start` | Includes runtime context (hostname, os, git branch, orchestration). Sent exactly once per session id. |
+| First hook invocation per session | `session_start` | Includes runtime context (hostname, os, git branch, orchestration) and `supports_directives=false`. Sent exactly once per session id. |
 | `PreToolUse` | `pre_call` | `tool_name` populated; `tool_input` only when capture is on. |
-| `PostToolUse` | `tool_call` | Same fields as `pre_call`, plus `latency_ms` (hook processing time). |
-| `Stop` | `session_end` | |
+| `PostToolUse` | `post_call` (flushed) + `tool_call` | Flushes any un-emitted assistant turns from the transcript as `post_call` events first (D107), then emits the `tool_call` itself. Mid-turn LLM activity surfaces in real time instead of batching at `Stop`. Per-`message.id` disk-marker dedup keeps this idempotent with `Stop`. |
+| `Stop` | `post_call` (backstop) | Emits `post_call` for the final assistant turn that had no tool follow-up. Any turns already flushed by `PostToolUse` are skipped via the dedup marker. |
+| `SessionEnd` | `post_call` (last-turn flush) + `session_end` | Final sweep of the transcript in case `Stop` fired before the last turn was flushed, then the session-teardown event. |
+| `PreCompact` | `tool_call` | Synthetic `tool_name=compact_context` so the dashboard timeline shows the compaction event. |
 
 Every event carries `flavor=claude-code`, `agent_type=developer`, and `framework=claude-code`.
 
@@ -105,10 +107,12 @@ After install, confirm `/bin/sh -c 'node --version'` prints a version. The plugi
 [flightdeck] cannot reach http://localhost:4000: ECONNREFUSED. events dropped for this session.
 ```
 
-The plugin printed this once per session then silently dropped subsequent POSTs. Either the stack is not running (`make dev` in the Flightdeck repo), or `FLIGHTDECK_SERVER` points at the wrong host. Claude Code itself is not affected -- the plugin fails open.
+The plugin logs one line per failed POST, with at most two lines per hook invocation (one for `ensureSessionStarted` and one for the event itself). Either the stack is not running (`make dev` in the Flightdeck repo), or `FLIGHTDECK_SERVER` points at the wrong host. Claude Code itself is not affected -- the plugin fails open and exits 0 so hooks remain healthy.
 
-A stale unreachable flag in `$TMPDIR/flightdeck-plugin/unreachable-<sessionId>.flag` can keep the plugin from re-attempting POSTs within the same session after the stack comes back up. `rm -rf $TMPDIR/flightdeck-plugin` clears every plugin marker. Session ids change each time Claude Code starts a new conversation, so a fresh `claude` invocation already bypasses the flag.
+### Server was down when Claude Code started -- events resume on recovery
+
+Each hook invocation is a fresh Node process with no disk-persisted mute state, so the plugin retries its POST on every hook. When the Flightdeck stack comes back up mid-session, the next hook's POST lands automatically. The server lazy-creates the session row from that first post-recovery event (D106) so the session appears in the dashboard with tokens counted from the moment the stack recovered. No manual intervention or `rm -rf $TMPDIR/flightdeck-plugin` is needed.
 
 ### Sessions appear with no LLM calls
 
-Stop hook fires when Claude finishes responding, including between tool turns. In print mode (`claude -p`) the hook can fire before the final turn is flushed to the transcript; the plugin also sweeps the transcript on `SessionEnd` to catch any turns `Stop` missed. If you still see missing turns, make sure the SessionEnd hook is wired in `plugin/hooks/hooks.json` and that the session did not exit via `SIGKILL` before the hook could run.
+Most `post_call` events now land via the `PostToolUse` mid-turn flush (D107), with `Stop` and `SessionEnd` acting as backstops for the final turn that had no tool follow-up. If you still see missing LLM calls, make sure the `SessionEnd` hook is wired in `plugin/hooks/hooks.json`, that Claude Code's JSONL transcript is readable at the path the hooks pass in, and that the session did not exit via `SIGKILL` before the last hook could run.

@@ -779,7 +779,9 @@ their next LLM call.
 
 The `attached` boolean is set to `true` exclusively on `session_start`
 responses whose `session_id` matches a pre-existing `sessions` row -- closed,
-lost, active, idle, or stale. See DECISIONS.md D094 and "Session attachment
+lost, active, idle, or stale. See DECISIONS.md D094 (original attach semantics)
+and D106 (extension to the session-does-not-exist case, where a non-`session_start`
+event lazy-creates the row instead of FK-violating) and "Session attachment
 flow" below. All non-`session_start` responses return `attached: false`.
 
 ### Session attachment flow
@@ -948,7 +950,8 @@ here; a session with zero attachment rows is a session that has
 only ever run once. `GET /v1/sessions/:id` surfaces the timestamps
 as an `attachments` array so the dashboard drawer can render a
 "New execution attached · {timestamp}" separator between the
-events of each run. See DECISIONS.md D094.
+events of each run. See DECISIONS.md D094 (extended by D105 for
+revive-on-any-event and D106 for lazy-create-on-unknown).
 
 The `context` column stores the runtime environment snapshot collected
 once by the sensor at `init()` time -- hostname, OS, Python version, git
@@ -2434,7 +2437,7 @@ flightdeck:
     flavor: ""
     type: "autonomous"
   unavailablePolicy: "continue"
-  capturePrompts: false           # opt-in, off by default
+  capturePrompts: false           # sensor default -- opt-in, off by default (D019). The Claude Code plugin flips its equivalent knob on by default per D103; this Helm value controls the Python-sensor path only.
 
 ingestion:
   replicas: 2
@@ -2796,7 +2799,7 @@ their agent appear in the live dashboard timeline in real time.
 - `AnthropicProvider`: implements Provider Protocol
 - `estimate_tokens()`: uses anthropic SDK count_tokens if available, falls back to char//4
 - `extract_usage()`: reads response.usage.input_tokens, output_tokens, cache fields
-- `extract_content()`: returns None in Phase 1 (capture_prompts always False in Phase 1)
+- `extract_content()`: returns `PromptContent` when `capture_prompts=True`, `None` otherwise. The sensor default is `capture_prompts=False` (D019); flip via kwarg or `FLIGHTDECK_CAPTURE_PROMPTS=true`. The Claude Code plugin defaults the equivalent knob to `True` per D103 -- different product surfaces, different safe defaults.
 - `get_model()`: reads request_kwargs["model"]
 
 `sensor/flightdeck_sensor/providers/openai.py`
@@ -3002,8 +3005,15 @@ For frameworks that bypass the SDK entirely (current example: none of the four t
 - `HandlePostCall()`: update tokens_used, update last_seen_at
 - `HandleSessionEnd()`: set state=closed, set ended_at
 - Background reconciler: runs every 60s, sets stale (>2min no signal), lost (>30min no close)
-- Every non-session_start handler runs a terminal guard before its write: `closed` sessions are skipped with a warn log; `stale` and `lost` sessions are revived to `active` with `last_seen_at` advanced, then the event's normal side effects proceed. This extends D094's session_start attach-on-terminal semantics to every event type. See DECISIONS.md D105.
-- SIGKILL bypasses all handlers. Affected sessions transition to stale after 2 minutes and lost after 30 minutes via the background reconciler; the next event from any re-attached process revives the session. This is untrappable by design (see D039 and D105).
+- Every non-session_start handler runs `handleSessionGuard` before its write (renamed from `handleTerminalGuard` when D106 extended its scope): `closed` sessions are skipped with a warn log; `stale` and `lost` sessions are revived to `active` with `last_seen_at` advanced; previously-unknown `session_id`s are lazy-created (D106) so the event lands instead of FK-violating at InsertEvent. The event's normal side effects then proceed. D105 extends D094's session_start attach-on-terminal semantics to every event type; D106 extends it again to the session-does-not-exist case. See DECISIONS.md D105 and D106.
+- SIGKILL bypasses all handlers. Affected sessions transition to stale after 2 minutes and lost after 30 minutes via the background reconciler; the next event from any re-attached process revives the session (or lazy-creates one if the re-attach ended up on a fresh `session_id`). This is untrappable by design (see D039, D105, D106).
+
+**Revive / create trio.** Four mirror sites know how to ensure a session is usable for an incoming event. They do not share a helper -- each one has a meaningfully different scope -- but every change to the revival contract must be applied to all four:
+
+  1. **Ingestion `session.Store.Attach`** (D094) -- synchronous on `session_start` so the HTTP response can report `attached=true`. Closed/lost -> active; writes one `session_attachments` row per arrival; clears `ended_at` on revive.
+  2. **Worker `UpsertSession` ON CONFLICT** (D094 extended by D106) -- any prior state -> whatever `session_start` asks for (always `active`), with identity-column refresh, COALESCE enrichment of NULL context/token columns from lazy-created rows, and CASE-upgrade of the `"unknown"` flavor/agent_type sentinel.
+  3. **Worker `ReviveIfRevivable`** (D105) -- stale/lost -> active, touches state + last_seen_at only. No identity refresh, no attachment row. Called by `handleSessionGuard` on any non-session_start event.
+  4. **Worker `ReviveOrCreateSession`** (D106) -- delegates to `ReviveIfRevivable` when the row exists, INSERTs a new row with best-effort identity + `"unknown"`/NULL sentinels when it does not.
 
 `workers/internal/processor/policy.go`
 - `PolicyEvaluator`: checks token thresholds against sessions table after each post_call
@@ -3018,7 +3028,7 @@ For frameworks that bypass the SDK entirely (current example: none of the four t
 - All via pgx, no ORM
 
 `workers/internal/writer/notify.go`
-- `NotifyFleetChange(session_id, event_type)`: Postgres NOTIFY `flightdeck_fleet` channel after each write
+- `NotifyFleetChange(session_id, event_type, event_id)`: Postgres NOTIFY on `flightdeck_fleet` channel after each write. The wire payload is `{session_id, event_type, event_id}`; the `event_id` field (D108) lets the API hub fetch the exact event that triggered the NOTIFY via a PK lookup, eliminating the O(N) `GetSessionEvents` + tail race that was deterministic under D107's paired-event flush.
 
 `workers/internal/models/` -- Go structs mirroring all Postgres tables
 
@@ -3587,6 +3597,13 @@ The production deployment is secure, HA, and auditable.
 - `POST   /v1/access-tokens` -- mint a new token; plaintext returned ONCE
 - `DELETE /v1/access-tokens/:id` -- revoke (dev-seed row protected: 403)
 - `PATCH  /v1/access-tokens/:id` -- rename (dev-seed row protected: 403)
+
+**Phase 5 session-lifecycle hardening** (shipped alongside the auth / Helm work):
+- `workers/internal/processor/session.go::handleSessionGuard` -- renamed from `handleTerminalGuard`; revives stale/lost sessions on every non-session_start event (D105) and lazy-creates session rows on first sight of a previously-unknown session_id (D106). Lost-threshold raised from 10 min to 30 min to cover interactive Claude Code think-time windows.
+- `workers/internal/writer/postgres.go::ReviveIfRevivable` (D105) and `ReviveOrCreateSession` (D106) -- sibling helpers mirroring the ingestion attach + UpsertSession ON CONFLICT paths; UpsertSession ON CONFLICT extended with COALESCE enrichment of NULL context/token columns and CASE-upgrade of the `"unknown"` sentinel so a lazy-created row absorbs the real identity when session_start eventually arrives.
+- `plugin/hooks/scripts/observe_cli.mjs::flushPostCallTurns` (D107) -- emits `post_call` events on every PostToolUse hook with `markEmittedTurn` per-messageId disk-marker dedup so mid-turn LLM activity surfaces in real time instead of batching at Stop.
+- `workers/internal/writer/notify.go` + `api/internal/ws/hub.go` (D108) -- NATS NOTIFY payload extended to `{session_id, event_type, event_id}`; the hub replaces `GetSessionEvents + tail` with a single-row PK lookup (`GetEvent(event_id)`). Eliminates the deterministic Live-Feed broadcast drop on paired `post_call` + `tool_call` writes and reduces per-NOTIFY DB work from O(N) to O(1).
+- `dashboard/src/lib/directives.ts` (D109) -- observer-session class. Plugin payloads set `context.supports_directives=false`; UI hides the Stop Agent button for observer sessions and gates the Fleet Stop All control on at least one directive-capable session in the flavor. `isClaudeCodeSession` fallback covers pre-flag rows that predate the context field.
 
 `dashboard/src/pages/Settings.tsx` -- access token CRUD UI (Part 2)
 - List, create, revoke, rename

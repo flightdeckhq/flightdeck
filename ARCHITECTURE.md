@@ -490,6 +490,79 @@ Data flows:
 
 ---
 
+## Integration Patterns: Sensor and Plugin
+
+Flightdeck accepts events from two integration surfaces that share
+the same ingestion pipeline but differ in what they can do with a
+running agent. The difference lives at the integration boundary;
+downstream (NATS, workers, Postgres, NOTIFY, hub, WebSocket,
+dashboard) the two paths are indistinguishable.
+
+### Sensor (Python library)
+
+The sensor runs in-process inside the agent. `init()` resolves
+configuration; `patch()` installs a class-level descriptor on the
+Anthropic and OpenAI client classes; every LLM call passes through
+the sensor synchronously. The event POST itself is offloaded onto
+a background queue drain thread (D037) so it does not sit in the
+hot path, but the LLM call waits for the sensor's response-envelope
+parsing before returning control to user code.
+
+Because the sensor sits in the call path, it can act on directives
+returned in the response envelope. Shutdown, warn, degrade, custom
+handlers, and token-budget enforcement all depend on this
+interception loop. The sensor reads the directive from the POST
+response and applies it before the next LLM call returns: the kill
+switch works because the sensor decides whether the next
+`client.messages.create()` call raises `BudgetExceededError` or
+proceeds.
+
+Integration cost: one `pip install flightdeck-sensor`, one `init()`
+plus `patch()` at the top of the entrypoint. Requires code access
+to the agent.
+
+### Plugin (Claude Code)
+
+The plugin is a set of hook scripts registered in
+`plugin/hooks/hooks.json`. Claude Code invokes each hook as a
+short-lived detached child process; the plugin reads the hook
+event from stdin, resolves session identity, builds an event
+payload, POSTs to `/ingest/v1/events`, and exits. No in-process
+interception, no background threads, no shared state across hook
+invocations beyond a small set of marker files in
+`$TMPDIR/flightdeck-plugin/` (session id, per-turn dedup, cached
+model).
+
+Because the plugin is observation-only, a directive returned in
+the POST response envelope has nowhere to go: the plugin already
+exited and Claude Code has moved on. The plugin payload sets
+`context.supports_directives = false` on `session_start` so the
+dashboard hides the Stop Agent button and the Fleet Stop All
+control skips these sessions rather than render UI that silently
+fails. This is the observer-session class (D109).
+
+Integration cost: `claude --plugin-dir /path/to/flightdeck/plugin`
+(or a marketplace install when one is published). No code change
+to the user's agent; the plugin cannot modify what Claude Code
+does.
+
+### Shared downstream
+
+Both surfaces POST the same event shape to the same
+`/ingest/v1/events` endpoint. From there the pipeline is a single
+code path: NATS → worker → Postgres → NOTIFY → API hub →
+WebSocket → dashboard. Event payloads carry a `flavor` field that
+distinguishes the source (`claude-code` for the plugin, whatever
+`AGENT_FLAVOR` is for sensor agents). The worker's
+`handleSessionGuard` uses `flavor` only for lazy-create defaults
+(D106), not for routing.
+
+See DECISIONS.md D018 (plugin hook-pattern choice), D109
+(observer-session class), and plugin/README.md for plugin user
+onboarding.
+
+---
+
 ## Sensor Design Principles
 
 The sensor is a library wrapper, not an OS agent.
@@ -847,6 +920,99 @@ why interactive Claude Code plugin sessions, which naturally pause
 for minutes during user think-time, no longer disappear from the
 dashboard after a reconciler sweep.
 
+### Session revival and lazy creation
+
+D094's attachment flow (above) is one of three concrete
+applications of a single conceptual primitive: ensure the session
+row matches the incoming event's assumption. Three scenarios,
+three code paths:
+
+- **Attach-on-terminal** (D094). A `session_start` for a session
+  already in `{closed, lost}` revives to `active` and records an
+  attachment row. Drives orchestrator-re-run attribution.
+- **Revive-on-any-event** (D105). Any non-`session_start` event
+  for a session in `{stale, lost}` revives to `active` and
+  advances `last_seen_at`. Drives interactive Claude Code
+  sessions that pause during user think-time without being
+  treated as lost by the reconciler.
+- **Create-on-unknown** (D106). Any non-`session_start` event
+  for a `session_id` Flightdeck has never seen creates the row
+  lazily from the event payload with `state=active`,
+  `started_at = event.occurred_at`, and the string `"unknown"`
+  sentinel on fields the event doesn't carry (typically
+  `flavor`, `agent_type`). A subsequent authoritative
+  `session_start` enriches the row: the ON CONFLICT branch of
+  `UpsertSession` COALESCEs the NULL context / token columns
+  and CASE-upgrades `flavor` / `agent_type` from `"unknown"` to
+  the real value. Real values are write-once; only the sentinel
+  is upgradable.
+
+Four code sites implement these. They mirror rather than
+consolidate; a unified primitive would need a 4-axis config
+surface (writes_attachment, refreshes_identity,
+creates_if_missing, allowed_prior_states) which is harder to
+read than four focused functions:
+
+- `ingestion/internal/session/store.go::Attach` (D094 only). The
+  only writer of `session_attachments` rows; the only path that
+  clears `ended_at` on revive.
+- `workers/internal/writer/postgres.go::UpsertSession` (D094 +
+  D106 extensions). Called on every `session_start`. Refreshes
+  identity columns from the event payload; COALESCE and CASE
+  branches were added in D106 so a previously lazy-created row
+  absorbs the real session_start data.
+- `workers/internal/writer/postgres.go::ReviveIfRevivable`
+  (D105). State flip only: `{stale, lost} → active` plus
+  `last_seen_at = NOW()`. Called by `handleSessionGuard` before
+  any non-`session_start` side effects run.
+- `workers/internal/writer/postgres.go::ReviveOrCreateSession`
+  (D106). Delegates to `ReviveIfRevivable` when the row exists;
+  inserts a new row with best-effort identity when it does not.
+
+Any change to the revival contract (columns touched, state
+predicate) must be applied to all four sites. The cross-reference
+comment on `ReviveIfRevivable` enumerates the list.
+
+#### State machine
+
+```
+                     session_end (any state)
+                ┌───────────────────────────────┐
+                │                               ▼
+   session_start│                            closed
+      ──▶  active ──▶ idle ──▶ stale ──▶ lost
+                ▲                 │         │
+                │                 │         │
+                └─────────────────┴─────────┘
+                  any event  (D105 revive)
+
+   any event for unknown session_id
+                │
+                ▼
+        lazy-create (active)   (D106)
+
+   closed + any event → skipped with warn log (handleSessionGuard)
+```
+
+Thresholds. 2 min silence after the last signal triggers
+`active → stale`; 30 min total silence triggers `stale → lost`
+(D105 raised the lost threshold from 10 min to cover Claude Code
+user-think-time windows; the 2 min stale threshold is unchanged
+from Phase 1). The reconciler in `workers/internal/processor/
+session.go` sweeps every 60 s and applies both transitions in a
+single pass.
+
+Terminal-state handling. `closed` is terminal and final.
+`session_end` at any non-closed state transitions directly to
+`closed`; `handleSessionGuard` skips any subsequent event for a
+closed session with a warn log. This is intentional per the KI13
+resolution: revival on `stale` / `lost` is a correctness fix, but
+reviving a `closed` session would contradict the user's explicit
+end signal.
+
+See DECISIONS.md D094, D105, D106, and the D105 "Interaction with
+KI13" paragraph.
+
 ### Session detail API response
 
 `GET /v1/sessions/{id}` returns:
@@ -866,6 +1032,159 @@ table. A brand-new session that has only run once returns
 include attachments -- it would force a join on every row of a
 large fleet view. Consumers that need attachment history fetch the
 detail endpoint on demand.
+
+---
+
+## Content Capture: Two-Knob Model
+
+Event payloads carry two classes of captured content, each gated by
+its own independent knob. The two-knob split is deliberate: the
+privacy calculus and the safe handling differ per class, and a
+single knob would either strip too much or too little for the
+developer use case the plugin targets.
+
+### captureToolInputs
+
+Governs tool-call arguments (what the agent asked a tool to do):
+file paths, command strings, query strings, search patterns, and
+prompt strings on tools that accept one.
+
+Every tool_input passes through the sanitiser before emission. The
+sanitiser is a strict whitelist implemented in
+`plugin/hooks/scripts/observe_cli.mjs::sanitizeToolInput`:
+
+- Keys kept: `file_path`, `command`, `query`, `pattern`, `prompt`.
+  Every other field is dropped at the source; structured inputs
+  that don't map onto one of these keys never reach the network.
+- String values truncated: `prompt` at 100 chars, everything else
+  at 200. Truncation happens before JSON serialisation, so the
+  truncated form is what the worker persists in `events.payload`.
+- Raw file bodies written by `Write` / `Edit` are never forwarded.
+  Those tools carry their body as the `content` key, which is not
+  on the whitelist; the sanitiser drops it.
+
+Plugin default: ON. See
+`plugin/hooks/scripts/observe_cli.mjs::resolveConfig` for the
+default resolution. The Python sensor has no direct equivalent
+because it captures tool use via the LLM message array when
+`capture_prompts=true`.
+
+### capturePrompts
+
+Governs LLM prompt / response content and tool_result bodies: the
+user's prompt text, assistant response text, thinking blocks, and
+the output of each tool the LLM invoked.
+
+No sanitiser applies. Outputs can carry arbitrary prompt-like
+content (model-generated text, tool-fetched web pages, search
+results) and a whitelist cannot express "keep the parts that are
+safe" without mangling the structure or leaking the content it was
+trying to protect. The knob is all-or-nothing per session.
+
+When `capturePrompts=false`, every content field on every event
+type is zeroed: `has_content=false`, `content=null`. The event
+still ships, so the dashboard shows the session, token counts, and
+metadata; only the bodies are absent. The Prompts tab renders
+"Prompt capture is not enabled for this deployment" in that state.
+
+Plugin default: ON (D103). A developer running `claude` locally is
+observing their own conversation; an empty Prompts tab would make
+the feature useless without improving privacy. Python sensor
+default: OFF (D019). The sensor runs inside production agents
+where content may carry PII, proprietary prompts, and customer
+context; opt-in is the correct posture.
+
+### Why two knobs, not one
+
+A developer who wants tool-call visibility but not LLM response
+bodies can set `capturePrompts=false` and keep
+`captureToolInputs=true`. That configuration matters for tools
+whose outputs are sensitive (internal search indexes, fetched
+documents) even though their inputs are narrow strings. A single
+knob would either strip tool visibility entirely or leak
+response bodies alongside safe tool args.
+
+Both defaults for the plugin point the same direction because the
+target user is observing their own session. Both defaults for the
+sensor point the other direction because the target user is
+observing someone else's traffic. Same two knobs, different
+defaults per surface. See DECISIONS.md D019, D103, and the D103
+amendment paragraph.
+
+---
+
+## Real-time Push: NOTIFY → Hub → WebSocket
+
+Event propagation from Postgres to the dashboard is a four-step
+LISTEN / NOTIFY chain, fully decoupled from REST paths.
+
+1. **Worker INSERT + capture id.** On each event,
+   `workers/internal/writer/postgres.go::InsertEvent` INSERTs into
+   `events` and RETURNS the generated UUID primary key. The id is
+   captured before any downstream call.
+2. **NOTIFY publish.**
+   `workers/internal/writer/notify.go::NotifyFleetChange` sends a
+   Postgres NOTIFY on the `flightdeck_fleet` channel with payload
+   `{session_id, event_type, event_id}` (see
+   `fleetNotifyPayload`).
+3. **Hub LISTEN + single-row fetch.** The API hub
+   (`api/internal/ws/hub.go::listenOnce`) holds one pgx connection
+   permanently subscribed to `flightdeck_fleet`. On each
+   notification it parses the payload, fetches the session row via
+   `store.GetSession(session_id)`, and fetches the triggering
+   event via `store.GetEvent(event_id)` -- a PK lookup on
+   `events.id`.
+4. **WebSocket broadcast.** The hub wraps the session + event into
+   a `fleetUpdate` envelope and broadcasts it to every WebSocket
+   client connected to `/api/v1/stream`.
+
+### Why `event_id` is on the payload
+
+The pre-D108 payload was `{session_id, event_type}` and step 3
+fetched via `store.GetSessionEvents(session_id)` plus tail
+selection (highest `occurred_at`). That path races with
+concurrent inserts: when two events commit inside the hub's
+per-NOTIFY query latency, NOTIFY #1's query sees event #2 as the
+tail and both broadcasts carry event #2's id. Event #1 never
+reaches the Live Feed.
+
+D107's PostToolUse flush (plugin side, see
+`plugin/hooks/scripts/observe_cli.mjs::flushPostCallTurns`)
+compressed paired `post_call` + `tool_call` events into
+~150-300 ms windows, smaller than the hub's O(N) query latency on
+busy sessions. D105's revive-on-any-event unblocked those paired
+writes (before D105, the first `post_call` on a stale session was
+silently dropped by the pre-`handleSessionGuard` terminal gate).
+The combination turned an intermittent race into a deterministic
+broadcast drop for every `post_call` → `tool_call` pair.
+
+D108 added `event_id` to the NOTIFY payload so the hub fetches
+deterministically by PK. The broadcast is always pinned to the
+triggering event. Side effect: per-NOTIFY database work dropped
+from O(N) (index scan over the session's events) to O(1) (PK
+lookup), which also removes the hub from the critical path for
+fleets with long per-session event histories.
+
+### Why the drawer doesn't have this problem
+
+The session drawer renders events via `GET /v1/sessions/:id`,
+which calls `GetSessionEvents` once on drawer-open and returns
+the full ordered list. No race window: the query runs once after
+the user has already scrolled to the session, not once per
+incoming event. The pre-D108 bug was scoped exclusively to the
+per-NOTIFY push path.
+
+### Wire contract
+
+`workers/internal/writer/notify.go::fleetNotifyPayload` is the
+authoritative definition. The hub's `notifyPayload` struct in
+`api/internal/ws/hub.go` must stay field-compatible. Adding
+fields is backward compatible (`json.Unmarshal` silently drops
+extras); removing or renaming fields is not, because older
+deployed hubs on a rolling upgrade still run the previous
+struct.
+
+See DECISIONS.md D107 and D108.
 
 ---
 

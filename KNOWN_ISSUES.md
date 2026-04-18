@@ -28,12 +28,12 @@ fix in DECISIONS.md. Never leave a resolved TODO comment in the code.
 |------|------------|--------------------------------------|--------|-------|---------------------------------------------|-----------|
 | KI11 | Security   | No NATS auth in dev compose          | Low    | 5     | docker/docker-compose.yml:nats              | D047      |
 | KI12 | Security   | REST endpoints have no per-IP rate limit | Low | 5    | api/internal/server/server.go               | D048      |
-| KI13 | API        | Ingestion accepts events for closed/lost sessions | Low | 5 | ingestion/internal/handlers/events.go    | -         |
 
 ## Resolved
 
 | ID    | Component  | Concern                              | Resolved in | DECISIONS |
 |-------|------------|--------------------------------------|-------------|-----------|
+| KI13  | API        | Ingestion accepts events for closed/lost sessions -- closed as WAI via worker-authoritative state machine | Phase 5 | D105 + D106 |
 | KI18  | Plugin     | Unreachable-flag persisted for session lifetime; plugin stopped sending after any single HTTP failure | Phase 5     | D106 (server) + 4a (plugin) |
 | KI-R1 | Sensor     | Hot path blocking on event POST      | Phase 1     | D037      |
 | KI-R2 | API        | LISTEN connection no reconnect       | Phase 1     | D038      |

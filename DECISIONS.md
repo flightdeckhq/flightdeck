@@ -11,6 +11,12 @@ without a matching DECISIONS.md is a codebase future contributors cannot trust.
 
 New contributors: read this before asking "why is it done this way?"
 
+**Numbering note.** D-numbers are assigned sequentially but not every
+number is occupied. D092 and D093 were reserved during planning and
+never took shape in code -- the planning notes for those ids either
+folded into adjacent entries or were dropped entirely. The gap is
+intentional; do not hunt for missing documents.
+
 ---
 
 ## D001 -- Sensor pattern over proxy/gateway pattern
@@ -2838,6 +2844,38 @@ possible) would stream LLM content unless they set the opt-out.
 Documented in plugin/README.md Privacy section; accepted cost of
 fixing the developer-observing-own-session default.
 
+**Amendment: two-knob capture model.** The plugin distinguishes two
+classes of captured content and gates each with its own env var,
+because they carry different privacy profiles:
+
+  - `captureToolInputs` (default ON) covers tool arguments only --
+    file paths, short command strings, query strings, all passed
+    through `sanitizeToolInput` before emission. The sanitiser is a
+    whitelist: keys not on the list are dropped, string values are
+    truncated at 200 chars, and tools known to pass raw file bodies
+    (`Write`, `Edit`) drop the body field entirely. Tool arguments are
+    structured and safe to expose because the sanitiser keeps the
+    surface area narrow.
+  - `capturePrompts` (default ON for the plugin per D103 above; stays
+    off for the Python sensor per D019) covers the outputs: the
+    `tool_result` content that flows back from the tool run AND the
+    LLM response text / thinking blocks. Outputs can carry arbitrary
+    prompt-like content (model-generated text, tool-fetched web
+    pages, search results), so they need their own knob. A developer
+    who wants tool-call visibility but not response bodies can set
+    `FLIGHTDECK_CAPTURE_PROMPTS=false` and keep the default
+    `captureToolInputs=true`; a paranoid user can flip both off.
+
+The split exists because the sanitiser that works for tool arguments
+(whitelist + length cap) cannot be applied to arbitrary model output
+without either mangling it or leaking the same content it was trying
+to protect. Two independent knobs keep the privacy posture explicit
+per content class. Both defaults ON for the plugin matches the
+"developer observing their own work" rationale above; either can be
+flipped off without affecting the other. See `resolveConfig` in
+`plugin/hooks/scripts/observe_cli.mjs` for the defaults and
+`sanitizeToolInput` for the whitelist implementation.
+
 **Code locations.**
 
 - `plugin/hooks/scripts/observe_cli.mjs::resolveConfig` (default
@@ -3046,15 +3084,21 @@ session's current `last_seen_at` to reconstruct the revival).
 Keeping the change to two files + constants makes it easy to
 tune the threshold later.
 
-**Interaction with KI13.** `KNOWN_ISSUES.md` still lists KI13
-("ingestion accepts events for closed/lost sessions") as open.
-D105 changes the downstream behaviour for `lost` (revive is now
-correct), but the `closed` case is still a boundary question
-(should a `closed` session's events be 4xx'd at ingestion, or
-accepted and dropped silently at the worker?). KI13 remains
-open; this entry documents the shift from "silent drop
-everywhere" to "silent drop on closed only, revive on
-stale/lost".
+**Interaction with KI13.** `KNOWN_ISSUES.md` listed KI13 ("ingestion
+accepts events for closed/lost sessions") as open when this entry was
+written. The pairing of D105 (revive on any event for stale/lost) and
+D106 (lazy-create on unknown) together resolved KI13 as WAI: the
+worker is the authoritative owner of session state, and the
+post-D106 terminal-state matrix is:
+`lost -> revived to active by D105`,
+`closed -> explicit skip at the worker with a warn log`,
+`unknown -> lazy-create via D106`.
+Ingestion remains deliberately permissive (it publishes anything
+well-formed to NATS) because the worker's state machine decides
+what to do with each arrival. KI13 moved to Resolved in the commit
+that added this paragraph; the shift it documents is "silent drop
+everywhere" -> "revive stale/lost, create unknown, silent skip on
+closed".
 
 **Live evidence.** Session `e4a0b990-a5b7-420b-809f-1b5ff07684c9`
 on `feat/phase-5-tokens`: 142 events over ~43 min, one 23m27s
@@ -3266,5 +3310,326 @@ is encoded in the writer and processor layers.
   "unknown" sentinel upgrade, D094 write-once preservation on
   real values, order independence (PC -> SS -> TC vs SS -> PC
   -> TC), and the session_end non-lazy-create guard.
+
+---
+
+## D107 -- PostToolUse mid-turn `post_call` flush in the Claude Code plugin
+
+**Date:** 2026-04-17
+**Phase:** 5
+
+**Context.** Pre-b63ef8e, the plugin emitted `post_call` events only
+on the `Stop` hook -- which fires once at the end of a tool-loop
+turn. During a multi-tool turn (LLM requests a tool, tool runs, LLM
+reads the result and requests another tool, ...), the intermediate
+LLM calls stayed invisible on the dashboard until the entire turn
+ended. The Live Feed showed `tool_call` events landing in real time
+but `post_call` events batching up at the end; mid-turn token
+counting and prompt inspection felt disconnected from the actual
+agent activity. On long multi-step turns (10+ tool calls) the lag
+between "LLM issued the call" and "dashboard shows it" could reach
+tens of seconds, breaking the premise of the Live Feed.
+
+**Decision.** Flush pending `post_call` events on every `PostToolUse`
+hook before emitting the `tool_call` itself. The flush walks the
+current transcript, groups assistant chunks by `message.id` into
+logical turns, and emits one `post_call` per un-emitted group.
+`Stop` and `SessionEnd` hooks still call the same helper as a
+backstop for the final assistant turn (which has no tool follow-up
+to trigger PostToolUse).
+
+Idempotency comes from `markEmittedTurn(messageId)`: an `openSync(file,
+"wx")` race-safe create at
+`tmpdir()/flightdeck-plugin/emitted-<messageId>.txt`. EEXIST ->
+already emitted, skip. Any other error -> fail open and re-emit
+rather than silently drop. The disk marker is the only option
+because each hook runs as a fresh Node process, so in-memory dedup
+would never survive between invocations.
+
+**Rejected alternatives.**
+
+- **Keep emitting only on Stop, accept the lag.** Rejected -- the
+  real-time Live Feed is the product; batching undermines it. A tool
+  loop that runs for 30s with an LLM call every 5s should surface
+  those calls as they happen, not as a flurry at the end.
+
+- **Emit from PostToolUse without dedup.** Rejected -- Stop always
+  fires and would re-emit every turn after PostToolUse already
+  covered it, duplicating rows in `events`. Dedup is load-bearing,
+  not optional.
+
+- **Emit from Stop only but run it at a shorter interval.** Rejected
+  -- Stop's firing cadence is controlled by Claude Code, not the
+  plugin. The plugin cannot force it earlier.
+
+- **In-memory dedup.** Rejected -- each hook is a fresh Node
+  process. The marker has to survive on disk.
+
+**Downstream implication.** The tight flush schedule compressed
+paired `post_call` + `tool_call` events into ~150-300 ms windows.
+That window exposed a pre-existing hub NOTIFY->SELECT race
+(addressed by D108) because the hub's post-NOTIFY event lookup ran
+an O(N) session scan that routinely took longer than the gap
+between paired writes. The two fixes are paired: D107 without D108
+silently drops `post_call` from the Live Feed on every tight pair;
+D108 alone would not surface the improved real-time behaviour that
+D107 enables. See D108 for the race trace.
+
+**Privacy.** The flush helper respects `capturePrompts` via the
+plugin's two-knob content model (see the D103 amendment). When
+`capturePrompts=false`, `has_content=false` and `content=null` are
+emitted on every `post_call` regardless of which hook triggered the
+flush; the D107 flush path carries no content data that the Stop
+path did not already carry.
+
+**Code locations.**
+
+- `plugin/hooks/scripts/observe_cli.mjs::flushPostCallTurns` -- the
+  helper, called from Stop, SessionEnd, and PostToolUse.
+- `plugin/hooks/scripts/observe_cli.mjs::markEmittedTurn` -- the
+  per-messageId dedup marker.
+- `plugin/hooks/scripts/observe_cli.mjs` PostToolUse branch -- flush
+  runs before the `tool_call` emission so a reader scrolling the
+  Live Feed sees LLM activity ordered before the tool it triggered.
+- `plugin/tests/observe_cli.test.mjs` -- PostToolUse flush + dedup
+  integration tests ("PostToolUse flushes pending post_calls mid-turn
+  before the tool_call", "Stop no-ops on turns already flushed by a
+  prior PostToolUse", "Two-iteration turn emits one post_call per
+  LLM call, in order, no dupes").
+
+---
+
+## D108 -- Fleet NOTIFY payload carries `event_id`
+
+**Date:** 2026-04-18
+**Phase:** 5
+
+**Context.** The Fleet WebSocket hub
+(`api/internal/ws/hub.go::listenOnce`) subscribes to the Postgres
+`flightdeck_fleet` NOTIFY channel. The worker's `NotifyFleetChange`
+fires a NOTIFY after every event insert; the hub picks it up,
+fetches the session + the triggering event, and broadcasts an
+enriched `fleetUpdate` message. Pre-a72dda1 the NOTIFY payload was
+`{session_id, event_type}`; the hub called
+`GetSessionEvents(session_id)` and took the tail (highest
+`occurred_at`) to populate `fleetUpdate.last_event`. That "tail"
+was whichever event had the highest `occurred_at` at SELECT time --
+not necessarily the event that triggered this particular NOTIFY.
+
+**Race.** Every `GetSessionEvents` scan costs O(N) in the session's
+event count. On a session with ~300 rows the scan takes
+~10-50 ms. When two events committed inside that window, NOTIFY#1's
+query returned event #2's row as the tail; both broadcasts carried
+event #2's id and event #1 never surfaced on the Live Feed, even
+though it was persisted correctly and the NOTIFY fired correctly.
+
+D107's PostToolUse flush (Commit b63ef8e) compressed paired
+`post_call` + `tool_call` writes into ~150-300 ms windows -- smaller
+than the hub's per-NOTIFY query latency on busy sessions. D105's
+revive-on-any-event (Commit a6dedea) additionally unblocked those
+paired writes, because before D105 the first `post_call` on a
+stale session was silently dropped by the old `isTerminal` gate.
+The combination of D105 and D107 turned an intermittent race into a
+deterministic broadcast drop for every `post_call` -> `tool_call`
+pair.
+
+Empirical confirmation: a 2-min diagnostic run (since reverted) on
+session `e4a0b990` showed 4/4 mismatch lines, all
+`notify=post_call broadcast=tool_call`.
+
+**Decision.** Extend the NOTIFY payload to
+`{session_id, event_type, event_id}`. `InsertEvent` already returns
+the generated event id (needed for the paired `event_content`
+insert); thread it into `NotifyFleetChange`. The hub parses
+`event_id` and calls `store.GetEvent(event_id)` -- a single-row PK
+lookup against `events.id` (O(1) indexed) instead of `GetSessionEvents`
++ tail selection. The broadcast is now deterministically pinned to
+the triggering event.
+
+**Performance side effect.** The old hub path scanned every row for
+the session on every NOTIFY. Busy sessions (500+ events) paid that
+cost per-event. The new PK lookup is O(1). On a fleet of 50 active
+sessions this reduces per-NOTIFY database work from cumulative O(N)
+to O(1); under rAF-pressured broadcast bursts the hub no longer
+bottlenecks on `GetSessionEvents`.
+
+**Schema impact.** None. NOTIFY payload is a wire contract between
+worker-writer (`NotifyFleetChange`) and api-hub (`listenOnce`). The
+`event_id` field is additive; older worker binaries emit payloads
+without it and older hub binaries ignore unknown fields (`json.Unmarshal`
+into a narrower struct silently drops extras). Forwards- and
+backwards-compatible through rolling deploys.
+
+**Rejected alternatives.**
+
+- **Serialize inserts via a mutex at the worker.** Rejected -- adds
+  cross-goroutine contention for every event and the correctness
+  gap isn't at the insert layer. The insert always writes the right
+  row. The race is at the hub's read-after-notify lookup, not the
+  writer.
+
+- **Debounce hub broadcasts and batch tail SELECTs.** Rejected --
+  doesn't pin the broadcast to the triggering event; batching
+  trades one race class for another (compound updates with
+  missing intermediates).
+
+- **Include the full event payload in NOTIFY.** Rejected -- Postgres
+  NOTIFY payload is capped at 8 kB. Event content with prompt
+  capture on (D103) routinely exceeds that. Carrying just the id
+  and having the hub fetch the row on its own connection keeps the
+  notify path cheap and lets the fetch size match reality.
+
+- **Use a materialised "latest event per session" column instead of
+  fetching.** Rejected -- requires a write amplification on every
+  insert (UPDATE sessions SET latest_event_id = ...) and still
+  races with the same two-writer window.
+
+**Why Timeline was unaffected.** Timeline and the session drawer
+render events via `GET /v1/sessions/:id` which hits
+`GetSessionEvents` once on open and returns the full list. That path
+has no race window because the query runs once after the user has
+already scrolled to the session. The bug was scoped exclusively to
+the per-NOTIFY push path.
+
+**Code locations.**
+
+- `workers/internal/writer/notify.go::fleetNotifyPayload` --
+  `EventID` field added to the wire struct.
+- `workers/internal/writer/notify.go::NotifyFleetChange` --
+  signature accepts `eventID string`.
+- `workers/internal/processor/event.go::Process` -- passes the id
+  returned from `InsertEvent` into `NotifyFleetChange`.
+- `api/internal/ws/hub.go::notifyPayload` -- parses `EventID` from
+  the NOTIFY payload.
+- `api/internal/ws/hub.go::listenOnce` -- fetches via
+  `store.GetEvent(event_id)` instead of `GetSessionEvents` + tail.
+- `api/internal/store/postgres.go::GetEvent` -- new single-row
+  PK lookup by event id.
+- `tests/integration/test_ws_broadcast.py` -- race test fires two
+  events in quick succession and asserts both broadcasts carry the
+  correct, distinct event ids.
+
+---
+
+## D109 -- Observer-session class + `supports_directives` context flag
+
+**Date:** 2026-04-17
+**Phase:** 5
+
+**Context.** The Python sensor intercepts every LLM call
+synchronously. The response envelope flows through
+`Session._post_event`, which polls for directives, and any issued
+directive is applied before control returns to the user's code.
+Shutdown, warn, degrade, and custom handlers all depend on this
+interception loop. Hook-based plugins (Claude Code, and any future
+Codex / Cursor / Windsurf-style integration) do not sit in the
+agent's execution path: they observe tool lifecycle events via
+subprocess hooks fired by the orchestrator, run as fresh Node
+processes, and cannot be interrupted mid-call. A directive issued
+against a hook-based session has nowhere to go.
+
+Pre-f0fa302 the dashboard offered the Stop Agent button on every
+session regardless of whether the session could act on the directive.
+A platform engineer clicking Stop on a claude-code session would see
+"Shutdown pending" with no effect; the session continued until it
+ended naturally. The operator couldn't tell whether the click had
+worked, whether the agent was ignoring it, or whether the kill
+switch was broken.
+
+**Decision.** First-class **observer-session class**. A session is
+an observer when the agent process producing its events cannot act
+on a returned directive. The plugin payload marks this by setting
+`context.supports_directives = false` on `session_start`; the sensor
+does not set the field at all, and unset is treated as `true` so
+every pre-existing sensor session keeps its kill switch.
+
+UI gating lives in `dashboard/src/lib/directives.ts`:
+
+  - `sessionSupportsDirectives(session)` -- reads
+    `context.supports_directives`, defaulting to `true` when the
+    field is absent. `SessionDrawer` uses this to decide whether to
+    render the Stop Agent button at all. Hidden, not disabled: a
+    disabled control communicates "temporarily unavailable",
+    which is wrong when the plugin is structurally incapable of
+    acting on the directive. Gone is clearer.
+  - `flavorHasDirectiveCapableSession(sessions)` -- returns `true`
+    when at least one live (active or idle) session in the flavor
+    can act on a directive. The Fleet sidebar uses this to decide
+    whether to render the Stop All button for a flavor. A mixed
+    flavor (some sensor, some plugin) keeps the button because the
+    directive still affects the sensor subset; claude-code sessions
+    in the flavor silently ignore it.
+
+**Fallback pattern precedent.** D104 established that
+`sessions.context` is write-once. A pre-flag claude-code session's
+context lacks `supports_directives` and, because of D104, can never
+pick it up from a later event. 95be150 added an
+`isClaudeCodeSession(session)` fallback in `sessionSupportsDirectives`
+that reads `session.flavor` and `session.framework` -- top-level
+session columns that `UpsertSession` refreshes from every session
+event -- and treats any claude-code session as an observer regardless
+of context. This is the canonical pattern for any future
+session-capability flag that needs to gate UI behaviour on a context
+field:
+
+  1. **Preferred:** put the flag in a top-level session column or an
+     event field so any event can set it.
+  2. **Acceptable:** ship a fallback that reads a proxy signal from
+     top-level columns (flavor / framework / agent_type) so
+     pre-flag sessions are covered.
+  3. **Acceptable only for cosmetic flags:** document the flag as
+     prospective-only; accept that pre-flag sessions render as
+     "unset".
+
+**Rejected alternatives.**
+
+- **Keep the Stop button visible; add a tooltip explaining it won't
+  act on claude-code sessions.** Rejected -- a control that the
+  operator has to hover and read to learn is decorative is a UX
+  failure. The cost of discovering the failure is higher than the
+  cost of the hidden control.
+
+- **Disable (not hide) the button on observer sessions.** Rejected
+  -- disabled controls communicate "temporarily unavailable, try
+  later", which is wrong. The plugin is structurally incapable of
+  acting; the button should not exist for this session class.
+
+- **Per-flavor boolean in the agents table**
+  (`agents.supports_directives`). Rejected -- per-session is the
+  right granularity because one flavor could host multiple
+  integration variants in future (for example, a Python sensor
+  attaching to a claude-code session). Flavor-level is too coarse;
+  session-level via the context flag matches the granularity of
+  the decision.
+
+- **Delete the kill-switch for claude-code sessions at the API
+  layer (4xx the directive).** Rejected -- the UI gating keeps the
+  backend surface clean; a claude-code session that does somehow
+  receive a directive can silently ignore it without paying an
+  error-handling tax. UI gates are cheaper and more adaptable.
+
+**Graceful-fail corollary.** f0fa302 shipped alongside a second
+change: `parseBool` in the plugin now has explicit empty-string
+handling so a typo like `FLIGHTDECK_CAPTURE_PROMPTS=ture` falls
+through to the documented default instead of silently flipping. This
+is not a directive-class concern but shares the same "plugin defaults
+must be conservative because the user will not read the env var table"
+posture as D103.
+
+**Code locations.**
+
+- `plugin/hooks/scripts/observe_cli.mjs::collectContext` -- emits
+  `supports_directives: false` on claude-code `session_start`
+  payloads.
+- `dashboard/src/lib/directives.ts::sessionSupportsDirectives` --
+  the primary gate with the pre-flag fallback.
+- `dashboard/src/lib/directives.ts::flavorHasDirectiveCapableSession`
+  -- mixed-flavor helper for the Fleet sidebar's Stop All control.
+- `dashboard/src/lib/models.ts::isClaudeCodeSession` -- the proxy
+  signal readoff (used by the 95be150 fallback).
+- `dashboard/src/components/session/SessionDrawer.tsx` -- the Stop
+  Agent button gate.
+- Fleet sidebar -- `flavorHasDirectiveCapableSession` gates the
+  Stop All rendering.
 
 ---

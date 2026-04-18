@@ -142,10 +142,12 @@ func WritePump(client *Client) {
 
 // notifyPayload is the raw payload from Postgres NOTIFY. EventID was
 // added to give the hub a deterministic pointer to the triggering
-// event: before this, listenOnce called GetSessionEvents and picked
+// event: before D108, listenOnce called GetSessionEvents and picked
 // the tail, which raced with concurrent inserts whenever paired
-// events (post_call + tool_call within ~200 ms) committed close
-// together. See workers/internal/writer/notify.go for the writer side.
+// events (post_call + tool_call within ~200 ms, common after D107's
+// PostToolUse flush) committed close together. See D108 in
+// DECISIONS.md and workers/internal/writer/notify.go for the writer
+// side of the contract.
 type notifyPayload struct {
 	SessionID string `json:"session_id"`
 	EventType string `json:"event_type"`
@@ -221,7 +223,7 @@ func (h *Hub) listenOnce(ctx context.Context, pool *pgxpool.Pool) error {
 		// rather than O(N) over the session's event history, and
 		// eliminates the NOTIFY->SELECT race where
 		// GetSessionEvents + tail would return a later event when
-		// paired writes committed in quick succession.
+		// paired writes committed in quick succession. See D108.
 		var lastEvent *store.Event
 		if np.EventID != "" {
 			event, evtErr := h.store.GetEvent(ctx, np.EventID)

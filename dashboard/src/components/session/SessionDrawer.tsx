@@ -316,11 +316,14 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
   function handleViewPrompts(eventId: string) {
     setActiveTab("prompts");
     setExpandedEventId(null);
-    // Land on the list view with the clicked event highlighted and
-    // scrolled into view. Clearing selectedEventId guarantees
-    // PromptsTab renders the list (selectedEventId drills into
-    // PromptViewer detail) -- focus is purely list-level.
-    setSelectedEventId(null);
+    // Land directly on PromptViewer detail for the clicked Timeline
+    // event, skipping the list stop. A user drilling from a specific
+    // row wants that row's detail, not a list that includes it. We
+    // still set focusedPromptEventId so that when the user clicks
+    // "Back to event list" from detail, the origin row is
+    // highlighted and scrolled into view -- preserves Fix C
+    // (03792f5) on the round trip.
+    setSelectedEventId(eventId);
     setFocusedPromptEventId(eventId);
   }
 
@@ -589,10 +592,14 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
                     focusedEventId={focusedPromptEventId}
                     onSelectEvent={(id) => {
                       setSelectedEventId(id);
-                      // Dismiss the focused-row treatment once the
-                      // user chooses to drill into any event (detail
-                      // view takes over) or steps back to the list.
-                      if (id !== focusedPromptEventId) {
+                      // Clear the focused-row treatment only when
+                      // the user selects a different event from the
+                      // list. When id === null (Back to event
+                      // list), preserve focus so the origin row is
+                      // still highlighted -- that's what makes the
+                      // Timeline → detail → Back round trip land
+                      // the user back on their originating row.
+                      if (id !== null && id !== focusedPromptEventId) {
                         setFocusedPromptEventId(null);
                       }
                     }}

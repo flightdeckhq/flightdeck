@@ -76,9 +76,11 @@ vi.mock("@/lib/api", () => ({
   triggerCustomDirective: vi.fn(() => Promise.resolve()),
 }));
 
-import { createDirective, triggerCustomDirective } from "@/lib/api";
+import { createDirective, fetchEventContent, triggerCustomDirective } from "@/lib/api";
 const mockTriggerCustomDirective =
   triggerCustomDirective as ReturnType<typeof vi.fn>;
+const mockFetchEventContent =
+  fetchEventContent as ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
   mockSessionOverride = {};
@@ -222,39 +224,107 @@ describe("SessionDrawer", () => {
     expect(screen.queryByText("View Prompts →")).not.toBeInTheDocument();
   });
 
-  it("View Prompts click switches to Prompts tab and highlights the focused row", () => {
-    // The regression this test guards against: the zero-arg
-    // handleViewPrompts dropped the clicked event id, so PromptsTab
-    // always landed on the generic list with no row highlighted and
-    // no scroll. The fix threads event.id through as focusedEventId.
+  it("View Prompts on an LLM CALL opens detail view directly for that event", async () => {
+    // Supersedes Fix C (03792f5), which landed users on the list
+    // with the row highlighted. Supervisor redirected the UX: a
+    // user drilling from a specific Timeline row wants that row's
+    // detail, not a list stop that includes it. PromptsTab already
+    // had a selectedEventId branch rendering PromptViewer; the
+    // fix flips handleViewPrompts to set selectedEventId directly.
     mockEventsOverride = eventsWithContent;
     // Stub scrollIntoView -- jsdom doesn't implement it and the
     // useEffect in PromptsTab would otherwise crash the test run.
+    Element.prototype.scrollIntoView = vi.fn();
+
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    const rows = screen.getAllByTestId("event-row");
+    // Reversed: row[0]=e3 (has_content=true, the target).
+    fireEvent.click(rows[0]);
+    fireEvent.click(screen.getByText("View Prompts →"));
+
+    // Detail view rendered: "Back to event list" button present,
+    // no prompts-row-* buttons (list is suppressed when
+    // selectedEventId is set). PromptViewer kicked off a fetch
+    // for the clicked event id.
+    expect(screen.getByText("← Back to event list")).toBeInTheDocument();
+    expect(screen.queryByTestId("prompts-row-e3")).not.toBeInTheDocument();
+    await waitFor(() => {
+      expect(mockFetchEventContent).toHaveBeenCalledWith("e3");
+    });
+  });
+
+  it("View Prompts on a tool_call opens detail view directly for that tool_call", async () => {
+    // Same contract for tool_call events, which carry content when
+    // the plugin captures tool inputs (see PromptsTab's
+    // contentEvents filter -- post_call OR tool_call with
+    // has_content).
+    mockEventsOverride = [
+      ...baseEvents,
+      {
+        id: "t1",
+        session_id: "s1",
+        flavor: "test",
+        event_type: "tool_call" as const,
+        model: null,
+        tokens_input: null,
+        tokens_output: null,
+        tokens_total: null,
+        latency_ms: null,
+        tool_name: "web_search",
+        has_content: true,
+        occurred_at: "2026-04-07T10:03:00Z",
+      },
+    ];
+    Element.prototype.scrollIntoView = vi.fn();
+
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    const rows = screen.getAllByTestId("event-row");
+    // Reversed: row[0]=tool_call (the target).
+    fireEvent.click(rows[0]);
+    fireEvent.click(screen.getByText("View Prompts →"));
+
+    expect(screen.getByText("← Back to event list")).toBeInTheDocument();
+    expect(screen.queryByTestId("prompts-row-t1")).not.toBeInTheDocument();
+    await waitFor(() => {
+      expect(mockFetchEventContent).toHaveBeenCalledWith("t1");
+    });
+  });
+
+  it("Back from detail returns to list with focused row highlighted and scrolled", () => {
+    // Preserves Fix C (03792f5) for the round-trip case: even
+    // though we now skip the list on arrival, clicking Back must
+    // still land on the list with the origin row highlighted and
+    // scrolled into view, so the user can navigate from there.
+    // Regression guard against clearing focusedPromptEventId when
+    // onSelectEvent(null) fires.
+    mockEventsOverride = eventsWithContent;
     const scrollSpy = vi.fn();
     Element.prototype.scrollIntoView = scrollSpy;
 
     render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
     const rows = screen.getAllByTestId("event-row");
-    // Reversed: row[0]=e3 (has_content=true, the focus target).
     fireEvent.click(rows[0]);
     fireEvent.click(screen.getByText("View Prompts →"));
+    // Detail view is on screen; now step back.
+    fireEvent.click(screen.getByText("← Back to event list"));
 
-    // Focus row carries the selected treatment via data-focused="true"
-    // and the accent border-left; both are pulled from the same
-    // design vocabulary the fleet sidebar uses for its active flavor.
     const focusRow = screen.getByTestId("prompts-row-e3");
     expect(focusRow.getAttribute("data-focused")).toBe("true");
     expect(focusRow.style.borderLeft).toContain("var(--accent)");
     expect(focusRow.style.background).toContain("var(--accent-glow)");
 
-    // scrollIntoView was called on the focused row's button element.
+    // scrollIntoView was invoked on the focused list row once the
+    // list remounted (PromptsTab useEffect re-runs when
+    // selectedEventId transitions back to null).
     expect(scrollSpy).toHaveBeenCalled();
-    const call = scrollSpy.mock.calls[0];
-    expect(call[0]).toMatchObject({ behavior: "smooth", block: "center" });
+    const lastCall = scrollSpy.mock.calls.at(-1)!;
+    expect(lastCall[0]).toMatchObject({ behavior: "smooth", block: "center" });
   });
 
-  it("unfocused prompt rows have no highlight treatment", () => {
-    // Make sure the focus CSS is scoped to exactly one row.
+  it("unfocused prompt rows have no highlight treatment after Back navigation", () => {
+    // The focus CSS must be scoped to exactly one row. With the
+    // new routing the user only sees the list after Back, so this
+    // assertion now runs post-Back rather than post-View-Prompts.
     mockEventsOverride = [
       ...eventsWithContent,
       {
@@ -276,10 +346,11 @@ describe("SessionDrawer", () => {
 
     render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
     const rows = screen.getAllByTestId("event-row");
-    // Find the e3 row and click View Prompts.
-    // Reversed order: row[0]=e6, row[1]=e3, row[2..]=...
+    // Reversed: row[0]=e6, row[1]=e3. Click into e3 → View Prompts
+    // → Back, so the list view is the one we assert against.
     fireEvent.click(rows[1]);
     fireEvent.click(screen.getByText("View Prompts →"));
+    fireEvent.click(screen.getByText("← Back to event list"));
 
     const focusRow = screen.getByTestId("prompts-row-e3");
     const otherRow = screen.getByTestId("prompts-row-e6");

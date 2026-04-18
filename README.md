@@ -2,7 +2,7 @@
 
 Observability and control for AI agent fleets.
 
-See every LLM call, tool use, and token spend across your agents in real time. Stop any agent, enforce budgets, and run custom actions from the dashboard without a redeploy.
+Flightdeck ingests events from sensor-instrumented agents and the Claude Code plugin, stores them in Postgres, and serves a dashboard, a query API, and a WebSocket push channel.
 
 ---
 
@@ -77,7 +77,7 @@ After `init()` + `patch()`, frameworks that build Anthropic or OpenAI clients in
 
 ---
 
-## Features
+## Capabilities
 
 ### Live fleet timeline
 
@@ -103,17 +103,15 @@ The session drawer surfaces a collapsible **RUNTIME** panel. The sidebar **CONTE
 
 Define policies centrally. Each agent pulls its policy on session start and enforces it locally with no code changes.
 
-```
-82% of budget   warning fires, call proceeds
-91% of budget   transparent downgrade to a cheaper model
-100% of budget  call blocked, BudgetExceededError raised
-```
+- At 82% of budget: a warning event fires, the call proceeds.
+- At 91% of budget: the model is substituted for a cheaper model configured on the policy.
+- At 100% of budget: the call raises `BudgetExceededError`.
 
 Thresholds, actions, and model substitutions are configurable per policy. Policies attach to agent flavors and propagate to every session of that flavor.
 
 ### Kill switch
 
-Stop an individual agent or every agent of a flavor from the dashboard. The directive delivers on the agent's next LLM call; agents in a loop stop within seconds.
+Stop an individual agent or every agent of a flavor from the dashboard. The directive is delivered on the agent's next LLM call; agents in a tool loop stop when the loop returns to its next call.
 
 ### Custom directives
 
@@ -136,7 +134,7 @@ def clear_cache(context, cache_type="all"):
     return {"cleared": my_cache.clear(cache_type)}
 ```
 
-The function appears in the dashboard the moment an agent calls `init()`. Results land in the session timeline within seconds.
+The function registers with the control plane on `init()` and is callable from the dashboard. Results are recorded as `directive_result` events on the session timeline.
 
 ### Analytics
 
@@ -173,7 +171,7 @@ Revoking a token does not strip its historical attribution: previous sessions ke
 
 ### Claude Code plugin
 
-Developer Claude Code sessions appear in the fleet view alongside production agents. Shadow AI usage becomes visible with no developer action required beyond installing the plugin.
+Claude Code sessions appear in the fleet view alongside sensor-instrumented agents. The plugin is an observer; it has no code footprint in the Claude Code process beyond the hook scripts.
 
 ```bash
 export FLIGHTDECK_SERVER="http://localhost:4000"
@@ -266,7 +264,7 @@ FLIGHTDECK_UNAVAILABLE_POLICY=continue  # run with cached policy (default)
 FLIGHTDECK_UNAVAILABLE_POLICY=halt      # block new sessions until CP responds
 ```
 
-The sensor reports out-of-band over HTTP. Control plane downtime never sits in the agent's execution path.
+The sensor reports over HTTP on a background thread. Control plane downtime is handled by the configured policy; it does not block agent code.
 
 ### Threading model
 

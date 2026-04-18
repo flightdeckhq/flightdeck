@@ -2,7 +2,7 @@ import { describe, it, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -90,8 +90,11 @@ function startCaptureServer() {
  * Start a server that always responds with the given HTTP status code
  * and counts every request. Used by the graceful-fail tests to
  * verify the plugin treats HTTP non-2xx the same as connection
- * refused: log once, flag the session unreachable, drop subsequent
- * POSTs.
+ * refused: log on every failed POST, exit 0, and let the next hook
+ * invocation try again fresh. (KI18 fix: the pre-4a design wrote a
+ * disk-persisted unreachable flag on the first failure and then
+ * silently dropped every subsequent POST for the session's lifetime,
+ * which broke reconnect after transient outages.)
  */
 function startFailingServer(status) {
   return new Promise((resolve) => {
@@ -110,15 +113,6 @@ function startFailingServer(status) {
       resolve({ server, port, requestCount: () => requestCount });
     });
   });
-}
-
-/**
- * Path of the per-session unreachable flag. Mirrors the path
- * computation in observe_cli.mjs so tests can inspect it without
- * coupling to the plugin module internals.
- */
-function unreachableFlagPathForTest(sessionId) {
-  return join(tmpdir(), "flightdeck-plugin", `unreachable-${sessionId}.flag`);
 }
 
 // Write a synthetic JSONL transcript with one LLM turn (user → assistant
@@ -347,7 +341,7 @@ describe("observe_cli.mjs", () => {
     assert.ok(capture.bodies().length > 0);
   });
 
-  it("HTTP 500 response triggers canonical unreachable log and flag file", async () => {
+  it("HTTP 500 response logs the canonical unreachable line and exits zero", async () => {
     clearAllPluginMarkers();
     const failing = await startFailingServer(500);
     try {
@@ -369,17 +363,10 @@ describe("observe_cli.mjs", () => {
       );
       // Exactly one server request: the initial POST that got the 500.
       assert.equal(failing.requestCount(), 1);
-      // Flag file must be present so subsequent hooks skip the POST.
-      let flagContents = null;
-      try {
-        flagContents = readFileSync(unreachableFlagPathForTest(sid), "utf8");
-      } catch {
-        /* missing file -> fail assert below */
-      }
-      assert.ok(
-        flagContents && flagContents.length > 0,
-        `expected unreachable flag file at ${unreachableFlagPathForTest(sid)}`,
-      );
+      // KI18 fix: no disk-persisted unreachable flag is written. Each
+      // hook invocation is a fresh process, so "log once per POST"
+      // naturally bounds stderr without locking the session out of
+      // future retries after a transient failure.
     } finally {
       failing.server.close();
     }
@@ -412,50 +399,85 @@ describe("observe_cli.mjs", () => {
     }
   });
 
-  it("subsequent hooks in an unreachable session do not hit the server", async () => {
+  it("subsequent hooks retry after a failure so the plugin recovers from transient outages (KI18)", async () => {
     clearAllPluginMarkers();
+    // First server: always 500. The first hook fires against this,
+    // fails, logs. Before the pre-4a fix this would write a
+    // disk-persisted unreachable flag and every subsequent hook
+    // would short-circuit -- breaking reconnect.
     const failing = await startFailingServer(500);
+    let firstPort;
     try {
-      const sid = "sess-unreachable-dedup-1";
-      const env = {
-        FLIGHTDECK_SERVER: `http://127.0.0.1:${failing.port}`,
+      firstPort = failing.port;
+      const sid = "sess-reconnect-1";
+      const envDown = {
+        FLIGHTDECK_SERVER: `http://127.0.0.1:${firstPort}`,
         FLIGHTDECK_TOKEN: "tok_test",
       };
-      // First hook: triggers the one-shot log and writes the flag.
+      // First hook: hits the failing server, gets 500, logs once,
+      // exits 0. No disk-persisted flag is written.
       await runScript(
         JSON.stringify({
           hook_event_name: "SessionStart",
           session_id: sid,
           source: "startup",
         }),
-        env,
+        envDown,
       );
-      const firstCount = failing.requestCount();
-      assert.equal(firstCount, 1);
+      assert.equal(failing.requestCount(), 1);
 
-      // Second hook in the same session: should short-circuit and not
-      // hit the server.
-      const second = await runScript(
+      // Second hook in the same session hits the server AGAIN. With
+      // the KI18 fix, each hook tries fresh; the same failing server
+      // therefore sees a new request (and another "cannot reach"
+      // line on stderr -- bounded at one per failed POST).
+      const secondSameServer = await runScript(
         JSON.stringify({
           hook_event_name: "PostToolUse",
           tool_name: "Bash",
           session_id: sid,
         }),
-        env,
+        envDown,
       );
-      assert.equal(second.code, 0);
-      assert.equal(
-        failing.requestCount(),
-        firstCount,
-        "second hook must not POST once the session is flagged unreachable",
-      );
-      // And no duplicate log line on stderr.
+      assert.equal(secondSameServer.code, 0, "hook still exits 0");
       assert.ok(
-        !second.stderr.includes("cannot reach"),
-        "second hook must not re-log the unreachable message",
+        failing.requestCount() >= 2,
+        "second hook must retry the POST -- no disk-persisted mute flag",
+      );
+      assert.match(
+        secondSameServer.stderr,
+        /cannot reach/,
+        "second hook must re-log the unreachable line (one per failed POST)",
       );
     } finally {
       failing.server.close();
+    }
+
+    // Third hook: the "server" has recovered. Point the plugin at a
+    // fresh capture server on a new port and confirm the event
+    // actually lands. This is the reconnect path that D106 relies on
+    // and that the pre-4a flag persistence would have prevented.
+    const recovered = await startCaptureServer();
+    try {
+      const sid = "sess-reconnect-1";
+      const envUp = {
+        FLIGHTDECK_SERVER: `http://127.0.0.1:${recovered.port}`,
+        FLIGHTDECK_TOKEN: "tok_test",
+      };
+      const third = await runScript(
+        JSON.stringify({
+          hook_event_name: "PostToolUse",
+          tool_name: "Bash",
+          session_id: sid,
+        }),
+        envUp,
+      );
+      assert.equal(third.code, 0);
+      assert.ok(
+        recovered.bodies().length >= 1,
+        "after server recovery, the next hook's POST lands on the new server",
+      );
+    } finally {
+      recovered.server.close();
     }
   });
 

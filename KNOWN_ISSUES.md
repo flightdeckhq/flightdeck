@@ -29,22 +29,12 @@ fix in DECISIONS.md. Never leave a resolved TODO comment in the code.
 | KI11 | Security   | No NATS auth in dev compose          | Low    | 5     | docker/docker-compose.yml:nats              | D047      |
 | KI12 | Security   | REST endpoints have no per-IP rate limit | Low | 5    | api/internal/server/server.go               | D048      |
 | KI13 | API        | Ingestion accepts events for closed/lost sessions | Low | 5 | ingestion/internal/handlers/events.go    | -         |
-| KI18 | Plugin     | Unreachable-flag persists for session lifetime; plugin stops sending after any single HTTP failure, never retries even after server recovery | Med | 5 | plugin/hooks/scripts/observe_cli.mjs:455-547 | D106 (server-side tolerance already in place)  |
-
-> **KI18 is expected to be resolved in the next commit (4a).** D106
-> already handled the server-side half ("events landing for an
-> unknown session_id are recorded from that event onwards"); KI18
-> is the remaining plugin-side half (plugin must actually resume
-> sending after a transient network failure). When the
-> unreachable-flag persistence is removed and a test covers
-> "server recovers mid-session, plugin fires next hook, event
-> lands", delete this row and add a Resolved entry referencing
-> the follow-up commit.
 
 ## Resolved
 
 | ID    | Component  | Concern                              | Resolved in | DECISIONS |
 |-------|------------|--------------------------------------|-------------|-----------|
+| KI18  | Plugin     | Unreachable-flag persisted for session lifetime; plugin stopped sending after any single HTTP failure | Phase 5     | D106 (server) + 4a (plugin) |
 | KI-R1 | Sensor     | Hot path blocking on event POST      | Phase 1     | D037      |
 | KI-R2 | API        | LISTEN connection no reconnect       | Phase 1     | D038      |
 | KI-R3 | Ingestion  | Kill switch not delivered to idle     | Phase 1     | D049      |

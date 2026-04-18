@@ -3231,17 +3231,18 @@ Four changes:
   `session_end` for an unknown session_id remains a silent drop
   at InsertEvent, matching pre-D106 behaviour for that event type.
 
-**Known related defect (out-of-scope).** The plugin's
+**Known related defect.** The plugin's
 `unreachable-<sessionId>.flag` file (in
-`plugin/hooks/scripts/observe_cli.mjs`) short-circuits all
-subsequent POSTs for a session once the first hook fails. No code
-path clears the flag within the session's lifetime. For the "server
-down at startup, recovers mid-session" scenario, D106 fixes the
-server side correctly, but the plugin stops sending after the first
-failure and never resumes -- so no reconnect events reach the
-server to exercise the D106 path. Tracked as KI18; fix planned as
-a separate plugin-only commit that removes the flag persistence
-and lets each hook try fresh.
+`plugin/hooks/scripts/observe_cli.mjs`) short-circuited all
+subsequent POSTs for a session once the first hook failed. No code
+path cleared the flag within the session's lifetime, so "server
+down at startup, recovers mid-session" saw the plugin stop sending
+after the first failure and never resume -- no reconnect events
+reached the server to exercise the D106 path. Tracked as KI18,
+**resolved in the follow-up commit 4a**: the flag persistence was
+removed so every hook invocation attempts its POST fresh. The
+paired fix (D106 server + 4a client) restores the full reconnect
+path end-to-end.
 
 **Schema change footprint.** Zero. The `context JSONB DEFAULT
 '{}'::jsonb` column stays as-is; D106 writes `NULL` explicitly

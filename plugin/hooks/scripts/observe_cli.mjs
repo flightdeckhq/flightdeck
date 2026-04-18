@@ -453,48 +453,37 @@ export const EVENT_MAP = {
 };
 
 // ---------------------------------------------------------------------
-// HTTP POST helper + one-shot unreachable-session logging.
+// HTTP POST helper + unreachable-session logging.
 //
 // The plugin must never block Claude Code on a broken or missing
 // Flightdeck stack. Every failure path -- connection refused, DNS
 // failure, HTTP non-2xx, abort timeout -- writes a single stderr line
-// the first time it happens in a session and then silently drops
-// every subsequent POST for that session via a flag file at
-// tmpdir()/flightdeck-plugin/unreachable-<sessionId>.flag. Hook
-// process still returns 0 so Claude Code sees the hook as healthy.
+// and returns; the hook still exits 0 so Claude Code sees it healthy.
+//
+// Each hook invocation is a fresh Node process, so "each POST logs at
+// most once" naturally yields bounded stderr output: one line per
+// failed POST, at most two lines per hook (ensureSessionStarted's
+// POST + the real event's POST). No disk-persisted unreachable flag
+// -- that design broke reconnect: once the flag was written, every
+// subsequent hook short-circuited even after the server recovered,
+// so transient outages turned into permanent session mute. Retrying
+// each hook's POST costs at most two stderr lines on a dead stack
+// and unlocks the "server recovers mid-session, events resume
+// landing" path that D106 handles on the server side. See KI18
+// resolution / commit 4a.
 // ---------------------------------------------------------------------
 
-function unreachableFlagPath(sessionId) {
-  return join(tmpdir(), "flightdeck-plugin", `unreachable-${sessionId}.flag`);
-}
-
-function isSessionMarkedUnreachable(sessionId) {
-  try {
-    readFileSync(unreachableFlagPath(sessionId), "utf8");
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 /**
- * Log once per session that the Flightdeck stack cannot be reached,
- * then drop a flag file so subsequent hooks skip the POST path
- * entirely (avoids one log line per hook invocation on a broken
- * stack). The message format is stable -- it is documented in the
- * plugin README troubleshooting section and in tests.
+ * Log a single "cannot reach" stderr line for this failed POST. The
+ * message format is stable -- it is documented in the plugin README
+ * troubleshooting section and in tests. Called once per failed POST;
+ * the caller process exits shortly after so the volume of log lines
+ * is bounded by the number of POST attempts per hook (at most two).
  */
-function logUnreachableOnce(sessionId, server, shortError) {
-  if (isSessionMarkedUnreachable(sessionId)) return;
+function logUnreachable(server, shortError) {
   process.stderr.write(
     `[flightdeck] cannot reach ${server}: ${shortError}. events dropped for this session.\n`,
   );
-  try {
-    mkdirSync(join(tmpdir(), "flightdeck-plugin"), { recursive: true });
-    writeFileSync(unreachableFlagPath(sessionId), new Date().toISOString());
-  } catch {
-    /* silent -- the flag is an optimisation, not a correctness gate */
-  }
 }
 
 // ``fetch failed`` is the generic umbrella Node uses to wrap underlying
@@ -510,10 +499,6 @@ function shortErrorFrom(err) {
 }
 
 async function postEvent(server, token, sessionId, payload) {
-  // Short-circuit every future POST for a session already flagged
-  // unreachable -- a broken stack at turn 1 is still broken at turn 10.
-  if (isSessionMarkedUnreachable(sessionId)) return;
-
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
   let response = null;
@@ -529,20 +514,21 @@ async function postEvent(server, token, sessionId, payload) {
     });
   } catch (err) {
     // Network-level failure: connection refused, DNS miss, abort
-    // timeout, fetch rejection. Collapse to a one-shot log.
-    logUnreachableOnce(sessionId, server, shortErrorFrom(err));
+    // timeout, fetch rejection. Log and return -- the next hook
+    // invocation is a fresh process and will try again.
+    logUnreachable(server, shortErrorFrom(err));
     return;
   } finally {
     clearTimeout(timeout);
   }
 
-  // HTTP-level failure: auth, payload validation, server error. fetch()
-  // returns normally for these so the catch above does not fire. Treat
-  // 4xx and 5xx the same way -- log once, drop subsequent POSTs. We do
-  // NOT retry; the sensor is fire-and-forget and a downed stack may
-  // stay down for longer than any sensible retry schedule.
+  // HTTP-level failure: auth, payload validation, server error.
+  // fetch() returns normally for these so the catch above does not
+  // fire. We do NOT retry within this hook -- one attempt per POST
+  // is the whole contract. A subsequent hook will try again when
+  // Claude Code invokes a fresh plugin process.
   if (!response.ok) {
-    logUnreachableOnce(sessionId, server, `HTTP ${response.status}`);
+    logUnreachable(server, `HTTP ${response.status}`);
   }
 }
 

@@ -115,8 +115,6 @@ Stop an individual agent or every agent of a flavor from the dashboard. The dire
 
 ### Custom directives
 
-Register a Python function as a directive. The function is callable from the dashboard without a code change or redeploy.
-
 ```python
 @flightdeck_sensor.directive(
     name="clear_cache",
@@ -159,7 +157,7 @@ These are estimates. Actual billing will differ. Not included: volume discounts,
 
 ### Search
 
-Cmd+K finds any session, agent, or event across the fleet.
+Cmd+K searches sessions, agents, and events.
 
 ### Access tokens
 

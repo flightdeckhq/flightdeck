@@ -1,6 +1,6 @@
 # Flightdeck Plugin for Claude Code
 
-A Claude Code plugin that surfaces every LLM call, tool use, and token spend from your sessions into the Flightdeck dashboard in real time. Zero configuration for the local `make dev` stack; one env var to point at a hosted Flightdeck instance. No persistent daemon, no background process, no hot-path interception. The plugin runs only when a Claude Code hook fires, posts the event, and exits.
+A Claude Code plugin that reports LLM call metadata, tool invocations, and token counts from Claude Code sessions to a Flightdeck stack. The plugin reads defaults for the local `make dev` stack; set `FLIGHTDECK_SERVER` and `FLIGHTDECK_TOKEN` to point at a different stack. Each hook invocation runs as a short-lived child process: read stdin, POST, exit.
 
 ## Quickstart
 
@@ -67,7 +67,7 @@ Each row is what the dashboard shows for a given Claude Code hook.
 |---|---|
 | SessionStart | `session_start` with runtime context (hostname, git, frameworks, `supports_directives=false`). Sent once per session id. |
 | UserPromptSubmit | `pre_call` with cached model name and the user prompt (if `capturePrompts=true`). |
-| PostToolUse | Any un-emitted assistant turns from the transcript flush as `post_call` events first (token counts, model, response body when capture is on), then the tool execution itself emits a `tool_call`. Mid-turn LLM activity surfaces in real time. |
+| PostToolUse | Any un-emitted assistant turns from the transcript flush as `post_call` events first (token counts, model, response body when capture is on), then the tool execution itself emits a `tool_call`. Mid-turn LLM activity is flushed on every tool invocation instead of only at turn end. |
 | Stop | `post_call` backstop for the final assistant turn that had no tool follow-up. Turns already flushed by PostToolUse are skipped via per-message dedup. |
 | SessionEnd | Final transcript sweep (any last-turn `post_call` missed by Stop) followed by `session_end`. |
 | PreCompact | Synthetic `tool_call` with `tool_name=compact_context` so the timeline shows when Claude Code compacted its context window. |

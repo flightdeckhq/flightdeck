@@ -1,7 +1,5 @@
 # Flightdeck
 
-Observability and control for AI agent fleets.
-
 Flightdeck ingests events from sensor-instrumented agents and the Claude Code plugin, stores them in Postgres, and serves a dashboard, a query API, and a WebSocket push channel.
 
 ---
@@ -81,7 +79,7 @@ After `init()` + `patch()`, frameworks that build Anthropic or OpenAI clients in
 
 ### Live fleet timeline
 
-Every session on one shared time axis, one swim lane per agent flavor and one sub-row per running session. LLM calls, tool uses, policy events, and directives plot as they happen. Pause and catch-up controls freeze the scroll without dropping events; the event-type filter bar isolates LLM Calls, Tools, Policy, Directives, or Session events. Provider logos render on LLM call nodes, OS and orchestration icons on session hostnames. Click any event to inspect it inline.
+Every session on one shared time axis, one swim lane per agent flavor and one sub-row per running session. LLM calls, tool uses, policy events, and directives are plotted on the timeline as events arrive. Pause and catch-up controls freeze the scroll without dropping events; the event-type filter bar isolates LLM Calls, Tools, Policy, Directives, or Session events. Provider logos render on LLM call nodes, OS and orchestration icons on session hostnames. Click any event to inspect it inline.
 
 ### Full session inspection
 
@@ -115,7 +113,7 @@ Stop an individual agent or every agent of a flavor from the dashboard. The dire
 
 ### Custom directives
 
-Register a Python function once; call it from the dashboard anytime. No redeploy.
+Register a Python function as a directive. The function is callable from the dashboard without a code change or redeploy.
 
 ```python
 @flightdeck_sensor.directive(

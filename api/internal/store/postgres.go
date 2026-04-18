@@ -37,6 +37,7 @@ type Querier interface {
 	GetFleet(ctx context.Context, limit, offset int, agentType string) ([]FlavorSummary, int, error)
 	GetSession(ctx context.Context, sessionID string) (*Session, error)
 	GetSessionEvents(ctx context.Context, sessionID string) ([]Event, error)
+	GetEvent(ctx context.Context, eventID string) (*Event, error)
 	GetSessionAttachments(ctx context.Context, sessionID string) ([]time.Time, error)
 	GetEventContent(ctx context.Context, eventID string) (*EventContent, error)
 	GetEffectivePolicy(ctx context.Context, flavor, sessionID string) (*Policy, error)
@@ -401,6 +402,45 @@ func (s *Store) GetSessionEvents(ctx context.Context, sessionID string) ([]Event
 		return nil, fmt.Errorf("session events scan: %w", err)
 	}
 	return events, nil
+}
+
+// GetEvent returns a single event by primary key. Used by the
+// WebSocket hub to fetch exactly the event named in a NOTIFY payload,
+// avoiding the race where re-querying GetSessionEvents and taking the
+// tail would return a later event when paired writes commit close
+// together. Returns (nil, nil) when the event does not exist -- this
+// is possible when the hub runs the query before the insert
+// transaction has committed (uncommon but valid). Caller handles the
+// nil return by skipping the broadcast.
+func (s *Store) GetEvent(ctx context.Context, eventID string) (*Event, error) {
+	var e Event
+	var payloadRaw []byte
+	err := s.pool.QueryRow(ctx, `
+		SELECT id::text, session_id::text, flavor, event_type, model,
+		       tokens_input, tokens_output, tokens_total,
+		       tokens_cache_read, tokens_cache_creation,
+		       latency_ms, tool_name, has_content, payload, occurred_at
+		FROM events
+		WHERE id = $1::uuid
+	`, eventID).Scan(
+		&e.ID, &e.SessionID, &e.Flavor, &e.EventType, &e.Model,
+		&e.TokensInput, &e.TokensOutput, &e.TokensTotal,
+		&e.TokensCacheRead, &e.TokensCacheCreation,
+		&e.LatencyMs, &e.ToolName, &e.HasContent, &payloadRaw, &e.OccurredAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get event %s: %w", eventID, err)
+	}
+	if len(payloadRaw) > 0 {
+		var v map[string]any
+		if jsonErr := json.Unmarshal(payloadRaw, &v); jsonErr == nil && len(v) > 0 {
+			e.Payload = v
+		}
+	}
+	return &e, nil
 }
 
 // GetSessionAttachments returns every recorded attachment timestamp

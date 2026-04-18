@@ -121,6 +121,23 @@ func (m *mockStore) GetSessionEvents(_ context.Context, _ string) ([]store.Event
 	}, nil
 }
 
+func (m *mockStore) GetEvent(_ context.Context, eventID string) (*store.Event, error) {
+	// Synthesize a minimal event keyed on the requested id so hub
+	// tests can assert that GetEvent-by-PK is actually called. Mirror
+	// the shape returned by the real Store.GetEvent: (nil, nil) means
+	// "not found" (caller skips broadcast per D-hub-race defensive
+	// path), otherwise a populated Event.
+	if eventID == "" || eventID == "missing" {
+		return nil, nil
+	}
+	return &store.Event{
+		ID:         eventID,
+		SessionID:  "sess-001",
+		EventType:  "post_call",
+		OccurredAt: time.Now(),
+	}, nil
+}
+
 func (m *mockStore) GetSessionAttachments(_ context.Context, _ string) ([]time.Time, error) {
 	return nil, nil
 }

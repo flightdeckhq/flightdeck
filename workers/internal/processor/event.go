@@ -131,8 +131,12 @@ func (p *Processor) Process(ctx context.Context, e consumer.EventPayload) error 
 		}
 	}
 
-	// NOTIFY for real-time dashboard push
-	if err := writer.NotifyFleetChange(ctx, p.pool, e.SessionID, e.EventType); err != nil {
+	// NOTIFY for real-time dashboard push. eventID is the one just
+	// returned by InsertEvent above -- the hub fetches exactly this
+	// row by primary key, avoiding the NOTIFY->SELECT race where
+	// GetSessionEvents + tail would return a later event under
+	// tight paired writes.
+	if err := writer.NotifyFleetChange(ctx, p.pool, e.SessionID, e.EventType, eventID); err != nil {
 		// Non-fatal: log but don't fail the event
 		slog.Warn("notify error", "err", err)
 	}

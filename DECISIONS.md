@@ -3076,3 +3076,194 @@ reconciler-driven transition to `lost` at ~05:42:28Z,
   30-min threshold verified via backdated `last_seen_at`).
 
 ---
+
+## D106 -- Lazy session creation on events with unknown session_id
+
+**Date:** 2026-04-18
+**Phase:** 5
+
+**Context.** Two user scenarios share one root cause. (1) Flightdeck
+server is down when Claude Code + plugin start, so the plugin's
+SessionStart HTTP POST fails. The plugin writes a one-shot unreachable
+flag and keeps calling hooks; when the server recovers, subsequent
+events reference a session_id Flightdeck has never seen. (2) The user
+enables the plugin partway through a running Claude Code session.
+SessionStart was never fired; every hook that follows references an
+in-progress session the server has no record of.
+
+Pre-fix behaviour traced through ingestion -> NATS -> worker:
+
+ - Ingestion (`ingestion/internal/handlers/events.go`) accepts the
+   event, publishes to NATS, returns 200. No existence check for
+   non-`session_start` event types.
+ - Worker `handleTerminalGuard` (D105) runs `SELECT state`, swallows
+   the `pgx.ErrNoRows` without discrimination, returns `skip=false`.
+ - Handler's normal side effects (`UpdateTokensUsed`,
+   `UpdateLastSeen`, `UpdateSessionModel`) fire UPDATE-with-WHERE,
+   affect 0 rows, return no error.
+ - `Processor.Process` then calls `writer.InsertEvent`, which
+   INSERTs into `events`. `events.session_id UUID NOT NULL REFERENCES
+   sessions(session_id)` rejects with FK-violation (SQLSTATE 23503).
+ - Consumer Naks the message; NATS JetStream redelivers indefinitely
+   until the stream's retention expires. No event row ever lands,
+   `tokens_used` never increments, no NOTIFY fires.
+
+Sensor (Python) is unaffected -- `init()` fires `session_start`
+synchronously before returning control to user code, so
+non-`session_start` events cannot precede it. D106 addresses the
+plugin's fire-and-forget hook model specifically.
+
+**Decision.** Non-`session_start` handlers now lazy-create the session
+row when they see a previously-unknown `session_id`. The event lands
+from first sight, with the row carrying enough identity to be usable
+on the dashboard immediately, and enough "not yet authoritative"
+sentinel material that a later `session_start` arrival can enrich it
+without violating D094's write-once principle.
+
+Observer-style ingestion tolerates arriving mid-stream without data
+loss. D094 handled the session_start-on-terminal case ("the sensor
+sent session_start for an id we already know"); D105 handled the
+any-event-on-terminal case ("the sensor sent anything for an id in
+a timeout-terminal state"); D106 handles the any-event-on-unknown
+case ("the sensor sent anything for an id we have never seen").
+
+Four changes:
+
+1. **New helper `ReviveOrCreateSession`**
+   (`workers/internal/writer/postgres.go`). If the row exists,
+   delegates to `ReviveIfRevivable` (D105). If it does not, upserts
+   the `agents` row (needed for the `sessions.flavor` FK), then
+   INSERTs a new `sessions` row with `state='active'`,
+   `started_at = last_seen_at = event.occurred_at`, best-effort
+   identity from the event payload, and `context = NULL` written
+   explicitly to override the column's `DEFAULT '{}'::jsonb`. Missing
+   `flavor` / `agent_type` are replaced with the string `"unknown"`.
+
+2. **Rename `handleTerminalGuard` -> `handleSessionGuard`**
+   (`workers/internal/processor/session.go`). The new guard
+   distinguishes `pgx.ErrNoRows` (lazy-create) from other DB errors
+   (fail open) via `errors.Is`. All D105 revival paths are preserved;
+   only the fall-through case for unknown session_id changed from
+   "silent no-op that FK-violates later" to "lazy-create so the
+   event lands". `HandleSessionEnd` deliberately stays off this
+   path -- a teardown signal for a session we never saw should not
+   retroactively manifest a closed row (same rationale as D105's
+   session_end exclusion).
+
+3. **Extend `UpsertSession` ON CONFLICT for enrichment**
+   (`workers/internal/writer/postgres.go`). Columns that were
+   write-once-on-insert in the original D094 design now COALESCE so
+   that a lazy-created row's NULL sentinels get filled by the next
+   authoritative `session_start`:
+
+   ```sql
+   context    = COALESCE(sessions.context, EXCLUDED.context)
+   token_id   = COALESCE(sessions.token_id, EXCLUDED.token_id)
+   token_name = COALESCE(sessions.token_name, EXCLUDED.token_name)
+   ```
+
+   `flavor` and `agent_type` use a CASE guard against the `"unknown"`
+   sentinel:
+
+   ```sql
+   flavor = CASE WHEN sessions.flavor = 'unknown'
+                 THEN EXCLUDED.flavor
+                 ELSE sessions.flavor END
+   ```
+
+   **Unknown is a sentinel, not a value.** Upgrading a sentinel on
+   enrichment is not overwriting data; a legitimate `session_start`
+   never writes `"unknown"`, so the CASE is a no-op for every row
+   that was created via an authoritative path. D094 write-once is
+   preserved for real values -- `COALESCE(sessions.context, ...)`
+   returns the stored side first whenever it's non-null, and the
+   `CASE` guard only fires on the exact sentinel literal.
+
+4. **{} vs NULL on the context column.** The schema defines
+   `context JSONB DEFAULT '{}'::jsonb`, so omitting the column on
+   INSERT silently writes the empty object. That defeats the
+   COALESCE enrichment because `{}` is non-null. D106 makes the
+   two states semantically distinct: `session_start` with an empty
+   collectContext result still writes `{}` (authoritative "I tried,
+   nothing to report"); `ReviveOrCreateSession` writes explicit
+   NULL ("nobody has tried yet, please enrich me"). The enrichment
+   branch `COALESCE(sessions.context, EXCLUDED.context)` then
+   distinguishes them correctly.
+
+**Rejected alternatives.**
+
+- **Reject at ingestion (409 for unknown session_id).** Rejected:
+  the plugin client cannot distinguish a transient "session_start
+  in flight on a different hook invocation" from a permanent
+  "session does not exist", and retries would arrive after the
+  server has already received session_start from some other path.
+  Observer-style ingestion is meant to accept events and decide
+  what to do with them, not gate them at the door.
+
+- **Wait for session_start at the worker (buffer events for
+  unknown session_ids).** Rejected: requires an in-memory or
+  per-session timer, which is exactly the stateful surface D106
+  avoids. It also silently reorders events (session_start->real
+  event versus real event->session_start), which complicates
+  downstream guarantees. Lazy-create preserves arrival order:
+  every event lands in `events` exactly when it arrived.
+
+- **Extract a single shared "ensure session exists and is active"
+  primitive unifying D094, D105, and D106.** Rejected, same
+  rationale as D105's rejection of that collapse. There are now
+  four revival/create sites: ingestion `session.Store.Attach`
+  (writes session_attachments row), worker `UpsertSession` ON
+  CONFLICT (refreshes identity columns from session_start),
+  `ReviveIfRevivable` (D105 state flip only), and
+  `ReviveOrCreateSession` (D106 lazy INSERT). Each has a
+  meaningfully different scope; a unified primitive would need a
+  four-axis config surface that obscures intent. The mirror
+  pattern is verbose but each site is readable in isolation. The
+  cross-reference comment on `ReviveIfRevivable` now enumerates
+  all four sites -- any change to the revival contract (columns
+  touched, state predicate) must be applied to all four.
+
+- **Lazy-create on `session_end` too.** Rejected. `session_end` is
+  a teardown signal. Manifesting a closed row from a session we
+  never saw tells operators nothing they can act on. It would also
+  contradict D106's framing ("record activity from that event
+  onwards") -- there is no activity to record past a teardown.
+  `session_end` for an unknown session_id remains a silent drop
+  at InsertEvent, matching pre-D106 behaviour for that event type.
+
+**Known related defect (out-of-scope).** The plugin's
+`unreachable-<sessionId>.flag` file (in
+`plugin/hooks/scripts/observe_cli.mjs`) short-circuits all
+subsequent POSTs for a session once the first hook fails. No code
+path clears the flag within the session's lifetime. For the "server
+down at startup, recovers mid-session" scenario, D106 fixes the
+server side correctly, but the plugin stops sending after the first
+failure and never resumes -- so no reconnect events reach the
+server to exercise the D106 path. Tracked as KI18; fix planned as
+a separate plugin-only commit that removes the flag persistence
+and lets each hook try fresh.
+
+**Schema change footprint.** Zero. The `context JSONB DEFAULT
+'{}'::jsonb` column stays as-is; D106 writes `NULL` explicitly
+on the lazy-create path to override the DEFAULT. All behaviour
+is encoded in the writer and processor layers.
+
+**Code locations.**
+
+- `workers/internal/writer/postgres.go` -- `ReviveOrCreateSession`
+  helper; `UpsertSession` ON CONFLICT extended with COALESCE on
+  context / token columns and CASE guard on flavor / agent_type;
+  cross-reference comment on `ReviveIfRevivable` updated from
+  three sites to four.
+- `workers/internal/processor/session.go` -- `handleTerminalGuard`
+  renamed to `handleSessionGuard`; new `errors.Is(err, pgx.ErrNoRows)`
+  branch calls `ReviveOrCreateSession`; `HandleHeartbeat` and
+  `HandlePostCall` callers updated; `HandleSessionEnd` unchanged
+  (keeps `isClosed`).
+- `tests/integration/test_session_states.py` -- six new tests
+  cover the lazy-create path on post_call / tool_call, the
+  "unknown" sentinel upgrade, D094 write-once preservation on
+  real values, order independence (PC -> SS -> TC vs SS -> PC
+  -> TC), and the session_end non-lazy-create guard.
+
+---

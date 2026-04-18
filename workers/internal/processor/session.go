@@ -4,12 +4,14 @@ package processor
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
 
 	"github.com/flightdeckhq/flightdeck/workers/internal/consumer"
 	"github.com/flightdeckhq/flightdeck/workers/internal/writer"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -26,47 +28,82 @@ func NewSessionProcessor(w *writer.Writer, pool *pgxpool.Pool) *SessionProcessor
 	return &SessionProcessor{w: w, pool: pool}
 }
 
-// handleTerminalGuard enforces the D105 revive-or-skip policy before a
-// non-session_start handler applies its side effects.
+// handleSessionGuard enforces the revive-or-create-or-skip policy
+// before a non-session_start handler applies its side effects.
 //
-//   - closed   -> warn + skip (caller returns nil). The user explicitly
+//   - closed -> warn + skip (caller returns nil). The user explicitly
 //     ended the session; reviving would contradict an explicit exit.
-//   - stale/lost -> warn + revive to active + advance last_seen_at, then
-//     the caller proceeds with normal processing. This is the D105
-//     extension of D094's session_start attach-on-terminal semantics to
-//     every event type.
-//   - active / idle / unknown / non-existent -> no-op, caller proceeds.
+//   - stale/lost -> warn + revive to active + advance last_seen_at
+//     (D105). Caller proceeds with normal processing.
+//   - not-found (pgx.ErrNoRows) -> D106 lazy-create a new row from
+//     the event's best-effort identity fields, then caller proceeds.
+//     Without this the caller's UPDATE queries no-op silently and
+//     the subsequent InsertEvent FK-violates, so the event is
+//     dropped even though the session is legitimately active.
+//   - active / idle / unknown-DB-error -> no-op, caller proceeds.
 //
 // Returns true if the caller should skip further processing (closed
-// sessions only). On a DB error reading state, fails open (returns
-// false) rather than blocking the event.
+// sessions only). All other states / failure modes fall open so the
+// event's downstream UPDATE + InsertEvent have a chance to succeed.
 //
-// HandleSessionEnd uses isClosed instead -- closing a stale/lost session
-// should transition it directly to closed via CloseSession, not flicker
-// through active.
-func (sp *SessionProcessor) handleTerminalGuard(ctx context.Context, sessionID, eventType string) (skip bool) {
+// HandleSessionEnd uses isClosed instead -- closing a stale/lost
+// session should transition directly via CloseSession, and D106 does
+// not lazy-create on session_end (a teardown signal for a session we
+// never saw should not retroactively manifest a closed row).
+func (sp *SessionProcessor) handleSessionGuard(ctx context.Context, e consumer.EventPayload) (skip bool) {
 	var state string
 	err := sp.pool.QueryRow(ctx,
-		"SELECT state FROM sessions WHERE session_id = $1::uuid", sessionID,
+		"SELECT state FROM sessions WHERE session_id = $1::uuid", e.SessionID,
 	).Scan(&state)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// D106: session never seen. Lazy-create from event fields.
+		occurredAt, tsErr := time.Parse(time.RFC3339, e.Timestamp)
+		if tsErr != nil {
+			occurredAt = time.Now().UTC()
+		}
+		created, cErr := sp.w.ReviveOrCreateSession(
+			ctx, e.SessionID, e.Flavor, e.AgentType,
+			e.Host, e.Framework, e.Model, occurredAt,
+		)
+		if cErr != nil {
+			// Lazy-create failed. Log and fail open -- InsertEvent
+			// will then FK-violate and the consumer will Nak+retry,
+			// which is the pre-D106 behaviour for this failure mode.
+			slog.Error("lazy-create session failed (D106)",
+				"session_id", e.SessionID,
+				"event_type", e.EventType,
+				"err", cErr,
+			)
+			return false
+		}
+		if created {
+			slog.Info("lazy-created session on event (D106)",
+				"session_id", e.SessionID,
+				"event_type", e.EventType,
+				"flavor", e.Flavor,
+			)
+		}
+		return false
+	}
 	if err != nil {
-		// Session doesn't exist (new) or DB error -- fail open.
+		// Non-ErrNoRows DB error -- fail open. Matches the prior
+		// handleTerminalGuard posture.
 		return false
 	}
 	switch state {
 	case "closed":
 		slog.Warn("skipping event for closed session",
-			"session_id", sessionID,
-			"event_type", eventType,
+			"session_id", e.SessionID,
+			"event_type", e.EventType,
 		)
 		return true
 	case "stale", "lost":
 		slog.Warn("reviving stale/lost session on event (D105)",
-			"session_id", sessionID,
-			"event_type", eventType,
+			"session_id", e.SessionID,
+			"event_type", e.EventType,
 			"prior_state", state,
 		)
-		if _, rerr := sp.w.ReviveIfRevivable(ctx, sessionID); rerr != nil {
+		if _, rerr := sp.w.ReviveIfRevivable(ctx, e.SessionID); rerr != nil {
 			// Revival failure is non-fatal: log and let the event's
 			// normal side effects run. UpdateLastSeen / UpdateTokensUsed
 			// still execute the same UPDATE against state-agnostic
@@ -75,8 +112,8 @@ func (sp *SessionProcessor) handleTerminalGuard(ctx context.Context, sessionID, 
 			// re-observes state=stale|lost with a fresh last_seen_at
 			// on its next tick and leaves it alone.
 			slog.Error("revive session failed",
-				"session_id", sessionID,
-				"event_type", eventType,
+				"session_id", e.SessionID,
+				"event_type", e.EventType,
 				"err", rerr,
 			)
 		}
@@ -113,11 +150,15 @@ func (sp *SessionProcessor) isClosed(ctx context.Context, sessionID string) bool
 // the sensor.
 //
 // D105 generalised the terminal policy: heartbeat, post_call, tool_call,
-// pre_call, and directive_result now run through handleTerminalGuard,
-// which revives stale/lost sessions on the fly and skips only closed
-// ones. session_end uses isClosed (a closed session's session_end is a
+// pre_call, and directive_result now run through handleSessionGuard,
+// which revives stale/lost sessions on the fly, skips only closed ones,
+// and (since D106) lazily creates the row when it doesn't exist.
+// session_end uses isClosed (a closed session's session_end is a
 // no-op; a stale or lost session_end goes straight to closed via
-// CloseSession rather than flickering through active).
+// CloseSession rather than flickering through active). D106's
+// lazy-create path deliberately excludes session_end -- a teardown
+// signal for a session we never saw should not retroactively manifest
+// a closed row.
 //
 // The runtime context dict from e.Context is marshaled to JSON and
 // passed to UpsertSession, which writes it once into sessions.context
@@ -153,7 +194,7 @@ func (sp *SessionProcessor) HandleSessionStart(ctx context.Context, e consumer.E
 
 // HandleHeartbeat updates last_seen_at on the session.
 func (sp *SessionProcessor) HandleHeartbeat(ctx context.Context, e consumer.EventPayload) error {
-	if sp.handleTerminalGuard(ctx, e.SessionID, "heartbeat") {
+	if sp.handleSessionGuard(ctx, e) {
 		return nil
 	}
 	return sp.w.UpdateLastSeen(ctx, e.SessionID)
@@ -167,7 +208,7 @@ func (sp *SessionProcessor) HandleHeartbeat(ctx context.Context, e consumer.Even
 // are logged but do not abort processing -- the token update is
 // load-bearing.
 func (sp *SessionProcessor) HandlePostCall(ctx context.Context, e consumer.EventPayload) error {
-	if sp.handleTerminalGuard(ctx, e.SessionID, e.EventType) {
+	if sp.handleSessionGuard(ctx, e) {
 		return nil
 	}
 	if e.Model != "" {

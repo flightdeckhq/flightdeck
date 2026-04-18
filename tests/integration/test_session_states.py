@@ -275,3 +275,280 @@ def test_reconciler_lost_threshold_is_30_min() -> None:
     # transitions fire in the same ReconcileStaleSessions call).
     detail = wait_for_state(sid, "lost", timeout=90)
     assert detail["session"]["state"] == "lost"
+
+
+# ---------------------------------------------------------------------------
+# D106: lazy session creation on events with unknown session_id.
+#
+# The plugin's fire-and-forget hook model means a non-session_start event
+# can reach Flightdeck before session_start ever does -- server down at
+# plugin startup, plugin enabled mid-session, future out-of-order
+# delivery paths. Pre-D106 these events FK-violated at worker.InsertEvent
+# and bounced in the NATS queue. D106 has non-session_start handlers
+# lazy-create the session row so the event lands, with "unknown"
+# sentinels on flavor/agent_type and NULL context/token columns that a
+# later authoritative session_start enriches via UpsertSession's
+# COALESCE + CASE branches.
+# ---------------------------------------------------------------------------
+
+
+def _read_session_identity(session_id: str) -> dict[str, str]:
+    """Read flavor / agent_type / context / token columns from the DB.
+
+    Returns "" for NULL columns so callers can assert on sentinel
+    values without juggling None. context is returned as the raw
+    JSONB text ("{}" or "null" -- psql -A renders JSONB verbatim).
+    """
+    raw = _exec_sql(
+        "SELECT flavor, agent_type, "
+        "COALESCE(context::text, 'NULL'), "
+        "COALESCE(token_id::text, ''), "
+        "COALESCE(token_name, '') "
+        "FROM sessions "
+        f"WHERE session_id = '{session_id}'::uuid"
+    )
+    parts = raw.split("|")
+    if len(parts) != 5:
+        raise AssertionError(f"unexpected session identity row: {raw!r}")
+    return {
+        "flavor": parts[0],
+        "agent_type": parts[1],
+        "context": parts[2],
+        "token_id": parts[3],
+        "token_name": parts[4],
+    }
+
+
+def _first_event_payload(
+    session_id: str, flavor: str, event_type: str, **extra: object,
+) -> dict[str, object]:
+    """Build an event payload for a session_id that Flightdeck has
+    never seen. Differs from make_event() only in that no session_start
+    has preceded it -- the payload itself is identical so the server
+    cannot distinguish "legitimate first event" from "session_start
+    got lost"; D106 handles both identically.
+    """
+    return make_event(session_id, flavor, event_type, **extra)
+
+
+def test_unknown_session_id_lazy_creates_on_post_call() -> None:
+    """A post_call for a session_id Flightdeck has never seen creates
+    the session row with state=active, started_at=event.occurred_at,
+    best-effort flavor/host, and the tokens are counted correctly.
+
+    Pre-D106 this event FK-violated at worker.InsertEvent and was
+    dropped. After D106, the row manifests and the event lands.
+    """
+    sid = str(uuid.uuid4())
+    flavor = f"test-d106-postcall-{uuid.uuid4().hex[:6]}"
+
+    # Skip the session_start. Go directly to a post_call.
+    post_event(_first_event_payload(sid, flavor, "post_call", tokens_total=250))
+    wait_for_session_in_fleet(sid, timeout=10.0)
+
+    row = _read_session_row(sid)
+    assert row["state"] == "active", (
+        f"lazy-created session {sid} should be state=active, got {row['state']}"
+    )
+    assert row["tokens_used"] == "250", (
+        f"expected tokens_used=250 on lazy-created session, got {row['tokens_used']}"
+    )
+
+    identity = _read_session_identity(sid)
+    # Plugin-style best-effort identity: the event's flavor is carried
+    # through even though no session_start ever arrived. agent_type is
+    # the sentinel "unknown" (make_event defaults to "autonomous" --
+    # D106 uses "unknown" only when the event literally omits it).
+    assert identity["flavor"] == flavor, (
+        f"expected flavor from event payload, got {identity['flavor']!r}"
+    )
+    # context is NULL -- the enrichable sentinel. An empty JSONB dict
+    # would look identical to a session_start that collected nothing,
+    # so D106 distinguishes them with true NULL.
+    assert identity["context"] == "NULL", (
+        f"expected context=NULL on lazy-created session, got {identity['context']!r}"
+    )
+
+
+def test_unknown_session_id_lazy_creates_on_tool_call() -> None:
+    """tool_call on an unknown session_id follows the same path as
+    post_call. Matches the Claude Code plugin case where the first
+    post-outage hook the plugin fires is PostToolUse.
+    """
+    sid = str(uuid.uuid4())
+    flavor = f"test-d106-toolcall-{uuid.uuid4().hex[:6]}"
+
+    post_event(
+        _first_event_payload(sid, flavor, "tool_call", tool_name="Bash")
+    )
+    wait_for_session_in_fleet(sid, timeout=10.0)
+
+    row = _read_session_row(sid)
+    assert row["state"] == "active"
+    identity = _read_session_identity(sid)
+    assert identity["flavor"] == flavor
+    assert identity["context"] == "NULL"
+
+
+def test_unknown_flavor_uses_sentinel_on_lazy_create() -> None:
+    """When the event literally omits flavor, D106 writes the 'unknown'
+    sentinel so a later session_start can upgrade it.
+    """
+    sid = str(uuid.uuid4())
+
+    payload = _first_event_payload(sid, "", "post_call", tokens_total=100)
+    payload["flavor"] = ""  # explicit: no flavor on the wire
+    payload["agent_type"] = ""
+    post_event(payload)
+    wait_for_session_in_fleet(sid, timeout=10.0)
+
+    identity = _read_session_identity(sid)
+    assert identity["flavor"] == "unknown", (
+        f"expected flavor='unknown' sentinel, got {identity['flavor']!r}"
+    )
+    assert identity["agent_type"] == "unknown", (
+        f"expected agent_type='unknown' sentinel, got {identity['agent_type']!r}"
+    )
+
+    # Now send the authoritative session_start. UpsertSession's CASE
+    # branch must upgrade both sentinels and fill in context.
+    real_flavor = f"test-d106-upgrade-{uuid.uuid4().hex[:6]}"
+    post_event(make_event(sid, real_flavor, "session_start"))
+    # Wait until the row picks up the real flavor.
+    wait_until(
+        lambda: _read_session_identity(sid)["flavor"] == real_flavor,
+        timeout=10,
+        msg=f"session_start did not upgrade unknown flavor for {sid}",
+    )
+    enriched = _read_session_identity(sid)
+    assert enriched["flavor"] == real_flavor, (
+        f"expected sentinel upgrade to {real_flavor}, got {enriched['flavor']!r}"
+    )
+    assert enriched["agent_type"] == "autonomous", (
+        "expected agent_type upgraded from 'unknown' to 'autonomous' by "
+        f"session_start, got {enriched['agent_type']!r}"
+    )
+    # Context is NULL on lazy-create; session_start carries
+    # DEFAULT_TEST_CONTEXT and COALESCE should fill it in.
+    assert enriched["context"] != "NULL", (
+        "expected session_start to enrich NULL context via COALESCE"
+    )
+    assert "integration-test-host" in enriched["context"], (
+        "expected DEFAULT_TEST_CONTEXT hostname to appear in enriched context"
+    )
+
+
+def test_real_flavor_not_overwritten_on_session_start_reattach() -> None:
+    """D094 write-once: a row whose flavor is a real value (not the
+    'unknown' sentinel) is preserved when session_start re-arrives
+    with a different flavor. The CASE guard is specifically scoped to
+    'unknown' so lazy-created sentinels can upgrade without opening
+    a door for legitimate reattaches to overwrite identity.
+    """
+    sid = str(uuid.uuid4())
+    real_flavor = f"test-d106-writeonce-{uuid.uuid4().hex[:6]}"
+
+    # First event carries a real flavor (plugin-style: every hook has
+    # "claude-code", not the "unknown" sentinel).
+    post_event(_first_event_payload(sid, real_flavor, "post_call", tokens_total=50))
+    wait_for_session_in_fleet(sid, timeout=10.0)
+    first = _read_session_identity(sid)
+    assert first["flavor"] == real_flavor
+
+    # A malformed or confused session_start arrives with a DIFFERENT
+    # flavor. The CASE guard must refuse to overwrite.
+    different_flavor = f"test-d106-should-ignore-{uuid.uuid4().hex[:6]}"
+    post_event(make_event(sid, different_flavor, "session_start"))
+    # Give the worker a beat to process.
+    wait_until(
+        lambda: _read_session_identity(sid)["context"] != "NULL",
+        timeout=10,
+        msg=f"session_start did not process for {sid}",
+    )
+    after = _read_session_identity(sid)
+    assert after["flavor"] == real_flavor, (
+        f"expected write-once preservation of {real_flavor!r}, got {after['flavor']!r}"
+    )
+
+
+def test_order_independence_pc_then_ss_matches_ss_then_pc() -> None:
+    """Order independence: post_call -> session_start -> tool_call
+    produces the same final session row as session_start -> post_call
+    -> tool_call. Token totals, flavor, and context must match.
+    """
+    # Out-of-order pipeline.
+    sid_a = str(uuid.uuid4())
+    flavor_a = f"test-d106-order-a-{uuid.uuid4().hex[:6]}"
+    post_event(_first_event_payload(sid_a, flavor_a, "post_call", tokens_total=200))
+    wait_for_session_in_fleet(sid_a, timeout=10.0)
+    post_event(make_event(sid_a, flavor_a, "session_start"))
+    post_event(make_event(sid_a, flavor_a, "tool_call", tool_name="Bash"))
+    wait_until(
+        lambda: _read_session_identity(sid_a)["context"] != "NULL",
+        timeout=10,
+        msg="session_start did not enrich context on sid_a",
+    )
+
+    # In-order baseline.
+    sid_b = str(uuid.uuid4())
+    flavor_b = f"test-d106-order-b-{uuid.uuid4().hex[:6]}"
+    post_event(make_event(sid_b, flavor_b, "session_start"))
+    wait_for_session_in_fleet(sid_b, timeout=10.0)
+    post_event(make_event(sid_b, flavor_b, "post_call", tokens_total=200))
+    post_event(make_event(sid_b, flavor_b, "tool_call", tool_name="Bash"))
+
+    wait_until(
+        lambda: _read_session_row(sid_a)["tokens_used"] == "200",
+        timeout=10,
+        msg="tokens not counted on sid_a after enrichment",
+    )
+    wait_until(
+        lambda: _read_session_row(sid_b)["tokens_used"] == "200",
+        timeout=10,
+        msg="tokens not counted on sid_b",
+    )
+
+    row_a = _read_session_row(sid_a)
+    row_b = _read_session_row(sid_b)
+    assert row_a["state"] == row_b["state"] == "active"
+    assert row_a["tokens_used"] == row_b["tokens_used"] == "200", (
+        f"order independence failure: sid_a tokens={row_a['tokens_used']}, "
+        f"sid_b tokens={row_b['tokens_used']}"
+    )
+
+    id_a = _read_session_identity(sid_a)
+    id_b = _read_session_identity(sid_b)
+    # Flavors differ by design (a vs b random suffix), but the shape
+    # of the identity (both real, both with context, both with
+    # matching agent_type) must match.
+    assert id_a["agent_type"] == id_b["agent_type"] == "autonomous"
+    assert id_a["context"] != "NULL" and id_b["context"] != "NULL", (
+        "both sessions must carry enriched context after session_start"
+    )
+
+
+def test_session_end_on_unknown_session_id_does_not_lazy_create() -> None:
+    """D106 deliberately excludes session_end from lazy-create. A
+    teardown signal for a session we never saw should not
+    retroactively manifest a closed row. This mirrors D105's
+    rationale for excluding session_end from the revive path.
+    """
+    sid = str(uuid.uuid4())
+    flavor = f"test-d106-end-{uuid.uuid4().hex[:6]}"
+
+    # session_end on an unknown session_id. Pre-D106 and post-D106
+    # both drop this at InsertEvent (FK) -- the only difference is
+    # that post-D106 doesn't create a zombie closed row.
+    post_event(make_event(sid, flavor, "session_end"))
+
+    # The session row must not exist. Direct DB lookup rather than
+    # wait_for -- there's nothing to wait for.
+    import time as _time
+    _time.sleep(1.0)  # brief pause for worker to (not) process
+    raw = _exec_sql(
+        f"SELECT COUNT(*) FROM sessions WHERE session_id = '{sid}'::uuid"
+    )
+    assert raw == "0", (
+        f"session_end on unknown session_id should not lazy-create a row; "
+        f"found {raw} row(s) for {sid}"
+    )

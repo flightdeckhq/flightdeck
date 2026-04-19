@@ -3633,3 +3633,22 @@ posture as D103.
   Stop All rendering.
 
 ---
+
+## D110 -- FLIGHTDECK_SERVER URL expects `/ingest` suffix
+
+**Decision (v0.3.0, to revisit in v0.4.0):** `flightdeck_sensor.init()`
+reads `FLIGHTDECK_SERVER` verbatim; the sensor expects the full ingest
+URL (e.g. `http://localhost:4000/ingest`) because it posts directly to
+`{server}/v1/events`. The Claude Code plugin, by contrast, sets
+`FLIGHTDECK_SERVER=http://localhost:4000` (no `/ingest`) because it
+constructs the full path itself. A developer with both tools on one
+machine hits a silent 404 when the playground or any sensor-based
+script picks up the plugin-shaped env var.
+
+**v0.4.0 follow-up (KI20):** normalise inside `init()` -- append
+`/ingest` when missing, or raise a clear `ConfigurationError` asking
+the developer to pick one convention. The `playground/_helpers.py`
+normalisation is a workaround; removing it is the cleanup signal that
+the sensor side is fixed.
+
+---

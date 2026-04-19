@@ -42,3 +42,7 @@ make test-smoke
 - A running Flightdeck stack. Default: `make dev` on `localhost:4000`. Override via `FLIGHTDECK_SERVER` / `FLIGHTDECK_TOKEN` / `FLIGHTDECK_API_URL`.
 - `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` in the environment.
 - Framework packages for the examples you want to run. Each file prints a `SKIP: pip install <package>` line and exits cleanly when its dependency is missing, so you can run the suite with only the frameworks you care about installed.
+
+## Known limitations
+
+- **CrewAI Anthropic path (KI19).** `06_crewai.py` runs on OpenAI because CrewAI's Anthropic backend routes through litellm, which builds its own HTTP layer rather than using the `anthropic` SDK classes that `flightdeck_sensor.patch()` hooks. Drive Anthropic through LangChain (`03_langchain.py`) or LlamaIndex (`05_llamaindex.py`) if you need Anthropic telemetry with CrewAI-style orchestration. See [KNOWN_ISSUES.md](../KNOWN_ISSUES.md#deferred-to-v040) KI19.

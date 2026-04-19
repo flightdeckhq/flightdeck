@@ -262,6 +262,32 @@ export function collectContext(extras = {}) {
   return ctx;
 }
 
+/**
+ * Wrap ``collectContext`` so a throw or an empty result returns ``null``
+ * instead of propagating. Callers use ``null`` to signal "omit the
+ * context field from the outbound payload" rather than sending
+ * ``context: {}``.
+ *
+ * A non-session_start event that arrives without context would leave the
+ * worker's COALESCE upgrade as a no-op, so there is no correctness cost
+ * to omitting; the benefit is that the worker-side logs don't report a
+ * pointless upgrade attempt and the DB doesn't see an extra UPDATE. The
+ * "or throws" branch is defensive -- ``collectContext`` already wraps
+ * each syscall in try/catch, so in practice the check on
+ * ``Object.keys(ctx).length === 0`` guards the "everything I tried to
+ * read failed" edge case.
+ */
+export function safeCollectContext(extras = {}) {
+  try {
+    const ctx = collectContext(extras);
+    if (!ctx || typeof ctx !== "object") return null;
+    if (Object.keys(ctx).length === 0) return null;
+    return ctx;
+  } catch {
+    return null;
+  }
+}
+
 // ---------------------------------------------------------------------
 // Tool input sanitisation -- safe whitelist only.
 // ---------------------------------------------------------------------
@@ -595,8 +621,11 @@ async function ensureSessionStarted(server, token, sessionId, basePayload, extra
     is_subagent_call: false,
     latency_ms: null,
     timestamp: new Date().toISOString(),
-    context: collectContext({ claudeCodeVersion: extras.claudeCodeVersion }),
   };
+  const startContext = safeCollectContext({
+    claudeCodeVersion: extras.claudeCodeVersion,
+  });
+  if (startContext) startPayload.context = startContext;
   if (extras.model) startPayload.model = extras.model;
 
   await postEvent(server, token, sessionId, startPayload);
@@ -735,6 +764,19 @@ async function main() {
   const transcriptPath = hookEvent.transcript_path;
 
   // Base identity fields used by every event for this session.
+  //
+  // ``context`` is attached here so *every* event type (pre_call,
+  // post_call, tool_call, session_end) carries it -- not only
+  // session_start. The worker's D106 lazy-create path and the
+  // UpgradeSessionContext upgrade depend on seeing context on the first
+  // event that actually reaches the server. Without this, a session
+  // whose session_start POST failed (stack down at start, dead-TLS
+  // window, ...) would land with "unknown" flavor and NULL context
+  // forever because the session_start dedup marker on disk prevents
+  // a retry. ``safeCollectContext`` returns null on throw or empty
+  // result, in which case the field is omitted -- the worker's
+  // COALESCE upgrade treats "missing" and "empty dict" identically.
+  const baseContext = safeCollectContext();
   const basePayload = {
     session_id: sessionId,
     flavor: "claude-code",
@@ -751,6 +793,7 @@ async function main() {
     token_limit_session: null,
     has_content: false,
     content: null,
+    ...(baseContext ? { context: baseContext } : {}),
   };
 
   // Read transcript lazily -- some hooks don't need it and the file

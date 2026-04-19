@@ -83,11 +83,15 @@ func (sp *SessionProcessor) handleSessionGuard(ctx context.Context, e consumer.E
 				"flavor", e.Flavor,
 			)
 		}
+		sp.upgradeContextIfPresent(ctx, e)
 		return false
 	}
 	if err != nil {
 		// Non-ErrNoRows DB error -- fail open. Matches the prior
-		// handleTerminalGuard posture.
+		// handleTerminalGuard posture. Skip the context upgrade: we
+		// have no confirmation the row exists, so the UPDATE would
+		// no-op silently, and a transient DB blip should not trigger
+		// extra write pressure.
 		return false
 	}
 	switch state {
@@ -117,9 +121,49 @@ func (sp *SessionProcessor) handleSessionGuard(ctx context.Context, e consumer.E
 				"err", rerr,
 			)
 		}
+		sp.upgradeContextIfPresent(ctx, e)
 		return false
 	default:
+		sp.upgradeContextIfPresent(ctx, e)
 		return false
+	}
+}
+
+// upgradeContextIfPresent fills in sessions.context when the incoming
+// event carries one. Called from every non-closed branch of
+// handleSessionGuard so lazy-created rows (D106) and already-active
+// rows whose session_start never landed both pick up context from the
+// first event that actually reaches the worker.
+//
+// Scoped to the context column only. Flavor, agent_type, token_id,
+// and token_name remain session_start-only writes to preserve D094
+// attribution semantics: a non-session_start event has no authoritative
+// source for those columns.
+//
+// The UPDATE uses COALESCE(NULLIF(context, '{}'::jsonb), EXCLUDED) so
+// real stored context is not overwritten -- safe to call repeatedly,
+// safe on the session revival path where the context genuinely changed
+// since the previous run (default: keep-old / write-once; revisit if
+// users report stale working_dir after cross-run directory changes).
+func (sp *SessionProcessor) upgradeContextIfPresent(ctx context.Context, e consumer.EventPayload) {
+	if len(e.Context) == 0 {
+		return
+	}
+	cbytes, merr := json.Marshal(e.Context)
+	if merr != nil {
+		slog.Warn("marshal event context for upgrade",
+			"session_id", e.SessionID,
+			"event_type", e.EventType,
+			"err", merr,
+		)
+		return
+	}
+	if uerr := sp.w.UpgradeSessionContext(ctx, e.SessionID, cbytes); uerr != nil {
+		slog.Warn("upgrade session context failed",
+			"session_id", e.SessionID,
+			"event_type", e.EventType,
+			"err", uerr,
+		)
 	}
 }
 

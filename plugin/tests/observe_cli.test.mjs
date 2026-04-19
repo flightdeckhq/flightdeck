@@ -532,6 +532,49 @@ describe("observe_cli.mjs", () => {
     const body = capture.bodies().at(-1);
     assert.equal(body.tool_name, "Write");
   });
+
+  it("PostToolUse tool_call carries runtime context (session_start safety net)", async () => {
+    // Production repro: plugin's SessionStart POST failed because the
+    // stack was down at claude start, the on-disk dedup marker blocks a
+    // retry, and the first event to land is a PostToolUse. Pre-fix that
+    // payload carried no context so the worker's D106 lazy-create
+    // produced a row with NULL context that never got enriched -- no
+    // OS, no hostname, no RUNTIME panel. The fix: context rides on
+    // every event, not only session_start.
+    clearAllPluginMarkers();
+    const input = JSON.stringify({
+      hook_event_name: "PostToolUse",
+      tool_name: "Read",
+      session_id: "sess-ctx-1",
+    });
+    const env = {
+      FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
+      FLIGHTDECK_TOKEN: "tok_test",
+    };
+    const result = await runScript(input, env);
+    assert.equal(result.code, 0);
+    // Two bodies: the ensureSessionStarted backstop and the tool_call.
+    const toolCall = capture
+      .bodies()
+      .filter((b) => b && b.event_type === "tool_call")
+      .at(-1);
+    assert.ok(toolCall, "expected a tool_call POST");
+    assert.ok(
+      toolCall.context && typeof toolCall.context === "object",
+      `tool_call payload must carry a context object, got ${JSON.stringify(toolCall.context)}`,
+    );
+    assert.equal(
+      toolCall.context.supports_directives,
+      false,
+      "context.supports_directives must be false on observer sessions (D109)",
+    );
+    // At least one real-identity field must be present -- os comes from
+    // platform() which is deterministic across test environments.
+    assert.ok(
+      typeof toolCall.context.os === "string" && toolCall.context.os.length > 0,
+      "context.os should be populated from platform()",
+    );
+  });
 });
 
 describe("observe_cli helpers", () => {
@@ -659,6 +702,18 @@ describe("observe_cli helpers", () => {
       } finally {
         process.env = orig;
       }
+    });
+  });
+
+  describe("safeCollectContext", () => {
+    it("returns a populated context object on the happy path", async () => {
+      const { safeCollectContext } = await import(
+        "../hooks/scripts/observe_cli.mjs"
+      );
+      const ctx = safeCollectContext();
+      assert.ok(ctx, "expected a context object, got null");
+      assert.equal(typeof ctx.os, "string");
+      assert.equal(ctx.process_name, "claude-code");
     });
   });
 

@@ -128,6 +128,50 @@ func (w *Writer) UpsertSession(
 	return nil
 }
 
+// UpgradeSessionContext fills in the sessions.context column on a row
+// whose context is either NULL (D106 lazy-create) or the empty JSON
+// object ``{}``. Once the column holds real data, the COALESCE branch
+// short-circuits to the stored value and the incoming payload is
+// ignored -- write-once semantics for real context are preserved across
+// every event type.
+//
+// Motivation: a Claude Code plugin session whose session_start POST
+// fails (stack was down at claude start, transient DNS outage, ...)
+// leaves the per-session dedup marker on disk, so session_start is
+// never retried. Every subsequent event then flows through
+// handleSessionGuard's D106 lazy-create which writes flavor="unknown"
+// and context=NULL. Without this helper the RUNTIME panel stays empty
+// forever. Attaching context to every event and running this upgrade
+// lets the first event that actually reaches the server populate the
+// column.
+//
+// NULLIF(context, '{}'::jsonb) makes the upgrade compatible with the
+// two "no real context yet" sentinels in play: NULL (ReviveOrCreateSession
+// writes explicit NULL; DEFAULT '{}'::jsonb on inserts that omit the
+// column) and '{}'::jsonb (UpsertSession writes '{}' when the sensor
+// ran collectContext and got nothing back). The helper treats both
+// sentinels as "enrich me".
+//
+// Called from handleSessionGuard after the guard resolves the row to
+// any non-closed state (active, idle, stale->active, lost->active,
+// or lazy-created). Closed rows are skipped one level up -- a user
+// explicitly ended the session and we do not rewrite their context
+// retroactively.
+func (w *Writer) UpgradeSessionContext(ctx context.Context, sessionID string, contextJSON []byte) error {
+	if len(contextJSON) == 0 {
+		return nil
+	}
+	_, err := w.pool.Exec(ctx, `
+		UPDATE sessions
+		SET context = COALESCE(NULLIF(context, '{}'::jsonb), $2::jsonb)
+		WHERE session_id = $1::uuid
+	`, sessionID, contextJSON)
+	if err != nil {
+		return fmt.Errorf("upgrade session context %s: %w", sessionID, err)
+	}
+	return nil
+}
+
 // InsertEvent inserts a new event record (metadata only) and returns the generated event ID.
 //
 // The optional payload argument is a JSON-encoded blob written into the

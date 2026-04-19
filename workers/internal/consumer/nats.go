@@ -58,9 +58,15 @@ type EventPayload struct {
 	Error           string          `json:"error,omitempty"`
 	DurationMs      *int64          `json:"duration_ms,omitempty"`
 
-	// Runtime context collected by the sensor at init() time.
-	// Present only on session_start events. Stored once in
-	// sessions.context (JSONB) and never updated on conflict.
+	// Runtime context collected by the sensor at init() time and by
+	// the Claude Code plugin on every hook invocation. Populated on
+	// any event type that carries it; session_start calls
+	// UpsertSession's COALESCE-enriched ON CONFLICT branch, and every
+	// other event type calls UpgradeSessionContext to fill in the
+	// context column when a prior session_start never landed (e.g.,
+	// the plugin's session_start POST failed because the stack was
+	// down at process start -- D106 lazy-creates the row with NULL
+	// context, and a later event's context finally populates it).
 	Context map[string]interface{} `json:"context,omitempty"`
 
 	// Token attribution (D095). Injected by the ingestion API on

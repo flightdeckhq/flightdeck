@@ -24,10 +24,18 @@ fix in DECISIONS.md. Never leave a resolved TODO comment in the code.
 
 ## Open
 
-| ID   | Component  | Concern                              | Risk   | Phase | File                                        | DECISIONS |
-|------|------------|--------------------------------------|--------|-------|---------------------------------------------|-----------|
-| KI11 | Security   | No NATS auth in dev compose          | Low    | 5     | docker/docker-compose.yml:nats              | D047      |
-| KI12 | Security   | REST endpoints have no per-IP rate limit | Low | 5    | api/internal/server/server.go               | D048      |
+*(None as of Phase 5 close. New Phase-6 items land here as discovered.)*
+
+## Deferred to v0.4.0
+
+Items that are real hardening work but not v0.3.0 blockers. The Supervisor
+decided to ship v0.3.0 without them; each row carries the follow-up scope
+so the v0.4.0 plan can pick it up directly.
+
+| ID   | Component  | Deferral reason + follow-up scope                                                                                                                                                                                                                                                      | DECISIONS |
+|------|------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|-----------|
+| KI11 | Security   | `make dev` NATS is unauthenticated on purpose -- single-host developer loop, adding token/NKey auth just slows the feedback cycle. **v0.4.0 follow-up:** wire NATS auth (token or NKey) into `docker/docker-compose.prod.yml` and the Helm chart; dev compose stays as-is.            | D047      |
+| KI12 | Security   | Per-IP rate limiting on the query API belongs at the nginx ingress, not in Go middleware -- nginx is the only prod entry point and `limit_req` is battle-tested. **v0.4.0 follow-up:** add `limit_req_zone` + `limit_req` on `/ingest/` (and optionally `/api/`) in `nginx.prod.conf`. | D048      |
 
 ## Resolved
 

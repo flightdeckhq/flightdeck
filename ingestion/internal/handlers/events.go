@@ -15,14 +15,12 @@ import (
 
 const maxRequestBodyBytes = 1 << 20 // 1MB
 
-// TODO(KI13)[Phase 5]: Ingestion accepts events for closed and lost
-// sessions. The handler does not check the session's terminal state
-// before publishing to NATS, so a sensor (or a buggy test) can keep
-// posting events to a session that has already received session_end.
-// The dashboard then renders circles past the END marker.
-// Fix: query the worker-side session state cache before publishing,
-// and reject events with HTTP 409 when the session is closed/lost.
-// See KNOWN_ISSUES.md KI13.
+// Session-state admission (closed vs lost vs stale) is enforced on the
+// worker side by processor.handleSessionGuard (D105 revive-on-event,
+// D106 lazy-create). The ingestion handler intentionally stays
+// state-unaware: admitting every event lets a live sensor recover
+// from a stale server-side view without the ingestion and worker
+// having to share a session-state cache. KI13 resolved.
 
 // TokenValidator resolves bearer tokens to an access_tokens row. The
 // resolved (id, name) are injected into the NATS payload for

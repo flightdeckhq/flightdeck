@@ -22,7 +22,15 @@ type Config struct {
 
 // Load reads configuration from environment variables.
 // Panics on missing required values -- fail fast on misconfiguration.
-// JWTSecret, AdminEmail, and AdminPassword are required only in production.
+//
+// JWTSecret, AdminEmail, and AdminPassword are scaffolding for a
+// dashboard-side login flow that is not implemented in v0.3.0. No
+// handler, middleware, or dashboard component reads them. They are
+// kept as optional fields so the plumbing (env wiring, Helm chart
+// Secret, future login handler) survives the v0.3.0 cut; no panic
+// gate because panicking for a feature that does not exist would
+// only misdirect operators. See README "Self-hosting" and DECISIONS
+// for the v0.3.0 auth posture (bearer ftd_ tokens only).
 func Load() Config {
 	env := envOrDefault("FLIGHTDECK_ENV", "development")
 	cfg := Config{
@@ -34,17 +42,6 @@ func Load() Config {
 		AdminPassword:       os.Getenv("FLIGHTDECK_ADMIN_PASSWORD"),
 		ShutdownTimeoutSecs: envIntOrDefault("SHUTDOWN_TIMEOUT_SECS", 30),
 		CORSOrigin:          envOrDefault("FLIGHTDECK_CORS_ORIGIN", "*"),
-	}
-	if env == "production" {
-		if cfg.JWTSecret == "" {
-			panic("FLIGHTDECK_JWT_SECRET is required in production")
-		}
-		if cfg.AdminEmail == "" {
-			panic("FLIGHTDECK_ADMIN_EMAIL is required in production")
-		}
-		if cfg.AdminPassword == "" {
-			panic("FLIGHTDECK_ADMIN_PASSWORD is required in production")
-		}
 	}
 	return cfg
 }

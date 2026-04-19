@@ -297,7 +297,7 @@ Flightdeck is self-hosted. Two deployment targets are supported: Docker Compose 
 
 ### 1. Get a TLS certificate
 
-Certbot's standalone mode is the shortest path. It binds port 80 for the ACME HTTP-01 challenge, so nothing else can be listening on 80 during issuance:
+Certbot's standalone mode is the shortest path. It binds port 80 for the ACME HTTP-01 challenge, so nothing else can be listening on 80 at the time -- run it before starting the stack, or stop nginx briefly first (`docker compose ... down nginx` on a running stack):
 
 ```bash
 sudo certbot certonly --standalone \
@@ -306,7 +306,7 @@ sudo certbot certonly --standalone \
   -m ops@example.com --no-eff-email
 ```
 
-Certbot writes the cert to `/etc/letsencrypt/live/flightdeck.example.com/`. If port 80 is already in use (nginx already serving another site, say), use `--webroot -w /var/www/certbot` instead. The prod nginx config serves `/.well-known/acme-challenge/` from that path for in-place renewals.
+Certbot writes the cert to `/etc/letsencrypt/live/flightdeck.example.com/`. If you need to issue or renew without stopping nginx, use `--webroot -w /var/www/certbot` instead. The prod nginx config serves `/.well-known/acme-challenge/` from that path for in-place renewals.
 
 For renewal, certbot ships its own systemd timer (`systemctl list-timers | grep certbot`) and a cron recipe. Renewals happen in place; reload nginx to pick up the new cert:
 
@@ -357,9 +357,9 @@ docker compose \
 
 Every service except nginx listens on the internal compose network only. `workers` has no HTTP surface and shows no open ports; that is correct.
 
-### 4. Mint your first access token
+### 4. Reach the dashboard and mint your first access token
 
-Open `https://flightdeck.example.com/` in a browser. The dashboard prompts for credentials on first boot; use the admin email + password you configured (env vars `FLIGHTDECK_ADMIN_EMAIL` and `FLIGHTDECK_ADMIN_PASSWORD` on the `api` service -- override both in a `.env` file or inline on the `docker compose up` command).
+Open `https://flightdeck.example.com/` in a browser. The dashboard is reachable without authentication in v0.3.0 -- restrict network access at the ingress or firewall layer until dashboard auth ships (planned post-v0.3.0). Any user with network access to the dashboard can mint and revoke access tokens.
 
 Go to **Settings → Access tokens → Create**. Give the token a name that identifies its caller (e.g. `research-fleet-us-east`). Plaintext is shown once at creation time and is not recoverable afterwards -- copy it into your secret store before closing the modal.
 
@@ -380,10 +380,7 @@ A chart lives at `helm/`. One-command install against an existing cluster with a
 helm install flightdeck helm/ \
   --namespace flightdeck --create-namespace \
   --values helm/values.prod.yaml \
-  --set postgres.externalUrl="postgres://user:pass@rds.example.com:5432/flightdeck?sslmode=require" \
-  --set api.auth.jwtSecret="$(openssl rand -hex 32)" \
-  --set api.auth.adminEmail="ops@example.com" \
-  --set api.auth.adminPassword="$(openssl rand -hex 16)"
+  --set postgres.externalUrl="postgres://user:pass@rds.example.com:5432/flightdeck?sslmode=require"
 ```
 
 Without `postgres.externalUrl` the chart ships its own single-instance Postgres StatefulSet -- fine for small deployments, not HA and not backed up. NATS is always bundled in v0.3.0.
@@ -407,9 +404,6 @@ The ~20 values an operator is most likely to override. See `helm/values.yaml` fo
 | `workers.replicas` | `2` | NATS consumer pod count. |
 | `workers.poolSize` | `10` | Per-pod goroutine pool size for NATS consumption. |
 | `api.replicas` | `2` | Query API replica count. |
-| `api.auth.jwtSecret` | *(empty)* | Required in production. HMAC secret for dashboard JWTs; at least 32 bytes. |
-| `api.auth.adminEmail` | *(empty)* | Bootstrap admin email. |
-| `api.auth.adminPassword` | *(empty)* | Bootstrap admin password. |
 | `api.corsOrigin` | `*` | `Access-Control-Allow-Origin` for the query API. Lock this down to your dashboard origin in prod. |
 | `dashboard.replicas` | `2` | Dashboard pod count. |
 | `postgres.externalUrl` | *(empty)* | Single escape hatch. When set to a DSN, the bundled Postgres StatefulSet is not rendered and every service reads this DSN from the generated Secret. |

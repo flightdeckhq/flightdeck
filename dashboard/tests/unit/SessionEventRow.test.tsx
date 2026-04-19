@@ -173,4 +173,24 @@ describe("SessionEventRow", () => {
     // No newline when there's nothing to stack above.
     expect(sticky.getAttribute("title")).toBe(baseSession.session_id);
   });
+
+  it("renders the access token name pill when token_name is non-null", () => {
+    renderRow({ ...baseSession, token_name: "Staging K8s" });
+    const badge = screen.getByTestId("session-row-token-name");
+    expect(badge.textContent).toBe("Staging K8s");
+  });
+
+  it("omits the token name pill when token_name is null (tok_dev / pre-Phase-5 rows)", () => {
+    renderRow({ ...baseSession, token_name: null });
+    expect(
+      screen.queryByTestId("session-row-token-name"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("omits the token name pill when token_name field is absent entirely", () => {
+    renderRow(baseSession);
+    expect(
+      screen.queryByTestId("session-row-token-name"),
+    ).not.toBeInTheDocument();
+  });
 });

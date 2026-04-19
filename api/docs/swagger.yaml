@@ -1,6 +1,132 @@
 basePath: /
 definitions:
-  github_com_flightdeckhq_flightdeck_api_internal_store.AccessTokenRow:
+  handlers.CreateAccessTokenRequest:
+    properties:
+      name:
+        type: string
+    type: object
+  handlers.CustomDirectivesListResponse:
+    properties:
+      directives:
+        items:
+          $ref: '#/definitions/store.CustomDirective'
+        type: array
+    type: object
+  handlers.DeleteCustomDirectivesResponse:
+    properties:
+      deleted:
+        type: integer
+    type: object
+  handlers.DirectiveRequest:
+    properties:
+      action:
+        type: string
+      directive_name:
+        type: string
+      fingerprint:
+        type: string
+      flavor:
+        type: string
+      grace_period_ms:
+        type: integer
+      parameters:
+        type: object
+      reason:
+        type: string
+      session_id:
+        type: string
+    type: object
+  handlers.ErrorResponse:
+    properties:
+      error:
+        type: string
+    type: object
+  handlers.FleetResponse:
+    properties:
+      context_facets:
+        additionalProperties:
+          items:
+            $ref: '#/definitions/store.ContextFacetValue'
+          type: array
+        type: object
+      flavors:
+        items:
+          $ref: '#/definitions/store.FlavorSummary'
+        type: array
+      total_session_count:
+        type: integer
+    type: object
+  handlers.PolicyRequest:
+    properties:
+      block_at_pct:
+        type: integer
+      degrade_at_pct:
+        type: integer
+      degrade_to:
+        type: string
+      scope:
+        type: string
+      scope_value:
+        type: string
+      token_limit:
+        type: integer
+      warn_at_pct:
+        type: integer
+    type: object
+  handlers.RegisterDirectivesRequest:
+    properties:
+      directives:
+        items:
+          $ref: '#/definitions/store.CustomDirective'
+        type: array
+      flavor:
+        type: string
+    type: object
+  handlers.RegisterDirectivesResponse:
+    properties:
+      registered:
+        type: integer
+    type: object
+  handlers.RenameAccessTokenRequest:
+    properties:
+      name:
+        type: string
+    type: object
+  handlers.SessionResponse:
+    properties:
+      attachments:
+        items:
+          type: string
+        type: array
+      events:
+        items:
+          $ref: '#/definitions/store.Event'
+        type: array
+      session:
+        $ref: '#/definitions/store.Session'
+    type: object
+  handlers.SyncDirectivesRequest:
+    properties:
+      directives:
+        items:
+          properties:
+            fingerprint:
+              type: string
+            name:
+              type: string
+          type: object
+        type: array
+      flavor:
+        type: string
+    type: object
+  handlers.SyncDirectivesResponse:
+    properties:
+      unknown_fingerprints:
+        items:
+          type: string
+        type: array
+    type: object
+  store.AccessTokenRow:
     properties:
       created_at:
         type: string
@@ -13,7 +139,7 @@ definitions:
       prefix:
         type: string
     type: object
-  github_com_flightdeckhq_flightdeck_api_internal_store.AnalyticsResponse:
+  store.AnalyticsResponse:
     properties:
       granularity:
         type: string
@@ -27,37 +153,37 @@ definitions:
         type: string
       series:
         items:
-          $ref: '#/definitions/github_com_flightdeckhq_flightdeck_api_internal_store.AnalyticsSeries'
+          $ref: '#/definitions/store.AnalyticsSeries'
         type: array
       totals:
-        $ref: '#/definitions/github_com_flightdeckhq_flightdeck_api_internal_store.AnalyticsTotals'
+        $ref: '#/definitions/store.AnalyticsTotals'
     type: object
-  github_com_flightdeckhq_flightdeck_api_internal_store.AnalyticsSeries:
+  store.AnalyticsSeries:
     properties:
       data:
         items:
-          $ref: '#/definitions/github_com_flightdeckhq_flightdeck_api_internal_store.DataPoint'
+          $ref: '#/definitions/store.DataPoint'
         type: array
       dimension:
         type: string
       total:
         type: number
     type: object
-  github_com_flightdeckhq_flightdeck_api_internal_store.AnalyticsTotals:
+  store.AnalyticsTotals:
     properties:
       grand_total:
         type: number
       period_change_pct:
         type: number
     type: object
-  github_com_flightdeckhq_flightdeck_api_internal_store.ContextFacetValue:
+  store.ContextFacetValue:
     properties:
       count:
         type: integer
       value:
         type: string
     type: object
-  github_com_flightdeckhq_flightdeck_api_internal_store.CreatedAccessTokenResponse:
+  store.CreatedAccessTokenResponse:
     properties:
       created_at:
         type: string
@@ -70,7 +196,7 @@ definitions:
       token:
         type: string
     type: object
-  github_com_flightdeckhq_flightdeck_api_internal_store.CustomDirective:
+  store.CustomDirective:
     properties:
       description:
         type: string
@@ -88,14 +214,14 @@ definitions:
       registered_at:
         type: string
     type: object
-  github_com_flightdeckhq_flightdeck_api_internal_store.DataPoint:
+  store.DataPoint:
     properties:
       date:
         type: string
       value:
         type: number
     type: object
-  github_com_flightdeckhq_flightdeck_api_internal_store.Directive:
+  store.Directive:
     properties:
       action:
         type: string
@@ -120,7 +246,7 @@ definitions:
       session_id:
         type: string
     type: object
-  github_com_flightdeckhq_flightdeck_api_internal_store.Event:
+  store.Event:
     properties:
       event_type:
         type: string
@@ -156,7 +282,7 @@ definitions:
       tool_name:
         type: string
     type: object
-  github_com_flightdeckhq_flightdeck_api_internal_store.EventContent:
+  store.EventContent:
     properties:
       captured_at:
         type: string
@@ -174,11 +300,11 @@ definitions:
         type: string
       tools: {}
     type: object
-  github_com_flightdeckhq_flightdeck_api_internal_store.EventsResponse:
+  store.EventsResponse:
     properties:
       events:
         items:
-          $ref: '#/definitions/github_com_flightdeckhq_flightdeck_api_internal_store.Event'
+          $ref: '#/definitions/store.Event'
         type: array
       has_more:
         type: boolean
@@ -189,7 +315,7 @@ definitions:
       total:
         type: integer
     type: object
-  github_com_flightdeckhq_flightdeck_api_internal_store.FlavorSummary:
+  store.FlavorSummary:
     properties:
       active_count:
         type: integer
@@ -201,12 +327,12 @@ definitions:
         type: integer
       sessions:
         items:
-          $ref: '#/definitions/github_com_flightdeckhq_flightdeck_api_internal_store.Session'
+          $ref: '#/definitions/store.Session'
         type: array
       tokens_used_total:
         type: integer
     type: object
-  github_com_flightdeckhq_flightdeck_api_internal_store.Policy:
+  store.Policy:
     properties:
       block_at_pct:
         type: integer
@@ -229,7 +355,7 @@ definitions:
       warn_at_pct:
         type: integer
     type: object
-  github_com_flightdeckhq_flightdeck_api_internal_store.SearchResultAgent:
+  store.SearchResultAgent:
     properties:
       agent_type:
         type: string
@@ -238,7 +364,7 @@ definitions:
       last_seen:
         type: string
     type: object
-  github_com_flightdeckhq_flightdeck_api_internal_store.SearchResultEvent:
+  store.SearchResultEvent:
     properties:
       event_id:
         type: string
@@ -253,7 +379,7 @@ definitions:
       tool_name:
         type: string
     type: object
-  github_com_flightdeckhq_flightdeck_api_internal_store.SearchResultSession:
+  store.SearchResultSession:
     properties:
       context:
         additionalProperties: true
@@ -277,22 +403,22 @@ definitions:
       tokens_used:
         type: integer
     type: object
-  github_com_flightdeckhq_flightdeck_api_internal_store.SearchResults:
+  store.SearchResults:
     properties:
       agents:
         items:
-          $ref: '#/definitions/github_com_flightdeckhq_flightdeck_api_internal_store.SearchResultAgent'
+          $ref: '#/definitions/store.SearchResultAgent'
         type: array
       events:
         items:
-          $ref: '#/definitions/github_com_flightdeckhq_flightdeck_api_internal_store.SearchResultEvent'
+          $ref: '#/definitions/store.SearchResultEvent'
         type: array
       sessions:
         items:
-          $ref: '#/definitions/github_com_flightdeckhq_flightdeck_api_internal_store.SearchResultSession'
+          $ref: '#/definitions/store.SearchResultSession'
         type: array
     type: object
-  github_com_flightdeckhq_flightdeck_api_internal_store.Session:
+  store.Session:
     properties:
       agent_type:
         type: string
@@ -347,13 +473,26 @@ definitions:
         type: string
       token_limit:
         type: integer
+      token_name:
+        description: |-
+          TokenName is the human-readable name of the access_tokens row
+          that authenticated the session_start event (D095). Nullable:
+          tok_dev-authenticated sessions and pre-Phase-5 rows carry NULL.
+          Preserved across token revocation (sessions.token_id clears via
+          ON DELETE SET NULL but sessions.token_name is a static snapshot
+          so the dashboard can attribute historical sessions even after
+          the token row is gone). Mirrors the SessionListItem.TokenName
+          returned by GetSessions.
+        type: string
       tokens_used:
         type: integer
       warn_at_pct:
         type: integer
     type: object
-  github_com_flightdeckhq_flightdeck_api_internal_store.SessionListItem:
+  store.SessionListItem:
     properties:
+      agent_type:
+        type: string
       capture_enabled:
         type: boolean
       context:
@@ -390,7 +529,7 @@ definitions:
       tokens_used:
         type: integer
     type: object
-  github_com_flightdeckhq_flightdeck_api_internal_store.SessionsResponse:
+  store.SessionsResponse:
     properties:
       has_more:
         type: boolean
@@ -400,136 +539,10 @@ definitions:
         type: integer
       sessions:
         items:
-          $ref: '#/definitions/github_com_flightdeckhq_flightdeck_api_internal_store.SessionListItem'
+          $ref: '#/definitions/store.SessionListItem'
         type: array
       total:
         type: integer
-    type: object
-  internal_handlers.CreateAccessTokenRequest:
-    properties:
-      name:
-        type: string
-    type: object
-  internal_handlers.CustomDirectivesListResponse:
-    properties:
-      directives:
-        items:
-          $ref: '#/definitions/github_com_flightdeckhq_flightdeck_api_internal_store.CustomDirective'
-        type: array
-    type: object
-  internal_handlers.DeleteCustomDirectivesResponse:
-    properties:
-      deleted:
-        type: integer
-    type: object
-  internal_handlers.DirectiveRequest:
-    properties:
-      action:
-        type: string
-      directive_name:
-        type: string
-      fingerprint:
-        type: string
-      flavor:
-        type: string
-      grace_period_ms:
-        type: integer
-      parameters:
-        type: object
-      reason:
-        type: string
-      session_id:
-        type: string
-    type: object
-  internal_handlers.ErrorResponse:
-    properties:
-      error:
-        type: string
-    type: object
-  internal_handlers.FleetResponse:
-    properties:
-      context_facets:
-        additionalProperties:
-          items:
-            $ref: '#/definitions/github_com_flightdeckhq_flightdeck_api_internal_store.ContextFacetValue'
-          type: array
-        type: object
-      flavors:
-        items:
-          $ref: '#/definitions/github_com_flightdeckhq_flightdeck_api_internal_store.FlavorSummary'
-        type: array
-      total_session_count:
-        type: integer
-    type: object
-  internal_handlers.PolicyRequest:
-    properties:
-      block_at_pct:
-        type: integer
-      degrade_at_pct:
-        type: integer
-      degrade_to:
-        type: string
-      scope:
-        type: string
-      scope_value:
-        type: string
-      token_limit:
-        type: integer
-      warn_at_pct:
-        type: integer
-    type: object
-  internal_handlers.RegisterDirectivesRequest:
-    properties:
-      directives:
-        items:
-          $ref: '#/definitions/github_com_flightdeckhq_flightdeck_api_internal_store.CustomDirective'
-        type: array
-      flavor:
-        type: string
-    type: object
-  internal_handlers.RegisterDirectivesResponse:
-    properties:
-      registered:
-        type: integer
-    type: object
-  internal_handlers.RenameAccessTokenRequest:
-    properties:
-      name:
-        type: string
-    type: object
-  internal_handlers.SessionResponse:
-    properties:
-      attachments:
-        items:
-          type: string
-        type: array
-      events:
-        items:
-          $ref: '#/definitions/github_com_flightdeckhq_flightdeck_api_internal_store.Event'
-        type: array
-      session:
-        $ref: '#/definitions/github_com_flightdeckhq_flightdeck_api_internal_store.Session'
-    type: object
-  internal_handlers.SyncDirectivesRequest:
-    properties:
-      directives:
-        items:
-          properties:
-            fingerprint:
-              type: string
-            name:
-              type: string
-          type: object
-        type: array
-      flavor:
-        type: string
-    type: object
-  internal_handlers.SyncDirectivesResponse:
-    properties:
-      unknown_fingerprints:
-        items:
-          type: string
-        type: array
     type: object
 host: localhost:8081
 info:
@@ -565,16 +578,16 @@ paths:
           description: OK
           schema:
             items:
-              $ref: '#/definitions/github_com_flightdeckhq_flightdeck_api_internal_store.AccessTokenRow'
+              $ref: '#/definitions/store.AccessTokenRow'
             type: array
         "401":
           description: Unauthorized
           schema:
-            $ref: '#/definitions/internal_handlers.ErrorResponse'
+            $ref: '#/definitions/handlers.ErrorResponse'
         "500":
           description: Internal Server Error
           schema:
-            $ref: '#/definitions/internal_handlers.ErrorResponse'
+            $ref: '#/definitions/handlers.ErrorResponse'
       summary: List access tokens
       tags:
       - access-tokens
@@ -590,26 +603,26 @@ paths:
         name: token
         required: true
         schema:
-          $ref: '#/definitions/internal_handlers.CreateAccessTokenRequest'
+          $ref: '#/definitions/handlers.CreateAccessTokenRequest'
       produces:
       - application/json
       responses:
         "201":
           description: Created
           schema:
-            $ref: '#/definitions/github_com_flightdeckhq_flightdeck_api_internal_store.CreatedAccessTokenResponse'
+            $ref: '#/definitions/store.CreatedAccessTokenResponse'
         "400":
           description: Bad Request
           schema:
-            $ref: '#/definitions/internal_handlers.ErrorResponse'
+            $ref: '#/definitions/handlers.ErrorResponse'
         "401":
           description: Unauthorized
           schema:
-            $ref: '#/definitions/internal_handlers.ErrorResponse'
+            $ref: '#/definitions/handlers.ErrorResponse'
         "500":
           description: Internal Server Error
           schema:
-            $ref: '#/definitions/internal_handlers.ErrorResponse'
+            $ref: '#/definitions/handlers.ErrorResponse'
       summary: Create an access token
       tags:
       - access-tokens
@@ -631,19 +644,19 @@ paths:
         "401":
           description: Unauthorized
           schema:
-            $ref: '#/definitions/internal_handlers.ErrorResponse'
+            $ref: '#/definitions/handlers.ErrorResponse'
         "403":
           description: Forbidden
           schema:
-            $ref: '#/definitions/internal_handlers.ErrorResponse'
+            $ref: '#/definitions/handlers.ErrorResponse'
         "404":
           description: Not Found
           schema:
-            $ref: '#/definitions/internal_handlers.ErrorResponse'
+            $ref: '#/definitions/handlers.ErrorResponse'
         "500":
           description: Internal Server Error
           schema:
-            $ref: '#/definitions/internal_handlers.ErrorResponse'
+            $ref: '#/definitions/handlers.ErrorResponse'
       summary: Revoke an access token
       tags:
       - access-tokens
@@ -664,34 +677,34 @@ paths:
         name: token
         required: true
         schema:
-          $ref: '#/definitions/internal_handlers.RenameAccessTokenRequest'
+          $ref: '#/definitions/handlers.RenameAccessTokenRequest'
       produces:
       - application/json
       responses:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/github_com_flightdeckhq_flightdeck_api_internal_store.AccessTokenRow'
+            $ref: '#/definitions/store.AccessTokenRow'
         "400":
           description: Bad Request
           schema:
-            $ref: '#/definitions/internal_handlers.ErrorResponse'
+            $ref: '#/definitions/handlers.ErrorResponse'
         "401":
           description: Unauthorized
           schema:
-            $ref: '#/definitions/internal_handlers.ErrorResponse'
+            $ref: '#/definitions/handlers.ErrorResponse'
         "403":
           description: Forbidden
           schema:
-            $ref: '#/definitions/internal_handlers.ErrorResponse'
+            $ref: '#/definitions/handlers.ErrorResponse'
         "404":
           description: Not Found
           schema:
-            $ref: '#/definitions/internal_handlers.ErrorResponse'
+            $ref: '#/definitions/handlers.ErrorResponse'
         "500":
           description: Internal Server Error
           schema:
-            $ref: '#/definitions/internal_handlers.ErrorResponse'
+            $ref: '#/definitions/handlers.ErrorResponse'
       summary: Rename an access token
       tags:
       - access-tokens
@@ -749,15 +762,15 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/github_com_flightdeckhq_flightdeck_api_internal_store.AnalyticsResponse'
+            $ref: '#/definitions/store.AnalyticsResponse'
         "400":
           description: Bad Request
           schema:
-            $ref: '#/definitions/internal_handlers.ErrorResponse'
+            $ref: '#/definitions/handlers.ErrorResponse'
         "500":
           description: Internal Server Error
           schema:
-            $ref: '#/definitions/internal_handlers.ErrorResponse'
+            $ref: '#/definitions/handlers.ErrorResponse'
       summary: Query analytics
       tags:
       - analytics
@@ -773,30 +786,30 @@ paths:
         name: directive
         required: true
         schema:
-          $ref: '#/definitions/internal_handlers.DirectiveRequest'
+          $ref: '#/definitions/handlers.DirectiveRequest'
       produces:
       - application/json
       responses:
         "201":
           description: Created
           schema:
-            $ref: '#/definitions/github_com_flightdeckhq_flightdeck_api_internal_store.Directive'
+            $ref: '#/definitions/store.Directive'
         "400":
           description: Bad Request
           schema:
-            $ref: '#/definitions/internal_handlers.ErrorResponse'
+            $ref: '#/definitions/handlers.ErrorResponse'
         "404":
           description: Not Found
           schema:
-            $ref: '#/definitions/internal_handlers.ErrorResponse'
+            $ref: '#/definitions/handlers.ErrorResponse'
         "422":
           description: Unprocessable Entity
           schema:
-            $ref: '#/definitions/internal_handlers.ErrorResponse'
+            $ref: '#/definitions/handlers.ErrorResponse'
         "500":
           description: Internal Server Error
           schema:
-            $ref: '#/definitions/internal_handlers.ErrorResponse'
+            $ref: '#/definitions/handlers.ErrorResponse'
       summary: Create directive
       tags:
       - directives
@@ -816,15 +829,15 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/internal_handlers.DeleteCustomDirectivesResponse'
+            $ref: '#/definitions/handlers.DeleteCustomDirectivesResponse'
         "400":
           description: Bad Request
           schema:
-            $ref: '#/definitions/internal_handlers.ErrorResponse'
+            $ref: '#/definitions/handlers.ErrorResponse'
         "500":
           description: Internal Server Error
           schema:
-            $ref: '#/definitions/internal_handlers.ErrorResponse'
+            $ref: '#/definitions/handlers.ErrorResponse'
       summary: Delete custom directives by name prefix (dev/test only)
       tags:
       - custom-directives
@@ -842,11 +855,11 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/internal_handlers.CustomDirectivesListResponse'
+            $ref: '#/definitions/handlers.CustomDirectivesListResponse'
         "500":
           description: Internal Server Error
           schema:
-            $ref: '#/definitions/internal_handlers.ErrorResponse'
+            $ref: '#/definitions/handlers.ErrorResponse'
       summary: List custom directives
       tags:
       - custom-directives
@@ -867,26 +880,26 @@ paths:
         name: body
         required: true
         schema:
-          $ref: '#/definitions/internal_handlers.RegisterDirectivesRequest'
+          $ref: '#/definitions/handlers.RegisterDirectivesRequest'
       produces:
       - application/json
       responses:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/internal_handlers.RegisterDirectivesResponse'
+            $ref: '#/definitions/handlers.RegisterDirectivesResponse'
         "400":
           description: Bad Request
           schema:
-            $ref: '#/definitions/internal_handlers.ErrorResponse'
+            $ref: '#/definitions/handlers.ErrorResponse'
         "401":
           description: Missing or invalid bearer token
           schema:
-            $ref: '#/definitions/internal_handlers.ErrorResponse'
+            $ref: '#/definitions/handlers.ErrorResponse'
         "500":
           description: Internal Server Error
           schema:
-            $ref: '#/definitions/internal_handlers.ErrorResponse'
+            $ref: '#/definitions/handlers.ErrorResponse'
       summary: Register custom directives
       tags:
       - custom-directives
@@ -907,26 +920,26 @@ paths:
         name: body
         required: true
         schema:
-          $ref: '#/definitions/internal_handlers.SyncDirectivesRequest'
+          $ref: '#/definitions/handlers.SyncDirectivesRequest'
       produces:
       - application/json
       responses:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/internal_handlers.SyncDirectivesResponse'
+            $ref: '#/definitions/handlers.SyncDirectivesResponse'
         "400":
           description: Bad Request
           schema:
-            $ref: '#/definitions/internal_handlers.ErrorResponse'
+            $ref: '#/definitions/handlers.ErrorResponse'
         "401":
           description: Missing or invalid bearer token
           schema:
-            $ref: '#/definitions/internal_handlers.ErrorResponse'
+            $ref: '#/definitions/handlers.ErrorResponse'
         "500":
           description: Internal Server Error
           schema:
-            $ref: '#/definitions/internal_handlers.ErrorResponse'
+            $ref: '#/definitions/handlers.ErrorResponse'
       summary: Sync custom directive fingerprints
       tags:
       - custom-directives
@@ -970,15 +983,15 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/github_com_flightdeckhq_flightdeck_api_internal_store.EventsResponse'
+            $ref: '#/definitions/store.EventsResponse'
         "400":
           description: Bad Request
           schema:
-            $ref: '#/definitions/internal_handlers.ErrorResponse'
+            $ref: '#/definitions/handlers.ErrorResponse'
         "500":
           description: Internal Server Error
           schema:
-            $ref: '#/definitions/internal_handlers.ErrorResponse'
+            $ref: '#/definitions/handlers.ErrorResponse'
       summary: List events with filters
       tags:
       - events
@@ -998,15 +1011,15 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/github_com_flightdeckhq_flightdeck_api_internal_store.EventContent'
+            $ref: '#/definitions/store.EventContent'
         "404":
           description: Not Found
           schema:
-            $ref: '#/definitions/internal_handlers.ErrorResponse'
+            $ref: '#/definitions/handlers.ErrorResponse'
         "500":
           description: Internal Server Error
           schema:
-            $ref: '#/definitions/internal_handlers.ErrorResponse'
+            $ref: '#/definitions/handlers.ErrorResponse'
       summary: Get event content
       tags:
       - events
@@ -1035,11 +1048,11 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/internal_handlers.FleetResponse'
+            $ref: '#/definitions/handlers.FleetResponse'
         "500":
           description: Internal Server Error
           schema:
-            $ref: '#/definitions/internal_handlers.ErrorResponse'
+            $ref: '#/definitions/handlers.ErrorResponse'
       summary: Get fleet state
       tags:
       - fleet
@@ -1053,12 +1066,12 @@ paths:
           description: OK
           schema:
             items:
-              $ref: '#/definitions/github_com_flightdeckhq_flightdeck_api_internal_store.Policy'
+              $ref: '#/definitions/store.Policy'
             type: array
         "500":
           description: Internal Server Error
           schema:
-            $ref: '#/definitions/internal_handlers.ErrorResponse'
+            $ref: '#/definitions/handlers.ErrorResponse'
       summary: List policies
       tags:
       - policies
@@ -1072,22 +1085,22 @@ paths:
         name: policy
         required: true
         schema:
-          $ref: '#/definitions/internal_handlers.PolicyRequest'
+          $ref: '#/definitions/handlers.PolicyRequest'
       produces:
       - application/json
       responses:
         "201":
           description: Created
           schema:
-            $ref: '#/definitions/github_com_flightdeckhq_flightdeck_api_internal_store.Policy'
+            $ref: '#/definitions/store.Policy'
         "400":
           description: Bad Request
           schema:
-            $ref: '#/definitions/internal_handlers.ErrorResponse'
+            $ref: '#/definitions/handlers.ErrorResponse'
         "500":
           description: Internal Server Error
           schema:
-            $ref: '#/definitions/internal_handlers.ErrorResponse'
+            $ref: '#/definitions/handlers.ErrorResponse'
       summary: Create policy
       tags:
       - policies
@@ -1106,11 +1119,11 @@ paths:
         "404":
           description: Not Found
           schema:
-            $ref: '#/definitions/internal_handlers.ErrorResponse'
+            $ref: '#/definitions/handlers.ErrorResponse'
         "500":
           description: Internal Server Error
           schema:
-            $ref: '#/definitions/internal_handlers.ErrorResponse'
+            $ref: '#/definitions/handlers.ErrorResponse'
       summary: Delete policy
       tags:
       - policies
@@ -1129,26 +1142,26 @@ paths:
         name: policy
         required: true
         schema:
-          $ref: '#/definitions/internal_handlers.PolicyRequest'
+          $ref: '#/definitions/handlers.PolicyRequest'
       produces:
       - application/json
       responses:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/github_com_flightdeckhq_flightdeck_api_internal_store.Policy'
+            $ref: '#/definitions/store.Policy'
         "400":
           description: Bad Request
           schema:
-            $ref: '#/definitions/internal_handlers.ErrorResponse'
+            $ref: '#/definitions/handlers.ErrorResponse'
         "404":
           description: Not Found
           schema:
-            $ref: '#/definitions/internal_handlers.ErrorResponse'
+            $ref: '#/definitions/handlers.ErrorResponse'
         "500":
           description: Internal Server Error
           schema:
-            $ref: '#/definitions/internal_handlers.ErrorResponse'
+            $ref: '#/definitions/handlers.ErrorResponse'
       summary: Update policy
       tags:
       - policies
@@ -1171,15 +1184,15 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/github_com_flightdeckhq_flightdeck_api_internal_store.Policy'
+            $ref: '#/definitions/store.Policy'
         "404":
           description: Not Found
           schema:
-            $ref: '#/definitions/internal_handlers.ErrorResponse'
+            $ref: '#/definitions/handlers.ErrorResponse'
         "500":
           description: Internal Server Error
           schema:
-            $ref: '#/definitions/internal_handlers.ErrorResponse'
+            $ref: '#/definitions/handlers.ErrorResponse'
       summary: Get effective policy
       tags:
       - policies
@@ -1199,15 +1212,15 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/github_com_flightdeckhq_flightdeck_api_internal_store.SearchResults'
+            $ref: '#/definitions/store.SearchResults'
         "400":
           description: Bad Request
           schema:
-            $ref: '#/definitions/internal_handlers.ErrorResponse'
+            $ref: '#/definitions/handlers.ErrorResponse'
         "500":
           description: Internal Server Error
           schema:
-            $ref: '#/definitions/internal_handlers.ErrorResponse'
+            $ref: '#/definitions/handlers.ErrorResponse'
       summary: Cross-entity search
       tags:
       - search
@@ -1268,15 +1281,15 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/github_com_flightdeckhq_flightdeck_api_internal_store.SessionsResponse'
+            $ref: '#/definitions/store.SessionsResponse'
         "400":
           description: Bad Request
           schema:
-            $ref: '#/definitions/internal_handlers.ErrorResponse'
+            $ref: '#/definitions/handlers.ErrorResponse'
         "500":
           description: Internal Server Error
           schema:
-            $ref: '#/definitions/internal_handlers.ErrorResponse'
+            $ref: '#/definitions/handlers.ErrorResponse'
       summary: List sessions with filters, search, and pagination
       tags:
       - sessions
@@ -1296,19 +1309,19 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/internal_handlers.SessionResponse'
+            $ref: '#/definitions/handlers.SessionResponse'
         "400":
           description: Bad Request
           schema:
-            $ref: '#/definitions/internal_handlers.ErrorResponse'
+            $ref: '#/definitions/handlers.ErrorResponse'
         "404":
           description: Not Found
           schema:
-            $ref: '#/definitions/internal_handlers.ErrorResponse'
+            $ref: '#/definitions/handlers.ErrorResponse'
         "500":
           description: Internal Server Error
           schema:
-            $ref: '#/definitions/internal_handlers.ErrorResponse'
+            $ref: '#/definitions/handlers.ErrorResponse'
       summary: Get session detail
       tags:
       - sessions
@@ -1330,11 +1343,11 @@ paths:
         "401":
           description: Unauthorized
           schema:
-            $ref: '#/definitions/internal_handlers.ErrorResponse'
+            $ref: '#/definitions/handlers.ErrorResponse'
         "500":
           description: Internal Server Error
           schema:
-            $ref: '#/definitions/internal_handlers.ErrorResponse'
+            $ref: '#/definitions/handlers.ErrorResponse'
       summary: Real-time fleet stream
       tags:
       - stream

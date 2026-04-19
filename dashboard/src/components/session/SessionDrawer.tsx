@@ -878,6 +878,16 @@ function MetadataBar({ session }: { session: SessionType }) {
         {session.host ?? "—"}
       </MetadataCell>
 
+      {session.token_name && (
+        <MetadataCell
+          label="Token"
+          title={session.token_name}
+          testId="metadata-token-name"
+        >
+          <span style={META_CLIP_STYLE}>{session.token_name}</span>
+        </MetadataCell>
+      )}
+
       {os && (
         <MetadataCell
           label="OS"

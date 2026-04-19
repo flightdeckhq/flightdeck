@@ -164,6 +164,23 @@ describe("SessionDrawer", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("metadata Token cell renders the access token name when present", () => {
+    mockSessionOverride = { token_name: "Staging K8s" };
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    expect(screen.getByTestId("metadata-token-name")).toBeInTheDocument();
+    expect(screen.getByText("Token")).toBeInTheDocument();
+    expect(screen.getByText("Staging K8s")).toBeInTheDocument();
+  });
+
+  it("metadata Token cell is omitted when token_name is null", () => {
+    // Pre-Phase-5 sessions and tok_dev-opened sessions both carry
+    // null token_name; the cell should not render a "—" placeholder.
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    expect(
+      screen.queryByTestId("metadata-token-name"),
+    ).not.toBeInTheDocument();
+  });
+
   it("metadata Model cell strips date suffix from model name", () => {
     mockSessionOverride = { model: "claude-haiku-4-5-20251001" };
     render(<SessionDrawer sessionId="s1" onClose={() => {}} />);

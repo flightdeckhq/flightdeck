@@ -54,20 +54,20 @@ const docTemplate = `{
                         "schema": {
                             "type": "array",
                             "items": {
-                                "$ref": "#/definitions/github_com_flightdeckhq_flightdeck_api_internal_store.AccessTokenRow"
+                                "$ref": "#/definitions/store.AccessTokenRow"
                             }
                         }
                     },
                     "401": {
                         "description": "Unauthorized",
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.ErrorResponse"
+                            "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     },
                     "500": {
                         "description": "Internal Server Error",
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.ErrorResponse"
+                            "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     }
                 }
@@ -91,7 +91,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.CreateAccessTokenRequest"
+                            "$ref": "#/definitions/handlers.CreateAccessTokenRequest"
                         }
                     }
                 ],
@@ -99,25 +99,25 @@ const docTemplate = `{
                     "201": {
                         "description": "Created",
                         "schema": {
-                            "$ref": "#/definitions/github_com_flightdeckhq_flightdeck_api_internal_store.CreatedAccessTokenResponse"
+                            "$ref": "#/definitions/store.CreatedAccessTokenResponse"
                         }
                     },
                     "400": {
                         "description": "Bad Request",
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.ErrorResponse"
+                            "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     },
                     "401": {
                         "description": "Unauthorized",
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.ErrorResponse"
+                            "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     },
                     "500": {
                         "description": "Internal Server Error",
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.ErrorResponse"
+                            "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     }
                 }
@@ -146,25 +146,25 @@ const docTemplate = `{
                     "401": {
                         "description": "Unauthorized",
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.ErrorResponse"
+                            "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     },
                     "403": {
                         "description": "Forbidden",
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.ErrorResponse"
+                            "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     },
                     "404": {
                         "description": "Not Found",
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.ErrorResponse"
+                            "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     },
                     "500": {
                         "description": "Internal Server Error",
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.ErrorResponse"
+                            "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     }
                 }
@@ -195,7 +195,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.RenameAccessTokenRequest"
+                            "$ref": "#/definitions/handlers.RenameAccessTokenRequest"
                         }
                     }
                 ],
@@ -203,37 +203,37 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/github_com_flightdeckhq_flightdeck_api_internal_store.AccessTokenRow"
+                            "$ref": "#/definitions/store.AccessTokenRow"
                         }
                     },
                     "400": {
                         "description": "Bad Request",
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.ErrorResponse"
+                            "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     },
                     "401": {
                         "description": "Unauthorized",
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.ErrorResponse"
+                            "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     },
                     "403": {
                         "description": "Forbidden",
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.ErrorResponse"
+                            "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     },
                     "404": {
                         "description": "Not Found",
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.ErrorResponse"
+                            "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     },
                     "500": {
                         "description": "Internal Server Error",
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.ErrorResponse"
+                            "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     }
                 }
@@ -315,19 +315,19 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/github_com_flightdeckhq_flightdeck_api_internal_store.AnalyticsResponse"
+                            "$ref": "#/definitions/store.AnalyticsResponse"
                         }
                     },
                     "400": {
                         "description": "Bad Request",
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.ErrorResponse"
+                            "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     },
                     "500": {
                         "description": "Internal Server Error",
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.ErrorResponse"
+                            "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     }
                 }
@@ -353,7 +353,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.DirectiveRequest"
+                            "$ref": "#/definitions/handlers.DirectiveRequest"
                         }
                     }
                 ],
@@ -361,31 +361,31 @@ const docTemplate = `{
                     "201": {
                         "description": "Created",
                         "schema": {
-                            "$ref": "#/definitions/github_com_flightdeckhq_flightdeck_api_internal_store.Directive"
+                            "$ref": "#/definitions/store.Directive"
                         }
                     },
                     "400": {
                         "description": "Bad Request",
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.ErrorResponse"
+                            "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     },
                     "404": {
                         "description": "Not Found",
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.ErrorResponse"
+                            "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     },
                     "422": {
                         "description": "Unprocessable Entity",
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.ErrorResponse"
+                            "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     },
                     "500": {
                         "description": "Internal Server Error",
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.ErrorResponse"
+                            "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     }
                 }
@@ -413,13 +413,13 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.CustomDirectivesListResponse"
+                            "$ref": "#/definitions/handlers.CustomDirectivesListResponse"
                         }
                     },
                     "500": {
                         "description": "Internal Server Error",
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.ErrorResponse"
+                            "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     }
                 }
@@ -446,19 +446,19 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.DeleteCustomDirectivesResponse"
+                            "$ref": "#/definitions/handlers.DeleteCustomDirectivesResponse"
                         }
                     },
                     "400": {
                         "description": "Bad Request",
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.ErrorResponse"
+                            "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     },
                     "500": {
                         "description": "Internal Server Error",
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.ErrorResponse"
+                            "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     }
                 }
@@ -491,7 +491,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.RegisterDirectivesRequest"
+                            "$ref": "#/definitions/handlers.RegisterDirectivesRequest"
                         }
                     }
                 ],
@@ -499,25 +499,25 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.RegisterDirectivesResponse"
+                            "$ref": "#/definitions/handlers.RegisterDirectivesResponse"
                         }
                     },
                     "400": {
                         "description": "Bad Request",
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.ErrorResponse"
+                            "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     },
                     "401": {
                         "description": "Missing or invalid bearer token",
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.ErrorResponse"
+                            "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     },
                     "500": {
                         "description": "Internal Server Error",
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.ErrorResponse"
+                            "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     }
                 }
@@ -550,7 +550,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.SyncDirectivesRequest"
+                            "$ref": "#/definitions/handlers.SyncDirectivesRequest"
                         }
                     }
                 ],
@@ -558,25 +558,25 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.SyncDirectivesResponse"
+                            "$ref": "#/definitions/handlers.SyncDirectivesResponse"
                         }
                     },
                     "400": {
                         "description": "Bad Request",
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.ErrorResponse"
+                            "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     },
                     "401": {
                         "description": "Missing or invalid bearer token",
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.ErrorResponse"
+                            "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     },
                     "500": {
                         "description": "Internal Server Error",
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.ErrorResponse"
+                            "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     }
                 }
@@ -641,19 +641,19 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/github_com_flightdeckhq_flightdeck_api_internal_store.EventsResponse"
+                            "$ref": "#/definitions/store.EventsResponse"
                         }
                     },
                     "400": {
                         "description": "Bad Request",
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.ErrorResponse"
+                            "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     },
                     "500": {
                         "description": "Internal Server Error",
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.ErrorResponse"
+                            "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     }
                 }
@@ -682,19 +682,19 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/github_com_flightdeckhq_flightdeck_api_internal_store.EventContent"
+                            "$ref": "#/definitions/store.EventContent"
                         }
                     },
                     "404": {
                         "description": "Not Found",
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.ErrorResponse"
+                            "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     },
                     "500": {
                         "description": "Internal Server Error",
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.ErrorResponse"
+                            "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     }
                 }
@@ -734,13 +734,13 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.FleetResponse"
+                            "$ref": "#/definitions/handlers.FleetResponse"
                         }
                     },
                     "500": {
                         "description": "Internal Server Error",
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.ErrorResponse"
+                            "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     }
                 }
@@ -762,14 +762,14 @@ const docTemplate = `{
                         "schema": {
                             "type": "array",
                             "items": {
-                                "$ref": "#/definitions/github_com_flightdeckhq_flightdeck_api_internal_store.Policy"
+                                "$ref": "#/definitions/store.Policy"
                             }
                         }
                     },
                     "500": {
                         "description": "Internal Server Error",
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.ErrorResponse"
+                            "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     }
                 }
@@ -793,7 +793,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.PolicyRequest"
+                            "$ref": "#/definitions/handlers.PolicyRequest"
                         }
                     }
                 ],
@@ -801,19 +801,19 @@ const docTemplate = `{
                     "201": {
                         "description": "Created",
                         "schema": {
-                            "$ref": "#/definitions/github_com_flightdeckhq_flightdeck_api_internal_store.Policy"
+                            "$ref": "#/definitions/store.Policy"
                         }
                     },
                     "400": {
                         "description": "Bad Request",
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.ErrorResponse"
+                            "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     },
                     "500": {
                         "description": "Internal Server Error",
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.ErrorResponse"
+                            "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     }
                 }
@@ -846,7 +846,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.PolicyRequest"
+                            "$ref": "#/definitions/handlers.PolicyRequest"
                         }
                     }
                 ],
@@ -854,25 +854,25 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/github_com_flightdeckhq_flightdeck_api_internal_store.Policy"
+                            "$ref": "#/definitions/store.Policy"
                         }
                     },
                     "400": {
                         "description": "Bad Request",
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.ErrorResponse"
+                            "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     },
                     "404": {
                         "description": "Not Found",
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.ErrorResponse"
+                            "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     },
                     "500": {
                         "description": "Internal Server Error",
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.ErrorResponse"
+                            "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     }
                 }
@@ -899,13 +899,13 @@ const docTemplate = `{
                     "404": {
                         "description": "Not Found",
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.ErrorResponse"
+                            "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     },
                     "500": {
                         "description": "Internal Server Error",
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.ErrorResponse"
+                            "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     }
                 }
@@ -939,19 +939,19 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/github_com_flightdeckhq_flightdeck_api_internal_store.Policy"
+                            "$ref": "#/definitions/store.Policy"
                         }
                     },
                     "404": {
                         "description": "Not Found",
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.ErrorResponse"
+                            "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     },
                     "500": {
                         "description": "Internal Server Error",
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.ErrorResponse"
+                            "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     }
                 }
@@ -980,19 +980,19 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/github_com_flightdeckhq_flightdeck_api_internal_store.SearchResults"
+                            "$ref": "#/definitions/store.SearchResults"
                         }
                     },
                     "400": {
                         "description": "Bad Request",
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.ErrorResponse"
+                            "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     },
                     "500": {
                         "description": "Internal Server Error",
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.ErrorResponse"
+                            "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     }
                 }
@@ -1080,19 +1080,19 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/github_com_flightdeckhq_flightdeck_api_internal_store.SessionsResponse"
+                            "$ref": "#/definitions/store.SessionsResponse"
                         }
                     },
                     "400": {
                         "description": "Bad Request",
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.ErrorResponse"
+                            "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     },
                     "500": {
                         "description": "Internal Server Error",
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.ErrorResponse"
+                            "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     }
                 }
@@ -1121,25 +1121,25 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.SessionResponse"
+                            "$ref": "#/definitions/handlers.SessionResponse"
                         }
                     },
                     "400": {
                         "description": "Bad Request",
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.ErrorResponse"
+                            "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     },
                     "404": {
                         "description": "Not Found",
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.ErrorResponse"
+                            "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     },
                     "500": {
                         "description": "Internal Server Error",
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.ErrorResponse"
+                            "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     }
                 }
@@ -1170,13 +1170,13 @@ const docTemplate = `{
                     "401": {
                         "description": "Unauthorized",
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.ErrorResponse"
+                            "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     },
                     "500": {
                         "description": "Internal Server Error",
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.ErrorResponse"
+                            "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     }
                 }
@@ -1184,7 +1184,203 @@ const docTemplate = `{
         }
     },
     "definitions": {
-        "github_com_flightdeckhq_flightdeck_api_internal_store.AccessTokenRow": {
+        "handlers.CreateAccessTokenRequest": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string"
+                }
+            }
+        },
+        "handlers.CustomDirectivesListResponse": {
+            "type": "object",
+            "properties": {
+                "directives": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/store.CustomDirective"
+                    }
+                }
+            }
+        },
+        "handlers.DeleteCustomDirectivesResponse": {
+            "type": "object",
+            "properties": {
+                "deleted": {
+                    "type": "integer"
+                }
+            }
+        },
+        "handlers.DirectiveRequest": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string"
+                },
+                "directive_name": {
+                    "type": "string"
+                },
+                "fingerprint": {
+                    "type": "string"
+                },
+                "flavor": {
+                    "type": "string"
+                },
+                "grace_period_ms": {
+                    "type": "integer"
+                },
+                "parameters": {
+                    "type": "object"
+                },
+                "reason": {
+                    "type": "string"
+                },
+                "session_id": {
+                    "type": "string"
+                }
+            }
+        },
+        "handlers.ErrorResponse": {
+            "type": "object",
+            "properties": {
+                "error": {
+                    "type": "string"
+                }
+            }
+        },
+        "handlers.FleetResponse": {
+            "type": "object",
+            "properties": {
+                "context_facets": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/definitions/store.ContextFacetValue"
+                        }
+                    }
+                },
+                "flavors": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/store.FlavorSummary"
+                    }
+                },
+                "total_session_count": {
+                    "type": "integer"
+                }
+            }
+        },
+        "handlers.PolicyRequest": {
+            "type": "object",
+            "properties": {
+                "block_at_pct": {
+                    "type": "integer"
+                },
+                "degrade_at_pct": {
+                    "type": "integer"
+                },
+                "degrade_to": {
+                    "type": "string"
+                },
+                "scope": {
+                    "type": "string"
+                },
+                "scope_value": {
+                    "type": "string"
+                },
+                "token_limit": {
+                    "type": "integer"
+                },
+                "warn_at_pct": {
+                    "type": "integer"
+                }
+            }
+        },
+        "handlers.RegisterDirectivesRequest": {
+            "type": "object",
+            "properties": {
+                "directives": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/store.CustomDirective"
+                    }
+                },
+                "flavor": {
+                    "type": "string"
+                }
+            }
+        },
+        "handlers.RegisterDirectivesResponse": {
+            "type": "object",
+            "properties": {
+                "registered": {
+                    "type": "integer"
+                }
+            }
+        },
+        "handlers.RenameAccessTokenRequest": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string"
+                }
+            }
+        },
+        "handlers.SessionResponse": {
+            "type": "object",
+            "properties": {
+                "attachments": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "events": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/store.Event"
+                    }
+                },
+                "session": {
+                    "$ref": "#/definitions/store.Session"
+                }
+            }
+        },
+        "handlers.SyncDirectivesRequest": {
+            "type": "object",
+            "properties": {
+                "directives": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "fingerprint": {
+                                "type": "string"
+                            },
+                            "name": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                },
+                "flavor": {
+                    "type": "string"
+                }
+            }
+        },
+        "handlers.SyncDirectivesResponse": {
+            "type": "object",
+            "properties": {
+                "unknown_fingerprints": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                }
+            }
+        },
+        "store.AccessTokenRow": {
             "type": "object",
             "properties": {
                 "created_at": {
@@ -1204,7 +1400,7 @@ const docTemplate = `{
                 }
             }
         },
-        "github_com_flightdeckhq_flightdeck_api_internal_store.AnalyticsResponse": {
+        "store.AnalyticsResponse": {
             "type": "object",
             "properties": {
                 "granularity": {
@@ -1225,21 +1421,21 @@ const docTemplate = `{
                 "series": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/github_com_flightdeckhq_flightdeck_api_internal_store.AnalyticsSeries"
+                        "$ref": "#/definitions/store.AnalyticsSeries"
                     }
                 },
                 "totals": {
-                    "$ref": "#/definitions/github_com_flightdeckhq_flightdeck_api_internal_store.AnalyticsTotals"
+                    "$ref": "#/definitions/store.AnalyticsTotals"
                 }
             }
         },
-        "github_com_flightdeckhq_flightdeck_api_internal_store.AnalyticsSeries": {
+        "store.AnalyticsSeries": {
             "type": "object",
             "properties": {
                 "data": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/github_com_flightdeckhq_flightdeck_api_internal_store.DataPoint"
+                        "$ref": "#/definitions/store.DataPoint"
                     }
                 },
                 "dimension": {
@@ -1250,7 +1446,7 @@ const docTemplate = `{
                 }
             }
         },
-        "github_com_flightdeckhq_flightdeck_api_internal_store.AnalyticsTotals": {
+        "store.AnalyticsTotals": {
             "type": "object",
             "properties": {
                 "grand_total": {
@@ -1261,7 +1457,7 @@ const docTemplate = `{
                 }
             }
         },
-        "github_com_flightdeckhq_flightdeck_api_internal_store.ContextFacetValue": {
+        "store.ContextFacetValue": {
             "type": "object",
             "properties": {
                 "count": {
@@ -1272,7 +1468,7 @@ const docTemplate = `{
                 }
             }
         },
-        "github_com_flightdeckhq_flightdeck_api_internal_store.CreatedAccessTokenResponse": {
+        "store.CreatedAccessTokenResponse": {
             "type": "object",
             "properties": {
                 "created_at": {
@@ -1292,7 +1488,7 @@ const docTemplate = `{
                 }
             }
         },
-        "github_com_flightdeckhq_flightdeck_api_internal_store.CustomDirective": {
+        "store.CustomDirective": {
             "type": "object",
             "properties": {
                 "description": {
@@ -1319,7 +1515,7 @@ const docTemplate = `{
                 }
             }
         },
-        "github_com_flightdeckhq_flightdeck_api_internal_store.DataPoint": {
+        "store.DataPoint": {
             "type": "object",
             "properties": {
                 "date": {
@@ -1330,7 +1526,7 @@ const docTemplate = `{
                 }
             }
         },
-        "github_com_flightdeckhq_flightdeck_api_internal_store.Directive": {
+        "store.Directive": {
             "type": "object",
             "properties": {
                 "action": {
@@ -1368,7 +1564,7 @@ const docTemplate = `{
                 }
             }
         },
-        "github_com_flightdeckhq_flightdeck_api_internal_store.Event": {
+        "store.Event": {
             "type": "object",
             "properties": {
                 "event_type": {
@@ -1421,7 +1617,7 @@ const docTemplate = `{
                 }
             }
         },
-        "github_com_flightdeckhq_flightdeck_api_internal_store.EventContent": {
+        "store.EventContent": {
             "type": "object",
             "properties": {
                 "captured_at": {
@@ -1447,13 +1643,13 @@ const docTemplate = `{
                 "tools": {}
             }
         },
-        "github_com_flightdeckhq_flightdeck_api_internal_store.EventsResponse": {
+        "store.EventsResponse": {
             "type": "object",
             "properties": {
                 "events": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/github_com_flightdeckhq_flightdeck_api_internal_store.Event"
+                        "$ref": "#/definitions/store.Event"
                     }
                 },
                 "has_more": {
@@ -1470,7 +1666,7 @@ const docTemplate = `{
                 }
             }
         },
-        "github_com_flightdeckhq_flightdeck_api_internal_store.FlavorSummary": {
+        "store.FlavorSummary": {
             "type": "object",
             "properties": {
                 "active_count": {
@@ -1488,7 +1684,7 @@ const docTemplate = `{
                 "sessions": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/github_com_flightdeckhq_flightdeck_api_internal_store.Session"
+                        "$ref": "#/definitions/store.Session"
                     }
                 },
                 "tokens_used_total": {
@@ -1496,7 +1692,7 @@ const docTemplate = `{
                 }
             }
         },
-        "github_com_flightdeckhq_flightdeck_api_internal_store.Policy": {
+        "store.Policy": {
             "type": "object",
             "properties": {
                 "block_at_pct": {
@@ -1531,7 +1727,7 @@ const docTemplate = `{
                 }
             }
         },
-        "github_com_flightdeckhq_flightdeck_api_internal_store.SearchResultAgent": {
+        "store.SearchResultAgent": {
             "type": "object",
             "properties": {
                 "agent_type": {
@@ -1545,7 +1741,7 @@ const docTemplate = `{
                 }
             }
         },
-        "github_com_flightdeckhq_flightdeck_api_internal_store.SearchResultEvent": {
+        "store.SearchResultEvent": {
             "type": "object",
             "properties": {
                 "event_id": {
@@ -1568,7 +1764,7 @@ const docTemplate = `{
                 }
             }
         },
-        "github_com_flightdeckhq_flightdeck_api_internal_store.SearchResultSession": {
+        "store.SearchResultSession": {
             "type": "object",
             "properties": {
                 "context": {
@@ -1604,30 +1800,30 @@ const docTemplate = `{
                 }
             }
         },
-        "github_com_flightdeckhq_flightdeck_api_internal_store.SearchResults": {
+        "store.SearchResults": {
             "type": "object",
             "properties": {
                 "agents": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/github_com_flightdeckhq_flightdeck_api_internal_store.SearchResultAgent"
+                        "$ref": "#/definitions/store.SearchResultAgent"
                     }
                 },
                 "events": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/github_com_flightdeckhq_flightdeck_api_internal_store.SearchResultEvent"
+                        "$ref": "#/definitions/store.SearchResultEvent"
                     }
                 },
                 "sessions": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/github_com_flightdeckhq_flightdeck_api_internal_store.SearchResultSession"
+                        "$ref": "#/definitions/store.SearchResultSession"
                     }
                 }
             }
         },
-        "github_com_flightdeckhq_flightdeck_api_internal_store.Session": {
+        "store.Session": {
             "type": "object",
             "properties": {
                 "agent_type": {
@@ -1689,6 +1885,10 @@ const docTemplate = `{
                 "token_limit": {
                     "type": "integer"
                 },
+                "token_name": {
+                    "description": "TokenName is the human-readable name of the access_tokens row\nthat authenticated the session_start event (D095). Nullable:\ntok_dev-authenticated sessions and pre-Phase-5 rows carry NULL.\nPreserved across token revocation (sessions.token_id clears via\nON DELETE SET NULL but sessions.token_name is a static snapshot\nso the dashboard can attribute historical sessions even after\nthe token row is gone). Mirrors the SessionListItem.TokenName\nreturned by GetSessions.",
+                    "type": "string"
+                },
                 "tokens_used": {
                     "type": "integer"
                 },
@@ -1697,9 +1897,12 @@ const docTemplate = `{
                 }
             }
         },
-        "github_com_flightdeckhq_flightdeck_api_internal_store.SessionListItem": {
+        "store.SessionListItem": {
             "type": "object",
             "properties": {
+                "agent_type": {
+                    "type": "string"
+                },
                 "capture_enabled": {
                     "type": "boolean"
                 },
@@ -1746,7 +1949,7 @@ const docTemplate = `{
                 }
             }
         },
-        "github_com_flightdeckhq_flightdeck_api_internal_store.SessionsResponse": {
+        "store.SessionsResponse": {
             "type": "object",
             "properties": {
                 "has_more": {
@@ -1761,207 +1964,11 @@ const docTemplate = `{
                 "sessions": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/github_com_flightdeckhq_flightdeck_api_internal_store.SessionListItem"
+                        "$ref": "#/definitions/store.SessionListItem"
                     }
                 },
                 "total": {
                     "type": "integer"
-                }
-            }
-        },
-        "internal_handlers.CreateAccessTokenRequest": {
-            "type": "object",
-            "properties": {
-                "name": {
-                    "type": "string"
-                }
-            }
-        },
-        "internal_handlers.CustomDirectivesListResponse": {
-            "type": "object",
-            "properties": {
-                "directives": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/github_com_flightdeckhq_flightdeck_api_internal_store.CustomDirective"
-                    }
-                }
-            }
-        },
-        "internal_handlers.DeleteCustomDirectivesResponse": {
-            "type": "object",
-            "properties": {
-                "deleted": {
-                    "type": "integer"
-                }
-            }
-        },
-        "internal_handlers.DirectiveRequest": {
-            "type": "object",
-            "properties": {
-                "action": {
-                    "type": "string"
-                },
-                "directive_name": {
-                    "type": "string"
-                },
-                "fingerprint": {
-                    "type": "string"
-                },
-                "flavor": {
-                    "type": "string"
-                },
-                "grace_period_ms": {
-                    "type": "integer"
-                },
-                "parameters": {
-                    "type": "object"
-                },
-                "reason": {
-                    "type": "string"
-                },
-                "session_id": {
-                    "type": "string"
-                }
-            }
-        },
-        "internal_handlers.ErrorResponse": {
-            "type": "object",
-            "properties": {
-                "error": {
-                    "type": "string"
-                }
-            }
-        },
-        "internal_handlers.FleetResponse": {
-            "type": "object",
-            "properties": {
-                "context_facets": {
-                    "type": "object",
-                    "additionalProperties": {
-                        "type": "array",
-                        "items": {
-                            "$ref": "#/definitions/github_com_flightdeckhq_flightdeck_api_internal_store.ContextFacetValue"
-                        }
-                    }
-                },
-                "flavors": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/github_com_flightdeckhq_flightdeck_api_internal_store.FlavorSummary"
-                    }
-                },
-                "total_session_count": {
-                    "type": "integer"
-                }
-            }
-        },
-        "internal_handlers.PolicyRequest": {
-            "type": "object",
-            "properties": {
-                "block_at_pct": {
-                    "type": "integer"
-                },
-                "degrade_at_pct": {
-                    "type": "integer"
-                },
-                "degrade_to": {
-                    "type": "string"
-                },
-                "scope": {
-                    "type": "string"
-                },
-                "scope_value": {
-                    "type": "string"
-                },
-                "token_limit": {
-                    "type": "integer"
-                },
-                "warn_at_pct": {
-                    "type": "integer"
-                }
-            }
-        },
-        "internal_handlers.RegisterDirectivesRequest": {
-            "type": "object",
-            "properties": {
-                "directives": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/github_com_flightdeckhq_flightdeck_api_internal_store.CustomDirective"
-                    }
-                },
-                "flavor": {
-                    "type": "string"
-                }
-            }
-        },
-        "internal_handlers.RegisterDirectivesResponse": {
-            "type": "object",
-            "properties": {
-                "registered": {
-                    "type": "integer"
-                }
-            }
-        },
-        "internal_handlers.RenameAccessTokenRequest": {
-            "type": "object",
-            "properties": {
-                "name": {
-                    "type": "string"
-                }
-            }
-        },
-        "internal_handlers.SessionResponse": {
-            "type": "object",
-            "properties": {
-                "attachments": {
-                    "type": "array",
-                    "items": {
-                        "type": "string"
-                    }
-                },
-                "events": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/github_com_flightdeckhq_flightdeck_api_internal_store.Event"
-                    }
-                },
-                "session": {
-                    "$ref": "#/definitions/github_com_flightdeckhq_flightdeck_api_internal_store.Session"
-                }
-            }
-        },
-        "internal_handlers.SyncDirectivesRequest": {
-            "type": "object",
-            "properties": {
-                "directives": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "fingerprint": {
-                                "type": "string"
-                            },
-                            "name": {
-                                "type": "string"
-                            }
-                        }
-                    }
-                },
-                "flavor": {
-                    "type": "string"
-                }
-            }
-        },
-        "internal_handlers.SyncDirectivesResponse": {
-            "type": "object",
-            "properties": {
-                "unknown_fingerprints": {
-                    "type": "array",
-                    "items": {
-                        "type": "string"
-                    }
                 }
             }
         }

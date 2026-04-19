@@ -98,6 +98,16 @@ type Session struct {
 	// etc. -- see sensor/flightdeck_sensor/core/context.py.
 	Context map[string]any `json:"context,omitempty"`
 
+	// TokenName is the human-readable name of the access_tokens row
+	// that authenticated the session_start event (D095). Nullable:
+	// tok_dev-authenticated sessions and pre-Phase-5 rows carry NULL.
+	// Preserved across token revocation (sessions.token_id clears via
+	// ON DELETE SET NULL but sessions.token_name is a static snapshot
+	// so the dashboard can attribute historical sessions even after
+	// the token row is gone). Mirrors the SessionListItem.TokenName
+	// returned by GetSessions.
+	TokenName *string `json:"token_name"`
+
 	// Active policy thresholds (nullable).
 	// Populated by GetSession via effective policy lookup.
 	// Null if no policy applies at any scope.
@@ -187,7 +197,7 @@ func (s *Store) GetFleet(ctx context.Context, limit, offset int, agentType strin
 	rows, err := s.pool.Query(ctx, `
 		SELECT session_id::text, flavor, agent_type, host, framework, model,
 		       state, started_at, last_seen_at, ended_at, tokens_used, token_limit,
-		       context
+		       context, token_name
 		FROM sessions
 		WHERE state != 'lost'`+agentFilter+`
 		ORDER BY flavor, started_at DESC
@@ -209,7 +219,7 @@ func (s *Store) GetFleet(ctx context.Context, limit, offset int, agentType strin
 			&sess.Host, &sess.Framework, &sess.Model,
 			&sess.State, &sess.StartedAt, &sess.LastSeenAt,
 			&sess.EndedAt, &sess.TokensUsed, &sess.TokenLimit,
-			&contextRaw,
+			&contextRaw, &sess.TokenName,
 		); err != nil {
 			return nil, 0, fmt.Errorf("scan session: %w", err)
 		}
@@ -254,7 +264,7 @@ func (s *Store) GetSession(ctx context.Context, sessionID string) (*Session, err
 		SELECT
 			s.session_id::text, s.flavor, s.agent_type, s.host, s.framework, s.model,
 			s.state, s.started_at, s.last_seen_at, s.ended_at, s.tokens_used, s.token_limit,
-			s.context,
+			s.context, s.token_name,
 			COALESCE(ps.token_limit, pf.token_limit, po.token_limit) AS policy_token_limit,
 			COALESCE(ps.warn_at_pct, pf.warn_at_pct, po.warn_at_pct) AS warn_at_pct,
 			COALESCE(ps.degrade_at_pct, pf.degrade_at_pct, po.degrade_at_pct) AS degrade_at_pct,
@@ -279,7 +289,7 @@ func (s *Store) GetSession(ctx context.Context, sessionID string) (*Session, err
 		&sess.Host, &sess.Framework, &sess.Model,
 		&sess.State, &sess.StartedAt, &sess.LastSeenAt,
 		&sess.EndedAt, &sess.TokensUsed, &sess.TokenLimit,
-		&contextRaw,
+		&contextRaw, &sess.TokenName,
 		&sess.PolicyTokenLimit, &sess.WarnAtPct, &sess.DegradeAtPct,
 		&sess.DegradeTo, &sess.BlockAtPct,
 		&sess.CaptureEnabled,

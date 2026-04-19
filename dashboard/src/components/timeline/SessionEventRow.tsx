@@ -281,6 +281,29 @@ function SessionEventRowComponent({
         >
           {session.state}
         </span>
+        {session.token_name && (
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span
+                  data-testid="session-row-token-name"
+                  className="rounded font-mono text-[10px] px-[5px] py-[1px] max-w-[96px] overflow-hidden"
+                  style={{
+                    background: "var(--bg-elevated)",
+                    color: "var(--text-muted)",
+                    border: "1px solid var(--border-subtle)",
+                    flexShrink: 0,
+                    whiteSpace: "nowrap",
+                    textOverflow: "ellipsis",
+                  }}
+                >
+                  {session.token_name}
+                </span>
+              </TooltipTrigger>
+              <TooltipContent>Access token: {session.token_name}</TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+        )}
         {session.capture_enabled && (
           <TooltipProvider>
             <Tooltip>

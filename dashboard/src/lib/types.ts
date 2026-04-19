@@ -54,6 +54,13 @@ export interface Session {
    * Computed by the API via EXISTS subquery; no schema change required.
    */
   capture_enabled?: boolean;
+  /**
+   * Name of the access_tokens row that opened this session (D095).
+   * Null for tok_dev-authenticated sessions and pre-Phase-5 rows.
+   * Preserved across token revocation so historical sessions keep
+   * their attribution snapshot.
+   */
+  token_name?: string | null;
 }
 
 /**

@@ -1,0 +1,219 @@
+# Default values for the flightdeck chart.
+# All values are documented with their production implications.
+#
+# Image tags are pinned to v0.2.0 because that is the latest tag currently
+# published on Docker Hub. When v0.3.0 images ship, bump image.tag here.
+
+nameOverride: ""
+fullnameOverride: ""
+
+image:
+  registry: docker.io
+  repository: flightdeckhq
+  tag: "v0.2.0"
+  pullPolicy: IfNotPresent
+  pullSecrets: []
+
+# Agent-side defaults documented for operators who want to consume them in
+# their agent deployments via envFrom on the flightdeck-config ConfigMap.
+# These keys do not affect server-component behaviour; they are surfaced in
+# the ConfigMap for convenience only. Reference: ARCHITECTURE.md lines 2754-2759.
+flightdeck:
+  agents:
+    flavor: ""
+    type: "autonomous"
+  unavailablePolicy: "continue"
+  capturePrompts: false
+
+ingestion:
+  replicas: 2
+  port: 8080
+  image:
+    repository: flightdeck-ingestion
+    tag: ""  # inherits image.tag when empty
+  env: "production"
+  shutdownTimeoutSecs: 30
+  rateLimitPerMinute: 1000
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  service:
+    type: ClusterIP
+    port: 8080
+  hpa:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+workers:
+  replicas: 2
+  image:
+    repository: flightdeck-workers
+    tag: ""
+  poolSize: 10
+  shutdownTimeoutSecs: 30
+  migrationsDir: /migrations
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+api:
+  replicas: 2
+  port: 8081
+  image:
+    repository: flightdeck-api
+    tag: ""
+  env: "production"
+  shutdownTimeoutSecs: 30
+  corsOrigin: "*"
+  auth:
+    # JWT bootstrap is evaluated at api startup when env == "production".
+    # jwtSecret must be set; adminEmail + adminPassword create the initial
+    # admin user on first boot.
+    jwtSecret: ""
+    adminEmail: ""
+    adminPassword: ""
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  service:
+    type: ClusterIP
+    port: 8081
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+dashboard:
+  replicas: 2
+  port: 3000
+  image:
+    repository: flightdeck-dashboard
+    tag: ""
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+  service:
+    type: ClusterIP
+    port: 3000
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+nats:
+  enabled: true  # There is no external-NATS escape hatch in v0.3.0.
+  image:
+    repository: nats
+    tag: "2.10.22-alpine"
+  replicas: 3
+  clientPort: 4222
+  monitorPort: 8222
+  jetstream:
+    enabled: true
+    fileStore:
+      size: "10Gi"
+      storageClassName: ""
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+postgres:
+  # externalUrl is the single escape hatch for Postgres: when set to a full
+  # DSN (e.g. postgres://user:pass@host:5432/flightdeck?sslmode=require) the
+  # bundled StatefulSet and Service are not rendered and every dependent
+  # service reads this DSN from the generated secret. When empty the chart
+  # ships its own single-instance StatefulSet. v0.3.0 does not provide HA or
+  # backups for the bundled database; use externalUrl for either.
+  externalUrl: ""
+  image:
+    repository: postgres
+    tag: "16.4-alpine"
+  user: flightdeck
+  password: ""  # generated if left empty (printed once into the Secret)
+  database: flightdeck
+  port: 5432
+  sslmode: disable
+  storage:
+    size: "20Gi"
+    storageClassName: ""
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: 1000m
+      memory: 2Gi
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  host: flightdeck.local
+  tls: []
+  # Paths are routed to the three public services. The Ingress controller
+  # must support the pathType used here.
+  paths:
+    - path: /ingest
+      pathType: Prefix
+      service: ingestion
+    - path: /api
+      pathType: Prefix
+      service: api
+    - path: /
+      pathType: Prefix
+      service: dashboard
+
+serviceAccount:
+  # Per-component ServiceAccounts are always rendered. Roles/RoleBindings
+  # are empty by default (no permissions granted) -- they exist as a
+  # placeholder for operators who want to scope future permissions.
+  create: true
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: false
+  capabilities:
+    drop: ["ALL"]

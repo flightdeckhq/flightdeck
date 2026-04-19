@@ -1,0 +1,17 @@
+apiVersion: v2
+name: flightdeck
+description: Flightdeck control plane for Kubernetes (bundled Postgres + NATS).
+type: application
+version: 0.3.0
+appVersion: "0.2.0"
+kubeVersion: ">=1.25.0-0"
+home: https://github.com/flightdeckhq/flightdeck
+sources:
+  - https://github.com/flightdeckhq/flightdeck
+keywords:
+  - observability
+  - llm
+  - agents
+maintainers:
+  - name: flightdeckhq
+    url: https://github.com/flightdeckhq

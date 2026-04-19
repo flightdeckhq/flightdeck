@@ -1,0 +1,1 @@
+ALTER TABLE directives ADD COLUMN IF NOT EXISTS degrade_to TEXT;

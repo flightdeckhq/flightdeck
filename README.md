@@ -286,9 +286,141 @@ Two background daemon threads run inside the sensor. `flightdeck-event-queue` dr
 
 ## Self-hosting
 
-The full stack runs via Docker Compose today. `make dev` brings up the dev overlay: nginx on port 4000, the `tok_dev` seed, development logging. For a self-hosted production deployment, run `docker/docker-compose.yml` without the dev overlay, terminate TLS at your own reverse proxy, leave `ENVIRONMENT` unset so `tok_dev` is rejected, and mint a real access token from the Settings page once the stack is up.
+Flightdeck is self-hosted. Two deployment targets are supported: Docker Compose (single host) and a Helm chart for Kubernetes with a bundled Postgres + NATS shape. The sections below cover the Docker Compose production overlay step by step, then point at the Helm chart with a values reference table.
 
-A Helm chart for Kubernetes is in progress and will ship in a future release.
+### Prerequisites
+
+- Docker Engine 28+ with Compose v2 (`docker compose version` reports `v2.x`).
+- A DNS A/AAAA record for the host, e.g. `flightdeck.example.com`.
+- A TLS cert for that hostname. The walkthrough below uses `certbot`. Bring-your-own-cert works too -- any `fullchain.pem` + `privkey.pem` pair does.
+- Ports 80 and 443 reachable from the public internet (certbot's HTTP-01 challenge needs port 80 during issuance; nginx serves HTTPS on 443).
+
+### 1. Get a TLS certificate
+
+Certbot's standalone mode is the shortest path. It binds port 80 for the ACME HTTP-01 challenge, so nothing else can be listening on 80 during issuance:
+
+```bash
+sudo certbot certonly --standalone \
+  -d flightdeck.example.com \
+  --non-interactive --agree-tos \
+  -m ops@example.com --no-eff-email
+```
+
+Certbot writes the cert to `/etc/letsencrypt/live/flightdeck.example.com/`. If port 80 is already in use (nginx already serving another site, say), use `--webroot -w /var/www/certbot` instead. The prod nginx config serves `/.well-known/acme-challenge/` from that path for in-place renewals.
+
+For renewal, certbot ships its own systemd timer (`systemctl list-timers | grep certbot`) and a cron recipe. Renewals happen in place; reload nginx to pick up the new cert:
+
+```bash
+docker compose \
+  -f docker/docker-compose.yml \
+  -f docker/docker-compose.prod.yml \
+  exec nginx nginx -s reload
+```
+
+### 2. Place the certificate where nginx expects it
+
+The prod compose file mounts `/etc/nginx/certs` on the host read-only into the nginx container and expects `fullchain.pem` + `privkey.pem` inside it. Symlink certbot's output so renewals are picked up automatically:
+
+```bash
+sudo mkdir -p /etc/nginx/certs
+sudo ln -sf /etc/letsencrypt/live/flightdeck.example.com/fullchain.pem \
+  /etc/nginx/certs/fullchain.pem
+sudo ln -sf /etc/letsencrypt/live/flightdeck.example.com/privkey.pem \
+  /etc/nginx/certs/privkey.pem
+```
+
+Bring-your-own-cert: drop the two PEM files directly into `/etc/nginx/certs/` with the same filenames.
+
+### 3. Start the stack
+
+```bash
+git clone https://github.com/flightdeckhq/flightdeck
+cd flightdeck
+docker compose \
+  -f docker/docker-compose.yml \
+  -f docker/docker-compose.prod.yml up -d
+```
+
+What the overlay does (full rationale in `docker/docker-compose.prod.yml`):
+
+- TLS at nginx on 443, 80 → 443 redirect. No direct service ports exposed.
+- `ENVIRONMENT` unset on ingestion and api, so the seed `tok_dev` row is rejected (D095).
+- `restart: unless-stopped` on every service, memory and CPU ceilings sized for light-to-moderate load, named volumes for Postgres data and NATS JetStream.
+
+Check the stack is healthy:
+
+```bash
+docker compose \
+  -f docker/docker-compose.yml \
+  -f docker/docker-compose.prod.yml ps
+```
+
+Every service except nginx listens on the internal compose network only. `workers` has no HTTP surface and shows no open ports; that is correct.
+
+### 4. Mint your first access token
+
+Open `https://flightdeck.example.com/` in a browser. The dashboard prompts for credentials on first boot; use the admin email + password you configured (env vars `FLIGHTDECK_ADMIN_EMAIL` and `FLIGHTDECK_ADMIN_PASSWORD` on the `api` service -- override both in a `.env` file or inline on the `docker compose up` command).
+
+Go to **Settings → Access tokens → Create**. Give the token a name that identifies its caller (e.g. `research-fleet-us-east`). Plaintext is shown once at creation time and is not recoverable afterwards -- copy it into your secret store before closing the modal.
+
+Point an agent at the stack:
+
+```bash
+export FLIGHTDECK_SERVER="https://flightdeck.example.com/ingest"
+export FLIGHTDECK_TOKEN="ftd_..."
+```
+
+The agent appears in the fleet view within seconds of its first LLM call.
+
+### Kubernetes (Helm)
+
+A chart lives at `helm/`. One-command install against an existing cluster with an external managed Postgres:
+
+```bash
+helm install flightdeck helm/ \
+  --namespace flightdeck --create-namespace \
+  --values helm/values.prod.yaml \
+  --set postgres.externalUrl="postgres://user:pass@rds.example.com:5432/flightdeck?sslmode=require" \
+  --set api.auth.jwtSecret="$(openssl rand -hex 32)" \
+  --set api.auth.adminEmail="ops@example.com" \
+  --set api.auth.adminPassword="$(openssl rand -hex 16)"
+```
+
+Without `postgres.externalUrl` the chart ships its own single-instance Postgres StatefulSet -- fine for small deployments, not HA and not backed up. NATS is always bundled in v0.3.0.
+
+The chart is `v0.3.0` (Chart.yaml) with `appVersion: 0.2.0` because `v0.3.0` container images are not yet published on Docker Hub. Bump `image.tag` in `values.yaml` once they are.
+
+### Helm values reference
+
+The ~20 values an operator is most likely to override. See `helm/values.yaml` for the full schema including resources, node selectors, and security contexts.
+
+| Key | Default | Description |
+|---|---|---|
+| `image.registry` | `docker.io` | Container registry host for all Flightdeck images. |
+| `image.repository` | `flightdeckhq` | Namespace under the registry. |
+| `image.tag` | `v0.2.0` | Image tag applied to ingestion/workers/api/dashboard unless the per-component `image.tag` overrides it. |
+| `image.pullSecrets` | `[]` | `imagePullSecrets` for private registries. |
+| `ingestion.replicas` | `2` | Initial replica count. HPA overrides this at runtime when enabled. |
+| `ingestion.hpa.enabled` | `true` | Enable the HorizontalPodAutoscaler for ingestion. |
+| `ingestion.hpa.minReplicas` | `2` | HPA lower bound. |
+| `ingestion.hpa.maxReplicas` | `10` | HPA upper bound. |
+| `workers.replicas` | `2` | NATS consumer pod count. |
+| `workers.poolSize` | `10` | Per-pod goroutine pool size for NATS consumption. |
+| `api.replicas` | `2` | Query API replica count. |
+| `api.auth.jwtSecret` | *(empty)* | Required in production. HMAC secret for dashboard JWTs; at least 32 bytes. |
+| `api.auth.adminEmail` | *(empty)* | Bootstrap admin email. |
+| `api.auth.adminPassword` | *(empty)* | Bootstrap admin password. |
+| `api.corsOrigin` | `*` | `Access-Control-Allow-Origin` for the query API. Lock this down to your dashboard origin in prod. |
+| `dashboard.replicas` | `2` | Dashboard pod count. |
+| `postgres.externalUrl` | *(empty)* | Single escape hatch. When set to a DSN, the bundled Postgres StatefulSet is not rendered and every service reads this DSN from the generated Secret. |
+| `postgres.password` | *(empty)* | Superuser password for the bundled StatefulSet. Ignored when `externalUrl` is set. |
+| `postgres.storage.size` | `20Gi` | PVC size for the bundled StatefulSet. |
+| `nats.replicas` | `3` | NATS StatefulSet replica count. |
+| `nats.jetstream.fileStore.size` | `10Gi` | PVC size per NATS replica. |
+| `ingress.enabled` | `false` | Render an Ingress that routes `/` to the dashboard, `/api` to the query API, and `/ingest` to the ingestion API. |
+| `ingress.className` | *(empty)* | `ingressClassName` on the Ingress resource. |
+| `ingress.host` | `flightdeck.local` | Host header routed by the Ingress. |
+| `ingress.tls` | `[]` | Pass through to the Ingress `tls:` stanza; typically one entry with a `secretName` populated by cert-manager. |
 
 ---
 

@@ -1,0 +1,100 @@
+# Production compose overlay. Run with:
+#
+#   docker compose \
+#     -f docker/docker-compose.yml \
+#     -f docker/docker-compose.prod.yml up -d
+#
+# What this overlay does:
+#
+#   * Terminates TLS at nginx on 443, redirects 80 -> 443. No direct
+#     service ports are exposed to the host -- ingestion, api, and
+#     dashboard are reachable only through nginx.
+#   * Leaves ENVIRONMENT unset on ingestion and api so the seed
+#     ``tok_dev`` row becomes inert (D095). Operators mint real
+#     ``ftd_`` tokens from the Settings page after first boot.
+#   * ``restart: unless-stopped`` on every service.
+#   * Memory and CPU ceilings on every service so a runaway worker
+#     cannot starve the host. Reservations are sized for light-to-
+#     moderate load; tune for your fleet size.
+#   * Named volumes for Postgres data and NATS JetStream storage.
+#
+# ``!override`` tags on ``ports`` / ``volumes`` replace the base lists
+# instead of appending to them (Compose's default merge behaviour for
+# lists). This is what lets the overlay strip host port bindings from
+# postgres / nats / dashboard / api / ingestion and swap the nginx
+# config mount from nginx.dev.conf to nginx.prod.conf.
+#
+# TLS certs: mount your fullchain + privkey at /etc/nginx/certs on the
+# host. Paths expected inside the container:
+#   /etc/nginx/certs/fullchain.pem
+#   /etc/nginx/certs/privkey.pem
+# Certbot's default output (``/etc/letsencrypt/live/<domain>/``) matches
+# these filenames; symlink or copy them into /etc/nginx/certs.
+#
+# NOT in scope for this overlay (tracked for v0.4.0+):
+#   * Auto-renew systemd unit / cron
+#   * Monitoring / Prometheus scrape configs
+#   * HA Postgres, multi-host deploys, load balancer upstream of nginx
+
+services:
+  postgres:
+    restart: unless-stopped
+    ports: !override []
+    mem_limit: 2g
+    mem_reservation: 512m
+    cpus: 2.0
+
+  nats:
+    restart: unless-stopped
+    ports: !override []
+    mem_limit: 1g
+    mem_reservation: 256m
+    cpus: 1.0
+
+  ingestion:
+    restart: unless-stopped
+    ports: !override []
+    environment:
+      # D095: seed tok_dev is only accepted when ENVIRONMENT=dev. The
+      # base compose opts in for developer workstations; prod leaves it
+      # unset so the seed row is rejected with 401.
+      ENVIRONMENT: ""
+      FLIGHTDECK_ENV: production
+    mem_limit: 1g
+    mem_reservation: 256m
+    cpus: 1.0
+
+  workers:
+    restart: unless-stopped
+    mem_limit: 1g
+    mem_reservation: 256m
+    cpus: 1.0
+
+  api:
+    restart: unless-stopped
+    ports: !override []
+    environment:
+      ENVIRONMENT: ""
+      FLIGHTDECK_ENV: production
+    mem_limit: 1g
+    mem_reservation: 256m
+    cpus: 1.0
+
+  dashboard:
+    restart: unless-stopped
+    ports: !override []
+    mem_limit: 256m
+    mem_reservation: 64m
+    cpus: 0.5
+
+  nginx:
+    restart: unless-stopped
+    ports: !override
+      - "80:80"
+      - "443:443"
+    volumes: !override
+      - ./nginx/nginx.prod.conf:/etc/nginx/conf.d/default.conf:ro
+      - /etc/nginx/certs:/etc/nginx/certs:ro
+    mem_limit: 256m
+    mem_reservation: 64m
+    cpus: 0.5

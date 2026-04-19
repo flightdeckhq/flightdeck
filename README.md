@@ -51,6 +51,8 @@ client.messages.create(model="claude-sonnet-4-6", ...)
 
 The agent shows up in the fleet view within seconds.
 
+Working examples for every supported framework -- LangChain, LangGraph, LlamaIndex, CrewAI, direct SDKs -- live in [`playground/`](playground/). Copy the one that matches your stack.
+
 To run the sensor from source instead of PyPI: `pip install -e sensor/` from the repo root.
 
 ---

@@ -89,6 +89,13 @@ This runs:
 4. Open a PR against `main` — CI runs automatically
 5. All CI checks must pass before merge
 
+## Releasing
+
+Before tagging a release, run `make test-smoke` against a live stack with real
+provider API keys (`ANTHROPIC_API_KEY` + `OPENAI_API_KEY` exported). The
+target runs [`playground/`](playground/), which exercises every framework
+integration end-to-end. Cost: under $0.05 per run.
+
 ## Database Migrations
 
 Schema changes are managed by [golang-migrate](https://github.com/golang-migrate/migrate).

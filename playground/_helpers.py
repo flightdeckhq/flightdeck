@@ -33,24 +33,42 @@ def init_sensor(session_id: str, **overrides: Any) -> None:
     )
 
 
-def assert_event_landed(session_id: str, event_type: str, timeout: float = 5.0) -> None:
-    """Poll GET /api/v1/sessions/{id} until *event_type* appears."""
+def assert_event_landed(session_id: str, event_type: str, timeout: float = 5.0,
+                        model_contains: str | None = None) -> None:
+    """Poll GET /api/v1/sessions/{id} until *event_type* appears.
+
+    When *model_contains* is given, also require that at least one
+    matching event's `model` field contains that substring -- use this
+    to tie the assertion to a specific provider call rather than any
+    event of the requested type.
+    """
     api = os.environ.get("FLIGHTDECK_API_URL", "http://localhost:4000/api")
     tok = os.environ.get("FLIGHTDECK_TOKEN", "tok_dev")
     req = urllib.request.Request(f"{api}/v1/sessions/{session_id}",
         headers={"Authorization": f"Bearer {tok}"})
     deadline = time.monotonic() + timeout
-    last: set[str] = set()
+    seen_types: set[str] = set()
+    seen_models: set[str] = set()
     while time.monotonic() < deadline:
         try:
             with urllib.request.urlopen(req, timeout=2) as r:
-                last = {e["event_type"] for e in json.loads(r.read()).get("events", [])}
-            if event_type in last: return
-        except Exception: pass
+                events = json.loads(r.read()).get("events", [])
+            seen_types = {e["event_type"] for e in events}
+            matches = [e for e in events if e.get("event_type") == event_type]
+            seen_models = {e.get("model") or "" for e in matches}
+            if event_type in seen_types and (
+                model_contains is None
+                or any(model_contains in (e.get("model") or "") for e in matches)
+            ):
+                return
+        except Exception:
+            pass
         time.sleep(0.3)
+    detail = (f"with model containing {model_contains!r} (saw models {sorted(seen_models)})"
+              if model_contains else f"(saw {sorted(seen_types) or 'nothing'})")
     raise AssertionError(
         f"event_type {event_type!r} never arrived for session {session_id} "
-        f"within {timeout}s (saw {sorted(last) or 'nothing'}). Is the stack running at {api}?")
+        f"within {timeout}s {detail}. Is the stack running at {api}?")
 
 
 def print_result(label: str, passed: bool, duration_ms: int, details: str = "") -> None:

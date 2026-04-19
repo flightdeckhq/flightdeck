@@ -13,7 +13,7 @@ The suite also doubles as a pre-release smoke check: `python playground/run_all.
 | `03_langchain.py` | `langchain-anthropic`, `langchain-openai` | `ChatAnthropic.invoke` + `ChatOpenAI.invoke` |
 | `04_langgraph.py` | langgraph | StateGraph routing through ChatAnthropic |
 | `05_llamaindex.py` | `llama-index-llms-anthropic`, `llama-index-llms-openai` | `.complete(...)` for both providers |
-| `06_crewai.py` | crewai | `LLM("openai/gpt-4o-mini").call(...)` |
+| `06_crewai.py` | crewai | `LLM("anthropic/...").call(...)` + `LLM("openai/...").call(...)` |
 | `07_directives.py` | anthropic | register → POST custom directive → handler runs |
 | `08_enforcement.py` | anthropic | server policy `block_at_pct=1` → `BudgetExceededError` |
 | `09_capture.py` | anthropic | `capture_prompts` OFF (404) vs ON (200) |
@@ -45,4 +45,4 @@ make test-smoke
 
 ## Known limitations
 
-- **CrewAI Anthropic path (KI19).** `06_crewai.py` runs on OpenAI because CrewAI's Anthropic backend routes through litellm, which builds its own HTTP layer rather than using the `anthropic` SDK classes that `flightdeck_sensor.patch()` hooks. Drive Anthropic through LangChain (`03_langchain.py`) or LlamaIndex (`05_llamaindex.py`) if you need Anthropic telemetry with CrewAI-style orchestration. See [KNOWN_ISSUES.md](../KNOWN_ISSUES.md#deferred-to-v040) KI19.
+- **litellm Anthropic path (KI21).** Flightdeck intercepts LLM calls by patching the anthropic and openai SDK classes. litellm's openai provider uses the openai SDK and is therefore intercepted. litellm's anthropic provider uses raw httpx and bypasses the anthropic SDK, so apps calling `litellm.completion(model="anthropic/...")` directly (or routing through libraries that do) will not have those calls observed until v0.4.0 ships the httpx-level interceptor. See [KNOWN_ISSUES.md](../KNOWN_ISSUES.md#deferred-to-v040) KI21. CrewAI 1.14+ uses native providers for anthropic and openai, so its calls are intercepted normally (see `06_crewai.py`).

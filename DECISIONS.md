@@ -2060,6 +2060,9 @@ Resolved in: Phase 4.9
 
 ## D089 -- Smoke test suite: plain Python, real API keys
 
+**Superseded in part by D111 and D112.** CrewAI native providers ARE
+intercepted. litellm coverage is provider-dependent.
+
 **Decision:** The smoke test suite (`tests/smoke/smoke_test.py`) uses
 plain Python with no test framework (no pytest, no unittest).
 
@@ -3650,5 +3653,60 @@ script picks up the plugin-shaped env var.
 the developer to pick one convention. The `playground/_helpers.py`
 normalisation is a workaround; removing it is the cleanup signal that
 the sensor side is fixed.
+
+---
+
+## D111 -- CrewAI native providers are intercepted (supersedes parts of D089)
+
+**Decision:** CrewAI 1.14.1's model-string prefix routing in
+`crewai/llm.py:300-393` maps `anthropic/`, `openai/`, `claude/`,
+`azure/`, `gemini/`, `bedrock/` prefixes to native provider classes
+under `crewai/llms/providers/`. The native Anthropic provider
+(`crewai/llms/providers/anthropic/completion.py:192,793`) constructs
+`anthropic.Anthropic()` and calls `.messages.create()`. The native
+OpenAI provider (`crewai/llms/providers/openai/completion.py:262,1614`)
+constructs `openai.OpenAI()` and calls `.chat.completions.create()`.
+Both are exactly the SDK-class descriptors `flightdeck_sensor.patch()`
+hooks, so CrewAI native provider calls are intercepted identically to
+direct SDK usage.
+
+**Verification:** `playground/06_crewai.py` exercises both providers
+against `make dev`. Both land `post_call` events.
+
+**Out of scope:** CrewAI model strings that fall through to litellm
+(`is_litellm=True` kwarg, or prefixes not in
+`SUPPORTED_NATIVE_PROVIDERS`) inherit litellm's per-provider behaviour
+-- openai intercepted, anthropic not (see D112 / KI21).
+
+**Supersedes:** prior decisions including D089 that framed CrewAI as
+"routes through litellm" or "excluded from framework support" -- those
+were based on an incorrect reading of CrewAI's LLM factory.
+
+---
+
+## D112 -- litellm coverage is provider-mechanism dependent
+
+**Decision:** litellm's per-provider completion handlers each pick
+their own HTTP mechanism. Verified against litellm 1.83.10:
+
+- **OpenAI** (`litellm/llms/openai/openai.py:24,386,397`): constructs
+  `openai.OpenAI()` / `AsyncOpenAI()` and calls
+  `.chat.completions.create()`. Intercepted by
+  `flightdeck_sensor.patch(providers=["openai"])`.
+
+- **Anthropic** (`litellm/llms/anthropic/chat/handler.py:31-35,91,149,278,481`):
+  uses `litellm.llms.custom_httpx.http_handler._get_httpx_client` and
+  `get_async_httpx_client` to issue raw `httpx.Client.post()` /
+  `AsyncClient.post()` requests. Does NOT construct
+  `anthropic.Anthropic()`. NOT intercepted by class-level SDK patching.
+
+- **Other providers** (Bedrock, Vertex, Cohere, etc.): not verified;
+  likely follow the same per-provider pattern.
+
+**v0.4.0 follow-up:** close the litellm gap via a sensor-side
+interceptor (httpx patching OR `litellm.success_callback` registration,
+after confirming the callback's supported-API status). Tracked as KI21.
+Addresses litellm-direct users and any framework that routes LLM calls
+through litellm's httpx-based providers.
 
 ---

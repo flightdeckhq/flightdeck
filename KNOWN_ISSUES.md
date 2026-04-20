@@ -24,7 +24,7 @@ fix in DECISIONS.md. Never leave a resolved TODO comment in the code.
 
 ## Open
 
-*(None as of Phase 5 close. New Phase-6 items land here as discovered.)*
+*(None currently open. Items discovered in the rest of Phase 5 or during Phase 6 land here.)*
 
 ## Deferred to v0.4.0
 

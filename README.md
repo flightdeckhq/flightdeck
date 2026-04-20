@@ -75,7 +75,7 @@ After `init()` + `patch()`, frameworks that build Anthropic or OpenAI clients in
 | LangChain    | `langchain-anthropic` (`ChatAnthropic.invoke`), `langchain-openai` (`ChatOpenAI.invoke`) |
 | LangGraph    | Covered transitively via LangChain. Any graph routing through `ChatAnthropic` or `ChatOpenAI` is intercepted, including `langgraph.prebuilt.create_react_agent` tool loops. |
 | LlamaIndex   | `llama-index-llms-anthropic` and `llama-index-llms-openai` (`.complete`)                 |
-| CrewAI 1.14+ | `LLM(model=...).call()` via the native Anthropic and OpenAI provider classes            |
+| CrewAI 1.14+ | `LLM(model=...).call()` via the native Anthropic and OpenAI provider classes. Model strings that don't match a native-provider prefix (e.g. `openrouter/`, `deepseek/`) fall through to litellm and inherit the litellm-Anthropic gap above. |
 
 ---
 
@@ -283,6 +283,7 @@ Two background daemon threads run inside the sensor. `flightdeck-event-queue` dr
 - **`patch()` must run before clients are constructed.** Instances that already accessed `.messages`, `.chat`, `.responses`, or `.embeddings` before `patch()` keep the raw resource cached in `__dict__`. In practice this is a non-issue when `init()` + `patch()` runs at the top of the entrypoint.
 - **One `init()` per process.** A second `init()` is a no-op with a warning. Multi-agent frameworks (CrewAI, LangGraph, etc.) work fine under a single `init()` and shared `AGENT_FLAVOR`. Per-thread Session isolation is not yet supported.
 - **Custom directive handler input validation is yours.** The `parameters` schema used to register a directive drives the dashboard form and the directive fingerprint. It is not enforced at execution time. Validate types inside your handler.
+- **litellm-Anthropic calls are not intercepted.** The sensor patches the Anthropic and OpenAI SDK client classes. litellm's Anthropic provider uses raw httpx directly instead of constructing `anthropic.Anthropic()`, so calls via `litellm.completion(model="anthropic/...")` bypass interception. litellm's OpenAI provider DOES construct `openai.OpenAI()` and IS intercepted, so the gap is asymmetric. Tracked as KI21; v0.4.0 will close the gap via a sensor-side httpx interceptor or `litellm.success_callback`.
 
 ---
 

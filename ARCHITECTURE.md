@@ -784,10 +784,10 @@ to whichever token opened it.
 The dashboard Settings page drives token CRUD via:
 
 ```
-GET    /v1/tokens     -- list all tokens (never returns hash or salt or raw token)
-POST   /v1/tokens     -- create a token; response includes the raw token ONCE
-DELETE /v1/tokens/:id -- revoke
-PATCH  /v1/tokens/:id -- rename
+GET    /v1/access-tokens     -- list all tokens (never returns hash or salt or raw token)
+POST   /v1/access-tokens     -- create a token; response includes the raw token ONCE
+DELETE /v1/access-tokens/:id -- revoke
+PATCH  /v1/access-tokens/:id -- rename
 ```
 
 The seeded `Development Token` row is not deletable or renameable
@@ -1220,7 +1220,7 @@ CREATE TABLE sessions (
     tokens_used     INTEGER NOT NULL DEFAULT 0,
     token_limit     INTEGER,
     metadata        JSONB,
-    context         JSONB NOT NULL DEFAULT '{}'::jsonb,
+    context         JSONB DEFAULT '{}'::jsonb,
     token_id        UUID REFERENCES access_tokens(id) ON DELETE SET NULL,
     token_name      TEXT
 );
@@ -1456,6 +1456,7 @@ Current migrations:
 | 000010 | Replace minimal `api_tokens` with salted schema and reseed (D095) |
 | 000011 | Add `token_id` FK + `token_name` column to sessions (D095) |
 | 000012 | Rename `api_tokens` → `access_tokens` (D096) |
+| 000013 | Add `tokens_cache_read` and `tokens_cache_creation` columns to events (D100) |
 
 ---
 
@@ -2472,7 +2473,7 @@ record for that session.
 ### Database -- migration 000006
 
 `docker/postgres/migrations/000006_add_context_to_sessions.{up,down}.sql`
-- Adds `context JSONB NOT NULL DEFAULT '{}'::jsonb` to
+- Adds `context JSONB DEFAULT '{}'::jsonb` to
   `sessions` and `CREATE INDEX sessions_context_gin ON sessions
   USING GIN (context)` for the facet aggregation query.
 - Down migration drops both.
@@ -2930,35 +2931,54 @@ audit Task 1).
 ### Smoke tests
 
 ```
-tests/smoke/
-└── smoke_test.py              # Real provider calls, no mocks, full stack
+playground/
+├── 01_direct_anthropic.py    # Anthropic SDK, patched client
+├── 02_direct_openai.py       # OpenAI SDK, patched client
+├── 03_langchain.py           # langchain-anthropic + langchain-openai
+├── 04_langgraph.py           # create_react_agent tool loop
+├── 05_llamaindex.py          # llama-index-llms-{anthropic,openai}
+├── 06_crewai.py              # CrewAI 1.14+ native providers
+├── 07_directives.py          # Custom directive registration + invocation
+├── 08_enforcement.py         # Policy thresholds, updates, deletions, fail-open
+├── 09_capture.py             # Prompt capture toggle
+├── 10_killswitch.py          # Dashboard-driven agent stop
+├── 11_unavailability.py      # Control-plane down, continue/halt policies
+├── _helpers.py               # Shared sensor init + event-landing assertions
+└── run_all.py                # Sequential runner for local pre-release sweeps
 ```
 
-Run: `make test-smoke`. Requires `ANTHROPIC_API_KEY` and `OPENAI_API_KEY`
-environment variables. Uses real LLM calls (claude-haiku-4-5-20251001 and
-gpt-4o-mini, max_tokens=5) so cost per run is < $0.05. Plain Python
-(no pytest) -- executable directly with `python tests/smoke/smoke_test.py`.
-Covers 12 groups: provider interception (patch/wrap, streaming, tools,
-embeddings, beta.messages), prompt capture, local policy, server policy,
-kill switch, custom directives, runtime context, session visibility,
-sensor status, unavailability, multi-session fleet, and framework support
-(LangChain, LlamaIndex, CrewAI). See D089 for design decisions.
+Run the full suite: `python playground/run_all.py`. Each file is
+runnable standalone (`python playground/06_crewai.py`) for targeted
+debugging. Plain Python per file, no pytest -- each file imports from
+`_helpers.py` which centralises sensor init, event-landing assertions,
+and stack connectivity checks.
+
+Requires `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` in the environment,
+plus `FLIGHTDECK_SERVER` and `FLIGHTDECK_TOKEN` pointing at a running
+`make dev` stack. Uses claude-haiku-4-5-20251001 and gpt-4o-mini with
+max_tokens=5 for every call; full suite cost per run is approximately
+$0.005.
+
+Not run in CI -- real API keys required. Run manually before tagging a
+release. See DECISIONS.md D089 for the original design rationale (plain
+Python, no test framework, real API keys).
 
 #### Policy enforcement coverage
 
 Token policy enforcement is exercised at two tiers. The integration
-suite (`tests/integration/test_policy.py` and `test_enforcement.py`)
-drives the workers' `PolicyEvaluator` with fabricated `post_call`
-events through the live ingestion pipeline and asserts on directive
-rows written by the workers (`warn` / `degrade` / `shutdown`) --
-fast, deterministic, and zero-cost because no provider is called.
-The smoke suite GROUP 3 and GROUP 4 cover the same thresholds plus
-mid-session policy updates, deletions, and sensor-side fail-open
-behaviour against a real Anthropic call, so the full sensor →
-ingestion → workers → directives → sensor response envelope path is
-exercised end to end. Keep both in sync when adding a new policy
-behaviour: a bug that shows up only under a real LLM belongs in
-smoke; a bug that needs speed / determinism belongs in integration.
+suite (`tests/integration/test_policy.py` and
+`tests/integration/test_enforcement.py`) drives the workers'
+`PolicyEvaluator` with fabricated `post_call` events through the live
+ingestion pipeline and asserts on directive rows written by the workers
+(`warn` / `degrade` / `shutdown`) -- fast, deterministic, and zero-cost
+because no provider is called. `playground/08_enforcement.py` covers
+the same thresholds plus mid-session policy updates, deletions, and
+sensor-side fail-open behaviour against a real Anthropic call, so the
+full sensor → ingestion → workers → directives → sensor response
+envelope path is exercised end to end. Keep both in sync when adding a
+new policy behaviour: a bug that shows up only under a real LLM belongs
+in the playground suite; a bug that needs speed / determinism belongs
+in integration.
 
 ### Sensor end-to-end tests
 

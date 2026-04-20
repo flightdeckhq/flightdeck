@@ -2060,9 +2060,6 @@ Resolved in: Phase 4.9
 
 ## D089 -- Smoke test suite: plain Python, real API keys
 
-**Superseded in part by D111 and D112.** CrewAI native providers ARE
-intercepted. litellm coverage is provider-dependent.
-
 **Decision:** The smoke test suite (`tests/smoke/smoke_test.py`) uses
 plain Python with no test framework (no pytest, no unittest).
 
@@ -3656,7 +3653,7 @@ the sensor side is fixed.
 
 ---
 
-## D111 -- CrewAI native providers are intercepted (supersedes parts of D089)
+## D111 -- CrewAI native providers are intercepted
 
 **Decision:** CrewAI 1.14.1's model-string prefix routing in
 `crewai/llm.py:300-393` maps `anthropic/`, `openai/`, `claude/`,
@@ -3677,10 +3674,6 @@ against `make dev`. Both land `post_call` events.
 (`is_litellm=True` kwarg, or prefixes not in
 `SUPPORTED_NATIVE_PROVIDERS`) inherit litellm's per-provider behaviour
 -- openai intercepted, anthropic not (see D112 / KI21).
-
-**Supersedes:** prior decisions including D089 that framed CrewAI as
-"routes through litellm" or "excluded from framework support" -- those
-were based on an incorrect reading of CrewAI's LLM factory.
 
 ---
 

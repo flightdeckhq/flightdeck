@@ -3703,3 +3703,88 @@ Addresses litellm-direct users and any framework that routes LLM calls
 through litellm's httpx-based providers.
 
 ---
+
+## D113 -- Stable session IDs for the Claude Code plugin
+
+**Decision:** `plugin/hooks/scripts/observe_cli.mjs:getSessionId()`
+derives a stable session id from a deterministic identity tuple so the
+same developer running Claude Code daily in the same repo sees one
+ongoing fleet-view session instead of a fresh row per spawn. The
+recipe is an RFC 4122 version-5 UUID:
+
+```
+uuid5(NAMESPACE_URL, `flightdeck://${user}@${hostname}/${remote}@${branch}`)
+```
+
+where `remote` is the `origin` URL credential-stripped with the same
+regex `collectContext` uses, and `branch` is trimmed. If branch is
+empty (detached HEAD) the marker is `detached-<short_sha>`. If the
+remote probe fails or returns empty the component is `process.cwd()`.
+If git is unavailable the derivation returns null and the caller
+falls through to the next precedence step. `uuid5` is hand-rolled in
+`plugin/hooks/scripts/uuid5.mjs` on `node:crypto` SHA-1 so the plugin
+preserves its zero-npm-dependency posture; the test suite asserts
+against Python `uuid.uuid5` canonical vectors so a byte-masking bug
+in the version or variant bits fails loudly.
+
+**Precedence chain (top wins):**
+
+1. `process.env.CLAUDE_SESSION_ID`
+2. `process.env.ANTHROPIC_CLAUDE_SESSION_ID`
+3. Derived stable UUID (above).
+4. Marker file at
+   `$TMPDIR/flightdeck-plugin/session-<sha256(cwd)[:16]>.txt`. The
+   first hook to run populates it with whichever candidate step 3, 5,
+   or 6 produced; subsequent hooks in the same cwd read it directly.
+   This both makes same-invocation hooks cheap (no repeated git
+   probes) and gives the marker priority over step 5.
+5. `hookEvent.session_id` -- Claude Code's own per-spawn id, demoted
+   from its former step-1 position. Only used when env vars are
+   unset, git is unavailable, and the marker file cannot be written.
+6. `sha256(cwd)[:32]` -- final deterministic fallback when `$TMPDIR`
+   itself is broken.
+
+**Branch-in-identity choice:** Branch is part of session identity,
+not variable context. Switching branches is usually an intentional
+context switch (feature work vs. hotfix) that should produce a
+distinct session row. Treating branch as a facet that *changes*
+inside one session would smear cross-branch activity together, which
+is the opposite of what the dashboard wants to show.
+
+**Caveat:** Mid-invocation branch switches reuse the cached UUID
+until the Claude Code invocation ends. The marker file wins over
+step 3, so once an id is picked at the first hook it sticks even if
+the developer runs `git checkout other-branch` partway through.
+Clearing `$TMPDIR/flightdeck-plugin/session-<...>.txt` (or letting
+`$TMPDIR` turn over on reboot) starts a fresh identity cycle. This
+is acceptable because the fleet-view goal is "one row per day of
+work on one repo", not "one row per momentary branch state".
+
+**transcript_path audit:** `readTurns(transcriptPath)` at
+`observe_cli.mjs:328` takes `transcript_path` as a direct argument
+and reads the file directly. It does not look up the transcript via
+`session_id`. `session_id` and `transcript_path` are independent
+fields on the Claude Code hook payload and are used independently by
+the plugin and by D107's PostToolUse flush. Demoting
+`hookEvent.session_id` from step 1 to step 5 does not affect
+transcript reading; the earlier inline comment at
+`observe_cli.mjs:116-118` claiming the two fields "line up" was
+cosmetic wording, not a structural dependency.
+
+**Scope:**
+
+- Plugin only. The Python sensor's `session_id` kwarg (D094) is the
+  sensor-side mechanism and is not touched here.
+- No schema migration. The existing attach/revive paths (D094, D105,
+  D106) handle the rest: the stable-id row wakes up on the next
+  event, and each spawn adds a `session_attachments` row.
+
+**Out of scope for v0.3.0:**
+
+- Splitting `collectContext` so branch-varying context (current
+  branch, current commit) rides each event while laptop identity
+  (user, hostname, OS) lives on the session -- deferred to v0.4.0.
+- Drawer pagination for sessions that accumulate many attachments
+  over a week of spawns -- tracked as a separate v0.3.0 follow-up.
+
+---

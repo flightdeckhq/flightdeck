@@ -2686,14 +2686,21 @@ resizable state via Timeline.tsx's `leftPanelWidth` prop.
 ### Plugin -- Claude Code observe_cli rewrite
 
 `plugin/hooks/scripts/observe_cli.mjs` (rewritten in this pass)
-- **Stable session ID**: `getSessionId()` prefers
-  `CLAUDE_SESSION_ID` env var, then
-  `ANTHROPIC_CLAUDE_SESSION_ID`, then a file-based id under
-  `tmpdir/flightdeck-plugin/session-${sha256(cwd)[:16]}.txt`.
-  The file fallback exists because every hook invocation runs
-  as a separate Node child process spawned by Claude Code --
-  pid-based fallbacks would create one session row per tool
-  call. Different cwds get different sessions.
+- **Stable session ID**: `getSessionId()` resolves in this
+  order (D113): `CLAUDE_SESSION_ID` / `ANTHROPIC_CLAUDE_SESSION_ID`
+  env vars, then an RFC 4122 v5 UUID derived from (user,
+  hostname, repo remote, branch) so same-laptop + same-repo +
+  same-branch Claude Code spawns converge on one session row,
+  then a marker file at
+  `tmpdir/flightdeck-plugin/session-${sha256(cwd)[:16]}.txt`
+  that caches whichever candidate was picked on first run (the
+  cache wins over the steps below it in the chain), then
+  `hookEvent.session_id` as a demoted safety net, and finally
+  `sha256(cwd)[:32]`. The marker file exists because every hook
+  invocation runs as a separate Node child process -- pid-based
+  fallbacks would create one session row per tool call. Branch
+  is part of identity: intentionally switching branches
+  produces a distinct session.
 - **session_start with context**: `ensureSessionStarted()`
   uses a file-marker dedup so the session_start event is sent
   exactly once per session id (marker file is

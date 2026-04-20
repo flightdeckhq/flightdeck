@@ -1,4 +1,4 @@
-.PHONY: help build test test-integration test-e2e test-smoke lint dev dev-reset down logs release migrate-local-up migrate-local-status
+.PHONY: help build test test-plugin test-integration test-e2e test-smoke lint dev dev-reset down logs release migrate-local-up migrate-local-status
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-12s %s\n", $$1, $$2}'
@@ -14,6 +14,10 @@ test: ## Run all unit tests
 	$(MAKE) -C ingestion test
 	$(MAKE) -C workers test
 	$(MAKE) -C api test
+	$(MAKE) test-plugin
+
+test-plugin: ## Run the Claude Code plugin unit tests (zero-dep, node --test)
+	cd plugin && node --test tests/*.test.mjs
 
 test-integration: ## Run integration tests (requires running stack)
 	$(MAKE) -C docker dev

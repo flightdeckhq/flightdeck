@@ -148,6 +148,7 @@ describe("observe_cli.mjs", () => {
     const env = {
       FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
       FLIGHTDECK_TOKEN: "tok_test",
+      CLAUDE_SESSION_ID: "sess-pretool-1",
     };
     const result = await runScript(input, env);
     assert.equal(result.code, 0);
@@ -169,6 +170,7 @@ describe("observe_cli.mjs", () => {
     const result = await runScript(input, {
       FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
       FLIGHTDECK_TOKEN: "tok_test",
+      CLAUDE_SESSION_ID: "sess-ups-no-model",
     });
     assert.equal(result.code, 0);
     // Only the SessionStart backstop should have posted -- no pre_call.
@@ -210,6 +212,7 @@ describe("observe_cli.mjs", () => {
         {
           FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
           FLIGHTDECK_TOKEN: "tok_test",
+          CLAUDE_SESSION_ID: "sess-ups-cached",
         },
       );
       const before = capture.bodies().length;
@@ -226,6 +229,7 @@ describe("observe_cli.mjs", () => {
         {
           FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
           FLIGHTDECK_TOKEN: "tok_test",
+          CLAUDE_SESSION_ID: "sess-ups-cached",
         },
       );
       const newBodies = capture.bodies().slice(before);
@@ -246,6 +250,7 @@ describe("observe_cli.mjs", () => {
     const env = {
       FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
       FLIGHTDECK_TOKEN: "tok_test",
+      CLAUDE_SESSION_ID: "sess-posttool-1",
     };
     const result = await runScript(input, env);
     assert.equal(result.code, 0);
@@ -290,6 +295,7 @@ describe("observe_cli.mjs", () => {
       FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
       FLIGHTDECK_TOKEN: "tok_test",
       FLIGHTDECK_CAPTURE_PROMPTS: "false",
+      CLAUDE_SESSION_ID: "sess-stop-1",
     };
     const result = await runScript(input, env);
     assert.equal(result.code, 0);
@@ -315,6 +321,7 @@ describe("observe_cli.mjs", () => {
     const env = {
       FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
       FLIGHTDECK_TOKEN: "tok_test",
+      CLAUDE_SESSION_ID: "sess-end-1",
     };
     const result = await runScript(input, env);
     assert.equal(result.code, 0);
@@ -334,6 +341,7 @@ describe("observe_cli.mjs", () => {
     const env = {
       FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
       FLIGHTDECK_TOKEN: "",
+      CLAUDE_SESSION_ID: "sess-default-1",
     };
     const result = await runScript(input, env);
     assert.equal(result.code, 0);
@@ -354,6 +362,7 @@ describe("observe_cli.mjs", () => {
       const env = {
         FLIGHTDECK_SERVER: `http://127.0.0.1:${failing.port}`,
         FLIGHTDECK_TOKEN: "tok_test",
+        CLAUDE_SESSION_ID: sid,
       };
       const result = await runScript(input, env);
       assert.equal(result.code, 0, "hook must exit 0 on 5xx");
@@ -385,6 +394,7 @@ describe("observe_cli.mjs", () => {
       const env = {
         FLIGHTDECK_SERVER: `http://127.0.0.1:${failing.port}`,
         FLIGHTDECK_TOKEN: "tok_test",
+        CLAUDE_SESSION_ID: sid,
       };
       const result = await runScript(input, env);
       assert.equal(result.code, 0);
@@ -413,6 +423,7 @@ describe("observe_cli.mjs", () => {
       const envDown = {
         FLIGHTDECK_SERVER: `http://127.0.0.1:${firstPort}`,
         FLIGHTDECK_TOKEN: "tok_test",
+        CLAUDE_SESSION_ID: sid,
       };
       // First hook: hits the failing server, gets 500, logs once,
       // exits 0. No disk-persisted flag is written.
@@ -462,6 +473,7 @@ describe("observe_cli.mjs", () => {
       const envUp = {
         FLIGHTDECK_SERVER: `http://127.0.0.1:${recovered.port}`,
         FLIGHTDECK_TOKEN: "tok_test",
+        CLAUDE_SESSION_ID: sid,
       };
       const third = await runScript(
         JSON.stringify({
@@ -492,6 +504,7 @@ describe("observe_cli.mjs", () => {
     const env = {
       FLIGHTDECK_SERVER: "http://127.0.0.1:1",
       FLIGHTDECK_TOKEN: "tok_test",
+      CLAUDE_SESSION_ID: "sess-refused-1",
     };
     const result = await runScript(input, env);
     assert.equal(result.code, 0);
@@ -510,6 +523,7 @@ describe("observe_cli.mjs", () => {
     const env = {
       FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
       FLIGHTDECK_TOKEN: "tok_test",
+      CLAUDE_SESSION_ID: "sess-unknown-1",
     };
     const countBefore = capture.bodies().length;
     const result = await runScript(input, env);
@@ -526,6 +540,7 @@ describe("observe_cli.mjs", () => {
     const env = {
       FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
       FLIGHTDECK_TOKEN: "tok_test",
+      CLAUDE_SESSION_ID: "sess-fallback-1",
     };
     const result = await runScript(input, env);
     assert.equal(result.code, 0);
@@ -550,6 +565,7 @@ describe("observe_cli.mjs", () => {
     const env = {
       FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
       FLIGHTDECK_TOKEN: "tok_test",
+      CLAUDE_SESSION_ID: "sess-ctx-1",
     };
     const result = await runScript(input, env);
     assert.equal(result.code, 0);
@@ -638,25 +654,60 @@ describe("observe_cli helpers", () => {
       clearSessionMarkers();
     });
 
-    it("prefers hookEvent.session_id when present", () => {
-      assert.equal(getSessionId({ session_id: "hook-sent-id" }), "hook-sent-id");
-    });
+    // Precedence chain under test (see D113):
+    //   1. CLAUDE_SESSION_ID env var
+    //   2. ANTHROPIC_CLAUDE_SESSION_ID env var
+    //   3. Derived v5 UUID from (user, hostname, repo remote, branch)
+    //   4. Marker file cache
+    //   5. hookEvent.session_id (demoted)
+    //   6. sha256(cwd)[:32]
 
-    it("falls back to CLAUDE_SESSION_ID env var", () => {
+    const V5_UUID_RE =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+    it("CLAUDE_SESSION_ID env var wins over hookEvent.session_id", () => {
       process.env.CLAUDE_SESSION_ID = "claude-test-id";
-      assert.equal(getSessionId(), "claude-test-id");
+      assert.equal(
+        getSessionId({ session_id: "hook-would-be-ignored" }),
+        "claude-test-id",
+      );
     });
 
-    it("falls back to ANTHROPIC_CLAUDE_SESSION_ID", () => {
+    it("ANTHROPIC_CLAUDE_SESSION_ID is honored when CLAUDE_SESSION_ID is unset", () => {
       process.env.ANTHROPIC_CLAUDE_SESSION_ID = "anthropic-test-id";
-      assert.equal(getSessionId(), "anthropic-test-id");
+      assert.equal(
+        getSessionId({ session_id: "hook-would-be-ignored" }),
+        "anthropic-test-id",
+      );
+    });
+
+    it("derives a stable v5 UUID from git identity when inside a git repo", () => {
+      const id = getSessionId();
+      assert.match(id, V5_UUID_RE, `expected v5 UUID, got ${id}`);
+    });
+
+    it("derived UUID wins over hookEvent.session_id in a git repo", () => {
+      // Core semantic of D113: Claude Code's own per-spawn id is
+      // demoted to step 5 and loses to the derived UUID at step 3.
+      const id = getSessionId({ session_id: "hook-would-be-ignored" });
+      assert.notEqual(id, "hook-would-be-ignored");
+      assert.match(id, V5_UUID_RE);
     });
 
     it("returns the same id on repeated calls in the same cwd", () => {
       const a = getSessionId();
       const b = getSessionId();
       assert.equal(a, b);
-      assert.equal(a.length, 32);
+    });
+
+    it("marker file cache wins over recomputation on a second call", () => {
+      // First call populates marker; second call must return the
+      // cached id regardless of what hookEvent supplies.
+      const first = getSessionId();
+      const second = getSessionId({
+        session_id: "would-win-only-without-cache",
+      });
+      assert.equal(first, second);
     });
   });
 
@@ -968,6 +1019,7 @@ describe("observe_cli end-to-end (new fields)", () => {
     const env = {
       FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
       FLIGHTDECK_TOKEN: "tok_test",
+      CLAUDE_SESSION_ID: "sess-first-1",
     };
     const result = await runScript(input, env);
     assert.equal(result.code, 0);
@@ -998,6 +1050,7 @@ describe("observe_cli end-to-end (new fields)", () => {
     const env = {
       FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
       FLIGHTDECK_TOKEN: "tok_test",
+      CLAUDE_SESSION_ID: "sess-first-1",
     };
     const result = await runScript(input, env);
     assert.equal(result.code, 0);
@@ -1016,6 +1069,7 @@ describe("observe_cli end-to-end (new fields)", () => {
     const env = {
       FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
       FLIGHTDECK_TOKEN: "tok_test",
+      CLAUDE_SESSION_ID: "sess-capture-default-1",
     };
     const result = await runScript(input, env);
     assert.equal(result.code, 0);
@@ -1037,6 +1091,7 @@ describe("observe_cli end-to-end (new fields)", () => {
       FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
       FLIGHTDECK_TOKEN: "tok_test",
       FLIGHTDECK_CAPTURE_TOOL_INPUTS: "false",
+      CLAUDE_SESSION_ID: "sess-capture-off-1",
     };
     const result = await runScript(input, env);
     assert.equal(result.code, 0);
@@ -1061,6 +1116,7 @@ describe("observe_cli end-to-end (new fields)", () => {
     const env = {
       FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
       FLIGHTDECK_TOKEN: "tok_test",
+      CLAUDE_SESSION_ID: "sess-content-tools-1",
     };
     const result = await runScript(input, env);
     assert.equal(result.code, 0);
@@ -1089,6 +1145,7 @@ describe("observe_cli end-to-end (new fields)", () => {
       FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
       FLIGHTDECK_TOKEN: "tok_test",
       FLIGHTDECK_CAPTURE_PROMPTS: "true",
+      CLAUDE_SESSION_ID: "sess-content-response-1",
     };
     const result = await runScript(input, env);
     assert.equal(result.code, 0);
@@ -1110,6 +1167,7 @@ describe("observe_cli end-to-end (new fields)", () => {
       FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
       FLIGHTDECK_TOKEN: "tok_test",
       FLIGHTDECK_CAPTURE_TOOL_INPUTS: "false",
+      CLAUDE_SESSION_ID: "sess-no-content-1",
     };
     const result = await runScript(input, env);
     assert.equal(result.code, 0);
@@ -1145,6 +1203,7 @@ describe("observe_cli end-to-end (new fields)", () => {
       FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
       FLIGHTDECK_TOKEN: "tok_test",
       FLIGHTDECK_CAPTURE_PROMPTS: "true",
+      CLAUDE_SESSION_ID: "sess-capture-prompts-1",
     };
     const result = await runScript(input, env);
     assert.equal(result.code, 0);
@@ -1168,6 +1227,7 @@ describe("observe_cli end-to-end (new fields)", () => {
     const env = {
       FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
       FLIGHTDECK_TOKEN: "tok_test",
+      CLAUDE_SESSION_ID: "sess-task-1",
     };
     const result = await runScript(input, env);
     assert.equal(result.code, 0);
@@ -1187,6 +1247,7 @@ describe("observe_cli end-to-end (new fields)", () => {
       {
         FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
         FLIGHTDECK_TOKEN: "tok_test",
+        CLAUDE_SESSION_ID: "sess-lat-1",
       },
     );
     assert.equal(post.code, 0);
@@ -1231,6 +1292,7 @@ describe("observe_cli end-to-end (new fields)", () => {
         FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
         FLIGHTDECK_TOKEN: "tok_test",
         FLIGHTDECK_CAPTURE_PROMPTS: "false",
+        CLAUDE_SESSION_ID: "sess-flush-1",
       },
     );
     assert.equal(result.code, 0);
@@ -1273,6 +1335,7 @@ describe("observe_cli end-to-end (new fields)", () => {
       FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
       FLIGHTDECK_TOKEN: "tok_test",
       FLIGHTDECK_CAPTURE_PROMPTS: "false",
+      CLAUDE_SESSION_ID: "sess-dedup-1",
     };
     await runScript(
       JSON.stringify({
@@ -1332,6 +1395,7 @@ describe("observe_cli end-to-end (new fields)", () => {
         FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
         FLIGHTDECK_TOKEN: "tok_test",
         FLIGHTDECK_CAPTURE_PROMPTS: "false",
+        CLAUDE_SESSION_ID: "sess-stop-notool",
       },
     );
     assert.equal(result.code, 0);
@@ -1408,6 +1472,7 @@ describe("observe_cli end-to-end (new fields)", () => {
       FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
       FLIGHTDECK_TOKEN: "tok_test",
       FLIGHTDECK_CAPTURE_PROMPTS: "false",
+      CLAUDE_SESSION_ID: "sess-two-iter",
     };
     const writeState = (records) => {
       writeFileSync(
@@ -1482,6 +1547,7 @@ describe("observe_cli end-to-end (new fields)", () => {
       {
         FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
         FLIGHTDECK_TOKEN: "tok_test",
+        CLAUDE_SESSION_ID: "sess-no-transcript",
       },
     );
     assert.equal(result.code, 0);

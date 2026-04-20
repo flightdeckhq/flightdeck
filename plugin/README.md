@@ -56,8 +56,8 @@ Guarantees that hold regardless of the knob settings:
 | `FLIGHTDECK_TOKEN` | `tok_dev` | Bearer token used in the `Authorization` header. The dev compose accepts `tok_dev` when `ENVIRONMENT=dev`; production deployments leave that unset and require an `ftd_` token minted from the Settings page. |
 | `FLIGHTDECK_CAPTURE_TOOL_INPUTS` | `true` | Captures a sanitised whitelist of tool input fields on each `tool_call` event. Set to `false` to strip tool inputs. |
 | `FLIGHTDECK_CAPTURE_PROMPTS` | `true` | Captures LLM prompts, assistant responses, and tool results. Set to `false` to strip all content bodies from plugin events while keeping metadata and token counts. |
-| `CLAUDE_SESSION_ID` | unset | Override the session id. The plugin normally reads `session_id` off the hook event payload itself, which matches what Claude Code uses internally. |
-| `ANTHROPIC_CLAUDE_SESSION_ID` | unset | Alternative name for `CLAUDE_SESSION_ID`. |
+| `CLAUDE_SESSION_ID` | unset | Explicit session id override. Wins over every other resolution step -- use this when you want to force a specific id across processes or tests. |
+| `ANTHROPIC_CLAUDE_SESSION_ID` | unset | Alternative name for `CLAUDE_SESSION_ID`, honored second. |
 
 ## What gets reported, when
 
@@ -146,13 +146,22 @@ Confirm with `/bin/sh -c 'node --version'`. The plugin works with Node v20+.
 
 ## How it works
 
-Fire-and-forget HTTP. Claude Code invokes each hook as a detached child process. The plugin reads the hook event from stdin, resolves session identity (preferring the `session_id` Claude Code passes on the hook payload so transcripts line up), builds an event payload, POSTs it to `$FLIGHTDECK_SERVER/ingest/v1/events`, and exits. On failure the plugin logs one stderr line and exits 0. Claude Code never blocks on the plugin.
+Fire-and-forget HTTP. Claude Code invokes each hook as a detached child process. The plugin reads the hook event from stdin, resolves session identity (see below), builds an event payload, POSTs it to `$FLIGHTDECK_SERVER/ingest/v1/events`, and exits. On failure the plugin logs one stderr line and exits 0. Claude Code never blocks on the plugin.
 
-Session identity resolution order: hook event payload `session_id`, then `CLAUDE_SESSION_ID` / `ANTHROPIC_CLAUDE_SESSION_ID` env vars, then a file under `$TMPDIR/flightdeck-plugin/session-<sha256(cwd)[:16]>.txt` for concurrent first-time invocations to converge on. Different working directories get different sessions.
+Session identity resolution (D113). Precedence, top wins:
+
+1. `CLAUDE_SESSION_ID` env var.
+2. `ANTHROPIC_CLAUDE_SESSION_ID` env var.
+3. RFC 4122 v5 UUID derived from `(user, hostname, repo remote, branch)`. Same laptop + same repo + same branch converges on the same session across Claude Code spawns, so a developer running `claude` daily in one repo sees one ongoing session row instead of 30+ fleet-view rows.
+4. Marker file cache at `$TMPDIR/flightdeck-plugin/session-<sha256(cwd)[:16]>.txt`. The first hook to run populates it; subsequent hooks in the same cwd read it directly and skip the git probes.
+5. `session_id` from the hook event payload (Claude Code's own per-spawn id). Demoted safety net -- used only when env vars are unset, git is unavailable, and the marker file can't be written.
+6. `sha256(cwd)[:32]` as the final deterministic fallback when `$TMPDIR` itself is broken.
+
+Branch is part of the identity: intentionally switching branches produces a different session. Detached HEAD maps to `detached-<short_sha>`. Mid-session branch switches reuse the cached UUID until the Claude Code invocation ends (clear `$TMPDIR/flightdeck-plugin/` to start a fresh identity cycle).
 
 No background threads. No polling. The only state the plugin persists across hook invocations is a small set of markers in `$TMPDIR/flightdeck-plugin/`:
 
-- `session-<hash>.txt`: the session id for a given cwd.
+- `session-<hash>.txt`: the resolved session id for a given cwd (normally the derived stable UUID).
 - `started-<sid>.txt`: marks that session_start was attempted (so subsequent hooks don't duplicate).
 - `model-<sid>.txt`: caches the model name so `pre_call` events on older Claude Code versions can carry a non-null model.
 - `emitted-<messageId>.txt`: per-message dedup so Stop / SessionEnd don't re-emit turns that PostToolUse already flushed.
@@ -160,6 +169,17 @@ No background threads. No polling. The only state the plugin persists across hoo
 All of these are safe to delete; the plugin recreates what it needs on the next hook.
 
 For the deeper architecture (ingestion pipeline, session state machine, NOTIFY/WebSocket push, revive/create semantics), see ARCHITECTURE.md.
+
+## Testing
+
+The plugin has a Node-only unit suite using the built-in test runner (no npm dependencies, matching the plugin's zero-dep constraint):
+
+```bash
+cd plugin
+node --test tests/*.test.mjs
+```
+
+Or via the top-level Makefile: `make test-plugin`. The suite covers the uuid5 helper (Python-canonical vectors), the session-identity resolution chain, and the end-to-end hook flow against an in-process capture server.
 
 ## Uninstall
 

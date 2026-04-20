@@ -43,6 +43,8 @@ import {
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { NAMESPACE_URL, uuid5 } from "./uuid5.mjs";
+
 const TIMEOUT_MS = 2000;
 
 // ---------------------------------------------------------------------
@@ -108,16 +110,27 @@ export function resolveConfig(env = process.env) {
 }
 
 // ---------------------------------------------------------------------
-// Session id -- stable for the lifetime of a Claude Code conversation
-// in a given working directory.
+// Session id -- stable across Claude Code spawns when same user +
+// hostname + repo remote + branch. See DECISIONS.md D113 for the full
+// derivation recipe and precedence chain.
 // ---------------------------------------------------------------------
 
+/**
+ * Resolve a session id for the current hook invocation. Precedence
+ * (top wins, see D113):
+ *   1. process.env.CLAUDE_SESSION_ID
+ *   2. process.env.ANTHROPIC_CLAUDE_SESSION_ID
+ *   3. RFC 4122 v5 UUID from (user, hostname, repo remote, branch)
+ *   4. Marker file cache (populated by step 3/5/6 on first hook)
+ *   5. hookEvent.session_id -- demoted safety net, Claude Code's own
+ *      per-spawn id, kept only for when git is unavailable
+ *   6. sha256(cwd)[:32] -- final deterministic fallback when tmpdir
+ *      itself is broken
+ *
+ * The marker file caches whichever candidate is picked on first run so
+ * repeated hooks within one Claude Code invocation don't re-probe git.
+ */
 export function getSessionId(hookEvent = {}) {
-  // Claude Code passes session_id on the hook payload itself for most
-  // event types; prefer that so session_id matches Claude Code's own id
-  // and the transcript_path lines up.
-  if (hookEvent.session_id) return hookEvent.session_id;
-
   const env =
     process.env.CLAUDE_SESSION_ID || process.env.ANTHROPIC_CLAUDE_SESSION_ID;
   if (env) return env;
@@ -127,6 +140,16 @@ export function getSessionId(hookEvent = {}) {
   const key = createHash("sha256").update(cwd).digest("hex").slice(0, 16);
   const file = join(dir, `session-${key}.txt`);
 
+  const pickCandidate = () => {
+    const derived = deriveStableSessionId(cwd);
+    if (derived) return derived;
+    if (hookEvent.session_id) return hookEvent.session_id;
+    return createHash("sha256")
+      .update(`${Date.now()}-${process.pid}-${cwd}`)
+      .digest("hex")
+      .slice(0, 32);
+  };
+
   try {
     mkdirSync(dir, { recursive: true });
     try {
@@ -135,10 +158,7 @@ export function getSessionId(hookEvent = {}) {
     } catch {
       /* fall through to create */
     }
-    const candidate = createHash("sha256")
-      .update(`${Date.now()}-${process.pid}-${cwd}`)
-      .digest("hex")
-      .slice(0, 32);
+    const candidate = pickCandidate();
     try {
       const fd = openSync(file, "wx");
       try {
@@ -155,8 +175,63 @@ export function getSessionId(hookEvent = {}) {
       throw err;
     }
   } catch {
-    return createHash("sha256").update(cwd).digest("hex").slice(0, 32);
+    return pickCandidate();
   }
+}
+
+/**
+ * Derive an RFC 4122 v5 UUID from (user, hostname, repo remote, branch).
+ * Returns null if any probe fails or we aren't in a git repo -- callers
+ * treat null as "fall through to the next precedence step". Branch is
+ * part of identity: switching branches intentionally produces a
+ * distinct session. Detached HEAD uses `detached-<short_sha>`.
+ */
+function deriveStableSessionId(cwd) {
+  let user, host;
+  try {
+    user = userInfo().username;
+  } catch {
+    return null;
+  }
+  try {
+    host = osHostname();
+  } catch {
+    return null;
+  }
+  if (!user || !host) return null;
+
+  const gitOpts = { timeout: 500, stdio: ["ignore", "pipe", "ignore"] };
+
+  let branch;
+  try {
+    branch = execSync("git branch --show-current", gitOpts).toString().trim();
+  } catch {
+    return null;
+  }
+  if (!branch) {
+    try {
+      const sha = execSync("git rev-parse --short HEAD", gitOpts)
+        .toString()
+        .trim();
+      if (!sha) return null;
+      branch = `detached-${sha}`;
+    } catch {
+      return null;
+    }
+  }
+
+  let repo;
+  try {
+    const raw = execSync("git remote get-url origin", gitOpts)
+      .toString()
+      .trim();
+    if (raw) repo = raw.replace(/https?:\/\/[^@]+@/, "https://");
+  } catch {
+    /* fall through to cwd */
+  }
+  if (!repo) repo = cwd;
+
+  return uuid5(NAMESPACE_URL, `flightdeck://${user}@${host}/${repo}@${branch}`);
 }
 
 // ---------------------------------------------------------------------

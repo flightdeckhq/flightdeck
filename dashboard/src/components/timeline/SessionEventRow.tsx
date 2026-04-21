@@ -287,7 +287,7 @@ function SessionEventRowComponent({
               <TooltipTrigger asChild>
                 <span
                   data-testid="session-row-token-name"
-                  className="rounded font-mono text-[10px] px-[5px] py-[1px] max-w-[96px] overflow-hidden"
+                  className="rounded font-mono text-[10px] px-[5px] py-[1px] max-w-[128px] overflow-hidden"
                   style={{
                     background: "var(--bg-elevated)",
                     color: "var(--text-muted)",

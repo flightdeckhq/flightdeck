@@ -18,6 +18,7 @@ import { PromptViewer } from "./PromptViewer";
 import { createDirective, fetchOlderEvents } from "@/lib/api";
 import { sessionSupportsDirectives } from "@/lib/directives";
 import { ClaudeCodeLogo } from "@/components/ui/claude-code-logo";
+import { CodingAgentBadge } from "@/components/ui/coding-agent-badge";
 import { getClaudeCodeVersion, isClaudeCodeSession } from "@/lib/models";
 import { attachBadge, getBadge, getEventDetail, getSummaryRows, isAttachmentStartEvent, truncateSessionId } from "@/lib/events";
 import { getProvider } from "@/lib/models";
@@ -593,6 +594,13 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
                   >
                     Claude Code
                   </span>
+                  {/* Matches the CODING AGENT pill the Investigate
+                      table (pages/Investigate.tsx) and Fleet sidebar
+                      (components/fleet/FleetPanel.tsx) render next to
+                      the flavor name. Same component, same gating via
+                      isClaudeCodeSession, so the three surfaces stay
+                      aligned. */}
+                  <CodingAgentBadge />
                   {(() => {
                     const v = getClaudeCodeVersion(data.session);
                     return v ? (

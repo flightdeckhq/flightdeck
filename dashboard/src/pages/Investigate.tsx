@@ -1423,10 +1423,10 @@ export function Investigate() {
                     <td className="truncate" style={{ padding: "0 12px", width: COL_WIDTHS.hostname, fontSize: 12, color: "var(--text-secondary)" }}>
                       {(s.context?.hostname as string) ?? s.host ?? "\u2014"}
                     </td>
-                    <td style={{ padding: "0 8px", width: COL_WIDTHS.os, textAlign: "center" }}>
+                    <td style={{ padding: "0 8px", width: COL_WIDTHS.os }}>
                       <OSIcon os={(s.context?.os as string) ?? ""} size={16} />
                     </td>
-                    <td style={{ padding: "0 8px", width: COL_WIDTHS.orch, textAlign: "center" }}>
+                    <td style={{ padding: "0 8px", width: COL_WIDTHS.orch }}>
                       <OrchestrationIcon
                         orchestration={(s.context?.orchestration as string) ?? ""}
                         size={16}

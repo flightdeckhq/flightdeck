@@ -51,8 +51,42 @@ export function fetchFleet(limit = 50, offset = 0, agentType?: string): Promise<
   return fetchJson<FleetResponse>(url);
 }
 
-export function fetchSession(id: string): Promise<SessionDetail> {
-  return fetchJson<SessionDetail>(`/v1/sessions/${id}`);
+/**
+ * Fetch session detail. When ``eventsLimit`` is provided the server
+ * returns at most the N newest events (still sorted ASC). The drawer
+ * uses this to cap the initial load on long-running stable sessions
+ * (D113); Fleet-side callers continue to call without the arg and
+ * receive the full history.
+ */
+export function fetchSession(id: string, eventsLimit?: number): Promise<SessionDetail> {
+  const qs = eventsLimit ? `?events_limit=${eventsLimit}` : "";
+  return fetchJson<SessionDetail>(`/v1/sessions/${id}${qs}`);
+}
+
+/**
+ * Fetch older events for a session via the keyset-cursor variant of
+ * GET /v1/events. ``before`` is an RFC 3339 timestamp (typically the
+ * oldest occurred_at currently visible in the drawer); the server
+ * returns at most ``limit`` rows with occurred_at < before, ordered
+ * newest-first. The drawer merges the result into the shared
+ * eventsCache and re-sorts ASC.
+ */
+export function fetchOlderEvents(
+  sessionId: string,
+  before: string,
+  limit: number,
+): Promise<BulkEventsResponse> {
+  // ``from`` is required by the endpoint but a keyset-by-before query
+  // is already scoped to occurred_at < before; passing the Unix epoch
+  // makes the time-window filter a no-op so the cursor is the only
+  // bound that matters.
+  const sp = new URLSearchParams();
+  sp.set("from", "1970-01-01T00:00:00Z");
+  sp.set("session_id", sessionId);
+  sp.set("before", before);
+  sp.set("order", "desc");
+  sp.set("limit", String(limit));
+  return fetchJson<BulkEventsResponse>(`/v1/events?${sp.toString()}`);
 }
 
 export async function fetchPolicies(): Promise<Policy[]> {

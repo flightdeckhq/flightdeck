@@ -36,7 +36,13 @@ const NotifyDirectiveRegistered = "directive_registered"
 type Querier interface {
 	GetFleet(ctx context.Context, limit, offset int, agentType string) ([]FlavorSummary, int, error)
 	GetSession(ctx context.Context, sessionID string) (*Session, error)
-	GetSessionEvents(ctx context.Context, sessionID string) ([]Event, error)
+	// GetSessionEvents returns events for a session in chronological
+	// (ASC) order. When limit <= 0 the full history is returned; when
+	// limit > 0 the caller gets at most the N newest events (the query
+	// runs ``ORDER BY occurred_at DESC LIMIT N`` and the result is
+	// re-sorted ASC before returning so the response shape stays
+	// chronological).
+	GetSessionEvents(ctx context.Context, sessionID string, limit int) ([]Event, error)
 	GetEvent(ctx context.Context, eventID string) (*Event, error)
 	GetSessionAttachments(ctx context.Context, sessionID string) ([]time.Time, error)
 	GetEventContent(ctx context.Context, eventID string) (*EventContent, error)
@@ -366,23 +372,48 @@ func (s *Store) GetEffectivePolicy(ctx context.Context, flavor, sessionID string
 	return nil, nil
 }
 
-// GetSessionEvents returns all events for a session in chronological order.
+// GetSessionEvents returns events for a session in chronological (ASC)
+// order. When limit <= 0 the full history is returned (legacy behaviour
+// used by Fleet-side callers that still expect the whole timeline).
+// When limit > 0 the query runs ``ORDER BY occurred_at DESC LIMIT N``
+// so the composite ``events(session_id, occurred_at)`` index is used
+// optimally for the newest-first slice; the slice is reversed in-place
+// before returning so the response shape the handler documents
+// (chronological ASC) holds regardless of whether a limit was applied.
 //
 // The payload JSONB column is decoded into Event.Payload so callers
 // (the dashboard) can read directive_name / directive_status / result
 // without a separate /v1/events/:id/content fetch. NULL or empty
 // payload columns yield a nil map on the Event struct, which omits
 // the field from the JSON response.
-func (s *Store) GetSessionEvents(ctx context.Context, sessionID string) ([]Event, error) {
-	rows, err := s.pool.Query(ctx, `
-		SELECT id::text, session_id::text, flavor, event_type, model,
-		       tokens_input, tokens_output, tokens_total,
-		       tokens_cache_read, tokens_cache_creation,
-		       latency_ms, tool_name, has_content, payload, occurred_at
-		FROM events
-		WHERE session_id = $1::uuid
-		ORDER BY occurred_at ASC
-	`, sessionID)
+func (s *Store) GetSessionEvents(ctx context.Context, sessionID string, limit int) ([]Event, error) {
+	var sql string
+	args := []any{sessionID}
+	if limit > 0 {
+		sql = `
+			SELECT id::text, session_id::text, flavor, event_type, model,
+			       tokens_input, tokens_output, tokens_total,
+			       tokens_cache_read, tokens_cache_creation,
+			       latency_ms, tool_name, has_content, payload, occurred_at
+			FROM events
+			WHERE session_id = $1::uuid
+			ORDER BY occurred_at DESC
+			LIMIT $2
+		`
+		args = append(args, limit)
+	} else {
+		sql = `
+			SELECT id::text, session_id::text, flavor, event_type, model,
+			       tokens_input, tokens_output, tokens_total,
+			       tokens_cache_read, tokens_cache_creation,
+			       latency_ms, tool_name, has_content, payload, occurred_at
+			FROM events
+			WHERE session_id = $1::uuid
+			ORDER BY occurred_at ASC
+		`
+	}
+
+	rows, err := s.pool.Query(ctx, sql, args...)
 	if err != nil {
 		return nil, fmt.Errorf("get events for %s: %w", sessionID, err)
 	}
@@ -410,6 +441,14 @@ func (s *Store) GetSessionEvents(ctx context.Context, sessionID string) ([]Event
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("session events scan: %w", err)
+	}
+
+	if limit > 0 {
+		// Reverse DESC → ASC so downstream consumers see events in
+		// chronological order regardless of the query direction.
+		for i, j := 0, len(events)-1; i < j; i, j = i+1, j-1 {
+			events[i], events[j] = events[j], events[i]
+		}
 	}
 	return events, nil
 }

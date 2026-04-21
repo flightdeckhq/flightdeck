@@ -584,7 +584,7 @@ const docTemplate = `{
         },
         "/v1/events": {
             "get": {
-                "description": "Returns events matching time range, flavor, event type, and session filters with pagination.",
+                "description": "Returns events matching time range, flavor, event type, and session filters with pagination. Supports optional ` + "`" + `` + "`" + `before` + "`" + `` + "`" + ` keyset cursor and ` + "`" + `` + "`" + `order` + "`" + `` + "`" + ` direction so the session drawer can paginate backwards in time when loading older events for long-running stable sessions.",
                 "produces": [
                     "application/json"
                 ],
@@ -622,6 +622,18 @@ const docTemplate = `{
                         "type": "string",
                         "description": "Filter by session ID",
                         "name": "session_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Keyset cursor (ISO 8601). When set, only rows with occurred_at \u003c before are returned. Pair with order=desc for newest-first drawer pagination.",
+                        "name": "before",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Sort order: asc (default) or desc",
+                        "name": "order",
                         "in": "query"
                     },
                     {
@@ -1100,7 +1112,7 @@ const docTemplate = `{
         },
         "/v1/sessions/{id}": {
             "get": {
-                "description": "Returns session metadata (including effective policy thresholds) and all events in chronological order",
+                "description": "Returns session metadata (including effective policy thresholds) and events in chronological order. When ` + "`" + `` + "`" + `events_limit` + "`" + `` + "`" + ` is provided, the N newest events are returned (still sorted ASC); the drawer uses this to cap the initial fetch on long-running stable sessions.",
                 "produces": [
                     "application/json"
                 ],
@@ -1115,6 +1127,12 @@ const docTemplate = `{
                         "name": "id",
                         "in": "path",
                         "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Return at most N newest events (1-1000). Omit for the full history.",
+                        "name": "events_limit",
+                        "in": "query"
                     }
                 ],
                 "responses": {

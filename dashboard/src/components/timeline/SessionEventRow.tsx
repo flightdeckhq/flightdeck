@@ -188,17 +188,6 @@ function SessionEventRowComponent({
           overflow: "hidden",
           padding: "0 8px 0 28px",
         }}
-        // When the row's primary label is the hostname, the hostname
-        // is the field most likely to be visually truncated, so put
-        // it on the first line of the tooltip with the full uuid
-        // below. Browser `title` attributes render "\n" as a line
-        // break in native tooltips. When there's no hostname the
-        // uuid IS the identity and there's nothing to stack above.
-        title={
-          ctxHostname
-            ? `${ctxHostname}\n${session.session_id}`
-            : session.session_id
-        }
       >
         <span
           data-testid="session-row-index"
@@ -282,13 +271,14 @@ function SessionEventRowComponent({
           {session.state}
         </span>
         {session.token_name && (
-          <TooltipProvider>
+          <TooltipProvider delayDuration={200}>
             <Tooltip>
               <TooltipTrigger asChild>
                 <span
                   data-testid="session-row-token-name"
                   className="rounded font-mono text-[10px] px-[5px] py-[1px] max-w-[128px] overflow-hidden"
                   style={{
+                    fontSize: 10,
                     background: "var(--bg-elevated)",
                     color: "var(--text-muted)",
                     border: "1px solid var(--border-subtle)",

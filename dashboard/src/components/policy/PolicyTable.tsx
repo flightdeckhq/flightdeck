@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { Policy } from "@/lib/types";
+import { POLICY_SCOPE_LABELS, type PolicyScope } from "@/lib/policy-scope-labels";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -109,7 +110,9 @@ export function PolicyTable({ policies, onEdit, onDelete, onCreate, loading }: P
                   className="border-b border-border transition-colors hover:bg-surface-hover"
                 >
                   <td className="px-3 py-2">
-                    <Badge className={scopeColors[p.scope]}>{p.scope}</Badge>
+                    <Badge className={scopeColors[p.scope]}>
+                      {POLICY_SCOPE_LABELS[p.scope as PolicyScope] ?? p.scope}
+                    </Badge>
                   </td>
                   <td className="px-3 py-2 text-text">
                     {p.scope_value || "\u2014"}

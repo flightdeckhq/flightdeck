@@ -1,8 +1,8 @@
-import { Fragment, useEffect, useState, useMemo } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { X, Camera } from "lucide-react";
+import { X, FileText } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { useSession } from "@/hooks/useSession";
+import { invalidateSessionCache, useSession } from "@/hooks/useSession";
 import { useFleetStore } from "@/store/fleet";
 import { DirectiveCard } from "@/components/directives/DirectiveCard";
 import { Button } from "@/components/ui/button";
@@ -15,7 +15,11 @@ import {
 } from "@/components/ui/dialog";
 import { TokenUsageBar } from "./TokenUsageBar";
 import { PromptViewer } from "./PromptViewer";
-import { createDirective } from "@/lib/api";
+import { createDirective, fetchOlderEvents } from "@/lib/api";
+import { sessionSupportsDirectives } from "@/lib/directives";
+import { ClaudeCodeLogo } from "@/components/ui/claude-code-logo";
+import { CodingAgentBadge } from "@/components/ui/coding-agent-badge";
+import { getClaudeCodeVersion, isClaudeCodeSession } from "@/lib/models";
 import { attachBadge, getBadge, getEventDetail, getSummaryRows, isAttachmentStartEvent, truncateSessionId } from "@/lib/events";
 import { getProvider } from "@/lib/models";
 import { ProviderLogo } from "@/components/ui/provider-logo";
@@ -29,6 +33,14 @@ import { eventsCache } from "@/hooks/useSessionEvents";
 import type { AgentEvent, Session as SessionType } from "@/lib/types";
 
 export type DrawerTab = "timeline" | "prompts" | "directives";
+
+// D113 drawer pagination. Flat pill selector (mirrors Fleet's time-range
+// pills at Fleet.tsx:492-515) in place of a dropdown so the control
+// reads as inline chrome rather than a form field. Default 100 matches
+// the Supervisor-approved initial cap; 50 gives operators a lighter
+// option on very dense sessions.
+export const EVENTS_LIMIT_OPTIONS = [50, 100] as const;
+export const DEFAULT_EVENTS_LIMIT: (typeof EVENTS_LIMIT_OPTIONS)[number] = 100;
 
 /* ---- State badge colors ---- */
 
@@ -204,7 +216,28 @@ interface SessionDrawerProps {
 }
 
 export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDirectEvent, version = 0, initialTab }: SessionDrawerProps) {
-  const { data, loading } = useSession(sessionId);
+  // Page-size pill state. Resets to DEFAULT_EVENTS_LIMIT on every
+  // drawer open (no localStorage per Supervisor directive for v0.3.0)
+  // so a user tuning down to 50 on one session doesn't silently carry
+  // the cap across to the next drawer.
+  const [eventsLimit, setEventsLimit] = useState<number>(DEFAULT_EVENTS_LIMIT);
+  useEffect(() => {
+    if (sessionId) setEventsLimit(DEFAULT_EVENTS_LIMIT);
+  }, [sessionId]);
+
+  // has_more flag derived from pagination fetches; seeded to true when
+  // the initial capped fetch returns exactly ``eventsLimit`` rows (a
+  // reasonable signal that older history may exist). Turns false when
+  // the most recent fetchOlderEvents call reports has_more=false.
+  const [hasMoreOlder, setHasMoreOlder] = useState<boolean>(true);
+  const [loadingOlder, setLoadingOlder] = useState<boolean>(false);
+  // Version counter bumped after a "Show older" merge so the
+  // cache-backed useMemo below re-reads eventsCache. Separate from
+  // the Fleet-injected ``version`` prop so the two sources of live
+  // updates cannot clobber each other's bumps.
+  const [paginationVersion, setPaginationVersion] = useState(0);
+
+  const { data, loading } = useSession(sessionId, eventsLimit);
   const customDirectives = useFleetStore((s) => s.customDirectives);
   const shuttingDown = useFleetStore((s) => s.shuttingDown);
   const markShuttingDown = useFleetStore((s) => s.markShuttingDown);
@@ -227,6 +260,14 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
   }, [sessionId, initialTab]);
   const [expandedEventId, setExpandedEventId] = useState<string | null>(null);
   const [selectedEventId, setSelectedEventId] = useState<string | null>(null);
+  // Event id passed through from a Timeline "View Prompts →" click.
+  // PromptsTab uses this to scroll the matching list row into view and
+  // apply the highlight treatment so the user sees immediately which
+  // event they just jumped from. Distinct from selectedEventId, which
+  // drills into PromptViewer detail view; focus is a list-level state.
+  const [focusedPromptEventId, setFocusedPromptEventId] = useState<
+    string | null
+  >(null);
   const [runtimeExpanded, setRuntimeExpanded] = useState(false);
 
   // Filter the fleet-wide custom directive list down to ones
@@ -256,7 +297,7 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
       if (cached && cached.length > 0) return cached;
     }
     return data?.events ?? [];
-  }, [sessionId, version, data?.events]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [sessionId, version, paginationVersion, data?.events]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Reverse once, memoized — newest first
   const displayEvents = useMemo(
@@ -264,13 +305,87 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
     [drawerEvents]
   );
 
+  // Seed the has-more flag on the initial capped fetch: if the REST
+  // response returned exactly ``eventsLimit`` rows, older events may
+  // exist; if it returned fewer, the session history is fully loaded.
+  // Running on data.events instead of drawerEvents avoids a false
+  // negative on live-WS-populated sessions where the cache already
+  // exceeds the server cap.
+  useEffect(() => {
+    if (!data) return;
+    const fetched = data.events?.length ?? 0;
+    setHasMoreOlder(fetched >= eventsLimit);
+  }, [data, eventsLimit]);
+
+  const handleLimitChange = useCallback(
+    (next: number) => {
+      if (!sessionId || next === eventsLimit) return;
+      // Drop every cached layer so the next fetchSession call re-
+      // issues against the new cap. Without the cache drop the
+      // existing useSession entry would win and the new limit would
+      // appear to do nothing.
+      invalidateSessionCache(sessionId);
+      setEventsLimit(next);
+      setHasMoreOlder(true);
+      setPaginationVersion((v) => v + 1);
+    },
+    [sessionId, eventsLimit],
+  );
+
+  const handleLoadOlder = useCallback(async () => {
+    if (!sessionId || loadingOlder || !hasMoreOlder) return;
+    const cached = eventsCache.get(sessionId) ?? [];
+    if (cached.length === 0) return;
+    // Cache is ASC, so index 0 is the oldest event currently visible
+    // -- that's the keyset cursor for the next page.
+    const oldest = cached[0];
+    setLoadingOlder(true);
+    try {
+      const resp = await fetchOlderEvents(
+        sessionId,
+        oldest.occurred_at,
+        eventsLimit,
+      );
+      const older = resp.events ?? [];
+      if (older.length > 0) {
+        const existing = eventsCache.get(sessionId) ?? [];
+        const seen = new Set(existing.map((e) => e.id));
+        const merged = [...existing];
+        for (const e of older) {
+          if (!seen.has(e.id)) {
+            merged.push(e);
+            seen.add(e.id);
+          }
+        }
+        merged.sort(
+          (a, b) =>
+            new Date(a.occurred_at).getTime() -
+            new Date(b.occurred_at).getTime(),
+        );
+        eventsCache.set(sessionId, merged);
+        setPaginationVersion((v) => v + 1);
+      }
+      setHasMoreOlder(resp.has_more);
+    } catch {
+      // Leave hasMoreOlder alone so the user can retry; the button
+      // re-enables itself when loadingOlder drops back to false.
+    } finally {
+      setLoadingOlder(false);
+    }
+  }, [sessionId, loadingOlder, hasMoreOlder, eventsLimit]);
+
   const session = data?.session;
   const isTerminal = session?.state === "closed" || session?.state === "lost";
   const isShuttingDown =
     !!session && shuttingDown.has(session.session_id);
   const hasPending =
     session?.has_pending_directive || killSent || isShuttingDown;
-  const showButton = session && !isTerminal;
+  // Hide the Stop Agent button for observer-only sessions (Claude Code
+  // and any future hook-based plugin). Those sessions never poll for
+  // directives, so the kill switch would silently no-op and mislead
+  // the operator. See dashboard/src/lib/directives.ts.
+  const supportsStop = !session || sessionSupportsDirectives(session);
+  const showButton = session && !isTerminal && supportsStop;
 
   async function handleKill() {
     if (!session) return;
@@ -297,9 +412,18 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
     }
   }
 
-  function handleViewPrompts() {
+  function handleViewPrompts(eventId: string) {
     setActiveTab("prompts");
     setExpandedEventId(null);
+    // Land directly on PromptViewer detail for the clicked Timeline
+    // event, skipping the list stop. A user drilling from a specific
+    // row wants that row's detail, not a list that includes it. We
+    // still set focusedPromptEventId so that when the user clicks
+    // "Back to event list" from detail, the origin row is
+    // highlighted and scrolled into view -- preserves Fix C
+    // (03792f5) on the round trip.
+    setSelectedEventId(eventId);
+    setFocusedPromptEventId(eventId);
   }
 
   const stateBadge = stateBadgeStyles[session?.state ?? "closed"] ?? stateBadgeStyles.closed;
@@ -335,7 +459,7 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
                       <Tooltip>
                         <TooltipTrigger asChild>
                           <span style={{ display: "inline-flex", lineHeight: 0 }} aria-label="Prompt capture enabled">
-                            <Camera size={12} style={{ color: "var(--accent)" }} />
+                            <FileText size={12} strokeWidth={2.25} style={{ color: "var(--accent)" }} />
                           </span>
                         </TooltipTrigger>
                         <TooltipContent>Prompt capture enabled</TooltipContent>
@@ -442,6 +566,54 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
           {/* Mode 1: Session view */}
           {!activeDetailEvent && displayEvents.length > 0 && data && (
             <>
+              {/* Claude Code session badge — only renders for sessions
+                  produced by the Claude Code plugin. Sits above the
+                  metadata bar so a platform engineer opening the drawer
+                  immediately sees "this is a developer Claude Code
+                  session" rather than having to infer it from the
+                  flavor text. Version is pulled from
+                  context.frameworks["claude-code/<ver>"]; absent
+                  versions collapse to just "Claude Code". */}
+              {isClaudeCodeSession(data.session) && (
+                <div
+                  data-testid="claude-code-badge"
+                  className="flex items-center gap-2 px-4 py-2"
+                  style={{
+                    borderBottom: "1px solid var(--border-subtle)",
+                    background: "var(--accent-glow)",
+                  }}
+                >
+                  {/* The visible "Claude Code" label sits right next
+                      to the icon, so we suppress the icon's own
+                      tooltip/aria-label to avoid screen readers
+                      announcing the tool name twice. */}
+                  <ClaudeCodeLogo size={20} title="" />
+                  <span
+                    className="text-[13px] font-semibold"
+                    style={{ color: "var(--text)" }}
+                  >
+                    Claude Code
+                  </span>
+                  {/* Matches the CODING AGENT pill the Investigate
+                      table (pages/Investigate.tsx) and Fleet sidebar
+                      (components/fleet/FleetPanel.tsx) render next to
+                      the flavor name. Same component, same gating via
+                      isClaudeCodeSession, so the three surfaces stay
+                      aligned. */}
+                  <CodingAgentBadge />
+                  {(() => {
+                    const v = getClaudeCodeVersion(data.session);
+                    return v ? (
+                      <span
+                        className="font-mono text-[11px]"
+                        style={{ color: "var(--text-muted)" }}
+                      >
+                        v{v}
+                      </span>
+                    ) : null;
+                  })()}
+                </div>
+              )}
               {/* Metadata bar — labelled grid. Auto-fits items into a
                   flowing two-row layout (identity on top, metrics
                   below) so the bar doesn't wrap unreadably on the
@@ -517,13 +689,31 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
                     onToggleExpand={(id) => setExpandedEventId(expandedEventId === id ? null : id)}
                     onViewPrompts={handleViewPrompts}
                     onOpenDetail={setInternalDetailEvent}
+                    eventsLimit={eventsLimit}
+                    onLimitChange={handleLimitChange}
+                    hasMoreOlder={hasMoreOlder}
+                    loadingOlder={loadingOlder}
+                    onLoadOlder={handleLoadOlder}
                   />
                 )}
                 {activeTab === "prompts" && (
                   <PromptsTab
-                    events={drawerEvents}
+                    events={displayEvents}
                     selectedEventId={selectedEventId}
-                    onSelectEvent={setSelectedEventId}
+                    focusedEventId={focusedPromptEventId}
+                    onSelectEvent={(id) => {
+                      setSelectedEventId(id);
+                      // Clear the focused-row treatment only when
+                      // the user selects a different event from the
+                      // list. When id === null (Back to event
+                      // list), preserve focus so the origin row is
+                      // still highlighted -- that's what makes the
+                      // Timeline → detail → Back round trip land
+                      // the user back on their originating row.
+                      if (id !== null && id !== focusedPromptEventId) {
+                        setFocusedPromptEventId(null);
+                      }
+                    }}
                   />
                 )}
                 {activeTab === "directives" && (
@@ -793,11 +983,21 @@ function MetadataBar({ session }: { session: SessionType }) {
         borderBottom: "1px solid var(--border-subtle)",
       }}
     >
-      <MetadataCell label="Flavor">{session.flavor}</MetadataCell>
+      <MetadataCell label="Agent">{session.flavor}</MetadataCell>
 
       <MetadataCell label="Host" title={session.host ?? undefined}>
         {session.host ?? "—"}
       </MetadataCell>
+
+      {session.token_name && (
+        <MetadataCell
+          label="Token"
+          title={session.token_name}
+          testId="metadata-token-name"
+        >
+          <span style={META_CLIP_STYLE}>{session.token_name}</span>
+        </MetadataCell>
+      )}
 
       {os && (
         <MetadataCell
@@ -851,27 +1051,53 @@ function MetadataBar({ session }: { session: SessionType }) {
 
 /* ---- Event feed (Timeline tab) ---- */
 
+/**
+ * Zero-arg signature was previously used here; the caller in
+ * SessionDrawer dropped the event id entirely, so "View Prompts →"
+ * always landed on the generic list. The one-arg signature threads
+ * the clicked event's id through to PromptsTab as focusedEventId.
+ */
 interface EventFeedProps {
   events: AgentEvent[];
   attachments: string[];
   expandedEventId: string | null;
   onToggleExpand: (id: string) => void;
-  onViewPrompts: () => void;
+  onViewPrompts: (eventId: string) => void;
   onOpenDetail?: (event: AgentEvent) => void;
+  // D113 pagination controls. The pill selector renders above the
+  // event map regardless of whether any events are loaded yet, so the
+  // user can tune the cap from an empty state; the "Show older"
+  // button renders below the list and only when more history may
+  // exist.
+  eventsLimit: number;
+  onLimitChange: (next: number) => void;
+  hasMoreOlder: boolean;
+  loadingOlder: boolean;
+  onLoadOlder: () => void;
 }
 
-function EventFeed({ events, attachments, expandedEventId, onToggleExpand, onViewPrompts, onOpenDetail }: EventFeedProps) {
-  if (events.length === 0) {
-    return (
-      <div className="py-8 text-center text-xs text-text-muted">
-        No events recorded for this session.
-      </div>
-    );
-  }
-
+function EventFeed({
+  events,
+  attachments,
+  expandedEventId,
+  onToggleExpand,
+  onViewPrompts,
+  onOpenDetail,
+  eventsLimit,
+  onLimitChange,
+  hasMoreOlder,
+  loadingOlder,
+  onLoadOlder,
+}: EventFeedProps) {
   return (
-    <div className="flex flex-col">
-      {events.map((event) => {
+    <div className="flex flex-col" data-testid="session-event-feed">
+      <EventsLimitPills value={eventsLimit} onChange={onLimitChange} />
+      {events.length === 0 ? (
+        <div className="py-8 text-center text-xs text-text-muted">
+          No events recorded for this session.
+        </div>
+      ) : (
+        events.map((event) => {
         const isAttachment = isAttachmentStartEvent(event, attachments);
         const badge = isAttachment ? attachBadge : getBadge(event.event_type);
         const isExpanded = expandedEventId === event.id;
@@ -937,13 +1163,97 @@ function EventFeed({ events, attachments, expandedEventId, onToggleExpand, onVie
             {isExpanded && (
               <ExpandedEvent
                 event={event}
-                onViewPrompts={event.has_content ? onViewPrompts : undefined}
+                onViewPrompts={
+                  event.has_content ? () => onViewPrompts(event.id) : undefined
+                }
                 onOpenDetail={onOpenDetail ? () => onOpenDetail(event) : undefined}
               />
             )}
           </div>
         );
-      })}
+      })
+      )}
+      {events.length > 0 && hasMoreOlder && (
+        <button
+          type="button"
+          data-testid="show-older-events"
+          disabled={loadingOlder}
+          onClick={onLoadOlder}
+          className="flex h-9 items-center justify-center text-xs transition-colors hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-60"
+          style={{
+            color: "var(--accent)",
+            borderTop: "1px solid var(--border-subtle)",
+          }}
+        >
+          {loadingOlder ? "Loading…" : "Show older events"}
+        </button>
+      )}
+    </div>
+  );
+}
+
+/* ---- Events-limit pill selector (D113) ---- */
+
+/**
+ * Flat two-button pill selector shown at the top of the Timeline tab
+ * event feed. Mirrors the Fleet time-range pill styling
+ * (Fleet.tsx:492-515) so the drawer picks up the same visual
+ * vocabulary rather than inventing a new control.
+ */
+function EventsLimitPills({
+  value,
+  onChange,
+}: {
+  value: number;
+  onChange: (next: number) => void;
+}) {
+  return (
+    <div
+      data-testid="events-limit-pills"
+      className="flex h-9 shrink-0 items-center gap-2 px-3"
+      style={{
+        borderBottom: "1px solid var(--border-subtle)",
+        background: "var(--bg-elevated)",
+      }}
+    >
+      <span
+        className="uppercase"
+        style={{
+          fontSize: 10,
+          fontWeight: 600,
+          letterSpacing: "0.06em",
+          color: "var(--text-muted)",
+        }}
+      >
+        Events
+      </span>
+      <div className="flex gap-0.5">
+        {EVENTS_LIMIT_OPTIONS.map((opt) => (
+          <button
+            key={opt}
+            type="button"
+            data-testid={`events-limit-pill-${opt}`}
+            onClick={() => onChange(opt)}
+            className="rounded px-2.5 py-[3px] text-xs transition-colors"
+            style={
+              value === opt
+                ? {
+                    background: "var(--bg)",
+                    color: "var(--text)",
+                    border: "1px solid var(--border-strong)",
+                  }
+                : {
+                    background: "transparent",
+                    color: "var(--text-muted)",
+                    border: "1px solid transparent",
+                  }
+            }
+            aria-pressed={value === opt}
+          >
+            {opt}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }
@@ -1063,11 +1373,47 @@ function EventDetailView({ event, session, onBack }: { event: AgentEvent; sessio
 interface PromptsTabProps {
   events: AgentEvent[];
   selectedEventId: string | null;
+  /**
+   * Event id the user came from via a Timeline "View Prompts →"
+   * click. When set (and no selectedEventId drilling into detail),
+   * the matching list row scrolls into view and renders with the
+   * accent-glow highlight so the user sees the origin event
+   * immediately. Distinct from selectedEventId, which replaces the
+   * list with PromptViewer.
+   */
+  focusedEventId: string | null;
   onSelectEvent: (id: string | null) => void;
 }
 
-function PromptsTab({ events, selectedEventId, onSelectEvent }: PromptsTabProps) {
-  const contentEvents = events.filter((e) => e.has_content && e.event_type === "post_call");
+function PromptsTab({
+  events,
+  selectedEventId,
+  focusedEventId,
+  onSelectEvent,
+}: PromptsTabProps) {
+  // post_call carries prompt+response for an LLM turn; tool_call now
+  // also carries content when the plugin has captureToolInputs on
+  // (tools[] = sanitised tool input, response[] = tool_result when
+  // capturePrompts is also on). Both belong in the Prompts tab.
+  const contentEvents = events.filter(
+    (e) =>
+      e.has_content &&
+      (e.event_type === "post_call" || e.event_type === "tool_call"),
+  );
+  const rowRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+
+  // Scroll the focused row into view once the list is mounted. block:
+  // "center" keeps the row visually centred, not flush with the top
+  // where it can be clipped by the tab bar. Runs only when the
+  // focused id changes -- re-rendering the same focus after state
+  // churn shouldn't re-scroll the user mid-scroll.
+  useEffect(() => {
+    if (!focusedEventId || selectedEventId) return;
+    const node = rowRefs.current[focusedEventId];
+    if (node) {
+      node.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  }, [focusedEventId, selectedEventId]);
 
   if (contentEvents.length === 0) {
     return (
@@ -1092,11 +1438,27 @@ function PromptsTab({ events, selectedEventId, onSelectEvent }: PromptsTabProps)
     <div className="flex flex-col">
       {contentEvents.map((event) => {
         const badge = getBadge(event.event_type);
+        const isFocused = event.id === focusedEventId;
         return (
           <button
             key={event.id}
+            ref={(el) => {
+              rowRefs.current[event.id] = el;
+            }}
+            data-testid={`prompts-row-${event.id}`}
+            data-focused={isFocused ? "true" : undefined}
             className="flex items-center gap-2 px-3 py-2 text-left text-xs transition-colors hover:bg-surface-hover"
-            style={{ borderBottom: "1px solid var(--border-subtle)" }}
+            style={{
+              borderBottom: "1px solid var(--border-subtle)",
+              // Same accent-glow + accent-left treatment the fleet
+              // sidebar uses for its active flavor row, so the
+              // highlight reads as "selected / focused" and reuses
+              // existing visual language.
+              background: isFocused ? "var(--accent-glow)" : undefined,
+              borderLeft: isFocused
+                ? "2px solid var(--accent)"
+                : "2px solid transparent",
+            }}
             onClick={() => onSelectEvent(event.id)}
           >
             <span className="flex h-[18px] w-[88px] shrink-0 items-center justify-center rounded font-mono text-[10px] font-semibold uppercase"

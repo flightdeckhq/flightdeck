@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "flightdeck.configMapName" . }}
+  labels:
+    {{- include "flightdeck.labels" (dict "root" . "component" "shared") | nindent 4 }}
+data:
+  FLIGHTDECK_NATS_URL: {{ include "flightdeck.natsURL" . | quote }}
+  FLIGHTDECK_ENV: {{ .Values.api.env | quote }}
+  FLIGHTDECK_WORKER_POOL_SIZE: {{ .Values.workers.poolSize | quote }}
+  FLIGHTDECK_MIGRATIONS_DIR: {{ .Values.workers.migrationsDir | quote }}
+  FLIGHTDECK_RATE_LIMIT_PER_MINUTE: {{ .Values.ingestion.rateLimitPerMinute | quote }}
+  FLIGHTDECK_CORS_ORIGIN: {{ .Values.api.corsOrigin | quote }}
+  SHUTDOWN_TIMEOUT_SECS: {{ .Values.api.shutdownTimeoutSecs | quote }}
+  # Agent-side defaults -- consumed only if an operator wires them into an
+  # agent deployment. Server components ignore these.
+  AGENT_FLAVOR: {{ .Values.flightdeck.agents.flavor | quote }}
+  AGENT_TYPE: {{ .Values.flightdeck.agents.type | quote }}
+  FLIGHTDECK_UNAVAILABLE_POLICY: {{ .Values.flightdeck.unavailablePolicy | quote }}
+  FLIGHTDECK_CAPTURE_PROMPTS: {{ .Values.flightdeck.capturePrompts | quote }}

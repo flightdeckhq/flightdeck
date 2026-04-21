@@ -7,6 +7,7 @@ import { SessionEventRow } from "./SessionEventRow";
 import { EventNode } from "./EventNode";
 import { useSessionEvents, attachmentsCache } from "@/hooks/useSessionEvents";
 import { isAttachmentStartEvent, isEventVisible } from "@/lib/events";
+import { ClaudeCodeLogo } from "@/components/ui/claude-code-logo";
 
 interface SwimLaneProps {
   flavor: string;
@@ -132,6 +133,9 @@ function SwimLaneComponent({
               transition: "transform 200ms ease",
             }}
           />
+          {flavor === "claude-code" && (
+            <ClaudeCodeLogo size={14} className="shrink-0" />
+          )}
           <span
             className="text-[13px] font-medium"
             style={{

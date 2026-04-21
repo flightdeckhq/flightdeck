@@ -203,13 +203,27 @@ export function PromptViewer({ eventId }: PromptViewerProps) {
           <div className="space-y-1.5">
             {content.tools.map((tool: Record<string, unknown>, i: number) => {
               const name = (tool.name as string) ?? ((tool.function as Record<string, unknown>)?.name as string) ?? `tool_${i}`;
-              const desc = (tool.description as string) ?? ((tool.function as Record<string, unknown>)?.description as string) ?? null;
-              const schema = (tool.input_schema as Record<string, unknown>) ?? ((tool.function as Record<string, unknown>)?.parameters as Record<string, unknown>) ?? null;
+              // Plugin-captured tool_use calls carry { type, name, input }.
+              // Prefer rendering the call (actual input values) when input
+              // is present; otherwise fall back to the declaration path
+              // (description + input_schema) used by LLM-request tool defs.
+              const input = isPlainObject(tool.input) ? tool.input : null;
+              const desc = input == null
+                ? ((tool.description as string) ?? ((tool.function as Record<string, unknown>)?.description as string) ?? null)
+                : null;
+              const schema = input == null
+                ? ((tool.input_schema as Record<string, unknown>) ?? ((tool.function as Record<string, unknown>)?.parameters as Record<string, unknown>) ?? null)
+                : null;
               const props = (schema?.properties as Record<string, Record<string, unknown>>) ?? null;
 
               return (
                 <div key={i} className="rounded-md p-2.5" style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)" }}>
                   <div className="font-mono text-[13px] font-semibold" style={{ color: "var(--event-tool)" }}>{name}</div>
+                  {input != null && Object.keys(input).length > 0 && (
+                    <div className="mt-2" data-testid="tool-use-input">
+                      <KeyValueList data={input} />
+                    </div>
+                  )}
                   {desc && <div className="mt-1 text-xs" style={{ color: "var(--text-secondary)" }}>{desc}</div>}
                   {props && Object.keys(props).length > 0 && (
                     <>
@@ -265,7 +279,21 @@ export function PromptViewer({ eventId }: PromptViewerProps) {
 /* ---- Pretty response renderer ---- */
 
 function PrettyResponse({ response, provider }: { response: unknown; provider: string }) {
-  if (!response || typeof response !== "object") {
+  if (!response) {
+    return <pre className="text-xs text-text-muted whitespace-pre-wrap">{String(response)}</pre>;
+  }
+
+  // Plugin-captured tool_call shape: response is an array of content blocks
+  // like { type: "tool_result", content: "<stringified JSON>" } or
+  // { type: "text", text: "..." } -- not an Anthropic/OpenAI response object.
+  if (Array.isArray(response)) {
+    if (response.length === 0) {
+      return <div className="text-xs" style={{ color: "var(--text-muted)" }}>(no response)</div>;
+    }
+    return <ToolResponseBlocks blocks={response} />;
+  }
+
+  if (typeof response !== "object") {
     return <pre className="text-xs text-text-muted whitespace-pre-wrap">{String(response)}</pre>;
   }
 
@@ -315,5 +343,225 @@ function PrettyResponse({ response, provider }: { response: unknown; provider: s
         </div>
       )}
     </div>
+  );
+}
+
+/* ---- Structured value helpers (tool_use input, tool_result fields) ---- */
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+function needsMultiline(v: unknown): boolean {
+  if (typeof v === "string") return v.includes("\n") || v.length > 60;
+  if (v !== null && typeof v === "object") return true;
+  return false;
+}
+
+function InlineValue({ value }: { value: unknown }) {
+  if (value === null || value === undefined) {
+    return <span style={{ color: "var(--text-muted)" }}>(null)</span>;
+  }
+  if (typeof value === "string") {
+    if (value.length === 0) {
+      return <span style={{ color: "var(--text-muted)" }}>(empty)</span>;
+    }
+    return <span style={{ color: "var(--text)" }}>{value}</span>;
+  }
+  return <span style={{ color: "var(--text)" }}>{String(value)}</span>;
+}
+
+function BlockValue({ value }: { value: unknown }) {
+  if (typeof value === "string" && value.length === 0) {
+    return <span className="font-mono text-[12px]" style={{ color: "var(--text-muted)" }}>(empty)</span>;
+  }
+  const text = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+  return (
+    <pre
+      className="rounded-md p-2 font-mono text-[12px]"
+      style={{
+        background: "var(--bg-base)",
+        color: "var(--text)",
+        whiteSpace: "pre-wrap",
+        wordBreak: "break-word",
+        margin: 0,
+      }}
+    >
+      {text}
+    </pre>
+  );
+}
+
+function KeyValueList({ data }: { data: Record<string, unknown> }) {
+  const entries = Object.entries(data);
+  return (
+    <div className="space-y-1.5">
+      {entries.map(([key, value]) => {
+        if (needsMultiline(value)) {
+          return (
+            <div key={key} className="flex flex-col gap-1">
+              <span
+                data-testid="kv-label"
+                className="font-mono text-[10px] font-semibold uppercase tracking-[0.06em]"
+                style={{ color: "var(--text-muted)" }}
+              >
+                {key}
+              </span>
+              <BlockValue value={value} />
+            </div>
+          );
+        }
+        return (
+          <div key={key} className="flex items-baseline gap-2 font-mono text-[12px]">
+            <span
+              data-testid="kv-label"
+              className="font-medium"
+              style={{ color: "var(--text-muted)" }}
+            >
+              {key}:
+            </span>
+            <InlineValue value={value} />
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ---- Tool response block renderers (tool_call Pretty view) ---- */
+
+function ToolResponseBlocks({ blocks }: { blocks: unknown[] }) {
+  return (
+    <div className="space-y-2">
+      {blocks.map((raw, i) => {
+        if (!isPlainObject(raw)) {
+          return (
+            <pre
+              key={i}
+              className="rounded-md p-2 font-mono text-[12px]"
+              style={{
+                background: "var(--bg-elevated)",
+                color: "var(--text-muted)",
+                whiteSpace: "pre-wrap",
+                wordBreak: "break-word",
+              }}
+            >
+              {String(raw)}
+            </pre>
+          );
+        }
+        const type = typeof raw.type === "string" ? raw.type : "";
+        if (type === "text") {
+          const text = typeof raw.text === "string" ? raw.text : JSON.stringify(raw.text);
+          return (
+            <div
+              key={i}
+              className="rounded-md p-2.5"
+              style={{
+                background: "var(--bg-elevated)",
+                fontSize: 13,
+                lineHeight: 1.6,
+                color: "var(--text)",
+                whiteSpace: "pre-wrap",
+                wordBreak: "break-word",
+              }}
+            >
+              {text}
+            </div>
+          );
+        }
+        if (type === "tool_result") {
+          return <ToolResultBlock key={i} block={raw} />;
+        }
+        return (
+          <pre
+            key={i}
+            className="rounded-md p-2 font-mono text-[12px]"
+            style={{
+              background: "var(--bg-elevated)",
+              color: "var(--text)",
+              whiteSpace: "pre-wrap",
+              wordBreak: "break-word",
+            }}
+          >
+            {JSON.stringify(raw, null, 2)}
+          </pre>
+        );
+      })}
+    </div>
+  );
+}
+
+function ToolResultBlock({ block }: { block: Record<string, unknown> }) {
+  const rawContent = block.content;
+  const contentString = typeof rawContent === "string" ? rawContent : null;
+
+  // Parse nested JSON content so structured fields (stdout, stderr,
+  // interrupted, isImage, ...) render as a labeled list rather than
+  // escape-encoded soup. Parse-failure falls back to the raw string.
+  let parsed: unknown = undefined;
+  if (contentString != null) {
+    try {
+      parsed = JSON.parse(contentString);
+    } catch {
+      parsed = undefined;
+    }
+  }
+
+  if (isPlainObject(parsed)) {
+    return (
+      <div
+        data-testid="tool-result-parsed"
+        className="rounded-md p-2.5"
+        style={{ background: "var(--bg-elevated)" }}
+      >
+        <KeyValueList data={parsed} />
+      </div>
+    );
+  }
+
+  if (contentString != null) {
+    // Plugin truncates tool output at 2000 chars, appending U+2026 (…).
+    // Surface that so the user knows this is the cap, not a render bug.
+    const truncated = contentString.endsWith("\u2026");
+    return (
+      <div data-testid="tool-result-raw">
+        <pre
+          className="rounded-md p-2.5 font-mono text-[12px]"
+          style={{
+            background: "var(--bg-elevated)",
+            color: "var(--text)",
+            whiteSpace: "pre-wrap",
+            wordBreak: "break-word",
+            margin: 0,
+          }}
+        >
+          {contentString}
+        </pre>
+        {truncated && (
+          <div
+            data-testid="tool-result-truncated"
+            className="mt-1 font-mono text-[10px] italic"
+            style={{ color: "var(--text-muted)" }}
+          >
+            … (truncated)
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <pre
+      className="rounded-md p-2.5 font-mono text-[12px]"
+      style={{
+        background: "var(--bg-elevated)",
+        color: "var(--text)",
+        whiteSpace: "pre-wrap",
+        wordBreak: "break-word",
+      }}
+    >
+      {JSON.stringify(rawContent, null, 2)}
+    </pre>
   );
 }

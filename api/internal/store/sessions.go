@@ -17,15 +17,107 @@ type SessionsParams struct {
 	Query   string   // Full-text search (ILIKE across multiple fields)
 	States  []string // active, idle, stale, closed, lost
 	Flavors []string
+	// AgentTypes filters sessions by the agent_type column. Repeatable:
+	// values ``developer`` / ``autonomous`` / ``supervised`` / ``batch``.
+	// The Investigate page exposes this as the AGENT TYPE facet so an
+	// operator can isolate developer (Claude Code etc.) sessions from
+	// production autonomous agents. Unvalidated against a fixed set
+	// because new agent_type values land without a migration; a typo
+	// just yields an empty result.
+	AgentTypes []string
 	// Frameworks filters on sessions.context->'frameworks' (JSONB
 	// array of strings like "langgraph/1.1.6"). Multi-value: any
 	// match across the array passes (``?|`` operator).
 	Frameworks []string
+	// ContextFilters carries the generic scalar-key filters on
+	// sessions.context JSONB (user, os, arch, hostname, process_name,
+	// node_version, python_version, git_branch, git_commit, git_repo,
+	// orchestration). Each key maps to a list of accepted values; a
+	// session passes the filter when its ``context->>'<key>'`` matches
+	// any value. Keys outside AllowedContextFilterKeys are rejected by
+	// the handler so callers cannot inject arbitrary JSONB paths.
+	ContextFilters map[string][]string
 	Model   string
 	Sort    string // started_at, duration, tokens_used, flavor
 	Order   string // asc, desc
 	Limit   int
 	Offset  int
+}
+
+// AllowedContextFilterKeys is the closed whitelist of scalar
+// ``sessions.context`` JSONB keys that can be used as filters on the
+// ``/v1/sessions`` endpoint. Restricting the set at both the handler
+// and store layer means ``context->>'<key>'`` interpolation in the
+// WHERE clause cannot be weaponised -- a caller cannot smuggle a
+// custom JSONB path through the query string. Keep this list in sync
+// with the facet whitelist on the dashboard (Investigate computeFacets)
+// and with the ContextFilters TypeScript interface in lib/api.ts.
+var AllowedContextFilterKeys = []string{
+	"user",
+	"os",
+	"arch",
+	"hostname",
+	"process_name",
+	"node_version",
+	"python_version",
+	"git_branch",
+	"git_commit",
+	"git_repo",
+	"orchestration",
+}
+
+// allowedContextFilterSet mirrors AllowedContextFilterKeys as a set
+// for O(1) membership checks.
+var allowedContextFilterSet = func() map[string]bool {
+	m := make(map[string]bool, len(AllowedContextFilterKeys))
+	for _, k := range AllowedContextFilterKeys {
+		m[k] = true
+	}
+	return m
+}()
+
+// IsAllowedContextFilterKey reports whether ``key`` is part of the
+// scalar filter whitelist. Handler-layer callers use this to reject
+// unknown query-string names with a 400 before the param reaches
+// the store.
+func IsAllowedContextFilterKey(key string) bool {
+	return allowedContextFilterSet[key]
+}
+
+// BuildContextFilterClause returns the ``s.context->>'<key>' IN ($n,
+// ...)`` WHERE fragment plus the extended arg list and next placeholder
+// index. Returns ``""`` (empty fragment, unchanged args, same idx) when
+// ``values`` is empty so callers can unconditionally invoke this
+// without filter-counting.
+//
+// ``key`` MUST come from AllowedContextFilterKeys -- the function
+// panics otherwise. Calling with an unvalidated key is a
+// programming error, never a user-input path; the handler filters
+// unknowns before calling. Panic is preferable to silently
+// returning a broken query.
+func BuildContextFilterClause(
+	key string,
+	values []string,
+	args []any,
+	argIdx int,
+) (clause string, nextArgs []any, nextIdx int) {
+	if len(values) == 0 {
+		return "", args, argIdx
+	}
+	if !allowedContextFilterSet[key] {
+		panic(fmt.Sprintf("BuildContextFilterClause: key %q is not in AllowedContextFilterKeys", key))
+	}
+	placeholders := make([]string, len(values))
+	for i, v := range values {
+		placeholders[i] = fmt.Sprintf("$%d", argIdx)
+		args = append(args, v)
+		argIdx++
+	}
+	clause = fmt.Sprintf(
+		"s.context->>'%s' IN (%s)",
+		key, strings.Join(placeholders, ", "),
+	)
+	return clause, args, argIdx
 }
 
 // SessionListItem is one row in the paginated sessions response.
@@ -35,6 +127,7 @@ type SessionsParams struct {
 type SessionListItem struct {
 	SessionID      string                 `json:"session_id"`
 	Flavor         string                 `json:"flavor"`
+	AgentType      string                 `json:"agent_type"`
 	Host           *string                `json:"host"`
 	Model          *string                `json:"model"`
 	State          string                 `json:"state"`
@@ -112,6 +205,19 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 		conditions = append(conditions, fmt.Sprintf("s.flavor IN (%s)", strings.Join(placeholders, ", ")))
 	}
 
+	// Agent-type filter (repeatable: OR within group). Mirrors the
+	// flavor filter shape so the handler can just forward the parsed
+	// list without special-casing.
+	if len(params.AgentTypes) > 0 {
+		placeholders := make([]string, len(params.AgentTypes))
+		for i, at := range params.AgentTypes {
+			placeholders[i] = fmt.Sprintf("$%d", argIdx)
+			args = append(args, at)
+			argIdx++
+		}
+		conditions = append(conditions, fmt.Sprintf("s.agent_type IN (%s)", strings.Join(placeholders, ", ")))
+	}
+
 	// Model filter
 	if params.Model != "" {
 		conditions = append(conditions, fmt.Sprintf("s.model = $%d", argIdx))
@@ -130,6 +236,23 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 		))
 		args = append(args, params.Frameworks)
 		argIdx++
+	}
+
+	// Generic scalar-key context filters (user, os, arch, hostname,
+	// process_name, node_version, python_version, git_branch,
+	// git_commit, git_repo, orchestration). Iterate the allow-list so
+	// the clause ordering is stable regardless of Go map iteration
+	// order -- easier to read in logs and deterministic for any
+	// future snapshot test of the generated SQL.
+	for _, key := range AllowedContextFilterKeys {
+		values := params.ContextFilters[key]
+		clause, nextArgs, nextIdx := BuildContextFilterClause(key, values, args, argIdx)
+		if clause == "" {
+			continue
+		}
+		conditions = append(conditions, clause)
+		args = nextArgs
+		argIdx = nextIdx
 	}
 
 	// Full-text search across multiple fields
@@ -184,6 +307,7 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 		SELECT
 			s.session_id::text,
 			s.flavor,
+			s.agent_type,
 			s.host,
 			s.model,
 			s.state,
@@ -221,6 +345,7 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 		if err := rows.Scan(
 			&item.SessionID,
 			&item.Flavor,
+			&item.AgentType,
 			&item.Host,
 			&item.Model,
 			&item.State,

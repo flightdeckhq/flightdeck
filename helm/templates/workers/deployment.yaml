@@ -1,0 +1,80 @@
+{{- $component := "workers" -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "flightdeck.componentName" (dict "root" . "component" $component) }}
+  labels:
+    {{- include "flightdeck.labels" (dict "root" . "component" $component) | nindent 4 }}
+spec:
+  replicas: {{ .Values.workers.replicas }}
+  selector:
+    matchLabels:
+      {{- include "flightdeck.selectorLabels" (dict "root" . "component" $component) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "flightdeck.selectorLabels" (dict "root" . "component" $component) | nindent 8 }}
+      {{- with .Values.workers.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- if .Values.serviceAccount.create }}
+      serviceAccountName: {{ include "flightdeck.serviceAccountName" (dict "root" . "component" $component) }}
+      {{- end }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: workers
+          image: {{ include "flightdeck.image" (dict "root" . "component" .Values.workers) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "flightdeck.configMapName" . }}
+            - secretRef:
+                name: {{ include "flightdeck.secretName" . }}
+          volumeMounts:
+            - name: migrations
+              mountPath: {{ .Values.workers.migrationsDir }}
+              readOnly: true
+          readinessProbe:
+            # Workers exposes no HTTP endpoint; probe confirms the process is
+            # alive as PID 1. A crash triggers container restart anyway, so
+            # this is a minimal "scheduled and running" signal.
+            exec:
+              command: ["/bin/sh", "-c", "kill -0 1"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            exec:
+              command: ["/bin/sh", "-c", "kill -0 1"]
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.workers.resources | nindent 12 }}
+      volumes:
+        - name: migrations
+          configMap:
+            name: {{ include "flightdeck.migrationsConfigMapName" . }}
+      {{- with .Values.workers.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.workers.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.workers.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

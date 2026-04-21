@@ -16,12 +16,11 @@ services:
       timeout: 3s
       retries: 5
 
-  # TODO(KI11)[Phase 5]: NATS has no authentication in dev
-  # compose. Any process on the Docker network can publish
-  # to the FLIGHTDECK stream.
-  # Fix: add NATS token auth or NKey in Helm chart and
-  # docker-compose.prod.yml.
-  # See DECISIONS.md D047.
+  # NATS runs unauthenticated in dev on purpose: `make dev` is a
+  # single-host developer loop and a token/NKey round-trip just
+  # complicates the feedback cycle. Prod NATS auth (Helm chart +
+  # docker-compose.prod.yml) is tracked in KNOWN_ISSUES.md
+  # "Deferred to v0.4.0" (KI11). See DECISIONS.md D047.
   nats:
     image: nats:2.10-alpine
     command: ["--jetstream", "--store_dir", "/data", "--http_port", "8222"]
@@ -86,6 +85,12 @@ services:
       # D095: tok_dev only works when ENVIRONMENT=dev.
       ENVIRONMENT: dev
       SHUTDOWN_TIMEOUT_SECS: "30"
+    volumes:
+      # D102: mount the repo-level pricing.yaml into the production
+      # default path so a dev operator can edit prices and restart the
+      # api without rebuilding the image. Production deployments that
+      # use the baked-in copy instead can drop this mount.
+      - ../pricing.yaml:/etc/flightdeck/pricing.yaml:ro
     depends_on:
       postgres:
         condition: service_healthy

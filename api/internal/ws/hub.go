@@ -140,10 +140,18 @@ func WritePump(client *Client) {
 	}
 }
 
-// notifyPayload is the raw payload from Postgres NOTIFY.
+// notifyPayload is the raw payload from Postgres NOTIFY. EventID was
+// added to give the hub a deterministic pointer to the triggering
+// event: before D108, listenOnce called GetSessionEvents and picked
+// the tail, which raced with concurrent inserts whenever paired
+// events (post_call + tool_call within ~200 ms, common after D107's
+// PostToolUse flush) committed close together. See D108 in
+// DECISIONS.md and workers/internal/writer/notify.go for the writer
+// side of the contract.
 type notifyPayload struct {
 	SessionID string `json:"session_id"`
 	EventType string `json:"event_type"`
+	EventID   string `json:"event_id"`
 }
 
 // fleetUpdate is the enriched payload broadcast to WebSocket clients.
@@ -210,11 +218,37 @@ func (h *Hub) listenOnce(ctx context.Context, pool *pgxpool.Pool) error {
 			continue
 		}
 
-		// Fetch the latest event for the live feed
+		// Fetch exactly the event that triggered this NOTIFY. A
+		// direct GetEvent(event_id) is O(1) (indexed PK lookup)
+		// rather than O(N) over the session's event history, and
+		// eliminates the NOTIFY->SELECT race where
+		// GetSessionEvents + tail would return a later event when
+		// paired writes committed in quick succession. See D108.
 		var lastEvent *store.Event
-		events, evtErr := h.store.GetSessionEvents(ctx, np.SessionID)
-		if evtErr == nil && len(events) > 0 {
-			lastEvent = &events[len(events)-1]
+		if np.EventID != "" {
+			event, evtErr := h.store.GetEvent(ctx, np.EventID)
+			if evtErr != nil {
+				slog.Warn("failed to fetch event for WS broadcast",
+					"event_id", np.EventID,
+					"session_id", np.SessionID,
+					"err", evtErr,
+				)
+				continue
+			}
+			if event == nil {
+				// Possible when the NOTIFY arrives at the hub
+				// before the insert transaction has committed
+				// (uncommon but valid). Skip the broadcast; the
+				// client has no update to apply, and the event
+				// will be picked up by the next bulk fetch or
+				// drawer open.
+				slog.Warn("event not found for WS broadcast",
+					"event_id", np.EventID,
+					"session_id", np.SessionID,
+				)
+				continue
+			}
+			lastEvent = event
 		}
 
 		// Determine update type from event_type

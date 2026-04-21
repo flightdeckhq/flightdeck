@@ -252,19 +252,19 @@ const docTemplate = `{
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "Metric: tokens, sessions, latency_avg, policy_events (default: tokens)",
+                        "description": "Metric: tokens, sessions, latency_avg, latency_p50, latency_p95, policy_events, estimated_cost (default: tokens)",
                         "name": "metric",
                         "in": "query"
                     },
                     {
                         "type": "string",
-                        "description": "Dimension: flavor, model, framework, host, agent_type, team (default: flavor)",
+                        "description": "Dimension: flavor, model, framework, host, agent_type, team, provider (default: flavor)",
                         "name": "group_by",
                         "in": "query"
                     },
                     {
                         "type": "string",
-                        "description": "Time range: 7d, 30d, 90d, custom (default: 30d)",
+                        "description": "Time range: today, 7d, 30d, 90d, custom (default: 30d)",
                         "name": "range",
                         "in": "query"
                     },
@@ -302,6 +302,12 @@ const docTemplate = `{
                         "type": "string",
                         "description": "Filter to specific agent_type",
                         "name": "filter_agent_type",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter to specific provider (anthropic, openai, google, xai, mistral, meta, other)",
+                        "name": "filter_provider",
                         "in": "query"
                     }
                 ],
@@ -578,7 +584,7 @@ const docTemplate = `{
         },
         "/v1/events": {
             "get": {
-                "description": "Returns events matching time range, flavor, event type, and session filters with pagination.",
+                "description": "Returns events matching time range, flavor, event type, and session filters with pagination. Supports optional ` + "`" + `` + "`" + `before` + "`" + `` + "`" + ` keyset cursor and ` + "`" + `` + "`" + `order` + "`" + `` + "`" + ` direction so the session drawer can paginate backwards in time when loading older events for long-running stable sessions.",
                 "produces": [
                     "application/json"
                 ],
@@ -616,6 +622,18 @@ const docTemplate = `{
                         "type": "string",
                         "description": "Filter by session ID",
                         "name": "session_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Keyset cursor (ISO 8601). When set, only rows with occurred_at \u003c before are returned. Pair with order=desc for newest-first drawer pagination.",
+                        "name": "before",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Sort order: asc (default) or desc",
+                        "name": "order",
                         "in": "query"
                     },
                     {
@@ -1094,7 +1112,7 @@ const docTemplate = `{
         },
         "/v1/sessions/{id}": {
             "get": {
-                "description": "Returns session metadata (including effective policy thresholds) and all events in chronological order",
+                "description": "Returns session metadata (including effective policy thresholds) and events in chronological order. When ` + "`" + `` + "`" + `events_limit` + "`" + `` + "`" + ` is provided, the N newest events are returned (still sorted ASC); the drawer uses this to cap the initial fetch on long-running stable sessions.",
                 "produces": [
                     "application/json"
                 ],
@@ -1109,6 +1127,12 @@ const docTemplate = `{
                         "name": "id",
                         "in": "path",
                         "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Return at most N newest events (1-1000). Omit for the full history.",
+                        "name": "events_limit",
+                        "in": "query"
                     }
                 ],
                 "responses": {
@@ -1406,6 +1430,9 @@ const docTemplate = `{
                 "metric": {
                     "type": "string"
                 },
+                "partial_estimate": {
+                    "type": "boolean"
+                },
                 "range": {
                     "type": "string"
                 },
@@ -1585,6 +1612,14 @@ const docTemplate = `{
                 },
                 "session_id": {
                     "type": "string"
+                },
+                "tokens_cache_creation": {
+                    "description": "D100",
+                    "type": "integer"
+                },
+                "tokens_cache_read": {
+                    "description": "D100",
+                    "type": "integer"
                 },
                 "tokens_input": {
                     "type": "integer"
@@ -1868,6 +1903,10 @@ const docTemplate = `{
                 "token_limit": {
                     "type": "integer"
                 },
+                "token_name": {
+                    "description": "TokenName is the human-readable name of the access_tokens row\nthat authenticated the session_start event (D095). Nullable:\ntok_dev-authenticated sessions and pre-Phase-5 rows carry NULL.\nPreserved across token revocation (sessions.token_id clears via\nON DELETE SET NULL but sessions.token_name is a static snapshot\nso the dashboard can attribute historical sessions even after\nthe token row is gone). Mirrors the SessionListItem.TokenName\nreturned by GetSessions.",
+                    "type": "string"
+                },
                 "tokens_used": {
                     "type": "integer"
                 },
@@ -1879,6 +1918,9 @@ const docTemplate = `{
         "store.SessionListItem": {
             "type": "object",
             "properties": {
+                "agent_type": {
+                    "type": "string"
+                },
                 "capture_enabled": {
                     "type": "boolean"
                 },

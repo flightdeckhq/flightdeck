@@ -1,11 +1,38 @@
 #!/usr/bin/env node
-// Flightdeck Claude Code hook -- reports tool calls and session lifecycle.
-// Reads hook event from stdin, POSTs to Flightdeck ingestion API.
-// Uses only Node.js built-in modules. Never blocks Claude Code.
+// Flightdeck Claude Code hook. Reads hook event from stdin, reads the
+// Claude Code JSONL transcript for token/content details, and POSTs
+// metadata + optional content to the Flightdeck ingestion API.
+//
+// Design notes:
+//   * Claude Code hooks have no visibility into the raw LLM request.
+//     Every hook invocation receives `transcript_path` pointing at the
+//     JSONL conversation log. That log carries the full Anthropic API
+//     response envelope for every assistant turn, including model name,
+//     usage object (input/output/cache tokens), and the message body.
+//     The plugin reads that file to emit real post_call events rather
+//     than the old "tokens_total = 0" placeholder (D100).
+//   * Every hook is a fresh Node child process. State that must survive
+//     across invocations (session id, session-start de-dup, Stop dedup
+//     per message.id, connection-refused one-shot log) lives on disk
+//     under tmpdir()/flightdeck-plugin/.
+//   * Defaults let a developer run `claude --plugin-dir <path>` against
+//     a local `make dev` stack with zero env config. Production teams
+//     override via shell rc or wrapper script.
+//   * Hook failures never block Claude Code. Connection refused logs
+//     once per session and then silently no-ops; anything else logs and
+//     returns.
+//
+// Uses only Node.js built-in modules.
 
 import { execSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync, openSync, closeSync } from "node:fs";
+import {
+  closeSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import {
   arch,
   hostname as osHostname,
@@ -16,44 +43,96 @@ import {
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { NAMESPACE_URL, uuid5 } from "./uuid5.mjs";
+
 const TIMEOUT_MS = 2000;
 
-// Map Claude Code's TOOL lifecycle hooks to Flightdeck event types.
-// Note: pre_call/tool_call here are the *tool* lifecycle, not the LLM
-// call lifecycle. Claude Code hooks have no visibility into LLM calls,
-// only into tool invocations and the session itself, so we reuse the
-// schema's tool-related event_type values.
-export const EVENT_MAP = {
-  PreToolUse: "pre_call",
-  PostToolUse: "tool_call",
-  Stop: "session_end",
-};
-
 // ---------------------------------------------------------------------
-// Session ID -- stable for the lifetime of a Claude Code conversation
-// in a given working directory.
+// Env var resolution + defaults (D100 zero-config flow).
 // ---------------------------------------------------------------------
 
 /**
- * Resolve a stable session ID. Order of preference:
- *   1. CLAUDE_SESSION_ID env var (set by Claude Code)
- *   2. ANTHROPIC_CLAUDE_SESSION_ID env var (alternative name)
- *   3. File-based ID scoped to the current working directory --
- *      atomic via O_CREAT|O_EXCL so concurrent hook processes always
- *      converge on the same id (FIX 3a, was racy: two simultaneous
- *      first-time invocations could each `writeFileSync` a different
- *      id, last-write-wins, splitting the session).
- *   4. Last-resort sha256(cwd) hash
- *
- * The file fallback exists because every hook invocation runs as a
- * separate Node child process spawned by Claude Code -- pid-based
- * fallbacks would create one session row per tool call. Different
- * cwds get different sessions so multi-project users don't collide.
+ * Parse a string as a boolean, with an explicit fallback for the
+ * "nothing here to interpret" cases: undefined, null, empty string,
+ * and any value that doesn't clearly mean true or false. We fall back
+ * to the default rather than guessing so a typo (e.g.
+ * FLIGHTDECK_CAPTURE_PROMPTS=ture) preserves the documented default
+ * behaviour instead of silently flipping.
  */
-export function getSessionId() {
+export function parseBool(value, fallback) {
+  if (value === undefined || value === null || value === "") {
+    return fallback;
+  }
+  const v = String(value).trim().toLowerCase();
+  if (v === "") return fallback;
+  if (v === "true" || v === "1" || v === "yes" || v === "on") return true;
+  if (v === "false" || v === "0" || v === "no" || v === "off") return false;
+  return fallback;
+}
+
+/**
+ * Resolve the plugin's four configuration knobs. Defaults target a
+ * local ``make dev`` stack so ``claude --plugin-dir <path>`` works
+ * with zero configuration for a developer who has just brought up the
+ * stack. Production teams override via shell rc or a wrapper script.
+ *
+ * Rationale for each default:
+ *   * ``server`` points at the dev nginx (localhost:4000). Any
+ *     whitespace-only env var is treated as unset so a user who sets
+ *     ``FLIGHTDECK_SERVER=""`` in a script does not silently break.
+ *   * ``token`` defaults to ``tok_dev``, the seed token the dev
+ *     compose stack accepts when ``ENVIRONMENT=dev``. Production
+ *     deployments do not set ``ENVIRONMENT=dev`` so the seed token
+ *     becomes inert there.
+ *   * ``captureToolInputs`` defaults ON because the plugin only
+ *     captures a sanitised whitelist (file paths, short command and
+ *     query strings, <=200 chars). Without it tool events carry only
+ *     the tool name which is far less useful for a developer
+ *     inspecting their own work. Teams that want it off flip the env
+ *     var.
+ *   * ``capturePrompts`` defaults ON for the Claude Code plugin --
+ *     developers running ``claude`` locally are observing their own
+ *     session, and the Prompts tab is empty without captured LLM
+ *     call content. The Python sensor keeps ``capture_prompts=False``
+ *     as its default because it runs in production where prompts
+ *     may carry PII and proprietary context (D019, D103). Users can
+ *     opt out on the plugin with ``FLIGHTDECK_CAPTURE_PROMPTS=false``.
+ */
+export function resolveConfig(env = process.env) {
+  const server = (env.FLIGHTDECK_SERVER ?? "").trim() || "http://localhost:4000";
+  const token = (env.FLIGHTDECK_TOKEN ?? "").trim() || "tok_dev";
+  return {
+    server,
+    token,
+    captureToolInputs: parseBool(env.FLIGHTDECK_CAPTURE_TOOL_INPUTS, true),
+    capturePrompts: parseBool(env.FLIGHTDECK_CAPTURE_PROMPTS, true),
+  };
+}
+
+// ---------------------------------------------------------------------
+// Session id -- stable across Claude Code spawns when same user +
+// hostname + repo remote + branch. See DECISIONS.md D113 for the full
+// derivation recipe and precedence chain.
+// ---------------------------------------------------------------------
+
+/**
+ * Resolve a session id for the current hook invocation. Precedence
+ * (top wins, see D113):
+ *   1. process.env.CLAUDE_SESSION_ID
+ *   2. process.env.ANTHROPIC_CLAUDE_SESSION_ID
+ *   3. RFC 4122 v5 UUID from (user, hostname, repo remote, branch)
+ *   4. Marker file cache (populated by step 3/5/6 on first hook)
+ *   5. hookEvent.session_id -- demoted safety net, Claude Code's own
+ *      per-spawn id, kept only for when git is unavailable
+ *   6. sha256(cwd)[:32] -- final deterministic fallback when tmpdir
+ *      itself is broken
+ *
+ * The marker file caches whichever candidate is picked on first run so
+ * repeated hooks within one Claude Code invocation don't re-probe git.
+ */
+export function getSessionId(hookEvent = {}) {
   const env =
-    process.env.CLAUDE_SESSION_ID ||
-    process.env.ANTHROPIC_CLAUDE_SESSION_ID;
+    process.env.CLAUDE_SESSION_ID || process.env.ANTHROPIC_CLAUDE_SESSION_ID;
   if (env) return env;
 
   const cwd = process.cwd();
@@ -61,25 +140,25 @@ export function getSessionId() {
   const key = createHash("sha256").update(cwd).digest("hex").slice(0, 16);
   const file = join(dir, `session-${key}.txt`);
 
+  const pickCandidate = () => {
+    const derived = deriveStableSessionId(cwd);
+    if (derived) return derived;
+    if (hookEvent.session_id) return hookEvent.session_id;
+    return createHash("sha256")
+      .update(`${Date.now()}-${process.pid}-${cwd}`)
+      .digest("hex")
+      .slice(0, 32);
+  };
+
   try {
     mkdirSync(dir, { recursive: true });
-
-    // Fast path: file already exists.
     try {
       const existing = readFileSync(file, "utf8").trim();
       if (existing) return existing;
     } catch {
-      // Fall through to creation.
+      /* fall through to create */
     }
-
-    // Atomic create: O_CREAT|O_EXCL ('wx' flag) succeeds only if the
-    // file did not exist a moment ago. If two hook processes race here
-    // exactly one wins; the loser gets EEXIST and re-reads the file
-    // the winner just wrote.
-    const candidate = createHash("sha256")
-      .update(`${Date.now()}-${process.pid}-${cwd}`)
-      .digest("hex")
-      .slice(0, 32);
+    const candidate = pickCandidate();
     try {
       const fd = openSync(file, "wx");
       try {
@@ -90,39 +169,79 @@ export function getSessionId() {
       return candidate;
     } catch (err) {
       if (err && err.code === "EEXIST") {
-        try {
-          const winner = readFileSync(file, "utf8").trim();
-          if (winner) return winner;
-        } catch {
-          /* fall through to last-resort hash */
-        }
+        const winner = readFileSync(file, "utf8").trim();
+        if (winner) return winner;
       }
       throw err;
     }
   } catch {
-    // Filesystem unavailable -- last-resort cwd hash gives stability
-    // across multiple invocations in the same working directory at
-    // minimum.
-    return createHash("sha256").update(cwd).digest("hex").slice(0, 32);
+    return pickCandidate();
   }
 }
 
-// ---------------------------------------------------------------------
-// Runtime context collection (parallels sensor/core/context.py)
-// ---------------------------------------------------------------------
-
 /**
- * Collect runtime environment fields. Every individual probe is
- * wrapped in try/catch so a single failure (e.g. git not installed,
- * platform() throwing on an exotic OS) cannot break the rest of the
- * snapshot. Returns a plain object suitable for inclusion in a
- * session_start event payload's `context` field.
+ * Derive an RFC 4122 v5 UUID from (user, hostname, repo remote, branch).
+ * Returns null if any probe fails or we aren't in a git repo -- callers
+ * treat null as "fall through to the next precedence step". Branch is
+ * part of identity: switching branches intentionally produces a
+ * distinct session. Detached HEAD uses `detached-<short_sha>`.
  */
-export function collectContext() {
-  const ctx = {};
+function deriveStableSessionId(cwd) {
+  let user, host;
+  try {
+    user = userInfo().username;
+  } catch {
+    return null;
+  }
+  try {
+    host = osHostname();
+  } catch {
+    return null;
+  }
+  if (!user || !host) return null;
 
-  ctx.pid = process.pid;
-  ctx.process_name = "claude-code";
+  const gitOpts = { timeout: 500, stdio: ["ignore", "pipe", "ignore"] };
+
+  let branch;
+  try {
+    branch = execSync("git branch --show-current", gitOpts).toString().trim();
+  } catch {
+    return null;
+  }
+  if (!branch) {
+    try {
+      const sha = execSync("git rev-parse --short HEAD", gitOpts)
+        .toString()
+        .trim();
+      if (!sha) return null;
+      branch = `detached-${sha}`;
+    } catch {
+      return null;
+    }
+  }
+
+  let repo;
+  try {
+    const raw = execSync("git remote get-url origin", gitOpts)
+      .toString()
+      .trim();
+    if (raw) repo = raw.replace(/https?:\/\/[^@]+@/, "https://");
+  } catch {
+    /* fall through to cwd */
+  }
+  if (!repo) repo = cwd;
+
+  return uuid5(NAMESPACE_URL, `flightdeck://${user}@${host}/${repo}@${branch}`);
+}
+
+// ---------------------------------------------------------------------
+// Runtime context collection (parallels sensor/core/context.py).
+// ---------------------------------------------------------------------
+
+export function collectContext(extras = {}) {
+  const ctx = { pid: process.pid, process_name: "claude-code" };
+
+  const frameworks = [];
 
   try {
     const p = platform();
@@ -153,11 +272,7 @@ export function collectContext() {
     /* silent */
   }
 
-  // Git -- each call independently best-effort with a 500 ms timeout.
-  const gitOpts = {
-    timeout: 500,
-    stdio: ["ignore", "pipe", "ignore"],
-  };
+  const gitOpts = { timeout: 500, stdio: ["ignore", "pipe", "ignore"] };
   try {
     ctx.git_commit = execSync("git rev-parse --short HEAD", gitOpts)
       .toString()
@@ -176,8 +291,6 @@ export function collectContext() {
     const remote = execSync("git remote get-url origin", gitOpts)
       .toString()
       .trim();
-    // Strip embedded credentials from the remote URL before extracting
-    // the repo name.
     const clean = remote.replace(/https?:\/\/[^@]+@/, "https://");
     const repo = clean.split("/").pop()?.replace(/\.git$/, "");
     if (repo) ctx.git_repo = repo;
@@ -185,18 +298,12 @@ export function collectContext() {
     /* silent */
   }
 
-  // Orchestration -- first match wins (parallels the Python sensor's
-  // KubernetesCollector > DockerComposeCollector ordering). Docker
-  // Compose only fires when the env vars are explicitly set, since
-  // /.dockerenv probing is unreliable on Windows / WSL hosts running
-  // Claude Code natively.
   if (process.env.KUBERNETES_SERVICE_HOST) {
     ctx.orchestration = "kubernetes";
     const pod =
       process.env.MY_POD_NAME || process.env.POD_NAME || ctx.hostname;
     if (pod) ctx.k8s_pod = pod;
-    const ns =
-      process.env.MY_POD_NAMESPACE || process.env.POD_NAMESPACE;
+    const ns = process.env.MY_POD_NAMESPACE || process.env.POD_NAMESPACE;
     if (ns) ctx.k8s_namespace = ns;
     const node = process.env.MY_NODE_NAME || process.env.NODE_NAME;
     if (node) ctx.k8s_node = node;
@@ -211,20 +318,55 @@ export function collectContext() {
       ctx.compose_service = process.env.COMPOSE_SERVICE;
   }
 
+  // Identify Claude Code itself in context.frameworks so the FRAMEWORK
+  // facet in Investigate picks it up alongside sensor-reported frameworks
+  // (D100). Version comes from the transcript when available.
+  const version = extras.claudeCodeVersion;
+  frameworks.push(version ? `claude-code/${version}` : "claude-code");
+  ctx.frameworks = frameworks;
+
+  // Mark hook-based sessions as observer-only so the dashboard hides
+  // the kill-switch UI. Claude Code hooks fire after the event has
+  // already happened and the plugin never sits in the agent's hot
+  // path, so a "Stop Agent" click would be a silent no-op. Python
+  // sensor sessions omit this field entirely and the dashboard
+  // treats "unset" as directive-capable. See dashboard/src/lib/
+  // directives.ts.
+  ctx.supports_directives = false;
+
   return ctx;
+}
+
+/**
+ * Wrap ``collectContext`` so a throw or an empty result returns ``null``
+ * instead of propagating. Callers use ``null`` to signal "omit the
+ * context field from the outbound payload" rather than sending
+ * ``context: {}``.
+ *
+ * A non-session_start event that arrives without context would leave the
+ * worker's COALESCE upgrade as a no-op, so there is no correctness cost
+ * to omitting; the benefit is that the worker-side logs don't report a
+ * pointless upgrade attempt and the DB doesn't see an extra UPDATE. The
+ * "or throws" branch is defensive -- ``collectContext`` already wraps
+ * each syscall in try/catch, so in practice the check on
+ * ``Object.keys(ctx).length === 0`` guards the "everything I tried to
+ * read failed" edge case.
+ */
+export function safeCollectContext(extras = {}) {
+  try {
+    const ctx = collectContext(extras);
+    if (!ctx || typeof ctx !== "object") return null;
+    if (Object.keys(ctx).length === 0) return null;
+    return ctx;
+  } catch {
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------
 // Tool input sanitisation -- safe whitelist only.
 // ---------------------------------------------------------------------
 
-/**
- * Reduce a hook tool_input to a small whitelist of fields safe for
- * dashboard display. Never captures content / messages / output --
- * those may contain secrets and are out of scope for the plugin.
- * Returns null if no whitelisted field was present, so the caller can
- * skip serialisation entirely.
- */
 export function sanitizeToolInput(input) {
   if (!input || typeof input !== "object") return null;
   const safe = {};
@@ -237,14 +379,232 @@ export function sanitizeToolInput(input) {
 }
 
 // ---------------------------------------------------------------------
-// HTTP POST helper -- best-effort, never blocks the hook.
+// Transcript reader. Pulls the final LLM turn out of Claude Code's
+// JSONL transcript so post_call events carry real tokens + model.
 // ---------------------------------------------------------------------
 
-async function postEvent(server, token, payload) {
+/**
+ * Read a JSONL transcript and return every LLM turn, in order.
+ *
+ * One LLM call can span multiple assistant JSONL records (one per
+ * streamed content block -- thinking, text, tool_use). All records
+ * that belong to the same call share the same `message.id`. The final
+ * record's `usage` object is the authoritative accumulated usage. We
+ * group by `message.id` in order and pair each group with the most
+ * recent user-role turn that preceded it (for latency calculation).
+ *
+ * Multi-LLM-turn conversations (assistant makes a tool call, gets a
+ * tool_result user-role reply, makes another LLM call) produce one
+ * entry in the returned array per LLM call, not per user prompt. That
+ * matches the Python sensor's one-post_call-per-LLM-call semantics.
+ *
+ * Returns [] when the transcript is missing or has no assistant records.
+ */
+export function readTurns(transcriptPath) {
+  if (!transcriptPath) return [];
+  let raw;
+  try {
+    raw = readFileSync(transcriptPath, "utf8");
+  } catch {
+    return [];
+  }
+  const lines = raw.split("\n").filter((l) => l.length > 0);
+  // "Last user-role record we saw" -- both real prompts and tool_result
+  // injections. We track it per-record rather than per-prompt because
+  // every new assistant turn (including follow-up turns after a
+  // tool_result) wants its latency measured against the immediately
+  // preceding user-role record, which is the tool_result reply when
+  // the assistant is continuing a tool-use loop.
+  let lastUser = null;
+  let lastClaudeVersion = null;
+  const groups = new Map();
+  const groupOrder = [];
+  for (const line of lines) {
+    let rec;
+    try {
+      rec = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (typeof rec !== "object" || rec === null) continue;
+    if (rec.version && typeof rec.version === "string") {
+      lastClaudeVersion = rec.version;
+    }
+    if (rec.type === "user") {
+      const content = rec.message?.content;
+      // Normalise to a string for downstream content capture -- either
+      // the raw prompt or a short description of the tool_result reply.
+      const userContent =
+        typeof content === "string"
+          ? content
+          : Array.isArray(content)
+            ? content
+            : null;
+      if (userContent !== null) {
+        lastUser = {
+          content: userContent,
+          timestamp: rec.timestamp,
+          promptId: rec.promptId,
+        };
+      }
+    } else if (rec.type === "assistant") {
+      const messageId = rec.message?.id;
+      if (!messageId) continue;
+      let group = groups.get(messageId);
+      if (!group) {
+        group = {
+          messageId,
+          model: rec.message?.model || null,
+          firstTimestamp: rec.timestamp,
+          lastTimestamp: rec.timestamp,
+          usage: rec.message?.usage || null,
+          contentBlocks: [],
+          userAtStart: lastUser,
+        };
+        groups.set(messageId, group);
+        groupOrder.push(messageId);
+      }
+      group.lastTimestamp = rec.timestamp || group.lastTimestamp;
+      if (rec.message?.usage) group.usage = rec.message.usage;
+      const blocks = rec.message?.content;
+      if (Array.isArray(blocks)) {
+        for (const b of blocks) group.contentBlocks.push(b);
+      }
+    }
+  }
+  const out = [];
+  for (const id of groupOrder) {
+    const group = groups.get(id);
+    out.push({
+      messageId: group.messageId,
+      model: group.model,
+      firstTimestamp: group.firstTimestamp,
+      lastTimestamp: group.lastTimestamp,
+      usage: group.usage || {},
+      contentBlocks: group.contentBlocks,
+      userTurn: group.userAtStart,
+      claudeCodeVersion: lastClaudeVersion,
+    });
+  }
+  return out;
+}
+
+/**
+ * Convenience wrapper: return the most recent turn, or null. Kept for
+ * callers that only want the final turn (e.g. version-probe on
+ * SessionStart).
+ */
+export function readLatestTurn(transcriptPath) {
+  const turns = readTurns(transcriptPath);
+  return turns.length > 0 ? turns.at(-1) : null;
+}
+
+/**
+ * Compute token fields from a transcript usage object, matching the
+ * Python sensor's AnthropicProvider semantics (D100):
+ *   tokens_input = uncached + cache_read + cache_creation
+ *   tokens_cache_read / tokens_cache_creation surfaced separately
+ *   tokens_output = output_tokens
+ * Missing fields default to 0.
+ */
+export function tokensFromUsage(usage = {}) {
+  const uncached = Number(usage.input_tokens || 0);
+  const cacheRead = Number(usage.cache_read_input_tokens || 0);
+  const cacheCreation = Number(usage.cache_creation_input_tokens || 0);
+  const output = Number(usage.output_tokens || 0);
+  const input = uncached + cacheRead + cacheCreation;
+  return {
+    tokens_input: input,
+    tokens_output: output,
+    tokens_total: input + output,
+    tokens_cache_read: cacheRead,
+    tokens_cache_creation: cacheCreation,
+  };
+}
+
+/**
+ * Compute latency_ms between a user turn and the assistant response.
+ * Falls back to null when either timestamp is missing or malformed.
+ */
+export function computeLatencyMs(userTurn, assistantLastTimestamp) {
+  if (!userTurn || !userTurn.timestamp || !assistantLastTimestamp) return null;
+  const t0 = Date.parse(userTurn.timestamp);
+  const t1 = Date.parse(assistantLastTimestamp);
+  if (Number.isNaN(t0) || Number.isNaN(t1) || t1 < t0) return null;
+  return t1 - t0;
+}
+
+// ---------------------------------------------------------------------
+// Event-type mapping.
+// ---------------------------------------------------------------------
+
+// Maps Claude Code hook names to Flightdeck event_types. Notably
+// PreToolUse is intentionally absent -- PostToolUse already emits a
+// tool_call per invocation, matching the Python sensor's post-hoc
+// tool_call extraction. A parallel pre-tool event would double-report
+// every tool use and render as "unknown model" in the dashboard since
+// pre-tool hooks do not know which LLM call triggered them.
+export const EVENT_MAP = {
+  SessionStart: "session_start",
+  UserPromptSubmit: "pre_call",
+  PostToolUse: "tool_call",
+  Stop: "post_call",
+  SessionEnd: "session_end",
+  PreCompact: "tool_call",
+};
+
+// ---------------------------------------------------------------------
+// HTTP POST helper + unreachable-session logging.
+//
+// The plugin must never block Claude Code on a broken or missing
+// Flightdeck stack. Every failure path -- connection refused, DNS
+// failure, HTTP non-2xx, abort timeout -- writes a single stderr line
+// and returns; the hook still exits 0 so Claude Code sees it healthy.
+//
+// Each hook invocation is a fresh Node process, so "each POST logs at
+// most once" naturally yields bounded stderr output: one line per
+// failed POST, at most two lines per hook (ensureSessionStarted's
+// POST + the real event's POST). No disk-persisted unreachable flag
+// -- that design broke reconnect: once the flag was written, every
+// subsequent hook short-circuited even after the server recovered,
+// so transient outages turned into permanent session mute. Retrying
+// each hook's POST costs at most two stderr lines on a dead stack
+// and unlocks the "server recovers mid-session, events resume
+// landing" path that D106 handles on the server side. See KI18
+// resolution / commit 4a.
+// ---------------------------------------------------------------------
+
+/**
+ * Log a single "cannot reach" stderr line for this failed POST. The
+ * message format is stable -- it is documented in the plugin README
+ * troubleshooting section and in tests. Called once per failed POST;
+ * the caller process exits shortly after so the volume of log lines
+ * is bounded by the number of POST attempts per hook (at most two).
+ */
+function logUnreachable(server, shortError) {
+  process.stderr.write(
+    `[flightdeck] cannot reach ${server}: ${shortError}. events dropped for this session.\n`,
+  );
+}
+
+// ``fetch failed`` is the generic umbrella Node uses to wrap underlying
+// network errors whose ``cause.code`` we also check explicitly. Keeping
+// both the string substring test and the code check covers libuv
+// errors that surface through either path.
+function shortErrorFrom(err) {
+  if (!err) return "unknown error";
+  const code = err.cause?.code || err.code;
+  if (code) return String(code);
+  if (err.name === "AbortError") return "timeout";
+  return (err.message || "unknown error").split("\n")[0];
+}
+
+async function postEvent(server, token, sessionId, payload) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  let response = null;
   try {
-    await fetch(`${server}/ingest/v1/events`, {
+    response = await fetch(`${server}/ingest/v1/events`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -253,36 +613,79 @@ async function postEvent(server, token, payload) {
       body: JSON.stringify(payload),
       signal: controller.signal,
     });
+  } catch (err) {
+    // Network-level failure: connection refused, DNS miss, abort
+    // timeout, fetch rejection. Log and return -- the next hook
+    // invocation is a fresh process and will try again.
+    logUnreachable(server, shortErrorFrom(err));
+    return;
   } finally {
     clearTimeout(timeout);
+  }
+
+  // HTTP-level failure: auth, payload validation, server error.
+  // fetch() returns normally for these so the catch above does not
+  // fire. We do NOT retry within this hook -- one attempt per POST
+  // is the whole contract. A subsequent hook will try again when
+  // Claude Code invokes a fresh plugin process.
+  if (!response.ok) {
+    logUnreachable(server, `HTTP ${response.status}`);
   }
 }
 
 // ---------------------------------------------------------------------
-// Session-start de-duplication -- file-based, scoped to session id.
+// Per-session model cache -- SessionStart's `model` field survives on
+// disk so UserPromptSubmit can populate pre_call.model without waiting
+// for the assistant response to land in the transcript. Without this,
+// LLM pre_calls all carry model=null and the dashboard renders them
+// as "unknown".
 // ---------------------------------------------------------------------
 
+function modelCachePath(sessionId) {
+  return join(tmpdir(), "flightdeck-plugin", `model-${sessionId}.txt`);
+}
+
+function cacheSessionModel(sessionId, model) {
+  if (!model) return;
+  try {
+    mkdirSync(join(tmpdir(), "flightdeck-plugin"), { recursive: true });
+    writeFileSync(modelCachePath(sessionId), String(model));
+  } catch {
+    /* silent */
+  }
+}
+
+function readCachedModel(sessionId) {
+  try {
+    return readFileSync(modelCachePath(sessionId), "utf8").trim() || null;
+  } catch {
+    return null;
+  }
+}
+
 /**
- * Send a session_start event for `sessionId` exactly once per machine
- * lifetime (modulo tmpdir cleanup). The marker file lives next to the
- * session id file under tmpdir/flightdeck-plugin. The session_start
- * payload carries the same identity fields as a normal event plus the
- * runtime context dict, which Flightdeck stores once in
- * sessions.context (set-once via UpsertSession ON CONFLICT).
- *
- * If the POST fails, we deliberately skip writing the marker so the
- * next hook invocation gets another chance. UpsertSession is
- * idempotent and ON CONFLICT preserves the original context, so a
- * duplicate session_start is harmless.
+ * Resolve the model for the upcoming LLM turn. Prefers the most recent
+ * assistant record in the transcript (captures mid-session model
+ * switches), falls back to the SessionStart-cached model, and finally
+ * to the hook payload itself.
  */
-async function ensureSessionStarted(server, token, sessionId, basePayload) {
+function resolvePreCallModel(sessionId, hookEvent, transcriptPath) {
+  const latest = readLatestTurn(transcriptPath);
+  return latest?.model || readCachedModel(sessionId) || hookEvent.model || null;
+}
+
+// ---------------------------------------------------------------------
+// Session-start de-duplication -- once per session id per machine.
+// ---------------------------------------------------------------------
+
+async function ensureSessionStarted(server, token, sessionId, basePayload, extras = {}) {
   const dir = join(tmpdir(), "flightdeck-plugin");
   const startFile = join(dir, `started-${sessionId}.txt`);
   try {
     readFileSync(startFile, "utf8");
-    return; // Already started.
+    return;
   } catch {
-    // Not yet started -- fall through.
+    /* fall through */
   }
 
   const startPayload = {
@@ -293,47 +696,127 @@ async function ensureSessionStarted(server, token, sessionId, basePayload) {
     is_subagent_call: false,
     latency_ms: null,
     timestamp: new Date().toISOString(),
-    context: collectContext(),
   };
+  const startContext = safeCollectContext({
+    claudeCodeVersion: extras.claudeCodeVersion,
+  });
+  if (startContext) startPayload.context = startContext;
+  if (extras.model) startPayload.model = extras.model;
 
-  try {
-    await postEvent(server, token, startPayload);
-  } catch (err) {
-    process.stderr.write(
-      `flightdeck: session_start POST failed: ${err.message}\n`,
-    );
-    return;
-  }
+  await postEvent(server, token, sessionId, startPayload);
 
   try {
     mkdirSync(dir, { recursive: true });
     writeFileSync(startFile, new Date().toISOString());
   } catch {
-    // Marker write failed -- worst case we send another session_start
-    // on the next hook, which is harmless.
+    /* silent */
   }
 }
 
 // ---------------------------------------------------------------------
-// Main entry point
+// post_call de-duplication -- per assistant message.id.
+// Stop fires after every assistant turn. Without dedup, a replay or
+// double-hook would duplicate the turn in the dashboard.
+// ---------------------------------------------------------------------
+
+function markEmittedTurn(messageId) {
+  const dir = join(tmpdir(), "flightdeck-plugin");
+  const file = join(dir, `emitted-${messageId}.txt`);
+  try {
+    mkdirSync(dir, { recursive: true });
+    const fd = openSync(file, "wx");
+    try {
+      writeFileSync(fd, new Date().toISOString());
+    } finally {
+      closeSync(fd);
+    }
+    return true;
+  } catch (err) {
+    if (err && err.code === "EEXIST") return false;
+    return true; // fail open -- better to re-emit than silently drop
+  }
+}
+
+// ---------------------------------------------------------------------
+// Build content payload for prompt capture (D100). Mirrors the Python
+// sensor's AnthropicProvider.extract_content shape: provider, model,
+// messages (user turn), tools (assistant tool_use blocks), response
+// (assistant text + thinking blocks). system is null -- Claude Code's
+// system prompt is not in the transcript.
+// ---------------------------------------------------------------------
+
+function buildContent(turn) {
+  const toolUses = [];
+  const responseBlocks = [];
+  for (const block of turn.contentBlocks) {
+    if (!block || !block.type) continue;
+    if (block.type === "tool_use") {
+      toolUses.push(block);
+    } else {
+      // text, thinking, redacted_thinking, etc.
+      responseBlocks.push(block);
+    }
+  }
+  const messages = turn.userTurn
+    ? [{ role: "user", content: turn.userTurn.content }]
+    : [];
+  return {
+    provider: "anthropic",
+    model: turn.model || "",
+    system: null,
+    messages,
+    tools: toolUses,
+    response: responseBlocks,
+  };
+}
+
+// ---------------------------------------------------------------------
+// Emit one post_call per un-emitted transcript turn.
+//
+// Called from Stop, SessionEnd, and PostToolUse. markEmittedTurn dedup
+// (per assistant message.id) keeps emission idempotent across the three
+// call sites. PostToolUse flushes mid-turn so the dashboard shows LLM
+// activity in real time instead of waiting for the turn to end at Stop.
+// ---------------------------------------------------------------------
+
+async function flushPostCallTurns({
+  cfg,
+  sessionId,
+  basePayload,
+  turns,
+  capturePrompts,
+}) {
+  for (const turn of turns) {
+    if (!markEmittedTurn(turn.messageId)) continue;
+    const tokens = tokensFromUsage(turn.usage);
+    const latencyMs = computeLatencyMs(turn.userTurn, turn.lastTimestamp);
+    const hasContent = capturePrompts;
+    const content = hasContent ? buildContent(turn) : null;
+    const resolvedModel = turn.model || basePayload.model;
+    cacheSessionModel(sessionId, resolvedModel);
+    await postEvent(cfg.server, cfg.token, sessionId, {
+      ...basePayload,
+      event_type: "post_call",
+      model: resolvedModel,
+      tool_name: null,
+      tool_input: null,
+      is_subagent_call: false,
+      latency_ms: latencyMs,
+      timestamp: turn.lastTimestamp || new Date().toISOString(),
+      ...tokens,
+      has_content: hasContent,
+      content,
+    });
+  }
+}
+
+// ---------------------------------------------------------------------
+// Main entry point.
 // ---------------------------------------------------------------------
 
 async function main() {
-  // Stamp the start of the hook invocation. PostToolUse events report
-  // (now - startTime) as latency_ms; this is HOOK PROCESSING time, not
-  // the actual tool execution time. Claude Code does not expose tool
-  // start/end timestamps to hooks, so this is the closest proxy we
-  // have.
   const startTime = Date.now();
-
-  const server = process.env.FLIGHTDECK_SERVER;
-  const token = process.env.FLIGHTDECK_TOKEN;
-  if (!server || !token) {
-    process.stderr.write(
-      "flightdeck: FLIGHTDECK_SERVER and FLIGHTDECK_TOKEN must be set\n",
-    );
-    return;
-  }
+  const cfg = resolveConfig();
 
   let input = "";
   for await (const chunk of process.stdin) {
@@ -350,55 +833,259 @@ async function main() {
 
   const hookName = hookEvent.hook_event_name || hookEvent.event || "";
   const eventType = EVENT_MAP[hookName];
-  if (!eventType) {
-    return; // Unknown hook event, silently ignore.
-  }
+  if (!eventType) return; // unknown / unhandled hook, silently ignore
 
-  const sessionId = getSessionId();
-  const toolName =
-    hookEvent.tool_name ||
-    hookEvent.tool_use?.name ||
-    hookEvent.tool ||
-    null;
+  const sessionId = getSessionId(hookEvent);
+  const transcriptPath = hookEvent.transcript_path;
 
-  // Identity fields shared by every event for this session. Used as
-  // the spread base for both the session_start and the actual event.
+  // Base identity fields used by every event for this session.
+  //
+  // ``context`` is attached here so *every* event type (pre_call,
+  // post_call, tool_call, session_end) carries it -- not only
+  // session_start. The worker's D106 lazy-create path and the
+  // UpgradeSessionContext upgrade depend on seeing context on the first
+  // event that actually reaches the server. Without this, a session
+  // whose session_start POST failed (stack down at start, dead-TLS
+  // window, ...) would land with "unknown" flavor and NULL context
+  // forever because the session_start dedup marker on disk prevents
+  // a retry. ``safeCollectContext`` returns null on throw or empty
+  // result, in which case the field is omitted -- the worker's
+  // COALESCE upgrade treats "missing" and "empty dict" identically.
+  const baseContext = safeCollectContext();
   const basePayload = {
     session_id: sessionId,
     flavor: "claude-code",
     agent_type: "developer",
     host: osHostname(),
     framework: "claude-code",
-    model: null,
+    model: hookEvent.model || null,
     tokens_input: 0,
     tokens_output: 0,
     tokens_total: 0,
+    tokens_cache_read: 0,
+    tokens_cache_creation: 0,
     tokens_used_session: 0,
     token_limit_session: null,
     has_content: false,
     content: null,
+    ...(baseContext ? { context: baseContext } : {}),
   };
 
-  // Send session_start exactly once per session id, before the actual
-  // event. Carries runtime context which the worker stores once in
-  // sessions.context.
-  await ensureSessionStarted(server, token, sessionId, basePayload);
+  // Read transcript lazily -- some hooks don't need it and the file
+  // may not exist yet (first-hook SessionStart before the JSONL is
+  // flushed).
+  let cachedTurns = null;
+  const getTurns = () => {
+    if (cachedTurns !== null) return cachedTurns;
+    cachedTurns = readTurns(transcriptPath);
+    return cachedTurns;
+  };
+  const getLatestTurn = () => {
+    const turns = getTurns();
+    return turns.length > 0 ? turns.at(-1) : null;
+  };
 
-  // Tool-input capture is opt-in (FIX 3b). Off by default so the
-  // dashboard never sees command/file_path/query strings unless the
-  // operator explicitly turns capture on, mirroring capture_prompts in
-  // the Python sensor (D019).
-  const captureToolInputs =
-    process.env.FLIGHTDECK_CAPTURE_TOOL_INPUTS === "true" ||
-    process.env.FLIGHTDECK_CAPTURE_TOOL_INPUTS === "1";
-
-  let toolInputJson = null;
-  if (captureToolInputs && hookEvent.tool_input) {
-    const sanitized = sanitizeToolInput(hookEvent.tool_input);
-    if (sanitized) toolInputJson = JSON.stringify(sanitized);
+  // SessionStart: real first hook. Emit session_start with the model
+  // and context, cache the model for subsequent UserPromptSubmit hooks,
+  // and mark the dedup file so later hooks skip the backstop.
+  if (hookName === "SessionStart") {
+    const turn = getLatestTurn();
+    const model = hookEvent.model || turn?.model || null;
+    cacheSessionModel(sessionId, model);
+    await ensureSessionStarted(cfg.server, cfg.token, sessionId, basePayload, {
+      model,
+      claudeCodeVersion: turn?.claudeCodeVersion || hookEvent.version || null,
+    });
+    return;
   }
 
+  // SessionEnd: real session teardown. Before emitting session_end,
+  // flush any LLM turns not yet emitted by Stop or PostToolUse -- in
+  // `claude -p` mode Claude Code fires Stop once before the final
+  // tool-loop turn is flushed to the transcript, so a post_call for
+  // the final turn can still be missing when SessionEnd arrives.
+  // Dedup via the per-messageId marker keeps this idempotent with
+  // Stop and PostToolUse.
+  if (hookName === "SessionEnd") {
+    await flushPostCallTurns({
+      cfg,
+      sessionId,
+      basePayload,
+      turns: getTurns(),
+      capturePrompts: cfg.capturePrompts,
+    });
+    const payload = {
+      ...basePayload,
+      event_type: "session_end",
+      tool_name: null,
+      tool_input: null,
+      is_subagent_call: false,
+      latency_ms: null,
+      timestamp: new Date().toISOString(),
+    };
+    await postEvent(cfg.server, cfg.token, sessionId, payload);
+    return;
+  }
+
+  // Every other event type goes through the common session_start
+  // backstop so an initial hook that is NOT SessionStart still produces
+  // a session row.
+  await ensureSessionStarted(cfg.server, cfg.token, sessionId, basePayload, {
+    model: hookEvent.model || null,
+    claudeCodeVersion: hookEvent.version || null,
+  });
+
+  // Stop: every un-emitted LLM turn in the transcript becomes a
+  // post_call. Multi-turn tool-use conversations produce multiple
+  // assistant message.ids and Stop only fires once at the end, so we
+  // must iterate every group and dedup via the per-messageId marker
+  // file. PostToolUse flushes most of these mid-turn; Stop acts as the
+  // final backstop for the last assistant turn (no tool follow-up).
+  // cacheSessionModel inside the helper keeps pre_call labelling right
+  // for subsequent UserPromptSubmit hooks on older Claude Code versions
+  // that do not carry model on SessionStart.
+  if (hookName === "Stop") {
+    await flushPostCallTurns({
+      cfg,
+      sessionId,
+      basePayload,
+      turns: getTurns(),
+      capturePrompts: cfg.capturePrompts,
+    });
+    return;
+  }
+
+  // UserPromptSubmit: user hit enter on a prompt. Emit pre_call for
+  // the upcoming LLM turn, but only when we can resolve a concrete
+  // model. Resolution order: (1) most recent assistant in the
+  // transcript, (2) cached model from a prior post_call this session,
+  // (3) hook payload. If all three are empty the dashboard would
+  // render the pre_call as "unknown", so we skip the emission entirely
+  // and rely on the Stop-emitted post_call (which always has a model
+  // because it reads usage directly from the transcript). First-turn
+  // prompts in a brand-new session thus have no pre_call; second and
+  // subsequent prompts are labelled correctly.
+  if (hookName === "UserPromptSubmit") {
+    const model = resolvePreCallModel(sessionId, hookEvent, transcriptPath);
+    if (!model) return;
+    const hasContent = cfg.capturePrompts && typeof hookEvent.prompt === "string";
+    const content = hasContent
+      ? {
+          provider: "anthropic",
+          model,
+          system: null,
+          messages: [{ role: "user", content: hookEvent.prompt }],
+          tools: [],
+          response: [],
+        }
+      : null;
+    const payload = {
+      ...basePayload,
+      event_type: "pre_call",
+      model,
+      tool_name: null,
+      tool_input: null,
+      is_subagent_call: false,
+      latency_ms: null,
+      timestamp: new Date().toISOString(),
+      has_content: hasContent,
+      content,
+    };
+    await postEvent(cfg.server, cfg.token, sessionId, payload);
+    return;
+  }
+
+  // PreCompact: context compaction is about to happen. Emit a synthetic
+  // tool_call so the dashboard timeline shows the compaction event.
+  if (hookName === "PreCompact") {
+    const payload = {
+      ...basePayload,
+      event_type: "tool_call",
+      tool_name: "compact_context",
+      tool_input: hookEvent.trigger ? JSON.stringify({ trigger: hookEvent.trigger }) : null,
+      is_subagent_call: false,
+      latency_ms: null,
+      timestamp: new Date().toISOString(),
+    };
+    await postEvent(cfg.server, cfg.token, sessionId, payload);
+    return;
+  }
+
+  // PostToolUse: flush any un-emitted LLM turns from the transcript
+  // before emitting the tool_call. The assistant record that triggered
+  // this tool invocation is already in the transcript by the time
+  // PostToolUse fires, so its post_call becomes visible in the
+  // dashboard in real time rather than batching at Stop. Ordering:
+  // post_call (LLM decision) precedes tool_call (tool execution),
+  // matching transcript order. markEmittedTurn dedup keeps Stop and
+  // SessionEnd idempotent. Wrapped in try/catch so a transcript read
+  // failure cannot block the tool_call emission -- readTurns already
+  // returns [] on read errors, but belt-and-suspenders.
+  if (hookName === "PostToolUse") {
+    try {
+      await flushPostCallTurns({
+        cfg,
+        sessionId,
+        basePayload,
+        turns: getTurns(),
+        capturePrompts: cfg.capturePrompts,
+      });
+    } catch (err) {
+      process.stderr.write(
+        `flightdeck: post_call flush on PostToolUse failed: ${err?.message || err}\n`,
+      );
+    }
+  }
+
+  // PreToolUse / PostToolUse: tool-lifecycle events. Keep the same
+  // sanitised-whitelist capture semantics the plugin has shipped since
+  // Phase 4.
+  const toolName =
+    hookEvent.tool_name ||
+    hookEvent.tool_use?.name ||
+    hookEvent.tool ||
+    null;
+
+  const sanitizedInput =
+    cfg.captureToolInputs && hookEvent.tool_input
+      ? sanitizeToolInput(hookEvent.tool_input)
+      : null;
+  const toolInputJson = sanitizedInput ? JSON.stringify(sanitizedInput) : null;
+
   const isSubagentCall = toolName === "Task";
+
+  // Build event_content payload so the drawer's Prompts tab can show
+  // real tool input + output (previously tool_call events always had
+  // has_content=false, so the drawer rendered shallow metadata only).
+  // Privacy tiers: input is gated on captureToolInputs (default ON);
+  // output is gated on capturePrompts (default ON for the plugin,
+  // OFF for the Python sensor -- see resolveConfig rationale and
+  // DECISIONS.md D103).
+  let content = null;
+  let hasContent = false;
+  if (cfg.captureToolInputs && toolName && sanitizedInput) {
+    const tools = [{ type: "tool_use", name: toolName, input: sanitizedInput }];
+    const response = [];
+    if (cfg.capturePrompts && hookEvent.tool_response != null) {
+      const out =
+        typeof hookEvent.tool_response === "string"
+          ? hookEvent.tool_response
+          : JSON.stringify(hookEvent.tool_response);
+      response.push({
+        type: "tool_result",
+        content: out.length > 2000 ? out.slice(0, 2000) + "\u2026" : out,
+      });
+    }
+    content = {
+      provider: "anthropic",
+      model: readCachedModel(sessionId) || basePayload.model || "",
+      system: null,
+      messages: [],
+      tools,
+      response,
+    };
+    hasContent = true;
+  }
 
   const payload = {
     ...basePayload,
@@ -407,29 +1094,15 @@ async function main() {
     tool_input: toolInputJson,
     tool_result: null,
     is_subagent_call: isSubagentCall,
-    // FIX 3c: a Task tool call is the spawn point of a sub-agent.
-    // Stamp the current session as the parent so any downstream
-    // sub-agent emission (or future server-side rollup) can correlate
-    // child sessions back to the parent that issued the Task.
     parent_session_id: isSubagentCall ? sessionId : null,
     latency_ms: hookName === "PostToolUse" ? Date.now() - startTime : null,
     timestamp: new Date().toISOString(),
+    has_content: hasContent,
+    content,
   };
-
-  try {
-    await postEvent(server, token, payload);
-  } catch (err) {
-    process.stderr.write(`flightdeck: POST failed: ${err.message}\n`);
-  }
-  // Deliberately do NOT call process.exit() -- letting main() return
-  // lets undici drain its connection pool cleanly. Calling exit while
-  // a fetch is mid-cleanup crashes Node on Windows with
-  // STATUS_STACK_BUFFER_OVERRUN (0xC0000409).
+  await postEvent(cfg.server, cfg.token, sessionId, payload);
 }
 
-// Run main() only when invoked as a script. When imported as a module
-// (e.g., from tests), the helpers above are exported but main() does
-// not run automatically.
 if (
   process.argv[1] &&
   fileURLToPath(import.meta.url) === process.argv[1]

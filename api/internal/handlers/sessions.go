@@ -4,11 +4,19 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/flightdeckhq/flightdeck/api/internal/store"
 )
+
+// sessionEventsMaxLimit caps the events_limit query param on
+// GET /v1/sessions/{id}. The drawer's page-size pill tops out at 100;
+// 1000 leaves meaningful headroom for automation or future UI without
+// exposing the unbounded-fetch footgun that motivated D113's pagination
+// work in the first place.
+const sessionEventsMaxLimit = 1000
 
 // SessionResponse is the response body for GET /v1/sessions/{id}.
 //
@@ -27,10 +35,11 @@ type SessionResponse struct {
 // SessionsHandler handles GET /v1/sessions/{id}.
 //
 // @Summary      Get session detail
-// @Description  Returns session metadata (including effective policy thresholds) and all events in chronological order
+// @Description  Returns session metadata (including effective policy thresholds) and events in chronological order. When ``events_limit`` is provided, the N newest events are returned (still sorted ASC); the drawer uses this to cap the initial fetch on long-running stable sessions.
 // @Tags         sessions
 // @Produce      json
-// @Param        id   path      string  true  "Session UUID"
+// @Param        id            path      string  true   "Session UUID"
+// @Param        events_limit  query     int     false  "Return at most N newest events (1-1000). Omit for the full history."
 // @Success      200  {object}  SessionResponse
 // @Failure      400  {object}  ErrorResponse
 // @Failure      404  {object}  ErrorResponse
@@ -44,6 +53,25 @@ func SessionsHandler(s store.Querier) http.HandlerFunc {
 			return
 		}
 
+		// events_limit: optional, 1..sessionEventsMaxLimit. Absent =>
+		// full history (limit=0 through to the store). Values outside
+		// the range return 400 rather than silently clamping -- silent
+		// clamping hides client bugs (e.g. a dashboard regression
+		// passing 0 would look like "no events" rather than an error).
+		eventsLimit := 0
+		if raw := r.URL.Query().Get("events_limit"); raw != "" {
+			parsed, err := strconv.Atoi(raw)
+			if err != nil || parsed < 1 {
+				writeError(w, http.StatusBadRequest, "events_limit must be a positive integer")
+				return
+			}
+			if parsed > sessionEventsMaxLimit {
+				writeError(w, http.StatusBadRequest, "events_limit exceeds maximum of 1000")
+				return
+			}
+			eventsLimit = parsed
+		}
+
 		session, err := s.GetSession(r.Context(), id)
 		if err != nil {
 			slog.Error("get session error", "id", id, "err", err)
@@ -55,7 +83,7 @@ func SessionsHandler(s store.Querier) http.HandlerFunc {
 			return
 		}
 
-		events, err := s.GetSessionEvents(r.Context(), id)
+		events, err := s.GetSessionEvents(r.Context(), id, eventsLimit)
 		if err != nil {
 			slog.Error("get session events error", "id", id, "err", err)
 			writeError(w, http.StatusInternalServerError, "internal server error")

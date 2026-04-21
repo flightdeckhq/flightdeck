@@ -9,17 +9,34 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// fleetNotifyPayload is the wire format of every NOTIFY sent on the
+// flightdeck_fleet channel. EventID was added (D108) to eliminate
+// the hub NOTIFY->SELECT race: the hub used to re-query
+// GetSessionEvents and pick the tail, which broke under tight
+// paired events (post_call followed by tool_call inside ~200 ms,
+// common after D107's PostToolUse flush) because the second event
+// would commit before the hub's query ran and clobber the first
+// event in the broadcast. Carrying the event id directly lets the
+// hub do a deterministic single-row fetch. See D108 in DECISIONS.md
+// and api/internal/ws/hub.go for the reader side of the contract.
 type fleetNotifyPayload struct {
 	SessionID string `json:"session_id"`
 	EventType string `json:"event_type"`
+	EventID   string `json:"event_id"`
 }
 
 const notifyChannel = "flightdeck_fleet"
 
 // NotifyFleetChange sends a Postgres NOTIFY on the flightdeck_fleet channel.
 // The query API hub LISTENs on this channel to broadcast WebSocket updates.
-func NotifyFleetChange(ctx context.Context, pool *pgxpool.Pool, sessionID, eventType string) error {
-	data, err := json.Marshal(fleetNotifyPayload{SessionID: sessionID, EventType: eventType})
+// eventID must be the id returned by the preceding InsertEvent call so the
+// hub can fetch exactly the event that triggered the NOTIFY (D108).
+func NotifyFleetChange(ctx context.Context, pool *pgxpool.Pool, sessionID, eventType, eventID string) error {
+	data, err := json.Marshal(fleetNotifyPayload{
+		SessionID: sessionID,
+		EventType: eventType,
+		EventID:   eventID,
+	})
 	if err != nil {
 		return fmt.Errorf("marshal notify payload: %w", err)
 	}

@@ -14,12 +14,6 @@ import (
 	httpSwagger "github.com/swaggo/http-swagger/v2"
 )
 
-// TODO(KI12)[Phase 5]: REST endpoints have no per-IP rate limit.
-// The query API has no analogue to the ingestion-side per-token
-// sliding window rate limiter (D048). Add per-IP middleware in
-// Phase 5 alongside the JWT auth refactor. See DECISIONS.md D073
-// for the related sensor-endpoint stopgap.
-
 const (
 	serverReadTimeout = 15 * time.Second
 	// WriteTimeout intentionally omitted -- WebSocket connections are

@@ -37,6 +37,11 @@ type EventPayload struct {
 	TokensInput     *int            `json:"tokens_input"`
 	TokensOutput    *int            `json:"tokens_output"`
 	TokensTotal     *int            `json:"tokens_total"`
+	// D100: Anthropic cache-token breakdown. Populated by the Python sensor's
+	// AnthropicProvider.extract_usage and by the Claude Code plugin's
+	// transcript reader. Absent on OpenAI events and on non-LLM events.
+	TokensCacheRead     *int64      `json:"tokens_cache_read,omitempty"`
+	TokensCacheCreation *int64      `json:"tokens_cache_creation,omitempty"`
 	TokensUsedSess  int             `json:"tokens_used_session"`
 	TokenLimitSess  *int            `json:"token_limit_session"`
 	LatencyMs       *int            `json:"latency_ms"`
@@ -53,9 +58,15 @@ type EventPayload struct {
 	Error           string          `json:"error,omitempty"`
 	DurationMs      *int64          `json:"duration_ms,omitempty"`
 
-	// Runtime context collected by the sensor at init() time.
-	// Present only on session_start events. Stored once in
-	// sessions.context (JSONB) and never updated on conflict.
+	// Runtime context collected by the sensor at init() time and by
+	// the Claude Code plugin on every hook invocation. Populated on
+	// any event type that carries it; session_start calls
+	// UpsertSession's COALESCE-enriched ON CONFLICT branch, and every
+	// other event type calls UpgradeSessionContext to fill in the
+	// context column when a prior session_start never landed (e.g.,
+	// the plugin's session_start POST failed because the stack was
+	// down at process start -- D106 lazy-creates the row with NULL
+	// context, and a later event's context finally populates it).
 	Context map[string]interface{} `json:"context,omitempty"`
 
 	// Token attribution (D095). Injected by the ingestion API on

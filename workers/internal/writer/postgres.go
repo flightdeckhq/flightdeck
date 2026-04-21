@@ -13,7 +13,12 @@ import (
 
 const (
 	staleThreshold = "2 minutes"
-	lostThreshold  = "10 minutes"
+	// lostThreshold was 10 minutes; raised to 30 minutes in D105 to
+	// cover typical interactive user think-time on the Claude Code
+	// plugin without hiding legitimately-active sessions from the
+	// fleet view. Revival on any event (D105) closes the correctness
+	// gap; this threshold narrows the "appears lost" window.
+	lostThreshold = "30 minutes"
 )
 
 // Writer performs all Postgres writes for the worker pipeline.
@@ -46,28 +51,44 @@ func (w *Writer) UpsertAgent(ctx context.Context, flavor, agentType string) erro
 //
 // The optional contextJSON argument carries the runtime context dict
 // collected by the sensor at init() time (see sensor/core/context.py).
-// It is stored in sessions.context (JSONB) and is set ONCE on insert
-// -- the ON CONFLICT branch deliberately does NOT touch the context
-// column so reconnects from the same session_id can't overwrite the
-// initial collection. Pass nil for events that don't carry context
-// (only session_start does).
+// Pass nil for events that don't carry context (only session_start
+// does). When non-nil, it is stored in sessions.context (JSONB).
+//
+// ON CONFLICT enrichment semantics (D094 write-once + D106 sentinel
+// upgrade):
+//
+//   - identity columns (host, framework, model) -- COALESCE, keep the
+//     existing value when the incoming side is NULL.
+//   - context, token_id, token_name -- COALESCE. Originally these were
+//     write-once-on-insert with D094 explicitly forbidding overwrites.
+//     D106 loosened this to COALESCE so that a lazily-created row
+//     (ReviveOrCreateSession) with NULL context/token columns gets
+//     enriched by a later session_start arrival. Real values remain
+//     write-once: once sessions.context is non-null, COALESCE returns
+//     the stored value and the incoming EXCLUDED is ignored.
+//   - flavor, agent_type -- CASE upgrade from the sentinel "unknown".
+//     "unknown" is the value D106 writes when a non-session_start
+//     event lacks flavor/agent_type data. A legitimate session_start
+//     never writes "unknown", so the CASE is a no-op for every row
+//     that was created via an authoritative path. "Unknown is a
+//     sentinel, not a value" -- upgrading it on enrichment is not
+//     overwriting data.
 func (w *Writer) UpsertSession(
 	ctx context.Context,
 	sessionID, flavor, agentType, host, framework, model, state string,
 	contextJSON []byte,
 	tokenID, tokenName string,
 ) error {
+	// session_start is the authoritative context source; an empty
+	// context dict from the sensor ("I tried, there was nothing to
+	// collect") still writes `{}` so the row looks populated. Only
+	// ReviveOrCreateSession writes NULL context -- the sentinel
+	// "nobody has tried yet, please enrich me" state that the
+	// COALESCE branch below converts back into real data on the
+	// session_start arrival. See D106 for the {} vs NULL split.
 	if contextJSON == nil {
 		contextJSON = []byte("{}")
 	}
-	// tokenID is a nullable UUID FK; the NULLIF('') dance keeps the
-	// insert path generic for sessions created before Phase 5 or for
-	// any future code path that doesn't resolve a token (there are
-	// none today, but a defensive NULL is cheaper than a panic). The
-	// ON CONFLICT branch deliberately does NOT overwrite token_id /
-	// token_name: a session belongs to whichever token opened it,
-	// and subsequent session_start attachments (D094 re-attach)
-	// intentionally keep the original attribution.
 	_, err := w.pool.Exec(ctx, `
 		INSERT INTO sessions (
 			session_id, flavor, agent_type, host, framework, model, state,
@@ -83,11 +104,70 @@ func (w *Writer) UpsertSession(
 		    last_seen_at = NOW(),
 		    host = COALESCE(EXCLUDED.host, sessions.host),
 		    framework = COALESCE(EXCLUDED.framework, sessions.framework),
-		    model = COALESCE(EXCLUDED.model, sessions.model)
-		    -- context, token_id, token_name intentionally NOT updated on conflict
+		    model = COALESCE(EXCLUDED.model, sessions.model),
+		    -- D106: COALESCE the write-once columns so a lazily-created
+		    -- row with NULL context / token columns picks up the real
+		    -- values when session_start later arrives. Real values are
+		    -- preserved (COALESCE returns the stored side first).
+		    context = COALESCE(sessions.context, EXCLUDED.context),
+		    token_id = COALESCE(sessions.token_id, EXCLUDED.token_id),
+		    token_name = COALESCE(sessions.token_name, EXCLUDED.token_name),
+		    -- D106 sentinel upgrade: "unknown" on flavor / agent_type
+		    -- means "we lazy-created without authoritative data".
+		    -- Replace it when a real session_start brings the truth.
+		    flavor = CASE WHEN sessions.flavor = 'unknown'
+		                  THEN EXCLUDED.flavor
+		                  ELSE sessions.flavor END,
+		    agent_type = CASE WHEN sessions.agent_type = 'unknown'
+		                      THEN EXCLUDED.agent_type
+		                      ELSE sessions.agent_type END
 	`, sessionID, flavor, agentType, host, framework, model, state, contextJSON, tokenID, tokenName)
 	if err != nil {
 		return fmt.Errorf("upsert session %s: %w", sessionID, err)
+	}
+	return nil
+}
+
+// UpgradeSessionContext fills in the sessions.context column on a row
+// whose context is either NULL (D106 lazy-create) or the empty JSON
+// object ``{}``. Once the column holds real data, the COALESCE branch
+// short-circuits to the stored value and the incoming payload is
+// ignored -- write-once semantics for real context are preserved across
+// every event type.
+//
+// Motivation: a Claude Code plugin session whose session_start POST
+// fails (stack was down at claude start, transient DNS outage, ...)
+// leaves the per-session dedup marker on disk, so session_start is
+// never retried. Every subsequent event then flows through
+// handleSessionGuard's D106 lazy-create which writes flavor="unknown"
+// and context=NULL. Without this helper the RUNTIME panel stays empty
+// forever. Attaching context to every event and running this upgrade
+// lets the first event that actually reaches the server populate the
+// column.
+//
+// NULLIF(context, '{}'::jsonb) makes the upgrade compatible with the
+// two "no real context yet" sentinels in play: NULL (ReviveOrCreateSession
+// writes explicit NULL; DEFAULT '{}'::jsonb on inserts that omit the
+// column) and '{}'::jsonb (UpsertSession writes '{}' when the sensor
+// ran collectContext and got nothing back). The helper treats both
+// sentinels as "enrich me".
+//
+// Called from handleSessionGuard after the guard resolves the row to
+// any non-closed state (active, idle, stale->active, lost->active,
+// or lazy-created). Closed rows are skipped one level up -- a user
+// explicitly ended the session and we do not rewrite their context
+// retroactively.
+func (w *Writer) UpgradeSessionContext(ctx context.Context, sessionID string, contextJSON []byte) error {
+	if len(contextJSON) == 0 {
+		return nil
+	}
+	_, err := w.pool.Exec(ctx, `
+		UPDATE sessions
+		SET context = COALESCE(NULLIF(context, '{}'::jsonb), $2::jsonb)
+		WHERE session_id = $1::uuid
+	`, sessionID, contextJSON)
+	if err != nil {
+		return fmt.Errorf("upgrade session context %s: %w", sessionID, err)
 	}
 	return nil
 }
@@ -104,18 +184,29 @@ func (w *Writer) InsertEvent(
 	ctx context.Context,
 	sessionID, flavor, eventType, model string,
 	tokensInput, tokensOutput, tokensTotal *int,
+	tokensCacheRead, tokensCacheCreation *int64,
 	latencyMs *int,
 	toolName *string,
 	hasContent bool,
 	occurredAt time.Time,
 	payload []byte,
 ) (string, error) {
+	// Cache columns are NOT NULL DEFAULT 0; coalesce nil pointers to 0 rather
+	// than relying on a NULL insert, which the column definition rejects.
+	cacheRead := int64(0)
+	if tokensCacheRead != nil {
+		cacheRead = *tokensCacheRead
+	}
+	cacheCreation := int64(0)
+	if tokensCacheCreation != nil {
+		cacheCreation = *tokensCacheCreation
+	}
 	var eventID string
 	err := w.pool.QueryRow(ctx, `
-		INSERT INTO events (session_id, flavor, event_type, model, tokens_input, tokens_output, tokens_total, latency_ms, tool_name, has_content, occurred_at, payload)
-		VALUES ($1::uuid, $2, $3, NULLIF($4, ''), $5, $6, $7, $8, $9, $10, $11, $12)
+		INSERT INTO events (session_id, flavor, event_type, model, tokens_input, tokens_output, tokens_total, tokens_cache_read, tokens_cache_creation, latency_ms, tool_name, has_content, occurred_at, payload)
+		VALUES ($1::uuid, $2, $3, NULLIF($4, ''), $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 		RETURNING id::text
-	`, sessionID, flavor, eventType, model, tokensInput, tokensOutput, tokensTotal, latencyMs, toolName, hasContent, occurredAt, payload).Scan(&eventID)
+	`, sessionID, flavor, eventType, model, tokensInput, tokensOutput, tokensTotal, cacheRead, cacheCreation, latencyMs, toolName, hasContent, occurredAt, payload).Scan(&eventID)
 	if err != nil {
 		return "", fmt.Errorf("insert event: %w", err)
 	}
@@ -190,6 +281,159 @@ func (w *Writer) UpdateLastSeen(ctx context.Context, sessionID string) error {
 		return fmt.Errorf("update last_seen for %s: %w", sessionID, err)
 	}
 	return nil
+}
+
+// ReviveIfRevivable flips a stale or lost session back to active and
+// advances last_seen_at. D105 generalises D094's session_start
+// attach-on-terminal semantics to every event type: every
+// non-session_start handler runs this before its normal side effects,
+// so sessions that go stale/lost during interactive idle windows
+// resume on the next event instead of freezing forever.
+//
+// Four places know how to revive or create a session. They mirror
+// each other rather than share a helper; any change to the revival
+// contract (columns touched, state predicate) must be applied to
+// all four:
+//
+//  1. Ingestion: ``session.Store.Attach`` (D094) runs synchronously on
+//     ``session_start`` so the HTTP response can report ``attached=true``.
+//     Scope: closed, lost -> active; records a session_attachments row.
+//  2. Worker, ``UpsertSession`` ON CONFLICT branch (D094 worker side,
+//     extended by D106). Scope: any prior state -> whatever the
+//     session_start event asks for (always ``active``), with identity-
+//     column refresh and D106 enrichment of the ``unknown`` sentinel
+//     and NULL context/token columns that a lazy-create left behind.
+//  3. Worker, ``ReviveIfRevivable`` (this function, D105). Scope:
+//     stale, lost -> active. No identity refresh, no attachment row.
+//  4. Worker, ``ReviveOrCreateSession`` (D106). Scope: delegates to
+//     ReviveIfRevivable when the row exists, INSERTs a new row with
+//     best-effort identity + ``unknown`` sentinels when it does not.
+//     Called by every non-session_start handler so an event for an
+//     unknown session_id lazily manifests the row instead of
+//     FK-violating at InsertEvent.
+//
+// Scope of this helper:
+//   - state IN ('stale', 'lost') -> UPDATE, returns (true, nil).
+//   - state IN ('active', 'idle', 'closed') -> no-op, returns (false, nil).
+//     closed stays terminal (user explicitly ended the session) and is
+//     enforced at the handler layer, not here.
+//   - session row does not exist -> no-op, returns (false, nil).
+func (w *Writer) ReviveIfRevivable(ctx context.Context, sessionID string) (bool, error) {
+	tag, err := w.pool.Exec(ctx, `
+		UPDATE sessions
+		SET state = 'active',
+		    last_seen_at = NOW()
+		WHERE session_id = $1::uuid
+		  AND state IN ('stale', 'lost')
+	`, sessionID)
+	if err != nil {
+		return false, fmt.Errorf("revive session %s: %w", sessionID, err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// ReviveOrCreateSession is the D106 lazy-create path. Called by every
+// non-session_start handler before its normal side effects.
+//
+// Semantics:
+//
+//   - Row exists in any state -> delegates to ReviveIfRevivable so a
+//     stale/lost row flips back to active. Returns (created=false, nil).
+//     The caller's subsequent UPDATE (token counting, last_seen) runs
+//     against the existing row.
+//   - Row does not exist -> upserts the agents row (needed for the
+//     sessions.flavor FK), then INSERTs a new sessions row with
+//     state='active', started_at=last_seen_at=occurredAt, and
+//     best-effort identity fields. Where the event does not carry
+//     flavor or agent_type, the "unknown" sentinel is written so
+//     UpsertSession's ON CONFLICT branch can upgrade it when the
+//     authoritative session_start eventually arrives. context and
+//     token columns are NULL (sentinel for "enrich me"). Returns
+//     (created=true, nil).
+//
+// Fail-open posture: on any Postgres error during the existence
+// check, falls through to the INSERT (ON CONFLICT DO NOTHING) so a
+// transient read failure does not block creation. The caller's
+// InsertEvent still protects against a row-missing-after-failure
+// case via the FK.
+//
+// Why this helper is separate from UpsertSession: UpsertSession is
+// tied to session_start and refreshes identity columns from the
+// session_start payload. ReviveOrCreateSession runs on any event
+// type, does not overwrite identity, and specifically writes the
+// "unknown" sentinel that UpsertSession's CASE guard later upgrades.
+// Consolidating would need a four-axis config surface -- see the
+// cross-reference comment on ReviveIfRevivable for the full list.
+func (w *Writer) ReviveOrCreateSession(
+	ctx context.Context,
+	sessionID, flavor, agentType, host, framework, model string,
+	occurredAt time.Time,
+) (created bool, err error) {
+	var state string
+	sErr := w.pool.QueryRow(ctx,
+		"SELECT state FROM sessions WHERE session_id = $1::uuid",
+		sessionID,
+	).Scan(&state)
+	if sErr == nil {
+		// Row exists. Delegate to the D105 revive path -- it's a
+		// no-op for active/idle/closed and flips stale/lost.
+		if _, rerr := w.ReviveIfRevivable(ctx, sessionID); rerr != nil {
+			return false, fmt.Errorf("revive-or-create %s: %w", sessionID, rerr)
+		}
+		return false, nil
+	}
+	// Any error (ErrNoRows or otherwise) falls through to INSERT.
+	// ON CONFLICT DO NOTHING covers the race where a parallel event
+	// created the row between our SELECT and our INSERT.
+
+	// Default sentinels for missing identity. "unknown" survives in
+	// the agents row and the sessions row until a real session_start
+	// arrives and UpsertSession's CASE branch upgrades them.
+	if flavor == "" {
+		flavor = "unknown"
+	}
+	if agentType == "" {
+		agentType = "unknown"
+	}
+
+	// agents FK: sessions.flavor references agents.flavor. Upsert the
+	// agents row first so the sessions INSERT does not FK-violate on
+	// a truly-never-before-seen flavor.
+	if _, aErr := w.pool.Exec(ctx, `
+		INSERT INTO agents (flavor, agent_type, first_seen, last_seen, session_count)
+		VALUES ($1, $2, NOW(), NOW(), 1)
+		ON CONFLICT (flavor) DO UPDATE
+		SET last_seen = NOW(),
+		    session_count = agents.session_count + 1,
+		    agent_type = EXCLUDED.agent_type
+	`, flavor, agentType); aErr != nil {
+		return false, fmt.Errorf("revive-or-create %s: upsert agent: %w", sessionID, aErr)
+	}
+
+	// context is written as explicit NULL (overriding the column's
+	// DEFAULT '{}'::jsonb) so UpsertSession's COALESCE branch on the
+	// next session_start can distinguish "nobody has populated this
+	// yet" from "sensor ran collectContext and got an empty dict".
+	// token_id / token_name are omitted from the column list; both
+	// are nullable without a DEFAULT, so omission gives us NULL.
+	// started_at and last_seen_at pin to the event's occurred_at so
+	// the lazy row backdates to when the activity actually began,
+	// not when the server got around to recording it.
+	tag, iErr := w.pool.Exec(ctx, `
+		INSERT INTO sessions (
+			session_id, flavor, agent_type, host, framework, model, state,
+			started_at, last_seen_at, context
+		)
+		VALUES (
+			$1::uuid, $2, $3, NULLIF($4, ''), NULLIF($5, ''), NULLIF($6, ''),
+			'active', $7, $7, NULL
+		)
+		ON CONFLICT (session_id) DO NOTHING
+	`, sessionID, flavor, agentType, host, framework, model, occurredAt)
+	if iErr != nil {
+		return false, fmt.Errorf("revive-or-create %s: insert: %w", sessionID, iErr)
+	}
+	return tag.RowsAffected() > 0, nil
 }
 
 // CloseSession sets state=closed and ended_at on a session.

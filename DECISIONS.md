@@ -11,6 +11,12 @@ without a matching DECISIONS.md is a codebase future contributors cannot trust.
 
 New contributors: read this before asking "why is it done this way?"
 
+**Numbering note.** D-numbers are assigned sequentially but not every
+number is occupied. D092 and D093 were reserved during planning and
+never took shape in code -- the planning notes for those ids either
+folded into adjacent entries or were dropped entirely. The gap is
+intentional; do not hunt for missing documents.
+
 ---
 
 ## D001 -- Sensor pattern over proxy/gateway pattern
@@ -2469,5 +2475,1316 @@ endpoint, GetContextFacets should gain the matching parameter.
 - `api/internal/store/postgres.go::GetContextFacets`
 - `api/internal/store/postgres_test.go::TestGetContextFacetsUnnestArrayValues`
   (test SQL mirrored to match)
+
+---
+
+## D098 -- Analytics `provider` dimension via SQL `CASE` on model name
+
+**Problem:** Analytics v2 wants a provider breakdown (anthropic /
+openai / google / xai / mistral / meta / other). The `events` table
+has `model` but no `provider` column. The `event_content.provider`
+column is populated only when `capture_prompts=true` (D094 opt-in)
+and is therefore sparse or empty in most deployments -- not suitable
+as the authoritative provider source.
+
+**Options considered:**
+1. Add `events.provider TEXT NOT NULL DEFAULT 'unknown'` via a new
+   migration, have the sensor set it from the intercepted client
+   class (Anthropic / OpenAI SDK), plus a one-off backfill that
+   infers provider from `model` for historical rows.
+2. Derive provider at query time via a SQL `CASE` expression over
+   `model`.
+
+**Decision:** Option 2 for v1. The query-time CASE expression is
+added to `validGroupByColumns` in `api/internal/store/analytics.go`
+alongside the other whitelisted group-by columns, and keyed as
+`"provider"`. The mapping is also mirrored in
+`dashboard/src/lib/models.ts::getProvider` for client-side UI work
+(provider logos, colours) -- both must stay in sync when a new
+model family lands.
+
+**Tradeoff:** The mapping lives in two places (SQL + TS). A future
+improvement (not v1) is to add a real `events.provider` column,
+have the sensor populate it at `post_call` time, and drop the SQL
+CASE branch. Until then, rolling out a new provider family (e.g.
+Cohere) requires editing both the SQL expression and the TS helper.
+
+**Code locations:**
+
+- `api/internal/store/analytics.go::validGroupByColumns["provider"]`
+- `dashboard/src/lib/models.ts::getProvider`
+
+---
+
+## D099 -- Analytics `estimated_cost` metric with static pricing table
+
+**Problem:** Operators want a "how much are we spending" view.
+Computing this server-side needs per-model pricing. We do not
+want a live pricing feed (no upstream contract, no refresh
+schedule) and we do not want per-customer discount tables
+(self-hosted v1 has no tenant model).
+
+**Decision:** Ship a static, hand-maintained pricing map in
+`api/internal/store/pricing.go` keyed by exact model name. Values
+are `(input_per_mtok, output_per_mtok)` in USD, taken from public
+list prices as of the commit date. The query builds a SQL `CASE`
+from the map and computes
+`SUM(tokens_input * input_rate + tokens_output * output_rate)` per
+time bucket. Models missing from the map contribute $0; the API
+response exposes a `partial_estimate` flag so the dashboard can
+show a disclaimer.
+
+**UI disclosure:** The Analytics page renders an amber-toned
+disclaimer above the cost chart stating the numbers are based on
+public list prices and exclude volume discounts, enterprise
+commitments, and cached-token rebates.
+
+**Tradeoff:** Accuracy decays as providers change prices. The
+pricing table is a normal source file -- it moves with commits,
+not a service restart. A quarterly refresh is the expected
+maintenance cadence. Treat reported figures as approximate and
+never as billable.
+
+**Code locations:**
+
+- `api/internal/store/pricing.go` (new)
+- `api/internal/store/analytics.go::QueryAnalytics` (cost metric path)
+
+---
+
+## D100 -- Cache token columns on events + Claude Code emits real tokens
+
+**Date:** 2026-04-17
+**Phase:** 5
+
+**Context.** The Claude Code plugin reported every LLM call with
+`tokens_input=0`, `tokens_output=0`, `tokens_total=0`, `model=null`. The
+plugin docstring claimed Claude Code hooks could not expose token counts.
+That claim is incomplete: hooks receive `transcript_path` on every
+invocation, and the JSONL transcript carries the full Anthropic API
+response envelope for every assistant turn, including the `usage` object
+and the model name. "Tokens = 0" was a plugin limitation, not a platform
+constraint. Meanwhile the Python sensor's `AnthropicProvider.extract_usage`
+folded `cache_read_input_tokens` and `cache_creation_input_tokens` into
+`tokens_input`, erasing the cache breakdown from analytics even for the
+sensors that did report tokens.
+
+**Decision.**
+
+1. Add two columns to `events`: `tokens_cache_read BIGINT NOT NULL
+   DEFAULT 0` and `tokens_cache_creation BIGINT NOT NULL DEFAULT 0`.
+   Migration `000013_cache_tokens_on_events`. Default 0 is safe for
+   every existing row; every caller now writes both.
+2. Keep `tokens_input` as the full-input sum (uncached + cache_read +
+   cache_creation) so existing analytics and token-budget enforcement
+   stay numerically identical. The new columns are additive visibility.
+3. Update the Python sensor's `TokenUsage` dataclass to carry both new
+   fields and update `AnthropicProvider.extract_usage` to populate them
+   from the Anthropic response's `cache_read_input_tokens` and
+   `cache_creation_input_tokens` attributes.
+4. The Claude Code plugin tails the JSONL transcript on every `Stop`
+   hook, groups assistant records by `message.id`, and emits a
+   `post_call` event carrying model, token counts (all four fields),
+   and per-turn latency. This makes Claude Code sessions first-class in
+   analytics, cost estimation, policy enforcement, and latency metrics
+   with no special-casing on the backend.
+
+**Rejected alternatives.**
+
+- **Emit a new event_type for Claude Code LLM turns.** Rejected: the
+  Python sensor's `pre_call`/`post_call` contract already fits
+  perfectly, and adding a new event_type would require analytics,
+  policy, and dashboard changes that would not otherwise be needed.
+- **Change `tokens_input` to mean uncached-only.** Rejected: every
+  historical row would need backfill, analytics queries would report
+  lower numbers than before the migration, and policy budgets tuned
+  against the old definition would silently become more permissive.
+- **Put cache fields in the events.payload JSONB.** Rejected: cache
+  economics are high-value analytics; JSONB is for per-event-type
+  metadata that does not deserve a column. A query like "show me cache
+  hit rate by flavor" should not need `payload ->> 'tokens_cache_read'`.
+
+**Plugin side-effects resolved in the same phase.**
+
+- `Stop` hook mapping was `session_end`, which is incorrect: Claude
+  Code's `Stop` fires after every assistant turn, not at session
+  teardown. `Stop` now maps to `post_call`. Real session teardown
+  comes from `SessionEnd`.
+- Synthetic first-hook `session_start` replaced by the real
+  `SessionStart` hook. Source (`startup` / `resume` / `clear` /
+  `compact`) and `model` now come from the hook payload.
+- `SubagentStart` and `SubagentStop` hooks emit child `session_start`
+  and `session_end` events with `parent_session_id`, so Task
+  sub-agents appear as proper child sessions in the fleet.
+
+**Code locations.**
+
+- `docker/postgres/migrations/000013_cache_tokens_on_events.{up,down}.sql`
+- `sensor/flightdeck_sensor/core/types.py::TokenUsage`
+- `sensor/flightdeck_sensor/providers/anthropic.py::extract_usage`
+- `sensor/flightdeck_sensor/core/session.py::_build_payload`
+- `sensor/flightdeck_sensor/interceptor/base.py::_post_call`
+- `workers/internal/consumer/nats.go::EventPayload`
+- `workers/internal/writer/postgres.go::InsertEvent`
+- `workers/internal/processor/event.go::Process`
+- `api/internal/store/postgres.go::Event`
+- `plugin/hooks/scripts/observe_cli.mjs::{transcriptReader, EVENT_MAP}`
+
+---
+
+## D101 -- Cache-aware cost estimation formula
+
+**Date:** 2026-04-17
+**Phase:** 5
+
+**Context.** D099 shipped `estimated_cost` with a two-term formula:
+`tokens_input * input_price + tokens_output * output_price`. D100
+added `tokens_cache_read` and `tokens_cache_creation` to the events
+schema because the pre-D100 plugin was reporting `tokens_input=0` for
+Claude Code sessions. Once the cache columns started carrying real
+numbers, the old cost formula became visibly wrong: Claude Code's
+cached system prompt dominates every turn, so a cache-blind formula
+inflates estimated cost by roughly 60% or more for a typical session.
+The same overstatement applies to any other cache-heavy Anthropic
+deployment (LangChain + long context, agentic loops with stable tools).
+
+**Decision.** Replace the two-term formula with a four-term formula:
+
+```
+(tokens_input - tokens_cache_read - tokens_cache_creation) * input_rate
+  + tokens_cache_read     * input_rate * 0.10
+  + tokens_cache_creation * input_rate * 1.25
+  + tokens_output         * output_rate
+```
+
+The ratios (`0.10` for reads, `1.25` for writes) come from Anthropic's
+published pricing and are exposed as the `cacheReadRatio` and
+`cacheCreationRatio` constants in `api/internal/store/pricing.go`.
+They apply uniformly across every model that reports cache tokens.
+Providers that don't report cache tokens contribute `0` to both cache
+columns, so the cache_read and cache_creation terms vanish and the
+formula collapses to the old two-term expression. **No regression for
+non-Anthropic providers.**
+
+**Rejected alternatives.**
+
+- **Redefine `tokens_input` to mean uncached-only.** Rejected: breaks
+  the Python sensor contract (D100 explicitly keeps `tokens_input` as
+  the full-input sum), breaks every policy that uses `tokens_total`
+  for budget enforcement, and would need a migration backfill. Adding
+  cache-awareness only at the cost metric keeps policy arithmetic
+  stable.
+- **Move the ratios to pricing.yaml as per-model fields.** Rejected for
+  v1: Anthropic publishes them uniformly and no other provider
+  publishes any ratio today. If a provider ever diverges, extend
+  `ModelPricing` with optional cache ratios and default to the current
+  uniform values -- that's a code change, not a YAML change, which is
+  the right signal for "this is a semantic extension."
+- **Compute cost in Go post-query.** Rejected: a single SQL aggregate
+  keeps the cost metric consistent with every other dimension and
+  avoids per-bucket round-trips over long time windows.
+
+**Tradeoff.** The ratios are hard-coded constants. A future provider
+that publishes non-Anthropic-style cache pricing would require a
+`ModelPricing` schema bump. Documented in the comment on both
+constants so the next contributor sees the plan.
+
+**Code locations.**
+
+- `api/internal/store/pricing.go::BuildCostAggregateSQL`
+- `api/internal/store/pricing.go::{cacheReadRatio,cacheCreationRatio}`
+- `api/internal/store/pricing_test.go::TestBuildCostAggregateSQL_CacheAwareFormula`
+- `api/internal/store/pricing_test.go::TestBuildCostAggregateSQL_CollapsesWhenNoCacheTokens`
+
+---
+
+## D102 -- Externalize pricing data to `pricing.yaml`
+
+**Date:** 2026-04-17
+**Phase:** 5
+
+**Context.** D099 put the pricing table in a Go map literal inside
+`api/internal/store/pricing.go`. Every price change required a Go
+edit, a compile, a container rebuild, and a release. Providers adjust
+list prices on their own cadence (typically quarterly, sometimes
+more often), so the release-gated workflow was friction for
+contributors and guaranteed the table would drift from current
+pricing.
+
+**Decision.** Move the pricing table to `pricing.yaml` at the repo
+root. Load at service startup via `store.LoadPricing` from
+`api/internal/store/pricing_loader.go`. Path resolution order:
+
+1. `FLIGHTDECK_PRICING_PATH` environment variable, if set
+2. `/etc/flightdeck/pricing.yaml` (production container default --
+   the api Dockerfile COPYs the repo's pricing.yaml to this path)
+3. `./pricing.yaml` relative to the process working directory (dev)
+
+**Validation at load time.** Duplicate `model_id` rejected. Negative
+`input` or `output` rejected. Unknown `provider` strings rejected
+(valid set mirrors `ProviderCaseSQL`). Empty models list rejected.
+
+**Fallback.** On any load failure the loader logs a WARN and installs
+a small safety map (`claude-sonnet-4-6`, `claude-haiku-4-5`, `gpt-4o`,
+`gpt-4o-mini`) so the service still boots. Cost estimation for
+other models contributes `$0` to the SUM, which the handler already
+surfaces via `partial_estimate=true`. The service **never** crashes
+on a bad pricing file -- cost is a display feature, not a correctness
+feature.
+
+**Rejected alternatives.**
+
+- **JSON instead of YAML.** Rejected: comments matter. The pricing
+  file wants inline notes ("Legacy Opus 3 pricing", source links)
+  and a header explaining the cache-ratio convention. YAML supports
+  comments; JSON doesn't.
+- **Database-backed pricing.** Rejected for v1: adds a migration, an
+  admin UI, and a new read path just to get features the filesystem
+  already provides. `pricing.yaml` is version-controlled, reviewed
+  like code, and every deployment knows exactly which prices it's
+  using.
+- **Hot reload on every request.** Rejected: pricing is stable
+  minute-to-minute. Restart-to-apply is cheap and obvious.
+
+**Tradeoff.** One more file to ship with the binary. Dockerfile
+`COPY pricing.yaml /etc/flightdeck/pricing.yaml` bakes it into the
+image so a production deploy picks it up with no extra setup. The
+docker-compose dev overlay mounts `../pricing.yaml` over the baked-in
+copy so a dev operator can edit prices and `restart api` without a
+rebuild.
+
+**Future work.** `POST /v1/admin/reload-pricing` admin-gated endpoint
+so production operators can push a price update without a restart.
+Not in scope for this commit -- a container restart is cheap and
+obvious, and reload-without-restart adds an auth surface area without
+solving a demonstrated problem.
+
+**Code locations.**
+
+- `pricing.yaml` (repo root)
+- `api/internal/store/pricing_loader.go`
+- `api/internal/store/pricing.go::modelPricing` (now populated from YAML)
+- `api/cmd/main.go::main` (calls `store.LoadPricing()`)
+- `api/Dockerfile` (`COPY pricing.yaml /etc/flightdeck/pricing.yaml`)
+- `docker/docker-compose.yml::api.volumes`
+- `docker/docker-compose.dev.yml::api.volumes`
+- `api/internal/store/pricing_test.go` (six loader tests)
+
+---
+
+## D103 -- Claude Code plugin captures prompts by default (split from sensor)
+
+**Date:** 2026-04-17
+**Phase:** 5
+
+**Context.** D019 established `capture_prompts=False` as the Python
+sensor's default: prompts in production may carry PII, proprietary
+instructions, and customer context, and a platform that captured
+them by default would fail every serious security review. That
+rationale is sound for the sensor. It stopped being sound once the
+Claude Code plugin shipped, because the plugin observes a different
+population: a developer running `claude` locally against their own
+session. Supervisor verified on 2026-04-17 that a live claude-code
+session (`a1d4f7a5`) had an empty Prompts tab -- the plugin
+inherited the sensor's off-by-default and every `post_call` payload
+left the wire with `content: null`, `messages: []`, `response: []`.
+The 1ced241 fix populated content for `tool_call` events only; LLM
+calls stayed empty because of the plugin default.
+
+**Decision.** Flip `capturePrompts` default to `true` in the Claude
+Code plugin (`plugin/hooks/scripts/observe_cli.mjs::resolveConfig`).
+`FLIGHTDECK_CAPTURE_PROMPTS=false` remains a first-class opt-out,
+honoured identically to the old default. The Python sensor's
+`capture_prompts` default stays `False` -- D019 is unchanged, the
+sensor observes production systems with a different privacy
+calculus.
+
+**Why split instead of unify.** The two surfaces serve disjoint use
+cases:
+
+- **Python sensor** -- runs inside a production or staging agent
+  process, observing traffic the operator does not own. The prompts
+  may be customer data; the operator owes an explicit opt-in.
+- **Claude Code plugin** -- runs in a developer's own shell,
+  observing their own conversation with `claude`. The prompts are
+  the developer's own work. An empty Prompts tab actively hurts
+  the product without privacy benefit.
+
+Unifying on either default breaks one of the two. Splitting is
+narrow: the plugin's `resolveConfig` is the only place that
+interprets the plugin env var, and its rationale comment documents
+both defaults side-by-side so a future contributor does not assume
+they should match.
+
+**Rejected alternatives.**
+
+- **Keep default off; document loudly.** Rejected: already tried
+  (plugin/README.md had the knob documented before the Prompts tab
+  was even built). Users do not read env var tables before
+  installing a plugin and then wonder why a feature that looks
+  broken is actually opt-in.
+- **Prompt the user on first run for a yes/no.** Rejected: the
+  plugin has no interactive UI -- hooks fire as detached child
+  processes. Anything that asked for input would block Claude Code.
+- **Require setup in a config file.** Rejected: the plugin's whole
+  appeal is "install and it works." A zero-config default that
+  leaves the core feature broken is worse than a slightly more
+  opinionated default that matches the expectation.
+
+**Privacy posture.** Even with the flip, the plugin never forwards
+raw file bodies written by `Write` / `Edit` -- `sanitizeToolInput`
+drops those regardless. Tool inputs go through the sanitised
+whitelist, and `FLIGHTDECK_CAPTURE_PROMPTS=false` still zeroes every
+content field on every event type, matching the sensor's off state
+exactly.
+
+**Tradeoff.** A developer who installs the plugin on a machine that
+proxies to a production-scale `claude` deployment (rare but
+possible) would stream LLM content unless they set the opt-out.
+Documented in plugin/README.md Privacy section; accepted cost of
+fixing the developer-observing-own-session default.
+
+**Amendment: two-knob capture model.** The plugin distinguishes two
+classes of captured content and gates each with its own env var,
+because they carry different privacy profiles:
+
+  - `captureToolInputs` (default ON) covers tool arguments only --
+    file paths, short command strings, query strings, all passed
+    through `sanitizeToolInput` before emission. The sanitiser is a
+    whitelist: keys not on the list are dropped, string values are
+    truncated at 200 chars, and tools known to pass raw file bodies
+    (`Write`, `Edit`) drop the body field entirely. Tool arguments are
+    structured and safe to expose because the sanitiser keeps the
+    surface area narrow.
+  - `capturePrompts` (default ON for the plugin per D103 above; stays
+    off for the Python sensor per D019) covers the outputs: the
+    `tool_result` content that flows back from the tool run AND the
+    LLM response text / thinking blocks. Outputs can carry arbitrary
+    prompt-like content (model-generated text, tool-fetched web
+    pages, search results), so they need their own knob. A developer
+    who wants tool-call visibility but not response bodies can set
+    `FLIGHTDECK_CAPTURE_PROMPTS=false` and keep the default
+    `captureToolInputs=true`; a paranoid user can flip both off.
+
+The split exists because the sanitiser that works for tool arguments
+(whitelist + length cap) cannot be applied to arbitrary model output
+without either mangling it or leaking the same content it was trying
+to protect. Two independent knobs keep the privacy posture explicit
+per content class. Both defaults ON for the plugin matches the
+"developer observing their own work" rationale above; either can be
+flipped off without affecting the other. See `resolveConfig` in
+`plugin/hooks/scripts/observe_cli.mjs` for the defaults and
+`sanitizeToolInput` for the whitelist implementation.
+
+**Code locations.**
+
+- `plugin/hooks/scripts/observe_cli.mjs::resolveConfig` (default
+  `capturePrompts=true`; rationale comment references D019 and D103)
+- `plugin/hooks/scripts/observe_cli.mjs` (tool_call privacy-tier
+  comment updated to call out the plugin/sensor split)
+- `plugin/README.md` (env var table + Privacy section)
+- `README.md` (Claude Code plugin section)
+- `plugin/tests/observe_cli.test.mjs::resolveConfig` (default, opt-in,
+  opt-out tests)
+
+---
+
+## D104 -- `sessions.context` is a write-once column
+
+**Date:** 2026-04-17
+**Phase:** 5
+
+**Context.** Flagged during the 95be150 kill-switch gating
+investigation. `workers/internal/writer/postgres.go::UpsertSession`
+uses `ON CONFLICT (session_id) DO UPDATE` but intentionally does
+NOT include the `context` column in the update list (see the
+comment at L87). Rationale at the time: the first event carries the
+richest context collector output, and later events stamp less
+(e.g. a `tool_call` payload's context is narrower than
+`SessionStart`). Overwriting on every event risked regressing a
+session's context to a smaller snapshot than the one it already had.
+
+**Why this matters now.** The kill-switch gating incident exposed
+the implication. A pre-f0fa302 claude-code session's context row
+predated the `supports_directives: false` flag and, because of the
+write-once rule, never picked it up. The dashboard showed a Stop
+button on that session even though the code gate was intact --
+because the gate lives in `context`, which was frozen at the
+pre-flag snapshot. The fix in 95be150 added an
+`isClaudeCodeSession(session)` fallback in
+`dashboard/src/lib/directives.ts::sessionSupportsDirectives`. That
+fallback works only because `flavor` and `framework` are top-level
+session columns (populated from every event), not buried in
+`context`. Any future context-only flag will NOT have that escape
+hatch.
+
+**Decision.** Preserve the write-once behaviour -- the original
+rationale (the first context snapshot is the richest) still holds
+-- and make the implication a first-class planning step. Any new
+session-context flag must ship with one of:
+
+1. **A top-level column or event field** so it can be read from
+   any event, not only the first one. (Preferred when the flag
+   gates UI behaviour like the kill switch.)
+2. **A one-shot backfill migration** that updates `sessions.context`
+   for existing rows that predate the flag. Only when the flag
+   must live in `context` for schema reasons.
+3. **Explicit prospective-only documentation**: the flag applies
+   to sessions started after it shipped; older sessions are treated
+   as unset. Only when the flag is cosmetic and the stale path is
+   acceptable.
+
+**Rejected alternative.** Flip `UpsertSession` to merge context on
+update (e.g. `context = events.context || sessions.context` in JSONB).
+Rejected: merging is ambiguous when keys collide, and a narrower
+`tool_call` event's context would sometimes *shrink* a session's
+record instead of enriching it. The write-once rule avoids that
+whole class of regression.
+
+**Code locations.**
+
+- `workers/internal/writer/postgres.go::UpsertSession` (the L87
+  comment -- kept as the canonical in-code note)
+- `dashboard/src/lib/directives.ts::sessionSupportsDirectives`
+  (the 95be150 fallback, precedent for option 1 above)
+
+---
+
+## D105 -- Revive stale/lost sessions on any event; raise lost threshold to 30 min
+
+**Date:** 2026-04-18
+**Phase:** 5
+
+**Context.** Claude Code plugin session `e4a0b990` transitioned to
+`state=lost` while hooks were still actively firing. Ingestion
+continued accepting events (`tokens_used` on the events table
+reached 2.4M) but the session row froze at `last_seen_at =
+2026-04-18T05:32:28Z` and `tokens_used = 2,786,973` for the rest
+of the conversation. Downstream symptoms: the Fleet page showed
+"0 Agents, 0 Sessions" (fleet query filters `state != 'lost'`),
+the live token counter was stuck, and the Investigate page
+rendered the session as finished even though work was still
+happening.
+
+**Investigation.** Two defects composed into the user-visible
+failure:
+
+1. **Timeout mismatch.** The reconciler flipped `active → stale`
+   at 2 min silence and `stale → lost` at 10 min silence.
+   Interactive Claude Code sessions routinely pause for longer
+   than that between turns -- a Supervisor reading a report took
+   a 1407-second gap (23m27s) between two events on
+   `e4a0b990`, exceeding the 10-min lost threshold twice over.
+   Python sensor sessions never hit this because non-interactive
+   agents emit events every few seconds throughout a run.
+
+2. **One-way door.** Every non-`session_start` handler in
+   `workers/internal/processor/session.go` started with
+   `isTerminal()` -- an early-return that warn-logged and
+   silently dropped the event for any session in state
+   `closed` or `lost`. `session_start` had a carve-out because
+   the ingestion-side D094 path already revived terminal rows
+   synchronously. No other event type had a recovery path. Once
+   a plugin session crossed `lost`, every subsequent
+   `post_call`, `tool_call`, `pre_call`, `heartbeat`, and
+   `session_end` was dropped at the handler; the session was
+   permanently invisible to the dashboard, even though the
+   `events` table kept accumulating rows.
+
+**Decision.** D105 is D094 generalised to all event types. D094
+answered the question "the sensor sent a session_start for an id
+the control plane already knows about -- what do we do?" with
+"flip terminal -> active and record an attachment." D105 answers
+the broader question "the sensor sent anything at all for an id
+the control plane currently thinks is terminal -- what do we do?"
+with the same answer for `stale`/`lost` (flip to active, advance
+last_seen_at) and a principled "no" for `closed` (which is not a
+timeout-driven terminal; the user deliberately ended the session).
+
+Two changes:
+
+1. **Remove the one-way door.** Non-`session_start` handlers
+   now run a terminal guard (`handleTerminalGuard` in
+   `processor/session.go`) instead of the old `isTerminal`
+   early-return. The guard:
+     - `closed` -> warn + skip (the user explicitly ended the
+       session; reviving a `closed` session would contradict an
+       explicit exit).
+     - `stale` / `lost` -> warn "reviving stale/lost session on
+       <event_type>", call `writer.ReviveIfRevivable` which
+       runs `UPDATE sessions SET state='active',
+       last_seen_at=NOW() WHERE session_id=$1 AND state IN
+       ('stale', 'lost')`, then fall through to the event's
+       normal side effects (token increment, close on
+       session_end, etc.).
+     - `active` / `idle` / unknown / non-existent -> no-op,
+       continue as before.
+
+   `HandleSessionEnd` is the one exception -- it skips on
+   `closed` but does not run the revive path for `stale`/
+   `lost`. `CloseSession` already transitions any non-closed
+   state straight to `closed` with `ended_at = NOW()` in a
+   single UPDATE, so a revive-then-close flicker through
+   `active` would be an unnecessary intermediate state.
+
+2. **Raise `lostThreshold` 10 min -> 30 min** in
+   `workers/internal/writer/postgres.go`. Revival closes the
+   correctness gap, but without a longer threshold the
+   dashboard still briefly shows a legitimately-active session
+   as `lost` until the next event arrives and triggers the
+   revive. 30 min covers typical interactive user think-time
+   windows without hiding genuinely abandoned sessions for too
+   long. `staleThreshold` stays at 2 min -- `stale` is still a
+   useful intermediate "quiet but probably alive" signal for
+   operators.
+
+**Rejected alternatives.**
+
+- **Plugin-side idle heartbeat.** Rejected: violates CLAUDE.md
+  rule 32 ("sensor is a library wrapper, not an OS agent ...
+  never add background threads, polling loops, or daemon
+  threads"). The whole point of the plugin architecture is that
+  there is no persistent process to carry a timer.
+- **Per-flavor threshold** (e.g. `claude-code` gets 30 min,
+  `python-sensor` keeps 10 min). Rejected: premature
+  configuration surface. One threshold that covers the
+  interactive case is simpler and Python sensors are not harmed
+  by a longer threshold -- their events keep `last_seen_at`
+  fresh regardless.
+- **Mirror D094 literally by routing non-session_start events
+  through ingestion's `session.Store.Attach`.** Rejected: that
+  path also writes `session_attachments` rows (one per
+  re-attachment), which is semantically a session_start concern
+  (a new orchestrator run attaching to a prior session id). A
+  simple `UPDATE ... WHERE state IN ('stale', 'lost')` on the
+  worker side matches the same three load-bearing columns
+  (`state`, `last_seen_at`, plus the reconciler-sweep
+  guardrail) without the attachment-audit noise.
+
+- **Extract a single shared "revive a terminal session" helper
+  so D094 and D105 share one primitive.** Tempting: three places
+  now know how to revive (`session.Store.Attach` in ingestion,
+  `UpsertSession` ON CONFLICT in the worker, and
+  `ReviveIfRevivable` in the worker). They mirror each other,
+  they do not share. Rejected for this commit: each path has a
+  different scope (D094 also writes `session_attachments` and
+  clears `ended_at`; D094 worker-side also refreshes identity
+  columns; D105 touches only state + last_seen_at). Collapsing
+  them would mean a single function with a multi-axis
+  configuration surface. Documented in the function-level
+  comment on `ReviveIfRevivable` -- if a future column (e.g. a
+  `revived_at` timestamp) is added, it must be applied to all
+  three places. Revisit if/when a fourth revival path shows up.
+
+**Schema change footprint.** Zero. Deliberately not adding a
+`previous_state` column, a revival-history table, or any audit
+schema. The `events` table already records every event that
+caused a revive (operators can query for `event_type` around the
+session's current `last_seen_at` to reconstruct the revival).
+Keeping the change to two files + constants makes it easy to
+tune the threshold later.
+
+**Interaction with KI13.** `KNOWN_ISSUES.md` listed KI13 ("ingestion
+accepts events for closed/lost sessions") as open when this entry was
+written. The pairing of D105 (revive on any event for stale/lost) and
+D106 (lazy-create on unknown) together resolved KI13 as WAI: the
+worker is the authoritative owner of session state, and the
+post-D106 terminal-state matrix is:
+`lost -> revived to active by D105`,
+`closed -> explicit skip at the worker with a warn log`,
+`unknown -> lazy-create via D106`.
+Ingestion remains deliberately permissive (it publishes anything
+well-formed to NATS) because the worker's state machine decides
+what to do with each arrival. KI13 moved to Resolved in the commit
+that added this paragraph; the shift it documents is "silent drop
+everywhere" -> "revive stale/lost, create unknown, silent skip on
+closed".
+
+**Live evidence.** Session `e4a0b990-a5b7-420b-809f-1b5ff07684c9`
+on `feat/phase-5-tokens`: 142 events over ~43 min, one 23m27s
+gap (`05:32:28Z -> 05:55:55Z`) during a Supervisor read,
+reconciler-driven transition to `lost` at ~05:42:28Z,
+`last_seen_at` and `tokens_used` frozen thereafter despite
+74 subsequent events landing in the `events` table.
+
+**Code locations.**
+
+- `workers/internal/writer/postgres.go` -- `lostThreshold`
+  constant; new `ReviveIfRevivable` helper.
+- `workers/internal/processor/session.go` -- `handleTerminalGuard`
+  replaces `isTerminal` across `HandleHeartbeat`,
+  `HandlePostCall`, `HandleSessionEnd`.
+- `tests/integration/test_session_states.py` -- revival
+  coverage (stale+lost revive on post_call/tool_call; closed
+  stays closed; session_end on lost lands as closed;
+  30-min threshold verified via backdated `last_seen_at`).
+
+---
+
+## D106 -- Lazy session creation on events with unknown session_id
+
+**Date:** 2026-04-18
+**Phase:** 5
+
+**Context.** Two user scenarios share one root cause. (1) Flightdeck
+server is down when Claude Code + plugin start, so the plugin's
+SessionStart HTTP POST fails. The plugin writes a one-shot unreachable
+flag and keeps calling hooks; when the server recovers, subsequent
+events reference a session_id Flightdeck has never seen. (2) The user
+enables the plugin partway through a running Claude Code session.
+SessionStart was never fired; every hook that follows references an
+in-progress session the server has no record of.
+
+Pre-fix behaviour traced through ingestion -> NATS -> worker:
+
+ - Ingestion (`ingestion/internal/handlers/events.go`) accepts the
+   event, publishes to NATS, returns 200. No existence check for
+   non-`session_start` event types.
+ - Worker `handleTerminalGuard` (D105) runs `SELECT state`, swallows
+   the `pgx.ErrNoRows` without discrimination, returns `skip=false`.
+ - Handler's normal side effects (`UpdateTokensUsed`,
+   `UpdateLastSeen`, `UpdateSessionModel`) fire UPDATE-with-WHERE,
+   affect 0 rows, return no error.
+ - `Processor.Process` then calls `writer.InsertEvent`, which
+   INSERTs into `events`. `events.session_id UUID NOT NULL REFERENCES
+   sessions(session_id)` rejects with FK-violation (SQLSTATE 23503).
+ - Consumer Naks the message; NATS JetStream redelivers indefinitely
+   until the stream's retention expires. No event row ever lands,
+   `tokens_used` never increments, no NOTIFY fires.
+
+Sensor (Python) is unaffected -- `init()` fires `session_start`
+synchronously before returning control to user code, so
+non-`session_start` events cannot precede it. D106 addresses the
+plugin's fire-and-forget hook model specifically.
+
+**Decision.** Non-`session_start` handlers now lazy-create the session
+row when they see a previously-unknown `session_id`. The event lands
+from first sight, with the row carrying enough identity to be usable
+on the dashboard immediately, and enough "not yet authoritative"
+sentinel material that a later `session_start` arrival can enrich it
+without violating D094's write-once principle.
+
+Observer-style ingestion tolerates arriving mid-stream without data
+loss. D094 handled the session_start-on-terminal case ("the sensor
+sent session_start for an id we already know"); D105 handled the
+any-event-on-terminal case ("the sensor sent anything for an id in
+a timeout-terminal state"); D106 handles the any-event-on-unknown
+case ("the sensor sent anything for an id we have never seen").
+
+Four changes:
+
+1. **New helper `ReviveOrCreateSession`**
+   (`workers/internal/writer/postgres.go`). If the row exists,
+   delegates to `ReviveIfRevivable` (D105). If it does not, upserts
+   the `agents` row (needed for the `sessions.flavor` FK), then
+   INSERTs a new `sessions` row with `state='active'`,
+   `started_at = last_seen_at = event.occurred_at`, best-effort
+   identity from the event payload, and `context = NULL` written
+   explicitly to override the column's `DEFAULT '{}'::jsonb`. Missing
+   `flavor` / `agent_type` are replaced with the string `"unknown"`.
+
+2. **Rename `handleTerminalGuard` -> `handleSessionGuard`**
+   (`workers/internal/processor/session.go`). The new guard
+   distinguishes `pgx.ErrNoRows` (lazy-create) from other DB errors
+   (fail open) via `errors.Is`. All D105 revival paths are preserved;
+   only the fall-through case for unknown session_id changed from
+   "silent no-op that FK-violates later" to "lazy-create so the
+   event lands". `HandleSessionEnd` deliberately stays off this
+   path -- a teardown signal for a session we never saw should not
+   retroactively manifest a closed row (same rationale as D105's
+   session_end exclusion).
+
+3. **Extend `UpsertSession` ON CONFLICT for enrichment**
+   (`workers/internal/writer/postgres.go`). Columns that were
+   write-once-on-insert in the original D094 design now COALESCE so
+   that a lazy-created row's NULL sentinels get filled by the next
+   authoritative `session_start`:
+
+   ```sql
+   context    = COALESCE(sessions.context, EXCLUDED.context)
+   token_id   = COALESCE(sessions.token_id, EXCLUDED.token_id)
+   token_name = COALESCE(sessions.token_name, EXCLUDED.token_name)
+   ```
+
+   `flavor` and `agent_type` use a CASE guard against the `"unknown"`
+   sentinel:
+
+   ```sql
+   flavor = CASE WHEN sessions.flavor = 'unknown'
+                 THEN EXCLUDED.flavor
+                 ELSE sessions.flavor END
+   ```
+
+   **Unknown is a sentinel, not a value.** Upgrading a sentinel on
+   enrichment is not overwriting data; a legitimate `session_start`
+   never writes `"unknown"`, so the CASE is a no-op for every row
+   that was created via an authoritative path. D094 write-once is
+   preserved for real values -- `COALESCE(sessions.context, ...)`
+   returns the stored side first whenever it's non-null, and the
+   `CASE` guard only fires on the exact sentinel literal.
+
+4. **{} vs NULL on the context column.** The schema defines
+   `context JSONB DEFAULT '{}'::jsonb`, so omitting the column on
+   INSERT silently writes the empty object. That defeats the
+   COALESCE enrichment because `{}` is non-null. D106 makes the
+   two states semantically distinct: `session_start` with an empty
+   collectContext result still writes `{}` (authoritative "I tried,
+   nothing to report"); `ReviveOrCreateSession` writes explicit
+   NULL ("nobody has tried yet, please enrich me"). The enrichment
+   branch `COALESCE(sessions.context, EXCLUDED.context)` then
+   distinguishes them correctly.
+
+**Rejected alternatives.**
+
+- **Reject at ingestion (409 for unknown session_id).** Rejected:
+  the plugin client cannot distinguish a transient "session_start
+  in flight on a different hook invocation" from a permanent
+  "session does not exist", and retries would arrive after the
+  server has already received session_start from some other path.
+  Observer-style ingestion is meant to accept events and decide
+  what to do with them, not gate them at the door.
+
+- **Wait for session_start at the worker (buffer events for
+  unknown session_ids).** Rejected: requires an in-memory or
+  per-session timer, which is exactly the stateful surface D106
+  avoids. It also silently reorders events (session_start->real
+  event versus real event->session_start), which complicates
+  downstream guarantees. Lazy-create preserves arrival order:
+  every event lands in `events` exactly when it arrived.
+
+- **Extract a single shared "ensure session exists and is active"
+  primitive unifying D094, D105, and D106.** Rejected, same
+  rationale as D105's rejection of that collapse. There are now
+  four revival/create sites: ingestion `session.Store.Attach`
+  (writes session_attachments row), worker `UpsertSession` ON
+  CONFLICT (refreshes identity columns from session_start),
+  `ReviveIfRevivable` (D105 state flip only), and
+  `ReviveOrCreateSession` (D106 lazy INSERT). Each has a
+  meaningfully different scope; a unified primitive would need a
+  four-axis config surface that obscures intent. The mirror
+  pattern is verbose but each site is readable in isolation. The
+  cross-reference comment on `ReviveIfRevivable` now enumerates
+  all four sites -- any change to the revival contract (columns
+  touched, state predicate) must be applied to all four.
+
+- **Lazy-create on `session_end` too.** Rejected. `session_end` is
+  a teardown signal. Manifesting a closed row from a session we
+  never saw tells operators nothing they can act on. It would also
+  contradict D106's framing ("record activity from that event
+  onwards") -- there is no activity to record past a teardown.
+  `session_end` for an unknown session_id remains a silent drop
+  at InsertEvent, matching pre-D106 behaviour for that event type.
+
+**Known related defect.** The plugin's
+`unreachable-<sessionId>.flag` file (in
+`plugin/hooks/scripts/observe_cli.mjs`) short-circuited all
+subsequent POSTs for a session once the first hook failed. No code
+path cleared the flag within the session's lifetime, so "server
+down at startup, recovers mid-session" saw the plugin stop sending
+after the first failure and never resume -- no reconnect events
+reached the server to exercise the D106 path. Tracked as KI18,
+**resolved in the follow-up commit 4a**: the flag persistence was
+removed so every hook invocation attempts its POST fresh. The
+paired fix (D106 server + 4a client) restores the full reconnect
+path end-to-end.
+
+**Schema change footprint.** Zero. The `context JSONB DEFAULT
+'{}'::jsonb` column stays as-is; D106 writes `NULL` explicitly
+on the lazy-create path to override the DEFAULT. All behaviour
+is encoded in the writer and processor layers.
+
+**Code locations.**
+
+- `workers/internal/writer/postgres.go` -- `ReviveOrCreateSession`
+  helper; `UpsertSession` ON CONFLICT extended with COALESCE on
+  context / token columns and CASE guard on flavor / agent_type;
+  cross-reference comment on `ReviveIfRevivable` updated from
+  three sites to four.
+- `workers/internal/processor/session.go` -- `handleTerminalGuard`
+  renamed to `handleSessionGuard`; new `errors.Is(err, pgx.ErrNoRows)`
+  branch calls `ReviveOrCreateSession`; `HandleHeartbeat` and
+  `HandlePostCall` callers updated; `HandleSessionEnd` unchanged
+  (keeps `isClosed`).
+- `tests/integration/test_session_states.py` -- six new tests
+  cover the lazy-create path on post_call / tool_call, the
+  "unknown" sentinel upgrade, D094 write-once preservation on
+  real values, order independence (PC -> SS -> TC vs SS -> PC
+  -> TC), and the session_end non-lazy-create guard.
+
+---
+
+## D107 -- PostToolUse mid-turn `post_call` flush in the Claude Code plugin
+
+**Date:** 2026-04-17
+**Phase:** 5
+
+**Context.** Pre-b63ef8e, the plugin emitted `post_call` events only
+on the `Stop` hook -- which fires once at the end of a tool-loop
+turn. During a multi-tool turn (LLM requests a tool, tool runs, LLM
+reads the result and requests another tool, ...), the intermediate
+LLM calls stayed invisible on the dashboard until the entire turn
+ended. The Live Feed showed `tool_call` events landing in real time
+but `post_call` events batching up at the end; mid-turn token
+counting and prompt inspection felt disconnected from the actual
+agent activity. On long multi-step turns (10+ tool calls) the lag
+between "LLM issued the call" and "dashboard shows it" could reach
+tens of seconds, breaking the premise of the Live Feed.
+
+**Decision.** Flush pending `post_call` events on every `PostToolUse`
+hook before emitting the `tool_call` itself. The flush walks the
+current transcript, groups assistant chunks by `message.id` into
+logical turns, and emits one `post_call` per un-emitted group.
+`Stop` and `SessionEnd` hooks still call the same helper as a
+backstop for the final assistant turn (which has no tool follow-up
+to trigger PostToolUse).
+
+Idempotency comes from `markEmittedTurn(messageId)`: an `openSync(file,
+"wx")` race-safe create at
+`tmpdir()/flightdeck-plugin/emitted-<messageId>.txt`. EEXIST ->
+already emitted, skip. Any other error -> fail open and re-emit
+rather than silently drop. The disk marker is the only option
+because each hook runs as a fresh Node process, so in-memory dedup
+would never survive between invocations.
+
+**Rejected alternatives.**
+
+- **Keep emitting only on Stop, accept the lag.** Rejected -- the
+  real-time Live Feed is the product; batching undermines it. A tool
+  loop that runs for 30s with an LLM call every 5s should surface
+  those calls as they happen, not as a flurry at the end.
+
+- **Emit from PostToolUse without dedup.** Rejected -- Stop always
+  fires and would re-emit every turn after PostToolUse already
+  covered it, duplicating rows in `events`. Dedup is load-bearing,
+  not optional.
+
+- **Emit from Stop only but run it at a shorter interval.** Rejected
+  -- Stop's firing cadence is controlled by Claude Code, not the
+  plugin. The plugin cannot force it earlier.
+
+- **In-memory dedup.** Rejected -- each hook is a fresh Node
+  process. The marker has to survive on disk.
+
+**Downstream implication.** The tight flush schedule compressed
+paired `post_call` + `tool_call` events into ~150-300 ms windows.
+That window exposed a pre-existing hub NOTIFY->SELECT race
+(addressed by D108) because the hub's post-NOTIFY event lookup ran
+an O(N) session scan that routinely took longer than the gap
+between paired writes. The two fixes are paired: D107 without D108
+silently drops `post_call` from the Live Feed on every tight pair;
+D108 alone would not surface the improved real-time behaviour that
+D107 enables. See D108 for the race trace.
+
+**Privacy.** The flush helper respects `capturePrompts` via the
+plugin's two-knob content model (see the D103 amendment). When
+`capturePrompts=false`, `has_content=false` and `content=null` are
+emitted on every `post_call` regardless of which hook triggered the
+flush; the D107 flush path carries no content data that the Stop
+path did not already carry.
+
+**Code locations.**
+
+- `plugin/hooks/scripts/observe_cli.mjs::flushPostCallTurns` -- the
+  helper, called from Stop, SessionEnd, and PostToolUse.
+- `plugin/hooks/scripts/observe_cli.mjs::markEmittedTurn` -- the
+  per-messageId dedup marker.
+- `plugin/hooks/scripts/observe_cli.mjs` PostToolUse branch -- flush
+  runs before the `tool_call` emission so a reader scrolling the
+  Live Feed sees LLM activity ordered before the tool it triggered.
+- `plugin/tests/observe_cli.test.mjs` -- PostToolUse flush + dedup
+  integration tests ("PostToolUse flushes pending post_calls mid-turn
+  before the tool_call", "Stop no-ops on turns already flushed by a
+  prior PostToolUse", "Two-iteration turn emits one post_call per
+  LLM call, in order, no dupes").
+
+---
+
+## D108 -- Fleet NOTIFY payload carries `event_id`
+
+**Date:** 2026-04-18
+**Phase:** 5
+
+**Context.** The Fleet WebSocket hub
+(`api/internal/ws/hub.go::listenOnce`) subscribes to the Postgres
+`flightdeck_fleet` NOTIFY channel. The worker's `NotifyFleetChange`
+fires a NOTIFY after every event insert; the hub picks it up,
+fetches the session + the triggering event, and broadcasts an
+enriched `fleetUpdate` message. Pre-a72dda1 the NOTIFY payload was
+`{session_id, event_type}`; the hub called
+`GetSessionEvents(session_id)` and took the tail (highest
+`occurred_at`) to populate `fleetUpdate.last_event`. That "tail"
+was whichever event had the highest `occurred_at` at SELECT time --
+not necessarily the event that triggered this particular NOTIFY.
+
+**Race.** Every `GetSessionEvents` scan costs O(N) in the session's
+event count. On a session with ~300 rows the scan takes
+~10-50 ms. When two events committed inside that window, NOTIFY#1's
+query returned event #2's row as the tail; both broadcasts carried
+event #2's id and event #1 never surfaced on the Live Feed, even
+though it was persisted correctly and the NOTIFY fired correctly.
+
+D107's PostToolUse flush (Commit b63ef8e) compressed paired
+`post_call` + `tool_call` writes into ~150-300 ms windows -- smaller
+than the hub's per-NOTIFY query latency on busy sessions. D105's
+revive-on-any-event (Commit a6dedea) additionally unblocked those
+paired writes, because before D105 the first `post_call` on a
+stale session was silently dropped by the old `isTerminal` gate.
+The combination of D105 and D107 turned an intermittent race into a
+deterministic broadcast drop for every `post_call` -> `tool_call`
+pair.
+
+Empirical confirmation: a 2-min diagnostic run (since reverted) on
+session `e4a0b990` showed 4/4 mismatch lines, all
+`notify=post_call broadcast=tool_call`.
+
+**Decision.** Extend the NOTIFY payload to
+`{session_id, event_type, event_id}`. `InsertEvent` already returns
+the generated event id (needed for the paired `event_content`
+insert); thread it into `NotifyFleetChange`. The hub parses
+`event_id` and calls `store.GetEvent(event_id)` -- a single-row PK
+lookup against `events.id` (O(1) indexed) instead of `GetSessionEvents`
++ tail selection. The broadcast is now deterministically pinned to
+the triggering event.
+
+**Performance side effect.** The old hub path scanned every row for
+the session on every NOTIFY. Busy sessions (500+ events) paid that
+cost per-event. The new PK lookup is O(1). On a fleet of 50 active
+sessions this reduces per-NOTIFY database work from cumulative O(N)
+to O(1); under rAF-pressured broadcast bursts the hub no longer
+bottlenecks on `GetSessionEvents`.
+
+**Schema impact.** None. NOTIFY payload is a wire contract between
+worker-writer (`NotifyFleetChange`) and api-hub (`listenOnce`). The
+`event_id` field is additive; older worker binaries emit payloads
+without it and older hub binaries ignore unknown fields (`json.Unmarshal`
+into a narrower struct silently drops extras). Forwards- and
+backwards-compatible through rolling deploys.
+
+**Rejected alternatives.**
+
+- **Serialize inserts via a mutex at the worker.** Rejected -- adds
+  cross-goroutine contention for every event and the correctness
+  gap isn't at the insert layer. The insert always writes the right
+  row. The race is at the hub's read-after-notify lookup, not the
+  writer.
+
+- **Debounce hub broadcasts and batch tail SELECTs.** Rejected --
+  doesn't pin the broadcast to the triggering event; batching
+  trades one race class for another (compound updates with
+  missing intermediates).
+
+- **Include the full event payload in NOTIFY.** Rejected -- Postgres
+  NOTIFY payload is capped at 8 kB. Event content with prompt
+  capture on (D103) routinely exceeds that. Carrying just the id
+  and having the hub fetch the row on its own connection keeps the
+  notify path cheap and lets the fetch size match reality.
+
+- **Use a materialised "latest event per session" column instead of
+  fetching.** Rejected -- requires a write amplification on every
+  insert (UPDATE sessions SET latest_event_id = ...) and still
+  races with the same two-writer window.
+
+**Why Timeline was unaffected.** Timeline and the session drawer
+render events via `GET /v1/sessions/:id` which hits
+`GetSessionEvents` once on open and returns the full list. That path
+has no race window because the query runs once after the user has
+already scrolled to the session. The bug was scoped exclusively to
+the per-NOTIFY push path.
+
+**Code locations.**
+
+- `workers/internal/writer/notify.go::fleetNotifyPayload` --
+  `EventID` field added to the wire struct.
+- `workers/internal/writer/notify.go::NotifyFleetChange` --
+  signature accepts `eventID string`.
+- `workers/internal/processor/event.go::Process` -- passes the id
+  returned from `InsertEvent` into `NotifyFleetChange`.
+- `api/internal/ws/hub.go::notifyPayload` -- parses `EventID` from
+  the NOTIFY payload.
+- `api/internal/ws/hub.go::listenOnce` -- fetches via
+  `store.GetEvent(event_id)` instead of `GetSessionEvents` + tail.
+- `api/internal/store/postgres.go::GetEvent` -- new single-row
+  PK lookup by event id.
+- `tests/integration/test_ws_broadcast.py` -- race test fires two
+  events in quick succession and asserts both broadcasts carry the
+  correct, distinct event ids.
+
+---
+
+## D109 -- Observer-session class + `supports_directives` context flag
+
+**Date:** 2026-04-17
+**Phase:** 5
+
+**Context.** The Python sensor intercepts every LLM call
+synchronously. The response envelope flows through
+`Session._post_event`, which polls for directives, and any issued
+directive is applied before control returns to the user's code.
+Shutdown, warn, degrade, and custom handlers all depend on this
+interception loop. Hook-based plugins (Claude Code, and any future
+Codex / Cursor / Windsurf-style integration) do not sit in the
+agent's execution path: they observe tool lifecycle events via
+subprocess hooks fired by the orchestrator, run as fresh Node
+processes, and cannot be interrupted mid-call. A directive issued
+against a hook-based session has nowhere to go.
+
+Pre-f0fa302 the dashboard offered the Stop Agent button on every
+session regardless of whether the session could act on the directive.
+A platform engineer clicking Stop on a claude-code session would see
+"Shutdown pending" with no effect; the session continued until it
+ended naturally. The operator couldn't tell whether the click had
+worked, whether the agent was ignoring it, or whether the kill
+switch was broken.
+
+**Decision.** First-class **observer-session class**. A session is
+an observer when the agent process producing its events cannot act
+on a returned directive. The plugin payload marks this by setting
+`context.supports_directives = false` on `session_start`; the sensor
+does not set the field at all, and unset is treated as `true` so
+every pre-existing sensor session keeps its kill switch.
+
+UI gating lives in `dashboard/src/lib/directives.ts`:
+
+  - `sessionSupportsDirectives(session)` -- reads
+    `context.supports_directives`, defaulting to `true` when the
+    field is absent. `SessionDrawer` uses this to decide whether to
+    render the Stop Agent button at all. Hidden, not disabled: a
+    disabled control communicates "temporarily unavailable",
+    which is wrong when the plugin is structurally incapable of
+    acting on the directive. Gone is clearer.
+  - `flavorHasDirectiveCapableSession(sessions)` -- returns `true`
+    when at least one live (active or idle) session in the flavor
+    can act on a directive. The Fleet sidebar uses this to decide
+    whether to render the Stop All button for a flavor. A mixed
+    flavor (some sensor, some plugin) keeps the button because the
+    directive still affects the sensor subset; claude-code sessions
+    in the flavor silently ignore it.
+
+**Fallback pattern precedent.** D104 established that
+`sessions.context` is write-once. A pre-flag claude-code session's
+context lacks `supports_directives` and, because of D104, can never
+pick it up from a later event. 95be150 added an
+`isClaudeCodeSession(session)` fallback in `sessionSupportsDirectives`
+that reads `session.flavor` and `session.framework` -- top-level
+session columns that `UpsertSession` refreshes from every session
+event -- and treats any claude-code session as an observer regardless
+of context. This is the canonical pattern for any future
+session-capability flag that needs to gate UI behaviour on a context
+field:
+
+  1. **Preferred:** put the flag in a top-level session column or an
+     event field so any event can set it.
+  2. **Acceptable:** ship a fallback that reads a proxy signal from
+     top-level columns (flavor / framework / agent_type) so
+     pre-flag sessions are covered.
+  3. **Acceptable only for cosmetic flags:** document the flag as
+     prospective-only; accept that pre-flag sessions render as
+     "unset".
+
+**Rejected alternatives.**
+
+- **Keep the Stop button visible; add a tooltip explaining it won't
+  act on claude-code sessions.** Rejected -- a control that the
+  operator has to hover and read to learn is decorative is a UX
+  failure. The cost of discovering the failure is higher than the
+  cost of the hidden control.
+
+- **Disable (not hide) the button on observer sessions.** Rejected
+  -- disabled controls communicate "temporarily unavailable, try
+  later", which is wrong. The plugin is structurally incapable of
+  acting; the button should not exist for this session class.
+
+- **Per-flavor boolean in the agents table**
+  (`agents.supports_directives`). Rejected -- per-session is the
+  right granularity because one flavor could host multiple
+  integration variants in future (for example, a Python sensor
+  attaching to a claude-code session). Flavor-level is too coarse;
+  session-level via the context flag matches the granularity of
+  the decision.
+
+- **Delete the kill-switch for claude-code sessions at the API
+  layer (4xx the directive).** Rejected -- the UI gating keeps the
+  backend surface clean; a claude-code session that does somehow
+  receive a directive can silently ignore it without paying an
+  error-handling tax. UI gates are cheaper and more adaptable.
+
+**Graceful-fail corollary.** f0fa302 shipped alongside a second
+change: `parseBool` in the plugin now has explicit empty-string
+handling so a typo like `FLIGHTDECK_CAPTURE_PROMPTS=ture` falls
+through to the documented default instead of silently flipping. This
+is not a directive-class concern but shares the same "plugin defaults
+must be conservative because the user will not read the env var table"
+posture as D103.
+
+**Code locations.**
+
+- `plugin/hooks/scripts/observe_cli.mjs::collectContext` -- emits
+  `supports_directives: false` on claude-code `session_start`
+  payloads.
+- `dashboard/src/lib/directives.ts::sessionSupportsDirectives` --
+  the primary gate with the pre-flag fallback.
+- `dashboard/src/lib/directives.ts::flavorHasDirectiveCapableSession`
+  -- mixed-flavor helper for the Fleet sidebar's Stop All control.
+- `dashboard/src/lib/models.ts::isClaudeCodeSession` -- the proxy
+  signal readoff (used by the 95be150 fallback).
+- `dashboard/src/components/session/SessionDrawer.tsx` -- the Stop
+  Agent button gate.
+- Fleet sidebar -- `flavorHasDirectiveCapableSession` gates the
+  Stop All rendering.
+
+---
+
+## D110 -- FLIGHTDECK_SERVER URL expects `/ingest` suffix
+
+**Decision (v0.3.0, to revisit in v0.4.0):** `flightdeck_sensor.init()`
+reads `FLIGHTDECK_SERVER` verbatim; the sensor expects the full ingest
+URL (e.g. `http://localhost:4000/ingest`) because it posts directly to
+`{server}/v1/events`. The Claude Code plugin, by contrast, sets
+`FLIGHTDECK_SERVER=http://localhost:4000` (no `/ingest`) because it
+constructs the full path itself. A developer with both tools on one
+machine hits a silent 404 when the playground or any sensor-based
+script picks up the plugin-shaped env var.
+
+**v0.4.0 follow-up (KI20):** normalise inside `init()` -- append
+`/ingest` when missing, or raise a clear `ConfigurationError` asking
+the developer to pick one convention. The `playground/_helpers.py`
+normalisation is a workaround; removing it is the cleanup signal that
+the sensor side is fixed.
+
+---
+
+## D111 -- CrewAI native providers are intercepted
+
+**Decision:** CrewAI 1.14.1's model-string prefix routing in
+`crewai/llm.py:300-393` maps `anthropic/`, `openai/`, `claude/`,
+`azure/`, `gemini/`, `bedrock/` prefixes to native provider classes
+under `crewai/llms/providers/`. The native Anthropic provider
+(`crewai/llms/providers/anthropic/completion.py:192,793`) constructs
+`anthropic.Anthropic()` and calls `.messages.create()`. The native
+OpenAI provider (`crewai/llms/providers/openai/completion.py:262,1614`)
+constructs `openai.OpenAI()` and calls `.chat.completions.create()`.
+Both are exactly the SDK-class descriptors `flightdeck_sensor.patch()`
+hooks, so CrewAI native provider calls are intercepted identically to
+direct SDK usage.
+
+**Verification:** `playground/06_crewai.py` exercises both providers
+against `make dev`. Both land `post_call` events.
+
+**Out of scope:** CrewAI model strings that fall through to litellm
+(`is_litellm=True` kwarg, or prefixes not in
+`SUPPORTED_NATIVE_PROVIDERS`) inherit litellm's per-provider behaviour
+-- openai intercepted, anthropic not (see D112 / KI21).
+
+---
+
+## D112 -- litellm coverage is provider-mechanism dependent
+
+**Decision:** litellm's per-provider completion handlers each pick
+their own HTTP mechanism. Verified against litellm 1.83.10:
+
+- **OpenAI** (`litellm/llms/openai/openai.py:24,386,397`): constructs
+  `openai.OpenAI()` / `AsyncOpenAI()` and calls
+  `.chat.completions.create()`. Intercepted by
+  `flightdeck_sensor.patch(providers=["openai"])`.
+
+- **Anthropic** (`litellm/llms/anthropic/chat/handler.py:31-35,91,149,278,481`):
+  uses `litellm.llms.custom_httpx.http_handler._get_httpx_client` and
+  `get_async_httpx_client` to issue raw `httpx.Client.post()` /
+  `AsyncClient.post()` requests. Does NOT construct
+  `anthropic.Anthropic()`. NOT intercepted by class-level SDK patching.
+
+- **Other providers** (Bedrock, Vertex, Cohere, etc.): not verified;
+  likely follow the same per-provider pattern.
+
+**v0.4.0 follow-up:** close the litellm gap via a sensor-side
+interceptor (httpx patching OR `litellm.success_callback` registration,
+after confirming the callback's supported-API status). Tracked as KI21.
+Addresses litellm-direct users and any framework that routes LLM calls
+through litellm's httpx-based providers.
+
+---
+
+## D113 -- Stable session IDs for the Claude Code plugin
+
+**Decision:** `plugin/hooks/scripts/observe_cli.mjs:getSessionId()`
+derives a stable session id from a deterministic identity tuple so the
+same developer running Claude Code daily in the same repo sees one
+ongoing fleet-view session instead of a fresh row per spawn. The
+recipe is an RFC 4122 version-5 UUID:
+
+```
+uuid5(NAMESPACE_URL, `flightdeck://${user}@${hostname}/${remote}@${branch}`)
+```
+
+where `remote` is the `origin` URL credential-stripped with the same
+regex `collectContext` uses, and `branch` is trimmed. If branch is
+empty (detached HEAD) the marker is `detached-<short_sha>`. If the
+remote probe fails or returns empty the component is `process.cwd()`.
+If git is unavailable the derivation returns null and the caller
+falls through to the next precedence step. `uuid5` is hand-rolled in
+`plugin/hooks/scripts/uuid5.mjs` on `node:crypto` SHA-1 so the plugin
+preserves its zero-npm-dependency posture; the test suite asserts
+against Python `uuid.uuid5` canonical vectors so a byte-masking bug
+in the version or variant bits fails loudly.
+
+**Precedence chain (top wins):**
+
+1. `process.env.CLAUDE_SESSION_ID`
+2. `process.env.ANTHROPIC_CLAUDE_SESSION_ID`
+3. Derived stable UUID (above).
+4. Marker file at
+   `$TMPDIR/flightdeck-plugin/session-<sha256(cwd)[:16]>.txt`. The
+   first hook to run populates it with whichever candidate step 3, 5,
+   or 6 produced; subsequent hooks in the same cwd read it directly.
+   This both makes same-invocation hooks cheap (no repeated git
+   probes) and gives the marker priority over step 5.
+5. `hookEvent.session_id` -- Claude Code's own per-spawn id, demoted
+   from its former step-1 position. Only used when env vars are
+   unset, git is unavailable, and the marker file cannot be written.
+6. `sha256(cwd)[:32]` -- final deterministic fallback when `$TMPDIR`
+   itself is broken.
+
+**Branch-in-identity choice:** Branch is part of session identity,
+not variable context. Switching branches is usually an intentional
+context switch (feature work vs. hotfix) that should produce a
+distinct session row. Treating branch as a facet that *changes*
+inside one session would smear cross-branch activity together, which
+is the opposite of what the dashboard wants to show.
+
+**Caveat:** Mid-invocation branch switches reuse the cached UUID
+until the Claude Code invocation ends. The marker file wins over
+step 3, so once an id is picked at the first hook it sticks even if
+the developer runs `git checkout other-branch` partway through.
+Clearing `$TMPDIR/flightdeck-plugin/session-<...>.txt` (or letting
+`$TMPDIR` turn over on reboot) starts a fresh identity cycle. This
+is acceptable because the fleet-view goal is "one row per day of
+work on one repo", not "one row per momentary branch state".
+
+**transcript_path audit:** `readTurns(transcriptPath)` at
+`observe_cli.mjs:328` takes `transcript_path` as a direct argument
+and reads the file directly. It does not look up the transcript via
+`session_id`. `session_id` and `transcript_path` are independent
+fields on the Claude Code hook payload and are used independently by
+the plugin and by D107's PostToolUse flush. Demoting
+`hookEvent.session_id` from step 1 to step 5 does not affect
+transcript reading; the earlier inline comment at
+`observe_cli.mjs:116-118` claiming the two fields "line up" was
+cosmetic wording, not a structural dependency.
+
+**Scope:**
+
+- Plugin only. The Python sensor's `session_id` kwarg (D094) is the
+  sensor-side mechanism and is not touched here.
+- No schema migration. The existing attach/revive paths (D094, D105,
+  D106) handle the rest: the stable-id row wakes up on the next
+  event, and each spawn adds a `session_attachments` row.
+
+**Out of scope for v0.3.0:**
+
+- Splitting `collectContext` so branch-varying context (current
+  branch, current commit) rides each event while laptop identity
+  (user, hostname, OS) lives on the session -- deferred to v0.4.0.
+- Drawer pagination for sessions that accumulate many attachments
+  over a week of spawns -- tracked as a separate v0.3.0 follow-up.
 
 ---

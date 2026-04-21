@@ -109,6 +109,21 @@ func SessionsListHandler(s store.Querier) http.HandlerFunc {
 			}
 		}
 
+		// Parse agent_type filter (repeatable). Values are unvalidated
+		// against a fixed set -- new agent_type values can land without
+		// a migration; a typo just yields an empty result like every
+		// other text filter. Backs the AGENT TYPE facet on the
+		// Investigate page.
+		var agentTypes []string
+		for _, a := range q["agent_type"] {
+			for _, v := range strings.Split(a, ",") {
+				v = strings.TrimSpace(v)
+				if v != "" {
+					agentTypes = append(agentTypes, v)
+				}
+			}
+		}
+
 		// Parse framework filter (repeatable). Values are the full
 		// name/version strings emitted by the sensor's
 		// FrameworkClassifier (e.g. "langgraph/1.1.6"). We do NOT
@@ -120,6 +135,24 @@ func SessionsListHandler(s store.Querier) http.HandlerFunc {
 				v = strings.TrimSpace(v)
 				if v != "" {
 					frameworks = append(frameworks, v)
+				}
+			}
+		}
+
+		// Parse generic scalar-key context filters. We iterate the
+		// closed whitelist rather than looping over ``q`` so an
+		// unrecognised query param (typo, injection attempt) is
+		// silently ignored instead of forwarded to the store where
+		// the helper would panic. Values are comma-splittable for
+		// "user=a,b" shorthand and repeatable for "user=a&user=b".
+		contextFilters := map[string][]string{}
+		for _, key := range store.AllowedContextFilterKeys {
+			for _, raw := range q[key] {
+				for _, v := range strings.Split(raw, ",") {
+					v = strings.TrimSpace(v)
+					if v != "" {
+						contextFilters[key] = append(contextFilters[key], v)
+					}
 				}
 			}
 		}
@@ -173,17 +206,19 @@ func SessionsListHandler(s store.Querier) http.HandlerFunc {
 		search := q.Get("q")
 
 		params := store.SessionsParams{
-			From:    from,
-			To:      to,
-			Query:   search,
-			States:     states,
-			Flavors:    flavors,
-			Frameworks: frameworks,
-			Model:      q.Get("model"),
-			Sort:    sort,
-			Order:   order,
-			Limit:   limit,
-			Offset:  offset,
+			From:           from,
+			To:             to,
+			Query:          search,
+			States:         states,
+			Flavors:        flavors,
+			AgentTypes:     agentTypes,
+			Frameworks:     frameworks,
+			ContextFilters: contextFilters,
+			Model:          q.Get("model"),
+			Sort:           sort,
+			Order:          order,
+			Limit:          limit,
+			Offset:         offset,
 		}
 
 		result, err := s.GetSessions(r.Context(), params)

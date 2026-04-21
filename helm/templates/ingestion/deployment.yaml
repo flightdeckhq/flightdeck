@@ -1,0 +1,80 @@
+{{- $component := "ingestion" -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "flightdeck.componentName" (dict "root" . "component" $component) }}
+  labels:
+    {{- include "flightdeck.labels" (dict "root" . "component" $component) | nindent 4 }}
+spec:
+  {{- if not .Values.ingestion.hpa.enabled }}
+  replicas: {{ .Values.ingestion.replicas }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "flightdeck.selectorLabels" (dict "root" . "component" $component) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "flightdeck.selectorLabels" (dict "root" . "component" $component) | nindent 8 }}
+      {{- with .Values.ingestion.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- if .Values.serviceAccount.create }}
+      serviceAccountName: {{ include "flightdeck.serviceAccountName" (dict "root" . "component" $component) }}
+      {{- end }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: ingestion
+          image: {{ include "flightdeck.image" (dict "root" . "component" .Values.ingestion) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.ingestion.port }}
+              protocol: TCP
+          env:
+            - name: FLIGHTDECK_PORT
+              value: {{ .Values.ingestion.port | quote }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "flightdeck.configMapName" . }}
+            - secretRef:
+                name: {{ include "flightdeck.secretName" . }}
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.ingestion.resources | nindent 12 }}
+      {{- with .Values.ingestion.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.ingestion.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.ingestion.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

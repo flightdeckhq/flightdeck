@@ -87,10 +87,10 @@ export function Directives() {
               color: "var(--text)",
             }}
           >
-            <SelectValue placeholder="All Flavors" />
+            <SelectValue placeholder="All Agents" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="__all__">All Flavors</SelectItem>
+            <SelectItem value="__all__">All Agents</SelectItem>
             {flavors.map((f) => (
               <SelectItem key={f} value={f}>
                 {f}

@@ -1,4 +1,4 @@
-.PHONY: help build test test-integration test-e2e test-smoke test-smoke-deps lint dev dev-reset down logs release migrate-local-up migrate-local-status
+.PHONY: help build test test-plugin test-integration test-e2e test-smoke lint dev dev-reset down logs release migrate-local-up migrate-local-status
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-12s %s\n", $$1, $$2}'
@@ -14,6 +14,10 @@ test: ## Run all unit tests
 	$(MAKE) -C ingestion test
 	$(MAKE) -C workers test
 	$(MAKE) -C api test
+	$(MAKE) test-plugin
+
+test-plugin: ## Run the Claude Code plugin unit tests (zero-dep, node --test)
+	cd plugin && node --test tests/*.test.mjs
 
 test-integration: ## Run integration tests (requires running stack)
 	$(MAKE) -C docker dev
@@ -23,17 +27,8 @@ test-e2e: ## Run sensor end-to-end tests only (requires running stack + respx)
 	$(MAKE) -C docker dev
 	cd tests/integration && pytest -v test_sensor_e2e.py
 
-test-smoke-deps: tests/smoke/.venv-py312/bin/python ## Install smoke test deps into the dedicated Python 3.12 venv
-	tests/smoke/.venv-py312/bin/pip install -e sensor/
-	tests/smoke/.venv-py312/bin/pip install -r tests/smoke/requirements.txt
-	tests/smoke/.venv-py312/bin/pip install crewai langgraph langgraph-prebuilt
-
-tests/smoke/.venv-py312/bin/python: ## Create Python 3.12 venv for smoke tests (crewai pins tiktoken<0.6 which has no 3.14 wheel)
-	python3.12 -m venv tests/smoke/.venv-py312
-	tests/smoke/.venv-py312/bin/pip install --upgrade pip
-
-test-smoke: test-smoke-deps ## Run smoke tests with real API keys (requires running stack + ANTHROPIC_API_KEY + OPENAI_API_KEY). See tests/smoke/README.md.
-	tests/smoke/.venv-py312/bin/python tests/smoke/smoke_test.py
+test-smoke: ## Run the playground against a live stack (requires ANTHROPIC_API_KEY + OPENAI_API_KEY). See playground/README.md.
+	python playground/run_all.py
 
 test-e2e: ## Run Playwright E2E tests (requires make dev)
 	cd dashboard && npx playwright test

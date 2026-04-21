@@ -3,6 +3,7 @@ import type { Policy, PolicyRequest } from "@/lib/types";
 import { useFleetStore } from "@/store/fleet";
 import { truncateSessionId } from "@/lib/events";
 import { ALL_MODELS as ALL_MODELS_LIST, getProvider } from "@/lib/models";
+import { POLICY_SCOPE_LABELS, type PolicyScope } from "@/lib/policy-scope-labels";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import { Button } from "@/components/ui/button";
 import {
@@ -19,13 +20,9 @@ export interface PolicyEditorProps {
   onCancel: () => void;
 }
 
-type Scope = "org" | "flavor" | "session";
+type Scope = PolicyScope;
 
-const SCOPE_LABELS: Record<Scope, string> = {
-  org: "Organization",
-  flavor: "Flavor",
-  session: "Session",
-};
+const SCOPE_LABELS = POLICY_SCOPE_LABELS;
 
 // Model lists imported from @/lib/models
 
@@ -157,7 +154,7 @@ export function PolicyEditor({ policy, onSave, onCancel }: PolicyEditorProps) {
       {/* Scope value — Flavor */}
       {scope === "flavor" && (
         <div>
-          <label className="mb-1 block text-xs font-medium text-text">Flavor</label>
+          <label className="mb-1 block text-xs font-medium text-text">Agent</label>
           {!customFlavorInput && flavorNames.length > 0 ? (
             <>
               <Select
@@ -172,10 +169,10 @@ export function PolicyEditor({ policy, onSave, onCancel }: PolicyEditorProps) {
                 }}
               >
                 <SelectTrigger className="w-full" data-testid="flavor-dropdown">
-                  <SelectValue placeholder="Select flavor" />
+                  <SelectValue placeholder="Select agent" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="*">* (all flavors)</SelectItem>
+                  <SelectItem value="*">* (all agents)</SelectItem>
                   {flavorNames.map((f) => (
                     <SelectItem key={f} value={f}>{f}</SelectItem>
                   ))}
@@ -190,7 +187,7 @@ export function PolicyEditor({ policy, onSave, onCancel }: PolicyEditorProps) {
                 className={inputClass}
                 value={scopeValue}
                 onChange={(e) => setScopeValue(e.target.value)}
-                placeholder="Enter flavor name"
+                placeholder="Enter agent name"
               />
               {flavorNames.length > 0 && (
                 <button

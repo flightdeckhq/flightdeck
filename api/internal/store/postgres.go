@@ -36,7 +36,14 @@ const NotifyDirectiveRegistered = "directive_registered"
 type Querier interface {
 	GetFleet(ctx context.Context, limit, offset int, agentType string) ([]FlavorSummary, int, error)
 	GetSession(ctx context.Context, sessionID string) (*Session, error)
-	GetSessionEvents(ctx context.Context, sessionID string) ([]Event, error)
+	// GetSessionEvents returns events for a session in chronological
+	// (ASC) order. When limit <= 0 the full history is returned; when
+	// limit > 0 the caller gets at most the N newest events (the query
+	// runs ``ORDER BY occurred_at DESC LIMIT N`` and the result is
+	// re-sorted ASC before returning so the response shape stays
+	// chronological).
+	GetSessionEvents(ctx context.Context, sessionID string, limit int) ([]Event, error)
+	GetEvent(ctx context.Context, eventID string) (*Event, error)
 	GetSessionAttachments(ctx context.Context, sessionID string) ([]time.Time, error)
 	GetEventContent(ctx context.Context, eventID string) (*EventContent, error)
 	GetEffectivePolicy(ctx context.Context, flavor, sessionID string) (*Policy, error)
@@ -97,6 +104,16 @@ type Session struct {
 	// etc. -- see sensor/flightdeck_sensor/core/context.py.
 	Context map[string]any `json:"context,omitempty"`
 
+	// TokenName is the human-readable name of the access_tokens row
+	// that authenticated the session_start event (D095). Nullable:
+	// tok_dev-authenticated sessions and pre-Phase-5 rows carry NULL.
+	// Preserved across token revocation (sessions.token_id clears via
+	// ON DELETE SET NULL but sessions.token_name is a static snapshot
+	// so the dashboard can attribute historical sessions even after
+	// the token row is gone). Mirrors the SessionListItem.TokenName
+	// returned by GetSessions.
+	TokenName *string `json:"token_name"`
+
 	// Active policy thresholds (nullable).
 	// Populated by GetSession via effective policy lookup.
 	// Null if no policy applies at any scope.
@@ -133,19 +150,21 @@ type ContextFacetValue struct {
 // for directive_result events. Empty for events with no extra
 // metadata.
 type Event struct {
-	ID           string         `json:"id"`
-	SessionID    string         `json:"session_id"`
-	Flavor       string         `json:"flavor"`
-	EventType    string         `json:"event_type"`
-	Model        *string        `json:"model,omitempty"`
-	TokensInput  *int           `json:"tokens_input,omitempty"`
-	TokensOutput *int           `json:"tokens_output,omitempty"`
-	TokensTotal  *int           `json:"tokens_total,omitempty"`
-	LatencyMs    *int           `json:"latency_ms,omitempty"`
-	ToolName     *string        `json:"tool_name,omitempty"`
-	HasContent   bool           `json:"has_content"`
-	Payload      map[string]any `json:"payload,omitempty"`
-	OccurredAt   time.Time      `json:"occurred_at"`
+	ID                  string         `json:"id"`
+	SessionID           string         `json:"session_id"`
+	Flavor              string         `json:"flavor"`
+	EventType           string         `json:"event_type"`
+	Model               *string        `json:"model,omitempty"`
+	TokensInput         *int           `json:"tokens_input,omitempty"`
+	TokensOutput        *int           `json:"tokens_output,omitempty"`
+	TokensTotal         *int           `json:"tokens_total,omitempty"`
+	TokensCacheRead     int64          `json:"tokens_cache_read"`     // D100
+	TokensCacheCreation int64          `json:"tokens_cache_creation"` // D100
+	LatencyMs           *int           `json:"latency_ms,omitempty"`
+	ToolName            *string        `json:"tool_name,omitempty"`
+	HasContent          bool           `json:"has_content"`
+	Payload             map[string]any `json:"payload,omitempty"`
+	OccurredAt          time.Time      `json:"occurred_at"`
 }
 
 // FlavorSummary groups sessions by flavor for the fleet view.
@@ -184,7 +203,7 @@ func (s *Store) GetFleet(ctx context.Context, limit, offset int, agentType strin
 	rows, err := s.pool.Query(ctx, `
 		SELECT session_id::text, flavor, agent_type, host, framework, model,
 		       state, started_at, last_seen_at, ended_at, tokens_used, token_limit,
-		       context
+		       context, token_name
 		FROM sessions
 		WHERE state != 'lost'`+agentFilter+`
 		ORDER BY flavor, started_at DESC
@@ -206,7 +225,7 @@ func (s *Store) GetFleet(ctx context.Context, limit, offset int, agentType strin
 			&sess.Host, &sess.Framework, &sess.Model,
 			&sess.State, &sess.StartedAt, &sess.LastSeenAt,
 			&sess.EndedAt, &sess.TokensUsed, &sess.TokenLimit,
-			&contextRaw,
+			&contextRaw, &sess.TokenName,
 		); err != nil {
 			return nil, 0, fmt.Errorf("scan session: %w", err)
 		}
@@ -251,7 +270,7 @@ func (s *Store) GetSession(ctx context.Context, sessionID string) (*Session, err
 		SELECT
 			s.session_id::text, s.flavor, s.agent_type, s.host, s.framework, s.model,
 			s.state, s.started_at, s.last_seen_at, s.ended_at, s.tokens_used, s.token_limit,
-			s.context,
+			s.context, s.token_name,
 			COALESCE(ps.token_limit, pf.token_limit, po.token_limit) AS policy_token_limit,
 			COALESCE(ps.warn_at_pct, pf.warn_at_pct, po.warn_at_pct) AS warn_at_pct,
 			COALESCE(ps.degrade_at_pct, pf.degrade_at_pct, po.degrade_at_pct) AS degrade_at_pct,
@@ -276,7 +295,7 @@ func (s *Store) GetSession(ctx context.Context, sessionID string) (*Session, err
 		&sess.Host, &sess.Framework, &sess.Model,
 		&sess.State, &sess.StartedAt, &sess.LastSeenAt,
 		&sess.EndedAt, &sess.TokensUsed, &sess.TokenLimit,
-		&contextRaw,
+		&contextRaw, &sess.TokenName,
 		&sess.PolicyTokenLimit, &sess.WarnAtPct, &sess.DegradeAtPct,
 		&sess.DegradeTo, &sess.BlockAtPct,
 		&sess.CaptureEnabled,
@@ -353,22 +372,48 @@ func (s *Store) GetEffectivePolicy(ctx context.Context, flavor, sessionID string
 	return nil, nil
 }
 
-// GetSessionEvents returns all events for a session in chronological order.
+// GetSessionEvents returns events for a session in chronological (ASC)
+// order. When limit <= 0 the full history is returned (legacy behaviour
+// used by Fleet-side callers that still expect the whole timeline).
+// When limit > 0 the query runs ``ORDER BY occurred_at DESC LIMIT N``
+// so the composite ``events(session_id, occurred_at)`` index is used
+// optimally for the newest-first slice; the slice is reversed in-place
+// before returning so the response shape the handler documents
+// (chronological ASC) holds regardless of whether a limit was applied.
 //
 // The payload JSONB column is decoded into Event.Payload so callers
 // (the dashboard) can read directive_name / directive_status / result
 // without a separate /v1/events/:id/content fetch. NULL or empty
 // payload columns yield a nil map on the Event struct, which omits
 // the field from the JSON response.
-func (s *Store) GetSessionEvents(ctx context.Context, sessionID string) ([]Event, error) {
-	rows, err := s.pool.Query(ctx, `
-		SELECT id::text, session_id::text, flavor, event_type, model,
-		       tokens_input, tokens_output, tokens_total, latency_ms,
-		       tool_name, has_content, payload, occurred_at
-		FROM events
-		WHERE session_id = $1::uuid
-		ORDER BY occurred_at ASC
-	`, sessionID)
+func (s *Store) GetSessionEvents(ctx context.Context, sessionID string, limit int) ([]Event, error) {
+	var sql string
+	args := []any{sessionID}
+	if limit > 0 {
+		sql = `
+			SELECT id::text, session_id::text, flavor, event_type, model,
+			       tokens_input, tokens_output, tokens_total,
+			       tokens_cache_read, tokens_cache_creation,
+			       latency_ms, tool_name, has_content, payload, occurred_at
+			FROM events
+			WHERE session_id = $1::uuid
+			ORDER BY occurred_at DESC
+			LIMIT $2
+		`
+		args = append(args, limit)
+	} else {
+		sql = `
+			SELECT id::text, session_id::text, flavor, event_type, model,
+			       tokens_input, tokens_output, tokens_total,
+			       tokens_cache_read, tokens_cache_creation,
+			       latency_ms, tool_name, has_content, payload, occurred_at
+			FROM events
+			WHERE session_id = $1::uuid
+			ORDER BY occurred_at ASC
+		`
+	}
+
+	rows, err := s.pool.Query(ctx, sql, args...)
 	if err != nil {
 		return nil, fmt.Errorf("get events for %s: %w", sessionID, err)
 	}
@@ -380,8 +425,9 @@ func (s *Store) GetSessionEvents(ctx context.Context, sessionID string) ([]Event
 		var payloadRaw []byte
 		if err := rows.Scan(
 			&e.ID, &e.SessionID, &e.Flavor, &e.EventType, &e.Model,
-			&e.TokensInput, &e.TokensOutput, &e.TokensTotal, &e.LatencyMs,
-			&e.ToolName, &e.HasContent, &payloadRaw, &e.OccurredAt,
+			&e.TokensInput, &e.TokensOutput, &e.TokensTotal,
+			&e.TokensCacheRead, &e.TokensCacheCreation,
+			&e.LatencyMs, &e.ToolName, &e.HasContent, &payloadRaw, &e.OccurredAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan event: %w", err)
 		}
@@ -396,7 +442,54 @@ func (s *Store) GetSessionEvents(ctx context.Context, sessionID string) ([]Event
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("session events scan: %w", err)
 	}
+
+	if limit > 0 {
+		// Reverse DESC → ASC so downstream consumers see events in
+		// chronological order regardless of the query direction.
+		for i, j := 0, len(events)-1; i < j; i, j = i+1, j-1 {
+			events[i], events[j] = events[j], events[i]
+		}
+	}
 	return events, nil
+}
+
+// GetEvent returns a single event by primary key. Used by the
+// WebSocket hub to fetch exactly the event named in a NOTIFY payload,
+// avoiding the race where re-querying GetSessionEvents and taking the
+// tail would return a later event when paired writes commit close
+// together. Returns (nil, nil) when the event does not exist -- this
+// is possible when the hub runs the query before the insert
+// transaction has committed (uncommon but valid). Caller handles the
+// nil return by skipping the broadcast.
+func (s *Store) GetEvent(ctx context.Context, eventID string) (*Event, error) {
+	var e Event
+	var payloadRaw []byte
+	err := s.pool.QueryRow(ctx, `
+		SELECT id::text, session_id::text, flavor, event_type, model,
+		       tokens_input, tokens_output, tokens_total,
+		       tokens_cache_read, tokens_cache_creation,
+		       latency_ms, tool_name, has_content, payload, occurred_at
+		FROM events
+		WHERE id = $1::uuid
+	`, eventID).Scan(
+		&e.ID, &e.SessionID, &e.Flavor, &e.EventType, &e.Model,
+		&e.TokensInput, &e.TokensOutput, &e.TokensTotal,
+		&e.TokensCacheRead, &e.TokensCacheCreation,
+		&e.LatencyMs, &e.ToolName, &e.HasContent, &payloadRaw, &e.OccurredAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get event %s: %w", eventID, err)
+	}
+	if len(payloadRaw) > 0 {
+		var v map[string]any
+		if jsonErr := json.Unmarshal(payloadRaw, &v); jsonErr == nil && len(v) > 0 {
+			e.Payload = v
+		}
+	}
+	return &e, nil
 }
 
 // GetSessionAttachments returns every recorded attachment timestamp

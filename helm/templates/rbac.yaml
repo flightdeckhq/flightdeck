@@ -1,0 +1,49 @@
+{{- /*
+ServiceAccount + empty Role + RoleBinding per component. Roles are emitted
+with empty rules so the chart complies with the ARCHITECTURE.md Phase 5
+deliverable list while granting no privileges by default. Operators who
+need to grant permissions can extend via a post-install kustomize overlay.
+*/ -}}
+{{- if .Values.serviceAccount.create -}}
+{{- $components := list "ingestion" "workers" "api" "dashboard" -}}
+{{- if .Values.nats.enabled -}}
+{{- $components = append $components "nats" -}}
+{{- end -}}
+{{- if not .Values.postgres.externalUrl -}}
+{{- $components = append $components "postgres" -}}
+{{- end -}}
+{{- range $components }}
+{{- $component := . }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "flightdeck.serviceAccountName" (dict "root" $ "component" $component) }}
+  labels:
+    {{- include "flightdeck.labels" (dict "root" $ "component" $component) | nindent 4 }}
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "flightdeck.serviceAccountName" (dict "root" $ "component" $component) }}
+  labels:
+    {{- include "flightdeck.labels" (dict "root" $ "component" $component) | nindent 4 }}
+rules: []
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "flightdeck.serviceAccountName" (dict "root" $ "component" $component) }}
+  labels:
+    {{- include "flightdeck.labels" (dict "root" $ "component" $component) | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "flightdeck.serviceAccountName" (dict "root" $ "component" $component) }}
+    namespace: {{ $.Release.Namespace }}
+roleRef:
+  kind: Role
+  name: {{ include "flightdeck.serviceAccountName" (dict "root" $ "component" $component) }}
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}
+{{- end }}

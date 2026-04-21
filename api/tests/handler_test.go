@@ -28,6 +28,14 @@ type mockStore struct {
 	contextFacets    map[string][]store.ContextFacetValue
 	contextFacetsErr error
 	tokens           []store.AccessTokenRow
+
+	// Last EventsParams / session-events-limit observed by the mock.
+	// Used by drawer-pagination tests to assert that handler-layer
+	// parsing threads ``before``/``order`` into the store call and
+	// ``events_limit`` into GetSessionEvents without relying on the
+	// mock to simulate time-window filtering.
+	lastEventsParams       *store.EventsParams
+	lastSessionEventsLimit int
 }
 
 func (m *mockStore) GetContextFacets(_ context.Context) (map[string][]store.ContextFacetValue, error) {
@@ -114,10 +122,35 @@ func (m *mockStore) GetSession(_ context.Context, id string) (*store.Session, er
 	return sess, nil
 }
 
-func (m *mockStore) GetSessionEvents(_ context.Context, _ string) ([]store.Event, error) {
-	return []store.Event{
+func (m *mockStore) GetSessionEvents(_ context.Context, _ string, limit int) ([]store.Event, error) {
+	m.lastSessionEventsLimit = limit
+	events := []store.Event{
 		{ID: "e1", EventType: "session_start", OccurredAt: time.Now().Add(-time.Minute)},
 		{ID: "e2", EventType: "post_call", OccurredAt: time.Now()},
+	}
+	// Mirror production semantics: limit <= 0 returns everything;
+	// limit > 0 returns the N newest (here the tail) still in ASC
+	// order so assertions on ordering match the real store.
+	if limit > 0 && limit < len(events) {
+		events = events[len(events)-limit:]
+	}
+	return events, nil
+}
+
+func (m *mockStore) GetEvent(_ context.Context, eventID string) (*store.Event, error) {
+	// Synthesize a minimal event keyed on the requested id so hub
+	// tests can assert that GetEvent-by-PK is actually called. Mirror
+	// the shape returned by the real Store.GetEvent: (nil, nil) means
+	// "not found" (caller skips broadcast per D-hub-race defensive
+	// path), otherwise a populated Event.
+	if eventID == "" || eventID == "missing" {
+		return nil, nil
+	}
+	return &store.Event{
+		ID:         eventID,
+		SessionID:  "sess-001",
+		EventType:  "post_call",
+		OccurredAt: time.Now(),
 	}, nil
 }
 
@@ -361,6 +394,8 @@ func (m *mockStore) GetSessions(_ context.Context, params store.SessionsParams) 
 }
 
 func (m *mockStore) GetEvents(_ context.Context, params store.EventsParams) (*store.EventsResponse, error) {
+	paramsCopy := params
+	m.lastEventsParams = &paramsCopy
 	events := []store.Event{
 		{ID: "e1", SessionID: "s1", Flavor: "test-agent", EventType: "post_call", HasContent: false, OccurredAt: time.Now()},
 		{ID: "e2", SessionID: "s1", Flavor: "test-agent", EventType: "tool_call", HasContent: false, OccurredAt: time.Now()},
@@ -733,6 +768,107 @@ func TestSessionsHandler_UnknownID_Returns404(t *testing.T) {
 
 	if w.Code != http.StatusNotFound {
 		t.Errorf("expected 404, got %d", w.Code)
+	}
+}
+
+// D113 drawer pagination: without events_limit the handler must pass
+// limit=0 to the store so the full session history is returned.
+// Guards against a regression where a future default silently caps
+// the payload and breaks non-drawer callers.
+func TestSessionsHandler_NoEventsLimit_PassesZeroToStore(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.SessionsHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/sessions/sess-001", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if s.lastSessionEventsLimit != 0 {
+		t.Errorf("expected store to receive limit=0 when events_limit is absent, got %d", s.lastSessionEventsLimit)
+	}
+}
+
+// events_limit is threaded through to the store and produces a
+// payload still sorted ASC so the drawer's "reverse for newest-first
+// display" pattern stays correct.
+func TestSessionsHandler_EventsLimit_PassesThroughAndSortsAsc(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.SessionsHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/sessions/sess-001?events_limit=1", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if s.lastSessionEventsLimit != 1 {
+		t.Errorf("expected store to receive limit=1, got %d", s.lastSessionEventsLimit)
+	}
+
+	var resp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	events, ok := resp["events"].([]any)
+	if !ok {
+		t.Fatalf("expected events array, got %T", resp["events"])
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	// Mock keeps the tail (newest) when limit=1 and emits it in ASC
+	// order. Verify the handler didn't reverse or otherwise reshape.
+	first := events[0].(map[string]any)
+	if first["event_type"] != "post_call" {
+		t.Errorf("expected newest event (post_call), got %v", first["event_type"])
+	}
+}
+
+func TestSessionsHandler_EventsLimit_Zero_Returns400(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.SessionsHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/sessions/sess-001?events_limit=0", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for events_limit=0, got %d", w.Code)
+	}
+}
+
+func TestSessionsHandler_EventsLimit_Negative_Returns400(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.SessionsHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/sessions/sess-001?events_limit=-5", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for negative events_limit, got %d", w.Code)
+	}
+}
+
+func TestSessionsHandler_EventsLimit_ExceedsMax_Returns400(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.SessionsHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/sessions/sess-001?events_limit=99999", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for events_limit>1000, got %d", w.Code)
+	}
+}
+
+func TestSessionsHandler_EventsLimit_NonNumeric_Returns400(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.SessionsHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/sessions/sess-001?events_limit=abc", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for non-numeric events_limit, got %d", w.Code)
 	}
 }
 
@@ -1858,6 +1994,89 @@ func TestGetEventsHasMoreFormula(t *testing.T) {
 				t.Errorf("has_more: expected %v, got %v", tc.hasMore, got)
 			}
 		})
+	}
+}
+
+// D113 drawer pagination: ``before`` keyset cursor threads from the
+// query string into EventsParams.Before as an RFC3339-parsed time.
+func TestGetEvents_Before_ThreadsToStore(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.EventsListHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/events?from=2026-01-01T00:00:00Z&before=2026-02-01T00:00:00Z", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if s.lastEventsParams == nil {
+		t.Fatal("mock did not receive params")
+	}
+	if s.lastEventsParams.Before.IsZero() {
+		t.Fatal("expected Before to be parsed, got zero value")
+	}
+	if s.lastEventsParams.Before.Format(time.RFC3339) != "2026-02-01T00:00:00Z" {
+		t.Errorf("expected Before=2026-02-01T00:00:00Z, got %v", s.lastEventsParams.Before)
+	}
+}
+
+func TestGetEvents_InvalidBefore_Returns400(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.EventsListHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/events?from=2026-01-01T00:00:00Z&before=not-a-date", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for invalid before, got %d", w.Code)
+	}
+}
+
+func TestGetEvents_OrderDesc_ThreadsToStore(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.EventsListHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/events?from=2026-01-01T00:00:00Z&order=desc", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if s.lastEventsParams == nil {
+		t.Fatal("mock did not receive params")
+	}
+	if s.lastEventsParams.Order != "desc" {
+		t.Errorf("expected Order=desc, got %q", s.lastEventsParams.Order)
+	}
+}
+
+func TestGetEvents_OrderDefault_IsEmptyString(t *testing.T) {
+	// Default order is expressed as the empty string in EventsParams;
+	// the store falls back to ASC when Order is not exactly "desc"
+	// (case-insensitive). Guards against a handler regression that
+	// would pre-populate Order with "asc" and inadvertently close the
+	// door on case-insensitive fallbacks in the store.
+	s := &mockStore{}
+	handler := handlers.EventsListHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/events?from=2026-01-01T00:00:00Z", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	if s.lastEventsParams == nil {
+		t.Fatal("mock did not receive params")
+	}
+	if s.lastEventsParams.Order != "" {
+		t.Errorf("expected empty Order when unset, got %q", s.lastEventsParams.Order)
+	}
+}
+
+func TestGetEvents_InvalidOrder_Returns400(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.EventsListHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/events?from=2026-01-01T00:00:00Z&order=sideways", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for invalid order, got %d", w.Code)
 	}
 }
 

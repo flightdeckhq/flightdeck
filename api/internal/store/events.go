@@ -11,12 +11,21 @@ import (
 )
 
 // EventsParams defines filters for bulk event queries.
+//
+// Before and Order power the drawer's "Show older events" pagination.
+// Before is a keyset cursor: when non-zero, only rows with
+// occurred_at < Before are returned. Order selects the sort direction
+// ("asc" or "desc"); any other value (including empty) falls back to
+// ASC for backwards compatibility with existing callers that rely on
+// chronological order.
 type EventsParams struct {
 	From      time.Time
 	To        time.Time
 	Flavor    string
 	EventType string
 	SessionID string
+	Before    time.Time
+	Order     string
 	Limit     int
 	Offset    int
 }
@@ -69,6 +78,18 @@ func (s *Store) GetEvents(ctx context.Context, params EventsParams) (*EventsResp
 		args = append(args, params.SessionID)
 		argIdx++
 	}
+	if !params.Before.IsZero() {
+		conditions = append(conditions, fmt.Sprintf("occurred_at < $%d", argIdx))
+		args = append(args, params.Before)
+		argIdx++
+	}
+
+	// Default ASC preserves pre-pagination callers (bulk history loader,
+	// Fleet historical events). Only ``desc`` flips the order.
+	orderDir := "ASC"
+	if strings.EqualFold(params.Order, "desc") {
+		orderDir = "DESC"
+	}
 
 	where := "WHERE " + strings.Join(conditions, " AND ")
 
@@ -91,13 +112,14 @@ func (s *Store) GetEvents(ctx context.Context, params EventsParams) (*EventsResp
 	// Fetch page
 	querySQL := fmt.Sprintf(`
 		SELECT id::text, session_id::text, flavor, event_type, model,
-		       tokens_input, tokens_output, tokens_total, latency_ms,
-		       tool_name, has_content, payload, occurred_at
+		       tokens_input, tokens_output, tokens_total,
+		       tokens_cache_read, tokens_cache_creation,
+		       latency_ms, tool_name, has_content, payload, occurred_at
 		FROM events
 		%s
-		ORDER BY occurred_at ASC
+		ORDER BY occurred_at %s
 		LIMIT $%d OFFSET $%d
-	`, where, argIdx, argIdx+1)
+	`, where, orderDir, argIdx, argIdx+1)
 	args = append(args, params.Limit, params.Offset)
 
 	rows, err := tx.Query(ctx, querySQL, args...)
@@ -112,8 +134,9 @@ func (s *Store) GetEvents(ctx context.Context, params EventsParams) (*EventsResp
 		var payloadRaw []byte
 		if err := rows.Scan(
 			&e.ID, &e.SessionID, &e.Flavor, &e.EventType, &e.Model,
-			&e.TokensInput, &e.TokensOutput, &e.TokensTotal, &e.LatencyMs,
-			&e.ToolName, &e.HasContent, &payloadRaw, &e.OccurredAt,
+			&e.TokensInput, &e.TokensOutput, &e.TokensTotal,
+			&e.TokensCacheRead, &e.TokensCacheCreation,
+			&e.LatencyMs, &e.ToolName, &e.HasContent, &payloadRaw, &e.OccurredAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan event: %w", err)
 		}

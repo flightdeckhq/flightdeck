@@ -125,7 +125,7 @@ describe("LiveFeed", () => {
     render(<LiveFeed events={mockFeedEvents} onEventClick={() => {}} />);
     const headers = screen.getByTestId("feed-column-headers");
     expect(headers).toBeInTheDocument();
-    expect(headers.textContent).toContain("Flavor");
+    expect(headers.textContent).toContain("Agent");
     expect(headers.textContent).toContain("Session");
     expect(headers.textContent).toContain("Type");
     expect(headers.textContent).toContain("Detail");

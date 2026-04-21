@@ -53,9 +53,9 @@ describe("PolicyTable", () => {
       />
     );
 
-    expect(screen.getByText("org")).toBeInTheDocument();
-    expect(screen.getByText("flavor")).toBeInTheDocument();
-    expect(screen.getByText("session")).toBeInTheDocument();
+    expect(screen.getByText("Organization")).toBeInTheDocument();
+    expect(screen.getByText("Agent")).toBeInTheDocument();
+    expect(screen.getByText("Session")).toBeInTheDocument();
     expect(screen.getByText("research-agent")).toBeInTheDocument();
     expect(screen.getByText("1,000,000")).toBeInTheDocument();
   });

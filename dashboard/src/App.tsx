@@ -1,5 +1,11 @@
 import { useState, useCallback } from "react";
-import { BrowserRouter, Routes, Route, NavLink } from "react-router-dom";
+import {
+  BrowserRouter,
+  Routes,
+  Route,
+  NavLink,
+  useNavigate,
+} from "react-router-dom";
 import { Search, Settings as SettingsIcon, Sun, Moon } from "lucide-react";
 import { Fleet } from "@/pages/Fleet";
 import { Policies } from "@/pages/Policies";
@@ -8,6 +14,11 @@ import { Analytics } from "@/pages/Analytics";
 import { Investigate } from "@/pages/Investigate";
 import { Settings } from "@/pages/Settings";
 import { CommandPalette } from "@/components/search/CommandPalette";
+import type {
+  SearchResultAgent,
+  SearchResultEvent,
+  SearchResultSession,
+} from "@/lib/types";
 import { useTheme } from "@/hooks/useTheme";
 
 function Nav({ onSearchClick }: { onSearchClick: () => void }) {
@@ -102,28 +113,88 @@ function Nav({ onSearchClick }: { onSearchClick: () => void }) {
   );
 }
 
-export default function App() {
+/**
+ * Routing helper for the global search modal. Agent clicks navigate
+ * to Investigate with the flavor pre-filtered; session and event
+ * clicks navigate to Investigate with the ``session`` URL param set,
+ * which Investigate's drawer picks up via useEffect. Event clicks
+ * target the parent session drawer (per-event deep-linking with
+ * ``directEventDetail`` is a separate follow-up).
+ *
+ * The URL param name for flavor is the singular ``flavor=`` -- the
+ * Investigate parseUrlState reads via ``sp.getAll("flavor")``. The
+ * new ``session=`` param is defined in the same file.
+ */
+export function buildSearchResultHref(
+  type: "agent" | "session" | "event",
+  item: SearchResultAgent | SearchResultSession | SearchResultEvent,
+): string {
+  if (type === "agent") {
+    return `/investigate?flavor=${encodeURIComponent(
+      (item as SearchResultAgent).flavor,
+    )}`;
+  }
+  if (type === "session") {
+    return `/investigate?session=${encodeURIComponent(
+      (item as SearchResultSession).session_id,
+    )}`;
+  }
+  // event -- route to the parent session's drawer.
+  return `/investigate?session=${encodeURIComponent(
+    (item as SearchResultEvent).session_id,
+  )}`;
+}
+
+/**
+ * Host component for the Cmd+K search modal + its click routing.
+ * Lives inside BrowserRouter so ``useNavigate`` is available; the
+ * modal itself renders here so App.tsx stays a single-level wrapper.
+ */
+function CommandPaletteHost() {
   const [searchOpen, setSearchOpen] = useState(false);
+  const navigate = useNavigate();
 
   const handleSearchClick = useCallback(() => {
     setSearchOpen(true);
   }, []);
 
+  const handleSelectResult = useCallback(
+    (
+      type: "agent" | "session" | "event",
+      item: SearchResultAgent | SearchResultSession | SearchResultEvent,
+    ) => {
+      navigate(buildSearchResultHref(type, item));
+    },
+    [navigate],
+  );
+
+  return (
+    <>
+      <Nav onSearchClick={handleSearchClick} />
+      <div className="flex-1 overflow-hidden">
+        <Routes>
+          <Route path="/" element={<Fleet />} />
+          <Route path="/investigate" element={<Investigate />} />
+          <Route path="/policies" element={<Policies />} />
+          <Route path="/directives" element={<Directives />} />
+          <Route path="/analytics" element={<Analytics />} />
+          <Route path="/settings" element={<Settings />} />
+        </Routes>
+      </div>
+      <CommandPalette
+        open={searchOpen}
+        onOpenChange={setSearchOpen}
+        onSelectResult={handleSelectResult}
+      />
+    </>
+  );
+}
+
+export default function App() {
   return (
     <BrowserRouter>
       <div className="flex h-screen flex-col">
-        <Nav onSearchClick={handleSearchClick} />
-        <div className="flex-1 overflow-hidden">
-          <Routes>
-            <Route path="/" element={<Fleet />} />
-            <Route path="/investigate" element={<Investigate />} />
-            <Route path="/policies" element={<Policies />} />
-            <Route path="/directives" element={<Directives />} />
-            <Route path="/analytics" element={<Analytics />} />
-            <Route path="/settings" element={<Settings />} />
-          </Routes>
-        </div>
-        <CommandPalette open={searchOpen} onOpenChange={setSearchOpen} />
+        <CommandPaletteHost />
       </div>
     </BrowserRouter>
   );

@@ -78,6 +78,27 @@ export const EVENT_CIRCLE_SIZE = 22;
 /** LocalStorage key for live feed column widths. */
 export const FEED_COL_WIDTHS_KEY = "flightdeck-feed-col-widths";
 
+/**
+ * Fleet left sidebar resize constants. The sidebar is draggable on
+ * its right edge, clamped to [MIN, MAX] on both init and drag, and
+ * defaults to DEFAULT_WIDTH when localStorage is empty or corrupt.
+ *
+ * PILL_HIDE_MIN_WIDTH is a defensive floor for the CODING AGENT /
+ * DEV pills in each FlavorItem. The primary narrow-width strategy
+ * is flex-shrink + text-overflow:ellipsis on the pill itself so the
+ * agent name stays fully rendered and the pill truncates character-
+ * by-character as the sidebar narrows. The hard floor kicks in only
+ * at widths so narrow even "C..." would be noise. 150 is below the
+ * sidebar MIN (180) so in normal operation the gate is always true
+ * and pills render with ellipsis; the constant documents intent and
+ * guards against future sidebar MIN lowering.
+ */
+export const FLEET_SIDEBAR_MIN_WIDTH = 180;
+export const FLEET_SIDEBAR_MAX_WIDTH = 600;
+export const FLEET_SIDEBAR_DEFAULT_WIDTH = 240;
+export const FLEET_SIDEBAR_WIDTH_KEY = "flightdeck.fleet.sidebarWidth";
+export const FLEET_PILL_HIDE_MIN_WIDTH = 150;
+
 /** Default live feed column widths in pixels. */
 export const FEED_COL_DEFAULTS = {
   flavor: 120,

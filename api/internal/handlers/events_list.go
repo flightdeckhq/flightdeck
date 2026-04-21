@@ -17,7 +17,7 @@ const (
 // EventsListHandler handles GET /v1/events.
 //
 // @Summary      List events with filters
-// @Description  Returns events matching time range, flavor, event type, and session filters with pagination.
+// @Description  Returns events matching time range, flavor, event type, and session filters with pagination. Supports optional ``before`` keyset cursor and ``order`` direction so the session drawer can paginate backwards in time when loading older events for long-running stable sessions.
 // @Tags         events
 // @Produce      json
 // @Param        from        query     string  true   "Start time (ISO 8601)"
@@ -25,6 +25,8 @@ const (
 // @Param        flavor      query     string  false  "Filter by flavor"
 // @Param        event_type  query     string  false  "Filter by event type"
 // @Param        session_id  query     string  false  "Filter by session ID"
+// @Param        before      query     string  false  "Keyset cursor (ISO 8601). When set, only rows with occurred_at < before are returned. Pair with order=desc for newest-first drawer pagination."
+// @Param        order       query     string  false  "Sort order: asc (default) or desc"
 // @Param        limit       query     int     false  "Max results (default 500, max 2000)"
 // @Param        offset      query     int     false  "Offset for pagination (default 0)"
 // @Success      200  {object}  store.EventsResponse
@@ -89,12 +91,34 @@ func EventsListHandler(s store.Querier) http.HandlerFunc {
 			offset = parsed
 		}
 
+		// Parse optional ``before`` keyset cursor. Same RFC3339 shape
+		// as from/to so the handler stays internally consistent.
+		var before time.Time
+		if beforeStr := q.Get("before"); beforeStr != "" {
+			parsed, err := time.Parse(time.RFC3339, beforeStr)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, "before must be ISO 8601 format")
+				return
+			}
+			before = parsed
+		}
+
+		// Parse optional ``order`` direction. Default ASC preserves the
+		// pre-pagination shape for existing callers.
+		order := q.Get("order")
+		if order != "" && order != "asc" && order != "desc" {
+			writeError(w, http.StatusBadRequest, "order must be asc or desc")
+			return
+		}
+
 		params := store.EventsParams{
 			From:      from,
 			To:        to,
 			Flavor:    q.Get("flavor"),
 			EventType: q.Get("event_type"),
 			SessionID: q.Get("session_id"),
+			Before:    before,
+			Order:     order,
 			Limit:     limit,
 			Offset:    offset,
 		}

@@ -106,11 +106,15 @@
     Do not create separate endpoints per chart.
 
 25. **Available dimensions are exactly:** `flavor`, `model`, `framework`, `host`,
-    `agent_type`, `team`. No other values. Do not add dimensions without updating
-    ARCHITECTURE.md first.
+    `agent_type`, `team`, `provider`. No other values. Do not add dimensions without
+    updating ARCHITECTURE.md first. `provider` is derived at query time via SQL
+    CASE over `model` (see DECISIONS.md D098).
 
 26. **Available metrics are exactly:** `tokens`, `sessions`, `latency_avg`,
-    `policy_events`. Same rule applies.
+    `latency_p50`, `latency_p95`, `policy_events`, `estimated_cost`. Same rule
+    applies. `estimated_cost` uses the static pricing table in
+    `api/internal/store/pricing.go` (D099); update the table when provider list
+    prices change.
 
 ---
 
@@ -291,9 +295,92 @@
 
 Do not implement without explicit Supervisor instruction:
 
-- Dollar cost conversion (v2)
 - Notification infrastructure: Slack, email, PagerDuty (v2)
 - TimescaleDB migration (v2 -- analytics page works on plain Postgres)
 - Proxy or gateway pattern for LLM traffic interception
 - MCP server
 - Multi-tenant SaaS (self-hosted only in v1)
+
+---
+
+## Git Discipline
+
+These rules exist because a rebase operation earlier orphaned 27 commits
+of real work and nearly lost the Analytics v2 feature. The reflog saved
+us. The rules below make that class of mistake harder.
+
+### No destructive operations without explicit Supervisor approval
+
+The following are DESTRUCTIVE -- they rewrite history, drop commits, or
+make remote state unrecoverable from the branch. Never run any of these
+without the Supervisor approving the exact command in the chat:
+
+- `git rebase` (interactive or `--onto`)
+- `git reset --hard`
+- `git push --force`
+- `git push --force-with-lease`
+- `git push -f`
+- `git branch -D` (force delete)
+- `git checkout -- <file>` (when it would discard uncommitted work)
+- `git clean -fd`
+- `git filter-branch`
+- `git commit --amend` (on a commit that has already been pushed)
+- Any git operation involving `--onto`, `--orphan`, or reflog manipulation
+
+If any of these feels necessary, stop and write a plan describing:
+
+- What you intend to run (exact command)
+- What state you expect before and after
+- How the Supervisor can verify the result is what was intended
+- What the rollback path is if it goes wrong
+
+The Supervisor must explicitly respond with `go` before execution.
+
+### Default safe operations
+
+For normal work, stick to:
+
+- `git add`, `git commit`
+- `git push` (fast-forward only)
+- `git pull --ff-only`
+- `git fetch` + `git merge --ff-only`
+- `git merge` (only when explicitly asked)
+- `git stash` / `git stash pop`
+
+### Syncing with main
+
+When main moves forward and the feature branch needs updates:
+
+1. `git fetch origin`
+2. `git merge --ff-only origin/main` (if possible)
+3. If not fast-forwardable, report the situation to the Supervisor with
+   `git log --oneline origin/main feat/<branch> --not --graph` and ask
+   before merging, rebasing, or resolving.
+
+Never silently rebase a feature branch onto main. Squash merges from PRs
+create non-linear history that rebase does not handle cleanly -- the
+rebase earlier in this project kept only one commit and dropped 27.
+
+### When something goes wrong
+
+1. Do not panic-fix with another destructive operation.
+2. `git reflog` is your friend. Every HEAD movement for the last 30+
+   days is recoverable from the reflog.
+3. `git fsck --lost-found` finds dangling commits not reachable from any
+   ref.
+4. Orphaned commits stay in the object store for at least 30 days
+   (default `gc.pruneExpire`) before `git gc` removes them. Move fast
+   but don't panic.
+
+### PR and merge workflow
+
+When a PR is squash-merged to main, the feature branch's local history
+diverges from main because the 20 commits on the branch become 1 commit
+on main. Do NOT try to "clean this up" with rebase. Either:
+
+- Delete the feature branch and start a new one from updated main for
+  the next piece of work
+- OR keep working on the feature branch, treating it as
+  divergent-but-valuable, and merge main in periodically with
+  `git merge --ff-only origin/main` (or a non-ff merge if ff is
+  impossible, with Supervisor approval)

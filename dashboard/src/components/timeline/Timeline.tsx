@@ -357,6 +357,41 @@ export function Timeline({
           })}
         </div>
 
+        {/* Full-height drag handle for resizing the left panel. Lives
+            here, as a sibling of the grid overlay, rather than inside
+            the 28-px sticky time-axis spacer above -- that placement
+            clipped the grab area to a thin strip next to the top
+            pills, which was too small to be discoverable or reliable.
+            Positioned at `left: leftPanelWidth - 3` so the 6-px-wide
+            handle straddles the label column's right border. zIndex
+            10 sits above the sticky time axis (z 4) and the grid
+            overlay (z 1) so the user can still grab it while hovering
+            a pill or a grid line. */}
+        <div
+          data-testid="left-panel-resize-handle"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize left panel"
+          style={{
+            position: "absolute",
+            top: 0,
+            bottom: 0,
+            left: leftPanelWidth - 3,
+            width: 6,
+            cursor: "col-resize",
+            zIndex: 10,
+            background: "transparent",
+            transition: "background 0.1s",
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.background = "var(--accent)";
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.background = "transparent";
+          }}
+          onMouseDown={handleResizeStart}
+        />
+
         {/* Shared time axis. Sticky on the vertical axis so it stays
             pinned at the top of the right panel as flavor rows scroll
             past. The container's parent (Fleet.tsx) provides vertical
@@ -373,11 +408,11 @@ export function Timeline({
           {/* Left spacer above the flavor labels column. Sticky
               horizontally so it stays pinned over the labels when
               the user scrolls right. Width tracks the resizable
-              leftPanelWidth. This spacer hosts the resize handle:
-              the time-axis row itself is `position: sticky; top: 0`
-              against Fleet.tsx's outer scroll, so the handle stays
-              visible even when the user scrolls through many
-              flavor rows. */}
+              leftPanelWidth. The resize handle that used to live
+              inside this 28-px spacer is now rendered as a sibling
+              of the grid-lines overlay (outside the sticky time-
+              axis row) so its height spans the full swimlane --
+              see the comment on the handle div below. */}
           <div
             className="shrink-0"
             style={{
@@ -389,38 +424,7 @@ export function Timeline({
               background: "var(--bg)",
               borderRight: "1px solid var(--border)",
             }}
-          >
-            {/* Drag handle for resizing the left panel. `position:
-                absolute` anchors it to the sticky parent so it
-                doesn't affect flex layout. Only one handle exists
-                in the whole Timeline -- the width state is shared
-                across every SwimLane below via props, so dragging
-                resizes every row simultaneously. */}
-            <div
-              data-testid="left-panel-resize-handle"
-              role="separator"
-              aria-orientation="vertical"
-              aria-label="Resize left panel"
-              style={{
-                position: "absolute",
-                right: 0,
-                top: 0,
-                bottom: 0,
-                width: 6,
-                cursor: "col-resize",
-                zIndex: 10,
-                background: "transparent",
-                transition: "background 0.1s",
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.background = "var(--accent)";
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.background = "transparent";
-              }}
-              onMouseDown={handleResizeStart}
-            />
-          </div>
+          />
           <div style={{ width: timelineWidth, flexShrink: 0 }}>
             <TimeAxis
               start={start}
@@ -492,7 +496,7 @@ export function Timeline({
                 fontFamily: "var(--font-ui)",
               }}
             >
-              Flavors
+              Agents
               {matchingSessionIds !== null && (
                 <span
                   data-testid="flavors-filtered-suffix"

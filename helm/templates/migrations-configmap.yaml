@@ -1,0 +1,19 @@
+{{- /*
+Workers run golang-migrate on startup against FLIGHTDECK_MIGRATIONS_DIR
+(default /migrations). In docker-compose this directory is bind-mounted
+from docker/postgres/migrations. In Helm the SQL files are packaged as a
+ConfigMap and mounted into every workers pod. Files are loaded via Files.Glob
+so adding a new migration requires only a `helm upgrade` -- no template
+edit.
+*/ -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "flightdeck.migrationsConfigMapName" . }}
+  labels:
+    {{- include "flightdeck.labels" (dict "root" . "component" "workers") | nindent 4 }}
+data:
+{{- range $path, $bytes := .Files.Glob "migrations/*.sql" }}
+  {{ base $path }}: |
+{{ $.Files.Get $path | indent 4 }}
+{{- end }}

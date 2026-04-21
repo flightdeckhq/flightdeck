@@ -1,0 +1,18 @@
+{{- if not .Values.postgres.externalUrl -}}
+{{- $component := "postgres" -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "flightdeck.postgresServiceName" . }}
+  labels:
+    {{- include "flightdeck.labels" (dict "root" . "component" $component) | nindent 4 }}
+spec:
+  clusterIP: None
+  selector:
+    {{- include "flightdeck.selectorLabels" (dict "root" . "component" $component) | nindent 4 }}
+  ports:
+    - name: postgres
+      port: {{ .Values.postgres.port }}
+      targetPort: postgres
+      protocol: TCP
+{{- end }}

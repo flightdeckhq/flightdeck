@@ -51,6 +51,7 @@ const inactiveFlavors: FlavorSummary[] = [
 describe("FleetPanel", () => {
   beforeEach(() => {
     mockCustomDirectives = [];
+    localStorage.clear();
   });
 
   it("Custom Directives sidebar section is gone", () => {
@@ -170,6 +171,145 @@ describe("FleetPanel", () => {
         grace_period_ms: 5000,
       });
     });
+  });
+
+  it("hides Stop All for a flavor where every live session is observer-only", () => {
+    // Pure claude-code flavor: every live session carries
+    // context.supports_directives=false, so the kill switch is a
+    // silent no-op and must not appear.
+    const claudeCodeFlavor: FlavorSummary[] = [
+      {
+        flavor: "claude-code",
+        agent_type: "developer",
+        session_count: 2,
+        active_count: 2,
+        tokens_used_total: 0,
+        sessions: [
+          {
+            session_id: "cc1", flavor: "claude-code", agent_type: "developer",
+            host: null, framework: null, model: null,
+            state: "active", started_at: "", last_seen_at: "", ended_at: null,
+            tokens_used: 0, token_limit: null,
+            context: { supports_directives: false },
+          },
+          {
+            session_id: "cc2", flavor: "claude-code", agent_type: "developer",
+            host: null, framework: null, model: null,
+            state: "idle", started_at: "", last_seen_at: "", ended_at: null,
+            tokens_used: 0, token_limit: null,
+            context: { supports_directives: false },
+          },
+        ],
+      },
+    ];
+    render(<FleetPanel flavors={claudeCodeFlavor} />);
+    expect(
+      screen.queryByTestId("flavor-stop-all-button-claude-code"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("keeps Stop All for a mixed flavor (at least one directive-capable session)", () => {
+    // Unusual but legal: one sensor-backed session, one hook-based
+    // session under the same flavor name. Directive will reach the
+    // sensor session; the hook-based one silently ignores it. UI
+    // keeps the button because part of the cohort can still be stopped.
+    const mixedFlavor: FlavorSummary[] = [
+      {
+        flavor: "mixed-flavor",
+        agent_type: "autonomous",
+        session_count: 2,
+        active_count: 2,
+        tokens_used_total: 0,
+        sessions: [
+          {
+            session_id: "m1", flavor: "mixed-flavor", agent_type: "autonomous",
+            host: null, framework: null, model: null,
+            state: "active", started_at: "", last_seen_at: "", ended_at: null,
+            tokens_used: 0, token_limit: null,
+            // Sensor session: no supports_directives field = directive-capable.
+          },
+          {
+            session_id: "m2", flavor: "mixed-flavor", agent_type: "autonomous",
+            host: null, framework: null, model: null,
+            state: "active", started_at: "", last_seen_at: "", ended_at: null,
+            tokens_used: 0, token_limit: null,
+            context: { supports_directives: false },
+          },
+        ],
+      },
+    ];
+    render(<FleetPanel flavors={mixedFlavor} />);
+    expect(
+      screen.getByTestId("flavor-stop-all-button-mixed-flavor"),
+    ).toBeInTheDocument();
+  });
+
+  it("claude-code flavor row shows CODING AGENT pill, hides DEV pill", () => {
+    // Specific-pill-wins rule: a claude-code flavor's developer-ness
+    // is already conveyed by the CODING AGENT pill (plus the terminal
+    // icon), so DEV would be redundant. The icon rule at
+    // FleetPanel.tsx:550 uses the same flavor === "claude-code"
+    // check, so icon and pill always flip together.
+    const claudeCodeFlavor = [
+      {
+        flavor: "claude-code",
+        agent_type: "developer",
+        session_count: 1,
+        active_count: 1,
+        tokens_used_total: 0,
+        sessions: [
+          {
+            session_id: "cc1", flavor: "claude-code", agent_type: "developer",
+            host: null, framework: null, model: null,
+            state: "active" as const, started_at: "", last_seen_at: "",
+            ended_at: null, tokens_used: 0, token_limit: null,
+            context: { supports_directives: false },
+          },
+        ],
+      },
+    ];
+    render(<FleetPanel flavors={claudeCodeFlavor} />);
+    expect(screen.getByTestId("coding-agent-badge")).toBeInTheDocument();
+    expect(screen.queryByTestId("flavor-dev-badge")).not.toBeInTheDocument();
+    // Belt and suspenders: the literal "DEV" text must not appear
+    // anywhere in the claude-code row.
+    expect(screen.queryByText("DEV")).not.toBeInTheDocument();
+  });
+
+  it("non-claude-code developer flavor shows DEV, hides CODING AGENT", () => {
+    // The hypothetical case in the brief: a Python sensor session
+    // that sets AGENT_TYPE=developer but is not a hook-based coding
+    // agent. DEV applies (agent_type=developer); CODING AGENT does
+    // not (flavor !== "claude-code").
+    const customDeveloperFlavor = [
+      {
+        flavor: "research-dev-agent",
+        agent_type: "developer",
+        session_count: 1,
+        active_count: 1,
+        tokens_used_total: 0,
+        sessions: [
+          {
+            session_id: "rd1", flavor: "research-dev-agent", agent_type: "developer",
+            host: null, framework: null, model: null,
+            state: "active" as const, started_at: "", last_seen_at: "",
+            ended_at: null, tokens_used: 0, token_limit: null,
+          },
+        ],
+      },
+    ];
+    render(<FleetPanel flavors={customDeveloperFlavor} />);
+    expect(screen.getByTestId("flavor-dev-badge")).toBeInTheDocument();
+    expect(screen.queryByTestId("coding-agent-badge")).not.toBeInTheDocument();
+  });
+
+  it("autonomous flavor shows neither DEV nor CODING AGENT", () => {
+    // Production autonomous flavors (mockFlavors above: research-agent
+    // with agent_type="autonomous") should render the bare flavor
+    // name with no pill.
+    render(<FleetPanel flavors={mockFlavors} />);
+    expect(screen.queryByTestId("flavor-dev-badge")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("coding-agent-badge")).not.toBeInTheDocument();
   });
 
   it("calls onFlavorClick when flavor name is clicked", () => {

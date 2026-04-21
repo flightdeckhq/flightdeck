@@ -1,0 +1,22 @@
+{{- if .Values.nats.enabled -}}
+{{- $component := "nats" -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "flightdeck.natsServiceName" . }}
+  labels:
+    {{- include "flightdeck.labels" (dict "root" . "component" $component) | nindent 4 }}
+spec:
+  clusterIP: None
+  selector:
+    {{- include "flightdeck.selectorLabels" (dict "root" . "component" $component) | nindent 4 }}
+  ports:
+    - name: client
+      port: {{ .Values.nats.clientPort }}
+      targetPort: client
+      protocol: TCP
+    - name: monitor
+      port: {{ .Values.nats.monitorPort }}
+      targetPort: monitor
+      protocol: TCP
+{{- end }}

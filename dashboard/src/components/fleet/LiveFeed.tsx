@@ -3,6 +3,7 @@ import type { AgentEvent, FeedEvent } from "@/lib/types";
 import { getBadge, getEventDetail, flavorColor, isEventVisible, truncateSessionId } from "@/lib/events";
 import { getProvider } from "@/lib/models";
 import { ProviderLogo } from "@/components/ui/provider-logo";
+import { ClaudeCodeLogo } from "@/components/ui/claude-code-logo";
 import {
   FEED_MAX_EVENTS,
   PAUSE_QUEUE_MAX_EVENTS,
@@ -157,7 +158,7 @@ export function LiveFeed({ events, onEventClick, activeFilter, onFilterChange, i
     ) : null;
 
   const headerCols: { key: SortCol; label: string; width: number; align?: string }[] = [
-    { key: "flavor", label: "Flavor", width: colWidths.flavor },
+    { key: "flavor", label: "Agent", width: colWidths.flavor },
     { key: "session", label: "Session", width: colWidths.session },
     { key: "type", label: "Type", width: colWidths.type },
     { key: "detail", label: "Detail", width: colWidths.detail },
@@ -274,7 +275,15 @@ function FeedRow({ fe, colWidths, onClick }: { fe: FeedEvent; colWidths: ColWidt
       onClick={onClick}
       data-testid="feed-row"
     >
-      <span className="shrink-0 truncate font-mono text-xs" style={{ width: colWidths.flavor, color }}>{event.flavor}</span>
+      <span
+        className="shrink-0 truncate font-mono text-xs"
+        style={{ width: colWidths.flavor, color, display: "inline-flex", alignItems: "center", gap: 4 }}
+      >
+        {event.flavor === "claude-code" && (
+          <ClaudeCodeLogo size={12} className="shrink-0" />
+        )}
+        <span className="truncate">{event.flavor}</span>
+      </span>
       <span className="shrink-0 truncate font-mono text-xs" style={{ width: colWidths.session, color: "var(--text-muted)" }} data-testid="feed-session-id">{truncateSessionId(event.session_id)}</span>
       <span
         className="flex shrink-0 h-[18px] items-center justify-center rounded font-mono text-[10px] font-semibold uppercase"

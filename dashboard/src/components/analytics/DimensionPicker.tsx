@@ -6,14 +6,23 @@ import {
   SelectItem,
 } from "@/components/ui/select";
 
-const DIMENSIONS = [
-  { value: "flavor", label: "Flavor" },
+export const DIMENSIONS = [
+  { value: "flavor", label: "Agent" },
   { value: "model", label: "Model" },
   { value: "framework", label: "Framework" },
   { value: "host", label: "Host" },
   { value: "agent_type", label: "Agent Type" },
   { value: "team", label: "Team" },
 ] as const;
+
+/** Resolve a group_by value to the human-readable label used in the
+ *  picker, for chart titles that want to reflect the live selection
+ *  (e.g. ``Avg Latency by Model``). Falls back to the raw value when
+ *  a caller passes a dimension the picker doesn't know about. */
+export function dimensionLabel(value: string): string {
+  const match = DIMENSIONS.find((d) => d.value === value);
+  return match ? match.label : value;
+}
 
 interface DimensionPickerProps {
   value: string;

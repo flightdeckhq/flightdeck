@@ -10,7 +10,7 @@ import {
   OrchestrationIcon,
   getOrchestrationLabel,
 } from "@/components/ui/OrchestrationIcon";
-import { Camera } from "lucide-react";
+import { FileText } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 
 /**
@@ -188,17 +188,6 @@ function SessionEventRowComponent({
           overflow: "hidden",
           padding: "0 8px 0 28px",
         }}
-        // When the row's primary label is the hostname, the hostname
-        // is the field most likely to be visually truncated, so put
-        // it on the first line of the tooltip with the full uuid
-        // below. Browser `title` attributes render "\n" as a line
-        // break in native tooltips. When there's no hostname the
-        // uuid IS the identity and there's nothing to stack above.
-        title={
-          ctxHostname
-            ? `${ctxHostname}\n${session.session_id}`
-            : session.session_id
-        }
       >
         <span
           data-testid="session-row-index"
@@ -281,12 +270,36 @@ function SessionEventRowComponent({
         >
           {session.state}
         </span>
+        {session.token_name && (
+          <TooltipProvider delayDuration={200}>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span
+                  data-testid="session-row-token-name"
+                  className="rounded font-mono text-[10px] px-[5px] py-[1px] max-w-[128px] overflow-hidden"
+                  style={{
+                    fontSize: 10,
+                    background: "var(--bg-elevated)",
+                    color: "var(--text-muted)",
+                    border: "1px solid var(--border-subtle)",
+                    flexShrink: 0,
+                    whiteSpace: "nowrap",
+                    textOverflow: "ellipsis",
+                  }}
+                >
+                  {session.token_name}
+                </span>
+              </TooltipTrigger>
+              <TooltipContent>Access token: {session.token_name}</TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+        )}
         {session.capture_enabled && (
           <TooltipProvider>
             <Tooltip>
               <TooltipTrigger asChild>
                 <span style={{ display: "inline-flex", lineHeight: 0, flexShrink: 0 }} aria-label="Prompt capture enabled">
-                  <Camera size={12} style={{ color: "var(--accent)" }} />
+                  <FileText size={12} strokeWidth={2.25} style={{ color: "var(--accent)" }} />
                 </span>
               </TooltipTrigger>
               <TooltipContent>Prompt capture enabled</TooltipContent>

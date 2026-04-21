@@ -54,6 +54,13 @@ export interface Session {
    * Computed by the API via EXISTS subquery; no schema change required.
    */
   capture_enabled?: boolean;
+  /**
+   * Name of the access_tokens row that opened this session (D095).
+   * Null for tok_dev-authenticated sessions and pre-Phase-5 rows.
+   * Preserved across token revocation so historical sessions keep
+   * their attribution snapshot.
+   */
+  token_name?: string | null;
 }
 
 /**
@@ -201,6 +208,7 @@ export interface AnalyticsParams {
   filter_flavor?: string;
   filter_model?: string;
   filter_agent_type?: string;
+  filter_provider?: string;
 }
 
 /** A single time-series data point. */
@@ -230,6 +238,10 @@ export interface AnalyticsResponse {
   granularity: string;
   series: AnalyticsSeries[];
   totals: AnalyticsTotals;
+  /** True when metric=estimated_cost and the window contains post_call
+   *  rows for models without a pricing entry. UI shows a partial-
+   *  estimate disclaimer when set. See DECISIONS.md D099. */
+  partial_estimate?: boolean;
 }
 
 /** Prompt content for a single event, from GET /v1/events/:id/content. */
@@ -313,6 +325,12 @@ export interface SearchResults {
 export interface SessionListItem {
   session_id: string;
   flavor: string;
+  /**
+   * developer / autonomous / supervised / batch. Populated from the
+   * sessions.agent_type column. Drives the AGENT TYPE facet on the
+   * Investigate page.
+   */
+  agent_type: string;
   host: string | null;
   model: string | null;
   state: SessionState;

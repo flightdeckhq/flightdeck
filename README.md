@@ -2,98 +2,23 @@
 
 Observability and control for AI agent fleets.
 
-See every LLM call, tool use, and token spend across your entire fleet in real time. Stop any agent, enforce budgets, and execute custom actions without redeploying.
+Flightdeck ingests events from sensor-instrumented agents and the Claude Code plugin, stores them in Postgres, and serves a dashboard, a query API, and a WebSocket push channel.
 
 ---
 
-<!-- Fleet view demo — replace with actual recording -->
-![Fleet view](docs/assets/fleet-demo.gif)
-*Live fleet view — events stream in as agents run. Click any session to inspect every call.*
+<!-- Fleet view demo. Recording coming shortly. -->
+![Fleet view: every session on a shared timeline, events stream in as agents run.](docs/assets/fleet-demo.gif)
 
-<!-- Session drawer demo — replace with actual recording -->
-![Session drawer](docs/assets/session-demo.gif)
-*Full session detail — every LLM call, tool use, and policy event in order. Prompt and response captured separately when enabled.*
+<!-- Session drawer demo. Recording coming shortly. -->
+![Session drawer: every LLM call, tool use, policy event, and directive in order.](docs/assets/session-demo.gif)
+
+> Recordings above are placeholders. The UI they describe is shipping today.
 
 ---
 
-## Install
+## Quickstart
 
-```bash
-pip install flightdeck-sensor
-```
-
-## Quick start
-
-```python
-import flightdeck_sensor
-
-flightdeck_sensor.init(
-    server="http://localhost:4000/ingest",
-    token="tok_dev",
-    # Optional: supply a stable session_id (or export
-    # FLIGHTDECK_SESSION_ID) so orchestrator re-runs attach to the
-    # existing session instead of creating a new one every time.
-    # See DECISIONS.md D094.
-    # session_id="my-workflow-run-id",
-)
-flightdeck_sensor.patch()
-
-# Your existing agent code. Nothing changes.
-# Every Anthropic and OpenAI client is intercepted automatically.
-import anthropic
-client = anthropic.Anthropic()
-response = client.messages.create(model="claude-sonnet-4-6", ...)
-```
-
-`patch()` is the recommended way to use the sensor. After `init()` + `patch()`, every instance of `anthropic.Anthropic`, `openai.OpenAI` (and their async variants) -- including instances constructed internally by frameworks -- has its LLM call resources intercepted automatically. No `wrap()` call needed.
-
-The dev `make dev` stack exposes the ingestion API at
-`http://localhost:4000/ingest` via nginx. Production deployments
-behind their own gateway typically route a single root URL like
-`https://flightdeck.example.com` to the ingestion service; consult
-your Helm `values.yaml` for the externally-visible ingestion path.
-
-## Supported resources
-
-| Provider  | Intercepted resources |
-|-----------|----------------------|
-| Anthropic | `client.messages.create/stream`, `client.beta.messages.create/stream` |
-| OpenAI    | `client.chat.completions.create` (sync, async, streaming), `client.responses.create`, `client.embeddings.create` |
-
-Resources NOT intercepted: `audio`, `images`, `moderations`, `files`, `fine_tuning`, legacy `completions`. These are utility resources with no relevance to agent fleet management.
-
-## Frameworks
-
-After `init()` + `patch()`, frameworks that use the official Anthropic or OpenAI SDKs internally are intercepted without any user-side wrapping:
-
-- **LangChain** — `langchain-anthropic` (`ChatAnthropic.invoke()`) and `langchain-openai` (`ChatOpenAI.invoke()`)
-- **LlamaIndex** — `llama-index-llms-anthropic` (`Anthropic.complete()`) and `llama-index-llms-openai` (`OpenAI.complete()`)
-- **CrewAI 1.14+** — `LLM(model=...).call()` via the native OpenAI/Anthropic provider classes
-
-Framework calls flow through the same sensor pipeline as direct SDK calls -- session events, token counts, and policy enforcement all apply automatically.
-
-## Explicit wrapping with `wrap()`
-
-If you have called `patch()`, you do **not** need `wrap()`. Every client is already intercepted at the class level. Calling `wrap()` after `patch()` is safe -- it detects that the class is already patched, returns the client unchanged, and produces no double interception and no error. It is simply redundant.
-
-`wrap()` exists for one specific scenario: you deliberately choose **not** to call `patch()` and want to instrument a single client instance explicitly.
-
-```python
-import flightdeck_sensor
-import anthropic
-
-flightdeck_sensor.init(
-    server="http://localhost:4000/ingest",
-    token="tok_dev",
-)
-
-# No patch() -- only this specific client is intercepted.
-client = flightdeck_sensor.wrap(anthropic.Anthropic())
-```
-
-Most users should use `patch()` instead. `wrap()` does not intercept clients that frameworks build internally, so framework calls will be invisible to the sensor unless `patch()` is also active.
-
-## Start the control plane
+Start the stack:
 
 ```bash
 git clone https://github.com/flightdeckhq/flightdeck
@@ -101,32 +26,96 @@ cd flightdeck
 make dev
 ```
 
-Open [http://localhost:4000](http://localhost:4000). Your agents appear in the fleet view within seconds of calling `init()`.
+Dashboard: http://localhost:4000. The dev stack seeds a test token `tok_dev` automatically.
 
-The dev environment seeds a test token `tok_dev` automatically — no configuration needed to get started.
+Install the sensor and point your agent at it:
+
+```bash
+pip install flightdeck-sensor
+```
+
+```python
+import flightdeck_sensor
+
+flightdeck_sensor.init(
+    server="http://localhost:4000/ingest",
+    token="tok_dev",
+)
+flightdeck_sensor.patch()
+
+# Your existing agent code. Nothing changes.
+import anthropic
+client = anthropic.Anthropic()
+client.messages.create(model="claude-sonnet-4-6", ...)
+```
+
+The agent shows up in the fleet view within seconds.
+
+Working examples for every supported framework -- LangChain, LangGraph, LlamaIndex, CrewAI, direct SDKs -- live in [`playground/`](playground/). Copy the one that matches your stack.
+
+To run the sensor from source instead of PyPI: `pip install -e sensor/` from the repo root.
 
 ---
 
-## What you get
+## What it covers
 
-**Live fleet timeline**
-Every agent session on a shared time axis. LLM calls, tool uses, policy events, and directives plotted as colored nodes as they happen. Click any event to inspect the full call inline.
+| Provider  | Intercepted resources                                                                      |
+|-----------|--------------------------------------------------------------------------------------------|
+| Anthropic | `messages.create`, `messages.stream`, `beta.messages.create`, `beta.messages.stream` (sync and async) |
+| OpenAI    | `chat.completions.create`, `responses.create`, `embeddings.create` (sync, async, streaming)|
 
-**Full payload inspection**
-Enable prompt capture to store the complete payload for every LLM call. System prompt, messages, tool definitions, and the full model response are stored and displayed in separate fields. Off by default.
+Non-agent resources (`audio`, `images`, `moderations`, `files`, `fine_tuning`, legacy `completions`) are deliberately not intercepted.
+
+### Frameworks
+
+After `init()` + `patch()`, frameworks that build Anthropic or OpenAI clients internally are intercepted without any user-side wrapping.
+
+| Framework    | Path covered                                                                             |
+|--------------|------------------------------------------------------------------------------------------|
+| LangChain    | `langchain-anthropic` (`ChatAnthropic.invoke`), `langchain-openai` (`ChatOpenAI.invoke`) |
+| LangGraph    | Covered transitively via LangChain. Any graph routing through `ChatAnthropic` or `ChatOpenAI` is intercepted, including `langgraph.prebuilt.create_react_agent` tool loops. |
+| LlamaIndex   | `llama-index-llms-anthropic` and `llama-index-llms-openai` (`.complete`)                 |
+| CrewAI 1.14+ | `LLM(model=...).call()` via the native Anthropic and OpenAI provider classes. Model strings that don't match a native-provider prefix (e.g. `openrouter/`, `deepseek/`) fall through to litellm and inherit the litellm-Anthropic gap above. |
+
+---
+
+## Capabilities
+
+### Live fleet timeline
+
+Every session on one shared time axis, one swim lane per agent flavor and one sub-row per running session. LLM calls, tool uses, policy events, and directives are plotted on the timeline as events arrive. Pause and catch-up controls freeze the scroll without dropping events; the event-type filter bar isolates LLM Calls, Tools, Policy, Directives, or Session events. Provider logos render on LLM call nodes, OS and orchestration icons on session hostnames. Click any event to inspect it inline.
+
+### Full session inspection
+
+Enable prompt capture to store every call's full payload: system prompt, messages, tool definitions, and model response. Off by default.
 
 ```python
-flightdeck_sensor.init(
-    server="...",
-    token="...",
-    capture_prompts=True,
-)
+flightdeck_sensor.init(server="...", token="...", capture_prompts=True)
 ```
 
-Anthropic sessions show `system`, `messages`, `tools`, and `response` as separate collapsible sections. OpenAI sessions show `messages` (including system role), `tools`, and `response`. Provider terminology is preserved exactly — no normalization between providers.
+Provider shape is preserved. Anthropic sessions display `system`, `messages`, `tools`, and `response` as separate fields. OpenAI sessions display `messages` (system role included), `tools`, and `response`. No cross-provider normalization.
 
-**Custom actions**
-Register Python functions as callable directives from the dashboard. No redeployment. The function executes inside the agent process on its next LLM call and the result appears in the session timeline within seconds.
+### Runtime context
+
+On `init()` the sensor captures hostname, OS, Python version, git commit / branch / repo, container orchestration (Kubernetes, Docker Compose, ECS, Cloud Run), and any in-process AI frameworks (LangChain, CrewAI, LlamaIndex, AutoGen, Haystack, DSPy, smolagents, pydantic_ai). Git remote URLs are credential-stripped before storage.
+
+The session drawer surfaces a collapsible **RUNTIME** panel. The sidebar **CONTEXT** facet panel filters the fleet by any context field (`os=Linux`, `k8s_namespace=research`, `git_branch=main`). Every probe is wrapped in defensive try/except: a broken collector never crashes the agent.
+
+### Token enforcement
+
+Define policies centrally. Each agent pulls its policy on session start and enforces it locally with no code changes.
+
+- At 82% of budget: a warning event fires, the call proceeds.
+- At 91% of budget: the model is substituted for a cheaper model configured on the policy.
+- At 100% of budget: the call raises `BudgetExceededError`.
+
+Thresholds, actions, and model substitutions are configurable per policy. Policies attach to agent flavors and propagate to every session of that flavor.
+
+### Kill switch
+
+Stop an individual agent or every agent of a flavor from the dashboard. The directive is delivered on the agent's next LLM call; agents in a tool loop stop when the loop returns to its next call.
+
+### Custom directives
 
 ```python
 @flightdeck_sensor.directive(
@@ -139,78 +128,68 @@ Register Python functions as callable directives from the dashboard. No redeploy
             options=["all", "prompt"],
             default="all",
         )
-    ]
+    ],
 )
 def clear_cache(context, cache_type="all"):
     return {"cleared": my_cache.clear(cache_type)}
 ```
 
-The function appears in the dashboard the moment an agent calls `init()`. No redeploy. No SSH. No waiting.
+The function registers with the control plane on `init()` and is callable from the dashboard. Results are recorded as `directive_result` events on the session timeline.
 
-**Kill switch**
-Stop any individual agent or an entire fleet by flavor. One click. The directive arrives on the agent's next LLM call. Active agents in a loop stop within seconds.
+### Analytics
 
-**Token enforcement**
-Define policies centrally. Every agent enforces them automatically without code changes.
+Token consumption, session counts, policy event volume, latency, and model distribution on a shared time range. Every chart has a group-by control spanning `flavor`, `model`, `framework`, `host`, `agent_type`, `team`, and `provider`. Every chart reads from the same endpoint (`GET /v1/analytics`), so the global time range applies to all of them at once.
+
+### Estimated cost
+
+Flightdeck computes an estimated cost per session from public list prices. The per-event formula is:
 
 ```
-82% of budget  →  warning fires, call proceeds
-91% of budget  →  model transparently degraded to a cheaper model
-100% of budget →  call blocked, BudgetExceededError raised
+(tokens_input - tokens_cache_read - tokens_cache_creation) * input_price
+  + tokens_cache_read     * input_price * 0.10
+  + tokens_cache_creation * input_price * 1.25
+  + tokens_output         * output_price
 ```
 
-Policies attach to agent flavors and propagate on session start.
+Cache ratios follow Anthropic's published structure (90% discount on reads, 25% premium on writes) and apply uniformly to every model that reports cache tokens. OpenAI and other providers that don't report cache tokens contribute 0 to the cache terms, so the formula collapses to `tokens_input * input_price + tokens_output * output_price`.
 
-**Analytics**
-Token consumption, session counts, policy events, latency, and model distribution — grouped by flavor, model, team, or agent type. Flexible time range.
+Pricing data lives in [`pricing.yaml`](pricing.yaml) at the repo root and is loaded at API startup. To change a price: edit the YAML, open a PR with a link to the provider's pricing page. See [CONTRIBUTING.md](CONTRIBUTING.md#updating-pricing-data).
 
-**Search**
-Find any session, agent, or event across your entire fleet with Cmd+K.
+These are estimates. Actual billing will differ. Not included: volume discounts, enterprise commitments, negotiated rates, cached-token rebates beyond the published ratio. Treat the cost chart as a sanity check, never as an invoice.
 
-**Runtime context, automatically**
-On `init()` the sensor collects a snapshot of the agent's
-environment — hostname, OS, Python version, git commit/branch/repo,
-container orchestration (Kubernetes / Docker Compose / ECS /
-Cloud Run), and any in-process AI frameworks (LangChain, CrewAI,
-LlamaIndex, AutoGen, Haystack, DSPy, smolagents, pydantic_ai).
-Each session in the dashboard surfaces this in a collapsible
-**RUNTIME** panel inside the session drawer, plus a sidebar
-**CONTEXT** facet panel that lets operators filter the fleet by
-any context field (`os=Linux`, `k8s_namespace=research`,
-`git_branch=main`, etc.). Git remote URLs are credential-stripped
-before storage. The whole probe is best-effort: every collector
-is wrapped in two layers of `try/except` so a broken probe never
-crashes the agent.
+### Search
 
-**Visual fleet glance**
-The fleet view is a swim-lane timeline with one row per agent
-flavor and one sub-row per running session, plus pause / catch-up
-controls, an event-type filter bar (LLM Calls / Tools / Policy /
-Directives / Session), provider logos for Anthropic and OpenAI
-calls, and OS / orchestration icons next to each session
-hostname. The left panel is resizable and the timeline width is
-fixed at 900 px so density scales with the time range, not the
-viewport.
+Cmd+K searches sessions, agents, and events.
 
----
+### Access tokens
 
-## Claude Code plugin
+Mint opaque `ftd_` bearer tokens from the Settings page. Each token carries a name that persists on every session it opens, so you can trace which deployment's token produced which session. Plaintext is shown once at creation time and is not recoverable afterwards.
 
-Developer Claude Code sessions appear in the fleet view alongside production agents. Shadow developer AI usage becomes visible to platform engineers automatically — no developer action required.
+Revoking a token does not strip its historical attribution: previous sessions keep their `token_name` snapshot.
+
+`tok_dev` is accepted only when the service sees `ENVIRONMENT=dev` (the dev compose opts in). Production deployments leave that env var unset and the seed token becomes inert.
+
+### Claude Code plugin
+
+Claude Code sessions appear in the fleet view alongside sensor-instrumented agents. The plugin is an observer; it has no code footprint in the Claude Code process beyond the hook scripts.
 
 ```bash
-claude plugin install flightdeck
+export FLIGHTDECK_SERVER="http://localhost:4000"
+export FLIGHTDECK_TOKEN="tok_dev"
+claude --plugin-dir /path/to/flightdeck/plugin
 ```
 
-Developer sessions appear with a `DEV` badge. Use the filter toggle to view production sessions, developer sessions, or both.
+`--plugin-dir` loads the plugin for the session without a marketplace install. A marketplace-installable build is not published yet.
+
+Sessions carry `flavor=claude-code`, `agent_type=developer`, and render with a `DEV` badge. Tool inputs and LLM call content are captured by default so the Prompts tab is populated without extra setup -- the developer is observing their own session, not production traffic. Set `FLIGHTDECK_CAPTURE_PROMPTS=false` or `FLIGHTDECK_CAPTURE_TOOL_INPUTS=false` to opt out. Raw file bodies written by `Write` / `Edit` are never forwarded; tool inputs go through a sanitised whitelist. See [plugin/README.md](plugin/README.md) for the full event list and privacy controls.
+
+The plugin is hook-based, so claude-code sessions cannot act on directives mid-call. The Stop Agent button is hidden for these sessions and the Fleet Stop All control skips them when counting directive-capable sessions. See DECISIONS.md D109.
 
 ---
 
 ## Identity
 
-Every agent session has two identities: a persistent **flavor** and an ephemeral **session ID**.
-
-Set the flavor via environment variable — ideally injected by your Helm chart:
+Every session carries a persistent **flavor** and an ephemeral **session ID**. Set the flavor via environment variable at deploy time, typically from your orchestrator manifest:
 
 ```yaml
 env:
@@ -225,134 +204,231 @@ env:
         key: token
 ```
 
-Agents without `AGENT_FLAVOR` appear flagged as `unknown` — this is how agents deployed outside the blessed configuration are detected automatically.
+Agents without `AGENT_FLAVOR` appear as `unknown`. That is how agents deployed outside your blessed config become visible.
+
+### Orchestrator session attachment
+
+When a Temporal workflow or Airflow DAG re-runs, you usually want one continuous session rather than a new session per run. Pass a stable `session_id` at `init()` and the backend attaches each execution to the prior session.
+
+```python
+import uuid
+import flightdeck_sensor as fd
+
+# Pick any fixed namespace UUID per deployment. Same input -> same UUID.
+NS = uuid.UUID("00000000-0000-0000-0000-000000000001")
+
+fd.init(
+    server="http://flightdeck.internal/ingest",
+    token="ftd_...",
+    session_id=str(uuid.uuid5(NS, workflow_id)),
+)
+```
+
+`session_id` must be a valid UUID (any version). Hash string identifiers (workflow_id, dag_run_id) with `uuid.uuid5`. The `FLIGHTDECK_SESSION_ID` environment variable takes precedence over the kwarg.
 
 ---
 
-## Unavailability policy
+## Sensor reference
 
-If the control plane is unreachable:
+### `patch()` vs `wrap()`
+
+`patch()` is the right answer in almost every case. It installs a class-level descriptor on `anthropic.Anthropic`, `anthropic.AsyncAnthropic`, `openai.OpenAI`, and `openai.AsyncOpenAI` so every instance, including ones frameworks build internally, is intercepted.
+
+`wrap()` instruments a single client instance:
+
+```python
+client = flightdeck_sensor.wrap(anthropic.Anthropic())
+```
+
+Use `wrap()` only when you deliberately do not call `patch()`. Clients built by frameworks will be invisible unless `patch()` is active. Calling `wrap()` after `patch()` is safe: it detects that the class is already patched and returns the client unchanged.
+
+Call `patch()` before any framework or user code constructs a client. Instances that already accessed `.messages`, `.chat`, `.responses`, or `.embeddings` before the patch keep the raw resource cached on the instance and are not intercepted. In practice this means calling `init()` + `patch()` at the top of your entrypoint.
+
+### Environment variables
+
+| Variable                        | Purpose                                                         |
+|---------------------------------|-----------------------------------------------------------------|
+| `FLIGHTDECK_SERVER`             | Ingestion base URL. Overrides the `server=` kwarg.              |
+| `FLIGHTDECK_TOKEN`              | Access token. Overrides the `token=` kwarg.                     |
+| `FLIGHTDECK_API_URL`            | Control-plane base URL. Derived from `FLIGHTDECK_SERVER` if unset. |
+| `FLIGHTDECK_SESSION_ID`         | Stable session UUID for orchestrator re-runs.                   |
+| `FLIGHTDECK_CAPTURE_PROMPTS`    | `true` to enable full payload capture.                          |
+| `FLIGHTDECK_UNAVAILABLE_POLICY` | `continue` (default) or `halt` when the control plane is down.  |
+| `AGENT_FLAVOR`                  | Persistent agent identity. Default: `unknown`.                  |
+| `AGENT_TYPE`                    | `autonomous`, `supervised`, or `batch`.                         |
+
+### Unavailability policy
 
 ```bash
 FLIGHTDECK_UNAVAILABLE_POLICY=continue  # run with cached policy (default)
 FLIGHTDECK_UNAVAILABLE_POLICY=halt      # block new sessions until CP responds
 ```
 
-The sensor never sits in your agent's execution path. It reports out-of-band over HTTP. If the control plane goes down, your agents keep running.
+The sensor reports over HTTP on a background thread. Control plane downtime is handled by the configured policy; it does not block agent code.
 
----
+### Threading model
 
-## Threading model
+| Pattern                         | Description                                                | Status                |
+|---------------------------------|------------------------------------------------------------|-----------------------|
+| A. Single-threaded agent        | One `init()`, one thread, sequential LLM calls             | Supported             |
+| B. Multithreaded agent          | One `init()`, many threads sharing patched clients         | Supported             |
+| C. Multi-agent in one process   | Multiple `init()` calls, one per logical agent             | See Known limitations |
 
-The sensor is safe to use from multithreaded agents. The
-intended deployment patterns are:
-
-| Pattern | Description | Status |
-|---|---|---|
-| **A — Single-threaded agent** | One `init()`, one thread, sequential LLM calls | ✓ Supported |
-| **B — Multithreaded agent** | One `init()`, many threads sharing one patched client | ✓ Supported (web servers, async frameworks) |
-| **C — Multi-agent in one process** | Multiple `init()` calls, one per "logical agent" | ⚠ See *Known limitations* below |
-
-Internally the sensor runs two background daemon threads. The
-first (`flightdeck-event-queue`) drains the event queue and
-posts events to the control plane. The second
-(`flightdeck-directive-queue`) processes directives received in
-event response envelopes — kill switches, custom directive
-handlers, model-degrade swaps, policy updates. The two queues
-are decoupled so a slow custom directive handler can never block
-LLM call event throughput. See `ARCHITECTURE.md` and DECISIONS
-D081 for the full design.
+Two background daemon threads run inside the sensor. `flightdeck-event-queue` drains events to the control plane; `flightdeck-directive-queue` processes directives received in event responses (kill, custom handlers, model swap, policy updates). The queues are decoupled so a slow directive handler cannot block event throughput.
 
 ---
 
 ## Known limitations
 
-* **Call `patch()` before constructing clients.** Instances that
-  accessed `.messages`, `.chat`, `.responses`, or `.embeddings`
-  before `patch()` was called have the raw, unwrapped resource
-  cached internally and will not be intercepted. In practice,
-  `init()` + `patch()` runs at the top of your agent's
-  entrypoint, well before any framework or user code constructs
-  LLM clients.
-* **One `init()` per process.** The second `init()` call from
-  any thread is currently a no-op with a warning log. Pattern C
-  (multiple "logically separate" agents in one process, each
-  with its own Session) is not yet supported. The typical
-  multi-agent framework deployment (CrewAI, LangGraph, etc.)
-  works fine with one `init()` and a shared `AGENT_FLAVOR`,
-  because every agent's calls flow under the same fleet
-  identity. If you need per-thread Session isolation, follow
-  `KNOWN_ISSUES.md` KI15.
-* **Custom directive handler input validation is your job.** The
-  `parameters` schema you declare in `@flightdeck_sensor.directive`
-  is used to compute the directive fingerprint and to render the
-  dashboard form. It is **not** enforced at execution time --
-  the runtime only validates the directive payload's top-level
-  shape (`directive_name: str`, `fingerprint: str`,
-  `parameters: dict`). Your handler should defensively validate
-  its own inputs. Type errors inside the handler are caught and
-  logged but bad input data may produce surprising side effects
-  before the crash.
+- **`patch()` must run before clients are constructed.** Instances that already accessed `.messages`, `.chat`, `.responses`, or `.embeddings` before `patch()` keep the raw resource cached in `__dict__`. In practice this is a non-issue when `init()` + `patch()` runs at the top of the entrypoint.
+- **One `init()` per process.** A second `init()` is a no-op with a warning. Multi-agent frameworks (CrewAI, LangGraph, etc.) work fine under a single `init()` and shared `AGENT_FLAVOR`. Per-thread Session isolation is not yet supported.
+- **Custom directive handler input validation is yours.** The `parameters` schema used to register a directive drives the dashboard form and the directive fingerprint. It is not enforced at execution time. Validate types inside your handler.
+- **litellm-Anthropic calls are not intercepted.** The sensor patches the Anthropic and OpenAI SDK client classes. litellm's Anthropic provider uses raw httpx directly instead of constructing `anthropic.Anthropic()`, so calls via `litellm.completion(model="anthropic/...")` bypass interception. litellm's OpenAI provider DOES construct `openai.OpenAI()` and IS intercepted, so the gap is asymmetric. Tracked as KI21; v0.4.0 will close the gap via a sensor-side httpx interceptor or `litellm.success_callback`.
 
 ---
 
-## Production
+## Self-hosting
+
+Flightdeck is self-hosted. Two deployment targets are supported: Docker Compose (single host) and a Helm chart for Kubernetes with a bundled Postgres + NATS shape. The sections below cover the Docker Compose production overlay step by step, then point at the Helm chart with a values reference table.
+
+### Prerequisites
+
+- Docker Engine 28+ with Compose v2 (`docker compose version` reports `v2.x`).
+- A DNS A/AAAA record for the host, e.g. `flightdeck.example.com`.
+- A TLS cert for that hostname. The walkthrough below uses `certbot`. Bring-your-own-cert works too -- any `fullchain.pem` + `privkey.pem` pair does.
+- Ports 80 and 443 reachable from the public internet (certbot's HTTP-01 challenge needs port 80 during issuance; nginx serves HTTPS on 443).
+
+### 1. Get a TLS certificate
+
+Certbot's standalone mode is the shortest path. It binds port 80 for the ACME HTTP-01 challenge, so nothing else can be listening on 80 at the time -- run it before starting the stack, or stop nginx briefly first (`docker compose ... down nginx` on a running stack):
 
 ```bash
-helm repo add flightdeck https://charts.flightdeck.dev
-helm install flightdeck flightdeck/flightdeck \
-  --set flightdeck.server.token=your-token \
-  --namespace flightdeck \
-  --create-namespace
+sudo certbot certonly --standalone \
+  -d flightdeck.example.com \
+  --non-interactive --agree-tos \
+  -m ops@example.com --no-eff-email
 ```
 
-See [docs/production.md](docs/production.md) for TLS, HA setup, and security hardening.
+Certbot writes the cert to `/etc/letsencrypt/live/flightdeck.example.com/`. If you need to issue or renew without stopping nginx, use `--webroot -w /var/www/certbot` instead. The prod nginx config serves `/.well-known/acme-challenge/` from that path for in-place renewals.
 
----
+For renewal, certbot ships its own systemd timer (`systemctl list-timers | grep certbot`) and a cron recipe. Renewals happen in place; reload nginx to pick up the new cert:
 
-## Supported providers
-
-| Provider  | Install                                    | Notes                  |
-|-----------|--------------------------------------------|------------------------|
-| Anthropic | `pip install flightdeck-sensor[anthropic]` | Sync, async, streaming |
-| OpenAI    | `pip install flightdeck-sensor[openai]`    | Sync, async, streaming |
-
----
-
-## Acknowledgements
-
-The fleet timeline UI was inspired by [agent-observe](https://github.com/simple10/agents-observe) by [@simple10](https://github.com/simple10) — an excellent tool for observing individual Claude Code sessions. Flightdeck builds on that visual language for production fleet management at scale. If you are running Claude Code personally, agent-observe is worth checking out.
-
-The sensor is built on the foundation of [tokencap](https://github.com/pykul/tokencap), an open source token budget enforcement library.
-
----
-
-## Smoke Tests
-
-The smoke test suite runs real LLM API calls against a live Flightdeck stack. No mocks.
-
-**Requirements:**
-- Running stack: `make dev`
-- Environment variables: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`
-- Sensor installed: `pip install -e sensor/`
-
-**Run:**
 ```bash
-make test-smoke
-# or directly:
-python tests/smoke/smoke_test.py
+docker compose \
+  -f docker/docker-compose.yml \
+  -f docker/docker-compose.prod.yml \
+  exec nginx nginx -s reload
 ```
 
-**Cost:** < $0.05 per full run (haiku + gpt-4o-mini, max_tokens=5).
+### 2. Place the certificate where nginx expects it
 
-**Coverage:** 12 groups, ~32 scenarios covering provider interception (patch/wrap, streaming, tools, embeddings, beta.messages), prompt capture, local and server policy enforcement, kill switch, custom directives, runtime context, session visibility, sensor status, unavailability, multi-session fleet, and framework support (LangChain, LlamaIndex, CrewAI). Scenarios that require missing API keys or packages are skipped gracefully.
+The prod compose file mounts `/etc/nginx/certs` on the host read-only into the nginx container and expects `fullchain.pem` + `privkey.pem` inside it. Symlink certbot's output so renewals are picked up automatically:
+
+```bash
+sudo mkdir -p /etc/nginx/certs
+sudo ln -sf /etc/letsencrypt/live/flightdeck.example.com/fullchain.pem \
+  /etc/nginx/certs/fullchain.pem
+sudo ln -sf /etc/letsencrypt/live/flightdeck.example.com/privkey.pem \
+  /etc/nginx/certs/privkey.pem
+```
+
+Bring-your-own-cert: drop the two PEM files directly into `/etc/nginx/certs/` with the same filenames.
+
+### 3. Start the stack
+
+```bash
+git clone https://github.com/flightdeckhq/flightdeck
+cd flightdeck
+docker compose \
+  -f docker/docker-compose.yml \
+  -f docker/docker-compose.prod.yml up -d
+```
+
+What the overlay does (full rationale in `docker/docker-compose.prod.yml`):
+
+- TLS at nginx on 443, 80 → 443 redirect. No direct service ports exposed.
+- `ENVIRONMENT` unset on ingestion and api, so the seed `tok_dev` row is rejected (D095).
+- `restart: unless-stopped` on every service, memory and CPU ceilings sized for light-to-moderate load, named volumes for Postgres data and NATS JetStream.
+
+Check the stack is healthy:
+
+```bash
+docker compose \
+  -f docker/docker-compose.yml \
+  -f docker/docker-compose.prod.yml ps
+```
+
+Every service except nginx listens on the internal compose network only. `workers` has no HTTP surface and shows no open ports; that is correct.
+
+### 4. Reach the dashboard and mint your first access token
+
+Open `https://flightdeck.example.com/` in a browser. The dashboard is reachable without authentication in v0.3.0 -- restrict network access at the ingress or firewall layer until dashboard auth ships (planned post-v0.3.0). Any user with network access to the dashboard can mint and revoke access tokens.
+
+Go to **Settings → Access tokens → Create**. Give the token a name that identifies its caller (e.g. `research-fleet-us-east`). Plaintext is shown once at creation time and is not recoverable afterwards -- copy it into your secret store before closing the modal.
+
+Point an agent at the stack:
+
+```bash
+export FLIGHTDECK_SERVER="https://flightdeck.example.com/ingest"
+export FLIGHTDECK_TOKEN="ftd_..."
+```
+
+The agent appears in the fleet view within seconds of its first LLM call.
+
+### Kubernetes (Helm)
+
+A chart lives at `helm/`. One-command install against an existing cluster with an external managed Postgres:
+
+```bash
+helm install flightdeck helm/ \
+  --namespace flightdeck --create-namespace \
+  --values helm/values.prod.yaml \
+  --set postgres.externalUrl="postgres://user:pass@rds.example.com:5432/flightdeck?sslmode=require"
+```
+
+Without `postgres.externalUrl` the chart ships its own single-instance Postgres StatefulSet -- fine for small deployments, not HA and not backed up. NATS is always bundled in v0.3.0.
+
+The chart is `v0.3.0` (Chart.yaml) with `appVersion: 0.2.0` because `v0.3.0` container images are not yet published on Docker Hub. Bump `image.tag` in `values.yaml` once they are.
+
+### Helm values reference
+
+The ~20 values an operator is most likely to override. See `helm/values.yaml` for the full schema including resources, node selectors, and security contexts.
+
+| Key | Default | Description |
+|---|---|---|
+| `image.registry` | `docker.io` | Container registry host for all Flightdeck images. |
+| `image.repository` | `flightdeckhq` | Namespace under the registry. |
+| `image.tag` | `v0.2.0` | Image tag applied to ingestion/workers/api/dashboard unless the per-component `image.tag` overrides it. |
+| `image.pullSecrets` | `[]` | `imagePullSecrets` for private registries. |
+| `ingestion.replicas` | `2` | Initial replica count. HPA overrides this at runtime when enabled. |
+| `ingestion.hpa.enabled` | `true` | Enable the HorizontalPodAutoscaler for ingestion. |
+| `ingestion.hpa.minReplicas` | `2` | HPA lower bound. |
+| `ingestion.hpa.maxReplicas` | `10` | HPA upper bound. |
+| `workers.replicas` | `2` | NATS consumer pod count. |
+| `workers.poolSize` | `10` | Per-pod goroutine pool size for NATS consumption. |
+| `api.replicas` | `2` | Query API replica count. |
+| `api.corsOrigin` | `*` | `Access-Control-Allow-Origin` for the query API. Lock this down to your dashboard origin in prod. |
+| `dashboard.replicas` | `2` | Dashboard pod count. |
+| `postgres.externalUrl` | *(empty)* | Single escape hatch. When set to a DSN, the bundled Postgres StatefulSet is not rendered and every service reads this DSN from the generated Secret. |
+| `postgres.password` | *(empty)* | Superuser password for the bundled StatefulSet. Ignored when `externalUrl` is set. |
+| `postgres.storage.size` | `20Gi` | PVC size for the bundled StatefulSet. |
+| `nats.replicas` | `3` | NATS StatefulSet replica count. |
+| `nats.jetstream.fileStore.size` | `10Gi` | PVC size per NATS replica. |
+| `ingress.enabled` | `false` | Render an Ingress that routes `/` to the dashboard, `/api` to the query API, and `/ingest` to the ingestion API. |
+| `ingress.className` | *(empty)* | `ingressClassName` on the Ingress resource. |
+| `ingress.host` | `flightdeck.local` | Host header routed by the Ingress. |
+| `ingress.tls` | `[]` | Pass through to the Ingress `tls:` stanza; typically one entry with a `secretName` populated by cert-manager. |
 
 ---
 
 ## Contributing
 
-Bug reports, provider requests, and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).
+Bug reports, provider requests, and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for dev setup, lint, test instructions, and the process for adding a new LLM provider. A `make test-smoke` target runs real LLM calls against a live stack for sensor regression checks (requires `ANTHROPIC_API_KEY` and `OPENAI_API_KEY`; under $0.05 per full run).
 
 ## License
 
 Apache 2.0. See [LICENSE](LICENSE).
+
+## Acknowledgements
+
+The fleet timeline UI was inspired by [agent-observe](https://github.com/simple10/agents-observe) by [@simple10](https://github.com/simple10), a great tool for observing individual Claude Code sessions. The sensor builds on the foundation of [tokencap](https://github.com/pykul/tokencap), an open source token budget enforcement library.

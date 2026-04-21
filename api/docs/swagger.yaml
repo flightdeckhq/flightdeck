@@ -147,6 +147,8 @@ definitions:
         type: string
       metric:
         type: string
+      partial_estimate:
+        type: boolean
       range:
         type: string
       series:
@@ -265,6 +267,12 @@ definitions:
         type: object
       session_id:
         type: string
+      tokens_cache_creation:
+        description: D100
+        type: integer
+      tokens_cache_read:
+        description: D100
+        type: integer
       tokens_input:
         type: integer
       tokens_output:
@@ -465,6 +473,17 @@ definitions:
         type: string
       token_limit:
         type: integer
+      token_name:
+        description: |-
+          TokenName is the human-readable name of the access_tokens row
+          that authenticated the session_start event (D095). Nullable:
+          tok_dev-authenticated sessions and pre-Phase-5 rows carry NULL.
+          Preserved across token revocation (sessions.token_id clears via
+          ON DELETE SET NULL but sessions.token_name is a static snapshot
+          so the dashboard can attribute historical sessions even after
+          the token row is gone). Mirrors the SessionListItem.TokenName
+          returned by GetSessions.
+        type: string
       tokens_used:
         type: integer
       warn_at_pct:
@@ -472,6 +491,8 @@ definitions:
     type: object
   store.SessionListItem:
     properties:
+      agent_type:
+        type: string
       capture_enabled:
         type: boolean
       context:
@@ -692,17 +713,17 @@ paths:
       description: Flexible GROUP BY analytics endpoint. Returns time series data
         grouped by dimension.
       parameters:
-      - description: 'Metric: tokens, sessions, latency_avg, policy_events (default:
-          tokens)'
+      - description: 'Metric: tokens, sessions, latency_avg, latency_p50, latency_p95,
+          policy_events, estimated_cost (default: tokens)'
         in: query
         name: metric
         type: string
-      - description: 'Dimension: flavor, model, framework, host, agent_type, team
-          (default: flavor)'
+      - description: 'Dimension: flavor, model, framework, host, agent_type, team,
+          provider (default: flavor)'
         in: query
         name: group_by
         type: string
-      - description: 'Time range: 7d, 30d, 90d, custom (default: 30d)'
+      - description: 'Time range: today, 7d, 30d, 90d, custom (default: 30d)'
         in: query
         name: range
         type: string
@@ -729,6 +750,11 @@ paths:
       - description: Filter to specific agent_type
         in: query
         name: filter_agent_type
+        type: string
+      - description: Filter to specific provider (anthropic, openai, google, xai,
+          mistral, meta, other)
+        in: query
+        name: filter_provider
         type: string
       produces:
       - application/json
@@ -920,7 +946,9 @@ paths:
   /v1/events:
     get:
       description: Returns events matching time range, flavor, event type, and session
-        filters with pagination.
+        filters with pagination. Supports optional ``before`` keyset cursor and ``order``
+        direction so the session drawer can paginate backwards in time when loading
+        older events for long-running stable sessions.
       parameters:
       - description: Start time (ISO 8601)
         in: query
@@ -942,6 +970,15 @@ paths:
       - description: Filter by session ID
         in: query
         name: session_id
+        type: string
+      - description: Keyset cursor (ISO 8601). When set, only rows with occurred_at
+          < before are returned. Pair with order=desc for newest-first drawer pagination.
+        in: query
+        name: before
+        type: string
+      - description: 'Sort order: asc (default) or desc'
+        in: query
+        name: order
         type: string
       - description: Max results (default 500, max 2000)
         in: query
@@ -1270,13 +1307,19 @@ paths:
   /v1/sessions/{id}:
     get:
       description: Returns session metadata (including effective policy thresholds)
-        and all events in chronological order
+        and events in chronological order. When ``events_limit`` is provided, the
+        N newest events are returned (still sorted ASC); the drawer uses this to cap
+        the initial fetch on long-running stable sessions.
       parameters:
       - description: Session UUID
         in: path
         name: id
         required: true
         type: string
+      - description: Return at most N newest events (1-1000). Omit for the full history.
+        in: query
+        name: events_limit
+        type: integer
       produces:
       - application/json
       responses:

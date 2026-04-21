@@ -1,0 +1,96 @@
+# Example production overrides. Deploy with:
+#   helm install flightdeck helm/ -f helm/values.prod.yaml \
+#     --set postgres.externalUrl=postgres://... \
+#     --set api.auth.jwtSecret=... \
+#     --set api.auth.adminPassword=...
+#
+# This file pins production-shaped defaults (replicas, resources, auth)
+# but leaves secrets and the external Postgres URL to the install command.
+
+ingestion:
+  replicas: 3
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+  hpa:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 20
+    targetCPUUtilizationPercentage: 70
+
+workers:
+  replicas: 3
+  poolSize: 20
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+
+api:
+  replicas: 3
+  env: "production"
+  auth:
+    adminEmail: "admin@example.com"
+    # jwtSecret and adminPassword must be supplied via --set or a secret file.
+    jwtSecret: ""
+    adminPassword: ""
+  corsOrigin: "https://flightdeck.example.com"
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+
+dashboard:
+  replicas: 2
+
+nats:
+  enabled: true
+  replicas: 3
+  jetstream:
+    enabled: true
+    fileStore:
+      size: "50Gi"
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: 1000m
+      memory: 2Gi
+
+postgres:
+  # Production deployments should supply an external managed Postgres via
+  # --set postgres.externalUrl=... The bundled StatefulSet is not HA and
+  # has no backup story in v0.3.0. Left empty here so the file stays valid
+  # for `helm template` runs without requiring a real secret.
+  externalUrl: ""
+  storage:
+    size: "50Gi"
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: 2000m
+      memory: 4Gi
+
+ingress:
+  enabled: true
+  className: nginx
+  host: flightdeck.example.com
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt
+  tls:
+    - secretName: flightdeck-tls
+      hosts:
+        - flightdeck.example.com

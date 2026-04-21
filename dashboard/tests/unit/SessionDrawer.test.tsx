@@ -56,6 +56,10 @@ vi.mock("@/hooks/useSession", () => ({
       error: null,
     };
   },
+  // Drawer's D113 pill-change handler calls invalidateSessionCache
+  // before re-fetching; the mock just needs to be a no-op so the
+  // drawer code path runs without a "not exported" module error.
+  invalidateSessionCache: vi.fn(),
 }));
 
 // Mock the fleet store so SessionDrawer's `customDirectives` lookup
@@ -74,11 +78,18 @@ vi.mock("@/lib/api", () => ({
   createDirective: vi.fn(() => Promise.resolve({ id: "dir-1" })),
   fetchEventContent: vi.fn(() => Promise.resolve(null)),
   triggerCustomDirective: vi.fn(() => Promise.resolve()),
+  // Default: no older events. D113 pagination tests below reassign
+  // this mock per case to exercise the merge-and-sort logic.
+  fetchOlderEvents: vi.fn(() =>
+    Promise.resolve({ events: [], total: 0, limit: 50, offset: 0, has_more: false }),
+  ),
 }));
 
-import { createDirective, triggerCustomDirective } from "@/lib/api";
+import { createDirective, fetchEventContent, triggerCustomDirective } from "@/lib/api";
 const mockTriggerCustomDirective =
   triggerCustomDirective as ReturnType<typeof vi.fn>;
+const mockFetchEventContent =
+  fetchEventContent as ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
   mockSessionOverride = {};
@@ -108,7 +119,7 @@ describe("SessionDrawer", () => {
     render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
     expect(screen.getByTestId("session-metadata-bar")).toBeInTheDocument();
     // Labels above the always-rendered cells
-    expect(screen.getByText("Flavor")).toBeInTheDocument();
+    expect(screen.getByText("Agent")).toBeInTheDocument();
     expect(screen.getByText("Host")).toBeInTheDocument();
     expect(screen.getByText("Started")).toBeInTheDocument();
     expect(screen.getByText("Duration")).toBeInTheDocument();
@@ -159,6 +170,23 @@ describe("SessionDrawer", () => {
     expect(screen.queryByTestId("metadata-os")).not.toBeInTheDocument();
     expect(
       screen.queryByTestId("metadata-orchestration"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("metadata Token cell renders the access token name when present", () => {
+    mockSessionOverride = { token_name: "Staging K8s" };
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    expect(screen.getByTestId("metadata-token-name")).toBeInTheDocument();
+    expect(screen.getByText("Token")).toBeInTheDocument();
+    expect(screen.getByText("Staging K8s")).toBeInTheDocument();
+  });
+
+  it("metadata Token cell is omitted when token_name is null", () => {
+    // Pre-Phase-5 sessions and tok_dev-opened sessions both carry
+    // null token_name; the cell should not render a "—" placeholder.
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    expect(
+      screen.queryByTestId("metadata-token-name"),
     ).not.toBeInTheDocument();
   });
 
@@ -222,6 +250,141 @@ describe("SessionDrawer", () => {
     expect(screen.queryByText("View Prompts →")).not.toBeInTheDocument();
   });
 
+  it("View Prompts on an LLM CALL opens detail view directly for that event", async () => {
+    // Supersedes Fix C (03792f5), which landed users on the list
+    // with the row highlighted. Supervisor redirected the UX: a
+    // user drilling from a specific Timeline row wants that row's
+    // detail, not a list stop that includes it. PromptsTab already
+    // had a selectedEventId branch rendering PromptViewer; the
+    // fix flips handleViewPrompts to set selectedEventId directly.
+    mockEventsOverride = eventsWithContent;
+    // Stub scrollIntoView -- jsdom doesn't implement it and the
+    // useEffect in PromptsTab would otherwise crash the test run.
+    Element.prototype.scrollIntoView = vi.fn();
+
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    const rows = screen.getAllByTestId("event-row");
+    // Reversed: row[0]=e3 (has_content=true, the target).
+    fireEvent.click(rows[0]);
+    fireEvent.click(screen.getByText("View Prompts →"));
+
+    // Detail view rendered: "Back to event list" button present,
+    // no prompts-row-* buttons (list is suppressed when
+    // selectedEventId is set). PromptViewer kicked off a fetch
+    // for the clicked event id.
+    expect(screen.getByText("← Back to event list")).toBeInTheDocument();
+    expect(screen.queryByTestId("prompts-row-e3")).not.toBeInTheDocument();
+    await waitFor(() => {
+      expect(mockFetchEventContent).toHaveBeenCalledWith("e3");
+    });
+  });
+
+  it("View Prompts on a tool_call opens detail view directly for that tool_call", async () => {
+    // Same contract for tool_call events, which carry content when
+    // the plugin captures tool inputs (see PromptsTab's
+    // contentEvents filter -- post_call OR tool_call with
+    // has_content).
+    mockEventsOverride = [
+      ...baseEvents,
+      {
+        id: "t1",
+        session_id: "s1",
+        flavor: "test",
+        event_type: "tool_call" as const,
+        model: null,
+        tokens_input: null,
+        tokens_output: null,
+        tokens_total: null,
+        latency_ms: null,
+        tool_name: "web_search",
+        has_content: true,
+        occurred_at: "2026-04-07T10:03:00Z",
+      },
+    ];
+    Element.prototype.scrollIntoView = vi.fn();
+
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    const rows = screen.getAllByTestId("event-row");
+    // Reversed: row[0]=tool_call (the target).
+    fireEvent.click(rows[0]);
+    fireEvent.click(screen.getByText("View Prompts →"));
+
+    expect(screen.getByText("← Back to event list")).toBeInTheDocument();
+    expect(screen.queryByTestId("prompts-row-t1")).not.toBeInTheDocument();
+    await waitFor(() => {
+      expect(mockFetchEventContent).toHaveBeenCalledWith("t1");
+    });
+  });
+
+  it("Back from detail returns to list with focused row highlighted and scrolled", () => {
+    // Preserves Fix C (03792f5) for the round-trip case: even
+    // though we now skip the list on arrival, clicking Back must
+    // still land on the list with the origin row highlighted and
+    // scrolled into view, so the user can navigate from there.
+    // Regression guard against clearing focusedPromptEventId when
+    // onSelectEvent(null) fires.
+    mockEventsOverride = eventsWithContent;
+    const scrollSpy = vi.fn();
+    Element.prototype.scrollIntoView = scrollSpy;
+
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    const rows = screen.getAllByTestId("event-row");
+    fireEvent.click(rows[0]);
+    fireEvent.click(screen.getByText("View Prompts →"));
+    // Detail view is on screen; now step back.
+    fireEvent.click(screen.getByText("← Back to event list"));
+
+    const focusRow = screen.getByTestId("prompts-row-e3");
+    expect(focusRow.getAttribute("data-focused")).toBe("true");
+    expect(focusRow.style.borderLeft).toContain("var(--accent)");
+    expect(focusRow.style.background).toContain("var(--accent-glow)");
+
+    // scrollIntoView was invoked on the focused list row once the
+    // list remounted (PromptsTab useEffect re-runs when
+    // selectedEventId transitions back to null).
+    expect(scrollSpy).toHaveBeenCalled();
+    const lastCall = scrollSpy.mock.calls.at(-1)!;
+    expect(lastCall[0]).toMatchObject({ behavior: "smooth", block: "center" });
+  });
+
+  it("unfocused prompt rows have no highlight treatment after Back navigation", () => {
+    // The focus CSS must be scoped to exactly one row. With the
+    // new routing the user only sees the list after Back, so this
+    // assertion now runs post-Back rather than post-View-Prompts.
+    mockEventsOverride = [
+      ...eventsWithContent,
+      {
+        id: "e6",
+        session_id: "s1",
+        flavor: "test",
+        event_type: "post_call" as const,
+        model: "claude-sonnet-4-20250514",
+        tokens_input: 10,
+        tokens_output: 5,
+        tokens_total: 15,
+        latency_ms: 100,
+        tool_name: null,
+        has_content: true,
+        occurred_at: "2026-04-07T10:05:00Z",
+      },
+    ];
+    Element.prototype.scrollIntoView = vi.fn();
+
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    const rows = screen.getAllByTestId("event-row");
+    // Reversed: row[0]=e6, row[1]=e3. Click into e3 → View Prompts
+    // → Back, so the list view is the one we assert against.
+    fireEvent.click(rows[1]);
+    fireEvent.click(screen.getByText("View Prompts →"));
+    fireEvent.click(screen.getByText("← Back to event list"));
+
+    const focusRow = screen.getByTestId("prompts-row-e3");
+    const otherRow = screen.getByTestId("prompts-row-e6");
+    expect(focusRow.getAttribute("data-focused")).toBe("true");
+    expect(otherRow.getAttribute("data-focused")).toBeNull();
+    expect(otherRow.style.background).toBe("");
+  });
+
   it("does not show kill button for closed session", () => {
     mockSessionOverride = { state: "closed" };
     render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
@@ -244,6 +407,21 @@ describe("SessionDrawer", () => {
     expect(indicator.className).toContain("animate-pulse");
     expect(indicator).toBeDisabled();
     expect(indicator.getAttribute("aria-label")).toBe("Shutdown in progress");
+  });
+
+  it("hides Stop Agent button for observer-only sessions (claude-code)", () => {
+    // Claude Code hooks fire after the event; the plugin cannot
+    // interrupt the agent. context.supports_directives=false must
+    // hide the kill switch so operators aren't misled into clicking
+    // a button that silently no-ops.
+    mockSessionOverride = {
+      state: "active",
+      has_pending_directive: false,
+      context: { supports_directives: false },
+    };
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    expect(screen.queryByText("Stop Agent")).not.toBeInTheDocument();
+    expect(screen.queryByText("Shutdown pending")).not.toBeInTheDocument();
   });
 
   it("shows enabled Stop Agent button for active session", () => {
@@ -305,6 +483,34 @@ describe("SessionDrawer", () => {
     // The content event should show as a clickable badge row
     const badges = screen.getAllByText("LLM CALL");
     expect(badges.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("sorts Prompts tab rows newest-first to match Timeline", () => {
+    // Regression guard for the mismatch reported on e4a0b990:
+    // Timeline rendered descending but PromptsTab rendered ascending
+    // because it received the un-reversed drawerEvents. Both tabs
+    // should now consume the same displayEvents (reversed) array.
+    mockEventsOverride = [
+      { id: "p1", session_id: "s1", flavor: "test", event_type: "post_call" as const, model: "m", tokens_input: 1, tokens_output: 1, tokens_total: 2, latency_ms: 1, tool_name: null, has_content: true, occurred_at: "2026-04-07T10:00:00Z" },
+      { id: "p2", session_id: "s1", flavor: "test", event_type: "post_call" as const, model: "m", tokens_input: 1, tokens_output: 1, tokens_total: 2, latency_ms: 1, tool_name: null, has_content: true, occurred_at: "2026-04-07T10:01:00Z" },
+      { id: "p3", session_id: "s1", flavor: "test", event_type: "post_call" as const, model: "m", tokens_input: 1, tokens_output: 1, tokens_total: 2, latency_ms: 1, tool_name: null, has_content: true, occurred_at: "2026-04-07T10:02:00Z" },
+    ];
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    fireEvent.click(screen.getByText("Prompts"));
+    // rowRefs are registered by id; the rendered button elements
+    // carry data-testid="prompts-row-<id>". Asking the DOM for all
+    // three returns them in document order, which is render order.
+    const rows = [
+      screen.getByTestId("prompts-row-p1"),
+      screen.getByTestId("prompts-row-p2"),
+      screen.getByTestId("prompts-row-p3"),
+    ];
+    const positions = rows.map((r) =>
+      Array.from(r.parentElement!.children).indexOf(r),
+    );
+    // Newest first: p3 (10:02) should come before p2 (10:01) before p1 (10:00).
+    expect(positions[2]).toBeLessThan(positions[1]);
+    expect(positions[1]).toBeLessThan(positions[0]);
   });
 
   it("switches back to Timeline tab", () => {
@@ -607,5 +813,218 @@ describe("SessionDrawer", () => {
     // omitted so the worker fans the directive to ONLY this session.
     expect(call.session_id).toBe("s1-abcdef-1234");
     expect(call.flavor).toBeUndefined();
+  });
+});
+
+// -----------------------------------------------------------------------
+// D113: drawer events pagination
+// -----------------------------------------------------------------------
+
+import { fetchOlderEvents } from "@/lib/api";
+import { invalidateSessionCache } from "@/hooks/useSession";
+
+const mockFetchOlderEvents = fetchOlderEvents as ReturnType<typeof vi.fn>;
+const mockInvalidateSessionCache = invalidateSessionCache as ReturnType<typeof vi.fn>;
+
+describe("SessionDrawer pagination (D113)", () => {
+  beforeEach(() => {
+    mockSessionOverride = {};
+    mockEventsOverride = null;
+    mockAttachments = [];
+    mockFetchOlderEvents.mockReset();
+    mockFetchOlderEvents.mockResolvedValue({
+      events: [],
+      total: 0,
+      limit: 50,
+      offset: 0,
+      has_more: false,
+    });
+    mockInvalidateSessionCache.mockReset();
+  });
+
+  it("renders the events-limit pill with 50 and 100 and 100 selected by default", () => {
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    expect(screen.getByTestId("events-limit-pills")).toBeInTheDocument();
+    const pill100 = screen.getByTestId("events-limit-pill-100");
+    const pill50 = screen.getByTestId("events-limit-pill-50");
+    expect(pill100).toHaveAttribute("aria-pressed", "true");
+    expect(pill50).toHaveAttribute("aria-pressed", "false");
+  });
+
+  it("changing the pill invalidates the cache and moves selection", () => {
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    fireEvent.click(screen.getByTestId("events-limit-pill-50"));
+    expect(mockInvalidateSessionCache).toHaveBeenCalledWith("s1");
+    expect(screen.getByTestId("events-limit-pill-50")).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+  });
+
+  it("show-older button is hidden when the initial fetch returns fewer than the cap", () => {
+    // baseEvents (2 events) is well under the default cap of 100, so
+    // the seed effect in SessionDrawer sets hasMoreOlder=false and
+    // the button never renders.
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    expect(screen.queryByTestId("show-older-events")).not.toBeInTheDocument();
+  });
+
+  it("show-older button appears when the initial fetch saturates the cap", () => {
+    // Fabricate 100 events so the seed effect treats has-more as true.
+    const saturated = Array.from({ length: 100 }, (_, i) => ({
+      id: `bulk-${i}`,
+      session_id: "s1",
+      flavor: "test",
+      event_type: "post_call" as const,
+      model: "claude-sonnet-4-20250514",
+      tokens_input: 10,
+      tokens_output: 5,
+      tokens_total: 15,
+      latency_ms: 100,
+      tool_name: null,
+      has_content: false,
+      occurred_at: new Date(1700000000000 + i * 1000).toISOString(),
+    }));
+    mockEventsOverride = saturated;
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    expect(screen.getByTestId("show-older-events")).toBeInTheDocument();
+  });
+
+  it("clicking show-older calls fetchOlderEvents with the oldest visible timestamp", async () => {
+    // Drawer is cache-aware. The cache read path prefers eventsCache
+    // over data.events, so we seed it with a saturated list and pull
+    // the oldest occurred_at from index 0 to assert the cursor.
+    const { eventsCache } = await import("@/hooks/useSessionEvents");
+    const saturated = Array.from({ length: 100 }, (_, i) => ({
+      id: `sat-${i}`,
+      session_id: "s1",
+      flavor: "test",
+      event_type: "post_call" as const,
+      model: "claude-sonnet-4-20250514",
+      tokens_input: 10,
+      tokens_output: 5,
+      tokens_total: 15,
+      latency_ms: 100,
+      tool_name: null,
+      has_content: false,
+      occurred_at: new Date(1700000000000 + i * 1000).toISOString(),
+    }));
+    eventsCache.set("s1", saturated);
+    mockEventsOverride = saturated;
+
+    mockFetchOlderEvents.mockResolvedValueOnce({
+      events: [],
+      total: 0,
+      limit: 100,
+      offset: 0,
+      has_more: false,
+    });
+
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    fireEvent.click(screen.getByTestId("show-older-events"));
+
+    await waitFor(() => {
+      expect(mockFetchOlderEvents).toHaveBeenCalledTimes(1);
+    });
+    const [sid, before, limit] = mockFetchOlderEvents.mock.calls[0];
+    expect(sid).toBe("s1");
+    expect(before).toBe(saturated[0].occurred_at);
+    expect(limit).toBe(100);
+
+    eventsCache.delete("s1");
+  });
+
+  it("merging paginated results dedupes by event id and keeps ASC order", async () => {
+    const { eventsCache } = await import("@/hooks/useSessionEvents");
+    // Seed the cache with two events, occurred_at T+10 and T+11.
+    const t10 = new Date(1700000000000).toISOString();
+    const t11 = new Date(1700000000000 + 1000).toISOString();
+    const head = [
+      { id: "head-1", session_id: "s1", flavor: "test", event_type: "session_start" as const, model: null, tokens_input: null, tokens_output: null, tokens_total: null, latency_ms: null, tool_name: null, has_content: false, occurred_at: t10 },
+      { id: "head-2", session_id: "s1", flavor: "test", event_type: "post_call" as const, model: "claude-sonnet-4-20250514", tokens_input: 10, tokens_output: 5, tokens_total: 15, latency_ms: 100, tool_name: null, has_content: false, occurred_at: t11 },
+    ];
+    // Saturate so the show-older button renders.
+    const filler = Array.from({ length: 98 }, (_, i) => ({
+      id: `fill-${i}`,
+      session_id: "s1",
+      flavor: "test",
+      event_type: "post_call" as const,
+      model: "claude-sonnet-4-20250514",
+      tokens_input: 10,
+      tokens_output: 5,
+      tokens_total: 15,
+      latency_ms: 100,
+      tool_name: null,
+      has_content: false,
+      occurred_at: new Date(1700000000000 + 2000 + i * 1000).toISOString(),
+    }));
+    const seeded = [...head, ...filler];
+    eventsCache.set("s1", seeded);
+    mockEventsOverride = seeded;
+
+    // Server returns one new older event (t09) plus a duplicate of
+    // head-1 the merge must drop.
+    const t09 = new Date(1700000000000 - 1000).toISOString();
+    mockFetchOlderEvents.mockResolvedValueOnce({
+      events: [
+        { id: "older-1", session_id: "s1", flavor: "test", event_type: "session_start", model: null, tokens_input: null, tokens_output: null, tokens_total: null, latency_ms: null, tool_name: null, has_content: false, occurred_at: t09 },
+        { ...head[0] }, // duplicate id
+      ],
+      total: 2,
+      limit: 100,
+      offset: 0,
+      has_more: false,
+    });
+
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    fireEvent.click(screen.getByTestId("show-older-events"));
+
+    await waitFor(() => {
+      const merged = eventsCache.get("s1")!;
+      // Seeded 100 + 1 new = 101 (dup dropped).
+      expect(merged).toHaveLength(101);
+      // ASC sort: index 0 is the new older event.
+      expect(merged[0].id).toBe("older-1");
+      expect(merged[0].occurred_at).toBe(t09);
+    });
+
+    eventsCache.delete("s1");
+  });
+
+  it("show-older hides when the server reports has_more=false", async () => {
+    const { eventsCache } = await import("@/hooks/useSessionEvents");
+    const saturated = Array.from({ length: 100 }, (_, i) => ({
+      id: `sat2-${i}`,
+      session_id: "s1",
+      flavor: "test",
+      event_type: "post_call" as const,
+      model: "claude-sonnet-4-20250514",
+      tokens_input: 10,
+      tokens_output: 5,
+      tokens_total: 15,
+      latency_ms: 100,
+      tool_name: null,
+      has_content: false,
+      occurred_at: new Date(1700000000000 + i * 1000).toISOString(),
+    }));
+    eventsCache.set("s1", saturated);
+    mockEventsOverride = saturated;
+    mockFetchOlderEvents.mockResolvedValueOnce({
+      events: [],
+      total: 0,
+      limit: 100,
+      offset: 0,
+      has_more: false,
+    });
+
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    const button = screen.getByTestId("show-older-events");
+    fireEvent.click(button);
+
+    await waitFor(() => {
+      expect(screen.queryByTestId("show-older-events")).not.toBeInTheDocument();
+    });
+
+    eventsCache.delete("s1");
   });
 });

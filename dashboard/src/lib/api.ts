@@ -51,8 +51,42 @@ export function fetchFleet(limit = 50, offset = 0, agentType?: string): Promise<
   return fetchJson<FleetResponse>(url);
 }
 
-export function fetchSession(id: string): Promise<SessionDetail> {
-  return fetchJson<SessionDetail>(`/v1/sessions/${id}`);
+/**
+ * Fetch session detail. When ``eventsLimit`` is provided the server
+ * returns at most the N newest events (still sorted ASC). The drawer
+ * uses this to cap the initial load on long-running stable sessions
+ * (D113); Fleet-side callers continue to call without the arg and
+ * receive the full history.
+ */
+export function fetchSession(id: string, eventsLimit?: number): Promise<SessionDetail> {
+  const qs = eventsLimit ? `?events_limit=${eventsLimit}` : "";
+  return fetchJson<SessionDetail>(`/v1/sessions/${id}${qs}`);
+}
+
+/**
+ * Fetch older events for a session via the keyset-cursor variant of
+ * GET /v1/events. ``before`` is an RFC 3339 timestamp (typically the
+ * oldest occurred_at currently visible in the drawer); the server
+ * returns at most ``limit`` rows with occurred_at < before, ordered
+ * newest-first. The drawer merges the result into the shared
+ * eventsCache and re-sorts ASC.
+ */
+export function fetchOlderEvents(
+  sessionId: string,
+  before: string,
+  limit: number,
+): Promise<BulkEventsResponse> {
+  // ``from`` is required by the endpoint but a keyset-by-before query
+  // is already scoped to occurred_at < before; passing the Unix epoch
+  // makes the time-window filter a no-op so the cursor is the only
+  // bound that matters.
+  const sp = new URLSearchParams();
+  sp.set("from", "1970-01-01T00:00:00Z");
+  sp.set("session_id", sessionId);
+  sp.set("before", before);
+  sp.set("order", "desc");
+  sp.set("limit", String(limit));
+  return fetchJson<BulkEventsResponse>(`/v1/events?${sp.toString()}`);
 }
 
 export async function fetchPolicies(): Promise<Policy[]> {
@@ -184,12 +218,40 @@ export interface SessionsParams {
   state?: string[];
   flavor?: string[];
   /**
+   * Filter by sessions.agent_type. Repeatable: OR within the group,
+   * AND with every other filter. Values are free-form text and
+   * unvalidated at the API layer -- a typo just yields an empty
+   * result.
+   */
+  agent_type?: string[];
+  /**
    * Filter on sessions.context.frameworks[] -- repeatable. Values
    * are the full name/version strings emitted by the sensor's
    * FrameworkCollector (e.g. "langgraph/1.1.6"). Server side this
    * maps to the ?| JSONB-array-contains-any operator.
    */
   framework?: string[];
+  /**
+   * Generic scalar-key context filters. Every key listed here maps
+   * to a repeatable query param on ``/v1/sessions`` and a
+   * ``context->>'<key>' IN (...)`` WHERE fragment on the server.
+   * Keys outside this whitelist are silently dropped by the handler
+   * -- safe against typos and injection. Keep in sync with
+   * api/internal/store/sessions.go::AllowedContextFilterKeys.
+   */
+  user?: string[];
+  os?: string[];
+  arch?: string[];
+  hostname?: string[];
+  process_name?: string[];
+  node_version?: string[];
+  python_version?: string[];
+  git_branch?: string[];
+  /** Filter-only (no facet). Powers deep-link triage of a single
+   *  commit across the fleet. */
+  git_commit?: string[];
+  git_repo?: string[];
+  orchestration?: string[];
   model?: string;
   sort?: string;
   order?: string;
@@ -208,8 +270,32 @@ export async function fetchSessions(params: SessionsParams, signal?: AbortSignal
   if (params.flavor) {
     for (const f of params.flavor) sp.append("flavor", f);
   }
+  if (params.agent_type) {
+    for (const a of params.agent_type) sp.append("agent_type", a);
+  }
   if (params.framework) {
     for (const fw of params.framework) sp.append("framework", fw);
+  }
+  // Generic scalar-key context filters. Iterated via the shared key
+  // list so adding a new key is a one-line change here plus the
+  // whitelist update on the server.
+  for (const key of [
+    "user",
+    "os",
+    "arch",
+    "hostname",
+    "process_name",
+    "node_version",
+    "python_version",
+    "git_branch",
+    "git_commit",
+    "git_repo",
+    "orchestration",
+  ] as const) {
+    const values = params[key];
+    if (values) {
+      for (const v of values) sp.append(key, v);
+    }
   }
   if (params.model) sp.set("model", params.model);
   if (params.sort) sp.set("sort", params.sort);

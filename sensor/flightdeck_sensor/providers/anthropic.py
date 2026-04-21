@@ -70,6 +70,13 @@ class AnthropicProvider:
 
         Handles both sync ``Message`` objects and raw response wrappers.
         Returns ``TokenUsage(0, 0)`` on any failure -- never raises.
+
+        Cache tokens (``cache_read_input_tokens`` and
+        ``cache_creation_input_tokens``) are included in the ``input_tokens``
+        total so policy/budget arithmetic sees every billed input token, AND
+        also reported as separate ``cache_read_tokens`` /
+        ``cache_creation_tokens`` fields on :class:`TokenUsage` so cache
+        economics are visible in analytics (D100).
         """
         try:
             obj = response
@@ -80,21 +87,21 @@ class AnthropicProvider:
 
             usage = getattr(obj, "usage", None)
             if usage is None:
-                return TokenUsage(input_tokens=0, output_tokens=0)
+                return TokenUsage()
 
             input_tokens = getattr(usage, "input_tokens", 0) or 0
             output_tokens = getattr(usage, "output_tokens", 0) or 0
-
-            # Include cache tokens in input count for accurate totals
             cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
-            cache_write = getattr(usage, "cache_creation_input_tokens", 0) or 0
+            cache_creation = getattr(usage, "cache_creation_input_tokens", 0) or 0
 
             return TokenUsage(
-                input_tokens=input_tokens + cache_read + cache_write,
+                input_tokens=input_tokens + cache_read + cache_creation,
                 output_tokens=output_tokens,
+                cache_read_tokens=cache_read,
+                cache_creation_tokens=cache_creation,
             )
         except Exception:
-            return TokenUsage(input_tokens=0, output_tokens=0)
+            return TokenUsage()
 
     def extract_content(
         self,

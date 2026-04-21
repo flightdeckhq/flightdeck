@@ -1,0 +1,11 @@
+.DS_Store
+.git/
+.gitignore
+.bak
+.swp
+*~
+.project
+.idea/
+*.tmproj
+.vscode/
+Makefile

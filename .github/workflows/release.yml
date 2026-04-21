@@ -90,6 +90,17 @@ jobs:
             flightdeckhq/flightdeck-workers:${{ steps.version.outputs.VERSION }}
             flightdeckhq/flightdeck-workers:latest
 
+      # pricing.yaml is the canonical source of truth at the repo root
+      # (D102). api/Dockerfile bakes it into the image at
+      # /etc/flightdeck/pricing.yaml via `COPY pricing.yaml ...`, which
+      # resolves relative to the Docker build context. The context
+      # below is ./api, so stage the file into the context without
+      # relocating the source of truth or broadening the context to
+      # the whole repo. The runner's working tree is ephemeral, so the
+      # staged copy is discarded at the end of the job.
+      - name: Stage pricing.yaml into api build context
+        run: cp pricing.yaml api/pricing.yaml
+
       - name: Build and push api
         uses: docker/build-push-action@v6
         with:

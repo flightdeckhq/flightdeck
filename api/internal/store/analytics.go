@@ -281,7 +281,6 @@ func (s *Store) QueryAnalytics(ctx context.Context, params AnalyticsParams) (*An
 		// join, add it specifically for this filter.
 		if spec.baseTable == "events" && !needsJoin {
 			fromClause = "events e JOIN sessions s ON e.session_id = s.session_id"
-			needsJoin = true
 		}
 		aliasForFilter := "s"
 		if spec.baseTable == "sessions" {

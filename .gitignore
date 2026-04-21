@@ -12,6 +12,7 @@ build/
 
 # Go
 bin/
+tmp/
 
 # Node
 node_modules/

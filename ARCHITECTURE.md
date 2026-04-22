@@ -2376,10 +2376,12 @@ DECISIONS.md D073-D079 for the rationale.
   agents in one process, each with its own Session) are NOT
   supported in v1. Resolution requires an architectural decision
   (Session-handle API change, per-thread storage, or per-flavor
-  map). Tracked for Phase 5; see `KNOWN_ISSUES.md` and D086.
-  `tests/integration/test_sensor_e2e.py::test_pattern_c_ki15_singleton_limitation`
-  documents the current behaviour and will fail loudly when KI15 is
-  resolved, signalling that the test should be updated.
+  map). Declared won't-fix for v1 (see D086 and D091); the framework
+  coverage bullet of the Roadmap in `README.md` is the home for any
+  follow-up. `tests/integration/test_sensor_e2e.py::test_pattern_c_ki15_singleton_limitation`
+  documents the current behaviour and will fail loudly if the
+  multi-Session model ever lands, signalling that the test should
+  be updated.
 
 ### Sensor → Ingestion -- session_start payload extension
 

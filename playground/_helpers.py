@@ -50,14 +50,20 @@ def init_sensor(
 
     Env overrides: FLIGHTDECK_SERVER (default http://localhost:4000/ingest),
     FLIGHTDECK_TOKEN (default tok_dev), FLIGHTDECK_API_URL (derived).
-    A plugin-style FLIGHTDECK_SERVER (no /ingest suffix) is normalised
-    so the Claude Code plugin's env doesn't break the sensor.
+
+    KI20: the sensor's ``init()`` now normalises a plugin-style
+    ``FLIGHTDECK_SERVER`` (no ``/ingest`` suffix) on its own, so this
+    helper no longer needs to. We still compute ``api_url`` by replacing
+    ``/ingest`` with ``/api`` for the default case so the
+    ``assert_event_landed`` caller in this module has a base URL to
+    hit without another env-var override.
     """
     server = os.environ.get("FLIGHTDECK_SERVER", "http://localhost:4000/ingest")
-    if "/ingest" not in server:
-        server = server.rstrip("/") + "/ingest"
-        os.environ["FLIGHTDECK_SERVER"] = server
-    api_url = os.environ.get("FLIGHTDECK_API_URL") or server.replace("/ingest", "/api")
+    api_url = os.environ.get("FLIGHTDECK_API_URL") or (
+        server.rstrip("/").replace("/ingest", "/api")
+        if "/ingest" in server
+        else server.rstrip("/") + "/api"
+    )
 
     # Identity propagation: the sensor reads AGENT_FLAVOR / AGENT_TYPE
     # from env, not kwargs. Set them explicitly so every playground

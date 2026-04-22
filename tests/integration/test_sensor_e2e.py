@@ -2203,10 +2203,10 @@ def test_pattern_c_ki15_singleton_limitation(
     should NOT "fix" it without resolving KI15 first (the resolution
     is a Session-handle API change tracked for Phase 5).
 
-    If this assertion ever flips -- e.g. if KI15 has been resolved
-    and the sensor now supports per-thread Sessions -- update this
-    test to verify the new behaviour and remove KI15 from
-    KNOWN_ISSUES.md.
+    If this assertion ever flips -- e.g. if per-thread Sessions
+    become supported -- update this test to verify the new behaviour.
+    The framework-coverage bullet of the Roadmap in README.md is the
+    home for any follow-up.
     """
     flavor_a = f"e2e-ki15-a-{uuid.uuid4().hex[:8]}"
     flavor_b = f"e2e-ki15-b-{uuid.uuid4().hex[:8]}"

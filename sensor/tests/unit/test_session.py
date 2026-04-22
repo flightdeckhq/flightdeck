@@ -391,3 +391,92 @@ def test_post_event_attached_logs_info_once(
     ]
     assert info_lines == []
     session.end()
+
+
+# ---------------------------------------------------------------------
+# KI20 -- FLIGHTDECK_SERVER URL normalization at init()
+# ---------------------------------------------------------------------
+#
+# The Claude Code plugin uses FLIGHTDECK_SERVER without the /ingest
+# suffix (it appends the path itself). A developer running both the
+# plugin and a sensor script on one machine used to hit a silent 404
+# because the sensor required the suffix and the plugin's env
+# overrode any kwarg. The sensor now appends /ingest when missing --
+# these tests lock that behaviour in.
+
+
+def test_init_appends_ingest_suffix_when_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Server URL without /ingest gets the suffix appended.
+
+    Verifies via get_status() after init -- SensorConfig.server
+    should carry the normalized URL with /ingest, regardless of
+    whether the original input had it.
+    """
+    import flightdeck_sensor
+
+    monkeypatch.delenv("FLIGHTDECK_SERVER", raising=False)
+    monkeypatch.delenv("FLIGHTDECK_TOKEN", raising=False)
+    flightdeck_sensor.teardown()
+    flightdeck_sensor.init(server="http://stack.internal", token="tok", quiet=True)
+    try:
+        assert flightdeck_sensor._session is not None
+        assert (
+            flightdeck_sensor._session.config.server == "http://stack.internal/ingest"
+        )
+    finally:
+        flightdeck_sensor.teardown()
+
+
+def test_init_preserves_ingest_suffix_when_present(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Server URL that already ends with /ingest is left unchanged.
+
+    Idempotency: a caller that passed the canonical form keeps it
+    exactly -- no double-append, no trailing slash games.
+    """
+    import flightdeck_sensor
+
+    monkeypatch.delenv("FLIGHTDECK_SERVER", raising=False)
+    monkeypatch.delenv("FLIGHTDECK_TOKEN", raising=False)
+    flightdeck_sensor.teardown()
+    flightdeck_sensor.init(
+        server="http://stack.internal/ingest", token="tok", quiet=True,
+    )
+    try:
+        assert flightdeck_sensor._session is not None
+        assert (
+            flightdeck_sensor._session.config.server == "http://stack.internal/ingest"
+        )
+    finally:
+        flightdeck_sensor.teardown()
+
+
+def test_init_preserves_ingest_with_trailing_slash(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Server URL with /ingest/ (trailing slash) is left unchanged.
+
+    The normalization check is ``if "/ingest" not in server`` -- a
+    trailing slash after /ingest is still a containment match so the
+    suffix is not double-appended. The trailing slash itself is
+    preserved verbatim (callers occasionally intend it).
+    """
+    import flightdeck_sensor
+
+    monkeypatch.delenv("FLIGHTDECK_SERVER", raising=False)
+    monkeypatch.delenv("FLIGHTDECK_TOKEN", raising=False)
+    flightdeck_sensor.teardown()
+    flightdeck_sensor.init(
+        server="http://stack.internal/ingest/", token="tok", quiet=True,
+    )
+    try:
+        assert flightdeck_sensor._session is not None
+        assert (
+            flightdeck_sensor._session.config.server
+            == "http://stack.internal/ingest/"
+        )
+    finally:
+        flightdeck_sensor.teardown()

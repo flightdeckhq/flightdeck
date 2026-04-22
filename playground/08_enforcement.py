@@ -32,12 +32,15 @@ def _api(method, path, body=None):
     return json.loads(raw) if raw else None
 def main() -> None:
     session_id = str(uuid.uuid4())
-    flavor = f"playground-08-{uuid.uuid4().hex[:6]}"
-    os.environ["AGENT_FLAVOR"] = flavor
+    # Hex suffix is load-bearing -- this script creates a flavor-scoped
+    # policy and asserts the BLOCK threshold fires for THIS flavor's
+    # first call. Two concurrent runs with the same flavor would share
+    # one policy row and one budget, so each run gets its own.
+    flavor = f"playground-enforcement-{uuid.uuid4().hex[:6]}"
     policy = _api("POST", "/v1/policies", {"scope": "flavor", "scope_value": flavor,
         "token_limit": 20, "block_at_pct": 50})
     try:
-        init_sensor(session_id)
+        init_sensor(session_id, flavor=flavor)
         flightdeck_sensor.patch(providers=["anthropic"], quiet=True)
         print(f"[playground:08_enforcement] session_id={session_id} flavor={flavor}")
         c = anthropic.Anthropic()

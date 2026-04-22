@@ -27,11 +27,21 @@ MODEL, HI = "claude-haiku-4-5-20251001", [{"role": "user", "content": "hi"}]
 def main():
     print("[playground:11_unavailability]")
 
+    # Declare identity via env so the sensor picks it up on each init
+    # call below. CLAUDE.md rule 40a sub-rule A: meaningful flavor +
+    # agent_type even though the control plane is dead for this test
+    # and no events ever land. Consistency beats exceptions -- if a
+    # future run against a LIVE server accidentally uses this script's
+    # env, the session still shows up as ``playground-unavailability``
+    # rather than ``unknown``.
+    os.environ["AGENT_FLAVOR"] = "playground-unavailability"
+    os.environ["AGENT_TYPE"] = "coding"
+
     # 1) continue: init + LLM call succeed against a dead control plane.
     os.environ.pop("FLIGHTDECK_SERVER", None)
     os.environ["FLIGHTDECK_UNAVAILABLE_POLICY"] = "continue"
     flightdeck_sensor.init(server=DEAD, token="tok_dev",
-        session_id=str(uuid.uuid4()), quiet=True)
+        session_id=str(uuid.uuid4()), capture_prompts=True, quiet=True)
     flightdeck_sensor.patch(providers=["anthropic"], quiet=True)
     anthropic.Anthropic().messages.create(model=MODEL, max_tokens=5, messages=HI)
     print_result("continue + dead URL: LLM call succeeds", True, 0)
@@ -41,7 +51,7 @@ def main():
     os.environ["FLIGHTDECK_UNAVAILABLE_POLICY"] = "halt"
     try:
         flightdeck_sensor.init(server=DEAD, token="tok_dev",
-            session_id=str(uuid.uuid4()), quiet=True)
+            session_id=str(uuid.uuid4()), capture_prompts=True, quiet=True)
         print_result("halt + dead URL: init() raises", False, 0, "no exception")
         flightdeck_sensor.teardown()
         sys.exit(1)

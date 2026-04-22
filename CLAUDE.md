@@ -184,6 +184,74 @@
 
 ---
 
+## Live Stack Verification Rule
+
+40a. **Any new runtime code path must be exercised against the live dev stack
+     before claiming it works.** Passing unit tests with mocks is insufficient
+     evidence on its own. A playground script or smoke test that pytest never
+     executes -- real API calls, real dev stack, real event persistence -- is
+     the verification standard.
+
+     Applies to:
+     - New sensor framework interceptors (Anthropic, OpenAI, litellm, and every
+       future addition).
+     - New playground scripts.
+     - New worker code paths (state transitions, revive logic, session guards).
+     - New dashboard behavior where the claim is user-facing ("state revives
+       on event", "filter composes with flavor").
+     - Any "this should work" claim that unit tests alone can't verify.
+
+     Does NOT apply to:
+     - Pure refactors where behavior is identical and tests pass.
+     - Docs-only changes.
+     - Type-only fixes.
+
+     If a live-run is genuinely not feasible (requires production credentials,
+     or the dev stack can't exercise the path), flag explicitly in the commit
+     body:
+
+        Not verified against live stack because <reason>. Unit tests cover
+        <paths>; live verification deferred to <mechanism>.
+
+     Never silently claim verification that wasn't done. Mock-only coverage
+     has shipped real bugs in this repo (KI21 pre-fix, workers binary pre-D105
+     drift, KI24 Node-20 annotations). The rule is the lesson.
+
+40a.A. **Every playground script must declare a meaningful ``agent_type`` and
+     ``flavor``.** Never ``"unknown"``, never empty, never inherited defaults.
+     Convention:
+     - ``agent_type = "coding"`` (dev smoke matching the D114 vocabulary)
+     - ``flavor = "playground-<script-name>"``
+
+     Enforced by ``playground/_helpers.py::init_sensor`` -- ``flavor`` is a
+     required keyword-only parameter with no default, ``agent_type`` defaults
+     to ``"coding"``. Scripts that need a flavor-scoped policy or directive
+     (currently ``07_directives.py``, ``08_enforcement.py``) append a hex
+     suffix for per-run uniqueness (``playground-directives-a1b2c3``).
+
+     Without this rule every playground run lands as ``flavor="unknown"`` /
+     ``agent_type="autonomous"`` -- the sensor's pre-D114 defaults -- which
+     makes the Fleet view unreadable and violates the agent_type vocabulary
+     lock.
+
+40a.B. **Every playground script must enable maximum capture.**
+     ``capture_prompts=True`` is the default in
+     ``playground/_helpers.py::init_sensor``. Any future sensor capture flag
+     (currently only ``capture_prompts`` exists) defaults to its most
+     expansive setting in the helper. Playground is the highest-fidelity
+     smoke surface -- it demonstrates what the sensor can see, not a minimal
+     happy path.
+
+     The one legitimate override is ``09_capture.py`` which exercises the
+     ``capture_prompts=False`` / ``True`` matrix explicitly to verify the
+     ``GET /v1/events/{id}/content`` 404-vs-200 contract. Any other script
+     that turns capture off needs a commit-body justification.
+
+     Both sub-rules inherit from rule 40a. Any new playground script must
+     satisfy both at creation.
+
+---
+
 ## Living Document Rules
 
 41. **ARCHITECTURE.md is a living document, not a contract carved in stone.**

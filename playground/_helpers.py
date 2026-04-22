@@ -14,8 +14,39 @@ from typing import Any
 import flightdeck_sensor
 
 
-def init_sensor(session_id: str, **overrides: Any) -> None:
+def init_sensor(
+    session_id: str,
+    *,
+    flavor: str,
+    agent_type: str = "coding",
+    capture_prompts: bool = True,
+    **overrides: Any,
+) -> None:
     """flightdeck_sensor.init() with playground defaults.
+
+    Required keyword-only ``flavor`` -- every playground script must
+    declare a meaningful agent identity (CLAUDE.md rule 40a / sub-rule
+    A). No default here because "one size fits all" would re-introduce
+    the ``flavor="unknown"`` failure mode this signature exists to
+    prevent. Convention: ``playground-<script-name>``.
+
+    ``agent_type`` defaults to ``"coding"`` -- playground scripts are
+    developer-facing smoke, matching the D114 vocabulary for
+    developer-driven sessions. Override only if the script is
+    exercising a non-coding persona on purpose.
+
+    ``capture_prompts`` defaults to ``True`` (sub-rule B). Playground
+    is the highest-fidelity smoke surface; it exists to demonstrate
+    what the sensor can see, not to validate a minimal happy path.
+    ``09_capture.py`` overrides this to exercise the on/off matrix
+    explicitly -- otherwise every script captures maximally.
+
+    ``flavor`` and ``agent_type`` propagate via the ``AGENT_FLAVOR`` /
+    ``AGENT_TYPE`` env vars -- ``flightdeck_sensor.init()`` resolves
+    those env vars (env takes precedence over kwargs, same pattern as
+    ``FLIGHTDECK_SERVER``). Setting them here guarantees the helper's
+    flavor/agent_type win even if a caller has stale values in their
+    shell.
 
     Env overrides: FLIGHTDECK_SERVER (default http://localhost:4000/ingest),
     FLIGHTDECK_TOKEN (default tok_dev), FLIGHTDECK_API_URL (derived).
@@ -27,9 +58,22 @@ def init_sensor(session_id: str, **overrides: Any) -> None:
         server = server.rstrip("/") + "/ingest"
         os.environ["FLIGHTDECK_SERVER"] = server
     api_url = os.environ.get("FLIGHTDECK_API_URL") or server.replace("/ingest", "/api")
+
+    # Identity propagation: the sensor reads AGENT_FLAVOR / AGENT_TYPE
+    # from env, not kwargs. Set them explicitly so every playground
+    # session lands with a meaningful flavor + agent_type rather than
+    # the silent ``"unknown"`` / ``"autonomous"`` defaults.
+    os.environ["AGENT_FLAVOR"] = flavor
+    os.environ["AGENT_TYPE"] = agent_type
+
     flightdeck_sensor.init(
-        server=server, token=os.environ.get("FLIGHTDECK_TOKEN", "tok_dev"),
-        api_url=api_url, session_id=session_id, quiet=True, **overrides,
+        server=server,
+        token=os.environ.get("FLIGHTDECK_TOKEN", "tok_dev"),
+        api_url=api_url,
+        session_id=session_id,
+        capture_prompts=capture_prompts,
+        quiet=True,
+        **overrides,
     )
 
 

@@ -32,7 +32,7 @@ from _helpers import assert_event_landed, init_sensor, print_result
 
 def main() -> None:
     session_id = str(uuid.uuid4())
-    init_sensor(session_id)
+    init_sensor(session_id, flavor="playground-litellm")
     flightdeck_sensor.patch(quiet=True)
     print(f"[playground:12_litellm] session_id={session_id}")
 

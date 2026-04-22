@@ -27,7 +27,7 @@ HI = [{"role": "user", "content": "hi"}]
 
 def main() -> None:
     session_id = str(uuid.uuid4())
-    init_sensor(session_id)
+    init_sensor(session_id, flavor="playground-direct-anthropic")
     flightdeck_sensor.patch(providers=["anthropic"], quiet=True)
     print(f"[playground:01_direct_anthropic] session_id={session_id}")
 

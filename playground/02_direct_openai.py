@@ -22,7 +22,7 @@ HI = [{"role": "user", "content": "hi"}]
 
 def main() -> None:
     session_id = str(uuid.uuid4())
-    init_sensor(session_id)
+    init_sensor(session_id, flavor="playground-direct-openai")
     flightdeck_sensor.patch(providers=["openai"], quiet=True)
     print(f"[playground:02_direct_openai] session_id={session_id}")
 

@@ -27,7 +27,7 @@ def _run(label: str, provider: str, model: str, contains: str) -> None:
     # Fresh session_id per block -- assertion queries filter by
     # session_id, so distinct ids keep the two blocks independent.
     session_id = str(uuid.uuid4())
-    init_sensor(session_id)
+    init_sensor(session_id, flavor="playground-crewai")
     flightdeck_sensor.patch(providers=[provider], quiet=True)
     print(f"[playground:06_crewai] {label} session_id={session_id}")
     t0 = time.monotonic()

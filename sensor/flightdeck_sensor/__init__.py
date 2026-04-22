@@ -35,6 +35,11 @@ from flightdeck_sensor.interceptor.anthropic import (
     patch_anthropic_classes,
     unpatch_anthropic_classes,
 )
+from flightdeck_sensor.interceptor.litellm import (
+    SensorLitellm,  # noqa: F401  # re-exported for flightdeck_sensor.SensorLitellm
+    patch_litellm_functions,
+    unpatch_litellm_functions,
+)
 from flightdeck_sensor.interceptor.openai import (
     SensorOpenAI,
     _OrigAsyncOpenAI,
@@ -382,24 +387,31 @@ def patch(
 
     Args:
         providers: list of provider names to patch. Default patches all
-            available providers (``["anthropic", "openai"]``).
+            available providers (``["anthropic", "openai", "litellm"]``).
+            litellm joins the patch set as the third interceptor (KI21).
+            Its patch mutates module-level ``litellm.completion`` /
+            ``litellm.acompletion`` rather than SDK classes; streaming
+            is not yet supported and raises NotImplementedError (KI26).
     """
     _require_session("patch")
-    targets = providers or ["anthropic", "openai"]
+    targets = providers or ["anthropic", "openai", "litellm"]
 
     with _patch_lock:
         if "anthropic" in targets:
             patch_anthropic_classes(quiet=quiet)
         if "openai" in targets:
             patch_openai_classes(quiet=quiet)
+        if "litellm" in targets:
+            patch_litellm_functions(quiet=quiet)
 
 
 def unpatch() -> None:
     """Reverse all class-level patches applied by :func:`patch`.
 
     Idempotent: safe to call without a preceding ``patch()``. Restores
-    the original ``cached_property`` descriptors and removes the
-    ``_flightdeck_patched`` sentinels.
+    the original ``cached_property`` descriptors and the original
+    ``litellm.completion`` / ``litellm.acompletion`` module attributes,
+    and removes every ``_flightdeck_patched`` sentinel.
 
     Instances that have already accessed ``.messages`` / ``.chat``
     after ``patch()`` was called keep the wrapped version cached in
@@ -411,6 +423,7 @@ def unpatch() -> None:
     with _patch_lock:
         unpatch_anthropic_classes()
         unpatch_openai_classes()
+        unpatch_litellm_functions()
 
 
 def get_status() -> StatusResponse:

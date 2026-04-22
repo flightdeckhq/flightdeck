@@ -16,6 +16,10 @@ jobs:
     environment: pypi
     permissions:
       id-token: write
+    # Opt into Node 24 for every JavaScript-based action on this job
+    # ahead of GitHub's 2026-06-02 default flip. KI24.
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
     steps:
       - uses: actions/checkout@v4
 
@@ -56,6 +60,10 @@ jobs:
     environment:
       name: docker-hub
       url: https://hub.docker.com/u/flightdeckhq
+    # KI24: opt this job's JavaScript actions (checkout, login-action,
+    # setup-buildx, build-push-action) into Node 24.
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
     steps:
       - uses: actions/checkout@v4
 
@@ -125,6 +133,10 @@ jobs:
     needs: [publish-sensor, publish-docker]
     permissions:
       contents: write
+    # KI24: opt this job's JavaScript actions (checkout, action-gh-release)
+    # into Node 24.
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
     steps:
       - uses: actions/checkout@v4
         with:

@@ -65,3 +65,4 @@ so the v0.4.0 plan can pick it up directly.
 | KI16  | Sensor/Ingestion | Single-POST drain thread (won't-fix v1)  | Phase 4.9 | D091 |
 | KI17  | Sensor     | wrap() did not intercept beta.messages | Phase 4.9 | D087      |
 | KI10  | Security   | SHA256 token auth without salt       | Phase 5     | D046, D095 |
+| KI25  | Sensor tests | `test_configuration_error_on_empty_server` did not scrub `FLIGHTDECK_SERVER` / `FLIGHTDECK_TOKEN`, so a shell with either set at test time let `init()` resolve a server from env and mask the empty-kwarg `ConfigurationError`. Blocked `make release` from any developer shell that had sourced dev env vars. Fixed by adding two `monkeypatch.delenv(...)` calls | v0.3.1 | — |

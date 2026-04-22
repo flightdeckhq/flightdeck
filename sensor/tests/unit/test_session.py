@@ -200,7 +200,13 @@ def test_directive_shutdown_flavor_raises() -> None:
     assert session._shutdown_reason == "fleet-wide stop"
 
 
-def test_configuration_error_on_empty_server() -> None:
+def test_configuration_error_on_empty_server(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Scrub FLIGHTDECK_SERVER / FLIGHTDECK_TOKEN so a shell with these
+    # vars set (dev loop, release workflow) doesn't let init() resolve
+    # a server from env and mask the empty-kwarg ConfigurationError.
+    # KI25.
+    monkeypatch.delenv("FLIGHTDECK_SERVER", raising=False)
+    monkeypatch.delenv("FLIGHTDECK_TOKEN", raising=False)
     import flightdeck_sensor
 
     with pytest.raises(ConfigurationError):

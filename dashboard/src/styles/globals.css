@@ -48,10 +48,13 @@ body {
   min-height: 100vh;
 }
 
-/* Mono class for identifiers, timestamps, hex values */
+/* Mono class for identifiers, timestamps, hex values.
+ * Font-family only -- size is set per-consumer via Tailwind
+ * text-[Npx] / text-xs / inline fontSize so each mono span can
+ * match its local typographic context instead of being forced to
+ * 12px globally. KI22. */
 .font-mono {
   font-family: var(--font-mono);
-  font-size: 12px;
 }
 
 /* Scrollbar styling */

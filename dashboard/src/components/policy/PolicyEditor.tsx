@@ -222,7 +222,7 @@ export function PolicyEditor({ policy, onSave, onCancel }: PolicyEditorProps) {
               <SelectContent>
                 {activeSessions.map((s) => (
                   <SelectItem key={s.session_id} value={s.session_id}>
-                    <span className="font-mono">{truncateSessionId(s.session_id)}</span>
+                    <span className="font-mono text-xs">{truncateSessionId(s.session_id)}</span>
                     <span className="ml-1" style={{ color: "var(--text-muted)" }}>·</span>
                     <span className="ml-1">{s.flavor}</span>
                     <span className="ml-1" style={{ color: "var(--text-muted)" }}>·</span>

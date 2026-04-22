@@ -21,7 +21,12 @@ image:
 flightdeck:
   agents:
     flavor: ""
-    type: "autonomous"
+    # D114 / D115 vocabulary: ``coding`` (developer-driven sessions)
+    # or ``production`` (long-running autonomous agents). Invalid
+    # values cause flightdeck_sensor.init() to raise
+    # ConfigurationError. Previous values ("autonomous",
+    # "supervised", "batch") no longer accepted.
+    type: "production"
   unavailablePolicy: "continue"
   capturePrompts: false
 

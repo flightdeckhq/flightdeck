@@ -21,14 +21,16 @@ vi.mock("@/store/fleet", () => ({
     selector({ customDirectives: mockCustomDirectives }),
 }));
 
-// Minimal two-flavor fixture covering the two pill cases: CODING
-// AGENT for claude-code, DEV for developer-typed autonomous flavors.
-// research-agent (14 chars) is the longest currently-observed name
-// and is the stress-test for the 300px pill threshold.
+// D115 pill-pair fixture covering the two client types: Claude Code
+// (hook-based coding agent) and Python sensor (coding agent invoked
+// from outside the Claude Code plugin). Both flavors carry
+// agent_type=coding so the CodingAgentBadge fires for each; the
+// second pill (``flavor-client-type-pill``) distinguishes the
+// emitter.
 const mkFlavors = (): FlavorSummary[] => [
   {
     flavor: "claude-code",
-    agent_type: "developer",
+    agent_type: "coding",
     session_count: 1,
     active_count: 1,
     tokens_used_total: 100,
@@ -36,7 +38,7 @@ const mkFlavors = (): FlavorSummary[] => [
       {
         session_id: "s-cc",
         flavor: "claude-code",
-        agent_type: "developer",
+        agent_type: "coding",
         host: null,
         framework: null,
         model: null,
@@ -48,10 +50,13 @@ const mkFlavors = (): FlavorSummary[] => [
         token_limit: null,
       },
     ],
+    agent_id: "11111111-1111-4111-8111-111111111111",
+    agent_name: "claude-code",
+    client_type: "claude_code",
   },
   {
     flavor: "research-agent",
-    agent_type: "developer",
+    agent_type: "coding",
     session_count: 1,
     active_count: 1,
     tokens_used_total: 50,
@@ -59,7 +64,7 @@ const mkFlavors = (): FlavorSummary[] => [
       {
         session_id: "s-ra",
         flavor: "research-agent",
-        agent_type: "developer",
+        agent_type: "coding",
         host: null,
         framework: null,
         model: null,
@@ -71,6 +76,9 @@ const mkFlavors = (): FlavorSummary[] => [
         token_limit: null,
       },
     ],
+    agent_id: "22222222-2222-4222-8222-222222222222",
+    agent_name: "research-agent",
+    client_type: "flightdeck_sensor",
   },
 ];
 
@@ -224,23 +232,22 @@ describe("FleetPanel sidebar width: gradual pill truncation", () => {
   // truncation CSS is deliberately kept inline so tests can observe
   // it.
 
-  it("renders both pills at the 240 default with ellipsis styling", () => {
-    // The supervisor's regression: pill used to hide at 240. The
-    // correct behaviour is that the pill stays rendered and shrinks
-    // first while the agent name stays full.
+  it("renders agent_type badge + client_type pill at the 240 default with ellipsis styling", () => {
+    // D115: the pill pair is CodingAgentBadge (for agent_type=coding)
+    // and the new client-type pill. Both carry the flex-shrink-100 +
+    // ellipsis treatment so pills collapse before the agent name
+    // when the sidebar narrows.
     expect(FLEET_SIDEBAR_DEFAULT_WIDTH).toBeGreaterThan(
       FLEET_PILL_HIDE_MIN_WIDTH,
     );
     render(<FleetPanel flavors={mkFlavors()} />);
-    const codingPill = screen.getByTestId("coding-agent-badge");
-    const devPill = screen.getByTestId("flavor-dev-badge");
-    expect(codingPill).toBeInTheDocument();
-    expect(devPill).toBeInTheDocument();
-    // Pills carry the shrink-first + ellipsis inline styles so narrow
-    // widths clip the pill text rather than the agent name.
-    for (const pill of [codingPill, devPill]) {
+    const codingPills = screen.getAllByTestId("coding-agent-badge");
+    const clientPills = screen.getAllByTestId("flavor-client-type-pill");
+    expect(codingPills.length).toBe(2);
+    expect(clientPills.length).toBe(2);
+    // jsdom normalises numeric 0 to "0" while browsers render "0px".
+    for (const pill of [...codingPills, ...clientPills]) {
       expect(pill.style.flexShrink).toBe("100");
-      // jsdom normalises numeric 0 to "0" while browsers render "0px".
       expect(parseFloat(pill.style.minWidth || "0")).toBe(0);
       expect(pill.style.overflow).toBe("hidden");
       expect(pill.style.textOverflow).toBe("ellipsis");
@@ -250,46 +257,39 @@ describe("FleetPanel sidebar width: gradual pill truncation", () => {
   it("renders pills at a wide width (500) with the same truncation styles", () => {
     localStorage.setItem(FLEET_SIDEBAR_WIDTH_KEY, "500");
     render(<FleetPanel flavors={mkFlavors()} />);
-    expect(screen.getByTestId("coding-agent-badge")).toBeInTheDocument();
-    expect(screen.getByTestId("flavor-dev-badge")).toBeInTheDocument();
+    expect(screen.getAllByTestId("coding-agent-badge").length).toBe(2);
+    expect(screen.getAllByTestId("flavor-client-type-pill").length).toBe(2);
   });
 
   it("renders pills at the sidebar MIN (180) — still above pill floor", () => {
-    // FLEET_PILL_HIDE_MIN_WIDTH (150) is below sidebar MIN (180) by
-    // design, so even the narrowest reachable sidebar still shows the
-    // pill. At this width ellipsis does the heavy lifting.
     localStorage.setItem(FLEET_SIDEBAR_WIDTH_KEY, "180");
     render(<FleetPanel flavors={mkFlavors()} />);
-    expect(screen.getByTestId("coding-agent-badge")).toBeInTheDocument();
-    expect(screen.getByTestId("flavor-dev-badge")).toBeInTheDocument();
+    expect(screen.getAllByTestId("coding-agent-badge").length).toBe(2);
+    expect(screen.getAllByTestId("flavor-client-type-pill").length).toBe(2);
   });
 
   it("agent name shrinks slower than the pill", () => {
     render(<FleetPanel flavors={mkFlavors()} />);
     const ccName = screen.getByText("claude-code");
-    const pill = screen.getByTestId("coding-agent-badge");
-    // Name shrink = 1, pill shrink = 100 -> pill shrinks 100x faster,
-    // so the pill truncates first while the name stays intact.
+    const pill = screen.getAllByTestId("coding-agent-badge")[0];
     expect(ccName.style.flexShrink).toBe("1");
     expect(pill.style.flexShrink).toBe("100");
   });
 
   it("CodingAgentBadge carries a descriptive title for hover disclosure", () => {
     render(<FleetPanel flavors={mkFlavors()} />);
-    const pill = screen.getByTestId("coding-agent-badge");
+    const pill = screen.getAllByTestId("coding-agent-badge")[0];
     const title = pill.getAttribute("title") ?? "";
-    // The existing title is more informative than the literal pill
-    // text; the supervisor asked for "full text on hover", which this
-    // strictly over-delivers.
     expect(title.length).toBeGreaterThan(0);
     expect(title.toLowerCase()).toContain("coding agent");
   });
 
-  it("DEV pill carries a title attribute", () => {
+  it("client-type pill carries a title attribute with client_type=<value>", () => {
     render(<FleetPanel flavors={mkFlavors()} />);
-    expect(screen.getByTestId("flavor-dev-badge").getAttribute("title")).toBe(
-      "DEV",
-    );
+    const pills = screen.getAllByTestId("flavor-client-type-pill");
+    // First row = claude-code; second = sensor.
+    expect(pills[0].getAttribute("title")).toBe("client_type=claude_code");
+    expect(pills[1].getAttribute("title")).toBe("client_type=flightdeck_sensor");
   });
 
   it("every flavor name carries a title attribute for the hover tooltip", () => {

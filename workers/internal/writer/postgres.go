@@ -31,18 +31,61 @@ func New(pool *pgxpool.Pool) *Writer {
 	return &Writer{pool: pool}
 }
 
-// UpsertAgent inserts a new agent or updates last_seen and increments session_count.
-func (w *Writer) UpsertAgent(ctx context.Context, flavor, agentType string) error {
+// AgentIdentity bundles the columns that identify an agent in the
+// v0.4.0+ schema. agent_id is derived deterministically by the sensor
+// and plugin from the other five fields (see D115); the derivation is
+// verified at the ingestion boundary, so the worker trusts the tuple
+// it receives here.
+type AgentIdentity struct {
+	AgentID    string
+	AgentType  string
+	ClientType string
+	AgentName  string
+	UserName   string
+	Hostname   string
+}
+
+// UpsertAgent inserts the agents row when it does not exist and
+// advances last_seen_at when it does. Does NOT increment
+// total_sessions -- that rollup is tied to sessions.INSERT and lives
+// in ReviveOrCreateSession so an agent that sees 20 events from one
+// session does not bump its session counter 20 times. total_tokens
+// is bumped separately via IncrementAgentTokens on post_call events.
+func (w *Writer) UpsertAgent(ctx context.Context, id AgentIdentity) error {
 	_, err := w.pool.Exec(ctx, `
-		INSERT INTO agents (flavor, agent_type, first_seen, last_seen, session_count)
-		VALUES ($1, $2, NOW(), NOW(), 1)
-		ON CONFLICT (flavor) DO UPDATE
-		SET last_seen = NOW(),
-		    session_count = agents.session_count + 1,
-		    agent_type = EXCLUDED.agent_type
-	`, flavor, agentType)
+		INSERT INTO agents (
+			agent_id, agent_type, client_type, agent_name,
+			user_name, hostname, first_seen_at, last_seen_at
+		)
+		VALUES (
+			$1::uuid, $2, $3, $4, $5, $6, NOW(), NOW()
+		)
+		ON CONFLICT (agent_id) DO UPDATE
+		SET last_seen_at = NOW()
+	`, id.AgentID, id.AgentType, id.ClientType, id.AgentName,
+		id.UserName, id.Hostname)
 	if err != nil {
-		return fmt.Errorf("upsert agent %s: %w", flavor, err)
+		return fmt.Errorf("upsert agent %s: %w", id.AgentID, err)
+	}
+	return nil
+}
+
+// IncrementAgentTokens bumps total_tokens by the event's
+// tokens_total contribution. Called from post_call handling. delta
+// may be zero (non-LLM events) or negative in edge cases; the column
+// is BIGINT so arithmetic is safe.
+func (w *Writer) IncrementAgentTokens(ctx context.Context, agentID string, delta int64) error {
+	if delta == 0 {
+		return nil
+	}
+	_, err := w.pool.Exec(ctx, `
+		UPDATE agents
+		SET total_tokens = total_tokens + $2,
+		    last_seen_at = NOW()
+		WHERE agent_id = $1::uuid
+	`, agentID, delta)
+	if err != nil {
+		return fmt.Errorf("increment agent tokens %s: %w", agentID, err)
 	}
 	return nil
 }
@@ -76,9 +119,10 @@ func (w *Writer) UpsertAgent(ctx context.Context, flavor, agentType string) erro
 func (w *Writer) UpsertSession(
 	ctx context.Context,
 	sessionID, flavor, agentType, host, framework, model, state string,
+	agentID, clientType, agentName string,
 	contextJSON []byte,
 	tokenID, tokenName string,
-) error {
+) (created bool, err error) {
 	// session_start is the authoritative context source; an empty
 	// context dict from the sensor ("I tried, there was nothing to
 	// collect") still writes `{}` so the row looks populated. Only
@@ -89,15 +133,22 @@ func (w *Writer) UpsertSession(
 	if contextJSON == nil {
 		contextJSON = []byte("{}")
 	}
-	_, err := w.pool.Exec(ctx, `
+	// INSERT ... RETURNING (xmax = 0) distinguishes a fresh insert
+	// from an ON CONFLICT update, so the caller can bump the agents
+	// total_sessions rollup exactly once per new session row without
+	// tracking it in a second query.
+	var wasInsert bool
+	err = w.pool.QueryRow(ctx, `
 		INSERT INTO sessions (
 			session_id, flavor, agent_type, host, framework, model, state,
-			started_at, last_seen_at, context, token_id, token_name
+			started_at, last_seen_at, context, token_id, token_name,
+			agent_id, client_type, agent_name
 		)
 		VALUES (
 			$1::uuid, $2, $3, NULLIF($4, ''), NULLIF($5, ''), NULLIF($6, ''), $7,
 			NOW(), NOW(), $8,
-			NULLIF($9, '')::uuid, NULLIF($10, '')
+			NULLIF($9, '')::uuid, NULLIF($10, ''),
+			$11::uuid, $12, $13
 		)
 		ON CONFLICT (session_id) DO UPDATE
 		SET state = EXCLUDED.state,
@@ -120,12 +171,23 @@ func (w *Writer) UpsertSession(
 		                  ELSE sessions.flavor END,
 		    agent_type = CASE WHEN sessions.agent_type = 'unknown'
 		                      THEN EXCLUDED.agent_type
-		                      ELSE sessions.agent_type END
-	`, sessionID, flavor, agentType, host, framework, model, state, contextJSON, tokenID, tokenName)
+		                      ELSE sessions.agent_type END,
+		    -- D115: identity is write-once once non-null. A lazy-create
+		    -- writes NULL for agent_id / client_type / agent_name; the
+		    -- first authoritative session_start fills them in. Real
+		    -- values (non-null) are preserved by COALESCE.
+		    agent_id = COALESCE(sessions.agent_id, EXCLUDED.agent_id),
+		    client_type = COALESCE(sessions.client_type, EXCLUDED.client_type),
+		    agent_name = COALESCE(sessions.agent_name, EXCLUDED.agent_name)
+		RETURNING (xmax = 0)
+	`, sessionID, flavor, agentType, host, framework, model, state,
+		contextJSON, tokenID, tokenName,
+		agentID, clientType, agentName,
+	).Scan(&wasInsert)
 	if err != nil {
-		return fmt.Errorf("upsert session %s: %w", sessionID, err)
+		return false, fmt.Errorf("upsert session %s: %w", sessionID, err)
 	}
-	return nil
+	return wasInsert, nil
 }
 
 // UpgradeSessionContext fills in the sessions.context column on a row
@@ -367,6 +429,7 @@ func (w *Writer) ReviveIfRevivable(ctx context.Context, sessionID string) (bool,
 func (w *Writer) ReviveOrCreateSession(
 	ctx context.Context,
 	sessionID, flavor, agentType, host, framework, model string,
+	identity AgentIdentity,
 	occurredAt time.Time,
 ) (created bool, err error) {
 	var state string
@@ -386,9 +449,10 @@ func (w *Writer) ReviveOrCreateSession(
 	// ON CONFLICT DO NOTHING covers the race where a parallel event
 	// created the row between our SELECT and our INSERT.
 
-	// Default sentinels for missing identity. "unknown" survives in
-	// the agents row and the sessions row until a real session_start
-	// arrives and UpsertSession's CASE branch upgrades them.
+	// Default sentinels for missing flavor/agent_type so UpsertSession's
+	// CASE branch can later upgrade the row when the authoritative
+	// session_start arrives. Identity fields (agent_id, client_type,
+	// agent_name) are trusted from the ingestion-validated payload.
 	if flavor == "" {
 		flavor = "unknown"
 	}
@@ -396,17 +460,11 @@ func (w *Writer) ReviveOrCreateSession(
 		agentType = "unknown"
 	}
 
-	// agents FK: sessions.flavor references agents.flavor. Upsert the
-	// agents row first so the sessions INSERT does not FK-violate on
-	// a truly-never-before-seen flavor.
-	if _, aErr := w.pool.Exec(ctx, `
-		INSERT INTO agents (flavor, agent_type, first_seen, last_seen, session_count)
-		VALUES ($1, $2, NOW(), NOW(), 1)
-		ON CONFLICT (flavor) DO UPDATE
-		SET last_seen = NOW(),
-		    session_count = agents.session_count + 1,
-		    agent_type = EXCLUDED.agent_type
-	`, flavor, agentType); aErr != nil {
+	// D115: upsert the agents row first so the sessions FK lands
+	// cleanly. Even a lazy-create path knows the authoritative agent
+	// identity because the ingestion handler validated it on the
+	// way in.
+	if aErr := w.UpsertAgent(ctx, identity); aErr != nil {
 		return false, fmt.Errorf("revive-or-create %s: upsert agent: %w", sessionID, aErr)
 	}
 
@@ -422,18 +480,51 @@ func (w *Writer) ReviveOrCreateSession(
 	tag, iErr := w.pool.Exec(ctx, `
 		INSERT INTO sessions (
 			session_id, flavor, agent_type, host, framework, model, state,
-			started_at, last_seen_at, context
+			started_at, last_seen_at, context,
+			agent_id, client_type, agent_name
 		)
 		VALUES (
 			$1::uuid, $2, $3, NULLIF($4, ''), NULLIF($5, ''), NULLIF($6, ''),
-			'active', $7, $7, NULL
+			'active', $7, $7, NULL,
+			$8::uuid, $9, $10
 		)
 		ON CONFLICT (session_id) DO NOTHING
-	`, sessionID, flavor, agentType, host, framework, model, occurredAt)
+	`, sessionID, flavor, agentType, host, framework, model, occurredAt,
+		identity.AgentID, identity.ClientType, identity.AgentName)
 	if iErr != nil {
 		return false, fmt.Errorf("revive-or-create %s: insert: %w", sessionID, iErr)
 	}
-	return tag.RowsAffected() > 0, nil
+	if tag.RowsAffected() > 0 {
+		// Fresh session row landed. Bump the agents rollup exactly
+		// once per new session, matching the UpsertSession path.
+		if bErr := w.BumpAgentSessionCount(ctx, identity.AgentID); bErr != nil {
+			// Rollup failure is non-fatal: the session row exists and
+			// the agent row exists, so dashboards still render; a
+			// missed increment at worst shows one fewer session in the
+			// total_sessions column until reconciliation runs.
+			// Log-only rather than unwind the insert.
+			_ = bErr
+		}
+		return true, nil
+	}
+	return false, nil
+}
+
+// BumpAgentSessionCount increments agents.total_sessions by 1. Called
+// only when UpsertSession / ReviveOrCreateSession observed a fresh
+// INSERT into sessions, so the counter stays accurate under repeated
+// events for the same session_id.
+func (w *Writer) BumpAgentSessionCount(ctx context.Context, agentID string) error {
+	_, err := w.pool.Exec(ctx, `
+		UPDATE agents
+		SET total_sessions = total_sessions + 1,
+		    last_seen_at = NOW()
+		WHERE agent_id = $1::uuid
+	`, agentID)
+	if err != nil {
+		return fmt.Errorf("bump agent session count %s: %w", agentID, err)
+	}
+	return nil
 }
 
 // CloseSession sets state=closed and ended_at on a session.

@@ -23,7 +23,7 @@ vi.mock("@/hooks/useSearch", () => ({
 }));
 
 function agent(flavor: string): SearchResultAgent {
-  return { flavor, agent_type: "developer", last_seen: "2026-04-17T09:00:00Z" };
+  return { flavor, agent_type: "coding", last_seen: "2026-04-17T09:00:00Z" };
 }
 
 function session(id: string, flavor: string): SearchResultSession {

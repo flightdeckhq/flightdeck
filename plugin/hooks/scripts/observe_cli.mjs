@@ -25,7 +25,7 @@
 // Uses only Node.js built-in modules.
 
 import { execSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   closeSync,
   mkdirSync,
@@ -43,7 +43,7 @@ import {
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { NAMESPACE_URL, uuid5 } from "./uuid5.mjs";
+import { deriveAgentId } from "./agent_id.mjs";
 
 const TIMEOUT_MS = 2000;
 
@@ -110,25 +110,41 @@ export function resolveConfig(env = process.env) {
 }
 
 // ---------------------------------------------------------------------
-// Session id -- stable across Claude Code spawns when same user +
-// hostname + repo remote + branch. See DECISIONS.md D113 for the full
-// derivation recipe and precedence chain.
+// Session id -- v0.4.0 Phase 1 (D115): uuid4 random, cached once per
+// Claude Code invocation in a marker file keyed on the
+// Claude-Code-supplied invocation id so every hook in the same run
+// shares one session_id -- regardless of ``cd`` or whatever cwd the
+// hook process happens to inherit.
+//
+// The v0.3-era derivation (D113) keyed on ``sha256(user, host, repo,
+// branch)`` and produced a stable uuid5; stability now lives in
+// ``agent_id`` so ``session_id`` can be a per-invocation random
+// uuid4. An earlier Phase 1 implementation briefly keyed the marker
+// on ``sha256(cwd)[:16]`` which broke the "one session per
+// invocation" invariant whenever a user ran ``cd`` between hooks --
+// three sessions landed for one Claude Code invocation in the audit
+// smoke. Keying on ``hookEvent.session_id`` closes that regression
+// because Claude Code guarantees a stable per-invocation id on every
+// hook event.
 // ---------------------------------------------------------------------
 
 /**
  * Resolve a session id for the current hook invocation. Precedence
- * (top wins, see D113):
+ * (top wins):
  *   1. process.env.CLAUDE_SESSION_ID
  *   2. process.env.ANTHROPIC_CLAUDE_SESSION_ID
- *   3. RFC 4122 v5 UUID from (user, hostname, repo remote, branch)
- *   4. Marker file cache (populated by step 3/5/6 on first hook)
- *   5. hookEvent.session_id -- demoted safety net, Claude Code's own
- *      per-spawn id, kept only for when git is unavailable
- *   6. sha256(cwd)[:32] -- final deterministic fallback when tmpdir
- *      itself is broken
- *
- * The marker file caches whichever candidate is picked on first run so
- * repeated hooks within one Claude Code invocation don't re-probe git.
+ *   3. Marker file cache keyed on ``hookEvent.session_id``
+ *      (populated by step 4 on the first hook of this invocation;
+ *      read verbatim by every subsequent hook in the same run)
+ *   4. Fresh uuid4 -- written to the hook-id-keyed marker file so
+ *      steps 3 and 4 converge the moment the file lands
+ *   5. Cwd-sha fallback (keys the marker on ``sha256(cwd)[:16]``
+ *      AND emits a ``[flightdeck] WARN`` stderr line) when the hook
+ *      event carries no session_id. Only triggered on malformed or
+ *      missing hook payloads -- the supported Claude Code path
+ *      always provides a session_id.
+ *   6. Final ephemeral sha256(cwd)[:32] backstop when even
+ *      ``$TMPDIR`` is unusable (tests + recovery path only).
  */
 export function getSessionId(hookEvent = {}) {
   const env =
@@ -137,18 +153,34 @@ export function getSessionId(hookEvent = {}) {
 
   const cwd = process.cwd();
   const dir = join(tmpdir(), "flightdeck-plugin");
-  const key = createHash("sha256").update(cwd).digest("hex").slice(0, 16);
-  const file = join(dir, `session-${key}.txt`);
 
-  const pickCandidate = () => {
-    const derived = deriveStableSessionId(cwd);
-    if (derived) return derived;
-    if (hookEvent.session_id) return hookEvent.session_id;
-    return createHash("sha256")
+  // Primary: Claude Code's per-invocation session id. Hook events
+  // carry this reliably; when present it is the authoritative
+  // invocation scope and the marker key.
+  let markerKey;
+  if (hookEvent && typeof hookEvent.session_id === "string" && hookEvent.session_id) {
+    markerKey = createHash("sha256")
+      .update(hookEvent.session_id)
+      .digest("hex")
+      .slice(0, 16);
+  } else {
+    // Fallback: cwd-sha marker + a single stderr warning so operators
+    // know the plugin lost per-invocation scope. Kept as a safety net
+    // for non-Claude-Code callers (playground scripts, integration
+    // harnesses) that may invoke the entrypoint without a hook event.
+    markerKey = createHash("sha256").update(cwd).digest("hex").slice(0, 16);
+    process.stderr.write(
+      "[flightdeck] WARN: hook event missing session_id; " +
+        "falling back to cwd-keyed marker. Sessions may split on cd.\n",
+    );
+  }
+  const file = join(dir, `session-${markerKey}.txt`);
+
+  const fallback = () =>
+    createHash("sha256")
       .update(`${Date.now()}-${process.pid}-${cwd}`)
       .digest("hex")
       .slice(0, 32);
-  };
 
   try {
     mkdirSync(dir, { recursive: true });
@@ -158,7 +190,7 @@ export function getSessionId(hookEvent = {}) {
     } catch {
       /* fall through to create */
     }
-    const candidate = pickCandidate();
+    const candidate = randomUUID();
     try {
       const fd = openSync(file, "wx");
       try {
@@ -169,69 +201,17 @@ export function getSessionId(hookEvent = {}) {
       return candidate;
     } catch (err) {
       if (err && err.code === "EEXIST") {
+        // Concurrent first-hook race: another process beat us to the
+        // file. Read whatever they wrote so every hook in the same
+        // Claude Code run still agrees on one session id.
         const winner = readFileSync(file, "utf8").trim();
         if (winner) return winner;
       }
       throw err;
     }
   } catch {
-    return pickCandidate();
+    return fallback();
   }
-}
-
-/**
- * Derive an RFC 4122 v5 UUID from (user, hostname, repo remote, branch).
- * Returns null if any probe fails or we aren't in a git repo -- callers
- * treat null as "fall through to the next precedence step". Branch is
- * part of identity: switching branches intentionally produces a
- * distinct session. Detached HEAD uses `detached-<short_sha>`.
- */
-function deriveStableSessionId(cwd) {
-  let user, host;
-  try {
-    user = userInfo().username;
-  } catch {
-    return null;
-  }
-  try {
-    host = osHostname();
-  } catch {
-    return null;
-  }
-  if (!user || !host) return null;
-
-  const gitOpts = { timeout: 500, stdio: ["ignore", "pipe", "ignore"] };
-
-  let branch;
-  try {
-    branch = execSync("git branch --show-current", gitOpts).toString().trim();
-  } catch {
-    return null;
-  }
-  if (!branch) {
-    try {
-      const sha = execSync("git rev-parse --short HEAD", gitOpts)
-        .toString()
-        .trim();
-      if (!sha) return null;
-      branch = `detached-${sha}`;
-    } catch {
-      return null;
-    }
-  }
-
-  let repo;
-  try {
-    const raw = execSync("git remote get-url origin", gitOpts)
-      .toString()
-      .trim();
-    if (raw) repo = raw.replace(/https?:\/\/[^@]+@/, "https://");
-  } catch {
-    /* fall through to cwd */
-  }
-  if (!repo) repo = cwd;
-
-  return uuid5(NAMESPACE_URL, `flightdeck://${user}@${host}/${repo}@${branch}`);
 }
 
 // ---------------------------------------------------------------------
@@ -852,10 +832,39 @@ async function main() {
   // result, in which case the field is omitted -- the worker's
   // COALESCE upgrade treats "missing" and "empty dict" identically.
   const baseContext = safeCollectContext();
+
+  // D115 agent identity. Plugin emits hardcoded agent_type="coding"
+  // and client_type="claude_code"; agent_name defaults to
+  // "{user}@{hostname}" and can be overridden via
+  // FLIGHTDECK_AGENT_NAME env var. The user/hostname come from the
+  // context collector (which itself honors FLIGHTDECK_HOSTNAME), so
+  // an operator overriding hostname for k8s pod grouping gets
+  // consistent agent_id / agent_name derivation and context.hostname.
+  const identityUser = baseContext?.user || "unknown";
+  const identityHostname =
+    process.env.FLIGHTDECK_HOSTNAME ||
+    baseContext?.hostname ||
+    osHostname();
+  const agentName =
+    process.env.FLIGHTDECK_AGENT_NAME || `${identityUser}@${identityHostname}`;
+  const agentId = deriveAgentId({
+    agent_type: "coding",
+    user: identityUser,
+    hostname: identityHostname,
+    client_type: "claude_code",
+    agent_name: agentName,
+  });
+
   const basePayload = {
     session_id: sessionId,
     flavor: "claude-code",
-    agent_type: "developer",
+    agent_type: "coding",
+    // D115 identity on every event.
+    agent_id: agentId,
+    agent_name: agentName,
+    client_type: "claude_code",
+    user: identityUser,
+    hostname: identityHostname,
     host: osHostname(),
     framework: "claude-code",
     model: hookEvent.model || null,

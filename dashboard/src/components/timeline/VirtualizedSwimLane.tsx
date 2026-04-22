@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { ScaleTime } from "d3-scale";
 import type { Session, AgentEvent } from "@/lib/types";
+import type { ClientType } from "@/lib/agent-identity";
 import { SwimLane } from "./SwimLane";
 
 /**
@@ -14,6 +15,10 @@ const FALLBACK_ROW_HEIGHT = 48;
 
 interface VirtualizedSwimLaneProps {
   flavor: string;
+  /** D115 label + pill metadata. Forwarded verbatim to SwimLane. */
+  agentName?: string;
+  clientType?: ClientType;
+  agentType?: string;
   sessions: Session[];
   scale: ScaleTime<number, number>;
   onSessionClick: (sessionId: string, eventId?: string, event?: AgentEvent) => void;

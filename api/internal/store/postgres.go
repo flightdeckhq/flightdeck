@@ -34,7 +34,7 @@ const NotifyDirectiveRegistered = "directive_registered"
 // Querier is the interface for fleet data access.
 // Implemented by Store (Postgres) and mocks in tests.
 type Querier interface {
-	GetFleet(ctx context.Context, limit, offset int, agentType string) ([]FlavorSummary, int, error)
+	GetAgentFleet(ctx context.Context, limit, offset int, agentType string) ([]AgentSummary, int, error)
 	GetSession(ctx context.Context, sessionID string) (*Session, error)
 	// GetSessionEvents returns events for a session in chronological
 	// (ASC) order. When limit <= 0 the full history is returned; when
@@ -88,6 +88,14 @@ type Session struct {
 	SessionID  string     `json:"session_id"`
 	Flavor     string     `json:"flavor"`
 	AgentType  string     `json:"agent_type"`
+	// D115 identity columns (nullable for sessions that predate the
+	// migration OR for lazy-created rows whose authoritative
+	// session_start never arrived; UpsertSession's COALESCE
+	// enrichment promotes these from NULL to real values on the
+	// first session_start).
+	AgentID    *string    `json:"agent_id,omitempty"`
+	AgentName  *string    `json:"agent_name,omitempty"`
+	ClientType *string    `json:"client_type,omitempty"`
 	Host       *string    `json:"host"`
 	Framework  *string    `json:"framework"`
 	Model      *string    `json:"model"`
@@ -167,96 +175,106 @@ type Event struct {
 	OccurredAt          time.Time      `json:"occurred_at"`
 }
 
-// FlavorSummary groups sessions by flavor for the fleet view.
-type FlavorSummary struct {
-	Flavor         string    `json:"flavor"`
+// AgentSummary is one row in the v0.4.0 Phase 1 agent-level fleet
+// response. Each row represents a persistent fleet entity (an
+// ``agents`` row) with aggregated state computed across its sessions.
+type AgentSummary struct {
+	AgentID        string    `json:"agent_id"`
+	AgentName      string    `json:"agent_name"`
 	AgentType      string    `json:"agent_type"`
-	SessionCount   int       `json:"session_count"`
-	ActiveCount    int       `json:"active_count"`
-	TokensUsedTotal int     `json:"tokens_used_total"`
-	Sessions       []Session `json:"sessions"`
+	ClientType     string    `json:"client_type"`
+	UserName       string    `json:"user"`
+	Hostname       string    `json:"hostname"`
+	FirstSeenAt    time.Time `json:"first_seen_at"`
+	LastSeenAt     time.Time `json:"last_seen_at"`
+	TotalSessions  int       `json:"total_sessions"`
+	TotalTokens    int64     `json:"total_tokens"`
+	// State rollup: "active" when any session under this agent is
+	// currently active; otherwise the most-recent session's state.
+	// Empty string when the agent has no sessions yet (freshly
+	// upserted agent row awaiting its first session linkage).
+	State string `json:"state"`
 }
 
-// GetFleet returns sessions grouped by flavor, excluding lost sessions.
-// Limit/offset apply to the sessions query. Returns (flavors, total_session_count, error).
-// agentType filters: "developer" = only developer sessions, non-empty other = exclude developer, empty = all.
-func (s *Store) GetFleet(ctx context.Context, limit, offset int, agentType string) ([]FlavorSummary, int, error) {
-	// Build optional agent_type filter
-	var agentFilter string
+// GetAgentFleet returns agents with rollup state, paginated. Accepts
+// optional agent_type filter (D114 vocabulary). Returns
+// (agents, total_count, error).
+func (s *Store) GetAgentFleet(
+	ctx context.Context,
+	limit, offset int,
+	agentType string,
+) ([]AgentSummary, int, error) {
 	var args []any
-	switch agentType {
-	case "developer":
-		agentFilter = " AND agent_type = 'developer'"
-	case "":
-		// no filter
-	default:
-		agentFilter = " AND agent_type != 'developer'"
+	filter := ""
+	if agentType != "" {
+		filter = " WHERE agent_type = $1"
+		args = append(args, agentType)
 	}
 
-	// Get total count for pagination metadata
 	var totalCount int
-	if err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM sessions WHERE state != 'lost'`+agentFilter).Scan(&totalCount); err != nil {
-		return nil, 0, fmt.Errorf("get fleet count: %w", err)
+	countArgs := args
+	if err := s.pool.QueryRow(
+		ctx,
+		`SELECT COUNT(*) FROM agents`+filter,
+		countArgs...,
+	).Scan(&totalCount); err != nil {
+		return nil, 0, fmt.Errorf("get agent fleet count: %w", err)
 	}
 
+	// State rollup via LATERAL subquery against sessions for each
+	// agent row: "active" if any active session exists; otherwise
+	// the most-recent session's state by started_at. An agent with
+	// no sessions yet reports state = '' (empty string) which the
+	// dashboard renders as a muted placeholder.
+	limitPlaceholder := fmt.Sprintf("$%d", len(args)+1)
+	offsetPlaceholder := fmt.Sprintf("$%d", len(args)+2)
 	args = append(args, limit, offset)
-	rows, err := s.pool.Query(ctx, `
-		SELECT session_id::text, flavor, agent_type, host, framework, model,
-		       state, started_at, last_seen_at, ended_at, tokens_used, token_limit,
-		       context, token_name
-		FROM sessions
-		WHERE state != 'lost'`+agentFilter+`
-		ORDER BY flavor, started_at DESC
-		LIMIT $1 OFFSET $2
-	`, args...)
+
+	query := `
+		SELECT
+			a.agent_id::text, a.agent_name, a.agent_type, a.client_type,
+			a.user_name, a.hostname, a.first_seen_at, a.last_seen_at,
+			a.total_sessions, a.total_tokens,
+			COALESCE(rollup.state, '') AS state
+		FROM agents a
+		LEFT JOIN LATERAL (
+			SELECT CASE
+				WHEN EXISTS (
+					SELECT 1 FROM sessions s
+					WHERE s.agent_id = a.agent_id AND s.state = 'active'
+				) THEN 'active'
+				ELSE (
+					SELECT s.state
+					FROM sessions s
+					WHERE s.agent_id = a.agent_id
+					ORDER BY s.started_at DESC
+					LIMIT 1
+				)
+			END AS state
+		) rollup ON TRUE` + filter + `
+		ORDER BY a.last_seen_at DESC
+		LIMIT ` + limitPlaceholder + ` OFFSET ` + offsetPlaceholder
+	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
-		return nil, 0, fmt.Errorf("get fleet: %w", err)
+		return nil, 0, fmt.Errorf("get agent fleet: %w", err)
 	}
 	defer rows.Close()
 
-	flavorMap := make(map[string]*FlavorSummary)
-	var order []string
-
+	var result []AgentSummary
 	for rows.Next() {
-		var sess Session
-		var contextRaw []byte
+		var a AgentSummary
+		var rollupState *string
 		if err := rows.Scan(
-			&sess.SessionID, &sess.Flavor, &sess.AgentType,
-			&sess.Host, &sess.Framework, &sess.Model,
-			&sess.State, &sess.StartedAt, &sess.LastSeenAt,
-			&sess.EndedAt, &sess.TokensUsed, &sess.TokenLimit,
-			&contextRaw, &sess.TokenName,
+			&a.AgentID, &a.AgentName, &a.AgentType, &a.ClientType,
+			&a.UserName, &a.Hostname, &a.FirstSeenAt, &a.LastSeenAt,
+			&a.TotalSessions, &a.TotalTokens, &rollupState,
 		); err != nil {
-			return nil, 0, fmt.Errorf("scan session: %w", err)
+			return nil, 0, fmt.Errorf("scan agent: %w", err)
 		}
-		if len(contextRaw) > 0 {
-			var v map[string]any
-			if jsonErr := json.Unmarshal(contextRaw, &v); jsonErr == nil && len(v) > 0 {
-				sess.Context = v
-			}
+		if rollupState != nil {
+			a.State = *rollupState
 		}
-
-		fs, ok := flavorMap[sess.Flavor]
-		if !ok {
-			fs = &FlavorSummary{
-				Flavor:    sess.Flavor,
-				AgentType: sess.AgentType,
-			}
-			flavorMap[sess.Flavor] = fs
-			order = append(order, sess.Flavor)
-		}
-
-		fs.Sessions = append(fs.Sessions, sess)
-		fs.SessionCount++
-		fs.TokensUsedTotal += sess.TokensUsed
-		if sess.State == "active" {
-			fs.ActiveCount++
-		}
-	}
-
-	result := make([]FlavorSummary, 0, len(order))
-	for _, f := range order {
-		result = append(result, *flavorMap[f])
+		result = append(result, a)
 	}
 	return result, totalCount, nil
 }
@@ -268,7 +286,9 @@ func (s *Store) GetSession(ctx context.Context, sessionID string) (*Session, err
 	var contextRaw []byte
 	err := s.pool.QueryRow(ctx, `
 		SELECT
-			s.session_id::text, s.flavor, s.agent_type, s.host, s.framework, s.model,
+			s.session_id::text, s.flavor, s.agent_type,
+			s.agent_id::text, s.agent_name, s.client_type,
+			s.host, s.framework, s.model,
 			s.state, s.started_at, s.last_seen_at, s.ended_at, s.tokens_used, s.token_limit,
 			s.context, s.token_name,
 			COALESCE(ps.token_limit, pf.token_limit, po.token_limit) AS policy_token_limit,
@@ -292,6 +312,7 @@ func (s *Store) GetSession(ctx context.Context, sessionID string) (*Session, err
 		WHERE s.session_id = $1::uuid
 	`, sessionID).Scan(
 		&sess.SessionID, &sess.Flavor, &sess.AgentType,
+		&sess.AgentID, &sess.AgentName, &sess.ClientType,
 		&sess.Host, &sess.Framework, &sess.Model,
 		&sess.State, &sess.StartedAt, &sess.LastSeenAt,
 		&sess.EndedAt, &sess.TokensUsed, &sess.TokenLimit,

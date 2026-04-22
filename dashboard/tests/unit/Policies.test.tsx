@@ -6,23 +6,23 @@ import { PolicyEditor } from "@/components/policy/PolicyEditor";
 const mockFlavors = [
   {
     flavor: "research-agent",
-    agent_type: "autonomous",
+    agent_type: "production",
     session_count: 2,
     active_count: 1,
     tokens_used_total: 5000,
     sessions: [
-      { session_id: "s1-abc-123", flavor: "research-agent", agent_type: "autonomous", host: null, framework: null, model: "claude-sonnet-4-6", state: "active", started_at: "", last_seen_at: "", ended_at: null, tokens_used: 3000, token_limit: null },
-      { session_id: "s2-def-456", flavor: "research-agent", agent_type: "autonomous", host: null, framework: null, model: "gpt-4o", state: "closed", started_at: "", last_seen_at: "", ended_at: "", tokens_used: 2000, token_limit: null },
+      { session_id: "s1-abc-123", flavor: "research-agent", agent_type: "production", host: null, framework: null, model: "claude-sonnet-4-6", state: "active", started_at: "", last_seen_at: "", ended_at: null, tokens_used: 3000, token_limit: null },
+      { session_id: "s2-def-456", flavor: "research-agent", agent_type: "production", host: null, framework: null, model: "gpt-4o", state: "closed", started_at: "", last_seen_at: "", ended_at: "", tokens_used: 2000, token_limit: null },
     ],
   },
   {
     flavor: "code-agent",
-    agent_type: "autonomous",
+    agent_type: "production",
     session_count: 1,
     active_count: 1,
     tokens_used_total: 1000,
     sessions: [
-      { session_id: "s3-ghi-789", flavor: "code-agent", agent_type: "autonomous", host: null, framework: null, model: "gpt-4o", state: "idle", started_at: "", last_seen_at: "", ended_at: null, tokens_used: 1000, token_limit: null },
+      { session_id: "s3-ghi-789", flavor: "code-agent", agent_type: "production", host: null, framework: null, model: "gpt-4o", state: "idle", started_at: "", last_seen_at: "", ended_at: null, tokens_used: 1000, token_limit: null },
     ],
   },
 ];

@@ -41,12 +41,10 @@ def init_sensor(
     ``09_capture.py`` overrides this to exercise the on/off matrix
     explicitly -- otherwise every script captures maximally.
 
-    ``flavor`` and ``agent_type`` propagate via the ``AGENT_FLAVOR`` /
-    ``AGENT_TYPE`` env vars -- ``flightdeck_sensor.init()`` resolves
-    those env vars (env takes precedence over kwargs, same pattern as
-    ``FLIGHTDECK_SERVER``). Setting them here guarantees the helper's
-    flavor/agent_type win even if a caller has stale values in their
-    shell.
+    ``flavor`` propagates via the ``AGENT_FLAVOR`` env var so the
+    wire-level ``flavor`` column on sessions carries the playground
+    script's intent. ``agent_type`` is passed as a kwarg directly to
+    ``flightdeck_sensor.init`` (v0.4.0 Phase 1 added the kwarg).
 
     Env overrides: FLIGHTDECK_SERVER (default http://localhost:4000/ingest),
     FLIGHTDECK_TOKEN (default tok_dev), FLIGHTDECK_API_URL (derived).
@@ -65,12 +63,11 @@ def init_sensor(
         else server.rstrip("/") + "/api"
     )
 
-    # Identity propagation: the sensor reads AGENT_FLAVOR / AGENT_TYPE
-    # from env, not kwargs. Set them explicitly so every playground
-    # session lands with a meaningful flavor + agent_type rather than
-    # the silent ``"unknown"`` / ``"autonomous"`` defaults.
+    # Wire-level ``flavor`` column propagation. Sensor reads
+    # AGENT_FLAVOR from env; setting it explicitly guarantees the
+    # helper's flavor wins even if a caller has stale values in
+    # their shell.
     os.environ["AGENT_FLAVOR"] = flavor
-    os.environ["AGENT_TYPE"] = agent_type
 
     flightdeck_sensor.init(
         server=server,
@@ -78,6 +75,7 @@ def init_sensor(
         api_url=api_url,
         session_id=session_id,
         capture_prompts=capture_prompts,
+        agent_type=agent_type,
         quiet=True,
         **overrides,
     )

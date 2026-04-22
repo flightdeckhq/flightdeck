@@ -1,34 +1,43 @@
 import { create } from "zustand";
 import type {
+  AgentSummary,
   CustomDirective,
   FlavorSummary,
-  Session,
   FleetUpdate,
+  Session,
+  SessionListItem,
+  SessionState,
 } from "@/lib/types";
 import type { ContextFacets } from "@/types/context";
-import { fetchCustomDirectives, fetchFleet } from "@/lib/api";
+import {
+  fetchCustomDirectives,
+  fetchFleet,
+  fetchSessions,
+} from "@/lib/api";
 
-export type AgentTypeFilter = "all" | "production" | "developer";
+// D114 vocabulary -- ``coding`` or ``production``. ``all`` suppresses
+// the filter at the query layer.
+export type AgentTypeFilter = "all" | "coding" | "production";
+
+// How far back the swimlane-bootstrap session fetch looks. Matches
+// the longest swimlane time range (1h) plus a small buffer so the
+// dashboard can still render rows that were active at the start of
+// the window.
+const SWIMLANE_LOOKBACK_MS = 2 * 60 * 60 * 1000; // 2 hours
 
 interface FleetState {
+  /** Agent-level rows for the Fleet table view and the sidebar
+   *  AGENTS list. Sourced from GET /v1/fleet. */
+  agents: AgentSummary[];
+  /** Swimlane-shaped rows: one FlavorSummary per agent_id with the
+   *  recent sessions under it. Built by load() from the agents
+   *  roster + a fetchSessions() window. */
   flavors: FlavorSummary[];
-  /** Context facets aggregated by the API across all non-terminal sessions. */
+  total: number;
+  page: number;
+  perPage: number;
   contextFacets: ContextFacets;
-  /**
-   * All custom directives registered in the fleet, flat list. The
-   * drawer and per-flavor trigger UI filter this client-side by
-   * flavor so we only fetch once per fleet load. Empty array until
-   * the first load() resolves.
-   */
   customDirectives: CustomDirective[];
-  /**
-   * Session IDs with an in-flight shutdown directive. Populated
-   * client-side by the kill-switch / Stop All code paths the moment a
-   * shutdown is POSTed, so the UI can show a "shutting down"
-   * indicator before the next WebSocket update rebuilds the Session
-   * row with `has_pending_directive=true`. Cleared automatically when
-   * a session transitions to `closed` via applyUpdate.
-   */
   shuttingDown: Set<string>;
   loading: boolean;
   error: string | null;
@@ -36,17 +45,94 @@ interface FleetState {
   agentTypeFilter: AgentTypeFilter;
   flavorFilter: string | null;
 
-  load: (agentType?: AgentTypeFilter) => Promise<void>;
+  load: (opts?: {
+    page?: number;
+    perPage?: number;
+    agentType?: AgentTypeFilter;
+  }) => Promise<void>;
   setAgentTypeFilter: (filter: AgentTypeFilter) => void;
   setFlavorFilter: (flavor: string | null) => void;
   applyUpdate: (update: FleetUpdate) => void;
   selectSession: (id: string | null) => void;
   markShuttingDown: (sessionId: string) => void;
+  /**
+   * Kept for FleetPanel's per-flavor Stop-All button. Under D115 a
+   * "flavor" value is usually an agent_id; the helper walks the
+   * sessions under that flavor and marks each active/idle one as
+   * shutting down client-side so the UI reacts before the next
+   * WebSocket update lands.
+   */
   markFlavorShuttingDown: (flavor: string) => void;
 }
 
+function listItemToSession(li: SessionListItem): Session {
+  // Swimlane code consumes ``Session`` (from types.ts), not
+  // ``SessionListItem``. The fields overlap except for framework /
+  // last_seen_at; we synthesise last_seen_at from ended_at / now so
+  // the swimlane's activity sort does not see missing values.
+  const now = new Date().toISOString();
+  return {
+    session_id: li.session_id,
+    flavor: li.flavor,
+    agent_type: li.agent_type,
+    agent_id: li.agent_id ?? null,
+    agent_name: li.agent_name ?? null,
+    client_type: li.client_type ?? null,
+    host: li.host ?? null,
+    framework: null,
+    model: li.model,
+    state: li.state,
+    started_at: li.started_at,
+    last_seen_at: li.ended_at ?? now,
+    ended_at: li.ended_at,
+    tokens_used: li.tokens_used,
+    token_limit: li.token_limit ? Number(li.token_limit) : null,
+    context: (li.context ?? {}) as Record<string, unknown>,
+    capture_enabled: li.capture_enabled,
+    token_name: li.token_name ?? null,
+  };
+}
+
+function buildFlavors(
+  agents: AgentSummary[],
+  recentSessions: SessionListItem[],
+): FlavorSummary[] {
+  const byAgent = new Map<string, Session[]>();
+  for (const li of recentSessions) {
+    if (!li.agent_id) continue;
+    const bucket = byAgent.get(li.agent_id) ?? [];
+    bucket.push(listItemToSession(li));
+    byAgent.set(li.agent_id, bucket);
+  }
+  return agents.map((a) => {
+    const sessions = byAgent.get(a.agent_id) ?? [];
+    const active = sessions.filter((s) => s.state === "active").length;
+    return {
+      // The ``flavor`` field carries the agent_id so swimlane rows key
+      // by agent without reshaping every downstream component. The
+      // display label reads ``agent_name`` when present.
+      flavor: a.agent_id,
+      agent_type: a.agent_type,
+      session_count: a.total_sessions,
+      active_count: active,
+      tokens_used_total: Number(a.total_tokens),
+      sessions,
+      agent_id: a.agent_id,
+      agent_name: a.agent_name,
+      client_type: a.client_type,
+      user: a.user,
+      hostname: a.hostname,
+      last_seen_at: a.last_seen_at,
+    };
+  });
+}
+
 export const useFleetStore = create<FleetState>((set, get) => ({
+  agents: [],
   flavors: [],
+  total: 0,
+  page: 1,
+  perPage: 200,
   contextFacets: {},
   customDirectives: [],
   shuttingDown: new Set<string>(),
@@ -56,21 +142,41 @@ export const useFleetStore = create<FleetState>((set, get) => ({
   agentTypeFilter: "all",
   flavorFilter: null,
 
-  load: async (agentType?: AgentTypeFilter) => {
-    const filter = agentType ?? get().agentTypeFilter;
-    set({ loading: true, error: null });
+  load: async (opts = {}) => {
+    const page = opts.page ?? 1;
+    const perPage = opts.perPage ?? get().perPage;
+    const filter = opts.agentType ?? get().agentTypeFilter;
+    const apiFilter = filter === "all" ? undefined : filter;
+
+    set({ loading: true, error: null, agentTypeFilter: filter });
+
     try {
-      const apiFilter = filter === "all" ? undefined : filter;
-      // Fetch fleet state and custom directives in parallel. The
-      // directive fetch is best-effort -- if it fails we surface
-      // an empty array rather than blocking the fleet view.
-      const [fleet, directives] = await Promise.all([
-        fetchFleet(50, 0, apiFilter),
+      const since = new Date(Date.now() - SWIMLANE_LOOKBACK_MS).toISOString();
+      // Parallel fetch: agents roster (table + sidebar), recent
+      // sessions (swimlane grouping), directive registry.
+      const [fleet, sessions, directives] = await Promise.all([
+        fetchFleet(page, perPage, apiFilter),
+        // Server caps the sessions page at 100; the swimlane sources
+        // its rows from the agents roster (fetchFleet) so 100 recent
+        // sessions is plenty to populate event circles in the rows
+        // the user can actually see. Fleets with a higher burst would
+        // rely on WebSocket updates to fill in missing circles.
+        fetchSessions({
+          from: since,
+          agent_type: apiFilter ? [apiFilter] : undefined,
+          limit: 100,
+          offset: 0,
+        }),
         fetchCustomDirectives().catch(() => [] as CustomDirective[]),
       ]);
+
       set({
-        flavors: fleet.flavors,
+        agents: fleet.agents,
+        total: fleet.total,
+        page: fleet.page,
+        perPage: fleet.per_page,
         contextFacets: fleet.context_facets ?? {},
+        flavors: buildFlavors(fleet.agents, sessions.sessions),
         customDirectives: directives,
         loading: false,
       });
@@ -80,8 +186,7 @@ export const useFleetStore = create<FleetState>((set, get) => ({
   },
 
   setAgentTypeFilter: (filter: AgentTypeFilter) => {
-    set({ agentTypeFilter: filter });
-    get().load(filter);
+    void get().load({ page: 1, agentType: filter });
   },
 
   setFlavorFilter: (flavor: string | null) => {
@@ -89,18 +194,15 @@ export const useFleetStore = create<FleetState>((set, get) => ({
   },
 
   applyUpdate: (update: FleetUpdate) => {
-    const { flavors, shuttingDown } = get();
-    // Snapshot whether this flavor was already in the store BEFORE
-    // we mutate flavors. A new flavor appearing via session_start is
-    // a strong signal that the agent just called sensor.init() and
-    // may have registered new custom directives -- the dashboard
-    // would otherwise miss them until a hard refresh.
-    const isNewFlavor = !flavors.some((f) => f.flavor === update.session.flavor);
-    const updated = applySessionUpdate(flavors, update.session);
+    const { flavors, agents, shuttingDown } = get();
+    // D115: the swimlane row key is agent_id (stored under the legacy
+    // ``flavor`` field name). Updates for sessions without an
+    // agent_id (legacy rows awaiting enrichment) land under the
+    // session's flavor string as a fallback so they still render.
+    const agentKey = update.session.agent_id ?? update.session.flavor;
+    const isNewAgent = !flavors.some((f) => f.flavor === agentKey);
+    const updated = applySessionUpdate(flavors, update.session, agentKey);
 
-    // Clear the client-side "shutting down" mark the moment the
-    // session transitions to closed -- the UI no longer needs the
-    // pulsing indicator.
     let nextShuttingDown = shuttingDown;
     if (
       update.session.state === "closed" &&
@@ -112,17 +214,37 @@ export const useFleetStore = create<FleetState>((set, get) => ({
 
     set({ flavors: updated, shuttingDown: nextShuttingDown });
 
-    if (update.type === "session_start" && isNewFlavor) {
-      // Best-effort: refetch the directive registry. The new
-      // FlavorItem will pick it up automatically because the
-      // FleetPanel reads customDirectives from the store via a
-      // useFleetStore selector. Failures are swallowed so a
-      // transient API blip never blocks WebSocket processing.
+    if (update.type === "session_start" && isNewAgent) {
+      // A brand-new agent: refetch directives (which are flavor /
+      // agent-scoped) and pull the refreshed agent roster so the
+      // table view gains the row without a hard refresh. Best-effort
+      // -- failures swallowed.
       fetchCustomDirectives()
         .then((directives) => set({ customDirectives: directives }))
         .catch(() => {
           /* directive refresh is best-effort */
         });
+      // Narrow refetch: only hits the agents endpoint, not the
+      // sessions window, so the payload stays small.
+      void get().load({ page: get().page, agentType: get().agentTypeFilter });
+    }
+
+    // Mirror the agent-level rollup so the Fleet table reflects the
+    // new session without waiting for a server-side counter bump.
+    if (update.type === "session_start" && update.session.agent_id) {
+      const aid = update.session.agent_id;
+      const nowIso = new Date().toISOString();
+      const nextAgents = agents.map((a) =>
+        a.agent_id === aid
+          ? {
+              ...a,
+              total_sessions: a.total_sessions + 1,
+              last_seen_at: nowIso,
+              state: "active" as SessionState,
+            }
+          : a,
+      );
+      if (nextAgents !== agents) set({ agents: nextAgents });
     }
   },
 
@@ -150,31 +272,34 @@ export const useFleetStore = create<FleetState>((set, get) => ({
 
 function applySessionUpdate(
   flavors: FlavorSummary[],
-  session: Session
+  session: Session,
+  agentKey: string,
 ): FlavorSummary[] {
-  const flavorExists = flavors.some((f) => f.flavor === session.flavor);
+  const exists = flavors.some((f) => f.flavor === agentKey);
 
-  if (!flavorExists) {
-    // New flavor not present at initial load — create a new entry
+  if (!exists) {
     return [
       ...flavors,
       {
-        flavor: session.flavor,
+        flavor: agentKey,
         agent_type: session.agent_type,
         session_count: 1,
         active_count: session.state === "active" ? 1 : 0,
         tokens_used_total: session.tokens_used,
         sessions: [session],
+        agent_id: session.agent_id ?? undefined,
+        agent_name: session.agent_name ?? undefined,
+        client_type: session.client_type ?? undefined,
+        last_seen_at: session.last_seen_at,
       },
     ];
   }
 
   return flavors.map((f) => {
-    if (f.flavor !== session.flavor) return f;
+    if (f.flavor !== agentKey) return f;
     const sessions = f.sessions.map((s) =>
-      s.session_id === session.session_id ? session : s
+      s.session_id === session.session_id ? session : s,
     );
-    // If session is new within existing flavor, add it
     if (!sessions.some((s) => s.session_id === session.session_id)) {
       sessions.unshift(session);
     }
@@ -184,6 +309,13 @@ function applySessionUpdate(
       session_count: sessions.length,
       active_count: sessions.filter((s) => s.state === "active").length,
       tokens_used_total: sessions.reduce((sum, s) => sum + s.tokens_used, 0),
+      // Promote identity fields from the update if the row had none
+      // (e.g. a fallback row built from session.flavor before the
+      // session's first enriched update arrived).
+      agent_id: f.agent_id ?? session.agent_id ?? undefined,
+      agent_name: f.agent_name ?? session.agent_name ?? undefined,
+      client_type: f.client_type ?? session.client_type ?? undefined,
+      last_seen_at: session.last_seen_at || f.last_seen_at,
     };
   });
 }

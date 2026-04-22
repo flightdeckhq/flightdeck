@@ -1,4 +1,5 @@
 import { useState, useCallback, useRef, useEffect, useMemo } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useFleet } from "@/hooks/useFleet";
 import { useFleetStore } from "@/store/fleet";
 import { useHistoricalEvents } from "@/hooks/useHistoricalEvents";
@@ -7,11 +8,27 @@ import { EventFilterBar } from "@/components/fleet/EventFilterBar";
 import { LiveFeed } from "@/components/fleet/LiveFeed";
 import { EventDetailDrawer } from "@/components/fleet/EventDetailDrawer";
 import { Timeline } from "@/components/timeline/Timeline";
+import { AgentTable } from "@/components/fleet/AgentTable";
 import { SessionDrawer } from "@/components/session/SessionDrawer";
 import type { AgentEvent, FeedEvent, FlavorSummary, Session } from "@/lib/types";
 import type { ContextFilters } from "@/types/context";
 import { FEED_MAX_EVENTS, PAUSE_QUEUE_MAX_EVENTS } from "@/lib/constants";
 import { eventsCache } from "@/hooks/useSessionEvents";
+
+/**
+ * v0.4.0 Phase 1 (D115): Fleet view modes. ``swimlane`` is the
+ * default live-activity view (one row per agent on the time axis);
+ * ``table`` is the paginated agent-level alternative that matches
+ * the Investigate page's session-table styling. URL-driven via the
+ * ``view`` query param so refreshes and shared links preserve the
+ * user's choice.
+ */
+export type FleetView = "swimlane" | "table";
+const DEFAULT_VIEW: FleetView = "swimlane";
+
+function parseViewParam(raw: string | null): FleetView {
+  return raw === "table" ? "table" : DEFAULT_VIEW;
+}
 
 /**
  * Timeline view mode. The "bars" stacked-histogram variant was
@@ -102,6 +119,29 @@ export function sortFlavorsByActivity(
 }
 
 export function Fleet() {
+  // View toggle (D115). Default swimlane; ``?view=table`` flips the
+  // main-area rendering to the paginated AgentTable. Persists in URL
+  // query so reloads and shared links keep the user's choice.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const view: FleetView = parseViewParam(searchParams.get("view"));
+  const setView = useCallback(
+    (next: FleetView) => {
+      const sp = new URLSearchParams(searchParams);
+      if (next === DEFAULT_VIEW) {
+        sp.delete("view");
+      } else {
+        sp.set("view", next);
+      }
+      setSearchParams(sp, { replace: true });
+    },
+    [searchParams, setSearchParams],
+  );
+
+  const agents = useFleetStore((s) => s.agents);
+  const fleetTotal = useFleetStore((s) => s.total);
+  const fleetPage = useFleetStore((s) => s.page);
+  const fleetPerPage = useFleetStore((s) => s.perPage);
+  const storeLoad = useFleetStore((s) => s.load);
   const [feedEvents, setFeedEvents] = useState<FeedEvent[]>([]);
   const [pauseQueue, setPauseQueue] = useState<FeedEvent[]>([]);
   const [paused, setPaused] = useState(false);
@@ -645,6 +685,58 @@ export function Fleet() {
           onFilterChange={setActiveFilter}
         />
 
+        {/* D115 view toggle: swimlane (default) vs paginated agent
+            table. URL-driven. Typography + pill geometry mirror
+            EventFilterBar immediately above so the two strips read
+            as a continuous fleet-header unit. */}
+        <div
+          data-testid="fleet-view-toggle"
+          role="tablist"
+          aria-label="Fleet view mode"
+          className="flex h-9 shrink-0 items-center gap-1.5 px-3"
+          style={{
+            background: "var(--bg)",
+            borderBottom: "1px solid var(--border-subtle)",
+          }}
+        >
+          {(["swimlane", "table"] as const).map((mode) => {
+            const active = view === mode;
+            return (
+              <button
+                key={mode}
+                type="button"
+                role="tab"
+                aria-selected={active}
+                onClick={() => setView(mode)}
+                data-testid={`fleet-view-toggle-${mode}`}
+                style={{
+                  height: 22,
+                  padding: "0 10px",
+                  cursor: "pointer",
+                  borderRadius: 4,
+                  fontFamily: "var(--font-mono)",
+                  fontSize: 11,
+                  fontWeight: 500,
+                  letterSpacing: "0.02em",
+                  ...(active
+                    ? {
+                        background: "var(--bg-elevated)",
+                        color: "var(--text)",
+                        border: "1px solid var(--border-strong)",
+                      }
+                    : {
+                        background: "transparent",
+                        color: "var(--text-muted)",
+                        border: "1px solid var(--border-subtle)",
+                      }),
+                }}
+              >
+                {mode === "swimlane" ? "Swimlane" : "Table"}
+              </button>
+            );
+          })}
+        </div>
+
         {/* Context filter status bar. Only renders when a CONTEXT
             filter is active. Shows matched / total session counts
             and a one-click clear so the user always knows how many
@@ -693,27 +785,42 @@ export function Fleet() {
           </div>
         )}
 
-        {/* Timeline area. Horizontal scroll lives inside Timeline
-            (proportional to the selected time range); only vertical
-            scroll bubbles up here. */}
+        {/* Main view area. Swimlane is the default live view; the
+            agent table is the paginated alternate selected via the
+            view toggle above. Both consume the same agent-grouped
+            data from the fleet store (store.load() fetches the
+            agents roster AND a recent-sessions window in one pass). */}
         <div className="flex-1" style={{ overflowY: "auto", overflowX: "hidden" }}>
-          <Timeline
-            flavors={sortedFlavors}
-            flavorFilter={flavorFilter}
-            timeRange={timeRange}
-            expandedFlavors={expandedFlavors}
-            onExpandFlavor={handleExpandFlavor}
-            onNodeClick={(id, _eventId, event) => {
-              selectSession(id);
-              setDirectEventDetail(event ?? null);
-            }}
-            activeFilter={activeFilter}
-            paused={paused}
-            pausedAt={pausedAt}
-            effectiveNowMs={effectiveNowMs}
-            sessionVersions={sessionVersions}
-            matchingSessionIds={matchingSessionIds}
-          />
+          {view === "swimlane" ? (
+            <Timeline
+              flavors={sortedFlavors}
+              flavorFilter={flavorFilter}
+              timeRange={timeRange}
+              expandedFlavors={expandedFlavors}
+              onExpandFlavor={handleExpandFlavor}
+              onNodeClick={(id, _eventId, event) => {
+                selectSession(id);
+                setDirectEventDetail(event ?? null);
+              }}
+              activeFilter={activeFilter}
+              paused={paused}
+              pausedAt={pausedAt}
+              effectiveNowMs={effectiveNowMs}
+              sessionVersions={sessionVersions}
+              matchingSessionIds={matchingSessionIds}
+            />
+          ) : (
+            <div className="p-4">
+              <AgentTable agents={agents} loading={loading} />
+              <FleetTablePagination
+                total={fleetTotal}
+                page={fleetPage}
+                perPage={fleetPerPage}
+                loading={loading}
+                onPage={(next) => void storeLoad({ page: next })}
+              />
+            </div>
+          )}
         </div>
 
         {/* Live feed.
@@ -752,6 +859,59 @@ export function Fleet() {
         event={selectedEvent}
         onClose={() => setSelectedEvent(null)}
       />
+    </div>
+  );
+}
+
+/** Minimal pagination strip for the table view. Matches the
+ *  ``Prev / Page X of Y / Next`` pattern used below the Investigate
+ *  session table -- kept locally because it is the only Fleet
+ *  consumer and the component surface is trivial. */
+function FleetTablePagination({
+  total,
+  page,
+  perPage,
+  loading,
+  onPage,
+}: {
+  total: number;
+  page: number;
+  perPage: number;
+  loading: boolean;
+  onPage: (next: number) => void;
+}) {
+  const pageCount = Math.max(1, Math.ceil(total / perPage));
+  return (
+    <div className="mt-4 flex items-center justify-between text-xs text-muted-foreground">
+      <span>
+        {total === 0
+          ? "0 agents"
+          : `Showing ${Math.min((page - 1) * perPage + 1, total)}–${Math.min(
+              page * perPage,
+              total,
+            )} of ${total}`}
+      </span>
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => onPage(Math.max(1, page - 1))}
+          disabled={page <= 1 || loading}
+          className="px-2 py-1 rounded-sm border border-border disabled:opacity-40"
+        >
+          Prev
+        </button>
+        <span>
+          Page {page} / {pageCount}
+        </span>
+        <button
+          type="button"
+          onClick={() => onPage(Math.min(pageCount, page + 1))}
+          disabled={page >= pageCount || loading}
+          className="px-2 py-1 rounded-sm border border-border disabled:opacity-40"
+        >
+          Next
+        </button>
+      </div>
     </div>
   );
 }

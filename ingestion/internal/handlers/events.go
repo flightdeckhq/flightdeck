@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strings"
 
 	"github.com/flightdeckhq/flightdeck/ingestion/internal/auth"
@@ -14,6 +15,34 @@ import (
 )
 
 const maxRequestBodyBytes = 1 << 20 // 1MB
+
+// D114 / D115 vocabulary lock, enforced at the wire boundary so a
+// non-conforming third-party emitter gets a 400 instead of polluting
+// the database. The Python sensor and Claude Code plugin emit these
+// values already; the schema's CHECK constraints enforce them at the
+// storage layer -- this middleware rejection produces a cleaner
+// error message than a Postgres constraint violation surfaced through
+// the NATS worker path. See DECISIONS.md D115, D116.
+var validAgentTypes = map[string]bool{
+	"coding":     true,
+	"production": true,
+}
+
+var validClientTypes = map[string]bool{
+	"claude_code":       true,
+	"flightdeck_sensor": true,
+}
+
+// uuidRegex matches the canonical 8-4-4-4-12 hex form. Any version
+// (v1/v4/v5) and any variant bits are accepted -- the identity
+// derivation produces v5 UUIDs and legacy session_ids may be v4, but
+// the schema's UUID column rejects malformed values regardless. We
+// match both here so the ingestion API returns 400 with a meaningful
+// message instead of letting a malformed UUID propagate to the worker
+// and FK-violate at INSERT time.
+var uuidRegex = regexp.MustCompile(
+	`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`,
+)
 
 // Session-state admission (closed vs lost vs stale) is enforced on the
 // worker side by processor.handleSessionGuard (D105 revive-on-event,
@@ -153,6 +182,36 @@ func EventsHandler(
 		eventType, _ := payload["event_type"].(string)
 		if sessionID == "" || eventType == "" {
 			writeError(w, http.StatusBadRequest, "session_id and event_type are required")
+			return
+		}
+
+		// D115 / D116: agent identity validation at the wire boundary.
+		// Every event payload must carry a valid agent_id (UUID
+		// canonical form), agent_type from the D114 vocabulary, and
+		// client_type from the closed set {claude_code,
+		// flightdeck_sensor}. Rejecting at ingestion means a
+		// misbehaving third-party emitter gets an immediate 400 with
+		// a specific message rather than writing junk rows that the
+		// dashboard then has to defend against.
+		agentID, _ := payload["agent_id"].(string)
+		agentType, _ := payload["agent_type"].(string)
+		clientType, _ := payload["client_type"].(string)
+		if agentID == "" {
+			writeError(w, http.StatusBadRequest, "agent_id is required")
+			return
+		}
+		if !uuidRegex.MatchString(agentID) {
+			writeError(w, http.StatusBadRequest, "agent_id must be a canonical UUID")
+			return
+		}
+		if !validAgentTypes[agentType] {
+			writeError(w, http.StatusBadRequest,
+				"agent_type must be one of: coding, production")
+			return
+		}
+		if !validClientTypes[clientType] {
+			writeError(w, http.StatusBadRequest,
+				"client_type must be one of: claude_code, flightdeck_sensor")
 			return
 		}
 

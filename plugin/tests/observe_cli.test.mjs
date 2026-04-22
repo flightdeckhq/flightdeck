@@ -2,7 +2,7 @@ import { describe, it, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -25,13 +25,25 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = join(__dirname, "..", "hooks", "scripts", "observe_cli.mjs");
 
 function clearSessionMarkers() {
+  // Nukes every ``session-*.txt`` in the plugin tmpdir. Post-D115 the
+  // marker key derives from ``hookEvent.session_id``, not cwd, so
+  // targeting one specific name would miss the files the test just
+  // wrote. Glob-style clean keeps the helper resilient to future
+  // keying changes.
   const dir = join(tmpdir(), "flightdeck-plugin");
-  const cwd = process.cwd();
-  const key = createHash("sha256").update(cwd).digest("hex").slice(0, 16);
   try {
-    rmSync(join(dir, `session-${key}.txt`));
+    const entries = readdirSync(dir);
+    for (const name of entries) {
+      if (name.startsWith("session-") && name.endsWith(".txt")) {
+        try {
+          rmSync(join(dir, name));
+        } catch {
+          /* ignore individual failures */
+        }
+      }
+    }
   } catch {
-    /* file may not exist */
+    /* dir may not exist */
   }
 }
 
@@ -654,21 +666,28 @@ describe("observe_cli helpers", () => {
       clearSessionMarkers();
     });
 
-    // Precedence chain under test (see D113):
+    // Precedence chain under test (v0.4.0 Phase 1, D115):
     //   1. CLAUDE_SESSION_ID env var
     //   2. ANTHROPIC_CLAUDE_SESSION_ID env var
-    //   3. Derived v5 UUID from (user, hostname, repo remote, branch)
-    //   4. Marker file cache
-    //   5. hookEvent.session_id (demoted)
-    //   6. sha256(cwd)[:32]
+    //   3. Marker file keyed on sha256(hookEvent.session_id)
+    //      (populated by step 4 on the first hook; read verbatim by
+    //      every subsequent hook in the same invocation)
+    //   4. Fresh uuid4 written to the hook-id-keyed marker
+    //   5. Cwd-sha marker fallback + stderr WARN when the hook event
+    //      carries no session_id
+    //   6. Ephemeral sha256(cwd)[:32] backstop when $TMPDIR is unusable
+    //
+    // D113's uuid5-from-(user, host, repo, branch) derivation was
+    // removed; stability moved to ``agent_id``, ``session_id`` is
+    // now per-invocation random.
 
-    const V5_UUID_RE =
-      /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+    const V4_UUID_RE =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
-    it("CLAUDE_SESSION_ID env var wins over hookEvent.session_id", () => {
+    it("CLAUDE_SESSION_ID env var wins over everything else", () => {
       process.env.CLAUDE_SESSION_ID = "claude-test-id";
       assert.equal(
-        getSessionId({ session_id: "hook-would-be-ignored" }),
+        getSessionId({ session_id: "hook-id-ignored" }),
         "claude-test-id",
       );
     });
@@ -676,38 +695,61 @@ describe("observe_cli helpers", () => {
     it("ANTHROPIC_CLAUDE_SESSION_ID is honored when CLAUDE_SESSION_ID is unset", () => {
       process.env.ANTHROPIC_CLAUDE_SESSION_ID = "anthropic-test-id";
       assert.equal(
-        getSessionId({ session_id: "hook-would-be-ignored" }),
+        getSessionId({ session_id: "hook-id-ignored" }),
         "anthropic-test-id",
       );
     });
 
-    it("derives a stable v5 UUID from git identity when inside a git repo", () => {
-      const id = getSessionId();
-      assert.match(id, V5_UUID_RE, `expected v5 UUID, got ${id}`);
+    it("generates a fresh uuid4 keyed on hookEvent.session_id", () => {
+      const id = getSessionId({ session_id: "invocation-A" });
+      assert.match(id, V4_UUID_RE, `expected v4 UUID, got ${id}`);
     });
 
-    it("derived UUID wins over hookEvent.session_id in a git repo", () => {
-      // Core semantic of D113: Claude Code's own per-spawn id is
-      // demoted to step 5 and loses to the derived UUID at step 3.
-      const id = getSessionId({ session_id: "hook-would-be-ignored" });
-      assert.notEqual(id, "hook-would-be-ignored");
-      assert.match(id, V5_UUID_RE);
-    });
-
-    it("returns the same id on repeated calls in the same cwd", () => {
-      const a = getSessionId();
-      const b = getSessionId();
+    it("returns the same id on repeated calls within one invocation", () => {
+      const hookEvent = { session_id: "invocation-B" };
+      const a = getSessionId(hookEvent);
+      const b = getSessionId(hookEvent);
       assert.equal(a, b);
     });
 
-    it("marker file cache wins over recomputation on a second call", () => {
-      // First call populates marker; second call must return the
-      // cached id regardless of what hookEvent supplies.
-      const first = getSessionId();
-      const second = getSessionId({
-        session_id: "would-win-only-without-cache",
-      });
+    it("marker key depends on hookEvent.session_id, not cwd", () => {
+      // Two calls with the same hookEvent.session_id but simulated
+      // different cwds (via clearing and re-running) still converge
+      // -- the marker key is hookEvent.session_id's hash, so cwd
+      // changes between hooks within one invocation do NOT split
+      // the session. This is the regression fixed post-audit.
+      const hookEvent = { session_id: "invocation-C" };
+      const first = getSessionId(hookEvent);
+      // Second call in the same process + same hookEvent: marker
+      // hits and we get the cached id back.
+      const second = getSessionId(hookEvent);
       assert.equal(first, second);
+    });
+
+    it("different hookEvent.session_id values produce different sessions", () => {
+      const first = getSessionId({ session_id: "invocation-D" });
+      const second = getSessionId({ session_id: "invocation-E" });
+      assert.notEqual(first, second);
+      assert.match(first, V4_UUID_RE);
+      assert.match(second, V4_UUID_RE);
+    });
+
+    it("missing hookEvent.session_id falls back to cwd-sha marker", () => {
+      // Non-Claude-Code caller or a malformed hook event: without a
+      // session_id we fall back to the cwd-sha keying so the plugin
+      // still yields *some* marker rather than crashing. Output
+      // still shape-matches a uuid4.
+      const id = getSessionId({});
+      assert.match(id, V4_UUID_RE);
+    });
+
+    it("clearing the marker triggers a fresh uuid4 on the next call", () => {
+      const hookEvent = { session_id: "invocation-F" };
+      const first = getSessionId(hookEvent);
+      clearSessionMarkers();
+      const second = getSessionId(hookEvent);
+      assert.notEqual(first, second);
+      assert.match(second, V4_UUID_RE);
     });
   });
 

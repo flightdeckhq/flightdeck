@@ -45,8 +45,8 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-export function fetchFleet(limit = 50, offset = 0, agentType?: string): Promise<FleetResponse> {
-  let url = `/v1/fleet?limit=${limit}&offset=${offset}`;
+export function fetchFleet(page = 1, perPage = 50, agentType?: string): Promise<FleetResponse> {
+  let url = `/v1/fleet?page=${page}&per_page=${perPage}`;
   if (agentType) url += `&agent_type=${agentType}`;
   return fetchJson<FleetResponse>(url);
 }
@@ -154,9 +154,33 @@ export async function fetchSearch(query: string, signal?: AbortSignal): Promise<
   return fetchJson<SearchResults>(`/v1/search?q=${encodeURIComponent(query)}`, { signal });
 }
 
+/**
+ * Return distinct flavor strings seen across recent sessions. The
+ * v0.4.0 Phase 1 fleet response is agent-keyed and no longer groups
+ * sessions by flavor, so this helper sources the list from the
+ * paginated /v1/sessions endpoint. Used by the policy editor and
+ * directive trigger forms that still scope on sessions.flavor.
+ *
+ * Best-effort: returns [] on any network / parse failure so callers
+ * (PolicyEditor dropdown, Directives flavor filter) render an empty
+ * list rather than erroring out. The dropdowns accept free-form
+ * input so an empty fetch is survivable.
+ */
 export async function fetchFlavors(): Promise<string[]> {
-  const resp = await fetchFleet(200, 0);
-  return resp.flavors.map((f) => f.flavor);
+  try {
+    // Server caps the sessions page at 100. Fetching more than that
+    // requires paginating; for the policy-editor / directive-trigger
+    // dropdowns one page of recent sessions is sufficient since the
+    // dropdown is a hint, not an authoritative flavor list.
+    const resp = await fetchSessions({ limit: 100, offset: 0 });
+    const seen = new Set<string>();
+    for (const s of resp.sessions) {
+      if (s.flavor) seen.add(s.flavor);
+    }
+    return [...seen].sort();
+  } catch {
+    return [];
+  }
 }
 
 export async function fetchCustomDirectives(flavor?: string): Promise<CustomDirective[]> {
@@ -217,11 +241,12 @@ export interface SessionsParams {
   to?: string;
   state?: string[];
   flavor?: string[];
+  /** D115 single-agent filter. Empty = no filter. */
+  agent_id?: string;
   /**
-   * Filter by sessions.agent_type. Repeatable: OR within the group,
-   * AND with every other filter. Values are free-form text and
-   * unvalidated at the API layer -- a typo just yields an empty
-   * result.
+   * Filter by sessions.agent_type. D114 vocabulary
+   * (``coding`` / ``production``). Repeatable: OR within the group,
+   * AND with every other filter.
    */
   agent_type?: string[];
   /**
@@ -270,6 +295,7 @@ export async function fetchSessions(params: SessionsParams, signal?: AbortSignal
   if (params.flavor) {
     for (const f of params.flavor) sp.append("flavor", f);
   }
+  if (params.agent_id) sp.set("agent_id", params.agent_id);
   if (params.agent_type) {
     for (const a of params.agent_type) sp.append("agent_type", a);
   }

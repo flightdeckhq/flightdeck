@@ -47,6 +47,10 @@ export function parseUrlState(sp: URLSearchParams) {
     to: sp.get("to") ?? new Date().toISOString(),
     states: sp.getAll("state") as SessionState[],
     flavors: sp.getAll("flavor"),
+    // D115: single-agent filter. Deep-linked from the Fleet agent
+    // table and the Investigate AGENT sidebar facet. Empty string
+    // means no filter.
+    agentId: sp.get("agent_id") ?? "",
     agentTypes: sp.getAll("agent_type"),
     frameworks: sp.getAll("framework"),
     // Scalar context filters. The key list here must stay in sync
@@ -84,6 +88,7 @@ export function buildUrlParams(s: ReturnType<typeof parseUrlState>): URLSearchPa
   if (s.to) p.set("to", s.to);
   for (const st of s.states) p.append("state", st);
   for (const fl of s.flavors) p.append("flavor", fl);
+  if (s.agentId) p.set("agent_id", s.agentId);
   for (const at of s.agentTypes) p.append("agent_type", at);
   for (const fw of s.frameworks) p.append("framework", fw);
   for (const u of s.contextUsers) p.append("user", u);
@@ -176,7 +181,11 @@ function timeAgo(ms: number): string {
 interface FacetGroup {
   key: string;
   label: string;
-  values: { value: string; count: number }[];
+  /** ``value`` is the wire value the filter clicks on (e.g. agent_id
+   *  UUID for the AGENT facet); optional ``label`` is the human
+   *  display string (e.g. agent_name) rendered in place of the
+   *  value. Omit ``label`` when value and display are the same. */
+  values: { value: string; count: number; label?: string }[];
 }
 
 /**
@@ -196,6 +205,11 @@ interface FacetSources {
   model?: SessionListItem[];
   framework?: SessionListItem[];
   agent_type?: SessionListItem[];
+  /** D115 sticky-facet source for the AGENT sidebar facet. When
+   *  an agent_id filter is active, this holds the result set with
+   *  the agent filter stripped so the AGENT facet keeps listing
+   *  every distinct agent instead of collapsing to one row. */
+  agent_id?: SessionListItem[];
   // Per-key overrides for scalar context facets. Each key, when
   // populated, contributes its session list to THAT facet only --
   // keeps an actively-filtered facet from collapsing to a single row
@@ -258,6 +272,12 @@ export function computeFacets(
   const modelCounts = new Map<string, number>();
   const frameworkCounts = new Map<string, number>();
   const agentTypeCounts = new Map<string, number>();
+  // D115 AGENT facet: keyed on agent_id (clickable filter value) with
+  // an accompanying name map for display rendering. Sessions without
+  // agent_id (pre-v0.4.0 legacy rows) are silently skipped -- they
+  // cannot participate in an agent-based filter.
+  const agentIdCounts = new Map<string, number>();
+  const agentIdNames = new Map<string, string>();
   // Scalar context counts. Initialised once per key so downstream code
   // can address them via the same key string the facets emit under.
   const ctxCounts: Record<ContextFacetKey, Map<string, number>> = {
@@ -310,6 +330,14 @@ export function computeFacets(
       }
     }
   }
+  if (sources.agent_id) {
+    for (const s of sources.agent_id) {
+      if (s.agent_id) {
+        agentIdCounts.set(s.agent_id, (agentIdCounts.get(s.agent_id) ?? 0) + 1);
+        if (s.agent_name) agentIdNames.set(s.agent_id, s.agent_name);
+      }
+    }
+  }
   // Sticky-source pass for scalar context facets. A key whose source
   // override is present consumes THAT list; the main-loop branch
   // below skips it to avoid double-counting.
@@ -336,6 +364,10 @@ export function computeFacets(
         s.agent_type,
         (agentTypeCounts.get(s.agent_type) ?? 0) + 1,
       );
+    }
+    if (!sources.agent_id && s.agent_id) {
+      agentIdCounts.set(s.agent_id, (agentIdCounts.get(s.agent_id) ?? 0) + 1);
+      if (s.agent_name) agentIdNames.set(s.agent_id, s.agent_name);
     }
     for (const key of CONTEXT_FACET_KEYS) {
       if (sources[key]) continue;
@@ -371,9 +403,21 @@ export function computeFacets(
     values: toArr(ctxCounts[k]),
   }));
 
+  // D115 AGENT group: keyed on agent_id, display label = agent_name.
+  // Sorted by count DESC (toArr does this already) so the busiest
+  // agents land at the top of the facet list.
+  const agentGroupValues = [...agentIdCounts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([id, count]) => ({
+      value: id,
+      count,
+      label: agentIdNames.get(id) ?? id,
+    }));
+
   return [
     { key: "state", label: "STATE", values: toArr(stateCounts) },
-    { key: "flavor", label: "AGENT", values: toArr(flavorCounts) },
+    { key: "agent_id", label: "AGENT", values: agentGroupValues },
+    { key: "flavor", label: "FLAVOR", values: toArr(flavorCounts) },
     { key: "agent_type", label: "AGENT TYPE", values: toArr(agentTypeCounts) },
     { key: "model", label: "MODEL", values: toArr(modelCounts) },
     { key: "framework", label: "FRAMEWORK", values: toArr(frameworkCounts) },
@@ -597,6 +641,7 @@ export function Investigate() {
         to: state.to,
         state: state.states.length > 0 ? state.states : undefined,
         flavor: state.flavors.length > 0 ? state.flavors : undefined,
+        agent_id: state.agentId || undefined,
         agent_type: state.agentTypes.length > 0 ? state.agentTypes : undefined,
         framework: state.frameworks.length > 0 ? state.frameworks : undefined,
         model: state.model || undefined,
@@ -648,6 +693,9 @@ export function Investigate() {
           : null,
         agent_type: state.agentTypes.length > 0
           ? fetchSessions({ ...facetBase, agent_type: undefined }, controller.signal)
+          : null,
+        agent_id: state.agentId
+          ? fetchSessions({ ...facetBase, agent_id: undefined }, controller.signal)
           : null,
         user: state.contextUsers.length > 0
           ? fetchSessions({ ...facetBase, user: undefined }, controller.signal)
@@ -847,6 +895,14 @@ export function Investigate() {
           ? current.filter((a) => a !== value)
           : [...current, value];
         updateUrl({ agentTypes: next, page: 1 });
+      } else if (group === "agent_id") {
+        // D115 AGENT facet is single-select: clicking the active
+        // agent clears the filter; clicking a different agent
+        // replaces it. Matches the MODEL facet UX.
+        updateUrl({
+          agentId: urlState.agentId === value ? "" : value,
+          page: 1,
+        });
       } else {
         // Scalar context facets. Lookup table keeps the per-facet
         // boilerplate (urlState slot, toggle, URL key) in one place
@@ -1170,6 +1226,7 @@ export function Investigate() {
                   (group.key === "model" && urlState.model === v.value) ||
                   (group.key === "framework" && urlState.frameworks.includes(v.value)) ||
                   (group.key === "agent_type" && urlState.agentTypes.includes(v.value)) ||
+                  (group.key === "agent_id" && urlState.agentId === v.value) ||
                   (group.key === "os" && urlState.contextOS.includes(v.value)) ||
                   (group.key === "arch" && urlState.contextArch.includes(v.value)) ||
                   (group.key === "hostname" && urlState.contextHostnames.includes(v.value)) ||
@@ -1197,7 +1254,7 @@ export function Investigate() {
                   >
                     <span className="flex items-center min-w-0 flex-1" style={{ gap: 8 }}>
                       <FacetIcon groupKey={group.key} value={v.value} />
-                      <span className="truncate">{v.value}</span>
+                      <span className="truncate">{v.label ?? v.value}</span>
                     </span>
                     <span
                       className="shrink-0"

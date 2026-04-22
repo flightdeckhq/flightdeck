@@ -800,11 +800,20 @@ disabled globally by unsetting `ENVIRONMENT=dev`.
 
 ### Sensor → Ingestion API (`POST /v1/events`)
 
+> **v0.4.0 Phase 1 update (D115 / D116).** Every event payload also
+> carries the D115 identity trio ``agent_id`` (UUID),
+> ``agent_type`` (``coding`` or ``production``), ``client_type``
+> (``claude_code`` or ``flightdeck_sensor``), plus ``agent_name``,
+> ``user`` and ``hostname``. Ingestion returns 400 if any of these
+> are missing or outside their vocabulary. The example below shows
+> the legacy v0.3.x shape for historical context; new integrations
+> must emit the D115 fields.
+
 ```json
 {
   "session_id":          "uuid",
   "flavor":              "research-agent",
-  "agent_type":          "autonomous",
+  "agent_type":          "production",
   "event_type":          "post_call",
   "host":                "worker-node-3",
   "framework":           "crewai",
@@ -1190,18 +1199,46 @@ See DECISIONS.md D107 and D108.
 
 ## Data Model
 
-### agents
+### agents (D115 -- v0.4.0 Phase 1)
 
 ```sql
 CREATE TABLE agents (
-    flavor          TEXT PRIMARY KEY,
-    agent_type      TEXT NOT NULL DEFAULT 'autonomous',
-    first_seen      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    last_seen       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    session_count   INTEGER NOT NULL DEFAULT 0,
-    policy_id       UUID REFERENCES token_policies(id)
+    agent_id        UUID PRIMARY KEY,
+    agent_type      TEXT NOT NULL
+        CHECK (agent_type IN ('coding', 'production')),
+    client_type     TEXT NOT NULL
+        CHECK (client_type IN ('claude_code', 'flightdeck_sensor')),
+    agent_name      TEXT NOT NULL,
+    user_name       TEXT NOT NULL,
+    hostname        TEXT NOT NULL,
+    policy_id       UUID REFERENCES token_policies(id),
+    first_seen_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_seen_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    total_sessions  INTEGER NOT NULL DEFAULT 0,
+    total_tokens    BIGINT  NOT NULL DEFAULT 0
 );
+
+CREATE INDEX idx_agents_last_seen_at ON agents(last_seen_at DESC);
+CREATE INDEX idx_agents_client_type  ON agents(client_type);
+CREATE INDEX idx_agents_agent_type   ON agents(agent_type);
 ```
+
+``agent_id`` is a deterministic name-based UUID derived on the
+client side from the five-segment identity tuple
+``(agent_type, user, hostname, client_type, agent_name)`` against
+the ``NAMESPACE_FLIGHTDECK`` namespace. The Python sensor and Claude
+Code plugin both compute this UUID before the first event POST; the
+ingestion API validates the resulting string at the wire boundary
+(D116). The CHECK constraints above are the storage-layer backstop.
+
+The legacy flavor-keyed ``agents`` table was dropped in migration
+``000015`` and reseeded under this schema. The D115 session-to-
+agent FK lives on ``sessions.agent_id`` (below); the old
+``sessions.flavor`` column is retained as denormalized metadata but
+no longer references agents.
+
+See DECISIONS.md D115 for the identity grammar + fixture vector and
+D116 for the wire-level validation contract.
 
 ### sessions
 
@@ -1457,6 +1494,8 @@ Current migrations:
 | 000011 | Add `token_id` FK + `token_name` column to sessions (D095) |
 | 000012 | Rename `api_tokens` → `access_tokens` (D096) |
 | 000013 | Add `tokens_cache_read` and `tokens_cache_creation` columns to events (D100) |
+| 000014 | Normalize legacy `developer` / `autonomous` agent_type values (D114) |
+| 000015 | Agent identity model: drop flavor-keyed agents, create agent_id-keyed agents, add agent_id/client_type/agent_name to sessions (D115) |
 
 ---
 
@@ -3398,8 +3437,9 @@ For frameworks that bypass the SDK entirely (current example: none of the four t
 `api/internal/server/server.go`
 
 `api/internal/handlers/fleet.go`
-- `GET /v1/fleet`: returns all sessions with state != lost, grouped by flavor
-- Response: `{flavors: [{flavor, session_count, active_count, tokens_used_total, sessions: [...]}], total_session_count, context_facets}`
+- `GET /v1/fleet`: returns agents with aggregated state rollup and pagination (D115 -- v0.4.0 Phase 1)
+- Response: `{agents: [{agent_id, agent_name, agent_type, client_type, user, hostname, first_seen_at, last_seen_at, total_sessions, total_tokens, state: <rollup>}], total, page, per_page, context_facets}`
+- Pre-v0.4.0 shape (`{flavors: [...]}`) is retired; the flavor-grouped view is no longer returned
 - `context_facets` is a `map[string][]ContextFacetValue` of `{value, count}`
   rows aggregated from `sessions.context` (state IN active/idle/stale).
   GetContextFacets failure is best-effort -- the handler logs a warning

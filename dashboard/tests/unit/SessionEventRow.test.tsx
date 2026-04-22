@@ -12,7 +12,7 @@ vi.mock("@/hooks/useSessionEvents", () => ({
 const baseSession: Session = {
   session_id: "fcc640eb-5325-4658-ab48-335e975993d8",
   flavor: "claude-code",
-  agent_type: "developer",
+  agent_type: "coding",
   host: "bob-laptop",
   framework: "claude-code",
   model: "claude-sonnet-4-6",

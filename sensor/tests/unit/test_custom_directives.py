@@ -41,7 +41,7 @@ def _make_session(
         server=server,
         token=token,
         agent_flavor="test",
-        agent_type="autonomous",
+        agent_type="production",
         quiet=quiet,
     )
     client = MagicMock(spec=ControlPlaneClient)

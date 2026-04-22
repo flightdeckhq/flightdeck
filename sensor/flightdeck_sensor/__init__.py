@@ -11,10 +11,12 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import socket
 import threading
 import uuid
 from typing import Any, Callable
 
+from flightdeck_sensor.core.agent_id import derive_agent_id
 from flightdeck_sensor.core.context import collect as _collect_context
 from flightdeck_sensor.core.exceptions import (
     BudgetExceededError,
@@ -66,6 +68,35 @@ __all__ = [
 ]
 
 _log = logging.getLogger("flightdeck_sensor")
+
+# D114 / D115 vocabulary lock. Any other value raises ConfigurationError
+# at init time. See CHANGELOG.md for the v0.4.0 Phase 1 breaking change
+# that narrowed this from {autonomous, supervised, batch, developer}.
+_VALID_AGENT_TYPES = frozenset({"coding", "production"})
+
+
+def _resolve_user_name() -> str:
+    """Resolve the current OS user, never raising.
+
+    Uses ``pwd.getpwuid(os.getuid()).pw_name`` on POSIX, falling back
+    to ``os.environ['USER']`` / ``os.environ['USERNAME']`` / the
+    string ``"unknown"`` on platforms or containers where the
+    primary probe raises (e.g. scratch UIDs inside distroless
+    images). Never raises -- the agent_id derivation must always
+    produce a value so the sensor boots.
+    """
+    try:
+        import pwd
+
+        return pwd.getpwuid(os.getuid()).pw_name
+    except Exception:
+        pass
+    for key in ("USER", "USERNAME", "LOGNAME"):
+        v = os.environ.get(key)
+        if v:
+            return v
+    return "unknown"
+
 
 # Global state -- protected by _lock.
 # v1 design: process-wide singleton. Multi-session-in-one-process is a
@@ -172,6 +203,8 @@ def init(
     limit: int | None = None,
     warn_at: float = 0.8,
     session_id: str | None = None,
+    agent_type: str | None = None,
+    agent_name: str | None = None,
 ) -> None:
     """Initialize the sensor and start the session.
 
@@ -206,12 +239,30 @@ def init(
     workflow and want a single correlatable session in the fleet view.
     See DECISIONS.md D094.
 
+    ``agent_type`` selects the D114 / D115 agent classification. Must
+    be one of ``"coding"`` or ``"production"`` -- any other value
+    raises :class:`ConfigurationError` at init time. Default
+    ``"production"`` because the Python sensor runs inside production
+    agents; developer-driven smoke (playground, CI runners) flips the
+    kwarg or the ``FLIGHTDECK_AGENT_TYPE`` env var to ``"coding"``.
+    The pre-v0.4.0 values (``"autonomous"``, ``"supervised"``,
+    ``"batch"``) are NO LONGER accepted -- this is a deliberate
+    breaking change recorded in CHANGELOG.md.
+
+    ``agent_name`` is the human-readable label that renders on the
+    Fleet page. Defaults to ``"{user}@{hostname}"`` -- use the kwarg
+    or ``FLIGHTDECK_AGENT_NAME`` env var to override (e.g. a
+    Kubernetes deployment name, a CI job id, etc.). Override via
+    env var when the running process cannot know its own label at
+    code time.
+
     Reads from environment (overrides parameters):
 
     - ``FLIGHTDECK_API_URL`` -- control-plane base URL (overrides *api_url*)
     - ``FLIGHTDECK_SESSION_ID`` -- session id hint (overrides *session_id*)
-    - ``AGENT_FLAVOR`` -- persistent identity (default: ``"unknown"``)
-    - ``AGENT_TYPE`` -- ``"autonomous"``, ``"supervised"``, or ``"batch"``
+    - ``FLIGHTDECK_AGENT_TYPE`` / ``AGENT_TYPE`` -- overrides *agent_type*; must be ``coding`` or ``production``
+    - ``FLIGHTDECK_AGENT_NAME`` / ``AGENT_FLAVOR`` -- overrides *agent_name* (``AGENT_FLAVOR`` retained for wire-level ``flavor`` field compatibility)
+    - ``FLIGHTDECK_HOSTNAME`` -- overrides ``socket.gethostname()`` (useful for k8s pod grouping)
     - ``FLIGHTDECK_UNAVAILABLE_POLICY`` -- ``"continue"`` or ``"halt"``
     - ``FLIGHTDECK_CAPTURE_PROMPTS`` -- ``"true"`` to enable
     """
@@ -283,6 +334,50 @@ def init(
                 resolved_session_id,
             )
 
+        # D115: resolve agent identity. Precedence is
+        # kwarg > env > default, matching every other init() param.
+        # ``FLIGHTDECK_AGENT_TYPE`` wins over the legacy ``AGENT_TYPE``
+        # env var so operators migrating from v0.3.x can set either;
+        # same pattern for ``FLIGHTDECK_AGENT_NAME`` / ``AGENT_FLAVOR``.
+        resolved_agent_type = (
+            agent_type
+            or os.environ.get("FLIGHTDECK_AGENT_TYPE")
+            or os.environ.get("AGENT_TYPE")
+            or "production"
+        )
+        if resolved_agent_type not in _VALID_AGENT_TYPES:
+            raise ConfigurationError(
+                f"agent_type={resolved_agent_type!r} is not valid. "
+                f"Must be one of {sorted(_VALID_AGENT_TYPES)}. "
+                "Pre-v0.4.0 values ('autonomous', 'supervised', "
+                "'batch', 'developer') are no longer accepted -- "
+                "see CHANGELOG.md for the v0.4.0 Phase 1 migration."
+            )
+
+        resolved_hostname = (
+            os.environ.get("FLIGHTDECK_HOSTNAME") or socket.gethostname()
+        )
+        resolved_user = _resolve_user_name()
+        resolved_agent_name = (
+            agent_name
+            or os.environ.get("FLIGHTDECK_AGENT_NAME")
+            or os.environ.get("AGENT_FLAVOR")
+            or f"{resolved_user}@{resolved_hostname}"
+        )
+
+        # Agent identity UUID. Deterministic function of the tuple --
+        # same tuple on two processes = same agent_id. See D115 and
+        # flightdeck_sensor.core.agent_id.
+        resolved_agent_id = str(
+            derive_agent_id(
+                agent_type=resolved_agent_type,
+                user=resolved_user,
+                hostname=resolved_hostname,
+                client_type="flightdeck_sensor",
+                agent_name=resolved_agent_name,
+            )
+        )
+
         config_kwargs: dict[str, Any] = {
             "server": resolved_server,
             "token": resolved_token,
@@ -291,8 +386,20 @@ def init(
             "unavailable_policy": os.environ.get(
                 "FLIGHTDECK_UNAVAILABLE_POLICY", "continue"
             ),
-            "agent_flavor": os.environ.get("AGENT_FLAVOR", "unknown"),
-            "agent_type": os.environ.get("AGENT_TYPE", "autonomous"),
+            # Legacy wire-level ``flavor`` field stays populated for
+            # backward compat with every downstream surface that still
+            # reads sessions.flavor (dashboard flavor facet, analytics
+            # group_by=flavor, etc.). Default now mirrors agent_name so
+            # the two fields agree for sensor-default deployments.
+            "agent_flavor": os.environ.get(
+                "AGENT_FLAVOR", resolved_agent_name
+            ),
+            "agent_type": resolved_agent_type,
+            "agent_id": resolved_agent_id,
+            "agent_name": resolved_agent_name,
+            "user_name": resolved_user,
+            "hostname": resolved_hostname,
+            "client_type": "flightdeck_sensor",
             "quiet": quiet,
             "limit": limit,
             "warn_at": warn_at,

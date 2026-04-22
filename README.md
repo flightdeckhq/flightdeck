@@ -421,6 +421,15 @@ The ~20 values an operator is most likely to override. See `helm/values.yaml` fo
 
 ---
 
+## Roadmap
+
+Tracked post-v0.4.0 work. Prioritized when users tell us which matters most.
+
+- Production deployment hardening (NATS authentication, Helm chart polish, nginx rate limiting)
+- Comprehensive framework coverage — streaming and embeddings across all sensors, native interception for CrewAI, LangChain, LangGraph, LlamaIndex, AutoGen (current state: detection only; traffic flows through Anthropic / OpenAI SDK patches)
+
+---
+
 ## Contributing
 
 Bug reports, provider requests, and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for dev setup, lint, test instructions, and the process for adding a new LLM provider. A `make test-smoke` target runs real LLM calls against a live stack for sensor regression checks (requires `ANTHROPIC_API_KEY` and `OPENAI_API_KEY`; under $0.05 per full run).

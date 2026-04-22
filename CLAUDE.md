@@ -293,43 +293,32 @@
 
 ---
 
-## Known Issues Rules
+## Issue Tracking Rules
 
-49. **At the start of every phase, run this command:**
-        grep -rn "TODO(KI" . \
-          --include="*.go" \
-          --include="*.py" \
-          --include="*.ts" \
-          --include="*.yml" \
-          | grep "\[Phase N\]"
-    Replace N with the current phase number. Every result must be raised with
-    the Supervisor and included in the phase plan before any feature work begins.
+49. **No indefinite deferral bucket.** Issues land in one of three states:
+    fixed in the release they are filed in, declined with a documented reason
+    (typically in the commit body or DECISIONS.md), or on the Roadmap in
+    `README.md` as a user-prioritizable post-v0.4.0 bullet. The prior
+    `KNOWN_ISSUES.md` / `Deferred to v0.4.0` bucket was retired; it had
+    become a dumping ground where items sat for months. The Roadmap is
+    public (user-facing README) so the work is visible and user demand can
+    prioritize it.
 
-    When a KI item is resolved:
-    - Remove the TODO comment from the code entirely. Never leave a resolved
-      TODO in the code.
-    - Remove the row from the Open table in KNOWN_ISSUES.md.
-    - Add it to the Resolved table in KNOWN_ISSUES.md with the phase it was
-      resolved in.
-    - Record the fix in DECISIONS.md.
-    - If the resolved item corresponds to a trade-off entry in DECISIONS.md
-      (D039-D048 range), update that entry to add:
-        "Resolved in: Phase N"
-        "Resolution: <one-line summary of what was done>"
-      Do not delete the DECISIONS.md entry -- it is a historical record.
-      Only update it.
+    When you would have filed a KI, instead:
+    - If it's a bug that needs fixing now: fix it in this commit or the
+      next release. Don't file, don't defer.
+    - If it's a legitimate architectural trade-off: document the decision
+      in DECISIONS.md (with a follow-up pointer if there's a real path to
+      revisit) and close the matter.
+    - If it's a post-launch follow-up that might matter to users but has
+      no concrete owner yet: add or update a Roadmap bullet in README.md.
+    - If it's outside scope entirely (feature creep, hypothetical): decline
+      in the PR or commit body with reason. No entry anywhere.
 
-    When the Open table in KNOWN_ISSUES.md is empty:
-    - Delete KNOWN_ISSUES.md entirely.
-    - Do not leave an empty file or a Resolved-only file.
-
-    Before any release tag is pushed:
-    - Verify KNOWN_ISSUES.md does not exist.
-    - If it exists, all open items must be resolved and the file deleted
-      before the tag is pushed, OR the Supervisor must explicitly approve
-      shipping with known issues and state which items are acceptable.
-    - Never push a release tag with open KI items without explicit Supervisor
-      approval.
+    `TODO(KI...)` comments in code are retired. If a comment refers to
+    deferred work, use `TODO: <short description>` with a pointer to the
+    Roadmap section when applicable. Plain `TODO` for local "come back to
+    this after the branch merges" work is still fine.
 
 ---
 

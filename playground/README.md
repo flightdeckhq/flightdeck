@@ -43,6 +43,7 @@ make test-smoke
 - `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` in the environment.
 - Framework packages for the examples you want to run. Each file prints a `SKIP: pip install <package>` line and exits cleanly when its dependency is missing, so you can run the suite with only the frameworks you care about installed.
 
-## Known limitations
+## Coverage notes
 
-- **litellm Anthropic path (KI21).** Flightdeck intercepts LLM calls by patching the anthropic and openai SDK classes. litellm's openai provider uses the openai SDK and is therefore intercepted. litellm's anthropic provider uses raw httpx and bypasses the anthropic SDK, so apps calling `litellm.completion(model="anthropic/...")` directly (or routing through libraries that do) will not have those calls observed until v0.4.0 ships the httpx-level interceptor. See [KNOWN_ISSUES.md](../KNOWN_ISSUES.md#deferred-to-v040) KI21. CrewAI 1.14+ uses native providers for anthropic and openai, so its calls are intercepted normally (see `06_crewai.py`).
+- **litellm** has its own module-level interceptor (`12_litellm.py`). `litellm.completion` and `litellm.acompletion` are wrapped regardless of underlying provider, closing the previous gap where litellm's raw-httpx Anthropic route bypassed the SDK-class patches. Streaming (`stream=True`) is not yet supported -- see the Roadmap in the root `README.md`. For the full "what's caught, what's not" breakdown of the litellm interceptor, see `sensor/README.md`.
+- **CrewAI 1.14+** uses the official `anthropic` / `openai` SDKs directly, so its LLM calls are intercepted through the SDK-class patches (see `06_crewai.py`).

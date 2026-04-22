@@ -230,6 +230,17 @@ def init(
         if not resolved_token:
             raise ConfigurationError("token is required")
 
+        # KI20: normalize ``FLIGHTDECK_SERVER`` / ``server`` kwarg to
+        # always carry the ``/ingest`` suffix. The Claude Code plugin
+        # uses the same env var without the suffix (it appends
+        # ``/ingest/v1/events`` itself), so a developer running both
+        # tools on one machine would otherwise hit a silent 404 when
+        # a sensor script inherited the plugin's env. ``/ingest`` is
+        # added idempotently -- a URL that already contains it stays
+        # unchanged.
+        if "/ingest" not in resolved_server:
+            resolved_server = resolved_server.rstrip("/") + "/ingest"
+
         resolved_api_url = os.environ.get("FLIGHTDECK_API_URL") or api_url
         if not resolved_api_url:
             resolved_api_url = resolved_server.rstrip("/").replace(

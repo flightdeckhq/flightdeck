@@ -3788,3 +3788,118 @@ cosmetic wording, not a structural dependency.
   over a week of spawns -- tracked as a separate v0.3.0 follow-up.
 
 ---
+
+## D114 -- Retire KNOWN_ISSUES.md in favour of Roadmap in README
+
+**Date:** 2026-04-22
+**Phase:** scrub-close (post-v0.3.1)
+
+**Context.** `KNOWN_ISSUES.md` accumulated a "Deferred to v0.4.0"
+bucket that had become a dumping ground: KI11 (NATS auth), KI12
+(nginx rate limiting), KI20 (URL normalization), KI21 (litellm),
+KI22 (font-mono global), KI23 (token pill / tooltip), KI24
+(Node-20 deprecation), KI25 (env-leak release bug), KI26
+(litellm streaming). Items sat there for months with no owner,
+no prioritization signal from users, and no plan to ship. The
+file was also a split source of truth: CLAUDE.md Rule 49 had a
+14-step per-KI lifecycle (file in Open, move to Resolved, update
+D entry, delete-file-when-empty, pre-tag audit), and every
+release gate involved re-auditing whether the file was allowed
+to exist.
+
+**Decision.** Retire `KNOWN_ISSUES.md` entirely. Replace with a
+short "Roadmap" section in `README.md` that lists
+user-prioritizable post-v0.4.0 work as plain bullets. The scrub-
+close PR batch (KI24 Node 24 opt-in, PR #19 KI22 font-mono, PR
+#20 KI21 SensorLitellm, PR #21 playground identity/capture, this
+PR for the retirement + KI20 + KI26 streaming bullet) closed
+every open item: each one either got a real fix (KI20, KI21,
+KI22, KI23, KI24, KI25), got declined with a DECISIONS.md entry
+(KI13 closed branch, KI15 pattern C), or became a Roadmap
+bullet (KI11, KI12, and KI26's streaming follow-up all land
+under "Production deployment hardening" and "Comprehensive
+framework coverage").
+
+Path A policy going forward:
+
+- Bugs that need fixing now get fixed now. No "we'll get to it
+  next quarter" entries.
+- Architectural trade-offs get a DECISIONS.md entry with a
+  follow-up pointer if one exists. No separate tracker.
+- Post-launch work that might matter to users but has no owner
+  yet goes in the README Roadmap. Public, user-prioritizable,
+  visible in the main README rather than in an internal file.
+- Scope creep / feature creep gets declined in the PR or commit
+  body. No entry anywhere.
+
+**Changes shipped with this decision.**
+
+1. `KNOWN_ISSUES.md` deleted (recoverable via git history if
+   the retirement is ever reversed).
+2. `README.md` gets a Roadmap section -- two bullets covering
+   production deployment hardening and comprehensive framework
+   coverage. More bullets are added as user demand surfaces
+   them.
+3. `CLAUDE.md` Rule 49 rewritten from "KI lifecycle management"
+   to "Issue Tracking Rules" that enumerate the three paths
+   above and explicitly retire the `TODO(KI...)` comment
+   convention.
+4. Every `KNOWN_ISSUES.md` reference in the repo was either
+   removed or rewritten to point at the Roadmap:
+   `ARCHITECTURE.md` (KI15 pattern C limitation note),
+   `docker/docker-compose.yml` (NATS auth comment),
+   `tests/integration/test_sensor_e2e.py` (docstring),
+   `playground/README.md` (litellm coverage note).
+   Historical references in `DECISIONS.md` D086 / D094 / D106
+   are preserved verbatim -- those entries were timestamped
+   records of the state at their own dates and rewriting them
+   would be revisionist.
+5. KI20 (URL normalization) was shipped alongside the
+   retirement so the change-set is complete -- the sensor
+   init() now appends `/ingest` when missing, matching what
+   the plugin does internally. Unit tests in
+   `sensor/tests/unit/test_session.py` cover the three
+   combinations (missing, present, present-with-trailing-slash).
+6. A one-time data migration (`000014_normalize_legacy_agent_type`)
+   normalizes `developer` / `autonomous` agent_type values
+   lingering on the dev DB since before the agent_type
+   vocabulary lock. The discarded `feat/agent-type-vocab-lock`
+   branch had a matching migration that never reached main; this
+   restores the invariant for any deployment whose DB pre-dates
+   the lock.
+
+**Rejected alternatives.**
+
+- **Keep KNOWN_ISSUES.md as an engineering-only view separate
+  from README Roadmap.** Rejected: two sources of truth, same
+  drift failure mode the retirement is meant to solve.
+- **Replace with GitHub Issues as the only tracker.** Rejected
+  for now because the Roadmap is a user-facing prioritization
+  surface -- it answers "what's next?" in one grep on the
+  README rather than requiring a GitHub search. GitHub Issues
+  remains the right home for actual bug reports; Roadmap is
+  for directional work.
+- **Leave `KNOWN_ISSUES.md` as a Resolved-only archive after
+  moving every Open row to Roadmap or declined.** Rejected:
+  `DECISIONS.md` is already the historical record of resolved
+  trade-offs; a separate Resolved-only file duplicates the
+  audit trail.
+
+**Rollback path.** If the Roadmap convention turns out to be
+insufficient (e.g. the bullets don't carry enough context for
+contributors to pick up), `KNOWN_ISSUES.md` is recoverable from
+the commit immediately prior to this scrub-close via
+`git show HEAD~1:KNOWN_ISSUES.md`. A D114 rollback would
+touch this file, `CLAUDE.md` Rule 49, and the references
+rewritten above.
+
+**Related decisions.** D086 (multi-Session limitation, formerly
+KI15), D091 (Session singleton, formerly KI16), D047 (NATS
+auth, formerly KI11, now Roadmap), D048 (rate limiting,
+formerly KI12, now Roadmap), D105 / D106 (revive + lazy-create,
+formerly KI13 closed branch), D110 (sensor URL expectation,
+formerly KI20 -- superseded by the URL normalization shipped
+in this PR), D112 (litellm coverage, formerly KI21 -- shipped
+SensorLitellm in PR #20).
+
+---

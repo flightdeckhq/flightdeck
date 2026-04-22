@@ -24,7 +24,7 @@ from _helpers import assert_event_landed, init_sensor, print_result
 
 def main() -> None:
     session_id = str(uuid.uuid4())
-    init_sensor(session_id)
+    init_sensor(session_id, flavor="playground-langchain")
     flightdeck_sensor.patch(quiet=True)
     print(f"[playground:03_langchain] session_id={session_id}")
 

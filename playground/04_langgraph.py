@@ -28,7 +28,7 @@ class State(TypedDict):
 
 def main() -> None:
     session_id = str(uuid.uuid4())
-    init_sensor(session_id)
+    init_sensor(session_id, flavor="playground-langgraph")
     flightdeck_sensor.patch(providers=["anthropic"], quiet=True)
     print(f"[playground:04_langgraph] session_id={session_id}")
 

@@ -39,9 +39,12 @@ def _api(method, path, body=None):
 
 def main() -> None:
     session_id = str(uuid.uuid4())
-    flavor = f"playground-07-{uuid.uuid4().hex[:6]}"
-    os.environ["AGENT_FLAVOR"] = flavor
-    init_sensor(session_id)
+    # Hex suffix is load-bearing here -- this script registers a custom
+    # directive scoped to flavor and verifies it came back from the
+    # server. Two concurrent runs with the same flavor would collide
+    # on the directive registration, so each run gets its own.
+    flavor = f"playground-directives-{uuid.uuid4().hex[:6]}"
+    init_sensor(session_id, flavor=flavor)
     flightdeck_sensor.patch(providers=["anthropic"], quiet=True)
     print(f"[playground:07_directives] session={session_id} flavor={flavor}")
     # init_sensor fires sync + register but the server row is not

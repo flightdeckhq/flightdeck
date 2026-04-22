@@ -28,7 +28,7 @@ MODEL, HI = "claude-haiku-4-5-20251001", [{"role": "user", "content": "hi"}]
 
 def main():
     sid = str(uuid.uuid4())
-    init_sensor(sid)
+    init_sensor(sid, flavor="playground-killswitch")
     flightdeck_sensor.patch(providers=["anthropic"], quiet=True)
     print(f"[playground:10_killswitch] session_id={sid}")
     c = anthropic.Anthropic()

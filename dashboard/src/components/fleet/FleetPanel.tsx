@@ -663,7 +663,7 @@ function FlavorItem({
           <ClaudeCodeLogo size={14} className="shrink-0" />
         )}
         <span
-          className="font-mono truncate"
+          className="font-mono text-xs truncate"
           style={{ flexShrink: 1 }}
           title={flavor.flavor}
         >

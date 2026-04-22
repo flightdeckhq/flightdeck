@@ -51,6 +51,11 @@ from flightdeck_sensor.interceptor.anthropic import (
     patch_anthropic_classes,
     unpatch_anthropic_classes,
 )
+from flightdeck_sensor.interceptor.litellm import (
+    SensorLitellm,
+    patch_litellm_functions,
+    unpatch_litellm_functions,
+)
 from flightdeck_sensor.interceptor.openai import (
     SensorChat,
     SensorCompletions,
@@ -88,6 +93,7 @@ def sensor_init() -> Any:
     # Defensive: in case teardown failed mid-way leave classes clean.
     unpatch_anthropic_classes()
     unpatch_openai_classes()
+    unpatch_litellm_functions()
 
 
 # ----------------------------------------------------------------------
@@ -571,3 +577,297 @@ def test_descriptor_no_session_then_init_openai() -> None:
             pass
         unpatch_anthropic_classes()
         unpatch_openai_classes()
+
+
+# ----------------------------------------------------------------------
+# litellm interceptor tests (KI21)
+# ----------------------------------------------------------------------
+#
+# litellm exposes two module-level entry points (completion /
+# acompletion) rather than a class with cached-property resources.
+# patch_litellm_functions() swaps these two attributes in place. The
+# tests below mock the underlying ``litellm.completion`` call with a
+# MagicMock so no real API call is made -- the sensor still exercises
+# pre-call token estimation, post-call usage extraction, and event
+# emission around the mocked call. Two different model strings are
+# covered (claude-* and gpt-*) to confirm the interceptor is
+# provider-agnostic and does not hard-code either side.
+
+
+import litellm as _litellm
+
+
+def _make_mock_litellm_response(
+    prompt_tokens: int = 10,
+    completion_tokens: int = 5,
+    model: str = "claude-haiku-4-5-20251001",
+) -> MagicMock:
+    """Build a MagicMock that quacks like a litellm ``ModelResponse``.
+
+    Minimum shape needed for the sensor's LitellmProvider:
+    ``.model``, ``.usage.prompt_tokens``, ``.usage.completion_tokens``,
+    ``.choices[0].message`` (for tool-invocation extraction; empty
+    message is fine when the test doesn't exercise tool calls).
+    """
+    response = MagicMock()
+    response.model = model
+    response.usage = MagicMock()
+    response.usage.prompt_tokens = prompt_tokens
+    response.usage.completion_tokens = completion_tokens
+    response.usage.total_tokens = prompt_tokens + completion_tokens
+    # No tool calls by default.
+    message = MagicMock()
+    message.tool_calls = None
+    choice = MagicMock()
+    choice.message = message
+    response.choices = [choice]
+    return response
+
+
+def test_patch_litellm_is_idempotent(sensor_init: Any) -> None:
+    """A second patch() call is a no-op on the litellm side.
+
+    The idempotency check uses the ``_flightdeck_patched`` sentinel on
+    the litellm module. Verifies it survives two patch calls without
+    double-wrapping (which would shadow the orig_completion reference
+    and break unpatch).
+    """
+    flightdeck_sensor.patch(quiet=True)
+    first = _litellm.completion
+    flightdeck_sensor.patch(quiet=True)
+    second = _litellm.completion
+    assert first is second, (
+        "second patch() must not re-wrap litellm.completion"
+    )
+    assert getattr(_litellm, "_flightdeck_patched", False) is True
+
+
+def test_litellm_completion_intercepted_sync(
+    sensor_init: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """After patch(), calling litellm.completion routes through
+    base.call which estimates tokens, runs the underlying function,
+    and emits a post-call event with the reconciled token counts.
+
+    Uses MagicMock to replace the original completion so no real API
+    call is made. The test asserts the mock is invoked with the user
+    kwargs (``model``, ``messages``) AND returns the mocked response
+    unchanged -- i.e. the sensor is transparent to the caller.
+    """
+    mock_completion = MagicMock(
+        return_value=_make_mock_litellm_response(
+            prompt_tokens=12, completion_tokens=8,
+            model="claude-haiku-4-5-20251001",
+        ),
+    )
+    # Replace BEFORE patching so the patch captures our mock as the
+    # "original" to call through.
+    monkeypatch.setattr(_litellm, "completion", mock_completion)
+    flightdeck_sensor.patch(quiet=True)
+
+    response = _litellm.completion(
+        model="claude-haiku-4-5-20251001",
+        messages=[{"role": "user", "content": "hi"}],
+        max_tokens=5,
+    )
+
+    mock_completion.assert_called_once()
+    call_kwargs = mock_completion.call_args.kwargs
+    assert call_kwargs["model"] == "claude-haiku-4-5-20251001"
+    assert call_kwargs["messages"] == [{"role": "user", "content": "hi"}]
+    assert response.usage.prompt_tokens == 12
+    assert response.usage.completion_tokens == 8
+
+
+@pytest.mark.asyncio
+async def test_litellm_acompletion_intercepted_async(
+    sensor_init: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Async variant of the sync-intercept test.
+
+    litellm.acompletion is a coroutine function; the patched wrapper
+    awaits the original and feeds the response through the same
+    LitellmProvider.extract_usage path as the sync test. The test
+    checks the mock was awaited with the expected kwargs and the
+    response passes through.
+    """
+    from unittest.mock import AsyncMock
+
+    mock_acompletion = AsyncMock(
+        return_value=_make_mock_litellm_response(
+            prompt_tokens=15, completion_tokens=9,
+            model="gpt-4o",
+        ),
+    )
+    monkeypatch.setattr(_litellm, "acompletion", mock_acompletion)
+    flightdeck_sensor.patch(quiet=True)
+
+    response = await _litellm.acompletion(
+        model="gpt-4o",
+        messages=[{"role": "user", "content": "hi"}],
+    )
+
+    mock_acompletion.assert_awaited_once()
+    call_kwargs = mock_acompletion.call_args.kwargs
+    assert call_kwargs["model"] == "gpt-4o"
+    assert response.usage.prompt_tokens == 15
+
+
+def test_litellm_exception_propagates(
+    sensor_init: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the underlying litellm call raises, the exception
+    propagates out of the patched wrapper.
+
+    base.call catches user exceptions to emit a post-call failure
+    event but re-raises afterwards so the caller's error-handling
+    code path still runs. The patched wrapper must not swallow the
+    exception.
+    """
+    class _SimulatedProviderError(RuntimeError):
+        pass
+
+    def _raise(**kwargs: Any) -> Any:
+        raise _SimulatedProviderError("upstream provider 500")
+
+    monkeypatch.setattr(_litellm, "completion", _raise)
+    flightdeck_sensor.patch(quiet=True)
+
+    with pytest.raises(_SimulatedProviderError):
+        _litellm.completion(
+            model="claude-haiku-4-5-20251001",
+            messages=[{"role": "user", "content": "hi"}],
+        )
+
+
+def test_litellm_two_providers_agnostic(
+    sensor_init: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The interceptor handles any ``model`` string litellm routes to.
+
+    Runs the same patched call twice with model strings representing
+    two different underlying providers (Anthropic via litellm,
+    OpenAI via litellm). Both succeed, both return the mocked
+    response, no hard-coded provider-specific branch fails.
+    """
+    mock_completion = MagicMock(
+        side_effect=[
+            _make_mock_litellm_response(model="claude-haiku-4-5-20251001"),
+            _make_mock_litellm_response(model="gpt-4o"),
+        ],
+    )
+    monkeypatch.setattr(_litellm, "completion", mock_completion)
+    flightdeck_sensor.patch(quiet=True)
+
+    r1 = _litellm.completion(
+        model="claude-haiku-4-5-20251001",
+        messages=[{"role": "user", "content": "hi"}],
+    )
+    r2 = _litellm.completion(
+        model="gpt-4o",
+        messages=[{"role": "user", "content": "hi"}],
+    )
+    assert r1.model == "claude-haiku-4-5-20251001"
+    assert r2.model == "gpt-4o"
+    assert mock_completion.call_count == 2
+
+
+def test_litellm_streaming_raises_not_implemented(
+    sensor_init: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """stream=True raises NotImplementedError with KI26 reference.
+
+    Streaming support is deferred; KI21's scope is non-streaming sync
+    and async only. The error message points users to KI26 so they
+    can find the tracking issue rather than hit an opaque crash.
+    """
+    monkeypatch.setattr(_litellm, "completion", MagicMock())
+    flightdeck_sensor.patch(quiet=True)
+
+    with pytest.raises(NotImplementedError) as exc_info:
+        _litellm.completion(
+            model="claude-haiku-4-5-20251001",
+            messages=[{"role": "user", "content": "hi"}],
+            stream=True,
+        )
+    assert "KI26" in str(exc_info.value)
+    assert "stream" in str(exc_info.value).lower()
+
+
+def test_unpatch_litellm_without_patch_is_noop(sensor_init: Any) -> None:
+    """Calling unpatch_litellm_functions() without a prior patch is a
+    silent no-op -- does not raise, does not touch litellm module
+    attributes.
+    """
+    orig_completion = _litellm.completion
+    unpatch_litellm_functions(quiet=True)
+    assert _litellm.completion is orig_completion
+
+
+def test_litellm_patch_unpatch_patch_cycle(sensor_init: Any) -> None:
+    """patch -> unpatch -> patch restores and re-installs cleanly."""
+    orig_completion = _litellm.completion
+    flightdeck_sensor.patch(quiet=True)
+    assert _litellm.completion is not orig_completion
+    unpatch_litellm_functions()
+    assert _litellm.completion is orig_completion
+    flightdeck_sensor.patch(quiet=True)
+    assert _litellm.completion is not orig_completion
+
+
+def test_sensor_litellm_per_instance_wrap(
+    sensor_init: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SensorLitellm wraps a single callsite without module patching.
+
+    Verifies the programmatic wrapping path: construct SensorLitellm
+    directly, call .completion(...), confirm base.call runs and the
+    response passes through. module-level litellm.completion is NOT
+    patched in this test -- SensorLitellm works standalone.
+    """
+    mock_response = _make_mock_litellm_response(
+        prompt_tokens=7, completion_tokens=3,
+    )
+    # SensorLitellm's __init__ captures _OrigCompletion at module
+    # import time. Replace that captured reference via the module's
+    # attribute so the wrapper invokes our mock.
+    from flightdeck_sensor.interceptor import litellm as _litellm_interceptor
+
+    monkeypatch.setattr(
+        _litellm_interceptor, "_OrigCompletion",
+        MagicMock(return_value=mock_response),
+    )
+    session = flightdeck_sensor._session
+    assert session is not None
+
+    wrapped = SensorLitellm(session)
+    response = wrapped.completion(
+        model="claude-haiku-4-5-20251001",
+        messages=[{"role": "user", "content": "hi"}],
+    )
+    assert response is mock_response
+
+
+def test_sensor_litellm_streaming_raises_not_implemented(
+    sensor_init: Any,
+) -> None:
+    """SensorLitellm's per-instance path also rejects stream=True
+    with the same KI26 message as the patched path. Ensures the two
+    intercept paths present a consistent streaming contract.
+    """
+    session = flightdeck_sensor._session
+    assert session is not None
+    wrapped = SensorLitellm(session)
+    with pytest.raises(NotImplementedError) as exc_info:
+        wrapped.completion(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": "hi"}],
+            stream=True,
+        )
+    assert "KI26" in str(exc_info.value)

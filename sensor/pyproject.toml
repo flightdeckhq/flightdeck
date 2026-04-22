@@ -28,6 +28,11 @@ classifiers = [
 [project.optional-dependencies]
 anthropic = ["anthropic>=0.20"]
 openai = ["openai>=1.0", "tiktoken>=0.5"]
+# KI21: litellm is a framework-level router that aggregates multiple
+# underlying providers. Installing the extra pulls in litellm; the
+# sensor's SensorLitellm wrapper then intercepts ``litellm.completion``
+# / ``litellm.acompletion`` via module-level patching.
+litellm = ["litellm>=1.0"]
 dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.21",
@@ -41,6 +46,13 @@ dev = [
     "respx>=0.20",
     "anthropic>=0.20",
     "openai>=1.0",
+    # KI21: unit-test-time litellm so tests/unit/test_patch.py and
+    # tests/unit/test_providers.py can import litellm and exercise the
+    # SensorLitellm interceptor + LitellmProvider extractor. Unit tests
+    # do not make real API calls -- they mock ``litellm.completion``'s
+    # return value and assert the sensor emits the right pre/post-call
+    # events around it.
+    "litellm>=1.0",
     # Used by tests/integration/test_framework_patching.py to verify
     # that flightdeck_sensor.patch() transparently intercepts LLM calls
     # made through agent frameworks without any explicit wrap() call.

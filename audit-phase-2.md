@@ -310,6 +310,61 @@ Fix commit: second commit on this branch.
 
 ---
 
+## 9b. Post-post-smoke round — truncation tooltips + coding+sensor anomaly
+
+Supervisor Chrome smoke of the post-regression-fix branch surfaced two more gaps before merge. Both fixed on this same branch in two additional commits.
+
+### Issue A — truncated text with no hover reveal
+
+**Reproduction.** Fleet swimlane at a narrow window width. Agent name renders `integration@integration-test-ho…` truncated mid-word with no title / tooltip on hover. Pill renders `SENS…` truncated mid-character. Users have no way to see the hidden value without resizing.
+
+**Audit result.** `grep -rn "textOverflow.*ellipsis|\\btruncate\\b" dashboard/src/` identified 19 truncation sites across 8 components. All three flavors of truncation (inline `textOverflow: ellipsis`, Tailwind `truncate`, hand-rolled `overflow: hidden; white-space: nowrap`) were in use. No single existing primitive handled hover reveal.
+
+**Resolution.** New `<TruncatedText/>` primitive at `dashboard/src/components/ui/TruncatedText.tsx`. Renders text with `overflow: hidden; text-overflow: ellipsis; white-space: nowrap`, detects truncation at runtime via `scrollWidth > clientWidth`, re-evaluates on container resize via `ResizeObserver`, attaches native `title=` only when actually truncated. Native-title floor per Supervisor direction — no new Tooltip dependency wraps.
+
+14 of 19 sites migrated to `<TruncatedText/>`. The remaining 5 sites are mixed-content containers (provider logo + text, badge + string) where a pure string primitive cannot wrap; those kept the `truncate` Tailwind class AND gained explicit `title=<composed-string>` attributes so the hover reveal behaviour is preserved.
+
+**Pill non-truncation rule.** S4: `<ClientTypePill/>` + `<CodingAgentBadge/>` now render with `flex-shrink: 0` + `white-space: nowrap` + NO ellipsis. When the row is narrow, the sibling `<TruncatedText/>` agent name absorbs the truncation instead — pills keep their full intrinsic width so labels like `SENSOR` and `CODING AGENT` stay readable. Covered by `FleetSidebar-resize.test.tsx`, which was rewritten to assert the new pill invariants.
+
+**V-pass lesson.** Dynamic text (user / DB / runtime data) rendered through raw `truncate` or `textOverflow: ellipsis` CSS without a hover-reveal path is the anti-pattern. Phase 3+ UI phases must default to `<TruncatedText/>` for any dynamic-text rendering; hand-rolled truncation CSS is only allowed on mixed-content containers where a string primitive cannot be the leaf (and those cases must carry an explicit `title=` attribute).
+
+### Issue B — coding+sensor agent anomaly
+
+**Reproduction.** Fleet sidebar agent `integration@integration-test-host` renders twice: once with a CODING AGENT badge + SENSOR pill (0 sessions visible), once with just a SENSOR pill. Same agent_name, two distinct agent rows. The CODING AGENT + SENSOR pair is mechanically allowed by the ingestion validator but semantically broken: coding agents are the Claude Code plugin (client_type=claude_code), sensor-routed events are SDK workloads (client_type=flightdeck_sensor).
+
+**V-pass — Path A (test pollution) confirmed.** DB query identified one anomalous agent: `agent_id = e6163974-c512-5c5d-b388-495db8857f12`, `agent_type=coding` + `client_type=flightdeck_sensor`, 2 sessions under it both with `flavor=claude-code`. Grep of `tests/integration/` located the source: `test_ui_demo.py:56-57` emits claude-code-flavored entries with `agent_type="coding"` but does NOT pass `client_type` through `make_event`, so conftest's `DEFAULT_CLIENT_TYPE = "flightdeck_sensor"` applies. Result: every manual run of `test_ui_demo.py` reliably derives the anomalous agent_id via the D115 namespace UUID. File is `@pytest.mark.manual` so CI never ran into this; the dev DB accumulated the pollution from historical manual runs.
+
+**Resolution per Path A.**
+
+1. `tests/integration/test_ui_demo.py` — added `"client_type"` field to every AGENTS entry (canonical pairs: `production`+`flightdeck_sensor` for research/code-agent flavors, `coding`+`claude_code` for claude-code flavors). Threaded `client_type=s["client_type"]` through the six `make_event` emit sites. Hardcoded `agent_type="production"` directive-result sites were left unchanged — their flavors (research/code-agent) pair with `flightdeck_sensor` which is conftest's default, so no `client_type` kwarg needed.
+2. One-shot DELETE against the dev DB under a transaction: `DELETE FROM event_content WHERE session_id IN …; DELETE FROM events WHERE session_id IN …; DELETE FROM sessions WHERE agent_id = …; DELETE FROM agents WHERE agent_id = …`. Removed 214 events + 2 sessions + 1 agent row matching the anomaly. No schema or ingestion constraint added — Phase 1's validator stays as-is.
+3. New regression test `tests/integration/test_agent_type_client_type_pairing.py` (16 cases). Asserts:
+   - conftest's default agent_type/client_type pair is canonical.
+   - `test_ui_demo.py::AGENTS` list declares `client_type` on every entry and every (agent_type, client_type) pair is one of the canonical pairings.
+   - No integration test file emits `agent_type="coding"` without a nearby `client_type="claude_code"` pairing.
+
+### Second data-integrity discovery during live smoke
+
+After the Issue B cleanup, the Supervisor expanded the swimlane row for agent `e2e-f3112276e5` (a sensor agent reporting `total_sessions=1` per the agents rollup) and saw zero sessions in the expanded drawer. My Bug 1 fix from the earlier regression-fix round was working correctly — the on-demand fetch fired, the response had zero rows — but the UI rendered a near-empty drawer with just the `SESSIONS` header and nothing below.
+
+**Root cause.** The agents table reported `total_sessions=1`, but the sessions table had **zero** rows for that agent_id. Query across the full dev DB revealed 28 of 34 agents in this out-of-sync state: rollup counter nonzero, actual session rows absent. The sessions had been TRUNCATE'd from the table at some point (dev-reset cycle, test cleanup, or migration 000015 replay on a fresh DB that left orphan agents behind) without a corresponding decrement of the rollup.
+
+**Resolution.** Two parts.
+
+1. **UI affordance.** `SwimLane.tsx` expanded drawer now renders a muted `"No sessions to display for this agent."` empty-state row when `visibleSessionCount === 0`. Drawer `maxHeight` reserves ~36 px for the row instead of collapsing to the bare 28 px header, so expanding a zero-session agent reads as "no data" rather than "broken UI". Test id `swimlane-expanded-empty` for future assertion coverage.
+2. **One-shot reconcile on the dev DB.** Transaction:
+   ```sql
+   UPDATE agents SET total_sessions = COALESCE(counts.c, 0)
+     FROM (SELECT agent_id, COUNT(*) c FROM sessions GROUP BY agent_id) counts
+     WHERE agents.agent_id = counts.agent_id AND agents.total_sessions != counts.c;
+   DELETE FROM agents a WHERE NOT EXISTS (SELECT 1 FROM sessions s WHERE s.agent_id = a.agent_id);
+   ```
+   Result: 1 agent rollup corrected, 28 orphan agents removed. Post-state: 6 agents, all coherent.
+
+FOLLOWUPS.md entry filed for the **root cause**: the worker has no reconciler / cleanup path that decrements `agents.total_sessions` when sessions are deleted or TRUNCATE'd. Proper fix is either a worker-side reconciler (periodic SELECT/UPDATE reconciling the counter), or a trigger on the sessions table that keeps the counter in sync. Out of scope for this regression-fix commit; the one-shot reconcile is enough to unblock the smoke.
+
+---
+
 ## 10. Files touched
 
 **Added:**

@@ -44,17 +44,30 @@ from .conftest import (
 
 # ---- Agent configuration ----
 
+# D115: each entry declares the full agent_type + client_type pair.
+# The pair is semantically bound:
+#   - research-agent / code-agent (production) -> flightdeck_sensor
+#     (that's what a deployed SDK-driven agent looks like on the wire)
+#   - claude-code (coding)                    -> claude_code
+#     (the Claude Code plugin hardcodes this pair; entries carrying
+#     ``agent_type=coding`` with ``client_type=flightdeck_sensor`` are
+#     the semantic anomaly the Supervisor caught in the Fleet sidebar
+#     -- a CODING AGENT badge next to a SENSOR pill on the same row).
+# Phase 2 post-smoke cleanup commit fixes this by threading client_type
+# through to ``make_event`` below; conftest's default
+# ``client_type=flightdeck_sensor`` only applies to entries that omit
+# the kwarg.
 AGENTS = [
-    {"flavor": "research-agent", "agent_type": "production", "model": "claude-sonnet-4-6", "provider": "anthropic"},
-    {"flavor": "research-agent", "agent_type": "production", "model": "claude-sonnet-4-6", "provider": "anthropic"},
-    {"flavor": "research-agent", "agent_type": "production", "model": "claude-sonnet-4-6", "provider": "anthropic"},
-    {"flavor": "research-agent", "agent_type": "production", "model": "claude-sonnet-4-6", "provider": "anthropic"},
-    {"flavor": "code-agent", "agent_type": "production", "model": "gpt-4o", "provider": "openai"},
-    {"flavor": "code-agent", "agent_type": "production", "model": "gpt-4o", "provider": "openai"},
-    {"flavor": "code-agent", "agent_type": "production", "model": "gpt-4o", "provider": "openai"},
-    {"flavor": "code-agent", "agent_type": "production", "model": "gpt-4o", "provider": "openai"},
-    {"flavor": "claude-code", "agent_type": "coding", "model": "claude-sonnet-4-6", "provider": "anthropic"},
-    {"flavor": "claude-code", "agent_type": "coding", "model": "claude-sonnet-4-6", "provider": "anthropic"},
+    {"flavor": "research-agent", "agent_type": "production", "client_type": "flightdeck_sensor", "model": "claude-sonnet-4-6", "provider": "anthropic"},
+    {"flavor": "research-agent", "agent_type": "production", "client_type": "flightdeck_sensor", "model": "claude-sonnet-4-6", "provider": "anthropic"},
+    {"flavor": "research-agent", "agent_type": "production", "client_type": "flightdeck_sensor", "model": "claude-sonnet-4-6", "provider": "anthropic"},
+    {"flavor": "research-agent", "agent_type": "production", "client_type": "flightdeck_sensor", "model": "claude-sonnet-4-6", "provider": "anthropic"},
+    {"flavor": "code-agent", "agent_type": "production", "client_type": "flightdeck_sensor", "model": "gpt-4o", "provider": "openai"},
+    {"flavor": "code-agent", "agent_type": "production", "client_type": "flightdeck_sensor", "model": "gpt-4o", "provider": "openai"},
+    {"flavor": "code-agent", "agent_type": "production", "client_type": "flightdeck_sensor", "model": "gpt-4o", "provider": "openai"},
+    {"flavor": "code-agent", "agent_type": "production", "client_type": "flightdeck_sensor", "model": "gpt-4o", "provider": "openai"},
+    {"flavor": "claude-code", "agent_type": "coding", "client_type": "claude_code", "model": "claude-sonnet-4-6", "provider": "anthropic"},
+    {"flavor": "claude-code", "agent_type": "coding", "client_type": "claude_code", "model": "claude-sonnet-4-6", "provider": "anthropic"},
 ]
 
 # Per-agent runtime context attached to each session_start. Matches
@@ -391,6 +404,7 @@ def test_ui_demo() -> None:
             "session_id": sid,
             "flavor": agent["flavor"],
             "agent_type": agent["agent_type"],
+            "client_type": agent["client_type"],
             "model": agent["model"],
             "provider": agent["provider"],
             # Use the context hostname so the drawer Host field and
@@ -448,7 +462,7 @@ def test_ui_demo() -> None:
             # real data to render.
             evt = make_event(
                 s["session_id"], s["flavor"], "session_start",
-                agent_type=s["agent_type"], host=s["host"], model=s["model"],
+                agent_type=s["agent_type"], client_type=s["client_type"], host=s["host"], model=s["model"],
                 context=s["context"],
             )
             _safe_post(evt)
@@ -527,14 +541,14 @@ def test_ui_demo() -> None:
             for cycle in range(attach_count):
                 _safe_post(make_event(
                     target["session_id"], target["flavor"], "session_end",
-                    agent_type=target["agent_type"], host=target["host"],
+                    agent_type=target["agent_type"], client_type=target["client_type"], host=target["host"],
                 ))
                 # Small gap so the worker commits state=closed before
                 # the next session_start races in.
                 time.sleep(0.6)
                 resp = post_event(make_event(
                     target["session_id"], target["flavor"], "session_start",
-                    agent_type=target["agent_type"], host=target["host"],
+                    agent_type=target["agent_type"], client_type=target["client_type"], host=target["host"],
                     model=target["model"], context=target["context"],
                 ))
                 print(
@@ -675,7 +689,7 @@ def test_ui_demo() -> None:
 
                     # Build event with prompt capture for research-agent and code-agent
                     extra: dict = dict(
-                        agent_type=s["agent_type"], host=s["host"], model=s["model"],
+                        agent_type=s["agent_type"], client_type=s["client_type"], host=s["host"], model=s["model"],
                         tokens_input=ti, tokens_output=to, tokens_total=tt,
                         tokens_used_session=s["tokens_used_session"], latency_ms=lat,
                     )
@@ -718,7 +732,7 @@ def test_ui_demo() -> None:
 
                     evt = make_event(
                         s["session_id"], s["flavor"], "tool_call",
-                        agent_type=s["agent_type"], host=s["host"], tool_name=tool,
+                        agent_type=s["agent_type"], client_type=s["client_type"], host=s["host"], tool_name=tool,
                         latency_ms=lat, tokens_input=0, tokens_output=0, tokens_total=0,
                         tokens_used_session=s["tokens_used_session"],
                     )
@@ -734,7 +748,7 @@ def test_ui_demo() -> None:
                 continue
             evt = make_event(
                 s["session_id"], s["flavor"], "session_end",
-                agent_type=s["agent_type"], host=s["host"],
+                agent_type=s["agent_type"], client_type=s["client_type"], host=s["host"],
             )
             _safe_post(evt)
             inactive_sessions.add(s["session_id"])

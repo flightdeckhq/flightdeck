@@ -176,11 +176,23 @@ export function AgentTable({ agents, loading }: AgentTableProps) {
               rendered.push(
             <tr
               key={a.agent_id}
-              onClick={() =>
-                navigate(
-                  `/investigate?agent_id=${encodeURIComponent(a.agent_id)}`,
-                )
-              }
+              onClick={() => {
+                // D115 deep-link: include an explicit 7-day time
+                // window so the Investigate page hits the same
+                // from/to shape as a facet-click navigation from
+                // within Investigate. Relying on parseUrlState's
+                // implicit default worked in isolation but left the
+                // URL looking filter-less to users who then wondered
+                // why it wasn't showing every session. Matching
+                // Investigate's default keeps the URL self-describing.
+                const from = new Date(Date.now() - 7 * 86400000).toISOString();
+                const to = new Date().toISOString();
+                const sp = new URLSearchParams();
+                sp.set("from", from);
+                sp.set("to", to);
+                sp.set("agent_id", a.agent_id);
+                navigate(`/investigate?${sp.toString()}`);
+              }}
               className="cursor-pointer transition-colors duration-150"
               style={{
                 height: 44,

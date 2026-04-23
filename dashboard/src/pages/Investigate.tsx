@@ -10,7 +10,8 @@ import {
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { FacetIcon } from "@/components/facets/FacetIcon";
 import { fetchSessions, type SessionsParams } from "@/lib/api";
-import type { SessionListItem, SessionState } from "@/lib/types";
+import type { AgentSummary, SessionListItem, SessionState } from "@/lib/types";
+import { useFleetStore } from "@/store/fleet";
 import { DateRangePicker, type DateRangeWithPreset } from "@/components/ui/DateRangePicker";
 import { Pagination } from "@/components/ui/Pagination";
 import { SessionDrawer, type DrawerTab } from "@/components/session/SessionDrawer";
@@ -506,6 +507,22 @@ export interface ActiveFilterPill {
   onRemove: () => void;
 }
 
+/**
+ * Module-level set so the UUID-prefix fallback warns once per agent_id,
+ * not once per render. Clean up is intentional noop -- the set is
+ * bounded by the number of distinct agents the user filters on in a
+ * session, which is low.
+ */
+const warnedUnresolvedAgents = new Set<string>();
+function warnUnresolvedAgentOnce(agentId: string): void {
+  if (warnedUnresolvedAgents.has(agentId)) return;
+  warnedUnresolvedAgents.add(agentId);
+  console.warn(
+    `agent_id ${agentId} did not resolve to an agent_name via fleet store or sessions list; ` +
+      `chip label falls back to the UUID prefix. Proper fix tracked in FOLLOWUPS.md.`,
+  );
+}
+
 /** Type alias for the subset of URL state the filter-chip logic reads. */
 export type UrlStateSnapshot = ReturnType<typeof parseUrlState>;
 
@@ -515,18 +532,26 @@ export type UpdateUrlFn = (patch: Partial<UrlStateSnapshot>) => void;
 /**
  * Build the active-filter chip list from the URL state.
  *
- * Pure function of (urlState, sessions, updateUrl) so the chip logic
- * is testable in isolation from the Investigate component. The
- * ``sessions`` list is only used to resolve an ``agent_id`` UUID back
- * to a human-readable ``agent_name`` -- callers that do not have
- * sessions yet (e.g. initial render) can pass ``[]`` and the chip
- * falls back to an 8-char UUID prefix. Tracked in FOLLOWUPS.md: the
- * proper fix for the empty-result case is to resolve agent names via
- * /v1/agents/{id} or a fleet-store cache.
+ * Pure function of (urlState, sessions, agents, updateUrl) so the
+ * chip logic is testable in isolation from the Investigate component.
+ *
+ * ``agent_id`` chip label resolution, in order:
+ *   1. Fleet-store agents[] (hydrated at page load by the always-
+ *      fetch-on-Investigate-mount effect). This is the authoritative
+ *      source and works independent of which sessions happen to be
+ *      in the current filtered result set -- the prior UUID-prefix
+ *      fallback was the "No sessions found" bug in Phase 2.
+ *   2. Sessions list. Kept as a secondary source for deployments or
+ *      race conditions where the fleet store has not hydrated yet
+ *      but the sessions fetch already returned rows for this agent.
+ *   3. 8-char UUID prefix. Final fallback when neither lookup
+ *      resolves. Console-warns so a future ``/v1/agents/:id``
+ *      endpoint is easy to justify when it comes up.
  */
 export function buildActiveFilters(
   urlState: UrlStateSnapshot,
   sessions: SessionListItem[],
+  agents: AgentSummary[],
   updateUrl: UpdateUrlFn,
 ): ActiveFilterPill[] {
   const pills: ActiveFilterPill[] = [];
@@ -568,8 +593,20 @@ export function buildActiveFilters(
     });
   }
   if (urlState.agentId) {
-    const match = sessions.find((s) => s.agent_id === urlState.agentId);
-    const label = match?.agent_name ?? urlState.agentId.slice(0, 8);
+    const agentMatch = agents.find((a) => a.agent_id === urlState.agentId);
+    const sessionMatch = sessions.find(
+      (s) => s.agent_id === urlState.agentId,
+    );
+    const label =
+      agentMatch?.agent_name ??
+      sessionMatch?.agent_name ??
+      urlState.agentId.slice(0, 8);
+    if (!agentMatch && !sessionMatch) {
+      // Hit the UUID-prefix fallback. One console line per render is
+      // annoying; emit only when the pill would render for the first
+      // time and keep it quiet on re-renders via a module-level Set.
+      warnUnresolvedAgentOnce(urlState.agentId);
+    }
     pills.push({
       label: `agent:${label}`,
       onRemove: () => updateUrl({ agentId: "", page: 1 }),
@@ -664,6 +701,24 @@ export function collectFacetSources(
 export function Investigate() {
   const [searchParams, setSearchParams] = useSearchParams();
   const urlState = useMemo(() => parseUrlState(searchParams), [searchParams]);
+
+  // Fleet store -- hydrated on mount so the agent_id filter chip
+  // label resolves via agent identity rather than falling through to
+  // the UUID prefix when the current sessions list happens not to
+  // contain a row for the filtered agent. One extra /v1/fleet call
+  // per Investigate mount is cheap (small, cached at store layer
+  // after the first fetch) and closes the "No sessions found" + UUID
+  // chip UX that PR #24 Bug 2 surfaced.
+  const fleetAgents = useFleetStore((s) => s.agents);
+  const fleetLoad = useFleetStore((s) => s.load);
+  useEffect(() => {
+    if (fleetAgents.length === 0) {
+      void fleetLoad();
+    }
+    // Run-once on mount is the desired behaviour; agent roster refresh
+    // under live traffic is the Fleet page's responsibility.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Core data state
   const [sessions, setSessions] = useState<SessionListItem[]>([]);
@@ -1065,10 +1120,14 @@ export function Investigate() {
     [urlState, updateUrl]
   );
 
-  // Active filter pills -- pure function for testability.
+  // Active filter pills -- pure function for testability. Agents
+  // come from the fleet store, hydrated at mount below so the
+  // agent_id chip label resolves via agent identity (authoritative)
+  // instead of falling through to the 8-char UUID prefix when the
+  // filtered sessions list happens to be empty -- Bug 2b fix.
   const activeFilters = useMemo(
-    () => buildActiveFilters(urlState, sessions, updateUrl),
-    [urlState, sessions, updateUrl],
+    () => buildActiveFilters(urlState, sessions, fleetAgents, updateUrl),
+    [urlState, sessions, fleetAgents, updateUrl],
   );
 
   const clearAllFilters = useCallback(() => {

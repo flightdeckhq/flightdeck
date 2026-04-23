@@ -235,7 +235,7 @@ Unlike Phase 1 (where the search.go agents-subquery bug was the V-pass's blind s
 
 In the spirit of the Phase 1 V-pass coverage lesson: list every gap honestly, not just the ones that happened to be caught.
 
-- **Chrome DOM walkthrough.** No browser automation in this session. Every UI-level claim ("chip renders", "table updates", "bucket divider visible") relies on unit tests + typecheck + lint + the live-stack contract. The Supervisor's original Chrome repro for Issue 1 was confirmed at the contract layer (filtered response works, aux limit=100 works) but I did NOT re-click through the Investigate page's facet in a real browser.
+- **Chrome DOM walkthrough of the post-regression-fix state.** The Supervisor's Chrome smoke covered the pre-fix PR #24 and surfaced Bug 1 + Bug 2 (§9 below). Those fixes land on this same branch; their contract-level verification (curl + Vitest) is documented per-bug, but Chrome walkthrough of the fixed state will be the Supervisor's pre-merge verification, not this author's. Listed here honestly because the pattern ("I thought this was covered, Supervisor surfaced a regression") is exactly the class of failure Phase 3's E2E-Playwright foundation is meant to close.
 - **WebSocket live-update timing.** The bucket-crossing logic is tested against deterministic fixed timestamps in `fleet-ordering.test.ts`. The actual wall-clock behaviour under a burst of real WebSocket events (does the agent cross LIVE→RECENT after 15 s as expected? does a bucket divider re-render without flicker?) was NOT observed on a running stack with live traffic. Would require a playground script + a multi-minute browser session.
 - **Bucket-ordering applied to swimlane with the `ALL` row.** `Timeline.tsx` renders one special `<AllSwimLane>` above the virtualized rows. I did NOT verify that the ALL row is excluded from bucket boundary calculation (currently `filteredFlavors` which feeds the bucket loop does not include it — same as pre-fix — but a burst scenario could surface a mismatch I haven't stress-tested).
 - **Slide animation.** Deliberately skipped per §4.5.
@@ -249,21 +249,78 @@ In the spirit of the Phase 1 V-pass coverage lesson: list every gap honestly, no
 1. **FACET_LIMIT vs. result fidelity.** The facet-source fetches now ask for 100 rows instead of 500. On a very active fleet (thousands of sessions in the window), the sticky-facet counts computed from those 100 rows will under-count. The server cap is 100 by design (`sessionsMaxLimit`), so the proper fix is a dedicated facet-count endpoint rather than bumping the cap. Not a regression — previously the 500 request rejected outright.
 2. **Issue 2 secondary sort is a tie-breaker, not an interleaver.** See §3.5.
 3. **Bucket-crossing slide animation — FOLLOWUPS.md.**
-4. **Chip-label UUID fallback — FOLLOWUPS.md.**
-5. **AGENT facet visual disambiguation — carried over from Phase 1 FOLLOWUPS.md.**
-6. **Search click routing — carried over from Phase 1 FOLLOWUPS.md.**
+4. **AGENT facet visual disambiguation — carried over from Phase 1 FOLLOWUPS.md.**
+5. **Search click routing — carried over from Phase 1 FOLLOWUPS.md.**
+
+---
+
+## 9a. Post-smoke regression fixes (landed as additional commits on this branch)
+
+Supervisor Chrome smoke of the original PR #24 surfaced two regressions before merge. Both fixed on the same branch, second commit pair.
+
+### Bug 1 — closed sessions disappear from swimlane + FLEET OVERVIEW shows zero counts
+
+**Root cause.** Pre-existing since Phase 1 merge, not a PR #24 regression. `dashboard/src/store/fleet.ts:30` set `SWIMLANE_LOOKBACK_MS = 2 hours`. The bootstrap `fetchSessions({ from: since, limit: 100 })` filtered by `started_at` (server-side semantic), so sessions that started more than 2 hours ago never reached the store's `flavors[].sessions[]` arrays regardless of their state or current `last_seen_at`. Invisible during Phase 1 testing because the dev DB was being actively populated by a Claude Code plugin session that kept hooks firing within the window; surfaced only after the dev DB had aged.
+
+The downstream effects were exactly what the Supervisor reported:
+
+- `FleetPanel.tsx::sessionStateCounts` sums `flavors[].sessions[].state`; empty arrays → all zeros.
+- Swimlane per-agent header `flavor.active_count` → 0 because `buildFlavors` computed it from an empty filtered list.
+- Expanded agent row iterated `flavor.sessions` → empty list.
+- Investigate, by contrast, used `/v1/sessions` directly with a 7-day server default, hence it saw all 194.
+
+**Fix (A)+(E) per Supervisor direction.**
+
+- (A) `SWIMLANE_LOOKBACK_MS` 2 h → 24 h. Comment at `fleet.ts:26` documents the "what did my fleet do today?" intent and the explicit contrast with Investigate's 7-day history-view default.
+- (E) `useFleetStore.loadExpandedSessions(agentId)` — new on-demand action called by `Fleet.tsx::handleExpandFlavor` when a user expands a row. Fetches `/v1/sessions?agent_id=<uuid>&limit=100` with no `from`/`to` bound (server default 7 d). Result stashed in a separate `expandedSessions: Map<string, Session[]>` so the main swimlane event-circle row stays windowed and only the expanded SESSIONS drawer sees older sessions. Fresh fetch per expand, no cache, best-effort on failure.
+- SwimLane gained an optional `expandedSessions?: Session[]` prop; when set, the expanded drawer renders from it instead of `sessions`. Main event-circle row above the drawer still uses `sessions` so old circles do NOT contaminate the timeline.
+- `FleetPanel.tsx` SESSION STATES heading now carries a muted `last 24 hours` label with a tooltip explaining the windowing. Closes the "why doesn't the sum equal `total_sessions`?" UX trap pre-emptively.
+
+Fix commit: second commit on this branch.
+
+### Bug 2 — Fleet Table row click lands on Investigate with empty sessions + UUID-prefix chip label
+
+**Root cause.** Two layered sub-bugs:
+
+- (2a) `AgentTable.tsx` row click navigated to `/investigate?agent_id=<uuid>` with no `from`/`to` params. `parseUrlState` in Investigate DOES default `from = 7 days ago` + `to = now`, so the fetch should have worked — but in the Supervisor's specific repro, the chip resolved to a UUID prefix because the sessions list was empty in a race, which in turn cascaded into "No sessions found" display language that made the user doubt the filter applied. Facet-click navigation, for comparison, emits an explicit `from`/`to` because it goes through `updateUrl` over an already-parsed urlState. Mismatch between the two navigation paths.
+- (2b) The agent_id chip label resolved only via the current sessions list (`buildActiveFilters(urlState, sessions, updateUrl)`). When the filtered query returns 0 rows, the lookup fell through to the 8-char UUID prefix — documented in FOLLOWUPS.md post-Phase-2 but still a user-visible UX bug.
+
+**Fix.**
+
+- (2a) `AgentTable.tsx` row click now composes `/investigate?from=<7d-ago>&to=<now>&agent_id=<uuid>` so the two navigation paths emit the same URL shape. Self-describing URL; no reliance on Investigate's implicit defaults.
+- (2b) `buildActiveFilters` signature changed to `(urlState, sessions, agents, updateUrl)`. Resolution order: fleet-store `agents[]` → sessions list → UUID prefix. A module-level `warnUnresolvedAgentOnce` emits one `console.warn` per distinct unresolved agent_id so operators noticing the fallback can easily file a `/v1/agents/{id}` endpoint request when it hurts.
+- `Investigate.tsx` now calls `useFleetStore((s) => s.agents)` and fires a `load()` on mount when the roster is empty. Fleet roster is cheap (≤ per_page=200 rows) and caches at the store layer; the redundant fetch cost is negligible compared to the UX win.
+- The "chip label UUID fallback" FOLLOWUPS.md entry is CLOSED by this fix.
+
+Fix commit: second commit on this branch.
+
+### V-pass lesson
+
+**Time-dependent bugs can sit dormant between phases** and surface only after the dev DB has aged sufficiently. CI and fresh-data manual smoke cannot detect them — every test fixture was emitted milliseconds before the assertion, so it lived inside any realistic window constant.
+
+**Future V-passes for phases touching windowed queries, lookback constants, or TTL logic MUST:**
+
+1. Enumerate every window / lookback constant in the codebase (grep for `LOOKBACK_MS`, `TTL`, `INTERVAL`, `from:`, `* 60 * 60 *`).
+2. Audit whether each constant's value is coherent with the user-facing question the UI answers ("now" vs "today" vs "this week").
+3. Require at least one data point in each window tier (fresh-minute, 24-hour, 7-day+) during live-stack verification.
+
+**Phase 1 ducked this** because the Claude Code plugin that populated the dev DB kept firing hooks within the 2-hour window throughout testing, so every UI surface looked fine. The bug surfaced only after a multi-hour pause between Phase 1 merge and the Phase 2 Chrome smoke. Supervisor's smoke discipline (using an aged stack, not a fresh one) is why this was caught before users hit it.
+
+**applyUpdate-specific corollary.** Any change to the fleet store's `applyUpdate` must have regression tests asserting each session state is preserved across state transitions (active → idle → stale → closed, plus the revive paths). Future V-passes for store logic must specifically enumerate state-preservation invariants before modifying `applyUpdate`. This PR's Issue 3 change to mirror every event onto `agents[]` was not accompanied by such tests; the Bug 1 mechanism was orthogonal (windowing, not state filtering) but the V-pass rule protects against the class of bug where "one invariant change breaks another quietly".
 
 ---
 
 ## 10. Files touched
 
-**Added (4):**
+**Added:**
 - `dashboard/src/lib/fleet-ordering.ts`
 - `dashboard/src/components/facets/FacetIcon.tsx`
 - `dashboard/src/components/facets/ClientTypePill.tsx`
 - `dashboard/tests/unit/fleet-ordering.test.ts`
 - `dashboard/tests/unit/investigate-active-filters.test.ts`
 - `dashboard/tests/unit/ClientTypePill.test.tsx`
+- `dashboard/tests/unit/fleet-store-expanded-sessions.test.ts` (Bug 1 regression guard)
+- `dashboard/tests/unit/AgentTable-row-navigation.test.tsx` (Bug 2a regression guard)
 - `audit-phase-2.md` (this document)
 
 **Modified:**

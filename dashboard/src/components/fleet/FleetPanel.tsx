@@ -23,12 +23,10 @@ import { createDirective } from "@/lib/api";
 import { flavorHasDirectiveCapableSession } from "@/lib/directives";
 import { ClaudeCodeLogo } from "@/components/ui/claude-code-logo";
 import { CodingAgentBadge } from "@/components/ui/coding-agent-badge";
-import {
-  AgentType,
-  CLIENT_TYPE_LABEL,
-  ClientType,
-} from "@/lib/agent-identity";
+import { AgentType, ClientType } from "@/lib/agent-identity";
 import { DirectiveCard } from "@/components/directives/DirectiveCard";
+import { FacetIcon } from "@/components/facets/FacetIcon";
+import { ClientTypePill } from "@/components/facets/ClientTypePill";
 import { useFleetStore } from "@/store/fleet";
 import { OctagonX, X, Zap } from "lucide-react";
 
@@ -529,17 +527,11 @@ function ContextFacetSection({
                     data-testid={`context-value-${key}-${entry.value}`}
                   >
                     <span
-                      className="inline-block rounded-full"
-                      style={{
-                        width: 8,
-                        height: 8,
-                        flexShrink: 0,
-                        background: isSelected ? "var(--accent)" : "transparent",
-                        border: isSelected
-                          ? "1px solid var(--accent)"
-                          : "1px solid var(--border)",
-                      }}
-                    />
+                      className="inline-flex items-center justify-center shrink-0"
+                      style={{ width: 12, height: 12 }}
+                    >
+                      <FacetIcon groupKey={key} value={entry.value} />
+                    </span>
                     <span
                       className="flex-1 truncate font-mono"
                       style={{ fontSize: 12, color: "var(--text)" }}
@@ -734,24 +726,11 @@ function FlavorItem({
             />
           )}
         {sidebarWidth >= FLEET_PILL_HIDE_MIN_WIDTH && flavor.client_type && (
-          <span
-            data-testid="flavor-client-type-pill"
-            className="rounded px-1 py-0.5 text-[10px] font-semibold uppercase tracking-wide"
-            style={{
-              background: "var(--bg-elevated)",
-              color: "var(--text-muted)",
-              border: "1px solid var(--border-subtle)",
-              letterSpacing: "0.04em",
-              whiteSpace: "nowrap",
-              flexShrink: 100,
-              minWidth: 0,
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-            }}
-            title={`client_type=${flavor.client_type}`}
-          >
-            {CLIENT_TYPE_LABEL[flavor.client_type]}
-          </span>
+          <ClientTypePill
+            clientType={flavor.client_type}
+            size="compact"
+            testId="flavor-client-type-pill"
+          />
         )}
         <span className="text-[11px] font-mono" style={{ color: "var(--text-muted)" }}>
           ({flavor.active_count})

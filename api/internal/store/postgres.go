@@ -252,7 +252,15 @@ func (s *Store) GetAgentFleet(
 				)
 			END AS state
 		) rollup ON TRUE` + filter + `
-		ORDER BY a.last_seen_at DESC
+		-- ORDER BY: primary last_seen_at DESC matches user expectation
+		-- ("most recently active first"). Secondary client_type ASC
+		-- breaks last_seen_at ties deterministically -- critical for
+		-- bulk-seeded fleets where many rows share a timestamp; without
+		-- it page 1 could silently hide an entire client type. Tertiary
+		-- agent_id ASC guarantees page-stable ordering so the same row
+		-- does not appear on both page N and page N+1 when two agents
+		-- share both timestamp AND client_type.
+		ORDER BY a.last_seen_at DESC, a.client_type ASC, a.agent_id ASC
 		LIMIT ` + limitPlaceholder + ` OFFSET ` + offsetPlaceholder
 	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {

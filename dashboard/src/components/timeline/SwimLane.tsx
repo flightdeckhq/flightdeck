@@ -2,10 +2,10 @@ import { memo, useMemo } from "react";
 import type { ScaleTime } from "d3-scale";
 import type { Session, AgentEvent } from "@/lib/types";
 import {
-  CLIENT_TYPE_LABEL,
   ClientType,
   type ClientType as ClientTypeT,
 } from "@/lib/agent-identity";
+import { ClientTypePill } from "@/components/facets/ClientTypePill";
 import { SESSION_ROW_HEIGHT, EVENT_CIRCLE_SIZE } from "@/lib/constants";
 import { ChevronRight } from "lucide-react";
 import { SessionEventRow } from "./SessionEventRow";
@@ -168,18 +168,11 @@ function SwimLaneComponent({
             {agentName ?? flavor}
           </span>
           {clientType && (
-            <span
-              className="shrink-0 rounded-sm px-1.5 py-[1px] text-[10px] font-medium uppercase tracking-wide"
-              style={{
-                background: "var(--bg-elevated)",
-                color: "var(--text-muted)",
-                border: "1px solid var(--border-subtle)",
-              }}
-              data-testid="swimlane-client-type-pill"
-              title={`client_type=${clientType}`}
-            >
-              {CLIENT_TYPE_LABEL[clientType]}
-            </span>
+            <ClientTypePill
+              clientType={clientType}
+              size="compact"
+              testId="swimlane-client-type-pill"
+            />
           )}
           {agentType && (
             <span

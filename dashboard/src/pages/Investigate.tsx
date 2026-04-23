@@ -5,19 +5,10 @@ import {
   RefreshCw,
   X,
   LayoutGrid,
-  GitBranch,
-  Bot,
-  Boxes,
-  Server,
   FileText,
-  User,
-  Cpu,
-  Terminal,
-  Package,
-  Container,
-  GitCommit,
 } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { FacetIcon } from "@/components/facets/FacetIcon";
 import { fetchSessions, type SessionsParams } from "@/lib/api";
 import type { SessionListItem, SessionState } from "@/lib/types";
 import { DateRangePicker, type DateRangeWithPreset } from "@/components/ui/DateRangePicker";
@@ -115,13 +106,6 @@ export function buildUrlParams(s: ReturnType<typeof parseUrlState>): URLSearchPa
 // Constants
 // ---------------------------------------------------------------------------
 
-const STATE_COLORS: Record<string, string> = {
-  active: "bg-status-active",
-  idle: "bg-status-idle",
-  stale: "bg-status-stale",
-  closed: "bg-status-closed",
-  lost: "bg-status-lost",
-};
 const AUTO_REFRESH_OPTIONS = [
   { label: "Off", ms: 0 },
   { label: "30s", ms: 30_000 },
@@ -199,7 +183,7 @@ interface FacetGroup {
  * the fully-filtered main result -- those have no active-dim filter
  * to strip, and cross-filtering on them is correct as-is.
  */
-interface FacetSources {
+export interface FacetSources {
   state?: SessionListItem[];
   flavor?: SessionListItem[];
   model?: SessionListItem[];
@@ -429,66 +413,6 @@ export function computeFacets(
 // Facet value icons
 // ---------------------------------------------------------------------------
 
-function FacetIcon({ groupKey, value }: { groupKey: string; value: string }) {
-  if (groupKey === "state") {
-    return (
-      <span
-        className={cn("inline-block rounded-full shrink-0", STATE_COLORS[value] ?? "bg-text-muted")}
-        style={{ width: 5, height: 5 }}
-      />
-    );
-  }
-  if (groupKey === "os") {
-    return <OSIcon os={value} size={12} />;
-  }
-  if (groupKey === "model") {
-    const provider = getProvider(value);
-    if (provider !== "unknown") {
-      return <ProviderLogo provider={provider} size={12} />;
-    }
-    return null;
-  }
-  if (groupKey === "flavor") {
-    return <Bot size={12} style={{ color: "var(--text-muted)", flexShrink: 0 }} />;
-  }
-  if (groupKey === "framework") {
-    return <Boxes size={12} style={{ color: "var(--text-muted)", flexShrink: 0 }} />;
-  }
-  if (groupKey === "agent_type") {
-    // agent_type values are free-form text (developer / autonomous /
-    // supervised / batch today, possibly new values tomorrow) so we
-    // render the same generic "bot" glyph as the FLAVOR facet rather
-    // than special-casing each value. The value text itself carries
-    // the identity -- the icon is a visual anchor for the row.
-    return <Bot size={12} style={{ color: "var(--text-muted)", flexShrink: 0 }} />;
-  }
-  if (groupKey === "git_branch") {
-    return <GitBranch size={12} style={{ color: "var(--text-muted)", flexShrink: 0 }} />;
-  }
-  if (groupKey === "hostname") {
-    return <Server size={12} style={{ color: "var(--text-muted)", flexShrink: 0 }} />;
-  }
-  if (groupKey === "arch") {
-    return <Cpu size={12} style={{ color: "var(--text-muted)", flexShrink: 0 }} />;
-  }
-  if (groupKey === "user") {
-    return <User size={12} style={{ color: "var(--text-muted)", flexShrink: 0 }} />;
-  }
-  if (groupKey === "process_name") {
-    return <Terminal size={12} style={{ color: "var(--text-muted)", flexShrink: 0 }} />;
-  }
-  if (groupKey === "node_version" || groupKey === "python_version") {
-    return <Package size={12} style={{ color: "var(--text-muted)", flexShrink: 0 }} />;
-  }
-  if (groupKey === "git_repo") {
-    return <GitCommit size={12} style={{ color: "var(--text-muted)", flexShrink: 0 }} />;
-  }
-  if (groupKey === "orchestration") {
-    return <Container size={12} style={{ color: "var(--text-muted)", flexShrink: 0 }} />;
-  }
-  return null;
-}
-
 // ---------------------------------------------------------------------------
 // State badge pill
 // ---------------------------------------------------------------------------
@@ -570,6 +494,167 @@ function SkeletonRows() {
       ))}
     </>
   );
+}
+
+// ---------------------------------------------------------------------------
+// Pure helpers exposed for unit testing
+// ---------------------------------------------------------------------------
+
+/** Shape of an active-filter chip rendered in the top bar. */
+export interface ActiveFilterPill {
+  label: string;
+  onRemove: () => void;
+}
+
+/** Type alias for the subset of URL state the filter-chip logic reads. */
+export type UrlStateSnapshot = ReturnType<typeof parseUrlState>;
+
+/** Update callback shape the chip ``onRemove`` handlers close over. */
+export type UpdateUrlFn = (patch: Partial<UrlStateSnapshot>) => void;
+
+/**
+ * Build the active-filter chip list from the URL state.
+ *
+ * Pure function of (urlState, sessions, updateUrl) so the chip logic
+ * is testable in isolation from the Investigate component. The
+ * ``sessions`` list is only used to resolve an ``agent_id`` UUID back
+ * to a human-readable ``agent_name`` -- callers that do not have
+ * sessions yet (e.g. initial render) can pass ``[]`` and the chip
+ * falls back to an 8-char UUID prefix. Tracked in FOLLOWUPS.md: the
+ * proper fix for the empty-result case is to resolve agent names via
+ * /v1/agents/{id} or a fleet-store cache.
+ */
+export function buildActiveFilters(
+  urlState: UrlStateSnapshot,
+  sessions: SessionListItem[],
+  updateUrl: UpdateUrlFn,
+): ActiveFilterPill[] {
+  const pills: ActiveFilterPill[] = [];
+  for (const st of urlState.states) {
+    pills.push({
+      label: `state:${st}`,
+      onRemove: () =>
+        updateUrl({ states: urlState.states.filter((s) => s !== st), page: 1 }),
+    });
+  }
+  for (const fl of urlState.flavors) {
+    pills.push({
+      label: `agent:${fl}`,
+      onRemove: () =>
+        updateUrl({ flavors: urlState.flavors.filter((f) => f !== fl), page: 1 }),
+    });
+  }
+  if (urlState.model) {
+    pills.push({
+      label: `model:${urlState.model}`,
+      onRemove: () => updateUrl({ model: "", page: 1 }),
+    });
+  }
+  for (const fw of urlState.frameworks) {
+    pills.push({
+      label: `framework:${fw}`,
+      onRemove: () =>
+        updateUrl({ frameworks: urlState.frameworks.filter((f) => f !== fw), page: 1 }),
+    });
+  }
+  for (const at of urlState.agentTypes) {
+    pills.push({
+      label: `agent_type:${at}`,
+      onRemove: () =>
+        updateUrl({
+          agentTypes: urlState.agentTypes.filter((a) => a !== at),
+          page: 1,
+        }),
+    });
+  }
+  if (urlState.agentId) {
+    const match = sessions.find((s) => s.agent_id === urlState.agentId);
+    const label = match?.agent_name ?? urlState.agentId.slice(0, 8);
+    pills.push({
+      label: `agent:${label}`,
+      onRemove: () => updateUrl({ agentId: "", page: 1 }),
+    });
+  }
+  const ctxPills: Array<[string, string[], (next: string[]) => void]> = [
+    ["os", urlState.contextOS, (n) => updateUrl({ contextOS: n, page: 1 })],
+    ["arch", urlState.contextArch, (n) => updateUrl({ contextArch: n, page: 1 })],
+    ["hostname", urlState.contextHostnames, (n) => updateUrl({ contextHostnames: n, page: 1 })],
+    ["user", urlState.contextUsers, (n) => updateUrl({ contextUsers: n, page: 1 })],
+    ["process_name", urlState.contextProcessNames, (n) => updateUrl({ contextProcessNames: n, page: 1 })],
+    ["node_version", urlState.contextNodeVersions, (n) => updateUrl({ contextNodeVersions: n, page: 1 })],
+    ["python_version", urlState.contextPythonVersions, (n) => updateUrl({ contextPythonVersions: n, page: 1 })],
+    ["git_branch", urlState.contextGitBranches, (n) => updateUrl({ contextGitBranches: n, page: 1 })],
+    ["git_commit", urlState.contextGitCommits, (n) => updateUrl({ contextGitCommits: n, page: 1 })],
+    ["git_repo", urlState.contextGitRepos, (n) => updateUrl({ contextGitRepos: n, page: 1 })],
+    ["orchestration", urlState.contextOrchestrations, (n) => updateUrl({ contextOrchestrations: n, page: 1 })],
+  ];
+  for (const [key, values, setter] of ctxPills) {
+    for (const v of values) {
+      pills.push({
+        label: `${key}:${v}`,
+        onRemove: () => setter(values.filter((x) => x !== v)),
+      });
+    }
+  }
+  return pills;
+}
+
+/**
+ * Patch handed to ``updateUrl`` by the "Clear all filters" link.
+ * Every filter-bearing URL state field must appear here with its
+ * empty value -- missing a field means that filter survives the
+ * clear, which is the regression we guard against in unit tests.
+ */
+export const CLEAR_ALL_FILTERS_PATCH: Partial<UrlStateSnapshot> = {
+  states: [],
+  flavors: [],
+  agentId: "",
+  agentTypes: [],
+  frameworks: [],
+  contextUsers: [],
+  contextOS: [],
+  contextArch: [],
+  contextHostnames: [],
+  contextProcessNames: [],
+  contextNodeVersions: [],
+  contextPythonVersions: [],
+  contextGitBranches: [],
+  contextGitCommits: [],
+  contextGitRepos: [],
+  contextOrchestrations: [],
+  model: "",
+  q: "",
+  page: 1,
+};
+
+/**
+ * Fold a ``Promise.allSettled`` result for the aux facet-source
+ * fetches into a ``FacetSources`` map. Fulfilled entries land in the
+ * map; rejected entries are logged (unless the rejection is an
+ * AbortError, which indicates a superseded fetch and is expected) and
+ * dropped, so the caller falls back to computing that dimension's
+ * facet counts from the main result set. Pure function, testable in
+ * isolation.
+ */
+export function collectFacetSources(
+  settled: PromiseSettledResult<readonly [string, SessionListItem[] | undefined]>[],
+  keys: readonly string[],
+  log: (msg: string, err: unknown) => void = console.error,
+): FacetSources {
+  const sources: FacetSources = {};
+  for (let i = 0; i < settled.length; i += 1) {
+    const s = settled[i];
+    if (s.status === "fulfilled") {
+      const [k, sess] = s.value;
+      if (sess) (sources as Record<string, SessionListItem[]>)[k] = sess;
+    } else if ((s.reason as Error | undefined)?.name !== "AbortError") {
+      log(
+        `aux facet-source fetch for "${keys[i]}" failed; falling back to main result set`,
+        s.reason,
+      );
+    }
+  }
+  return sources;
 }
 
 // ---------------------------------------------------------------------------
@@ -672,11 +757,15 @@ export function Investigate() {
       // filters -- typical interactive use is 1-2; even a worst-case
       // "every facet filtered" run stays bounded by the number of
       // facet keys. All fetches share the main controller so a stale
-      // render cancels them together. FACET_LIMIT matches GetSessions'
-      // hard cap on the server; drawer refresh short-circuits before
-      // we reach this block so the fan-out only happens on URL-state
-      // changes.
-      const FACET_LIMIT = 500;
+      // render cancels them together. FACET_LIMIT must match
+      // ``sessionsMaxLimit`` in
+      // ``api/internal/handlers/sessions_list.go`` (currently 100); a
+      // larger value triggers ``"limit exceeds maximum of 100"`` 400s
+      // that, without the Promise.allSettled + early main-state-write
+      // fix below, used to silently strand the main table on stale
+      // data. Drawer refresh short-circuits before we reach this
+      // block so the fan-out only happens on URL-state changes.
+      const FACET_LIMIT = 100;
       const facetBase = { ...baseParams, limit: FACET_LIMIT, offset: 0 };
       const auxPromises: Record<string, Promise<Awaited<ReturnType<typeof fetchSessions>>> | null> = {
         state: state.states.length > 0
@@ -731,26 +820,36 @@ export function Investigate() {
 
       try {
         const resp = await fetchSessions(baseParams, controller.signal);
-        // Await every aux fetch in parallel, filtering nulls. Resolve
-        // each into { key, sessions } so the source map stays keyed.
-        const auxEntries = await Promise.all(
-          (Object.keys(auxPromises) as (keyof typeof auxPromises)[]).map(
-            async (k) => {
-              const p = auxPromises[k];
-              if (!p) return [k, undefined] as const;
-              const r = await p;
-              return [k, r.sessions] as const;
-            },
-          ),
-        );
-        const sources: FacetSources = {};
-        for (const [k, sess] of auxEntries) {
-          if (sess) (sources as Record<string, SessionListItem[]>)[k] = sess;
-        }
+        // Land the main table state immediately -- the filtered
+        // session list and total are what the user sees, and they
+        // must not depend on the aux facet-source fetches succeeding.
+        // Pre-fix, a single aux rejection (e.g. the limit=500 / cap
+        // 100 mismatch) drained the whole branch into ``catch`` and
+        // the table stayed on stale data. Landing the main state
+        // here decouples render correctness from facet-count
+        // integrity.
         setSessions(resp.sessions);
         setTotal(resp.total);
-        setFacetSources(sources);
         setLastUpdated(Date.now());
+
+        // Aux fetches use allSettled so one dimension failing (400
+        // on a bad param, transient 5xx, network blip, anything)
+        // degrades gracefully: the failing dimension falls back to
+        // its in-main-resp facet source -- which is the exact
+        // behavior used when no filter is active for that dimension
+        // anyway, so downstream code already tolerates a missing
+        // entry in ``FacetSources``. See ``collectFacetSources`` for
+        // the fold logic.
+        const auxKeys = Object.keys(auxPromises) as (keyof typeof auxPromises)[];
+        const settled = await Promise.allSettled(
+          auxKeys.map(async (k) => {
+            const p = auxPromises[k];
+            if (!p) return [k, undefined] as const;
+            const r = await p;
+            return [k, r.sessions] as const;
+          }),
+        );
+        setFacetSources(collectFacetSources(settled, auxKeys));
       } catch (err) {
         if ((err as Error).name !== "AbortError") {
           console.error("fetchSessions error:", err);
@@ -966,94 +1065,14 @@ export function Investigate() {
     [urlState, updateUrl]
   );
 
-  // Active filter pills
-  const activeFilters = useMemo(() => {
-    const pills: { label: string; onRemove: () => void }[] = [];
-    for (const st of urlState.states) {
-      pills.push({
-        label: `state:${st}`,
-        onRemove: () =>
-          updateUrl({ states: urlState.states.filter((s) => s !== st), page: 1 }),
-      });
-    }
-    for (const fl of urlState.flavors) {
-      pills.push({
-        label: `agent:${fl}`,
-        onRemove: () =>
-          updateUrl({ flavors: urlState.flavors.filter((f) => f !== fl), page: 1 }),
-      });
-    }
-    if (urlState.model) {
-      pills.push({
-        label: `model:${urlState.model}`,
-        onRemove: () => updateUrl({ model: "", page: 1 }),
-      });
-    }
-    for (const fw of urlState.frameworks) {
-      pills.push({
-        label: `framework:${fw}`,
-        onRemove: () =>
-          updateUrl({ frameworks: urlState.frameworks.filter((f) => f !== fw), page: 1 }),
-      });
-    }
-    for (const at of urlState.agentTypes) {
-      pills.push({
-        label: `agent_type:${at}`,
-        onRemove: () =>
-          updateUrl({
-            agentTypes: urlState.agentTypes.filter((a) => a !== at),
-            page: 1,
-          }),
-      });
-    }
-    // Scalar context pills. Iterated via a tuple list so the label
-    // shape ("user:alice") and the remove-by-filter plumbing share a
-    // single expression -- adding a new facet is a one-row change.
-    const ctxPills: Array<[string, string[], (next: string[]) => void]> = [
-      ["os", urlState.contextOS, (n) => updateUrl({ contextOS: n, page: 1 })],
-      ["arch", urlState.contextArch, (n) => updateUrl({ contextArch: n, page: 1 })],
-      ["hostname", urlState.contextHostnames, (n) => updateUrl({ contextHostnames: n, page: 1 })],
-      ["user", urlState.contextUsers, (n) => updateUrl({ contextUsers: n, page: 1 })],
-      ["process_name", urlState.contextProcessNames, (n) => updateUrl({ contextProcessNames: n, page: 1 })],
-      ["node_version", urlState.contextNodeVersions, (n) => updateUrl({ contextNodeVersions: n, page: 1 })],
-      ["python_version", urlState.contextPythonVersions, (n) => updateUrl({ contextPythonVersions: n, page: 1 })],
-      ["git_branch", urlState.contextGitBranches, (n) => updateUrl({ contextGitBranches: n, page: 1 })],
-      ["git_commit", urlState.contextGitCommits, (n) => updateUrl({ contextGitCommits: n, page: 1 })],
-      ["git_repo", urlState.contextGitRepos, (n) => updateUrl({ contextGitRepos: n, page: 1 })],
-      ["orchestration", urlState.contextOrchestrations, (n) => updateUrl({ contextOrchestrations: n, page: 1 })],
-    ];
-    for (const [key, values, setter] of ctxPills) {
-      for (const v of values) {
-        pills.push({
-          label: `${key}:${v}`,
-          onRemove: () => setter(values.filter((x) => x !== v)),
-        });
-      }
-    }
-    return pills;
-  }, [urlState, updateUrl]);
+  // Active filter pills -- pure function for testability.
+  const activeFilters = useMemo(
+    () => buildActiveFilters(urlState, sessions, updateUrl),
+    [urlState, sessions, updateUrl],
+  );
 
   const clearAllFilters = useCallback(() => {
-    updateUrl({
-      states: [],
-      flavors: [],
-      agentTypes: [],
-      frameworks: [],
-      contextUsers: [],
-      contextOS: [],
-      contextArch: [],
-      contextHostnames: [],
-      contextProcessNames: [],
-      contextNodeVersions: [],
-      contextPythonVersions: [],
-      contextGitBranches: [],
-      contextGitCommits: [],
-      contextGitRepos: [],
-      contextOrchestrations: [],
-      model: "",
-      q: "",
-      page: 1,
-    });
+    updateUrl(CLEAR_ALL_FILTERS_PATCH);
     setSearchInput("");
   }, [updateUrl]);
 

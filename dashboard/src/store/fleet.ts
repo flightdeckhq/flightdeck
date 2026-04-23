@@ -14,6 +14,10 @@ import {
   fetchFleet,
   fetchSessions,
 } from "@/lib/api";
+import {
+  advanceBucketEntry,
+  seedBucketEntries,
+} from "@/lib/fleet-ordering";
 
 // D114 vocabulary -- ``coding`` or ``production``. ``all`` suppresses
 // the filter at the query layer.
@@ -44,6 +48,16 @@ interface FleetState {
   selectedSessionId: string | null;
   agentTypeFilter: AgentTypeFilter;
   flavorFilter: string | null;
+  /**
+   * When each row last entered its current activity bucket (LIVE /
+   * RECENT / IDLE). Keyed by ``agent_id`` so the swimlane (``flavors``
+   * keyed on ``agent_id``) and the table (``agents`` keyed on
+   * ``agent_id``) share the same map. Seeded on ``load`` from each
+   * row's ``last_seen_at``; updated by ``applyUpdate`` only when a
+   * row crosses a bucket boundary, so same-bucket events never cause
+   * within-bucket reordering. See ``lib/fleet-ordering.ts``.
+   */
+  enteredBucketAt: Map<string, number>;
 
   load: (opts?: {
     page?: number;
@@ -141,6 +155,7 @@ export const useFleetStore = create<FleetState>((set, get) => ({
   selectedSessionId: null,
   agentTypeFilter: "all",
   flavorFilter: null,
+  enteredBucketAt: new Map<string, number>(),
 
   load: async (opts = {}) => {
     const page = opts.page ?? 1;
@@ -179,6 +194,17 @@ export const useFleetStore = create<FleetState>((set, get) => ({
         flavors: buildFlavors(fleet.agents, sessions.sessions),
         customDirectives: directives,
         loading: false,
+        // Seed the bucket-entry map from the loaded roster. Every
+        // row starts out having "just entered" its current bucket
+        // at its server-reported last_seen_at; subsequent
+        // applyUpdate calls only advance the entry on bucket
+        // crossings, so within-bucket ordering stays stable.
+        enteredBucketAt: seedBucketEntries(
+          fleet.agents.map((a) => ({
+            id: a.agent_id,
+            lastSeenAt: a.last_seen_at,
+          })),
+        ),
       });
     } catch (e) {
       set({ error: (e as Error).message, loading: false });
@@ -194,7 +220,7 @@ export const useFleetStore = create<FleetState>((set, get) => ({
   },
 
   applyUpdate: (update: FleetUpdate) => {
-    const { flavors, agents, shuttingDown } = get();
+    const { flavors, agents, shuttingDown, enteredBucketAt } = get();
     // D115: the swimlane row key is agent_id (stored under the legacy
     // ``flavor`` field name). Updates for sessions without an
     // agent_id (legacy rows awaiting enrichment) land under the
@@ -229,22 +255,46 @@ export const useFleetStore = create<FleetState>((set, get) => ({
       void get().load({ page: get().page, agentType: get().agentTypeFilter });
     }
 
-    // Mirror the agent-level rollup so the Fleet table reflects the
-    // new session without waiting for a server-side counter bump.
-    if (update.type === "session_start" && update.session.agent_id) {
+    // Mirror the server-side rollup so the Fleet table + bucket sort
+    // react to every live event, not just session_start. Previously
+    // only session_start bumped agents[]; tool_call / post_call /
+    // heartbeat updates left the array frozen until the next full
+    // load(), which was what made the table view drift out of sync
+    // with the swimlane under WebSocket traffic.
+    if (update.session.agent_id) {
       const aid = update.session.agent_id;
-      const nowIso = new Date().toISOString();
+      const now = Date.now();
+      const nowIso = new Date(now).toISOString();
+      const priorAgent = agents.find((a) => a.agent_id === aid);
+      const isStart = update.type === "session_start";
       const nextAgents = agents.map((a) =>
         a.agent_id === aid
           ? {
               ...a,
-              total_sessions: a.total_sessions + 1,
+              total_sessions: isStart ? a.total_sessions + 1 : a.total_sessions,
               last_seen_at: nowIso,
-              state: "active" as SessionState,
+              state:
+                update.session.state === "active" ||
+                update.session.state === "idle"
+                  ? ("active" as SessionState)
+                  : a.state,
             }
           : a,
       );
-      if (nextAgents !== agents) set({ agents: nextAgents });
+      if (nextAgents !== agents) {
+        const nextEntries = advanceBucketEntry(
+          enteredBucketAt,
+          aid,
+          priorAgent?.last_seen_at,
+          nowIso,
+          now,
+        );
+        set({
+          agents: nextAgents,
+          enteredBucketAt:
+            nextEntries === enteredBucketAt ? enteredBucketAt : nextEntries,
+        });
+      }
     }
   },
 

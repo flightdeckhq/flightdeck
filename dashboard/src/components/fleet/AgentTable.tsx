@@ -1,11 +1,11 @@
+import React from "react";
 import { useNavigate } from "react-router-dom";
 import type { AgentSummary, SessionState } from "@/lib/types";
-import {
-  CLIENT_TYPE_LABEL,
-  ClientType,
-} from "@/lib/agent-identity";
+import { ClientType } from "@/lib/agent-identity";
+import { ClientTypePill } from "@/components/facets/ClientTypePill";
 import { CodingAgentBadge } from "@/components/ui/coding-agent-badge";
 import { ClaudeCodeLogo } from "@/components/ui/claude-code-logo";
+import { bucketFor } from "@/lib/fleet-ordering";
 
 /**
  * Investigate-mirror typography constants. The header / cell styles
@@ -143,7 +143,37 @@ export function AgentTable({ agents, loading }: AgentTableProps) {
           </tr>
         </thead>
         <tbody>
-          {agents.map((a) => (
+          {(() => {
+            // Mirror the swimlane's bucket-boundary divider so the
+            // table and swimlane read as the same three-tier list.
+            // A spanning TR with a thin top border creates a visual
+            // gap without a label.
+            const now = Date.now();
+            let prevBucket: "live" | "recent" | "idle" | null = null;
+            const rendered: React.ReactNode[] = [];
+            for (const a of agents) {
+              const b = bucketFor(a.last_seen_at, now);
+              if (prevBucket !== null && b !== prevBucket) {
+                rendered.push(
+                  <tr
+                    key={`bucket-${prevBucket}-to-${b}`}
+                    data-testid={`agent-table-bucket-divider-${prevBucket}-${b}`}
+                    aria-hidden
+                  >
+                    <td
+                      colSpan={7}
+                      style={{
+                        height: 1,
+                        padding: 0,
+                        background: "var(--border)",
+                        borderTop: "none",
+                        borderBottom: "none",
+                      }}
+                    />
+                  </tr>,
+                );
+              }
+              rendered.push(
             <tr
               key={a.agent_id}
               onClick={() =>
@@ -204,20 +234,10 @@ export function AgentTable({ agents, loading }: AgentTableProps) {
                   color: "var(--text-secondary)",
                 }}
               >
-                <span
-                  data-testid="agent-table-client-pill"
-                  className="rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide"
-                  style={{
-                    background: "var(--bg-elevated)",
-                    color: "var(--text-muted)",
-                    border: "1px solid var(--border-subtle)",
-                    letterSpacing: "0.04em",
-                    whiteSpace: "nowrap",
-                  }}
-                  title={`client_type=${a.client_type}`}
-                >
-                  {CLIENT_TYPE_LABEL[a.client_type]}
-                </span>
+                <ClientTypePill
+                  clientType={a.client_type}
+                  testId="agent-table-client-pill"
+                />
               </td>
               <td
                 style={{
@@ -264,8 +284,12 @@ export function AgentTable({ agents, loading }: AgentTableProps) {
               <td style={{ padding: "0 12px", fontSize: 12 }}>
                 <StateDot state={a.state} />
               </td>
-            </tr>
-          ))}
+            </tr>,
+              );
+              prevBucket = b;
+            }
+            return rendered;
+          })()}
         </tbody>
       </table>
     </div>

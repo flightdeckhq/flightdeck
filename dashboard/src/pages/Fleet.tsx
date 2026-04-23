@@ -10,7 +10,14 @@ import { EventDetailDrawer } from "@/components/fleet/EventDetailDrawer";
 import { Timeline } from "@/components/timeline/Timeline";
 import { AgentTable } from "@/components/fleet/AgentTable";
 import { SessionDrawer } from "@/components/session/SessionDrawer";
-import type { AgentEvent, FeedEvent, FlavorSummary, Session } from "@/lib/types";
+import type {
+  AgentEvent,
+  AgentSummary,
+  FeedEvent,
+  FlavorSummary,
+  Session,
+} from "@/lib/types";
+import { bucketFor, sortByActivityBucket } from "@/lib/fleet-ordering";
 import type { ContextFilters } from "@/types/context";
 import { FEED_MAX_EVENTS, PAUSE_QUEUE_MAX_EVENTS } from "@/lib/constants";
 import { eventsCache } from "@/hooks/useSessionEvents";
@@ -52,70 +59,70 @@ const TIME_RANGE_MS: Record<TimeRange, number> = {
 };
 
 /**
- * Grace period (ms) during which a flavor whose sessions have all
- * just closed still sorts near the top. Without this, rapid agent
- * turnover causes the swimlane to reshuffle every few seconds and
- * the operator loses track of what just ran.
- */
-const CLOSED_GRACE_MS = 60_000;
-
-/**
- * Sort flavors by activity priority so flavors with active or idle
- * sessions always sit at the top of the swimlane and stale/closed
- * ones sink to the bottom. Stable secondary order is alphabetical.
+ * Sort flavors (swimlane-shaped rows) into the three activity buckets
+ * defined in ``lib/fleet-ordering.ts``: LIVE (<15s), RECENT (15s–5m),
+ * IDLE (>5m or never). Within LIVE / RECENT the order is
+ * ``enteredBucketAt`` DESC so newly-arrived rows sit at the top of
+ * their bucket and existing rows stay put under event bursts. IDLE is
+ * alphabetical by agent_name.
  *
- * Within the "all closed" bucket, flavors whose most recent session
- * ended within the last CLOSED_GRACE_MS sort above the rest, most
- * recently closed first. Alphabetical order kicks in only for
- * flavors whose most recent close is older than the grace window.
- *
- * Exported so unit tests can verify the ordering directly without
- * mounting the full Fleet page (which would require mocking the
- * WebSocket store and bulk events fetch). FIX 3 -- part A.
+ * Exported for unit tests; callers inside the component should use
+ * the ``useFleetStore`` ``enteredBucketAt`` map so the within-bucket
+ * stability invariant holds across renders.
  */
 export function sortFlavorsByActivity(
   flavors: FlavorSummary[],
   now: number = Date.now(),
+  enteredBucketAt: Map<string, number> = new Map(),
 ): FlavorSummary[] {
-  const priority = (states: string[]): number => {
-    if (states.includes("active")) return 0;
-    if (states.includes("idle")) return 1;
-    if (states.includes("stale")) return 2;
-    if (states.includes("lost")) return 3;
-    return 4;
-  };
-  // Most recent ended_at across all sessions for this flavor (ms).
-  // Returns -Infinity if no session has an ended_at (e.g. still live
-  // or never fully ended).
-  const mostRecentClose = (f: FlavorSummary): number => {
-    let latest = -Infinity;
-    for (const s of f.sessions) {
-      if (!s.ended_at) continue;
-      const t = new Date(s.ended_at).getTime();
-      if (Number.isFinite(t) && t > latest) latest = t;
-    }
-    return latest;
-  };
-  return [...flavors].sort((a, b) => {
-    const pa = priority(a.sessions.map((s) => s.state));
-    const pb = priority(b.sessions.map((s) => s.state));
-    if (pa !== pb) return pa - pb;
+  return sortByActivityBucket(
+    flavors,
+    (f) => ({
+      id: f.agent_id ?? f.flavor,
+      lastSeenAt: f.last_seen_at,
+      displayName: f.agent_name ?? f.flavor,
+    }),
+    now,
+    enteredBucketAt,
+  ).map((row) => row.item);
+}
 
-    // For fully-closed flavors (priority 4): apply grace period.
-    // Anything closed within the last CLOSED_GRACE_MS floats to the
-    // top of the closed bucket (most recent first); older closed
-    // flavors fall back to alphabetical.
-    if (pa === 4) {
-      const ra = mostRecentClose(a);
-      const rb = mostRecentClose(b);
-      const aRecent = now - ra < CLOSED_GRACE_MS;
-      const bRecent = now - rb < CLOSED_GRACE_MS;
-      if (aRecent && !bRecent) return -1;
-      if (!aRecent && bRecent) return 1;
-      if (aRecent && bRecent) return rb - ra;
-    }
-    return a.flavor.localeCompare(b.flavor);
-  });
+/**
+ * Sort agents (Fleet table rows) into the same three activity buckets
+ * so the table and swimlane agree on row order under live traffic.
+ */
+export function sortAgentsByActivity(
+  agents: AgentSummary[],
+  now: number = Date.now(),
+  enteredBucketAt: Map<string, number> = new Map(),
+): AgentSummary[] {
+  return sortByActivityBucket(
+    agents,
+    (a) => ({
+      id: a.agent_id,
+      lastSeenAt: a.last_seen_at,
+      displayName: a.agent_name,
+    }),
+    now,
+    enteredBucketAt,
+  ).map((row) => row.item);
+}
+
+/**
+ * Bucket assignments for a flavor list, exposed separately from the
+ * sort so the Fleet page can render visual separators between buckets
+ * without re-running the sort.
+ */
+export function bucketAssignments(
+  flavors: FlavorSummary[],
+  now: number = Date.now(),
+): Map<string, "live" | "recent" | "idle"> {
+  const map = new Map<string, "live" | "recent" | "idle">();
+  for (const f of flavors) {
+    const key = f.agent_id ?? f.flavor;
+    map.set(key, bucketFor(f.last_seen_at, now));
+  }
+  return map;
 }
 
 export function Fleet() {
@@ -138,6 +145,7 @@ export function Fleet() {
   );
 
   const agents = useFleetStore((s) => s.agents);
+  const enteredBucketAt = useFleetStore((s) => s.enteredBucketAt);
   const fleetTotal = useFleetStore((s) => s.total);
   const fleetPage = useFleetStore((s) => s.page);
   const fleetPerPage = useFleetStore((s) => s.perPage);
@@ -387,10 +395,20 @@ export function Fleet() {
     return counts;
   }, [flavors]);
 
-  // Sort flavors by activity priority. Re-sorts automatically on
-  // every flavors update via useMemo. See sortFlavorsByActivity
-  // above for the priority function. (FIX 3 -- part A)
-  const sortedFlavors = useMemo(() => sortFlavorsByActivity(flavors), [flavors]);
+  // Sort flavors (swimlane) and agents (table) into the three
+  // activity buckets defined in ``lib/fleet-ordering.ts``. Both share
+  // the store's ``enteredBucketAt`` map so the swimlane and the
+  // table surface rows in the same order. The ``now`` state ticks
+  // every second so bucket-crossings are picked up without waiting
+  // for an explicit WebSocket event.
+  const sortedFlavors = useMemo(
+    () => sortFlavorsByActivity(flavors, now, enteredBucketAt),
+    [flavors, now, enteredBucketAt],
+  );
+  const sortedAgents = useMemo(
+    () => sortAgentsByActivity(agents, now, enteredBucketAt),
+    [agents, now, enteredBucketAt],
+  );
 
   // Tokens scoped to the currently selected time range. Filters
   // feedEvents by occurred_at > now - timeRangeMs so events outside
@@ -811,7 +829,7 @@ export function Fleet() {
             />
           ) : (
             <div className="p-4">
-              <AgentTable agents={agents} loading={loading} />
+              <AgentTable agents={sortedAgents} loading={loading} />
               <FleetTablePagination
                 total={fleetTotal}
                 page={fleetPage}

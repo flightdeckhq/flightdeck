@@ -1,4 +1,4 @@
-import { useMemo, useState, useEffect, useCallback, useRef } from "react";
+import React, { useMemo, useState, useEffect, useCallback, useRef } from "react";
 import { scaleTime } from "d3-scale";
 import type { FlavorSummary } from "@/lib/types";
 import type { TimeRange } from "@/pages/Fleet";
@@ -13,6 +13,7 @@ import {
 import { TimeAxis } from "./TimeAxis";
 import { AllSwimLane } from "./SwimLane";
 import { VirtualizedSwimLane } from "./VirtualizedSwimLane";
+import { bucketFor } from "@/lib/fleet-ordering";
 import { eventsCache } from "@/hooks/useSessionEvents";
 
 interface TimelineProps {
@@ -527,25 +528,52 @@ export function Timeline({
             virtualized -- it's always the top row and would defeat
             its own purpose if it flickered between spacer and real
             content. */}
-        {filteredFlavors.map((f) => (
-          <VirtualizedSwimLane
-            key={f.flavor}
-            flavor={f.flavor}
-            agentName={f.agent_name}
-            clientType={f.client_type}
-            agentType={f.agent_type}
-            sessions={f.sessions}
-            scale={scale}
-            onSessionClick={onNodeClick}
-            expanded={expandedFlavors.has(f.flavor)}
-            onToggleExpand={() => onExpandFlavor(f.flavor)}
-            timelineWidth={timelineWidth}
-            leftPanelWidth={leftPanelWidth}
-            activeFilter={activeFilter}
-            sessionVersions={sessionVersions}
-            matchingSessionIds={matchingSessionIds}
-          />
-        ))}
+        {(() => {
+          // Track the previous flavor's bucket so a thin horizontal
+          // divider can be injected at LIVE->RECENT and RECENT->IDLE
+          // transitions (no label, just a visual gap). Bucket-for
+          // reads last_seen_at against ``rawEndMs`` so it picks up
+          // the rAF / pause / catch-up time source Fleet drives.
+          let prevBucket: "live" | "recent" | "idle" | null = null;
+          const rendered: React.ReactNode[] = [];
+          for (const f of filteredFlavors) {
+            const b = bucketFor(f.last_seen_at, rawEndMs);
+            if (prevBucket !== null && b !== prevBucket) {
+              rendered.push(
+                <div
+                  key={`bucket-${prevBucket}-to-${b}`}
+                  data-testid={`bucket-divider-${prevBucket}-${b}`}
+                  style={{
+                    height: 1,
+                    background: "var(--border)",
+                    margin: "4px 0",
+                  }}
+                />,
+              );
+            }
+            rendered.push(
+              <VirtualizedSwimLane
+                key={f.flavor}
+                flavor={f.flavor}
+                agentName={f.agent_name}
+                clientType={f.client_type}
+                agentType={f.agent_type}
+                sessions={f.sessions}
+                scale={scale}
+                onSessionClick={onNodeClick}
+                expanded={expandedFlavors.has(f.flavor)}
+                onToggleExpand={() => onExpandFlavor(f.flavor)}
+                timelineWidth={timelineWidth}
+                leftPanelWidth={leftPanelWidth}
+                activeFilter={activeFilter}
+                sessionVersions={sessionVersions}
+                matchingSessionIds={matchingSessionIds}
+              />,
+            );
+            prevBucket = b;
+          }
+          return rendered;
+        })()}
       </div>
     </div>
   );

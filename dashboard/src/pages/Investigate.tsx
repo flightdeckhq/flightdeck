@@ -593,8 +593,13 @@ export function buildActiveFilters(
     });
   }
   if (urlState.agentId) {
-    const agentMatch = agents.find((a) => a.agent_id === urlState.agentId);
-    const sessionMatch = sessions.find(
+    // ``?? []`` guards against a caller handing a runtime null where
+    // the type asserts an array (e.g. a fleet fetch that nominally
+    // returns AgentSummary[] but reached us before hydration).
+    const agentMatch = (agents ?? []).find(
+      (a) => a.agent_id === urlState.agentId,
+    );
+    const sessionMatch = (sessions ?? []).find(
       (s) => s.agent_id === urlState.agentId,
     );
     const label =
@@ -709,7 +714,14 @@ export function Investigate() {
   // per Investigate mount is cheap (small, cached at store layer
   // after the first fetch) and closes the "No sessions found" + UUID
   // chip UX that PR #24 Bug 2 surfaced.
-  const fleetAgents = useFleetStore((s) => s.agents);
+  // ``?? []`` guards against a store selector returning ``undefined``
+  // during initial mount before the create() factory runs, and also
+  // surfaces the pattern that a future JSON null from the wire (see
+  // ``api/internal/store/postgres.go::GetAgentFleet`` on an empty
+  // fleet) cannot crash the component via a ``.length`` on null.
+  // Memoized so useMemo consumers downstream get a stable reference.
+  const rawFleetAgents = useFleetStore((s) => s.agents);
+  const fleetAgents = useMemo(() => rawFleetAgents ?? [], [rawFleetAgents]);
   const fleetLoad = useFleetStore((s) => s.load);
   useEffect(() => {
     if (fleetAgents.length === 0) {

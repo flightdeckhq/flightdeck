@@ -126,7 +126,17 @@ function SwimLaneComponent({
   // expansion uses ``sessions`` (the windowed subset) so circles for
   // sessions outside the Fleet window do NOT appear on the main
   // timeline, only in the expanded session list.
-  const expandedSessionList = expandedSessions ?? sessions;
+  // ``?? []`` on both branches: TypeScript types the incoming
+  // ``sessions`` prop as ``Session[]`` and ``expandedSessions`` as
+  // ``Session[] | undefined``, but a runtime payload that surprises
+  // the type (e.g. a ``null`` field slipping through a stale
+  // WebSocket deserializer) would crash the expanded drawer's
+  // ``.map`` below. Memoized so the useMemo hooks downstream get a
+  // stable reference when the underlying arrays don't change.
+  const expandedSessionList = useMemo(
+    () => expandedSessions ?? sessions ?? [],
+    [expandedSessions, sessions],
+  );
 
   // Count of sessions that will actually render in the expanded
   // view. When a CONTEXT filter is active, non-matching sessions

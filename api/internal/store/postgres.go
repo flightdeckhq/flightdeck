@@ -268,7 +268,13 @@ func (s *Store) GetAgentFleet(
 	}
 	defer rows.Close()
 
-	var result []AgentSummary
+	// Start with a non-nil empty slice so an empty fleet encodes as
+	// ``[]`` in JSON rather than ``null``. A null ``agents`` field
+	// crashes the dashboard's store seed (``fleet.agents.map(...)``)
+	// on empty deployments -- the frontend Array type is a hard
+	// contract, not a nullable one. Matches the pattern in
+	// ``sessions.go::GetSessions``.
+	result := make([]AgentSummary, 0)
 	for rows.Next() {
 		var a AgentSummary
 		var rollupState *string

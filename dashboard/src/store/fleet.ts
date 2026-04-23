@@ -227,13 +227,21 @@ export const useFleetStore = create<FleetState>((set, get) => ({
         fetchCustomDirectives().catch(() => [] as CustomDirective[]),
       ]);
 
+      // Belt-and-suspenders: the API contract says agents is an
+      // array, but a nil-slice Go return becomes JSON null, which
+      // crashes every ``.map`` below. Guard once here so every
+      // downstream consumer (buildFlavors, seedBucketEntries,
+      // Fleet/Investigate readers) sees a real array. Same story
+      // for ``sessions.sessions``.
+      const safeAgents = fleet.agents ?? [];
+      const safeSessions = sessions.sessions ?? [];
       set({
-        agents: fleet.agents,
+        agents: safeAgents,
         total: fleet.total,
         page: fleet.page,
         perPage: fleet.per_page,
         contextFacets: fleet.context_facets ?? {},
-        flavors: buildFlavors(fleet.agents, sessions.sessions),
+        flavors: buildFlavors(safeAgents, safeSessions),
         customDirectives: directives,
         loading: false,
         // Seed the bucket-entry map from the loaded roster. Every
@@ -242,7 +250,7 @@ export const useFleetStore = create<FleetState>((set, get) => ({
         // applyUpdate calls only advance the entry on bucket
         // crossings, so within-bucket ordering stays stable.
         enteredBucketAt: seedBucketEntries(
-          fleet.agents.map((a) => ({
+          safeAgents.map((a) => ({
             id: a.agent_id,
             lastSeenAt: a.last_seen_at,
           })),
@@ -270,7 +278,7 @@ export const useFleetStore = create<FleetState>((set, get) => ({
         limit: 100,
         offset: 0,
       });
-      const sessions = resp.sessions.map(listItemToSession);
+      const sessions = (resp.sessions ?? []).map(listItemToSession);
       set({
         expandedSessions: new Map(get().expandedSessions).set(
           agentId,

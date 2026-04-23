@@ -11,7 +11,7 @@ import (
 
 // SearchResultAgent is a search hit on the agents table.
 type SearchResultAgent struct {
-	Flavor    string `json:"flavor"`
+	AgentName string `json:"agent_name"`
 	AgentType string `json:"agent_type"`
 	LastSeen  string `json:"last_seen"`
 }
@@ -66,13 +66,15 @@ func (s *Store) Search(ctx context.Context, query string) (*SearchResults, error
 
 	g, ctx := errgroup.WithContext(ctx)
 
-	// Search agents
+	// Search agents. D115: agents is keyed by agent_id and the
+	// searchable human-readable label is agent_name; the legacy
+	// flavor column was dropped in migration 000015.
 	g.Go(func() error {
 		rows, err := s.pool.Query(ctx, `
-			SELECT flavor, agent_type, last_seen::text
+			SELECT agent_name, agent_type, last_seen_at::text
 			FROM agents
-			WHERE flavor ILIKE $1
-			ORDER BY last_seen DESC
+			WHERE agent_name ILIKE $1
+			ORDER BY last_seen_at DESC
 			LIMIT 5
 		`, pattern)
 		if err != nil {
@@ -81,7 +83,7 @@ func (s *Store) Search(ctx context.Context, query string) (*SearchResults, error
 		defer rows.Close()
 		for rows.Next() {
 			var a SearchResultAgent
-			if err := rows.Scan(&a.Flavor, &a.AgentType, &a.LastSeen); err != nil {
+			if err := rows.Scan(&a.AgentName, &a.AgentType, &a.LastSeen); err != nil {
 				return fmt.Errorf("scan agent: %w", err)
 			}
 			results.Agents = append(results.Agents, a)

@@ -22,8 +22,8 @@ vi.mock("@/hooks/useSearch", () => ({
   }),
 }));
 
-function agent(flavor: string): SearchResultAgent {
-  return { flavor, agent_type: "coding", last_seen: "2026-04-17T09:00:00Z" };
+function agent(agentName: string): SearchResultAgent {
+  return { agent_name: agentName, agent_type: "coding", last_seen: "2026-04-17T09:00:00Z" };
 }
 
 function session(id: string, flavor: string): SearchResultSession {
@@ -111,7 +111,7 @@ describe("CommandPalette result click routing", () => {
     expect(onSelectResult).toHaveBeenCalledTimes(1);
     expect(onSelectResult.mock.calls[0][0]).toBe("agent");
     expect(
-      (onSelectResult.mock.calls[0][1] as SearchResultAgent).flavor,
+      (onSelectResult.mock.calls[0][1] as SearchResultAgent).agent_name,
     ).toBe("claude-code");
     // Modal-close side effect from handleSelect -> onOpenChange(false).
     expect(onOpenChange).toHaveBeenCalledWith(false);
@@ -186,7 +186,7 @@ describe("CommandPalette result click routing", () => {
     fireEvent.keyDown(screen.getByRole("dialog"), { key: "Enter" });
     expect(onSelectResult).toHaveBeenCalledWith(
       "agent",
-      expect.objectContaining({ flavor: "claude-code" }),
+      expect.objectContaining({ agent_name: "claude-code" }),
     );
     expect(onOpenChange).toHaveBeenCalledWith(false);
   });

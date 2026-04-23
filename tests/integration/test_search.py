@@ -32,20 +32,34 @@ def _search(query: str) -> dict:
         return json.loads(resp.read())
 
 
-def _setup_searchable(flavor: str, host: str, tool_name: str) -> str:
-    """Create a session and post a tool_call event with known searchable fields."""
+def _setup_searchable(agent_name: str, host: str, tool_name: str) -> str:
+    """Create a session under an agent whose agent_name is the needle,
+    then post a tool_call event with a unique host and tool_name.
+
+    Passes ``agent_name=`` through to ``make_event`` so the event-level
+    identity fields populate the agents table with the test-owned
+    label. The flavor field carries the same string so flavor-scoped
+    session queries (e.g. ``test_directives::test_directive_filter_by_flavor``)
+    still see a recognizable value -- only agent-level search keys on
+    ``agent_name`` under D115.
+    """
     sid = str(uuid.uuid4())
-    post_event(make_event(sid, flavor, "session_start", host=host))
+    post_event(make_event(
+        sid, agent_name, "session_start",
+        host=host,
+        agent_name=agent_name,
+    ))
     wait_until(
         lambda: session_exists_in_fleet(sid),
         timeout=10,
         msg=f"session {sid} did not appear in fleet",
     )
     post_event(make_event(
-        sid, flavor, "post_call",
+        sid, agent_name, "post_call",
         tokens_total=100,
         tool_name=tool_name,
         model="claude-sonnet-4-6",
+        agent_name=agent_name,
     ))
     wait_until(
         lambda: get_session_event_count(sid) >= 2,
@@ -57,27 +71,32 @@ def _setup_searchable(flavor: str, host: str, tool_name: str) -> str:
 
 @pytest.fixture(scope="module")
 def searchable_fixture() -> dict[str, str]:
-    """Module-scoped fixture: create one session whose flavor / host /
-    tool name are all unique strings, then let every search-by-X test
-    run against the same session. Saves the cost of two extra
-    session_start round trips per file (Phase 4.5 audit Task 1).
+    """Module-scoped fixture: create one session under an agent whose
+    agent_name / host / tool name are all unique strings, then let
+    every search-by-X test run against the same session.
+
+    D115: the agent-level search dimension is ``agent_name`` (the
+    flavor column was dropped from the agents table in migration
+    000015). Integration tests drive a unique ``agent_name`` via the
+    conftest ``agent_name=`` kwarg so the search query has a
+    deterministic needle.
     """
     suffix = uuid.uuid4().hex[:6]
-    flavor = f"search-test-agent-{suffix}"
+    agent_name = f"search-test-agent-{suffix}"
     host = f"search-test-host-{suffix}"
     tool = f"search-test-tool-{suffix}"
-    _setup_searchable(flavor, host, tool)
-    return {"flavor": flavor, "host": host, "tool": tool}
+    _setup_searchable(agent_name, host, tool)
+    return {"agent_name": agent_name, "host": host, "tool": tool}
 
 
 @pytest.mark.parametrize(
     "field, group_key, item_key",
     [
-        ("flavor", "agents", "flavor"),
+        ("agent_name", "agents", "agent_name"),
         ("host", "sessions", "host"),
         ("tool", "events", "tool_name"),
     ],
-    ids=["by_flavor", "by_host", "by_tool"],
+    ids=["by_agent_name", "by_host", "by_tool"],
 )
 def test_search_finds_entity(
     searchable_fixture: dict[str, str],
@@ -107,10 +126,10 @@ def test_search_empty_returns_empty_arrays() -> None:
 def test_search_partial_match() -> None:
     """Partial match finds results across multiple groups."""
     prefix = f"search-partial-{uuid.uuid4().hex[:4]}"
-    flavor = f"{prefix}-agent"
+    agent_name = f"{prefix}-agent"
     host = f"{prefix}-host"
     tool = f"{prefix}-tool"
-    _setup_searchable(flavor, host, tool)
+    _setup_searchable(agent_name, host, tool)
 
     results = _search(prefix)
     total = (

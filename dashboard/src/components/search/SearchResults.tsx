@@ -106,7 +106,7 @@ export function SearchResultsList({
 function AgentRow({ item }: { item: SearchResultAgent }) {
   return (
     <>
-      <span className="font-medium text-text">{item.flavor}</span>
+      <span className="font-medium text-text">{item.agent_name}</span>
       <span className="text-text-muted">{item.agent_type}</span>
       <span className="ml-auto text-text-muted">{formatTime(item.last_seen)}</span>
     </>

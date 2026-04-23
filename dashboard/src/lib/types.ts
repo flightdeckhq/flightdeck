@@ -337,7 +337,7 @@ export interface CustomDirectiveParameter {
 
 /** Search result: agent summary. */
 export interface SearchResultAgent {
-  flavor: string;
+  agent_name: string;
   agent_type: string;
   last_seen: string;
 }

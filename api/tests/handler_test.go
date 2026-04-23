@@ -323,7 +323,7 @@ func (m *mockStore) Search(_ context.Context, query string) (*store.SearchResult
 		}, nil
 	}
 	return &store.SearchResults{
-		Agents: []store.SearchResultAgent{{Flavor: "test-agent", AgentType: "production", LastSeen: "2026-04-08"}},
+		Agents: []store.SearchResultAgent{{AgentName: "test-agent", AgentType: "production", LastSeen: "2026-04-08"}},
 		Sessions: []store.SearchResultSession{{
 			SessionID: "s1", Flavor: "test-agent", Host: "host-1", State: "active", StartedAt: "2026-04-08",
 			Model: "claude-sonnet-4-6", TokensUsed: 3000, Context: map[string]interface{}{"os": "Linux", "hostname": "host-1"},

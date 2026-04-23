@@ -356,9 +356,11 @@ def test_unknown_session_id_lazy_creates_on_post_call() -> None:
 
     identity = _read_session_identity(sid)
     # Plugin-style best-effort identity: the event's flavor is carried
-    # through even though no session_start ever arrived. agent_type is
-    # the sentinel "unknown" (make_event defaults to "autonomous" --
-    # D106 uses "unknown" only when the event literally omits it).
+    # through even though no session_start ever arrived. Under D115 the
+    # agent_type "unknown" sentinel path is unreachable from the wire
+    # (D116 rejects any agent_type outside {coding, production} at
+    # ingestion); the flavor sentinel is still meaningful because flavor
+    # is an informational field the validator does not constrain.
     assert identity["flavor"] == flavor, (
         f"expected flavor from event payload, got {identity['flavor']!r}"
     )
@@ -393,12 +395,19 @@ def test_unknown_session_id_lazy_creates_on_tool_call() -> None:
 def test_unknown_flavor_uses_sentinel_on_lazy_create() -> None:
     """When the event literally omits flavor, D106 writes the 'unknown'
     sentinel so a later session_start can upgrade it.
+
+    D115 note: the parallel sentinel path for ``agent_type`` is no longer
+    reachable from the wire. The D116 ingestion validator rejects any
+    event whose ``agent_type`` is outside ``{coding, production}`` with
+    400, so this test now exercises only the flavor-sentinel upgrade.
+    agent_type stays at its ``make_event`` default ("production") across
+    the lazy-create and the authoritative session_start -- it never
+    transits through "unknown" because it cannot legitimately arrive empty.
     """
     sid = str(uuid.uuid4())
 
     payload = _first_event_payload(sid, "", "post_call", tokens_total=100)
     payload["flavor"] = ""  # explicit: no flavor on the wire
-    payload["agent_type"] = ""
     post_event(payload)
     wait_for_session_in_fleet(sid, timeout=10.0)
 
@@ -406,12 +415,9 @@ def test_unknown_flavor_uses_sentinel_on_lazy_create() -> None:
     assert identity["flavor"] == "unknown", (
         f"expected flavor='unknown' sentinel, got {identity['flavor']!r}"
     )
-    assert identity["agent_type"] == "unknown", (
-        f"expected agent_type='unknown' sentinel, got {identity['agent_type']!r}"
-    )
 
     # Now send the authoritative session_start. UpsertSession's CASE
-    # branch must upgrade both sentinels and fill in context.
+    # branch must upgrade the flavor sentinel and fill in context.
     real_flavor = f"test-d106-upgrade-{uuid.uuid4().hex[:6]}"
     post_event(make_event(sid, real_flavor, "session_start"))
     # Wait until the row picks up the real flavor.
@@ -423,10 +429,6 @@ def test_unknown_flavor_uses_sentinel_on_lazy_create() -> None:
     enriched = _read_session_identity(sid)
     assert enriched["flavor"] == real_flavor, (
         f"expected sentinel upgrade to {real_flavor}, got {enriched['flavor']!r}"
-    )
-    assert enriched["agent_type"] == "autonomous", (
-        "expected agent_type upgraded from 'unknown' to 'autonomous' by "
-        f"session_start, got {enriched['agent_type']!r}"
     )
     # Context is NULL on lazy-create; session_start carries
     # DEFAULT_TEST_CONTEXT and COALESCE should fill it in.
@@ -521,7 +523,7 @@ def test_order_independence_pc_then_ss_matches_ss_then_pc() -> None:
     # Flavors differ by design (a vs b random suffix), but the shape
     # of the identity (both real, both with context, both with
     # matching agent_type) must match.
-    assert id_a["agent_type"] == id_b["agent_type"] == "autonomous"
+    assert id_a["agent_type"] == id_b["agent_type"] == "production"
     assert id_a["context"] != "NULL" and id_b["context"] != "NULL", (
         "both sessions must carry enriched context after session_start"
     )

@@ -250,6 +250,34 @@
      Both sub-rules inherit from rule 40a. Any new playground script must
      satisfy both at creation.
 
+40b. **Before committing changes that touch code paths with runtime
+     behavior, run the full test suite against a locally-running dev
+     stack that reflects the current branch state.** CI is not the
+     first-line detector for runtime bugs — local pre-commit
+     verification is. Unit tests with mocks pass while live queries
+     500 exactly when the mocks diverge from reality. The
+     `feedback_pre_commit_live_test.md` entry in the auto-memory
+     captures this rule in permanent agent memory.
+
+     How to apply:
+     - For sensor / ingestion / worker / API / dashboard API-contract
+       changes: rebuild the affected container(s) so the dev stack is
+       running branch HEAD, then run the component's full test suite
+       (unit + integration) locally. Don't push until green.
+     - The project's dev stack uses the `docker-compose.dev.yml`
+       override (mounts source, runs `go run ./cmd/` / vite dev) — a
+       plain `docker compose up --build` without the override rebuilds
+       a stale prod-image layer and will NOT reflect your edits. Use
+       `make dev` or `docker compose -f docker-compose.yml -f
+       docker-compose.dev.yml up --build -d <service>`.
+     - Exempt: pure docs, comments, type-only fixes, and formatting
+       passes that cannot change runtime behavior.
+
+     Inherits from rule 40a (live-stack verification). Where 40a says
+     "new runtime code must be exercised live before claiming it
+     works," 40b says "and that verification happens before the
+     commit, not after push-to-CI."
+
 ---
 
 ## Living Document Rules

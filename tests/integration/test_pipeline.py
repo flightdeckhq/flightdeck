@@ -9,7 +9,6 @@ from __future__ import annotations
 import uuid
 
 from .conftest import (
-    get_fleet,
     get_session,
     get_session_event_count,
     make_event,
@@ -79,22 +78,15 @@ def test_multiple_events_returned_in_order() -> None:
 
 
 def test_heartbeat_updates_last_seen() -> None:
-    """POST heartbeat → last_seen_at updates in fleet response."""
+    """POST heartbeat → last_seen_at updates in the session detail response."""
     sid = str(uuid.uuid4())
     flavor = f"test-heartbeat-{uuid.uuid4().hex[:6]}"
 
     post_event(make_event(sid, flavor, "session_start"))
     wait_for_session_in_fleet(sid, timeout=5.0)
 
-    # Get initial last_seen_at
-    fleet1 = get_fleet()
-    initial_last_seen = None
-    for f in fleet1.get("flavors", []):
-        for s in f.get("sessions", []):
-            if s["session_id"] == sid:
-                initial_last_seen = s["last_seen_at"]
-                break
-
+    initial = get_session(sid)["session"]
+    initial_last_seen = initial.get("last_seen_at")
     assert initial_last_seen is not None, (
         f"session {sid} has no last_seen_at after session_start"
     )
@@ -102,12 +94,8 @@ def test_heartbeat_updates_last_seen() -> None:
     post_heartbeat(sid)
 
     def _last_seen_updated() -> bool:
-        fleet = get_fleet()
-        for flav in fleet.get("flavors", []):
-            for s in flav.get("sessions", []):
-                if s["session_id"] == sid:
-                    return s["last_seen_at"] > initial_last_seen
-        return False
+        cur = get_session(sid)["session"].get("last_seen_at")
+        return cur is not None and cur > initial_last_seen
 
     wait_until(
         _last_seen_updated,
@@ -115,16 +103,10 @@ def test_heartbeat_updates_last_seen() -> None:
         msg=f"last_seen_at did not update for session {sid} after heartbeat",
     )
 
-    fleet2 = get_fleet()
-    updated_last_seen = None
-    for f in fleet2.get("flavors", []):
-        for s in f.get("sessions", []):
-            if s["session_id"] == sid:
-                updated_last_seen = s["last_seen_at"]
-                break
-
+    updated = get_session(sid)["session"]
+    updated_last_seen = updated.get("last_seen_at")
     assert updated_last_seen is not None, (
-        f"session {sid} not found in fleet after heartbeat"
+        f"session {sid} detail missing last_seen_at after heartbeat"
     )
     assert updated_last_seen >= initial_last_seen, (
         f"expected last_seen_at to increase after heartbeat, "

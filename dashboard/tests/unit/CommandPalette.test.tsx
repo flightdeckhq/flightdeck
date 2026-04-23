@@ -11,7 +11,7 @@ const emptyResults: SearchResults = {
 
 const populatedResults: SearchResults = {
   agents: [
-    { flavor: "research-agent", agent_type: "production", last_seen: "2026-04-01T00:00:00Z" },
+    { agent_name: "research-agent", agent_type: "production", last_seen: "2026-04-01T00:00:00Z" },
   ],
   sessions: [
     {

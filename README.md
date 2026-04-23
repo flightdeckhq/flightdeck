@@ -181,7 +181,7 @@ claude --plugin-dir /path/to/flightdeck/plugin
 
 `--plugin-dir` loads the plugin for the session without a marketplace install. A marketplace-installable build is not published yet.
 
-Sessions carry `flavor=claude-code`, `agent_type=developer`, and render with a `DEV` badge. Tool inputs and LLM call content are captured by default so the Prompts tab is populated without extra setup -- the developer is observing their own session, not production traffic. Set `FLIGHTDECK_CAPTURE_PROMPTS=false` or `FLIGHTDECK_CAPTURE_TOOL_INPUTS=false` to opt out. Raw file bodies written by `Write` / `Edit` are never forwarded; tool inputs go through a sanitised whitelist. See [plugin/README.md](plugin/README.md) for the full event list and privacy controls.
+Sessions carry `flavor=claude-code`, `agent_type=coding`, and `client_type=claude_code` (D115 identity). Tool inputs and LLM call content are captured by default so the Prompts tab is populated without extra setup -- the developer is observing their own session, not production traffic. Set `FLIGHTDECK_CAPTURE_PROMPTS=false` or `FLIGHTDECK_CAPTURE_TOOL_INPUTS=false` to opt out. Raw file bodies written by `Write` / `Edit` are never forwarded; tool inputs go through a sanitised whitelist. See [plugin/README.md](plugin/README.md) for the full event list and privacy controls.
 
 The plugin is hook-based, so claude-code sessions cannot act on directives mid-call. The Stop Agent button is hidden for these sessions and the Fleet Stop All control skips them when counting directive-capable sessions. See DECISIONS.md D109.
 
@@ -254,8 +254,9 @@ Call `patch()` before any framework or user code constructs a client. Instances 
 | `FLIGHTDECK_SESSION_ID`         | Stable session UUID for orchestrator re-runs.                   |
 | `FLIGHTDECK_CAPTURE_PROMPTS`    | `true` to enable full payload capture.                          |
 | `FLIGHTDECK_UNAVAILABLE_POLICY` | `continue` (default) or `halt` when the control plane is down.  |
-| `AGENT_FLAVOR`                  | Persistent agent identity. Default: `unknown`.                  |
-| `AGENT_TYPE`                    | `autonomous`, `supervised`, or `batch`.                         |
+| `AGENT_FLAVOR` / `FLIGHTDECK_AGENT_NAME` | Persistent agent label. Default: `{user}@{hostname}`.    |
+| `AGENT_TYPE` / `FLIGHTDECK_AGENT_TYPE`   | `coding` or `production` (D114/D115). Default: `production`. Any other value raises `ConfigurationError`. |
+| `FLIGHTDECK_HOSTNAME`           | Override `socket.gethostname()` (useful for k8s pod grouping).  |
 
 ### Unavailability policy
 

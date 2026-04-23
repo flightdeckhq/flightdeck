@@ -37,7 +37,7 @@ vi.mock("@/hooks/useSessionEvents", () => {
 const mockFlavors: FlavorSummary[] = [
   {
     flavor: "research-agent",
-    agent_type: "autonomous",
+    agent_type: "production",
     session_count: 1,
     active_count: 1,
     tokens_used_total: 1000,
@@ -45,7 +45,7 @@ const mockFlavors: FlavorSummary[] = [
       {
         session_id: "s1",
         flavor: "research-agent",
-        agent_type: "autonomous",
+        agent_type: "production",
         host: null,
         framework: null,
         model: null,

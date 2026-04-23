@@ -177,24 +177,21 @@ def _assert_session_in_fleet_with_context(flavor: str) -> dict[str, Any]:
         f"python_version missing from context: {ctx}"
     )
 
-    # Reach for the public fleet API: verify the session is visible
-    # through GET /v1/fleet (not just sitting in the DB). Use the
-    # paginated helper from conftest so we tolerate cross-test fleet
-    # accumulation.
+    # Reach for the public sessions API: verify the session is visible
+    # through GET /v1/sessions (not just sitting in the DB). D115
+    # retired the flavor-grouped fleet response, so the equivalent
+    # check is "does a /v1/sessions row for this session_id exist?".
     from .conftest import get_fleet
     fleet = get_fleet()
-    found = False
-    for f in fleet.get("flavors", []):
-        if f.get("flavor") == flavor:
-            for s in f.get("sessions", []):
-                if s.get("session_id") == sess["session_id"]:
-                    found = True
-                    break
-        if found:
-            break
+    found = any(
+        s.get("session_id") == sess["session_id"]
+        for flv in fleet.get("flavors", [])
+        if flv.get("flavor") == flavor
+        for s in flv.get("sessions", [])
+    )
     assert found, (
         f"session {sess['session_id']} for flavor {flavor} "
-        f"not visible via GET /v1/fleet"
+        f"not visible via GET /v1/sessions"
     )
     return sess
 

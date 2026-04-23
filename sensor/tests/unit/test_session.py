@@ -23,7 +23,7 @@ def _make_session(
     quiet: bool = True,
 ) -> tuple[Session, MagicMock]:
     config = SensorConfig(
-        server=server, token=token, agent_flavor="test", agent_type="autonomous", quiet=quiet
+        server=server, token=token, agent_flavor="test", agent_type="production", quiet=quiet
     )
     client = MagicMock(spec=ControlPlaneClient)
     client.post_event.return_value = (None, False)
@@ -86,7 +86,7 @@ def test_preflight_populates_policy_cache(mock_control_plane: Any) -> None:
         server=mock_control_plane["url"],
         token="test-token",
         agent_flavor="test-preflight",
-        agent_type="autonomous",
+        agent_type="production",
         quiet=True,
     )
     client_obj = ControlPlaneClient(
@@ -107,7 +107,7 @@ def test_preflight_failure_proceeds_with_empty_cache() -> None:
         server="http://127.0.0.1:1",  # unreachable
         token="test-token",
         agent_flavor="test-preflight-fail",
-        agent_type="autonomous",
+        agent_type="production",
         quiet=True,
     )
     client_obj = ControlPlaneClient(

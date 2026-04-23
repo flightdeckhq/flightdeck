@@ -17,13 +17,13 @@ type SessionsParams struct {
 	Query   string   // Full-text search (ILIKE across multiple fields)
 	States  []string // active, idle, stale, closed, lost
 	Flavors []string
-	// AgentTypes filters sessions by the agent_type column. Repeatable:
-	// values ``developer`` / ``autonomous`` / ``supervised`` / ``batch``.
-	// The Investigate page exposes this as the AGENT TYPE facet so an
-	// operator can isolate developer (Claude Code etc.) sessions from
-	// production autonomous agents. Unvalidated against a fixed set
-	// because new agent_type values land without a migration; a typo
-	// just yields an empty result.
+	// AgentID filters sessions to one specific agent (D115). The
+	// Investigate page surfaces this via the ``agent_id`` URL param
+	// and the AGENT sidebar facet. Empty string = no agent filter.
+	AgentID string
+	// AgentTypes filters sessions by the agent_type column. D114
+	// vocabulary (``coding``, ``production``); other values are
+	// accepted but yield empty results.
 	AgentTypes []string
 	// Frameworks filters on sessions.context->'frameworks' (JSONB
 	// array of strings like "langgraph/1.1.6"). Multi-value: any
@@ -128,6 +128,11 @@ type SessionListItem struct {
 	SessionID      string                 `json:"session_id"`
 	Flavor         string                 `json:"flavor"`
 	AgentType      string                 `json:"agent_type"`
+	// D115 identity (nullable for lazy-created rows awaiting an
+	// authoritative session_start).
+	AgentID        *string                `json:"agent_id,omitempty"`
+	AgentName      *string                `json:"agent_name,omitempty"`
+	ClientType     *string                `json:"client_type,omitempty"`
 	Host           *string                `json:"host"`
 	Model          *string                `json:"model"`
 	State          string                 `json:"state"`
@@ -203,6 +208,16 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 			argIdx++
 		}
 		conditions = append(conditions, fmt.Sprintf("s.flavor IN (%s)", strings.Join(placeholders, ", ")))
+	}
+
+	// Single-agent filter (D115). The Investigate page sends this
+	// both via URL deep-link and the AGENT sidebar facet click.
+	// Parameterised against the uuid column so a malformed value
+	// produces a cast error rather than a bypassed filter.
+	if params.AgentID != "" {
+		conditions = append(conditions, fmt.Sprintf("s.agent_id = $%d::uuid", argIdx))
+		args = append(args, params.AgentID)
+		argIdx++
 	}
 
 	// Agent-type filter (repeatable: OR within group). Mirrors the
@@ -308,6 +323,9 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 			s.session_id::text,
 			s.flavor,
 			s.agent_type,
+			s.agent_id::text,
+			s.agent_name,
+			s.client_type,
 			s.host,
 			s.model,
 			s.state,
@@ -346,6 +364,9 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 			&item.SessionID,
 			&item.Flavor,
 			&item.AgentType,
+			&item.AgentID,
+			&item.AgentName,
+			&item.ClientType,
 			&item.Host,
 			&item.Model,
 			&item.State,

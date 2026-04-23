@@ -81,15 +81,32 @@ class TokenUsage:
 
 @dataclass
 class SensorConfig:
-    """Configuration for a sensor session."""
+    """Configuration for a sensor session.
+
+    D115 v0.4.0 Phase 1: agent identity fields (``agent_id``,
+    ``agent_name``, ``user_name``, ``hostname``, ``client_type``) are
+    resolved by :func:`flightdeck_sensor.init` and passed in -- they
+    do not have defaults here because deriving them requires calls to
+    ``socket.gethostname()`` / ``pwd`` that belong at the edge of the
+    library, not in a dataclass default-factory.
+    """
 
     server: str
     token: str
+    # Identity (D115). Required on construction by init(); the
+    # default empty strings exist only so tests / fixtures that
+    # instantiate SensorConfig directly do not have to populate
+    # every field.
+    agent_id: str = ""
+    agent_name: str = ""
+    user_name: str = ""
+    hostname: str = ""
+    client_type: str = "flightdeck_sensor"
     api_url: str = ""
     capture_prompts: bool = False
     unavailable_policy: str = "continue"
     agent_flavor: str = "unknown"
-    agent_type: str = "autonomous"
+    agent_type: str = "production"
     session_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     quiet: bool = False
     limit: int | None = None

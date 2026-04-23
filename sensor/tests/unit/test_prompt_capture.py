@@ -102,7 +102,7 @@ def test_capture_off_event_payload_clean() -> None:
         server="http://localhost:9999",
         token="tok",
         agent_flavor="test",
-        agent_type="autonomous",
+        agent_type="production",
         capture_prompts=False,
         quiet=True,
     )

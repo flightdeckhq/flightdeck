@@ -48,12 +48,12 @@ vi.mock("@/store/fleet", () => ({
     flavors: [
       {
         flavor: "research-agent",
-        agent_type: "autonomous",
+        agent_type: "production",
         session_count: 1,
         active_count: 1,
         tokens_used_total: 1000,
         sessions: [
-          { session_id: "sess-active-1", flavor: "research-agent", agent_type: "autonomous", host: null, framework: null, model: "claude-sonnet-4-6", state: "active", started_at: "", last_seen_at: "", ended_at: null, tokens_used: 1000, token_limit: null },
+          { session_id: "sess-active-1", flavor: "research-agent", agent_type: "production", host: null, framework: null, model: "claude-sonnet-4-6", state: "active", started_at: "", last_seen_at: "", ended_at: null, tokens_used: 1000, token_limit: null },
         ],
       },
     ],

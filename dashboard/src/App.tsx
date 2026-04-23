@@ -131,7 +131,7 @@ export function buildSearchResultHref(
 ): string {
   if (type === "agent") {
     return `/investigate?flavor=${encodeURIComponent(
-      (item as SearchResultAgent).flavor,
+      (item as SearchResultAgent).agent_name,
     )}`;
   }
   if (type === "session") {

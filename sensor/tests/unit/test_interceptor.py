@@ -39,7 +39,7 @@ def _make_session_and_provider(
 ) -> tuple[Session, AnthropicProvider]:
     config = SensorConfig(
         server="http://localhost:9999", token="tok",
-        agent_flavor="test", agent_type="autonomous", quiet=True,
+        agent_flavor="test", agent_type="production", quiet=True,
     )
     client = MagicMock(spec=ControlPlaneClient)
     client.post_event.return_value = (None, False)

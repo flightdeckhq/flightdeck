@@ -14,11 +14,23 @@ import urllib.request
 import urllib.error
 import json
 
+from flightdeck_sensor.core.agent_id import derive_agent_id
+
 INGESTION_URL = "http://localhost:4000/ingest"
 API_URL = "http://localhost:4000/api"
 INGEST_HEALTH = f"{INGESTION_URL}/health"
 API_HEALTH = f"{API_URL}/health"
 TOKEN = "tok_dev"
+
+# D115 identity defaults for the synthetic-emitter tier. The integration
+# suite impersonates a sensor-like client (not the plugin), so client_type
+# is pinned to "flightdeck_sensor" and agent_type defaults to the
+# sensor's own "production" default. Individual tests can override via
+# make_event(..., agent_type="coding") when needed.
+DEFAULT_AGENT_TYPE = "production"
+DEFAULT_CLIENT_TYPE = "flightdeck_sensor"
+DEFAULT_USER = "integration"
+DEFAULT_HOSTNAME = "integration-test-host"
 
 MAX_WAIT_SECS = 60
 POLL_INTERVAL = 2
@@ -145,62 +157,36 @@ def post_heartbeat(session_id: str) -> dict[str, Any]:
 
 
 def get_fleet() -> dict[str, Any]:
-    """GET /v1/fleet from the query API.
+    """Return a sessions-flat view reconstructed from GET /v1/sessions.
 
-    Pages through every flavor until the response is exhausted, then
-    merges flavors that span page boundaries (the API groups sessions
-    by flavor inside each page; the same flavor can appear on the
-    next page with additional sessions). This is required so a
-    session whose flavor sorts alphabetically past the first 50 in
-    the fleet is still discoverable by callers like
-    session_exists_in_fleet and wait_for_session_in_fleet.
+    D115 retired the ``/v1/fleet`` flavor-grouped shape in favor of
+    agent-keyed rollups that no longer nest sessions. Integration tests
+    predate that change and scan for specific sessions by flavor, so
+    this helper preserves the legacy iteration surface by fetching the
+    most recent sessions via ``/v1/sessions`` and grouping them by
+    flavor client-side. Returns ``{"flavors": [{"flavor": X,
+    "sessions": [...]}...], "total_session_count": N}``.
+
+    Single-page fetch (server caps at 100). Integration tests run
+    serially and each creates 1--3 sessions; 100 recent sessions is
+    comfortably above the working set per run.
     """
-    limit = 100
-    offset = 0
-    merged: dict[str, dict[str, Any]] = {}
+    url = f"{API_URL}/v1/sessions?limit=100"
+    req = urllib.request.Request(url, headers=auth_headers())
+    with urllib.request.urlopen(req, timeout=5) as resp:
+        data = json.loads(resp.read())
+    sessions = data.get("sessions", [])
+    by_flavor: dict[str, dict[str, Any]] = {}
     flavor_order: list[str] = []
-    total = 0
-    while True:
-        url = f"{API_URL}/v1/fleet?limit={limit}&offset={offset}"
-        req = urllib.request.Request(
-            url, headers=auth_headers()
-        )
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            data = json.loads(resp.read())
-        flavors = data.get("flavors", [])
-        total = data.get("total_session_count", total)
-        page_session_count = 0
-        for flavor in flavors:
-            page_session_count += len(flavor.get("sessions", []))
-            name = flavor.get("flavor", "")
-            if name not in merged:
-                merged[name] = dict(flavor)
-                flavor_order.append(name)
-            else:
-                # Same flavor straddled a page boundary -- append its
-                # additional sessions onto the existing merged entry.
-                merged[name].setdefault("sessions", []).extend(
-                    flavor.get("sessions", [])
-                )
-                merged[name]["session_count"] = (
-                    merged[name].get("session_count", 0)
-                    + flavor.get("session_count", 0)
-                )
-                merged[name]["active_count"] = (
-                    merged[name].get("active_count", 0)
-                    + flavor.get("active_count", 0)
-                )
-                merged[name]["tokens_used_total"] = (
-                    merged[name].get("tokens_used_total", 0)
-                    + flavor.get("tokens_used_total", 0)
-                )
-        if offset + limit >= total or page_session_count < limit:
-            break
-        offset += limit
-
+    for sess in sessions:
+        name = sess.get("flavor", "")
+        if name not in by_flavor:
+            by_flavor[name] = {"flavor": name, "sessions": []}
+            flavor_order.append(name)
+        by_flavor[name]["sessions"].append(sess)
     return {
-        "flavors": [merged[name] for name in flavor_order],
-        "total_session_count": total,
+        "flavors": [by_flavor[name] for name in flavor_order],
+        "total_session_count": len(sessions),
     }
 
 
@@ -214,64 +200,85 @@ def get_session(session_id: str) -> dict[str, Any]:
         return json.loads(resp.read())  # type: ignore[no-any-return]
 
 
-def _get_fleet_page(limit: int, offset: int) -> dict[str, Any]:
-    """GET /v1/fleet?limit=&offset= -- single page."""
-    url = f"{API_URL}/v1/fleet?limit={limit}&offset={offset}"
-    req = urllib.request.Request(
-        url, headers=auth_headers()
-    )
-    with urllib.request.urlopen(req, timeout=5) as resp:
-        return json.loads(resp.read())  # type: ignore[no-any-return]
-
-
 def wait_for_session_in_fleet(
     session_id: str, timeout: float = 5.0
 ) -> dict[str, Any] | None:
-    """Poll GET /v1/fleet until the session appears or timeout.
+    """Poll GET /v1/sessions/:id until the worker persists the row or timeout.
 
-    Pages through all sessions on each poll so a session does not get
-    missed when accumulated test data pushes it past the default 50
-    session limit. Without pagination, the helper used to silently
-    return None for any session whose flavor sorted alphabetically
-    after the first 50 in the fleet, producing intermittent failures
-    in test_session_states.test_stale_after_no_signal that depended on
-    test ordering.
+    Under D115 the fleet endpoint no longer nests sessions under agents,
+    so "did the session land?" is answered by hitting the single-session
+    detail endpoint directly. Returns the ``session`` sub-dict on
+    success or None on timeout.
     """
     deadline = time.time() + timeout
-    limit = 50
     while time.time() < deadline:
-        offset = 0
-        while True:
-            data = _get_fleet_page(limit, offset)
-            flavors = data.get("flavors", [])
-            for flavor in flavors:
-                for sess in flavor.get("sessions", []):
-                    if sess.get("session_id") == session_id:
-                        return sess  # type: ignore[no-any-return]
-            # If fewer sessions returned than limit, this was the last page.
-            page_session_count = sum(
-                len(f.get("sessions", [])) for f in flavors
-            )
-            total = data.get("total_session_count", page_session_count)
-            if offset + limit >= total or page_session_count < limit:
-                break
-            offset += limit
-        # Not found on this poll -- wait and retry.
-        time.sleep(0.5)
+        try:
+            detail = get_session(session_id)
+            return detail.get("session")  # type: ignore[no-any-return]
+        except urllib.error.HTTPError as exc:
+            if exc.code != 404:
+                raise
+        time.sleep(0.25)
     return None
+
+
+def _identity_fields(
+    *,
+    agent_type: str = DEFAULT_AGENT_TYPE,
+    client_type: str = DEFAULT_CLIENT_TYPE,
+    user: str = DEFAULT_USER,
+    hostname: str = DEFAULT_HOSTNAME,
+    agent_name: str | None = None,
+) -> dict[str, str]:
+    """Return the D115 identity quintuple plus derived agent_id.
+
+    Mirrors ``sensor/flightdeck_sensor/core/session.py::_build_payload``.
+    The ingestion validator (D116) rejects any event lacking agent_id /
+    a vocabulary-valid agent_type / a vocabulary-valid client_type, so
+    every synthetic event must carry this block.
+    """
+    if agent_name is None:
+        agent_name = f"{user}@{hostname}"
+    agent_id = str(derive_agent_id(
+        agent_type=agent_type,
+        user=user,
+        hostname=hostname,
+        client_type=client_type,
+        agent_name=agent_name,
+    ))
+    return {
+        "agent_id": agent_id,
+        "agent_type": agent_type,
+        "agent_name": agent_name,
+        "client_type": client_type,
+        "user": user,
+        "hostname": hostname,
+    }
 
 
 def make_event(
     session_id: str,
     flavor: str,
     event_type: str,
+    *,
+    agent_type: str = DEFAULT_AGENT_TYPE,
+    client_type: str = DEFAULT_CLIENT_TYPE,
+    user: str = DEFAULT_USER,
+    hostname: str = DEFAULT_HOSTNAME,
+    agent_name: str | None = None,
     **extra: Any,
 ) -> dict[str, Any]:
-    """Build an event payload."""
+    """Build an event payload with D115 identity fields populated."""
+    identity = _identity_fields(
+        agent_type=agent_type,
+        client_type=client_type,
+        user=user,
+        hostname=hostname,
+        agent_name=agent_name,
+    )
     payload: dict[str, Any] = {
         "session_id": session_id,
         "flavor": flavor,
-        "agent_type": "autonomous",
         "event_type": event_type,
         "host": "test-host",
         "framework": None,
@@ -289,6 +296,7 @@ def make_event(
         "content": None,
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
+    payload.update(identity)
     payload.update(extra)
     if event_type == "session_start" and "context" not in payload:
         payload["context"] = dict(DEFAULT_TEST_CONTEXT)
@@ -389,13 +397,18 @@ def wait_until(
 
 
 def session_exists_in_fleet(session_id: str) -> bool:
-    """Check if a session appears in the fleet endpoint."""
-    fleet = get_fleet()
-    for flavor in fleet.get("flavors", []):
-        for s in flavor.get("sessions", []):
-            if s.get("session_id") == session_id:
-                return True
-    return False
+    """Return True once the worker has persisted the session row.
+
+    Under D115 the legacy flavor-grouped fleet response is gone, so
+    persistence is observed via ``GET /v1/sessions/:id`` returning 200.
+    """
+    try:
+        get_session(session_id)
+        return True
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return False
+        raise
 
 
 def get_session_event_count(session_id: str) -> int:
@@ -503,10 +516,9 @@ def _session_lifecycle() -> Any:
                 # would re-register the session_id in the tracker (already
                 # being drained) and pull in DEFAULT_TEST_CONTEXT, which
                 # only belongs on session_start.
-                payload = {
+                payload: dict[str, Any] = {
                     "session_id": sid,
                     "flavor": flavor,
-                    "agent_type": "autonomous",
                     "event_type": "session_end",
                     "host": "test-host",
                     "framework": None,
@@ -526,6 +538,7 @@ def _session_lifecycle() -> Any:
                         "%Y-%m-%dT%H:%M:%SZ", time.gmtime()
                     ),
                 }
+                payload.update(_identity_fields())
                 post_event(payload)
             except Exception:
                 pass

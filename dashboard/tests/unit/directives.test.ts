@@ -13,7 +13,7 @@ function mkSession(
   return {
     session_id: id,
     flavor: "test",
-    agent_type: "autonomous",
+    agent_type: "production",
     host: null,
     framework: null,
     model: null,

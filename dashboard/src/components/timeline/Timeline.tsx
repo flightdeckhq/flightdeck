@@ -531,6 +531,9 @@ export function Timeline({
           <VirtualizedSwimLane
             key={f.flavor}
             flavor={f.flavor}
+            agentName={f.agent_name}
+            clientType={f.client_type}
+            agentType={f.agent_type}
             sessions={f.sessions}
             scale={scale}
             onSessionClick={onNodeClick}

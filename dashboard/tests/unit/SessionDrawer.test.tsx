@@ -7,7 +7,7 @@ import type { CustomDirective } from "@/lib/types";
 const baseSession = {
   session_id: "s1-abcdef-1234",
   flavor: "test-agent",
-  agent_type: "autonomous",
+  agent_type: "production",
   host: "worker-1",
   framework: null,
   model: "claude-sonnet-4-20250514",

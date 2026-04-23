@@ -17,6 +17,20 @@ import (
 
 const reconcilerInterval = 60 * time.Second
 
+// identityFromEvent extracts the D115 agent identity fields from an
+// event payload. The ingestion API has already validated them (UUID
+// shape, vocabulary), so the worker trusts the values verbatim.
+func identityFromEvent(e consumer.EventPayload) writer.AgentIdentity {
+	return writer.AgentIdentity{
+		AgentID:    e.AgentID,
+		AgentType:  e.AgentType,
+		ClientType: e.ClientType,
+		AgentName:  e.AgentName,
+		UserName:   e.User,
+		Hostname:   e.Hostname,
+	}
+}
+
 // SessionProcessor manages the session state machine in Postgres.
 type SessionProcessor struct {
 	w    *writer.Writer
@@ -63,7 +77,8 @@ func (sp *SessionProcessor) handleSessionGuard(ctx context.Context, e consumer.E
 		}
 		created, cErr := sp.w.ReviveOrCreateSession(
 			ctx, e.SessionID, e.Flavor, e.AgentType,
-			e.Host, e.Framework, e.Model, occurredAt,
+			e.Host, e.Framework, e.Model,
+			identityFromEvent(e), occurredAt,
 		)
 		if cErr != nil {
 			// Lazy-create failed. Log and fail open -- InsertEvent
@@ -210,7 +225,8 @@ func (sp *SessionProcessor) isClosed(ctx context.Context, sessionID string) bool
 // touch context so reconnects from the same session_id can't
 // overwrite the initial collection.
 func (sp *SessionProcessor) HandleSessionStart(ctx context.Context, e consumer.EventPayload) error {
-	if err := sp.w.UpsertAgent(ctx, e.Flavor, e.AgentType); err != nil {
+	identity := identityFromEvent(e)
+	if err := sp.w.UpsertAgent(ctx, identity); err != nil {
 		return fmt.Errorf("session start: %w", err)
 	}
 	var contextJSON []byte
@@ -225,13 +241,25 @@ func (sp *SessionProcessor) HandleSessionStart(ctx context.Context, e consumer.E
 			contextJSON = marshaled
 		}
 	}
-	if err := sp.w.UpsertSession(
+	created, err := sp.w.UpsertSession(
 		ctx, e.SessionID, e.Flavor, e.AgentType,
 		e.Host, e.Framework, e.Model, "active",
+		e.AgentID, e.ClientType, e.AgentName,
 		contextJSON,
 		e.TokenID, e.TokenName,
-	); err != nil {
+	)
+	if err != nil {
 		return fmt.Errorf("session start: %w", err)
+	}
+	if created {
+		if bErr := sp.w.BumpAgentSessionCount(ctx, e.AgentID); bErr != nil {
+			// Non-fatal -- see ReviveOrCreateSession rationale.
+			slog.Warn("bump agent session count failed (session_start)",
+				"session_id", e.SessionID,
+				"agent_id", e.AgentID,
+				"err", bErr,
+			)
+		}
 	}
 	return nil
 }
@@ -267,6 +295,19 @@ func (sp *SessionProcessor) HandlePostCall(ctx context.Context, e consumer.Event
 	if delta > 0 {
 		if err := sp.w.UpdateTokensUsed(ctx, e.SessionID, delta); err != nil {
 			return fmt.Errorf("post call: %w", err)
+		}
+		// D115 agent-level rollup. Non-fatal on error so a
+		// transient UPDATE failure does not fail the whole event
+		// -- the session-level tokens_used is authoritative, the
+		// agent-level total_tokens is a dashboard convenience.
+		if e.AgentID != "" {
+			if aErr := sp.w.IncrementAgentTokens(ctx, e.AgentID, int64(delta)); aErr != nil {
+				slog.Warn("increment agent tokens failed",
+					"session_id", e.SessionID,
+					"agent_id", e.AgentID,
+					"err", aErr,
+				)
+			}
 		}
 	} else {
 		if err := sp.w.UpdateLastSeen(ctx, e.SessionID); err != nil {

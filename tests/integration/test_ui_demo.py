@@ -53,8 +53,8 @@ AGENTS = [
     {"flavor": "code-agent", "agent_type": "production", "model": "gpt-4o", "provider": "openai"},
     {"flavor": "code-agent", "agent_type": "production", "model": "gpt-4o", "provider": "openai"},
     {"flavor": "code-agent", "agent_type": "production", "model": "gpt-4o", "provider": "openai"},
-    {"flavor": "claude-code", "agent_type": "developer", "model": "claude-sonnet-4-6", "provider": "anthropic"},
-    {"flavor": "claude-code", "agent_type": "developer", "model": "claude-sonnet-4-6", "provider": "anthropic"},
+    {"flavor": "claude-code", "agent_type": "coding", "model": "claude-sonnet-4-6", "provider": "anthropic"},
+    {"flavor": "claude-code", "agent_type": "coding", "model": "claude-sonnet-4-6", "provider": "anthropic"},
 ]
 
 # Per-agent runtime context attached to each session_start. Matches

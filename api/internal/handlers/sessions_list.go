@@ -43,6 +43,7 @@ var validSessionSorts = map[string]bool{
 // @Param        to      query     string  false  "End time (ISO 8601, default: now)"
 // @Param        state   query     string  false  "Filter by state (repeatable: active, idle, stale, closed, lost)"
 // @Param        flavor  query     string  false  "Filter by flavor (repeatable)"
+// @Param        agent_id query    string  false  "Filter to a single agent (D115 UUID; deep-linked from the Fleet agent table and Investigate AGENT facet)"
 // @Param        framework query   string  false  "Filter by framework name/version matching sessions.context.frameworks[] (repeatable: langgraph/1.1.6, crewai/1.14.1, ...)"
 // @Param        model   query     string  false  "Filter by model"
 // @Param        sort    query     string  false  "Sort field: started_at, duration, tokens_used, flavor (default: started_at)"
@@ -211,6 +212,11 @@ func SessionsListHandler(s store.Querier) http.HandlerFunc {
 			Query:          search,
 			States:         states,
 			Flavors:        flavors,
+			// D115: single-agent filter. Empty string = no filter.
+			// Validated at the SQL layer via ``::uuid`` cast so a
+			// malformed value produces a query error rather than a
+			// silently-bypassed filter.
+			AgentID:        strings.TrimSpace(q.Get("agent_id")),
 			AgentTypes:     agentTypes,
 			Frameworks:     frameworks,
 			ContextFilters: contextFilters,

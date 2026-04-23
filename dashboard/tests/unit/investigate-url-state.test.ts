@@ -66,10 +66,22 @@ describe("Investigate URL round-trip", () => {
   });
 
   it("agent_type survives reload", () => {
-    const input = "agent_type=developer&from=2026-04-01T00:00:00.000Z&to=2026-04-02T00:00:00.000Z";
+    const input = "agent_type=coding&from=2026-04-01T00:00:00.000Z&to=2026-04-02T00:00:00.000Z";
     expect(roundTrip(input)).toBe(
       canonical([
-        ["agent_type", "developer"],
+        ["agent_type", "coding"],
+        ["from", "2026-04-01T00:00:00.000Z"],
+        ["to", "2026-04-02T00:00:00.000Z"],
+      ]),
+    );
+  });
+
+  it("agent_id survives reload", () => {
+    const aid = "11111111-1111-4111-8111-111111111111";
+    const input = `agent_id=${aid}&from=2026-04-01T00:00:00.000Z&to=2026-04-02T00:00:00.000Z`;
+    expect(roundTrip(input)).toBe(
+      canonical([
+        ["agent_id", aid],
         ["from", "2026-04-01T00:00:00.000Z"],
         ["to", "2026-04-02T00:00:00.000Z"],
       ]),

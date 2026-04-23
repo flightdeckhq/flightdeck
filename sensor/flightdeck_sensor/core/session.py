@@ -71,7 +71,11 @@ class Session:
         self._shutdown_requested: bool = False
         self._shutdown_reason: str = ""
 
-        self._host = socket.gethostname()
+        # Prefer the already-resolved hostname from config (which
+        # honors FLIGHTDECK_HOSTNAME for k8s pod grouping); fall
+        # back to socket for tests that construct Session /
+        # SensorConfig directly without going through init().
+        self._host = config.hostname or socket.gethostname()
         self._framework: str | None = None
         self._model: str | None = None
 
@@ -558,6 +562,12 @@ class Session:
             "session_id": self.config.session_id,
             "flavor": self.config.agent_flavor,
             "agent_type": self.config.agent_type,
+            # D115 identity fields on every event.
+            "agent_id": self.config.agent_id,
+            "agent_name": self.config.agent_name,
+            "client_type": self.config.client_type,
+            "user": self.config.user_name,
+            "hostname": self.config.hostname,
             "event_type": event_type.value,
             "host": self._host,
             "framework": framework,

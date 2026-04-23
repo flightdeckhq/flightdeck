@@ -1,3 +1,5 @@
+import type { AgentType, ClientType } from "./agent-identity";
+
 /** Lifecycle state of a sensor session. */
 export type SessionState = "active" | "idle" | "stale" | "closed" | "lost";
 
@@ -29,6 +31,11 @@ export interface Session {
   session_id: string;
   flavor: string;
   agent_type: string;
+  /** D115 identity columns. Nullable for sessions lazy-created
+   *  before the authoritative session_start arrived. */
+  agent_id?: string | null;
+  agent_name?: string | null;
+  client_type?: ClientType | null;
   host: string | null;
   framework: string | null;
   model: string | null;
@@ -106,7 +113,20 @@ export interface FeedEvent {
   event: AgentEvent;
 }
 
-/** Fleet state grouped by flavor, as returned by GET /v1/fleet. */
+/**
+ * v0.4.0 Phase 1 (D115): the swimlane still renders ``FlavorSummary``
+ * rows but each row now represents an **agent** rather than a flavor
+ * string. The ``flavor`` field carries the agent_id (kept under the
+ * old name so the existing swimlane code does not need to be
+ * retyped); optional ``agent_id`` / ``agent_name`` / ``client_type``
+ * fields carry the D115 identity tuple the label renders. Sessions
+ * inside are the sessions belonging to that agent_id.
+ *
+ * Populated by the fleet store by fetching the agents roster plus a
+ * recent-sessions window and grouping client-side. The policy /
+ * directive flavor pickers still consume the string ``flavor`` field
+ * (now usually the agent_id) through ``fetchFlavors``.
+ */
 export interface FlavorSummary {
   flavor: string;
   agent_type: string;
@@ -114,12 +134,44 @@ export interface FlavorSummary {
   active_count: number;
   tokens_used_total: number;
   sessions: Session[];
+  /** D115 identity fields. Populated when the summary was built from
+   *  agent-grouped data; absent for legacy consumers. */
+  agent_id?: string;
+  agent_name?: string;
+  client_type?: ClientType;
+  user?: string;
+  hostname?: string;
+  last_seen_at?: string;
+}
+
+/**
+ * Agent (persistent fleet entity) as returned by GET /v1/fleet in
+ * the v0.4.0 Phase 1 shape (D115). Each row aggregates multiple
+ * sessions under one agent_id.
+ */
+export interface AgentSummary {
+  agent_id: string;
+  agent_name: string;
+  agent_type: AgentType;
+  client_type: ClientType;
+  user: string;
+  hostname: string;
+  first_seen_at: string;
+  last_seen_at: string;
+  total_sessions: number;
+  total_tokens: number;
+  /** State rollup: "active" if any session under this agent is
+   *  active; otherwise the most-recent session's state; empty string
+   *  when the agent has no sessions yet. */
+  state: SessionState | "";
 }
 
 /** Top-level fleet response. */
 export interface FleetResponse {
-  flavors: FlavorSummary[];
-  total_session_count: number;
+  agents: AgentSummary[];
+  total: number;
+  page: number;
+  per_page: number;
   /**
    * Aggregated runtime context facets across all non-terminal
    * sessions. Powers the CONTEXT sidebar filter panel. Empty
@@ -285,7 +337,7 @@ export interface CustomDirectiveParameter {
 
 /** Search result: agent summary. */
 export interface SearchResultAgent {
-  flavor: string;
+  agent_name: string;
   agent_type: string;
   last_seen: string;
 }
@@ -326,11 +378,15 @@ export interface SessionListItem {
   session_id: string;
   flavor: string;
   /**
-   * developer / autonomous / supervised / batch. Populated from the
-   * sessions.agent_type column. Drives the AGENT TYPE facet on the
+   * D114 vocabulary: ``coding`` or ``production``. Populated from
+   * sessions.agent_type. Drives the AGENT TYPE facet on the
    * Investigate page.
    */
-  agent_type: string;
+  agent_type: AgentType;
+  /** D115 identity fields (nullable for legacy / lazy-created rows). */
+  agent_id?: string | null;
+  agent_name?: string | null;
+  client_type?: ClientType | null;
   host: string | null;
   model: string | null;
   state: SessionState;
@@ -345,6 +401,10 @@ export interface SessionListItem {
    * Drives the camera icon in the Investigate table and the SessionDrawer.
    */
   capture_enabled?: boolean;
+  /** D095 attribution -- nullable when token was revoked or the row
+   *  predates Phase 5. */
+  token_id?: string | null;
+  token_name?: string | null;
 }
 
 /** Paginated response from GET /v1/sessions. */

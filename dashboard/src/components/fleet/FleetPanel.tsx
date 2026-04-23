@@ -23,6 +23,11 @@ import { createDirective } from "@/lib/api";
 import { flavorHasDirectiveCapableSession } from "@/lib/directives";
 import { ClaudeCodeLogo } from "@/components/ui/claude-code-logo";
 import { CodingAgentBadge } from "@/components/ui/coding-agent-badge";
+import {
+  AgentType,
+  CLIENT_TYPE_LABEL,
+  ClientType,
+} from "@/lib/agent-identity";
 import { DirectiveCard } from "@/components/directives/DirectiveCard";
 import { useFleetStore } from "@/store/fleet";
 import { OctagonX, X, Zap } from "lucide-react";
@@ -413,9 +418,35 @@ export function FleetPanel({
 }
 
 /**
- * CONTEXT sidebar section. Renders one facet group per key in
- * contextFacets that has 2+ distinct values. Single-value facets
- * are skipped (not useful as filters).
+ * Curated CONTEXT whitelist for the Fleet sidebar (D115/D116). The
+ * server returns many context keys -- pid, frameworks, git_commit,
+ * working_dir, supports_directives -- that are noise as fleet
+ * filters (every session has a unique pid, etc.). The Investigate
+ * page exports a broader CONTEXT_FACET_KEYS covering its own
+ * richer filter model; the sidebar's five keys are intentionally
+ * narrower because it's a glanceable fleet-level view, not a
+ * drilled-in session query surface. Kept inline rather than
+ * imported because the two lists serve different pages.
+ */
+const FLEET_SIDEBAR_CONTEXT_KEYS = [
+  "os",
+  "hostname",
+  "user",
+  "git_repo",
+  "orchestration",
+] as const;
+
+/**
+ * CONTEXT sidebar section. Renders every curated whitelist key that
+ * the backend returned with at least one value. Noise keys the server
+ * returns (pid, working_dir, frameworks, ...) are dropped by the
+ * whitelist itself. Single-value curated keys still render -- they
+ * are informational today and become clickable filters the moment a
+ * second value lands in the fleet. The prior ``length >= 2`` gate
+ * hid the whole section on a one-host / one-user fleet which broke
+ * the "CONTEXT is where I learn what axes exist" glanceability the
+ * sidebar is supposed to provide (Supervisor regression after the
+ * curated-whitelist rollout).
  */
 function ContextFacetSection({
   facets,
@@ -428,10 +459,12 @@ function ContextFacetSection({
   onToggle?: (key: string, value: string) => void;
   onClear?: () => void;
 }) {
-  // Only show facets with 2+ distinct values; alphabetical key order.
-  const filterableKeys = Object.keys(facets)
-    .filter((k) => facets[k].length >= 2)
-    .sort();
+  // Curated whitelist in canonical order (identity first, then
+  // runtime, then git / orchestration). Keys absent from the
+  // response are skipped; keys with any values are rendered.
+  const filterableKeys = FLEET_SIDEBAR_CONTEXT_KEYS.filter(
+    (k) => (facets[k]?.length ?? 0) >= 1,
+  );
 
   if (filterableKeys.length === 0) return null;
 
@@ -659,35 +692,38 @@ function FlavorItem({
       onClick={() => onFlavorClick?.(flavor.flavor)}
     >
       <div className="flex items-center gap-2 min-w-0">
-        {flavor.flavor === "claude-code" && (
+        {/* D115: ClaudeCode logo now keys off ``client_type``
+            (authoritative) with the legacy ``flavor === "claude-code"``
+            string as a fallback for rows built before client_type
+            propagated through the store. */}
+        {(flavor.client_type === ClientType.ClaudeCode ||
+          flavor.flavor === "claude-code") && (
           <ClaudeCodeLogo size={14} className="shrink-0" />
         )}
         <span
           className="font-mono text-xs truncate"
           style={{ flexShrink: 1 }}
-          title={flavor.flavor}
+          title={flavor.agent_name ?? flavor.flavor}
         >
-          {flavor.flavor}
+          {/* D115 label: prefer the human-readable agent_name over
+              the agent_id-hijacked ``flavor`` field. Falls back to
+              ``flavor`` only when agent_name is absent (legacy rows,
+              WebSocket updates that land before the agents roster
+              enriches the row). */}
+          {flavor.agent_name ?? flavor.flavor}
         </span>
-        {/* Specific pill wins: CODING AGENT identifies the tool
-            category (hook-based coding agent, observer-only) and
-            subsumes the more generic DEV signal. The icon rule at
-            the ClaudeCodeLogo render above uses the same
-            ``flavor === "claude-code"`` check so the icon and pill
-            always flip together.
-
-            Narrow-width strategy: the pill is the flex-shrink target
-            (shrink factor 100 vs name's 1), with min-width:0 and
-            overflow:hidden text-overflow:ellipsis so its text is
-            what gets clipped as the sidebar narrows. The name keeps
-            the default shrink of 1 so it only starts trimming after
-            the pill has collapsed to zero content width. The hard
-            FLEET_PILL_HIDE_MIN_WIDTH floor (150) is below the
-            sidebar MIN (180) so in practice the gate is always true;
-            the pill always renders, just with progressively fewer
-            visible characters. */}
+        {/* Two sibling pills (D115 pill pair):
+              - agent_type badge: Coding agent pill for coding, no pill
+                for production (matches pre-D115 "no badge for
+                autonomous" behaviour so production agents render
+                cleanly).
+              - client_type pill: Claude Code / Sensor. Added in D115
+                so the sidebar reads "what tool produced this" at a
+                glance without hovering the icon.
+            Both shrink to ellipsis at narrow sidebar widths; the name
+            keeps its default shrink-1 so the pills trim first. */}
         {sidebarWidth >= FLEET_PILL_HIDE_MIN_WIDTH &&
-          (flavor.flavor === "claude-code" ? (
+          flavor.agent_type === AgentType.Coding && (
             <CodingAgentBadge
               style={{
                 flexShrink: 100,
@@ -696,24 +732,27 @@ function FlavorItem({
                 textOverflow: "ellipsis",
               }}
             />
-          ) : flavor.agent_type === "developer" ? (
-            <span
-              data-testid="flavor-dev-badge"
-              className="rounded px-1 py-0.5 text-[11px] font-semibold uppercase"
-              style={{
-                background: "var(--accent-glow)",
-                color: "var(--primary)",
-                flexShrink: 100,
-                minWidth: 0,
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-              }}
-              title="DEV"
-            >
-              DEV
-            </span>
-          ) : null)}
+          )}
+        {sidebarWidth >= FLEET_PILL_HIDE_MIN_WIDTH && flavor.client_type && (
+          <span
+            data-testid="flavor-client-type-pill"
+            className="rounded px-1 py-0.5 text-[10px] font-semibold uppercase tracking-wide"
+            style={{
+              background: "var(--bg-elevated)",
+              color: "var(--text-muted)",
+              border: "1px solid var(--border-subtle)",
+              letterSpacing: "0.04em",
+              whiteSpace: "nowrap",
+              flexShrink: 100,
+              minWidth: 0,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+            }}
+            title={`client_type=${flavor.client_type}`}
+          >
+            {CLIENT_TYPE_LABEL[flavor.client_type]}
+          </span>
+        )}
         <span className="text-[11px] font-mono" style={{ color: "var(--text-muted)" }}>
           ({flavor.active_count})
         </span>

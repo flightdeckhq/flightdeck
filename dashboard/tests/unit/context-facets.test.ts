@@ -10,7 +10,7 @@ function mk(id: string, flavor: string, overrides: CtxOverrides = {}): SessionLi
   return {
     session_id: id,
     flavor,
-    agent_type: overrides.agent_type ?? "developer",
+    agent_type: overrides.agent_type ?? "coding",
     host: overrides.host ?? null,
     model: overrides.model ?? null,
     state: "active",

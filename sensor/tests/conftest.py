@@ -64,7 +64,7 @@ def sensor_config() -> SensorConfig:
         server="http://localhost:9999",
         token="test-token",
         agent_flavor="test-agent",
-        agent_type="autonomous",
+        agent_type="production",
         quiet=True,
     )
 

@@ -48,49 +48,44 @@ func (m *mockStore) GetContextFacets(_ context.Context) (map[string][]store.Cont
 	return m.contextFacets, nil
 }
 
-func (m *mockStore) GetFleet(_ context.Context, limit, offset int, agentType string) ([]store.FlavorSummary, int, error) {
-	allFlavors := []store.FlavorSummary{
+func (m *mockStore) GetAgentFleet(_ context.Context, limit, offset int, agentType string) ([]store.AgentSummary, int, error) {
+	all := []store.AgentSummary{
 		{
-			Flavor:          "research-agent",
-			AgentType:       "autonomous",
-			SessionCount:    2,
-			ActiveCount:     1,
-			TokensUsedTotal: 5000,
-			Sessions: []store.Session{
-				{SessionID: "s1", Flavor: "research-agent", AgentType: "autonomous", State: "active", StartedAt: time.Now(), LastSeenAt: time.Now(), TokensUsed: 3000},
-				{SessionID: "s2", Flavor: "research-agent", AgentType: "autonomous", State: "closed", StartedAt: time.Now(), LastSeenAt: time.Now(), TokensUsed: 2000},
-			},
+			AgentID:       "11111111-1111-4111-8111-111111111111",
+			AgentName:     "research-agent",
+			AgentType:     "production",
+			ClientType:    "flightdeck_sensor",
+			UserName:      "svc-research",
+			Hostname:      "worker-1",
+			FirstSeenAt:   time.Now().Add(-time.Hour),
+			LastSeenAt:    time.Now(),
+			TotalSessions: 2,
+			TotalTokens:   5000,
+			State:         "active",
 		},
 		{
-			Flavor:          "dev-helper",
-			AgentType:       "developer",
-			SessionCount:    1,
-			ActiveCount:     1,
-			TokensUsedTotal: 1000,
-			Sessions: []store.Session{
-				{SessionID: "s3", Flavor: "dev-helper", AgentType: "developer", State: "active", StartedAt: time.Now(), LastSeenAt: time.Now(), TokensUsed: 1000},
-			},
+			AgentID:       "22222222-2222-4222-8222-222222222222",
+			AgentName:     "dev-helper",
+			AgentType:     "coding",
+			ClientType:    "claude_code",
+			UserName:      "omria",
+			Hostname:      "laptop-1",
+			FirstSeenAt:   time.Now().Add(-time.Hour),
+			LastSeenAt:    time.Now(),
+			TotalSessions: 1,
+			TotalTokens:   1000,
+			State:         "active",
 		},
 	}
 
-	// Apply agent_type filter matching real store logic
 	switch agentType {
-	case "developer":
-		var filtered []store.FlavorSummary
-		for _, f := range allFlavors {
-			if f.AgentType == "developer" {
-				filtered = append(filtered, f)
-			}
-		}
-		return filtered, len(filtered), nil
 	case "":
-		return allFlavors, 3, nil
+		return all, len(all), nil
 	default:
-		// production: exclude developer
-		var filtered []store.FlavorSummary
-		for _, f := range allFlavors {
-			if f.AgentType != "developer" {
-				filtered = append(filtered, f)
+		var filtered []store.AgentSummary
+		for _, a := range all {
+			if a.AgentType == agentType {
+				filtered = append(filtered, a)
 			}
 		}
 		return filtered, len(filtered), nil
@@ -305,19 +300,16 @@ func (m *mockStore) CreateDirective(_ context.Context, d store.Directive) (*stor
 }
 
 func (m *mockStore) GetActiveSessionIDsByFlavor(_ context.Context, flavor string) ([]string, error) {
-	var ids []string
-	for _, f := range []store.FlavorSummary{
-		{Flavor: "research-agent", Sessions: []store.Session{
+	fixture := map[string][]store.Session{
+		"research-agent": {
 			{SessionID: "s1", State: "active"},
 			{SessionID: "s2", State: "closed"},
-		}},
-	} {
-		if f.Flavor == flavor {
-			for _, s := range f.Sessions {
-				if s.State == "active" || s.State == "idle" {
-					ids = append(ids, s.SessionID)
-				}
-			}
+		},
+	}
+	var ids []string
+	for _, s := range fixture[flavor] {
+		if s.State == "active" || s.State == "idle" {
+			ids = append(ids, s.SessionID)
 		}
 	}
 	return ids, nil
@@ -331,7 +323,7 @@ func (m *mockStore) Search(_ context.Context, query string) (*store.SearchResult
 		}, nil
 	}
 	return &store.SearchResults{
-		Agents: []store.SearchResultAgent{{Flavor: "test-agent", AgentType: "autonomous", LastSeen: "2026-04-08"}},
+		Agents: []store.SearchResultAgent{{AgentName: "test-agent", AgentType: "production", LastSeen: "2026-04-08"}},
 		Sessions: []store.SearchResultSession{{
 			SessionID: "s1", Flavor: "test-agent", Host: "host-1", State: "active", StartedAt: "2026-04-08",
 			Model: "claude-sonnet-4-6", TokensUsed: 3000, Context: map[string]interface{}{"os": "Linux", "hostname": "host-1"},
@@ -544,7 +536,7 @@ func TestHealthHandler_Returns200(t *testing.T) {
 	}
 }
 
-func TestFleetHandler_ReturnsSessionsGroupedByFlavor(t *testing.T) {
+func TestFleetHandler_ReturnsAgents(t *testing.T) {
 	s := &mockStore{}
 	handler := handlers.FleetHandler(store.WrapStore(s))
 	req := httptest.NewRequest("GET", "/v1/fleet", nil)
@@ -556,16 +548,16 @@ func TestFleetHandler_ReturnsSessionsGroupedByFlavor(t *testing.T) {
 	}
 	var resp map[string]any
 	_ = json.Unmarshal(w.Body.Bytes(), &resp)
-	flavors, ok := resp["flavors"].([]any)
-	if !ok || len(flavors) != 2 {
-		t.Errorf("expected 2 flavor groups, got %v", resp["flavors"])
+	agents, ok := resp["agents"].([]any)
+	if !ok || len(agents) != 2 {
+		t.Errorf("expected 2 agents, got %v", resp["agents"])
 	}
 }
 
-func TestFleetHandler_FilterByAgentType(t *testing.T) {
+func TestFleetHandler_FilterByAgentType_Coding(t *testing.T) {
 	s := &mockStore{}
 	handler := handlers.FleetHandler(store.WrapStore(s))
-	req := httptest.NewRequest("GET", "/v1/fleet?agent_type=developer", nil)
+	req := httptest.NewRequest("GET", "/v1/fleet?agent_type=coding", nil)
 	w := httptest.NewRecorder()
 	handler(w, req)
 
@@ -574,19 +566,19 @@ func TestFleetHandler_FilterByAgentType(t *testing.T) {
 	}
 	var resp map[string]any
 	_ = json.Unmarshal(w.Body.Bytes(), &resp)
-	flavors, ok := resp["flavors"].([]any)
-	if !ok || len(flavors) != 1 {
-		t.Errorf("expected 1 developer flavor, got %d", len(flavors))
+	agents, ok := resp["agents"].([]any)
+	if !ok || len(agents) != 1 {
+		t.Errorf("expected 1 coding agent, got %d", len(agents))
 	}
-	if len(flavors) > 0 {
-		fm := flavors[0].(map[string]any)
-		if fm["agent_type"] != "developer" {
-			t.Errorf("expected agent_type=developer, got %v", fm["agent_type"])
+	if len(agents) > 0 {
+		fm := agents[0].(map[string]any)
+		if fm["agent_type"] != "coding" {
+			t.Errorf("expected agent_type=coding, got %v", fm["agent_type"])
 		}
 	}
 }
 
-func TestFleetHandler_FilterByProduction(t *testing.T) {
+func TestFleetHandler_FilterByAgentType_Production(t *testing.T) {
 	s := &mockStore{}
 	handler := handlers.FleetHandler(store.WrapStore(s))
 	req := httptest.NewRequest("GET", "/v1/fleet?agent_type=production", nil)
@@ -598,14 +590,14 @@ func TestFleetHandler_FilterByProduction(t *testing.T) {
 	}
 	var resp map[string]any
 	_ = json.Unmarshal(w.Body.Bytes(), &resp)
-	flavors, ok := resp["flavors"].([]any)
-	if !ok || len(flavors) != 1 {
-		t.Errorf("expected 1 non-developer flavor, got %d", len(flavors))
+	agents, ok := resp["agents"].([]any)
+	if !ok || len(agents) != 1 {
+		t.Errorf("expected 1 production agent, got %d", len(agents))
 	}
-	if len(flavors) > 0 {
-		fm := flavors[0].(map[string]any)
-		if fm["agent_type"] == "developer" {
-			t.Errorf("expected non-developer agent_type, got developer")
+	if len(agents) > 0 {
+		fm := agents[0].(map[string]any)
+		if fm["agent_type"] != "production" {
+			t.Errorf("expected agent_type=production, got %v", fm["agent_type"])
 		}
 	}
 }
@@ -671,8 +663,8 @@ func TestGetFleetFacetsErrorDoesNotFail(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if _, ok := resp["flavors"].([]any); !ok {
-		t.Errorf("expected flavors array, got %T", resp["flavors"])
+	if _, ok := resp["agents"].([]any); !ok {
+		t.Errorf("expected agents array, got %T", resp["agents"])
 	}
 	facets, ok := resp["context_facets"].(map[string]any)
 	if !ok {
@@ -680,29 +672,6 @@ func TestGetFleetFacetsErrorDoesNotFail(t *testing.T) {
 	}
 	if len(facets) != 0 {
 		t.Errorf("expected empty context_facets on error, got %v", facets)
-	}
-}
-
-func TestFleetHandler_ExcludesLostSessions(t *testing.T) {
-	// The mock store doesn't return lost sessions (by design matching the real store)
-	s := &mockStore{}
-	handler := handlers.FleetHandler(store.WrapStore(s))
-	req := httptest.NewRequest("GET", "/v1/fleet", nil)
-	w := httptest.NewRecorder()
-	handler(w, req)
-
-	var resp map[string]any
-	_ = json.Unmarshal(w.Body.Bytes(), &resp)
-	flavors := resp["flavors"].([]any)
-	for _, f := range flavors {
-		fm := f.(map[string]any)
-		sessions := fm["sessions"].([]any)
-		for _, s := range sessions {
-			sm := s.(map[string]any)
-			if sm["state"] == "lost" {
-				t.Error("lost session should be excluded from fleet response")
-			}
-		}
 	}
 }
 

@@ -1748,10 +1748,10 @@ const docTemplate = `{
         "store.SearchResultAgent": {
             "type": "object",
             "properties": {
-                "agent_type": {
+                "agent_name": {
                     "type": "string"
                 },
-                "flavor": {
+                "agent_type": {
                     "type": "string"
                 },
                 "last_seen": {

@@ -23,14 +23,14 @@ import { createDirective } from "@/lib/api";
 const mockFlavors: FlavorSummary[] = [
   {
     flavor: "research-agent",
-    agent_type: "autonomous",
+    agent_type: "production",
     session_count: 3,
     active_count: 2,
     tokens_used_total: 10000,
     sessions: [
-      { session_id: "s1", flavor: "research-agent", agent_type: "autonomous", host: null, framework: null, model: null, state: "active", started_at: "", last_seen_at: "", ended_at: null, tokens_used: 5000, token_limit: null },
-      { session_id: "s2", flavor: "research-agent", agent_type: "autonomous", host: null, framework: null, model: null, state: "active", started_at: "", last_seen_at: "", ended_at: null, tokens_used: 3000, token_limit: null },
-      { session_id: "s3", flavor: "research-agent", agent_type: "autonomous", host: null, framework: null, model: null, state: "closed", started_at: "", last_seen_at: "", ended_at: "", tokens_used: 2000, token_limit: null },
+      { session_id: "s1", flavor: "research-agent", agent_type: "production", host: null, framework: null, model: null, state: "active", started_at: "", last_seen_at: "", ended_at: null, tokens_used: 5000, token_limit: null },
+      { session_id: "s2", flavor: "research-agent", agent_type: "production", host: null, framework: null, model: null, state: "active", started_at: "", last_seen_at: "", ended_at: null, tokens_used: 3000, token_limit: null },
+      { session_id: "s3", flavor: "research-agent", agent_type: "production", host: null, framework: null, model: null, state: "closed", started_at: "", last_seen_at: "", ended_at: "", tokens_used: 2000, token_limit: null },
     ],
   },
 ];
@@ -180,20 +180,20 @@ describe("FleetPanel", () => {
     const claudeCodeFlavor: FlavorSummary[] = [
       {
         flavor: "claude-code",
-        agent_type: "developer",
+        agent_type: "coding",
         session_count: 2,
         active_count: 2,
         tokens_used_total: 0,
         sessions: [
           {
-            session_id: "cc1", flavor: "claude-code", agent_type: "developer",
+            session_id: "cc1", flavor: "claude-code", agent_type: "coding",
             host: null, framework: null, model: null,
             state: "active", started_at: "", last_seen_at: "", ended_at: null,
             tokens_used: 0, token_limit: null,
             context: { supports_directives: false },
           },
           {
-            session_id: "cc2", flavor: "claude-code", agent_type: "developer",
+            session_id: "cc2", flavor: "claude-code", agent_type: "coding",
             host: null, framework: null, model: null,
             state: "idle", started_at: "", last_seen_at: "", ended_at: null,
             tokens_used: 0, token_limit: null,
@@ -216,20 +216,20 @@ describe("FleetPanel", () => {
     const mixedFlavor: FlavorSummary[] = [
       {
         flavor: "mixed-flavor",
-        agent_type: "autonomous",
+        agent_type: "production",
         session_count: 2,
         active_count: 2,
         tokens_used_total: 0,
         sessions: [
           {
-            session_id: "m1", flavor: "mixed-flavor", agent_type: "autonomous",
+            session_id: "m1", flavor: "mixed-flavor", agent_type: "production",
             host: null, framework: null, model: null,
             state: "active", started_at: "", last_seen_at: "", ended_at: null,
             tokens_used: 0, token_limit: null,
             // Sensor session: no supports_directives field = directive-capable.
           },
           {
-            session_id: "m2", flavor: "mixed-flavor", agent_type: "autonomous",
+            session_id: "m2", flavor: "mixed-flavor", agent_type: "production",
             host: null, framework: null, model: null,
             state: "active", started_at: "", last_seen_at: "", ended_at: null,
             tokens_used: 0, token_limit: null,
@@ -253,13 +253,13 @@ describe("FleetPanel", () => {
     const claudeCodeFlavor = [
       {
         flavor: "claude-code",
-        agent_type: "developer",
+        agent_type: "coding",
         session_count: 1,
         active_count: 1,
         tokens_used_total: 0,
         sessions: [
           {
-            session_id: "cc1", flavor: "claude-code", agent_type: "developer",
+            session_id: "cc1", flavor: "claude-code", agent_type: "coding",
             host: null, framework: null, model: null,
             state: "active" as const, started_at: "", last_seen_at: "",
             ended_at: null, tokens_used: 0, token_limit: null,
@@ -276,40 +276,64 @@ describe("FleetPanel", () => {
     expect(screen.queryByText("DEV")).not.toBeInTheDocument();
   });
 
-  it("non-claude-code developer flavor shows DEV, hides CODING AGENT", () => {
-    // The hypothetical case in the brief: a Python sensor session
-    // that sets AGENT_TYPE=developer but is not a hook-based coding
-    // agent. DEV applies (agent_type=developer); CODING AGENT does
-    // not (flavor !== "claude-code").
-    const customDeveloperFlavor = [
+  it("sensor-emitted coding agent shows Coding agent badge + Sensor client pill", () => {
+    // D115 pill pair: agent_type=coding always flips the
+    // CodingAgentBadge (no longer gated on flavor==="claude-code")
+    // and the client_type pill surfaces the emitter (Sensor or
+    // Claude Code). This fixture is a Python-sensor coding agent.
+    const sensorCoding = [
       {
         flavor: "research-dev-agent",
-        agent_type: "developer",
+        agent_type: "coding",
         session_count: 1,
         active_count: 1,
         tokens_used_total: 0,
         sessions: [
           {
-            session_id: "rd1", flavor: "research-dev-agent", agent_type: "developer",
+            session_id: "rd1", flavor: "research-dev-agent", agent_type: "coding",
             host: null, framework: null, model: null,
             state: "active" as const, started_at: "", last_seen_at: "",
             ended_at: null, tokens_used: 0, token_limit: null,
           },
         ],
+        agent_id: "11111111-1111-4111-8111-111111111111",
+        agent_name: "research-dev-agent",
+        client_type: "flightdeck_sensor" as const,
       },
     ];
-    render(<FleetPanel flavors={customDeveloperFlavor} />);
-    expect(screen.getByTestId("flavor-dev-badge")).toBeInTheDocument();
-    expect(screen.queryByTestId("coding-agent-badge")).not.toBeInTheDocument();
+    render(<FleetPanel flavors={sensorCoding} />);
+    expect(screen.getByTestId("coding-agent-badge")).toBeInTheDocument();
+    expect(screen.getByTestId("flavor-client-type-pill")).toHaveTextContent(/sensor/i);
   });
 
-  it("autonomous flavor shows neither DEV nor CODING AGENT", () => {
-    // Production autonomous flavors (mockFlavors above: research-agent
-    // with agent_type="autonomous") should render the bare flavor
-    // name with no pill.
-    render(<FleetPanel flavors={mockFlavors} />);
-    expect(screen.queryByTestId("flavor-dev-badge")).not.toBeInTheDocument();
+  it("production agent shows no agent_type badge but still renders the client pill", () => {
+    // Production autonomous-era flavors render without the
+    // CodingAgentBadge (there's no equivalent "production" badge),
+    // but the client_type pill still surfaces so the operator can
+    // tell Sensor vs Claude Code at a glance.
+    const prodSensor = [
+      {
+        flavor: "research-agent",
+        agent_type: "production",
+        session_count: 1,
+        active_count: 1,
+        tokens_used_total: 0,
+        sessions: [
+          {
+            session_id: "pr1", flavor: "research-agent", agent_type: "production",
+            host: null, framework: null, model: null,
+            state: "active" as const, started_at: "", last_seen_at: "",
+            ended_at: null, tokens_used: 0, token_limit: null,
+          },
+        ],
+        agent_id: "22222222-2222-4222-8222-222222222222",
+        agent_name: "research-agent",
+        client_type: "flightdeck_sensor" as const,
+      },
+    ];
+    render(<FleetPanel flavors={prodSensor} />);
     expect(screen.queryByTestId("coding-agent-badge")).not.toBeInTheDocument();
+    expect(screen.getByTestId("flavor-client-type-pill")).toHaveTextContent(/sensor/i);
   });
 
   it("calls onFlavorClick when flavor name is clicked", () => {
@@ -339,12 +363,12 @@ describe("FleetPanel", () => {
     const fiveActive: FlavorSummary[] = [
       {
         flavor: "research-agent",
-        agent_type: "autonomous",
+        agent_type: "production",
         session_count: 5,
         active_count: 5,
         tokens_used_total: 0,
         sessions: Array.from({ length: 5 }).map((_, i) => ({
-          session_id: `s${i}`, flavor: "research-agent", agent_type: "autonomous",
+          session_id: `s${i}`, flavor: "research-agent", agent_type: "production",
           host: null, framework: null, model: null, state: "active" as const,
           started_at: "", last_seen_at: "", ended_at: null, tokens_used: 0, token_limit: null,
         })),
@@ -394,17 +418,41 @@ describe("FleetPanel", () => {
     ).toBeInTheDocument();
   });
 
-  it("hides CONTEXT section when every facet has only one value", () => {
-    // Single-value facets are useless as filters -- the section
-    // should be omitted entirely (no header, no rows). This keeps
-    // the sidebar clean for deployments where every agent runs in
-    // the same orchestration / on the same host.
+  it("renders curated CONTEXT keys even when they have a single value", () => {
+    // D115 curated whitelist pattern: the sidebar CONTEXT section
+    // lists the agreed-upon facet axes (os, hostname, user, git_repo,
+    // orchestration) regardless of cardinality. Single-value facets
+    // are informational today and become clickable filters the
+    // moment a second value lands in the fleet. This replaces the
+    // pre-D115 "hide entirely when length < 2" behaviour whose
+    // side-effect was that one-host / one-user deployments lost the
+    // CONTEXT section entirely.
     render(
       <FleetPanel
         flavors={mockFlavors}
         contextFacets={{
           orchestration: [{ value: "kubernetes", count: 5 }],
           hostname: [{ value: "host-1", count: 5 }],
+        }}
+      />,
+    );
+    expect(screen.getByTestId("fleet-panel-context")).toBeInTheDocument();
+    // Both curated keys render their single value.
+    expect(screen.getByTestId("context-value-orchestration-kubernetes")).toBeInTheDocument();
+    expect(screen.getByTestId("context-value-hostname-host-1")).toBeInTheDocument();
+  });
+
+  it("hides CONTEXT section when no curated key is populated", () => {
+    // With the curated whitelist, a payload whose only keys are
+    // noise values (pid, working_dir, frameworks, ...) renders
+    // nothing -- those keys are not on the whitelist so they're
+    // dropped before the length gate.
+    render(
+      <FleetPanel
+        flavors={mockFlavors}
+        contextFacets={{
+          pid: [{ value: "1234", count: 3 }],
+          working_dir: [{ value: "/tmp", count: 3 }],
         }}
       />,
     );

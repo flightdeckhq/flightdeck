@@ -27,9 +27,9 @@ function mkSession(
 describe("computeFacets -- AGENT TYPE", () => {
   it("emits an AGENT TYPE facet with counts per value", () => {
     const sessions = [
-      mkSession("a", "claude-code", "developer"),
-      mkSession("b", "claude-code", "developer"),
-      mkSession("c", "research-agent", "autonomous"),
+      mkSession("a", "claude-code", "coding"),
+      mkSession("b", "claude-code", "coding"),
+      mkSession("c", "research-agent", "production"),
       mkSession("d", "batch-job", "batch"),
     ];
     const groups = computeFacets(sessions);
@@ -40,8 +40,8 @@ describe("computeFacets -- AGENT TYPE", () => {
       agentType!.values.map((v) => [v.value, v.count]),
     );
     expect(values).toEqual({
-      developer: 2,
-      autonomous: 1,
+      coding: 2,
+      production: 1,
       batch: 1,
     });
   });
@@ -51,13 +51,13 @@ describe("computeFacets -- AGENT TYPE", () => {
       mkSession("a", "f", "batch"),
       mkSession("b", "f", "batch"),
       mkSession("c", "f", "batch"),
-      mkSession("d", "f", "developer"),
+      mkSession("d", "f", "coding"),
     ];
     const groups = computeFacets(sessions);
     const agentType = groups.find((g) => g.key === "agent_type")!;
     expect(agentType.values[0].value).toBe("batch");
     expect(agentType.values[0].count).toBe(3);
-    expect(agentType.values[1].value).toBe("developer");
+    expect(agentType.values[1].value).toBe("coding");
   });
 
   it("uses the sticky-facet source when the main result is filtered", () => {
@@ -65,10 +65,10 @@ describe("computeFacets -- AGENT TYPE", () => {
     // so the unfiltered source is what the facet should render -- the
     // user can't click over to another agent_type if the facet has
     // collapsed to a single row.
-    const filtered = [mkSession("a", "claude-code", "developer")];
+    const filtered = [mkSession("a", "claude-code", "coding")];
     const unfiltered = [
-      mkSession("a", "claude-code", "developer"),
-      mkSession("b", "research", "autonomous"),
+      mkSession("a", "claude-code", "coding"),
+      mkSession("b", "research", "production"),
       mkSession("c", "batch", "batch"),
     ];
     const groups = computeFacets(filtered, { agent_type: unfiltered });
@@ -98,7 +98,7 @@ describe("computeFacets -- AGENT TYPE", () => {
     // AGENT TYPE lives between FLAVOR and MODEL now.
     const sessions = [
       {
-        ...mkSession("a", "claude-code", "developer"),
+        ...mkSession("a", "claude-code", "coding"),
         model: "claude-sonnet-4-6",
         context: { frameworks: ["claude-code"], os: "Linux" },
       },

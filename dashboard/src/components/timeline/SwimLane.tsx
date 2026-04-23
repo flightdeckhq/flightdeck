@@ -1,6 +1,11 @@
 import { memo, useMemo } from "react";
 import type { ScaleTime } from "d3-scale";
 import type { Session, AgentEvent } from "@/lib/types";
+import {
+  CLIENT_TYPE_LABEL,
+  ClientType,
+  type ClientType as ClientTypeT,
+} from "@/lib/agent-identity";
 import { SESSION_ROW_HEIGHT, EVENT_CIRCLE_SIZE } from "@/lib/constants";
 import { ChevronRight } from "lucide-react";
 import { SessionEventRow } from "./SessionEventRow";
@@ -11,6 +16,15 @@ import { ClaudeCodeLogo } from "@/components/ui/claude-code-logo";
 
 interface SwimLaneProps {
   flavor: string;
+  /** D115 identity: human-readable label for the row. When absent
+   *  (legacy pre-v0.4.0 data), falls back to rendering ``flavor``
+   *  directly. */
+  agentName?: string;
+  /** D115 client_type, surfaced as a small pill beside the label. */
+  clientType?: ClientTypeT;
+  /** D115 agent_type -- coding / production -- surfaced as a muted
+   *  badge next to the pill. */
+  agentType?: string;
   sessions: Session[];
   scale: ScaleTime<number, number>;
   onSessionClick: (sessionId: string, eventId?: string, event?: AgentEvent) => void;
@@ -43,6 +57,9 @@ interface SwimLaneProps {
 
 function SwimLaneComponent({
   flavor,
+  agentName,
+  clientType,
+  agentType,
   sessions,
   scale,
   onSessionClick,
@@ -133,7 +150,7 @@ function SwimLaneComponent({
               transition: "transform 200ms ease",
             }}
           />
-          {flavor === "claude-code" && (
+          {(clientType === ClientType.ClaudeCode || flavor === "claude-code") && (
             <ClaudeCodeLogo size={14} className="shrink-0" />
           )}
           <span
@@ -146,8 +163,33 @@ function SwimLaneComponent({
               whiteSpace: "nowrap",
             }}
           >
-            {flavor}
+            {/* D115: primary label is agent_name; legacy rows without
+                agent identity fall back to the stored flavor string. */}
+            {agentName ?? flavor}
           </span>
+          {clientType && (
+            <span
+              className="shrink-0 rounded-sm px-1.5 py-[1px] text-[10px] font-medium uppercase tracking-wide"
+              style={{
+                background: "var(--bg-elevated)",
+                color: "var(--text-muted)",
+                border: "1px solid var(--border-subtle)",
+              }}
+              data-testid="swimlane-client-type-pill"
+              title={`client_type=${clientType}`}
+            >
+              {CLIENT_TYPE_LABEL[clientType]}
+            </span>
+          )}
+          {agentType && (
+            <span
+              className="shrink-0 font-mono text-[10px] uppercase tracking-wide"
+              style={{ color: "var(--text-muted)" }}
+              data-testid="swimlane-agent-type-badge"
+            >
+              {agentType}
+            </span>
+          )}
           <span
             className="font-mono text-[11px]"
             style={{

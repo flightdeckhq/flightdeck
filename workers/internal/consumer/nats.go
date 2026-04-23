@@ -30,6 +30,15 @@ type EventPayload struct {
 	SessionID       string          `json:"session_id"`
 	Flavor          string          `json:"flavor"`
 	AgentType       string          `json:"agent_type"`
+	// D115 identity fields. The ingestion API validates agent_id is
+	// a canonical UUID, and agent_type / client_type are from their
+	// respective D114 / D116 vocabularies, so by the time the worker
+	// sees a payload here these values are known-good.
+	AgentID         string          `json:"agent_id"`
+	AgentName       string          `json:"agent_name"`
+	ClientType      string          `json:"client_type"`
+	User            string          `json:"user"`
+	Hostname        string          `json:"hostname"`
 	EventType       string          `json:"event_type"`
 	Host            string          `json:"host"`
 	Framework       string          `json:"framework"`

@@ -3903,3 +3903,169 @@ in this PR), D112 (litellm coverage, formerly KI21 -- shipped
 SensorLitellm in PR #20).
 
 ---
+
+## D115 -- Agent identity model foundation (v0.4.0 Phase 1)
+
+**Date:** 2026-04-22
+**Phase:** v0.4.0 Phase 1
+
+**Context.** Prior to v0.4.0, the fleet model conflated two notions in
+a single ``sessions.flavor`` string:
+
+1. *Agent identity* -- who or what is emitting events (a persistent
+   fleet entity: "the research-agent on worker-1", "my Claude Code
+   laptop").
+2. *Session* -- one ephemeral run of that agent.
+
+The plugin worked around this by deriving a stable ``session_id`` from
+``(user, host, repo, branch)`` (D113) so same-laptop same-repo Claude
+Code invocations converged on one row. The sensor generated a
+uuid4-per-process ``session_id`` and left identity entirely to the
+``AGENT_FLAVOR`` / ``AGENT_TYPE`` env vars. Two integrations, two
+identity stories, and the dashboard had no unifying primitive to
+group sessions under.
+
+**Decision.** Introduce an ``agents`` table keyed on a deterministic
+``agent_id`` UUID derived from a five-segment identity tuple. Every
+event carries ``agent_id`` on the wire; the ingestion API validates
+it at the boundary; the worker upserts the agents row and links the
+session to it.
+
+Grammar:
+
+    agent_id = uuid5(NAMESPACE_FLIGHTDECK,
+        "flightdeck://{agent_type}/{user}@{hostname}/{client_type}/{agent_name}")
+
+``NAMESPACE_FLIGHTDECK`` = ``ee22ab58-26fc-54ef-91b4-b5c0a97f9b61``,
+derived once from ``uuid5(NAMESPACE_DNS, "flightdeck.dev")`` and
+frozen forever. Changing the constant orphans every historical
+agent_id in every deployment, so the derivation seed is documented in
+both the Python and Node module comments to make the value
+regenerable from first principles rather than an opaque literal.
+
+Fixture vector (asserted identically in Python and Node tests):
+
+    derive_agent_id(
+        agent_type="coding",
+        user="omria",
+        hostname="Omri-PC",
+        client_type="claude_code",
+        agent_name="omria@Omri-PC",
+    ) == "ee76931b-06fa-5da6-a019-5a8237efd496"
+
+**Client emissions.**
+
+Plugin (Claude Code): ``agent_type="coding"`` and
+``client_type="claude_code"`` are hardcoded; ``agent_name`` defaults
+to ``"{user}@{hostname}"`` and is overridable only via
+``FLIGHTDECK_AGENT_NAME``. ``session_id`` becomes a fresh uuid4 per
+Claude Code invocation, cached in the existing
+``$TMPDIR/flightdeck-plugin/session-{sha256(cwd)[:16]}.txt`` marker
+so every hook in the same invocation shares it. The previous D113
+uuid5-from-git derivation is removed; stability now lives in
+``agent_id``.
+
+Sensor: ``agent_type`` defaults to ``"production"``, overridable via
+``FLIGHTDECK_AGENT_TYPE`` / ``AGENT_TYPE`` env or ``agent_type=``
+kwarg on ``init()``. ``client_type="flightdeck_sensor"`` is
+hardcoded. ``agent_name`` defaults to ``"{user}@{hostname}"``, also
+overridable via kwarg or env. Any value outside the
+``{coding, production}`` vocabulary raises
+``ConfigurationError`` at ``init()`` -- pre-v0.4.0 values
+(``autonomous``, ``supervised``, ``batch``, ``developer``) are no
+longer accepted. This is a breaking change recorded in CHANGELOG.md.
+
+A shared ``FLIGHTDECK_HOSTNAME`` env var overrides
+``socket.gethostname()`` (plugin and sensor) for Kubernetes pod
+grouping use cases where the pod hostname is not meaningful.
+
+**Semantic narrowing versus D113.** D113's session_id captured
+``(user, host, repo, branch)``. D115's agent_id captures
+``(agent_type, user, hostname, client_type, agent_name)`` -- no
+repo, no branch. Under D115 the same laptop working on three repos
+converges to ONE agent; switching branches within a repo no longer
+creates a new session. This is a deliberate narrowing -- repo and
+branch become filterable dimensions within an agent's session list
+(via the existing ``context`` JSONB facets), not identity fields.
+Operators who want per-repo agent partitioning can set
+``FLIGHTDECK_AGENT_NAME=${repo}-${branch}`` at the integration
+boundary.
+
+**Schema change.** Migration ``000015_agent_identity_model``
+replaces the flavor-keyed agents table with an agent_id-keyed one
+and adds ``agent_id`` / ``client_type`` / ``agent_name`` columns to
+sessions. CHECK constraints on both tables enforce the
+``coding`` / ``production`` and
+``claude_code`` / ``flightdeck_sensor`` vocabularies at the storage
+layer so a misbehaving third-party emitter cannot persist junk
+values that the dashboard would then have to defend against. The
+migration is deliberately destructive -- the repository has no
+published users and the dev DB is transient, so a one-shot
+``DROP / TRUNCATE / CREATE`` is cheaper than a bespoke backfill.
+The DOWN migration restores the legacy schema shape for rollback
+symmetry; the legacy data is not recoverable.
+
+**Rejected alternatives.**
+
+- *Keep flavor as identity and add agent_id as an optional stable
+  hint.* Rejected: the dual-identity shape is exactly what D115 is
+  getting rid of; preserving flavor semantics would keep the
+  cross-integration divergence alive.
+- *Derive agent_id from flavor on the server side.* Rejected:
+  clients own their identity. A server-side derivation would couple
+  the namespace constant to the ingestion service and lose the
+  "client and server agree on the UUID before it hits the wire"
+  property that the Python / Node fixture-vector test guards.
+- *Store ``agent_id`` as a plain random UUID rather than a
+  deterministic derivation.* Rejected: re-running the same
+  integration from two processes (Temporal workflow, CI re-run)
+  would land under two different agent_ids. The deterministic
+  derivation is what lets the fleet view show "one agent across
+  many runs."
+
+**Related decisions.** D094 (session attachment flow) is unchanged
+-- session_id is still the correlatable identifier across
+re-invocations when the caller supplies a stable value. D106 (lazy-
+create on unknown session_id) still applies; the lazy-create path
+now records the event's ``agent_id`` so the session row links to
+the correct agent even when no authoritative ``session_start`` ever
+arrives. D113 is superseded by D115 for session identity; the
+plugin's marker-file mechanism survives with a different cached
+value (random uuid4 instead of derived uuid5).
+
+---
+
+## D116 -- Agent identity validation at the ingestion boundary
+
+**Date:** 2026-04-22
+**Phase:** v0.4.0 Phase 1
+
+**Decision.** The ingestion handler (``POST /v1/events``) rejects
+every event whose ``agent_id`` is missing or malformed, whose
+``agent_type`` is outside ``{coding, production}``, or whose
+``client_type`` is outside ``{claude_code, flightdeck_sensor}``.
+Returns ``400`` with a specific error message per invariant
+(``"agent_id is required"``, ``"agent_id must be a canonical UUID"``,
+``"agent_type must be one of: coding, production"``,
+``"client_type must be one of: claude_code, flightdeck_sensor"``).
+
+The Python sensor and Claude Code plugin emit these fields correctly
+by construction. The validator exists for *third-party* emitters --
+anyone else POSTing events (custom integrations, load-test harnesses,
+a future litellm-style wrapper) must conform to the D114 / D115
+vocabulary. Rejecting at the ingestion boundary produces a clean 400
+with a human-readable error rather than letting a bad payload reach
+the worker, trip a Postgres CHECK constraint violation during
+UpsertSession, and surface the failure as an opaque Nak in the logs.
+
+**Why the wire layer not just the storage layer.** Storage CHECK
+constraints catch the same violations but in the async worker path,
+long after the client has already moved on. The client sees a 200
+from ingestion, then nothing -- no feedback loop, no error log, no
+"your event never landed." Returning a 400 synchronously at
+ingestion gives the client a immediate "why," which is how a
+misbehaving integration learns its payload is wrong in production.
+
+**Related decisions.** D114 (agent_type vocabulary lock) is what
+this validation enforces. D115 (agent identity model) introduced the
+fields being validated.

@@ -85,7 +85,7 @@ func TestEventsHandler_MissingAuth_Returns401(t *testing.T) {
 		nil,
 		nil,
 	)
-	body := `{"session_id":"abc","event_type":"post_call"}`
+	body := `{"session_id":"abc","event_type":"post_call","agent_id":"11111111-1111-4111-8111-111111111111","agent_type":"coding","client_type":"claude_code"}`
 	req := httptest.NewRequest("POST", "/v1/events", bytes.NewBufferString(body))
 	w := httptest.NewRecorder()
 	handler(w, req)
@@ -103,7 +103,7 @@ func TestEventsHandler_InvalidToken_Returns401(t *testing.T) {
 		nil,
 		nil,
 	)
-	body := `{"session_id":"abc","event_type":"post_call"}`
+	body := `{"session_id":"abc","event_type":"post_call","agent_id":"11111111-1111-4111-8111-111111111111","agent_type":"coding","client_type":"claude_code"}`
 	req := httptest.NewRequest("POST", "/v1/events", bytes.NewBufferString(body))
 	req.Header.Set("Authorization", "Bearer bad-token")
 	w := httptest.NewRecorder()
@@ -132,6 +132,52 @@ func TestEventsHandler_MalformedPayload_Returns400(t *testing.T) {
 	}
 }
 
+// D115 / D116: agent identity validation at the wire boundary. Each
+// sub-case exercises one invariant. The stack never reaches NATS on
+// any of these -- the handler returns 400 before the publish path.
+func TestEventsHandler_AgentIdentityValidation(t *testing.T) {
+	const validAgentID = "11111111-1111-4111-8111-111111111111"
+	cases := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "missing_agent_id",
+			body: `{"session_id":"abc-123","event_type":"post_call","agent_type":"coding","client_type":"claude_code"}`,
+		},
+		{
+			name: "malformed_agent_id",
+			body: `{"session_id":"abc-123","event_type":"post_call","agent_id":"not-a-uuid","agent_type":"coding","client_type":"claude_code"}`,
+		},
+		{
+			name: "invalid_agent_type",
+			body: `{"session_id":"abc-123","event_type":"post_call","agent_id":"` + validAgentID + `","agent_type":"autonomous","client_type":"flightdeck_sensor"}`,
+		},
+		{
+			name: "invalid_client_type",
+			body: `{"session_id":"abc-123","event_type":"post_call","agent_id":"` + validAgentID + `","agent_type":"coding","client_type":"rogue"}`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			handler := handlers.EventsHandler(
+				&mockValidator{valid: true},
+				&mockPublisher{},
+				&mockDirStore{},
+				nil,
+				nil,
+			)
+			req := httptest.NewRequest("POST", "/v1/events", bytes.NewBufferString(tc.body))
+			req.Header.Set("Authorization", "Bearer valid-token")
+			w := httptest.NewRecorder()
+			handler(w, req)
+			if w.Code != http.StatusBadRequest {
+				t.Errorf("expected 400, got %d (body=%s)", w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
 func TestEventsHandler_ValidToken_Returns200WithNullDirective(t *testing.T) {
 	pub := &mockPublisher{}
 	handler := handlers.EventsHandler(
@@ -141,7 +187,7 @@ func TestEventsHandler_ValidToken_Returns200WithNullDirective(t *testing.T) {
 		nil,
 		nil,
 	)
-	body := `{"session_id":"abc-123","event_type":"post_call","flavor":"test"}`
+	body := `{"session_id":"abc-123","event_type":"post_call","flavor":"test","agent_id":"11111111-1111-4111-8111-111111111111","agent_type":"coding","client_type":"claude_code"}`
 	req := httptest.NewRequest("POST", "/v1/events", bytes.NewBufferString(body))
 	req.Header.Set("Authorization", "Bearer valid-token")
 	w := httptest.NewRecorder()
@@ -173,7 +219,7 @@ func TestEventsHandler_PendingDirective_Returns200WithDirective(t *testing.T) {
 		nil,
 		nil,
 	)
-	body := `{"session_id":"abc-123","event_type":"post_call","flavor":"test"}`
+	body := `{"session_id":"abc-123","event_type":"post_call","flavor":"test","agent_id":"11111111-1111-4111-8111-111111111111","agent_type":"coding","client_type":"claude_code"}`
 	req := httptest.NewRequest("POST", "/v1/events", bytes.NewBufferString(body))
 	req.Header.Set("Authorization", "Bearer valid-token")
 	w := httptest.NewRecorder()
@@ -195,7 +241,7 @@ func TestHeartbeatHandler_ValidToken_Returns200(t *testing.T) {
 		&mockPublisher{},
 		&mockDirStore{directive: nil},
 	)
-	body := `{"session_id":"abc-123"}`
+	body := `{"session_id":"abc-123","agent_id":"11111111-1111-4111-8111-111111111111","agent_type":"coding","client_type":"claude_code"}`
 	req := httptest.NewRequest("POST", "/v1/heartbeat", bytes.NewBufferString(body))
 	req.Header.Set("Authorization", "Bearer valid-token")
 	w := httptest.NewRecorder()
@@ -222,7 +268,7 @@ func TestHeartbeatHandler_PendingDirective_ReturnsDirective(t *testing.T) {
 			Action: "shutdown", Reason: "kill", GracePeriodMs: 5000,
 		}},
 	)
-	body := `{"session_id":"abc-123"}`
+	body := `{"session_id":"abc-123","agent_id":"11111111-1111-4111-8111-111111111111","agent_type":"coding","client_type":"claude_code"}`
 	req := httptest.NewRequest("POST", "/v1/heartbeat", bytes.NewBufferString(body))
 	req.Header.Set("Authorization", "Bearer valid-token")
 	w := httptest.NewRecorder()
@@ -283,7 +329,7 @@ func TestRateLimitReturns429ViaHandler(t *testing.T) {
 
 	// Exhaust the rate limit
 	for range 1000 {
-		body := `{"session_id":"abc","event_type":"post_call","flavor":"test"}`
+		body := `{"session_id":"abc","event_type":"post_call","flavor":"test","agent_id":"11111111-1111-4111-8111-111111111111","agent_type":"coding","client_type":"claude_code"}`
 		req := httptest.NewRequest("POST", "/v1/events", bytes.NewBufferString(body))
 		req.Header.Set("Authorization", "Bearer tok")
 		w := httptest.NewRecorder()
@@ -291,7 +337,7 @@ func TestRateLimitReturns429ViaHandler(t *testing.T) {
 	}
 
 	// The 1001st request should return 429
-	body := `{"session_id":"abc","event_type":"post_call","flavor":"test"}`
+	body := `{"session_id":"abc","event_type":"post_call","flavor":"test","agent_id":"11111111-1111-4111-8111-111111111111","agent_type":"coding","client_type":"claude_code"}`
 	req := httptest.NewRequest("POST", "/v1/events", bytes.NewBufferString(body))
 	req.Header.Set("Authorization", "Bearer tok")
 	w := httptest.NewRecorder()
@@ -361,7 +407,7 @@ func TestEventsHandler_SessionStart_NewSession_AttachedFalse(t *testing.T) {
 		attacher,
 		nil,
 	)
-	body := `{"session_id":"abc-123","event_type":"session_start","flavor":"test"}`
+	body := `{"session_id":"abc-123","event_type":"session_start","flavor":"test","agent_id":"11111111-1111-4111-8111-111111111111","agent_type":"coding","client_type":"claude_code"}`
 	req := httptest.NewRequest("POST", "/v1/events", bytes.NewBufferString(body))
 	req.Header.Set("Authorization", "Bearer valid-token")
 	w := httptest.NewRecorder()
@@ -391,7 +437,7 @@ func TestEventsHandler_SessionStart_ExistingSession_AttachedTrue(t *testing.T) {
 		attacher,
 		nil,
 	)
-	body := `{"session_id":"existing-id","event_type":"session_start","flavor":"test"}`
+	body := `{"session_id":"existing-id","event_type":"session_start","flavor":"test","agent_id":"11111111-1111-4111-8111-111111111111","agent_type":"coding","client_type":"claude_code"}`
 	req := httptest.NewRequest("POST", "/v1/events", bytes.NewBufferString(body))
 	req.Header.Set("Authorization", "Bearer valid-token")
 	w := httptest.NewRecorder()
@@ -419,7 +465,7 @@ func TestEventsHandler_SessionStart_InjectsTokenIDAndName(t *testing.T) {
 		&mockSessAttacher{attached: false},
 		nil,
 	)
-	body := `{"session_id":"abc-123","event_type":"session_start","flavor":"test"}`
+	body := `{"session_id":"abc-123","event_type":"session_start","flavor":"test","agent_id":"11111111-1111-4111-8111-111111111111","agent_type":"coding","client_type":"claude_code"}`
 	req := httptest.NewRequest("POST", "/v1/events", bytes.NewBufferString(body))
 	req.Header.Set("Authorization", "Bearer ftd_whatever")
 	w := httptest.NewRecorder()
@@ -456,7 +502,7 @@ func TestEventsHandler_NonSessionStart_OmitsTokenFields(t *testing.T) {
 		nil,
 		nil,
 	)
-	body := `{"session_id":"abc-123","event_type":"post_call","flavor":"test"}`
+	body := `{"session_id":"abc-123","event_type":"post_call","flavor":"test","agent_id":"11111111-1111-4111-8111-111111111111","agent_type":"coding","client_type":"claude_code"}`
 	req := httptest.NewRequest("POST", "/v1/events", bytes.NewBufferString(body))
 	req.Header.Set("Authorization", "Bearer ftd_whatever")
 	w := httptest.NewRecorder()
@@ -487,7 +533,7 @@ func TestEventsHandler_RejectionReasonSurfacedIn401(t *testing.T) {
 		nil,
 		nil,
 	)
-	body := `{"session_id":"abc","event_type":"post_call"}`
+	body := `{"session_id":"abc","event_type":"post_call","agent_id":"11111111-1111-4111-8111-111111111111","agent_type":"coding","client_type":"claude_code"}`
 	req := httptest.NewRequest("POST", "/v1/events", bytes.NewBufferString(body))
 	req.Header.Set("Authorization", "Bearer tok_dev")
 	w := httptest.NewRecorder()
@@ -515,7 +561,7 @@ func TestEventsHandler_NonSessionStart_DoesNotAttach(t *testing.T) {
 		attacher,
 		nil,
 	)
-	body := `{"session_id":"abc-123","event_type":"post_call","flavor":"test"}`
+	body := `{"session_id":"abc-123","event_type":"post_call","flavor":"test","agent_id":"11111111-1111-4111-8111-111111111111","agent_type":"coding","client_type":"claude_code"}`
 	req := httptest.NewRequest("POST", "/v1/events", bytes.NewBufferString(body))
 	req.Header.Set("Authorization", "Bearer valid-token")
 	w := httptest.NewRecorder()

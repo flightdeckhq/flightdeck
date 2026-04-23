@@ -260,9 +260,12 @@ def init(
 
     - ``FLIGHTDECK_API_URL`` -- control-plane base URL (overrides *api_url*)
     - ``FLIGHTDECK_SESSION_ID`` -- session id hint (overrides *session_id*)
-    - ``FLIGHTDECK_AGENT_TYPE`` / ``AGENT_TYPE`` -- overrides *agent_type*; must be ``coding`` or ``production``
-    - ``FLIGHTDECK_AGENT_NAME`` / ``AGENT_FLAVOR`` -- overrides *agent_name* (``AGENT_FLAVOR`` retained for wire-level ``flavor`` field compatibility)
-    - ``FLIGHTDECK_HOSTNAME`` -- overrides ``socket.gethostname()`` (useful for k8s pod grouping)
+    - ``FLIGHTDECK_AGENT_TYPE`` / ``AGENT_TYPE`` -- overrides *agent_type*;
+      must be ``coding`` or ``production``
+    - ``FLIGHTDECK_AGENT_NAME`` / ``AGENT_FLAVOR`` -- overrides *agent_name*
+      (``AGENT_FLAVOR`` retained for wire-level ``flavor`` field compatibility)
+    - ``FLIGHTDECK_HOSTNAME`` -- overrides ``socket.gethostname()`` (useful
+      for k8s pod grouping)
     - ``FLIGHTDECK_UNAVAILABLE_POLICY`` -- ``"continue"`` or ``"halt"``
     - ``FLIGHTDECK_CAPTURE_PROMPTS`` -- ``"true"`` to enable
     """

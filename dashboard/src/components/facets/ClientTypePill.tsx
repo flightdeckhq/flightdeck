@@ -40,18 +40,16 @@ export function ClientTypePill({
         color: colors.fg,
         border: `1px solid ${colors.border}`,
         letterSpacing: "0.04em",
+        // Pills never truncate: labels are short, meaningful, and
+        // decorative, so a truncated ``SENS…`` pill (the Supervisor
+        // Chrome-smoke bug) is strictly worse than a full-width
+        // ``SENSOR`` pill plus a truncated sibling agent_name. The
+        // sibling ``<TruncatedText/>`` absorbs the truncation via
+        // native ellipsis + tooltip; this pill keeps its intrinsic
+        // width with ``whiteSpace: nowrap`` + ``flexShrink: 0`` so
+        // it cannot be squeezed by its flex row.
         whiteSpace: "nowrap",
-        // Sidebar narrow-width behaviour: ``flexShrink: 100`` tells the
-        // flexbox the pill yields before sibling labels do, so the
-        // agent name stays readable when the sidebar is dragged narrow.
-        // ``minWidth: 0`` plus ``overflow/textOverflow`` lets the pill
-        // actually collapse past its intrinsic width instead of
-        // forcing the row wider. Covered by
-        // ``FleetSidebar-resize.test.tsx``.
-        flexShrink: 100,
-        minWidth: 0,
-        overflow: "hidden",
-        textOverflow: "ellipsis",
+        flexShrink: 0,
       }}
       title={`client_type=${clientType}`}
     >

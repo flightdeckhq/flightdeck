@@ -2,6 +2,7 @@ import { Fragment, useCallback, useEffect, useRef, useState, useMemo } from "rea
 import { motion, AnimatePresence } from "framer-motion";
 import { X, FileText } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { TruncatedText } from "@/components/ui/TruncatedText";
 import { invalidateSessionCache, useSession } from "@/hooks/useSession";
 import { useFleetStore } from "@/store/fleet";
 import { DirectiveCard } from "@/components/directives/DirectiveCard";
@@ -917,9 +918,14 @@ interface MetadataCellProps {
  * needs `META_CLIP_STYLE` applied explicitly).
  */
 function MetadataCell({ label, children, title, testId }: MetadataCellProps) {
+  // String children go through ``<TruncatedText/>`` so the cell gets
+  // auto-detected ellipsis + native ``title`` hover reveal without
+  // callers having to thread a ``title`` prop. Non-string children
+  // keep the explicit META_CLIP_STYLE path -- they're typically
+  // composite (icon + text) and the caller owns the tooltip.
   const content =
     typeof children === "string" ? (
-      <span style={META_CLIP_STYLE}>{children}</span>
+      <TruncatedText text={children} />
     ) : (
       children
     );
@@ -1148,7 +1154,13 @@ function EventFeed({
                   {badge.label}
                 </span>
               )}
-              <span className="flex-1 truncate text-[13px] flex items-center gap-1" style={{ color: "var(--text)" }}>
+              <span
+                // Mixed inline content (provider logo + detail text).
+                // Native ``title`` surfaces the text on hover.
+                className="flex-1 truncate text-[13px] flex items-center gap-1"
+                style={{ color: "var(--text)" }}
+                title={detail}
+              >
                 {(event.event_type === "post_call" || event.event_type === "pre_call") && event.model && (
                   <ProviderLogo provider={getProvider(event.model)} size={12} />
                 )}

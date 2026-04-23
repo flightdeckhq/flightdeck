@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { FacetIcon } from "@/components/facets/FacetIcon";
+import { TruncatedText } from "@/components/ui/TruncatedText";
 import { fetchSessions, type SessionsParams } from "@/lib/api";
 import type { AgentSummary, SessionListItem, SessionState } from "@/lib/types";
 import { useFleetStore } from "@/store/fleet";
@@ -1344,7 +1345,7 @@ export function Investigate() {
                   >
                     <span className="flex items-center min-w-0 flex-1" style={{ gap: 8 }}>
                       <FacetIcon groupKey={group.key} value={v.value} />
-                      <span className="truncate">{v.label ?? v.value}</span>
+                      <TruncatedText text={v.label ?? v.value} />
                     </span>
                     <span
                       className="shrink-0"
@@ -1546,29 +1547,36 @@ export function Investigate() {
                     onMouseLeave={(e) => { if (selectedSessionId !== s.session_id) e.currentTarget.style.background = ""; }}
                   >
                     <td
-                      className="truncate"
                       style={{
                         padding: "0 12px",
                         width: COL_WIDTHS.session,
                         fontFamily: "var(--font-mono)",
                         fontSize: 12,
                         color: "var(--text-secondary)",
+                        // Table cells drop the raw ``truncate``
+                        // Tailwind class in favour of an inner
+                        // ``<TruncatedText/>`` -- the cell still
+                        // constrains width, the primitive handles
+                        // ellipsis + title-attribute tooltip reveal.
+                        overflow: "hidden",
                       }}
                       data-testid={`investigate-row-session-${s.session_id}`}
                     >
-                      {truncateSessionId(s.session_id)}
+                      <TruncatedText text={truncateSessionId(s.session_id)} />
                     </td>
-                    <td className="truncate" style={{ padding: "0 12px", width: COL_WIDTHS.flavor, fontSize: 13, fontWeight: 500, color: "var(--text)" }}>
-                      <span style={{ display: "inline-flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+                    <td style={{ padding: "0 12px", width: COL_WIDTHS.flavor, fontSize: 13, fontWeight: 500, color: "var(--text)", overflow: "hidden" }}>
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: 6, minWidth: 0, maxWidth: "100%" }}>
                         {isClaudeCodeSession(s) && (
                           <ClaudeCodeLogo size={14} className="shrink-0" />
                         )}
-                        <span className="truncate">{s.flavor}</span>
+                        <TruncatedText text={s.flavor} />
                         {isClaudeCodeSession(s) && <CodingAgentBadge />}
                       </span>
                     </td>
-                    <td className="truncate" style={{ padding: "0 12px", width: COL_WIDTHS.hostname, fontSize: 12, color: "var(--text-secondary)" }}>
-                      {(s.context?.hostname as string) ?? s.host ?? "\u2014"}
+                    <td style={{ padding: "0 12px", width: COL_WIDTHS.hostname, fontSize: 12, color: "var(--text-secondary)", overflow: "hidden" }}>
+                      <TruncatedText
+                        text={(s.context?.hostname as string) ?? s.host ?? "\u2014"}
+                      />
                     </td>
                     <td style={{ padding: "0 8px", width: COL_WIDTHS.os }}>
                       <OSIcon os={(s.context?.os as string) ?? ""} size={16} />
@@ -1579,11 +1587,11 @@ export function Investigate() {
                         size={16}
                       />
                     </td>
-                    <td className="truncate" style={{ padding: "0 12px", width: COL_WIDTHS.model, fontSize: 12, color: "var(--text-secondary)" }}>
+                    <td style={{ padding: "0 12px", width: COL_WIDTHS.model, fontSize: 12, color: "var(--text-secondary)", overflow: "hidden" }}>
                       {s.model ? (
-                        <span className="inline-flex items-center gap-1.5 min-w-0">
+                        <span className="inline-flex items-center gap-1.5 min-w-0 max-w-full">
                           <ProviderLogo provider={getProvider(s.model)} size={12} />
-                          <span className="truncate">{s.model}</span>
+                          <TruncatedText text={s.model} />
                         </span>
                       ) : (
                         "\u2014"

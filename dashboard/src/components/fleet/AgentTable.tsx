@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import type { AgentSummary, SessionState } from "@/lib/types";
 import { ClientType } from "@/lib/agent-identity";
 import { ClientTypePill } from "@/components/facets/ClientTypePill";
+import { TruncatedText } from "@/components/ui/TruncatedText";
 import { CodingAgentBadge } from "@/components/ui/coding-agent-badge";
 import { ClaudeCodeLogo } from "@/components/ui/claude-code-logo";
 import { bucketFor } from "@/lib/fleet-ordering";
@@ -207,12 +208,16 @@ export function AgentTable({ agents, loading }: AgentTableProps) {
               data-testid={`fleet-agent-row-${a.agent_id}`}
             >
               <td
-                className="truncate"
                 style={{
                   padding: "0 12px",
                   fontSize: 13,
                   fontWeight: 500,
                   color: "var(--text)",
+                  // Cells drop the raw ``truncate`` Tailwind class;
+                  // inner ``<TruncatedText/>`` surfaces the full
+                  // value via native ``title`` on hover when the
+                  // ellipsis actually renders.
+                  overflow: "hidden",
                 }}
               >
                 <span
@@ -221,23 +226,24 @@ export function AgentTable({ agents, loading }: AgentTableProps) {
                     alignItems: "center",
                     gap: 6,
                     minWidth: 0,
+                    maxWidth: "100%",
                   }}
                 >
                   {a.client_type === ClientType.ClaudeCode && (
                     <ClaudeCodeLogo size={14} className="shrink-0" />
                   )}
-                  <span className="truncate">{a.agent_name}</span>
+                  <TruncatedText text={a.agent_name} />
                 </span>
-                <div
+                <TruncatedText
+                  as="div"
                   style={{
                     fontSize: 11,
                     color: "var(--text-muted)",
                     fontFamily: "var(--font-mono)",
                     marginTop: 2,
                   }}
-                >
-                  {a.user}@{a.hostname}
-                </div>
+                  text={`${a.user}@${a.hostname}`}
+                />
               </td>
               <td
                 style={{

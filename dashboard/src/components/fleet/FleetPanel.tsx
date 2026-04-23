@@ -202,8 +202,24 @@ export function FleetPanel({
       </div>
 
       {/* Session States */}
-      <div className="px-3 pb-2 pt-2 text-xs font-semibold uppercase tracking-[0.06em]" style={{ color: "var(--text-secondary)" }}>
-        Session States
+      <div
+        className="flex items-baseline gap-2 px-3 pb-2 pt-2 text-xs font-semibold uppercase tracking-[0.06em]"
+        style={{ color: "var(--text-secondary)" }}
+      >
+        <span>Session States</span>
+        {/* Windowing hint so the sum of state counts vs. the lifetime
+            ``total_sessions`` figure elsewhere is not mysterious.
+            Controlled by ``SWIMLANE_LOOKBACK_MS`` in the fleet store.
+            The swimlane header counts and the per-agent "X active"
+            values all use the same window. */}
+        <span
+          className="text-[10px] font-normal normal-case tracking-normal"
+          style={{ color: "var(--text-muted)" }}
+          data-testid="session-states-window-label"
+          title="Counts reflect sessions started in the last 24 hours. Expand an agent row to see every session under that agent."
+        >
+          last 24 hours
+        </span>
       </div>
       <div className="px-3 pb-3">
         <SessionStateBar flavors={flavors} counts={sessionStateCounts} />

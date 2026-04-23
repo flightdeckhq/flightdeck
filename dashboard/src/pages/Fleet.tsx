@@ -146,6 +146,8 @@ export function Fleet() {
 
   const agents = useFleetStore((s) => s.agents);
   const enteredBucketAt = useFleetStore((s) => s.enteredBucketAt);
+  const expandedSessions = useFleetStore((s) => s.expandedSessions);
+  const loadExpandedSessions = useFleetStore((s) => s.loadExpandedSessions);
   const fleetTotal = useFleetStore((s) => s.total);
   const fleetPage = useFleetStore((s) => s.page);
   const fleetPerPage = useFleetStore((s) => s.perPage);
@@ -478,6 +480,14 @@ export function Fleet() {
         next.delete(flavor);
       } else {
         next.add(flavor);
+        // On expand (not collapse): fetch every session under this
+        // agent so the expanded SESSIONS list shows closed / old
+        // sessions that fall outside the 24-hour Fleet rollup
+        // window. Fresh fetch per expand; no cache. The call
+        // populates ``expandedSessions`` in the fleet store, which
+        // the swimlane renderer merges in for this flavor only so
+        // the main timeline above the expansion stays windowed.
+        void loadExpandedSessions(flavor);
       }
       return next;
     });
@@ -816,6 +826,7 @@ export function Fleet() {
               timeRange={timeRange}
               expandedFlavors={expandedFlavors}
               onExpandFlavor={handleExpandFlavor}
+              expandedSessions={expandedSessions}
               onNodeClick={(id, _eventId, event) => {
                 selectSession(id);
                 setDirectEventDetail(event ?? null);

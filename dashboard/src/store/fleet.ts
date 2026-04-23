@@ -23,11 +23,27 @@ import {
 // the filter at the query layer.
 export type AgentTypeFilter = "all" | "coding" | "production";
 
-// How far back the swimlane-bootstrap session fetch looks. Matches
-// the longest swimlane time range (1h) plus a small buffer so the
-// dashboard can still render rows that were active at the start of
-// the window.
-const SWIMLANE_LOOKBACK_MS = 2 * 60 * 60 * 1000; // 2 hours
+// How far back the Fleet-bootstrap session fetch looks.
+//
+// 24 hours is the "what did my fleet do today?" window. The FLEET
+// OVERVIEW state-count rollup, the swimlane agent-row header counts,
+// and the default swimlane event circles all feed from this fetch.
+//
+// Not to be confused with Investigate's default from-window, which is
+// 7 days: Investigate is a history-view (answering "what happened in
+// the last week?") while Fleet is a now-view (answering "what is
+// running right now / did just run?"). The two defaults serve
+// different questions.
+//
+// Older per-agent history is loaded on demand via
+// ``loadExpandedSessions(agentId)`` when the user expands an agent
+// row; that path has no lookback bound (server default applies) so
+// the expanded SESSIONS list shows every session under the agent,
+// not just today's subset. See the "last 24h" label in
+// ``FleetPanel.tsx`` that surfaces this windowing to the user so the
+// FLEET OVERVIEW counts vs. lifetime ``total_sessions`` asymmetry is
+// not mysterious.
+const SWIMLANE_LOOKBACK_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 interface FleetState {
   /** Agent-level rows for the Fleet table view and the sidebar
@@ -58,6 +74,23 @@ interface FleetState {
    * within-bucket reordering. See ``lib/fleet-ordering.ts``.
    */
   enteredBucketAt: Map<string, number>;
+  /**
+   * Per-agent on-demand session lists, keyed by ``agent_id``.
+   *
+   * Populated by ``loadExpandedSessions(agentId)`` when the user
+   * expands an agent row in the swimlane. These sessions bypass the
+   * 24-hour ``SWIMLANE_LOOKBACK_MS`` window so the user sees ALL
+   * sessions under the agent, including closed ones from hours or
+   * days ago. Kept in a separate map from ``flavors[].sessions`` so
+   * the main swimlane view is NOT polluted with old sessions -- only
+   * the expanded row reads from this map.
+   *
+   * Policy: fresh fetch on every expand, no caching. Collapsing and
+   * re-expanding the same agent fires a second fetch. WebSocket
+   * updates are NOT mirrored into this map (the expanded list is a
+   * historical view reflecting the server at fetch time).
+   */
+  expandedSessions: Map<string, Session[]>;
 
   load: (opts?: {
     page?: number;
@@ -66,6 +99,14 @@ interface FleetState {
   }) => Promise<void>;
   setAgentTypeFilter: (filter: AgentTypeFilter) => void;
   setFlavorFilter: (flavor: string | null) => void;
+  /**
+   * Fetch every session under the given agent_id (up to the server's
+   * 100-row per-page cap) and stash the result in ``expandedSessions``.
+   * Bypasses ``SWIMLANE_LOOKBACK_MS`` so old/closed sessions are
+   * visible in the expanded SESSIONS list. Best-effort -- failures
+   * leave ``expandedSessions`` untouched and log to the console.
+   */
+  loadExpandedSessions: (agentId: string) => Promise<void>;
   applyUpdate: (update: FleetUpdate) => void;
   selectSession: (id: string | null) => void;
   markShuttingDown: (sessionId: string) => void;
@@ -156,6 +197,7 @@ export const useFleetStore = create<FleetState>((set, get) => ({
   agentTypeFilter: "all",
   flavorFilter: null,
   enteredBucketAt: new Map<string, number>(),
+  expandedSessions: new Map<string, Session[]>(),
 
   load: async (opts = {}) => {
     const page = opts.page ?? 1;
@@ -213,6 +255,34 @@ export const useFleetStore = create<FleetState>((set, get) => ({
 
   setAgentTypeFilter: (filter: AgentTypeFilter) => {
     void get().load({ page: 1, agentType: filter });
+  },
+
+  loadExpandedSessions: async (agentId: string) => {
+    try {
+      // No ``from``/``to`` bounds: server applies its 7-day default,
+      // which is sufficient for "show me this agent's sessions" and
+      // significantly wider than the Fleet 24h rollup. ``limit: 100``
+      // is the server cap; per-agent traffic rarely exceeds this in
+      // a 7-day window and any truncation is fronted by the lifetime
+      // ``total_sessions`` counter on the agent row.
+      const resp = await fetchSessions({
+        agent_id: agentId,
+        limit: 100,
+        offset: 0,
+      });
+      const sessions = resp.sessions.map(listItemToSession);
+      set({
+        expandedSessions: new Map(get().expandedSessions).set(
+          agentId,
+          sessions,
+        ),
+      });
+    } catch (err) {
+      console.error(
+        `loadExpandedSessions(${agentId}) failed; expanded row will fall back to the 24h subset`,
+        err,
+      );
+    }
   },
 
   setFlavorFilter: (flavor: string | null) => {

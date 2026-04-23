@@ -26,6 +26,17 @@ interface SwimLaneProps {
    *  badge next to the pill. */
   agentType?: string;
   sessions: Session[];
+  /**
+   * Optional override for the expanded SESSIONS list only. When
+   * provided (populated by the fleet store's on-demand
+   * ``loadExpandedSessions`` fetch), the expanded section renders
+   * every session under this agent, including closed / old ones that
+   * fall outside the 24-hour Fleet rollup window. The main
+   * event-circle row above the expansion still uses ``sessions`` so
+   * the timeline above the drawer stays scoped to the Fleet window
+   * and does not gain phantom circles from weeks-old sessions.
+   */
+  expandedSessions?: Session[];
   scale: ScaleTime<number, number>;
   onSessionClick: (sessionId: string, eventId?: string, event?: AgentEvent) => void;
   expanded: boolean;
@@ -61,6 +72,7 @@ function SwimLaneComponent({
   clientType,
   agentType,
   sessions,
+  expandedSessions,
   scale,
   onSessionClick,
   expanded,
@@ -107,16 +119,25 @@ function SwimLaneComponent({
     return "";
   }, [liveCount, sessions]);
 
+  // Source list for the expanded SESSIONS section. Prefers the
+  // on-demand full-history fetch (``expandedSessions``) when present;
+  // falls back to the 24-hour Fleet subset when the fetch has not
+  // resolved yet or failed. Note: the event-circle row above the
+  // expansion uses ``sessions`` (the windowed subset) so circles for
+  // sessions outside the Fleet window do NOT appear on the main
+  // timeline, only in the expanded session list.
+  const expandedSessionList = expandedSessions ?? sessions;
+
   // Count of sessions that will actually render in the expanded
   // view. When a CONTEXT filter is active, non-matching sessions
   // are omitted from the map below, so the maxHeight animation and
   // the SESSIONS sub-header count should reflect the visible subset.
   const visibleSessionCount = useMemo(() => {
-    if (matchingSessionIds === null) return sessions.length;
-    return sessions.filter((s) =>
+    if (matchingSessionIds === null) return expandedSessionList.length;
+    return expandedSessionList.filter((s) =>
       matchingSessionIds.has(s.session_id),
     ).length;
-  }, [sessions, matchingSessionIds]);
+  }, [expandedSessionList, matchingSessionIds]);
 
   return (
     <div style={{ borderBottom: "1px solid var(--border-subtle)" }}>
@@ -300,7 +321,7 @@ function SwimLaneComponent({
               </div>
               <div style={{ width: timelineWidth, flexShrink: 0 }} />
             </div>
-            {sessions.map((session, sessionIndex) => {
+            {expandedSessionList.map((session, sessionIndex) => {
               // Hide sessions that don't match the active CONTEXT
               // sidebar filter. matchingSessionIds === null means
               // no filters are active and every row is fully visible.
@@ -343,6 +364,7 @@ function SwimLaneComponent({
 export const SwimLane = memo(SwimLaneComponent, (prev, next) => {
   if (prev.flavor !== next.flavor) return false;
   if (prev.sessions !== next.sessions) return false;
+  if (prev.expandedSessions !== next.expandedSessions) return false;
   if (prev.expanded !== next.expanded) return false;
   if (prev.activeFilter !== next.activeFilter) return false;
   if (prev.sessionVersions !== next.sessionVersions) return false;

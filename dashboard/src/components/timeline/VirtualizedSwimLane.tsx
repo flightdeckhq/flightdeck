@@ -20,6 +20,9 @@ interface VirtualizedSwimLaneProps {
   clientType?: ClientType;
   agentType?: string;
   sessions: Session[];
+  /** Forwarded to SwimLane for the expanded SESSIONS drawer; see
+   *  SwimLane.tsx for the windowing rationale. */
+  expandedSessions?: Session[];
   scale: ScaleTime<number, number>;
   onSessionClick: (sessionId: string, eventId?: string, event?: AgentEvent) => void;
   expanded: boolean;

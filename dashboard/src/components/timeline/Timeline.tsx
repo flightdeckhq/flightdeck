@@ -27,6 +27,16 @@ interface TimelineProps {
    */
   expandedFlavors: Set<string>;
   onExpandFlavor: (flavor: string) => void;
+  /**
+   * Per-flavor on-demand session lists, keyed by flavor (which is
+   * the agent_id under D115). When the map has an entry for a given
+   * flavor, the SwimLane's expanded SESSIONS drawer renders from it
+   * instead of the 24-hour Fleet-windowed ``f.sessions`` subset, so
+   * old / closed sessions appear in the drawer but NOT on the main
+   * event-circle row. Populated by the fleet store's
+   * ``loadExpandedSessions(agentId)`` action.
+   */
+  expandedSessions?: Map<string, import("@/lib/types").Session[]>;
   onNodeClick: (sessionId: string, eventId?: string, event?: import("@/lib/types").AgentEvent) => void;
   activeFilter?: string | null;
   paused?: boolean;
@@ -57,6 +67,7 @@ export function Timeline({
   timeRange,
   expandedFlavors,
   onExpandFlavor,
+  expandedSessions,
   onNodeClick,
   activeFilter,
   paused,
@@ -559,6 +570,7 @@ export function Timeline({
                 clientType={f.client_type}
                 agentType={f.agent_type}
                 sessions={f.sessions}
+                expandedSessions={expandedSessions?.get(f.flavor)}
                 scale={scale}
                 onSessionClick={onNodeClick}
                 expanded={expandedFlavors.has(f.flavor)}

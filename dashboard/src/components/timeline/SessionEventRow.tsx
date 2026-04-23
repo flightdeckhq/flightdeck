@@ -6,6 +6,7 @@ import { EventNode } from "./EventNode";
 import { useSessionEvents, attachmentsCache } from "@/hooks/useSessionEvents";
 import { isAttachmentStartEvent, isEventVisible, truncateSessionId } from "@/lib/events";
 import { OSIcon } from "@/components/ui/OSIcon";
+import { TruncatedText } from "@/components/ui/TruncatedText";
 import {
   OrchestrationIcon,
   getOrchestrationLabel,
@@ -224,39 +225,31 @@ function SessionEventRowComponent({
             minWidth: 0,
           }}
         >
-          <span
+          <TruncatedText
             data-testid="session-row-label"
             style={{
               fontSize: 12,
               fontFamily: "var(--font-mono)",
               color: "var(--text)",
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
               lineHeight: 1.3,
             }}
-          >
-            {primaryLabel}
-          </span>
+            text={primaryLabel}
+          />
           {/* Secondary session hash -- only shown when hostname
               occupies the primary slot. Without a hostname, the
               hash IS the identity and duplicating it would waste
               space. */}
           {ctxHostname && (
-            <span
+            <TruncatedText
               data-testid="session-row-hash"
               style={{
                 fontSize: 10,
                 fontFamily: "var(--font-mono)",
                 color: "var(--text-muted)",
                 lineHeight: 1.3,
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
               }}
-            >
-              {truncatedSid}
-            </span>
+              text={truncatedSid}
+            />
           )}
         </div>
         <span

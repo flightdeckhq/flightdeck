@@ -4,6 +4,7 @@ import { getBadge, getEventDetail, flavorColor, isEventVisible, truncateSessionI
 import { getProvider } from "@/lib/models";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import { ClaudeCodeLogo } from "@/components/ui/claude-code-logo";
+import { TruncatedText } from "@/components/ui/TruncatedText";
 import {
   FEED_MAX_EVENTS,
   PAUSE_QUEUE_MAX_EVENTS,
@@ -276,15 +277,21 @@ function FeedRow({ fe, colWidths, onClick }: { fe: FeedEvent; colWidths: ColWidt
       data-testid="feed-row"
     >
       <span
-        className="shrink-0 truncate font-mono text-xs"
-        style={{ width: colWidths.flavor, color, display: "inline-flex", alignItems: "center", gap: 4 }}
+        className="shrink-0 font-mono text-xs"
+        style={{ width: colWidths.flavor, color, display: "inline-flex", alignItems: "center", gap: 4, overflow: "hidden" }}
       >
         {event.flavor === "claude-code" && (
           <ClaudeCodeLogo size={12} className="shrink-0" />
         )}
-        <span className="truncate">{event.flavor}</span>
+        <TruncatedText text={event.flavor} />
       </span>
-      <span className="shrink-0 truncate font-mono text-xs" style={{ width: colWidths.session, color: "var(--text-muted)" }} data-testid="feed-session-id">{truncateSessionId(event.session_id)}</span>
+      <span
+        className="shrink-0 font-mono text-xs"
+        style={{ width: colWidths.session, color: "var(--text-muted)", overflow: "hidden" }}
+        data-testid="feed-session-id"
+      >
+        <TruncatedText text={truncateSessionId(event.session_id)} />
+      </span>
       <span
         className="flex shrink-0 h-[18px] items-center justify-center rounded font-mono text-[10px] font-semibold uppercase"
         style={{
@@ -296,7 +303,14 @@ function FeedRow({ fe, colWidths, onClick }: { fe: FeedEvent; colWidths: ColWidt
         }}
         data-testid="feed-badge"
       >{badge.label}</span>
-      <span className="shrink-0 truncate text-xs pl-2 flex items-center gap-1" style={{ width: colWidths.detail, color: "var(--text)" }}>
+      <span
+        // Mixed content (provider logo + detail text). Native
+        // ``title`` surfaces the text value on hover; the primitive
+        // is not used here because the logo is a non-text child.
+        className="shrink-0 truncate text-xs pl-2 flex items-center gap-1"
+        style={{ width: colWidths.detail, color: "var(--text)" }}
+        title={detail}
+      >
         {(event.event_type === "post_call" || event.event_type === "pre_call") && event.model && (
           <ProviderLogo provider={getProvider(event.model)} size={12} />
         )}

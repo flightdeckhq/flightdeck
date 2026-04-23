@@ -2,10 +2,11 @@ import { memo, useMemo } from "react";
 import type { ScaleTime } from "d3-scale";
 import type { Session, AgentEvent } from "@/lib/types";
 import {
-  CLIENT_TYPE_LABEL,
   ClientType,
   type ClientType as ClientTypeT,
 } from "@/lib/agent-identity";
+import { ClientTypePill } from "@/components/facets/ClientTypePill";
+import { TruncatedText } from "@/components/ui/TruncatedText";
 import { SESSION_ROW_HEIGHT, EVENT_CIRCLE_SIZE } from "@/lib/constants";
 import { ChevronRight } from "lucide-react";
 import { SessionEventRow } from "./SessionEventRow";
@@ -26,6 +27,17 @@ interface SwimLaneProps {
    *  badge next to the pill. */
   agentType?: string;
   sessions: Session[];
+  /**
+   * Optional override for the expanded SESSIONS list only. When
+   * provided (populated by the fleet store's on-demand
+   * ``loadExpandedSessions`` fetch), the expanded section renders
+   * every session under this agent, including closed / old ones that
+   * fall outside the 24-hour Fleet rollup window. The main
+   * event-circle row above the expansion still uses ``sessions`` so
+   * the timeline above the drawer stays scoped to the Fleet window
+   * and does not gain phantom circles from weeks-old sessions.
+   */
+  expandedSessions?: Session[];
   scale: ScaleTime<number, number>;
   onSessionClick: (sessionId: string, eventId?: string, event?: AgentEvent) => void;
   expanded: boolean;
@@ -61,6 +73,7 @@ function SwimLaneComponent({
   clientType,
   agentType,
   sessions,
+  expandedSessions,
   scale,
   onSessionClick,
   expanded,
@@ -107,16 +120,35 @@ function SwimLaneComponent({
     return "";
   }, [liveCount, sessions]);
 
+  // Source list for the expanded SESSIONS section. Prefers the
+  // on-demand full-history fetch (``expandedSessions``) when present;
+  // falls back to the 24-hour Fleet subset when the fetch has not
+  // resolved yet or failed. Note: the event-circle row above the
+  // expansion uses ``sessions`` (the windowed subset) so circles for
+  // sessions outside the Fleet window do NOT appear on the main
+  // timeline, only in the expanded session list.
+  // ``?? []`` on both branches: TypeScript types the incoming
+  // ``sessions`` prop as ``Session[]`` and ``expandedSessions`` as
+  // ``Session[] | undefined``, but a runtime payload that surprises
+  // the type (e.g. a ``null`` field slipping through a stale
+  // WebSocket deserializer) would crash the expanded drawer's
+  // ``.map`` below. Memoized so the useMemo hooks downstream get a
+  // stable reference when the underlying arrays don't change.
+  const expandedSessionList = useMemo(
+    () => expandedSessions ?? sessions ?? [],
+    [expandedSessions, sessions],
+  );
+
   // Count of sessions that will actually render in the expanded
   // view. When a CONTEXT filter is active, non-matching sessions
   // are omitted from the map below, so the maxHeight animation and
   // the SESSIONS sub-header count should reflect the visible subset.
   const visibleSessionCount = useMemo(() => {
-    if (matchingSessionIds === null) return sessions.length;
-    return sessions.filter((s) =>
+    if (matchingSessionIds === null) return expandedSessionList.length;
+    return expandedSessionList.filter((s) =>
       matchingSessionIds.has(s.session_id),
     ).length;
-  }, [sessions, matchingSessionIds]);
+  }, [expandedSessionList, matchingSessionIds]);
 
   return (
     <div style={{ borderBottom: "1px solid var(--border-subtle)" }}>
@@ -153,33 +185,23 @@ function SwimLaneComponent({
           {(clientType === ClientType.ClaudeCode || flavor === "claude-code") && (
             <ClaudeCodeLogo size={14} className="shrink-0" />
           )}
-          <span
+          {/* D115: primary label is agent_name; legacy rows without
+              agent identity fall back to the stored flavor string.
+              ``<TruncatedText/>`` auto-reveals the full value via a
+              native ``title`` tooltip when the row is narrow -- the
+              Phase 2 Supervisor smoke bug was a truncated agent name
+              with no hover reveal. */}
+          <TruncatedText
             className="text-[13px] font-medium"
-            style={{
-              color: "var(--text)",
-              minWidth: 0,
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-            }}
-          >
-            {/* D115: primary label is agent_name; legacy rows without
-                agent identity fall back to the stored flavor string. */}
-            {agentName ?? flavor}
-          </span>
+            style={{ color: "var(--text)", minWidth: 0 }}
+            text={agentName ?? flavor}
+          />
           {clientType && (
-            <span
-              className="shrink-0 rounded-sm px-1.5 py-[1px] text-[10px] font-medium uppercase tracking-wide"
-              style={{
-                background: "var(--bg-elevated)",
-                color: "var(--text-muted)",
-                border: "1px solid var(--border-subtle)",
-              }}
-              data-testid="swimlane-client-type-pill"
-              title={`client_type=${clientType}`}
-            >
-              {CLIENT_TYPE_LABEL[clientType]}
-            </span>
+            <ClientTypePill
+              clientType={clientType}
+              size="compact"
+              testId="swimlane-client-type-pill"
+            />
           )}
           {agentType && (
             <span
@@ -249,8 +271,18 @@ function SwimLaneComponent({
           rather than leaving blank gaps for hidden rows. */}
       <div
         style={{
+          // When the agent has zero sessions to display (either a
+          // genuinely brand-new agent that has not yet emitted a
+          // session_start, or a data-integrity mismatch where
+          // ``agents.total_sessions`` is out of sync with actual
+          // session rows), reserve a ~36px slot for the empty-state
+          // row below instead of collapsing to the bare 28px header.
+          // Prevents the "I expanded it and nothing visible happened"
+          // UX hit.
           maxHeight: expanded
-            ? visibleSessionCount * SESSION_ROW_HEIGHT + 28
+            ? (visibleSessionCount === 0
+                ? SESSION_ROW_HEIGHT + 28 + 8
+                : visibleSessionCount * SESSION_ROW_HEIGHT + 28)
             : 0,
           opacity: expanded ? 1 : 0,
           overflow: "hidden",
@@ -307,7 +339,33 @@ function SwimLaneComponent({
               </div>
               <div style={{ width: timelineWidth, flexShrink: 0 }} />
             </div>
-            {sessions.map((session, sessionIndex) => {
+            {visibleSessionCount === 0 && (
+              // Empty state. Fires when the on-demand
+              // ``/v1/sessions?agent_id=<uuid>`` fetch returned zero
+              // rows (data-integrity: the agents rollup counter is
+              // nonzero but no actual session rows exist -- common on
+              // dev DBs that were TRUNCATE'd without reconciling the
+              // rollup) OR the agent is brand-new and has not yet
+              // emitted its first session_start. Either way, surface
+              // the reason rather than leaving the drawer looking
+              // broken-empty.
+              <div
+                data-testid="swimlane-expanded-empty"
+                style={{
+                  paddingLeft: 32,
+                  paddingRight: 16,
+                  height: SESSION_ROW_HEIGHT,
+                  display: "flex",
+                  alignItems: "center",
+                  fontSize: 12,
+                  color: "var(--text-muted)",
+                  fontStyle: "italic",
+                }}
+              >
+                No sessions to display for this agent.
+              </div>
+            )}
+            {expandedSessionList.map((session, sessionIndex) => {
               // Hide sessions that don't match the active CONTEXT
               // sidebar filter. matchingSessionIds === null means
               // no filters are active and every row is fully visible.
@@ -350,6 +408,7 @@ function SwimLaneComponent({
 export const SwimLane = memo(SwimLaneComponent, (prev, next) => {
   if (prev.flavor !== next.flavor) return false;
   if (prev.sessions !== next.sessions) return false;
+  if (prev.expandedSessions !== next.expandedSessions) return false;
   if (prev.expanded !== next.expanded) return false;
   if (prev.activeFilter !== next.activeFilter) return false;
   if (prev.sessionVersions !== next.sessionVersions) return false;

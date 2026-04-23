@@ -14,16 +14,36 @@ import {
   fetchFleet,
   fetchSessions,
 } from "@/lib/api";
+import {
+  advanceBucketEntry,
+  seedBucketEntries,
+} from "@/lib/fleet-ordering";
 
 // D114 vocabulary -- ``coding`` or ``production``. ``all`` suppresses
 // the filter at the query layer.
 export type AgentTypeFilter = "all" | "coding" | "production";
 
-// How far back the swimlane-bootstrap session fetch looks. Matches
-// the longest swimlane time range (1h) plus a small buffer so the
-// dashboard can still render rows that were active at the start of
-// the window.
-const SWIMLANE_LOOKBACK_MS = 2 * 60 * 60 * 1000; // 2 hours
+// How far back the Fleet-bootstrap session fetch looks.
+//
+// 24 hours is the "what did my fleet do today?" window. The FLEET
+// OVERVIEW state-count rollup, the swimlane agent-row header counts,
+// and the default swimlane event circles all feed from this fetch.
+//
+// Not to be confused with Investigate's default from-window, which is
+// 7 days: Investigate is a history-view (answering "what happened in
+// the last week?") while Fleet is a now-view (answering "what is
+// running right now / did just run?"). The two defaults serve
+// different questions.
+//
+// Older per-agent history is loaded on demand via
+// ``loadExpandedSessions(agentId)`` when the user expands an agent
+// row; that path has no lookback bound (server default applies) so
+// the expanded SESSIONS list shows every session under the agent,
+// not just today's subset. See the "last 24h" label in
+// ``FleetPanel.tsx`` that surfaces this windowing to the user so the
+// FLEET OVERVIEW counts vs. lifetime ``total_sessions`` asymmetry is
+// not mysterious.
+const SWIMLANE_LOOKBACK_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 interface FleetState {
   /** Agent-level rows for the Fleet table view and the sidebar
@@ -44,6 +64,33 @@ interface FleetState {
   selectedSessionId: string | null;
   agentTypeFilter: AgentTypeFilter;
   flavorFilter: string | null;
+  /**
+   * When each row last entered its current activity bucket (LIVE /
+   * RECENT / IDLE). Keyed by ``agent_id`` so the swimlane (``flavors``
+   * keyed on ``agent_id``) and the table (``agents`` keyed on
+   * ``agent_id``) share the same map. Seeded on ``load`` from each
+   * row's ``last_seen_at``; updated by ``applyUpdate`` only when a
+   * row crosses a bucket boundary, so same-bucket events never cause
+   * within-bucket reordering. See ``lib/fleet-ordering.ts``.
+   */
+  enteredBucketAt: Map<string, number>;
+  /**
+   * Per-agent on-demand session lists, keyed by ``agent_id``.
+   *
+   * Populated by ``loadExpandedSessions(agentId)`` when the user
+   * expands an agent row in the swimlane. These sessions bypass the
+   * 24-hour ``SWIMLANE_LOOKBACK_MS`` window so the user sees ALL
+   * sessions under the agent, including closed ones from hours or
+   * days ago. Kept in a separate map from ``flavors[].sessions`` so
+   * the main swimlane view is NOT polluted with old sessions -- only
+   * the expanded row reads from this map.
+   *
+   * Policy: fresh fetch on every expand, no caching. Collapsing and
+   * re-expanding the same agent fires a second fetch. WebSocket
+   * updates are NOT mirrored into this map (the expanded list is a
+   * historical view reflecting the server at fetch time).
+   */
+  expandedSessions: Map<string, Session[]>;
 
   load: (opts?: {
     page?: number;
@@ -52,6 +99,14 @@ interface FleetState {
   }) => Promise<void>;
   setAgentTypeFilter: (filter: AgentTypeFilter) => void;
   setFlavorFilter: (flavor: string | null) => void;
+  /**
+   * Fetch every session under the given agent_id (up to the server's
+   * 100-row per-page cap) and stash the result in ``expandedSessions``.
+   * Bypasses ``SWIMLANE_LOOKBACK_MS`` so old/closed sessions are
+   * visible in the expanded SESSIONS list. Best-effort -- failures
+   * leave ``expandedSessions`` untouched and log to the console.
+   */
+  loadExpandedSessions: (agentId: string) => Promise<void>;
   applyUpdate: (update: FleetUpdate) => void;
   selectSession: (id: string | null) => void;
   markShuttingDown: (sessionId: string) => void;
@@ -141,6 +196,8 @@ export const useFleetStore = create<FleetState>((set, get) => ({
   selectedSessionId: null,
   agentTypeFilter: "all",
   flavorFilter: null,
+  enteredBucketAt: new Map<string, number>(),
+  expandedSessions: new Map<string, Session[]>(),
 
   load: async (opts = {}) => {
     const page = opts.page ?? 1;
@@ -170,15 +227,34 @@ export const useFleetStore = create<FleetState>((set, get) => ({
         fetchCustomDirectives().catch(() => [] as CustomDirective[]),
       ]);
 
+      // Belt-and-suspenders: the API contract says agents is an
+      // array, but a nil-slice Go return becomes JSON null, which
+      // crashes every ``.map`` below. Guard once here so every
+      // downstream consumer (buildFlavors, seedBucketEntries,
+      // Fleet/Investigate readers) sees a real array. Same story
+      // for ``sessions.sessions``.
+      const safeAgents = fleet.agents ?? [];
+      const safeSessions = sessions.sessions ?? [];
       set({
-        agents: fleet.agents,
+        agents: safeAgents,
         total: fleet.total,
         page: fleet.page,
         perPage: fleet.per_page,
         contextFacets: fleet.context_facets ?? {},
-        flavors: buildFlavors(fleet.agents, sessions.sessions),
+        flavors: buildFlavors(safeAgents, safeSessions),
         customDirectives: directives,
         loading: false,
+        // Seed the bucket-entry map from the loaded roster. Every
+        // row starts out having "just entered" its current bucket
+        // at its server-reported last_seen_at; subsequent
+        // applyUpdate calls only advance the entry on bucket
+        // crossings, so within-bucket ordering stays stable.
+        enteredBucketAt: seedBucketEntries(
+          safeAgents.map((a) => ({
+            id: a.agent_id,
+            lastSeenAt: a.last_seen_at,
+          })),
+        ),
       });
     } catch (e) {
       set({ error: (e as Error).message, loading: false });
@@ -189,12 +265,40 @@ export const useFleetStore = create<FleetState>((set, get) => ({
     void get().load({ page: 1, agentType: filter });
   },
 
+  loadExpandedSessions: async (agentId: string) => {
+    try {
+      // No ``from``/``to`` bounds: server applies its 7-day default,
+      // which is sufficient for "show me this agent's sessions" and
+      // significantly wider than the Fleet 24h rollup. ``limit: 100``
+      // is the server cap; per-agent traffic rarely exceeds this in
+      // a 7-day window and any truncation is fronted by the lifetime
+      // ``total_sessions`` counter on the agent row.
+      const resp = await fetchSessions({
+        agent_id: agentId,
+        limit: 100,
+        offset: 0,
+      });
+      const sessions = (resp.sessions ?? []).map(listItemToSession);
+      set({
+        expandedSessions: new Map(get().expandedSessions).set(
+          agentId,
+          sessions,
+        ),
+      });
+    } catch (err) {
+      console.error(
+        `loadExpandedSessions(${agentId}) failed; expanded row will fall back to the 24h subset`,
+        err,
+      );
+    }
+  },
+
   setFlavorFilter: (flavor: string | null) => {
     set({ flavorFilter: flavor });
   },
 
   applyUpdate: (update: FleetUpdate) => {
-    const { flavors, agents, shuttingDown } = get();
+    const { flavors, agents, shuttingDown, enteredBucketAt } = get();
     // D115: the swimlane row key is agent_id (stored under the legacy
     // ``flavor`` field name). Updates for sessions without an
     // agent_id (legacy rows awaiting enrichment) land under the
@@ -229,22 +333,46 @@ export const useFleetStore = create<FleetState>((set, get) => ({
       void get().load({ page: get().page, agentType: get().agentTypeFilter });
     }
 
-    // Mirror the agent-level rollup so the Fleet table reflects the
-    // new session without waiting for a server-side counter bump.
-    if (update.type === "session_start" && update.session.agent_id) {
+    // Mirror the server-side rollup so the Fleet table + bucket sort
+    // react to every live event, not just session_start. Previously
+    // only session_start bumped agents[]; tool_call / post_call /
+    // heartbeat updates left the array frozen until the next full
+    // load(), which was what made the table view drift out of sync
+    // with the swimlane under WebSocket traffic.
+    if (update.session.agent_id) {
       const aid = update.session.agent_id;
-      const nowIso = new Date().toISOString();
+      const now = Date.now();
+      const nowIso = new Date(now).toISOString();
+      const priorAgent = agents.find((a) => a.agent_id === aid);
+      const isStart = update.type === "session_start";
       const nextAgents = agents.map((a) =>
         a.agent_id === aid
           ? {
               ...a,
-              total_sessions: a.total_sessions + 1,
+              total_sessions: isStart ? a.total_sessions + 1 : a.total_sessions,
               last_seen_at: nowIso,
-              state: "active" as SessionState,
+              state:
+                update.session.state === "active" ||
+                update.session.state === "idle"
+                  ? ("active" as SessionState)
+                  : a.state,
             }
           : a,
       );
-      if (nextAgents !== agents) set({ agents: nextAgents });
+      if (nextAgents !== agents) {
+        const nextEntries = advanceBucketEntry(
+          enteredBucketAt,
+          aid,
+          priorAgent?.last_seen_at,
+          nowIso,
+          now,
+        );
+        set({
+          agents: nextAgents,
+          enteredBucketAt:
+            nextEntries === enteredBucketAt ? enteredBucketAt : nextEntries,
+        });
+      }
     }
   },
 

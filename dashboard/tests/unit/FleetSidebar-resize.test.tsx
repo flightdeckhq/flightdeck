@@ -232,11 +232,11 @@ describe("FleetPanel sidebar width: gradual pill truncation", () => {
   // truncation CSS is deliberately kept inline so tests can observe
   // it.
 
-  it("renders agent_type badge + client_type pill at the 240 default with ellipsis styling", () => {
-    // D115: the pill pair is CodingAgentBadge (for agent_type=coding)
-    // and the new client-type pill. Both carry the flex-shrink-100 +
-    // ellipsis treatment so pills collapse before the agent name
-    // when the sidebar narrows.
+  it("pills never truncate at the 240 default (Phase 2 Supervisor smoke rule)", () => {
+    // Pre-rule: pills carried flex-shrink-100 + ellipsis so they
+    // collapsed under narrow widths, producing the "SENS…" bug. Post-
+    // rule: pills are flexShrink: 0 + white-space: nowrap, and the
+    // sibling <TruncatedText/> absorbs truncation instead.
     expect(FLEET_SIDEBAR_DEFAULT_WIDTH).toBeGreaterThan(
       FLEET_PILL_HIDE_MIN_WIDTH,
     );
@@ -245,12 +245,11 @@ describe("FleetPanel sidebar width: gradual pill truncation", () => {
     const clientPills = screen.getAllByTestId("flavor-client-type-pill");
     expect(codingPills.length).toBe(2);
     expect(clientPills.length).toBe(2);
-    // jsdom normalises numeric 0 to "0" while browsers render "0px".
     for (const pill of [...codingPills, ...clientPills]) {
-      expect(pill.style.flexShrink).toBe("100");
-      expect(parseFloat(pill.style.minWidth || "0")).toBe(0);
-      expect(pill.style.overflow).toBe("hidden");
-      expect(pill.style.textOverflow).toBe("ellipsis");
+      expect(pill.style.flexShrink).toBe("0");
+      expect(pill.style.whiteSpace).toBe("nowrap");
+      // Explicitly NOT truncating any more.
+      expect(pill.style.textOverflow).not.toBe("ellipsis");
     }
   });
 
@@ -268,12 +267,15 @@ describe("FleetPanel sidebar width: gradual pill truncation", () => {
     expect(screen.getAllByTestId("flavor-client-type-pill").length).toBe(2);
   });
 
-  it("agent name shrinks slower than the pill", () => {
+  it("agent name is the shrink target; pills hold their width", () => {
+    // Inverse of the prior rule: the name absorbs narrowing via the
+    // shared <TruncatedText/> primitive (overflow: hidden + ellipsis
+    // + native ``title`` on hover) while the pills keep their full
+    // intrinsic width. The old pre-Phase-2 "pills shrink first"
+    // design produced the "SENS…" truncated-mid-character bug.
     render(<FleetPanel flavors={mkFlavors()} />);
-    const ccName = screen.getByText("claude-code");
     const pill = screen.getAllByTestId("coding-agent-badge")[0];
-    expect(ccName.style.flexShrink).toBe("1");
-    expect(pill.style.flexShrink).toBe("100");
+    expect(pill.style.flexShrink).toBe("0");
   });
 
   it("CodingAgentBadge carries a descriptive title for hover disclosure", () => {
@@ -292,21 +294,28 @@ describe("FleetPanel sidebar width: gradual pill truncation", () => {
     expect(pills[1].getAttribute("title")).toBe("client_type=flightdeck_sensor");
   });
 
-  it("every flavor name carries a title attribute for the hover tooltip", () => {
+  it("flavor name is rendered through the <TruncatedText/> primitive", () => {
+    // Post-Phase-2: titles are now conditional (only when the
+    // ellipsis is actually rendered) via the shared primitive, so a
+    // strict ``title=flavor`` assertion no longer matches in jsdom
+    // where layout collapses to 0x0 and the auto-detector sees no
+    // truncation. The regression we care about is "every name has
+    // the ellipsis + overflow CSS signature so truncation is
+    // possible at all" -- assert that, plus the presence of the
+    // primitive's inline-block + overflow-hidden defaults so the
+    // primitive is the actual render path. Auto-truncation tooltip
+    // behaviour is covered in TruncatedText.test.tsx with mocked
+    // scrollWidth / clientWidth.
     localStorage.setItem(FLEET_SIDEBAR_WIDTH_KEY, "200");
     render(<FleetPanel flavors={mkFlavors()} />);
-    // getByText returns the span that directly contains the text.
-    const ccName = screen.getByText("claude-code");
-    const raName = screen.getByText("research-agent");
-    expect(ccName.getAttribute("title")).toBe("claude-code");
-    expect(raName.getAttribute("title")).toBe("research-agent");
-  });
-
-  it("name still carries a title attribute at wide widths", () => {
-    localStorage.setItem(FLEET_SIDEBAR_WIDTH_KEY, "500");
-    render(<FleetPanel flavors={mkFlavors()} />);
-    expect(screen.getByText("claude-code").getAttribute("title")).toBe(
-      "claude-code",
-    );
+    for (const name of ["claude-code", "research-agent"]) {
+      const el = screen.getByText(name);
+      // TruncatedText carries ``overflow-hidden`` + ``whitespace-
+      // nowrap`` as Tailwind classes (jsdom cannot read Tailwind
+      // computed styles) and ``textOverflow: ellipsis`` inline.
+      expect(el.className).toContain("overflow-hidden");
+      expect(el.className).toContain("whitespace-nowrap");
+      expect(el.style.textOverflow).toBe("ellipsis");
+    }
   });
 });

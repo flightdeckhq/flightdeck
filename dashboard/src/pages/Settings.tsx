@@ -350,6 +350,12 @@ function TokenRow({ token, onChanged, onError }: TokenRowProps) {
                   color: "var(--text)",
                   cursor: isDev ? "default" : "text",
                 }}
+                // Interactive element can't host <TruncatedText/>
+                // (which renders span/div). Native ``title`` gives
+                // hover reveal; the trade-off vs. the TruncatedText
+                // auto-detection is acceptable here because token
+                // names are short and usually fit.
+                title={token.name}
                 data-testid={`access-token-name-${token.id}`}
               >
                 {token.name}
@@ -680,6 +686,10 @@ function CreatedStep({
             data-testid="created-access-token-value"
             className="flex-1 truncate font-mono text-xs"
             style={{ color: "var(--text)" }}
+            // <code> element; TruncatedText renders span/div. Native
+            // ``title`` surfaces the full token. Token value is
+            // deliberately long; hover reveal is the whole point.
+            title={token.token}
           >
             {token.token}
           </code>

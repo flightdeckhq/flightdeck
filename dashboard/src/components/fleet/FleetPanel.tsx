@@ -23,12 +23,11 @@ import { createDirective } from "@/lib/api";
 import { flavorHasDirectiveCapableSession } from "@/lib/directives";
 import { ClaudeCodeLogo } from "@/components/ui/claude-code-logo";
 import { CodingAgentBadge } from "@/components/ui/coding-agent-badge";
-import {
-  AgentType,
-  CLIENT_TYPE_LABEL,
-  ClientType,
-} from "@/lib/agent-identity";
+import { AgentType, ClientType } from "@/lib/agent-identity";
 import { DirectiveCard } from "@/components/directives/DirectiveCard";
+import { FacetIcon } from "@/components/facets/FacetIcon";
+import { ClientTypePill } from "@/components/facets/ClientTypePill";
+import { TruncatedText } from "@/components/ui/TruncatedText";
 import { useFleetStore } from "@/store/fleet";
 import { OctagonX, X, Zap } from "lucide-react";
 
@@ -204,8 +203,24 @@ export function FleetPanel({
       </div>
 
       {/* Session States */}
-      <div className="px-3 pb-2 pt-2 text-xs font-semibold uppercase tracking-[0.06em]" style={{ color: "var(--text-secondary)" }}>
-        Session States
+      <div
+        className="flex items-baseline gap-2 px-3 pb-2 pt-2 text-xs font-semibold uppercase tracking-[0.06em]"
+        style={{ color: "var(--text-secondary)" }}
+      >
+        <span>Session States</span>
+        {/* Windowing hint so the sum of state counts vs. the lifetime
+            ``total_sessions`` figure elsewhere is not mysterious.
+            Controlled by ``SWIMLANE_LOOKBACK_MS`` in the fleet store.
+            The swimlane header counts and the per-agent "X active"
+            values all use the same window. */}
+        <span
+          className="text-[10px] font-normal normal-case tracking-normal"
+          style={{ color: "var(--text-muted)" }}
+          data-testid="session-states-window-label"
+          title="Counts reflect sessions started in the last 24 hours. Expand an agent row to see every session under that agent."
+        >
+          last 24 hours
+        </span>
       </div>
       <div className="px-3 pb-3">
         <SessionStateBar flavors={flavors} counts={sessionStateCounts} />
@@ -330,15 +345,20 @@ export function FleetPanel({
                     }}
                   />
                   <div className="flex-1 min-w-0">
-                    <div
-                      className="font-mono text-xs truncate"
+                    <TruncatedText
+                      as="div"
+                      className="font-mono text-xs"
                       style={{ color: "var(--text)" }}
-                    >
-                      {topLine}
-                    </div>
+                      text={topLine}
+                    />
                     <div
+                      // Mixed inline content with a colored badge span;
+                      // native ``title`` surfaces the composed string
+                      // on hover even when the ellipsis isn't actually
+                      // rendered. Cheaper than splitting the badge out.
                       className="text-[11px] truncate"
                       style={{ color: "var(--text-muted)" }}
+                      title={`${evt.flavor} · ${truncateSessionId(evt.session_id)}${badge ? ` · ${badge.label}` : ""}`}
                     >
                       {evt.flavor} · {truncateSessionId(evt.session_id)}
                       {badge && (
@@ -529,23 +549,16 @@ function ContextFacetSection({
                     data-testid={`context-value-${key}-${entry.value}`}
                   >
                     <span
-                      className="inline-block rounded-full"
-                      style={{
-                        width: 8,
-                        height: 8,
-                        flexShrink: 0,
-                        background: isSelected ? "var(--accent)" : "transparent",
-                        border: isSelected
-                          ? "1px solid var(--accent)"
-                          : "1px solid var(--border)",
-                      }}
-                    />
-                    <span
-                      className="flex-1 truncate font-mono"
-                      style={{ fontSize: 12, color: "var(--text)" }}
+                      className="inline-flex items-center justify-center shrink-0"
+                      style={{ width: 12, height: 12 }}
                     >
-                      {entry.value}
+                      <FacetIcon groupKey={key} value={entry.value} />
                     </span>
+                    <TruncatedText
+                      className="flex-1 font-mono"
+                      style={{ fontSize: 12, color: "var(--text)" }}
+                      text={entry.value}
+                    />
                     <span
                       className="font-mono shrink-0"
                       style={{ fontSize: 11, color: "var(--text-muted)" }}
@@ -574,19 +587,14 @@ function SidebarRow({
 }) {
   return (
     <div className="flex items-center justify-between py-[5px] px-0 text-[13px]">
-      <span
-        style={{
-          color: "var(--text-secondary)",
-          // Keep labels on a single line so the new "(1h)" suffix
-          // on the Tokens row never wraps. No visual change for
-          // labels that already fit.
-          whiteSpace: "nowrap",
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-        }}
-      >
-        {label}
-      </span>
+      {/* Labels on a single line so the "(1h)" suffix on the Tokens
+          row never wraps. ``<TruncatedText/>`` surfaces the full
+          label as a native ``title`` tooltip when the sidebar is
+          dragged narrow enough to trigger truncation. */}
+      <TruncatedText
+        style={{ color: "var(--text-secondary)" }}
+        text={label}
+      />
       <span
         className="font-mono text-sm font-semibold"
         style={{ color: valueColor ?? "var(--text)" }}
@@ -700,18 +708,17 @@ function FlavorItem({
           flavor.flavor === "claude-code") && (
           <ClaudeCodeLogo size={14} className="shrink-0" />
         )}
-        <span
-          className="font-mono text-xs truncate"
+        {/* D115 label: prefer the human-readable agent_name over
+            the agent_id-hijacked ``flavor`` field. Falls back to
+            ``flavor`` only when agent_name is absent (legacy rows,
+            WebSocket updates that land before the agents roster
+            enriches the row). ``<TruncatedText/>`` auto-reveals the
+            full value as a native tooltip on narrow sidebars. */}
+        <TruncatedText
+          className="font-mono text-xs"
           style={{ flexShrink: 1 }}
-          title={flavor.agent_name ?? flavor.flavor}
-        >
-          {/* D115 label: prefer the human-readable agent_name over
-              the agent_id-hijacked ``flavor`` field. Falls back to
-              ``flavor`` only when agent_name is absent (legacy rows,
-              WebSocket updates that land before the agents roster
-              enriches the row). */}
-          {flavor.agent_name ?? flavor.flavor}
-        </span>
+          text={flavor.agent_name ?? flavor.flavor}
+        />
         {/* Two sibling pills (D115 pill pair):
               - agent_type badge: Coding agent pill for coding, no pill
                 for production (matches pre-D115 "no badge for
@@ -724,34 +731,17 @@ function FlavorItem({
             keeps its default shrink-1 so the pills trim first. */}
         {sidebarWidth >= FLEET_PILL_HIDE_MIN_WIDTH &&
           flavor.agent_type === AgentType.Coding && (
-            <CodingAgentBadge
-              style={{
-                flexShrink: 100,
-                minWidth: 0,
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-              }}
-            />
+            // Pills never truncate (Phase 2 Supervisor smoke rule):
+            // ``flex-shrink: 0`` so the sibling ``<TruncatedText/>``
+            // agent_name is the shrink target instead.
+            <CodingAgentBadge style={{ flexShrink: 0 }} />
           )}
         {sidebarWidth >= FLEET_PILL_HIDE_MIN_WIDTH && flavor.client_type && (
-          <span
-            data-testid="flavor-client-type-pill"
-            className="rounded px-1 py-0.5 text-[10px] font-semibold uppercase tracking-wide"
-            style={{
-              background: "var(--bg-elevated)",
-              color: "var(--text-muted)",
-              border: "1px solid var(--border-subtle)",
-              letterSpacing: "0.04em",
-              whiteSpace: "nowrap",
-              flexShrink: 100,
-              minWidth: 0,
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-            }}
-            title={`client_type=${flavor.client_type}`}
-          >
-            {CLIENT_TYPE_LABEL[flavor.client_type]}
-          </span>
+          <ClientTypePill
+            clientType={flavor.client_type}
+            size="compact"
+            testId="flavor-client-type-pill"
+          />
         )}
         <span className="text-[11px] font-mono" style={{ color: "var(--text-muted)" }}>
           ({flavor.active_count})

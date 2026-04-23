@@ -1,11 +1,12 @@
+import React from "react";
 import { useNavigate } from "react-router-dom";
 import type { AgentSummary, SessionState } from "@/lib/types";
-import {
-  CLIENT_TYPE_LABEL,
-  ClientType,
-} from "@/lib/agent-identity";
+import { ClientType } from "@/lib/agent-identity";
+import { ClientTypePill } from "@/components/facets/ClientTypePill";
+import { TruncatedText } from "@/components/ui/TruncatedText";
 import { CodingAgentBadge } from "@/components/ui/coding-agent-badge";
 import { ClaudeCodeLogo } from "@/components/ui/claude-code-logo";
+import { bucketFor } from "@/lib/fleet-ordering";
 
 /**
  * Investigate-mirror typography constants. The header / cell styles
@@ -143,14 +144,56 @@ export function AgentTable({ agents, loading }: AgentTableProps) {
           </tr>
         </thead>
         <tbody>
-          {agents.map((a) => (
+          {(() => {
+            // Mirror the swimlane's bucket-boundary divider so the
+            // table and swimlane read as the same three-tier list.
+            // A spanning TR with a thin top border creates a visual
+            // gap without a label.
+            const now = Date.now();
+            let prevBucket: "live" | "recent" | "idle" | null = null;
+            const rendered: React.ReactNode[] = [];
+            for (const a of agents) {
+              const b = bucketFor(a.last_seen_at, now);
+              if (prevBucket !== null && b !== prevBucket) {
+                rendered.push(
+                  <tr
+                    key={`bucket-${prevBucket}-to-${b}`}
+                    data-testid={`agent-table-bucket-divider-${prevBucket}-${b}`}
+                    aria-hidden
+                  >
+                    <td
+                      colSpan={7}
+                      style={{
+                        height: 1,
+                        padding: 0,
+                        background: "var(--border)",
+                        borderTop: "none",
+                        borderBottom: "none",
+                      }}
+                    />
+                  </tr>,
+                );
+              }
+              rendered.push(
             <tr
               key={a.agent_id}
-              onClick={() =>
-                navigate(
-                  `/investigate?agent_id=${encodeURIComponent(a.agent_id)}`,
-                )
-              }
+              onClick={() => {
+                // D115 deep-link: include an explicit 7-day time
+                // window so the Investigate page hits the same
+                // from/to shape as a facet-click navigation from
+                // within Investigate. Relying on parseUrlState's
+                // implicit default worked in isolation but left the
+                // URL looking filter-less to users who then wondered
+                // why it wasn't showing every session. Matching
+                // Investigate's default keeps the URL self-describing.
+                const from = new Date(Date.now() - 7 * 86400000).toISOString();
+                const to = new Date().toISOString();
+                const sp = new URLSearchParams();
+                sp.set("from", from);
+                sp.set("to", to);
+                sp.set("agent_id", a.agent_id);
+                navigate(`/investigate?${sp.toString()}`);
+              }}
               className="cursor-pointer transition-colors duration-150"
               style={{
                 height: 44,
@@ -165,12 +208,16 @@ export function AgentTable({ agents, loading }: AgentTableProps) {
               data-testid={`fleet-agent-row-${a.agent_id}`}
             >
               <td
-                className="truncate"
                 style={{
                   padding: "0 12px",
                   fontSize: 13,
                   fontWeight: 500,
                   color: "var(--text)",
+                  // Cells drop the raw ``truncate`` Tailwind class;
+                  // inner ``<TruncatedText/>`` surfaces the full
+                  // value via native ``title`` on hover when the
+                  // ellipsis actually renders.
+                  overflow: "hidden",
                 }}
               >
                 <span
@@ -179,23 +226,24 @@ export function AgentTable({ agents, loading }: AgentTableProps) {
                     alignItems: "center",
                     gap: 6,
                     minWidth: 0,
+                    maxWidth: "100%",
                   }}
                 >
                   {a.client_type === ClientType.ClaudeCode && (
                     <ClaudeCodeLogo size={14} className="shrink-0" />
                   )}
-                  <span className="truncate">{a.agent_name}</span>
+                  <TruncatedText text={a.agent_name} />
                 </span>
-                <div
+                <TruncatedText
+                  as="div"
                   style={{
                     fontSize: 11,
                     color: "var(--text-muted)",
                     fontFamily: "var(--font-mono)",
                     marginTop: 2,
                   }}
-                >
-                  {a.user}@{a.hostname}
-                </div>
+                  text={`${a.user}@${a.hostname}`}
+                />
               </td>
               <td
                 style={{
@@ -204,20 +252,10 @@ export function AgentTable({ agents, loading }: AgentTableProps) {
                   color: "var(--text-secondary)",
                 }}
               >
-                <span
-                  data-testid="agent-table-client-pill"
-                  className="rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide"
-                  style={{
-                    background: "var(--bg-elevated)",
-                    color: "var(--text-muted)",
-                    border: "1px solid var(--border-subtle)",
-                    letterSpacing: "0.04em",
-                    whiteSpace: "nowrap",
-                  }}
-                  title={`client_type=${a.client_type}`}
-                >
-                  {CLIENT_TYPE_LABEL[a.client_type]}
-                </span>
+                <ClientTypePill
+                  clientType={a.client_type}
+                  testId="agent-table-client-pill"
+                />
               </td>
               <td
                 style={{
@@ -264,8 +302,12 @@ export function AgentTable({ agents, loading }: AgentTableProps) {
               <td style={{ padding: "0 12px", fontSize: 12 }}>
                 <StateDot state={a.state} />
               </td>
-            </tr>
-          ))}
+            </tr>,
+              );
+              prevBucket = b;
+            }
+            return rendered;
+          })()}
         </tbody>
       </table>
     </div>

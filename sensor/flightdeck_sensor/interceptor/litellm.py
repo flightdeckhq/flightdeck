@@ -70,11 +70,20 @@ try:
     import litellm as _litellm_module
     _OrigCompletion: Any = _litellm_module.completion
     _OrigAcompletion: Any = _litellm_module.acompletion
+    # Phase 4: embedding / aembedding are the two entry points for
+    # embedding-model calls. We capture them for the same reasons we
+    # capture completion -- tokens charged are real, and embeddings
+    # dominate RAG workflows. ``getattr`` with a fallback keeps the
+    # import resilient against an older litellm that predates aembedding.
+    _OrigEmbedding: Any = getattr(_litellm_module, "embedding", None)
+    _OrigAembedding: Any = getattr(_litellm_module, "aembedding", None)
     _LITELLM_AVAILABLE = True
 except ImportError:
     _litellm_module = None  # type: ignore[assignment]
     _OrigCompletion = None
     _OrigAcompletion = None
+    _OrigEmbedding = None
+    _OrigAembedding = None
     _LITELLM_AVAILABLE = False
 
 
@@ -152,6 +161,39 @@ class SensorLitellm:
             _OrigAcompletion, kwargs, self._session, self._provider,
         )
 
+    # Phase 4: embeddings parallel to completion. Same delegation pattern;
+    # event_type is EMBEDDINGS so the dashboard can render them distinctly.
+    def embedding(self, **kwargs: Any) -> Any:
+        """Intercept ``litellm.embedding(**kwargs)``.
+
+        Embedding-model calls carry input tokens only; the ``event_type``
+        promotion lets the dashboard and analytics distinguish them from
+        chat completions.
+        """
+        from flightdeck_sensor.core.types import EventType
+        if _OrigEmbedding is None:
+            raise RuntimeError(
+                "litellm.embedding is not available on the installed version; "
+                "upgrade litellm or use a different embedding client."
+            )
+        return base.call(
+            _OrigEmbedding, kwargs, self._session, self._provider,
+            event_type=EventType.EMBEDDINGS,
+        )
+
+    async def aembedding(self, **kwargs: Any) -> Any:
+        """Intercept ``litellm.aembedding(**kwargs)``."""
+        from flightdeck_sensor.core.types import EventType
+        if _OrigAembedding is None:
+            raise RuntimeError(
+                "litellm.aembedding is not available on the installed version; "
+                "upgrade litellm or use a different embedding client."
+            )
+        return await base.call_async(
+            _OrigAembedding, kwargs, self._session, self._provider,
+            event_type=EventType.EMBEDDINGS,
+        )
+
 
 # ----------------------------------------------------------------------
 # Class-level (module-level for litellm) patch / unpatch
@@ -191,11 +233,18 @@ def patch_litellm_functions(quiet: bool = False) -> None:
 
     orig_completion = _litellm_module.completion
     orig_acompletion = _litellm_module.acompletion
+    # Phase 4: also capture and patch the embedding surface when
+    # available. getattr + None fallback keeps this backwards-compatible
+    # with any litellm version that might lack one of the entry points.
+    orig_embedding = getattr(_litellm_module, "embedding", None)
+    orig_aembedding = getattr(_litellm_module, "aembedding", None)
 
     # Stash originals on the module so unpatch can restore them even
     # if the module was reloaded between patch and unpatch.
     _litellm_module._flightdeck_orig_completion = orig_completion
     _litellm_module._flightdeck_orig_acompletion = orig_acompletion
+    _litellm_module._flightdeck_orig_embedding = orig_embedding
+    _litellm_module._flightdeck_orig_aembedding = orig_aembedding
 
     def _patched_completion(**kwargs: Any) -> Any:
         session = _current_session()
@@ -219,12 +268,47 @@ def patch_litellm_functions(quiet: bool = False) -> None:
         )
         return await base.call_async(orig_acompletion, kwargs, session, provider)
 
+    def _patched_embedding(**kwargs: Any) -> Any:
+        session = _current_session()
+        if session is None or orig_embedding is None:
+            return orig_embedding(**kwargs) if orig_embedding else None
+        from flightdeck_sensor.core.types import EventType
+        provider = LitellmProvider(
+            capture_prompts=session.config.capture_prompts,
+        )
+        return base.call(
+            orig_embedding, kwargs, session, provider,
+            event_type=EventType.EMBEDDINGS,
+        )
+
+    async def _patched_aembedding(**kwargs: Any) -> Any:
+        session = _current_session()
+        if session is None or orig_aembedding is None:
+            return await orig_aembedding(**kwargs) if orig_aembedding else None
+        from flightdeck_sensor.core.types import EventType
+        provider = LitellmProvider(
+            capture_prompts=session.config.capture_prompts,
+        )
+        return await base.call_async(
+            orig_aembedding, kwargs, session, provider,
+            event_type=EventType.EMBEDDINGS,
+        )
+
     _litellm_module.completion = _patched_completion
     _litellm_module.acompletion = _patched_acompletion
+    if orig_embedding is not None:
+        _litellm_module.embedding = _patched_embedding
+    if orig_aembedding is not None:
+        _litellm_module.aembedding = _patched_aembedding
     _litellm_module._flightdeck_patched = True
 
     if not quiet:
-        _log.info("litellm.completion and litellm.acompletion patched")
+        parts = ["litellm.completion", "litellm.acompletion"]
+        if orig_embedding is not None:
+            parts.append("litellm.embedding")
+        if orig_aembedding is not None:
+            parts.append("litellm.aembedding")
+        _log.info("%s patched", " and ".join(parts))
 
 
 def unpatch_litellm_functions(quiet: bool = False) -> None:
@@ -246,18 +330,30 @@ def unpatch_litellm_functions(quiet: bool = False) -> None:
     orig_acompletion = getattr(
         _litellm_module, "_flightdeck_orig_acompletion", None,
     )
+    orig_embedding = getattr(
+        _litellm_module, "_flightdeck_orig_embedding", None,
+    )
+    orig_aembedding = getattr(
+        _litellm_module, "_flightdeck_orig_aembedding", None,
+    )
     if orig_completion is not None:
         _litellm_module.completion = orig_completion
     if orig_acompletion is not None:
         _litellm_module.acompletion = orig_acompletion
+    if orig_embedding is not None:
+        _litellm_module.embedding = orig_embedding
+    if orig_aembedding is not None:
+        _litellm_module.aembedding = orig_aembedding
 
     for attr in (
         "_flightdeck_orig_completion",
         "_flightdeck_orig_acompletion",
+        "_flightdeck_orig_embedding",
+        "_flightdeck_orig_aembedding",
         "_flightdeck_patched",
     ):
         if hasattr(_litellm_module, attr):
             delattr(_litellm_module, attr)
 
     if not quiet:
-        _log.info("litellm.completion and litellm.acompletion unpatched")
+        _log.info("litellm.completion/acompletion/embedding/aembedding unpatched")

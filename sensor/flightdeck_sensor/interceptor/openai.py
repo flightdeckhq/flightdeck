@@ -334,13 +334,25 @@ class SensorEmbeddings:
         self._is_async = is_async
 
     def create(self, **kwargs: Any) -> Any:
-        """Intercept embeddings.create() -- sync or async dispatch."""
+        """Intercept embeddings.create() -- sync or async dispatch.
+
+        Phase 4: emits ``event_type="embeddings"`` (not the generic
+        ``post_call``) so the dashboard can render embedding calls
+        distinctly. Token accounting stays identical -- embeddings carry
+        input tokens only, ``output_tokens=0`` as returned by
+        :meth:`OpenAIProvider.extract_usage`.
+        """
         real_fn = self._real.create
+        from flightdeck_sensor.core.types import EventType
         if self._is_async:
             return base.call_async(
-                real_fn, kwargs, self._session, self._provider
+                real_fn, kwargs, self._session, self._provider,
+                event_type=EventType.EMBEDDINGS,
             )
-        return base.call(real_fn, kwargs, self._session, self._provider)
+        return base.call(
+            real_fn, kwargs, self._session, self._provider,
+            event_type=EventType.EMBEDDINGS,
+        )
 
     def __getattr__(self, name: str) -> Any:
         # Pass through: with_raw_response, with_streaming_response.

@@ -23,6 +23,14 @@ class EventType(enum.Enum):
 
     POLICY_WARN events carry a ``source`` field: ``"local"`` (from init() limit)
     or ``"server"`` (from server-side policy).
+
+    Phase 4 additions (v0.5.0):
+
+    * :attr:`EMBEDDINGS` -- embedding-model call (no completion tokens). Emitted
+      by the OpenAI / litellm / LangChain embeddings paths instead of folding
+      them into the generic POST_CALL shape.
+    * :attr:`LLM_ERROR` -- structured LLM API error. Carries an ``error``
+      sub-object classified against :mod:`flightdeck_sensor.core.errors`.
     """
 
     SESSION_START = "session_start"
@@ -32,6 +40,8 @@ class EventType(enum.Enum):
     TOOL_CALL = "tool_call"
     POLICY_WARN = "policy_warn"
     DIRECTIVE_RESULT = "directive_result"
+    EMBEDDINGS = "embeddings"
+    LLM_ERROR = "llm_error"
 
 
 class DirectiveAction(enum.Enum):

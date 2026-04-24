@@ -58,22 +58,23 @@ export const CLIENT_TYPE_LABEL: Record<ClientType, string> = {
 /**
  * Colour treatment for the ``client_type`` pill.
  *
- * Rationale for the initial assignments:
+ * Rationale for the current assignments:
  *
- *   claude_code         → ``--primary`` (violet). The Coding Agent
- *                         badge already uses the primary-glow/primary
- *                         pair, and every plugin-sourced agent IS a
- *                         coding agent by D115 construction, so the
- *                         colour family stays visually coherent.
+ *   claude_code         → ``--claude-code`` (amber). Matches the
+ *                         CLAUDE_CODE_ICON / Anthropic brand colour
+ *                         already used by the provider logo in
+ *                         components/ui/provider-icons.ts. The
+ *                         CODING AGENT badge owns violet
+ *                         (``--primary``) as the ``agent_type`` cue,
+ *                         so letting the client pill own its own
+ *                         brand colour prevents the two pills reading
+ *                         as one blob when they render side-by-side.
  *
- *   flightdeck_sensor   → ``--chart-openai`` (cyan). The only pre-
- *                         existing distinct palette token not already
- *                         claimed by a different role (status-*,
- *                         directive, accent-glow, claude-code-orange
- *                         from the provider-icons logo). Sensors map
- *                         to "production server-side agent", which is
- *                         a neutral compute colour rather than a
- *                         branded one.
+ *   flightdeck_sensor   → ``--chart-openai`` (cyan). A neutral
+ *                         compute colour since the generic Python
+ *                         sensor is vendor-agnostic; matches the
+ *                         analytics provider palette rather than any
+ *                         SDK brand.
  *
  * Adding a new client in the future means adding an entry here. Use
  * existing theme tokens rather than raw hex so dark/light theme
@@ -92,9 +93,9 @@ export interface ClientTypeColor {
 
 export const CLIENT_TYPE_COLOR: Record<ClientType, ClientTypeColor> = {
   [ClientType.ClaudeCode]: {
-    bg: "color-mix(in srgb, var(--primary) 15%, transparent)",
-    fg: "var(--primary)",
-    border: "color-mix(in srgb, var(--primary) 35%, transparent)",
+    bg: "color-mix(in srgb, var(--claude-code) 15%, transparent)",
+    fg: "var(--claude-code)",
+    border: "color-mix(in srgb, var(--claude-code) 35%, transparent)",
   },
   [ClientType.FlightdeckSensor]: {
     bg: "color-mix(in srgb, var(--chart-openai) 15%, transparent)",

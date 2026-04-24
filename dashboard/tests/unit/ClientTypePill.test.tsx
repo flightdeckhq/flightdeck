@@ -8,13 +8,19 @@ import {
 } from "@/lib/agent-identity";
 
 describe("ClientTypePill", () => {
-  it("renders the Claude Code label with the violet colour family", () => {
+  it("renders the Claude Code label with the claude-code amber brand colour", () => {
     const { getByText } = render(
       <ClientTypePill clientType={ClientType.ClaudeCode} />,
     );
     const pill = getByText(CLIENT_TYPE_LABEL[ClientType.ClaudeCode]);
     expect(pill.style.background).toBe(CLIENT_TYPE_COLOR[ClientType.ClaudeCode].bg);
     expect(pill.style.color).toBe(CLIENT_TYPE_COLOR[ClientType.ClaudeCode].fg);
+    // Regression guard: the pill must reference the brand amber
+    // (``--claude-code``) rather than the generic violet ``--primary``
+    // so it does not collide with the CODING AGENT badge rendered
+    // next to it in the Fleet / Investigate tables.
+    expect(CLIENT_TYPE_COLOR[ClientType.ClaudeCode].fg).toContain("--claude-code");
+    expect(CLIENT_TYPE_COLOR[ClientType.ClaudeCode].fg).not.toContain("--primary");
   });
 
   it("renders the Sensor label with the cyan colour family", () => {

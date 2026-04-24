@@ -970,15 +970,11 @@ def test_openai_embeddings_intercepted(
     on ``OpenAI.embeddings`` which wraps the raw ``Embeddings``
     resource in :class:`SensorEmbeddings` on first access.
 
-    Embeddings responses carry only ``usage.prompt_tokens`` and
-    ``usage.total_tokens`` -- there is no output text to count, so
-    the ``post_call`` ``tokens_output`` is expected to be zero. This
-    test therefore does NOT use
-    :func:`_assert_full_pipeline_event_chain` (which strictly asserts
-    the 10/8/18 chat shape) and instead verifies the subset of
-    fields available for embeddings: a ``post_call`` exists, its
-    ``model`` is set, and ``tokens_input`` matches the mock
-    ``prompt_tokens``.
+    Phase 4: embedding calls emit ``event_type="embeddings"`` rather
+    than the generic ``post_call``, so the dashboard / analytics can
+    distinguish them cleanly. Token accounting is unchanged --
+    ``tokens_output=0`` is semantically correct for an embedding
+    (vectors produced, no completion text).
     """
     flavor = unique_flavor
 
@@ -999,20 +995,18 @@ def test_openai_embeddings_intercepted(
         assert response.model == "text-embedding-3-small"
         assert len(response.data) == 1
 
-        # Verify session_start + post_call land in the DB, with
-        # model present and tokens_input = 10 (prompt_tokens).
-        # tokens_output = 0 is expected for embeddings, not a bug.
+        # Phase 4: embedding calls emit event_type="embeddings".
         _wait_for_event_type(flavor, "session_start", timeout=10)
-        post_call = _wait_for_event_type(flavor, "post_call", timeout=15)
-        assert post_call.get("model") == "text-embedding-3-small", (
-            f"post_call model missing: {post_call}"
+        embed = _wait_for_event_type(flavor, "embeddings", timeout=15)
+        assert embed.get("model") == "text-embedding-3-small", (
+            f"embeddings event model missing: {embed}"
         )
-        assert post_call["tokens_input"] == 10, (
-            f"expected tokens_input=10, got {post_call.get('tokens_input')}"
+        assert embed["tokens_input"] == 10, (
+            f"expected tokens_input=10, got {embed.get('tokens_input')}"
         )
-        assert post_call["tokens_output"] == 0, (
+        assert embed["tokens_output"] == 0, (
             f"expected tokens_output=0 for embeddings, "
-            f"got {post_call.get('tokens_output')}"
+            f"got {embed.get('tokens_output')}"
         )
 
         _assert_session_in_fleet_with_context(flavor)

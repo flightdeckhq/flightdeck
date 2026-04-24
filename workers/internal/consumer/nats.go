@@ -65,8 +65,19 @@ type EventPayload struct {
 	DirectiveAction string          `json:"directive_action,omitempty"`
 	DirectiveStatus string          `json:"directive_status,omitempty"`
 	Result          json.RawMessage `json:"result,omitempty"`
-	Error           string          `json:"error,omitempty"`
+	// ``Error`` is overloaded between directive_result (plain string) and
+	// Phase 4 llm_error (structured taxonomy object). Accept both via
+	// json.RawMessage so unmarshal cannot fail on either shape; the
+	// event-extra builder preserves it verbatim into the payload JSONB
+	// column for the dashboard to narrow via typeof.
+	Error           json.RawMessage `json:"error,omitempty"`
 	DurationMs      *int64          `json:"duration_ms,omitempty"`
+	// Phase 4: optional streaming sub-object on post_call events.
+	// Populated by the sensor's GuardedStream / GuardedAsyncStream
+	// with TTFT + chunk stats + final_outcome. Absent for non-stream
+	// calls so the wire shape is unchanged for callers that never
+	// stream.
+	Streaming       json.RawMessage `json:"streaming,omitempty"`
 
 	// Runtime context collected by the sensor at init() time and by
 	// the Claude Code plugin on every hook invocation. Populated on

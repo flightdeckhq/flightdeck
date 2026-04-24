@@ -22,9 +22,16 @@ import (
 // This is an exported helper so it can be unit-tested directly without
 // needing to wire a mock writer through the Processor.
 func BuildEventExtra(e consumer.EventPayload) ([]byte, error) {
-	if e.EventType != "directive_result" {
-		return nil, nil
-	}
+	// Pre-Phase-4 this function only produced payload for
+	// directive_result events. Phase 4 opens it up to any event that
+	// carries structured extras -- llm_error events populate
+	// ``error`` with the Phase 4 taxonomy object, streaming post_call
+	// events populate ``streaming`` with TTFT + chunk stats. The
+	// per-field guards below skip any field the event doesn't carry,
+	// so non-directive events that also have no Phase 4 extras
+	// short-circuit out via ``if len(extra) == 0`` at the bottom and
+	// the payload column stays NULL -- matching the prior behaviour
+	// for those events exactly.
 	extra := make(map[string]interface{})
 	if e.DirectiveName != "" {
 		extra["directive_name"] = e.DirectiveName
@@ -43,11 +50,27 @@ func BuildEventExtra(e consumer.EventPayload) ([]byte, error) {
 			extra["result"] = v
 		}
 	}
-	if e.Error != "" {
-		extra["error"] = e.Error
+	if len(e.Error) > 0 {
+		// ``Error`` is json.RawMessage (Phase 4) to carry either the
+		// legacy directive_result string OR the structured llm_error
+		// object. Unmarshal back to an interface so the encoded
+		// payload is one document.
+		var v interface{}
+		if err := json.Unmarshal(e.Error, &v); err == nil {
+			extra["error"] = v
+		}
 	}
 	if e.DurationMs != nil {
 		extra["duration_ms"] = *e.DurationMs
+	}
+	if len(e.Streaming) > 0 {
+		// Phase 4 streaming sub-object. Same shape handling as Error
+		// above: decode + re-attach so the final payload is a single
+		// JSON document.
+		var v interface{}
+		if err := json.Unmarshal(e.Streaming, &v); err == nil {
+			extra["streaming"] = v
+		}
 	}
 	if len(extra) == 0 {
 		return nil, nil
@@ -92,6 +115,23 @@ func (p *Processor) Process(ctx context.Context, e consumer.EventPayload) error 
 			return err
 		}
 	case "post_call", "pre_call", "tool_call":
+		if err := p.session.HandlePostCall(ctx, e); err != nil {
+			return err
+		}
+	case "embeddings":
+		// Phase 4 addition. Embeddings are a post_call-shaped event
+		// with no completion tokens; the ingestion layer validated
+		// the schema so we route through the same last-seen + tokens
+		// update path. Policy does not evaluate (separate budget
+		// surface if ever added; out of scope for Phase 4).
+		if err := p.session.HandlePostCall(ctx, e); err != nil {
+			return err
+		}
+	case "llm_error":
+		// Phase 4 addition. Structured LLM API error. Route through
+		// the same last-seen update path so the session's freshness
+		// advances on failed calls too -- otherwise a session that
+		// only ever produces errors would age to stale.
 		if err := p.session.HandlePostCall(ctx, e); err != nil {
 			return err
 		}

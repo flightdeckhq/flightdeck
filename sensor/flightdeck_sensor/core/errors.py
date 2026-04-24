@@ -157,11 +157,15 @@ def _override_from_status_and_code(
         return ErrorType.REQUEST_TOO_LARGE
     if http_status == 529:  # Anthropic-specific "overloaded"
         return ErrorType.OVERLOADED
-    if http_status == 503:
-        # OpenAI sometimes returns 503 "engine overloaded"; distinguish on
-        # the message hint when present.
-        if provider_error_code and "overload" in provider_error_code.lower():
-            return ErrorType.OVERLOADED
+    # OpenAI sometimes returns 503 "engine overloaded"; distinguish on
+    # the message hint when present. The combined condition keeps ruff's
+    # SIM102 happy without losing the 503-vs-500 branch clarity.
+    if (
+        http_status == 503
+        and provider_error_code
+        and "overload" in provider_error_code.lower()
+    ):
+        return ErrorType.OVERLOADED
     if http_status == 400 and provider_error_code:
         code = provider_error_code.lower()
         if "context_length" in code or "token" in code and "exceed" in code:

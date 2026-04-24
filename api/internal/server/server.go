@@ -97,6 +97,21 @@ func newServer(addr string, s store.Querier, hub *ws.Hub, validator *auth.Valida
 	mux.Handle("DELETE /v1/access-tokens/{id}", gate(handlers.AccessTokenDeleteHandler(s)))
 	mux.Handle("PATCH /v1/access-tokens/{id}", gate(handlers.AccessTokenRenameHandler(s)))
 
+	// Admin-only ops endpoints. The adminGate composes the 30s
+	// REST timeout with auth.AdminRequired, which wraps the
+	// standard bearer validation AND requires IsAdmin=true on the
+	// resolved token (auth/token.go). Non-admin tokens get 403,
+	// missing/invalid tokens get 401 — matches the 40c/50 contract
+	// the handler annotation promises.
+	adminGate := func(h http.Handler) http.Handler {
+		if validator != nil {
+			h = auth.AdminRequired(validator, h)
+		}
+		return withRESTTimeout(h)
+	}
+	mux.Handle("POST /v1/admin/reconcile-agents",
+		adminGate(handlers.AdminReconcileAgentsHandler(s)))
+
 	mux.Handle("GET /health", withRESTTimeout(handlers.HealthHandler()))
 
 	// Swagger UI. The swag/v2 v2.0.0-rc5 + http-swagger v2.0.2

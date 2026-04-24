@@ -233,6 +233,56 @@
                 }
             }
         },
+        "/v1/admin/reconcile-agents": {
+            "post": {
+                "description": "Scans every agents row and recomputes total_sessions, total_tokens, first_seen_at, and last_seen_at by querying the sessions table. Per-agent transaction; continues on per-agent error and surfaces the failures in the response body's errors array. Orphan agents (zero actual sessions) have their counters zeroed but first_seen_at and last_seen_at are preserved — agent-row cleanup is out of scope for this endpoint. Concurrent calls return 409; a 207 indicates partial success (some per-agent errors). Intended for operator use when drift is suspected, not as a scheduled job.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin"
+                ],
+                "summary": "Reconcile agent rollup counters against sessions ground truth",
+                "responses": {
+                    "200": {
+                        "description": "Reconcile completed; errors array is empty",
+                        "schema": {
+                            "$ref": "#/definitions/store.ReconcileResult"
+                        }
+                    },
+                    "207": {
+                        "description": "Reconcile completed with per-agent errors (see errors array)",
+                        "schema": {
+                            "$ref": "#/definitions/store.ReconcileResult"
+                        }
+                    },
+                    "401": {
+                        "description": "Missing or invalid bearer token",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Token is valid but lacks admin scope",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Another reconcile is already in progress",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Fatal database error (agent listing or pool exhaustion)",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/v1/analytics": {
             "get": {
                 "description": "Flexible GROUP BY analytics endpoint. Returns time series data grouped by dimension.",
@@ -708,30 +758,30 @@
         },
         "/v1/fleet": {
             "get": {
-                "description": "Returns sessions grouped by flavor, excluding lost sessions. Includes runtime context facets aggregated across all non-terminal sessions for the dashboard CONTEXT sidebar.",
+                "description": "Returns agents with aggregated state rollup and pagination. Includes runtime context facets aggregated across all non-terminal sessions for the dashboard CONTEXT sidebar.",
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
                     "fleet"
                 ],
-                "summary": "Get fleet state",
+                "summary": "Get fleet state (agent-level, D115)",
                 "parameters": [
                     {
                         "type": "integer",
-                        "description": "Max sessions to return (default 50, max 200)",
-                        "name": "limit",
+                        "description": "Page number (1-based, default 1)",
+                        "name": "page",
                         "in": "query"
                     },
                     {
                         "type": "integer",
-                        "description": "Offset into sessions list (default 0)",
-                        "name": "offset",
+                        "description": "Rows per page (default 50, max 200)",
+                        "name": "per_page",
                         "in": "query"
                     },
                     {
                         "type": "string",
-                        "description": "Filter by agent type: 'developer', 'production', or empty for all",
+                        "description": "Filter by D114 agent type: 'coding', 'production', or empty for all",
                         "name": "agent_type",
                         "in": "query"
                     }
@@ -1047,6 +1097,12 @@
                     },
                     {
                         "type": "string",
+                        "description": "Filter to a single agent (D115 UUID; deep-linked from the Fleet agent table and Investigate AGENT facet)",
+                        "name": "agent_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
                         "description": "Filter by framework name/version matching sessions.context.frameworks[] (repeatable: langgraph/1.1.6, crewai/1.14.1, ...)",
                         "name": "framework",
                         "in": "query"
@@ -1263,6 +1319,12 @@
         "handlers.FleetResponse": {
             "type": "object",
             "properties": {
+                "agents": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/store.AgentSummary"
+                    }
+                },
                 "context_facets": {
                     "type": "object",
                     "additionalProperties": {
@@ -1272,13 +1334,13 @@
                         }
                     }
                 },
-                "flavors": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/store.FlavorSummary"
-                    }
+                "page": {
+                    "type": "integer"
                 },
-                "total_session_count": {
+                "per_page": {
+                    "type": "integer"
+                },
+                "total": {
                     "type": "integer"
                 }
             }
@@ -1408,6 +1470,45 @@
                     "type": "string"
                 },
                 "prefix": {
+                    "type": "string"
+                }
+            }
+        },
+        "store.AgentSummary": {
+            "type": "object",
+            "properties": {
+                "agent_id": {
+                    "type": "string"
+                },
+                "agent_name": {
+                    "type": "string"
+                },
+                "agent_type": {
+                    "type": "string"
+                },
+                "client_type": {
+                    "type": "string"
+                },
+                "first_seen_at": {
+                    "type": "string"
+                },
+                "hostname": {
+                    "type": "string"
+                },
+                "last_seen_at": {
+                    "type": "string"
+                },
+                "state": {
+                    "description": "State rollup: \"active\" when any session under this agent is\ncurrently active; otherwise the most-recent session's state.\nEmpty string when the agent has no sessions yet (freshly\nupserted agent row awaiting its first session linkage).",
+                    "type": "string"
+                },
+                "total_sessions": {
+                    "type": "integer"
+                },
+                "total_tokens": {
+                    "type": "integer"
+                },
+                "user": {
                     "type": "string"
                 }
             }
@@ -1678,32 +1779,6 @@
                 }
             }
         },
-        "store.FlavorSummary": {
-            "type": "object",
-            "properties": {
-                "active_count": {
-                    "type": "integer"
-                },
-                "agent_type": {
-                    "type": "string"
-                },
-                "flavor": {
-                    "type": "string"
-                },
-                "session_count": {
-                    "type": "integer"
-                },
-                "sessions": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/store.Session"
-                    }
-                },
-                "tokens_used_total": {
-                    "type": "integer"
-                }
-            }
-        },
         "store.Policy": {
             "type": "object",
             "properties": {
@@ -1736,6 +1811,32 @@
                 },
                 "warn_at_pct": {
                     "type": "integer"
+                }
+            }
+        },
+        "store.ReconcileResult": {
+            "type": "object",
+            "properties": {
+                "agents_scanned": {
+                    "type": "integer"
+                },
+                "agents_updated": {
+                    "type": "integer"
+                },
+                "counters_updated": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "integer"
+                    }
+                },
+                "duration_ms": {
+                    "type": "integer"
+                },
+                "errors": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
                 }
             }
         },
@@ -1838,6 +1939,13 @@
         "store.Session": {
             "type": "object",
             "properties": {
+                "agent_id": {
+                    "description": "D115 identity columns (nullable for sessions that predate the\nmigration OR for lazy-created rows whose authoritative\nsession_start never arrived; UpsertSession's COALESCE\nenrichment promotes these from NULL to real values on the\nfirst session_start).",
+                    "type": "string"
+                },
+                "agent_name": {
+                    "type": "string"
+                },
                 "agent_type": {
                     "type": "string"
                 },
@@ -1847,6 +1955,9 @@
                 "capture_enabled": {
                     "description": "CaptureEnabled is true when at least one event in this session\nhas has_content=true (i.e. prompt content was captured to\nevent_content). Computed via EXISTS subquery so no schema\nchange is required.",
                     "type": "boolean"
+                },
+                "client_type": {
+                    "type": "string"
                 },
                 "context": {
                     "description": "Runtime context collected by the sensor at init() time and\nstored once in sessions.context (JSONB) on the session_start\nevent. Carries hostname, OS, git, orchestration, frameworks,\netc. -- see sensor/flightdeck_sensor/core/context.py.",
@@ -1912,11 +2023,21 @@
         "store.SessionListItem": {
             "type": "object",
             "properties": {
+                "agent_id": {
+                    "description": "D115 identity (nullable for lazy-created rows awaiting an\nauthoritative session_start).",
+                    "type": "string"
+                },
+                "agent_name": {
+                    "type": "string"
+                },
                 "agent_type": {
                     "type": "string"
                 },
                 "capture_enabled": {
                     "type": "boolean"
+                },
+                "client_type": {
+                    "type": "string"
                 },
                 "context": {
                     "type": "object",

@@ -36,6 +36,12 @@ type mockStore struct {
 	// mock to simulate time-window filtering.
 	lastEventsParams       *store.EventsParams
 	lastSessionEventsLimit int
+
+	// Admin-reconcile handler-test plumbing. The handler calls
+	// ReconcileAgents unconditionally; tests inject the desired
+	// result (or an error) via these fields.
+	reconcileResult *store.ReconcileResult
+	reconcileErr    error
 }
 
 func (m *mockStore) GetContextFacets(_ context.Context) (map[string][]store.ContextFacetValue, error) {
@@ -516,6 +522,26 @@ func (m *mockStore) QueryAnalytics(_ context.Context, params store.AnalyticsPara
 			{Dimension: "research-agent", Total: 5000, Data: []store.DataPoint{{Date: "2026-04-01", Value: 5000}}},
 		},
 		Totals: store.AnalyticsTotals{GrandTotal: 5000, PeriodChangePct: 10.0},
+	}, nil
+}
+
+// ReconcileAgents is a no-op mock: the admin-reconcile handler tests
+// set ``m.reconcileResult`` / ``m.reconcileErr`` per-test (see the
+// reconcile handler tests below) and ignore the context. Tests that
+// don't exercise the reconcile path get a zero-agents response.
+func (m *mockStore) ReconcileAgents(_ context.Context) (*store.ReconcileResult, error) {
+	if m.reconcileErr != nil {
+		return nil, m.reconcileErr
+	}
+	if m.reconcileResult != nil {
+		return m.reconcileResult, nil
+	}
+	return &store.ReconcileResult{
+		AgentsScanned:   0,
+		AgentsUpdated:   0,
+		CountersUpdated: map[string]int{},
+		DurationMs:      0,
+		Errors:          []string{},
 	}, nil
 }
 
@@ -2446,4 +2472,139 @@ func TestPolicyDeleteHandler_MissingID(t *testing.T) {
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("expected 400, got %d", w.Code)
 	}
+}
+
+// --- AdminReconcileAgentsHandler ---
+
+func TestAdminReconcileHandler_200_OnCleanRun(t *testing.T) {
+	s := &mockStore{reconcileResult: &store.ReconcileResult{
+		AgentsScanned:   5,
+		AgentsUpdated:   2,
+		CountersUpdated: map[string]int{"total_sessions": 2, "total_tokens": 1},
+		DurationMs:      42,
+		Errors:          []string{},
+	}}
+	h := handlers.AdminReconcileAgentsHandler(store.WrapStore(s))
+	req := httptest.NewRequest("POST", "/v1/admin/reconcile-agents", nil)
+	w := httptest.NewRecorder()
+	h(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var got store.ReconcileResult
+	if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.AgentsScanned != 5 || got.AgentsUpdated != 2 {
+		t.Errorf("body mismatch: %+v", got)
+	}
+	if got.CountersUpdated["total_sessions"] != 2 {
+		t.Errorf("counters: %+v", got.CountersUpdated)
+	}
+}
+
+func TestAdminReconcileHandler_207_OnPartialErrors(t *testing.T) {
+	s := &mockStore{reconcileResult: &store.ReconcileResult{
+		AgentsScanned:   5,
+		AgentsUpdated:   3,
+		CountersUpdated: map[string]int{"total_sessions": 3},
+		DurationMs:      99,
+		Errors: []string{
+			"agent 00000000-0000-0000-0000-000000000001: tx begin: context canceled",
+		},
+	}}
+	h := handlers.AdminReconcileAgentsHandler(store.WrapStore(s))
+	req := httptest.NewRequest("POST", "/v1/admin/reconcile-agents", nil)
+	w := httptest.NewRecorder()
+	h(w, req)
+
+	if w.Code != http.StatusMultiStatus {
+		t.Fatalf("expected 207, got %d", w.Code)
+	}
+	var got store.ReconcileResult
+	if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got.Errors) != 1 {
+		t.Errorf("expected 1 error in body, got %d", len(got.Errors))
+	}
+}
+
+func TestAdminReconcileHandler_500_OnFatalError(t *testing.T) {
+	s := &mockStore{reconcileErr: fmt.Errorf("list agents: pool timeout")}
+	h := handlers.AdminReconcileAgentsHandler(store.WrapStore(s))
+	req := httptest.NewRequest("POST", "/v1/admin/reconcile-agents", nil)
+	w := httptest.NewRecorder()
+	h(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d", w.Code)
+	}
+	// Body must not leak internal error details to the client. The
+	// slog.Error line records the full string; the response body is
+	// the generic "internal server error" used by every other 500
+	// path in this package.
+	if !strings.Contains(w.Body.String(), "internal server error") {
+		t.Errorf("expected generic 500 body, got %s", w.Body.String())
+	}
+}
+
+func TestAdminReconcileHandler_409_OnConcurrentInvocation(t *testing.T) {
+	// Slow mock simulates a reconcile in progress. First request
+	// acquires the handler's process-level mutex; second request
+	// arrives while the lock is held and must return 409.
+	started := make(chan struct{})
+	release := make(chan struct{})
+	s := &slowReconcileStore{
+		started: started,
+		release: release,
+		result: &store.ReconcileResult{
+			AgentsScanned:   1,
+			AgentsUpdated:   0,
+			CountersUpdated: map[string]int{},
+			Errors:          []string{},
+		},
+	}
+	h := handlers.AdminReconcileAgentsHandler(store.WrapStore(s))
+
+	firstDone := make(chan *httptest.ResponseRecorder)
+	go func() {
+		w := httptest.NewRecorder()
+		h(w, httptest.NewRequest("POST", "/v1/admin/reconcile-agents", nil))
+		firstDone <- w
+	}()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first reconcile never started")
+	}
+
+	// Second call arrives while the first holds the lock.
+	w2 := httptest.NewRecorder()
+	h(w2, httptest.NewRequest("POST", "/v1/admin/reconcile-agents", nil))
+	if w2.Code != http.StatusConflict {
+		t.Errorf("expected 409, got %d body=%s", w2.Code, w2.Body.String())
+	}
+
+	close(release)
+	w1 := <-firstDone
+	if w1.Code != http.StatusOK {
+		t.Errorf("first call should return 200, got %d", w1.Code)
+	}
+}
+
+// slowReconcileStore blocks ReconcileAgents until the test releases it
+// so the concurrent-409 test can observe the mutex-held state.
+type slowReconcileStore struct {
+	mockStore
+	started chan struct{}
+	release chan struct{}
+	result  *store.ReconcileResult
+}
+
+func (s *slowReconcileStore) ReconcileAgents(_ context.Context) (*store.ReconcileResult, error) {
+	close(s.started)
+	<-s.release
+	return s.result, nil
 }

@@ -68,6 +68,11 @@ type Querier interface {
 	CreateAccessToken(ctx context.Context, name string) (*CreatedAccessTokenResponse, error)
 	DeleteAccessToken(ctx context.Context, id string) error
 	RenameAccessToken(ctx context.Context, id, newName string) (*AccessTokenRow, error)
+	// ReconcileAgents recomputes the denormalised rollup columns on
+	// the agents table from sessions ground truth. Called by the
+	// /v1/admin/reconcile-agents endpoint; see agents_reconcile.go
+	// for the per-agent contract + concurrency notes.
+	ReconcileAgents(ctx context.Context) (*ReconcileResult, error)
 }
 
 // WrapStore returns a Querier from any compatible implementation.

@@ -13,6 +13,10 @@ import { TruncatedText } from "@/components/ui/TruncatedText";
 import { fetchSessions, type SessionsParams } from "@/lib/api";
 import type { AgentSummary, SessionListItem, SessionState } from "@/lib/types";
 import { useFleetStore } from "@/store/fleet";
+import {
+  seedAgents,
+  useAgentIdentity,
+} from "@/lib/agent-identity-cache";
 import { DateRangePicker, type DateRangeWithPreset } from "@/components/ui/DateRangePicker";
 import { Pagination } from "@/components/ui/Pagination";
 import { SessionDrawer, type DrawerTab } from "@/components/session/SessionDrawer";
@@ -554,6 +558,12 @@ export function buildActiveFilters(
   sessions: SessionListItem[],
   agents: AgentSummary[],
   updateUrl: UpdateUrlFn,
+  // Optional 5th source — an authoritative agent_name pulled from
+  // /v1/agents/{id} when neither the fleet-store roster nor the
+  // sessions list could resolve it. Consumers that don't wire the
+  // cache simply pass ``null`` (or omit the arg) and the legacy
+  // two-source fallback + UUID-prefix chain still works.
+  resolvedAgentName: string | null = null,
 ): ActiveFilterPill[] {
   const pills: ActiveFilterPill[] = [];
   for (const st of urlState.states) {
@@ -603,11 +613,16 @@ export function buildActiveFilters(
     const sessionMatch = (sessions ?? []).find(
       (s) => s.agent_id === urlState.agentId,
     );
+    // Resolver order: fleet roster > sessions list > /v1/agents/{id}
+    // cache hit > UUID prefix. The cached lookup sits between "nice
+    // source happened to be in the current view" and "show the raw
+    // id"; see agent-identity-cache.ts for the fetch lifecycle.
     const label =
       agentMatch?.agent_name ??
       sessionMatch?.agent_name ??
+      resolvedAgentName ??
       urlState.agentId.slice(0, 8);
-    if (!agentMatch && !sessionMatch) {
+    if (!agentMatch && !sessionMatch && !resolvedAgentName) {
       // Hit the UUID-prefix fallback. One console line per render is
       // annoying; emit only when the pill would render for the first
       // time and keep it quiet on re-renders via a module-level Set.
@@ -732,6 +747,14 @@ export function Investigate() {
     // under live traffic is the Fleet page's responsibility.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Seed the /v1/agents/{id} cache with whatever the fleet store has
+  // already loaded so cache hits are free when an agent is in the
+  // roster. ``seedAgents`` only overwrites pending/missing entries
+  // so a concrete fetch result (hit or miss) is not clobbered.
+  useEffect(() => {
+    if (fleetAgents.length > 0) seedAgents(fleetAgents);
+  }, [fleetAgents]);
 
   // Core data state
   const [sessions, setSessions] = useState<SessionListItem[]>([]);
@@ -1133,14 +1156,29 @@ export function Investigate() {
     [urlState, updateUrl]
   );
 
+  // /v1/agents/{id} lookup for the chip label. When the fleet store
+  // roster and the current sessions list both miss the active
+  // agent_id filter (e.g. the time window excluded every session
+  // for that agent) this triggers a background fetch and the chip
+  // re-renders with the real agent_name once the response lands.
+  const resolvedAgent = useAgentIdentity(urlState.agentId);
+  const resolvedAgentName = resolvedAgent?.agent_name ?? null;
+
   // Active filter pills -- pure function for testability. Agents
   // come from the fleet store, hydrated at mount below so the
   // agent_id chip label resolves via agent identity (authoritative)
   // instead of falling through to the 8-char UUID prefix when the
   // filtered sessions list happens to be empty -- Bug 2b fix.
   const activeFilters = useMemo(
-    () => buildActiveFilters(urlState, sessions, fleetAgents, updateUrl),
-    [urlState, sessions, fleetAgents, updateUrl],
+    () =>
+      buildActiveFilters(
+        urlState,
+        sessions,
+        fleetAgents,
+        updateUrl,
+        resolvedAgentName,
+      ),
+    [urlState, sessions, fleetAgents, updateUrl, resolvedAgentName],
   );
 
   const clearAllFilters = useCallback(() => {

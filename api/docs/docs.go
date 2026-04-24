@@ -289,6 +289,177 @@ const docTemplate = `{
                 }
             }
         },
+        "/v1/agents": {
+            "get": {
+                "description": "Returns agents matching the supplied filters. Multi-value filters (state, agent_type, client_type, hostname, user, os, orchestration) accept comma-separated values and repeated query params; values within a dimension are OR, values across dimensions are AND. ` + "`" + `` + "`" + `search` + "`" + `` + "`" + ` is a case-insensitive substring match against ` + "`" + `` + "`" + `agent_name` + "`" + `` + "`" + ` and ` + "`" + `` + "`" + `hostname` + "`" + `` + "`" + `. ` + "`" + `` + "`" + `updated_since` + "`" + `` + "`" + ` filters on ` + "`" + `` + "`" + `last_seen_at \u003e= ts` + "`" + `` + "`" + `. State is computed via LATERAL subquery against the most-recent session. Pagination defaults to 25/page, max 100.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "agents"
+                ],
+                "summary": "List agents with filters, search, sort, and pagination",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Filter by agent_type (repeatable/comma: coding, production)",
+                        "name": "agent_type",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by client_type (repeatable/comma: claude_code, flightdeck_sensor)",
+                        "name": "client_type",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by rollup state (repeatable/comma: active, idle, stale, closed, lost)",
+                        "name": "state",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by hostname (repeatable/comma, exact match)",
+                        "name": "hostname",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by user_name (repeatable/comma, exact match)",
+                        "name": "user",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by sessions.context.os (EXISTS subquery; matches if ANY session had the OS)",
+                        "name": "os",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by sessions.context.orchestration (EXISTS subquery)",
+                        "name": "orchestration",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Case-insensitive substring search on agent_name + hostname",
+                        "name": "search",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter to agents whose last_seen_at \u003e= this ISO-8601 timestamp",
+                        "name": "updated_since",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Sort column (default: last_seen_at). One of: last_seen_at, first_seen_at, agent_name, total_sessions, total_tokens, state, user, hostname",
+                        "name": "sort",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "asc or desc (default: desc)",
+                        "name": "order",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Max results (default 25, max 100)",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Offset for pagination (default 0)",
+                        "name": "offset",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/store.AgentListResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid filter value, sort column, order direction, or limit over 100",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Missing or invalid bearer token",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Database error",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/agents/{agent_id}": {
+            "get": {
+                "description": "Returns the full AgentSummary for a single agent including rollup counters and the LATERAL-computed rollup state. Powers the Investigate chip agent-name resolver so the UI no longer has to fall back to a UUID prefix when the filtered sessions list is empty.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "agents"
+                ],
+                "summary": "Get agent detail by id",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Agent UUID",
+                        "name": "agent_id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/store.AgentSummary"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid UUID format",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Missing or invalid bearer token",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Agent not found",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Database error",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/v1/analytics": {
             "get": {
                 "description": "Flexible GROUP BY analytics endpoint. Returns time series data grouped by dimension.",
@@ -1062,7 +1233,7 @@ const docTemplate = `{
         },
         "/v1/sessions": {
             "get": {
-                "description": "Returns sessions matching time range, state, flavor, model, and search filters with pagination and sort support.",
+                "description": "Returns sessions matching time range, state, flavor, client_type, agent_type, model, framework, agent_id, context-scalar (user/os/hostname/git_branch/orchestration/...), and search filters with pagination and sort support. Multi-value filters (state, flavor, client_type, framework, agent_type, context-scalar) accept repeated query params and comma-separated values; values within a dimension are OR, values across dimensions are AND. ` + "`" + `` + "`" + `q` + "`" + `` + "`" + ` is a case-insensitive substring search across agent_name, flavor, host, model, session_id, context.hostname, context.os, context.git_branch, context.python_version, and the frameworks array.",
                 "produces": [
                     "application/json"
                 ],
@@ -1073,7 +1244,7 @@ const docTemplate = `{
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "Full-text search across flavor, host, model, hostname, os, git_branch",
+                        "description": "Full-text search across agent_name, flavor, host, model, session_id, context.hostname, context.os, context.git_branch, context.python_version, frameworks",
                         "name": "q",
                         "in": "query"
                     },
@@ -1109,6 +1280,18 @@ const docTemplate = `{
                     },
                     {
                         "type": "string",
+                        "description": "Filter by agent_type (repeatable: coding, production)",
+                        "name": "agent_type",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by client_type (repeatable: claude_code, flightdeck_sensor)",
+                        "name": "client_type",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
                         "description": "Filter by framework name/version matching sessions.context.frameworks[] (repeatable: langgraph/1.1.6, crewai/1.14.1, ...)",
                         "name": "framework",
                         "in": "query"
@@ -1121,7 +1304,49 @@ const docTemplate = `{
                     },
                     {
                         "type": "string",
-                        "description": "Sort field: started_at, duration, tokens_used, flavor (default: started_at)",
+                        "description": "Filter by context.user (repeatable)",
+                        "name": "user",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by context.os (repeatable)",
+                        "name": "os",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by context.hostname (repeatable)",
+                        "name": "hostname",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by context.arch (repeatable)",
+                        "name": "arch",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by context.git_branch (repeatable)",
+                        "name": "git_branch",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by context.git_repo (repeatable)",
+                        "name": "git_repo",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by context.orchestration (repeatable)",
+                        "name": "orchestration",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Sort field: started_at, last_seen_at, duration, tokens_used, flavor, model, hostname (default: started_at)",
                         "name": "sort",
                         "in": "query"
                     },
@@ -1477,6 +1702,29 @@ const docTemplate = `{
                 },
                 "prefix": {
                     "type": "string"
+                }
+            }
+        },
+        "store.AgentListResponse": {
+            "type": "object",
+            "properties": {
+                "agents": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/store.AgentSummary"
+                    }
+                },
+                "has_more": {
+                    "type": "boolean"
+                },
+                "limit": {
+                    "type": "integer"
+                },
+                "offset": {
+                    "type": "integer"
+                },
+                "total": {
+                    "type": "integer"
                 }
             }
         },

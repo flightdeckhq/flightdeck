@@ -73,6 +73,13 @@ type Querier interface {
 	// /v1/admin/reconcile-agents endpoint; see agents_reconcile.go
 	// for the per-agent contract + concurrency notes.
 	ReconcileAgents(ctx context.Context) (*ReconcileResult, error)
+	// ListAgents powers GET /v1/agents. See store/agents.go for the
+	// full filter/sort/search contract.
+	ListAgents(ctx context.Context, params AgentListParams) (*AgentListResponse, error)
+	// GetAgentByID powers GET /v1/agents/{id}. Returns (nil, nil)
+	// for a missing row so the handler can distinguish 404 from a
+	// real DB error.
+	GetAgentByID(ctx context.Context, agentID string) (*AgentSummary, error)
 }
 
 // WrapStore returns a Querier from any compatible implementation.

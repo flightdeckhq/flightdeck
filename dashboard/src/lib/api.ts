@@ -1,4 +1,4 @@
-import type { FleetResponse, SessionDetail, Policy, PolicyRequest, DirectiveRequest, Directive, AnalyticsParams, AnalyticsResponse, EventContent, SearchResults, CustomDirective, AgentEvent, SessionsResponse, AccessToken, CreatedAccessToken } from "./types";
+import type { FleetResponse, AgentSummary, SessionDetail, Policy, PolicyRequest, DirectiveRequest, Directive, AnalyticsParams, AnalyticsResponse, EventContent, SearchResults, CustomDirective, AgentEvent, SessionsResponse, AccessToken, CreatedAccessToken } from "./types";
 
 const BASE = import.meta.env.VITE_API_BASE_URL || "/api";
 
@@ -49,6 +49,21 @@ export function fetchFleet(page = 1, perPage = 50, agentType?: string): Promise<
   let url = `/v1/fleet?page=${page}&per_page=${perPage}`;
   if (agentType) url += `&agent_type=${agentType}`;
   return fetchJson<FleetResponse>(url);
+}
+
+/**
+ * Fetch a single agent's identity via ``GET /v1/agents/{id}``.
+ * Returns ``null`` when the server 404s (agent id not known) so
+ * callers can handle "no such agent" without a try/catch. Any other
+ * non-2xx status still throws via fetchJson.
+ */
+export async function fetchAgentById(agentId: string): Promise<AgentSummary | null> {
+  const res = await apiFetch(`/v1/agents/${encodeURIComponent(agentId)}`);
+  if (res.status === 404) return null;
+  if (!res.ok) {
+    throw new Error(`API ${res.status}: /v1/agents/${agentId}`);
+  }
+  return (await res.json()) as AgentSummary;
 }
 
 /**

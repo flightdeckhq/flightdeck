@@ -73,6 +73,13 @@
   --chart-mistral: #ef4444;
   --chart-meta: #22c55e;
 
+  /* Claude Code brand amber. Mirrors the CLAUDE_CODE_ICON / anthropic
+     provider icon colour in components/ui/provider-icons.ts so the
+     CLIENT_TYPE_COLOR pill reads as the same brand as the logo next
+     to it. Dark-theme value is the lighter of the two hexes so amber
+     on the dark surface stays legible. */
+  --claude-code: #E8915A;
+
   /* Cost disclaimer tone -- amber on dark theme. */
   --color-warn-soft: rgba(234, 179, 8, 0.12);
   --color-warn-border: rgba(234, 179, 8, 0.35);
@@ -156,6 +163,11 @@
   --chart-xai: #ea580c;
   --chart-mistral: #dc2626;
   --chart-meta: #16a34a;
+
+  /* Claude Code brand amber. Mirrors CLAUDE_CODE_ICON in
+     components/ui/provider-icons.ts. Light-theme value is the
+     darker hex so amber on white surface stays legible. */
+  --claude-code: #D4763B;
 
   /* Cost disclaimer tone -- amber on light theme. */
   --color-warn-soft: rgba(202, 138, 4, 0.08);

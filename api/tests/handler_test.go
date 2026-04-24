@@ -42,6 +42,25 @@ type mockStore struct {
 	// result (or an error) via these fields.
 	reconcileResult *store.ReconcileResult
 	reconcileErr    error
+
+	// Agents endpoint handler-test plumbing. ListAgents returns
+	// ``agentListResult`` (or ``agentListErr``) and records the
+	// params it was called with via ``lastAgentListParams`` so the
+	// handler's parse → store-params mapping can be asserted
+	// directly.
+	agentListResult     *store.AgentListResponse
+	agentListErr        error
+	lastAgentListParams *store.AgentListParams
+
+	// GetAgentByID plumbing — by-id lookup map + optional error.
+	agentsByID        map[string]*store.AgentSummary
+	agentByIDErr      error
+	lastAgentByIDArg  string
+
+	// Records the last GetSessions params so handler tests can
+	// assert the parse → store-params mapping. Nil unless set by a
+	// call.
+	lastSessionsParams *store.SessionsParams
 }
 
 func (m *mockStore) GetContextFacets(_ context.Context) (map[string][]store.ContextFacetValue, error) {
@@ -339,6 +358,8 @@ func (m *mockStore) Search(_ context.Context, query string) (*store.SearchResult
 }
 
 func (m *mockStore) GetSessions(_ context.Context, params store.SessionsParams) (*store.SessionsResponse, error) {
+	paramsCopy := params
+	m.lastSessionsParams = &paramsCopy
 	sessions := []store.SessionListItem{
 		{SessionID: "s1", Flavor: "research-agent", State: "active", StartedAt: time.Now(), TokensUsed: 3000, Context: map[string]interface{}{"os": "Linux"}},
 		{SessionID: "s2", Flavor: "research-agent", State: "closed", StartedAt: time.Now().Add(-time.Hour), TokensUsed: 2000, Context: map[string]interface{}{"os": "Darwin"}},
@@ -523,6 +544,39 @@ func (m *mockStore) QueryAnalytics(_ context.Context, params store.AnalyticsPara
 		},
 		Totals: store.AnalyticsTotals{GrandTotal: 5000, PeriodChangePct: 10.0},
 	}, nil
+}
+
+// ListAgents records the params it was called with and returns the
+// preconfigured result. Tests that don't set ``agentListResult``
+// get an empty response shape.
+func (m *mockStore) ListAgents(_ context.Context, params store.AgentListParams) (*store.AgentListResponse, error) {
+	m.lastAgentListParams = &params
+	if m.agentListErr != nil {
+		return nil, m.agentListErr
+	}
+	if m.agentListResult != nil {
+		return m.agentListResult, nil
+	}
+	return &store.AgentListResponse{
+		Agents: []store.AgentSummary{},
+		Total:  0,
+		Limit:  params.Limit,
+		Offset: params.Offset,
+	}, nil
+}
+
+// GetAgentByID consults ``agentsByID`` and returns the match or
+// nil when the id is absent. Tests set ``agentByIDErr`` to simulate
+// a DB failure.
+func (m *mockStore) GetAgentByID(_ context.Context, agentID string) (*store.AgentSummary, error) {
+	m.lastAgentByIDArg = agentID
+	if m.agentByIDErr != nil {
+		return nil, m.agentByIDErr
+	}
+	if m.agentsByID == nil {
+		return nil, nil
+	}
+	return m.agentsByID[agentID], nil
 }
 
 // ReconcileAgents is a no-op mock: the admin-reconcile handler tests
@@ -2154,6 +2208,63 @@ func TestSessionsListHandler_LimitExceedsMax(t *testing.T) {
 	}
 }
 
+func TestSessionsListHandler_ClientTypeFilter_MultiValue(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.SessionsListHandler(store.WrapStore(s))
+	req := httptest.NewRequest(
+		"GET",
+		"/v1/sessions?client_type=claude_code,flightdeck_sensor",
+		nil,
+	)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	p := s.lastSessionsParams
+	if p == nil {
+		t.Fatal("GetSessions not called")
+	}
+	assertStringSliceEqual(t, "client_type", p.ClientTypes, []string{"claude_code", "flightdeck_sensor"})
+}
+
+func TestSessionsListHandler_InvalidClientType(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.SessionsListHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/sessions?client_type=cursor", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for invalid client_type, got %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "claude_code") {
+		t.Errorf("error should list allowed values; got %s", w.Body.String())
+	}
+}
+
+func TestSessionsListHandler_AcceptsNewSortColumns(t *testing.T) {
+	// last_seen_at, model, hostname join the original {started_at,
+	// duration, tokens_used, flavor} allow-list. Any of them must
+	// 200 through the handler.
+	for _, sort := range []string{"last_seen_at", "model", "hostname"} {
+		s := &mockStore{}
+		handler := handlers.SessionsListHandler(store.WrapStore(s))
+		req := httptest.NewRequest(
+			"GET", "/v1/sessions?sort="+sort, nil,
+		)
+		w := httptest.NewRecorder()
+		handler(w, req)
+		if w.Code != http.StatusOK {
+			t.Errorf("sort=%s: expected 200, got %d body=%s",
+				sort, w.Code, w.Body.String())
+		}
+		if s.lastSessionsParams == nil || s.lastSessionsParams.Sort != sort {
+			t.Errorf("sort=%s: param not forwarded (%+v)",
+				sort, s.lastSessionsParams)
+		}
+	}
+}
+
 func TestSessionsListHandler_QueryFilter(t *testing.T) {
 	s := &mockStore{}
 	handler := handlers.SessionsListHandler(store.WrapStore(s))
@@ -2471,6 +2582,264 @@ func TestPolicyDeleteHandler_MissingID(t *testing.T) {
 	handler(w, req)
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+// --- AgentsListHandler ---
+
+func TestAgentsListHandler_200_DefaultParams(t *testing.T) {
+	s := &mockStore{agentListResult: &store.AgentListResponse{
+		Agents: []store.AgentSummary{
+			{AgentID: "a1", AgentName: "alice"},
+		},
+		Total: 1, Limit: 25, Offset: 0, HasMore: false,
+	}}
+	h := handlers.AgentsListHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/agents", nil)
+	w := httptest.NewRecorder()
+	h(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	var got store.AgentListResponse
+	if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Total != 1 || len(got.Agents) != 1 {
+		t.Errorf("body: %+v", got)
+	}
+	// Defaults: limit=25, offset=0, sort=last_seen_at, order=desc.
+	if s.lastAgentListParams == nil {
+		t.Fatal("handler should have called ListAgents")
+	}
+	p := s.lastAgentListParams
+	if p.Limit != 25 || p.Offset != 0 {
+		t.Errorf("defaults: limit=%d offset=%d", p.Limit, p.Offset)
+	}
+	if p.Sort != "last_seen_at" || p.Order != "desc" {
+		t.Errorf("defaults: sort=%q order=%q", p.Sort, p.Order)
+	}
+}
+
+func TestAgentsListHandler_ParsesMultiValueFilters(t *testing.T) {
+	s := &mockStore{}
+	h := handlers.AgentsListHandler(store.WrapStore(s))
+	// Comma-separated AND repeated — handler accepts both.
+	req := httptest.NewRequest(
+		"GET",
+		"/v1/agents?agent_type=coding,production&state=active&state=idle&hostname=h1,h2",
+		nil,
+	)
+	w := httptest.NewRecorder()
+	h(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	p := s.lastAgentListParams
+	if p == nil {
+		t.Fatal("ListAgents not called")
+	}
+	assertStringSliceEqual(t, "agent_type", p.AgentType, []string{"coding", "production"})
+	assertStringSliceEqual(t, "state", p.State, []string{"active", "idle"})
+	assertStringSliceEqual(t, "hostname", p.Hostname, []string{"h1", "h2"})
+}
+
+func TestAgentsListHandler_400_OnInvalidAgentType(t *testing.T) {
+	h := handlers.AgentsListHandler(store.WrapStore(&mockStore{}))
+	req := httptest.NewRequest("GET", "/v1/agents?agent_type=autonomous", nil)
+	w := httptest.NewRecorder()
+	h(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "coding, production") {
+		t.Errorf("error message should list allowed values; got %s", w.Body.String())
+	}
+}
+
+func TestAgentsListHandler_400_OnInvalidClientType(t *testing.T) {
+	h := handlers.AgentsListHandler(store.WrapStore(&mockStore{}))
+	req := httptest.NewRequest("GET", "/v1/agents?client_type=bogus", nil)
+	w := httptest.NewRecorder()
+	h(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestAgentsListHandler_400_OnInvalidState(t *testing.T) {
+	h := handlers.AgentsListHandler(store.WrapStore(&mockStore{}))
+	req := httptest.NewRequest("GET", "/v1/agents?state=sleeping", nil)
+	w := httptest.NewRecorder()
+	h(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestAgentsListHandler_400_OnInvalidSort(t *testing.T) {
+	h := handlers.AgentsListHandler(store.WrapStore(&mockStore{}))
+	req := httptest.NewRequest("GET", "/v1/agents?sort=agent_id", nil)
+	w := httptest.NewRecorder()
+	h(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "last_seen_at") {
+		t.Errorf("error should list allowed sort columns; got %s", w.Body.String())
+	}
+}
+
+func TestAgentsListHandler_400_OnLimitOver100(t *testing.T) {
+	h := handlers.AgentsListHandler(store.WrapStore(&mockStore{}))
+	req := httptest.NewRequest("GET", "/v1/agents?limit=101", nil)
+	w := httptest.NewRecorder()
+	h(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "maximum of 100") {
+		t.Errorf("error body: %s", w.Body.String())
+	}
+}
+
+func TestAgentsListHandler_400_OnInvalidUpdatedSince(t *testing.T) {
+	h := handlers.AgentsListHandler(store.WrapStore(&mockStore{}))
+	req := httptest.NewRequest("GET", "/v1/agents?updated_since=not-a-date", nil)
+	w := httptest.NewRecorder()
+	h(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestAgentsListHandler_IgnoresUnknownParams(t *testing.T) {
+	// Future-compatibility: unknown params must not 400. The handler
+	// simply never reads them; they pass through as no-ops.
+	s := &mockStore{}
+	h := handlers.AgentsListHandler(store.WrapStore(s))
+	req := httptest.NewRequest(
+		"GET",
+		"/v1/agents?fleet_version=42&future_flag=true",
+		nil,
+	)
+	w := httptest.NewRecorder()
+	h(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("unknown params should be silently ignored; got %d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestAgentsListHandler_500_OnStoreError(t *testing.T) {
+	s := &mockStore{agentListErr: fmt.Errorf("pool exhausted")}
+	h := handlers.AgentsListHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/agents", nil)
+	w := httptest.NewRecorder()
+	h(w, req)
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500, got %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "internal server error") {
+		t.Errorf("should return generic 500 body; got %s", w.Body.String())
+	}
+}
+
+func assertStringSliceEqual(t *testing.T, label string, got, want []string) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Errorf("%s: len mismatch — got %v want %v", label, got, want)
+		return
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("%s[%d]: got %q want %q", label, i, got[i], want[i])
+		}
+	}
+}
+
+// --- AgentByIDHandler ---
+
+func TestAgentByIDHandler_200_OnHit(t *testing.T) {
+	id := "11111111-2222-3333-4444-555555555555"
+	s := &mockStore{agentsByID: map[string]*store.AgentSummary{
+		id: {
+			AgentID:   id,
+			AgentName: "alice",
+			AgentType: "coding",
+			UserName:  "u1",
+			Hostname:  "h1",
+			State:     "active",
+		},
+	}}
+	h := handlers.AgentByIDHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/agents/"+id, nil)
+	w := httptest.NewRecorder()
+	h(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	var got store.AgentSummary
+	if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.AgentID != id || got.AgentName != "alice" {
+		t.Errorf("body: %+v", got)
+	}
+	if s.lastAgentByIDArg != id {
+		t.Errorf("store arg: want %q, got %q", id, s.lastAgentByIDArg)
+	}
+}
+
+func TestAgentByIDHandler_404_OnMiss(t *testing.T) {
+	id := "11111111-2222-3333-4444-555555555555"
+	// agentsByID is nil / no match — store returns (nil, nil).
+	h := handlers.AgentByIDHandler(store.WrapStore(&mockStore{}))
+	req := httptest.NewRequest("GET", "/v1/agents/"+id, nil)
+	w := httptest.NewRecorder()
+	h(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "agent not found") {
+		t.Errorf("body: %s", w.Body.String())
+	}
+}
+
+func TestAgentByIDHandler_400_OnInvalidUUID(t *testing.T) {
+	h := handlers.AgentByIDHandler(store.WrapStore(&mockStore{}))
+	req := httptest.NewRequest("GET", "/v1/agents/not-a-uuid", nil)
+	w := httptest.NewRecorder()
+	h(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestAgentByIDHandler_400_OnEmptyID(t *testing.T) {
+	h := handlers.AgentByIDHandler(store.WrapStore(&mockStore{}))
+	// Request the collection root via the by-id route; trailing slash
+	// with no id should 400 rather than fan out to the list handler
+	// (the mux differentiates /v1/agents vs /v1/agents/).
+	req := httptest.NewRequest("GET", "/v1/agents/", nil)
+	w := httptest.NewRecorder()
+	h(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestAgentByIDHandler_500_OnStoreError(t *testing.T) {
+	id := "11111111-2222-3333-4444-555555555555"
+	s := &mockStore{agentByIDErr: fmt.Errorf("pool exhausted")}
+	h := handlers.AgentByIDHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/agents/"+id, nil)
+	w := httptest.NewRecorder()
+	h(w, req)
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500, got %d", w.Code)
 	}
 }
 

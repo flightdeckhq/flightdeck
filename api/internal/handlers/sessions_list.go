@@ -25,31 +25,56 @@ var validSessionStates = map[string]bool{
 }
 
 // validSessionSorts is the whitelist for the sort parameter.
+// Extended in v0.4.0 phase 2: last_seen_at, model, hostname join the
+// original {started_at, duration, tokens_used, flavor} set so the
+// Investigate table can sort on the columns users actually scan
+// first (recency, model, host). The mapping to SQL expressions lives
+// in ``store.allowedSorts``; this set mirrors the keys so the
+// handler can emit the 400 with the full allow-list.
 var validSessionSorts = map[string]bool{
-	"started_at": true,
-	"duration":   true,
-	"tokens_used": true,
-	"flavor":     true,
+	"started_at":   true,
+	"last_seen_at": true,
+	"duration":     true,
+	"tokens_used":  true,
+	"flavor":       true,
+	"model":        true,
+	"hostname":     true,
+}
+
+// validSessionClientTypes mirrors the sessions.client_type CHECK
+// constraint (see migrations/000015_agent_identity_model.up.sql).
+var validSessionClientTypes = map[string]bool{
+	"claude_code":       true,
+	"flightdeck_sensor": true,
 }
 
 // SessionsListHandler handles GET /v1/sessions.
 //
 // @Summary      List sessions with filters, search, and pagination
-// @Description  Returns sessions matching time range, state, flavor, model, and search filters with pagination and sort support.
+// @Description  Returns sessions matching time range, state, flavor, client_type, agent_type, model, framework, agent_id, context-scalar (user/os/hostname/git_branch/orchestration/...), and search filters with pagination and sort support. Multi-value filters (state, flavor, client_type, framework, agent_type, context-scalar) accept repeated query params and comma-separated values; values within a dimension are OR, values across dimensions are AND. ``q`` is a case-insensitive substring search across agent_name, flavor, host, model, session_id, context.hostname, context.os, context.git_branch, context.python_version, and the frameworks array.
 // @Tags         sessions
 // @Produce      json
-// @Param        q       query     string  false  "Full-text search across flavor, host, model, hostname, os, git_branch"
-// @Param        from    query     string  false  "Start time (ISO 8601, default: 7 days ago)"
-// @Param        to      query     string  false  "End time (ISO 8601, default: now)"
-// @Param        state   query     string  false  "Filter by state (repeatable: active, idle, stale, closed, lost)"
-// @Param        flavor  query     string  false  "Filter by flavor (repeatable)"
-// @Param        agent_id query    string  false  "Filter to a single agent (D115 UUID; deep-linked from the Fleet agent table and Investigate AGENT facet)"
-// @Param        framework query   string  false  "Filter by framework name/version matching sessions.context.frameworks[] (repeatable: langgraph/1.1.6, crewai/1.14.1, ...)"
-// @Param        model   query     string  false  "Filter by model"
-// @Param        sort    query     string  false  "Sort field: started_at, duration, tokens_used, flavor (default: started_at)"
-// @Param        order   query     string  false  "Sort order: asc, desc (default: desc)"
-// @Param        limit   query     int     false  "Max results (default 25, max 100)"
-// @Param        offset  query     int     false  "Offset for pagination (default 0)"
+// @Param        q          query  string  false  "Full-text search across agent_name, flavor, host, model, session_id, context.hostname, context.os, context.git_branch, context.python_version, frameworks"
+// @Param        from       query  string  false  "Start time (ISO 8601, default: 7 days ago)"
+// @Param        to         query  string  false  "End time (ISO 8601, default: now)"
+// @Param        state      query  string  false  "Filter by state (repeatable: active, idle, stale, closed, lost)"
+// @Param        flavor     query  string  false  "Filter by flavor (repeatable)"
+// @Param        agent_id   query  string  false  "Filter to a single agent (D115 UUID; deep-linked from the Fleet agent table and Investigate AGENT facet)"
+// @Param        agent_type query  string  false  "Filter by agent_type (repeatable: coding, production)"
+// @Param        client_type query string  false  "Filter by client_type (repeatable: claude_code, flightdeck_sensor)"
+// @Param        framework  query  string  false  "Filter by framework name/version matching sessions.context.frameworks[] (repeatable: langgraph/1.1.6, crewai/1.14.1, ...)"
+// @Param        model      query  string  false  "Filter by model"
+// @Param        user       query  string  false  "Filter by context.user (repeatable)"
+// @Param        os         query  string  false  "Filter by context.os (repeatable)"
+// @Param        hostname   query  string  false  "Filter by context.hostname (repeatable)"
+// @Param        arch       query  string  false  "Filter by context.arch (repeatable)"
+// @Param        git_branch query  string  false  "Filter by context.git_branch (repeatable)"
+// @Param        git_repo   query  string  false  "Filter by context.git_repo (repeatable)"
+// @Param        orchestration query string false "Filter by context.orchestration (repeatable)"
+// @Param        sort       query  string  false  "Sort field: started_at, last_seen_at, duration, tokens_used, flavor, model, hostname (default: started_at)"
+// @Param        order      query  string  false  "Sort order: asc, desc (default: desc)"
+// @Param        limit      query  int     false  "Max results (default 25, max 100)"
+// @Param        offset     query  int     false  "Offset for pagination (default 0)"
 // @Success      200  {object}  store.SessionsResponse
 // @Failure      400  {object}  ErrorResponse
 // @Failure      500  {object}  ErrorResponse
@@ -140,6 +165,26 @@ func SessionsListHandler(s store.Querier) http.HandlerFunc {
 			}
 		}
 
+		// Parse client_type filter (repeatable). Validated against
+		// the CHECK-constraint vocabulary so a typo returns a 400
+		// with the allowed set rather than silently zero results --
+		// the same contract the /v1/agents handler uses.
+		var clientTypes []string
+		for _, c := range q["client_type"] {
+			for _, v := range strings.Split(c, ",") {
+				v = strings.TrimSpace(v)
+				if v == "" {
+					continue
+				}
+				if !validSessionClientTypes[v] {
+					writeError(w, http.StatusBadRequest,
+						"invalid client_type: "+v+". Allowed: claude_code, flightdeck_sensor")
+					return
+				}
+				clientTypes = append(clientTypes, v)
+			}
+		}
+
 		// Parse generic scalar-key context filters. We iterate the
 		// closed whitelist rather than looping over ``q`` so an
 		// unrecognised query param (typo, injection attempt) is
@@ -164,7 +209,10 @@ func SessionsListHandler(s store.Querier) http.HandlerFunc {
 			sort = "started_at"
 		}
 		if !validSessionSorts[sort] {
-			writeError(w, http.StatusBadRequest, "invalid sort: "+sort+". Allowed: started_at, duration, tokens_used, flavor")
+			writeError(w, http.StatusBadRequest,
+				"invalid sort: "+sort+
+					". Allowed: started_at, last_seen_at, duration, "+
+					"tokens_used, flavor, model, hostname")
 			return
 		}
 
@@ -207,17 +255,18 @@ func SessionsListHandler(s store.Querier) http.HandlerFunc {
 		search := q.Get("q")
 
 		params := store.SessionsParams{
-			From:           from,
-			To:             to,
-			Query:          search,
-			States:         states,
-			Flavors:        flavors,
+			From:    from,
+			To:      to,
+			Query:   search,
+			States:  states,
+			Flavors: flavors,
 			// D115: single-agent filter. Empty string = no filter.
 			// Validated at the SQL layer via ``::uuid`` cast so a
 			// malformed value produces a query error rather than a
 			// silently-bypassed filter.
 			AgentID:        strings.TrimSpace(q.Get("agent_id")),
 			AgentTypes:     agentTypes,
+			ClientTypes:    clientTypes,
 			Frameworks:     frameworks,
 			ContextFilters: contextFilters,
 			Model:          q.Get("model"),

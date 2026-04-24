@@ -30,6 +30,13 @@ type SessionsParams struct {
 	// Handler enforces the CHECK-constraint vocabulary so an invalid
 	// value 400s rather than silently matching nothing.
 	ClientTypes []string
+	// ErrorTypes (Phase 4) filters sessions to those that emitted at
+	// least one ``llm_error`` event whose structured ``error_type``
+	// matches one of the listed values. Multi-value OR within. Backed
+	// by an EXISTS subquery over the events table, keyed on
+	// ``payload->'error'->>'error_type'``. An empty slice means "no
+	// error-type filter".
+	ErrorTypes []string
 	// Frameworks filters on sessions.context->'frameworks' (JSONB
 	// array of strings like "langgraph/1.1.6"). Multi-value: any
 	// match across the array passes (``?|`` operator).
@@ -256,6 +263,28 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 			argIdx++
 		}
 		conditions = append(conditions, fmt.Sprintf("s.client_type IN (%s)", strings.Join(placeholders, ", ")))
+	}
+
+	// Phase 4: error-type filter. Uses an EXISTS subquery over the
+	// events table so "sessions that had a rate_limit error" is the
+	// correct predicate, not "sessions whose most-recent event was a
+	// rate_limit error". The events table carries one llm_error row
+	// per error occurrence; the classification lives at
+	// payload->'error'->>'error_type'.
+	if len(params.ErrorTypes) > 0 {
+		placeholders := make([]string, len(params.ErrorTypes))
+		for i, et := range params.ErrorTypes {
+			placeholders[i] = fmt.Sprintf("$%d", argIdx)
+			args = append(args, et)
+			argIdx++
+		}
+		conditions = append(conditions, fmt.Sprintf(
+			"EXISTS (SELECT 1 FROM events e "+
+				"WHERE e.session_id = s.session_id "+
+				"AND e.event_type = 'llm_error' "+
+				"AND e.payload->'error'->>'error_type' IN (%s))",
+			strings.Join(placeholders, ", "),
+		))
 	}
 
 	// Model filter

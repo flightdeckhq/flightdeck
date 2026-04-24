@@ -1554,6 +1554,14 @@ paths:
         in: query
         name: orchestration
         type: string
+      - description: 'Filter to sessions that emitted an llm_error event of one of
+          the listed taxonomy values (repeatable/comma). 14-entry vocabulary: rate_limit,
+          quota_exceeded, context_overflow, content_filter, invalid_request, authentication,
+          permission, not_found, request_too_large, api_error, overloaded, timeout,
+          stream_error, other.'
+        in: query
+        name: error_type
+        type: string
       - description: 'Sort field: started_at, last_seen_at, duration, tokens_used,
           flavor, model, hostname (default: started_at)'
         in: query

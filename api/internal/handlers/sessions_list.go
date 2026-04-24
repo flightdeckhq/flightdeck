@@ -71,6 +71,7 @@ var validSessionClientTypes = map[string]bool{
 // @Param        git_branch query  string  false  "Filter by context.git_branch (repeatable)"
 // @Param        git_repo   query  string  false  "Filter by context.git_repo (repeatable)"
 // @Param        orchestration query string false "Filter by context.orchestration (repeatable)"
+// @Param        error_type query  string  false  "Filter to sessions that emitted an llm_error event of one of the listed taxonomy values (repeatable/comma). 14-entry vocabulary: rate_limit, quota_exceeded, context_overflow, content_filter, invalid_request, authentication, permission, not_found, request_too_large, api_error, overloaded, timeout, stream_error, other."
 // @Param        sort       query  string  false  "Sort field: started_at, last_seen_at, duration, tokens_used, flavor, model, hostname (default: started_at)"
 // @Param        order      query  string  false  "Sort order: asc, desc (default: desc)"
 // @Param        limit      query  int     false  "Max results (default 25, max 100)"
@@ -161,6 +162,24 @@ func SessionsListHandler(s store.Querier) http.HandlerFunc {
 				v = strings.TrimSpace(v)
 				if v != "" {
 					frameworks = append(frameworks, v)
+				}
+			}
+		}
+
+		// Phase 4: filter sessions to those that emitted an
+		// llm_error event of one of the listed taxonomy values. The
+		// 14-entry taxonomy lives in the sensor's core/errors.py;
+		// the API accepts every taxonomy value plus any future
+		// value (free-form) -- the EXISTS subquery on events just
+		// won't match a typo, same as every other text filter.
+		// Multi-value OR within the dimension; AND against other
+		// filters.
+		var errorTypes []string
+		for _, e := range q["error_type"] {
+			for _, v := range strings.Split(e, ",") {
+				v = strings.TrimSpace(v)
+				if v != "" {
+					errorTypes = append(errorTypes, v)
 				}
 			}
 		}
@@ -267,6 +286,7 @@ func SessionsListHandler(s store.Querier) http.HandlerFunc {
 			AgentID:        strings.TrimSpace(q.Get("agent_id")),
 			AgentTypes:     agentTypes,
 			ClientTypes:    clientTypes,
+			ErrorTypes:     errorTypes,
 			Frameworks:     frameworks,
 			ContextFilters: contextFilters,
 			Model:          q.Get("model"),

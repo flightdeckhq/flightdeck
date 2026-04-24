@@ -19,7 +19,7 @@ Answers to the 8 V-pass open questions:
 | Q-ASYNC-STREAM | async streaming for Anthropic + OpenAI | **In scope.** Lift `NotImplementedError`, add `GuardedAsyncStream`, same TTFT/chunk/abort semantics as sync. |
 | Q-LITELLM-STREAM | resolve KI26 in Phase 4 | **Out of scope.** Keep litellm streaming as 🔨 Planned; close the streaming-semantics gap for the SDKs that already stream. |
 | Q-VOYAGE | dedicated Voyage SDK interceptor | **Out of scope.** Supported path is Voyage-via-litellm; LangChain-direct-Voyage is 🔨 Planned. |
-| Q-CLOCK-SKEW | timestamp bounds at ingestion | **Enforced.** Reject `occurred_at < NOW() - 24h` or `occurred_at > NOW() + 5m` with 400. Bounds are constants; can become env vars in a later phase. |
+| Q-CLOCK-SKEW | timestamp bounds at ingestion | **Enforced.** Reject `occurred_at < NOW() - 48h` or `occurred_at > NOW() + 5m` with 400. Bound widened from the V-pass proposal of 24h to 48h to accommodate the E2E `aged-closed` fixture (28h old by design) plus realistic retry-after-long-outage windows. Bounds are constants; can become env vars in a later phase. |
 | Q-STALENESS-CONFIG | env-var tuning of stale/lost thresholds | **Out of scope** for Phase 4. |
 | Q-THEMES-CSS | new `--event-embeddings` + `--event-error` tokens | **Approved** (Rule 15). Per-theme values in `styles/themes.css`. |
 | Q-MAKE-SMOKE-NAME | `test-smoke` vs new `smoke-*` | Rename existing `test-smoke` → `test-smoke-playground`. New `smoke-<framework>` per framework, `smoke-all` runs the per-framework set. |
@@ -77,7 +77,7 @@ Locked cases (Decision D) + discovered cases from V-pass research:
 | D4 | Mid-stream disconnect | No signal; observed via event silence | Sensor emits `llm_error{error_type="stream_error",abort_reason="client_aborted"}` on HTTP exception during streaming (V4 work) |
 | D5 | Out-of-order session_end before session_start | Same as D2 | Folds into D2 fix |
 | D6 | Out-of-order post_call before session_start | Already handled via D106 lazy-create + COALESCE upgrade | No change |
-| D7 | Past timestamp (> 24h ago) | Accepted verbatim | Ingestion rejects with 400 "timestamp too old" |
+| D7 | Past timestamp (> 48h ago) | Accepted verbatim | Ingestion rejects with 400 "timestamp too old" |
 | D8 | Future timestamp (> 5m ahead) | Accepted verbatim (session freezes in active) | Ingestion rejects with 400 "timestamp in future" |
 | D9 | Re-attach to already-active session | Already idempotent | No change |
 | D10 | Malformed session_id | Accepted; fails later at Postgres cast | Ingestion regex-validates (same pattern as `agent_id`) |

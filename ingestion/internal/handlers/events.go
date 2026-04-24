@@ -26,15 +26,18 @@ const maxRequestBodyBytes = 1 << 20 // 1MB
 // observable in prod but silent today (D7/D8 in audit-phase-4.md).
 //
 // Bounds are deliberately generous:
-//   maxClockSkewPast  — 24h: covers retry-after-long-outage scenarios and
-//                       batch replay. Anything older is almost certainly
-//                       a clock bug rather than a legitimate backlog.
+//   maxClockSkewPast  — 48h: covers retry-after-long-outage scenarios,
+//                       batch replay, and the E2E ``aged-closed``
+//                       fixture (28h old) that lives outside the
+//                       swimlane window by design. Anything older is
+//                       almost certainly a clock bug rather than a
+//                       legitimate backlog.
 //   maxClockSkewFuture — 5m: tight enough to catch a forward-drifting
 //                         clock, loose enough to absorb ordinary NTP
 //                         jitter on a fleet of machines that are not
 //                         tightly synchronised.
 const (
-	maxClockSkewPast   = 24 * time.Hour
+	maxClockSkewPast   = 48 * time.Hour
 	maxClockSkewFuture = 5 * time.Minute
 )
 

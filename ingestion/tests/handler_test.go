@@ -163,6 +163,10 @@ func TestEventsHandler_AgentIdentityValidation(t *testing.T) {
 			body: `{"session_id":"not-a-uuid","event_type":"post_call","agent_id":"` + validAgentID + `","agent_type":"coding","client_type":"claude_code"}`,
 		},
 		{
+			// 2020 timestamp is far older than the 48h maxClockSkewPast
+			// bound; ingestion must reject. The E2E ``aged-closed``
+			// fixture at 28h old still passes because it's inside the
+			// 48h window.
 			name: "timestamp_too_far_past",
 			body: `{"session_id":"22222222-2222-4222-8222-222222222222","event_type":"post_call","agent_id":"` + validAgentID + `","agent_type":"coding","client_type":"claude_code","timestamp":"2020-01-01T00:00:00Z"}`,
 		},

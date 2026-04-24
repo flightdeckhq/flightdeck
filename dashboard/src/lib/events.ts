@@ -66,6 +66,12 @@ export const eventBadgeConfig: Record<string, BadgeConfig> = {
   directive_result: { cssVar: "var(--event-result)", label: "RESULT" },
   session_start: { cssVar: "var(--event-lifecycle)", label: "START" },
   session_end: { cssVar: "var(--event-lifecycle)", label: "END" },
+  // Phase 4 event-type additions. EMBED uses the cyan RAG family;
+  // ERROR uses the danger red so it reads as alarming without being
+  // confused with a policy BLOCK (which is also red but stylistically
+  // distinct via its badge family).
+  embeddings: { cssVar: "var(--event-embeddings)", label: "EMBED" },
+  llm_error: { cssVar: "var(--event-error)", label: "ERROR" },
 };
 
 export const defaultBadge: BadgeConfig = { cssVar: "var(--event-lifecycle)", label: "EVENT" };
@@ -212,7 +218,13 @@ export function getSummaryRows(event: AgentEvent): [string, string][] {
         rows.push(["Duration", `${event.payload.duration_ms}ms`]);
       }
       if (event.payload?.error) {
-        rows.push(["Error", event.payload.error]);
+        // directive_result events emit ``error`` as a plain string;
+        // the Phase 4 ``llm_error`` event type uses the same payload
+        // slot for a structured object. Narrow here so a future
+        // directive_result that accidentally carries the structured
+        // shape still renders instead of blowing up.
+        const err = event.payload.error;
+        rows.push(["Error", typeof err === "string" ? err : err.error_type]);
       }
       if (rows.length === 0) {
         rows.push(["Event", "directive result"]);
@@ -229,6 +241,8 @@ export function getSummaryRows(event: AgentEvent): [string, string][] {
 export const EVENT_TYPE_GROUPS: Record<string, string[]> = {
   "LLM Calls": ["post_call", "pre_call"],
   "Tools": ["tool_call"],
+  "Embeddings": ["embeddings"],
+  "Errors": ["llm_error"],
   "Policy": ["policy_warn", "policy_block", "policy_degrade"],
   "Directives": ["directive", "directive_result"],
   "Session": ["session_start", "session_end"],
@@ -238,6 +252,8 @@ export const EVENT_FILTER_PILLS = [
   { label: "All", color: null },
   { label: "LLM Calls", color: "var(--event-llm)" },
   { label: "Tools", color: "var(--event-tool)" },
+  { label: "Embeddings", color: "var(--event-embeddings)" },
+  { label: "Errors", color: "var(--event-error)" },
   { label: "Policy", color: "var(--event-warn)" },
   { label: "Directives", color: "var(--event-directive)" },
   { label: "Session", color: "var(--event-lifecycle)" },

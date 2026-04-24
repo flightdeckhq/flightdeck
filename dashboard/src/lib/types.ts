@@ -15,7 +15,61 @@ export type EventType =
   | "policy_block"
   | "policy_degrade"
   | "directive"
-  | "directive_result";
+  | "directive_result"
+  // Phase 4 additions (v0.5.0):
+  | "embeddings"
+  | "llm_error";
+
+/** 14-entry structured LLM API error taxonomy. Mirrors
+ *  ``sensor/flightdeck_sensor/core/errors.py::ErrorType``. */
+export type LLMErrorType =
+  | "rate_limit"
+  | "quota_exceeded"
+  | "context_overflow"
+  | "content_filter"
+  | "invalid_request"
+  | "authentication"
+  | "permission"
+  | "not_found"
+  | "request_too_large"
+  | "api_error"
+  | "overloaded"
+  | "timeout"
+  | "stream_error"
+  | "other";
+
+/** Structured ``error`` sub-object attached to an ``llm_error`` event.
+ *  Carries the Phase 4 taxonomy classification plus provider-side
+ *  fields (http_status, provider_error_code, request_id, retry_after)
+ *  so the dashboard can render a precise, actionable view without a
+ *  second fetch. Optional ``partial_*`` fields appear when the error
+ *  aborted a stream mid-way. */
+export interface LLMErrorPayload {
+  error_type: LLMErrorType;
+  provider: string;
+  http_status: number | null;
+  provider_error_code: string | null;
+  error_message: string;
+  request_id: string | null;
+  retry_after: number | null;
+  is_retryable: boolean;
+  abort_reason?: string;
+  partial_chunks?: number;
+  partial_tokens_input?: number;
+  partial_tokens_output?: number;
+}
+
+/** Per-chunk latency summary attached to a streaming ``post_call`` event.
+ *  Populated only when the call was made with ``stream=true`` -- the
+ *  field is omitted on non-streaming calls to keep the wire shape
+ *  identical to pre-Phase-4 behaviour. */
+export interface StreamingMetrics {
+  ttft_ms: number | null;
+  chunk_count: number;
+  inter_chunk_ms: { p50: number; p95: number; max: number } | null;
+  final_outcome: "completed" | "aborted";
+  abort_reason: string | null;
+}
 
 /** Agent flavor (persistent identity). */
 export interface Agent {
@@ -86,8 +140,15 @@ export interface EventPayloadFields {
   // result is provider-specific JSON -- intentionally untyped
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   result?: any;
-  error?: string;
+  // Phase 4: ``error`` is overloaded. Legacy directive_result events
+  // emit a plain string here; the new llm_error events emit a
+  // structured LLMErrorPayload. Components that read ``payload.error``
+  // must narrow via ``typeof`` before accessing taxonomy fields.
+  error?: string | LLMErrorPayload;
   duration_ms?: number;
+  // Phase 4 streaming sub-object; populated only on post_call events
+  // emitted from a ``stream=true`` call.
+  streaming?: StreamingMetrics;
 }
 
 /** Event metadata (no prompt content inline). */

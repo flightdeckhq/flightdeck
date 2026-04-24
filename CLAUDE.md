@@ -278,6 +278,74 @@
      works," 40b says "and that verification happens before the
      commit, not after push-to-CI."
 
+40c. **E2E test discipline.** Every phase that adds or changes
+     user-visible UI behavior adds corresponding E2E tests at
+     `dashboard/tests/e2e/` covering the new behavior. Tests are
+     named after the user journey they cover
+     (``Tnn-<kebab-case-journey>.spec.ts``), one journey per file so
+     a failing test's filename tells you what's broken without
+     opening the trace. The V-pass for any UI phase MUST list the
+     E2E tests that will be added before implementation starts.
+
+     Why: Phases 1 and 2 each shipped UI regressions (KI20 phantom
+     rows, KI22 font-mono collapse, PR #24 bucket-divider
+     misalignment) that unit tests missed. The common shape: a
+     single component's mock test passed while the rendered
+     dashboard misbehaved. E2E tests exercising the real dashboard
+     against a seeded dev stack would have caught each one. The
+     Phase 3 Playwright foundation exists so every post-v0.4.0 UI
+     change inherits that floor.
+
+     How to apply: when planning a UI-touching task, name the E2E
+     tests in the plan. When implementing, write those tests before
+     or alongside the behavior change -- not after. When reviewing,
+     reject a UI PR whose only test coverage is unit tests.
+
+40c.1. **E2E stability — tests that flake are fixed or deleted,
+     never merged as-is.** CI retry is a tolerance buffer for
+     genuine infrastructure blips (stack boot race, NATS reconnect,
+     WSL disk flush), NOT for tests. The Playwright config sets
+     ``retries: 1`` on CI and ``0`` locally so flakes surface on
+     the first run and get fixed. A test that fails on the second
+     sequential local run against unchanged code is a flake and
+     must not ship.
+
+     Why: flaky tests teach reviewers to ignore failures ("it's
+     just that flaky one") which is indistinguishable from
+     abandoned test coverage. One trusted test is worth ten flaky
+     ones.
+
+     How to apply: after writing a test, run the suite twice in a
+     row locally against a fresh dev stack + seed. Both must pass
+     cleanly. If any test flakes, debug the root cause (timing
+     assumption, race condition, implicit state) rather than
+     adding retry.
+
+40c.2. **E2E as the pre-commit smoke gate for UI work.** After any
+     UI edit, run ``cd dashboard && npm run test:e2e`` locally
+     BEFORE committing. The suite must pass against a fresh dev
+     stack + seed. This is the minimum verification bar for UI
+     changes, below which work is not considered complete.
+
+     Inherits from rule 40b (pre-commit live test): where 40b is
+     about runtime behaviour generally, 40c.2 specialises to the
+     dashboard and requires the Playwright suite specifically.
+
+40c.3. **E2E theme coverage.** Tests run under both ``neon-dark``
+     and ``clean-light`` theme projects via Playwright's
+     ``projects`` config. Tests MUST NOT hardcode theme-specific
+     selectors or computed colour values; assertions are
+     theme-agnostic. Any new theme-dependent rendering logic
+     requires E2E coverage that passes under both themes. The
+     config already wires storageState per project; spec authors
+     just keep assertions structural.
+
+     Why: rule 14 requires both themes to work at all times.
+     Without automated per-theme coverage, "both themes work"
+     degrades to "dark theme works, light theme breaks on Tuesdays"
+     -- which is exactly the regression shape KI22 had until a
+     manual light-theme pass caught it.
+
 ---
 
 ## Living Document Rules

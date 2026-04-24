@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import type { AgentSummary, SessionState } from "@/lib/types";
 import { ClientType } from "@/lib/agent-identity";
@@ -7,6 +7,97 @@ import { TruncatedText } from "@/components/ui/TruncatedText";
 import { CodingAgentBadge } from "@/components/ui/coding-agent-badge";
 import { ClaudeCodeLogo } from "@/components/ui/claude-code-logo";
 import { bucketFor } from "@/lib/fleet-ordering";
+
+/**
+ * Sortable column whitelist for the agent table. Mirrors the
+ * handler-level validSessionSorts on /v1/agents so the UI can sort
+ * every column the backend supports without a second round-trip to
+ * discover which are valid. ``last_seen_at`` is the default.
+ */
+export const AGENT_TABLE_SORT_COLUMNS = [
+  "agent_name",
+  "client_type",
+  "agent_type",
+  "total_sessions",
+  "total_tokens",
+  "last_seen_at",
+  "state",
+] as const;
+export type AgentTableSortColumn = (typeof AGENT_TABLE_SORT_COLUMNS)[number];
+export type AgentTableSortDirection = "asc" | "desc";
+
+export function isAgentTableSortColumn(value: unknown): value is AgentTableSortColumn {
+  return (
+    typeof value === "string" &&
+    (AGENT_TABLE_SORT_COLUMNS as readonly string[]).includes(value)
+  );
+}
+
+// State ordinal mirrors the store-side CASE in
+// api/internal/store/agents.go. Desc on this column puts "most
+// engaged" agents first, same as the backend.
+const STATE_ORDINAL: Record<string, number> = {
+  active: 5,
+  idle: 4,
+  stale: 3,
+  closed: 2,
+  lost: 1,
+};
+
+/**
+ * Client-side sort over an AgentSummary[] matching the
+ * /v1/agents sort columns. Exported for unit tests so the sort
+ * behaviour is covered without mounting the component.
+ */
+export function sortAgents(
+  agents: AgentSummary[],
+  sort: AgentTableSortColumn,
+  order: AgentTableSortDirection,
+): AgentSummary[] {
+  const cmp = (a: AgentSummary, b: AgentSummary): number => {
+    let av: string | number;
+    let bv: string | number;
+    switch (sort) {
+      case "agent_name":
+        av = a.agent_name.toLowerCase();
+        bv = b.agent_name.toLowerCase();
+        break;
+      case "client_type":
+        av = a.client_type;
+        bv = b.client_type;
+        break;
+      case "agent_type":
+        av = a.agent_type;
+        bv = b.agent_type;
+        break;
+      case "total_sessions":
+        av = a.total_sessions;
+        bv = b.total_sessions;
+        break;
+      case "total_tokens":
+        av = Number(a.total_tokens);
+        bv = Number(b.total_tokens);
+        break;
+      case "last_seen_at":
+        av = new Date(a.last_seen_at).getTime();
+        bv = new Date(b.last_seen_at).getTime();
+        break;
+      case "state":
+        av = STATE_ORDINAL[a.state] ?? 0;
+        bv = STATE_ORDINAL[b.state] ?? 0;
+        break;
+    }
+    if (av < bv) return order === "asc" ? -1 : 1;
+    if (av > bv) return order === "asc" ? 1 : -1;
+    // Tiebreaker: agent_id asc — matches the backend ordering policy
+    // in store/agents.go so split pages stay consistent across
+    // re-renders and identical primary-key values never swap.
+    if (a.agent_id < b.agent_id) return -1;
+    if (a.agent_id > b.agent_id) return 1;
+    return 0;
+  };
+  return [...agents].sort(cmp);
+}
 
 /**
  * Investigate-mirror typography constants. The header / cell styles
@@ -66,6 +157,23 @@ function formatTokens(n: number): string {
 export interface AgentTableProps {
   agents: AgentSummary[];
   loading: boolean;
+  /**
+   * Active sort column, or null to use the bucket-ordered input as-is
+   * (LIVE → RECENT → IDLE per parent's ``sortAgentsByActivity``). A
+   * concrete sort overrides bucket ordering and disables the bucket
+   * divider rows, per the Phase 2 plan's "explicit sort overrides
+   * bucket ordering" lock.
+   */
+  sort?: AgentTableSortColumn | null;
+  order?: AgentTableSortDirection;
+  /**
+   * Header click handler. Parent owns the URL-state persistence;
+   * the component is stateless with respect to sort. When a user
+   * clicks a sortable header this is called with the clicked column
+   * and the caller decides whether to toggle direction or switch
+   * columns. Omit to render the table in legacy non-sortable mode.
+   */
+  onSortChange?: (column: AgentTableSortColumn) => void;
 }
 
 /**
@@ -77,8 +185,79 @@ export interface AgentTableProps {
  * is the default Fleet view; this table is the paginated alternate
  * reached via the ``?view=table`` toggle.
  */
-export function AgentTable({ agents, loading }: AgentTableProps) {
+export function AgentTable({
+  agents,
+  loading,
+  sort = null,
+  order = "desc",
+  onSortChange,
+}: AgentTableProps) {
   const navigate = useNavigate();
+
+  // Apply explicit sort when set; fall back to the parent-supplied
+  // bucket order. Memoised on the (agents, sort, order) triplet so
+  // the sort only runs when inputs actually change — live traffic
+  // re-renders are cheap again.
+  const displayedAgents = useMemo(() => {
+    if (!sort) return agents;
+    return sortAgents(agents, sort, order);
+  }, [agents, sort, order]);
+  const showBucketDividers = sort === null;
+
+  // Inline header helper — the click, arrow, and aria-sort treatment
+  // are identical across every sortable column so centralising here
+  // keeps the <thead> readable.
+  const renderHeader = (
+    column: AgentTableSortColumn,
+    label: string,
+    extraStyle: React.CSSProperties = {},
+  ) => {
+    const sortable = typeof onSortChange === "function";
+    const isActive = sort === column;
+    const ariaSort: "ascending" | "descending" | "none" = isActive
+      ? order === "asc"
+        ? "ascending"
+        : "descending"
+      : "none";
+    return (
+      <th
+        className={`uppercase ${sortable ? "cursor-pointer select-none" : ""}`}
+        style={{ ...HEADER_STYLE, ...extraStyle }}
+        data-testid={`agent-table-header-${column}`}
+        aria-sort={ariaSort}
+        onClick={() => {
+          if (sortable) onSortChange!(column);
+        }}
+      >
+        <span
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 4,
+          }}
+        >
+          {label}
+          {sortable && (
+            <span
+              data-testid={`agent-table-sort-indicator-${column}`}
+              style={{
+                fontSize: 10,
+                lineHeight: 1,
+                color: isActive ? "var(--text)" : "transparent",
+                // A hidden placeholder arrow preserves column width
+                // whether or not the header is active, so clicking
+                // does not nudge adjacent columns.
+                width: 8,
+                textAlign: "center",
+              }}
+            >
+              {order === "asc" ? "↑" : "↓"}
+            </span>
+          )}
+        </span>
+      </th>
+    );
+  };
 
   if (!loading && agents.length === 0) {
     return (
@@ -114,33 +293,19 @@ export function AgentTable({ agents, loading }: AgentTableProps) {
               height: 32,
             }}
           >
-            <th className="uppercase" style={{ ...HEADER_STYLE, width: "28%" }}>
-              Agent
-            </th>
-            <th className="uppercase" style={{ ...HEADER_STYLE, width: "10%" }}>
-              Client
-            </th>
-            <th className="uppercase" style={{ ...HEADER_STYLE, width: "10%" }}>
-              Type
-            </th>
-            <th
-              className="uppercase text-right"
-              style={{ ...HEADER_STYLE, width: "10%" }}
-            >
-              Sessions
-            </th>
-            <th
-              className="uppercase text-right"
-              style={{ ...HEADER_STYLE, width: "10%" }}
-            >
-              Tokens
-            </th>
-            <th className="uppercase" style={{ ...HEADER_STYLE, width: "14%" }}>
-              Last Active
-            </th>
-            <th className="uppercase" style={{ ...HEADER_STYLE, width: "18%" }}>
-              State
-            </th>
+            {renderHeader("agent_name", "Agent", { width: "28%" })}
+            {renderHeader("client_type", "Client", { width: "10%" })}
+            {renderHeader("agent_type", "Type", { width: "10%" })}
+            {renderHeader("total_sessions", "Sessions", {
+              width: "10%",
+              textAlign: "right",
+            })}
+            {renderHeader("total_tokens", "Tokens", {
+              width: "10%",
+              textAlign: "right",
+            })}
+            {renderHeader("last_seen_at", "Last Active", { width: "14%" })}
+            {renderHeader("state", "State", { width: "18%" })}
           </tr>
         </thead>
         <tbody>
@@ -148,13 +313,15 @@ export function AgentTable({ agents, loading }: AgentTableProps) {
             // Mirror the swimlane's bucket-boundary divider so the
             // table and swimlane read as the same three-tier list.
             // A spanning TR with a thin top border creates a visual
-            // gap without a label.
+            // gap without a label. Dividers are skipped when the user
+            // has applied an explicit column sort — that flow is
+            // deliberately "flat by column" rather than "bucketed".
             const now = Date.now();
             let prevBucket: "live" | "recent" | "idle" | null = null;
             const rendered: React.ReactNode[] = [];
-            for (const a of agents) {
+            for (const a of displayedAgents) {
               const b = bucketFor(a.last_seen_at, now);
-              if (prevBucket !== null && b !== prevBucket) {
+              if (showBucketDividers && prevBucket !== null && b !== prevBucket) {
                 rendered.push(
                   <tr
                     key={`bucket-${prevBucket}-to-${b}`}

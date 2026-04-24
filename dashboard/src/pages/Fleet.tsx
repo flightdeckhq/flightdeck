@@ -8,7 +8,12 @@ import { EventFilterBar } from "@/components/fleet/EventFilterBar";
 import { LiveFeed } from "@/components/fleet/LiveFeed";
 import { EventDetailDrawer } from "@/components/fleet/EventDetailDrawer";
 import { Timeline } from "@/components/timeline/Timeline";
-import { AgentTable } from "@/components/fleet/AgentTable";
+import {
+  AgentTable,
+  isAgentTableSortColumn,
+  type AgentTableSortColumn,
+  type AgentTableSortDirection,
+} from "@/components/fleet/AgentTable";
 import { SessionDrawer } from "@/components/session/SessionDrawer";
 import type {
   AgentEvent,
@@ -138,6 +143,43 @@ export function Fleet() {
         sp.delete("view");
       } else {
         sp.set("view", next);
+      }
+      setSearchParams(sp, { replace: true });
+    },
+    [searchParams, setSearchParams],
+  );
+
+  // AgentTable sort state lives in the URL so reloads and shared
+  // links preserve the user's choice, and the Fleet <-> Investigate
+  // round-trip keeps the table ordering when a user hits "back".
+  // When neither param is present we keep the legacy bucket ordering
+  // (LIVE / RECENT / IDLE) which the table renders as divider rows.
+  const rawSort = searchParams.get("sort");
+  const rawOrder = searchParams.get("order");
+  const tableSort: AgentTableSortColumn | null = isAgentTableSortColumn(rawSort)
+    ? rawSort
+    : null;
+  const tableOrder: AgentTableSortDirection =
+    rawOrder === "asc" ? "asc" : "desc";
+  const handleAgentTableSort = useCallback(
+    (column: AgentTableSortColumn) => {
+      const sp = new URLSearchParams(searchParams);
+      const currentSort = sp.get("sort");
+      const currentOrder = sp.get("order");
+      if (currentSort === column) {
+        // Same column: toggle direction. desc is the default, so a
+        // second click flips to asc and a third click clears the
+        // explicit sort entirely (back to bucket ordering).
+        if (currentOrder === "asc") {
+          sp.delete("sort");
+          sp.delete("order");
+        } else {
+          sp.set("sort", column);
+          sp.set("order", "asc");
+        }
+      } else {
+        sp.set("sort", column);
+        sp.set("order", "desc");
       }
       setSearchParams(sp, { replace: true });
     },
@@ -840,7 +882,13 @@ export function Fleet() {
             />
           ) : (
             <div className="p-4">
-              <AgentTable agents={sortedAgents} loading={loading} />
+              <AgentTable
+                agents={sortedAgents}
+                loading={loading}
+                sort={tableSort}
+                order={tableOrder}
+                onSortChange={handleAgentTableSort}
+              />
               <FleetTablePagination
                 total={fleetTotal}
                 page={fleetPage}

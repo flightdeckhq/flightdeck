@@ -1381,6 +1381,7 @@ export function Investigate() {
             >
               {urlState.q && (
                 <span
+                  data-testid="active-filter-pill"
                   className="inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs"
                   style={{
                     background: "var(--primary-glow)",
@@ -1389,6 +1390,7 @@ export function Investigate() {
                 >
                   search:{urlState.q}
                   <button
+                    data-testid="active-filter-remove"
                     onClick={() => {
                       updateUrl({ q: "", page: 1 });
                       setSearchInput("");
@@ -1402,6 +1404,7 @@ export function Investigate() {
               {activeFilters.map((f) => (
                 <span
                   key={f.label}
+                  data-testid="active-filter-pill"
                   className="inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs"
                   style={{
                     background: "var(--primary-glow)",
@@ -1409,7 +1412,7 @@ export function Investigate() {
                   }}
                 >
                   {f.label}
-                  <button onClick={f.onRemove} className="hover:opacity-70 transition-opacity duration-150">
+                  <button data-testid="active-filter-remove" onClick={f.onRemove} className="hover:opacity-70 transition-opacity duration-150">
                     <X className="h-3 w-3" />
                   </button>
                 </span>

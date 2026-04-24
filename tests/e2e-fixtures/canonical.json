@@ -1,0 +1,65 @@
+{
+  "_comment": "Declarative E2E fixture dataset. Every agent name starts with 'e2e-test-' so the Playwright suite can discriminate its own fixtures amid any other data in the shared dev DB. session_ids are derived deterministically in seed.py via uuid5(NAMESPACE_FLIGHTDECK, 'flightdeck-e2e/<agent_name>/<role>'), so each seed run addresses the same session rows and idempotency is a per-session HTTP GET.",
+  "agent_name_prefix": "e2e-test-",
+  "session_roles": {
+    "_comment": "Timeline offsets drive the UI state each fixture tests. Offsets are seconds relative to seed-time. 'aged-closed' and 'stale' require a post-seed SQL backdate because the worker stamps last_seen_at = NOW() regardless of event payload timestamp; see seed.py :: backdate_sessions.",
+    "fresh-active": {
+      "started_offset_sec": -30,
+      "ended_offset_sec": null,
+      "purpose": "T1 LIVE/RECENT bucket; T5 visible in swimlane"
+    },
+    "recent-closed": {
+      "started_offset_sec": -600,
+      "ended_offset_sec": -120,
+      "purpose": "T1 RECENT bucket; T5 closed-state badge"
+    },
+    "aged-closed": {
+      "started_offset_sec": -100800,
+      "ended_offset_sec": -97200,
+      "purpose": "T5 anchor: started 28h ago, ended 27h ago. Must NOT appear in 24h swimlane circles (server filters /v1/sessions by started_at AT fleet.ts::SWIMLANE_LOOKBACK_MS=24h) but MUST appear in expanded drawer via loadExpandedSessions (which fetches with no from/to bound). Plan called for 23h/22h but those values sit INSIDE the 24h window; 28h/27h gives a safe margin either side of the boundary. Requires post-seed SQL backdate AND force_state='closed'."
+    },
+    "stale": {
+      "started_offset_sec": -10800,
+      "ended_offset_sec": null,
+      "purpose": "T1 non-active state. 3h gap puts it past both the 2-min stale and 10-min lost reconciler thresholds (see workers/internal/writer/postgres.go:543). seed.py pins state='lost' deterministically (matches what the reconciler would set on its next pass) so a freshly-seeded stack is test-stable without waiting for a reconciler tick. Requires post-seed SQL backdate + force_state."
+    }
+  },
+  "agents": [
+    {
+      "agent_name": "e2e-test-coding-agent",
+      "agent_type": "coding",
+      "client_type": "claude_code",
+      "user": "e2e-runner",
+      "hostname": "e2e-host-coding",
+      "flavor": "e2e-claude-code",
+      "model": "claude-sonnet-4-5",
+      "framework": "claude-code",
+      "host": "e2e-host-coding",
+      "session_roles": ["fresh-active", "recent-closed", "aged-closed", "stale"]
+    },
+    {
+      "agent_name": "e2e-test-sensor-agent-prod",
+      "agent_type": "production",
+      "client_type": "flightdeck_sensor",
+      "user": "e2e-runner",
+      "hostname": "e2e-host-sensor-prod",
+      "flavor": "e2e-research-agent",
+      "model": "gpt-4o-mini",
+      "framework": "langchain",
+      "host": "e2e-host-sensor-prod",
+      "session_roles": ["fresh-active", "recent-closed", "aged-closed", "stale"]
+    },
+    {
+      "agent_name": "e2e-test-sensor-agent-long-name-for-truncation-testing-really-quite-long",
+      "agent_type": "production",
+      "client_type": "flightdeck_sensor",
+      "user": "e2e-runner",
+      "hostname": "e2e-host-truncation",
+      "flavor": "e2e-code-agent",
+      "model": "claude-sonnet-4-5",
+      "framework": "langchain",
+      "host": "e2e-host-truncation",
+      "session_roles": ["fresh-active", "recent-closed"]
+    }
+  ]
+}

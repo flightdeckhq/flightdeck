@@ -1,4 +1,4 @@
-.PHONY: help build test test-plugin test-integration test-e2e test-smoke lint dev dev-reset down logs release migrate-local-up migrate-local-status
+.PHONY: help build test test-plugin test-integration test-sensor-e2e test-e2e test-e2e-ui test-smoke seed-e2e lint dev dev-reset down logs release migrate-local-up migrate-local-status
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-12s %s\n", $$1, $$2}'
@@ -23,18 +23,27 @@ test-integration: ## Run integration tests (requires running stack)
 	$(MAKE) -C docker dev
 	cd tests/integration && pytest -v -m "not manual"
 
-test-e2e: ## Run sensor end-to-end tests only (requires running stack + respx)
+test-sensor-e2e: ## Run sensor respx-driven end-to-end tests (requires running stack)
 	$(MAKE) -C docker dev
 	cd tests/integration && pytest -v test_sensor_e2e.py
 
 test-smoke: ## Run the playground against a live stack (requires ANTHROPIC_API_KEY + OPENAI_API_KEY). See playground/README.md.
 	python playground/run_all.py
 
-test-e2e: ## Run Playwright E2E tests (requires make dev)
+# Phase 3 retired the duplicate `test-e2e` target. The prior target
+# at this line drove sensor pytest e2e (now `test-sensor-e2e` above)
+# but shared the name with the Playwright target the dashboard team
+# added later — whichever target `make` picked up last silently won,
+# hiding the other. `test-e2e` now means the browser end-to-end
+# suite; `test-sensor-e2e` is the pytest respx suite.
+test-e2e: ## Run Playwright E2E tests (requires make dev; fixtures seed automatically via globalSetup)
 	cd dashboard && npx playwright test
 
-test-e2e-ui: ## Run Playwright E2E tests with UI
+test-e2e-ui: ## Run Playwright E2E tests in Playwright UI mode
 	cd dashboard && npx playwright test --ui
+
+seed-e2e: ## Seed the canonical E2E fixture dataset into the running dev stack (idempotent)
+	python3 tests/e2e-fixtures/seed.py
 
 lint: ## Lint all components
 	$(MAKE) -C sensor lint

@@ -157,6 +157,7 @@ function SwimLaneComponent({
         className="flex h-12 cursor-pointer items-center"
         style={{ background: expanded ? "var(--bg-elevated)" : "var(--bg)" }}
         onClick={onToggleExpand}
+        data-testid={`swimlane-agent-row-${agentName ?? flavor}`}
       >
         {/* Left panel — sticky so it stays pinned during horizontal scroll.
             Width tracks the resizable leftPanelWidth state owned by
@@ -270,6 +271,8 @@ function SwimLaneComponent({
           expanded section collapses to the smaller subset size
           rather than leaving blank gaps for hidden rows. */}
       <div
+        data-testid="swimlane-expanded-body"
+        data-expanded={expanded ? "true" : "false"}
         style={{
           // When the agent has zero sessions to display (either a
           // genuinely brand-new agent that has not yet emitted a

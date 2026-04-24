@@ -269,3 +269,83 @@ jobs:
       - name: Tear down stack
         if: always()
         run: make down || true
+
+  e2e:
+    name: E2E (Playwright)
+    runs-on: ubuntu-latest
+    needs: [sensor, go, dashboard]
+    # Rule 40c (Phase 3): browser end-to-end tests run parallel to
+    # the integration job so neither blocks the other. The E2E job
+    # boots its own stack — required because seeding the canonical
+    # fixture dataset must happen against the same Postgres the
+    # dashboard later queries, and multiple jobs sharing one stack
+    # across runners isn't supported by ``make dev``.
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install sensor (required by seed.py's event-builder helpers)
+        # tests/shared/fixtures.py imports
+        # flightdeck_sensor.core.agent_id.derive_agent_id. Without the
+        # install the seeder crashes before POSTing anything.
+        working-directory: sensor
+        run: pip install -e ".[dev,anthropic,openai]"
+
+      - name: Install dashboard deps
+        working-directory: dashboard
+        run: npm ci
+
+      - name: Install Playwright browsers
+        working-directory: dashboard
+        run: npx playwright install --with-deps chromium
+
+      - name: Boot the dev stack
+        run: make dev
+
+      - name: Seed canonical E2E fixtures
+        # Idempotent; runs here explicitly so a failure at seed time
+        # surfaces as its own job step rather than hiding inside
+        # Playwright's globalSetup stdout. globalSetup will re-run
+        # (and skip) during the playwright test invocation below.
+        run: make seed-e2e
+
+      - name: Run Playwright tests (neon-dark + clean-light)
+        working-directory: dashboard
+        run: npx playwright test
+
+      - name: Upload Playwright HTML report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: dashboard/playwright-report/
+          retention-days: 14
+
+      - name: Upload Playwright test-results on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-test-results
+          path: dashboard/test-results/
+          retention-days: 14
+
+      - name: Dump stack logs on failure
+        if: failure()
+        run: |
+          docker compose -f docker/docker-compose.yml \
+            -f docker/docker-compose.dev.yml logs --tail=300 || true
+          docker compose -f docker/docker-compose.yml \
+            -f docker/docker-compose.dev.yml ps || true
+
+      - name: Tear down stack
+        if: always()
+        run: make down || true

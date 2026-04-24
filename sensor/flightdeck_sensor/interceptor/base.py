@@ -355,62 +355,88 @@ class GuardedStream:
     # ------------------------------------------------------------------
 
     def _build_streaming_summary(self) -> dict[str, Any]:
-        """Phase 4 streaming sub-object attached to the post_call payload.
+        """Delegate to the module-level helper.
 
-        Always returns a dict with the following keys:
-
-        * ``ttft_ms`` -- ``None`` if no chunks ever arrived, else the
-          millisecond delta from request dispatch to first chunk.
-        * ``chunk_count`` -- total chunks the caller iterated. Zero is
-          legal for callers that entered the context and exited without
-          iterating.
-        * ``inter_chunk_ms`` -- ``{"p50", "p95", "max"}`` derived from the
-          captured gaps. ``None`` when fewer than two chunks arrived.
-        * ``final_outcome`` -- always ``"completed"`` on this success
-          branch; the error branch does not call this helper.
-        * ``abort_reason`` -- ``None`` by default. Populated when the
-          caller exited the context before exhausting the stream
-          (``_stream_iter`` was created and its next() never raised
-          StopIteration but __exit__ still fired).
+        Kept as an instance method so the sync wrapper's call sites
+        above read naturally (``self._build_streaming_summary()``).
+        :class:`GuardedAsyncStream` binds the same delegator so both
+        classes share one implementation without mypy's bound-method
+        self-type mismatch.
         """
-        ttft_ms: int | None = None
-        if self._first_chunk_t is not None:
-            ttft_ms = int((self._first_chunk_t - self._t0) * 1000)
+        return _build_streaming_summary(
+            self._t0,
+            self._first_chunk_t,
+            self._chunk_count,
+            self._inter_chunk_ms,
+        )
 
-        inter_chunk: dict[str, int] | None = None
-        if len(self._inter_chunk_ms) >= 1:
-            sorted_gaps = sorted(self._inter_chunk_ms)
-            inter_chunk = {
-                "p50": int(_percentile(sorted_gaps, 50)),
-                "p95": int(_percentile(sorted_gaps, 95)),
-                "max": int(sorted_gaps[-1]),
-            }
 
-        # Determine whether the caller consumed the whole stream. The
-        # iterator was created only if the caller iterated; if it exists
-        # and is not exhausted the caller broke out early. We probe by
-        # trying a non-blocking next -- but generators in the Anthropic /
-        # OpenAI SDKs are synchronous iterators over the network, so
-        # calling next() here could block. Instead, infer from whether
-        # the underlying context manager was already closed and the
-        # iterator still has state. The safe heuristic: if chunk_count >
-        # 0 AND the iterator was created AND the inner context exit
-        # succeeded cleanly, assume the caller broke out only when we
-        # cannot verify exhaustion. Too conservative -- we'd never
-        # report "completed" for a for-loop that read every chunk. So
-        # the current policy is: trust the caller. If no exception
-        # propagated, report "completed"; the "client_aborted" path is
-        # the error branch.
-        abort_reason: str | None = None
-        final_outcome = "completed"
+def _build_streaming_summary(
+    t0: float,
+    first_chunk_t: float | None,
+    chunk_count: int,
+    inter_chunk_ms: list[float],
+) -> dict[str, Any]:
+    """Phase 4 streaming sub-object attached to the post_call payload.
 
-        return {
-            "ttft_ms": ttft_ms,
-            "chunk_count": self._chunk_count,
-            "inter_chunk_ms": inter_chunk,
-            "final_outcome": final_outcome,
-            "abort_reason": abort_reason,
+    Free function so both :class:`GuardedStream` and
+    :class:`GuardedAsyncStream` can share one implementation without
+    mypy's strict mode rejecting a cross-class bound-method alias.
+
+    Always returns a dict with the following keys:
+
+    * ``ttft_ms`` -- ``None`` if no chunks ever arrived, else the
+      millisecond delta from request dispatch to first chunk.
+    * ``chunk_count`` -- total chunks the caller iterated. Zero is
+      legal for callers that entered the context and exited without
+      iterating.
+    * ``inter_chunk_ms`` -- ``{"p50", "p95", "max"}`` derived from the
+      captured gaps. ``None`` when fewer than two chunks arrived.
+    * ``final_outcome`` -- always ``"completed"`` on this success
+      branch; the error branch does not call this helper.
+    * ``abort_reason`` -- ``None`` by default. Populated when the
+      caller exited the context before exhausting the stream
+      (``_stream_iter`` was created and its next() never raised
+      StopIteration but __exit__ still fired).
+    """
+    ttft_ms: int | None = None
+    if first_chunk_t is not None:
+        ttft_ms = int((first_chunk_t - t0) * 1000)
+
+    inter_chunk: dict[str, int] | None = None
+    if len(inter_chunk_ms) >= 1:
+        sorted_gaps = sorted(inter_chunk_ms)
+        inter_chunk = {
+            "p50": int(_percentile(sorted_gaps, 50)),
+            "p95": int(_percentile(sorted_gaps, 95)),
+            "max": int(sorted_gaps[-1]),
         }
+
+    # Determine whether the caller consumed the whole stream. The
+    # iterator was created only if the caller iterated; if it exists
+    # and is not exhausted the caller broke out early. We probe by
+    # trying a non-blocking next -- but generators in the Anthropic /
+    # OpenAI SDKs are synchronous iterators over the network, so
+    # calling next() here could block. Instead, infer from whether
+    # the underlying context manager was already closed and the
+    # iterator still has state. The safe heuristic: if chunk_count >
+    # 0 AND the iterator was created AND the inner context exit
+    # succeeded cleanly, assume the caller broke out only when we
+    # cannot verify exhaustion. Too conservative -- we'd never
+    # report "completed" for a for-loop that read every chunk. So
+    # the current policy is: trust the caller. If no exception
+    # propagated, report "completed"; the "client_aborted" path is
+    # the error branch.
+    abort_reason: str | None = None
+    final_outcome = "completed"
+
+    return {
+        "ttft_ms": ttft_ms,
+        "chunk_count": chunk_count,
+        "inter_chunk_ms": inter_chunk,
+        "final_outcome": final_outcome,
+        "abort_reason": abort_reason,
+    }
 
 
 class GuardedAsyncStream:
@@ -563,9 +589,15 @@ class GuardedAsyncStream:
         self._chunk_count += 1
         return chunk
 
-    # Identical shape to the sync variant -- share the helper so a future
-    # tweak to the summary shape lands in one place.
-    _build_streaming_summary = GuardedStream._build_streaming_summary
+    def _build_streaming_summary(self) -> dict[str, Any]:
+        """Delegate to the module-level helper — identical shape to
+        the sync variant so a future tweak lands in one place."""
+        return _build_streaming_summary(
+            self._t0,
+            self._first_chunk_t,
+            self._chunk_count,
+            self._inter_chunk_ms,
+        )
 
 
 def _percentile(sorted_values: list[float], pct: float) -> float:

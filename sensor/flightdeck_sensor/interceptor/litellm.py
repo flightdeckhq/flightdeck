@@ -296,8 +296,14 @@ def patch_litellm_functions(quiet: bool = False) -> None:
 
     _litellm_module.completion = _patched_completion
     _litellm_module.acompletion = _patched_acompletion
+    # ``litellm.embedding`` is declared as an ``@overload`` function in
+    # litellm's type stubs; mypy rejects the plain-function assignment
+    # here even though the runtime replacement is fully compatible.
+    # Silence the specific mismatch rather than widen the patched
+    # function's signature to Any, which would hide real type bugs in
+    # the wrapper itself.
     if orig_embedding is not None:
-        _litellm_module.embedding = _patched_embedding
+        _litellm_module.embedding = _patched_embedding  # type: ignore[assignment]
     if orig_aembedding is not None:
         _litellm_module.aembedding = _patched_aembedding
     _litellm_module._flightdeck_patched = True

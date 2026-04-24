@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"sync"
 
+	"github.com/flightdeckhq/flightdeck/workers/internal/metrics"
 	"github.com/nats-io/nats.go"
 )
 
@@ -164,12 +165,23 @@ func (c *Consumer) worker(ctx context.Context, sub *nats.Subscription, id int) {
 		for _, msg := range msgs {
 			var event EventPayload
 			if err := json.Unmarshal(msg.Data, &event); err != nil {
+				metrics.IncrDropped(metrics.ReasonUnmarshalError)
 				slog.Error("unmarshal error", "worker", id, "err", err)
 				_ = msg.Term()
 				continue
 			}
 
 			if err := c.processor.Process(ctx, event); err != nil {
+				// Phase 4: when the JetStream delivery count has
+				// crossed maxDeliver, the message is about to go to
+				// the DLQ rather than be redelivered again. Bump a
+				// distinct counter so operators can see
+				// retries-exhausted distinct from per-attempt errors.
+				// Use NumDelivered on the message metadata -- NATS
+				// increments it per delivery, starting at 1.
+				if meta, mErr := msg.Metadata(); mErr == nil && meta.NumDelivered >= maxDeliver {
+					metrics.IncrDropped(metrics.ReasonMaxRetriesExhausted)
+				}
 				slog.Error("process error", "worker", id, "event_type", event.EventType, "err", err)
 				_ = msg.Nak()
 				continue

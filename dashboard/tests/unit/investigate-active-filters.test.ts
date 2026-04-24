@@ -117,6 +117,33 @@ describe("buildActiveFilters -- agent_id chip", () => {
     expect(pills.map((p) => p.label)).toContain("agent:abcdef12");
   });
 
+  it("uses the resolvedAgentName arg when fleet + sessions both miss", () => {
+    // Phase 2 S5a: ``/v1/agents/{id}`` lookup feeds its result into
+    // the chip builder so the UUID-prefix path only fires when even
+    // the authoritative by-id fetch misses.
+    const uuid = "deadbeef-1234-5678-9abc-000000000000";
+    const state = urlState(`agent_id=${uuid}`);
+    const pills = buildActiveFilters(
+      state, [], [], () => {},
+      "resolved-via-agents-endpoint",
+    );
+    expect(pills.map((p) => p.label)).toContain(
+      "agent:resolved-via-agents-endpoint",
+    );
+  });
+
+  it("prefers fleet-store agents[] over the resolvedAgentName arg", () => {
+    // The cache is a fallback, not a replacement — the roster is
+    // authoritative and freshly hydrated from the fleet load.
+    const uuid = "cafef00d-1234-5678-9abc-000000000000";
+    const state = urlState(`agent_id=${uuid}`);
+    const agents = [mkAgent({ agent_id: uuid, agent_name: "fleet-wins" })];
+    const pills = buildActiveFilters(
+      state, [], agents, () => {}, "cache-loses",
+    );
+    expect(pills.map((p) => p.label)).toContain("agent:fleet-wins");
+  });
+
   it("onRemove clears agentId and resets page", () => {
     const state = urlState("agent_id=xyz");
     const updateUrl = vi.fn();

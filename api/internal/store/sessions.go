@@ -25,6 +25,11 @@ type SessionsParams struct {
 	// vocabulary (``coding``, ``production``); other values are
 	// accepted but yield empty results.
 	AgentTypes []string
+	// ClientTypes filters sessions by the denormalized client_type
+	// column on sessions (``claude_code`` | ``flightdeck_sensor``).
+	// Handler enforces the CHECK-constraint vocabulary so an invalid
+	// value 400s rather than silently matching nothing.
+	ClientTypes []string
 	// Frameworks filters on sessions.context->'frameworks' (JSONB
 	// array of strings like "langgraph/1.1.6"). Multi-value: any
 	// match across the array passes (``?|`` operator).
@@ -162,11 +167,18 @@ type SessionsResponse struct {
 }
 
 // allowedSorts prevents SQL injection in the ORDER BY clause.
+// v0.4.0 phase 2: added last_seen_at, model, hostname. hostname falls
+// back to ``context->>'hostname'`` because the sessions.host column
+// is nullable for sessions that predate the sensor filling it in;
+// COALESCE keeps the sort stable either way.
 var allowedSorts = map[string]string{
-	"started_at": "s.started_at",
-	"duration":   "EXTRACT(EPOCH FROM (COALESCE(s.ended_at, NOW()) - s.started_at))",
-	"tokens_used": "s.tokens_used",
-	"flavor":     "s.flavor",
+	"started_at":   "s.started_at",
+	"last_seen_at": "s.last_seen_at",
+	"duration":     "EXTRACT(EPOCH FROM (COALESCE(s.ended_at, NOW()) - s.started_at))",
+	"tokens_used":  "s.tokens_used",
+	"flavor":       "s.flavor",
+	"model":        "s.model",
+	"hostname":     "COALESCE(s.host, s.context->>'hostname', '')",
 }
 
 // GetSessions returns sessions matching the given filters with pagination.
@@ -233,6 +245,19 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 		conditions = append(conditions, fmt.Sprintf("s.agent_type IN (%s)", strings.Join(placeholders, ", ")))
 	}
 
+	// Client-type filter (repeatable: OR within group). Added in
+	// v0.4.0 phase 2 so the dashboard can partition the session
+	// table by Claude Code vs. the generic Python sensor.
+	if len(params.ClientTypes) > 0 {
+		placeholders := make([]string, len(params.ClientTypes))
+		for i, ct := range params.ClientTypes {
+			placeholders[i] = fmt.Sprintf("$%d", argIdx)
+			args = append(args, ct)
+			argIdx++
+		}
+		conditions = append(conditions, fmt.Sprintf("s.client_type IN (%s)", strings.Join(placeholders, ", ")))
+	}
+
 	// Model filter
 	if params.Model != "" {
 		conditions = append(conditions, fmt.Sprintf("s.model = $%d", argIdx))
@@ -278,6 +303,7 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 		argIdx++
 		conditions = append(conditions, fmt.Sprintf(`(
 			s.flavor ILIKE %[1]s
+			OR COALESCE(s.agent_name, '') ILIKE %[1]s
 			OR COALESCE(s.host, '') ILIKE %[1]s
 			OR COALESCE(s.model, '') ILIKE %[1]s
 			OR s.session_id::text ILIKE %[1]s

@@ -55,8 +55,15 @@ test.describe("T5 — Agent expansion surfaces session outside swimlane window",
         ),
       );
 
-    // Expand the row.
-    await row.click();
+    // Expand the row. row.click() with no position will land at
+    // the row's center, which under some viewport widths sits on a
+    // session circle — EventNode's onClick calls e.stopPropagation
+    // and opens the session drawer instead of toggling expansion.
+    // Click the upper-left corner of the row so we hit the chevron
+    // area inside the left panel (circles live in the right panel
+    // only). This is deterministic across viewport widths because
+    // the left panel is sticky-positioned at x=0 with width >=240px.
+    await row.click({ position: { x: 10, y: 20 } });
     const expandedBody = findExpandedBody(page, CODING_AGENT.name);
     await expect(expandedBody).toHaveAttribute("data-expanded", "true");
 

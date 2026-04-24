@@ -29,20 +29,39 @@ import (
 )
 
 const (
-	cacheTTL         = 60 * time.Second
-	cacheMaxSize     = 1000
-	devTokenRaw      = "tok_dev"
-	devTokenReject   = "tok_dev is only valid in development mode. Create a production token in the Settings page."
-	productionPrefix = "ftd_"
-	prefixLen        = 8
+	cacheTTL            = 60 * time.Second
+	cacheMaxSize        = 1000
+	devTokenRaw         = "tok_dev"
+	devAdminTokenRaw    = "tok_admin_dev"
+	devTokenReject      = "tok_dev is only valid in development mode. Create a production token in the Settings page."
+	devAdminTokenReject = "tok_admin_dev is only valid in development mode. Configure FLIGHTDECK_ADMIN_ACCESS_TOKEN in production."
+	productionPrefix    = "ftd_"
+	prefixLen           = 8
+	// Environment variable name for the production admin token. When
+	// set, any bearer whose raw value matches this env var
+	// authenticates as an admin. Absent in production => no admin
+	// access anywhere, which is the safe default for a rarely-used
+	// ops capability (the reconcile-agents endpoint). Dev mode keeps
+	// the hardcoded ``tok_admin_dev`` shortcut so CI and local runs
+	// don't need the env var wired through every test harness.
+	adminTokenEnvVar = "FLIGHTDECK_ADMIN_ACCESS_TOKEN"
 )
 
 // ValidationResult mirrors ingestion/internal/auth.ValidationResult.
+//
+// IsAdmin is the Phase 3-bis addition: ``AdminRequired`` middleware
+// gates endpoints that mutate fleet-wide state (reconcile-agents
+// today, more ops tooling in future) on this bit. Admin is a
+// SUPERSET of the standard bearer gate — an admin token also passes
+// the plain ``Middleware`` check, so a single operator token can
+// both read dashboards and run ops. Scope separation would add a
+// second token concept without much benefit at this scale.
 type ValidationResult struct {
-	Valid  bool
-	ID     string
-	Name   string
-	Reason string
+	Valid   bool
+	ID      string
+	Name    string
+	Reason  string
+	IsAdmin bool
 }
 
 type cacheEntry struct {
@@ -154,6 +173,20 @@ func (v *Validator) Validate(ctx context.Context, rawToken string) (ValidationRe
 }
 
 func (v *Validator) resolve(ctx context.Context, rawToken string) (ValidationResult, error) {
+	// Production admin token from env. Highest priority so an admin
+	// in production authenticates even if a future token scheme
+	// happens to collide on some prefix. Constant-time compare
+	// avoids leaking the env-configured secret via timing.
+	if adminToken := v.env(adminTokenEnvVar); adminToken != "" &&
+		subtle.ConstantTimeCompare([]byte(rawToken), []byte(adminToken)) == 1 {
+		return ValidationResult{
+			Valid:   true,
+			ID:      "admin-env",
+			Name:    "Admin (env)",
+			IsAdmin: true,
+		}, nil
+	}
+
 	if rawToken == devTokenRaw {
 		if v.env("ENVIRONMENT") != "dev" {
 			return ValidationResult{Valid: false, Reason: devTokenReject}, nil
@@ -167,6 +200,23 @@ func (v *Validator) resolve(ctx context.Context, rawToken string) (ValidationRes
 		}
 		_ = v.touchLastUsed(ctx, id)
 		return ValidationResult{Valid: true, ID: id, Name: name}, nil
+	}
+
+	if rawToken == devAdminTokenRaw {
+		if v.env("ENVIRONMENT") != "dev" {
+			return ValidationResult{Valid: false, Reason: devAdminTokenReject}, nil
+		}
+		// Reuse the Development Token row for id/name so audit queries
+		// see a known id. IsAdmin=true is the only delta vs tok_dev.
+		var id, name string
+		err := v.db.QueryRow(ctx,
+			`SELECT id::text, name FROM access_tokens WHERE name = 'Development Token' LIMIT 1`,
+		).Scan(&id, &name)
+		if err != nil {
+			return ValidationResult{}, fmt.Errorf("lookup tok_admin_dev row: %w", err)
+		}
+		_ = v.touchLastUsed(ctx, id)
+		return ValidationResult{Valid: true, ID: id, Name: name, IsAdmin: true}, nil
 	}
 
 	if strings.HasPrefix(rawToken, productionPrefix) && len(rawToken) >= prefixLen {
@@ -256,6 +306,36 @@ func Middleware(v *Validator, next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// AdminRequired wraps the standard ``Middleware`` gate and additionally
+// requires the authenticated token to carry ``IsAdmin=true``. Use this
+// for endpoints that mutate fleet-wide state (e.g. /v1/admin/
+// reconcile-agents). Admin is a superset of the regular bearer gate,
+// so an admin token hitting a plain ``Middleware``-wrapped route
+// passes there too — callers don't need a separate token per
+// sensitivity class.
+//
+// On a valid-but-non-admin token the handler returns 403 Forbidden
+// with an ``admin token required`` body, NOT 401 — the token IS valid,
+// it just lacks the needed scope.
+func AdminRequired(v *Validator, next http.Handler) http.Handler {
+	return Middleware(v, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Middleware already validated the token shape. Fetch the
+		// cached ValidationResult (guaranteed cache hit from the
+		// Middleware call above, <1 μs) to read IsAdmin.
+		raw := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		result, err := v.Validate(r.Context(), raw)
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "auth lookup error")
+			return
+		}
+		if !result.IsAdmin {
+			writeJSONError(w, http.StatusForbidden, "admin token required")
+			return
+		}
+		next.ServeHTTP(w, r)
+	}))
 }
 
 func writeJSONError(w http.ResponseWriter, code int, msg string) {

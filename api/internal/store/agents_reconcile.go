@@ -28,19 +28,15 @@ type ReconcileResult struct {
 	Errors          []string       `json:"errors"`
 }
 
-// reconcileColumns lists the denormalised columns on the agents table
-// that ReconcileAgents recomputes from sessions ground truth. The
-// worker's write paths (workers/internal/writer/postgres.go) touch
-// these on event arrivals but carry no decrement / compensate path,
-// so drift can accumulate across session deletes, failed event
-// processing, and pre-migration data. Keep in sync with the UPDATE
-// below if a column is added or removed.
-var reconcileColumns = []string{
-	"total_sessions",
-	"total_tokens",
-	"first_seen_at",
-	"last_seen_at",
-}
+// The four denormalised columns on the agents table reconciled by
+// ReconcileAgents are ``total_sessions``, ``total_tokens``,
+// ``first_seen_at``, and ``last_seen_at``. The worker's write paths
+// (workers/internal/writer/postgres.go) touch these on event
+// arrivals but carry no decrement / compensate path, so drift can
+// accumulate across session deletes, failed event processing, and
+// pre-migration data. Any addition to the reconciled-column set
+// needs a matching change to the UPDATE statement below AND to the
+// ground-truth SELECT, AND to the per-column divergence checks.
 
 // ReconcileAgents recomputes the denormalised rollup counters on every
 // agent row from the sessions table (the ground truth). For each

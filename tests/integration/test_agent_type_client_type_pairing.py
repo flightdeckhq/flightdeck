@@ -29,6 +29,19 @@ def _load(name: str) -> str:
     return (here / name).read_text()
 
 
+def _load_shared(name: str) -> str:
+    """Load a file from ``tests/shared/`` (sibling package).
+
+    Phase 3 extracted ``DEFAULT_AGENT_TYPE`` / ``DEFAULT_CLIENT_TYPE``
+    and friends out of ``conftest.py`` into ``tests/shared/fixtures.py``
+    so the E2E fixture seeder can reuse the same event-builder contract
+    without depending on pytest. The canonical-pair regression guard
+    follows the constants to their new home.
+    """
+    here = pathlib.Path(__file__).resolve().parent
+    return (here / ".." / "shared" / name).resolve().read_text()
+
+
 # Canonical pairings. Any additional client_type values added in the
 # future need a matching allowed agent_type set declared here.
 ALLOWED_PAIRS = {
@@ -38,14 +51,26 @@ ALLOWED_PAIRS = {
 
 
 def test_conftest_default_pair_is_canonical() -> None:
-    """``conftest.py`` default client_type must pair with its default
-    agent_type. Pre-Phase-2 the defaults were coding + flightdeck_sensor
-    which was the anomaly-producing pair."""
-    conftest = _load("conftest.py")
-    m_at = re.search(r'DEFAULT_AGENT_TYPE\s*=\s*"([^"]+)"', conftest)
-    m_ct = re.search(r'DEFAULT_CLIENT_TYPE\s*=\s*"([^"]+)"', conftest)
-    assert m_at is not None, "conftest.py must declare DEFAULT_AGENT_TYPE"
-    assert m_ct is not None, "conftest.py must declare DEFAULT_CLIENT_TYPE"
+    """Default client_type must pair with its default agent_type.
+    Pre-Phase-2 the defaults were coding + flightdeck_sensor which was
+    the anomaly-producing pair.
+
+    The constants now live in ``tests/shared/fixtures.py`` (Phase 3
+    extraction) and are re-imported by ``conftest.py``. The test greps
+    the shared module for the literal declarations AND verifies
+    ``conftest.py`` continues to import those names, so a future
+    refactor cannot accidentally re-shadow them with a non-canonical
+    default.
+    """
+    shared = _load_shared("fixtures.py")
+    m_at = re.search(r'DEFAULT_AGENT_TYPE\s*=\s*"([^"]+)"', shared)
+    m_ct = re.search(r'DEFAULT_CLIENT_TYPE\s*=\s*"([^"]+)"', shared)
+    assert m_at is not None, (
+        "tests/shared/fixtures.py must declare DEFAULT_AGENT_TYPE"
+    )
+    assert m_ct is not None, (
+        "tests/shared/fixtures.py must declare DEFAULT_CLIENT_TYPE"
+    )
     agent_type = m_at.group(1)
     client_type = m_ct.group(1)
     assert client_type in ALLOWED_PAIRS, (
@@ -53,8 +78,21 @@ def test_conftest_default_pair_is_canonical() -> None:
         "extend ALLOWED_PAIRS above if a new client_type is legitimate."
     )
     assert agent_type in ALLOWED_PAIRS[client_type], (
-        f"conftest defaults an illegal pair: agent_type={agent_type!r}, "
+        f"shared fixtures default an illegal pair: agent_type={agent_type!r}, "
         f"client_type={client_type!r}. Canonical pairs: {ALLOWED_PAIRS!r}."
+    )
+
+    # conftest.py must still re-export these names so every integration
+    # test that does ``from .conftest import DEFAULT_AGENT_TYPE`` gets
+    # the canonical value. A future refactor that drops the import
+    # would silently revert tests to whatever local default applied
+    # before -- this assertion makes that failure loud.
+    conftest = _load("conftest.py")
+    assert "DEFAULT_AGENT_TYPE" in conftest, (
+        "conftest.py must re-export DEFAULT_AGENT_TYPE from shared.fixtures"
+    )
+    assert "DEFAULT_CLIENT_TYPE" in conftest, (
+        "conftest.py must re-export DEFAULT_CLIENT_TYPE from shared.fixtures"
     )
 
 

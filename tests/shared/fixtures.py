@@ -476,3 +476,235 @@ def directive_has_delivered_at(directive_id: str) -> bool:
         capture_output=True, text=True, timeout=10,
     )
     return result.stdout.strip() == "t"
+
+
+# ---------------------------------------------------------------------------
+# Admin reconcile helpers. Used by integration + E2E tests that
+# exercise POST /v1/admin/reconcile-agents. The endpoint is gated by
+# auth.AdminRequired, which requires ``IsAdmin=true`` on the resolved
+# token — ``tok_admin_dev`` is the dev-mode shortcut (api/internal/
+# auth/token.go). Production callers pass
+# ``FLIGHTDECK_ADMIN_ACCESS_TOKEN`` verbatim instead.
+# ---------------------------------------------------------------------------
+
+ADMIN_TOKEN = "tok_admin_dev"
+
+
+def admin_auth_headers(json_body: bool = False) -> dict[str, str]:
+    """Headers for the admin endpoint. Parallel to ``auth_headers``
+    but carries the admin bearer so ``AdminRequired`` lets the call
+    through. Tests that explicitly verify the 403 path use
+    ``auth_headers`` (tok_dev, non-admin)."""
+    headers = {"Authorization": f"Bearer {ADMIN_TOKEN}"}
+    if json_body:
+        headers["Content-Type"] = "application/json"
+    return headers
+
+
+def post_admin_reconcile(
+    token: str | None = None,
+    timeout: float = 30.0,
+) -> tuple[int, dict[str, Any]]:
+    """POST /v1/admin/reconcile-agents and return (status, body).
+
+    Returns a tuple rather than raising on non-2xx because several
+    tests exercise 401/403/409 paths where a non-success status IS
+    the expected result. Body is parsed as JSON when the response
+    carries a JSON content-type; otherwise the raw decoded text is
+    returned under the ``"error"`` key so every caller sees a dict.
+
+    ``token`` defaults to ``ADMIN_TOKEN``. Pass ``TOKEN`` (the regular
+    dev bearer) to verify the 403 path, or an empty string to verify
+    the 401 path.
+    """
+    if token is None:
+        token = ADMIN_TOKEN
+    headers = {"Content-Type": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(
+        f"{API_URL}/v1/admin/reconcile-agents",
+        data=b"",
+        headers=headers,
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read()
+            body: dict[str, Any]
+            try:
+                body = json.loads(raw)
+            except json.JSONDecodeError:
+                body = {"error": raw.decode(errors="replace")}
+            return resp.status, body
+    except urllib.error.HTTPError as exc:
+        raw = exc.read()
+        body = {}
+        try:
+            body = json.loads(raw)
+        except json.JSONDecodeError:
+            body = {"error": raw.decode(errors="replace")}
+        return exc.code, body
+
+
+def create_drifted_agent(
+    *,
+    agent_name: str,
+    client_type: str = DEFAULT_CLIENT_TYPE,
+    agent_type: str = DEFAULT_AGENT_TYPE,
+    user: str = DEFAULT_USER,
+    hostname: str = DEFAULT_HOSTNAME,
+    actual_sessions: int = 1,
+    actual_tokens_per_session: int = 100,
+    counter_overrides: dict[str, Any] | None = None,
+) -> str:
+    """Insert an agents row with intentionally wrong counter values,
+    plus N matching sessions under that agent_id. Returns the
+    agent_id as a string.
+
+    Bypasses the worker's event path (no NATS, no ingestion API) so
+    tests can create drifted fixtures deterministically — an event-
+    driven path would re-sync the counters the worker maintains,
+    defeating the point.
+
+    ``counter_overrides`` keys override the default drift shape:
+        - ``total_sessions``: int (default: actual_sessions + 99)
+        - ``total_tokens``: int (default: actual_sessions *
+          actual_tokens_per_session + 999999)
+        - ``first_seen_at``: ISO-8601 string (default: actual
+          MIN(started_at) minus 1 hour — wrong direction)
+        - ``last_seen_at``: ISO-8601 string (default: NOW + 1 hour
+          — future-dated, obviously wrong)
+
+    Cleanup: callers MUST ``DELETE FROM sessions / agents`` manually
+    (or use a per-test fixture that does). Keeping cleanup caller-
+    side avoids tying this helper to pytest semantics so the E2E
+    suite can call it from a pure Python script.
+    """
+    agent_id = str(derive_agent_id(
+        agent_type=agent_type,
+        user=user,
+        hostname=hostname,
+        client_type=client_type,
+        agent_name=agent_name,
+    ))
+
+    overrides = counter_overrides or {}
+    total_sessions = overrides.get("total_sessions", actual_sessions + 99)
+    total_tokens = overrides.get(
+        "total_tokens",
+        actual_sessions * actual_tokens_per_session + 999_999,
+    )
+    # Default drift: first_seen_at forward by an hour vs ground
+    # truth, last_seen_at forward by an hour vs ground truth.
+    first_seen_override = overrides.get("first_seen_at")
+    last_seen_override = overrides.get("last_seen_at")
+
+    escaped_agent_name = agent_name.replace("'", "''")
+    # Build SQL in a single docker exec. The agents INSERT uses the
+    # canonical identity tuple; the sessions INSERTs carry fixed
+    # started_at / last_seen_at / tokens so ground truth is
+    # predictable.
+    first_seen_default = "NOW() - INTERVAL '1 hour'" if first_seen_override is None \
+        else f"'{first_seen_override}'::timestamptz"
+    last_seen_default = "NOW() + INTERVAL '1 hour'" if last_seen_override is None \
+        else f"'{last_seen_override}'::timestamptz"
+
+    # Sessions: fixed per-session offsets so MIN/MAX are easy to
+    # reason about. Session N starts at NOW() - (actual_sessions-N+1)
+    # minutes and last_seen_at at the same point.
+    session_inserts = []
+    for i in range(actual_sessions):
+        minutes_ago = actual_sessions - i  # session 0 is oldest
+        session_inserts.append(f"""
+            INSERT INTO sessions (
+                session_id, agent_id, flavor, state,
+                started_at, last_seen_at, tokens_used,
+                agent_type, client_type
+            ) VALUES (
+                gen_random_uuid(), '{agent_id}'::uuid, 'drift-test-flavor', 'closed',
+                NOW() - INTERVAL '{minutes_ago} minutes',
+                NOW() - INTERVAL '{minutes_ago} minutes',
+                {actual_tokens_per_session},
+                '{agent_type}', '{client_type}'
+            );
+        """)
+
+    sql = f"""
+        INSERT INTO agents (
+            agent_id, agent_type, client_type, agent_name,
+            user_name, hostname,
+            first_seen_at, last_seen_at,
+            total_sessions, total_tokens
+        ) VALUES (
+            '{agent_id}'::uuid, '{agent_type}', '{client_type}', '{escaped_agent_name}',
+            '{user}', '{hostname}',
+            {first_seen_default}, {last_seen_default},
+            {total_sessions}, {total_tokens}
+        )
+        ON CONFLICT (agent_id) DO UPDATE SET
+            total_sessions = EXCLUDED.total_sessions,
+            total_tokens   = EXCLUDED.total_tokens,
+            first_seen_at  = EXCLUDED.first_seen_at,
+            last_seen_at   = EXCLUDED.last_seen_at;
+        {' '.join(session_inserts)}
+    """
+    _psql_exec(sql)
+    return agent_id
+
+
+def delete_drifted_agent(agent_id: str) -> None:
+    """Tear down a drifted agent fixture (sessions then agent row).
+    Best-effort — missing rows are ignored so repeated cleanup calls
+    are safe."""
+    sql = (
+        f"DELETE FROM sessions WHERE agent_id = '{agent_id}'::uuid; "
+        f"DELETE FROM agents WHERE agent_id = '{agent_id}'::uuid;"
+    )
+    _psql_exec(sql)
+
+
+def get_agent_rollup(agent_id: str) -> dict[str, Any] | None:
+    """Read the denormalised rollup snapshot for an agent. Returns
+    None when the agent does not exist. Used by integration tests to
+    assert on post-reconcile state directly rather than round-tripping
+    through /v1/fleet."""
+    sql = (
+        "SELECT json_build_object("
+        "'agent_id', agent_id::text, "
+        "'total_sessions', total_sessions, "
+        "'total_tokens', total_tokens, "
+        "'first_seen_at', first_seen_at, "
+        "'last_seen_at', last_seen_at"
+        ") "
+        f"FROM agents WHERE agent_id = '{agent_id}'::uuid"
+    )
+    import subprocess
+    result = subprocess.run(
+        ["docker", "exec", "docker-postgres-1", "psql", "-U", "flightdeck",
+         "-d", "flightdeck", "-t", "-c", sql],
+        capture_output=True, text=True, timeout=10,
+    )
+    raw = result.stdout.strip()
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)  # type: ignore[no-any-return]
+    except json.JSONDecodeError:
+        return None
+
+
+def _psql_exec(sql: str) -> None:
+    """Run a multi-statement SQL block via docker exec psql. Raises
+    on non-zero exit so callers see setup failures loudly rather than
+    getting a silently unseeded fixture."""
+    import subprocess
+    result = subprocess.run(
+        ["docker", "exec", "docker-postgres-1", "psql", "-U", "flightdeck",
+         "-d", "flightdeck", "-v", "ON_ERROR_STOP=1", "-c", sql],
+        capture_output=True, text=True, timeout=15, check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"psql exec failed (exit {result.returncode}): {result.stderr.strip()}"
+        )

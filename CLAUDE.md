@@ -346,6 +346,45 @@
      -- which is exactly the regression shape KI22 had until a
      manual light-theme pass caught it.
 
+40d. **Framework coverage discipline.** Any phase that adds
+     framework support OR changes framework-emission behaviour
+     MUST include BOTH:
+
+     1. **Real-provider smoke tests** per affected framework --
+        manual, NOT in CI (they cost money and need live API
+        credentials). Live under ``tests/smoke/`` with pytest-skip
+        when the relevant env var is missing so ``make smoke-all``
+        runs cleanly on any box. Driven via ``make smoke-<framework>``
+        targets. Results documented in the phase's audit doc before
+        PR merge.
+     2. **Integration tests** per framework × behaviour combo,
+        mock-free (or lightly mocked at the network boundary),
+        running in CI via the existing Integration job. Seed a
+        realistic event payload for each new framework + behaviour
+        combination and verify end-to-end landing.
+
+     V-pass for such a phase MUST enumerate the smoke and
+     integration tests that will be added before implementation
+     starts. Skipping either is a phase-gate failure.
+
+     Why: Phase 4 (agent communication coverage hardening) shipped
+     embeddings, streaming semantics, structured error events, and
+     session-lifecycle edge-case fixes. Mock-only coverage would
+     have let a future SDK upgrade silently break the classifier
+     (anthropic renames ``RateLimitError`` to ``QuotaError`` and
+     our classifier falls through to ``other``; no CI gate catches
+     it). The smoke matrix is the only thing that exercises the
+     real class hierarchy every provider ships.
+
+     Applies to: every phase from Phase 4 onwards that touches
+     ``sensor/flightdeck_sensor/interceptor/*``, adds a new
+     interceptor file, or changes the event-emission shape for an
+     existing framework.
+
+     Does NOT apply to: non-framework sensor work (transport,
+     policy, directives) — those are covered by the standard unit
+     + integration suites.
+
 ---
 
 ## Living Document Rules

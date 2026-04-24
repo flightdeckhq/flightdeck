@@ -1,4 +1,4 @@
-.PHONY: help build test test-plugin test-integration test-sensor-e2e test-e2e test-e2e-ui test-smoke seed-e2e lint dev dev-reset down logs release migrate-local-up migrate-local-status
+.PHONY: help build test test-plugin test-integration test-sensor-e2e test-e2e test-e2e-ui test-smoke-playground seed-e2e lint dev dev-reset down logs release migrate-local-up migrate-local-status smoke-anthropic smoke-openai smoke-litellm smoke-langchain smoke-claude-code smoke-bifrost smoke-all
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-12s %s\n", $$1, $$2}'
@@ -27,8 +27,42 @@ test-sensor-e2e: ## Run sensor respx-driven end-to-end tests (requires running s
 	$(MAKE) -C docker dev
 	cd tests/integration && pytest -v test_sensor_e2e.py
 
-test-smoke: ## Run the playground against a live stack (requires ANTHROPIC_API_KEY + OPENAI_API_KEY). See playground/README.md.
+test-smoke-playground: ## Run the playground against a live stack (requires ANTHROPIC_API_KEY + OPENAI_API_KEY). See playground/README.md.
 	python playground/run_all.py
+
+# ---------------------------------------------------------------------------
+# Phase 4 Rule 40d smoke targets. Each runs the per-framework smoke
+# test against a live provider; NONE of these run in CI (they cost
+# money and need real API keys). Run manually before a PR that
+# touches framework-emission behaviour and document the results in
+# the phase's audit doc.
+#
+# Smoke tests skip cleanly when the relevant env var is unset, so
+# the target never fails the user's local pytest invocation; a skip
+# just means "not exercised on this run". Operators who want to force
+# a skipped target to fail can pass ``-o pytest.ini.addopts='--no-skips'``
+# (see tests/smoke/README.md).
+# ---------------------------------------------------------------------------
+
+smoke-anthropic: ## Rule 40d smoke: Anthropic SDK. Requires ANTHROPIC_API_KEY.
+	cd tests/smoke && pytest -v test_smoke_anthropic.py
+
+smoke-openai: ## Rule 40d smoke: OpenAI SDK. Requires OPENAI_API_KEY.
+	cd tests/smoke && pytest -v test_smoke_openai.py
+
+smoke-litellm: ## Rule 40d smoke: litellm multi-provider. Requires ANTHROPIC_API_KEY + OPENAI_API_KEY.
+	cd tests/smoke && pytest -v test_smoke_litellm.py
+
+smoke-langchain: ## Rule 40d smoke: LangChain (Anthropic + OpenAI paths). Requires ANTHROPIC_API_KEY + OPENAI_API_KEY.
+	cd tests/smoke && pytest -v test_smoke_langchain.py
+
+smoke-claude-code: ## Rule 40d smoke: Claude Code plugin against locally installed `claude` CLI.
+	cd tests/smoke && pytest -v test_smoke_claude_code.py
+
+smoke-bifrost: ## Rule 40d smoke: bifrost gateway (optional). Requires BIFROST_URL + upstream provider key.
+	cd tests/smoke && pytest -v test_smoke_bifrost.py
+
+smoke-all: smoke-anthropic smoke-openai smoke-litellm smoke-langchain smoke-claude-code ## Run every Phase 4 framework smoke test (bifrost is optional; run separately).
 
 # Phase 3 retired the duplicate `test-e2e` target. The prior target
 # at this line drove sensor pytest e2e (now `test-sensor-e2e` above)

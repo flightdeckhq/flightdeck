@@ -69,6 +69,8 @@ func newServer(addr string, s store.Querier, hub *ws.Hub, validator *auth.Valida
 
 	// REST routes -- all require a valid bearer token (D095).
 	mux.Handle("GET /v1/fleet", gate(handlers.FleetHandler(s)))
+	mux.Handle("GET /v1/agents", gate(handlers.AgentsListHandler(s)))
+	mux.Handle("GET /v1/agents/", gate(handlers.AgentByIDHandler(s)))
 	mux.Handle("GET /v1/sessions", gate(handlers.SessionsListHandler(s)))
 	mux.Handle("GET /v1/sessions/", gate(handlers.SessionsHandler(s)))
 	mux.Handle("GET /v1/events/", gate(handlers.ContentHandler(s)))

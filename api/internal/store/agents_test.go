@@ -1,0 +1,588 @@
+package store
+
+import (
+	"context"
+	"strings"
+	"testing"
+	"time"
+)
+
+// agents_test.go leans on newTestStore (postgres_test.go) so every
+// test either runs against a live Postgres or skips cleanly. Each
+// test seeds an isolated fixture set via ``seedAgent``/``seedSession``
+// (agents_reconcile_test.go) and cleans up via t.Cleanup.
+//
+// The tests focus on filter / sort / search behavior; handler-level
+// validation (400s for invalid enum values, limit overflow, etc.)
+// lives in api/tests/handler_test.go which exercises the HTTP
+// envelope with the mockStore.
+
+// seedAgentForList is a helper that composes seedAgent + any number of
+// sessions, returning the agent_id so tests can target specific
+// fixtures when asserting filter coverage. Unlike
+// ``seedAgent``, this helper leaves counter values synced (they are
+// not the point of these tests). Uses the ``state_override`` arg to
+// force a specific rollup state via a session, because
+// ReconcileAgents tests prove the rollup is LATERAL-computed from
+// session state.
+func seedAgentForList(
+	t *testing.T, s *Store,
+	agentName string,
+	opts agentListOpts,
+) string {
+	t.Helper()
+	agentID := randomUUID(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	firstSeen := opts.firstSeen
+	if firstSeen.IsZero() {
+		firstSeen = now.Add(-2 * time.Hour)
+	}
+	lastSeen := opts.lastSeen
+	if lastSeen.IsZero() {
+		lastSeen = now.Add(-10 * time.Minute)
+	}
+
+	ctx := context.Background()
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO agents (
+			agent_id, agent_type, client_type, agent_name,
+			user_name, hostname,
+			first_seen_at, last_seen_at,
+			total_sessions, total_tokens
+		) VALUES (
+			$1::uuid, $2, $3, $4,
+			$5, $6,
+			$7, $8,
+			$9, $10
+		)
+	`, agentID, opts.agentType, opts.clientType, agentName,
+		opts.userName, opts.hostname,
+		firstSeen, lastSeen,
+		opts.totalSessions, opts.totalTokens,
+	)
+	if err != nil {
+		t.Fatalf("seedAgentForList %s: %v", agentName, err)
+	}
+
+	t.Cleanup(func() {
+		_, _ = s.pool.Exec(ctx,
+			`DELETE FROM sessions WHERE agent_id = $1::uuid`, agentID)
+		_, _ = s.pool.Exec(ctx,
+			`DELETE FROM agents WHERE agent_id = $1::uuid`, agentID)
+	})
+
+	// Optional session seeding to exercise state rollup +
+	// context-filter paths.
+	if opts.sessionState != "" {
+		_, err := s.pool.Exec(ctx, `
+			INSERT INTO sessions (
+				session_id, agent_id, flavor, state,
+				started_at, last_seen_at, tokens_used,
+				agent_type, client_type, context
+			) VALUES (
+				gen_random_uuid(), $1::uuid, $2, $3,
+				$4, $5, $6,
+				$7, $8, $9::jsonb
+			)
+		`, agentID, "test-list-flavor", opts.sessionState,
+			lastSeen, lastSeen, opts.totalTokens,
+			opts.agentType, opts.clientType, opts.sessionContextJSON())
+		if err != nil {
+			t.Fatalf("seed session for %s: %v", agentID, err)
+		}
+	}
+
+	return agentID
+}
+
+type agentListOpts struct {
+	agentType     string
+	clientType    string
+	userName      string
+	hostname      string
+	firstSeen     time.Time
+	lastSeen      time.Time
+	totalSessions int
+	totalTokens   int64
+	sessionState  string // force rollup state via a session row
+	os            string // context.os for context-filter tests
+	orchestration string // context.orchestration for context-filter tests
+}
+
+func (o agentListOpts) sessionContextJSON() string {
+	parts := []string{}
+	if o.os != "" {
+		parts = append(parts, `"os":"`+o.os+`"`)
+	}
+	if o.orchestration != "" {
+		parts = append(parts, `"orchestration":"`+o.orchestration+`"`)
+	}
+	if len(parts) == 0 {
+		return `{}`
+	}
+	return "{" + strings.Join(parts, ",") + "}"
+}
+
+// --- Filter coverage ---
+
+func TestListAgents_FilterByAgentType(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+
+	codingID := seedAgentForList(t, s, "test-list-coding-"+randomUUID(t)[:8], agentListOpts{
+		agentType: "coding", clientType: "claude_code",
+		userName: "u1", hostname: "h1",
+	})
+	prodID := seedAgentForList(t, s, "test-list-prod-"+randomUUID(t)[:8], agentListOpts{
+		agentType: "production", clientType: "flightdeck_sensor",
+		userName: "u2", hostname: "h2",
+	})
+
+	ctx := context.Background()
+	resp, err := s.ListAgents(ctx, AgentListParams{
+		AgentType: []string{"coding"},
+		Limit:     100,
+	})
+	if err != nil {
+		t.Fatalf("ListAgents: %v", err)
+	}
+	assertContainsAgent(t, resp, codingID, true)
+	assertContainsAgent(t, resp, prodID, false)
+}
+
+func TestListAgents_FilterByClientType(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+
+	ccID := seedAgentForList(t, s, "test-list-cc-"+randomUUID(t)[:8], agentListOpts{
+		agentType: "coding", clientType: "claude_code",
+	})
+	sensorID := seedAgentForList(t, s, "test-list-sensor-"+randomUUID(t)[:8], agentListOpts{
+		agentType: "production", clientType: "flightdeck_sensor",
+	})
+
+	resp, err := s.ListAgents(context.Background(), AgentListParams{
+		ClientType: []string{"claude_code"},
+		Limit:      100,
+	})
+	if err != nil {
+		t.Fatalf("ListAgents: %v", err)
+	}
+	assertContainsAgent(t, resp, ccID, true)
+	assertContainsAgent(t, resp, sensorID, false)
+}
+
+func TestListAgents_FilterByState_LateralRollup(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+
+	activeID := seedAgentForList(t, s, "test-list-state-active-"+randomUUID(t)[:8], agentListOpts{
+		agentType: "coding", clientType: "claude_code", sessionState: "active",
+	})
+	closedID := seedAgentForList(t, s, "test-list-state-closed-"+randomUUID(t)[:8], agentListOpts{
+		agentType: "coding", clientType: "claude_code", sessionState: "closed",
+	})
+
+	resp, err := s.ListAgents(context.Background(), AgentListParams{
+		State: []string{"active"},
+		Limit: 100,
+	})
+	if err != nil {
+		t.Fatalf("ListAgents: %v", err)
+	}
+	assertContainsAgent(t, resp, activeID, true)
+	assertContainsAgent(t, resp, closedID, false)
+
+	// Second read, OR-within-dimension.
+	resp2, err := s.ListAgents(context.Background(), AgentListParams{
+		State: []string{"active", "closed"},
+		Limit: 100,
+	})
+	if err != nil {
+		t.Fatalf("ListAgents: %v", err)
+	}
+	assertContainsAgent(t, resp2, activeID, true)
+	assertContainsAgent(t, resp2, closedID, true)
+}
+
+func TestListAgents_FilterByHostnameAndUser(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+
+	matchID := seedAgentForList(t, s, "test-list-hu-match-"+randomUUID(t)[:8], agentListOpts{
+		agentType: "coding", clientType: "claude_code",
+		userName: "alice", hostname: "host-alice",
+	})
+	missID := seedAgentForList(t, s, "test-list-hu-miss-"+randomUUID(t)[:8], agentListOpts{
+		agentType: "coding", clientType: "claude_code",
+		userName: "bob", hostname: "host-bob",
+	})
+
+	resp, err := s.ListAgents(context.Background(), AgentListParams{
+		UserName: []string{"alice"},
+		Limit:    100,
+	})
+	if err != nil {
+		t.Fatalf("ListAgents: %v", err)
+	}
+	assertContainsAgent(t, resp, matchID, true)
+	assertContainsAgent(t, resp, missID, false)
+
+	// hostname filter independently.
+	resp2, err := s.ListAgents(context.Background(), AgentListParams{
+		Hostname: []string{"host-alice"},
+		Limit:    100,
+	})
+	if err != nil {
+		t.Fatalf("ListAgents: %v", err)
+	}
+	assertContainsAgent(t, resp2, matchID, true)
+	assertContainsAgent(t, resp2, missID, false)
+}
+
+func TestListAgents_FilterByContextOS_ExistsSubquery(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+
+	linuxID := seedAgentForList(t, s, "test-list-os-linux-"+randomUUID(t)[:8], agentListOpts{
+		agentType: "coding", clientType: "claude_code",
+		sessionState: "closed", os: "Linux",
+	})
+	macID := seedAgentForList(t, s, "test-list-os-mac-"+randomUUID(t)[:8], agentListOpts{
+		agentType: "coding", clientType: "claude_code",
+		sessionState: "closed", os: "Darwin",
+	})
+
+	resp, err := s.ListAgents(context.Background(), AgentListParams{
+		OS:    []string{"Linux"},
+		Limit: 100,
+	})
+	if err != nil {
+		t.Fatalf("ListAgents: %v", err)
+	}
+	assertContainsAgent(t, resp, linuxID, true)
+	assertContainsAgent(t, resp, macID, false)
+}
+
+func TestListAgents_Search_AgentNameAndHostname(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+
+	byNameID := seedAgentForList(t, s, "test-list-search-UniquelyNamed-"+randomUUID(t)[:8], agentListOpts{
+		agentType: "coding", clientType: "claude_code",
+		hostname: "plain-host",
+	})
+	byHostID := seedAgentForList(t, s, "test-list-search-regular-"+randomUUID(t)[:8], agentListOpts{
+		agentType: "coding", clientType: "claude_code",
+		hostname: "distinct-host-marker",
+	})
+	otherID := seedAgentForList(t, s, "test-list-search-nomatch-"+randomUUID(t)[:8], agentListOpts{
+		agentType: "coding", clientType: "claude_code",
+		hostname: "elsewhere",
+	})
+
+	// Substring match in agent_name only.
+	resp, err := s.ListAgents(context.Background(), AgentListParams{
+		Search: "UniquelyNamed",
+		Limit:  100,
+	})
+	if err != nil {
+		t.Fatalf("search agent_name: %v", err)
+	}
+	assertContainsAgent(t, resp, byNameID, true)
+	assertContainsAgent(t, resp, byHostID, false)
+	assertContainsAgent(t, resp, otherID, false)
+
+	// Substring match in hostname only.
+	resp2, err := s.ListAgents(context.Background(), AgentListParams{
+		Search: "distinct-host-marker",
+		Limit:  100,
+	})
+	if err != nil {
+		t.Fatalf("search hostname: %v", err)
+	}
+	assertContainsAgent(t, resp2, byHostID, true)
+	assertContainsAgent(t, resp2, byNameID, false)
+	assertContainsAgent(t, resp2, otherID, false)
+
+	// Case-insensitive (ILIKE).
+	resp3, err := s.ListAgents(context.Background(), AgentListParams{
+		Search: "uniquelyNAMED", // mixed-case to prove ILIKE
+		Limit:  100,
+	})
+	if err != nil {
+		t.Fatalf("search case-insensitive: %v", err)
+	}
+	assertContainsAgent(t, resp3, byNameID, true)
+}
+
+func TestListAgents_FilterByUpdatedSince(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	recentID := seedAgentForList(t, s, "test-list-since-recent-"+randomUUID(t)[:8], agentListOpts{
+		agentType: "coding", clientType: "claude_code",
+		lastSeen: now.Add(-5 * time.Minute),
+	})
+	oldID := seedAgentForList(t, s, "test-list-since-old-"+randomUUID(t)[:8], agentListOpts{
+		agentType: "coding", clientType: "claude_code",
+		lastSeen: now.Add(-24 * time.Hour),
+	})
+
+	cutoff := now.Add(-1 * time.Hour)
+	resp, err := s.ListAgents(context.Background(), AgentListParams{
+		UpdatedSince: &cutoff,
+		Limit:        100,
+	})
+	if err != nil {
+		t.Fatalf("ListAgents: %v", err)
+	}
+	assertContainsAgent(t, resp, recentID, true)
+	assertContainsAgent(t, resp, oldID, false)
+}
+
+// --- Sort ---
+
+func TestListAgents_SortByAgentName_AscDesc(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+
+	aID := seedAgentForList(t, s, "test-list-sort-aaa-"+randomUUID(t)[:8], agentListOpts{
+		agentType: "coding", clientType: "claude_code",
+	})
+	zID := seedAgentForList(t, s, "test-list-sort-zzz-"+randomUUID(t)[:8], agentListOpts{
+		agentType: "coding", clientType: "claude_code",
+	})
+
+	asc, err := s.ListAgents(context.Background(), AgentListParams{
+		Search: "test-list-sort-",
+		Sort:   "agent_name", Order: "asc",
+		Limit: 100,
+	})
+	if err != nil {
+		t.Fatalf("ListAgents asc: %v", err)
+	}
+	assertOrder(t, asc, []string{aID, zID})
+
+	desc, err := s.ListAgents(context.Background(), AgentListParams{
+		Search: "test-list-sort-",
+		Sort:   "agent_name", Order: "desc",
+		Limit: 100,
+	})
+	if err != nil {
+		t.Fatalf("ListAgents desc: %v", err)
+	}
+	assertOrder(t, desc, []string{zID, aID})
+}
+
+func TestListAgents_SortByTotalSessions(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+
+	lowID := seedAgentForList(t, s, "test-list-ts-low-"+randomUUID(t)[:8], agentListOpts{
+		agentType: "coding", clientType: "claude_code",
+		totalSessions: 1, totalTokens: 10,
+	})
+	highID := seedAgentForList(t, s, "test-list-ts-high-"+randomUUID(t)[:8], agentListOpts{
+		agentType: "coding", clientType: "claude_code",
+		totalSessions: 99, totalTokens: 1000,
+	})
+
+	desc, err := s.ListAgents(context.Background(), AgentListParams{
+		Search: "test-list-ts-",
+		Sort:   "total_sessions", Order: "desc",
+		Limit: 100,
+	})
+	if err != nil {
+		t.Fatalf("ListAgents: %v", err)
+	}
+	assertOrder(t, desc, []string{highID, lowID})
+}
+
+func TestListAgents_SortByStateOrdinal_ActiveFirstOnDesc(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+
+	activeID := seedAgentForList(t, s, "test-list-ss-active-"+randomUUID(t)[:8], agentListOpts{
+		agentType: "coding", clientType: "claude_code", sessionState: "active",
+	})
+	staleID := seedAgentForList(t, s, "test-list-ss-stale-"+randomUUID(t)[:8], agentListOpts{
+		agentType: "coding", clientType: "claude_code", sessionState: "stale",
+	})
+	closedID := seedAgentForList(t, s, "test-list-ss-closed-"+randomUUID(t)[:8], agentListOpts{
+		agentType: "coding", clientType: "claude_code", sessionState: "closed",
+	})
+
+	resp, err := s.ListAgents(context.Background(), AgentListParams{
+		Search: "test-list-ss-",
+		Sort:   "state", Order: "desc",
+		Limit: 100,
+	})
+	if err != nil {
+		t.Fatalf("ListAgents: %v", err)
+	}
+	// DESC means "most-engaged state first" per ordinal CASE in
+	// store/agents.go: active (1) < stale (3) < closed (4).
+	assertOrder(t, resp, []string{activeID, staleID, closedID})
+}
+
+// --- Pagination ---
+
+func TestListAgents_Pagination_LimitOffsetTotal(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+
+	// Seed 5 fixtures with a common search prefix so Total is
+	// deterministic regardless of other rows in the shared DB.
+	prefix := "test-list-page-" + randomUUID(t)[:8]
+	for i := 0; i < 5; i++ {
+		_ = seedAgentForList(t, s, prefix+"-"+randomUUID(t)[:6], agentListOpts{
+			agentType: "coding", clientType: "claude_code",
+		})
+	}
+
+	ctx := context.Background()
+	resp, err := s.ListAgents(ctx, AgentListParams{
+		Search: prefix,
+		Limit:  2, Offset: 0,
+	})
+	if err != nil {
+		t.Fatalf("ListAgents: %v", err)
+	}
+	if resp.Total != 5 {
+		t.Errorf("Total: want 5, got %d", resp.Total)
+	}
+	if len(resp.Agents) != 2 {
+		t.Errorf("Page 1 size: want 2, got %d", len(resp.Agents))
+	}
+	if !resp.HasMore {
+		t.Errorf("HasMore should be true on page 1")
+	}
+
+	resp2, err := s.ListAgents(ctx, AgentListParams{
+		Search: prefix,
+		Limit:  2, Offset: 4,
+	})
+	if err != nil {
+		t.Fatalf("ListAgents: %v", err)
+	}
+	if len(resp2.Agents) != 1 {
+		t.Errorf("Last page size: want 1, got %d", len(resp2.Agents))
+	}
+	if resp2.HasMore {
+		t.Errorf("HasMore should be false on the last page")
+	}
+}
+
+// --- Combination (AND across dimensions, OR within) ---
+
+func TestListAgents_FilterCombination_AndAcrossDimensions(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+
+	matchID := seedAgentForList(t, s, "test-list-combo-match-"+randomUUID(t)[:8], agentListOpts{
+		agentType: "coding", clientType: "claude_code",
+		userName: "alice",
+	})
+	halfID := seedAgentForList(t, s, "test-list-combo-half-"+randomUUID(t)[:8], agentListOpts{
+		agentType: "coding", clientType: "claude_code",
+		userName: "bob", // matches agent_type but not user
+	})
+	noneID := seedAgentForList(t, s, "test-list-combo-none-"+randomUUID(t)[:8], agentListOpts{
+		agentType: "production", clientType: "flightdeck_sensor",
+		userName: "carol",
+	})
+
+	resp, err := s.ListAgents(context.Background(), AgentListParams{
+		AgentType: []string{"coding"},
+		UserName:  []string{"alice"},
+		Limit:     100,
+	})
+	if err != nil {
+		t.Fatalf("ListAgents: %v", err)
+	}
+	assertContainsAgent(t, resp, matchID, true)
+	assertContainsAgent(t, resp, halfID, false)
+	assertContainsAgent(t, resp, noneID, false)
+}
+
+// --- GetAgentByID ---
+
+func TestGetAgentByID_HitMiss(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+
+	agentID := seedAgentForList(t, s, "test-byid-"+randomUUID(t)[:8], agentListOpts{
+		agentType: "coding", clientType: "claude_code",
+		userName: "alice", hostname: "host-byid",
+		sessionState: "active",
+	})
+
+	ctx := context.Background()
+	a, err := s.GetAgentByID(ctx, agentID)
+	if err != nil {
+		t.Fatalf("GetAgentByID: %v", err)
+	}
+	if a == nil {
+		t.Fatal("expected hit, got nil")
+	}
+	if a.AgentID != agentID {
+		t.Errorf("AgentID: want %s, got %s", agentID, a.AgentID)
+	}
+	if a.State != "active" {
+		t.Errorf("State rollup should be 'active', got %q", a.State)
+	}
+
+	// Miss — random UUID that matches nothing.
+	notExist := randomUUID(t)
+	a2, err := s.GetAgentByID(ctx, notExist)
+	if err != nil {
+		t.Fatalf("GetAgentByID miss: %v", err)
+	}
+	if a2 != nil {
+		t.Errorf("expected nil for missing id, got %+v", a2)
+	}
+}
+
+// --- Assertion helpers ---
+
+func assertContainsAgent(t *testing.T, resp *AgentListResponse, agentID string, expected bool) {
+	t.Helper()
+	for _, a := range resp.Agents {
+		if a.AgentID == agentID {
+			if !expected {
+				t.Errorf("unexpected match for agent_id %s", agentID)
+			}
+			return
+		}
+	}
+	if expected {
+		t.Errorf("expected agent_id %s in response, got %d agents (none matched)", agentID, len(resp.Agents))
+	}
+}
+
+// assertOrder verifies the agents appear in the expected order (only
+// the ids in ``want`` are checked; interleaving rows from other
+// fixtures in the shared test DB are ignored).
+func assertOrder(t *testing.T, resp *AgentListResponse, want []string) {
+	t.Helper()
+	seen := []string{}
+	for _, a := range resp.Agents {
+		for _, w := range want {
+			if a.AgentID == w {
+				seen = append(seen, a.AgentID)
+			}
+		}
+	}
+	if len(seen) != len(want) {
+		t.Fatalf("expected all %d ids in response, got %d (response size=%d)",
+			len(want), len(seen), len(resp.Agents))
+	}
+	for i, id := range want {
+		if seen[i] != id {
+			t.Errorf("order mismatch at position %d: want %s, got %s (full: %v)",
+				i, id, seen[i], seen)
+		}
+	}
+}

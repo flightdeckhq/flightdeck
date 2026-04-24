@@ -59,8 +59,15 @@ export default defineConfig({
     screenshot: "only-on-failure",
   },
   projects: [
+    // Fleet-read tests run under both themes. T11 is excluded because
+    // it mutates fleet-wide state via POST /v1/admin/reconcile-agents
+    // and the resulting websocket broadcast invalidates concurrently-
+    // running read tests' in-flight assertions. The admin-ops-*
+    // projects below re-run under both themes AFTER these complete,
+    // via project ``dependencies``.
     {
       name: "neon-dark",
+      testIgnore: /T11-.*\.spec\.ts/,
       use: {
         ...devices["Desktop Chrome"],
         channel: "chromium",
@@ -79,6 +86,64 @@ export default defineConfig({
     },
     {
       name: "clean-light",
+      testIgnore: /T11-.*\.spec\.ts/,
+      use: {
+        ...devices["Desktop Chrome"],
+        channel: "chromium",
+        storageState: {
+          cookies: [],
+          origins: [
+            {
+              origin: "http://localhost:4000",
+              localStorage: [
+                { name: THEME_STORAGE_KEY, value: "clean-light" },
+              ],
+            },
+          ],
+        },
+      },
+    },
+    // Admin-ops tests (currently only T11). Mutate fleet-wide state
+    // and must run serially after the read tests have completed so
+    // the reconcile's websocket broadcast doesn't race T1/T2/T5/T7/
+    // T9's Fleet renderings. Project dependencies handle the
+    // sequencing.
+    //
+    // The two admin-ops-* projects must ALSO be serial relative to
+    // each other because both instances of T11 would otherwise run
+    // reconcile in parallel and one's call corrects the drift the
+    // other just created — leaving the second instance to observe
+    // ``agents_updated=0`` and fail. The chain:
+    //
+    //   neon-dark + clean-light       (parallel)
+    //     ↓
+    //   admin-ops-neon-dark           (waits for both above)
+    //     ↓
+    //   admin-ops-clean-light         (waits for admin-ops-neon-dark)
+    {
+      name: "admin-ops-neon-dark",
+      testMatch: /T11-.*\.spec\.ts/,
+      dependencies: ["neon-dark", "clean-light"],
+      use: {
+        ...devices["Desktop Chrome"],
+        channel: "chromium",
+        storageState: {
+          cookies: [],
+          origins: [
+            {
+              origin: "http://localhost:4000",
+              localStorage: [
+                { name: THEME_STORAGE_KEY, value: "neon-dark" },
+              ],
+            },
+          ],
+        },
+      },
+    },
+    {
+      name: "admin-ops-clean-light",
+      testMatch: /T11-.*\.spec\.ts/,
+      dependencies: ["admin-ops-neon-dark"],
       use: {
         ...devices["Desktop Chrome"],
         channel: "chromium",

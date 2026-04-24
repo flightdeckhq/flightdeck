@@ -394,6 +394,101 @@ def test_streaming_emits_llm_error_on_mid_stream_exception() -> None:
     assert err["partial_chunks"] == 2
 
 
+def test_async_streaming_populates_ttft_and_chunk_count() -> None:
+    # Phase 4 lifts the async-streaming NotImplementedError. The async
+    # path uses GuardedAsyncStream which implements __aenter__/__aexit__
+    # and __aiter__/__anext__. Semantics must match the sync wrapper.
+    session, provider = _make_session_and_provider()
+
+    class _AStream:
+        def __init__(self) -> None:
+            self.usage = _Usage(input_tokens=25, output_tokens=15)
+            self.model = "claude-sonnet-4-6"
+            self._i = 0
+
+        def __aiter__(self) -> "_AStream":
+            return self
+
+        async def __anext__(self) -> dict[str, int]:
+            if self._i >= 3:
+                raise StopAsyncIteration
+            self._i += 1
+            return {"chunk": self._i}
+
+    class _ACtx:
+        async def __aenter__(self) -> _AStream:
+            return _AStream()
+
+        async def __aexit__(self, *args: Any) -> None:
+            return None
+
+    real_fn = MagicMock(return_value=_ACtx())
+    kwargs = {"model": "claude-sonnet-4-6", "messages": []}
+
+    async def run() -> None:
+        guarded = base.call_stream_async(real_fn, kwargs, session, provider)
+        async with guarded as stream:
+            async for _ in stream:
+                pass
+
+    asyncio.run(run())
+
+    events = _captured_events(session)
+    post_calls = [e for e in events if e["event_type"] == "post_call"]
+    assert len(post_calls) == 1
+    s = post_calls[0].get("streaming")
+    assert s is not None
+    assert s["chunk_count"] == 3
+    assert s["ttft_ms"] is not None
+    assert s["final_outcome"] == "completed"
+
+
+def test_async_streaming_emits_llm_error_on_mid_stream_exception() -> None:
+    # Mid-async-stream exception must classify as stream_error + emit
+    # an llm_error event, not fall back to a successful post_call.
+    session, provider = _make_session_and_provider()
+
+    class _AStream:
+        def __init__(self) -> None:
+            self._i = 0
+
+        def __aiter__(self) -> "_AStream":
+            return self
+
+        async def __anext__(self) -> Any:
+            self._i += 1
+            if self._i <= 1:
+                return {"chunk": self._i}
+            raise _mk_rate_limit("async mid-stream limit")
+
+    class _ACtx:
+        async def __aenter__(self) -> _AStream:
+            return _AStream()
+
+        async def __aexit__(self, *args: Any) -> None:
+            return None
+
+    real_fn = MagicMock(return_value=_ACtx())
+    kwargs = {"model": "claude-sonnet-4-6", "messages": []}
+
+    async def run() -> None:
+        guarded = base.call_stream_async(real_fn, kwargs, session, provider)
+        async with guarded as stream:
+            async for _ in stream:
+                pass
+
+    with pytest.raises(RateLimitError):
+        asyncio.run(run())
+
+    events = _captured_events(session)
+    llm_errors = [e for e in events if e["event_type"] == "llm_error"]
+    assert len(llm_errors) == 1
+    err = llm_errors[0]["error"]
+    assert err["error_type"] == "stream_error"
+    assert err["abort_reason"] == "error_mid_stream"
+    assert err["partial_chunks"] == 1
+
+
 def test_streaming_emits_error_before_stream_when_context_enter_raises() -> None:
     # Exception during __enter__ (before any chunk yielded) classifies
     # with abort_reason=error_before_stream and NOT as stream_error.

@@ -120,23 +120,20 @@ class SensorCompletions:
         When ``stream=True``, injects ``stream_options`` so OpenAI includes
         token usage in the final streaming chunk.
 
-        Async streaming (``await async_client.chat.completions.create(stream=True)``)
-        is not yet supported and raises ``NotImplementedError``. The
-        previous implementation silently dispatched async streaming to
-        the sync ``base.call_stream`` path; raising surfaces the
-        limitation immediately rather than producing broken behavior at
-        runtime. TODO: implement ``base.call_stream_async`` and a
-        matching async stream wrapper.
+        Phase 4: async streaming is now supported via
+        :func:`base.call_stream_async`. Sync and async streaming go through
+        guarded wrappers that measure TTFT, chunk count, and abort
+        reasons.
         """
         if kwargs.get("stream"):
-            if self._is_async:
-                raise NotImplementedError(
-                    "Async streaming via AsyncOpenAI.chat.completions.create"
-                    "(stream=True) is not yet supported by flightdeck-sensor. "
-                    "Use a non-streaming async call or sync streaming "
-                    "instead. Tracked for a future sensor release."
-                )
             call_kwargs = _inject_stream_options(kwargs)
+            if self._is_async:
+                return base.call_stream_async(
+                    self._real.create,
+                    call_kwargs,
+                    self._session,
+                    self._provider,
+                )
             return base.call_stream(
                 self._real.create,
                 call_kwargs,

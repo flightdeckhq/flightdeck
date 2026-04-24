@@ -143,6 +143,25 @@ def call_stream(
     return GuardedStream(real_fn, call_kwargs, session, provider, estimated)
 
 
+def call_stream_async(
+    real_fn: Any,
+    kwargs: dict[str, Any],
+    session: Session,
+    provider: Provider,
+) -> GuardedAsyncStream:
+    """Async streaming call intercept.
+
+    Phase 4 lift of the pre-existing ``NotImplementedError`` for async
+    streams. Semantically identical to :func:`call_stream` with awaitable
+    context-manager + async-iterator protocols. Pre-call policy check
+    still runs synchronously before the context is returned so BLOCK is
+    honoured before the first network byte.
+    """
+    estimated = provider.estimate_tokens(kwargs)
+    call_kwargs = _pre_call(session, provider, kwargs, estimated)
+    return GuardedAsyncStream(real_fn, call_kwargs, session, provider, estimated)
+
+
 class GuardedStream:
     """Context manager wrapping a streaming LLM response.
 
@@ -392,6 +411,161 @@ class GuardedStream:
             "final_outcome": final_outcome,
             "abort_reason": abort_reason,
         }
+
+
+class GuardedAsyncStream:
+    """Async counterpart of :class:`GuardedStream`.
+
+    The SDK-async streaming pattern looks like::
+
+        async with client.messages.stream(...) as stream:
+            async for chunk in stream:
+                ...
+
+    so both ``__aenter__`` / ``__aexit__`` and ``__aiter__`` / ``__anext__``
+    must be implemented. The measurement policy is identical to the sync
+    path: TTFT on first chunk, inter-chunk gap stats, abort reason.
+
+    Python's async-CM protocol (same as the sync protocol): if
+    ``__aenter__`` raises, ``__aexit__`` is NOT invoked -- so the
+    pre-stream exception handling lives inside ``__aenter__`` explicitly.
+    """
+
+    _MAX_GAPS_TRACKED = GuardedStream._MAX_GAPS_TRACKED
+
+    def __init__(
+        self,
+        real_fn: Any,
+        kwargs: dict[str, Any],
+        session: Session,
+        provider: Provider,
+        estimated: int,
+    ) -> None:
+        self._real_fn = real_fn
+        self._kwargs = kwargs
+        self._session = session
+        self._provider = provider
+        self._estimated = estimated
+        self._stream: Any = None
+        self._ctx: Any = None
+        self._t0: float = 0.0
+        self._first_chunk_t: float | None = None
+        self._last_chunk_t: float | None = None
+        self._chunk_count: int = 0
+        self._inter_chunk_ms: list[float] = []
+        self._stream_iter: Any = None
+
+    async def __aenter__(self) -> Any:
+        self._t0 = time.monotonic()
+        try:
+            self._ctx = self._real_fn(**self._kwargs)
+            self._stream = await self._ctx.__aenter__()
+        except BaseException as exc:
+            latency_ms = int((time.monotonic() - self._t0) * 1000)
+            try:
+                _emit_error(
+                    self._session,
+                    self._provider,
+                    exc,
+                    latency_ms,
+                    self._kwargs,
+                    is_stream_error=False,
+                    partial={
+                        "abort_reason": "error_before_stream",
+                        "partial_chunks": 0,
+                    },
+                )
+            except Exception:
+                _log.warning(
+                    "Failed to emit llm_error for pre-async-stream exception",
+                    exc_info=True,
+                )
+            raise
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
+        try:
+            if self._ctx is not None:
+                await self._ctx.__aexit__(exc_type, exc_val, exc_tb)
+        except Exception:
+            _log.debug("Exception closing underlying async stream", exc_info=True)
+
+        latency_ms = int((time.monotonic() - self._t0) * 1000)
+
+        if exc_val is not None:
+            try:
+                is_stream_error = self._first_chunk_t is not None
+                abort_reason = (
+                    "error_mid_stream" if is_stream_error else "error_before_stream"
+                )
+                if type(exc_val).__name__ in ("APITimeoutError", "TimeoutError"):
+                    abort_reason = "timeout"
+                _emit_error(
+                    self._session,
+                    self._provider,
+                    exc_val,
+                    latency_ms,
+                    self._kwargs,
+                    is_stream_error=is_stream_error,
+                    partial={
+                        "abort_reason": abort_reason,
+                        "partial_chunks": self._chunk_count,
+                    },
+                )
+            except Exception:
+                _log.warning(
+                    "Failed to emit llm_error for async stream exception",
+                    exc_info=True,
+                )
+            return
+
+        try:
+            streaming = self._build_streaming_summary()
+            _post_call(
+                self._session,
+                self._provider,
+                self._stream,
+                self._estimated,
+                latency_ms,
+                self._kwargs,
+                streaming=streaming,
+            )
+        except Exception:
+            _log.warning(
+                "Failed to post async stream reconciliation event", exc_info=True,
+            )
+
+    def __aiter__(self) -> Any:
+        if self._stream_iter is None:
+            self._stream_iter = self._stream.__aiter__()
+        return self
+
+    async def __anext__(self) -> Any:
+        if self._stream_iter is None:
+            self._stream_iter = self._stream.__aiter__()
+        try:
+            chunk = await self._stream_iter.__anext__()
+        except StopAsyncIteration:
+            raise
+        now = time.monotonic()
+        if self._first_chunk_t is None:
+            self._first_chunk_t = now
+        else:
+            gap_ms = (now - (self._last_chunk_t or now)) * 1000
+            if len(self._inter_chunk_ms) < self._MAX_GAPS_TRACKED:
+                self._inter_chunk_ms.append(gap_ms)
+        self._last_chunk_t = now
+        self._chunk_count += 1
+        return chunk
+
+    # Identical shape to the sync variant -- share the helper so a future
+    # tweak to the summary shape lands in one place.
+    _build_streaming_summary = GuardedStream._build_streaming_summary
 
 
 def _percentile(sorted_values: list[float], pct: float) -> float:

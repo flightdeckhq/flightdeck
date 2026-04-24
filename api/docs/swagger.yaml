@@ -143,6 +143,21 @@ definitions:
       prefix:
         type: string
     type: object
+  store.AgentListResponse:
+    properties:
+      agents:
+        items:
+          $ref: '#/definitions/store.AgentSummary'
+        type: array
+      has_more:
+        type: boolean
+      limit:
+        type: integer
+      offset:
+        type: integer
+      total:
+        type: integer
+    type: object
   store.AgentSummary:
     properties:
       agent_id:
@@ -803,6 +818,132 @@ paths:
       summary: Reconcile agent rollup counters against sessions ground truth
       tags:
       - admin
+  /v1/agents:
+    get:
+      description: Returns agents matching the supplied filters. Multi-value filters
+        (state, agent_type, client_type, hostname, user, os, orchestration) accept
+        comma-separated values and repeated query params; values within a dimension
+        are OR, values across dimensions are AND. ``search`` is a case-insensitive
+        substring match against ``agent_name`` and ``hostname``. ``updated_since``
+        filters on ``last_seen_at >= ts``. State is computed via LATERAL subquery
+        against the most-recent session. Pagination defaults to 25/page, max 100.
+      parameters:
+      - description: 'Filter by agent_type (repeatable/comma: coding, production)'
+        in: query
+        name: agent_type
+        type: string
+      - description: 'Filter by client_type (repeatable/comma: claude_code, flightdeck_sensor)'
+        in: query
+        name: client_type
+        type: string
+      - description: 'Filter by rollup state (repeatable/comma: active, idle, stale,
+          closed, lost)'
+        in: query
+        name: state
+        type: string
+      - description: Filter by hostname (repeatable/comma, exact match)
+        in: query
+        name: hostname
+        type: string
+      - description: Filter by user_name (repeatable/comma, exact match)
+        in: query
+        name: user
+        type: string
+      - description: Filter by sessions.context.os (EXISTS subquery; matches if ANY
+          session had the OS)
+        in: query
+        name: os
+        type: string
+      - description: Filter by sessions.context.orchestration (EXISTS subquery)
+        in: query
+        name: orchestration
+        type: string
+      - description: Case-insensitive substring search on agent_name + hostname
+        in: query
+        name: search
+        type: string
+      - description: Filter to agents whose last_seen_at >= this ISO-8601 timestamp
+        in: query
+        name: updated_since
+        type: string
+      - description: 'Sort column (default: last_seen_at). One of: last_seen_at, first_seen_at,
+          agent_name, total_sessions, total_tokens, state, user, hostname'
+        in: query
+        name: sort
+        type: string
+      - description: 'asc or desc (default: desc)'
+        in: query
+        name: order
+        type: string
+      - description: Max results (default 25, max 100)
+        in: query
+        name: limit
+        type: integer
+      - description: Offset for pagination (default 0)
+        in: query
+        name: offset
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/store.AgentListResponse'
+        "400":
+          description: Invalid filter value, sort column, order direction, or limit
+            over 100
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "401":
+          description: Missing or invalid bearer token
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "500":
+          description: Database error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      summary: List agents with filters, search, sort, and pagination
+      tags:
+      - agents
+  /v1/agents/{agent_id}:
+    get:
+      description: Returns the full AgentSummary for a single agent including rollup
+        counters and the LATERAL-computed rollup state. Powers the Investigate chip
+        agent-name resolver so the UI no longer has to fall back to a UUID prefix
+        when the filtered sessions list is empty.
+      parameters:
+      - description: Agent UUID
+        in: path
+        name: agent_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/store.AgentSummary'
+        "400":
+          description: Invalid UUID format
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "401":
+          description: Missing or invalid bearer token
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "404":
+          description: Agent not found
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "500":
+          description: Database error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      summary: Get agent detail by id
+      tags:
+      - agents
   /v1/analytics:
     get:
       description: Flexible GROUP BY analytics endpoint. Returns time series data
@@ -1332,10 +1473,18 @@ paths:
       - search
   /v1/sessions:
     get:
-      description: Returns sessions matching time range, state, flavor, model, and
-        search filters with pagination and sort support.
+      description: Returns sessions matching time range, state, flavor, client_type,
+        agent_type, model, framework, agent_id, context-scalar (user/os/hostname/git_branch/orchestration/...),
+        and search filters with pagination and sort support. Multi-value filters (state,
+        flavor, client_type, framework, agent_type, context-scalar) accept repeated
+        query params and comma-separated values; values within a dimension are OR,
+        values across dimensions are AND. ``q`` is a case-insensitive substring search
+        across agent_name, flavor, host, model, session_id, context.hostname, context.os,
+        context.git_branch, context.python_version, and the frameworks array.
       parameters:
-      - description: Full-text search across flavor, host, model, hostname, os, git_branch
+      - description: Full-text search across agent_name, flavor, host, model, session_id,
+          context.hostname, context.os, context.git_branch, context.python_version,
+          frameworks
         in: query
         name: q
         type: string
@@ -1360,6 +1509,14 @@ paths:
         in: query
         name: agent_id
         type: string
+      - description: 'Filter by agent_type (repeatable: coding, production)'
+        in: query
+        name: agent_type
+        type: string
+      - description: 'Filter by client_type (repeatable: claude_code, flightdeck_sensor)'
+        in: query
+        name: client_type
+        type: string
       - description: 'Filter by framework name/version matching sessions.context.frameworks[]
           (repeatable: langgraph/1.1.6, crewai/1.14.1, ...)'
         in: query
@@ -1369,8 +1526,36 @@ paths:
         in: query
         name: model
         type: string
-      - description: 'Sort field: started_at, duration, tokens_used, flavor (default:
-          started_at)'
+      - description: Filter by context.user (repeatable)
+        in: query
+        name: user
+        type: string
+      - description: Filter by context.os (repeatable)
+        in: query
+        name: os
+        type: string
+      - description: Filter by context.hostname (repeatable)
+        in: query
+        name: hostname
+        type: string
+      - description: Filter by context.arch (repeatable)
+        in: query
+        name: arch
+        type: string
+      - description: Filter by context.git_branch (repeatable)
+        in: query
+        name: git_branch
+        type: string
+      - description: Filter by context.git_repo (repeatable)
+        in: query
+        name: git_repo
+        type: string
+      - description: Filter by context.orchestration (repeatable)
+        in: query
+        name: orchestration
+        type: string
+      - description: 'Sort field: started_at, last_seen_at, duration, tokens_used,
+          flavor, model, hostname (default: started_at)'
         in: query
         name: sort
         type: string

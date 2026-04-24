@@ -434,6 +434,7 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
       {sessionId && (
         <motion.div
           key={sessionId}
+          data-testid="session-drawer"
           className="fixed right-0 top-0 z-40 flex h-full w-[520px] flex-col"
           style={{
             background: "var(--surface)",

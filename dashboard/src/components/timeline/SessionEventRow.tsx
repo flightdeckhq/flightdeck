@@ -159,6 +159,8 @@ function SessionEventRowComponent({
 
   return (
     <div
+      data-testid="session-row"
+      data-session-id={session.session_id}
       className="flex cursor-pointer items-center transition-colors hover:bg-surface-hover"
       style={{
         height: SESSION_ROW_HEIGHT,

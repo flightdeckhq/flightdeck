@@ -128,6 +128,7 @@ function EventNodeComponent({
   return (
     <>
       <div
+        data-testid={`session-circle-${sessionId}`}
         className={cn(
           "absolute top-1/2 -translate-y-1/2 cursor-pointer rounded-full flex items-center justify-center flex-shrink-0",
           // Transform transition is scoped to the hover state only.

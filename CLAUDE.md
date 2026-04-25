@@ -385,6 +385,31 @@
      policy, directives) — those are covered by the standard unit
      + integration suites.
 
+40e. **Pre-push lint is a hard rule.** Before pushing any code,
+     run the appropriate linter for every component touched and
+     fix every finding. Component → command:
+
+     - Sensor / playground / tests (Python): ``ruff check .`` and
+       ``ruff format --check .`` from the component root. ``mypy
+       --strict`` on sensor.
+     - Ingestion / workers / api (Go): ``golangci-lint run`` from
+       the component root. The binary lives at
+       ``/home/omria/go/bin/golangci-lint`` on the dev box (PATH may
+       not include it). ``go test ./...`` alone misses ``unused``
+       and other lints CI enforces.
+     - Dashboard (TypeScript): ``npm run lint`` and
+       ``npm run typecheck`` from ``dashboard/``.
+
+     CI runs these gates and a push that lands red blocks the PR.
+     Catching the failure locally takes seconds; catching it after
+     a CI run wastes ~5-10 minutes per cycle. Inherits from rule
+     40b (pre-commit live test). Where 40b is about runtime
+     behaviour, 40e is about static checks; both must pass before
+     push.
+
+     Does NOT apply to: docs-only commits with no source-file
+     changes. A README/CHANGELOG/CLAUDE.md edit is exempt.
+
 ---
 
 ## Living Document Rules
@@ -394,6 +419,22 @@
     or superseded by a better idea, update the document to reflect reality.
     A codebase that matches a stale ARCHITECTURE.md is worse than no
     ARCHITECTURE.md at all.
+
+    **ARCHITECTURE.md describes what the system IS, not how it got there.**
+    A new contributor with zero project history must be able to read it and
+    learn the system as it stands today. Phase references, "was added in
+    Phase X", "previously did Y", "pre-fix the worker dropped Z", and other
+    temporal qualifiers do not belong in ARCHITECTURE. They belong in:
+
+    - ``CHANGELOG.md`` for user-visible changes per release.
+    - ``audit-phase-N.md`` for phase decisions, V-pass methodology notes,
+      pre-existing bugs surfaced during audit, and phase-ancestry of
+      individual features.
+    - ``DECISIONS.md`` for durable D-numbered decisions.
+
+    D-numbers (D057, D094, D115, etc.) ARE acceptable in ARCHITECTURE
+    when they explain why the system is shaped a particular way — they
+    are durable references that point to DECISIONS.md, not phase tags.
 
 42. **When any planned decision changes, update docs before merging code.**
     The order is always: update ARCHITECTURE.md → update DECISIONS.md (record
@@ -480,6 +521,36 @@
 
     If any endpoint is undocumented, the phase audit fails. Document it before
     the phase can close.
+
+---
+
+## No-Defer Discipline
+
+51. **No-defer discipline.** When methodology or scope gaps surface
+    mid-phase that fit the phase's intent, they land in the current
+    PR. They do not get deferred to a follow-up PR. Deferring
+    recreates the drift the current phase exists to prevent.
+
+    The phase's intent is defined by its title and goal statement.
+    A finding that clearly fits is in scope. A finding that clearly
+    doesn't (e.g., unrelated feature work) is filed in FOLLOWUPS.md
+    and addressed later. Borderline cases are resolved by the
+    Supervisor, not deferred unilaterally.
+
+    This rule applies to Claude Code's "preserve intentionally" or
+    "flag for deferral" proposals — the default answer is "address
+    now", not "defer". The Supervisor authorizes deferral
+    explicitly, or it doesn't happen.
+
+    Why: Phase 4 surfaced multiple gaps mid-phase (embeddings
+    content capture, framework attribution always-null, V-DRAWER
+    dead-end, ARCHITECTURE phase-tag drift, ARCHITECTURE structural
+    reorganization) that a strict reading of the original V-pass
+    would have deferred. Each fit the phase's "agent communication
+    coverage hardening" intent, was addressed in PR #28, and would
+    have compounded as drift if shipped to a follow-up. This rule
+    codifies the principle that has been applied ad-hoc throughout
+    PR #28.
 
 ---
 

@@ -16,6 +16,7 @@ import {
 } from "@/components/ui/dialog";
 import { TokenUsageBar } from "./TokenUsageBar";
 import { PromptViewer } from "./PromptViewer";
+import { ErrorEventDetails } from "./ErrorEventDetails";
 import { createDirective, fetchOlderEvents } from "@/lib/api";
 import { sessionSupportsDirectives } from "@/lib/directives";
 import { ClaudeCodeLogo } from "@/components/ui/claude-code-logo";
@@ -1362,6 +1363,18 @@ function ExpandedEvent({
     tool_name: event.tool_name, has_content: event.has_content, occurred_at: event.occurred_at,
   };
 
+  // Phase 4 polish: when this is an llm_error event with a
+  // structured payload.error, lift it out so we can pass it to
+  // <ErrorEventDetails/>. Narrowing here keeps the accordion
+  // component itself unaware of the directive_result string
+  // overload — it accepts only the structured shape.
+  const errorPayload =
+    event.event_type === "llm_error" &&
+    event.payload?.error &&
+    typeof event.payload.error !== "string"
+      ? event.payload.error
+      : null;
+
   return (
     <div className="px-3 py-2.5" style={{ background: "var(--bg)", borderBottom: "1px solid var(--border-subtle)" }}>
       <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1">
@@ -1372,6 +1385,9 @@ function ExpandedEvent({
           </div>
         ))}
       </div>
+      {errorPayload && (
+        <ErrorEventDetails error={errorPayload} eventId={event.id} />
+      )}
       <div className="my-2" style={{ borderTop: "1px solid var(--border-subtle)" }} />
       <SyntaxJson data={payload} />
       <div className="mt-2 flex items-center gap-3">

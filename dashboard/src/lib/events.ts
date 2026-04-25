@@ -195,6 +195,22 @@ export function getEventDetail(event: AgentEvent): string {
       if (event.latency_ms != null) parts.push(`${event.latency_ms}ms`);
       return parts.join(" · ");
     }
+    case "llm_error": {
+      // Phase 4 polish: surface the taxonomy classification +
+      // provider_error_code (or provider name as fallback) so an
+      // operator scanning the timeline sees what kind of error it
+      // was without expanding. Narrows ``payload.error`` against
+      // the directive_result string overload before reading any
+      // structured fields.
+      const err = event.payload?.error;
+      if (err && typeof err !== "string") {
+        const parts: string[] = [err.error_type];
+        if (err.provider_error_code) parts.push(err.provider_error_code);
+        else if (err.provider) parts.push(err.provider);
+        return parts.join(" · ");
+      }
+      return "llm error";
+    }
     default:
       return event.event_type;
   }
@@ -288,6 +304,33 @@ export function getSummaryRows(event: AgentEvent): [string, string][] {
         ["Tokens input", event.tokens_input?.toLocaleString() ?? "—"],
         ["Latency", event.latency_ms != null ? `${event.latency_ms.toLocaleString()}ms` : "—"],
       ];
+    }
+    case "llm_error": {
+      // Pull the structured taxonomy fields off ``payload.error``
+      // and lay them out in the same key/value grid the rest of
+      // the event types use. Narrows against the directive_result
+      // string overload first so a misshaped payload can't blow
+      // up the row. Detailed accordion fields (request_id,
+      // retry_after, is_retryable) live in <ErrorEventDetails/>
+      // so this list stays scannable.
+      const err = event.payload?.error;
+      const rows: [string, string][] = [
+        ["Model", event.model ?? "unknown"],
+      ];
+      if (err && typeof err !== "string") {
+        rows.push(["Error type", err.error_type]);
+        rows.push(["Provider", err.provider || "unknown"]);
+        if (err.http_status != null) {
+          rows.push(["HTTP status", String(err.http_status)]);
+        }
+        if (err.provider_error_code) {
+          rows.push(["Provider code", err.provider_error_code]);
+        }
+        if (err.error_message) {
+          rows.push(["Message", err.error_message]);
+        }
+      }
+      return rows;
     }
     default:
       return [["Type", event.event_type]];

@@ -571,6 +571,7 @@ export function Timeline({
                 agentType={f.agent_type}
                 sessions={f.sessions}
                 expandedSessions={expandedSessions?.get(f.flavor)}
+                totalSessionsLifetime={f.session_count}
                 scale={scale}
                 onSessionClick={onNodeClick}
                 expanded={expandedFlavors.has(f.flavor)}

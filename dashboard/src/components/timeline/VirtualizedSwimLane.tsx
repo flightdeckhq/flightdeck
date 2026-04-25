@@ -23,6 +23,11 @@ interface VirtualizedSwimLaneProps {
   /** Forwarded to SwimLane for the expanded SESSIONS drawer; see
    *  SwimLane.tsx for the windowing rationale. */
   expandedSessions?: Session[];
+  /** D115 ``agent.total_sessions`` lifetime counter. Forwarded to
+   *  SwimLane so the expanded-drawer footer can compare against
+   *  the returned ``expandedSessions`` length and surface a
+   *  ``"Showing N of M sessions"`` preamble when truncated. */
+  totalSessionsLifetime?: number;
   scale: ScaleTime<number, number>;
   onSessionClick: (sessionId: string, eventId?: string, event?: AgentEvent) => void;
   expanded: boolean;

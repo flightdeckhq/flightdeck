@@ -1,8 +1,20 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
 import { Timeline } from "@/components/timeline/Timeline";
 import { TIMELINE_WIDTH_PX } from "@/lib/constants";
 import type { FlavorSummary } from "@/lib/types";
+
+// Wrap Timeline render with a Router context so the SwimLane
+// expanded-drawer footer's <Link> to /investigate?agent_id=<uuid>
+// has access to react-router's basename context. Without the
+// wrapper Link's useContext returns null and throws "Cannot
+// destructure property 'basename' of React.useContext(...) as it is
+// null." -- a Phase 4 V-DRAWER footer side-effect on the existing
+// suite.
+function renderWithRouter(ui: React.ReactElement) {
+  return render(<MemoryRouter>{ui}</MemoryRouter>);
+}
 
 // Mock useSessionEvents to avoid real API calls. eventsCache is
 // seeded with a recent event for every mock session so Timeline's
@@ -93,38 +105,38 @@ const defaultProps = {
 
 describe("Timeline", () => {
   it("renders one flavor row per unique flavor", () => {
-    render(<Timeline {...defaultProps} />);
+    renderWithRouter(<Timeline {...defaultProps} />);
     expect(screen.getByText("research-agent")).toBeInTheDocument();
     expect(screen.getByText("coding-agent")).toBeInTheDocument();
   });
 
   it("renders empty state when no flavors", () => {
-    render(<Timeline {...defaultProps} flavors={[]} />);
+    renderWithRouter(<Timeline {...defaultProps} flavors={[]} />);
     expect(screen.getByText(/No agents connected/)).toBeInTheDocument();
   });
 
   it("filters flavors when flavorFilter is set", () => {
-    render(<Timeline {...defaultProps} flavorFilter="research-agent" />);
+    renderWithRouter(<Timeline {...defaultProps} flavorFilter="research-agent" />);
     expect(screen.getByText("research-agent")).toBeInTheDocument();
     expect(screen.queryByText("coding-agent")).not.toBeInTheDocument();
   });
 
   it("shows all flavors when flavorFilter is null", () => {
-    render(<Timeline {...defaultProps} flavorFilter={null} />);
+    renderWithRouter(<Timeline {...defaultProps} flavorFilter={null} />);
     expect(screen.getByText("research-agent")).toBeInTheDocument();
     expect(screen.getByText("coding-agent")).toBeInTheDocument();
   });
 
   it("flavor row click calls onExpandFlavor", () => {
     const onExpandFlavor = vi.fn();
-    render(<Timeline {...defaultProps} onExpandFlavor={onExpandFlavor} />);
+    renderWithRouter(<Timeline {...defaultProps} onExpandFlavor={onExpandFlavor} />);
     // Click the flavor header row (contains flavor name)
     fireEvent.click(screen.getByText("research-agent").closest("[class*='cursor-pointer']")!);
     expect(onExpandFlavor).toHaveBeenCalledWith("research-agent");
   });
 
   it("expanded flavor shows session sub-rows", () => {
-    render(
+    renderWithRouter(
       <Timeline
         {...defaultProps}
         expandedFlavors={new Set(["research-agent"])}
@@ -139,7 +151,7 @@ describe("Timeline", () => {
   // second click to collapse the first flavor, which made comparing
   // two flavor swimlanes side-by-side impossible.
   it("renders both flavors expanded simultaneously when both are in expandedFlavors", () => {
-    render(
+    renderWithRouter(
       <Timeline
         {...defaultProps}
         expandedFlavors={new Set(["research-agent", "coding-agent"])}
@@ -163,7 +175,7 @@ describe("Timeline", () => {
     // matchingSessionIds includes only s1, so research-agent (which
     // contains s1) should render and coding-agent (which contains
     // only s2) must be hidden entirely.
-    render(
+    renderWithRouter(
       <Timeline
         {...defaultProps}
         matchingSessionIds={new Set(["s1"])}
@@ -176,7 +188,7 @@ describe("Timeline", () => {
   // ---- ALL aggregate row ----
 
   it("renders the ALL aggregate row above the FLAVORS section", () => {
-    render(<Timeline {...defaultProps} />);
+    renderWithRouter(<Timeline {...defaultProps} />);
     const allRow = screen.getByTestId("swimlane-all");
     expect(allRow).toBeInTheDocument();
     expect(screen.getByTestId("swimlane-all-label")).toHaveTextContent("All");
@@ -188,7 +200,7 @@ describe("Timeline", () => {
     // every flavor regardless. We assert that by counting the
     // AggregatedSessionEvents children -- one per session in the
     // unfiltered flavors prop (2 sessions across 2 flavors).
-    render(
+    renderWithRouter(
       <Timeline
         {...defaultProps}
         matchingSessionIds={new Set(["s1"])}
@@ -201,7 +213,7 @@ describe("Timeline", () => {
   });
 
   it("renders all flavors when matchingSessionIds is null", () => {
-    render(
+    renderWithRouter(
       <Timeline {...defaultProps} matchingSessionIds={null} />,
     );
     // Both flavors visible -- the cull only fires when filters are on.
@@ -210,7 +222,7 @@ describe("Timeline", () => {
   });
 
   it("shows active count in flavor row", () => {
-    render(<Timeline {...defaultProps} />);
+    renderWithRouter(<Timeline {...defaultProps} />);
     expect(screen.getByText("1 active")).toBeInTheDocument();
   });
 
@@ -221,7 +233,7 @@ describe("Timeline", () => {
   });
 
   it("scroll container clips both axes without becoming a scroll container", () => {
-    render(<Timeline {...defaultProps} timeRange="1h" />);
+    renderWithRouter(<Timeline {...defaultProps} timeRange="1h" />);
     const scrollEl = screen.getByTestId("timeline-scroll");
     // overflow-x: hidden clips circles that extend past the right
     // edge of the fixed-width canvas.
@@ -235,7 +247,7 @@ describe("Timeline", () => {
   // ---- Relative time axis labels ----
 
   it("time axis renders exactly 6 labels at 5m", () => {
-    const { container } = render(<Timeline {...defaultProps} timeRange="5m" />);
+    const { container } = renderWithRouter(<Timeline {...defaultProps} timeRange="5m" />);
     // Find labels inside the time axis row (h-7 sibling div with the
     // relative class). Match all the absolute font-mono text spans.
     const labels = container.querySelectorAll(
@@ -245,12 +257,12 @@ describe("Timeline", () => {
   });
 
   it("rightmost time axis label is 'now'", () => {
-    render(<Timeline {...defaultProps} timeRange="5m" />);
+    renderWithRouter(<Timeline {...defaultProps} timeRange="5m" />);
     expect(screen.getByTestId("axis-label-now")).toHaveTextContent("now");
   });
 
   it("leftmost label at 5m shows '5m'", () => {
-    const { container } = render(<Timeline {...defaultProps} timeRange="5m" />);
+    const { container } = renderWithRouter(<Timeline {...defaultProps} timeRange="5m" />);
     const labels = container.querySelectorAll(
       ".h-7 span.absolute.font-mono.text-\\[11px\\]",
     );
@@ -258,7 +270,7 @@ describe("Timeline", () => {
   });
 
   it("leftmost label at 1m is '1m' and middle labels use 's' suffix", () => {
-    const { container } = render(<Timeline {...defaultProps} timeRange="1m" />);
+    const { container } = renderWithRouter(<Timeline {...defaultProps} timeRange="1m" />);
     const labels = container.querySelectorAll(
       ".h-7 span.absolute.font-mono.text-\\[11px\\]",
     );
@@ -272,7 +284,7 @@ describe("Timeline", () => {
   });
 
   it("paused timeline shows 'paused' instead of 'now'", () => {
-    render(
+    renderWithRouter(
       <Timeline
         {...defaultProps}
         timeRange="5m"
@@ -287,7 +299,7 @@ describe("Timeline", () => {
   // ---- Vertical grid lines ----
 
   it("renders 6 vertical grid lines in the right panel overlay", () => {
-    render(<Timeline {...defaultProps} timeRange="5m" />);
+    renderWithRouter(<Timeline {...defaultProps} timeRange="5m" />);
     const overlay = screen.getByTestId("timeline-grid-overlay");
     // 5 non-now lines + 1 now line = 6 children total
     const lineChildren = overlay.querySelectorAll(":scope > div");
@@ -295,13 +307,13 @@ describe("Timeline", () => {
   });
 
   it("the rightmost grid line uses var(--accent) (the 'now' line)", () => {
-    render(<Timeline {...defaultProps} timeRange="5m" />);
+    renderWithRouter(<Timeline {...defaultProps} timeRange="5m" />);
     const nowLine = screen.getByTestId("grid-line-now");
     expect((nowLine as HTMLElement).style.background).toBe("var(--accent)");
   });
 
   it("non-now grid lines use var(--border)", () => {
-    render(<Timeline {...defaultProps} timeRange="5m" />);
+    renderWithRouter(<Timeline {...defaultProps} timeRange="5m" />);
     // Index 0..4 are the non-now lines. var(--border) is the
     // medium-brightness border color (between --border-subtle and
     // --border-strong) -- visible through row backgrounds without
@@ -313,13 +325,13 @@ describe("Timeline", () => {
   });
 
   it("grid overlay has pointerEvents: none so it does not block clicks", () => {
-    render(<Timeline {...defaultProps} timeRange="5m" />);
+    renderWithRouter(<Timeline {...defaultProps} timeRange="5m" />);
     const overlay = screen.getByTestId("timeline-grid-overlay");
     expect((overlay as HTMLElement).style.pointerEvents).toBe("none");
   });
 
   it("grid overlay is positioned only over the right panel at the default left panel width", () => {
-    render(<Timeline {...defaultProps} timeRange="5m" />);
+    renderWithRouter(<Timeline {...defaultProps} timeRange="5m" />);
     const overlay = screen.getByTestId("timeline-grid-overlay");
     // LEFT_PANEL_DEFAULT_WIDTH (320px) offset keeps the lines out of
     // the flavor labels column. The left panel is now resizable;
@@ -330,14 +342,14 @@ describe("Timeline", () => {
 
   it("uses LEFT_PANEL_DEFAULT_WIDTH when no stored preference exists", () => {
     localStorage.removeItem("flightdeck-left-panel-width");
-    render(<Timeline {...defaultProps} />);
+    renderWithRouter(<Timeline {...defaultProps} />);
     const overlay = screen.getByTestId("timeline-grid-overlay");
     expect((overlay as HTMLElement).style.left).toBe("320px");
   });
 
   it("reads the stored width from localStorage on mount", () => {
     localStorage.setItem("flightdeck-left-panel-width", "360");
-    render(<Timeline {...defaultProps} />);
+    renderWithRouter(<Timeline {...defaultProps} />);
     const overlay = screen.getByTestId("timeline-grid-overlay");
     expect((overlay as HTMLElement).style.left).toBe("360px");
     localStorage.removeItem("flightdeck-left-panel-width");
@@ -345,7 +357,7 @@ describe("Timeline", () => {
 
   it("clamps stored widths below LEFT_PANEL_MIN_WIDTH to the minimum", () => {
     localStorage.setItem("flightdeck-left-panel-width", "100");
-    render(<Timeline {...defaultProps} />);
+    renderWithRouter(<Timeline {...defaultProps} />);
     const overlay = screen.getByTestId("timeline-grid-overlay");
     expect((overlay as HTMLElement).style.left).toBe("200px");
     localStorage.removeItem("flightdeck-left-panel-width");
@@ -353,7 +365,7 @@ describe("Timeline", () => {
 
   it("clamps stored widths above LEFT_PANEL_MAX_WIDTH to the maximum", () => {
     localStorage.setItem("flightdeck-left-panel-width", "9999");
-    render(<Timeline {...defaultProps} />);
+    renderWithRouter(<Timeline {...defaultProps} />);
     const overlay = screen.getByTestId("timeline-grid-overlay");
     expect((overlay as HTMLElement).style.left).toBe("500px");
     localStorage.removeItem("flightdeck-left-panel-width");
@@ -362,7 +374,7 @@ describe("Timeline", () => {
   it("exposes a resize handle on the time axis sticky spacer", () => {
     // The handle moved from the FLAVORS header to the time axis row's
     // sticky left spacer so it stays visible during vertical scroll.
-    render(<Timeline {...defaultProps} />);
+    renderWithRouter(<Timeline {...defaultProps} />);
     const handle = screen.getByTestId("left-panel-resize-handle");
     expect(handle).toBeInTheDocument();
     expect((handle as HTMLElement).style.cursor).toBe("col-resize");

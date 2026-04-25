@@ -47,6 +47,26 @@ export const TRUNCATION_AGENT = {
   sessionRoles: ["fresh-active", "recent-closed"],
 } as const;
 
+/**
+ * V-DRAWER fixture: an agent whose only seeded session is > 7 days
+ * old. Used by T5b to confirm the expanded swimlane drawer surfaces
+ * sessions outside the API's pre-V-DRAWER 7-day default window.
+ * Distinct agent (not just a new role on an existing one) so the
+ * Chrome-verifiable expectation is: ancient-only agent's drawer
+ * shows ≥1 session, never the dead-end "No sessions to display"
+ * copy. Seeded via canonical.json's ``ancient-only`` role with
+ * started_offset_sec = -9 days.
+ */
+export const ANCIENT_AGENT = {
+  name: "e2e-test-ancient-agent",
+  agentType: "production",
+  clientType: "flightdeck_sensor",
+  flavor: "e2e-ancient-agent",
+  model: "gpt-4o-mini",
+  framework: "langchain",
+  sessionRoles: ["ancient-only"],
+} as const;
+
 export const ALL_FIXTURE_AGENTS = [
   CODING_AGENT,
   SENSOR_AGENT,

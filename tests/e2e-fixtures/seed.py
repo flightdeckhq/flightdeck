@@ -122,6 +122,23 @@ def _post_session_events(
     started = int(role_cfg["started_offset_sec"])
     ended = role_cfg["ended_offset_sec"]
 
+    # Ingestion enforces a clock-skew bound (D7 in audit-phase-4.md):
+    # rejects events with ``occurred_at < NOW() - 48h`` with HTTP 400.
+    # Roles that backdate the session row beyond that window
+    # (currently ``ancient-only`` at -9 days) emit their EVENTS at a
+    # recent timestamp clamped to within the bound, then the
+    # post-seed SQL backdate moves the session row's started_at /
+    # ended_at columns to the declared deep-past values. The events
+    # table still carries recent occurred_at values; the dashboard
+    # reads ``session.started_at`` for the V-DRAWER drawer query so
+    # the ancient session shows up correctly post-fix.
+    MAX_SAFE_EVENT_OFFSET = -3600  # 1h ago, well inside the 48h bound
+    event_started = max(started, MAX_SAFE_EVENT_OFFSET)
+    event_ended = (
+        max(int(ended), MAX_SAFE_EVENT_OFFSET + 60)
+        if ended is not None else None
+    )
+
     identity = {
         "agent_type": agent_cfg["agent_type"],
         "client_type": agent_cfg["client_type"],
@@ -138,7 +155,7 @@ def _post_session_events(
     # 1. session_start, then wait for persistence.
     post_event(make_event(
         session_id, agent_cfg["flavor"], "session_start",
-        timestamp=_shift_timestamp(started),
+        timestamp=_shift_timestamp(event_started),
         **identity,
         **common,
     ))
@@ -154,7 +171,7 @@ def _post_session_events(
     # 2. pre_call / post_call pair (tokens on post).
     post_event(make_event(
         session_id, agent_cfg["flavor"], "pre_call",
-        timestamp=_shift_timestamp(started + 5),
+        timestamp=_shift_timestamp(event_started + 5),
         tokens_input=240,
         tokens_used_session=240,
         **identity,
@@ -162,7 +179,7 @@ def _post_session_events(
     ))
     post_event(make_event(
         session_id, agent_cfg["flavor"], "post_call",
-        timestamp=_shift_timestamp(started + 8),
+        timestamp=_shift_timestamp(event_started + 8),
         tokens_input=240,
         tokens_output=80,
         tokens_total=320,
@@ -176,7 +193,7 @@ def _post_session_events(
     # 3. tool_call carrying both input and result on one payload.
     post_event(make_event(
         session_id, agent_cfg["flavor"], "tool_call",
-        timestamp=_shift_timestamp(started + 10),
+        timestamp=_shift_timestamp(event_started + 10),
         tool_name="read_file",
         tool_input={"path": "/tmp/e2e.txt"},
         tool_result={"ok": True, "bytes": 42},
@@ -189,7 +206,7 @@ def _post_session_events(
     if ended is not None:
         post_event(make_event(
             session_id, agent_cfg["flavor"], "session_end",
-            timestamp=_shift_timestamp(int(ended)),
+            timestamp=_shift_timestamp(int(event_ended) if event_ended is not None else int(ended)),
             **identity,
             **common,
         ))
@@ -208,7 +225,7 @@ def _post_session_events(
         # Offset progression: extras emit at started+12s, +14s, +16s,
         # ... so they cluster after the base tool_call (started+10s)
         # and well inside the active role's "fresh" window.
-        ts = _shift_timestamp(started + 12 + 2 * i)
+        ts = _shift_timestamp(event_started + 12 + 2 * i)
         if extra == "embeddings":
             # Embeddings calls override the agent's default chat model
             # with an embedding model -- the row's getEventDetail
@@ -505,11 +522,20 @@ def _wait_for_fleet_visibility(expected_agent_names: list[str], timeout: float) 
     """
     import urllib.request
 
+    # ``per_page=200`` is the server's hard cap (see api/internal/
+    # handlers/fleet.go). The seeder polls one page; under realistic
+    # dev DB pollution (this repo's local dev sees 130+ accumulated
+    # ``e2e-*`` agents from prior test runs) the canonical fixtures
+    # can fall off page 1 with the default 50, hanging the seeder
+    # waiting for an agent that's actually present but on page 2+.
+    # 200 fits any realistic dev fleet; if the dev DB ever exceeds
+    # 200 agents the seed should iterate pages, but that's a future
+    # concern.
     deadline = time.time() + timeout
     missing: list[str] = list(expected_agent_names)
     while time.time() < deadline:
         req = urllib.request.Request(
-            f"{API_URL}/v1/fleet?per_page=100",
+            f"{API_URL}/v1/fleet?per_page=200",
             headers=auth_headers(),
         )
         with urllib.request.urlopen(req, timeout=5) as resp:
@@ -641,7 +667,7 @@ def seed() -> None:
                 except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
                     print(f"  warn: fresh-active refresh for {session_id} failed: {exc}", file=sys.stderr)
                 continue
-            if role not in ("aged-closed", "stale"):
+            if role not in ("aged-closed", "stale", "ancient-only"):
                 continue
             # Force state for deterministic E2E assertions. Letting the
             # reconciler reclassify naturally would flake: the
@@ -659,6 +685,14 @@ def seed() -> None:
                 # its next pass anyway; pinning it up-front makes the
                 # fixture test-stable on a freshly-seeded stack.
                 forced_state = "lost"
+            elif role == "ancient-only":
+                # T5b anchor (V-DRAWER fix): session > 7 days old, the
+                # window the API's pre-fix default would have hidden.
+                # Forced to 'closed' so the swimlane row reads cleanly
+                # (the session_end at -8 days actually emits, but the
+                # reconciler hasn't pinned the state yet on a freshly-
+                # seeded stack).
+                forced_state = "closed"
             else:
                 forced_state = None
             _backdate_session(

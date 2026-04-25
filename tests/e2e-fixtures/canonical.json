@@ -41,6 +41,11 @@
         "llm_error_timeout",
         "streaming_post_call_aborted"
       ]
+    },
+    "ancient-only": {
+      "started_offset_sec": -777600,
+      "ended_offset_sec": -691200,
+      "purpose": "T5b anchor: agent whose only sessions are >7 days old, beyond the API's pre-V-DRAWER 7-day default that windowed the expanded swimlane drawer. 9 days started, 8 days ended. Confirms the V-DRAWER fix surfaces these sessions in the drawer (was a dead-end pre-fix). Used only on the dedicated ancient-agent fixture so the canonical pollution stays bounded. Requires post-seed SQL backdate AND force_state='closed' (worker stamps NOW() on every column write)."
     }
   },
   "agents": [
@@ -79,6 +84,18 @@
       "framework": "langchain",
       "host": "e2e-host-truncation",
       "session_roles": ["fresh-active", "recent-closed"]
+    },
+    {
+      "agent_name": "e2e-test-ancient-agent",
+      "agent_type": "production",
+      "client_type": "flightdeck_sensor",
+      "user": "e2e-runner",
+      "hostname": "e2e-host-ancient",
+      "flavor": "e2e-ancient-agent",
+      "model": "gpt-4o-mini",
+      "framework": "langchain",
+      "host": "e2e-host-ancient",
+      "session_roles": ["ancient-only"]
     }
   ]
 }

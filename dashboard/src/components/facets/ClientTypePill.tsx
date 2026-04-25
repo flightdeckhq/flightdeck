@@ -1,44 +1,36 @@
 import {
-  CLIENT_TYPE_ABBREV,
   CLIENT_TYPE_COLOR,
   CLIENT_TYPE_LABEL,
   type ClientType,
 } from "@/lib/agent-identity";
 
 /**
- * Small uppercase pill rendering the display label for an agent's
- * ``client_type`` (``Claude Code`` / ``Sensor``) with a
- * client-specific colour treatment.
+ * Small uppercase pill rendering the canonical label for an agent's
+ * ``client_type`` (``Claude Code`` / ``Sensor`` from
+ * [CLIENT_TYPE_LABEL], CSS-uppercased to ``CLAUDE CODE`` / ``SENSOR``)
+ * with a client-specific colour treatment.
  *
- * Three existing surfaces (Fleet sidebar FlavorItem, AgentTable CLIENT
- * column, swimlane header) previously inlined an identical neutral
- * pill; this component consolidates the rendering so colour /
- * typography / testid changes land in one place. Consumers pass
- * ``size="compact"`` where space is tight (sidebar + swimlane header
- * that have a ``shrink-0`` container) and the default elsewhere.
+ * Every surface that renders client_type uses this component or the
+ * shared label map: Fleet sidebar FlavorItem, AgentTable CLIENT
+ * column, swimlane header, Investigate AGENT facet, the Claude-Code
+ * session-drawer badge. Centralising prevents the F1 vocabulary-
+ * drift defect (parallel ``CC`` / ``SDK`` shorthand) from recurring.
+ *
+ * Consumers pass ``size="compact"`` where space is tight (sidebar +
+ * swimlane header + facet row which have a ``shrink-0`` container)
+ * and the default elsewhere.
  */
 export function ClientTypePill({
   clientType,
   size = "default",
-  variant = "full",
   testId,
 }: {
   clientType: ClientType;
   size?: "default" | "compact";
-  /**
-   * ``"full"`` renders the human label (``Claude Code`` / ``Sensor``).
-   * ``"abbrev"`` renders the two/three-letter form (``CC`` / ``SDK``)
-   * for tight-space surfaces such as the Investigate AGENT facet
-   * sidebar row, where same-name agents need disambiguation but
-   * the full label would crowd the row.
-   */
-  variant?: "full" | "abbrev";
   testId?: string;
 }) {
   const colors = CLIENT_TYPE_COLOR[clientType];
-  const label = variant === "abbrev"
-    ? CLIENT_TYPE_ABBREV[clientType]
-    : CLIENT_TYPE_LABEL[clientType];
+  const label = CLIENT_TYPE_LABEL[clientType];
   const padding = size === "compact" ? "0 4px" : "1px 6px";
   return (
     <span

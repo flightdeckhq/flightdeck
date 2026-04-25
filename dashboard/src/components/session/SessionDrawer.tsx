@@ -6,6 +6,7 @@ import { TruncatedText } from "@/components/ui/TruncatedText";
 import { invalidateSessionCache, useSession } from "@/hooks/useSession";
 import { useFleetStore } from "@/store/fleet";
 import { SUCCESS_MESSAGE_DISPLAY_MS } from "@/lib/constants";
+import { CLIENT_TYPE_LABEL, ClientType } from "@/lib/agent-identity";
 import { DirectiveCard } from "@/components/directives/DirectiveCard";
 import { Button } from "@/components/ui/button";
 import {
@@ -605,7 +606,12 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
                     className="text-[13px] font-semibold"
                     style={{ color: "var(--text)" }}
                   >
-                    Claude Code
+                    {/* S-LBL-2 centralisation: the visible label
+                        comes from the shared CLIENT_TYPE_LABEL map
+                        so the drawer badge can never diverge from
+                        the Fleet pill / Investigate AGENT facet
+                        pill / AgentTable client column. */}
+                    {CLIENT_TYPE_LABEL[ClientType.ClaudeCode]}
                   </span>
                   {/* Matches the CODING AGENT pill the Investigate
                       table (pages/Investigate.tsx) and Fleet sidebar

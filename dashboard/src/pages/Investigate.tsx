@@ -1541,14 +1541,18 @@ export function Investigate() {
                     <span className="flex items-center min-w-0 flex-1" style={{ gap: 8 }}>
                       <FacetIcon groupKey={group.key} value={v.value} />
                       <TruncatedText text={v.label ?? v.value} />
-                      {/* F1: CC/SDK pill on AGENT facet rows so two
-                          same-agent_name agents that differ on
-                          client_type render distinguishably. */}
+                      {/* F1 (S-LBL corrected): canonical client_type
+                          pill on AGENT facet rows so two same-
+                          agent_name agents that differ on client_type
+                          render distinguishably. Uses the same
+                          ``ClientTypePill`` Fleet renders, so the
+                          label vocabulary stays identical across
+                          surfaces (CLAUDE CODE / SENSOR via the
+                          shared CLIENT_TYPE_LABEL map). */}
                       {group.key === "agent_id" && v.clientType && isClientType(v.clientType) && (
                         <ClientTypePill
                           clientType={v.clientType}
                           size="compact"
-                          variant="abbrev"
                           testId={`investigate-agent-facet-pill-${v.value}`}
                         />
                       )}

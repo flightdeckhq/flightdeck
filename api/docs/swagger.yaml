@@ -572,6 +572,20 @@ definitions:
         type: number
       ended_at:
         type: string
+      error_types:
+        description: |-
+          ErrorTypes lists every distinct ``payload->'error'->>'error_type''
+          observed across the session's ``llm_error`` events. Always
+          present on the wire (empty array when the session has no
+          errors) so dashboard code can treat the slice as
+          non-nullable. Mirrors the ``frameworks`` JSONB-array surfacing
+          shape: aggregated server-side via a correlated subquery on the
+          listing query so the dashboard can render the ERROR TYPE facet
+          and the row-level error indicator without a per-session
+          follow-up fetch.
+        items:
+          type: string
+        type: array
       flavor:
         type: string
       host:

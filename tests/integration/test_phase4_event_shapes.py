@@ -212,3 +212,86 @@ def test_sessions_error_type_filter_narrows_result() -> None:
     assert sid_to not in rl_ids, f"rate_limit filter leaked {sid_to}: got {rl_ids}"
     assert sid_to in to_ids, f"timeout filter missing {sid_to}: got {to_ids}"
     assert sid_rl not in to_ids, f"timeout filter leaked {sid_rl}: got {to_ids}"
+
+
+def test_sessions_listing_exposes_error_types_per_session() -> None:
+    # Phase 4 polish: the /v1/sessions listing carries a per-row
+    # ``error_types: []string`` aggregate of every distinct
+    # ``payload->'error'->>'error_type'`` observed across the
+    # session's llm_error events. Powers the dashboard's ERROR TYPE
+    # facet and the row-level red error indicator without a
+    # per-session follow-up fetch. Three shapes covered here:
+    #   - clean session (no errors): error_types is the empty list
+    #   - one error: error_types contains exactly that taxonomy value
+    #   - multiple distinct errors: error_types contains every value
+    #     once, no duplicates
+    sid_clean = str(uuid.uuid4())
+    sid_one = str(uuid.uuid4())
+    sid_many = str(uuid.uuid4())
+    flavor = f"test-phase4-error-types-{uuid.uuid4().hex[:6]}"
+
+    for sid in (sid_clean, sid_one, sid_many):
+        post_event(make_event(sid, flavor, "session_start"))
+    wait_until(
+        lambda: all(
+            session_exists_in_fleet(s) for s in (sid_clean, sid_one, sid_many)
+        ),
+        timeout=10,
+        msg="sessions did not appear",
+    )
+
+    post_event(make_event(
+        sid_one, flavor, "llm_error",
+        error={
+            "error_type": "rate_limit", "provider": "anthropic",
+            "http_status": 429, "provider_error_code": None,
+            "error_message": "x", "request_id": None,
+            "retry_after": 30, "is_retryable": True,
+        },
+    ))
+    # Two distinct error_types on sid_many, plus a duplicate of one
+    # of them so the DISTINCT in the aggregate has something to
+    # collapse.
+    for et in ("authentication", "context_overflow", "authentication"):
+        post_event(make_event(
+            sid_many, flavor, "llm_error",
+            error={
+                "error_type": et, "provider": "openai",
+                "http_status": 400, "provider_error_code": None,
+                "error_message": "x", "request_id": None,
+                "retry_after": None, "is_retryable": False,
+            },
+        ))
+    _wait_for_event_count(sid_one, 2)
+    _wait_for_event_count(sid_many, 4)
+
+    qs = urllib.parse.urlencode({
+        "flavor": flavor,
+        "from": "2020-01-01T00:00:00Z",
+        "limit": 100,
+    })
+    req = urllib.request.Request(
+        f"{API_URL}/v1/sessions?{qs}", headers=auth_headers(),
+    )
+    import json as _json
+    with urllib.request.urlopen(req, timeout=5) as resp:
+        body = _json.loads(resp.read())
+
+    by_id: dict[str, list[str]] = {
+        s["session_id"]: s.get("error_types") or [] for s in body.get("sessions", [])
+    }
+    assert sid_clean in by_id, f"clean session missing from listing: {by_id!r}"
+    assert by_id[sid_clean] == [], (
+        f"clean session should have empty error_types, got {by_id[sid_clean]!r}"
+    )
+    assert by_id[sid_one] == ["rate_limit"], (
+        f"single-error session should carry exactly its error_type, got {by_id[sid_one]!r}"
+    )
+    # Set comparison -- the aggregate's order is unspecified by the
+    # SQL DISTINCT clause; we only require value presence + dedupe.
+    assert set(by_id[sid_many]) == {"authentication", "context_overflow"}, (
+        f"multi-error session lost a distinct value or kept a dupe: {by_id[sid_many]!r}"
+    )
+    assert len(by_id[sid_many]) == 2, (
+        f"multi-error session should dedupe duplicates: got {by_id[sid_many]!r}"
+    )

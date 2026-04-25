@@ -162,6 +162,16 @@ type SessionListItem struct {
 	// long after the token row is gone.
 	TokenID   *string `json:"token_id"`
 	TokenName *string `json:"token_name"`
+	// ErrorTypes lists every distinct ``payload->'error'->>'error_type''
+	// observed across the session's ``llm_error`` events. Always
+	// present on the wire (empty array when the session has no
+	// errors) so dashboard code can treat the slice as
+	// non-nullable. Mirrors the ``frameworks`` JSONB-array surfacing
+	// shape: aggregated server-side via a correlated subquery on the
+	// listing query so the dashboard can render the ERROR TYPE facet
+	// and the row-level error indicator without a per-session
+	// follow-up fetch.
+	ErrorTypes []string `json:"error_types"`
 }
 
 // SessionsResponse is the paginated response for GET /v1/sessions.
@@ -397,7 +407,17 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 				LIMIT 1
 			) AS capture_enabled,
 			s.token_id::text,
-			s.token_name
+			s.token_name,
+			COALESCE(
+				ARRAY(
+					SELECT DISTINCT e.payload->'error'->>'error_type'
+					FROM events e
+					WHERE e.session_id = s.session_id
+					AND e.event_type = 'llm_error'
+					AND e.payload->'error'->>'error_type' IS NOT NULL
+				),
+				ARRAY[]::text[]
+			) AS error_types
 		FROM sessions s
 		%s
 		ORDER BY %s %s
@@ -434,8 +454,12 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 			&item.CaptureEnabled,
 			&item.TokenID,
 			&item.TokenName,
+			&item.ErrorTypes,
 		); err != nil {
 			return nil, fmt.Errorf("scan session: %w", err)
+		}
+		if item.ErrorTypes == nil {
+			item.ErrorTypes = []string{}
 		}
 		if len(contextRaw) > 0 {
 			var v map[string]interface{}

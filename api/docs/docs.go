@@ -2309,6 +2309,13 @@ const docTemplate = `{
                 "ended_at": {
                     "type": "string"
                 },
+                "error_types": {
+                    "description": "ErrorTypes lists every distinct ` + "`" + `` + "`" + `payload-\u003e'error'-\u003e\u003e'error_type''\nobserved across the session's ` + "`" + `` + "`" + `llm_error` + "`" + `` + "`" + ` events. Always\npresent on the wire (empty array when the session has no\nerrors) so dashboard code can treat the slice as\nnon-nullable. Mirrors the ` + "`" + `` + "`" + `frameworks` + "`" + `` + "`" + ` JSONB-array surfacing\nshape: aggregated server-side via a correlated subquery on the\nlisting query so the dashboard can render the ERROR TYPE facet\nand the row-level error indicator without a per-session\nfollow-up fetch.",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
                 "flavor": {
                     "type": "string"
                 },

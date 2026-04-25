@@ -304,14 +304,29 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 		argIdx++
 	}
 
-	// Framework filter: any element of sessions.context->'frameworks'
-	// matches any name in the supplied list. The ?| operator requires
-	// a text[] right-hand side, so we pass the slice as a single
-	// positional arg and cast server-side. A session with a missing
-	// or empty frameworks array never matches, which is the intent.
+	// Framework filter. Phase 4 polish: this filter now matches BOTH
+	// the new bare-name per-event attribution (``sessions.framework``,
+	// populated from ``Session.record_framework``) AND the legacy
+	// versioned ``context.frameworks[]`` array. A session's framework
+	// is considered a match when:
+	//
+	//   - the bare name in ``s.framework`` equals one of the supplied
+	//     values (e.g. ``langchain``), OR
+	//   - any element of ``s.context->'frameworks'`` matches one of
+	//     the supplied values (e.g. ``langchain/0.3.27``).
+	//
+	// The OR-combined filter keeps existing versioned-string callers
+	// working while making the new bare-name attribution path
+	// queryable too. Pre-fix the filter only consulted the JSONB
+	// array, so a session with ``framework=langchain`` (bare) and an
+	// empty context array silently returned empty for any filter
+	// value -- the cross-cut bug the supervisor's V-pass addition
+	// flagged.
 	if len(params.Frameworks) > 0 {
 		conditions = append(conditions, fmt.Sprintf(
-			"COALESCE(s.context->'frameworks', '[]'::jsonb) ?| $%d::text[]", argIdx,
+			"(s.framework = ANY($%d::text[]) "+
+				"OR COALESCE(s.context->'frameworks', '[]'::jsonb) ?| $%d::text[])",
+			argIdx, argIdx,
 		))
 		args = append(args, params.Frameworks)
 		argIdx++

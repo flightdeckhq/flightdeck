@@ -295,3 +295,138 @@ def test_sessions_listing_exposes_error_types_per_session() -> None:
     assert len(by_id[sid_many]) == 2, (
         f"multi-error session should dedupe duplicates: got {by_id[sid_many]!r}"
     )
+
+
+def test_embeddings_content_input_roundtrips() -> None:
+    """Phase 4 polish S-EMBED-4: ``content.input`` round-trips
+    ingestion → worker → event_content table → ``GET
+    /v1/events/{id}/content``. Asserts both the single-string and
+    list-of-strings shapes survive intact (no normalisation /
+    re-shaping at any layer)."""
+    sid = str(uuid.uuid4())
+    flavor = f"test-phase4-embed-content-{uuid.uuid4().hex[:6]}"
+
+    post_event(make_event(sid, flavor, "session_start"))
+    wait_until(
+        lambda: session_exists_in_fleet(sid), timeout=10,
+        msg=f"session {sid} did not appear",
+    )
+
+    # Single-string input
+    post_event(make_event(
+        sid, flavor, "embeddings",
+        model="text-embedding-3-small",
+        tokens_input=24,
+        has_content=True,
+        content={
+            "provider": "openai",
+            "model": "text-embedding-3-small",
+            "system": None,
+            "messages": [],
+            "tools": None,
+            "response": {},
+            "input": "phase 4 e2e single-string capture",
+            "session_id": sid,
+            "event_id": "",
+            "captured_at": "2026-04-25T00:00:00Z",
+        },
+    ))
+
+    # List-of-strings input
+    post_event(make_event(
+        sid, flavor, "embeddings",
+        model="text-embedding-3-small",
+        tokens_input=42,
+        has_content=True,
+        content={
+            "provider": "openai",
+            "model": "text-embedding-3-small",
+            "system": None,
+            "messages": [],
+            "tools": None,
+            "response": {},
+            "input": ["item one", "item two", "item three"],
+            "session_id": sid,
+            "event_id": "",
+            "captured_at": "2026-04-25T00:00:00Z",
+        },
+    ))
+
+    _wait_for_event_count(sid, 3)
+
+    # Fetch via the per-event content endpoint and assert the input
+    # field round-trips intact for both shapes.
+    events = _fetch_session_events(sid)
+    embed_events = [e for e in events if e["event_type"] == "embeddings"]
+    assert len(embed_events) == 2
+
+    import json as _json
+    found_string = False
+    found_list = False
+    for e in embed_events:
+        req = urllib.request.Request(
+            f"{API_URL}/v1/events/{e['id']}/content",
+            headers=auth_headers(),
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            body = _json.loads(resp.read())
+        captured_input = body.get("input")
+        if captured_input == "phase 4 e2e single-string capture":
+            found_string = True
+        elif captured_input == ["item one", "item two", "item three"]:
+            found_list = True
+    assert found_string, "single-string embedding input did not round-trip"
+    assert found_list, "list embedding input did not round-trip"
+
+
+def test_session_framework_filter_matches_attributed_sessions() -> None:
+    """Phase 4 polish: the per-event ``framework`` field is now
+    actively populated (pre-fix it was always null because
+    ``Session.record_framework`` had no callers). ``/v1/sessions
+    ?framework=langchain`` must return sessions whose events emit
+    ``framework=langchain``.
+
+    Seeds a session whose events explicitly carry ``framework="
+    langchain"`` and one carrying ``framework="openai"``, then
+    asserts the filter matches only the langchain session.
+    """
+    sid_lc = str(uuid.uuid4())
+    sid_oa = str(uuid.uuid4())
+    flavor_lc = f"test-fw-lc-{uuid.uuid4().hex[:6]}"
+    flavor_oa = f"test-fw-oa-{uuid.uuid4().hex[:6]}"
+
+    for sid, flavor, framework in (
+        (sid_lc, flavor_lc, "langchain"),
+        (sid_oa, flavor_oa, "openai"),
+    ):
+        post_event(make_event(
+            sid, flavor, "session_start", framework=framework,
+        ))
+    wait_until(
+        lambda: session_exists_in_fleet(sid_lc) and session_exists_in_fleet(sid_oa),
+        timeout=10,
+        msg="sessions did not appear",
+    )
+
+    # Filter the listing on framework=langchain. The langchain session
+    # must surface; the openai session must not.
+    qs = urllib.parse.urlencode({
+        "framework": "langchain",
+        "from": "2020-01-01T00:00:00Z",
+        "limit": 100,
+    })
+    req = urllib.request.Request(
+        f"{API_URL}/v1/sessions?{qs}", headers=auth_headers(),
+    )
+    import json as _json
+    with urllib.request.urlopen(req, timeout=5) as resp:
+        body = _json.loads(resp.read())
+    matched = [s["session_id"] for s in body.get("sessions", [])]
+    assert sid_lc in matched, (
+        f"framework=langchain filter must include the langchain session: "
+        f"got {matched}"
+    )
+    assert sid_oa not in matched, (
+        f"framework=langchain filter must NOT include the openai session: "
+        f"got {matched}"
+    )

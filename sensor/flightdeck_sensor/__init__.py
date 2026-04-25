@@ -74,6 +74,14 @@ _log = logging.getLogger("flightdeck_sensor")
 # that narrowed this from {autonomous, supervised, batch, developer}.
 _VALID_AGENT_TYPES = frozenset({"coding", "production"})
 
+# L-7: scattered ``"unknown"`` magic-string sentinel across init
+# fallbacks and the lazy-create path (D106). Centralising as a named
+# constant so the worker's UpsertSession ON CONFLICT CASE-upgrade
+# (which matches exactly this string) and the sensor's fallbacks
+# stay byte-identical. A typo (``"Unknown"`` etc.) elsewhere would
+# silently break the upgrade path.
+UNKNOWN_SENTINEL = "unknown"
+
 
 def _resolve_user_name() -> str:
     """Resolve the current OS user, never raising.
@@ -95,7 +103,7 @@ def _resolve_user_name() -> str:
         v = os.environ.get(key)
         if v:
             return v
-    return "unknown"
+    return UNKNOWN_SENTINEL
 
 
 # Global state -- protected by _lock.

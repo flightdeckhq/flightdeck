@@ -35,6 +35,11 @@ import subprocess
 import sys
 from typing import Any, Protocol
 
+# Subprocess timeout for ``git`` invocations in GitCollector (M-5).
+# Bounded so a slow / unresponsive git binary cannot delay sensor
+# init() — context collection is best-effort and falls back silently.
+_GIT_SUBPROCESS_TIMEOUT_SECS = 0.5
+
 # ----------------------------------------------------------------------
 # Protocol + base
 # ----------------------------------------------------------------------
@@ -124,7 +129,7 @@ class GitCollector(BaseCollector):
         try:
             out = subprocess.check_output(
                 ["git", *args],
-                timeout=0.5,
+                timeout=_GIT_SUBPROCESS_TIMEOUT_SECS,
                 stderr=subprocess.DEVNULL,
                 cwd=os.getcwd(),
             )

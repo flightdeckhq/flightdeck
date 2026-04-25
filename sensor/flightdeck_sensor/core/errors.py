@@ -275,6 +275,18 @@ def classify_exception(
 # Extraction helpers — each returns ``None`` on any failure rather than
 # raising. Provider SDKs expose request IDs / status codes under varying
 # attribute names; these helpers try the common ones in a safe order.
+#
+# M-9 note: every helper below uses bare ``except Exception:`` blocks
+# intentionally. The classifier is defence-in-depth — provider SDKs
+# evolve their attribute shapes between releases (e.g. a future
+# anthropic SDK may rename ``response.headers`` to a different
+# accessor), and an extractor that raises on access pattern drift
+# would propagate up through ``classify_exception``'s outer try/except
+# and degrade the entire error event to ``error_type="other"``.
+# Returning ``None`` per-helper localises the degradation to that one
+# field while keeping the classification accurate. Do NOT narrow the
+# excepts to specific classes without auditing every supported SDK
+# version's attribute access pattern.
 # ---------------------------------------------------------------------------
 
 
@@ -416,6 +428,12 @@ class ErrorPayload:
     partial_tokens_input: int | None = None
     partial_tokens_output: int | None = None
     abort_reason: str | None = None
+    # N-2: mutable default by design. ErrorPayload is intentionally
+    # NOT frozen — callers (interceptor / GuardedStream / async
+    # variants) construct it once and append type-specific extras
+    # (e.g. abort_reason for stream aborts) before serialisation.
+    # Using ``default_factory=dict`` (not the bare-mutable-default
+    # antipattern) so each instance gets its own dict.
     fields: dict[str, Any] = field(default_factory=dict)
 
     def to_payload(self) -> dict[str, Any]:

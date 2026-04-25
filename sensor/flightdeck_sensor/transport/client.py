@@ -241,6 +241,14 @@ class ControlPlaneClient:
 # Non-blocking event queue + dedicated directive handler queue
 # ------------------------------------------------------------------
 
+# Both queues are sized identically by design (L-3): they share the
+# same drop-on-full backpressure semantics, and an asymmetric size
+# would mean directive bursts could starve event throughput (or vice
+# versa). 1000 is generous for the event queue (typical agent emits
+# 1-10 events/sec; 1000 is ~2 minutes of buffering at 10/sec) and
+# loose for the directive queue (custom-directive bursts are bounded
+# by operator action, not LLM call volume). If these need to differ,
+# fork the constants and add a regression test for the asymmetry.
 _MAX_QUEUE_SIZE = 1000
 _MAX_DIRECTIVE_QUEUE_SIZE = 1000
 _SENTINEL = object()
@@ -505,8 +513,15 @@ class EventQueue:
         ``KeyboardInterrupt`` does not apply here. Exceptions are
         logged and the loop continues.
         """
-        assert self._directive_queue is not None
-        assert self._directive_handler is not None
+        # M-6 fix: assertions are stripped under ``python -O`` so a
+        # bug that lets the loop start without a queue or handler
+        # would silently AttributeError downstream. Explicit narrow
+        # + RuntimeError surfaces the contract violation.
+        if self._directive_queue is None or self._directive_handler is None:
+            raise RuntimeError(
+                "_directive_loop started without a queue/handler — "
+                "constructor invariant violated",
+            )
         while True:
             try:
                 item = self._directive_queue.get(timeout=1.0)

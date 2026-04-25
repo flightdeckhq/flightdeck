@@ -427,10 +427,10 @@
     temporal qualifiers do not belong in ARCHITECTURE. They belong in:
 
     - ``CHANGELOG.md`` for user-visible changes per release.
-    - ``audit-phase-N.md`` for phase decisions, V-pass methodology notes,
-      pre-existing bugs surfaced during audit, and phase-ancestry of
-      individual features.
     - ``DECISIONS.md`` for durable D-numbered decisions.
+    - PR descriptions and commit bodies for phase decisions, V-pass
+      methodology notes, pre-existing bugs surfaced during audit,
+      and phase-ancestry of individual features.
 
     D-numbers (D057, D094, D115, etc.) ARE acceptable in ARCHITECTURE
     when they explain why the system is shaped a particular way — they

@@ -9,7 +9,7 @@
 > here is wrong or has drifted from reality, update this document before
 > merging code. Record the reason in DECISIONS.md. ARCHITECTURE describes
 > what the system IS today; phase ancestry, change history, and forward-
-> looking plans live in CHANGELOG.md, audit-phase-N.md, and README.md
+> looking plans live in CHANGELOG.md, PR descriptions, and README.md
 > respectively.
 
 ---
@@ -199,7 +199,6 @@ flightdeck/
 ├── CHANGELOG.md                # Version history (Keep-a-Changelog)
 ├── README.md                   # User-facing documentation
 ├── FOLLOWUPS.md                # Supervisor-approved deferred work
-├── audit-phase-*.md            # Phase audit notes + V-pass decisions
 ├── Makefile                    # Root Makefile -- orchestrates all components
 │
 ├── sensor/                     # flightdeck-sensor Python package (PyPI)

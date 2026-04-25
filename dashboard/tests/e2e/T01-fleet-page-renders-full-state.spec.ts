@@ -4,7 +4,7 @@ import {
   CODING_AGENT,
   SENSOR_AGENT,
   TRUNCATION_AGENT,
-  findSwimlaneRow,
+  bringSwimlaneRowIntoView,
   waitForFleetReady,
 } from "./_fixtures";
 
@@ -23,13 +23,15 @@ test.describe("T1 — Fleet renders full seeded state", () => {
     await page.goto("/");
     await waitForFleetReady(page);
 
-    // Every seeded agent appears in the swimlane. Semantic presence
-    // of the fixture-keyed row is the contract — a missing row means
-    // the seed didn't land or the fleet endpoint dropped it on the
-    // floor.
+    // Every seeded agent appears in the swimlane. The swimlane is
+    // virtualized -- under realistic data volume a fixture may
+    // start off-screen even though it exists. ``bringSwimlaneRow
+    // IntoView`` scrolls the parent container until the row mounts
+    // (resilience pattern P2: don't assume first-page visibility).
     for (const agent of ALL_FIXTURE_AGENTS) {
+      const row = await bringSwimlaneRowIntoView(page, agent.name);
       await expect(
-        findSwimlaneRow(page, agent.name),
+        row,
         `swimlane row missing for ${agent.name}`,
       ).toBeVisible();
     }
@@ -45,19 +47,22 @@ test.describe("T1 — Fleet renders full seeded state", () => {
       "CONTEXT facet panel should render",
     ).toBeVisible();
 
-    // Canonical-pair invariant. Scan every swimlane row: the
-    // client-type pill (SENSOR or CODING AGENT) and the agent-type
-    // badge (e.g. "production", "coding") must never be the
-    // anomaly combo (SENSOR + coding). Read the two sibling nodes
-    // inside each row's left panel. The CODING_AGENT fixture is
-    // client_type=claude_code (pill text "CODING AGENT", badge
+    // Canonical-pair invariant. Scan the seeded fixtures' swimlane
+    // rows: the client-type pill (SENSOR or CODING AGENT) and the
+    // agent-type badge (e.g. "production", "coding") must never be
+    // the anomaly combo (SENSOR + coding). The CODING_AGENT fixture
+    // is client_type=claude_code (pill text "CODING AGENT", badge
     // "coding"); the SENSOR_AGENT fixture is flightdeck_sensor +
     // "production". The truncation fixture is production too.
-    const rows = await page
-      .locator('[data-testid^="swimlane-agent-row-"]')
-      .all();
-    expect(rows.length, "swimlane must have ≥3 agent rows").toBeGreaterThanOrEqual(3);
-    for (const row of rows) {
+    //
+    // Pre-virtualization the test scanned every mounted swimlane
+    // row indiscriminately. Under the virtualizer that scan races
+    // against off-screen rows that never mount; targeting the
+    // seeded fixtures by name is both more correct (we know which
+    // pairs they should produce) and resilience-pattern compliant
+    // (P1: find-my-fixture).
+    for (const agent of ALL_FIXTURE_AGENTS) {
+      const row = await bringSwimlaneRowIntoView(page, agent.name);
       const pill = row.locator('[data-testid="swimlane-client-type-pill"]');
       const badge = row.locator('[data-testid="swimlane-agent-type-badge"]');
       const pillText = (await pill.textContent({ timeout: 2000 }).catch(() => null))?.trim().toUpperCase() ?? "";
@@ -65,8 +70,8 @@ test.describe("T1 — Fleet renders full seeded state", () => {
       const isSensorPlusCoding = pillText.includes("SENSOR") && badgeText === "coding";
       expect(
         isSensorPlusCoding,
-        `anomaly row: client_type=SENSOR paired with agent_type=coding — ` +
-          `seen on row with pill='${pillText}' badge='${badgeText}'. ` +
+        `anomaly row for ${agent.name}: client_type=SENSOR paired ` +
+          `with agent_type=coding — pill='${pillText}' badge='${badgeText}'. ` +
           `Canonical pairs only.`,
       ).toBeFalsy();
     }
@@ -74,19 +79,21 @@ test.describe("T1 — Fleet renders full seeded state", () => {
     // Spot-check each fixture's identity pill wiring -- CODING_AGENT
     // must render as CODING AGENT; both sensor fixtures must render
     // as SENSOR. Cheap sanity that seed → UI didn't swap labels.
+    // Each row is brought into view first because earlier scrolling
+    // may have unmounted it from the virtualizer's window.
     {
-      const codingPill = findSwimlaneRow(page, CODING_AGENT.name).locator(
-        '[data-testid="swimlane-client-type-pill"]',
-      );
-      await expect(codingPill).toContainText(/CLAUDE CODE/i);
-      const sensorPill = findSwimlaneRow(page, SENSOR_AGENT.name).locator(
-        '[data-testid="swimlane-client-type-pill"]',
-      );
-      await expect(sensorPill).toContainText(/SENSOR/i);
-      const truncPill = findSwimlaneRow(page, TRUNCATION_AGENT.name).locator(
-        '[data-testid="swimlane-client-type-pill"]',
-      );
-      await expect(truncPill).toContainText(/SENSOR/i);
+      const codingRow = await bringSwimlaneRowIntoView(page, CODING_AGENT.name);
+      await expect(
+        codingRow.locator('[data-testid="swimlane-client-type-pill"]'),
+      ).toContainText(/CLAUDE CODE/i);
+      const sensorRow = await bringSwimlaneRowIntoView(page, SENSOR_AGENT.name);
+      await expect(
+        sensorRow.locator('[data-testid="swimlane-client-type-pill"]'),
+      ).toContainText(/SENSOR/i);
+      const truncRow = await bringSwimlaneRowIntoView(page, TRUNCATION_AGENT.name);
+      await expect(
+        truncRow.locator('[data-testid="swimlane-client-type-pill"]'),
+      ).toContainText(/SENSOR/i);
     }
   });
 });

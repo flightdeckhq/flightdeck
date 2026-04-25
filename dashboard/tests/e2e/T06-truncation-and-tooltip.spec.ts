@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 import {
   TRUNCATION_AGENT,
-  findSwimlaneRow,
+  bringSwimlaneRowIntoView,
   waitForFleetReady,
 } from "./_fixtures";
 
@@ -23,7 +23,10 @@ test.describe("T6 — Agent-name truncation surfaces full value via title attr",
     await page.goto("/");
     await waitForFleetReady(page);
 
-    const row = findSwimlaneRow(page, TRUNCATION_AGENT.name);
+    // Resilience P1/P2: the long-name fixture is alphabetically
+    // buried under realistic data volume (the swimlane virtualizes
+    // off-screen rows). Scroll until the row mounts.
+    const row = await bringSwimlaneRowIntoView(page, TRUNCATION_AGENT.name);
     await expect(row).toBeVisible();
 
     // <TruncatedText> sets title reactively after ResizeObserver

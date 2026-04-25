@@ -147,21 +147,149 @@ export function investigateParamsFromUrl(url: string): {
 }
 
 /**
- * Wait for the Fleet page to settle: the first fixture row must be
- * visible in whichever view is active (swimlane or table). Prefer
- * this over networkidle, which is flaky under Playwright's HMR dev
- * mode. The function races a swimlane locator against a table
- * locator so callers on either view get a single wait helper.
+ * Wait for the Fleet page to settle: SOMETHING in the swimlane or
+ * table view has mounted. Prefer this over networkidle, which is
+ * flaky under Playwright's HMR dev mode.
+ *
+ * Critical: this no longer asserts on a *specific* fixture being
+ * visible. The Fleet swimlane uses an IntersectionObserver-backed
+ * virtualizer (see VirtualizedSwimLane.tsx), so under realistic
+ * data volume (Phase 3 + Phase 4 dev DBs accumulate hundreds of
+ * agents) any given fixture may be off-screen at initial render
+ * even though it exists. Pinning readiness to a specific fixture
+ * was the P2 violation that made T01/T05/T06/T09 flake. After this
+ * settles, callers must use ``bringSwimlaneRowIntoView`` to scroll
+ * a fixture into view before asserting on it.
  */
 export async function waitForFleetReady(page: Page): Promise<void> {
-  const swimlane = findSwimlaneRow(page, CODING_AGENT.name);
-  const table = findAgentTableRow(page, CODING_AGENT.name);
-  // Race the two locators. Playwright's `or` resolves when either
-  // matches — `waitFor` then settles on the winner.
-  await swimlane.or(table).first().waitFor({
+  // First swimlane row OR first agent-table row -- whichever shows
+  // up. Doesn't matter which agent that row represents, only that
+  // the page has mounted some data.
+  const anySwimlaneRow = page
+    .locator('[data-testid^="swimlane-agent-row-"]')
+    .first();
+  const anyTableRow = page
+    .locator('[data-testid^="fleet-agent-row-"]')
+    .first();
+  await anySwimlaneRow.or(anyTableRow).waitFor({
     state: "visible",
     timeout: 15_000,
   });
+}
+
+/**
+ * Scroll the Fleet swimlane container until the row for ``agentName``
+ * is mounted in the DOM, then return its locator. Companion to
+ * ``waitForFleetReady`` for resilience patterns P1 (find-my-fixture)
+ * and P2 (paginate/scroll instead of assuming first-row visibility).
+ *
+ * The swimlane is virtualized: rows that haven't been intersected
+ * with the viewport are placeholders without the
+ * ``swimlane-agent-row-<name>`` testid. Scrolling the parent flex
+ * container forces the IntersectionObserver to mount additional
+ * rows, eventually exposing the target.
+ *
+ * The function probes the DOM after each chunked scroll step (up to
+ * ``maxSteps`` × ``stepPx``) and returns as soon as the row mounts.
+ * If the row never appears, the locator returned is the test
+ * assertion's responsibility -- callers should follow up with
+ * ``await expect(locator).toBeVisible()`` so a missing row produces
+ * a clean failure with the locator's natural error message.
+ *
+ * Mirrors what a real operator does when hunting a known agent in a
+ * long fleet: scroll the list. The dashboard does NOT yet expose a
+ * Fleet-level search input that would let us filter the swimlane by
+ * agent_name; until it does, scroll-to-find is the user-realistic
+ * test path.
+ */
+export async function bringSwimlaneRowIntoView(
+  page: Page,
+  agentName: string,
+  opts: { stepPx?: number; maxSteps?: number } = {},
+): Promise<Locator> {
+  const stepPx = opts.stepPx ?? 600;
+  const maxSteps = opts.maxSteps ?? 80;
+  const target = page.locator(
+    `[data-testid="swimlane-agent-row-${agentName}"]`,
+  );
+  // Cheap path: row already mounted (top of LIVE bucket / small DB).
+  if ((await target.count()) > 0) {
+    await target.first().scrollIntoViewIfNeeded({ timeout: 2000 });
+    return target;
+  }
+  // Resolve the closest scrollable ancestor of any mounted swimlane
+  // row. Fleet's main view sits inside a ``flex-1`` div with
+  // ``overflowY: auto`` -- evaluating against a known mounted row
+  // is more robust than guessing the selector.
+  const anyRow = page
+    .locator('[data-testid^="swimlane-agent-row-"]')
+    .first();
+  await anyRow.waitFor({ state: "visible", timeout: 10_000 });
+  for (let i = 0; i < maxSteps; i += 1) {
+    // Scroll the closest overflow:auto ancestor by `stepPx`. JSDom
+    // doesn't ship `closest()` finding overflow ancestors; walk up
+    // the tree and check computed style.
+    await anyRow.evaluate(
+      (el, step) => {
+        let node: HTMLElement | null = el as HTMLElement;
+        while (node) {
+          const style = window.getComputedStyle(node);
+          if (
+            style.overflowY === "auto" ||
+            style.overflowY === "scroll"
+          ) {
+            node.scrollBy(0, step);
+            return;
+          }
+          node = node.parentElement;
+        }
+        // Fallback: scroll the document.
+        window.scrollBy(0, step);
+      },
+      stepPx,
+    );
+    // Let the IntersectionObserver fire and React commit.
+    // 150ms is generous; the observer fires synchronously on layout
+    // and React commits within a few ms, but Playwright's snapshot
+    // can race the layout in HMR mode.
+    await page.waitForTimeout(150);
+    if ((await target.count()) > 0) {
+      await target.first().scrollIntoViewIfNeeded({ timeout: 2000 });
+      return target;
+    }
+  }
+  // Return the locator anyway so the caller's expect.toBeVisible()
+  // produces the useful failure message.
+  return target;
+}
+
+/**
+ * Scroll the Fleet table view until the row containing ``agentName``
+ * is visible. Table view uses standard pagination (50 rows per
+ * page by default), not virtualization -- but if the fixture sits
+ * on a later page, we need to navigate to that page first. The
+ * table-view variant is intentionally simpler: paginate forward
+ * until the row's text appears.
+ */
+export async function bringTableRowIntoView(
+  page: Page,
+  agentName: string,
+  opts: { maxPages?: number } = {},
+): Promise<Locator> {
+  const maxPages = opts.maxPages ?? 10;
+  const target = findAgentTableRow(page, agentName);
+  if ((await target.count()) > 0) return target;
+  for (let i = 0; i < maxPages; i += 1) {
+    const nextBtn = page.locator(
+      '[aria-label="Go to next page"], [data-testid="pagination-next"]',
+    );
+    if ((await nextBtn.count()) === 0) break;
+    if ((await nextBtn.first().isDisabled().catch(() => true))) break;
+    await nextBtn.first().click();
+    await page.waitForTimeout(200);
+    if ((await target.count()) > 0) return target;
+  }
+  return target;
 }
 
 /**

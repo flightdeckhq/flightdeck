@@ -302,6 +302,110 @@ bring-into-view helper from the start or assert against a
 deterministically-sized API filter that bounds the result set
 before the test interacts with the rendering.
 
+## Per-framework embeddings content capture (Phase 4 polish, S-EMBED-1..8)
+
+Phase 4 polish closes the embedding-modality content capture gap that
+shipped without coverage in the initial Phase 4 contract. Pre-fix the
+sensor emitted ``event_type=embeddings`` with metadata only -- the
+request's ``input`` parameter (a string or list of strings, the
+content the embedding model actually saw) was never captured even
+with ``capture_prompts=True``. Chat completions captured the
+equivalent content; embeddings did not. Communication-modality parity
+gap caught during Chrome walkthrough.
+
+### Coverage matrix
+
+| Framework | Native embeddings | Capture path | Smoke status |
+|---|---|---|---|
+| Anthropic SDK | ❌ N/A | Anthropic has no native embeddings API; users route via litellm → Voyage | N/A — no smoke scenario |
+| OpenAI SDK | ✅ supported | Direct patch in ``interceptor/openai.py``; provider's ``extract_content`` branches on ``event_type=EMBEDDINGS`` to capture ``request_kwargs["input"]`` | smoke-openai +2 (single-string + list-of-strings) ✅ |
+| litellm | ✅ supported | Module-level patch on ``litellm.embedding`` / ``litellm.aembedding``; same content shape as OpenAI | smoke-litellm +1 (routes to OpenAI) ✅ |
+| Claude Code plugin | ❌ N/A | Observational; plugin doesn't see embeddings even if the user's agent performs them | N/A — no smoke scenario |
+| LangChain | ✅ supported via OpenAI transitively; ⚠️ partial via Voyage direct | ``OpenAIEmbeddings.embed_*`` rides through the OpenAI patch (no dedicated LangChain interceptor needed); ``VoyageAIEmbeddings`` direct path remains uncovered per Phase 4 V-pass Q-VOYAGE | smoke-langchain +1 (transitive via OpenAI) ✅; Voyage-direct: ⚠️ deferred |
+
+Wire shape: ``PromptContent.input: str \| list[str] \| None`` lands
+in the existing ``payload.content`` blob and survives ingestion →
+worker → Postgres ``event_content.input`` JSONB column → ``GET
+/v1/events/:id/content`` → dashboard's ``EmbeddingsContentViewer``.
+Three render branches (single-string, list, no-content) covered by
+vitest, T14 E2E, and per-framework smoke.
+
+### Communication modality content capture parity (methodology
+principle, locked here for future phases)
+
+> Every modality that has a request/response payload should support
+> content capture gated by the ``capture_prompts`` flag (or
+> modality-specific variants where genuinely needed). Modalities
+> that ship without content capture ship a documented gap that
+> must be called out in the coverage matrix and fixed before
+> launch.
+>
+> Phase 4 applied this retroactively to embeddings across all 5
+> supported frameworks when the gap surfaced in Chrome walkthrough.
+> Future phases adding new modalities must include content capture
+> in the initial V-pass spec across ALL supported frameworks, not
+> as a retrofit or narrowed to a subset.
+
+## Framework attribution Phase 1 oversight (parallel finding, fixed)
+
+Pre-fix ``Session.record_framework`` had zero callers across the
+sensor codebase, so every event emitted by the live sensor flow
+carried ``framework=null``. Confirmed against the smoke-langchain
+run on the dev stack: chat AND embeddings AND session_start all
+read ``framework=null``. The dashboard's FRAMEWORK facet, the
+analytics ``group_by=framework``, and the ``/v1/sessions
+?framework=`` filter were all silently misbehaving. A Phase 1
+oversight surfaced when the embeddings work made framework
+attribution parity load-bearing.
+
+Fix shipped on this branch:
+
+1. **Sensor init wires record_framework.** In
+   ``flightdeck_sensor.__init__.init`` after ``_collect_context()``
+   populates ``frameworks[]``, take the first detected entry,
+   strip the ``/<version>`` suffix, and call
+   ``Session.record_framework`` with the bare name. Versioned form
+   stays in ``context.frameworks[]`` for diagnostic detail; the
+   per-event field uses the bare analytics dimension.
+2. **LangChain classifier extended.** ``BaseClassifier.module``
+   accepts a tuple of aliases; ``LangChainClassifier`` now lists
+   ``("langchain", "langchain_core")`` so modern split-package
+   installs (``langchain_openai``, ``langchain_anthropic``) that
+   don't import the umbrella ``langchain`` module are still
+   detected via the always-present core package. Pre-fix the
+   classifier silently missed every modern LangChain install.
+3. **/v1/sessions?framework= OR-combines lookups.** The legacy SQL
+   only consulted ``context.frameworks[]`` (versioned strings);
+   the new bare-name path needs ``s.framework = ANY($1::text[])``
+   too. Fix OR-combines both so callers can filter on either bare
+   names (``langchain``) or versioned strings
+   (``langchain/0.3.27``) without behavioural surprise.
+
+### Locked design principle
+
+> When a higher-level framework is detected (LangChain, LangGraph,
+> CrewAI, etc.) it wins over the SDK transport that handled the
+> call. A LangChain pipeline routing through litellm routing
+> through OpenAI reports ``framework="langchain"`` because that's
+> the user's mental model. Phase 5 (MCP) and beyond inherit this
+> rule: MCP calls routed through any framework attribute to the
+> framework, not ``"mcp"`` as a framework itself.
+
+### Verification
+
+* Sensor unit suite 233/233 (5 new framework-attribution tests + 7
+  new embeddings-capture tests).
+* Integration suite 7/7 (1 new content-roundtrip test + 1 new
+  framework-filter test, plus the existing 5 Phase 4 tests).
+* Vitest 509/509 (6 new EmbeddingsContentViewer tests).
+* E2E 48/48 across both themes twice in a row (T14 extended to
+  cover the three EmbeddingsContentViewer branches).
+* All 5 smoke targets green: anthropic 4/4, openai 7/7, litellm
+  5/5, langchain 4/4, claude-code 1/1.
+* FRAMEWORK facet behaviour Chrome-verified: existing context-
+  array sourcing now populated for langchain sessions (positive
+  surprise per supervisor's risk check), no double-counting.
+
 ## Out of scope (deferred, with rationale)
 
 - **Image generation events** — out-of-band surface, separate phase.

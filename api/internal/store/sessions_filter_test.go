@@ -20,9 +20,12 @@ import (
 func runFilterRoundTripTest(t *testing.T, key string) {
 	t.Helper()
 	t.Run("single value", func(t *testing.T) {
-		clause, args, idx := BuildContextFilterClause(
+		clause, args, idx, err := BuildContextFilterClause(
 			key, []string{"alice"}, []any{"prior-arg"}, 2,
 		)
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
 		wantClause := "s.context->>'" + key + "' IN ($2)"
 		if clause != wantClause {
 			t.Errorf("clause = %q, want %q", clause, wantClause)
@@ -36,9 +39,12 @@ func runFilterRoundTripTest(t *testing.T, key string) {
 	})
 
 	t.Run("multi value", func(t *testing.T) {
-		clause, args, idx := BuildContextFilterClause(
+		clause, args, idx, err := BuildContextFilterClause(
 			key, []string{"alice", "bob", "carol"}, []any{}, 1,
 		)
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
 		// Placeholders advance in order; value list preserved order too.
 		re := regexp.MustCompile(`^s\.context->>'` + regexp.QuoteMeta(key) + `' IN \(\$1, \$2, \$3\)$`)
 		if !re.MatchString(clause) {
@@ -53,9 +59,12 @@ func runFilterRoundTripTest(t *testing.T, key string) {
 	})
 
 	t.Run("empty values is a no-op", func(t *testing.T) {
-		clause, args, idx := BuildContextFilterClause(
+		clause, args, idx, err := BuildContextFilterClause(
 			key, nil, []any{"prior"}, 5,
 		)
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
 		if clause != "" {
 			t.Errorf("clause should be empty on no-op, got %q", clause)
 		}
@@ -100,16 +109,20 @@ func TestIsAllowedContextFilterKey_Rejection(t *testing.T) {
 	}
 }
 
-// TestBuildContextFilterClause_PanicOnUnknownKey documents the
-// panic-on-programming-error contract. A direct store caller that
-// skipped the handler's whitelist check must fail fast rather than
-// silently inject an arbitrary JSONB path.
-func TestBuildContextFilterClause_PanicOnUnknownKey(t *testing.T) {
-	defer func() {
-		r := recover()
-		if r == nil {
-			t.Fatal("expected panic on unknown key")
-		}
-	}()
-	BuildContextFilterClause("evil_key", []string{"x"}, nil, 1)
+// TestBuildContextFilterClause_ErrorOnUnknownKey documents the
+// error-return contract for programming errors (M-11). A direct
+// store caller that skipped the handler's whitelist check must
+// fail fast with a non-nil error rather than silently inject an
+// arbitrary JSONB path. Pre-M-11 the function panicked; the
+// callers now surface a 500 instead of crashing the goroutine.
+func TestBuildContextFilterClause_ErrorOnUnknownKey(t *testing.T) {
+	clause, _, _, err := BuildContextFilterClause(
+		"evil_key", []string{"x"}, nil, 1,
+	)
+	if err == nil {
+		t.Fatal("expected error on unknown key, got nil")
+	}
+	if clause != "" {
+		t.Errorf("clause should be empty on error, got %q", clause)
+	}
 }

@@ -112,22 +112,26 @@ func IsAllowedContextFilterKey(key string) bool {
 // ``values`` is empty so callers can unconditionally invoke this
 // without filter-counting.
 //
-// ``key`` MUST come from AllowedContextFilterKeys -- the function
-// panics otherwise. Calling with an unvalidated key is a
-// programming error, never a user-input path; the handler filters
-// unknowns before calling. Panic is preferable to silently
-// returning a broken query.
+// ``key`` MUST come from AllowedContextFilterKeys. M-11 fix: returns
+// an error rather than panicking — handlers validate the key before
+// calling, but a future bug that lets an unvalidated key reach this
+// function would otherwise crash the request goroutine. Returning an
+// error lets the caller surface a 500 instead. Empty ``values`` is a
+// no-op return, not an error.
 func BuildContextFilterClause(
 	key string,
 	values []string,
 	args []any,
 	argIdx int,
-) (clause string, nextArgs []any, nextIdx int) {
+) (clause string, nextArgs []any, nextIdx int, err error) {
 	if len(values) == 0 {
-		return "", args, argIdx
+		return "", args, argIdx, nil
 	}
 	if !allowedContextFilterSet[key] {
-		panic(fmt.Sprintf("BuildContextFilterClause: key %q is not in AllowedContextFilterKeys", key))
+		return "", args, argIdx, fmt.Errorf(
+			"BuildContextFilterClause: key %q is not in AllowedContextFilterKeys",
+			key,
+		)
 	}
 	placeholders := make([]string, len(values))
 	for i, v := range values {
@@ -139,7 +143,7 @@ func BuildContextFilterClause(
 		"s.context->>'%s' IN (%s)",
 		key, strings.Join(placeholders, ", "),
 	)
-	return clause, args, argIdx
+	return clause, args, argIdx, nil
 }
 
 // SessionListItem is one row in the paginated sessions response.
@@ -398,7 +402,18 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 	// future snapshot test of the generated SQL.
 	for _, key := range AllowedContextFilterKeys {
 		values := params.ContextFilters[key]
-		clause, nextArgs, nextIdx := BuildContextFilterClause(key, values, args, argIdx)
+		clause, nextArgs, nextIdx, fcErr := BuildContextFilterClause(
+			key, values, args, argIdx,
+		)
+		if fcErr != nil {
+			// Should be unreachable: handlers validate ``key`` against
+			// AllowedContextFilterKeys before reaching this code path.
+			// M-11 surfaces an internal error rather than panicking so a
+			// future bug becomes a 500 with logs, not a goroutine crash.
+			return nil, fmt.Errorf(
+				"context filter for %q: %w", key, fcErr,
+			)
+		}
 		if clause == "" {
 			continue
 		}

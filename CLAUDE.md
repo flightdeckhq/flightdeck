@@ -533,9 +533,12 @@
 
     The phase's intent is defined by its title and goal statement.
     A finding that clearly fits is in scope. A finding that clearly
-    doesn't (e.g., unrelated feature work) is filed in FOLLOWUPS.md
-    and addressed later. Borderline cases are resolved by the
-    Supervisor, not deferred unilaterally.
+    doesn't (e.g., unrelated feature work that warrants user
+    prioritisation) lands as a Roadmap bullet in README.md and is
+    addressed later. Borderline cases are resolved by the
+    Supervisor, not deferred unilaterally. There is no separate
+    "follow-ups" file — the Roadmap and the current PR are the
+    only two destinations.
 
     This rule applies to Claude Code's "preserve intentionally" or
     "flag for deferral" proposals — the default answer is "address

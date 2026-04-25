@@ -198,7 +198,6 @@ flightdeck/
 ├── METHODOLOGY.md              # Supervisor/Executor build methodology
 ├── CHANGELOG.md                # Version history (Keep-a-Changelog)
 ├── README.md                   # User-facing documentation
-├── FOLLOWUPS.md                # Supervisor-approved deferred work
 ├── Makefile                    # Root Makefile -- orchestrates all components
 │
 ├── sensor/                     # flightdeck-sensor Python package (PyPI)
@@ -1786,9 +1785,9 @@ filter so the matching facet stays sticky when the filter is applied.
 
 The AGENT facet is keyed on `agent_id` with `agent_name` display labels.
 Two agents with the same `agent_name` but different `client_type` (e.g.
-plugin and SDK both running as `omria@laptop`) currently render as two
-identical-looking rows in the facet list — visual disambiguation is on
-the FOLLOWUPS list.
+plugin and SDK both running as `omria@laptop`) are disambiguated by a
+small uppercase pill (`CC` for `claude_code`, `SDK` for
+`flightdeck_sensor`) appended next to the agent name in the facet row.
 
 The ERROR TYPE facet is rendered last (after state / agent / flavor /
 agent_type / model / framework / scalar context groups). Hidden when no

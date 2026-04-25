@@ -614,7 +614,7 @@ function warnUnresolvedAgentOnce(agentId: string): void {
   warnedUnresolvedAgents.add(agentId);
   console.warn(
     `agent_id ${agentId} did not resolve to an agent_name via fleet store or sessions list; ` +
-      `chip label falls back to the UUID prefix. Proper fix tracked in FOLLOWUPS.md.`,
+      `chip label falls back to the UUID prefix.`,
   );
 }
 

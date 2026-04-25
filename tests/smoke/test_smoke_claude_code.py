@@ -43,5 +43,6 @@ def test_claude_cli_is_on_path() -> None:
     r = subprocess.run(["claude", "--version"], capture_output=True, text=True)
     assert r.returncode == 0, f"claude --version failed: {r.stderr}"
     # More comprehensive scenarios (drive a real prompt, assert
-    # session_start + post_call + session_end lands) are tracked
-    # in FOLLOWUPS -- they need a scripted claude-session harness.
+    # session_start + post_call + session_end lands) need a scripted
+    # claude-session harness. The README Roadmap is the surface for
+    # tracking that work.

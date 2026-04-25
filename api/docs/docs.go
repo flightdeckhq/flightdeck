@@ -2110,6 +2110,9 @@ const docTemplate = `{
         "store.SearchResultAgent": {
             "type": "object",
             "properties": {
+                "agent_id": {
+                    "type": "string"
+                },
                 "agent_name": {
                     "type": "string"
                 },

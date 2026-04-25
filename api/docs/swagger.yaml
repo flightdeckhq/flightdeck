@@ -407,6 +407,8 @@ definitions:
     type: object
   store.SearchResultAgent:
     properties:
+      agent_id:
+        type: string
       agent_name:
         type: string
       agent_type:

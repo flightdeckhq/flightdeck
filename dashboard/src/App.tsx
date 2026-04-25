@@ -130,8 +130,14 @@ export function buildSearchResultHref(
   item: SearchResultAgent | SearchResultSession | SearchResultEvent,
 ): string {
   if (type === "agent") {
-    return `/investigate?flavor=${encodeURIComponent(
-      (item as SearchResultAgent).agent_name,
+    // F2: route to agent_id, not flavor=agent_name. The previous
+    // ``flavor=`` form silently produced an empty session list for
+    // sensor-keyed agents whose agent_name is ``user@hostname`` and
+    // never matches any session.flavor. agent_id is now carried on
+    // SearchResultAgent (D115) and the Investigate parseUrlState
+    // already handles ``?agent_id=<uuid>``.
+    return `/investigate?agent_id=${encodeURIComponent(
+      (item as SearchResultAgent).agent_id,
     )}`;
   }
   if (type === "session") {

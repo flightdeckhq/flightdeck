@@ -10,7 +10,14 @@ import (
 )
 
 // SearchResultAgent is a search hit on the agents table.
+//
+// AgentID is the D115 identity used as the wire value for the
+// Investigate ``?agent_id=`` filter. F2: previously the dashboard
+// routed agent search clicks to ``?flavor=<agent_name>`` because
+// the result type omitted agent_id; that query string never
+// matched sensor-keyed agents whose agent_name is ``user@hostname``.
 type SearchResultAgent struct {
+	AgentID   string `json:"agent_id"`
 	AgentName string `json:"agent_name"`
 	AgentType string `json:"agent_type"`
 	LastSeen  string `json:"last_seen"`
@@ -71,7 +78,7 @@ func (s *Store) Search(ctx context.Context, query string) (*SearchResults, error
 	// flavor column was dropped in migration 000015.
 	g.Go(func() error {
 		rows, err := s.pool.Query(ctx, `
-			SELECT agent_name, agent_type, last_seen_at::text
+			SELECT agent_id::text, agent_name, agent_type, last_seen_at::text
 			FROM agents
 			WHERE agent_name ILIKE $1
 			ORDER BY last_seen_at DESC
@@ -83,7 +90,7 @@ func (s *Store) Search(ctx context.Context, query string) (*SearchResults, error
 		defer rows.Close()
 		for rows.Next() {
 			var a SearchResultAgent
-			if err := rows.Scan(&a.AgentName, &a.AgentType, &a.LastSeen); err != nil {
+			if err := rows.Scan(&a.AgentID, &a.AgentName, &a.AgentType, &a.LastSeen); err != nil {
 				return fmt.Errorf("scan agent: %w", err)
 			}
 			results.Agents = append(results.Agents, a)

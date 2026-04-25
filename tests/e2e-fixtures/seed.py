@@ -213,7 +213,9 @@ def _post_session_events(
             # Embeddings calls override the agent's default chat model
             # with an embedding model -- the row's getEventDetail
             # branch reads `event.model` so the test asserts on the
-            # specific embedding model name.
+            # specific embedding model name. No content captured
+            # (has_content defaults to False) -- exercises T14's
+            # "(content not captured)" branch.
             embed_common = {**common, "model": "text-embedding-3-small"}
             post_event(make_event(
                 session_id, agent_cfg["flavor"], "embeddings",
@@ -221,6 +223,66 @@ def _post_session_events(
                 tokens_input=1024,
                 tokens_used_session=320 + 1024,
                 latency_ms=180,
+                **identity,
+                **embed_common,
+            ))
+            posted += 1
+        elif extra == "embeddings_with_content_string":
+            # Embedding event with capture: single-string input.
+            # Exercises T14's truncated-text + expand-on-click branch
+            # of EmbeddingsContentViewer.
+            embed_common = {**common, "model": "text-embedding-3-small"}
+            post_event(make_event(
+                session_id, agent_cfg["flavor"], "embeddings",
+                timestamp=ts,
+                tokens_input=512,
+                tokens_used_session=320 + 512,
+                latency_ms=140,
+                has_content=True,
+                content={
+                    "provider": "openai",
+                    "model": "text-embedding-3-small",
+                    "system": None,
+                    "messages": [],
+                    "tools": None,
+                    "response": {},
+                    "input": "phase 4 e2e seeded embedding string content for T14 capture branch",
+                    "session_id": session_id,
+                    "event_id": "",
+                    "captured_at": "2026-04-25T00:00:00Z",
+                },
+                **identity,
+                **embed_common,
+            ))
+            posted += 1
+        elif extra == "embeddings_with_content_list":
+            # Embedding event with capture: list-of-strings input.
+            # Exercises T14's "<N> inputs" pill + expand-to-list
+            # branch of EmbeddingsContentViewer.
+            embed_common = {**common, "model": "text-embedding-3-small"}
+            post_event(make_event(
+                session_id, agent_cfg["flavor"], "embeddings",
+                timestamp=ts,
+                tokens_input=384,
+                tokens_used_session=320 + 384,
+                latency_ms=160,
+                has_content=True,
+                content={
+                    "provider": "openai",
+                    "model": "text-embedding-3-small",
+                    "system": None,
+                    "messages": [],
+                    "tools": None,
+                    "response": {},
+                    "input": [
+                        "phase 4 e2e item one",
+                        "phase 4 e2e item two",
+                        "phase 4 e2e item three",
+                    ],
+                    "session_id": session_id,
+                    "event_id": "",
+                    "captured_at": "2026-04-25T00:00:00Z",
+                },
                 **identity,
                 **embed_common,
             ))
@@ -343,7 +405,16 @@ def _session_is_complete(
     # treat a single post_call as covering both.
     expected_counts: dict[str, int] = {}
     for tag in extras:
-        if tag == "embeddings":
+        if tag in (
+            "embeddings",
+            "embeddings_with_content_string",
+            "embeddings_with_content_list",
+        ):
+            # All three variants emit event_type=embeddings; the
+            # has_content + payload.input shape varies but the
+            # event_type identifier is shared. Counting them as
+            # one bucket is correct -- a session that has all
+            # three needs three embeddings events.
             expected_counts["embeddings"] = expected_counts.get("embeddings", 0) + 1
         elif tag.startswith("llm_error_"):
             expected_counts["llm_error"] = expected_counts.get("llm_error", 0) + 1

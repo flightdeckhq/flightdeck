@@ -55,6 +55,41 @@ test.describe("T14 — Embeddings event renders in drawer", () => {
         const rowText = (await first.textContent()) ?? "";
         expect(rowText).toContain("text-embedding-3-small");
         expect(rowText).toContain("tok in");
+
+        // Phase 4 polish S-EMBED-7: with the seed fixture seeding
+        // three embeddings events per fresh-active session (no
+        // content + single-string captured + list captured), the
+        // drawer mounts at least one of each EmbeddingsContentViewer
+        // branch. Click each row to reveal its expanded body and
+        // assert the appropriate branch rendered.
+        //
+        // Branch coverage check: collect every embeddings row's
+        // post-expand state attribute and assert the set covers
+        // all three. The rows live under distinct event IDs so
+        // ``data-state`` on each can be read independently.
+        const allEmbedRows = await drawer
+          .locator('[data-testid^="embeddings-event-row-"]')
+          .all();
+        const observedStates = new Set<string>();
+        for (const row of allEmbedRows) {
+          await row.click();
+          // Every embedding row's expanded body mounts the viewer.
+          const viewer = drawer
+            .locator('[data-testid="embeddings-content-viewer"]')
+            .first();
+          await expect(viewer).toBeVisible({ timeout: 4000 });
+          const state = await viewer.getAttribute("data-state");
+          if (state) observedStates.add(state);
+          // Collapse for the next iteration (clicking the row
+          // again toggles).
+          await row.click();
+        }
+        expect(
+          observedStates,
+          `EmbeddingsContentViewer must surface every render branch ` +
+            `(empty + string + list) across the three seeded events; ` +
+            `observed: ${[...observedStates].join(", ") || "(none)"}`,
+        ).toEqual(new Set(["empty", "string", "list"]));
         break;
       }
     }

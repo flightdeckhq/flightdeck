@@ -112,20 +112,195 @@ Applies to this phase and every subsequent framework-touching phase.
 
 ## Smoke-test results
 
-_(Populated by the "Pre-push verification" task in this phase before PR merge.
-Tests not run yet — all API keys required are not loaded in the local
-environment as of plan-of-record.)_
+Run against the local dev stack on **2026-04-25** with real provider
+API keys loaded into the operator's shell env (Anthropic + OpenAI).
+Cost across all five targets: **<$0.01**.
 
-| Framework | Run date | Events observed | Anomalies |
+| Framework | Tests | Events observed | Anomalies |
 |---|---|---|---|
-| Anthropic SDK | — | — | — |
-| OpenAI SDK | — | — | — |
-| litellm | — | — | — |
-| LangChain | — | — | — |
-| Claude Code plugin | — | — | — |
-| bifrost | — | — | — (optional run) |
+| Anthropic SDK | 4 / 4 ✅ | session_start, post_call (chat + sync stream + async stream with streaming sub-object), llm_error (`error_type=not_found`, classifier hit), session_end | 2 sensor bugs surfaced + fixed (see below); 4 smoke-scaffolding bugs surfaced + fixed |
+| OpenAI SDK | 5 / 5 ✅ | post_call (chat, sync + async stream w/ streaming sub-object), embeddings (event_type promoted), llm_error (`error_type=authentication`) | 1 sensor bug surfaced + fixed (async-create + stream returned non-awaitable); same scaffolding bugs covered above |
+| litellm | 4 / 4 ✅ | post_call via OpenAI + Anthropic backends, embeddings, llm_error | None — Phase 4 shapes round-tripped cleanly through the litellm patch |
+| LangChain | 3 / 3 ✅ | post_call via ChatAnthropic + ChatOpenAI, embeddings via OpenAIEmbeddings | Pydantic V1 / Python 3.14 deprecation warning surfaces from upstream LangChain (not a sensor issue) |
+| Claude Code plugin | 1 / 1 ✅ | CLI presence sanity (scripted full-session harness deferred — covered by FOLLOWUPS) | None |
+| bifrost | (optional, not run) | — | Skipped per Q-FW decision; coverage rides on the OpenAI patch |
+
+### Sensor bugs caught by Rule 40d
+
+Two production-impacting Phase 4 bugs that mock-only unit tests
+missed; both fixed on this branch with the smoke target as the
+regression guard going forward.
+
+1. **`AsyncOpenAI.chat.completions.create(stream=True)` returned a
+   non-awaitable `GuardedAsyncStream`.** Native OpenAI returns a
+   coroutine that resolves to `AsyncStream`; the sensor wrapper
+   was missing the awaitable wrapping, so `await
+   client.chat.completions.create(stream=True)` raised `TypeError:
+   GuardedAsyncStream object can't be awaited`. Async stream users
+   on Phase 4 would have been completely broken. Fix: inline
+   `async def` wrap in `SensorCompletions.create`, plus
+   `GuardedAsyncStream.__aenter__` now awaits a coroutine `_real_fn`
+   return for the OpenAI pattern.
+
+2. **`capture_prompts=True` + streaming = silent post_call drop.**
+   The post_call drain panicked with `Object of type AsyncStream
+   is not JSON serializable` because `extract_content` walked the
+   raw stream object's `__dict__` and the JSON encoder choked on
+   nested httpx state. Anthropic now calls
+   `response.get_final_message()` when available (returns the
+   accumulated `Message` pydantic model with a clean `model_dump`);
+   both providers' `__dict__` fallback now per-field-filters via
+   `json.dumps` so non-serialisable fields drop without poisoning
+   the whole event.
+
+### Smoke scaffolding bugs caught alongside
+
+Four `tests/smoke/` scaffolding bugs that combined into a silent-
+pass failure mode (every target ran in <1s and asserted against
+empty event lists). Fixed via shared `make_sensor_session` helper
+in `conftest.py`:
+
+* `init(SensorConfig(...))` was the wrong signature — public
+  `init` takes kwargs, never a config object.
+* No `flightdeck_sensor.patch()` call, so raw `Anthropic` /
+  `OpenAI` constructors returned unwrapped clients.
+* `fetch_events_for_session` omitted the required `from` query
+  param; the API 400'd and the helper swallowed it as "no events".
+* `init()` is no-op on second call; subsequent tests in a module
+  reused the first test's session_id, polluting assertions.
+
+Helper now `teardown()`s before each `init()`, sets `AGENT_FLAVOR`,
+calls `patch()`, and the events fetch poll-waits for the specific
+event types each test asserts on (`expect_event_types`).
 
 ---
+
+## V6 S-UI rich rendering (Phase 4 polish, post-merge addition)
+
+The contract-level dashboard rendering shipped in PR #28's initial
+push: `EventType` union extended with `embeddings` + `llm_error`,
+badge config + `--event-embeddings` / `--event-error` theme tokens
+landed, structured `LLMErrorPayload` + `StreamingMetrics` interfaces
+defined. The V-pass scoped V6 S-UI surfaces (rich drawer rendering,
+streaming indicators, ERROR TYPE facet) out of the initial ship to
+keep the contract-level PR reviewable; this section covers their
+post-merge addition.
+
+### S-UI-1 — Embeddings drawer row
+
+* Timeline circle: cyan `--event-embeddings` colour + lucide
+  `Database` glyph (distinct from `post_call`'s lightning).
+* Drawer event row: typed `embeddings-event-row-<id>` testid,
+  EMBED badge, detail string `<model> · <N> tok in · <Mms>` (no
+  completion-token segment — embeddings have no generation step).
+* Drawer expanded grid: Model + Tokens input + Latency rows only
+  (no Tokens output / Total tokens — those would mislead).
+
+### S-UI-2 — Streaming indicators on `post_call`
+
+* Detail string: `TTFT <n>ms` segment inserted ahead of tokens +
+  total latency when `payload.streaming` is present. Non-streaming
+  post_calls keep the original three-part shape.
+* `<StreamingPill/>`: inline pill alongside the detail text.
+  `STREAM` (muted lavender) on `final_outcome="completed"`,
+  `ABORTED` (red) on `final_outcome="aborted"`. Native `title`
+  attribute carries `chunks=N · p50=Xms · p95=Yms · max_gap=Zms`,
+  plus `abort_reason=<...>` on the aborted variant.
+* Expanded grid grows TTFT, Chunks, Inter-chunk, and Stream
+  outcome rows when streaming is present.
+
+### S-UI-3 part 1 — `llm_error` event rendering
+
+* Timeline circle: red `--event-error` colour + lucide
+  `CircleAlert` glyph (distinct from `policy_block`'s `XCircle`).
+* Drawer event row: typed `error-event-row-<id>` testid, detail
+  string `<error_type> · <provider_error_code|provider>`.
+* Drawer expanded grid: Model + Error type + Provider + HTTP
+  status + Provider code + Message rows (HTTP status omitted on
+  client-side timeouts where it's null).
+* New `<ErrorEventDetails/>` accordion (separate file, owns its
+  own expand/collapse state): request_id, retry_after as `<n>s`,
+  is_retryable as a `Retryable` / `Not retryable` pill, plus
+  abort_reason + partial_chunks/tokens on stream-error variants.
+  Per-field testids `error-event-detail-<field>-<id>` for granular
+  E2E targeting.
+
+### S-UI-3 part 2 — Investigate ERROR TYPE facet + session-row dot
+
+* Backend extension: `SessionListItem` carries `error_types: []string`
+  aggregated server-side via correlated subquery
+  (`SELECT DISTINCT payload->'error'->>'error_type' FROM events
+  WHERE event_type='llm_error' AND session_id=s.session_id`).
+  Mirrors the `frameworks[]` JSONB-array surfacing shape.
+  Always-present (empty array when no errors) so the dashboard
+  treats it as non-nullable.
+* URL state: `?error_type=` (repeatable) round-trips via
+  `parseUrlState` / `buildUrlParams`; `CLEAR_ALL_FILTERS_PATCH`
+  zeroes it; `buildActiveFilters` emits `error_type:<value>` chips
+  with onRemove. Aux fetch in `doFetch` strips the filter so the
+  facet stays sticky when an error_type is active.
+* Sidebar: ERROR TYPE facet rendered last (after the existing
+  state/agent/flavor/agent-type/model/framework/scalar-context
+  groups), hidden when no visible session has any llm_error
+  events. Per-pill testid `investigate-error-type-pill-<value>`.
+* Session table: red 7px dot inline-left of the StateBadge in the
+  STATE column when `error_types.length > 0`. Tooltip lists the
+  distinct values. Test id
+  `session-row-error-indicator-<session_id>`.
+
+## E2E methodology fix (Phase 3 P1/P2 violation, now corrected)
+
+T01 / T05 / T06 / T09 — four specs shipped in Phase 3 — failed
+locally against any non-sterile dev DB. Root cause: each assumed
+the canonical `e2e-test-*` fixtures would render at the top of the
+Fleet swimlane on initial paint. Under realistic data volume (the
+dev DB accumulates hundreds of agents from prior test runs and
+integration suites) the swimlane's IntersectionObserver-backed
+virtualizer keeps off-screen rows as placeholders without their
+`data-testid`, and the alphabetical IDLE ordering buries the
+canonical fixtures behind random-suffix `e2e-XXXX` agents. The
+specs were only green on a freshly-reset DB.
+
+This violated Phase 3 resilience patterns:
+
+* **P1 (find-my-fixture, not assume-first-row).** T01/T05/T06
+  used `findSwimlaneRow(name)` and asserted visibility without a
+  scroll-into-view step.
+* **P2 (paginate / scroll until found).** T09 counted
+  `[data-testid^="swimlane-agent-row-${E2E_PREFIX}"]` against the
+  virtualizer's currently-mounted-rows window — counts were a
+  fraction of the actual fixture count.
+
+Fix shipped on this branch:
+
+* New `bringSwimlaneRowIntoView(page, agentName)` helper in
+  `dashboard/tests/e2e/_fixtures.ts`. Walks the swimlane's
+  closest scroll-overflow ancestor in chunked `stepPx` increments
+  (default 600 px), polls the DOM after each step, returns the
+  row's locator the moment it mounts.
+* Companion `bringTableRowIntoView` walks `next-page` clicks in
+  the agent table view (capped at 10 pages = 500 rows of
+  headroom).
+* `waitForFleetReady` no longer asserts on a *specific* fixture
+  — it waits for any swimlane or table row to mount, then leaves
+  fixture-by-fixture lookup to the bring-into-view helpers.
+* T01 / T05 / T06 / T09 refactored to use the helpers. T05 also
+  bumps its expected expanded-body session count from 4 to 5 to
+  match the Phase 4 polish addition of the `error-active` role on
+  the coding agent.
+
+Verification: 48/48 E2E pass under both neon-dark and clean-light,
+twice in a row, against the existing polluted dev DB (no
+dev-reset). Real fleet topology test for the first time — the
+previous specs were sterile-environment-only.
+
+This is a Phase 3 methodology miss we're correcting now. Lesson:
+under virtualization, "find by testid" is not the same as "find by
+testid that's currently in the DOM". Future phases adding new
+E2E specs against virtualized lists must either use a
+bring-into-view helper from the start or assert against a
+deterministically-sized API filter that bounds the result set
+before the test interacts with the rendering.
 
 ## Out of scope (deferred, with rationale)
 

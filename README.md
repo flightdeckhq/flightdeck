@@ -59,10 +59,13 @@ To run the sensor from source instead of PyPI: `pip install -e sensor/` from the
 
 ## What it covers
 
-| Provider  | Intercepted resources                                                                      |
-|-----------|--------------------------------------------------------------------------------------------|
-| Anthropic | `messages.create`, `messages.stream`, `beta.messages.create`, `beta.messages.stream` (sync and async) |
-| OpenAI    | `chat.completions.create`, `responses.create`, `embeddings.create` (sync, async, streaming)|
+| Provider  | Chat | Embeddings | Streaming (TTFT/chunks/abort) | Errors |
+|-----------|------|------------|-------------------------------|--------|
+| Anthropic | `messages.create`, `messages.stream`, `beta.messages.create`, `beta.messages.stream` (sync + async) | N/A native — route via litellm → Voyage | sync + async | structured `llm_error` event with 14-entry taxonomy |
+| OpenAI    | `chat.completions.create`, `responses.create` (sync + async) | `embeddings.create` (sync + async) | sync + async | same |
+| litellm   | `litellm.completion`, `litellm.acompletion` (chat path only — KI26 streaming deferred) | `litellm.embedding`, `litellm.aembedding` | sync only (KI26) | same |
+
+Streaming events expose `payload.streaming = {ttft_ms, chunk_count, inter_chunk_ms: {p50, p95, max}, final_outcome, abort_reason}`. Mid-stream aborts emit `llm_error{error_type="stream_error"}` with `partial_chunks` / `partial_tokens_*` so token accounting reflects work done before the failure.
 
 Non-agent resources (`audio`, `images`, `moderations`, `files`, `fine_tuning`, legacy `completions`) are deliberately not intercepted.
 
@@ -70,12 +73,16 @@ Non-agent resources (`audio`, `images`, `moderations`, `files`, `fine_tuning`, l
 
 After `init()` + `patch()`, frameworks that build Anthropic or OpenAI clients internally are intercepted without any user-side wrapping.
 
-| Framework    | Path covered                                                                             |
-|--------------|------------------------------------------------------------------------------------------|
-| LangChain    | `langchain-anthropic` (`ChatAnthropic.invoke`), `langchain-openai` (`ChatOpenAI.invoke`) |
-| LangGraph    | Covered transitively via LangChain. Any graph routing through `ChatAnthropic` or `ChatOpenAI` is intercepted, including `langgraph.prebuilt.create_react_agent` tool loops. |
-| LlamaIndex   | `llama-index-llms-anthropic` and `llama-index-llms-openai` (`.complete`)                 |
-| CrewAI 1.14+ | `LLM(model=...).call()` via the native Anthropic and OpenAI provider classes. Model strings that don't match a native-provider prefix (e.g. `openrouter/`, `deepseek/`) fall through to litellm and inherit the litellm-Anthropic gap above. |
+| Framework        | Chat | Embeddings | Streaming | Errors |
+|------------------|------|------------|-----------|--------|
+| LangChain        | `langchain-anthropic` (`ChatAnthropic.invoke`), `langchain-openai` (`ChatOpenAI.invoke`) | `OpenAIEmbeddings.embed_*` (transitive); Voyage-direct deferred | inherits OpenAI / Anthropic | inherits OpenAI / Anthropic |
+| LangGraph        | Transitive via LangChain — any graph routing through `ChatAnthropic` or `ChatOpenAI`, including `langgraph.prebuilt.create_react_agent` tool loops | inherits LangChain | inherits LangChain | inherits LangChain |
+| LlamaIndex       | `llama-index-llms-anthropic`, `llama-index-llms-openai` (`.complete`) | inherits OpenAI | inherits OpenAI / Anthropic | inherits OpenAI / Anthropic |
+| CrewAI 1.14+     | `LLM(model=...).call()` via the native Anthropic and OpenAI provider classes. Model strings that don't match a native-provider prefix (e.g. `openrouter/`, `deepseek/`) fall through to litellm and inherit the litellm-Anthropic gap above. | inherits OpenAI / litellm | inherits | inherits |
+| Claude Code plugin | observational — every tool use, prompt, and response surfaces in the fleet view | N/A (observational) | N/A (observational) | partial — `stream_error` only when transcript shows unexpected termination |
+| bifrost          | indirect — point the OpenAI client at bifrost's OpenAI-compatible `base_url` | indirect | indirect | indirect |
+
+Per-event ``framework`` field carries the bare name (``langchain``, ``crewai``, ...) populated at sensor ``init()`` from in-process introspection. Higher-level framework wins over SDK transport: a LangChain pipeline routing through litellm routing through OpenAI reports ``framework=langchain``.
 
 ---
 
@@ -83,17 +90,19 @@ After `init()` + `patch()`, frameworks that build Anthropic or OpenAI clients in
 
 ### Live fleet timeline
 
-Every session on one shared time axis, one swim lane per agent flavor and one sub-row per running session. LLM calls, tool uses, policy events, and directives are plotted on the timeline as events arrive. Pause and catch-up controls freeze the scroll without dropping events; the event-type filter bar isolates LLM Calls, Tools, Policy, Directives, or Session events. Provider logos render on LLM call nodes, OS and orchestration icons on session hostnames. Click any event to inspect it inline.
+Every session on one shared time axis, one swim lane per agent and one sub-row per running session. LLM calls, embeddings, tool uses, policy events, structured errors, and directives are plotted on the timeline as events arrive. Pause and catch-up controls freeze the scroll without dropping events; the event-type filter bar isolates LLM Calls, Embeddings, Tools, Policy, Errors, Directives, or Session events. Provider logos render on LLM call nodes, OS and orchestration icons on session hostnames. Click any event to inspect it inline.
+
+Expanding an agent row lists every session for that agent — including sessions older than the live time window — with a "View in Investigate →" link for the full history.
 
 ### Full session inspection
 
-Enable prompt capture to store every call's full payload: system prompt, messages, tool definitions, and model response. Off by default.
+Enable prompt capture to store every call's full payload: system prompt, messages, tool definitions, model response, and embedding inputs. Off by default.
 
 ```python
 flightdeck_sensor.init(server="...", token="...", capture_prompts=True)
 ```
 
-Provider shape is preserved. Anthropic sessions display `system`, `messages`, `tools`, and `response` as separate fields. OpenAI sessions display `messages` (system role included), `tools`, and `response`. No cross-provider normalization.
+Provider shape is preserved. Anthropic sessions display `system`, `messages`, `tools`, and `response` as separate fields. OpenAI sessions display `messages` (system role included), `tools`, and `response`. Embeddings show the request `input` (string or list of strings) in a dedicated viewer. No cross-provider normalization.
 
 ### Runtime context
 
@@ -284,7 +293,7 @@ Two background daemon threads run inside the sensor. `flightdeck-event-queue` dr
 - **`patch()` must run before clients are constructed.** Instances that already accessed `.messages`, `.chat`, `.responses`, or `.embeddings` before `patch()` keep the raw resource cached in `__dict__`. In practice this is a non-issue when `init()` + `patch()` runs at the top of the entrypoint.
 - **One `init()` per process.** A second `init()` is a no-op with a warning. Multi-agent frameworks (CrewAI, LangGraph, etc.) work fine under a single `init()` and shared `AGENT_FLAVOR`. Per-thread Session isolation is not yet supported.
 - **Custom directive handler input validation is yours.** The `parameters` schema used to register a directive drives the dashboard form and the directive fingerprint. It is not enforced at execution time. Validate types inside your handler.
-- **litellm-Anthropic calls are not intercepted.** The sensor patches the Anthropic and OpenAI SDK client classes. litellm's Anthropic provider uses raw httpx directly instead of constructing `anthropic.Anthropic()`, so calls via `litellm.completion(model="anthropic/...")` bypass interception. litellm's OpenAI provider DOES construct `openai.OpenAI()` and IS intercepted, so the gap is asymmetric. Tracked as KI21; v0.4.0 will close the gap via a sensor-side httpx interceptor or `litellm.success_callback`.
+- **litellm streaming events are not intercepted.** The sensor patches `litellm.completion` / `litellm.acompletion` for non-streaming calls and `litellm.embedding` / `litellm.aembedding` for embeddings. Streaming via `litellm.completion(stream=True)` falls through to the underlying provider's stream handling and bypasses the sensor's TTFT / chunk / abort accounting. Non-streaming chat calls and embeddings round-trip cleanly. Tracked on the Roadmap below.
 
 ---
 
@@ -422,12 +431,31 @@ The ~20 values an operator is most likely to override. See `helm/values.yaml` fo
 
 ---
 
+## What Flightdeck is NOT
+
+Set expectations early so the boundaries are clear:
+
+- **Not a proxy.** Flightdeck never intercepts LLM traffic on the network. The sensor wraps the SDK client classes inside the agent's own process; calls go directly to the provider as before. Nothing routes through Flightdeck.
+- **Not a content inspector by default.** Prompt and embedding-input capture is opt-in (``capture_prompts=True``). With capture off, event payloads carry token counts, model names, latency, framework, and tool names only — no message content, no system prompts, no tool inputs or outputs, no response text.
+- **Not an orchestrator.** Flightdeck observes; it does not decide what an agent should do next. Directives (kill switch, model swap, custom handlers) are explicit operator actions, not autonomous control.
+- **Not a billing system.** ``estimated_cost`` is an approximation from public list prices. Volume discounts, enterprise commitments, negotiated rates, and cache-token rebates beyond the published ratio are not reflected. Treat the cost chart as a sanity check, never as an invoice.
+- **Not a notification platform.** No Slack, email, or PagerDuty integrations. That class of feature is post-launch.
+- **Not multi-tenant SaaS.** Self-hosted only. One deployment, one tenant.
+- **Not an LLM gateway.** No model substitution, no caching layer, no retries injected by Flightdeck. The sensor enforces budgets your agents already know about.
+
+---
+
 ## Roadmap
 
-Tracked post-v0.4.0 work. Prioritized when users tell us which matters most.
+Tracked post-v0.5.0 work. Prioritized when users tell us which matters most.
 
-- Production deployment hardening (NATS authentication, Helm chart polish, nginx rate limiting)
-- Comprehensive framework coverage — streaming and embeddings across all sensors, native interception for CrewAI, LangChain, LangGraph, LlamaIndex, AutoGen (current state: detection only; traffic flows through Anthropic / OpenAI SDK patches)
+- **Phase 5 — MCP first-class support.** Treat Model Context Protocol calls as a first-class event surface alongside chat and embeddings. Cover MCP server lifecycle, tool inventory, per-tool latency, and structured error events for MCP transports.
+- **Phase 6 — sub-agent observability.** First-class events for sub-agent spawn, hand-off, and join across CrewAI / LangGraph / AutoGen multi-agent topologies. Render parent / child relationships in the fleet timeline.
+- **Phase 7a — landing page + agent detail.** Per-agent deep-link page (today's Investigate filter is the closest equivalent). Token / latency / error trends per agent over rolling windows.
+- **Phase 8 — framework verification matrix.** Continuous live-API smoke tests across every supported framework on a schedule, not just on PR. Catches SDK class-rename breakage (anthropic ``RateLimitError`` → ``QuotaError`` etc.) before users hit it.
+- **Phase 9 — launch polish.** Production deployment hardening (NATS authentication, Helm chart polish, nginx rate limiting, dashboard auth), litellm streaming interception, native LangChain Voyage embeddings, native LlamaIndex / CrewAI dedicated interceptors where transitive coverage falls short.
+
+The roadmap is intentionally loose. User demand reorders priorities; "Phase N" labels are sequencing hints, not commitments.
 
 ---
 

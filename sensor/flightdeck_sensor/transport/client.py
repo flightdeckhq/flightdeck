@@ -15,6 +15,8 @@ import urllib.request
 from typing import Any, Callable
 from urllib.error import HTTPError, URLError
 
+from pydantic import ValidationError
+
 from flightdeck_sensor.core.exceptions import DirectiveError
 from flightdeck_sensor.core.types import Directive, DirectiveAction
 from flightdeck_sensor.transport.retry import with_retry
@@ -100,8 +102,6 @@ class ControlPlaneClient:
             method="POST",
         )
         try:
-            from pydantic import ValidationError
-
             from flightdeck_sensor.core.schemas import SyncResponseSchema
 
             with urllib.request.urlopen(req, timeout=_STARTUP_TIMEOUT_SECS) as resp:
@@ -214,8 +214,6 @@ class ControlPlaneClient:
         if raw is None:
             return None
         try:
-            from pydantic import ValidationError
-
             try:
                 parsed = DirectiveResponseSchema.model_validate(raw)
             except ValidationError as ve:

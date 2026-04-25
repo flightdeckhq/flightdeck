@@ -18,6 +18,8 @@ import urllib.request
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
+from pydantic import ValidationError
+
 from flightdeck_sensor.core.policy import PolicyCache
 from flightdeck_sensor.core.types import (
     Directive,
@@ -292,8 +294,6 @@ class Session:
             )
             with urllib.request.urlopen(req, timeout=_PREFLIGHT_TIMEOUT_SECS) as resp:
                 data = json.loads(resp.read().decode())
-                from pydantic import ValidationError
-
                 from flightdeck_sensor.core.schemas import PolicyResponseSchema
 
                 try:
@@ -439,7 +439,6 @@ class Session:
         from flightdeck_sensor.core.schemas import DirectivePayloadSchema
 
         try:
-            from pydantic import ValidationError
             parsed_payload = DirectivePayloadSchema.model_validate(directive.payload)
             name = parsed_payload.directive_name
             fingerprint = parsed_payload.fingerprint

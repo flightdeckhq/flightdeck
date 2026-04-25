@@ -11,8 +11,16 @@ _T = TypeVar("_T")
 
 _log = logging.getLogger("flightdeck_sensor.transport.retry")
 
-_DEFAULT_MAX_ATTEMPTS = 3
-_DEFAULT_BACKOFF_BASE = 0.5
+# Phase 4.5 M-7: tighten retry budget so the event-drain thread (the
+# only background thread in the sensor, per Rule 32) is not blocked
+# for >0.25s on transient failures. Worst-case blocking is one sleep
+# of ``_DEFAULT_BACKOFF_BASE`` between two attempts. Pre-fix this was
+# 3 attempts with 0.5s base → up to 1.5s blocked, long enough to fill
+# the 1000-slot event queue under hot-path emission and start
+# dropping events. Tighter budget fails fast, drops fewer events
+# in steady-state failure conditions.
+_DEFAULT_MAX_ATTEMPTS = 2
+_DEFAULT_BACKOFF_BASE = 0.25
 
 
 def with_retry(
@@ -51,6 +59,9 @@ def with_retry(
                     exc,
                 )
                 time.sleep(delay)
-    # Should never reach here without last_exc being set, but mypy needs the assert.
-    assert last_exc is not None
+    # Unreachable: the loop either returns or sets ``last_exc`` and
+    # falls through. M-6 rationale: explicit RuntimeError rather than
+    # ``assert`` so behaviour is stable under ``python -O``.
+    if last_exc is None:
+        raise RuntimeError("with_retry exhausted attempts without recording an exception")
     raise last_exc

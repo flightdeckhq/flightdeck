@@ -591,6 +591,14 @@ definitions:
         type: string
       host:
         type: string
+      last_seen_at:
+        description: |-
+          LastSeenAt is the most-recent activity timestamp on the session.
+          For active/idle/stale/lost: max(events.occurred_at), projected
+          through the worker's last_seen_at column. For closed: aligned
+          with ended_at. Drives the Investigate "Last Seen" column
+          (S-TBL-1) and is sortable via ?sort=last_seen_at.
+        type: string
       model:
         type: string
       policy_event_types:
@@ -1597,7 +1605,8 @@ paths:
         name: policy_event_type
         type: string
       - description: 'Sort field: started_at, last_seen_at, duration, tokens_used,
-          flavor, model, hostname (default: started_at)'
+          flavor, model, hostname, state (default: started_at). state sort uses severity
+          ordinal active→idle→stale→lost→closed.'
         in: query
         name: sort
         type: string

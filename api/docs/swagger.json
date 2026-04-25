@@ -1352,7 +1352,7 @@
                     },
                     {
                         "type": "string",
-                        "description": "Sort field: started_at, last_seen_at, duration, tokens_used, flavor, model, hostname (default: started_at)",
+                        "description": "Sort field: started_at, last_seen_at, duration, tokens_used, flavor, model, hostname, state (default: started_at). state sort uses severity ordinal active→idle→stale→lost→closed.",
                         "name": "sort",
                         "in": "query"
                     },
@@ -2321,6 +2321,10 @@
                     "type": "string"
                 },
                 "host": {
+                    "type": "string"
+                },
+                "last_seen_at": {
+                    "description": "LastSeenAt is the most-recent activity timestamp on the session.\nFor active/idle/stale/lost: max(events.occurred_at), projected\nthrough the worker's last_seen_at column. For closed: aligned\nwith ended_at. Drives the Investigate \"Last Seen\" column\n(S-TBL-1) and is sortable via ?sort=last_seen_at.",
                     "type": "string"
                 },
                 "model": {

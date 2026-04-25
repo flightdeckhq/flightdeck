@@ -160,6 +160,12 @@ type SessionListItem struct {
 	State          string                 `json:"state"`
 	StartedAt      time.Time              `json:"started_at"`
 	EndedAt        *time.Time             `json:"ended_at"`
+	// LastSeenAt is the most-recent activity timestamp on the session.
+	// For active/idle/stale/lost: max(events.occurred_at), projected
+	// through the worker's last_seen_at column. For closed: aligned
+	// with ended_at. Drives the Investigate "Last Seen" column
+	// (S-TBL-1) and is sortable via ?sort=last_seen_at.
+	LastSeenAt     time.Time              `json:"last_seen_at"`
 	DurationS      float64                `json:"duration_s"`
 	TokensUsed     int                    `json:"tokens_used"`
 	TokenLimit     *int64                 `json:"token_limit"`
@@ -215,6 +221,20 @@ var allowedSorts = map[string]string{
 	"flavor":       "s.flavor",
 	"model":        "s.model",
 	"hostname":     "COALESCE(s.host, s.context->>'hostname', '')",
+	// State sort uses a custom severity ordinal (S-TBL-2): ascending
+	// orders most-needs-attention first (active → idle → stale → lost
+	// → closed). Descending reverses. CASE expression maps each state
+	// to its ordinal so ORDER BY uses the lifecycle severity, not
+	// alphabetical. Any state outside the documented vocabulary maps
+	// to 99 so unexpected rows fall to the bottom regardless of
+	// direction.
+	"state": "CASE s.state " +
+		"WHEN 'active'  THEN 0 " +
+		"WHEN 'idle'    THEN 1 " +
+		"WHEN 'stale'   THEN 2 " +
+		"WHEN 'lost'    THEN 3 " +
+		"WHEN 'closed'  THEN 4 " +
+		"ELSE 99 END",
 }
 
 // GetSessions returns sessions matching the given filters with pagination.
@@ -449,6 +469,7 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 			s.state,
 			s.started_at,
 			s.ended_at,
+			s.last_seen_at,
 			EXTRACT(EPOCH FROM (COALESCE(s.ended_at, NOW()) - s.started_at)) AS duration_s,
 			s.tokens_used,
 			s.token_limit,
@@ -509,6 +530,7 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 			&item.State,
 			&item.StartedAt,
 			&item.EndedAt,
+			&item.LastSeenAt,
 			&item.DurationS,
 			&item.TokensUsed,
 			&item.TokenLimit,

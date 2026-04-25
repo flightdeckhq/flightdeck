@@ -27,6 +27,7 @@ import { ClaudeCodeLogo } from "@/components/ui/claude-code-logo";
 import { CodingAgentBadge } from "@/components/ui/coding-agent-badge";
 import { getProvider, isClaudeCodeSession } from "@/lib/models";
 import { truncateSessionId } from "@/lib/events";
+import { formatRelativeTime } from "@/lib/time";
 import { cn } from "@/lib/utils";
 
 // ---------------------------------------------------------------------------
@@ -136,15 +137,18 @@ const COL_WIDTHS = {
   // (supervisor: "don't let it grow"); the percent columns divide the
   // remaining space the usual way.
   session: "100px",
-  flavor: "16%",
-  hostname: "13%",
+  flavor: "14%",
+  hostname: "11%",
   os: "4%",
   orch: "4%",
-  model: "14%",
-  started: "13%",
-  duration: "8%",
-  tokens: "8%",
-  capture: "8%",
+  model: "12%",
+  started: "11%",
+  // S-TBL-1 last-seen column. Mirrors started_at width so the relative
+  // labels render at the same length under typical session ages.
+  lastSeen: "11%",
+  duration: "7%",
+  tokens: "7%",
+  capture: "7%",
   state: "12%",
 };
 
@@ -1650,6 +1654,14 @@ export function Investigate() {
                   </th>
                   <th
                     className="group cursor-pointer uppercase transition-colors duration-150 hover:text-text"
+                    style={{ color: "var(--text-muted)", fontSize: 10, fontWeight: 600, letterSpacing: "0.07em", padding: "0 12px", width: COL_WIDTHS.lastSeen }}
+                    onClick={() => handleSort("last_seen_at")}
+                    data-testid="investigate-th-last-seen"
+                  >
+                    Last seen{sortArrow("last_seen_at")}
+                  </th>
+                  <th
+                    className="group cursor-pointer uppercase transition-colors duration-150 hover:text-text"
                     style={{ color: "var(--text-muted)", fontSize: 10, fontWeight: 600, letterSpacing: "0.07em", padding: "0 12px", width: COL_WIDTHS.duration }}
                     onClick={() => handleSort("duration")}
                   >
@@ -1691,10 +1703,12 @@ export function Investigate() {
                     </div>
                   </th>
                   <th
-                    className="uppercase"
+                    className="group cursor-pointer uppercase transition-colors duration-150 hover:text-text"
                     style={{ color: "var(--text-muted)", fontSize: 10, fontWeight: 600, letterSpacing: "0.07em", padding: "0 12px", width: COL_WIDTHS.state }}
+                    onClick={() => handleSort("state")}
+                    data-testid="investigate-th-state"
                   >
-                    State
+                    State{sortArrow("state")}
                   </th>
                 </tr>
               </thead>
@@ -1776,6 +1790,22 @@ export function Investigate() {
                         hour: "2-digit",
                         minute: "2-digit",
                       })}
+                    </td>
+                    <td
+                      className="whitespace-nowrap"
+                      style={{ padding: "0 12px", width: COL_WIDTHS.lastSeen, fontSize: 12, color: "var(--text-secondary)", fontVariantNumeric: "tabular-nums" }}
+                      data-testid={`investigate-row-last-seen-${s.session_id}`}
+                    >
+                      <TooltipProvider>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <span>{formatRelativeTime(s.last_seen_at)}</span>
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            {new Date(s.last_seen_at).toLocaleString()}
+                          </TooltipContent>
+                        </Tooltip>
+                      </TooltipProvider>
                     </td>
                     <td style={{ padding: "0 12px", width: COL_WIDTHS.duration, fontSize: 12, color: "var(--text-secondary)", fontVariantNumeric: "tabular-nums", fontFamily: "var(--font-mono)" }}>
                       {formatDuration(s.duration_s)}

@@ -198,6 +198,14 @@ export function Timeline({
       }
     }
     return false;
+    // Phase 4.5 M-29 justification: ``sessionVersions`` is the
+    // membership-change signal; flavors[].sessions[].events identity
+    // changes via the same per-session version bump, so deps are
+    // funnelled through ``sessionVersions`` rather than the deep
+    // event arrays. Adding the deep ``events`` would be either
+    // wrong (no membership change → no re-fire) or redundant
+    // (covered by versions). ``startMs`` derives from
+    // ``scaleEndMs`` and ``rangeMs`` already in deps.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [flavors, sessionVersions, scaleEndMs, rangeMs]);
 

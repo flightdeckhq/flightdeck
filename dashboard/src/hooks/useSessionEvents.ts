@@ -26,7 +26,13 @@ const fetchedSessions = new Set<string>();
 export function useSessionEvents(sessionId: string, _isActive = false, version = 0) {
   const [, setTick] = useState(0);
 
-  // Read from cache — re-reads when version changes
+  // Read from cache — re-reads when version changes.
+  // Phase 4.5 M-29 justification: ``eventsCache`` is a module-level
+  // Map; its identity never changes, but its contents are mutated
+  // in place. ``version`` bumps signal content changes (incremented
+  // by the WebSocket ingestion path). Adding eventsCache to deps
+  // would do nothing useful (stable identity) and adding
+  // ``eventsCache.get(sessionId)`` would re-read on every render.
   const events = useMemo(
     () => eventsCache.get(sessionId) ?? [],
     // eslint-disable-next-line react-hooks/exhaustive-deps

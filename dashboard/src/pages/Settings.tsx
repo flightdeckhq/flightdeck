@@ -7,6 +7,7 @@ import {
   deleteAccessToken,
   renameAccessToken,
 } from "@/lib/api";
+import { SUCCESS_MESSAGE_DISPLAY_MS } from "@/lib/constants";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import {
@@ -643,7 +644,7 @@ function CreatedStep({
     try {
       await navigator.clipboard.writeText(token.token);
       setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      setTimeout(() => setCopied(false), SUCCESS_MESSAGE_DISPLAY_MS);
     } catch {
       /* Clipboard API can fail under http://non-localhost or in
          sandboxed iframes. Leave the token visible so the user can

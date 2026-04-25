@@ -20,6 +20,7 @@ import { Button } from "@/components/ui/button";
 import { SessionStateBar } from "./SessionStateBar";
 import { PolicyEventList } from "./PolicyEventList";
 import { createDirective } from "@/lib/api";
+import { SUCCESS_MESSAGE_DISPLAY_MS } from "@/lib/constants";
 import { flavorHasDirectiveCapableSession } from "@/lib/directives";
 import { ClaudeCodeLogo } from "@/components/ui/claude-code-logo";
 import { CodingAgentBadge } from "@/components/ui/coding-agent-badge";
@@ -677,7 +678,7 @@ function FlavorItem({
       markFlavorShuttingDown(flavor.flavor);
       setSent(true);
       setDialogOpen(false);
-      setTimeout(() => setSent(false), 2000);
+      setTimeout(() => setSent(false), SUCCESS_MESSAGE_DISPLAY_MS);
     } catch (e) {
       setError((e as Error).message);
     } finally {

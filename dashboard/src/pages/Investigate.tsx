@@ -28,6 +28,7 @@ import { CodingAgentBadge } from "@/components/ui/coding-agent-badge";
 import { getProvider, isClaudeCodeSession } from "@/lib/models";
 import { truncateSessionId } from "@/lib/events";
 import { formatRelativeTime } from "@/lib/time";
+import { INVESTIGATE_DEFAULT_LOOKBACK_MS } from "@/lib/constants";
 import { cn } from "@/lib/utils";
 
 // ---------------------------------------------------------------------------
@@ -41,7 +42,7 @@ export function parseUrlState(sp: URLSearchParams) {
     : 25;
   return {
     q: sp.get("q") ?? "",
-    from: sp.get("from") ?? new Date(Date.now() - 7 * 86400000).toISOString(),
+    from: sp.get("from") ?? new Date(Date.now() - INVESTIGATE_DEFAULT_LOOKBACK_MS).toISOString(),
     to: sp.get("to") ?? new Date().toISOString(),
     states: sp.getAll("state") as SessionState[],
     flavors: sp.getAll("flavor"),

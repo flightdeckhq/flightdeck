@@ -18,7 +18,14 @@ const WS_URL =
  * onEvent callback fires when a new event arrives via WebSocket.
  */
 export function useFleet(onEvent?: (event: AgentEvent) => void) {
-  const { load, applyUpdate, flavors, loading, error } = useFleetStore();
+  // Phase 4.5 M-18: per-field selectors so a fleet-store mutation
+  // that does not change one of the consumed fields skips this
+  // hook's downstream consumers (and thus their re-render).
+  const load = useFleetStore((s) => s.load);
+  const applyUpdate = useFleetStore((s) => s.applyUpdate);
+  const flavors = useFleetStore((s) => s.flavors);
+  const loading = useFleetStore((s) => s.loading);
+  const error = useFleetStore((s) => s.error);
 
   useEffect(() => {
     void load();

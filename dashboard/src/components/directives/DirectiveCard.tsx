@@ -20,6 +20,7 @@ import type {
   CustomDirectiveParameter,
 } from "@/lib/types";
 import { triggerCustomDirective } from "@/lib/api";
+import { SUCCESS_MESSAGE_DISPLAY_MS } from "@/lib/constants";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -85,7 +86,7 @@ export function DirectiveCard({
           directive.parameters.length > 0 ? params : undefined,
       });
       setSent(true);
-      setTimeout(() => setSent(false), 2000);
+      setTimeout(() => setSent(false), SUCCESS_MESSAGE_DISPLAY_MS);
     } catch (e) {
       setSubmitError((e as Error).message);
     } finally {

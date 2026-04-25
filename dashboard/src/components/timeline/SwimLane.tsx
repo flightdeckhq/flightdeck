@@ -814,6 +814,14 @@ function AggregatedSessionEvents({
         directiveStatus: event.payload?.directive_status,
         isAttachment: isAttachmentStartEvent(event, attachments),
       }));
+    // Phase 4.5 M-29 justification: ``attachments`` is intentionally
+    // omitted; the memo re-runs only when ``events`` / ``scale`` /
+    // ``session.session_id`` / ``version`` change. ``attachments``
+    // identity flips on every render of the parent SwimLane — adding
+    // it to the dep array thrashes the memo. The single field we
+    // read from it (``isAttachmentStartEvent`` lookup) is a function
+    // of ``events`` and stable reference equality of the attachments
+    // entries, so events-as-dep is sufficient in practice.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [events, scale, session.session_id, version]);
 

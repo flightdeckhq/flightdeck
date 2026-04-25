@@ -7,6 +7,7 @@ import { TruncatedText } from "@/components/ui/TruncatedText";
 import { CodingAgentBadge } from "@/components/ui/coding-agent-badge";
 import { ClaudeCodeLogo } from "@/components/ui/claude-code-logo";
 import { bucketFor } from "@/lib/fleet-ordering";
+import { INVESTIGATE_DEFAULT_LOOKBACK_MS } from "@/lib/constants";
 
 /**
  * Sortable column whitelist for the agent table. Mirrors the
@@ -353,7 +354,7 @@ export function AgentTable({
                 // URL looking filter-less to users who then wondered
                 // why it wasn't showing every session. Matching
                 // Investigate's default keeps the URL self-describing.
-                const from = new Date(Date.now() - 7 * 86400000).toISOString();
+                const from = new Date(Date.now() - INVESTIGATE_DEFAULT_LOOKBACK_MS).toISOString();
                 const to = new Date().toISOString();
                 const sp = new URLSearchParams();
                 sp.set("from", from);

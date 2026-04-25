@@ -134,3 +134,22 @@ export const TIMELINE_RANGE_MS: Record<string, number> = {
   "30m": 1_800_000,
   "1h": 3_600_000,
 };
+
+/**
+ * Default lookback window for the Investigate page on first
+ * mount. Phase 4.5 L-20: previously hardcoded as ``7 * 24 * 3600
+ * * 1000`` in two places (Investigate.tsx and AgentTable.tsx)
+ * which let the two surfaces drift if either was tweaked. This
+ * constant is the single source of truth.
+ */
+export const INVESTIGATE_DEFAULT_LOOKBACK_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * Display duration for ephemeral success / completion toasts and
+ * inline acknowledgements (DirectiveCard "Saved", FleetPanel
+ * "Stopping...", SessionDrawer "Acknowledged", Settings "Token
+ * created"). Phase 4.5 L-21: extracted from four scattered inline
+ * ``setTimeout(..., 2000)`` calls so a UX tuning that wants 1500
+ * or 3000 ms changes ONE place.
+ */
+export const SUCCESS_MESSAGE_DISPLAY_MS = 2000;

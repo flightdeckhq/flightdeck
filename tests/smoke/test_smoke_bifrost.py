@@ -17,23 +17,14 @@ import pytest
 
 from tests.smoke.conftest import (
     fetch_events_for_session,
+    make_sensor_session,
     require_env,
     wait_for_dev_stack,
 )
 
 
 def _sensor_session():
-    import flightdeck_sensor as fd
-    from flightdeck_sensor.core.types import SensorConfig
-    cfg = SensorConfig(
-        server="http://localhost:4000/ingest",
-        token="tok_dev",
-        agent_flavor="smoke-bifrost",
-        agent_type="production",
-        capture_prompts=True,
-    )
-    fd.init(cfg)
-    return fd._session  # type: ignore[attr-defined]
+    return make_sensor_session(flavor="smoke-bifrost")
 
 
 @pytest.fixture(scope="module", autouse=True)

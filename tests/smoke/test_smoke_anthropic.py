@@ -17,24 +17,14 @@ import pytest
 
 from tests.smoke.conftest import (
     fetch_events_for_session,
+    make_sensor_session,
     require_env,
     wait_for_dev_stack,
 )
 
 
 def _sensor_session():
-    """Spin up a sensor bound to the dev stack. Returns the session."""
-    import flightdeck_sensor as fd
-    from flightdeck_sensor.core.types import SensorConfig
-    cfg = SensorConfig(
-        server="http://localhost:4000/ingest",
-        token="tok_dev",
-        agent_flavor="smoke-anthropic",
-        agent_type="production",
-        capture_prompts=True,
-    )
-    fd.init(cfg)
-    return fd._session  # type: ignore[attr-defined]
+    return make_sensor_session(flavor="smoke-anthropic")
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -52,7 +42,9 @@ def test_anthropic_non_stream_chat_completion() -> None:
         max_tokens=16,
         messages=[{"role": "user", "content": "say the word 'ok'"}],
     )
-    events = fetch_events_for_session(sess.config.session_id)
+    events = fetch_events_for_session(
+        sess.config.session_id, expect_event_types=["post_call"],
+    )
     assert any(e["event_type"] == "post_call" for e in events), events
 
 
@@ -67,7 +59,9 @@ def test_anthropic_sync_streaming_ttft_captured() -> None:
     ) as stream:
         for _ in stream:
             pass
-    events = fetch_events_for_session(sess.config.session_id)
+    events = fetch_events_for_session(
+        sess.config.session_id, expect_event_types=["post_call"],
+    )
     streamed = [
         e for e in events
         if e["event_type"] == "post_call"
@@ -92,7 +86,9 @@ def test_anthropic_async_streaming_ttft_captured() -> None:
                 pass
 
     asyncio.run(run())
-    events = fetch_events_for_session(sess.config.session_id)
+    events = fetch_events_for_session(
+        sess.config.session_id, expect_event_types=["post_call"],
+    )
     streamed = [
         e for e in events
         if e["event_type"] == "post_call"
@@ -111,7 +107,9 @@ def test_anthropic_invalid_model_emits_llm_error() -> None:
             max_tokens=16,
             messages=[{"role": "user", "content": "hello"}],
         )
-    events = fetch_events_for_session(sess.config.session_id)
+    events = fetch_events_for_session(
+        sess.config.session_id, expect_event_types=["llm_error"],
+    )
     errors = [e for e in events if e["event_type"] == "llm_error"]
     assert errors, f"no llm_error observed; events={events!r}"
     err = errors[-1]["payload"]["error"]

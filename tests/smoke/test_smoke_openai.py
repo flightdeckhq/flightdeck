@@ -12,23 +12,14 @@ import pytest
 
 from tests.smoke.conftest import (
     fetch_events_for_session,
+    make_sensor_session,
     require_env,
     wait_for_dev_stack,
 )
 
 
 def _sensor_session():
-    import flightdeck_sensor as fd
-    from flightdeck_sensor.core.types import SensorConfig
-    cfg = SensorConfig(
-        server="http://localhost:4000/ingest",
-        token="tok_dev",
-        agent_flavor="smoke-openai",
-        agent_type="production",
-        capture_prompts=True,
-    )
-    fd.init(cfg)
-    return fd._session  # type: ignore[attr-defined]
+    return make_sensor_session(flavor="smoke-openai")
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -46,7 +37,9 @@ def test_openai_non_stream_chat() -> None:
         max_tokens=16,
         messages=[{"role": "user", "content": "say ok"}],
     )
-    events = fetch_events_for_session(sess.config.session_id)
+    events = fetch_events_for_session(
+        sess.config.session_id, expect_event_types=["post_call"],
+    )
     assert any(e["event_type"] == "post_call" for e in events), events
 
 
@@ -58,7 +51,9 @@ def test_openai_embeddings_emits_embeddings_event() -> None:
         model="text-embedding-3-small",
         input=["phase 4 smoke test"],
     )
-    events = fetch_events_for_session(sess.config.session_id)
+    events = fetch_events_for_session(
+        sess.config.session_id, expect_event_types=["embeddings"],
+    )
     embeds = [e for e in events if e["event_type"] == "embeddings"]
     assert embeds, f"no embeddings event observed; events={events!r}"
 
@@ -77,7 +72,9 @@ def test_openai_sync_stream_carries_ttft() -> None:
     with stream as s:
         for _ in s:
             pass
-    events = fetch_events_for_session(sess.config.session_id)
+    events = fetch_events_for_session(
+        sess.config.session_id, expect_event_types=["post_call"],
+    )
     streamed = [
         e for e in events
         if e["event_type"] == "post_call"
@@ -103,7 +100,9 @@ def test_openai_async_stream_carries_ttft() -> None:
                 pass
 
     asyncio.run(run())
-    events = fetch_events_for_session(sess.config.session_id)
+    events = fetch_events_for_session(
+        sess.config.session_id, expect_event_types=["post_call"],
+    )
     streamed = [
         e for e in events
         if e["event_type"] == "post_call"
@@ -125,7 +124,9 @@ def test_openai_auth_error_classifies_correctly() -> None:
             max_tokens=4,
             messages=[{"role": "user", "content": "hi"}],
         )
-    events = fetch_events_for_session(sess.config.session_id)
+    events = fetch_events_for_session(
+        sess.config.session_id, expect_event_types=["llm_error"],
+    )
     errors = [e for e in events if e["event_type"] == "llm_error"]
     assert errors, f"no llm_error observed; events={events!r}"
     assert errors[-1]["payload"]["error"]["error_type"] == "authentication"

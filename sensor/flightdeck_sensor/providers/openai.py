@@ -140,16 +140,55 @@ class OpenAIProvider:
         self,
         request_kwargs: dict[str, Any],
         response: Any,
+        event_type: Any = None,
     ) -> PromptContent | None:
         """Extract full prompt payload for storage.
 
         Returns ``None`` when capture_prompts is False. Never raises.
         OpenAI has no separate system field -- system role is in messages.
+
+        Phase 4 polish: when ``event_type == EventType.EMBEDDINGS``
+        the request shape is ``{"input": <str | list[str]>, "model":
+        ...}`` -- there are no messages, system, tools, or generated
+        response content (the response is just an array of vectors,
+        which is opaque to operators and not stored). The captured
+        ``PromptContent`` carries the input string/list under
+        ``input`` and leaves the chat slots empty so the dashboard's
+        ``EmbeddingsContentViewer`` can render it distinctly from a
+        chat prompt.
         """
         if not self._capture_prompts:
             return None
         try:
             from datetime import datetime, timezone
+            # Lazy import keeps the typing TYPE_CHECKING contract on
+            # ``Provider.extract_content`` honest while letting the
+            # runtime branch on the enum value.
+            from flightdeck_sensor.core.types import EventType
+
+            now_iso = datetime.now(timezone.utc).isoformat()
+            model = request_kwargs.get("model", "")
+
+            if event_type == EventType.EMBEDDINGS:
+                # Embedding response is an opaque vector array; per
+                # the Phase 4 polish V-pass decision, response stays
+                # an empty dict because vectors aren't useful in a
+                # "what did the model see" content panel and would
+                # bloat event_content rows. Token accounting lives
+                # on the event row's ``tokens_input`` field; no
+                # duplication needed.
+                return PromptContent(
+                    system=None,
+                    messages=[],
+                    tools=None,
+                    response={},
+                    provider="openai",
+                    model=model,
+                    session_id="",
+                    event_id="",
+                    captured_at=now_iso,
+                    input=request_kwargs.get("input"),
+                )
 
             resp_dict: dict[str, Any] = {}
             if hasattr(response, "model_dump"):
@@ -181,10 +220,10 @@ class OpenAIProvider:
                 tools=request_kwargs.get("tools"),
                 response=resp_dict,
                 provider="openai",
-                model=request_kwargs.get("model", ""),
+                model=model,
                 session_id="",  # Filled by caller
                 event_id="",  # Filled by caller
-                captured_at=datetime.now(timezone.utc).isoformat(),
+                captured_at=now_iso,
             )
         except Exception:
             _log.debug("extract_content failed", exc_info=True)

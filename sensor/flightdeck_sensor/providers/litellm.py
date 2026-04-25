@@ -100,17 +100,43 @@ class LitellmProvider:
         self,
         request_kwargs: dict[str, Any],
         response: Any,
+        event_type: Any = None,
     ) -> PromptContent | None:
         """Extract full prompt payload for storage.
 
         Returns ``None`` when ``capture_prompts`` is False. litellm has
         no separate system field -- system role (when present) is in
         the messages list, same as OpenAI. Never raises.
+
+        Phase 4 polish: when ``event_type == EventType.EMBEDDINGS``
+        the request is ``litellm.embedding(model=..., input=<str |
+        list[str]>)``; capture the input parameter into
+        ``PromptContent.input`` and leave the chat-shaped slots
+        empty. Mirrors the OpenAI provider's embeddings branch --
+        the dashboard renders both via ``EmbeddingsContentViewer``.
         """
         if not self._capture_prompts:
             return None
         try:
             from datetime import datetime, timezone
+            from flightdeck_sensor.core.types import EventType
+
+            now_iso = datetime.now(timezone.utc).isoformat()
+            model = request_kwargs.get("model", "")
+
+            if event_type == EventType.EMBEDDINGS:
+                return PromptContent(
+                    system=None,
+                    messages=[],
+                    tools=None,
+                    response={},
+                    provider="litellm",
+                    model=model,
+                    session_id="",
+                    event_id="",
+                    captured_at=now_iso,
+                    input=request_kwargs.get("input"),
+                )
 
             resp_dict: dict[str, Any] = {}
             if hasattr(response, "model_dump"):
@@ -126,10 +152,10 @@ class LitellmProvider:
                 tools=request_kwargs.get("tools"),
                 response=resp_dict,
                 provider="litellm",
-                model=request_kwargs.get("model", ""),
+                model=model,
                 session_id="",
                 event_id="",
-                captured_at=datetime.now(timezone.utc).isoformat(),
+                captured_at=now_iso,
             )
         except Exception:
             _log.debug("extract_content failed", exc_info=True)

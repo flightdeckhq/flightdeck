@@ -739,7 +739,7 @@ def _post_call(
     content_dict: dict[str, Any] | None = None
     has_content = False
     if session.config.capture_prompts and call_kwargs is not None:
-        pc = provider.extract_content(call_kwargs, response)
+        pc = provider.extract_content(call_kwargs, response, event_type=event_type)
         if pc is not None:
             pc.session_id = session.config.session_id
             has_content = True
@@ -753,6 +753,10 @@ def _post_call(
                 "session_id": pc.session_id,
                 "event_id": pc.event_id,
                 "captured_at": pc.captured_at,
+                # Phase 4 polish: ``input`` is populated only on
+                # embeddings events; chat events leave it None and
+                # the field drops via the dashboard's optional read.
+                "input": pc.input,
             }
 
     # Atomically increment the session token counter and capture the

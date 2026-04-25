@@ -107,11 +107,22 @@ class AnthropicProvider:
         self,
         request_kwargs: dict[str, Any],
         response: Any,
+        event_type: Any = None,
     ) -> PromptContent | None:
         """Extract full prompt payload for storage.
 
         Returns ``None`` when capture_prompts is False. Never raises.
         Preserves Anthropic terminology: ``system`` as a separate field.
+
+        ``event_type`` is accepted for protocol symmetry with the
+        OpenAI / litellm providers (Phase 4 polish: per-event-type
+        content extraction). Anthropic has no native embeddings API
+        in this SDK -- users go via litellm → Voyage. So no
+        EMBEDDINGS branch here; if a caller ever passes that
+        event_type the chat-shaped extraction runs and ``messages``
+        will be empty, which the dashboard's
+        ``EmbeddingsContentViewer`` handles via the has_content=false
+        branch.
         """
         if not self._capture_prompts:
             return None

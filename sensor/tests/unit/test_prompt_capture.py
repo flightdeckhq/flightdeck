@@ -6,7 +6,9 @@ from dataclasses import dataclass
 from typing import Any
 from unittest.mock import MagicMock
 
+from flightdeck_sensor.core.types import EventType
 from flightdeck_sensor.providers.anthropic import AnthropicProvider
+from flightdeck_sensor.providers.litellm import LitellmProvider
 from flightdeck_sensor.providers.openai import OpenAIProvider
 
 
@@ -137,3 +139,125 @@ def test_capture_on_event_payload_has_content() -> None:
 
     assert payload["has_content"] is True
     assert payload["content"]["provider"] == "anthropic"
+
+
+# ---------------------------------------------------------------------
+# Phase 4 polish: embeddings content capture (S-EMBED-1, S-EMBED-2).
+# OpenAI and litellm both surface embedding inputs; the provider's
+# ``extract_content`` branches on event_type=EMBEDDINGS and captures
+# the request's ``input`` parameter into the new ``PromptContent.input``
+# slot, leaving the chat-shaped slots empty so downstream code can
+# render via the dashboard's EmbeddingsContentViewer instead of
+# PromptViewer.
+# ---------------------------------------------------------------------
+
+
+def test_openai_embeddings_capture_string_input() -> None:
+    provider = OpenAIProvider(capture_prompts=True)
+    kwargs = {
+        "model": "text-embedding-3-small",
+        "input": "phase 4 e2e single-string capture",
+    }
+    pc = provider.extract_content(
+        kwargs, MagicMock(), event_type=EventType.EMBEDDINGS,
+    )
+    assert pc is not None
+    assert pc.input == "phase 4 e2e single-string capture"
+    # Chat slots stay empty -- the dashboard's branch logic relies on
+    # this to know which viewer to render.
+    assert pc.messages == []
+    assert pc.system is None
+    assert pc.tools is None
+    assert pc.response == {}
+    assert pc.provider == "openai"
+    assert pc.model == "text-embedding-3-small"
+
+
+def test_openai_embeddings_capture_list_input() -> None:
+    provider = OpenAIProvider(capture_prompts=True)
+    kwargs = {
+        "model": "text-embedding-3-small",
+        "input": ["item one", "item two", "item three"],
+    }
+    pc = provider.extract_content(
+        kwargs, MagicMock(), event_type=EventType.EMBEDDINGS,
+    )
+    assert pc is not None
+    assert pc.input == ["item one", "item two", "item three"]
+    assert pc.messages == []
+
+
+def test_openai_embeddings_capture_off_returns_none() -> None:
+    provider = OpenAIProvider(capture_prompts=False)
+    pc = provider.extract_content(
+        {"model": "text-embedding-3-small", "input": "hi"},
+        MagicMock(),
+        event_type=EventType.EMBEDDINGS,
+    )
+    assert pc is None
+
+
+def test_litellm_embeddings_capture_string_input() -> None:
+    provider = LitellmProvider(capture_prompts=True)
+    kwargs = {
+        "model": "text-embedding-3-small",
+        "input": "phase 4 litellm string capture",
+    }
+    pc = provider.extract_content(
+        kwargs, MagicMock(), event_type=EventType.EMBEDDINGS,
+    )
+    assert pc is not None
+    assert pc.input == "phase 4 litellm string capture"
+    assert pc.provider == "litellm"
+    assert pc.messages == []
+    assert pc.response == {}
+
+
+def test_litellm_embeddings_capture_list_input() -> None:
+    provider = LitellmProvider(capture_prompts=True)
+    kwargs = {
+        "model": "text-embedding-3-small",
+        "input": ["a", "b"],
+    }
+    pc = provider.extract_content(
+        kwargs, MagicMock(), event_type=EventType.EMBEDDINGS,
+    )
+    assert pc is not None
+    assert pc.input == ["a", "b"]
+
+
+def test_chat_default_event_type_unchanged() -> None:
+    """``extract_content`` without an explicit ``event_type`` falls
+    back to chat-shaped extraction. Pre-Phase-4-polish callers
+    (none in this repo, but external code paths and pinned
+    integration mocks) keep working."""
+    provider = OpenAIProvider(capture_prompts=True)
+    kwargs = {
+        "model": "gpt-4o-mini",
+        "messages": [{"role": "user", "content": "say ok"}],
+    }
+    # No event_type passed -- should produce chat-shaped content.
+    pc = provider.extract_content(kwargs, _MockResponse())
+    assert pc is not None
+    assert pc.messages == [{"role": "user", "content": "say ok"}]
+    # Embedding-shaped slot stays None for chat events.
+    assert pc.input is None
+
+
+def test_anthropic_accepts_event_type_kwarg_for_protocol_symmetry() -> None:
+    """Anthropic has no native embeddings (users go via litellm →
+    Voyage), but the provider must accept the event_type kwarg so
+    the base interceptor can pass it uniformly. Falling through to
+    chat extraction for an EMBEDDINGS event_type is acceptable --
+    the dashboard renders the empty messages array via the
+    has_content=false branch."""
+    provider = AnthropicProvider(capture_prompts=True)
+    pc = provider.extract_content(
+        {"model": "claude-haiku-4-5", "messages": []},
+        _MockResponse(),
+        event_type=EventType.EMBEDDINGS,
+    )
+    # Doesn't raise; produces chat-shaped output (empty messages).
+    assert pc is not None
+    assert pc.messages == []
+    assert pc.input is None

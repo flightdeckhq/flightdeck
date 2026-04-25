@@ -56,6 +56,18 @@ export const CLIENT_TYPE_LABEL: Record<ClientType, string> = {
 };
 
 /**
+ * Two-letter abbreviation used in the AGENT facet sidebar rows where
+ * even the short form ("Sensor"/"Claude Code") is too wide alongside
+ * a TruncatedText agent_name. Disambiguates same-name agents whose
+ * client_type differs (a Claude Code plugin and a Python sensor both
+ * running as ``user@hostname``).
+ */
+export const CLIENT_TYPE_ABBREV: Record<ClientType, string> = {
+  [ClientType.ClaudeCode]: "CC",
+  [ClientType.FlightdeckSensor]: "SDK",
+};
+
+/**
  * Colour treatment for the ``client_type`` pill.
  *
  * Rationale for the current assignments:

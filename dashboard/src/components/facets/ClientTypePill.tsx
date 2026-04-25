@@ -1,4 +1,5 @@
 import {
+  CLIENT_TYPE_ABBREV,
   CLIENT_TYPE_COLOR,
   CLIENT_TYPE_LABEL,
   type ClientType,
@@ -19,14 +20,25 @@ import {
 export function ClientTypePill({
   clientType,
   size = "default",
+  variant = "full",
   testId,
 }: {
   clientType: ClientType;
   size?: "default" | "compact";
+  /**
+   * ``"full"`` renders the human label (``Claude Code`` / ``Sensor``).
+   * ``"abbrev"`` renders the two/three-letter form (``CC`` / ``SDK``)
+   * for tight-space surfaces such as the Investigate AGENT facet
+   * sidebar row, where same-name agents need disambiguation but
+   * the full label would crowd the row.
+   */
+  variant?: "full" | "abbrev";
   testId?: string;
 }) {
   const colors = CLIENT_TYPE_COLOR[clientType];
-  const label = CLIENT_TYPE_LABEL[clientType];
+  const label = variant === "abbrev"
+    ? CLIENT_TYPE_ABBREV[clientType]
+    : CLIENT_TYPE_LABEL[clientType];
   const padding = size === "compact" ? "0 4px" : "1px 6px";
   return (
     <span

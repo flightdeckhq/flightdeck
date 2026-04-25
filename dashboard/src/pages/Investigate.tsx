@@ -9,6 +9,8 @@ import {
 } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { FacetIcon } from "@/components/facets/FacetIcon";
+import { ClientTypePill } from "@/components/facets/ClientTypePill";
+import { isClientType } from "@/lib/agent-identity";
 import { TruncatedText } from "@/components/ui/TruncatedText";
 import { fetchSessions, type SessionsParams } from "@/lib/api";
 import type { AgentSummary, SessionListItem, SessionState } from "@/lib/types";
@@ -191,8 +193,16 @@ interface FacetGroup {
   /** ``value`` is the wire value the filter clicks on (e.g. agent_id
    *  UUID for the AGENT facet); optional ``label`` is the human
    *  display string (e.g. agent_name) rendered in place of the
-   *  value. Omit ``label`` when value and display are the same. */
-  values: { value: string; count: number; label?: string }[];
+   *  value. Omit ``label`` when value and display are the same.
+   *  ``clientType`` is populated for AGENT facet rows so the renderer
+   *  can append a CC/SDK pill that disambiguates same-name agents
+   *  whose only difference is client_type (F1). */
+  values: {
+    value: string;
+    count: number;
+    label?: string;
+    clientType?: string;
+  }[];
 }
 
 /**
@@ -303,6 +313,12 @@ export function computeFacets(
   // cannot participate in an agent-based filter.
   const agentIdCounts = new Map<string, number>();
   const agentIdNames = new Map<string, string>();
+  // F1 disambiguation: track each agent_id's client_type so the
+  // facet row can append a CC/SDK pill that distinguishes two
+  // same-agent_name agents whose only difference is client_type
+  // (e.g. an ``omria@Omri-PC`` Claude Code plugin vs. an
+  // ``omria@Omri-PC`` flightdeck_sensor SDK).
+  const agentIdClientTypes = new Map<string, string>();
   // Scalar context counts. Initialised once per key so downstream code
   // can address them via the same key string the facets emit under.
   const ctxCounts: Record<ContextFacetKey, Map<string, number>> = {
@@ -360,6 +376,7 @@ export function computeFacets(
       if (s.agent_id) {
         agentIdCounts.set(s.agent_id, (agentIdCounts.get(s.agent_id) ?? 0) + 1);
         if (s.agent_name) agentIdNames.set(s.agent_id, s.agent_name);
+        if (s.client_type) agentIdClientTypes.set(s.agent_id, s.client_type);
       }
     }
   }
@@ -407,6 +424,7 @@ export function computeFacets(
     if (!sources.agent_id && s.agent_id) {
       agentIdCounts.set(s.agent_id, (agentIdCounts.get(s.agent_id) ?? 0) + 1);
       if (s.agent_name) agentIdNames.set(s.agent_id, s.agent_name);
+      if (s.client_type) agentIdClientTypes.set(s.agent_id, s.client_type);
     }
     if (!sources.error_type) {
       for (const et of s.error_types ?? []) {
@@ -454,13 +472,16 @@ export function computeFacets(
 
   // D115 AGENT group: keyed on agent_id, display label = agent_name.
   // Sorted by count DESC (toArr does this already) so the busiest
-  // agents land at the top of the facet list.
+  // agents land at the top of the facet list. F1 disambiguation
+  // attaches the captured client_type so the renderer can append
+  // a CC/SDK pill when two same-name agents differ on client_type.
   const agentGroupValues = [...agentIdCounts.entries()]
     .sort((a, b) => b[1] - a[1])
     .map(([id, count]) => ({
       value: id,
       count,
       label: agentIdNames.get(id) ?? id,
+      clientType: agentIdClientTypes.get(id),
     }));
 
   return [
@@ -1520,6 +1541,17 @@ export function Investigate() {
                     <span className="flex items-center min-w-0 flex-1" style={{ gap: 8 }}>
                       <FacetIcon groupKey={group.key} value={v.value} />
                       <TruncatedText text={v.label ?? v.value} />
+                      {/* F1: CC/SDK pill on AGENT facet rows so two
+                          same-agent_name agents that differ on
+                          client_type render distinguishably. */}
+                      {group.key === "agent_id" && v.clientType && isClientType(v.clientType) && (
+                        <ClientTypePill
+                          clientType={v.clientType}
+                          size="compact"
+                          variant="abbrev"
+                          testId={`investigate-agent-facet-pill-${v.value}`}
+                        />
+                      )}
                     </span>
                     <span
                       className="shrink-0"

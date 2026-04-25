@@ -99,6 +99,25 @@ export const FLEET_SIDEBAR_DEFAULT_WIDTH = 240;
 export const FLEET_SIDEBAR_WIDTH_KEY = "flightdeck.fleet.sidebarWidth";
 export const FLEET_PILL_HIDE_MIN_WIDTH = 150;
 
+/**
+ * Investigate left-sidebar resize bounds and persistence key.
+ * Mirrors the Fleet sidebar pattern (lazy-init from localStorage,
+ * clamp to [MIN, MAX], persist on drag-release). The MAX is a
+ * fraction of the viewport rather than an absolute pixel cap so
+ * the sidebar can never eat the session table even on a 4K
+ * monitor — see clampInvestigateSidebarWidth in
+ * lib/investigate-sidebar-width.ts. ``MIN_WIDTH`` of 180 is the
+ * narrowest layout that still fits the "STATE" facet header
+ * comfortably with at least one pill on a line; ``DEFAULT_WIDTH``
+ * of 260 leaves room for a typical agent_name pill on one line
+ * without truncation. Phase 4.5.
+ */
+export const INVESTIGATE_SIDEBAR_MIN_WIDTH = 180;
+export const INVESTIGATE_SIDEBAR_MAX_VIEWPORT_FRACTION = 0.4;
+export const INVESTIGATE_SIDEBAR_DEFAULT_WIDTH = 260;
+export const INVESTIGATE_SIDEBAR_WIDTH_KEY =
+  "flightdeck.investigate.sidebarWidth";
+
 /** Default live feed column widths in pixels. */
 export const FEED_COL_DEFAULTS = {
   flavor: 120,

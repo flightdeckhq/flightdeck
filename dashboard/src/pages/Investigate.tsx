@@ -31,6 +31,11 @@ import { getProvider, isClaudeCodeSession } from "@/lib/models";
 import { truncateSessionId } from "@/lib/events";
 import { formatRelativeTime } from "@/lib/time";
 import { INVESTIGATE_DEFAULT_LOOKBACK_MS } from "@/lib/constants";
+import {
+  clampInvestigateSidebarWidth,
+  persistInvestigateSidebarWidth,
+  readPersistedInvestigateSidebarWidth,
+} from "@/lib/investigate-sidebar-width";
 import { cn } from "@/lib/utils";
 
 // ---------------------------------------------------------------------------
@@ -893,6 +898,44 @@ export function Investigate() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const autoRefreshRef = useRef<ReturnType<typeof setInterval>>();
 
+  // Resizable left sidebar — drag handle, localStorage round-trip,
+  // viewport-fraction max so the sidebar can never eat the session
+  // table even on a 4K monitor. Mirrors the Fleet sidebar pattern
+  // (FleetPanel.tsx) so operators see one consistent UX. The drag
+  // handler uses a ref-mirrored width so the listener doesn't
+  // rebind every re-render and the persisted write happens on
+  // mouse-up only (no per-frame storage thrash).
+  const [sidebarWidth, setSidebarWidth] = useState<number>(() =>
+    readPersistedInvestigateSidebarWidth(
+      typeof window !== "undefined" ? window.innerWidth : 0,
+    ),
+  );
+  const sidebarWidthRef = useRef(sidebarWidth);
+  useEffect(() => {
+    sidebarWidthRef.current = sidebarWidth;
+  }, [sidebarWidth]);
+  const handleSidebarResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startWidth = sidebarWidthRef.current;
+    const onMove = (ev: MouseEvent) => {
+      const delta = ev.clientX - startX;
+      setSidebarWidth(
+        clampInvestigateSidebarWidth(
+          startWidth + delta,
+          window.innerWidth,
+        ),
+      );
+    };
+    const onUp = () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      persistInvestigateSidebarWidth(sidebarWidthRef.current);
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  }, []);
+
   // Drawer state. Initialised from the ``session`` URL param so a
   // deep-link from the global search modal (or a shared URL) opens
   // the drawer on mount. The local state stays authoritative during
@@ -1468,10 +1511,16 @@ export function Investigate() {
 
       {/* Body: sidebar + table */}
       <div className="flex flex-1 overflow-hidden">
-        {/* Left sidebar */}
+        {/* Left sidebar — resizable. Width persists in localStorage
+            under flightdeck.investigate.sidebarWidth via the
+            handleSidebarResizeStart drag handler defined above. */}
         <div
-          className="w-[220px] flex-shrink-0 overflow-y-auto"
-          style={{ borderRight: "1px solid var(--border-subtle)" }}
+          className="relative flex-shrink-0 overflow-y-auto"
+          style={{
+            width: sidebarWidth,
+            borderRight: "1px solid var(--border-subtle)",
+          }}
+          data-testid="investigate-sidebar"
         >
           {facets.map((group, gi) => (
             <div
@@ -1579,6 +1628,35 @@ export function Investigate() {
               No facets available
             </div>
           )}
+          {/* Drag handle — 6px hit-box pinned to the right edge of
+              the sidebar. Cursor swap on hover; tinted background
+              on hover so the drag affordance is visible. role +
+              aria-label match the Fleet pattern so screen readers
+              announce the same primitive on both pages. */}
+          <div
+            data-testid="investigate-sidebar-resize-handle"
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize Investigate sidebar"
+            style={{
+              position: "absolute",
+              right: 0,
+              top: 0,
+              bottom: 0,
+              width: 6,
+              cursor: "col-resize",
+              zIndex: 10,
+              background: "transparent",
+              transition: "background 0.1s",
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.background = "var(--accent)";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.background = "transparent";
+            }}
+            onMouseDown={handleSidebarResizeStart}
+          />
         </div>
 
         {/* Main content */}
@@ -1615,14 +1693,30 @@ export function Investigate() {
                 <span
                   key={f.label}
                   data-testid="active-filter-pill"
+                  title={f.label}
                   className="inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs"
                   style={{
                     background: "var(--primary-glow)",
                     color: "var(--primary)",
+                    // Long values (UUID flavors, agent_names like
+                    // user@hostname, playground-policy-warn-7997b6)
+                    // truncate with ellipsis at the right edge of
+                    // the pill rather than overflow the row. Full
+                    // value visible on hover via the title attr
+                    // above.
+                    maxWidth: "32ch",
                   }}
                 >
-                  {f.label}
-                  <button data-testid="active-filter-remove" onClick={f.onRemove} className="hover:opacity-70 transition-opacity duration-150">
+                  <span
+                    style={{
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {f.label}
+                  </span>
+                  <button data-testid="active-filter-remove" onClick={f.onRemove} className="hover:opacity-70 transition-opacity duration-150 shrink-0">
                     <X className="h-3 w-3" />
                   </button>
                 </span>

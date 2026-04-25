@@ -903,6 +903,12 @@ def _emit_error(
             exc,
             provider_hint=provider_hint,
             is_stream_error=is_stream_error,
+            # H-2 fix: gate provider-controlled exception text on
+            # capture_prompts. content_filter exceptions echo the
+            # offending prompt fragment in their str(); when capture
+            # is off, _redacted_message returns class name only so
+            # the prompt fragment stays out of events.payload.
+            capture_prompts=session.config.capture_prompts,
         )
 
         model: str | None = None

@@ -5,7 +5,7 @@ import { truncateSessionId } from "@/lib/events";
 import { cn } from "@/lib/utils";
 import {
   Zap, Wrench, AlertTriangle, XCircle, ArrowDown,
-  Play, Square, Check, Circle, X,
+  Play, Square, Check, Circle, X, Database,
 } from "lucide-react";
 
 const eventTypeConfig: Record<
@@ -23,6 +23,12 @@ const eventTypeConfig: Record<
   session_end: { cssVar: "var(--event-lifecycle)", Icon: Square, label: "Session End" },
   directive_result: { cssVar: "var(--event-directive)", Icon: Check, label: "Directive Result" },
   heartbeat: { cssVar: "var(--event-lifecycle)", Icon: Circle, label: "Heartbeat" },
+  // Phase 4 event-type addition. ``embeddings`` reuses the cyan
+  // RAG/semantic-search visual family already used for the EMBED
+  // badge in events.ts. Distinct Database glyph keeps the 24px
+  // circle readable at a glance so a row of mixed events doesn't
+  // read as "all the same shape but coloured differently".
+  embeddings: { cssVar: "var(--event-embeddings)", Icon: Database, label: "Embeddings" },
 };
 
 // Failed directive_result events (error/timeout) render with the

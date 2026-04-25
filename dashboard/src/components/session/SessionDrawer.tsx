@@ -1117,7 +1117,22 @@ function EventFeed({
               className="flex h-8 cursor-pointer items-center gap-2 px-3 transition-colors hover:bg-surface-hover"
               style={{ borderBottom: "1px solid var(--border-subtle)" }}
               onClick={() => onToggleExpand(event.id)}
-              data-testid="event-row"
+              // Generic ``event-row`` testid stays for the existing
+              // E2E suite. New per-type testids (Phase 4 polish)
+              // pin a specific shape so T14/T15/T16 can locate
+              // exactly the row they assert against — e.g.
+              // ``embeddings-event-row-<id>``. Type-specific id
+              // sits alongside the generic via data-event-type so
+              // both selectors keep working.
+              data-testid={
+                event.event_type === "embeddings"
+                  ? `embeddings-event-row-${event.id}`
+                  : event.event_type === "llm_error"
+                  ? `error-event-row-${event.id}`
+                  : "event-row"
+              }
+              data-event-type={event.event_type}
+              data-event-id={event.id}
             >
               {isAttachment ? (
                 <TooltipProvider>

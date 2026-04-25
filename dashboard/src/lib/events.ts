@@ -174,6 +174,18 @@ export function getEventDetail(event: AgentEvent): string {
       if (status) return status;
       return "directive result";
     }
+    case "embeddings": {
+      // Phase 4 polish: embeddings calls have only an input-token
+      // dimension (no completion tokens) so the row reads as
+      // "<model> · <N> tok in" -- distinct from post_call's
+      // "tokens_total" framing.
+      const parts = [event.model ?? "unknown"];
+      if (event.tokens_input != null) {
+        parts.push(`${event.tokens_input.toLocaleString()} tok in`);
+      }
+      if (event.latency_ms != null) parts.push(`${event.latency_ms}ms`);
+      return parts.join(" · ");
+    }
     default:
       return event.event_type;
   }
@@ -230,6 +242,17 @@ export function getSummaryRows(event: AgentEvent): [string, string][] {
         rows.push(["Event", "directive result"]);
       }
       return rows;
+    }
+    case "embeddings": {
+      // No tokens_output column for embeddings -- the provider call
+      // has no generation step. Surface input tokens + latency only
+      // so the expanded row doesn't render an empty "tokens output"
+      // cell that would mislead a reader.
+      return [
+        ["Model", event.model ?? "unknown"],
+        ["Tokens input", event.tokens_input?.toLocaleString() ?? "—"],
+        ["Latency", event.latency_ms != null ? `${event.latency_ms.toLocaleString()}ms` : "—"],
+      ];
     }
     default:
       return [["Type", event.event_type]];

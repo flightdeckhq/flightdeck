@@ -29,9 +29,24 @@ import (
 )
 
 const (
-	cacheTTL            = 60 * time.Second
-	cacheMaxSize        = 1000
-	devTokenRaw         = "tok_dev"
+	cacheTTL = 60 * time.Second
+	cacheMaxSize = 1000
+	// devTokenRaw is the development-only sentinel bearer token.
+	// Phase 4.5 L-1 contract: it is ONLY accepted when
+	// ENVIRONMENT=dev (or the legacy FLIGHTDECK_DEV=1). In every
+	// other environment, presenting "tok_dev" yields a 401 with
+	// devTokenReject. There is no path where this constant
+	// authenticates outside dev mode -- see Validate() below for
+	// the env-gate. CI and local docker-compose intentionally
+	// inherit the dev mode so existing tests pass without secret
+	// material.
+	devTokenRaw = "tok_dev"
+	// devAdminTokenRaw is the dev-only admin sentinel. Same env
+	// gate as devTokenRaw. In production, set
+	// FLIGHTDECK_ADMIN_ACCESS_TOKEN to a real secret instead;
+	// without it, no admin access exists anywhere in production
+	// -- the safe default for the rarely-used reconcile-agents
+	// endpoint.
 	devAdminTokenRaw    = "tok_admin_dev"
 	devTokenReject      = "tok_dev is only valid in development mode. Create a production token in the Settings page."
 	devAdminTokenReject = "tok_admin_dev is only valid in development mode. Configure FLIGHTDECK_ADMIN_ACCESS_TOKEN in production."

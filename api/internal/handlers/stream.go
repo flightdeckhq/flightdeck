@@ -80,9 +80,31 @@ func StreamHandler(hub *ws.Hub, validator *auth.Validator) http.HandlerFunc {
 // extractStreamToken reads the bearer token from either the standard
 // Authorization header or the ?token= query parameter. Returns the
 // empty string when neither source provides a non-empty token.
+//
+// Phase 4.5 M-3 — known residual risk: a token in the URL may be
+// captured by reverse-proxy access logs, browser history, and CDN
+// caches. The standard browser WebSocket API cannot set custom
+// headers on the upgrade request, so we accept ?token= as a
+// fallback. The mitigation roadmap is a per-connection ticket
+// exchange (POST /v1/stream/ticket returns a single-use 60s-TTL
+// nonce; WS upgrade accepts ?ticket=<uuid>) which moves the long-
+// lived bearer off the URL surface entirely. Tracked on the
+// roadmap and not blocking this audit pass: (1) dashboard side
+// must switch in lockstep, and (2) any caller that scripts the
+// stream from outside the browser would need to pre-fetch a
+// ticket. See audit-phase-4.5.md M-3.
 func extractStreamToken(r *http.Request) string {
 	if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
 		return strings.TrimPrefix(h, "Bearer ")
 	}
-	return r.URL.Query().Get("token")
+	if t := r.URL.Query().Get("token"); t != "" {
+		// Don't log the token itself; do log that this code path
+		// took the URL fallback so operators can audit how often
+		// it's used vs. header-based auth.
+		slog.Debug("stream: token sourced from query parameter (M-3 residual risk)",
+			"client_ip", r.RemoteAddr,
+		)
+		return t
+	}
+	return ""
 }

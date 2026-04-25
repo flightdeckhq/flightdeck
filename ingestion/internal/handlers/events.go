@@ -158,10 +158,12 @@ func EventsHandler(
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 
-		// Auth
+		// Auth. Phase 4.5 N-1: error string aligned with the
+		// api-side wording in api/internal/auth/token.go for
+		// operator-clarity parity.
 		token := extractBearerToken(r)
 		if token == "" {
-			writeError(w, http.StatusUnauthorized, "missing or invalid authorization")
+			writeError(w, http.StatusUnauthorized, "missing bearer token")
 			return
 		}
 		result, err := validator.Validate(ctx, token)

@@ -1999,6 +1999,7 @@ const docTemplate = `{
                 "event_id": {
                     "type": "string"
                 },
+                "input": {},
                 "messages": {},
                 "model": {
                     "type": "string"

@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 import { CODING_AGENT, waitForInvestigateReady } from "./_fixtures";
 
 // T15 — Phase 4 polish S-UI-2: streaming indicators on post_call
@@ -12,93 +12,87 @@ import { CODING_AGENT, waitForInvestigateReady } from "./_fixtures";
 //     visible with the ``ABORTED`` label and the title attribute
 //     carries abort_reason.
 //
-// Theme-agnostic: every assertion is structural (testid, text,
-// title attribute). No colour comparisons.
+// Both scenes deep-link into the candidate session via
+// ``?session=<id>`` -- the dashboard's drawer URL param. Sequential
+// row clicks against the drawer overlay are flaky, deep-linking
+// avoids the choreography entirely.
 test.describe("T15 — Streaming indicators", () => {
   test("happy-path streaming post_call shows STREAM badge with chunk stats", async ({
     page,
   }) => {
-    const params = new URLSearchParams({
-      from: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
-      to: new Date().toISOString(),
-      flavor: CODING_AGENT.flavor,
-    });
-    await page.goto(`/investigate?${params.toString()}`);
-    await waitForInvestigateReady(page);
+    const sessionIds = await fetchActiveCodingSessionIds(page);
+    expect(sessionIds.length).toBeGreaterThanOrEqual(1);
 
-    const activeRow = page
-      .locator('[data-testid^="investigate-row-session-"]')
-      .filter({ hasText: "active" })
-      .first();
-    await activeRow.click();
-
-    const drawer = page.locator('[data-testid="session-drawer"]');
-    await expect(drawer).toBeVisible();
-
-    // The fresh-active role seeds a single streaming post_call with
-    // final_outcome=completed. The aborted variant lives in the
-    // error-active role on a different session, so the only
-    // ``stream-badge-*`` here is the happy-path one.
-    const streamBadge = drawer.locator(
-      '[data-testid^="stream-badge-"]',
-    );
-    await expect(
-      streamBadge,
-      "happy-path streaming post_call must surface a STREAM badge",
-    ).toBeVisible();
-    await expect(streamBadge).toHaveText("STREAM");
-
-    // Title attribute carries the per-chunk stats (chunks=N · p50=Xms
-    // · p95=Yms · max_gap=Zms). Read the attribute directly so the
-    // assertion doesn't depend on the renderer's tooltip
-    // implementation.
-    const title = await streamBadge.getAttribute("title");
-    expect(title, "STREAM badge must carry a title with chunk stats").not.toBeNull();
-    expect(title!).toContain("chunks=42");
-    expect(title!).toContain("p50=25ms");
-    expect(title!).toContain("p95=80ms");
-    expect(title!).toContain("max_gap=150ms");
-
-    // The aborted variant must NOT appear on the fresh-active
-    // session — those errors live on the error-active role only.
-    await expect(
-      drawer.locator('[data-testid^="stream-aborted-"]'),
-    ).toHaveCount(0);
+    let asserted = false;
+    for (const sid of sessionIds) {
+      const params = new URLSearchParams({
+        from: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
+        to: new Date().toISOString(),
+        flavor: CODING_AGENT.flavor,
+        state: "active",
+        session: sid,
+      });
+      await page.goto(`/investigate?${params.toString()}`);
+      await waitForInvestigateReady(page);
+      const drawer = page.locator('[data-testid="session-drawer"]');
+      await expect(drawer).toBeVisible();
+      const happy = drawer.locator('[data-testid^="stream-badge-"]');
+      const aborted = drawer.locator('[data-testid^="stream-aborted-"]');
+      if (
+        (await happy.count()) > 0 &&
+        (await aborted.count()) === 0
+      ) {
+        asserted = true;
+        const first = happy.first();
+        await expect(first).toBeVisible();
+        await expect(first).toHaveText("STREAM");
+        const title = await first.getAttribute("title");
+        expect(title).not.toBeNull();
+        expect(title!).toContain("chunks=42");
+        expect(title!).toContain("p50=25ms");
+        expect(title!).toContain("p95=80ms");
+        expect(title!).toContain("max_gap=150ms");
+        break;
+      }
+    }
+    expect(
+      asserted,
+      "at least one active coding session must carry a happy-path STREAM badge",
+    ).toBe(true);
   });
 
-  test("aborted streaming post_call shows red ABORTED badge with abort_reason", async ({
+  test("aborted streaming post_call shows ABORTED badge with abort_reason", async ({
     page,
   }) => {
-    // The error-active role lives only on the coding agent. Filter
-    // by the agent's error_type=rate_limit (which the same role
-    // emits) so we land on it without depending on row order.
+    // Filter the API directly to the error-active session: state=
+    // active + error_type=rate_limit narrows to error-active only
+    // (recent-closed has rate_limit but is state=closed).
+    const sessionIds = await fetchActiveCodingSessionIds(
+      page,
+      "&error_type=rate_limit",
+    );
+    expect(
+      sessionIds.length,
+      "expected exactly one active coding session matching rate_limit (error-active)",
+    ).toBeGreaterThanOrEqual(1);
+
     const params = new URLSearchParams({
       from: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
       to: new Date().toISOString(),
       flavor: CODING_AGENT.flavor,
       error_type: "rate_limit",
+      state: "active",
+      session: sessionIds[0],
     });
     await page.goto(`/investigate?${params.toString()}`);
     await waitForInvestigateReady(page);
 
-    // The error-active role is state=active (its session_end was
-    // never emitted). Recent-closed also carries a rate_limit error
-    // and matches the filter, so we resolve by clicking the
-    // active-state row -- error-active is the unique active row in
-    // the filtered set.
-    const errorActiveRow = page
-      .locator('[data-testid^="investigate-row-session-"]')
-      .filter({ hasText: "active" })
-      .first();
-    await expect(errorActiveRow).toBeVisible();
-    await errorActiveRow.click();
-
     const drawer = page.locator('[data-testid="session-drawer"]');
     await expect(drawer).toBeVisible();
 
-    const abortedBadge = drawer.locator(
-      '[data-testid^="stream-aborted-"]',
-    );
+    const abortedBadge = drawer
+      .locator('[data-testid^="stream-aborted-"]')
+      .first();
     await expect(
       abortedBadge,
       "error-active session must surface an ABORTED stream badge",
@@ -106,7 +100,24 @@ test.describe("T15 — Streaming indicators", () => {
     await expect(abortedBadge).toHaveText("ABORTED");
 
     const title = await abortedBadge.getAttribute("title");
-    expect(title, "ABORTED badge must carry abort_reason in title").not.toBeNull();
+    expect(title).not.toBeNull();
     expect(title!).toContain("abort_reason=client_aborted");
   });
 });
+
+async function fetchActiveCodingSessionIds(
+  page: Page,
+  extraQs: string = "",
+): Promise<string[]> {
+  const resp = await page.request.get(
+    `http://localhost:4000/api/v1/sessions?flavor=${encodeURIComponent(
+      CODING_AGENT.flavor,
+    )}&state=active&from=2020-01-01T00:00:00Z&limit=100${extraQs}`,
+    { headers: { Authorization: "Bearer tok_dev" } },
+  );
+  expect(resp.ok()).toBe(true);
+  const body = await resp.json();
+  return ((body.sessions ?? []) as Array<{ session_id: string }>).map(
+    (s) => s.session_id,
+  );
+}

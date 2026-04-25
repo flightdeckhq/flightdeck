@@ -210,15 +210,19 @@ def _post_session_events(
         # and well inside the active role's "fresh" window.
         ts = _shift_timestamp(started + 12 + 2 * i)
         if extra == "embeddings":
+            # Embeddings calls override the agent's default chat model
+            # with an embedding model -- the row's getEventDetail
+            # branch reads `event.model` so the test asserts on the
+            # specific embedding model name.
+            embed_common = {**common, "model": "text-embedding-3-small"}
             post_event(make_event(
                 session_id, agent_cfg["flavor"], "embeddings",
                 timestamp=ts,
-                model="text-embedding-3-small",
                 tokens_input=1024,
                 tokens_used_session=320 + 1024,
                 latency_ms=180,
                 **identity,
-                **common,
+                **embed_common,
             ))
             posted += 1
         elif extra == "streaming_post_call":
@@ -302,10 +306,23 @@ def _post_session_events(
     return posted
 
 
-def _session_is_complete(session_id: str) -> bool:
-    """Return True if the session already has >= MIN_EVENTS_FOR_COMPLETE
-    events in the DB. Used for idempotent seeding: a session that
-    cleared the bar is left alone on subsequent seed runs.
+def _session_is_complete(
+    session_id: str,
+    role_cfg: dict[str, Any] | None = None,
+) -> bool:
+    """Return True if the session already has every event the canonical
+    timeline expects: the base sequence (>= MIN_EVENTS_FOR_COMPLETE)
+    plus one event per ``phase4_extras`` entry, identified by the
+    expected event_type signature.
+
+    Without the phase4_extras check, an old seeded session that
+    pre-dated the canonical fixture's phase4 expansion would skip the
+    re-emit forever — leaving fresh-active sessions without the
+    embeddings + streaming events T14/T15 depend on. The phase4 check
+    keeps the per-session idempotency tight: if any expected
+    event_type is missing, treat the session as incomplete and
+    re-seed (additive — duplicates are accepted because the seed
+    runs in dev only, tests use .first() selectors).
     """
     try:
         detail = get_session(session_id)
@@ -314,7 +331,40 @@ def _session_is_complete(session_id: str) -> bool:
             return False
         raise
     events = detail.get("events") or []
-    return len(events) >= MIN_EVENTS_FOR_COMPLETE
+    if len(events) < MIN_EVENTS_FOR_COMPLETE:
+        return False
+    extras: list[str] = list((role_cfg or {}).get("phase4_extras") or [])
+    if not extras:
+        return True
+    # Map each extras tag to the event_type its seed emit would
+    # produce. Multiple tags can map to the same event_type
+    # (streaming_post_call + streaming_post_call_aborted both emit
+    # post_call rows) — counted as separate occurrences so we don't
+    # treat a single post_call as covering both.
+    expected_counts: dict[str, int] = {}
+    for tag in extras:
+        if tag == "embeddings":
+            expected_counts["embeddings"] = expected_counts.get("embeddings", 0) + 1
+        elif tag.startswith("llm_error_"):
+            expected_counts["llm_error"] = expected_counts.get("llm_error", 0) + 1
+        elif tag in ("streaming_post_call", "streaming_post_call_aborted"):
+            # Disambiguate streaming post_call from the base post_call
+            # by requiring the streaming sub-object on the payload.
+            expected_counts["__streaming_post_call__"] = (
+                expected_counts.get("__streaming_post_call__", 0) + 1
+            )
+    actual_counts: dict[str, int] = {}
+    for e in events:
+        et = e.get("event_type", "")
+        if et in expected_counts:
+            actual_counts[et] = actual_counts.get(et, 0) + 1
+        if et == "post_call" and (e.get("payload") or {}).get("streaming"):
+            key = "__streaming_post_call__"
+            actual_counts[key] = actual_counts.get(key, 0) + 1
+    for key, want in expected_counts.items():
+        if actual_counts.get(key, 0) < want:
+            return False
+    return True
 
 
 def _backdate_session(
@@ -426,7 +476,7 @@ def seed() -> None:
             role_cfg = roles_cfg[role]
             session_id = _derive_session_id(agent_cfg["agent_name"], role)
 
-            if _session_is_complete(session_id):
+            if _session_is_complete(session_id, role_cfg):
                 print(f"  skip {agent_cfg['agent_name']}/{role} ({session_id[:8]}) — already has events")
                 skipped += 1
                 continue
@@ -463,11 +513,15 @@ def seed() -> None:
         for role in agent_cfg["session_roles"]:
             role_cfg = roles_cfg[role]
             session_id = _derive_session_id(agent_cfg["agent_name"], role)
-            if role == "fresh-active":
+            if role in ("fresh-active", "error-active"):
                 # Pin state='active' and last_seen_at to NOW. Runs on
                 # every seed invocation so the session stays fresh
                 # relative to the Playwright run even if the previous
-                # seed landed 10 min ago.
+                # seed landed 10 min ago. ``error-active`` shares this
+                # path so its 4 llm_error events + aborted stream
+                # remain visible alongside an ``active`` state badge
+                # — T15's aborted scene and T16's filter-then-click
+                # path both rely on the role being state=active.
                 #
                 # ALSO emit a fresh tool_call event (timestamp=NOW-5s)
                 # on every seed run. Without this, the event stream's

@@ -150,24 +150,19 @@ class SensorMessages:
             return base.call_async(real_fn, kwargs, self._session, self._provider)
         return base.call(real_fn, kwargs, self._session, self._provider)
 
-    def stream(self, **kwargs: Any) -> base.GuardedStream:
-        """Intercept messages.stream() -- returns a GuardedStream context manager.
+    def stream(self, **kwargs: Any) -> Any:
+        """Intercept messages.stream() -- returns a guarded context manager.
 
-        Sync only. Async streaming via ``async with client.messages.stream(...)``
-        is not yet supported and raises ``NotImplementedError``. The previous
-        implementation silently dispatched the async stream to the sync
-        ``base.call_stream`` which then misbehaved at runtime; raising
-        early surfaces the limitation immediately. TODO: implement
-        ``base.call_stream_async`` and a matching ``GuardedAsyncStream``
-        context manager.
+        Phase 4: async streaming is now supported. Sync ``messages.stream``
+        returns a :class:`base.GuardedStream`; async
+        ``AsyncAnthropic.messages.stream`` returns a
+        :class:`base.GuardedAsyncStream` with awaitable
+        ``__aenter__``/``__aexit__`` and ``__aiter__``/``__anext__``. The
+        caller decides which surface based on their client type.
         """
         if self._is_async:
-            raise NotImplementedError(
-                "Async streaming via AsyncAnthropic.messages.stream() is not "
-                "yet supported by flightdeck-sensor. Use a non-streaming "
-                "async call (await client.messages.create(...)) or sync "
-                "streaming (with sync_client.messages.stream(...) as stream:) "
-                "instead. Tracked for a future sensor release."
+            return base.call_stream_async(
+                self._real.stream, kwargs, self._session, self._provider,
             )
         return base.call_stream(self._real.stream, kwargs, self._session, self._provider)
 

@@ -292,6 +292,22 @@ export interface SessionsParams {
   git_commit?: string[];
   git_repo?: string[];
   orchestration?: string[];
+  /**
+   * Phase 4: filter to sessions that emitted an llm_error event of
+   * one of the listed taxonomy values (rate_limit, authentication,
+   * etc.). Repeatable; OR within the dimension, AND with every
+   * other filter. Backed by an EXISTS subquery over the events
+   * table on the API side.
+   */
+  error_type?: string[];
+  /**
+   * Filter to sessions that emitted at least one policy enforcement
+   * event of the listed types. Vocabulary: ``policy_warn`` |
+   * ``policy_degrade`` | ``policy_block``. Repeatable; OR within the
+   * dimension. Closed-set validated server-side — out-of-band values
+   * 400.
+   */
+  policy_event_type?: string[];
   model?: string;
   sort?: string;
   order?: string;
@@ -337,6 +353,12 @@ export async function fetchSessions(params: SessionsParams, signal?: AbortSignal
     if (values) {
       for (const v of values) sp.append(key, v);
     }
+  }
+  if (params.error_type) {
+    for (const et of params.error_type) sp.append("error_type", et);
+  }
+  if (params.policy_event_type) {
+    for (const pt of params.policy_event_type) sp.append("policy_event_type", pt);
   }
   if (params.model) sp.set("model", params.model);
   if (params.sort) sp.set("sort", params.sort);

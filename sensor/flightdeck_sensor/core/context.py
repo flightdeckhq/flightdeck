@@ -244,17 +244,32 @@ class CloudRunCollector(BaseCollector):
 
 
 class BaseClassifier:
-    """Inspects ``sys.modules`` for a known framework. Never imports."""
+    """Inspects ``sys.modules`` for a known framework. Never imports.
+
+    ``module`` may be a single module name (``"langchain"``) or a
+    list/tuple of module names. When multiple are listed they're
+    treated as aliases — any one being in ``sys.modules`` is enough
+    to consider the framework present, and the detected version
+    comes from the first match. Pre-fix the classifier required the
+    bare canonical name (``langchain``) which is no longer imported
+    when callers use only the split packages (``langchain_openai``,
+    ``langchain_anthropic``); the LangChain detector silently
+    missed every modern install and the per-event ``framework``
+    field stayed null. Confirmed via Rule 40d smoke.
+    """
 
     name: str = ""
-    module: str = ""
+    module: str | tuple[str, ...] = ""
 
     def detect(self) -> str | None:
-        mod = sys.modules.get(self.module)
-        if mod is None:
-            return None
-        version = getattr(mod, "__version__", None)
-        return f"{self.name}/{version}" if version else self.name
+        modules = (self.module,) if isinstance(self.module, str) else tuple(self.module)
+        for mod_name in modules:
+            mod = sys.modules.get(mod_name)
+            if mod is None:
+                continue
+            version = getattr(mod, "__version__", None)
+            return f"{self.name}/{version}" if version else self.name
+        return None
 
 
 class CrewAIClassifier(BaseClassifier):
@@ -263,8 +278,18 @@ class CrewAIClassifier(BaseClassifier):
 
 
 class LangChainClassifier(BaseClassifier):
+    # LangChain split into multiple packages around 0.2: the bare
+    # ``langchain`` umbrella module isn't imported when callers use
+    # only the per-provider packages (``langchain_openai``,
+    # ``langchain_anthropic``, ``langchain_voyageai``, etc.).
+    # ``langchain_core`` is the lowest common dependency and is
+    # always present when any langchain_* package is loaded. Listing
+    # multiple aliases collapses every install layout onto the bare
+    # ``langchain`` framework name. Order matters: the first match
+    # wins, so the umbrella module reports its version when present
+    # and ``langchain_core`` is the canonical fallback.
     name = "langchain"
-    module = "langchain"
+    module = ("langchain", "langchain_core")
 
 
 class LangGraphClassifier(BaseClassifier):

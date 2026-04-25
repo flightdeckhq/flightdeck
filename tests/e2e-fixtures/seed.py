@@ -122,6 +122,23 @@ def _post_session_events(
     started = int(role_cfg["started_offset_sec"])
     ended = role_cfg["ended_offset_sec"]
 
+    # Ingestion enforces a clock-skew bound (D7 in audit-phase-4.md):
+    # rejects events with ``occurred_at < NOW() - 48h`` with HTTP 400.
+    # Roles that backdate the session row beyond that window
+    # (currently ``ancient-only`` at -9 days) emit their EVENTS at a
+    # recent timestamp clamped to within the bound, then the
+    # post-seed SQL backdate moves the session row's started_at /
+    # ended_at columns to the declared deep-past values. The events
+    # table still carries recent occurred_at values; the dashboard
+    # reads ``session.started_at`` for the V-DRAWER drawer query so
+    # the ancient session shows up correctly post-fix.
+    MAX_SAFE_EVENT_OFFSET = -3600  # 1h ago, well inside the 48h bound
+    event_started = max(started, MAX_SAFE_EVENT_OFFSET)
+    event_ended = (
+        max(int(ended), MAX_SAFE_EVENT_OFFSET + 60)
+        if ended is not None else None
+    )
+
     identity = {
         "agent_type": agent_cfg["agent_type"],
         "client_type": agent_cfg["client_type"],
@@ -138,7 +155,7 @@ def _post_session_events(
     # 1. session_start, then wait for persistence.
     post_event(make_event(
         session_id, agent_cfg["flavor"], "session_start",
-        timestamp=_shift_timestamp(started),
+        timestamp=_shift_timestamp(event_started),
         **identity,
         **common,
     ))
@@ -154,7 +171,7 @@ def _post_session_events(
     # 2. pre_call / post_call pair (tokens on post).
     post_event(make_event(
         session_id, agent_cfg["flavor"], "pre_call",
-        timestamp=_shift_timestamp(started + 5),
+        timestamp=_shift_timestamp(event_started + 5),
         tokens_input=240,
         tokens_used_session=240,
         **identity,
@@ -162,7 +179,7 @@ def _post_session_events(
     ))
     post_event(make_event(
         session_id, agent_cfg["flavor"], "post_call",
-        timestamp=_shift_timestamp(started + 8),
+        timestamp=_shift_timestamp(event_started + 8),
         tokens_input=240,
         tokens_output=80,
         tokens_total=320,
@@ -176,7 +193,7 @@ def _post_session_events(
     # 3. tool_call carrying both input and result on one payload.
     post_event(make_event(
         session_id, agent_cfg["flavor"], "tool_call",
-        timestamp=_shift_timestamp(started + 10),
+        timestamp=_shift_timestamp(event_started + 10),
         tool_name="read_file",
         tool_input={"path": "/tmp/e2e.txt"},
         tool_result={"ok": True, "bytes": 42},
@@ -189,19 +206,234 @@ def _post_session_events(
     if ended is not None:
         post_event(make_event(
             session_id, agent_cfg["flavor"], "session_end",
-            timestamp=_shift_timestamp(int(ended)),
+            timestamp=_shift_timestamp(int(event_ended) if event_ended is not None else int(ended)),
             **identity,
             **common,
         ))
         posted += 1
 
+    # 5. Phase 4 polish extras. ``role_cfg["phase4_extras"]`` lists
+    # additional event-shape strings the seeder emits on top of the
+    # base timeline; canonical.json carries the per-role list. Each
+    # extra is timestamped relative to ``started`` so the ordering
+    # matches the role's purpose statement, and offsets stay inside
+    # the role's span (active roles: positive offsets from start;
+    # closed roles: between started and ended). Unknown strings
+    # warn and continue so a typo doesn't abort the seed.
+    extras: list[str] = list(role_cfg.get("phase4_extras") or [])
+    for i, extra in enumerate(extras):
+        # Offset progression: extras emit at started+12s, +14s, +16s,
+        # ... so they cluster after the base tool_call (started+10s)
+        # and well inside the active role's "fresh" window.
+        ts = _shift_timestamp(event_started + 12 + 2 * i)
+        if extra == "embeddings":
+            # Embeddings calls override the agent's default chat model
+            # with an embedding model -- the row's getEventDetail
+            # branch reads `event.model` so the test asserts on the
+            # specific embedding model name. No content captured
+            # (has_content defaults to False) -- exercises T14's
+            # "(content not captured)" branch.
+            embed_common = {**common, "model": "text-embedding-3-small"}
+            post_event(make_event(
+                session_id, agent_cfg["flavor"], "embeddings",
+                timestamp=ts,
+                tokens_input=1024,
+                tokens_used_session=320 + 1024,
+                latency_ms=180,
+                **identity,
+                **embed_common,
+            ))
+            posted += 1
+        elif extra == "embeddings_with_content_string":
+            # Embedding event with capture: single-string input.
+            # Exercises T14's truncated-text + expand-on-click branch
+            # of EmbeddingsContentViewer.
+            embed_common = {**common, "model": "text-embedding-3-small"}
+            post_event(make_event(
+                session_id, agent_cfg["flavor"], "embeddings",
+                timestamp=ts,
+                tokens_input=512,
+                tokens_used_session=320 + 512,
+                latency_ms=140,
+                has_content=True,
+                content={
+                    "provider": "openai",
+                    "model": "text-embedding-3-small",
+                    "system": None,
+                    "messages": [],
+                    "tools": None,
+                    "response": {},
+                    "input": "phase 4 e2e seeded embedding string content for T14 capture branch",
+                    "session_id": session_id,
+                    "event_id": "",
+                    "captured_at": "2026-04-25T00:00:00Z",
+                },
+                **identity,
+                **embed_common,
+            ))
+            posted += 1
+        elif extra == "embeddings_with_content_list":
+            # Embedding event with capture: list-of-strings input.
+            # Exercises T14's "<N> inputs" pill + expand-to-list
+            # branch of EmbeddingsContentViewer.
+            embed_common = {**common, "model": "text-embedding-3-small"}
+            post_event(make_event(
+                session_id, agent_cfg["flavor"], "embeddings",
+                timestamp=ts,
+                tokens_input=384,
+                tokens_used_session=320 + 384,
+                latency_ms=160,
+                has_content=True,
+                content={
+                    "provider": "openai",
+                    "model": "text-embedding-3-small",
+                    "system": None,
+                    "messages": [],
+                    "tools": None,
+                    "response": {},
+                    "input": [
+                        "phase 4 e2e item one",
+                        "phase 4 e2e item two",
+                        "phase 4 e2e item three",
+                    ],
+                    "session_id": session_id,
+                    "event_id": "",
+                    "captured_at": "2026-04-25T00:00:00Z",
+                },
+                **identity,
+                **embed_common,
+            ))
+            posted += 1
+        elif extra == "streaming_post_call":
+            post_event(make_event(
+                session_id, agent_cfg["flavor"], "post_call",
+                timestamp=ts,
+                tokens_input=120,
+                tokens_output=240,
+                tokens_total=360,
+                tokens_used_session=320 + 360,
+                latency_ms=4500,
+                streaming={
+                    "ttft_ms": 320,
+                    "chunk_count": 42,
+                    "inter_chunk_ms": {"p50": 25, "p95": 80, "max": 150},
+                    "final_outcome": "completed",
+                    "abort_reason": None,
+                },
+                **identity,
+                **common,
+            ))
+            posted += 1
+        elif extra == "streaming_post_call_aborted":
+            post_event(make_event(
+                session_id, agent_cfg["flavor"], "post_call",
+                timestamp=ts,
+                tokens_input=80,
+                tokens_output=18,
+                tokens_total=98,
+                tokens_used_session=320 + 98,
+                latency_ms=2100,
+                streaming={
+                    "ttft_ms": 380,
+                    "chunk_count": 7,
+                    "inter_chunk_ms": {"p50": 30, "p95": 90, "max": 220},
+                    "final_outcome": "aborted",
+                    "abort_reason": "client_aborted",
+                },
+                **identity,
+                **common,
+            ))
+            posted += 1
+        elif extra.startswith("policy_"):
+            # Policy enforcement events. Three variants:
+            #   policy_warn      -- threshold crossed; call proceeded.
+            #   policy_degrade   -- threshold crossed; model swapped.
+            #   policy_block     -- threshold crossed; call refused.
+            # Source is hardcoded "server" because that's where the
+            # closed-vocabulary fixtures need to land for the T17 spec
+            # (see audit-phase-4.md methodology lessons + DECISIONS D035).
+            policy_event_type = extra
+            base_payload: dict[str, Any] = {
+                "source": "server",
+                "threshold_pct": 80 if policy_event_type == "policy_warn"
+                else 90 if policy_event_type == "policy_degrade"
+                else 100,
+                "tokens_used": 8000 if policy_event_type == "policy_warn"
+                else 9100 if policy_event_type == "policy_degrade"
+                else 10100,
+                "token_limit": 10000,
+            }
+            if policy_event_type == "policy_degrade":
+                base_payload["from_model"] = "claude-sonnet-4-6"
+                base_payload["to_model"] = "claude-haiku-4-5"
+            elif policy_event_type == "policy_block":
+                base_payload["intended_model"] = "claude-opus-4-7"
+            post_event(make_event(
+                session_id, agent_cfg["flavor"], policy_event_type,
+                timestamp=ts,
+                **base_payload,
+                **identity,
+                **common,
+            ))
+            posted += 1
+        elif extra.startswith("llm_error_"):
+            err_type = extra[len("llm_error_"):]
+            # Per-taxonomy http_status / retry_after defaults so the
+            # seeded payloads look realistic. Anything not enumerated
+            # here falls through to a generic 500 — keeps the seeder
+            # tolerant of future taxonomy additions without forcing
+            # a config update.
+            err_meta = {
+                "rate_limit": (429, "anthropic", "rate_limit_exceeded", 30, True),
+                "context_overflow": (400, "anthropic", "context_length_exceeded", None, False),
+                "authentication": (401, "openai", "invalid_api_key", None, False),
+                "timeout": (None, "openai", None, None, True),
+            }.get(err_type, (500, "anthropic", None, None, False))
+            http_status, provider, code, retry_after, retryable = err_meta
+            post_event(make_event(
+                session_id, agent_cfg["flavor"], "llm_error",
+                timestamp=ts,
+                error={
+                    "error_type": err_type,
+                    "provider": provider,
+                    "http_status": http_status,
+                    "provider_error_code": code,
+                    "error_message": f"E2E seeded {err_type} error",
+                    "request_id": f"req_e2e_{err_type}",
+                    "retry_after": retry_after,
+                    "is_retryable": retryable,
+                },
+                **identity,
+                **common,
+            ))
+            posted += 1
+        else:
+            print(
+                f"  warn: unknown phase4_extras entry {extra!r} for "
+                f"{session_id[:8]}; ignored",
+                file=sys.stderr,
+            )
+
     return posted
 
 
-def _session_is_complete(session_id: str) -> bool:
-    """Return True if the session already has >= MIN_EVENTS_FOR_COMPLETE
-    events in the DB. Used for idempotent seeding: a session that
-    cleared the bar is left alone on subsequent seed runs.
+def _session_is_complete(
+    session_id: str,
+    role_cfg: dict[str, Any] | None = None,
+) -> bool:
+    """Return True if the session already has every event the canonical
+    timeline expects: the base sequence (>= MIN_EVENTS_FOR_COMPLETE)
+    plus one event per ``phase4_extras`` entry, identified by the
+    expected event_type signature.
+
+    Without the phase4_extras check, an old seeded session that
+    pre-dated the canonical fixture's phase4 expansion would skip the
+    re-emit forever — leaving fresh-active sessions without the
+    embeddings + streaming events T14/T15 depend on. The phase4 check
+    keeps the per-session idempotency tight: if any expected
+    event_type is missing, treat the session as incomplete and
+    re-seed (additive — duplicates are accepted because the seed
+    runs in dev only, tests use .first() selectors).
     """
     try:
         detail = get_session(session_id)
@@ -210,7 +442,55 @@ def _session_is_complete(session_id: str) -> bool:
             return False
         raise
     events = detail.get("events") or []
-    return len(events) >= MIN_EVENTS_FOR_COMPLETE
+    if len(events) < MIN_EVENTS_FOR_COMPLETE:
+        return False
+    extras: list[str] = list((role_cfg or {}).get("phase4_extras") or [])
+    if not extras:
+        return True
+    # Map each extras tag to the event_type its seed emit would
+    # produce. Multiple tags can map to the same event_type
+    # (streaming_post_call + streaming_post_call_aborted both emit
+    # post_call rows) — counted as separate occurrences so we don't
+    # treat a single post_call as covering both.
+    expected_counts: dict[str, int] = {}
+    for tag in extras:
+        if tag in (
+            "embeddings",
+            "embeddings_with_content_string",
+            "embeddings_with_content_list",
+        ):
+            # All three variants emit event_type=embeddings; the
+            # has_content + payload.input shape varies but the
+            # event_type identifier is shared. Counting them as
+            # one bucket is correct -- a session that has all
+            # three needs three embeddings events.
+            expected_counts["embeddings"] = expected_counts.get("embeddings", 0) + 1
+        elif tag.startswith("llm_error_"):
+            expected_counts["llm_error"] = expected_counts.get("llm_error", 0) + 1
+        elif tag in ("policy_warn", "policy_degrade", "policy_block"):
+            # Each policy_* tag maps directly to its own event_type
+            # row. Counted independently so a session declaring all
+            # three needs three events of distinct types to be
+            # complete.
+            expected_counts[tag] = expected_counts.get(tag, 0) + 1
+        elif tag in ("streaming_post_call", "streaming_post_call_aborted"):
+            # Disambiguate streaming post_call from the base post_call
+            # by requiring the streaming sub-object on the payload.
+            expected_counts["__streaming_post_call__"] = (
+                expected_counts.get("__streaming_post_call__", 0) + 1
+            )
+    actual_counts: dict[str, int] = {}
+    for e in events:
+        et = e.get("event_type", "")
+        if et in expected_counts:
+            actual_counts[et] = actual_counts.get(et, 0) + 1
+        if et == "post_call" and (e.get("payload") or {}).get("streaming"):
+            key = "__streaming_post_call__"
+            actual_counts[key] = actual_counts.get(key, 0) + 1
+    for key, want in expected_counts.items():
+        if actual_counts.get(key, 0) < want:
+            return False
+    return True
 
 
 def _backdate_session(
@@ -280,11 +560,20 @@ def _wait_for_fleet_visibility(expected_agent_names: list[str], timeout: float) 
     """
     import urllib.request
 
+    # ``per_page=200`` is the server's hard cap (see api/internal/
+    # handlers/fleet.go). The seeder polls one page; under realistic
+    # dev DB pollution (this repo's local dev sees 130+ accumulated
+    # ``e2e-*`` agents from prior test runs) the canonical fixtures
+    # can fall off page 1 with the default 50, hanging the seeder
+    # waiting for an agent that's actually present but on page 2+.
+    # 200 fits any realistic dev fleet; if the dev DB ever exceeds
+    # 200 agents the seed should iterate pages, but that's a future
+    # concern.
     deadline = time.time() + timeout
     missing: list[str] = list(expected_agent_names)
     while time.time() < deadline:
         req = urllib.request.Request(
-            f"{API_URL}/v1/fleet?per_page=100",
+            f"{API_URL}/v1/fleet?per_page=200",
             headers=auth_headers(),
         )
         with urllib.request.urlopen(req, timeout=5) as resp:
@@ -322,7 +611,7 @@ def seed() -> None:
             role_cfg = roles_cfg[role]
             session_id = _derive_session_id(agent_cfg["agent_name"], role)
 
-            if _session_is_complete(session_id):
+            if _session_is_complete(session_id, role_cfg):
                 print(f"  skip {agent_cfg['agent_name']}/{role} ({session_id[:8]}) — already has events")
                 skipped += 1
                 continue
@@ -359,11 +648,15 @@ def seed() -> None:
         for role in agent_cfg["session_roles"]:
             role_cfg = roles_cfg[role]
             session_id = _derive_session_id(agent_cfg["agent_name"], role)
-            if role == "fresh-active":
+            if role in ("fresh-active", "error-active"):
                 # Pin state='active' and last_seen_at to NOW. Runs on
                 # every seed invocation so the session stays fresh
                 # relative to the Playwright run even if the previous
-                # seed landed 10 min ago.
+                # seed landed 10 min ago. ``error-active`` shares this
+                # path so its 4 llm_error events + aborted stream
+                # remain visible alongside an ``active`` state badge
+                # — T15's aborted scene and T16's filter-then-click
+                # path both rely on the role being state=active.
                 #
                 # ALSO emit a fresh tool_call event (timestamp=NOW-5s)
                 # on every seed run. Without this, the event stream's
@@ -412,7 +705,7 @@ def seed() -> None:
                 except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
                     print(f"  warn: fresh-active refresh for {session_id} failed: {exc}", file=sys.stderr)
                 continue
-            if role not in ("aged-closed", "stale"):
+            if role not in ("aged-closed", "stale", "ancient-only"):
                 continue
             # Force state for deterministic E2E assertions. Letting the
             # reconciler reclassify naturally would flake: the
@@ -430,6 +723,14 @@ def seed() -> None:
                 # its next pass anyway; pinning it up-front makes the
                 # fixture test-stable on a freshly-seeded stack.
                 forced_state = "lost"
+            elif role == "ancient-only":
+                # T5b anchor (V-DRAWER fix): session > 7 days old, the
+                # window the API's pre-fix default would have hidden.
+                # Forced to 'closed' so the swimlane row reads cleanly
+                # (the session_end at -8 days actually emits, but the
+                # reconciler hasn't pinned the state yet on a freshly-
+                # seeded stack).
+                forced_state = "closed"
             else:
                 forced_state = None
             _backdate_session(

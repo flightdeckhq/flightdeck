@@ -16,6 +16,9 @@ import {
 } from "@/components/ui/dialog";
 import { TokenUsageBar } from "./TokenUsageBar";
 import { PromptViewer } from "./PromptViewer";
+import { ErrorEventDetails } from "./ErrorEventDetails";
+import { PolicyEventDetails } from "./PolicyEventDetails";
+import { EmbeddingsContentViewer } from "./EmbeddingsContentViewer";
 import { createDirective, fetchOlderEvents } from "@/lib/api";
 import { sessionSupportsDirectives } from "@/lib/directives";
 import { ClaudeCodeLogo } from "@/components/ui/claude-code-logo";
@@ -1117,7 +1120,26 @@ function EventFeed({
               className="flex h-8 cursor-pointer items-center gap-2 px-3 transition-colors hover:bg-surface-hover"
               style={{ borderBottom: "1px solid var(--border-subtle)" }}
               onClick={() => onToggleExpand(event.id)}
-              data-testid="event-row"
+              // Generic ``event-row`` testid stays for the existing
+              // E2E suite. New per-type testids (Phase 4 polish)
+              // pin a specific shape so T14/T15/T16 can locate
+              // exactly the row they assert against — e.g.
+              // ``embeddings-event-row-<id>``. Type-specific id
+              // sits alongside the generic via data-event-type so
+              // both selectors keep working.
+              data-testid={
+                event.event_type === "embeddings"
+                  ? `embeddings-event-row-${event.id}`
+                  : event.event_type === "llm_error"
+                  ? `error-event-row-${event.id}`
+                  : event.event_type === "policy_warn" ||
+                      event.event_type === "policy_degrade" ||
+                      event.event_type === "policy_block"
+                  ? `policy-event-row-${event.id}`
+                  : "event-row"
+              }
+              data-event-type={event.event_type}
+              data-event-id={event.id}
             >
               {isAttachment ? (
                 <TooltipProvider>
@@ -1166,6 +1188,7 @@ function EventFeed({
                   <ProviderLogo provider={getProvider(event.model)} size={12} />
                 )}
                 {detail}
+                <StreamingPill event={event} />
               </span>
               <span className="w-[72px] shrink-0 text-right font-mono text-[11px]" style={{ color: "var(--text-muted)" }}>
                 {new Date(event.occurred_at).toLocaleTimeString()}
@@ -1202,6 +1225,62 @@ function EventFeed({
         </button>
       )}
     </div>
+  );
+}
+
+/* ---- Streaming pill (Phase 4 polish) ---- */
+
+/**
+ * Inline ``STREAM`` pill rendered alongside the row's detail text
+ * for any post_call event whose payload carries the streaming
+ * sub-object. Two visual variants:
+ *
+ *  - completed: muted lavender pill labelled ``STREAM``. Title
+ *    attribute carries chunks/p50/p95/max_gap so a hover reveals
+ *    the per-chunk latency summary without expanding the row.
+ *  - aborted: red pill labelled ``ABORTED``. Title appends the
+ *    sensor's ``abort_reason`` so the operator sees why the
+ *    stream gave up. Carries a separate ``stream-aborted-<id>``
+ *    testid so T15 can branch its assertion path on outcome.
+ *
+ * Renders nothing when ``payload.streaming`` is absent (the row's
+ * existing layout is unchanged for non-streaming post_calls).
+ */
+function StreamingPill({ event }: { event: AgentEvent }) {
+  const stream = event.payload?.streaming;
+  if (!stream) return null;
+  const aborted = stream.final_outcome === "aborted";
+  const ic = stream.inter_chunk_ms;
+  const titleParts: string[] = [`chunks=${stream.chunk_count}`];
+  if (ic) {
+    titleParts.push(`p50=${ic.p50}ms`);
+    titleParts.push(`p95=${ic.p95}ms`);
+    titleParts.push(`max_gap=${ic.max}ms`);
+  }
+  if (aborted && stream.abort_reason) {
+    titleParts.push(`abort_reason=${stream.abort_reason}`);
+  }
+  const title = titleParts.join(" · ");
+  const colorVar = aborted ? "var(--event-error)" : "var(--event-llm)";
+  const label = aborted ? "ABORTED" : "STREAM";
+  return (
+    <span
+      data-testid={
+        aborted ? `stream-aborted-${event.id}` : `stream-badge-${event.id}`
+      }
+      title={title}
+      className="ml-1 inline-flex h-[16px] shrink-0 items-center rounded font-mono text-[9px] font-semibold uppercase"
+      style={{
+        padding: "0 5px",
+        background: `color-mix(in srgb, ${colorVar} 15%, transparent)`,
+        color: colorVar,
+        border: `1px solid color-mix(in srgb, ${colorVar} 30%, transparent)`,
+        borderRadius: 3,
+        letterSpacing: "0.04em",
+      }}
+    >
+      {label}
+    </span>
   );
 }
 
@@ -1290,6 +1369,18 @@ function ExpandedEvent({
     tool_name: event.tool_name, has_content: event.has_content, occurred_at: event.occurred_at,
   };
 
+  // Phase 4 polish: when this is an llm_error event with a
+  // structured payload.error, lift it out so we can pass it to
+  // <ErrorEventDetails/>. Narrowing here keeps the accordion
+  // component itself unaware of the directive_result string
+  // overload — it accepts only the structured shape.
+  const errorPayload =
+    event.event_type === "llm_error" &&
+    event.payload?.error &&
+    typeof event.payload.error !== "string"
+      ? event.payload.error
+      : null;
+
   return (
     <div className="px-3 py-2.5" style={{ background: "var(--bg)", borderBottom: "1px solid var(--border-subtle)" }}>
       <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1">
@@ -1300,6 +1391,20 @@ function ExpandedEvent({
           </div>
         ))}
       </div>
+      {errorPayload && (
+        <ErrorEventDetails error={errorPayload} eventId={event.id} />
+      )}
+      {(event.event_type === "policy_warn" ||
+        event.event_type === "policy_degrade" ||
+        event.event_type === "policy_block") && (
+        <PolicyEventDetails event={event} />
+      )}
+      {event.event_type === "embeddings" && (
+        <EmbeddingsContentViewer
+          eventId={event.id}
+          hasContent={event.has_content}
+        />
+      )}
       <div className="my-2" style={{ borderTop: "1px solid var(--border-subtle)" }} />
       <SyntaxJson data={payload} />
       <div className="mt-2 flex items-center gap-3">

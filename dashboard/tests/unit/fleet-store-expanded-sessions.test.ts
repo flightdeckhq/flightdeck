@@ -48,16 +48,21 @@ beforeEach(() => {
 });
 
 describe("useFleetStore.loadExpandedSessions", () => {
-  it("fetches /v1/sessions with agent_id and no from/to bound", async () => {
-    // Bug 1 (E) regression guard: the per-agent on-demand fetch must
-    // deliberately NOT pass a from bound -- the expanded SESSIONS
-    // list needs sessions older than the 24-hour Fleet rollup window
-    // so closed sessions from days ago are visible when the user
-    // expands the row.
+  it("fetches /v1/sessions with agent_id, EXPANDED_DRAWER_PAGE_SIZE limit, and ``from`` set to the Unix epoch", async () => {
+    // V-DRAWER fix: the per-agent on-demand fetch must pass an
+    // explicit far-past ``from`` so the server's 7-day default
+    // doesn't kick in. Pre-fix the absence of ``from`` made the
+    // expanded drawer a dead-end whenever the agent's last session
+    // was > 7 days old (an invisible API default leaking into
+    // UX). ``new Date(0)`` is the well-known "no lower bound"
+    // sentinel; the page size is ``EXPANDED_DRAWER_PAGE_SIZE``,
+    // not the server's per-page hard cap (the drawer paginates
+    // via ``loadMoreExpandedSessions`` for agents with more
+    // history than fits in one page).
     fetchSessionsMock.mockResolvedValue({
       sessions: [],
       total: 0,
-      limit: 100,
+      limit: 25,
       offset: 0,
       has_more: false,
     });
@@ -65,11 +70,29 @@ describe("useFleetStore.loadExpandedSessions", () => {
     expect(fetchSessionsMock).toHaveBeenCalledTimes(1);
     const args = fetchSessionsMock.mock.calls[0][0];
     expect(args.agent_id).toBe("agent-xyz");
-    expect(args.limit).toBe(100);
+    expect(args.limit).toBe(25);
     expect(args.offset).toBe(0);
-    // No from/to bounds -- server default 7d applies.
-    expect(args.from).toBeUndefined();
+    expect(args.from).toBe(new Date(0).toISOString());
     expect(args.to).toBeUndefined();
+  });
+
+  it("records ``has_more`` from the fetch into expandedSessionsHasMore", async () => {
+    // V-DRAWER pagination: the load-more affordance gates on this
+    // flag. The store must persist whatever the server reported so
+    // a subsequent ``loadMoreExpandedSessions`` call doesn't fire
+    // a no-op fetch (and the SwimLane footer doesn't show a button
+    // that would noop on click).
+    fetchSessionsMock.mockResolvedValue({
+      sessions: [mkListItem({ session_id: "s1" })],
+      total: 50,
+      limit: 25,
+      offset: 0,
+      has_more: true,
+    });
+    await useFleetStore.getState().loadExpandedSessions("agent-xyz");
+    expect(
+      useFleetStore.getState().expandedSessionsHasMore.get("agent-xyz"),
+    ).toBe(true);
   });
 
   it("populates expandedSessions with the fetched rows", async () => {
@@ -144,5 +167,105 @@ describe("useFleetStore.loadExpandedSessions", () => {
     await useFleetStore.getState().loadExpandedSessions("agent-xyz");
     const list = useFleetStore.getState().expandedSessions.get("agent-xyz");
     expect(list!.map((s) => s.session_id)).toEqual(["second-a", "second-b"]);
+  });
+});
+
+describe("useFleetStore.loadMoreExpandedSessions", () => {
+  it("appends the next page via offset pagination and updates has_more", async () => {
+    // Initial page fills the drawer with 2 rows (real seed would be
+    // 25; trimmed for test brevity). has_more=true → footer shows
+    // load-more button. Click → loadMoreExpandedSessions fires
+    // ``offset = current.length`` so the second page picks up
+    // exactly where the first left off.
+    fetchSessionsMock
+      .mockResolvedValueOnce({
+        sessions: [
+          mkListItem({ session_id: "s1" }),
+          mkListItem({ session_id: "s2" }),
+        ],
+        total: 4,
+        limit: 25,
+        offset: 0,
+        has_more: true,
+      })
+      .mockResolvedValueOnce({
+        sessions: [
+          mkListItem({ session_id: "s3" }),
+          mkListItem({ session_id: "s4" }),
+        ],
+        total: 4,
+        limit: 25,
+        offset: 2,
+        has_more: false,
+      });
+    await useFleetStore.getState().loadExpandedSessions("agent-xyz");
+    expect(
+      useFleetStore.getState().expandedSessionsHasMore.get("agent-xyz"),
+    ).toBe(true);
+    await useFleetStore.getState().loadMoreExpandedSessions("agent-xyz");
+    const list = useFleetStore.getState().expandedSessions.get("agent-xyz");
+    expect(list!.map((s) => s.session_id)).toEqual(["s1", "s2", "s3", "s4"]);
+    expect(
+      useFleetStore.getState().expandedSessionsHasMore.get("agent-xyz"),
+    ).toBe(false);
+    // Second fetch's offset must equal first page length (keyset
+    // via offset, not 0). Mock receives this as its second call.
+    const secondArgs = fetchSessionsMock.mock.calls[1][0];
+    expect(secondArgs.offset).toBe(2);
+  });
+
+  it("dedupes by session_id when a live WS update raced the load-more click", async () => {
+    // Edge case: between the user expanding the row and clicking
+    // load-more, a session_start landed on the WebSocket and was
+    // appended to expandedSessions. The next page's offset would
+    // re-fetch that session. Without a dedupe guard the row would
+    // double-render.
+    fetchSessionsMock.mockResolvedValueOnce({
+      sessions: [mkListItem({ session_id: "s1" })],
+      total: 3,
+      limit: 25,
+      offset: 0,
+      has_more: true,
+    });
+    await useFleetStore.getState().loadExpandedSessions("agent-xyz");
+    // Simulate a WS update appending s2 between the expand and the
+    // load-more click.
+    useFleetStore.setState({
+      expandedSessions: new Map(
+        useFleetStore.getState().expandedSessions,
+      ).set("agent-xyz", [
+        ...useFleetStore.getState().expandedSessions.get("agent-xyz")!,
+        { ...mkListItem({ session_id: "s2" }) } as never,
+      ]),
+    });
+    fetchSessionsMock.mockResolvedValueOnce({
+      // Server's offset=2 fetch returns s2 (the WS-added one) and s3.
+      // s2 is the duplicate the dedupe must drop.
+      sessions: [
+        mkListItem({ session_id: "s2" }),
+        mkListItem({ session_id: "s3" }),
+      ],
+      total: 3,
+      limit: 25,
+      offset: 2,
+      has_more: false,
+    });
+    await useFleetStore.getState().loadMoreExpandedSessions("agent-xyz");
+    const list = useFleetStore.getState().expandedSessions.get("agent-xyz")!;
+    expect(list.map((s) => s.session_id)).toEqual(["s1", "s2", "s3"]);
+  });
+
+  it("no-ops when has_more is false (avoids superfluous request at end of history)", async () => {
+    fetchSessionsMock.mockResolvedValue({
+      sessions: [mkListItem({ session_id: "only" })],
+      total: 1,
+      limit: 25,
+      offset: 0,
+      has_more: false,
+    });
+    await useFleetStore.getState().loadExpandedSessions("agent-end");
+    fetchSessionsMock.mockReset();
+    await useFleetStore.getState().loadMoreExpandedSessions("agent-end");
+    expect(fetchSessionsMock).not.toHaveBeenCalled();
   });
 });

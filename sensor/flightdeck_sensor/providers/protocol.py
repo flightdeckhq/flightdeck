@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
-    from flightdeck_sensor.core.types import TokenUsage
+    from flightdeck_sensor.core.types import EventType, TokenUsage
 
 
 class Provider(Protocol):
@@ -28,8 +28,17 @@ class Provider(Protocol):
         self,
         request_kwargs: dict[str, Any],
         response: Any,
+        event_type: EventType | None = None,
     ) -> PromptContent | None:
         """Extract prompt content when capture_prompts is enabled.
+
+        ``event_type`` defaults to ``None`` for backwards compatibility
+        with callers that pre-date the event-type-aware extraction
+        (treated as POST_CALL by every provider). When set to
+        ``EventType.EMBEDDINGS`` the provider captures the embedding
+        ``input`` parameter (string or list of strings) into the new
+        ``PromptContent.input`` field instead of the chat-shaped
+        ``messages`` / ``system`` slots.
 
         Returns None when capture is disabled or on any error.
         Never raises.
@@ -72,6 +81,16 @@ class PromptContent:
 
     Provider terminology is preserved exactly -- no normalization.
     Anthropic uses 'system' as a separate field; OpenAI embeds it in messages.
+
+    Phase 4 polish: ``input`` is the embeddings-shaped slot. Embedding
+    calls (OpenAI ``embeddings.create``, ``litellm.embedding``,
+    LangChain ``OpenAIEmbeddings.embed_*`` transitively) put the
+    request's ``input`` parameter (a string or list of strings) here
+    rather than into the chat-shaped ``messages`` slot. Dashboard
+    branches on event_type to render via ``EmbeddingsContentViewer``
+    instead of the chat ``PromptViewer``. Provider terminology is
+    preserved here too: OpenAI's API parameter is called ``input``,
+    not ``inputs``.
     """
 
     system: str | None
@@ -83,3 +102,4 @@ class PromptContent:
     session_id: str
     event_id: str
     captured_at: str
+    input: str | list[str] | None = None

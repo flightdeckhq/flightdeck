@@ -30,6 +30,23 @@ type SessionsParams struct {
 	// Handler enforces the CHECK-constraint vocabulary so an invalid
 	// value 400s rather than silently matching nothing.
 	ClientTypes []string
+	// ErrorTypes (Phase 4) filters sessions to those that emitted at
+	// least one ``llm_error`` event whose structured ``error_type``
+	// matches one of the listed values. Multi-value OR within. Backed
+	// by an EXISTS subquery over the events table, keyed on
+	// ``payload->'error'->>'error_type'``. An empty slice means "no
+	// error-type filter".
+	ErrorTypes []string
+	// PolicyEventTypes filters sessions to those that emitted at
+	// least one event of the listed policy enforcement types
+	// (``policy_warn`` | ``policy_degrade`` | ``policy_block``).
+	// Multi-value OR within. EXISTS subquery on the events table
+	// keyed on ``event_type``; the policy event_type IS the filter
+	// dimension (unlike error_types which lives in payload JSONB).
+	// Handler validates the vocabulary so an out-of-band value 400s
+	// rather than silently matching nothing. Empty slice means "no
+	// policy-event-type filter".
+	PolicyEventTypes []string
 	// Frameworks filters on sessions.context->'frameworks' (JSONB
 	// array of strings like "langgraph/1.1.6"). Multi-value: any
 	// match across the array passes (``?|`` operator).
@@ -155,6 +172,25 @@ type SessionListItem struct {
 	// long after the token row is gone.
 	TokenID   *string `json:"token_id"`
 	TokenName *string `json:"token_name"`
+	// ErrorTypes lists every distinct ``payload->'error'->>'error_type''
+	// observed across the session's ``llm_error`` events. Always
+	// present on the wire (empty array when the session has no
+	// errors) so dashboard code can treat the slice as
+	// non-nullable. Mirrors the ``frameworks`` JSONB-array surfacing
+	// shape: aggregated server-side via a correlated subquery on the
+	// listing query so the dashboard can render the ERROR TYPE facet
+	// and the row-level error indicator without a per-session
+	// follow-up fetch.
+	ErrorTypes []string `json:"error_types"`
+	// PolicyEventTypes lists every distinct policy enforcement
+	// ``event_type`` observed in the session: any subset of
+	// ``policy_warn`` / ``policy_degrade`` / ``policy_block``.
+	// Always present on the wire (empty array when the session
+	// carries no policy events). Same surfacing pattern as
+	// ErrorTypes — correlated subquery on the listing query so the
+	// dashboard renders the POLICY facet and severity-ranked
+	// session-row indicator without a per-session follow-up fetch.
+	PolicyEventTypes []string `json:"policy_event_types"`
 }
 
 // SessionsResponse is the paginated response for GET /v1/sessions.
@@ -258,6 +294,47 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 		conditions = append(conditions, fmt.Sprintf("s.client_type IN (%s)", strings.Join(placeholders, ", ")))
 	}
 
+	// Phase 4: error-type filter. Uses an EXISTS subquery over the
+	// events table so "sessions that had a rate_limit error" is the
+	// correct predicate, not "sessions whose most-recent event was a
+	// rate_limit error". The events table carries one llm_error row
+	// per error occurrence; the classification lives at
+	// payload->'error'->>'error_type'.
+	if len(params.ErrorTypes) > 0 {
+		placeholders := make([]string, len(params.ErrorTypes))
+		for i, et := range params.ErrorTypes {
+			placeholders[i] = fmt.Sprintf("$%d", argIdx)
+			args = append(args, et)
+			argIdx++
+		}
+		conditions = append(conditions, fmt.Sprintf(
+			"EXISTS (SELECT 1 FROM events e "+
+				"WHERE e.session_id = s.session_id "+
+				"AND e.event_type = 'llm_error' "+
+				"AND e.payload->'error'->>'error_type' IN (%s))",
+			strings.Join(placeholders, ", "),
+		))
+	}
+
+	// Policy-event-type filter. The dimension IS the event_type
+	// itself — unlike error_types which is keyed off a payload
+	// JSONB field — so the subquery filters on
+	// ``e.event_type IN (...)`` directly.
+	if len(params.PolicyEventTypes) > 0 {
+		placeholders := make([]string, len(params.PolicyEventTypes))
+		for i, pt := range params.PolicyEventTypes {
+			placeholders[i] = fmt.Sprintf("$%d", argIdx)
+			args = append(args, pt)
+			argIdx++
+		}
+		conditions = append(conditions, fmt.Sprintf(
+			"EXISTS (SELECT 1 FROM events e "+
+				"WHERE e.session_id = s.session_id "+
+				"AND e.event_type IN (%s))",
+			strings.Join(placeholders, ", "),
+		))
+	}
+
 	// Model filter
 	if params.Model != "" {
 		conditions = append(conditions, fmt.Sprintf("s.model = $%d", argIdx))
@@ -265,14 +342,29 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 		argIdx++
 	}
 
-	// Framework filter: any element of sessions.context->'frameworks'
-	// matches any name in the supplied list. The ?| operator requires
-	// a text[] right-hand side, so we pass the slice as a single
-	// positional arg and cast server-side. A session with a missing
-	// or empty frameworks array never matches, which is the intent.
+	// Framework filter. Phase 4 polish: this filter now matches BOTH
+	// the new bare-name per-event attribution (``sessions.framework``,
+	// populated from ``Session.record_framework``) AND the legacy
+	// versioned ``context.frameworks[]`` array. A session's framework
+	// is considered a match when:
+	//
+	//   - the bare name in ``s.framework`` equals one of the supplied
+	//     values (e.g. ``langchain``), OR
+	//   - any element of ``s.context->'frameworks'`` matches one of
+	//     the supplied values (e.g. ``langchain/0.3.27``).
+	//
+	// The OR-combined filter keeps existing versioned-string callers
+	// working while making the new bare-name attribution path
+	// queryable too. Pre-fix the filter only consulted the JSONB
+	// array, so a session with ``framework=langchain`` (bare) and an
+	// empty context array silently returned empty for any filter
+	// value -- the cross-cut bug the supervisor's V-pass addition
+	// flagged.
 	if len(params.Frameworks) > 0 {
 		conditions = append(conditions, fmt.Sprintf(
-			"COALESCE(s.context->'frameworks', '[]'::jsonb) ?| $%d::text[]", argIdx,
+			"(s.framework = ANY($%d::text[]) "+
+				"OR COALESCE(s.context->'frameworks', '[]'::jsonb) ?| $%d::text[])",
+			argIdx, argIdx,
 		))
 		args = append(args, params.Frameworks)
 		argIdx++
@@ -368,7 +460,26 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 				LIMIT 1
 			) AS capture_enabled,
 			s.token_id::text,
-			s.token_name
+			s.token_name,
+			COALESCE(
+				ARRAY(
+					SELECT DISTINCT e.payload->'error'->>'error_type'
+					FROM events e
+					WHERE e.session_id = s.session_id
+					AND e.event_type = 'llm_error'
+					AND e.payload->'error'->>'error_type' IS NOT NULL
+				),
+				ARRAY[]::text[]
+			) AS error_types,
+			COALESCE(
+				ARRAY(
+					SELECT DISTINCT e.event_type
+					FROM events e
+					WHERE e.session_id = s.session_id
+					AND e.event_type IN ('policy_warn', 'policy_degrade', 'policy_block')
+				),
+				ARRAY[]::text[]
+			) AS policy_event_types
 		FROM sessions s
 		%s
 		ORDER BY %s %s
@@ -405,8 +516,16 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 			&item.CaptureEnabled,
 			&item.TokenID,
 			&item.TokenName,
+			&item.ErrorTypes,
+			&item.PolicyEventTypes,
 		); err != nil {
 			return nil, fmt.Errorf("scan session: %w", err)
+		}
+		if item.ErrorTypes == nil {
+			item.ErrorTypes = []string{}
+		}
+		if item.PolicyEventTypes == nil {
+			item.PolicyEventTypes = []string{}
 		}
 		if len(contextRaw) > 0 {
 			var v map[string]interface{}

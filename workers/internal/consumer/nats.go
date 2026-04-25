@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"sync"
 
+	"github.com/flightdeckhq/flightdeck/workers/internal/metrics"
 	"github.com/nats-io/nats.go"
 )
 
@@ -64,8 +65,34 @@ type EventPayload struct {
 	DirectiveAction string          `json:"directive_action,omitempty"`
 	DirectiveStatus string          `json:"directive_status,omitempty"`
 	Result          json.RawMessage `json:"result,omitempty"`
-	Error           string          `json:"error,omitempty"`
+	// ``Error`` is overloaded between directive_result (plain string) and
+	// Phase 4 llm_error (structured taxonomy object). Accept both via
+	// json.RawMessage so unmarshal cannot fail on either shape; the
+	// event-extra builder preserves it verbatim into the payload JSONB
+	// column for the dashboard to narrow via typeof.
+	Error           json.RawMessage `json:"error,omitempty"`
 	DurationMs      *int64          `json:"duration_ms,omitempty"`
+	// Phase 4: optional streaming sub-object on post_call events.
+	// Populated by the sensor's GuardedStream / GuardedAsyncStream
+	// with TTFT + chunk stats + final_outcome. Absent for non-stream
+	// calls so the wire shape is unchanged for callers that never
+	// stream.
+	Streaming       json.RawMessage `json:"streaming,omitempty"`
+
+	// Policy enforcement event metadata (policy_warn / policy_degrade /
+	// policy_block). Populated by the sensor's _pre_call (WARN, BLOCK)
+	// and _apply_directive(DEGRADE). All three event types share the
+	// (source, threshold_pct, tokens_used, token_limit) common shape;
+	// DEGRADE adds (from_model, to_model) and BLOCK adds intended_model.
+	// Absent on every other event type so the wire shape is unchanged
+	// for non-policy paths.
+	Source         string  `json:"source,omitempty"`
+	ThresholdPct   *int    `json:"threshold_pct,omitempty"`
+	TokensUsed     *int64  `json:"tokens_used,omitempty"`
+	TokenLimit     *int64  `json:"token_limit,omitempty"`
+	FromModel      string  `json:"from_model,omitempty"`
+	ToModel        string  `json:"to_model,omitempty"`
+	IntendedModel  string  `json:"intended_model,omitempty"`
 
 	// Runtime context collected by the sensor at init() time and by
 	// the Claude Code plugin on every hook invocation. Populated on
@@ -164,12 +191,23 @@ func (c *Consumer) worker(ctx context.Context, sub *nats.Subscription, id int) {
 		for _, msg := range msgs {
 			var event EventPayload
 			if err := json.Unmarshal(msg.Data, &event); err != nil {
+				metrics.IncrDropped(metrics.ReasonUnmarshalError)
 				slog.Error("unmarshal error", "worker", id, "err", err)
 				_ = msg.Term()
 				continue
 			}
 
 			if err := c.processor.Process(ctx, event); err != nil {
+				// Phase 4: when the JetStream delivery count has
+				// crossed maxDeliver, the message is about to go to
+				// the DLQ rather than be redelivered again. Bump a
+				// distinct counter so operators can see
+				// retries-exhausted distinct from per-attempt errors.
+				// Use NumDelivered on the message metadata -- NATS
+				// increments it per delivery, starting at 1.
+				if meta, mErr := msg.Metadata(); mErr == nil && meta.NumDelivered >= maxDeliver {
+					metrics.IncrDropped(metrics.ReasonMaxRetriesExhausted)
+				}
 				slog.Error("process error", "worker", id, "event_type", event.EventType, "err", err)
 				_ = msg.Nak()
 				continue

@@ -1346,6 +1346,18 @@ const docTemplate = `{
                     },
                     {
                         "type": "string",
+                        "description": "Filter to sessions that emitted an llm_error event of one of the listed taxonomy values (repeatable/comma). 14-entry vocabulary: rate_limit, quota_exceeded, context_overflow, content_filter, invalid_request, authentication, permission, not_found, request_too_large, api_error, overloaded, timeout, stream_error, other.",
+                        "name": "error_type",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter to sessions that emitted at least one policy enforcement event of the listed types (repeatable/comma). Vocabulary: policy_warn, policy_degrade, policy_block.",
+                        "name": "policy_event_type",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
                         "description": "Sort field: started_at, last_seen_at, duration, tokens_used, flavor, model, hostname (default: started_at)",
                         "name": "sort",
                         "in": "query"
@@ -1993,6 +2005,7 @@ const docTemplate = `{
                 "event_id": {
                     "type": "string"
                 },
+                "input": {},
                 "messages": {},
                 "model": {
                     "type": "string"
@@ -2303,6 +2316,13 @@ const docTemplate = `{
                 "ended_at": {
                     "type": "string"
                 },
+                "error_types": {
+                    "description": "ErrorTypes lists every distinct ` + "`" + `` + "`" + `payload-\u003e'error'-\u003e\u003e'error_type''\nobserved across the session's ` + "`" + `` + "`" + `llm_error` + "`" + `` + "`" + ` events. Always\npresent on the wire (empty array when the session has no\nerrors) so dashboard code can treat the slice as\nnon-nullable. Mirrors the ` + "`" + `` + "`" + `frameworks` + "`" + `` + "`" + ` JSONB-array surfacing\nshape: aggregated server-side via a correlated subquery on the\nlisting query so the dashboard can render the ERROR TYPE facet\nand the row-level error indicator without a per-session\nfollow-up fetch.",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
                 "flavor": {
                     "type": "string"
                 },
@@ -2311,6 +2331,13 @@ const docTemplate = `{
                 },
                 "model": {
                     "type": "string"
+                },
+                "policy_event_types": {
+                    "description": "PolicyEventTypes lists every distinct policy enforcement\n` + "`" + `` + "`" + `event_type` + "`" + `` + "`" + ` observed in the session: any subset of\n` + "`" + `` + "`" + `policy_warn` + "`" + `` + "`" + ` / ` + "`" + `` + "`" + `policy_degrade` + "`" + `` + "`" + ` / ` + "`" + `` + "`" + `policy_block` + "`" + `` + "`" + `.\nAlways present on the wire (empty array when the session\ncarries no policy events). Same surfacing pattern as\nErrorTypes — correlated subquery on the listing query so the\ndashboard renders the POLICY facet and severity-ranked\nsession-row indicator without a per-session follow-up fetch.",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
                 },
                 "session_id": {
                     "type": "string"

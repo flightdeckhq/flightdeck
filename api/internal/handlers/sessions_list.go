@@ -48,6 +48,17 @@ var validSessionClientTypes = map[string]bool{
 	"flightdeck_sensor": true,
 }
 
+// validPolicyEventTypes is the closed vocabulary for the
+// ?policy_event_type=... filter. Mirrors the sensor's EventType enum
+// values (sensor/flightdeck_sensor/core/types.py). A typo lands as
+// 400 with the allowed set so callers can self-correct rather than
+// silently receiving an empty result.
+var validPolicyEventTypes = map[string]bool{
+	"policy_warn":    true,
+	"policy_degrade": true,
+	"policy_block":   true,
+}
+
 // SessionsListHandler handles GET /v1/sessions.
 //
 // @Summary      List sessions with filters, search, and pagination
@@ -71,6 +82,8 @@ var validSessionClientTypes = map[string]bool{
 // @Param        git_branch query  string  false  "Filter by context.git_branch (repeatable)"
 // @Param        git_repo   query  string  false  "Filter by context.git_repo (repeatable)"
 // @Param        orchestration query string false "Filter by context.orchestration (repeatable)"
+// @Param        error_type query  string  false  "Filter to sessions that emitted an llm_error event of one of the listed taxonomy values (repeatable/comma). 14-entry vocabulary: rate_limit, quota_exceeded, context_overflow, content_filter, invalid_request, authentication, permission, not_found, request_too_large, api_error, overloaded, timeout, stream_error, other."
+// @Param        policy_event_type query  string  false  "Filter to sessions that emitted at least one policy enforcement event of the listed types (repeatable/comma). Vocabulary: policy_warn, policy_degrade, policy_block."
 // @Param        sort       query  string  false  "Sort field: started_at, last_seen_at, duration, tokens_used, flavor, model, hostname (default: started_at)"
 // @Param        order      query  string  false  "Sort order: asc, desc (default: desc)"
 // @Param        limit      query  int     false  "Max results (default 25, max 100)"
@@ -162,6 +175,46 @@ func SessionsListHandler(s store.Querier) http.HandlerFunc {
 				if v != "" {
 					frameworks = append(frameworks, v)
 				}
+			}
+		}
+
+		// Phase 4: filter sessions to those that emitted an
+		// llm_error event of one of the listed taxonomy values. The
+		// 14-entry taxonomy lives in the sensor's core/errors.py;
+		// the API accepts every taxonomy value plus any future
+		// value (free-form) -- the EXISTS subquery on events just
+		// won't match a typo, same as every other text filter.
+		// Multi-value OR within the dimension; AND against other
+		// filters.
+		var errorTypes []string
+		for _, e := range q["error_type"] {
+			for _, v := range strings.Split(e, ",") {
+				v = strings.TrimSpace(v)
+				if v != "" {
+					errorTypes = append(errorTypes, v)
+				}
+			}
+		}
+
+		// Policy-event-type filter (repeatable/comma). Vocabulary
+		// validated against the closed set so a typo 400s with the
+		// allowed values rather than silently matching nothing — same
+		// posture as state / client_type filters because the dimension
+		// is a fixed enum at the sensor side.
+		var policyEventTypes []string
+		for _, p := range q["policy_event_type"] {
+			for _, v := range strings.Split(p, ",") {
+				v = strings.TrimSpace(v)
+				if v == "" {
+					continue
+				}
+				if !validPolicyEventTypes[v] {
+					writeError(w, http.StatusBadRequest,
+						"invalid policy_event_type: "+v+
+							". Allowed: policy_warn, policy_degrade, policy_block")
+					return
+				}
+				policyEventTypes = append(policyEventTypes, v)
 			}
 		}
 
@@ -265,9 +318,11 @@ func SessionsListHandler(s store.Querier) http.HandlerFunc {
 			// malformed value produces a query error rather than a
 			// silently-bypassed filter.
 			AgentID:        strings.TrimSpace(q.Get("agent_id")),
-			AgentTypes:     agentTypes,
-			ClientTypes:    clientTypes,
-			Frameworks:     frameworks,
+			AgentTypes:       agentTypes,
+			ClientTypes:      clientTypes,
+			ErrorTypes:       errorTypes,
+			PolicyEventTypes: policyEventTypes,
+			Frameworks:       frameworks,
 			ContextFilters: contextFilters,
 			Model:          q.Get("model"),
 			Sort:           sort,

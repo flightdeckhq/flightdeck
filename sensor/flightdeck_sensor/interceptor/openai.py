@@ -120,23 +120,31 @@ class SensorCompletions:
         When ``stream=True``, injects ``stream_options`` so OpenAI includes
         token usage in the final streaming chunk.
 
-        Async streaming (``await async_client.chat.completions.create(stream=True)``)
-        is not yet supported and raises ``NotImplementedError``. The
-        previous implementation silently dispatched async streaming to
-        the sync ``base.call_stream`` path; raising surfaces the
-        limitation immediately rather than producing broken behavior at
-        runtime. TODO: implement ``base.call_stream_async`` and a
-        matching async stream wrapper.
+        Phase 4: async streaming is now supported via
+        :func:`base.call_stream_async`. Sync and async streaming go through
+        guarded wrappers that measure TTFT, chunk count, and abort
+        reasons.
         """
         if kwargs.get("stream"):
-            if self._is_async:
-                raise NotImplementedError(
-                    "Async streaming via AsyncOpenAI.chat.completions.create"
-                    "(stream=True) is not yet supported by flightdeck-sensor. "
-                    "Use a non-streaming async call or sync streaming "
-                    "instead. Tracked for a future sensor release."
-                )
             call_kwargs = _inject_stream_options(kwargs)
+            if self._is_async:
+                # Native ``AsyncOpenAI.chat.completions.create(stream=
+                # True)`` returns a coroutine that resolves to an
+                # ``AsyncStream``. Pre-fix the sensor returned a
+                # ``GuardedAsyncStream`` synchronously, so calls
+                # written ``await client.chat.completions.create(
+                # stream=True)`` raised ``TypeError: GuardedAsyncStream
+                # object can't be awaited``. Wrap the call in a
+                # coroutine so the awaited shape matches native
+                # behaviour. Caught by Rule 40d smoke (Phase 4 polish).
+                async def _async_stream_create() -> base.GuardedAsyncStream:
+                    return base.call_stream_async(
+                        self._real.create,
+                        call_kwargs,
+                        self._session,
+                        self._provider,
+                    )
+                return _async_stream_create()
             return base.call_stream(
                 self._real.create,
                 call_kwargs,
@@ -334,13 +342,25 @@ class SensorEmbeddings:
         self._is_async = is_async
 
     def create(self, **kwargs: Any) -> Any:
-        """Intercept embeddings.create() -- sync or async dispatch."""
+        """Intercept embeddings.create() -- sync or async dispatch.
+
+        Phase 4: emits ``event_type="embeddings"`` (not the generic
+        ``post_call``) so the dashboard can render embedding calls
+        distinctly. Token accounting stays identical -- embeddings carry
+        input tokens only, ``output_tokens=0`` as returned by
+        :meth:`OpenAIProvider.extract_usage`.
+        """
         real_fn = self._real.create
+        from flightdeck_sensor.core.types import EventType
         if self._is_async:
             return base.call_async(
-                real_fn, kwargs, self._session, self._provider
+                real_fn, kwargs, self._session, self._provider,
+                event_type=EventType.EMBEDDINGS,
             )
-        return base.call(real_fn, kwargs, self._session, self._provider)
+        return base.call(
+            real_fn, kwargs, self._session, self._provider,
+            event_type=EventType.EMBEDDINGS,
+        )
 
     def __getattr__(self, name: str) -> Any:
         # Pass through: with_raw_response, with_streaming_response.

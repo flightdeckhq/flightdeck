@@ -21,8 +21,10 @@ class SessionState(enum.Enum):
 class EventType(enum.Enum):
     """All event types the sensor can emit.
 
-    POLICY_WARN events carry a ``source`` field: ``"local"`` (from init() limit)
-    or ``"server"`` (from server-side policy).
+    POLICY_WARN / POLICY_DEGRADE / POLICY_BLOCK events carry a ``source``
+    field. POLICY_WARN can be ``"local"`` (from ``init(limit=...)``) or
+    ``"server"`` (from server-side policy). POLICY_DEGRADE / POLICY_BLOCK
+    are always ``"server"`` because local thresholds fire WARN only (D035).
     """
 
     SESSION_START = "session_start"
@@ -31,7 +33,11 @@ class EventType(enum.Enum):
     POST_CALL = "post_call"
     TOOL_CALL = "tool_call"
     POLICY_WARN = "policy_warn"
+    POLICY_DEGRADE = "policy_degrade"
+    POLICY_BLOCK = "policy_block"
     DIRECTIVE_RESULT = "directive_result"
+    EMBEDDINGS = "embeddings"
+    LLM_ERROR = "llm_error"
 
 
 class DirectiveAction(enum.Enum):

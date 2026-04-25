@@ -15,7 +15,61 @@ export type EventType =
   | "policy_block"
   | "policy_degrade"
   | "directive"
-  | "directive_result";
+  | "directive_result"
+  // Phase 4 additions (v0.5.0):
+  | "embeddings"
+  | "llm_error";
+
+/** 14-entry structured LLM API error taxonomy. Mirrors
+ *  ``sensor/flightdeck_sensor/core/errors.py::ErrorType``. */
+export type LLMErrorType =
+  | "rate_limit"
+  | "quota_exceeded"
+  | "context_overflow"
+  | "content_filter"
+  | "invalid_request"
+  | "authentication"
+  | "permission"
+  | "not_found"
+  | "request_too_large"
+  | "api_error"
+  | "overloaded"
+  | "timeout"
+  | "stream_error"
+  | "other";
+
+/** Structured ``error`` sub-object attached to an ``llm_error`` event.
+ *  Carries the Phase 4 taxonomy classification plus provider-side
+ *  fields (http_status, provider_error_code, request_id, retry_after)
+ *  so the dashboard can render a precise, actionable view without a
+ *  second fetch. Optional ``partial_*`` fields appear when the error
+ *  aborted a stream mid-way. */
+export interface LLMErrorPayload {
+  error_type: LLMErrorType;
+  provider: string;
+  http_status: number | null;
+  provider_error_code: string | null;
+  error_message: string;
+  request_id: string | null;
+  retry_after: number | null;
+  is_retryable: boolean;
+  abort_reason?: string;
+  partial_chunks?: number;
+  partial_tokens_input?: number;
+  partial_tokens_output?: number;
+}
+
+/** Per-chunk latency summary attached to a streaming ``post_call`` event.
+ *  Populated only when the call was made with ``stream=true`` -- the
+ *  field is omitted on non-streaming calls to keep the wire shape
+ *  identical to pre-Phase-4 behaviour. */
+export interface StreamingMetrics {
+  ttft_ms: number | null;
+  chunk_count: number;
+  inter_chunk_ms: { p50: number; p95: number; max: number } | null;
+  final_outcome: "completed" | "aborted";
+  abort_reason: string | null;
+}
 
 /** Agent flavor (persistent identity). */
 export interface Agent {
@@ -86,8 +140,28 @@ export interface EventPayloadFields {
   // result is provider-specific JSON -- intentionally untyped
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   result?: any;
-  error?: string;
+  // Phase 4: ``error`` is overloaded. Legacy directive_result events
+  // emit a plain string here; the new llm_error events emit a
+  // structured LLMErrorPayload. Components that read ``payload.error``
+  // must narrow via ``typeof`` before accessing taxonomy fields.
+  error?: string | LLMErrorPayload;
   duration_ms?: number;
+  // Phase 4 streaming sub-object; populated only on post_call events
+  // emitted from a ``stream=true`` call.
+  streaming?: StreamingMetrics;
+  // Policy enforcement fields. Populated on ``policy_warn`` /
+  // ``policy_degrade`` / ``policy_block`` events. ``source`` is
+  // ``"local"`` (init() limit) or ``"server"`` (server policy);
+  // BLOCK is always ``"server"`` per D035.
+  source?: "local" | "server";
+  threshold_pct?: number | null;
+  tokens_used?: number;
+  token_limit?: number | null;
+  // policy_degrade additions: the model swap.
+  from_model?: string;
+  to_model?: string;
+  // policy_block addition: the model the blocked call was going to use.
+  intended_model?: string;
 }
 
 /** Event metadata (no prompt content inline). */
@@ -310,6 +384,16 @@ export interface EventContent {
   tools: any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   response: any;
+  /**
+   * Phase 4 polish: embedding-shaped content. Populated only on
+   * ``event_type=embeddings`` events; absent on chat events. Carries
+   * the request's ``input`` parameter -- a string (single-input
+   * embed) or list of strings (batch embed) per the OpenAI / litellm
+   * / LangChain ``OpenAIEmbeddings`` API. Dashboard's
+   * ``EmbeddingsContentViewer`` branches on the type to render the
+   * single-input or batch-list view.
+   */
+  input?: string | string[] | null;
   captured_at: string;
 }
 
@@ -405,6 +489,24 @@ export interface SessionListItem {
    *  predates Phase 5. */
   token_id?: string | null;
   token_name?: string | null;
+  /**
+   * Phase 4 polish: every distinct ``payload->'error'->>'error_type'``
+   * observed across the session's ``llm_error`` events. Always
+   * present on the wire (empty array when the session has no
+   * errors) so the dashboard can read ``error_types.length > 0``
+   * directly without a null check. Drives the Investigate ERROR
+   * TYPE facet aggregation and the row-level red error indicator
+   * in the session table.
+   */
+  error_types?: string[];
+  /**
+   * Every distinct policy enforcement ``event_type`` observed in the
+   * session: any subset of ``policy_warn`` / ``policy_degrade`` /
+   * ``policy_block``. Always present (empty array when no policy
+   * events). Drives the Investigate POLICY facet aggregation and the
+   * severity-ranked row-level dot indicator (block > degrade > warn).
+   */
+  policy_event_types?: string[];
 }
 
 /** Paginated response from GET /v1/sessions. */

@@ -337,6 +337,7 @@ definitions:
         type: string
       event_id:
         type: string
+      input: {}
       messages: {}
       model:
         type: string
@@ -572,12 +573,39 @@ definitions:
         type: number
       ended_at:
         type: string
+      error_types:
+        description: |-
+          ErrorTypes lists every distinct ``payload->'error'->>'error_type''
+          observed across the session's ``llm_error`` events. Always
+          present on the wire (empty array when the session has no
+          errors) so dashboard code can treat the slice as
+          non-nullable. Mirrors the ``frameworks`` JSONB-array surfacing
+          shape: aggregated server-side via a correlated subquery on the
+          listing query so the dashboard can render the ERROR TYPE facet
+          and the row-level error indicator without a per-session
+          follow-up fetch.
+        items:
+          type: string
+        type: array
       flavor:
         type: string
       host:
         type: string
       model:
         type: string
+      policy_event_types:
+        description: |-
+          PolicyEventTypes lists every distinct policy enforcement
+          ``event_type`` observed in the session: any subset of
+          ``policy_warn`` / ``policy_degrade`` / ``policy_block``.
+          Always present on the wire (empty array when the session
+          carries no policy events). Same surfacing pattern as
+          ErrorTypes — correlated subquery on the listing query so the
+          dashboard renders the POLICY facet and severity-ranked
+          session-row indicator without a per-session follow-up fetch.
+        items:
+          type: string
+        type: array
       session_id:
         type: string
       started_at:
@@ -1553,6 +1581,20 @@ paths:
       - description: Filter by context.orchestration (repeatable)
         in: query
         name: orchestration
+        type: string
+      - description: 'Filter to sessions that emitted an llm_error event of one of
+          the listed taxonomy values (repeatable/comma). 14-entry vocabulary: rate_limit,
+          quota_exceeded, context_overflow, content_filter, invalid_request, authentication,
+          permission, not_found, request_too_large, api_error, overloaded, timeout,
+          stream_error, other.'
+        in: query
+        name: error_type
+        type: string
+      - description: 'Filter to sessions that emitted at least one policy enforcement
+          event of the listed types (repeatable/comma). Vocabulary: policy_warn, policy_degrade,
+          policy_block.'
+        in: query
+        name: policy_event_type
         type: string
       - description: 'Sort field: started_at, last_seen_at, duration, tokens_used,
           flavor, model, hostname (default: started_at)'

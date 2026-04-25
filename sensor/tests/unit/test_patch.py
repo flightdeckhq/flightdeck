@@ -449,35 +449,60 @@ def test_sensor_beta_messages_create_routes_through_intercept(
 
 
 # ----------------------------------------------------------------------
-# Async streaming raises informative NotImplementedError
+# Async streaming: Phase 4 lifted the prior ``NotImplementedError``.
+# Both SDKs now route async streaming through ``GuardedAsyncStream``
+# which implements the awaitable CM protocol. The smoke tests exercise
+# a real provider; here we assert at the type level that the dispatch
+# returns the guarded wrapper rather than raising.
 # ----------------------------------------------------------------------
 
 
-def test_async_anthropic_streaming_raises_not_implemented(sensor_init: Any) -> None:
-    """SensorMessages.stream on an async client raises NotImplementedError.
+def test_async_anthropic_streaming_returns_guarded_async_stream(sensor_init: Any) -> None:
+    """SensorMessages.stream on an async client returns a GuardedAsyncStream.
 
-    The previous implementation silently dispatched async streaming
-    to the sync ``base.call_stream`` path, which then misbehaved at
-    runtime. Raising surfaces the limitation immediately.
+    Phase 4 lifted the prior NotImplementedError; async streaming now
+    produces a :class:`base.GuardedAsyncStream` with the same TTFT +
+    chunk + abort measurement policy as the sync wrapper.
     """
+    from flightdeck_sensor.interceptor import base
     async_client = anthropic.AsyncAnthropic(api_key="test-key")
     wrapped = flightdeck_sensor.wrap(async_client)
     assert isinstance(wrapped, SensorAnthropic)
-    with pytest.raises(NotImplementedError, match="Async streaming"):
-        wrapped.messages.stream(model="claude-sonnet-4-6", messages=[])
+    guarded = wrapped.messages.stream(
+        model="claude-sonnet-4-6", messages=[],
+    )
+    assert isinstance(guarded, base.GuardedAsyncStream)
 
 
-def test_async_openai_streaming_raises_not_implemented(sensor_init: Any) -> None:
-    """SensorCompletions.create(stream=True) on async client raises."""
+def test_async_openai_streaming_returns_guarded_async_stream(sensor_init: Any) -> None:
+    """SensorCompletions.create(stream=True) on async client returns a coroutine
+    that resolves to GuardedAsyncStream.
+
+    Native ``AsyncOpenAI.chat.completions.create(stream=True)`` returns a
+    coroutine that resolves to ``AsyncStream``; the sensor wrapper now
+    matches that shape so ``await client.chat.completions.create(stream=
+    True)`` works for production users. Pre-fix the wrapper returned
+    ``GuardedAsyncStream`` synchronously and ``await`` raised ``TypeError:
+    GuardedAsyncStream object can't be awaited``. Caught by Rule 40d
+    smoke (Phase 4 polish).
+    """
+    import asyncio
+    import inspect
+    from flightdeck_sensor.interceptor import base
     async_client = openai.AsyncOpenAI(api_key="test-key")
     wrapped = flightdeck_sensor.wrap(async_client)
     assert isinstance(wrapped, SensorOpenAI)
-    with pytest.raises(NotImplementedError, match="Async streaming"):
-        wrapped.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[],
-            stream=True,
-        )
+    coro = wrapped.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[],
+        stream=True,
+    )
+    assert inspect.iscoroutine(coro), (
+        f"async stream create() must return a coroutine, got {type(coro).__name__}"
+    )
+    # Awaiting the coroutine yields the GuardedAsyncStream wrapper.
+    guarded = asyncio.run(coro)
+    assert isinstance(guarded, base.GuardedAsyncStream)
 
 
 # ----------------------------------------------------------------------

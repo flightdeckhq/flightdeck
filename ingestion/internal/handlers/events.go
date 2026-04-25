@@ -9,12 +9,37 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/flightdeckhq/flightdeck/ingestion/internal/auth"
 	inats "github.com/flightdeckhq/flightdeck/ingestion/internal/nats"
 )
 
 const maxRequestBodyBytes = 1 << 20 // 1MB
+
+// Phase 4 timestamp bounds. An event whose ``timestamp`` falls outside
+// this window is rejected at the wire boundary with 400. Motivation:
+// a sensor whose clock drifts (backwards) can backdate a session so
+// the reconciler instantly marks it lost; a sensor whose clock drifts
+// (forwards) can freeze a session in active forever because
+// ``last_seen_at > NOW()`` trips no staleness condition. Both are
+// observable in prod but silent today (D7/D8 in audit-phase-4.md).
+//
+// Bounds are deliberately generous:
+//   maxClockSkewPast  — 48h: covers retry-after-long-outage scenarios,
+//                       batch replay, and the E2E ``aged-closed``
+//                       fixture (28h old) that lives outside the
+//                       swimlane window by design. Anything older is
+//                       almost certainly a clock bug rather than a
+//                       legitimate backlog.
+//   maxClockSkewFuture — 5m: tight enough to catch a forward-drifting
+//                         clock, loose enough to absorb ordinary NTP
+//                         jitter on a fleet of machines that are not
+//                         tightly synchronised.
+const (
+	maxClockSkewPast   = 48 * time.Hour
+	maxClockSkewFuture = 5 * time.Minute
+)
 
 // D114 / D115 vocabulary lock, enforced at the wire boundary so a
 // non-conforming third-party emitter gets a 400 instead of polluting
@@ -183,6 +208,61 @@ func EventsHandler(
 		if sessionID == "" || eventType == "" {
 			writeError(w, http.StatusBadRequest, "session_id and event_type are required")
 			return
+		}
+
+		// D10 (Phase 4): reject non-UUID session_ids at the wire
+		// boundary. Previously a malformed session_id propagated to
+		// the worker and fell over at Postgres's ``::uuid`` cast
+		// (SQLSTATE 22P02) with a cryptic redelivery loop. The
+		// regex mirrors the agent_id check below; enforcing at the
+		// same layer keeps both UUID fields symmetric.
+		if !uuidRegex.MatchString(sessionID) {
+			writeError(w, http.StatusBadRequest, "session_id must be a canonical UUID")
+			return
+		}
+
+		// D7/D8 (Phase 4): reject events whose ``timestamp`` falls
+		// outside [NOW()-24h, NOW()+5m]. See maxClockSkewPast/Future
+		// comment above for motivation. Timestamp is RFC 3339; if
+		// the field is missing or not a string we do NOT reject --
+		// the worker's Processor.Process substitutes NOW() and
+		// proceeds, matching pre-Phase-4 behaviour for older sensors
+		// that pre-date timestamp injection.
+		if tsRaw, ok := payload["timestamp"].(string); ok && tsRaw != "" {
+			ts, terr := time.Parse(time.RFC3339, tsRaw)
+			if terr != nil {
+				writeError(w, http.StatusBadRequest,
+					"timestamp must be RFC 3339 format")
+				return
+			}
+			now := time.Now().UTC()
+			if ts.Before(now.Add(-maxClockSkewPast)) {
+				writeError(w, http.StatusBadRequest,
+					"timestamp is more than 24h in the past; refusing to "+
+						"backdate; check the sensor host clock")
+				return
+			}
+			if ts.After(now.Add(maxClockSkewFuture)) {
+				writeError(w, http.StatusBadRequest,
+					"timestamp is more than 5m in the future; refusing to "+
+						"postdate; check the sensor host clock")
+				return
+			}
+		}
+
+		// D15 (Phase 4): reject negative token counts. JSON-decoded
+		// numbers land as float64 in the map[string]any payload; we
+		// inspect only the three fields that carry real LLM usage.
+		// Missing values are fine (many events don't carry usage);
+		// only an explicit negative trips the reject path.
+		for _, key := range []string{"tokens_input", "tokens_output", "tokens_total"} {
+			if v, ok := payload[key]; ok && v != nil {
+				if n, isNum := v.(float64); isNum && n < 0 {
+					writeError(w, http.StatusBadRequest,
+						fmt.Sprintf("%s must be >= 0", key))
+					return
+				}
+			}
 		}
 
 		// D115 / D116: agent identity validation at the wire boundary.

@@ -3,11 +3,13 @@ import { render, screen, fireEvent } from "@testing-library/react";
 import { EventFilterBar } from "@/components/fleet/EventFilterBar";
 
 describe("EventFilterBar", () => {
-  it("renders all 6 pills", () => {
+  it("renders all 8 pills (incl Phase 4 Embeddings + Errors)", () => {
     render(<EventFilterBar activeFilter={null} onFilterChange={() => {}} />);
     expect(screen.getByTestId("filter-pill-All")).toBeInTheDocument();
     expect(screen.getByTestId("filter-pill-LLM Calls")).toBeInTheDocument();
     expect(screen.getByTestId("filter-pill-Tools")).toBeInTheDocument();
+    expect(screen.getByTestId("filter-pill-Embeddings")).toBeInTheDocument();
+    expect(screen.getByTestId("filter-pill-Errors")).toBeInTheDocument();
     expect(screen.getByTestId("filter-pill-Policy")).toBeInTheDocument();
     expect(screen.getByTestId("filter-pill-Directives")).toBeInTheDocument();
     expect(screen.getByTestId("filter-pill-Session")).toBeInTheDocument();
@@ -39,7 +41,7 @@ describe("EventFilterBar", () => {
   it("each non-All pill has a colored dot", () => {
     render(<EventFilterBar activeFilter={null} onFilterChange={() => {}} />);
     const dots = screen.getAllByTestId("filter-dot");
-    // 5 non-All pills should have dots
-    expect(dots).toHaveLength(5);
+    // 7 non-All pills (Phase 4 added Embeddings + Errors for 7 total).
+    expect(dots).toHaveLength(7);
   });
 });

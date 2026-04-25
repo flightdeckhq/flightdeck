@@ -1,52 +1,68 @@
 import { test, expect } from "@playwright/test";
-import { E2E_PREFIX, waitForFleetReady } from "./_fixtures";
+import {
+  ALL_FIXTURE_AGENTS,
+  E2E_PREFIX,
+  bringSwimlaneRowIntoView,
+  bringTableRowIntoView,
+  waitForFleetReady,
+} from "./_fixtures";
 
 // T9 — swimlane and table view are two presentations of the same
 // fleet set. Any discrepancy between the two (swimlane has N
-// agents, table has M) means one of the views is dropping rows or
-// the view-toggle is rewiring the query. Count our e2e-test-*
-// agents under each view and assert parity.
+// fixtures, table has M) means one of the views is dropping rows
+// or the view-toggle is rewiring the query.
+//
+// Resilience pattern P1: target each canonical fixture by name
+// rather than counting an unbounded ``[testid^=...]`` selector
+// against the swimlane's virtualizer (off-screen rows aren't in
+// the DOM, so a naive count under realistic data volume reports
+// a fraction of the actual fixtures). Pin every ALL_FIXTURE_AGENTS
+// entry as visible in BOTH views — that's the actual contract:
+// every fixture surfaces under both presentations.
 test.describe("T9 — Swimlane and table view render the same agent set", () => {
-  test("swimlane agent count for e2e-test-* == table agent count for e2e-test-*", async ({
+  test("every e2e-test-* fixture surfaces in both swimlane and table view", async ({
     page,
   }) => {
     await page.goto("/");
     await waitForFleetReady(page);
 
-    // Count distinct E2E agent rows in swimlane view.
-    const swimlaneCount = await page
-      .locator(`[data-testid^="swimlane-agent-row-${E2E_PREFIX}"]`)
-      .count();
-    expect(
-      swimlaneCount,
-      `swimlane should render all 3 seeded e2e-test-* fixtures`,
-    ).toBeGreaterThanOrEqual(3);
+    // Swimlane: each fixture must mount when scrolled into view.
+    for (const agent of ALL_FIXTURE_AGENTS) {
+      const row = await bringSwimlaneRowIntoView(page, agent.name);
+      await expect(
+        row,
+        `swimlane missing fixture ${agent.name}`,
+      ).toBeVisible();
+    }
 
     // Flip to table view.
     await page.locator('[data-testid="fleet-view-toggle-table"]').click();
     await expect(
-      page
-        .locator('[data-testid^="fleet-agent-row-"]')
-        .first(),
+      page.locator('[data-testid^="fleet-agent-row-"]').first(),
     ).toBeVisible();
 
-    // Table rows are keyed by agent_id (unknown to the test) — filter
-    // by visible text containing the E2E prefix. The name text is
-    // rendered in-cell so `filter({ hasText })` matches correctly.
-    const tableCount = await page
-      .locator('[data-testid^="fleet-agent-row-"]')
-      .filter({ hasText: E2E_PREFIX })
-      .count();
-    expect(
-      tableCount,
-      `table view should render the same 3 e2e-test-* fixtures as swimlane`,
-    ).toBeGreaterThanOrEqual(3);
+    // Table view paginates rather than virtualizes; bringTableRow
+    // walks page-next until the fixture appears (capped at 10
+    // pages = 500 rows of headroom). Same parity contract as
+    // swimlane: every fixture must be reachable.
+    for (const agent of ALL_FIXTURE_AGENTS) {
+      const row = await bringTableRowIntoView(page, agent.name);
+      await expect(
+        row,
+        `table view missing fixture ${agent.name}`,
+      ).toBeVisible();
+    }
 
-    expect(
-      tableCount,
-      `swimlane and table views must render the same count of e2e-test-* ` +
-        `agents (swimlane=${swimlaneCount}, table=${tableCount}). ` +
-        `A mismatch means one presentation is dropping rows.`,
-    ).toBe(swimlaneCount);
+    // Sanity guard against a future fixture-set drift: confirm the
+    // canonical prefix invariant still holds (every ALL_FIXTURE_
+    // AGENTS name starts with E2E_PREFIX). If the canonical set
+    // ever picks up a non-prefixed entry the swimlane/table
+    // discriminator on the prefix breaks silently — fail here.
+    for (const agent of ALL_FIXTURE_AGENTS) {
+      expect(
+        agent.name.startsWith(E2E_PREFIX),
+        `canonical fixture ${agent.name} must start with ${E2E_PREFIX}`,
+      ).toBe(true);
+    }
   });
 });

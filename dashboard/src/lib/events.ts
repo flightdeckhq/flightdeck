@@ -66,6 +66,12 @@ export const eventBadgeConfig: Record<string, BadgeConfig> = {
   directive_result: { cssVar: "var(--event-result)", label: "RESULT" },
   session_start: { cssVar: "var(--event-lifecycle)", label: "START" },
   session_end: { cssVar: "var(--event-lifecycle)", label: "END" },
+  // Phase 4 event-type additions. EMBED uses the cyan RAG family;
+  // ERROR uses the danger red so it reads as alarming without being
+  // confused with a policy BLOCK (which is also red but stylistically
+  // distinct via its badge family).
+  embeddings: { cssVar: "var(--event-embeddings)", label: "EMBED" },
+  llm_error: { cssVar: "var(--event-error)", label: "ERROR" },
 };
 
 export const defaultBadge: BadgeConfig = { cssVar: "var(--event-lifecycle)", label: "EVENT" };
@@ -142,6 +148,15 @@ export function getEventDetail(event: AgentEvent): string {
   switch (event.event_type) {
     case "post_call": {
       const parts = [event.model ?? "unknown"];
+      // Phase 4 polish: streaming post_calls surface TTFT inline
+      // ahead of the token + total-latency segments so an operator
+      // scanning the timeline sees first-token latency on the same
+      // row as the response. Non-streaming calls keep the original
+      // ``model · tokens · latency`` shape unchanged.
+      const stream = event.payload?.streaming;
+      if (stream && stream.ttft_ms != null) {
+        parts.push(`TTFT ${stream.ttft_ms.toLocaleString()}ms`);
+      }
       if (event.tokens_total != null) parts.push(`${event.tokens_total.toLocaleString()} tok`);
       if (event.latency_ms != null) parts.push(`${event.latency_ms}ms`);
       return parts.join(" · ");
@@ -150,12 +165,27 @@ export function getEventDetail(event: AgentEvent): string {
       return event.model ?? "unknown";
     case "tool_call":
       return event.tool_name ?? "unknown tool";
-    case "policy_warn":
+    case "policy_warn": {
+      const p = event.payload;
+      if (p && p.threshold_pct != null && p.tokens_used != null && p.token_limit != null) {
+        return `warn at ${p.threshold_pct}% · ${p.tokens_used.toLocaleString()} of ${p.token_limit.toLocaleString()} tokens`;
+      }
       return "warned at threshold";
-    case "policy_block":
+    }
+    case "policy_block": {
+      const p = event.payload;
+      if (p && p.tokens_used != null && p.token_limit != null) {
+        return `blocked at ${p.tokens_used.toLocaleString()} of ${p.token_limit.toLocaleString()} tokens`;
+      }
       return "blocked at threshold";
-    case "policy_degrade":
+    }
+    case "policy_degrade": {
+      const p = event.payload;
+      if (p && p.from_model && p.to_model) {
+        return `degraded from ${p.from_model} to ${p.to_model}`;
+      }
       return "degraded model";
+    }
     case "session_start":
       return "session started";
     case "session_end":
@@ -168,6 +198,34 @@ export function getEventDetail(event: AgentEvent): string {
       if (status) return status;
       return "directive result";
     }
+    case "embeddings": {
+      // Phase 4 polish: embeddings calls have only an input-token
+      // dimension (no completion tokens) so the row reads as
+      // "<model> · <N> tok in" -- distinct from post_call's
+      // "tokens_total" framing.
+      const parts = [event.model ?? "unknown"];
+      if (event.tokens_input != null) {
+        parts.push(`${event.tokens_input.toLocaleString()} tok in`);
+      }
+      if (event.latency_ms != null) parts.push(`${event.latency_ms}ms`);
+      return parts.join(" · ");
+    }
+    case "llm_error": {
+      // Phase 4 polish: surface the taxonomy classification +
+      // provider_error_code (or provider name as fallback) so an
+      // operator scanning the timeline sees what kind of error it
+      // was without expanding. Narrows ``payload.error`` against
+      // the directive_result string overload before reading any
+      // structured fields.
+      const err = event.payload?.error;
+      if (err && typeof err !== "string") {
+        const parts: string[] = [err.error_type];
+        if (err.provider_error_code) parts.push(err.provider_error_code);
+        else if (err.provider) parts.push(err.provider);
+        return parts.join(" · ");
+      }
+      return "llm error";
+    }
     default:
       return event.event_type;
   }
@@ -177,22 +235,76 @@ export function getEventDetail(event: AgentEvent): string {
 
 export function getSummaryRows(event: AgentEvent): [string, string][] {
   switch (event.event_type) {
-    case "post_call":
-      return [
+    case "post_call": {
+      const rows: [string, string][] = [
         ["Model", event.model ?? "unknown"],
         ["Tokens input", event.tokens_input?.toLocaleString() ?? "—"],
         ["Tokens output", event.tokens_output?.toLocaleString() ?? "—"],
         ["Total tokens", event.tokens_total?.toLocaleString() ?? "—"],
         ["Latency", event.latency_ms != null ? `${event.latency_ms.toLocaleString()}ms` : "—"],
       ];
+      // Phase 4 polish: surface the streaming sub-object inline so
+      // the expanded row shows everything the sensor recorded
+      // without a separate PromptViewer round-trip. Non-streaming
+      // post_calls keep the original five-row layout unchanged.
+      const stream = event.payload?.streaming;
+      if (stream) {
+        if (stream.ttft_ms != null) {
+          rows.push(["TTFT", `${stream.ttft_ms.toLocaleString()}ms`]);
+        }
+        rows.push(["Chunks", stream.chunk_count.toLocaleString()]);
+        if (stream.inter_chunk_ms) {
+          const ic = stream.inter_chunk_ms;
+          rows.push([
+            "Inter-chunk",
+            `p50 ${ic.p50}ms · p95 ${ic.p95}ms · max ${ic.max}ms`,
+          ]);
+        }
+        rows.push([
+          "Stream outcome",
+          stream.final_outcome === "aborted" && stream.abort_reason
+            ? `aborted · ${stream.abort_reason}`
+            : stream.final_outcome,
+        ]);
+      }
+      return rows;
+    }
     case "pre_call":
       return [["Model", event.model ?? "unknown"]];
     case "tool_call":
       return [["Tool", event.tool_name ?? "unknown"]];
     case "policy_warn":
     case "policy_block":
-    case "policy_degrade":
-      return [["Type", event.event_type.replace("policy_", "")]];
+    case "policy_degrade": {
+      // Lay out the common (source, threshold, tokens) shape plus the
+      // type-specific extras (from/to model on degrade,
+      // intended_model on block) so the operator sees the full
+      // enforcement decision in the expanded row. The detailed
+      // accordion (request-style metadata) lives in
+      // <PolicyEventDetails/> so this list stays scannable.
+      const p = event.payload;
+      const rows: [string, string][] = [
+        ["Type", event.event_type.replace("policy_", "")],
+      ];
+      if (p?.source) rows.push(["Source", p.source]);
+      if (p?.threshold_pct != null) {
+        rows.push(["Threshold", `${p.threshold_pct}%`]);
+      }
+      if (p?.tokens_used != null) {
+        rows.push(["Tokens used", p.tokens_used.toLocaleString()]);
+      }
+      if (p?.token_limit != null) {
+        rows.push(["Token limit", p.token_limit.toLocaleString()]);
+      }
+      if (event.event_type === "policy_degrade") {
+        if (p?.from_model) rows.push(["From model", p.from_model]);
+        if (p?.to_model) rows.push(["To model", p.to_model]);
+      }
+      if (event.event_type === "policy_block" && p?.intended_model) {
+        rows.push(["Intended model", p.intended_model]);
+      }
+      return rows;
+    }
     case "session_start":
       return [["Event", "session started"]];
     case "session_end":
@@ -212,10 +324,54 @@ export function getSummaryRows(event: AgentEvent): [string, string][] {
         rows.push(["Duration", `${event.payload.duration_ms}ms`]);
       }
       if (event.payload?.error) {
-        rows.push(["Error", event.payload.error]);
+        // directive_result events emit ``error`` as a plain string;
+        // the Phase 4 ``llm_error`` event type uses the same payload
+        // slot for a structured object. Narrow here so a future
+        // directive_result that accidentally carries the structured
+        // shape still renders instead of blowing up.
+        const err = event.payload.error;
+        rows.push(["Error", typeof err === "string" ? err : err.error_type]);
       }
       if (rows.length === 0) {
         rows.push(["Event", "directive result"]);
+      }
+      return rows;
+    }
+    case "embeddings": {
+      // No tokens_output column for embeddings -- the provider call
+      // has no generation step. Surface input tokens + latency only
+      // so the expanded row doesn't render an empty "tokens output"
+      // cell that would mislead a reader.
+      return [
+        ["Model", event.model ?? "unknown"],
+        ["Tokens input", event.tokens_input?.toLocaleString() ?? "—"],
+        ["Latency", event.latency_ms != null ? `${event.latency_ms.toLocaleString()}ms` : "—"],
+      ];
+    }
+    case "llm_error": {
+      // Pull the structured taxonomy fields off ``payload.error``
+      // and lay them out in the same key/value grid the rest of
+      // the event types use. Narrows against the directive_result
+      // string overload first so a misshaped payload can't blow
+      // up the row. Detailed accordion fields (request_id,
+      // retry_after, is_retryable) live in <ErrorEventDetails/>
+      // so this list stays scannable.
+      const err = event.payload?.error;
+      const rows: [string, string][] = [
+        ["Model", event.model ?? "unknown"],
+      ];
+      if (err && typeof err !== "string") {
+        rows.push(["Error type", err.error_type]);
+        rows.push(["Provider", err.provider || "unknown"]);
+        if (err.http_status != null) {
+          rows.push(["HTTP status", String(err.http_status)]);
+        }
+        if (err.provider_error_code) {
+          rows.push(["Provider code", err.provider_error_code]);
+        }
+        if (err.error_message) {
+          rows.push(["Message", err.error_message]);
+        }
       }
       return rows;
     }
@@ -229,6 +385,8 @@ export function getSummaryRows(event: AgentEvent): [string, string][] {
 export const EVENT_TYPE_GROUPS: Record<string, string[]> = {
   "LLM Calls": ["post_call", "pre_call"],
   "Tools": ["tool_call"],
+  "Embeddings": ["embeddings"],
+  "Errors": ["llm_error"],
   "Policy": ["policy_warn", "policy_block", "policy_degrade"],
   "Directives": ["directive", "directive_result"],
   "Session": ["session_start", "session_end"],
@@ -238,6 +396,8 @@ export const EVENT_FILTER_PILLS = [
   { label: "All", color: null },
   { label: "LLM Calls", color: "var(--event-llm)" },
   { label: "Tools", color: "var(--event-tool)" },
+  { label: "Embeddings", color: "var(--event-embeddings)" },
+  { label: "Errors", color: "var(--event-error)" },
   { label: "Policy", color: "var(--event-warn)" },
   { label: "Directives", color: "var(--event-directive)" },
   { label: "Session", color: "var(--event-lifecycle)" },

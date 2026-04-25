@@ -622,9 +622,30 @@ class Session:
 
         elif directive.action == DirectiveAction.DEGRADE:
             degrade_to = directive.payload.get("degrade_to", "")
-            # Acknowledge degrade before acting
             with self._lock:
                 current_model = self._model or ""
+                tokens_used = self._tokens_used
+                token_limit = self._token_limit
+            # POLICY_DEGRADE: the user-facing enforcement decision event.
+            # Fires ONCE per directive arrival (not per subsequent call) —
+            # per-call swaps are visible via post_call.model only. Source
+            # is always ``"server"`` because DEGRADE never originates from
+            # a local init(limit=...) threshold (D035 — local fires WARN
+            # only).
+            policy_event = self._build_payload(
+                EventType.POLICY_DEGRADE,
+                source="server",
+                threshold_pct=self.policy.degrade_at_pct,
+                tokens_used=tokens_used,
+                token_limit=token_limit,
+                from_model=current_model,
+                to_model=degrade_to,
+            )
+            self.event_queue.enqueue(policy_event)
+            # DIRECTIVE_RESULT (acknowledged): the plumbing-level
+            # acknowledgement that pairs with every other inbound
+            # directive type. Ordered AFTER the POLICY_DEGRADE so the
+            # decision event lands on the timeline before the ack.
             ack = self._build_payload(
                 EventType.DIRECTIVE_RESULT,
                 directive_name="degrade",

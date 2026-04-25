@@ -80,6 +80,13 @@
      on the dark surface stays legible. */
   --claude-code: #E8915A;
 
+  /* Phase 4 event-type palette extensions. ``--event-embeddings`` is
+     the cyan family (RAG/semantic search iconography); ``--event-error``
+     is the danger red so llm_error events read as alarming without
+     being a policy-block red (those are ``--event-block``). */
+  --event-embeddings: #06b6d4;
+  --event-error: #ef4444;
+
   /* Cost disclaimer tone -- amber on dark theme. */
   --color-warn-soft: rgba(234, 179, 8, 0.12);
   --color-warn-border: rgba(234, 179, 8, 0.35);
@@ -168,6 +175,11 @@
      components/ui/provider-icons.ts. Light-theme value is the
      darker hex so amber on white surface stays legible. */
   --claude-code: #D4763B;
+
+  /* Phase 4 event-type palette extensions -- light-theme variants
+     with slightly darker chromas to stay legible against ``--bg``. */
+  --event-embeddings: #0891b2;
+  --event-error: #dc2626;
 
   /* Cost disclaimer tone -- amber on light theme. */
   --color-warn-soft: rgba(202, 138, 4, 0.08);

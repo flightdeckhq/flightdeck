@@ -7,9 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/flightdeckhq/flightdeck/workers/internal/consumer"
+	"github.com/flightdeckhq/flightdeck/workers/internal/metrics"
 	"github.com/flightdeckhq/flightdeck/workers/internal/writer"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -111,6 +113,7 @@ func (sp *SessionProcessor) handleSessionGuard(ctx context.Context, e consumer.E
 	}
 	switch state {
 	case "closed":
+		metrics.IncrDropped(metrics.ReasonClosedSessionSkip)
 		slog.Warn("skipping event for closed session",
 			"session_id", e.SessionID,
 			"event_type", e.EventType,
@@ -182,19 +185,45 @@ func (sp *SessionProcessor) upgradeContextIfPresent(ctx context.Context, e consu
 	}
 }
 
-// isClosed reports whether the session is already in state=closed.
-// Used by HandleSessionEnd to skip redundant CloseSession calls. Fails
-// open (returns false) on a DB error or non-existent session so the
-// close path still runs.
-func (sp *SessionProcessor) isClosed(ctx context.Context, sessionID string) bool {
+// sessionLookup is the result of sessionLookupState. "missing" distinguishes
+// "unknown session_id" from "known but closed" so HandleSessionEnd can emit
+// a WARN + dropped-events counter increment for the former while treating
+// the latter as an idempotent no-op. Phase 4 D2: orphan session_end was
+// previously dropped via a silent FK-violation + NATS Nak loop; this
+// three-way result surfaces it cleanly.
+type sessionLookup int
+
+const (
+	sessionLookupMissing sessionLookup = iota
+	sessionLookupClosed
+	sessionLookupOpen
+)
+
+// sessionLookupState reports whether the session row is missing, present
+// and closed, or present and non-closed. Fails open on a DB error (returns
+// Missing) so the close path still runs -- matching the pre-Phase-4
+// isClosed-returns-false fallback.
+func (sp *SessionProcessor) sessionLookupState(ctx context.Context, sessionID string) sessionLookup {
 	var state string
 	err := sp.pool.QueryRow(ctx,
 		"SELECT state FROM sessions WHERE session_id = $1::uuid", sessionID,
 	).Scan(&state)
 	if err != nil {
-		return false
+		// pgx surfaces "no rows" as pgx.ErrNoRows; any other error
+		// (network, malformed UUID cast, etc.) also funnels here.
+		// Matching substring on error text keeps the import surface
+		// small -- pgx.ErrNoRows is the only sentinel we care about
+		// distinguishing, and the rest collapse to "assume missing,
+		// let the caller decide".
+		if strings.Contains(err.Error(), "no rows in result set") {
+			return sessionLookupMissing
+		}
+		return sessionLookupMissing
 	}
-	return state == "closed"
+	if state == "closed" {
+		return sessionLookupClosed
+	}
+	return sessionLookupOpen
 }
 
 // HandleSessionStart upserts the agent and creates (or revives) a session.
@@ -320,10 +349,32 @@ func (sp *SessionProcessor) HandlePostCall(ctx context.Context, e consumer.Event
 // HandleSessionEnd closes the session. Unlike the other handlers,
 // session_end deliberately bypasses handleTerminalGuard -- closing a
 // stale or lost session should transition it directly to closed via
-// CloseSession, not flicker through active. Only an already-closed
-// session is a no-op.
+// CloseSession, not flicker through active. Already-closed sessions are
+// an idempotent no-op.
+//
+// Phase 4 D2: orphan session_end (session_end for an unknown
+// session_id) is now handled explicitly. Pre-Phase-4 behaviour was a
+// silent FK-violation at InsertEvent → NATS Nak → redelivery loop → DLQ,
+// with an opaque "process error" log that didn't distinguish "orphan"
+// from "real problem". The new path looks up the session state before
+// CloseSession runs; a missing row yields a WARN log + dropped-events
+// counter increment + nil return so the consumer ACKs cleanly (there is
+// nothing to recover from redelivery).
 func (sp *SessionProcessor) HandleSessionEnd(ctx context.Context, e consumer.EventPayload) error {
-	if sp.isClosed(ctx, e.SessionID) {
+	switch sp.sessionLookupState(ctx, e.SessionID) {
+	case sessionLookupMissing:
+		// D106 deliberately does NOT lazy-create on session_end -- a
+		// teardown signal for a session we never saw should not
+		// retroactively manifest a closed row. Log + counter + ACK.
+		metrics.IncrDropped(metrics.ReasonOrphanSessionEnd)
+		slog.Warn("dropped orphan session_end",
+			"session_id", e.SessionID,
+			"reason", string(metrics.ReasonOrphanSessionEnd),
+		)
+		return nil
+	case sessionLookupClosed:
+		// Duplicate session_end. Idempotent by design; log and skip.
+		metrics.IncrDropped(metrics.ReasonClosedSessionSkip)
 		slog.Warn("skipping event for closed session",
 			"session_id", e.SessionID,
 			"event_type", "session_end",

@@ -1,5 +1,6 @@
 import { memo, useMemo } from "react";
 import type { ScaleTime } from "d3-scale";
+import { Link } from "react-router-dom";
 import type { Session, AgentEvent } from "@/lib/types";
 import {
   ClientType,
@@ -14,6 +15,7 @@ import { EventNode } from "./EventNode";
 import { useSessionEvents, attachmentsCache } from "@/hooks/useSessionEvents";
 import { isAttachmentStartEvent, isEventVisible } from "@/lib/events";
 import { ClaudeCodeLogo } from "@/components/ui/claude-code-logo";
+import { useFleetStore } from "@/store/fleet";
 
 interface SwimLaneProps {
   flavor: string;
@@ -38,6 +40,15 @@ interface SwimLaneProps {
    * and does not gain phantom circles from weeks-old sessions.
    */
   expandedSessions?: Session[];
+  /**
+   * D115 ``agent.total_sessions`` lifetime counter. Drives the
+   * "Showing N of M" preamble in the expanded-drawer footer when
+   * the on-demand fetch returned fewer rows than the lifetime
+   * count (capped per ``EXPANDED_DRAWER_SESSION_LIMIT`` plus
+   * server cap). When unset (legacy callers) the footer falls
+   * back to the bare "View in Investigate →" wording.
+   */
+  totalSessionsLifetime?: number;
   scale: ScaleTime<number, number>;
   onSessionClick: (sessionId: string, eventId?: string, event?: AgentEvent) => void;
   expanded: boolean;
@@ -74,6 +85,7 @@ function SwimLaneComponent({
   agentType,
   sessions,
   expandedSessions,
+  totalSessionsLifetime,
   scale,
   onSessionClick,
   expanded,
@@ -285,7 +297,14 @@ function SwimLaneComponent({
           maxHeight: expanded
             ? (visibleSessionCount === 0
                 ? SESSION_ROW_HEIGHT + 28 + 8
-                : visibleSessionCount * SESSION_ROW_HEIGHT + 28)
+                // 28px SESSIONS sub-header + visible rows + 28px
+                // ExpandedDrawerFooter (load-more + Investigate
+                // deep-link). Without the +28 reserve the footer
+                // clips off-screen and the "Show older sessions"
+                // affordance becomes unreachable on the first
+                // expand -- the dead-end class of UX bug the V-
+                // DRAWER fix exists to prevent.
+                : visibleSessionCount * SESSION_ROW_HEIGHT + 28 + 28)
             : 0,
           opacity: expanded ? 1 : 0,
           overflow: "hidden",
@@ -401,9 +420,135 @@ function SwimLaneComponent({
                 />
               );
             })}
+            {visibleSessionCount > 0 && (
+              <ExpandedDrawerFooter
+                agentId={flavor}
+                visibleCount={expandedSessionList.length}
+                totalLifetime={totalSessionsLifetime}
+                leftPanelWidth={leftPanelWidth}
+                timelineWidth={timelineWidth}
+              />
+            )}
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * Footer rendered at the bottom of the expanded swimlane drawer.
+ * Surfaces two affordances:
+ *
+ *  1. ``Show older sessions`` button when the fleet store reports
+ *     ``hasMore`` for the agent. Mirrors SessionDrawer's "Show older
+ *     events" pattern so users who have learned one drawer's
+ *     pagination get the other for free. Disabled while the next
+ *     page is in flight; label flips to ``Loading…``.
+ *  2. ``View in Investigate →`` deep-link to
+ *     ``/investigate?agent_id=<uuid>``. Always visible -- even when
+ *     the drawer shows every session, the user might want to filter
+ *     by event type, sort, or drill into events, none of which the
+ *     drawer supports. Pre-fix the drawer was a dead-end on agents
+ *     whose sessions aged out of the API's invisible 7-day default;
+ *     the footer is the dedicated full-history surface that
+ *     replaces that dead-end with a usable next step.
+ *
+ * Adaptive count preamble: when ``totalLifetime`` is known and
+ * exceeds the rendered count, surfaces ``"Showing N of M"`` so the
+ * user understands they're previewing a bounded slice. When equal
+ * (everything visible) the preamble is dropped to keep the footer
+ * compact.
+ */
+function ExpandedDrawerFooter({
+  agentId,
+  visibleCount,
+  totalLifetime,
+  leftPanelWidth,
+  timelineWidth,
+}: {
+  agentId: string;
+  visibleCount: number;
+  totalLifetime?: number;
+  leftPanelWidth: number;
+  timelineWidth: number;
+}) {
+  const hasMore = useFleetStore(
+    (s) => s.expandedSessionsHasMore.get(agentId) ?? false,
+  );
+  const loadingMore = useFleetStore(
+    (s) => s.expandedSessionsLoadingMore.get(agentId) ?? false,
+  );
+  const loadMore = useFleetStore((s) => s.loadMoreExpandedSessions);
+
+  const showCountPreamble =
+    totalLifetime != null && totalLifetime > visibleCount;
+  const remaining = totalLifetime != null
+    ? Math.max(0, totalLifetime - visibleCount)
+    : null;
+
+  return (
+    <div
+      data-testid="swimlane-expanded-footer"
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 12,
+        height: 28,
+        paddingLeft: 32,
+        paddingRight: 16,
+        borderTop: "1px solid var(--border-subtle)",
+        background: "var(--surface)",
+        fontSize: 11,
+        color: "var(--text-muted)",
+        width: leftPanelWidth + timelineWidth,
+        position: "sticky",
+        left: 0,
+      }}
+    >
+      {showCountPreamble && (
+        <span data-testid="swimlane-expanded-count-preamble">
+          Showing {visibleCount} of {totalLifetime} sessions
+        </span>
+      )}
+      {hasMore && (
+        <button
+          type="button"
+          data-testid="swimlane-expanded-load-more"
+          disabled={loadingMore}
+          onClick={(e) => {
+            e.stopPropagation();
+            void loadMore(agentId);
+          }}
+          style={{
+            background: "transparent",
+            border: "none",
+            color: "var(--accent)",
+            cursor: loadingMore ? "wait" : "pointer",
+            fontSize: 11,
+            padding: 0,
+          }}
+        >
+          {loadingMore
+            ? "Loading…"
+            : remaining != null && remaining > 0
+              ? `Show older sessions (${remaining} more)`
+              : "Show older sessions"}
+        </button>
+      )}
+      <Link
+        data-testid="swimlane-expanded-investigate-link"
+        to={`/investigate?agent_id=${encodeURIComponent(agentId)}`}
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          marginLeft: "auto",
+          color: "var(--accent)",
+          fontSize: 11,
+          textDecoration: "none",
+        }}
+      >
+        View in Investigate →
+      </Link>
     </div>
   );
 }

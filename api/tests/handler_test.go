@@ -2208,6 +2208,33 @@ func TestSessionsListHandler_LimitExceedsMax(t *testing.T) {
 	}
 }
 
+func TestSessionsListHandler_ErrorTypeFilter_MultiValue(t *testing.T) {
+	// Phase 4: the error_type filter accepts multi-value (comma or
+	// repeated) and forwards it to the store. The store's EXISTS
+	// subquery is covered by integration tests; here we just prove
+	// the handler parses and threads the list through.
+	s := &mockStore{}
+	handler := handlers.SessionsListHandler(store.WrapStore(s))
+	req := httptest.NewRequest(
+		"GET",
+		"/v1/sessions?error_type=rate_limit,context_overflow&error_type=timeout",
+		nil,
+	)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	p := s.lastSessionsParams
+	if p == nil {
+		t.Fatal("GetSessions not called")
+	}
+	assertStringSliceEqual(
+		t, "error_type", p.ErrorTypes,
+		[]string{"rate_limit", "context_overflow", "timeout"},
+	)
+}
+
 func TestSessionsListHandler_ClientTypeFilter_MultiValue(t *testing.T) {
 	s := &mockStore{}
 	handler := handlers.SessionsListHandler(store.WrapStore(s))

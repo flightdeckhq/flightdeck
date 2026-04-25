@@ -107,22 +107,73 @@ class AnthropicProvider:
         self,
         request_kwargs: dict[str, Any],
         response: Any,
+        event_type: Any = None,
     ) -> PromptContent | None:
         """Extract full prompt payload for storage.
 
         Returns ``None`` when capture_prompts is False. Never raises.
         Preserves Anthropic terminology: ``system`` as a separate field.
+
+        ``event_type`` is accepted for protocol symmetry with the
+        OpenAI / litellm providers (Phase 4 polish: per-event-type
+        content extraction). Anthropic has no native embeddings API
+        in this SDK -- users go via litellm → Voyage. So no
+        EMBEDDINGS branch here; if a caller ever passes that
+        event_type the chat-shaped extraction runs and ``messages``
+        will be empty, which the dashboard's
+        ``EmbeddingsContentViewer`` handles via the has_content=false
+        branch.
         """
         if not self._capture_prompts:
             return None
         try:
             from datetime import datetime, timezone
 
+            # Streaming responses surface a ``MessageStream`` /
+            # ``MessageStreamManager`` whose ``__dict__`` carries
+            # non-serializable httpx state (raw event source, async
+            # generator). Calling ``model_dump`` on those objects
+            # yields the unparsed wrapper. Anthropic exposes
+            # ``.get_final_message()`` after the stream has
+            # exhausted, returning the accumulated ``Message``
+            # pydantic object — that's the safe shape to capture.
+            # Phase 4 polish: pre-fix the post_call drain
+            # serialised an AsyncStream into the JSON payload and
+            # the worker rejected the event with a JSON-encode
+            # error (caught by Rule 40d smoke).
+            stream_msg = getattr(response, "get_final_message", None)
+            if callable(stream_msg):
+                with contextlib.suppress(Exception):
+                    candidate = stream_msg()
+                    # Async streams return a coroutine here -- we
+                    # can't ``await`` in a sync ``extract_content``
+                    # path, so detect and fall through to the
+                    # ``__dict__`` scrubbing branch instead. Sync
+                    # MessageStream returns a real Message which
+                    # ``model_dump`` handles cleanly.
+                    import inspect
+                    if not inspect.iscoroutine(candidate):
+                        response = candidate
+                    else:
+                        # Discard the orphan coroutine so the warn-
+                        # on-never-awaited message doesn't pollute
+                        # the smoke output.
+                        candidate.close()
             resp_dict: dict[str, Any] = {}
             if hasattr(response, "model_dump"):
                 resp_dict = response.model_dump()
             elif hasattr(response, "__dict__"):
-                resp_dict = dict(response.__dict__)
+                # Last-resort fallback: prune attributes whose values
+                # are not JSON-serialisable so the wire payload stays
+                # valid even on exotic response shapes.
+                import json
+                resp_dict = {}
+                for k, v in dict(response.__dict__).items():
+                    try:
+                        json.dumps(v)
+                    except (TypeError, ValueError):
+                        continue
+                    resp_dict[k] = v
             else:
                 resp_dict = {"raw": str(response)}
 

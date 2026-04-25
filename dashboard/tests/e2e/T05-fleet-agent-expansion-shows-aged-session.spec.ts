@@ -1,8 +1,8 @@
 import { test, expect } from "@playwright/test";
 import {
   CODING_AGENT,
+  bringSwimlaneRowIntoView,
   findExpandedBody,
-  findSwimlaneRow,
   waitForFleetReady,
 } from "./_fixtures";
 
@@ -26,7 +26,12 @@ test.describe("T5 — Agent expansion surfaces session outside swimlane window",
     await page.goto("/");
     await waitForFleetReady(page);
 
-    const row = findSwimlaneRow(page, CODING_AGENT.name);
+    // Resilience pattern P1/P2: scroll the virtualized swimlane
+    // until the CODING_AGENT row is mounted. Pre-fix, the test
+    // assumed first-page visibility; under realistic data volume
+    // the row could be off-screen and the assertion would fail
+    // even though the fixture exists.
+    const row = await bringSwimlaneRowIntoView(page, CODING_AGENT.name);
     await expect(row).toBeVisible();
 
     // Let the initial fetch settle so the swimlane's circles (if
@@ -68,9 +73,10 @@ test.describe("T5 — Agent expansion surfaces session outside swimlane window",
     await expect(expandedBody).toHaveAttribute("data-expanded", "true");
 
     // Expanded body renders one <SessionEventRow> per session. The
-    // CODING_AGENT fixture has 4 sessions (fresh-active, recent-
-    // closed, aged-closed, stale) — loadExpandedSessions bypasses
-    // the 24h swimlane window so all 4 land here.
+    // CODING_AGENT fixture has 6 sessions (fresh-active, recent-
+    // closed, aged-closed, stale, error-active, policy-active);
+    // see canonical.json. loadExpandedSessions bypasses the 24h
+    // swimlane window so every session lands here.
     const expandedSessionIds = await expandedBody
       .locator('[data-testid="session-row"]')
       .evaluateAll((nodes) =>
@@ -82,10 +88,10 @@ test.describe("T5 — Agent expansion surfaces session outside swimlane window",
       );
     expect(
       expandedSessionIds.length,
-      `expanded body must list all 4 CODING_AGENT sessions (fresh-active, ` +
-        `recent-closed, aged-closed, stale). Saw ${expandedSessionIds.length}: ` +
-        `${expandedSessionIds.join(", ")}`,
-    ).toBe(4);
+      `expanded body must list all CODING_AGENT sessions (fresh-active, ` +
+        `recent-closed, aged-closed, stale, error-active, policy-active). Saw ` +
+        `${expandedSessionIds.length}: ${expandedSessionIds.join(", ")}`,
+    ).toBe(6);
 
     // Structural invariant: at least one session in expanded is NOT in
     // the swimlane. That session is the aged-closed fixture (28h old,

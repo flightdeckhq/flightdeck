@@ -71,6 +71,37 @@ def test_litellm_embedding_emits_embeddings_event() -> None:
     assert embeds, f"no embeddings event; events={events!r}"
 
 
+def test_litellm_embeddings_capture_routes_to_openai() -> None:
+    """Phase 4 polish S-EMBED-6: litellm-routed embedding with
+    capture_prompts=True. Routes to OpenAI's text-embedding-3-small;
+    verifies has_content=True and the input round-trips intact."""
+    import litellm
+    sess = _sensor_session()
+    payload = "phase 4 smoke litellm route to openai"
+    litellm.embedding(
+        model="text-embedding-3-small",
+        input=payload,
+    )
+    events = fetch_events_for_session(
+        sess.config.session_id, expect_event_types=["embeddings"],
+    )
+    embed = next(
+        (e for e in events if e["event_type"] == "embeddings"), None,
+    )
+    assert embed is not None
+    assert embed.get("has_content") is True
+    import httpx
+    from tests.smoke.conftest import API_URL, API_TOKEN
+    r = httpx.get(
+        f"{API_URL}/v1/events/{embed['id']}/content",
+        headers={"Authorization": f"Bearer {API_TOKEN}"},
+        timeout=5.0,
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body.get("input") == payload, body
+
+
 def test_litellm_invalid_model_emits_llm_error() -> None:
     import litellm
     sess = _sensor_session()

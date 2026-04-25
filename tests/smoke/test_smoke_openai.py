@@ -58,6 +58,75 @@ def test_openai_embeddings_emits_embeddings_event() -> None:
     assert embeds, f"no embeddings event observed; events={events!r}"
 
 
+def test_openai_embeddings_capture_single_string() -> None:
+    """Phase 4 polish S-EMBED-6: capture_prompts=True with a
+    single-string input must populate ``has_content=true`` AND the
+    fetched ``content.input`` round-trips intact."""
+    import openai
+    sess = _sensor_session()  # make_sensor_session defaults capture_prompts=True
+    client = openai.OpenAI()
+    payload = "phase 4 smoke single-string capture"
+    client.embeddings.create(
+        model="text-embedding-3-small",
+        input=payload,
+    )
+    events = fetch_events_for_session(
+        sess.config.session_id, expect_event_types=["embeddings"],
+    )
+    embed = next(
+        (e for e in events if e["event_type"] == "embeddings"), None,
+    )
+    assert embed is not None, f"no embedding event; events={events!r}"
+    assert embed.get("has_content") is True, (
+        f"expected has_content=True with capture_prompts=True; got {embed!r}"
+    )
+    # Pull /v1/events/{id}/content; assert input round-trips.
+    import httpx
+    from tests.smoke.conftest import API_URL, API_TOKEN
+    r = httpx.get(
+        f"{API_URL}/v1/events/{embed['id']}/content",
+        headers={"Authorization": f"Bearer {API_TOKEN}"},
+        timeout=5.0,
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body.get("input") == payload, (
+        f"input did not round-trip: got {body.get('input')!r}"
+    )
+
+
+def test_openai_embeddings_capture_list_of_strings() -> None:
+    """Phase 4 polish S-EMBED-6: list-of-strings input round-trips
+    too. Distinct test so a single failure narrows the regression
+    to one input shape."""
+    import openai
+    sess = _sensor_session()
+    client = openai.OpenAI()
+    payload = ["item one", "item two", "item three"]
+    client.embeddings.create(
+        model="text-embedding-3-small",
+        input=payload,
+    )
+    events = fetch_events_for_session(
+        sess.config.session_id, expect_event_types=["embeddings"],
+    )
+    embed = next(
+        (e for e in events if e["event_type"] == "embeddings"), None,
+    )
+    assert embed is not None
+    assert embed.get("has_content") is True
+    import httpx
+    from tests.smoke.conftest import API_URL, API_TOKEN
+    r = httpx.get(
+        f"{API_URL}/v1/events/{embed['id']}/content",
+        headers={"Authorization": f"Bearer {API_TOKEN}"},
+        timeout=5.0,
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body.get("input") == payload, body
+
+
 def test_openai_sync_stream_carries_ttft() -> None:
     import openai
     sess = _sensor_session()

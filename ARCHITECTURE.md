@@ -623,7 +623,7 @@ clients internally are intercepted without user-side wrapping.
 | CrewAI 1.14+ | `LLM(model=...).call()` via the native Anthropic and OpenAI provider classes. Model strings without a native-provider prefix (e.g. `openrouter/`, `deepseek/`) fall through to litellm |
 | litellm | `litellm.completion` / `acompletion` chat path; `embedding` / `aembedding` |
 | Claude Code plugin | Observational hook-based path; emits the same event shape as the sensor |
-| bifrost | Indirect — point the OpenAI client at bifrost's OpenAI-compatible `base_url` |
+| bifrost | Multi-protocol gateway. Point the openai SDK at bifrost's `base_url` and the OpenAI interceptor fires; point the anthropic SDK at bifrost and the Anthropic interceptor fires. Both protocols are supported as deployment topologies |
 
 ### Framework attribution
 

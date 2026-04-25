@@ -80,9 +80,11 @@ After `init()` + `patch()`, frameworks that build Anthropic or OpenAI clients in
 | LlamaIndex       | `llama-index-llms-anthropic`, `llama-index-llms-openai` (`.complete`) | inherits OpenAI | inherits OpenAI / Anthropic | inherits OpenAI / Anthropic |
 | CrewAI 1.14+     | `LLM(model=...).call()` via the native Anthropic and OpenAI provider classes. Model strings that don't match a native-provider prefix (e.g. `openrouter/`, `deepseek/`) fall through to litellm and inherit the litellm-Anthropic gap above. | inherits OpenAI / litellm | inherits | inherits |
 | Claude Code plugin | observational — every tool use, prompt, and response surfaces in the fleet view | N/A (observational) | N/A (observational) | partial — `stream_error` only when transcript shows unexpected termination |
-| bifrost          | indirect — point the OpenAI client at bifrost's OpenAI-compatible `base_url` | indirect | indirect | indirect |
+| bifrost          | multi-protocol gateway — see below | multi-protocol | multi-protocol | multi-protocol |
 
 Per-event ``framework`` field carries the bare name (``langchain``, ``crewai``, ...) populated at sensor ``init()`` from in-process introspection. Higher-level framework wins over SDK transport: a LangChain pipeline routing through litellm routing through OpenAI reports ``framework=langchain``.
+
+**Bifrost** is a multi-provider LLM gateway. Flightdeck observes agents routing through bifrost via the protocol used — point the openai SDK at bifrost's `base_url` and the OpenAI interceptor fires; point the anthropic SDK at bifrost and the Anthropic interceptor fires. Both protocols are supported as deployment topologies.
 
 ---
 

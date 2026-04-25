@@ -2,16 +2,18 @@
   "_comment": "Declarative E2E fixture dataset. Every agent name starts with 'e2e-test-' so the Playwright suite can discriminate its own fixtures amid any other data in the shared dev DB. session_ids are derived deterministically in seed.py via uuid5(NAMESPACE_FLIGHTDECK, 'flightdeck-e2e/<agent_name>/<role>'), so each seed run addresses the same session rows and idempotency is a per-session HTTP GET.",
   "agent_name_prefix": "e2e-test-",
   "session_roles": {
-    "_comment": "Timeline offsets drive the UI state each fixture tests. Offsets are seconds relative to seed-time. 'aged-closed' and 'stale' require a post-seed SQL backdate because the worker stamps last_seen_at = NOW() regardless of event payload timestamp; see seed.py :: backdate_sessions.",
+    "_comment": "Timeline offsets drive the UI state each fixture tests. Offsets are seconds relative to seed-time. 'aged-closed' and 'stale' require a post-seed SQL backdate because the worker stamps last_seen_at = NOW() regardless of event payload timestamp; see seed.py :: backdate_sessions. 'phase4_extras' (when present) is a list of additional event-shape strings the seeder emits on top of the base session_start / pre_call / post_call / tool_call / session_end timeline. Recognised values: 'embeddings', 'streaming_post_call', 'streaming_post_call_aborted', 'llm_error_rate_limit', 'llm_error_context_overflow', 'llm_error_authentication', 'llm_error_timeout'.",
     "fresh-active": {
       "started_offset_sec": -30,
       "ended_offset_sec": null,
-      "purpose": "T1 LIVE/RECENT bucket; T5 visible in swimlane"
+      "purpose": "T1 LIVE/RECENT bucket; T5 visible in swimlane; T14 embeddings drawer row (Phase 4 polish); T15 happy-path streaming post_call (Phase 4 polish)",
+      "phase4_extras": ["embeddings", "streaming_post_call"]
     },
     "recent-closed": {
       "started_offset_sec": -600,
       "ended_offset_sec": -120,
-      "purpose": "T1 RECENT bucket; T5 closed-state badge"
+      "purpose": "T1 RECENT bucket; T5 closed-state badge; T16 carries one llm_error event so the session row's red error-indicator dot appears alongside the closed badge",
+      "phase4_extras": ["llm_error_rate_limit"]
     },
     "aged-closed": {
       "started_offset_sec": -100800,
@@ -22,6 +24,18 @@
       "started_offset_sec": -10800,
       "ended_offset_sec": null,
       "purpose": "T1 non-active state. 3h gap puts it past both the 2-min stale and 10-min lost reconciler thresholds (see workers/internal/writer/postgres.go:543). seed.py pins state='lost' deterministically (matches what the reconciler would set on its next pass) so a freshly-seeded stack is test-stable without waiting for a reconciler tick. Requires post-seed SQL backdate + force_state."
+    },
+    "error-active": {
+      "started_offset_sec": -120,
+      "ended_offset_sec": null,
+      "purpose": "T16 anchor: a single live session that emits four distinct llm_error taxonomy values (rate_limit, context_overflow, authentication, timeout) plus an aborted streaming post_call. Drives the ERROR TYPE facet on Investigate (4 distinct pills) and the session-row red dot tooltip (4 distinct values listed). Coding agent only -- the other agents stay clean so T16 can assert the dot is selectively applied.",
+      "phase4_extras": [
+        "llm_error_rate_limit",
+        "llm_error_context_overflow",
+        "llm_error_authentication",
+        "llm_error_timeout",
+        "streaming_post_call_aborted"
+      ]
     }
   },
   "agents": [
@@ -35,7 +49,7 @@
       "model": "claude-sonnet-4-5",
       "framework": "claude-code",
       "host": "e2e-host-coding",
-      "session_roles": ["fresh-active", "recent-closed", "aged-closed", "stale"]
+      "session_roles": ["fresh-active", "recent-closed", "aged-closed", "stale", "error-active"]
     },
     {
       "agent_name": "e2e-test-sensor-agent-prod",

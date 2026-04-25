@@ -195,6 +195,110 @@ def _post_session_events(
         ))
         posted += 1
 
+    # 5. Phase 4 polish extras. ``role_cfg["phase4_extras"]`` lists
+    # additional event-shape strings the seeder emits on top of the
+    # base timeline; canonical.json carries the per-role list. Each
+    # extra is timestamped relative to ``started`` so the ordering
+    # matches the role's purpose statement, and offsets stay inside
+    # the role's span (active roles: positive offsets from start;
+    # closed roles: between started and ended). Unknown strings
+    # warn and continue so a typo doesn't abort the seed.
+    extras: list[str] = list(role_cfg.get("phase4_extras") or [])
+    for i, extra in enumerate(extras):
+        # Offset progression: extras emit at started+12s, +14s, +16s,
+        # ... so they cluster after the base tool_call (started+10s)
+        # and well inside the active role's "fresh" window.
+        ts = _shift_timestamp(started + 12 + 2 * i)
+        if extra == "embeddings":
+            post_event(make_event(
+                session_id, agent_cfg["flavor"], "embeddings",
+                timestamp=ts,
+                model="text-embedding-3-small",
+                tokens_input=1024,
+                tokens_used_session=320 + 1024,
+                latency_ms=180,
+                **identity,
+                **common,
+            ))
+            posted += 1
+        elif extra == "streaming_post_call":
+            post_event(make_event(
+                session_id, agent_cfg["flavor"], "post_call",
+                timestamp=ts,
+                tokens_input=120,
+                tokens_output=240,
+                tokens_total=360,
+                tokens_used_session=320 + 360,
+                latency_ms=4500,
+                streaming={
+                    "ttft_ms": 320,
+                    "chunk_count": 42,
+                    "inter_chunk_ms": {"p50": 25, "p95": 80, "max": 150},
+                    "final_outcome": "completed",
+                    "abort_reason": None,
+                },
+                **identity,
+                **common,
+            ))
+            posted += 1
+        elif extra == "streaming_post_call_aborted":
+            post_event(make_event(
+                session_id, agent_cfg["flavor"], "post_call",
+                timestamp=ts,
+                tokens_input=80,
+                tokens_output=18,
+                tokens_total=98,
+                tokens_used_session=320 + 98,
+                latency_ms=2100,
+                streaming={
+                    "ttft_ms": 380,
+                    "chunk_count": 7,
+                    "inter_chunk_ms": {"p50": 30, "p95": 90, "max": 220},
+                    "final_outcome": "aborted",
+                    "abort_reason": "client_aborted",
+                },
+                **identity,
+                **common,
+            ))
+            posted += 1
+        elif extra.startswith("llm_error_"):
+            err_type = extra[len("llm_error_"):]
+            # Per-taxonomy http_status / retry_after defaults so the
+            # seeded payloads look realistic. Anything not enumerated
+            # here falls through to a generic 500 — keeps the seeder
+            # tolerant of future taxonomy additions without forcing
+            # a config update.
+            err_meta = {
+                "rate_limit": (429, "anthropic", "rate_limit_exceeded", 30, True),
+                "context_overflow": (400, "anthropic", "context_length_exceeded", None, False),
+                "authentication": (401, "openai", "invalid_api_key", None, False),
+                "timeout": (None, "openai", None, None, True),
+            }.get(err_type, (500, "anthropic", None, None, False))
+            http_status, provider, code, retry_after, retryable = err_meta
+            post_event(make_event(
+                session_id, agent_cfg["flavor"], "llm_error",
+                timestamp=ts,
+                error={
+                    "error_type": err_type,
+                    "provider": provider,
+                    "http_status": http_status,
+                    "provider_error_code": code,
+                    "error_message": f"E2E seeded {err_type} error",
+                    "request_id": f"req_e2e_{err_type}",
+                    "retry_after": retry_after,
+                    "is_retryable": retryable,
+                },
+                **identity,
+                **common,
+            ))
+            posted += 1
+        else:
+            print(
+                f"  warn: unknown phase4_extras entry {extra!r} for "
+                f"{session_id[:8]}; ignored",
+                file=sys.stderr,
+            )
+
     return posted
 
 

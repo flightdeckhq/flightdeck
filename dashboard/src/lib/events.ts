@@ -148,6 +148,15 @@ export function getEventDetail(event: AgentEvent): string {
   switch (event.event_type) {
     case "post_call": {
       const parts = [event.model ?? "unknown"];
+      // Phase 4 polish: streaming post_calls surface TTFT inline
+      // ahead of the token + total-latency segments so an operator
+      // scanning the timeline sees first-token latency on the same
+      // row as the response. Non-streaming calls keep the original
+      // ``model · tokens · latency`` shape unchanged.
+      const stream = event.payload?.streaming;
+      if (stream && stream.ttft_ms != null) {
+        parts.push(`TTFT ${stream.ttft_ms.toLocaleString()}ms`);
+      }
       if (event.tokens_total != null) parts.push(`${event.tokens_total.toLocaleString()} tok`);
       if (event.latency_ms != null) parts.push(`${event.latency_ms}ms`);
       return parts.join(" · ");
@@ -195,14 +204,40 @@ export function getEventDetail(event: AgentEvent): string {
 
 export function getSummaryRows(event: AgentEvent): [string, string][] {
   switch (event.event_type) {
-    case "post_call":
-      return [
+    case "post_call": {
+      const rows: [string, string][] = [
         ["Model", event.model ?? "unknown"],
         ["Tokens input", event.tokens_input?.toLocaleString() ?? "—"],
         ["Tokens output", event.tokens_output?.toLocaleString() ?? "—"],
         ["Total tokens", event.tokens_total?.toLocaleString() ?? "—"],
         ["Latency", event.latency_ms != null ? `${event.latency_ms.toLocaleString()}ms` : "—"],
       ];
+      // Phase 4 polish: surface the streaming sub-object inline so
+      // the expanded row shows everything the sensor recorded
+      // without a separate PromptViewer round-trip. Non-streaming
+      // post_calls keep the original five-row layout unchanged.
+      const stream = event.payload?.streaming;
+      if (stream) {
+        if (stream.ttft_ms != null) {
+          rows.push(["TTFT", `${stream.ttft_ms.toLocaleString()}ms`]);
+        }
+        rows.push(["Chunks", stream.chunk_count.toLocaleString()]);
+        if (stream.inter_chunk_ms) {
+          const ic = stream.inter_chunk_ms;
+          rows.push([
+            "Inter-chunk",
+            `p50 ${ic.p50}ms · p95 ${ic.p95}ms · max ${ic.max}ms`,
+          ]);
+        }
+        rows.push([
+          "Stream outcome",
+          stream.final_outcome === "aborted" && stream.abort_reason
+            ? `aborted · ${stream.abort_reason}`
+            : stream.final_outcome,
+        ]);
+      }
+      return rows;
+    }
     case "pre_call":
       return [["Model", event.model ?? "unknown"]];
     case "tool_call":

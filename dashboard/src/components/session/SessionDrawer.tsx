@@ -1181,6 +1181,7 @@ function EventFeed({
                   <ProviderLogo provider={getProvider(event.model)} size={12} />
                 )}
                 {detail}
+                <StreamingPill event={event} />
               </span>
               <span className="w-[72px] shrink-0 text-right font-mono text-[11px]" style={{ color: "var(--text-muted)" }}>
                 {new Date(event.occurred_at).toLocaleTimeString()}
@@ -1217,6 +1218,62 @@ function EventFeed({
         </button>
       )}
     </div>
+  );
+}
+
+/* ---- Streaming pill (Phase 4 polish) ---- */
+
+/**
+ * Inline ``STREAM`` pill rendered alongside the row's detail text
+ * for any post_call event whose payload carries the streaming
+ * sub-object. Two visual variants:
+ *
+ *  - completed: muted lavender pill labelled ``STREAM``. Title
+ *    attribute carries chunks/p50/p95/max_gap so a hover reveals
+ *    the per-chunk latency summary without expanding the row.
+ *  - aborted: red pill labelled ``ABORTED``. Title appends the
+ *    sensor's ``abort_reason`` so the operator sees why the
+ *    stream gave up. Carries a separate ``stream-aborted-<id>``
+ *    testid so T15 can branch its assertion path on outcome.
+ *
+ * Renders nothing when ``payload.streaming`` is absent (the row's
+ * existing layout is unchanged for non-streaming post_calls).
+ */
+function StreamingPill({ event }: { event: AgentEvent }) {
+  const stream = event.payload?.streaming;
+  if (!stream) return null;
+  const aborted = stream.final_outcome === "aborted";
+  const ic = stream.inter_chunk_ms;
+  const titleParts: string[] = [`chunks=${stream.chunk_count}`];
+  if (ic) {
+    titleParts.push(`p50=${ic.p50}ms`);
+    titleParts.push(`p95=${ic.p95}ms`);
+    titleParts.push(`max_gap=${ic.max}ms`);
+  }
+  if (aborted && stream.abort_reason) {
+    titleParts.push(`abort_reason=${stream.abort_reason}`);
+  }
+  const title = titleParts.join(" · ");
+  const colorVar = aborted ? "var(--event-error)" : "var(--event-llm)";
+  const label = aborted ? "ABORTED" : "STREAM";
+  return (
+    <span
+      data-testid={
+        aborted ? `stream-aborted-${event.id}` : `stream-badge-${event.id}`
+      }
+      title={title}
+      className="ml-1 inline-flex h-[16px] shrink-0 items-center rounded font-mono text-[9px] font-semibold uppercase"
+      style={{
+        padding: "0 5px",
+        background: `color-mix(in srgb, ${colorVar} 15%, transparent)`,
+        color: colorVar,
+        border: `1px solid color-mix(in srgb, ${colorVar} 30%, transparent)`,
+        borderRadius: 3,
+        letterSpacing: "0.04em",
+      }}
+    >
+      {label}
+    </span>
   );
 }
 

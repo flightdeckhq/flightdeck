@@ -120,6 +120,8 @@ Define policies centrally. Each agent pulls its policy on session start and enfo
 
 Thresholds, actions, and model substitutions are configurable per policy. Policies attach to agent flavors and propagate to every session of that flavor.
 
+Each enforcement decision lands as a structured event on the session timeline — `policy_warn`, `policy_degrade`, or `policy_block` — alongside the regular `post_call` events. The drawer renders type-specific badges and details (threshold, tokens used vs limit, model swap on degrade, intended-model on block); the Investigate POLICY facet groups sessions by the enforcement outcomes they hit; the session-row dot ranks block > degrade > warn at a glance. Operators see exactly when enforcement fired and why, not just the silence of a blocked call.
+
 ### Kill switch
 
 Stop an individual agent or every agent of a flavor from the dashboard. The directive is delivered on the agent's next LLM call; agents in a tool loop stop when the loop returns to its next call.

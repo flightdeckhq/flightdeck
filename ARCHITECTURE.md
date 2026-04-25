@@ -1077,9 +1077,21 @@ NOTIFY events.
 `workers/internal/consumer/nats.go::Consumer` connects to NATS and starts
 `WorkerPoolSize` goroutines consuming from the stream. Each goroutine
 acks on success, naks on error (up to `MaxDeliver` retries before dead
-letter). Subjects: `events.session_start`, `events.post_call`,
-`events.tool_call`, `events.embeddings`, `events.llm_error`,
-`events.policy_*`, `events.directive*`, `events.session_end`.
+letter).
+
+The ingestion API publishes one subject per event type — `events.<type>`
+where `<type>` mirrors the sensor's `EventType` enum value. Concrete
+subjects in use:
+
+`events.session_start`, `events.session_end`, `events.pre_call`,
+`events.post_call`, `events.tool_call`, `events.embeddings`,
+`events.llm_error`, `events.policy_warn`, `events.policy_degrade`,
+`events.policy_block`, `events.directive_result`.
+
+The worker subscribes via the `events.>` catch-all so all event types
+route to a single processor without per-type subscription wiring.
+Adding a new event type requires only the sensor enum + worker
+processor switch update — the NATS subject lands automatically.
 
 ### Session state machine
 
@@ -2079,11 +2091,17 @@ backoff: 1s → 2s → 4s, capped at 30s.
 
 ## Event Types
 
-`sensor/flightdeck_sensor/core/types.py::EventType` enum:
+`sensor/flightdeck_sensor/core/types.py::EventType` enum lists every
+event the sensor emits. Inbound directives are NOT event types — they
+arrive in the response envelope of `POST /v1/events` (see Directives
+section); the sensor's acknowledgement is the `DIRECTIVE_RESULT`
+event.
+
+11 emitted event types:
 
 `SESSION_START`, `SESSION_END`, `PRE_CALL`, `POST_CALL`, `TOOL_CALL`,
-`EMBEDDINGS`, `LLM_ERROR`, `POLICY_WARN`, `POLICY_BLOCK`,
-`POLICY_DEGRADE`, `DIRECTIVE`, `DIRECTIVE_RESULT`.
+`EMBEDDINGS`, `LLM_ERROR`, `POLICY_WARN`, `POLICY_DEGRADE`,
+`POLICY_BLOCK`, `DIRECTIVE_RESULT`.
 
 ### `session_start`
 
@@ -2172,23 +2190,58 @@ Plus `provider`, `http_status`, `provider_error_code`, `request_id`,
 `error_type=stream_error` with `partial_chunks` and `partial_tokens_*`
 so token accounting reflects work done before the failure.
 
-### `policy_warn`, `policy_block`, `policy_degrade`
+### `policy_warn`
 
-Policy-evaluation events. Each carries:
+Emitted when token-budget enforcement crosses the warn threshold.
+Two emission paths:
 
-- `source`: `"local"` (from sensor `init()` `limit` kwarg) or
-  `"server"` (from a server policy directive). The sensor's `init()`
-  `limit` kwarg fires WARN only — never upgraded to BLOCK / DEGRADE
-  regardless of what the server policy says (D035).
-- For DEGRADE: `from_model`, `to_model`.
-- For BLOCK: `tokens_used`, `token_limit`.
+- **Local** — sensor `init(limit=...)` threshold crossed. `_pre_call`
+  emits with `source="local"`, the call proceeds. Local thresholds
+  fire WARN only — never BLOCK or DEGRADE (D035). Fires once per
+  session (fire-once tracking in PolicyCache).
+- **Server** — worker policy evaluator detects the threshold cross,
+  writes a `warn` directive; the sensor receives it on the next
+  response envelope and `_apply_directive(WARN)` emits with
+  `source="server"`.
 
-### `directive`
+Payload fields: `source`, `threshold_pct`, `tokens_used`,
+`token_limit`. The local path uses the local threshold (`local_warn_at`
+× 100); the server path uses `policy.warn_at_pct`.
 
-Control-plane action delivered to the sensor. Action vocabulary:
-`shutdown`, `shutdown_flavor`, `degrade`, `warn`, `policy_update`,
-`custom`. Custom directives carry a `payload` JSONB with
-`directive_name`, `fingerprint`, and `parameters`.
+### `policy_degrade`
+
+Emitted ONCE on `_apply_directive(DEGRADE)` arrival — when the worker
+policy evaluator writes a `degrade` directive that the sensor
+receives. Decision event with `source="server"` (D035 — local never
+fires DEGRADE). Per-call swaps after the directive arrives are visible
+via `post_call.model` only; subsequent `_pre_call` invocations on the
+armed session do NOT re-emit.
+
+Payload fields: `source`, `threshold_pct` (`policy.degrade_at_pct`),
+`tokens_used`, `token_limit`, `from_model`, `to_model` (the directive's
+`degrade_to`). Co-emitted with a `DIRECTIVE_RESULT` (acknowledged) ack
+event so both the user-facing decision (`policy_degrade`) and the
+control-plane plumbing (`directive_result`) land on the timeline in
+chronological order.
+
+### `policy_block`
+
+Emitted by `_pre_call` when the local PolicyCache decision is BLOCK.
+Sensor calls `EventQueue.flush()` synchronously to ensure the event
+lands before the process exit, then raises `BudgetExceededError`. The
+caller's call never reaches the provider.
+
+Payload fields: `source` (always `"server"` — D035), `threshold_pct`
+(`policy.block_at_pct`), `tokens_used`, `token_limit`,
+`intended_model` (the model the blocked call was going to use; lets
+operators answer "which call hit the limit?").
+
+The worker's policy evaluator also detects block-threshold crossings
+on every `post_call` event, but it writes a `shutdown` directive rather
+than a `block` directive — there is no `BLOCK` `DirectiveAction` value.
+The sensor's local `policy_block` emission is the user-facing
+enforcement decision; the directive write is a parallel mechanism that
+covers SIGKILL'd or directive-aware sessions on subsequent re-attach.
 
 ### `directive_result`
 
@@ -2337,6 +2390,16 @@ empty data. Not 403. 404 — the resource does not exist (Rule 37).
 worker's policy evaluator when a session crosses a threshold, OR by the
 policy admin endpoints. The only way to trigger a `degrade` is to create
 a token policy and let the worker fire it on the next `post_call` event.
+
+There is no `block` `DirectiveAction` value. When the worker's policy
+evaluator detects that a session has crossed `block_at_pct`, it writes
+a `shutdown` directive (action `shutdown`, reason `token_budget_exceeded`)
+rather than a `block` directive. Block enforcement happens locally in
+the sensor's `_pre_call` via the PolicyCache decision, which raises
+`BudgetExceededError` and emits a `policy_block` event before the
+provider is reached. The worker's `shutdown` directive is the parallel
+mechanism that catches sessions that re-attach with stale local cache
+state. See "Event Types → policy_block".
 
 ### Delivery
 

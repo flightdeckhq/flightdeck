@@ -589,3 +589,58 @@ introduce — land in the phase's PR. Findings that don't fit go to
 FOLLOWUPS.md or get declined explicitly. "Defer with no owner" is
 not a third option. Rule 51 codifies this so future phases inherit
 the discipline by default.
+
+### Lesson 5 — Content-fidelity vs product-fidelity verification
+
+PR #28's V-pass started as a content-fidelity audit (do enum values
+match between docs and code? do declared event types appear in the
+sensor / API / dashboard?). That class of audit catches typo-class
+drift — the right things named the right way. It does NOT catch
+features that are *named correctly everywhere* but never actually
+fire end-to-end.
+
+PR #28 surfaced THREE such product-fidelity gaps:
+
+1. **Embeddings content capture.** Sensor declared the event type
+   and the dashboard rendered it; the request's ``input`` parameter
+   (the content the embedding model actually saw) was never captured
+   even with ``capture_prompts=True``. Closed by S-EMBED-1..8.
+2. **Framework attribution.** ``Session.record_framework`` had zero
+   callers across the sensor codebase; every event silently emitted
+   ``framework=null``. The dashboard FRAMEWORK facet, analytics
+   ``group_by=framework``, and ``/v1/sessions?framework=`` filter
+   were all silently lying about session attribution. Closed by
+   wiring at ``init()`` from ``FrameworkCollector``.
+3. **Policy enforcement events.** ``EventType.POLICY_WARN`` was in
+   the sensor enum and the dashboard had full event rendering wired
+   for ``policy_warn`` / ``policy_block`` / ``policy_degrade``. The
+   sensor's ``_pre_call`` emitted ZERO policy events on any decision
+   (BLOCK raised, DEGRADE swapped silently, WARN log-only); the
+   ``_apply_directive(DEGRADE)`` path emitted only ``DIRECTIVE_RESULT``
+   not ``POLICY_DEGRADE``; ``POLICY_BLOCK`` and ``POLICY_DEGRADE``
+   were missing from the enum entirely. Closed by S-POLICY-EV-1..7.
+
+The locked methodology principle (now in CLAUDE.md Rule 51 + this
+audit doc):
+
+> Content-fidelity verification (do enum values match between doc
+> and code?) catches typo-class drift. Product-fidelity verification
+> (does the documented behavior actually happen end-to-end?)
+> catches deeper gaps.
+>
+> V-pass MUST include end-to-end behavior verification for any
+> documented feature, not just "the code references exist."
+> Specifically: for any event type the doc claims exists, trace the
+> emission path from sensor condition → event queue → NATS →
+> worker → events table → ``GET /v1/events``. If any hop is
+> missing, that's a product gap to fix in the phase that surfaces
+> it.
+
+The deeper observation: every product-fidelity gap closed in PR #28
+was an instance of "wired everywhere except where the sensor
+actually decides to emit." The sensor is the ONLY place where a
+declared event becomes a live event. Future audits that focus
+exclusively on the API + dashboard surfaces will keep missing
+this class of bug. The first stop on the trace must be the
+sensor's emit site — if it's not enqueueing the event, the rest
+of the pipeline is theatre.

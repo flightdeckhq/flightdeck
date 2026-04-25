@@ -37,6 +37,16 @@ type SessionsParams struct {
 	// ``payload->'error'->>'error_type'``. An empty slice means "no
 	// error-type filter".
 	ErrorTypes []string
+	// PolicyEventTypes filters sessions to those that emitted at
+	// least one event of the listed policy enforcement types
+	// (``policy_warn`` | ``policy_degrade`` | ``policy_block``).
+	// Multi-value OR within. EXISTS subquery on the events table
+	// keyed on ``event_type``; the policy event_type IS the filter
+	// dimension (unlike error_types which lives in payload JSONB).
+	// Handler validates the vocabulary so an out-of-band value 400s
+	// rather than silently matching nothing. Empty slice means "no
+	// policy-event-type filter".
+	PolicyEventTypes []string
 	// Frameworks filters on sessions.context->'frameworks' (JSONB
 	// array of strings like "langgraph/1.1.6"). Multi-value: any
 	// match across the array passes (``?|`` operator).
@@ -172,6 +182,15 @@ type SessionListItem struct {
 	// and the row-level error indicator without a per-session
 	// follow-up fetch.
 	ErrorTypes []string `json:"error_types"`
+	// PolicyEventTypes lists every distinct policy enforcement
+	// ``event_type`` observed in the session: any subset of
+	// ``policy_warn`` / ``policy_degrade`` / ``policy_block``.
+	// Always present on the wire (empty array when the session
+	// carries no policy events). Same surfacing pattern as
+	// ErrorTypes — correlated subquery on the listing query so the
+	// dashboard renders the POLICY facet and severity-ranked
+	// session-row indicator without a per-session follow-up fetch.
+	PolicyEventTypes []string `json:"policy_event_types"`
 }
 
 // SessionsResponse is the paginated response for GET /v1/sessions.
@@ -293,6 +312,25 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 				"WHERE e.session_id = s.session_id "+
 				"AND e.event_type = 'llm_error' "+
 				"AND e.payload->'error'->>'error_type' IN (%s))",
+			strings.Join(placeholders, ", "),
+		))
+	}
+
+	// Policy-event-type filter. The dimension IS the event_type
+	// itself — unlike error_types which is keyed off a payload
+	// JSONB field — so the subquery filters on
+	// ``e.event_type IN (...)`` directly.
+	if len(params.PolicyEventTypes) > 0 {
+		placeholders := make([]string, len(params.PolicyEventTypes))
+		for i, pt := range params.PolicyEventTypes {
+			placeholders[i] = fmt.Sprintf("$%d", argIdx)
+			args = append(args, pt)
+			argIdx++
+		}
+		conditions = append(conditions, fmt.Sprintf(
+			"EXISTS (SELECT 1 FROM events e "+
+				"WHERE e.session_id = s.session_id "+
+				"AND e.event_type IN (%s))",
 			strings.Join(placeholders, ", "),
 		))
 	}
@@ -432,7 +470,16 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 					AND e.payload->'error'->>'error_type' IS NOT NULL
 				),
 				ARRAY[]::text[]
-			) AS error_types
+			) AS error_types,
+			COALESCE(
+				ARRAY(
+					SELECT DISTINCT e.event_type
+					FROM events e
+					WHERE e.session_id = s.session_id
+					AND e.event_type IN ('policy_warn', 'policy_degrade', 'policy_block')
+				),
+				ARRAY[]::text[]
+			) AS policy_event_types
 		FROM sessions s
 		%s
 		ORDER BY %s %s
@@ -470,11 +517,15 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 			&item.TokenID,
 			&item.TokenName,
 			&item.ErrorTypes,
+			&item.PolicyEventTypes,
 		); err != nil {
 			return nil, fmt.Errorf("scan session: %w", err)
 		}
 		if item.ErrorTypes == nil {
 			item.ErrorTypes = []string{}
+		}
+		if item.PolicyEventTypes == nil {
+			item.PolicyEventTypes = []string{}
 		}
 		if len(contextRaw) > 0 {
 			var v map[string]interface{}

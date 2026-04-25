@@ -72,6 +72,30 @@ func BuildEventExtra(e consumer.EventPayload) ([]byte, error) {
 			extra["streaming"] = v
 		}
 	}
+	// Policy enforcement fields (policy_warn / policy_degrade /
+	// policy_block). Emit only when populated so non-policy events keep
+	// their existing payload shape.
+	if e.Source != "" {
+		extra["source"] = e.Source
+	}
+	if e.ThresholdPct != nil {
+		extra["threshold_pct"] = *e.ThresholdPct
+	}
+	if e.TokensUsed != nil {
+		extra["tokens_used"] = *e.TokensUsed
+	}
+	if e.TokenLimit != nil {
+		extra["token_limit"] = *e.TokenLimit
+	}
+	if e.FromModel != "" {
+		extra["from_model"] = e.FromModel
+	}
+	if e.ToModel != "" {
+		extra["to_model"] = e.ToModel
+	}
+	if e.IntendedModel != "" {
+		extra["intended_model"] = e.IntendedModel
+	}
 	if len(extra) == 0 {
 		return nil, nil
 	}
@@ -137,6 +161,16 @@ func (p *Processor) Process(ctx context.Context, e consumer.EventPayload) error 
 		}
 	case "directive_result":
 		// Insert event but do NOT evaluate policy. Just update last_seen.
+		if err := p.session.HandlePostCall(ctx, e); err != nil {
+			return err
+		}
+	case "policy_warn", "policy_degrade", "policy_block":
+		// Policy enforcement events emitted by the sensor's _pre_call
+		// (WARN, BLOCK) and _apply_directive(DEGRADE). Route through
+		// HandlePostCall so last_seen_at advances on enforcement
+		// activity. Policy is NOT re-evaluated — these events ARE the
+		// evaluation outcome; the worker would otherwise emit a
+		// duplicate directive.
 		if err := p.session.HandlePostCall(ctx, e); err != nil {
 			return err
 		}

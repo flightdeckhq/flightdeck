@@ -79,6 +79,21 @@ type EventPayload struct {
 	// stream.
 	Streaming       json.RawMessage `json:"streaming,omitempty"`
 
+	// Policy enforcement event metadata (policy_warn / policy_degrade /
+	// policy_block). Populated by the sensor's _pre_call (WARN, BLOCK)
+	// and _apply_directive(DEGRADE). All three event types share the
+	// (source, threshold_pct, tokens_used, token_limit) common shape;
+	// DEGRADE adds (from_model, to_model) and BLOCK adds intended_model.
+	// Absent on every other event type so the wire shape is unchanged
+	// for non-policy paths.
+	Source         string  `json:"source,omitempty"`
+	ThresholdPct   *int    `json:"threshold_pct,omitempty"`
+	TokensUsed     *int64  `json:"tokens_used,omitempty"`
+	TokenLimit     *int64  `json:"token_limit,omitempty"`
+	FromModel      string  `json:"from_model,omitempty"`
+	ToModel        string  `json:"to_model,omitempty"`
+	IntendedModel  string  `json:"intended_model,omitempty"`
+
 	// Runtime context collected by the sensor at init() time and by
 	// the Claude Code plugin on every hook invocation. Populated on
 	// any event type that carries it; session_start calls

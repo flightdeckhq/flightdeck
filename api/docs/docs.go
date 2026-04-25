@@ -1352,6 +1352,12 @@ const docTemplate = `{
                     },
                     {
                         "type": "string",
+                        "description": "Filter to sessions that emitted at least one policy enforcement event of the listed types (repeatable/comma). Vocabulary: policy_warn, policy_degrade, policy_block.",
+                        "name": "policy_event_type",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
                         "description": "Sort field: started_at, last_seen_at, duration, tokens_used, flavor, model, hostname (default: started_at)",
                         "name": "sort",
                         "in": "query"
@@ -2325,6 +2331,13 @@ const docTemplate = `{
                 },
                 "model": {
                     "type": "string"
+                },
+                "policy_event_types": {
+                    "description": "PolicyEventTypes lists every distinct policy enforcement\n` + "`" + `` + "`" + `event_type` + "`" + `` + "`" + ` observed in the session: any subset of\n` + "`" + `` + "`" + `policy_warn` + "`" + `` + "`" + ` / ` + "`" + `` + "`" + `policy_degrade` + "`" + `` + "`" + ` / ` + "`" + `` + "`" + `policy_block` + "`" + `` + "`" + `.\nAlways present on the wire (empty array when the session\ncarries no policy events). Same surfacing pattern as\nErrorTypes — correlated subquery on the listing query so the\ndashboard renders the POLICY facet and severity-ranked\nsession-row indicator without a per-session follow-up fetch.",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
                 },
                 "session_id": {
                     "type": "string"

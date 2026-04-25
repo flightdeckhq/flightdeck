@@ -58,6 +58,7 @@ type CustomDirectivesListResponse struct {
 // @Router       /v1/directives/sync [post]
 func SyncDirectivesHandler(s store.Querier) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		limitBody(w, r)
 		var req SyncDirectivesRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid JSON")
@@ -114,6 +115,7 @@ func SyncDirectivesHandler(s store.Querier) http.HandlerFunc {
 // @Router       /v1/directives/register [post]
 func RegisterDirectivesHandler(s store.Querier) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		limitBody(w, r)
 		var req RegisterDirectivesRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid JSON")

@@ -236,16 +236,32 @@ func EventsHandler(
 				return
 			}
 			now := time.Now().UTC()
+			// Phase 4.5 M-1: don't reveal the exact validation
+			// window in the client-facing message. The previous
+			// strings ("more than 24h in the past", "more than 5m
+			// in the future") leaked the policy bounds to anyone
+			// who could submit an event. Log the precise reason
+			// server-side; surface a generic clock-skew error.
 			if ts.Before(now.Add(-maxClockSkewPast)) {
+				slog.Warn("event timestamp clock-skew (past)",
+					"timestamp", tsRaw,
+					"now", now.Format(time.RFC3339),
+					"max_past", maxClockSkewPast.String(),
+					"session_id", sessionID,
+				)
 				writeError(w, http.StatusBadRequest,
-					"timestamp is more than 24h in the past; refusing to "+
-						"backdate; check the sensor host clock")
+					"timestamp out of allowed clock-skew window; check sensor host clock")
 				return
 			}
 			if ts.After(now.Add(maxClockSkewFuture)) {
+				slog.Warn("event timestamp clock-skew (future)",
+					"timestamp", tsRaw,
+					"now", now.Format(time.RFC3339),
+					"max_future", maxClockSkewFuture.String(),
+					"session_id", sessionID,
+				)
 				writeError(w, http.StatusBadRequest,
-					"timestamp is more than 5m in the future; refusing to "+
-						"postdate; check the sensor host clock")
+					"timestamp out of allowed clock-skew window; check sensor host clock")
 				return
 			}
 		}
@@ -304,13 +320,22 @@ func EventsHandler(
 		if eventType == "session_start" && result.ID != "" {
 			payload["token_id"] = result.ID
 			payload["token_name"] = result.Name
-			if rebuilt, mErr := json.Marshal(payload); mErr == nil {
-				body = rebuilt
-			} else {
+			rebuilt, mErr := json.Marshal(payload)
+			if mErr != nil {
+				// Phase 4.5 M-10: silent fallback would have dropped
+				// token_id/token_name from the worker's UpsertSession
+				// (D095), leaving the session row without its owning
+				// token. The map was just successfully unmarshaled from
+				// `body` so re-marshal can only fail on pathological
+				// inputs (NaN/Inf floats). Surface as 500 rather than
+				// silently dropping audit fields.
 				slog.Error("re-marshal session_start payload with token",
 					"session_id", sessionID, "err", mErr,
 				)
+				http.Error(w, "internal error", http.StatusInternalServerError)
+				return
 			}
+			body = rebuilt
 		}
 
 		// Synchronous session-attachment check for session_start.

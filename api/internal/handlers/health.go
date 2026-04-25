@@ -6,6 +6,24 @@ import (
 	"net/http"
 )
 
+// MaxRequestBodyBytes bounds JSON POST/PUT bodies on the query API
+// at 256 KiB. The ingestion API has its own 1 MiB bound for sensor
+// event batches; the query API is for human-issued admin actions
+// (creating policies, directives, tokens, custom directives) where
+// 256 KiB is generously above any real payload. Phase 4.5 M-21:
+// previously these handlers used unbounded ``json.NewDecoder(r.Body)``
+// which would happily allocate as much memory as a slow-loris client
+// could send in a single request.
+const MaxRequestBodyBytes = 256 * 1024
+
+// limitBody wraps r.Body in [http.MaxBytesReader] so subsequent
+// reads (json.Decode, io.ReadAll) error out with
+// http.MaxBytesError once the bound is exceeded. Callers should
+// translate that error to 413 Payload Too Large.
+func limitBody(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, MaxRequestBodyBytes)
+}
+
 // ErrorResponse is the standard error response body.
 type ErrorResponse struct {
 	Error string `json:"error"`

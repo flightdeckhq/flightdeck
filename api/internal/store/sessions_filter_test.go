@@ -126,3 +126,39 @@ func TestBuildContextFilterClause_ErrorOnUnknownKey(t *testing.T) {
 		t.Errorf("clause should be empty on error, got %q", clause)
 	}
 }
+
+// TestBuildContextFilterClause_SQLInjectionInValuesParameterized is
+// the Phase 4.5 M-23 regression guard: every dynamic value MUST go
+// through a $N placeholder, never get inlined into the WHERE
+// fragment. The clause shape is a literal "key IN ($1, $2, ...)"
+// with placeholder indices only -- the values themselves stay in
+// the args slice where pgx escapes them. A future contributor that
+// breaks this contract (e.g. by string-formatting a value into the
+// clause) trips this test.
+func TestBuildContextFilterClause_SQLInjectionInValuesParameterized(t *testing.T) {
+	injectionPayloads := []string{
+		"' OR '1'='1",
+		"'; DROP TABLE sessions; --",
+		"\"; SELECT * FROM access_tokens; --",
+		"\\' UNION SELECT NULL --",
+		"%' OR 1=1 --",
+	}
+	for _, payload := range injectionPayloads {
+		clause, args, _, err := BuildContextFilterClause(
+			"user", []string{payload}, []any{}, 1,
+		)
+		if err != nil {
+			t.Fatalf("payload %q: unexpected err: %v", payload, err)
+		}
+		// Clause must reference only $N placeholders, never the
+		// payload bytes themselves.
+		if clause != "s.context->>'user' IN ($1)" {
+			t.Errorf("payload %q produced clause %q -- value leaked into WHERE fragment instead of being parameterized", payload, clause)
+		}
+		// Args slice carries the raw payload (pgx will escape it
+		// at execute time); this is the contract.
+		if len(args) != 1 || args[0] != payload {
+			t.Errorf("payload %q: args = %v, want [%q]", payload, args, payload)
+		}
+	}
+}

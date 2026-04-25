@@ -56,15 +56,35 @@ func NewHub(s store.Querier) *Hub {
 	}
 }
 
+// closeAndRemove closes the client's send channel and removes it
+// from the hub map. Phase 4.5 L-19: extracted helper so every close
+// path follows the same map-presence-then-close pattern. Caller
+// MUST hold ``h.mu`` (write lock) -- the helper does not acquire
+// the lock so it composes cleanly with multi-client iteration in
+// the broadcast branch.
+func (h *Hub) closeAndRemove(c *Client) {
+	if _, ok := h.clients[c]; !ok {
+		return
+	}
+	close(c.send)
+	delete(h.clients, c)
+}
+
 // Run starts the hub event loop. Blocks until ctx is cancelled.
+//
+// Run is a single goroutine; every map mutation and channel close
+// happens on this goroutine, serialized by the select. The h.mu
+// write lock additionally protects ClientCount readers from
+// observing torn state. This invariant is what makes the
+// "double-close channel" class of bug structurally impossible
+// here -- see audit-phase-4.5.md L-19 for the trace.
 func (h *Hub) Run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
 			h.mu.Lock()
 			for c := range h.clients {
-				close(c.send)
-				delete(h.clients, c)
+				h.closeAndRemove(c)
 			}
 			h.mu.Unlock()
 			return
@@ -76,10 +96,7 @@ func (h *Hub) Run(ctx context.Context) {
 
 		case client := <-h.unregister:
 			h.mu.Lock()
-			if _, ok := h.clients[client]; ok {
-				close(client.send)
-				delete(h.clients, client)
-			}
+			h.closeAndRemove(client)
 			h.mu.Unlock()
 
 		case msg := <-h.broadcast:
@@ -89,8 +106,7 @@ func (h *Hub) Run(ctx context.Context) {
 				case client.send <- msg:
 				default:
 					// Client send buffer full -- close and remove
-					close(client.send)
-					delete(h.clients, client)
+					h.closeAndRemove(client)
 				}
 			}
 			h.mu.Unlock()
@@ -162,13 +178,26 @@ type fleetUpdate struct {
 }
 
 // listenOnce acquires a connection, issues LISTEN, and blocks reading
-// notifications until an error occurs or ctx is cancelled.
+// notifications until an error occurs or ctx is cancelled. Phase 4.5
+// M-24: issues UNLISTEN before release so a recycled pool conn does
+// not surface stale subscriptions to an unrelated caller.
 func (h *Hub) listenOnce(ctx context.Context, pool *pgxpool.Pool) error {
 	conn, err := pool.Acquire(ctx)
 	if err != nil {
 		return fmt.Errorf("acquire conn for LISTEN: %w", err)
 	}
-	defer conn.Release()
+	defer func() {
+		// Use a fresh background context with a small timeout: the
+		// caller's ctx is typically already cancelled when we hit
+		// this path, and UNLISTEN over a cancelled context would
+		// no-op. We want the cleanup to land regardless.
+		uctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if _, uErr := conn.Exec(uctx, "UNLISTEN "+store.NotifyChannel); uErr != nil {
+			slog.Debug("UNLISTEN failed during release", "err", uErr)
+		}
+		conn.Release()
+	}()
 
 	_, err = conn.Exec(ctx, "LISTEN "+store.NotifyChannel)
 	if err != nil {
@@ -262,14 +291,21 @@ func (h *Hub) listenOnce(ctx context.Context, pool *pgxpool.Pool) error {
 			updateType = msgTypeSessionUpdate
 		}
 
-		// Build and broadcast the enriched payload
+		// Build and broadcast the enriched payload. fleetUpdate is
+		// composed of typed *store.Session and *store.Event fields
+		// whose JSON tags use only Go-marshalable primitives, so
+		// json.Marshal cannot fail in practice. Phase 4.5 L-8: log
+		// at debug rather than error and continue -- a real failure
+		// here would indicate corrupted db state surfacing through
+		// the typed structs and would already have been logged
+		// upstream.
 		msg, marshalErr := json.Marshal(fleetUpdate{
 			Type:      updateType,
 			Session:   session,
 			LastEvent: lastEvent,
 		})
 		if marshalErr != nil {
-			slog.Error("marshal fleet update", "err", marshalErr)
+			slog.Debug("marshal fleet update (unexpected; typed structs)", "err", marshalErr)
 			continue
 		}
 

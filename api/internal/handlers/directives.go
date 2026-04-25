@@ -43,6 +43,7 @@ type DirectiveRequest struct {
 // @Router       /v1/directives [post]
 func CreateDirectiveHandler(s store.Querier) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		limitBody(w, r)
 		var req DirectiveRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid JSON")

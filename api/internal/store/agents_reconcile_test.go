@@ -135,7 +135,7 @@ func TestReconcileAgents_NoDrift_ZeroCorrections(t *testing.T) {
 	seedSession(t, s, agentID, deriveSessionID(t, agentID, "s1"), s1Start, s1Last, 50)
 	seedSession(t, s, agentID, deriveSessionID(t, agentID, "s2"), s2Start, s2Last, 100)
 
-	result, err := s.ReconcileAgents(ctx)
+	result, err := s.ReconcileAgents(ctx, 0)
 	if err != nil {
 		t.Fatalf("ReconcileAgents: %v", err)
 	}
@@ -178,7 +178,7 @@ func TestReconcileAgents_TotalSessionsDrift(t *testing.T) {
 	seedAgent(t, s, agentID, start, seen, 99, 50)
 	seedSession(t, s, agentID, deriveSessionID(t, agentID, "only"), start, seen, 50)
 
-	beforeResult, err := s.ReconcileAgents(ctx)
+	beforeResult, err := s.ReconcileAgents(ctx, 0)
 	if err != nil {
 		t.Fatalf("ReconcileAgents: %v", err)
 	}
@@ -195,7 +195,7 @@ func TestReconcileAgents_TotalSessionsDrift(t *testing.T) {
 	}
 
 	// Second invocation must be a no-op for this agent (idempotency).
-	after, _ := s.ReconcileAgents(ctx)
+	after, _ := s.ReconcileAgents(ctx, 0)
 	// We can't assert CountersUpdated==0 globally (other agents may
 	// exist), but re-reading the fixture row should stay at 1.
 	_ = s.pool.QueryRow(ctx,
@@ -219,7 +219,7 @@ func TestReconcileAgents_TotalTokensDrift(t *testing.T) {
 	seedSession(t, s, agentID, deriveSessionID(t, agentID, "s1"), start, start, 100)
 	seedSession(t, s, agentID, deriveSessionID(t, agentID, "s2"), start, start, 220)
 
-	result, err := s.ReconcileAgents(ctx)
+	result, err := s.ReconcileAgents(ctx, 0)
 	if err != nil {
 		t.Fatalf("ReconcileAgents: %v", err)
 	}
@@ -249,7 +249,7 @@ func TestReconcileAgents_LastSeenAtDrift(t *testing.T) {
 	seedSession(t, s, agentID, deriveSessionID(t, agentID, "only"),
 		sessionSeen, sessionSeen, 10)
 
-	result, err := s.ReconcileAgents(ctx)
+	result, err := s.ReconcileAgents(ctx, 0)
 	if err != nil {
 		t.Fatalf("ReconcileAgents: %v", err)
 	}
@@ -280,7 +280,7 @@ func TestReconcileAgents_FirstSeenAtDrift(t *testing.T) {
 	seedSession(t, s, agentID, deriveSessionID(t, agentID, "only"),
 		realFirst, lastSeen, 10)
 
-	result, err := s.ReconcileAgents(ctx)
+	result, err := s.ReconcileAgents(ctx, 0)
 	if err != nil {
 		t.Fatalf("ReconcileAgents: %v", err)
 	}
@@ -312,7 +312,7 @@ func TestReconcileAgents_OrphanAgent_ConservativePolicy(t *testing.T) {
 	// row kept).
 	seedAgent(t, s, agentID, agentFirst, agentLast, 5, 1000)
 
-	result, err := s.ReconcileAgents(ctx)
+	result, err := s.ReconcileAgents(ctx, 0)
 	if err != nil {
 		t.Fatalf("ReconcileAgents: %v", err)
 	}
@@ -374,7 +374,7 @@ func TestReconcileAgents_MultipleAgents_MixedDrift(t *testing.T) {
 	cID := deriveAgentID(t, "agent-c")
 	seedAgent(t, s, cID, now.Add(-2*time.Hour), now.Add(-1*time.Hour), 9, 900)
 
-	result, err := s.ReconcileAgents(ctx)
+	result, err := s.ReconcileAgents(ctx, 0)
 	if err != nil {
 		t.Fatalf("ReconcileAgents: %v", err)
 	}
@@ -426,7 +426,7 @@ func TestReconcileAgents_PerAgentError_ContinuesAndRecords(t *testing.T) {
 	// errors) and rely on the analogous integration test covering
 	// the per-agent error record.
 
-	result, err := s.ReconcileAgents(ctx)
+	result, err := s.ReconcileAgents(ctx, 0)
 	if err != nil {
 		t.Fatalf("ReconcileAgents: %v", err)
 	}
@@ -446,5 +446,125 @@ func TestReconcileAgents_PerAgentError_ContinuesAndRecords(t *testing.T) {
 	).Scan(&n)
 	if n != 1 {
 		t.Errorf("good fixture: want 1 session, got %d", n)
+	}
+}
+
+
+// ---------------------------------------------------------------
+// Orphan-delete step (folded into ReconcileAgents)
+// ---------------------------------------------------------------
+
+func TestReconcileAgents_DeletesOrphansBeyondThreshold(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	old := time.Now().Add(-60 * 24 * time.Hour)
+	orphanID := randomUUID(t)
+	seedAgent(t, s, orphanID, old, old, 0, 0)
+
+	result, err := s.ReconcileAgents(ctx, 30*24*time.Hour)
+	if err != nil {
+		t.Fatalf("ReconcileAgents: %v", err)
+	}
+	if result.AgentsDeleted < 1 {
+		t.Fatalf("expected >=1 agent deleted (the seeded orphan), got %d", result.AgentsDeleted)
+	}
+	if result.DeleteThreshold == "" {
+		t.Errorf("delete_threshold should reflect the cutoff, got empty")
+	}
+
+	var stillThere int
+	if err := s.pool.QueryRow(ctx,
+		`SELECT count(*) FROM agents WHERE agent_id = $1::uuid`, orphanID,
+	).Scan(&stillThere); err != nil {
+		t.Fatalf("post-reconcile select: %v", err)
+	}
+	if stillThere != 0 {
+		t.Errorf("orphan agent should have been deleted, %d rows remain", stillThere)
+	}
+}
+
+func TestReconcileAgents_OrphanThresholdZeroSkipsDelete(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	old := time.Now().Add(-60 * 24 * time.Hour)
+	orphanID := randomUUID(t)
+	seedAgent(t, s, orphanID, old, old, 0, 0)
+
+	result, err := s.ReconcileAgents(ctx, 0)
+	if err != nil {
+		t.Fatalf("ReconcileAgents(threshold=0): %v", err)
+	}
+	if result.AgentsDeleted != 0 {
+		t.Errorf("threshold=0 must skip delete, got %d deleted", result.AgentsDeleted)
+	}
+	if result.DeleteThreshold != "" {
+		t.Errorf("threshold=0 → empty delete_threshold, got %q", result.DeleteThreshold)
+	}
+
+	var stillThere int
+	if err := s.pool.QueryRow(ctx,
+		`SELECT count(*) FROM agents WHERE agent_id = $1::uuid`, orphanID,
+	).Scan(&stillThere); err != nil {
+		t.Fatalf("post-reconcile select: %v", err)
+	}
+	if stillThere != 1 {
+		t.Errorf("threshold=0 must preserve the orphan, %d rows remain", stillThere)
+	}
+}
+
+func TestReconcileAgents_OrphanDeleteSparesAgentsWithSessions(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	old := time.Now().Add(-60 * 24 * time.Hour)
+	keepID := randomUUID(t)
+	seedAgent(t, s, keepID, old, old, 0, 0)
+	// Seed one closed session under the agent. Reconcile will
+	// recompute total_sessions=1, which excludes the row from the
+	// orphan-delete predicate.
+	sessID := randomUUID(t)
+	seedSession(t, s, keepID, sessID, old, old, 100)
+
+	if _, err := s.ReconcileAgents(ctx, 30*24*time.Hour); err != nil {
+		t.Fatalf("ReconcileAgents: %v", err)
+	}
+
+	var stillThere int
+	if err := s.pool.QueryRow(ctx,
+		`SELECT count(*) FROM agents WHERE agent_id = $1::uuid`, keepID,
+	).Scan(&stillThere); err != nil {
+		t.Fatalf("post-reconcile select: %v", err)
+	}
+	if stillThere != 1 {
+		t.Errorf("agent with sessions must survive reconcile+delete, %d rows remain", stillThere)
+	}
+}
+
+func TestReconcileAgents_OrphanDeleteSparesRecentOrphans(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	recent := time.Now().Add(-1 * time.Hour)
+	youngID := randomUUID(t)
+	seedAgent(t, s, youngID, recent, recent, 0, 0)
+
+	if _, err := s.ReconcileAgents(ctx, 30*24*time.Hour); err != nil {
+		t.Fatalf("ReconcileAgents: %v", err)
+	}
+
+	var stillThere int
+	if err := s.pool.QueryRow(ctx,
+		`SELECT count(*) FROM agents WHERE agent_id = $1::uuid`, youngID,
+	).Scan(&stillThere); err != nil {
+		t.Fatalf("post-reconcile select: %v", err)
+	}
+	if stillThere != 1 {
+		t.Errorf("recent orphan must survive 30d-threshold delete, %d rows remain", stillThere)
 	}
 }

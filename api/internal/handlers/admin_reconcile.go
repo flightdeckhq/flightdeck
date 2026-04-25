@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"sync"
+	"time"
 
 	"github.com/flightdeckhq/flightdeck/api/internal/store"
 )
@@ -20,16 +22,21 @@ import (
 // future revision.
 var reconcileLock sync.Mutex
 
-// AdminReconcileAgentsHandler recomputes every agent's rollup counters
-// from sessions ground truth. Admin-only — gated via
-// ``auth.AdminRequired`` in server.go.
+// AdminReconcileAgentsHandler makes the agents table correct in one
+// call. It (1) recomputes every agent's denormalised rollup counters
+// from sessions ground truth, then (2) deletes orphan rows whose
+// post-reconcile total_sessions is 0 AND whose last_seen_at is older
+// than ``orphan_threshold_secs`` (default 30 days). Admin-only —
+// gated via ``auth.AdminRequired`` in server.go.
 //
-// @Summary      Reconcile agent rollup counters against sessions ground truth
-// @Description  Scans every agents row and recomputes total_sessions, total_tokens, first_seen_at, and last_seen_at by querying the sessions table. Per-agent transaction; continues on per-agent error and surfaces the failures in the response body's errors array. Orphan agents (zero actual sessions) have their counters zeroed but first_seen_at and last_seen_at are preserved — agent-row cleanup is out of scope for this endpoint. Concurrent calls return 409; a 207 indicates partial success (some per-agent errors). Intended for operator use when drift is suspected, not as a scheduled job.
+// @Summary      Reconcile agent rollup counters AND reap stale orphan rows
+// @Description  One-shot operation that makes the agents table correct: recomputes total_sessions, total_tokens, first_seen_at, and last_seen_at against sessions ground truth (per-agent transaction; partial errors surface in the response errors array), then deletes orphan rows whose post-reconcile total_sessions = 0 AND last_seen_at < NOW() - orphan_threshold_secs. Pass orphan_threshold_secs=0 to skip the delete step (counters-only). Default threshold is 30 days. Values < 60 s rejected with 400 to prevent reaping freshly-upserted agents that the worker has not yet wired up to a session_start.
 // @Tags         admin
 // @Produce      json
+// @Param        orphan_threshold_secs  query  int  false  "Override the 30d default for the orphan-delete step. 0 skips deletion (counters-only). Values 1..59 rejected with 400."
 // @Success      200  {object}  store.ReconcileResult  "Reconcile completed; errors array is empty"
 // @Failure      207  {object}  store.ReconcileResult  "Reconcile completed with per-agent errors (see errors array)"
+// @Failure      400  {object}  ErrorResponse          "orphan_threshold_secs malformed or absurdly small"
 // @Failure      401  {object}  ErrorResponse          "Missing or invalid bearer token"
 // @Failure      403  {object}  ErrorResponse          "Token is valid but lacks admin scope"
 // @Failure      409  {object}  ErrorResponse          "Another reconcile is already in progress"
@@ -43,7 +50,27 @@ func AdminReconcileAgentsHandler(s store.Querier) http.HandlerFunc {
 		}
 		defer reconcileLock.Unlock()
 
-		result, err := s.ReconcileAgents(r.Context())
+		threshold := store.DefaultOrphanDeleteThreshold
+		if raw := r.URL.Query().Get("orphan_threshold_secs"); raw != "" {
+			n, perr := strconv.ParseInt(raw, 10, 64)
+			if perr != nil {
+				writeError(w, http.StatusBadRequest, "orphan_threshold_secs must be an integer")
+				return
+			}
+			if n <= 0 {
+				// Operator explicitly opted out of the orphan-delete
+				// step. Pass 0 down so the store skips it.
+				threshold = 0
+			} else {
+				if n < 60 {
+					writeError(w, http.StatusBadRequest, "orphan_threshold_secs must be 0 (skip) or >= 60")
+					return
+				}
+				threshold = time.Duration(n) * time.Second
+			}
+		}
+
+		result, err := s.ReconcileAgents(r.Context(), threshold)
 		if err != nil {
 			slog.Error("reconcile agents fatal", "err", err)
 			writeError(w, http.StatusInternalServerError, "internal server error")
@@ -61,11 +88,15 @@ func AdminReconcileAgentsHandler(s store.Querier) http.HandlerFunc {
 				"errors", len(result.Errors),
 				"agents_scanned", result.AgentsScanned,
 				"agents_updated", result.AgentsUpdated,
+				"agents_deleted", result.AgentsDeleted,
+				"delete_threshold", result.DeleteThreshold,
 			)
 		} else {
 			slog.Info("reconcile agents ok",
 				"agents_scanned", result.AgentsScanned,
 				"agents_updated", result.AgentsUpdated,
+				"agents_deleted", result.AgentsDeleted,
+				"delete_threshold", result.DeleteThreshold,
 				"duration_ms", result.DurationMs,
 			)
 		}

@@ -24,9 +24,28 @@ type ReconcileResult struct {
 	AgentsScanned   int            `json:"agents_scanned"`
 	AgentsUpdated   int            `json:"agents_updated"`
 	CountersUpdated map[string]int `json:"counters_updated"`
-	DurationMs      int64          `json:"duration_ms"`
-	Errors          []string       `json:"errors"`
+	// AgentsDeleted is the count of agent rows removed by the
+	// orphan-delete step (rows whose total_sessions post-reconcile
+	// is 0 AND whose last_seen_at is older than DeleteThreshold).
+	// Zero when the operator passed ``orphan_threshold=0`` to skip
+	// the delete step.
+	AgentsDeleted int `json:"agents_deleted"`
+	// DeleteThreshold is the human-readable form of the cutoff
+	// applied to the orphan-delete step (e.g. "720h0m0s" for the
+	// 30-day default, "" when the delete step was skipped).
+	DeleteThreshold string   `json:"delete_threshold"`
+	DurationMs      int64    `json:"duration_ms"`
+	Errors          []string `json:"errors"`
 }
+
+// DefaultOrphanDeleteThreshold is the conservative default
+// staleness window for the orphan-delete step: 30 days. An orphan
+// agent (total_sessions = 0 post-reconcile) whose last_seen_at is
+// older than 30 days is highly unlikely to receive future events,
+// so deletion is safe. The threshold is a request parameter so an
+// operator can pick a tighter window for a dev-DB cleanup or a
+// wider one for a long-lived production fleet.
+const DefaultOrphanDeleteThreshold = 30 * 24 * time.Hour
 
 // The four denormalised columns on the agents table reconciled by
 // ReconcileAgents are ``total_sessions``, ``total_tokens``,
@@ -52,14 +71,19 @@ type ReconcileResult struct {
 // minutes on a large fleet; per-column transactions would complicate
 // "was this row corrected" accounting. Per-agent is the sweet spot.
 //
-// **Orphan policy** (conservative). When an agent has zero sessions,
-// total_sessions and total_tokens are corrected to 0, but
-// first_seen_at and last_seen_at are NOT touched. Overwriting those
-// columns with NULL (MIN/MAX over an empty set) would be semantically
-// wrong — the values were set by the original UpsertAgent at agent
-// creation and carry ground-truth information about when the agent
-// row itself appeared. Orphan-agent row cleanup is a separate
-// decision and a separate PR.
+// **Orphan policy.** When an agent has zero sessions,
+// total_sessions and total_tokens are corrected to 0, and
+// first_seen_at / last_seen_at are NOT touched (overwriting those
+// with NULL via MIN/MAX over an empty set would lose the original
+// UpsertAgent timestamps). After the per-agent reconcile pass,
+// orphan rows whose ``total_sessions`` is now 0 AND whose
+// ``last_seen_at`` is older than ``orphanThreshold`` ago are
+// physically deleted. The two-clause predicate keeps the operation
+// safe: ``total_sessions = 0`` rules out any agent that had a real
+// session, and the staleness clause rules out a freshly upserted
+// agent that the worker has not yet wired up to a session_start.
+// Pass ``orphanThreshold <= 0`` to skip the delete step (counters-
+// only).
 //
 // **Concurrency note**. ReconcileAgents is NOT atomic against
 // concurrent worker writes. The worker's BumpAgentSessionCount /
@@ -73,7 +97,10 @@ type ReconcileResult struct {
 // alternative — a fleet-wide write barrier or advisory lock on the
 // worker's hot path — costs more than the problem is worth at this
 // scale.
-func (s *Store) ReconcileAgents(ctx context.Context) (*ReconcileResult, error) {
+func (s *Store) ReconcileAgents(
+	ctx context.Context,
+	orphanThreshold time.Duration,
+) (*ReconcileResult, error) {
 	start := time.Now()
 	result := &ReconcileResult{
 		CountersUpdated: make(map[string]int),
@@ -133,6 +160,58 @@ func (s *Store) ReconcileAgents(ctx context.Context) (*ReconcileResult, error) {
 				result.CountersUpdated[col]++
 			}
 		}
+	}
+
+	// Orphan-delete step. Runs AFTER counter reconciliation so a row
+	// whose drift hid a real session_count is corrected first and
+	// survives. Skip when orphanThreshold <= 0 (operator opted out).
+	if orphanThreshold > 0 {
+		cutoff := time.Now().Add(-orphanThreshold)
+		// SELECT first → per-row DELETE second so a single bad row
+		// (FK violation, race-promoted to non-orphan) doesn't abort
+		// the sweep, and so we get an accurate AgentsDeleted count
+		// without depending on driver-level RowsAffected for multi-
+		// row DELETEs. The DELETE restates the predicate so a row
+		// promoted between SELECT and DELETE is silently skipped.
+		rows, err := s.pool.Query(ctx, `
+			SELECT agent_id::text
+			FROM agents
+			WHERE total_sessions = 0
+			  AND last_seen_at < $1
+		`, cutoff)
+		if err != nil {
+			result.Errors = append(result.Errors,
+				fmt.Sprintf("scan orphans: %v", err))
+		} else {
+			candidates := make([]string, 0, 64)
+			for rows.Next() {
+				var id string
+				if scanErr := rows.Scan(&id); scanErr != nil {
+					result.Errors = append(result.Errors,
+						fmt.Sprintf("scan orphan row: %v", scanErr))
+					continue
+				}
+				candidates = append(candidates, id)
+			}
+			rows.Close()
+			for _, id := range candidates {
+				tag, derr := s.pool.Exec(ctx, `
+					DELETE FROM agents
+					WHERE agent_id::text = $1
+					  AND total_sessions = 0
+					  AND last_seen_at < $2
+				`, id, cutoff)
+				if derr != nil {
+					result.Errors = append(result.Errors,
+						fmt.Sprintf("delete orphan %s: %v", id, derr))
+					continue
+				}
+				if tag.RowsAffected() > 0 {
+					result.AgentsDeleted++
+				}
+			}
+		}
+		result.DeleteThreshold = orphanThreshold.String()
 	}
 
 	result.DurationMs = time.Since(start).Milliseconds()

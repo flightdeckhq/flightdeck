@@ -42,6 +42,10 @@ type mockStore struct {
 	// result (or an error) via these fields.
 	reconcileResult *store.ReconcileResult
 	reconcileErr    error
+	// lastReconcileOrphanThreshold records the threshold the
+	// handler forwarded so tests can assert query-param parsing
+	// (orphan_threshold_secs default + override + skip).
+	lastReconcileOrphanThreshold time.Duration
 
 	// Agents endpoint handler-test plumbing. ListAgents returns
 	// ``agentListResult`` (or ``agentListErr``) and records the
@@ -583,7 +587,11 @@ func (m *mockStore) GetAgentByID(_ context.Context, agentID string) (*store.Agen
 // set ``m.reconcileResult`` / ``m.reconcileErr`` per-test (see the
 // reconcile handler tests below) and ignore the context. Tests that
 // don't exercise the reconcile path get a zero-agents response.
-func (m *mockStore) ReconcileAgents(_ context.Context) (*store.ReconcileResult, error) {
+func (m *mockStore) ReconcileAgents(
+	_ context.Context,
+	orphanThreshold time.Duration,
+) (*store.ReconcileResult, error) {
+	m.lastReconcileOrphanThreshold = orphanThreshold
 	if m.reconcileErr != nil {
 		return nil, m.reconcileErr
 	}
@@ -594,6 +602,8 @@ func (m *mockStore) ReconcileAgents(_ context.Context) (*store.ReconcileResult, 
 		AgentsScanned:   0,
 		AgentsUpdated:   0,
 		CountersUpdated: map[string]int{},
+		AgentsDeleted:   0,
+		DeleteThreshold: "",
 		DurationMs:      0,
 		Errors:          []string{},
 	}, nil
@@ -2999,8 +3009,77 @@ type slowReconcileStore struct {
 	result  *store.ReconcileResult
 }
 
-func (s *slowReconcileStore) ReconcileAgents(_ context.Context) (*store.ReconcileResult, error) {
+func (s *slowReconcileStore) ReconcileAgents(
+	_ context.Context,
+	_ time.Duration,
+) (*store.ReconcileResult, error) {
 	close(s.started)
 	<-s.release
 	return s.result, nil
+}
+
+// --- AdminReconcileAgentsHandler — orphan-delete threshold parsing ---
+
+func TestAdminReconcileHandler_DefaultsOrphanThresholdTo30Days(t *testing.T) {
+	s := &mockStore{}
+	h := handlers.AdminReconcileAgentsHandler(store.WrapStore(s))
+	req := httptest.NewRequest("POST", "/v1/admin/reconcile-agents", nil)
+	w := httptest.NewRecorder()
+	h(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	if s.lastReconcileOrphanThreshold != store.DefaultOrphanDeleteThreshold {
+		t.Errorf("default orphan threshold not applied: %v", s.lastReconcileOrphanThreshold)
+	}
+}
+
+func TestAdminReconcileHandler_HonoursOrphanThresholdSecsOverride(t *testing.T) {
+	s := &mockStore{}
+	h := handlers.AdminReconcileAgentsHandler(store.WrapStore(s))
+	req := httptest.NewRequest("POST", "/v1/admin/reconcile-agents?orphan_threshold_secs=3600", nil)
+	w := httptest.NewRecorder()
+	h(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	if s.lastReconcileOrphanThreshold != time.Hour {
+		t.Errorf("threshold should be 1h, got %v", s.lastReconcileOrphanThreshold)
+	}
+}
+
+func TestAdminReconcileHandler_OrphanThresholdZeroSkipsDelete(t *testing.T) {
+	s := &mockStore{}
+	h := handlers.AdminReconcileAgentsHandler(store.WrapStore(s))
+	req := httptest.NewRequest("POST", "/v1/admin/reconcile-agents?orphan_threshold_secs=0", nil)
+	w := httptest.NewRecorder()
+	h(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	if s.lastReconcileOrphanThreshold != 0 {
+		t.Errorf("0 should pass through verbatim (skip delete), got %v", s.lastReconcileOrphanThreshold)
+	}
+}
+
+func TestAdminReconcileHandler_400_OnAbsurdlySmallOrphanThreshold(t *testing.T) {
+	s := &mockStore{}
+	h := handlers.AdminReconcileAgentsHandler(store.WrapStore(s))
+	req := httptest.NewRequest("POST", "/v1/admin/reconcile-agents?orphan_threshold_secs=10", nil)
+	w := httptest.NewRecorder()
+	h(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for orphan_threshold_secs<60, got %d", w.Code)
+	}
+}
+
+func TestAdminReconcileHandler_400_OnMalformedOrphanThreshold(t *testing.T) {
+	s := &mockStore{}
+	h := handlers.AdminReconcileAgentsHandler(store.WrapStore(s))
+	req := httptest.NewRequest("POST", "/v1/admin/reconcile-agents?orphan_threshold_secs=oops", nil)
+	w := httptest.NewRecorder()
+	h(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
 }

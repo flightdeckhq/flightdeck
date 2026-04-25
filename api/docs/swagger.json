@@ -235,14 +235,22 @@
         },
         "/v1/admin/reconcile-agents": {
             "post": {
-                "description": "Scans every agents row and recomputes total_sessions, total_tokens, first_seen_at, and last_seen_at by querying the sessions table. Per-agent transaction; continues on per-agent error and surfaces the failures in the response body's errors array. Orphan agents (zero actual sessions) have their counters zeroed but first_seen_at and last_seen_at are preserved — agent-row cleanup is out of scope for this endpoint. Concurrent calls return 409; a 207 indicates partial success (some per-agent errors). Intended for operator use when drift is suspected, not as a scheduled job.",
+                "description": "One-shot operation that makes the agents table correct: recomputes total_sessions, total_tokens, first_seen_at, and last_seen_at against sessions ground truth (per-agent transaction; partial errors surface in the response errors array), then deletes orphan rows whose post-reconcile total_sessions = 0 AND last_seen_at \u003c NOW() - orphan_threshold_secs. Pass orphan_threshold_secs=0 to skip the delete step (counters-only). Default threshold is 30 days. Values \u003c 60 s rejected with 400 to prevent reaping freshly-upserted agents that the worker has not yet wired up to a session_start.",
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
                     "admin"
                 ],
-                "summary": "Reconcile agent rollup counters against sessions ground truth",
+                "summary": "Reconcile agent rollup counters AND reap stale orphan rows",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Override the 30d default for the orphan-delete step. 0 skips deletion (counters-only). Values 1..59 rejected with 400.",
+                        "name": "orphan_threshold_secs",
+                        "in": "query"
+                    }
+                ],
                 "responses": {
                     "200": {
                         "description": "Reconcile completed; errors array is empty",
@@ -254,6 +262,12 @@
                         "description": "Reconcile completed with per-agent errors (see errors array)",
                         "schema": {
                             "$ref": "#/definitions/store.ReconcileResult"
+                        }
+                    },
+                    "400": {
+                        "description": "orphan_threshold_secs malformed or absurdly small",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     },
                     "401": {
@@ -2078,6 +2092,10 @@
         "store.ReconcileResult": {
             "type": "object",
             "properties": {
+                "agents_deleted": {
+                    "description": "AgentsDeleted is the count of agent rows removed by the\norphan-delete step (rows whose total_sessions post-reconcile\nis 0 AND whose last_seen_at is older than DeleteThreshold).\nZero when the operator passed ``orphan_threshold=0`` to skip\nthe delete step.",
+                    "type": "integer"
+                },
                 "agents_scanned": {
                     "type": "integer"
                 },
@@ -2089,6 +2107,10 @@
                     "additionalProperties": {
                         "type": "integer"
                     }
+                },
+                "delete_threshold": {
+                    "description": "DeleteThreshold is the human-readable form of the cutoff\napplied to the orphan-delete step (e.g. \"720h0m0s\" for the\n30-day default, \"\" when the delete step was skipped).",
+                    "type": "string"
                 },
                 "duration_ms": {
                     "type": "integer"

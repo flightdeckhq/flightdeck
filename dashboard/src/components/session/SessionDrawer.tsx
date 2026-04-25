@@ -17,6 +17,7 @@ import {
 import { TokenUsageBar } from "./TokenUsageBar";
 import { PromptViewer } from "./PromptViewer";
 import { ErrorEventDetails } from "./ErrorEventDetails";
+import { EmbeddingsContentViewer } from "./EmbeddingsContentViewer";
 import { createDirective, fetchOlderEvents } from "@/lib/api";
 import { sessionSupportsDirectives } from "@/lib/directives";
 import { ClaudeCodeLogo } from "@/components/ui/claude-code-logo";
@@ -1387,6 +1388,12 @@ function ExpandedEvent({
       </div>
       {errorPayload && (
         <ErrorEventDetails error={errorPayload} eventId={event.id} />
+      )}
+      {event.event_type === "embeddings" && (
+        <EmbeddingsContentViewer
+          eventId={event.id}
+          hasContent={event.has_content}
+        />
       )}
       <div className="my-2" style={{ borderTop: "1px solid var(--border-subtle)" }} />
       <SyntaxJson data={payload} />

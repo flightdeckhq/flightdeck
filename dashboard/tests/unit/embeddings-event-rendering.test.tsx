@@ -1,8 +1,10 @@
-import { describe, it, expect, vi } from "vitest";
-import { render } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { render, fireEvent, screen, waitFor } from "@testing-library/react";
 import { EventNode } from "@/components/timeline/EventNode";
+import { EmbeddingsContentViewer } from "@/components/session/EmbeddingsContentViewer";
 import { getEventDetail, getSummaryRows, getBadge } from "@/lib/events";
-import type { AgentEvent } from "@/lib/types";
+import type { AgentEvent, EventContent } from "@/lib/types";
+import * as api from "@/lib/api";
 
 // Phase 4 polish S-UI-1: rich embeddings rendering. Pins three layers
 // in one place so a future refactor can't silently regress one of
@@ -101,5 +103,132 @@ describe("embeddings -- badge config (getBadge)", () => {
     const badge = getBadge("embeddings");
     expect(badge.label).toBe("EMBED");
     expect(badge.cssVar).toContain("--event-embeddings");
+  });
+});
+
+// -------------------------------------------------------------------
+// Phase 4 polish S-EMBED-5: EmbeddingsContentViewer.
+// Three render branches × the captured-vs-not-captured switch. Tests
+// pin the contract that drives the dashboard side of S-EMBED-7
+// E2E coverage too.
+// -------------------------------------------------------------------
+
+function makeContent(input: EventContent["input"]): EventContent {
+  return {
+    event_id: "embed-1",
+    session_id: "sess-1",
+    provider: "openai",
+    model: "text-embedding-3-small",
+    system_prompt: null,
+    messages: [],
+    tools: null,
+    response: {},
+    input,
+    captured_at: new Date().toISOString(),
+  };
+}
+
+describe("EmbeddingsContentViewer", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("renders the empty placeholder when has_content is false (no API call)", () => {
+    const fetchSpy = vi
+      .spyOn(api, "fetchEventContent")
+      .mockResolvedValue(null);
+    const { getByTestId } = render(
+      <EmbeddingsContentViewer eventId="evt-1" hasContent={false} />,
+    );
+    expect(getByTestId("embeddings-content-state-empty")).toBeDefined();
+    // Critical: no fetch fired when caller already knows nothing was
+    // captured. Avoids a 404 round-trip on every embeddings row in
+    // a session with capture disabled.
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("renders truncated text + expand-to-show-more for a single-string input", async () => {
+    const longText = "x".repeat(500);
+    vi.spyOn(api, "fetchEventContent").mockResolvedValue(makeContent(longText));
+    const { getByTestId } = render(
+      <EmbeddingsContentViewer eventId="evt-2" hasContent={true} />,
+    );
+    await waitFor(() =>
+      expect(getByTestId("embeddings-content-state-string")).toBeDefined(),
+    );
+    const span = getByTestId("embeddings-content-state-string");
+    // Truncated: ends with the ellipsis, not the full 500 chars.
+    expect(span.textContent?.endsWith("…")).toBe(true);
+    expect((span.textContent ?? "").length).toBeLessThan(500);
+    // Toggle reveals the full text.
+    fireEvent.click(getByTestId("embeddings-content-toggle"));
+    await waitFor(() => {
+      const spanAfter = getByTestId("embeddings-content-state-string");
+      expect(spanAfter.textContent).toBe(longText);
+    });
+  });
+
+  it("does not show the expand button for short single-string inputs", async () => {
+    vi.spyOn(api, "fetchEventContent").mockResolvedValue(
+      makeContent("short input"),
+    );
+    const { getByTestId, queryByTestId } = render(
+      <EmbeddingsContentViewer eventId="evt-3" hasContent={true} />,
+    );
+    await waitFor(() =>
+      expect(getByTestId("embeddings-content-state-string")).toBeDefined(),
+    );
+    expect(queryByTestId("embeddings-content-toggle")).toBeNull();
+  });
+
+  it("renders ``<N> inputs`` count for a list input + expand reveals each item", async () => {
+    vi.spyOn(api, "fetchEventContent").mockResolvedValue(
+      makeContent(["alpha", "beta", "gamma"]),
+    );
+    const { getByTestId, queryByTestId } = render(
+      <EmbeddingsContentViewer eventId="evt-4" hasContent={true} />,
+    );
+    await waitFor(() =>
+      expect(getByTestId("embeddings-content-state-list")).toBeDefined(),
+    );
+    expect(getByTestId("embeddings-content-state-list").textContent).toBe(
+      "3 inputs",
+    );
+    // Items hidden until expand clicked.
+    expect(queryByTestId("embeddings-content-expanded")).toBeNull();
+    fireEvent.click(getByTestId("embeddings-content-toggle"));
+    await waitFor(() =>
+      expect(getByTestId("embeddings-content-expanded")).toBeDefined(),
+    );
+    expect(getByTestId("embeddings-content-list-item-0").textContent).toBe(
+      "alpha",
+    );
+    expect(getByTestId("embeddings-content-list-item-2").textContent).toBe(
+      "gamma",
+    );
+  });
+
+  it("singular ``1 input`` for a single-element list", async () => {
+    vi.spyOn(api, "fetchEventContent").mockResolvedValue(
+      makeContent(["only one"]),
+    );
+    const { getByTestId } = render(
+      <EmbeddingsContentViewer eventId="evt-5" hasContent={true} />,
+    );
+    await waitFor(() =>
+      expect(getByTestId("embeddings-content-state-list").textContent).toBe(
+        "1 input",
+      ),
+    );
+  });
+
+  it("falls back to empty placeholder when has_content is true but input is missing (defensive)", async () => {
+    vi.spyOn(api, "fetchEventContent").mockResolvedValue(makeContent(null));
+    const { getByTestId } = render(
+      <EmbeddingsContentViewer eventId="evt-6" hasContent={true} />,
+    );
+    await waitFor(() =>
+      expect(getByTestId("embeddings-content-state-empty")).toBeDefined(),
+    );
   });
 });

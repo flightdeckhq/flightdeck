@@ -371,6 +371,16 @@ export interface EventContent {
   tools: any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   response: any;
+  /**
+   * Phase 4 polish: embedding-shaped content. Populated only on
+   * ``event_type=embeddings`` events; absent on chat events. Carries
+   * the request's ``input`` parameter -- a string (single-input
+   * embed) or list of strings (batch embed) per the OpenAI / litellm
+   * / LangChain ``OpenAIEmbeddings`` API. Dashboard's
+   * ``EmbeddingsContentViewer`` branches on the type to render the
+   * single-input or batch-list view.
+   */
+  input?: string | string[] | null;
   captured_at: string;
 }
 

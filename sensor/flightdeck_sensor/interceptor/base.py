@@ -485,6 +485,17 @@ class GuardedAsyncStream:
         self._t0 = time.monotonic()
         try:
             self._ctx = self._real_fn(**self._kwargs)
+            # Some SDKs (OpenAI's AsyncOpenAI.chat.completions.create
+            # with stream=True) return a coroutine that resolves to
+            # the async stream. Others (Anthropic's
+            # AsyncAnthropic.messages.stream) return the async
+            # context-manager directly. Detect and await once.
+            # Pre-fix the OpenAI path raised
+            # ``AttributeError: coroutine object has no
+            # attribute '__aenter__'`` (caught by Rule 40d smoke).
+            import inspect
+            if inspect.iscoroutine(self._ctx):
+                self._ctx = await self._ctx
             self._stream = await self._ctx.__aenter__()
         except BaseException as exc:
             latency_ms = int((time.monotonic() - self._t0) * 1000)

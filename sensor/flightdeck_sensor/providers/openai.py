@@ -155,7 +155,23 @@ class OpenAIProvider:
             if hasattr(response, "model_dump"):
                 resp_dict = response.model_dump()
             elif hasattr(response, "__dict__"):
-                resp_dict = dict(response.__dict__)
+                # Streaming responses surface a ``Stream`` /
+                # ``AsyncStream`` whose ``__dict__`` carries the
+                # underlying httpx response + async generator —
+                # neither JSON-serialisable. Phase 4 polish: drop
+                # any field that fails ``json.dumps`` so the wire
+                # payload stays valid for stream calls. Pre-fix
+                # the post_call drain rejected streams with
+                # ``Object of type AsyncStream is not JSON
+                # serializable`` (caught by Rule 40d smoke).
+                import json as _json
+                resp_dict = {}
+                for k, v in dict(response.__dict__).items():
+                    try:
+                        _json.dumps(v)
+                    except (TypeError, ValueError):
+                        continue
+                    resp_dict[k] = v
             else:
                 resp_dict = {"raw": str(response)}
 

@@ -128,12 +128,23 @@ class SensorCompletions:
         if kwargs.get("stream"):
             call_kwargs = _inject_stream_options(kwargs)
             if self._is_async:
-                return base.call_stream_async(
-                    self._real.create,
-                    call_kwargs,
-                    self._session,
-                    self._provider,
-                )
+                # Native ``AsyncOpenAI.chat.completions.create(stream=
+                # True)`` returns a coroutine that resolves to an
+                # ``AsyncStream``. Pre-fix the sensor returned a
+                # ``GuardedAsyncStream`` synchronously, so calls
+                # written ``await client.chat.completions.create(
+                # stream=True)`` raised ``TypeError: GuardedAsyncStream
+                # object can't be awaited``. Wrap the call in a
+                # coroutine so the awaited shape matches native
+                # behaviour. Caught by Rule 40d smoke (Phase 4 polish).
+                async def _async_stream_create() -> base.GuardedAsyncStream:
+                    return base.call_stream_async(
+                        self._real.create,
+                        call_kwargs,
+                        self._session,
+                        self._provider,
+                    )
+                return _async_stream_create()
             return base.call_stream(
                 self._real.create,
                 call_kwargs,

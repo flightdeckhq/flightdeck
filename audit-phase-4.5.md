@@ -781,8 +781,46 @@ explicit.
   deployment-surface recategorization + threat-model trace
 - Step 4 ✅ Workstream B implementation (S-TBL-1..4)
 - Step 5 ✅ Workstream A fixes implementation (severity-ascending)
-- Step 6 ⏳ Twice-green local verification (Rule 40c.1)
-- Step 7 ⏳ Push (do not merge)
+- Step 6 ✅ Twice-green local verification (Rule 40c.1)
+- Step 7 ✅ Push (do not merge)
+- Step 8 ✅ E2E close-out against live dev stack (twice-green per Rule 40c.1)
+
+---
+
+## E2E close-out (Rule 40c.1, Rule 40c.3 theme parity)
+
+Stack reset (`make dev-reset`) before the close-out runs to land
+the canonical fixture set on a clean Postgres volume — the prior
+session had accumulated 50+ agents from past dev work, which is
+exactly the dev-DB-pollution scenario Rule 40c.1 says to document
+and proceed past rather than spend the audit on. Reset → seed →
+twice-green run, all in lockstep.
+
+| Run | Suite total | Failures | T18 (Last Seen) | T19 (State) |
+|---|---|---|---|---|
+| Run 1 | 70 / 70 | 0 | 2 / 2 neon-dark + 2 / 2 clean-light | 1 / 1 neon-dark + 1 / 1 clean-light |
+| Run 2 | 70 / 70 | 0 | 2 / 2 neon-dark + 2 / 2 clean-light | 1 / 1 neon-dark + 1 / 1 clean-light |
+| T18+T19 spec-only re-run (filter) | 6 / 6 | 0 | 4 / 4 across both themes | 2 / 2 across both themes |
+
+No flakes. No regressions on T01-T17. Each run completed in ~1m
+on the dev box. Both themes covered for every spec via the
+`projects: [neon-dark, clean-light, admin-ops-neon-dark,
+admin-ops-clean-light]` config (Rule 40c.3 parity).
+
+### Pre-reset run (documented, not gating)
+
+A run on the polluted dev DB (54 agents from prior sessions)
+showed T01 + T09 failing in both themes — `e2e-test-sensor-
+agent-prod` swimlane row missing. Root cause: with 50+ agents
+the `VirtualizedSwimLane` placeholder swap kicks in for off-
+screen rows, and the test's `toBeVisible()` lookup fails on a
+virtualized row before the IntersectionObserver promotes it
+back to a real `SwimLane` mount. NOT a Phase 4.5 regression —
+the same failure happens on `main` against a similarly polluted
+DB. Filed as a behaviour to track for the test suite (the
+locator could request scrolling first), but out of scope for
+this PR. Documented per the user's "environmental → document
+and proceed" guidance.
 
 ---
 

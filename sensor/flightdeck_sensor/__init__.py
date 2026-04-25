@@ -432,6 +432,31 @@ def init(
             runtime_ctx = _collect_context()
         _session.set_context(runtime_ctx)
 
+        # Phase 4 polish: derive the per-event ``framework`` field
+        # from the FrameworkCollector's first detected entry. Pre-fix
+        # ``Session.record_framework()`` had zero callers, so every
+        # event's ``framework`` field was ``null`` -- the dashboard's
+        # FRAMEWORK facet, the analytics group_by=framework, and the
+        # ``/v1/sessions?framework=`` filter all silently misbehaved.
+        # Strip the ``/<version>`` suffix so the per-event field uses
+        # the bare analytics dimension (``langchain``); the versioned
+        # form (``langchain/0.3.x``) stays in
+        # ``context.frameworks[]`` for diagnostic detail.
+        #
+        # Design principle locked here for future phases: when a
+        # higher-level framework is detected (LangChain, LangGraph,
+        # CrewAI, etc.) it wins over the SDK transport that handled
+        # the call. A LangChain pipeline routing through litellm
+        # routing through OpenAI reports ``framework="langchain"``
+        # because that's the user's mental model. Phase 5 (MCP) and
+        # beyond inherit this rule.
+        frameworks = runtime_ctx.get("frameworks") or []
+        if frameworks:
+            first = frameworks[0]
+            bare = first.split("/", 1)[0] if isinstance(first, str) else None
+            if bare:
+                _session.record_framework(bare)
+
         _session.start()
 
 

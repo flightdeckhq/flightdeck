@@ -344,6 +344,38 @@ def _post_session_events(
                 **common,
             ))
             posted += 1
+        elif extra.startswith("policy_"):
+            # Policy enforcement events. Three variants:
+            #   policy_warn      -- threshold crossed; call proceeded.
+            #   policy_degrade   -- threshold crossed; model swapped.
+            #   policy_block     -- threshold crossed; call refused.
+            # Source is hardcoded "server" because that's where the
+            # closed-vocabulary fixtures need to land for the T17 spec
+            # (see audit-phase-4.md methodology lessons + DECISIONS D035).
+            policy_event_type = extra
+            base_payload: dict[str, Any] = {
+                "source": "server",
+                "threshold_pct": 80 if policy_event_type == "policy_warn"
+                else 90 if policy_event_type == "policy_degrade"
+                else 100,
+                "tokens_used": 8000 if policy_event_type == "policy_warn"
+                else 9100 if policy_event_type == "policy_degrade"
+                else 10100,
+                "token_limit": 10000,
+            }
+            if policy_event_type == "policy_degrade":
+                base_payload["from_model"] = "claude-sonnet-4-6"
+                base_payload["to_model"] = "claude-haiku-4-5"
+            elif policy_event_type == "policy_block":
+                base_payload["intended_model"] = "claude-opus-4-7"
+            post_event(make_event(
+                session_id, agent_cfg["flavor"], policy_event_type,
+                timestamp=ts,
+                **base_payload,
+                **identity,
+                **common,
+            ))
+            posted += 1
         elif extra.startswith("llm_error_"):
             err_type = extra[len("llm_error_"):]
             # Per-taxonomy http_status / retry_after defaults so the
@@ -435,6 +467,12 @@ def _session_is_complete(
             expected_counts["embeddings"] = expected_counts.get("embeddings", 0) + 1
         elif tag.startswith("llm_error_"):
             expected_counts["llm_error"] = expected_counts.get("llm_error", 0) + 1
+        elif tag in ("policy_warn", "policy_degrade", "policy_block"):
+            # Each policy_* tag maps directly to its own event_type
+            # row. Counted independently so a session declaring all
+            # three needs three events of distinct types to be
+            # complete.
+            expected_counts[tag] = expected_counts.get(tag, 0) + 1
         elif tag in ("streaming_post_call", "streaming_post_call_aborted"):
             # Disambiguate streaming post_call from the base post_call
             # by requiring the streaming sub-object on the payload.

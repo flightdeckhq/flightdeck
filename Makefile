@@ -1,4 +1,4 @@
-.PHONY: help build test test-plugin test-integration test-sensor-e2e test-e2e test-e2e-ui test-smoke-playground seed-e2e lint dev dev-reset down logs release migrate-local-up migrate-local-status smoke-anthropic smoke-openai smoke-litellm smoke-langchain smoke-claude-code smoke-bifrost smoke-all
+.PHONY: help build test test-plugin test-integration test-sensor-e2e test-e2e test-e2e-ui test-smoke-playground seed-e2e lint dev dev-reset down logs release migrate-local-up migrate-local-status smoke-anthropic smoke-openai smoke-litellm smoke-langchain smoke-claude-code smoke-bifrost smoke-policies smoke-all
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-12s %s\n", $$1, $$2}'
@@ -62,7 +62,10 @@ smoke-claude-code: ## Rule 40d smoke: Claude Code plugin against locally install
 smoke-bifrost: ## Rule 40d smoke: bifrost gateway (optional). Requires BIFROST_URL + upstream provider key.
 	cd tests/smoke && pytest -v test_smoke_bifrost.py
 
-smoke-all: smoke-anthropic smoke-openai smoke-litellm smoke-langchain smoke-claude-code ## Run every Phase 4 framework smoke test (bifrost is optional; run separately).
+smoke-policies: ## Rule 40d smoke: policy enforcement events (warn/degrade/block) via real Anthropic + flavor policy. Requires ANTHROPIC_API_KEY.
+	cd tests/smoke && pytest -v test_smoke_policies.py
+
+smoke-all: smoke-anthropic smoke-openai smoke-litellm smoke-langchain smoke-claude-code smoke-policies ## Run every Phase 4 framework smoke test (bifrost is optional; run separately).
 
 # Phase 3 retired the duplicate `test-e2e` target. The prior target
 # at this line drove sensor pytest e2e (now `test-sensor-e2e` above)

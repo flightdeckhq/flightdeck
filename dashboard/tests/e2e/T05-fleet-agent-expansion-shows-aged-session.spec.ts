@@ -73,10 +73,9 @@ test.describe("T5 — Agent expansion surfaces session outside swimlane window",
     await expect(expandedBody).toHaveAttribute("data-expanded", "true");
 
     // Expanded body renders one <SessionEventRow> per session. The
-    // CODING_AGENT fixture has 5 sessions (fresh-active, recent-
-    // closed, aged-closed, stale, error-active) — Phase 4 polish
-    // added the error-active role on the coding agent only, see
-    // canonical.json. loadExpandedSessions bypasses the 24h
+    // CODING_AGENT fixture has 6 sessions (fresh-active, recent-
+    // closed, aged-closed, stale, error-active, policy-active);
+    // see canonical.json. loadExpandedSessions bypasses the 24h
     // swimlane window so every session lands here.
     const expandedSessionIds = await expandedBody
       .locator('[data-testid="session-row"]')
@@ -90,9 +89,9 @@ test.describe("T5 — Agent expansion surfaces session outside swimlane window",
     expect(
       expandedSessionIds.length,
       `expanded body must list all CODING_AGENT sessions (fresh-active, ` +
-        `recent-closed, aged-closed, stale, error-active). Saw ` +
+        `recent-closed, aged-closed, stale, error-active, policy-active). Saw ` +
         `${expandedSessionIds.length}: ${expandedSessionIds.join(", ")}`,
-    ).toBe(5);
+    ).toBe(6);
 
     // Structural invariant: at least one session in expanded is NOT in
     // the swimlane. That session is the aged-closed fixture (28h old,

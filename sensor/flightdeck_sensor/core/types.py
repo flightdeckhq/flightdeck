@@ -21,16 +21,10 @@ class SessionState(enum.Enum):
 class EventType(enum.Enum):
     """All event types the sensor can emit.
 
-    POLICY_WARN events carry a ``source`` field: ``"local"`` (from init() limit)
-    or ``"server"`` (from server-side policy).
-
-    Phase 4 additions (v0.5.0):
-
-    * :attr:`EMBEDDINGS` -- embedding-model call (no completion tokens). Emitted
-      by the OpenAI / litellm / LangChain embeddings paths instead of folding
-      them into the generic POST_CALL shape.
-    * :attr:`LLM_ERROR` -- structured LLM API error. Carries an ``error``
-      sub-object classified against :mod:`flightdeck_sensor.core.errors`.
+    POLICY_WARN / POLICY_DEGRADE / POLICY_BLOCK events carry a ``source``
+    field. POLICY_WARN can be ``"local"`` (from ``init(limit=...)``) or
+    ``"server"`` (from server-side policy). POLICY_DEGRADE / POLICY_BLOCK
+    are always ``"server"`` because local thresholds fire WARN only (D035).
     """
 
     SESSION_START = "session_start"
@@ -39,6 +33,8 @@ class EventType(enum.Enum):
     POST_CALL = "post_call"
     TOOL_CALL = "tool_call"
     POLICY_WARN = "policy_warn"
+    POLICY_DEGRADE = "policy_degrade"
+    POLICY_BLOCK = "policy_block"
     DIRECTIVE_RESULT = "directive_result"
     EMBEDDINGS = "embeddings"
     LLM_ERROR = "llm_error"

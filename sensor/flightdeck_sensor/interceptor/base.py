@@ -641,10 +641,23 @@ def _pre_call(
 ) -> dict[str, Any]:
     """Run policy check and return (possibly modified) kwargs.
 
-    * BLOCK: raises :class:`BudgetExceededError` -- call never happens.
-    * DEGRADE: returns a *copy* of kwargs with swapped model.
-    * WARN: logs once, returns original kwargs.
-    * ALLOW: returns original kwargs.
+    Each enforcement decision emits a structured policy event so
+    operators can see warn / degrade / block on the session timeline.
+    See ARCHITECTURE.md "Event Types" → policy_warn / policy_degrade /
+    policy_block.
+
+    * BLOCK: emit :attr:`EventType.POLICY_BLOCK`, flush the event queue
+      so the event lands before the process exit, then raise
+      :class:`BudgetExceededError`. Source is always ``"server"`` per
+      D035 (local thresholds fire WARN only).
+    * DEGRADE: returns a *copy* of kwargs with swapped model. POLICY_
+      DEGRADE is NOT emitted here — it fires once on
+      ``_apply_directive(DEGRADE)`` arrival. Per-call swaps are visible
+      via post_call.model only.
+    * WARN: emit :attr:`EventType.POLICY_WARN` (source ``"local"`` for
+      ``init(limit=...)`` thresholds, ``"server"`` for server policy),
+      log warning, return original kwargs.
+    * ALLOW: returns original kwargs unchanged.
     """
     with session._lock:
         shutdown = session._shutdown_requested
@@ -656,6 +669,31 @@ def _pre_call(
     decision = result.decision
 
     if decision == PolicyDecision.BLOCK:
+        # POLICY_BLOCK: source hardcoded ``"server"`` per D035 — local
+        # PolicyCache fires WARN only, never BLOCK. ``intended_model``
+        # captures the model the blocked call was going to use so the
+        # operator can answer "which call hit the limit?".
+        intended_model = provider.get_model(kwargs)
+        block_payload = session._build_payload(
+            EventType.POLICY_BLOCK,
+            source="server",
+            threshold_pct=session.policy.block_at_pct,
+            tokens_used=session.tokens_used,
+            token_limit=session.policy.token_limit,
+            intended_model=intended_model,
+        )
+        session.event_queue.enqueue(block_payload)
+        # Synchronous flush: the BudgetExceededError below tears the
+        # call down immediately and the caller may exit the process
+        # without giving the drain thread a chance to ship the event.
+        # Failure to flush is logged but does not change the raise.
+        try:
+            session.event_queue.flush()
+        except Exception as exc:
+            _log.warning(
+                "[flightdeck] policy_block: failed to flush event queue: %s",
+                exc,
+            )
         raise BudgetExceededError(
             session_id=session.config.session_id,
             tokens_used=session.tokens_used,
@@ -663,6 +701,9 @@ def _pre_call(
         )
 
     if decision == PolicyDecision.DEGRADE and session.policy.degrade_to:
+        # POLICY_DEGRADE is NOT emitted here. The decision event fired
+        # once on _apply_directive(DEGRADE) arrival; per-call swaps are
+        # visible via post_call.model. See decision lock above.
         call_kwargs = copy.copy(kwargs)
         call_kwargs["model"] = session.policy.degrade_to
         _log.info(
@@ -673,10 +714,30 @@ def _pre_call(
         return call_kwargs
 
     if decision == PolicyDecision.WARN:
+        # source comes from the PolicyResult — ``"local"`` for an
+        # init(limit=...) threshold, ``"server"`` for a server policy
+        # threshold. Local and server can both fire once each per
+        # session (PolicyCache tracks separately).
+        warn_source = result.source or "server"
+        warn_threshold_pct: int | None
+        if warn_source == "local":
+            warn_threshold_pct = int(session.policy.local_warn_at * 100)
+            warn_token_limit = session.policy.local_limit
+        else:
+            warn_threshold_pct = session.policy.warn_at_pct
+            warn_token_limit = session.policy.token_limit
+        warn_payload = session._build_payload(
+            EventType.POLICY_WARN,
+            source=warn_source,
+            threshold_pct=warn_threshold_pct,
+            tokens_used=session.tokens_used,
+            token_limit=warn_token_limit,
+        )
+        session.event_queue.enqueue(warn_payload)
         _log.warning(
             "Token budget warning: %d tokens used of %s limit (session %s)",
             session.tokens_used,
-            session.policy.token_limit,
+            warn_token_limit,
             session.config.session_id,
         )
 

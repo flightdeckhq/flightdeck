@@ -426,3 +426,166 @@ Fix shipped on this branch:
   patch.
 - **Async streaming for litellm** — follows KI26.
 - **Direct LangChain Voyage embeddings** — follows Q-VOYAGE.
+
+---
+
+## Docs Updated (PR #28 docs commits)
+
+Six commits, ~665 lines net additive across the docs surface. The
+delta is recorded here so the audit closes with a single docs map
+that future phases can audit against.
+
+| Doc | Change |
+|---|---|
+| ``ARCHITECTURE.md`` | Restructured by system topic (per Supervisor methodology correction) — phase-tag-removal pass + structural reorg from "Phase 1-5 deliverables" framing to "what the system IS" topical sections (Identity model, Sensor, Event types, Ingestion, Worker, Database, API, Dashboard, Communication modality content capture, Deployment & ops, Testing). Phase ancestry, war stories, "pre-fix did X", forward-looking Phase 5 Helm section all removed. D-numbers preserved as durable references to DECISIONS.md. |
+| ``README.md`` | 5-framework × 4-modality coverage matrix (Anthropic / OpenAI / litellm × chat / embeddings / streaming / errors). LangChain / LangGraph / LlamaIndex / CrewAI / Claude Code plugin / bifrost transitive coverage table. Per-event ``framework`` field explanation. New "What Flightdeck is NOT" section with seven explicit non-goals. KI21 closed inline; KI26 (litellm streaming) reframed as roadmap. Roadmap rewritten as Phase 5-9 sequencing (MCP first-class → sub-agents → landing/agent-detail → framework verification matrix → launch polish). |
+| ``CHANGELOG.md`` | New v0.5.0 entry ("Agent communication coverage hardening") covering everything since v0.4.0 Phase 1 — Phase 2 agents API, Phase 3 E2E foundation, admin reconciler, Phase 4 + Phase 4 polish. Keep-a-Changelog structure with component-prefixed bullets (Sensor / Ingestion / Worker / API / Dashboard / Tests / CI). |
+| ``CLAUDE.md`` | Rule 41 strengthened with explicit "ARCHITECTURE describes what the system IS, not how it got there" + "phase references go in CHANGELOG or audit docs, never ARCHITECTURE" + DECISIONS.md role. Rule 40e added (pre-push lint hard rule, sibling to 40a-40d). Rule 51 added (no-defer discipline) per Supervisor's verbatim spec — codifies the principle applied ad-hoc through PR #28. Rule 50 (API documentation) keeps its slot. |
+| ``FOLLOWUPS.md`` | Boundary clarification at the top — three valid categories, not a "things I noticed" bucket. Phase 4 polish dashboard rendering + embedding modality parity + framework attribution null + V-DRAWER dead-end struck through (closed by PR #28). New entry: orphan-agent reconciler (post-launch follow-up to the V-DRAWER companion fix). |
+| ``audit-phase-4.md`` | This Docs Updated section + Methodology lessons section below. |
+
+---
+
+## Methodology lessons (Phase 1-3 drift, dead-end UX class, modality parity retroactive fix, V-pass finding pre-existing bugs)
+
+Four lessons surfaced during PR #28's audit pass that weren't in the
+original Phase 4 V-pass spec. Recording them here so future phases
+inherit the corrections rather than rediscovering them.
+
+### Lesson 1 — Phase 1-3 docs drift accumulated because no phase explicitly updated docs
+
+ARCHITECTURE.md grew 4074 lines as the project moved through Phases
+1-4 + 4.5. Each phase added "Phase N Additions" sections describing
+what was new instead of integrating the new behaviour into the
+topical sections that already described related topics. The result:
+``Phase 4.5 Additions`` (lines 1839-2348) and ``Phase 4.5 -- Subsequent
+Additions`` (2349-2782) accumulated ~944 lines of present-tense
+system descriptions misframed as historical change-log entries. A
+new contributor reading top-to-bottom encountered a mix of "what is"
+and "what changed" without a way to tell them apart.
+
+The fix: ARCHITECTURE describes what the system IS, not how it got
+there. Phase references move to CHANGELOG / audit-phase-N.md /
+DECISIONS.md. Rule 41 strengthened with this explicit principle so
+future phases inherit the discipline.
+
+The deeper lesson: phase-gate methodology (Rule 41/42) made each
+phase responsible for "update docs before merging code" but didn't
+specify *which* docs in *what shape*. Phase 4 polish surfaced
+that the docs the rule pointed at had drifted into change-log
+shape, which violated the rule's own intent. Future phases need a
+docs audit step in V-pass that reads ARCHITECTURE end-to-end and
+flags any temporal qualifiers ("was added in", "previously",
+"pre-fix", "in Phase X") that crept in.
+
+### Lesson 2 — Dead-end UX is a recurring regression class (KI20, KI22, V-DRAWER)
+
+PR #28's V-DRAWER fix is the third instance of the same UX bug
+class:
+
+- **KI20** (closed pre-v0.4.0): phantom rows in the swimlane that
+  rendered an empty event row when no events fell inside the visible
+  window. Dead-end: "this row is here but there's nothing to see".
+- **KI22** (closed pre-v0.4.0): font-mono global override broke the
+  light theme on a specific drawer subtree. Dead-end: "the drawer
+  rendered but the content was invisible against background".
+- **V-DRAWER** (closed in PR #28): expanded swimlane drawer read
+  "No sessions to display for this agent" when the agent's only
+  sessions were older than the API's default 7-day window. Dead-end:
+  "the agent is in the fleet but the drawer says it has no sessions".
+
+The shared shape: a unit/component test passed because the component
+rendered correctly given its inputs. The user-facing failure was
+that the *inputs* were wrong (windowed to 7 days, missing context
+field, computed under wrong CSS scope). Mock-only unit tests can't
+catch this class because the test author already knows the input
+shape.
+
+The fix: any user-facing surface that renders "empty" / "no data"
+copy must have a regression guard E2E test that exercises the
+specific shape — agent with no sessions, agent with sessions outside
+the default window, session with no events in the visible time
+range. T5b is the regression guard for V-DRAWER's specific shape;
+T01-T16 cover the broader fleet/investigate journey but pre-T5b
+none of them asserted on the "drawer must not show dead-end copy"
+negative.
+
+The deeper lesson: regression guards are negative assertions. A test
+that says "expect non-empty list" is not the same as "expect to NOT
+see the dead-end copy". The latter is what fails when the empty-state
+copy is the bug. Future UI phases adding empty-state copy must add
+a corresponding negative assertion E2E test as part of the V-pass.
+
+### Lesson 3 — Modality parity is a load-bearing principle, not a polish item
+
+Phase 4's initial V-pass shipped ``embeddings`` as a new event type
+with metadata only. ``capture_prompts=True`` captured chat
+completions but not embedding inputs. The gap surfaced during a
+Chrome walkthrough — the operator looked for "what did the embedding
+model see?" and the EmbeddingsContentViewer showed nothing because
+the sensor never captured the request's ``input`` field.
+
+The fix shipped retroactively in S-EMBED-1..8 across all 5 supported
+frameworks. ``PromptContent.input`` round-trips through
+``payload.content.input`` → ``event_content.input`` JSONB →
+``GET /v1/events/:id/content`` → ``<EmbeddingsContentViewer>``. New
+column (migration 000016), new dataclass field, new content-viewer
+component, per-framework smoke coverage, T14 E2E coverage.
+
+The locked principle (now in ARCHITECTURE under Communication
+modality content capture):
+
+> Every modality that has a request/response payload supports
+> content capture gated by the ``capture_prompts`` flag (or
+> modality-specific variants where genuinely needed). Modalities
+> that ship without content capture ship a documented gap that
+> must be called out in the coverage matrix and fixed before
+> launch.
+
+The deeper lesson: "we observe what we claim to observe" needs to
+be true at the modality × framework matrix level, not the
+modality level. Phase 5 (MCP) and beyond inherit this rule —
+when MCP lands, ``capture_prompts=True`` MUST capture MCP request
+payloads across every framework that emits MCP calls, not as a
+follow-up.
+
+### Lesson 4 — V-pass findings include pre-existing bugs the phase didn't introduce
+
+Three of PR #28's surfaced bugs predate Phase 4 entirely:
+
+- ``Session.record_framework`` had zero callers. Every event since
+  the framework attribution feature shipped (Phase 1, ~6 months
+  ago) carried ``framework=null``. Surfaced during embeddings
+  smoke verification when the operator looked for
+  ``framework=langchain`` in the event payload and saw ``null``.
+- ``T01 / T05 / T06 / T09`` E2E specs (shipped in Phase 3)
+  failed locally against any non-sterile dev DB. Each assumed
+  canonical fixtures would render at the top of the Fleet
+  swimlane on initial paint; under realistic data volume the
+  virtualizer kept off-screen rows as placeholders without their
+  ``data-testid`` and the alphabetical ordering buried the
+  fixtures. The specs were green only on a freshly-reset DB.
+- ``LangChainClassifier.module = "langchain"`` missed every modern
+  split-package install (``langchain_openai`` / ``langchain_anthropic``
+  that don't import the umbrella ``langchain`` module). Pre-fix
+  no LangChain user got correct framework attribution.
+
+The original Phase 4 V-pass scope was "agent communication coverage
+hardening — embeddings, streaming, errors, lifecycle". A strict
+reading would have deferred the framework attribution null bug
+("not in scope, file as KI") and the T01/T05/T06/T09 P1/P2
+violations ("Phase 3 issue, file as follow-up"). Per Rule 51 (added
+in this PR), the default answer for findings that fit the phase's
+intent is "address now". Framework attribution parity was load-bearing
+for the embeddings work (the EmbeddingsContentViewer needed correct
+``framework=`` filtering on the Investigate page); the E2E P1/P2
+fix was a hard prerequisite for the new T14/T15/T16/T5b specs to
+run reliably. Both fit the phase's intent and landed in PR #28.
+
+The deeper lesson: V-pass scoping isn't a contract that limits what
+the phase can fix. It's a starting point. Findings that fit the
+phase's intent — even if they're pre-existing bugs the phase didn't
+introduce — land in the phase's PR. Findings that don't fit go to
+FOLLOWUPS.md or get declined explicitly. "Defer with no owner" is
+not a third option. Rule 51 codifies this so future phases inherit
+the discipline by default.

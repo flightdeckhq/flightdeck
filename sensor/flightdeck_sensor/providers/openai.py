@@ -161,6 +161,7 @@ class OpenAIProvider:
             return None
         try:
             from datetime import datetime, timezone
+
             # Lazy import keeps the typing TYPE_CHECKING contract on
             # ``Provider.extract_content`` honest while letting the
             # runtime branch on the enum value.

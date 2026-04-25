@@ -119,6 +119,7 @@ class LitellmProvider:
             return None
         try:
             from datetime import datetime, timezone
+
             from flightdeck_sensor.core.types import EventType
 
             now_iso = datetime.now(timezone.utc).isoformat()

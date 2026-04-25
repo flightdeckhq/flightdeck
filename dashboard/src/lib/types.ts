@@ -149,6 +149,19 @@ export interface EventPayloadFields {
   // Phase 4 streaming sub-object; populated only on post_call events
   // emitted from a ``stream=true`` call.
   streaming?: StreamingMetrics;
+  // Policy enforcement fields. Populated on ``policy_warn`` /
+  // ``policy_degrade`` / ``policy_block`` events. ``source`` is
+  // ``"local"`` (init() limit) or ``"server"`` (server policy);
+  // BLOCK is always ``"server"`` per D035.
+  source?: "local" | "server";
+  threshold_pct?: number | null;
+  tokens_used?: number;
+  token_limit?: number | null;
+  // policy_degrade additions: the model swap.
+  from_model?: string;
+  to_model?: string;
+  // policy_block addition: the model the blocked call was going to use.
+  intended_model?: string;
 }
 
 /** Event metadata (no prompt content inline). */
@@ -486,6 +499,14 @@ export interface SessionListItem {
    * in the session table.
    */
   error_types?: string[];
+  /**
+   * Every distinct policy enforcement ``event_type`` observed in the
+   * session: any subset of ``policy_warn`` / ``policy_degrade`` /
+   * ``policy_block``. Always present (empty array when no policy
+   * events). Drives the Investigate POLICY facet aggregation and the
+   * severity-ranked row-level dot indicator (block > degrade > warn).
+   */
+  policy_event_types?: string[];
 }
 
 /** Paginated response from GET /v1/sessions. */

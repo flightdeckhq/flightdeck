@@ -71,6 +71,10 @@ export function parseUrlState(sp: URLSearchParams) {
     // event of one of the listed taxonomy values. Drives the
     // ERROR TYPE sidebar facet and the active-filter chips.
     errorTypes: sp.getAll("error_type"),
+    // Policy-event-type filter. Vocabulary closed-set: policy_warn /
+    // policy_degrade / policy_block. Drives the POLICY sidebar facet
+    // and the severity-ranked session-row dot indicator.
+    policyEventTypes: sp.getAll("policy_event_type"),
     // ``session`` carries the session id of an open drawer so a
     // deep-link (e.g. clicking a result in the global search modal)
     // routes the user into Investigate AND pops the drawer in one
@@ -106,6 +110,7 @@ export function buildUrlParams(s: ReturnType<typeof parseUrlState>): URLSearchPa
   for (const gr of s.contextGitRepos) p.append("git_repo", gr);
   for (const oc of s.contextOrchestrations) p.append("orchestration", oc);
   for (const et of s.errorTypes) p.append("error_type", et);
+  for (const pt of s.policyEventTypes) p.append("policy_event_type", pt);
   if (s.session) p.set("session", s.session);
   if (s.model) p.set("model", s.model);
   if (s.sort !== "started_at") p.set("sort", s.sort);
@@ -228,6 +233,10 @@ export interface FacetSources {
    *  the facet keeps showing every distinct value the user could
    *  toggle to instead of collapsing to just the active rows. */
   error_type?: SessionListItem[];
+  /** Sticky-facet source for POLICY. Same shape: when a policy
+   *  filter is active, holds the result set with the policy filter
+   *  stripped. */
+  policy_event_type?: SessionListItem[];
 }
 
 /** Scalar context keys that render as facets in the Investigate
@@ -282,6 +291,7 @@ export function computeFacets(
   // skipped — they're not omitted from the table, just not counted
   // here.
   const errorTypeCounts = new Map<string, number>();
+  const policyEventTypeCounts = new Map<string, number>();
   // D115 AGENT facet: keyed on agent_id (clickable filter value) with
   // an accompanying name map for display rendering. Sessions without
   // agent_id (pre-v0.4.0 legacy rows) are silently skipped -- they
@@ -355,6 +365,13 @@ export function computeFacets(
       }
     }
   }
+  if (sources.policy_event_type) {
+    for (const s of sources.policy_event_type) {
+      for (const pt of s.policy_event_types ?? []) {
+        policyEventTypeCounts.set(pt, (policyEventTypeCounts.get(pt) ?? 0) + 1);
+      }
+    }
+  }
   // Sticky-source pass for scalar context facets. A key whose source
   // override is present consumes THAT list; the main-loop branch
   // below skips it to avoid double-counting.
@@ -389,6 +406,11 @@ export function computeFacets(
     if (!sources.error_type) {
       for (const et of s.error_types ?? []) {
         errorTypeCounts.set(et, (errorTypeCounts.get(et) ?? 0) + 1);
+      }
+    }
+    if (!sources.policy_event_type) {
+      for (const pt of s.policy_event_types ?? []) {
+        policyEventTypeCounts.set(pt, (policyEventTypeCounts.get(pt) ?? 0) + 1);
       }
     }
     for (const key of CONTEXT_FACET_KEYS) {
@@ -449,6 +471,11 @@ export function computeFacets(
     // the v0.4.0 layout. Hidden by the .filter() below when no
     // session in the visible result set has any llm_error events.
     { key: "error_type", label: "ERROR TYPE", values: toArr(errorTypeCounts) },
+    // POLICY facet renders the three enforcement event types
+    // (policy_warn / policy_degrade / policy_block) when the
+    // visible result set has any. Hidden by the .filter() below
+    // otherwise.
+    { key: "policy_event_type", label: "POLICY", values: toArr(policyEventTypeCounts) },
   ].filter((g) => g.values.length > 0);
 }
 
@@ -650,6 +677,16 @@ export function buildActiveFilters(
         }),
     });
   }
+  for (const pt of urlState.policyEventTypes) {
+    pills.push({
+      label: `policy_event_type:${pt}`,
+      onRemove: () =>
+        updateUrl({
+          policyEventTypes: urlState.policyEventTypes.filter((x) => x !== pt),
+          page: 1,
+        }),
+    });
+  }
   if (urlState.agentId) {
     // ``?? []`` guards against a caller handing a runtime null where
     // the type asserts an array (e.g. a fleet fetch that nominally
@@ -728,6 +765,7 @@ export const CLEAR_ALL_FILTERS_PATCH: Partial<UrlStateSnapshot> = {
   contextGitRepos: [],
   contextOrchestrations: [],
   errorTypes: [],
+  policyEventTypes: [],
   model: "",
   q: "",
   page: 1,
@@ -884,6 +922,8 @@ export function Investigate() {
         git_repo: state.contextGitRepos.length > 0 ? state.contextGitRepos : undefined,
         orchestration: state.contextOrchestrations.length > 0 ? state.contextOrchestrations : undefined,
         error_type: state.errorTypes.length > 0 ? state.errorTypes : undefined,
+        policy_event_type:
+          state.policyEventTypes.length > 0 ? state.policyEventTypes : undefined,
         sort: state.sort,
         order: state.order,
         limit: state.perPage,
@@ -958,6 +998,12 @@ export function Investigate() {
           : null,
         error_type: state.errorTypes.length > 0
           ? fetchSessions({ ...facetBase, error_type: undefined }, controller.signal)
+          : null,
+        policy_event_type: state.policyEventTypes.length > 0
+          ? fetchSessions(
+              { ...facetBase, policy_event_type: undefined },
+              controller.signal,
+            )
           : null,
       };
 
@@ -1137,6 +1183,12 @@ export function Investigate() {
           ? current.filter((a) => a !== value)
           : [...current, value];
         updateUrl({ agentTypes: next, page: 1 });
+      } else if (group === "policy_event_type") {
+        const current = urlState.policyEventTypes;
+        const next = current.includes(value)
+          ? current.filter((p) => p !== value)
+          : [...current, value];
+        updateUrl({ policyEventTypes: next, page: 1 });
       } else if (group === "agent_id") {
         // D115 AGENT facet is single-select: clicking the active
         // agent clears the filter; clicking a different agent
@@ -1399,7 +1451,11 @@ export function Investigate() {
             <div
               key={group.key}
               data-testid={
-                group.key === "error_type" ? "investigate-error-type-facet" : undefined
+                group.key === "error_type"
+                  ? "investigate-error-type-facet"
+                  : group.key === "policy_event_type"
+                  ? "investigate-policy-facet"
+                  : undefined
               }
             >
               <div
@@ -1423,6 +1479,7 @@ export function Investigate() {
                   (group.key === "agent_type" && urlState.agentTypes.includes(v.value)) ||
                   (group.key === "agent_id" && urlState.agentId === v.value) ||
                   (group.key === "error_type" && urlState.errorTypes.includes(v.value)) ||
+                  (group.key === "policy_event_type" && urlState.policyEventTypes.includes(v.value)) ||
                   (group.key === "os" && urlState.contextOS.includes(v.value)) ||
                   (group.key === "arch" && urlState.contextArch.includes(v.value)) ||
                   (group.key === "hostname" && urlState.contextHostnames.includes(v.value)) ||
@@ -1439,6 +1496,8 @@ export function Investigate() {
                     data-testid={
                       group.key === "error_type"
                         ? `investigate-error-type-pill-${v.value}`
+                        : group.key === "policy_event_type"
+                        ? `investigate-policy-pill-${v.value}`
                         : undefined
                     }
                     onClick={() => handleFacetClick(group.key, v.value)}
@@ -1785,6 +1844,41 @@ export function Investigate() {
                             </Tooltip>
                           </TooltipProvider>
                         )}
+                        {s.policy_event_types && s.policy_event_types.length > 0 && (() => {
+                          // Severity-ranked dot color: block > degrade > warn.
+                          // The single dot reports the most-severe enforcement
+                          // event observed in the session; the tooltip lists
+                          // every distinct value so the operator knows whether
+                          // multiple types fired.
+                          const types = s.policy_event_types;
+                          let cssVar = "var(--event-warn)";
+                          if (types.includes("policy_block")) cssVar = "var(--event-block)";
+                          else if (types.includes("policy_degrade")) cssVar = "var(--event-degrade)";
+                          const labels = types
+                            .map((t) => t.replace("policy_", ""))
+                            .join(", ");
+                          return (
+                            <TooltipProvider>
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <span
+                                    data-testid={`session-row-policy-indicator-${s.session_id}`}
+                                    aria-label={`Session emitted policy events: ${labels}`}
+                                    className="inline-block rounded-full"
+                                    style={{
+                                      width: 7,
+                                      height: 7,
+                                      background: cssVar,
+                                      boxShadow: `0 0 0 2px color-mix(in srgb, ${cssVar} 25%, transparent)`,
+                                      flexShrink: 0,
+                                    }}
+                                  />
+                                </TooltipTrigger>
+                                <TooltipContent>{`Policy: ${labels}`}</TooltipContent>
+                              </Tooltip>
+                            </TooltipProvider>
+                          );
+                        })()}
                         <StateBadge state={s.state} />
                       </span>
                     </td>

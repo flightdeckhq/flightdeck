@@ -17,6 +17,7 @@ import {
 import { TokenUsageBar } from "./TokenUsageBar";
 import { PromptViewer } from "./PromptViewer";
 import { ErrorEventDetails } from "./ErrorEventDetails";
+import { PolicyEventDetails } from "./PolicyEventDetails";
 import { EmbeddingsContentViewer } from "./EmbeddingsContentViewer";
 import { createDirective, fetchOlderEvents } from "@/lib/api";
 import { sessionSupportsDirectives } from "@/lib/directives";
@@ -1131,6 +1132,10 @@ function EventFeed({
                   ? `embeddings-event-row-${event.id}`
                   : event.event_type === "llm_error"
                   ? `error-event-row-${event.id}`
+                  : event.event_type === "policy_warn" ||
+                      event.event_type === "policy_degrade" ||
+                      event.event_type === "policy_block"
+                  ? `policy-event-row-${event.id}`
                   : "event-row"
               }
               data-event-type={event.event_type}
@@ -1388,6 +1393,11 @@ function ExpandedEvent({
       </div>
       {errorPayload && (
         <ErrorEventDetails error={errorPayload} eventId={event.id} />
+      )}
+      {(event.event_type === "policy_warn" ||
+        event.event_type === "policy_degrade" ||
+        event.event_type === "policy_block") && (
+        <PolicyEventDetails event={event} />
       )}
       {event.event_type === "embeddings" && (
         <EmbeddingsContentViewer

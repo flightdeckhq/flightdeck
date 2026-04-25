@@ -165,12 +165,27 @@ export function getEventDetail(event: AgentEvent): string {
       return event.model ?? "unknown";
     case "tool_call":
       return event.tool_name ?? "unknown tool";
-    case "policy_warn":
+    case "policy_warn": {
+      const p = event.payload;
+      if (p && p.threshold_pct != null && p.tokens_used != null && p.token_limit != null) {
+        return `warn at ${p.threshold_pct}% · ${p.tokens_used.toLocaleString()} of ${p.token_limit.toLocaleString()} tokens`;
+      }
       return "warned at threshold";
-    case "policy_block":
+    }
+    case "policy_block": {
+      const p = event.payload;
+      if (p && p.tokens_used != null && p.token_limit != null) {
+        return `blocked at ${p.tokens_used.toLocaleString()} of ${p.token_limit.toLocaleString()} tokens`;
+      }
       return "blocked at threshold";
-    case "policy_degrade":
+    }
+    case "policy_degrade": {
+      const p = event.payload;
+      if (p && p.from_model && p.to_model) {
+        return `degraded from ${p.from_model} to ${p.to_model}`;
+      }
       return "degraded model";
+    }
     case "session_start":
       return "session started";
     case "session_end":
@@ -260,8 +275,36 @@ export function getSummaryRows(event: AgentEvent): [string, string][] {
       return [["Tool", event.tool_name ?? "unknown"]];
     case "policy_warn":
     case "policy_block":
-    case "policy_degrade":
-      return [["Type", event.event_type.replace("policy_", "")]];
+    case "policy_degrade": {
+      // Lay out the common (source, threshold, tokens) shape plus the
+      // type-specific extras (from/to model on degrade,
+      // intended_model on block) so the operator sees the full
+      // enforcement decision in the expanded row. The detailed
+      // accordion (request-style metadata) lives in
+      // <PolicyEventDetails/> so this list stays scannable.
+      const p = event.payload;
+      const rows: [string, string][] = [
+        ["Type", event.event_type.replace("policy_", "")],
+      ];
+      if (p?.source) rows.push(["Source", p.source]);
+      if (p?.threshold_pct != null) {
+        rows.push(["Threshold", `${p.threshold_pct}%`]);
+      }
+      if (p?.tokens_used != null) {
+        rows.push(["Tokens used", p.tokens_used.toLocaleString()]);
+      }
+      if (p?.token_limit != null) {
+        rows.push(["Token limit", p.token_limit.toLocaleString()]);
+      }
+      if (event.event_type === "policy_degrade") {
+        if (p?.from_model) rows.push(["From model", p.from_model]);
+        if (p?.to_model) rows.push(["To model", p.to_model]);
+      }
+      if (event.event_type === "policy_block" && p?.intended_model) {
+        rows.push(["Intended model", p.intended_model]);
+      }
+      return rows;
+    }
     case "session_start":
       return [["Event", "session started"]];
     case "session_end":

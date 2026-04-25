@@ -466,6 +466,16 @@ export interface SessionListItem {
    *  predates Phase 5. */
   token_id?: string | null;
   token_name?: string | null;
+  /**
+   * Phase 4 polish: every distinct ``payload->'error'->>'error_type'``
+   * observed across the session's ``llm_error`` events. Always
+   * present on the wire (empty array when the session has no
+   * errors) so the dashboard can read ``error_types.length > 0``
+   * directly without a null check. Drives the Investigate ERROR
+   * TYPE facet aggregation and the row-level red error indicator
+   * in the session table.
+   */
+  error_types?: string[];
 }
 
 /** Paginated response from GET /v1/sessions. */

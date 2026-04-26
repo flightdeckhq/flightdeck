@@ -187,7 +187,12 @@ function SessionEventRowComponent({
           borderRight: "1px solid var(--border)",
           position: "sticky",
           left: 0,
-          zIndex: 1,
+          // z-index 3 covers event circles (z 2) and grid lines
+          // (z 1) sliding under the sticky column during S-SWIM
+          // horizontal scroll. With the previous z 1 the circles
+          // bled through, painting on top of the session sequence
+          // number / token count column.
+          zIndex: 3,
           overflow: "hidden",
           padding: "0 8px 0 28px",
         }}

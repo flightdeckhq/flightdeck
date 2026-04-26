@@ -2,8 +2,10 @@
 package server
 
 import (
+	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"time"
 
 	apidocs "github.com/flightdeckhq/flightdeck/api/docs"
@@ -32,11 +34,42 @@ const (
 // Passing nil panics on construction so a future refactor cannot
 // silently disable authentication on those endpoints. Use
 // NewForTesting if you need an unauthenticated server in tests.
+//
+// corsOrigin must be either "*" or a parseable absolute URL with a
+// non-empty scheme and host. Anything else fails fast at startup
+// (Phase 4.5 M-14) rather than rendering a non-functional CORS
+// surface in production.
 func New(addr string, s store.Querier, hub *ws.Hub, validator *auth.Validator, corsOrigin string) *http.Server {
 	if validator == nil {
 		panic("server: validator must not be nil. Pass auth.NewValidator() in production or use NewForTesting() in tests.")
 	}
+	if err := validateCORSOrigin(corsOrigin); err != nil {
+		panic(fmt.Sprintf("server: %v", err))
+	}
 	return newServer(addr, s, hub, validator, corsOrigin)
+}
+
+// validateCORSOrigin enforces the documented contract on
+// FLIGHTDECK_CORS_ORIGIN: either the wildcard "*" or an absolute
+// URL such as "https://app.example.com". An empty string, a
+// hostname-only value, or a path-only value would be silently
+// echoed by the browser as an invalid Access-Control-Allow-Origin
+// and break CORS for every user agent.
+func validateCORSOrigin(origin string) error {
+	if origin == "" {
+		return fmt.Errorf("CORS origin must not be empty (use \"*\" for any origin)")
+	}
+	if origin == "*" {
+		return nil
+	}
+	u, err := url.Parse(origin)
+	if err != nil {
+		return fmt.Errorf("CORS origin %q is not a valid URL: %w", origin, err)
+	}
+	if u.Scheme == "" || u.Host == "" {
+		return fmt.Errorf("CORS origin %q must include scheme and host (e.g. https://app.example.com)", origin)
+	}
+	return nil
 }
 
 // NewForTesting builds a server with sync/register endpoints mounted

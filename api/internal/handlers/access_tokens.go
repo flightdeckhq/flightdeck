@@ -58,6 +58,7 @@ func AccessTokensListHandler(s store.Querier) http.HandlerFunc {
 // @Router       /v1/access-tokens [post]
 func AccessTokenCreateHandler(s store.Querier) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		limitBody(w, r)
 		var req CreateAccessTokenRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid JSON")
@@ -142,6 +143,7 @@ func AccessTokenRenameHandler(s store.Querier) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "token id is required")
 			return
 		}
+		limitBody(w, r)
 		var req RenameAccessTokenRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid JSON")

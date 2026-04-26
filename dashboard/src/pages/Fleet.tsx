@@ -24,7 +24,13 @@ import type {
 } from "@/lib/types";
 import { bucketFor, sortByActivityBucket } from "@/lib/fleet-ordering";
 import type { ContextFilters } from "@/types/context";
-import { FEED_MAX_EVENTS, PAUSE_QUEUE_MAX_EVENTS } from "@/lib/constants";
+import {
+  FEED_MAX_EVENTS,
+  PAUSE_QUEUE_MAX_EVENTS,
+  SWIM_FADE_WIDTH_PX,
+} from "@/lib/constants";
+import { useLeftPanelWidth } from "@/lib/leftPanelWidth";
+import { useSwimlaneScroll } from "@/lib/useSwimlaneScroll";
 import { eventsCache } from "@/hooks/useSessionEvents";
 
 /**
@@ -131,6 +137,22 @@ export function bucketAssignments(
 }
 
 export function Fleet() {
+  // S-SWIM. Horizontal scroll affordances for the swimlane: the
+  // hook drives Fleet's main-content div as the H scroll container,
+  // landing the user on "now" (rightmost) on mount and exposing
+  // canScroll{Left,Right} flags for the fade-overlay rendering
+  // below. useLeftPanelWidth tracks the persisted column width so
+  // the left-fade overlay sits flush against the sticky agent-name
+  // column's right edge -- through Timeline drags too, via the
+  // CustomEvent in lib/leftPanelWidth.ts.
+  const {
+    scrollContainerRef: swimScrollRef,
+    canScrollLeft: swimCanScrollLeft,
+    canScrollRight: swimCanScrollRight,
+    onKeyDown: swimOnKeyDown,
+  } = useSwimlaneScroll();
+  const leftPanelWidth = useLeftPanelWidth();
+
   // View toggle (D115). Default swimlane; ``?view=table`` flips the
   // main-area rendering to the paginated AgentTable. Persists in URL
   // query so reloads and shared links keep the user's choice.
@@ -343,6 +365,12 @@ export function Fleet() {
     };
     rafId = requestAnimationFrame(step);
     return () => cancelAnimationFrame(rafId);
+    // Phase 4.5 M-29 justification: we want the rAF to (re)start
+    // only on the BOOLEAN transition virtualNow null↔non-null,
+    // not on every frame's value change. The expression
+    // ``virtualNow !== null`` evaluates to a boolean that React
+    // memoizes; eslint can't see through the expression so we
+    // disable it here rather than introduce an extra useState.
   }, [virtualNow !== null]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Single source of truth for "what time is shown". Drives the
@@ -859,44 +887,101 @@ export function Fleet() {
             agent table is the paginated alternate selected via the
             view toggle above. Both consume the same agent-grouped
             data from the fleet store (store.load() fetches the
-            agents roster AND a recent-sessions window in one pass). */}
-        <div className="flex-1" style={{ overflowY: "auto", overflowX: "hidden" }}>
-          {view === "swimlane" ? (
-            <Timeline
-              flavors={sortedFlavors}
-              flavorFilter={flavorFilter}
-              timeRange={timeRange}
-              expandedFlavors={expandedFlavors}
-              onExpandFlavor={handleExpandFlavor}
-              expandedSessions={expandedSessions}
-              onNodeClick={(id, _eventId, event) => {
-                selectSession(id);
-                setDirectEventDetail(event ?? null);
+            agents roster AND a recent-sessions window in one pass).
+
+            S-SWIM. The flex-1 div is the horizontal+vertical scroll
+            container -- overflowX:auto means narrow viewports
+            (~1280-1440px MacBook screens) can reach the older end
+            of the timeline, overflowY:auto preserves the existing
+            page-scroll. The relative shell hosts two pointer-events-
+            none fade overlays that surface only when the container
+            actually has overflow in that direction; the left fade
+            sits at left=leftPanelWidth so it lands on the boundary
+            between the sticky agent-name column and the timeline,
+            doubling as both the S-SWIM-3 sticky-column shadow cue
+            and the S-SWIM-4 left-edge fade. tabIndex=0 + onKeyDown
+            covers S-SWIM-5 keyboard scroll. */}
+        <div className="relative flex-1 overflow-hidden">
+          <div
+            ref={swimScrollRef}
+            tabIndex={0}
+            onKeyDown={swimOnKeyDown}
+            data-testid="fleet-main-scroll"
+            className="h-full"
+            style={{ overflowY: "auto", overflowX: "auto", outline: "none" }}
+          >
+            {view === "swimlane" ? (
+              <Timeline
+                flavors={sortedFlavors}
+                flavorFilter={flavorFilter}
+                timeRange={timeRange}
+                expandedFlavors={expandedFlavors}
+                onExpandFlavor={handleExpandFlavor}
+                expandedSessions={expandedSessions}
+                onNodeClick={(id, _eventId, event) => {
+                  selectSession(id);
+                  setDirectEventDetail(event ?? null);
+                }}
+                activeFilter={activeFilter}
+                paused={paused}
+                pausedAt={pausedAt}
+                effectiveNowMs={effectiveNowMs}
+                sessionVersions={sessionVersions}
+                matchingSessionIds={matchingSessionIds}
+              />
+            ) : (
+              <div className="p-4">
+                <AgentTable
+                  agents={sortedAgents}
+                  loading={loading}
+                  sort={tableSort}
+                  order={tableOrder}
+                  onSortChange={handleAgentTableSort}
+                />
+                <FleetTablePagination
+                  total={fleetTotal}
+                  page={fleetPage}
+                  perPage={fleetPerPage}
+                  loading={loading}
+                  onPage={(next) => void storeLoad({ page: next })}
+                />
+              </div>
+            )}
+          </div>
+          {swimCanScrollLeft && view === "swimlane" && (
+            <div
+              aria-hidden
+              data-testid="swimlane-fade-left"
+              style={{
+                position: "absolute",
+                top: 0,
+                bottom: 0,
+                left: leftPanelWidth,
+                width: SWIM_FADE_WIDTH_PX,
+                pointerEvents: "none",
+                background:
+                  "linear-gradient(to right, var(--bg) 0%, transparent 100%)",
+                boxShadow: "inset 4px 0 6px -4px rgba(0,0,0,0.25)",
+                zIndex: 6,
               }}
-              activeFilter={activeFilter}
-              paused={paused}
-              pausedAt={pausedAt}
-              effectiveNowMs={effectiveNowMs}
-              sessionVersions={sessionVersions}
-              matchingSessionIds={matchingSessionIds}
             />
-          ) : (
-            <div className="p-4">
-              <AgentTable
-                agents={sortedAgents}
-                loading={loading}
-                sort={tableSort}
-                order={tableOrder}
-                onSortChange={handleAgentTableSort}
-              />
-              <FleetTablePagination
-                total={fleetTotal}
-                page={fleetPage}
-                perPage={fleetPerPage}
-                loading={loading}
-                onPage={(next) => void storeLoad({ page: next })}
-              />
-            </div>
+          )}
+          {swimCanScrollRight && (
+            <div
+              aria-hidden
+              data-testid="swimlane-fade-right"
+              style={{
+                position: "absolute",
+                top: 0,
+                bottom: 0,
+                right: 0,
+                width: SWIM_FADE_WIDTH_PX,
+                pointerEvents: "none",
+                background:
+                  "linear-gradient(to left, var(--bg) 0%, transparent 100%)",
+                zIndex: 6,
+              }}
+            />
           )}
         </div>
 

@@ -243,15 +243,24 @@ def test_provider_hint_overrides_module_inference() -> None:
 
 
 def test_error_message_includes_class_name_and_clip() -> None:
+    """When capture_prompts=True, error_message includes the
+    exception's str() (clipped). With capture_prompts=False (the
+    default), see test_classify_capture_off_omits_provider_message_text
+    below — class name only."""
     big = "x" * 500
-    c = classify_exception(_mk("APIError", status=500, message=big))
+    c = classify_exception(
+        _mk("APIError", status=500, message=big), capture_prompts=True,
+    )
     assert c.error_message.startswith("APIError:")
     # Clipped to 200-char summary + ellipsis.
     assert len(c.error_message) <= 210
 
 
 def test_error_message_replaces_newlines_for_single_line_render() -> None:
-    c = classify_exception(_mk("APIError", status=500, message="line1\nline2\r\nline3"))
+    c = classify_exception(
+        _mk("APIError", status=500, message="line1\nline2\r\nline3"),
+        capture_prompts=True,
+    )
     assert "\n" not in c.error_message
     assert "\r" not in c.error_message
 
@@ -271,7 +280,12 @@ def test_to_payload_carries_all_taxonomy_fields() -> None:
         headers={"retry-after": "5"},
         message="slow down",
     )
-    payload = classify_exception(exc).to_payload()
+    # capture_prompts=True so the provider's str(exc) lands in
+    # error_message; this test verifies the wire-shape fields including
+    # the message-content path. See
+    # test_classify_capture_off_omits_provider_message_text for the
+    # capture-off behaviour.
+    payload = classify_exception(exc, capture_prompts=True).to_payload()
     assert payload["error_type"] == "rate_limit"
     assert payload["provider"] == "openai"
     assert payload["http_status"] == 429
@@ -330,3 +344,68 @@ def test_error_classification_is_frozen() -> None:
     except Exception:
         return
     raise AssertionError("ErrorClassification should be frozen")
+
+
+# ---------------------------------------------------------------------------
+# H-2 regression — Rule 18 leak via _redacted_message
+# ---------------------------------------------------------------------------
+#
+# Provider exceptions (notably content_filter rejections) echo the
+# offending prompt fragment in their str() representation. Pre-fix,
+# _redacted_message included str(exc) verbatim regardless of
+# capture_prompts. classify_exception now accepts capture_prompts and
+# threads it through so capture-off returns class-name only.
+
+
+def test_classify_capture_off_omits_provider_message_text() -> None:
+    """H-2 fix: capture_prompts=False MUST NOT include str(exc) in
+    error_message. Provider content_filter exceptions echo the
+    offending prompt fragment in their string; that fragment is
+    user-prompt content that capture-off must not forward.
+    """
+    sensitive = (
+        "BadRequestError: Your prompt contains text that is not "
+        "allowed: 'how to do something sensitive that should never "
+        "land in the events table'"
+    )
+    exc = _mk("BadRequestError", module="openai", status=400, message=sensitive)
+    c = classify_exception(exc, capture_prompts=False)
+    # Class name only. No prompt fragment.
+    assert c.error_message == "BadRequestError"
+    assert "sensitive" not in c.error_message
+    assert "prompt" not in c.error_message
+
+
+def test_classify_capture_on_includes_clipped_provider_message() -> None:
+    """When capture_prompts=True, error_message includes the
+    exception's clipped str repr — same redaction rule as chat
+    content."""
+    exc = _mk(
+        "RateLimitError",
+        module="anthropic",
+        status=429,
+        message="rate limit exceeded; retry-after 30s",
+    )
+    c = classify_exception(exc, capture_prompts=True)
+    assert c.error_message.startswith("RateLimitError: ")
+    assert "rate limit" in c.error_message
+
+
+def test_classify_capture_on_clips_message_to_max_length() -> None:
+    """Long provider strings clip at _ERROR_MESSAGE_MAX_LEN (200)
+    with a trailing ellipsis so the dashboard renders inline and a
+    runaway message can't bloat the events row."""
+    long = "x" * 1000
+    exc = _mk("APIError", status=500, message=long)
+    c = classify_exception(exc, capture_prompts=True)
+    assert len(c.error_message) <= 200 + len("APIError: ")
+    assert c.error_message.endswith("...")
+
+
+def test_classify_capture_off_default_value() -> None:
+    """capture_prompts defaults to False so a caller that forgets to
+    pass the flag gets safe (capture-off) behaviour, not the leaky
+    default."""
+    exc = _mk("BadRequestError", module="openai", status=400, message="prompt content")
+    c = classify_exception(exc)  # no capture_prompts argument
+    assert c.error_message == "BadRequestError"

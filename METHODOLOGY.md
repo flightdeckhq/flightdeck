@@ -98,3 +98,72 @@ The Supervisor maintains context across sessions through three documents:
 
 These documents are read at the start of every session. They replace
 the need for the Executor to "remember" prior conversations.
+
+---
+
+## Lessons
+
+These six lessons distill the durable guidance from past V-pass
+reviews. Phrased as standing rules: they apply to every PR, not
+to a particular phase.
+
+### L1 — Docs are contemporary descriptions
+
+ARCHITECTURE describes what the system IS, not how it got there.
+Phase tags, "was added," "previously," and similar temporal
+qualifiers do not belong in ARCHITECTURE. Change history lives in
+CHANGELOG and `git log`. A reader with zero project history must be
+able to learn the system as it stands today from the architecture
+doc alone, with no narrative thread of "first we did X, then we
+moved to Y."
+
+### L2 — Docs update in the same PR as the code
+
+Every PR that changes a runtime behaviour ARCHITECTURE describes,
+or that introduces a decision DECISIONS.md should record, updates
+those docs in the same PR. Drift accumulates when docs lag —
+a codebase that contradicts its architecture document is worse
+than no document. The order is doc-first: update ARCHITECTURE.md
+→ record the decision in DECISIONS.md → write the code → run
+tests → report.
+
+### L3 — Dead-end UX is a bug class
+
+Anywhere a user can see something but cannot act on it — an agent
+without accessible sessions, an error without details, a list
+without pagination, a detail panel that opens onto an empty state
+— is a bug, even if technically functional. UI surfaces that show
+the existence of data but block all paths to that data have failed
+their job. Treat dead-ends as defects, not polish.
+
+### L4 — V-pass requires end-to-end behaviour verification
+
+Verify by tracing the data flow, not by reading the code. A
+feature declared in code that has no emission path from sensor
+through pipeline through storage through surface is a silent
+failure: tests with mocks pass, the dashboard shows nothing, no
+alarm fires. Before declaring a feature shipped, exercise it
+against the live dev stack and confirm the value lands at the
+surface a user touches.
+
+### L5 — Modality content-capture parity
+
+Every communication modality with a request/response payload
+supports content capture, gated by `capture_prompts` (or a
+modality-specific flag where the modality has different
+sensitivity). Adding a new modality (chat, embeddings, completions,
+tool-call results, anything future) without content capture ships
+a documented gap by default. Audit new modality work for capture
+parity before merging.
+
+### L6 — Severity follows deployment surface AND threat-model trace
+
+A finding's severity is not a property of the code shape — it's a
+function of where the code runs (production / dev-tooling /
+test-only) and what an explicit threat-model trace says about
+attack vector, protecting invariants, and realistic impact. The
+same SQL-injection-shaped pattern is critical in a production
+handler and low in a dev seed script. "Looks dangerous" is not
+the same as "is dangerous." Every HIGH or CRITICAL needs the
+trace recorded in the PR; pattern-matching on shape alone produces
+false alarms that crowd out real issues.

@@ -22,8 +22,16 @@ vi.mock("@/hooks/useSearch", () => ({
   }),
 }));
 
-function agent(agentName: string): SearchResultAgent {
-  return { agent_name: agentName, agent_type: "coding", last_seen: "2026-04-17T09:00:00Z" };
+function agent(
+  agentName: string,
+  agentId = "11111111-2222-3333-4444-555555555555",
+): SearchResultAgent {
+  return {
+    agent_id: agentId,
+    agent_name: agentName,
+    agent_type: "coding",
+    last_seen: "2026-04-17T09:00:00Z",
+  };
 }
 
 function session(id: string, flavor: string): SearchResultSession {
@@ -57,13 +65,18 @@ function event(eventId: string, sessionId: string): SearchResultEvent {
 // ---------------------------------------------------------------
 
 describe("buildSearchResultHref", () => {
-  it("agent click uses the singular `flavor=` param (matches parseUrlState)", () => {
-    // parseUrlState reads via sp.getAll("flavor"); the plural form
-    // "flavors=" would silently fail. Guard against that regression.
-    const href = buildSearchResultHref("agent", agent("claude-code"));
-    expect(href).toBe("/investigate?flavor=claude-code");
+  it("agent click routes to ?agent_id=<uuid> (F2)", () => {
+    // F2: agent search clicks now route on agent_id, not
+    // flavor=agent_name. Sensor-keyed agents whose agent_name is
+    // ``user@hostname`` never matched any session.flavor; agent_id
+    // resolves correctly via the D115 filter.
+    const href = buildSearchResultHref(
+      "agent",
+      agent("claude-code", "deadbeef-1234-5678-9abc-def012345678"),
+    );
+    expect(href).toBe("/investigate?agent_id=deadbeef-1234-5678-9abc-def012345678");
     const sp = new URL("http://x" + href).searchParams;
-    expect(parseUrlState(sp).flavors).toEqual(["claude-code"]);
+    expect(parseUrlState(sp).agentId).toBe("deadbeef-1234-5678-9abc-def012345678");
   });
 
   it("session click sets ?session=<id>", () => {
@@ -81,9 +94,12 @@ describe("buildSearchResultHref", () => {
     expect(href).toBe("/investigate?session=s1");
   });
 
-  it("URL-encodes special characters in flavor names", () => {
-    const href = buildSearchResultHref("agent", agent("flavor with/space"));
-    expect(href).toBe("/investigate?flavor=flavor%20with%2Fspace");
+  it("URL-encodes special characters in the agent_id (F2)", () => {
+    const href = buildSearchResultHref(
+      "agent",
+      agent("any-name", "id with/slash"),
+    );
+    expect(href).toBe("/investigate?agent_id=id%20with%2Fslash");
   });
 });
 

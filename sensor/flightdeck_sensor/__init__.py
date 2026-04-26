@@ -16,6 +16,7 @@ import threading
 import uuid
 from typing import Any, Callable
 
+from flightdeck_sensor import config as _env
 from flightdeck_sensor.core.agent_id import derive_agent_id
 from flightdeck_sensor.core.context import collect as _collect_context
 from flightdeck_sensor.core.exceptions import (
@@ -74,6 +75,14 @@ _log = logging.getLogger("flightdeck_sensor")
 # that narrowed this from {autonomous, supervised, batch, developer}.
 _VALID_AGENT_TYPES = frozenset({"coding", "production"})
 
+# L-7: scattered ``"unknown"`` magic-string sentinel across init
+# fallbacks and the lazy-create path (D106). Centralising as a named
+# constant so the worker's UpsertSession ON CONFLICT CASE-upgrade
+# (which matches exactly this string) and the sensor's fallbacks
+# stay byte-identical. A typo (``"Unknown"`` etc.) elsewhere would
+# silently break the upgrade path.
+UNKNOWN_SENTINEL = "unknown"
+
 
 def _resolve_user_name() -> str:
     """Resolve the current OS user, never raising.
@@ -95,7 +104,7 @@ def _resolve_user_name() -> str:
         v = os.environ.get(key)
         if v:
             return v
-    return "unknown"
+    return UNKNOWN_SENTINEL
 
 
 # Global state -- protected by _lock.
@@ -277,8 +286,8 @@ def init(
                 _log.warning("flightdeck_sensor.init() called twice; ignoring")
             return
 
-        resolved_server = os.environ.get("FLIGHTDECK_SERVER", server)
-        resolved_token = os.environ.get("FLIGHTDECK_TOKEN", token)
+        resolved_server = os.environ.get(_env.ENV_SERVER, server)
+        resolved_token = os.environ.get(_env.ENV_TOKEN, token)
         if not resolved_server:
             raise ConfigurationError("server URL is required")
         if not resolved_token:
@@ -295,13 +304,13 @@ def init(
         if "/ingest" not in resolved_server:
             resolved_server = resolved_server.rstrip("/") + "/ingest"
 
-        resolved_api_url = os.environ.get("FLIGHTDECK_API_URL") or api_url
+        resolved_api_url = os.environ.get(_env.ENV_API_URL) or api_url
         if not resolved_api_url:
             resolved_api_url = resolved_server.rstrip("/").replace(
                 "/ingest", "/api"
             )
 
-        capture = _env_bool("FLIGHTDECK_CAPTURE_PROMPTS", capture_prompts)
+        capture = _env_bool(_env.ENV_CAPTURE_PROMPTS, capture_prompts)
 
         # session_id resolution follows the same env-wins pattern as
         # FLIGHTDECK_SERVER / AGENT_FLAVOR: env var overrides kwarg,
@@ -311,7 +320,7 @@ def init(
         # generates a UUID rather than posting a session_start with a
         # blank session_id that the ingestion API rejects.
         resolved_session_id = (
-            os.environ.get("FLIGHTDECK_SESSION_ID") or session_id or None
+            os.environ.get(_env.ENV_SESSION_ID) or session_id or None
         )
         if resolved_session_id and not _is_valid_uuid(resolved_session_id):
             # The sessions table column is UUID-typed; accepting a
@@ -344,8 +353,8 @@ def init(
         # same pattern for ``FLIGHTDECK_AGENT_NAME`` / ``AGENT_FLAVOR``.
         resolved_agent_type = (
             agent_type
-            or os.environ.get("FLIGHTDECK_AGENT_TYPE")
-            or os.environ.get("AGENT_TYPE")
+            or os.environ.get(_env.ENV_AGENT_TYPE)
+            or os.environ.get(_env.ENV_AGENT_TYPE_LEGACY)
             or "production"
         )
         if resolved_agent_type not in _VALID_AGENT_TYPES:
@@ -358,13 +367,13 @@ def init(
             )
 
         resolved_hostname = (
-            os.environ.get("FLIGHTDECK_HOSTNAME") or socket.gethostname()
+            os.environ.get(_env.ENV_HOSTNAME) or socket.gethostname()
         )
         resolved_user = _resolve_user_name()
         resolved_agent_name = (
             agent_name
-            or os.environ.get("FLIGHTDECK_AGENT_NAME")
-            or os.environ.get("AGENT_FLAVOR")
+            or os.environ.get(_env.ENV_AGENT_NAME)
+            or os.environ.get(_env.ENV_AGENT_FLAVOR_LEGACY)
             or f"{resolved_user}@{resolved_hostname}"
         )
 
@@ -387,7 +396,7 @@ def init(
             "api_url": resolved_api_url,
             "capture_prompts": capture,
             "unavailable_policy": os.environ.get(
-                "FLIGHTDECK_UNAVAILABLE_POLICY", "continue"
+                _env.ENV_UNAVAILABLE_POLICY, "continue"
             ),
             # Legacy wire-level ``flavor`` field stays populated for
             # backward compat with every downstream surface that still
@@ -395,7 +404,7 @@ def init(
             # group_by=flavor, etc.). Default now mirrors agent_name so
             # the two fields agree for sensor-default deployments.
             "agent_flavor": os.environ.get(
-                "AGENT_FLAVOR", resolved_agent_name
+                _env.ENV_AGENT_FLAVOR_LEGACY, resolved_agent_name
             ),
             "agent_type": resolved_agent_type,
             "agent_id": resolved_agent_id,

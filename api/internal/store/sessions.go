@@ -112,22 +112,26 @@ func IsAllowedContextFilterKey(key string) bool {
 // ``values`` is empty so callers can unconditionally invoke this
 // without filter-counting.
 //
-// ``key`` MUST come from AllowedContextFilterKeys -- the function
-// panics otherwise. Calling with an unvalidated key is a
-// programming error, never a user-input path; the handler filters
-// unknowns before calling. Panic is preferable to silently
-// returning a broken query.
+// ``key`` MUST come from AllowedContextFilterKeys. M-11 fix: returns
+// an error rather than panicking — handlers validate the key before
+// calling, but a future bug that lets an unvalidated key reach this
+// function would otherwise crash the request goroutine. Returning an
+// error lets the caller surface a 500 instead. Empty ``values`` is a
+// no-op return, not an error.
 func BuildContextFilterClause(
 	key string,
 	values []string,
 	args []any,
 	argIdx int,
-) (clause string, nextArgs []any, nextIdx int) {
+) (clause string, nextArgs []any, nextIdx int, err error) {
 	if len(values) == 0 {
-		return "", args, argIdx
+		return "", args, argIdx, nil
 	}
 	if !allowedContextFilterSet[key] {
-		panic(fmt.Sprintf("BuildContextFilterClause: key %q is not in AllowedContextFilterKeys", key))
+		return "", args, argIdx, fmt.Errorf(
+			"BuildContextFilterClause: key %q is not in AllowedContextFilterKeys",
+			key,
+		)
 	}
 	placeholders := make([]string, len(values))
 	for i, v := range values {
@@ -139,7 +143,7 @@ func BuildContextFilterClause(
 		"s.context->>'%s' IN (%s)",
 		key, strings.Join(placeholders, ", "),
 	)
-	return clause, args, argIdx
+	return clause, args, argIdx, nil
 }
 
 // SessionListItem is one row in the paginated sessions response.
@@ -160,6 +164,12 @@ type SessionListItem struct {
 	State          string                 `json:"state"`
 	StartedAt      time.Time              `json:"started_at"`
 	EndedAt        *time.Time             `json:"ended_at"`
+	// LastSeenAt is the most-recent activity timestamp on the session.
+	// For active/idle/stale/lost: max(events.occurred_at), projected
+	// through the worker's last_seen_at column. For closed: aligned
+	// with ended_at. Drives the Investigate "Last Seen" column
+	// (S-TBL-1) and is sortable via ?sort=last_seen_at.
+	LastSeenAt     time.Time              `json:"last_seen_at"`
 	DurationS      float64                `json:"duration_s"`
 	TokensUsed     int                    `json:"tokens_used"`
 	TokenLimit     *int64                 `json:"token_limit"`
@@ -215,6 +225,20 @@ var allowedSorts = map[string]string{
 	"flavor":       "s.flavor",
 	"model":        "s.model",
 	"hostname":     "COALESCE(s.host, s.context->>'hostname', '')",
+	// State sort uses a custom severity ordinal (S-TBL-2): ascending
+	// orders most-needs-attention first (active → idle → stale → lost
+	// → closed). Descending reverses. CASE expression maps each state
+	// to its ordinal so ORDER BY uses the lifecycle severity, not
+	// alphabetical. Any state outside the documented vocabulary maps
+	// to 99 so unexpected rows fall to the bottom regardless of
+	// direction.
+	"state": "CASE s.state " +
+		"WHEN 'active'  THEN 0 " +
+		"WHEN 'idle'    THEN 1 " +
+		"WHEN 'stale'   THEN 2 " +
+		"WHEN 'lost'    THEN 3 " +
+		"WHEN 'closed'  THEN 4 " +
+		"ELSE 99 END",
 }
 
 // GetSessions returns sessions matching the given filters with pagination.
@@ -378,7 +402,18 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 	// future snapshot test of the generated SQL.
 	for _, key := range AllowedContextFilterKeys {
 		values := params.ContextFilters[key]
-		clause, nextArgs, nextIdx := BuildContextFilterClause(key, values, args, argIdx)
+		clause, nextArgs, nextIdx, fcErr := BuildContextFilterClause(
+			key, values, args, argIdx,
+		)
+		if fcErr != nil {
+			// Should be unreachable: handlers validate ``key`` against
+			// AllowedContextFilterKeys before reaching this code path.
+			// M-11 surfaces an internal error rather than panicking so a
+			// future bug becomes a 500 with logs, not a goroutine crash.
+			return nil, fmt.Errorf(
+				"context filter for %q: %w", key, fcErr,
+			)
+		}
 		if clause == "" {
 			continue
 		}
@@ -449,6 +484,7 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 			s.state,
 			s.started_at,
 			s.ended_at,
+			s.last_seen_at,
 			EXTRACT(EPOCH FROM (COALESCE(s.ended_at, NOW()) - s.started_at)) AS duration_s,
 			s.tokens_used,
 			s.token_limit,
@@ -509,6 +545,7 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 			&item.State,
 			&item.StartedAt,
 			&item.EndedAt,
+			&item.LastSeenAt,
 			&item.DurationS,
 			&item.TokensUsed,
 			&item.TokenLimit,

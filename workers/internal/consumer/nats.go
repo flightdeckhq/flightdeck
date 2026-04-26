@@ -4,6 +4,7 @@ package consumer
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -181,7 +182,10 @@ func (c *Consumer) worker(ctx context.Context, sub *nats.Subscription, id int) {
 
 		msgs, err := sub.Fetch(1, nats.MaxWait(nats.DefaultTimeout))
 		if err != nil {
-			if err == nats.ErrTimeout || err == context.Canceled {
+			// Phase 4.5 N-3: errors.Is unwraps wrapped sentinels;
+			// direct `==` would miss a future caller that wraps the
+			// error to add context.
+			if errors.Is(err, nats.ErrTimeout) || errors.Is(err, context.Canceled) {
 				continue
 			}
 			slog.Error("fetch error", "worker", id, "err", err)

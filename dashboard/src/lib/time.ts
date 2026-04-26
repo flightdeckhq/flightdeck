@@ -57,6 +57,39 @@ export function formatRelativeTime(iso: string): string {
   return `${days}d ago`;
 }
 
+// 60-minute boundary between the relative and absolute branches of
+// formatSessionTimestamp. The S-TBL-1 spec sets this threshold so the
+// session table reads as "fresh activity" (relative) for the live-ish
+// window and "anchored when" (absolute) past it; "3h ago" / "8d ago"
+// on a row you cannot click-through to a calendar is harder to reason
+// about than the absolute timestamp.
+const SESSION_TIMESTAMP_ABSOLUTE_THRESHOLD_MS = 60 * 60_000;
+
+const SESSION_ABSOLUTE_FORMAT: Intl.DateTimeFormatOptions = {
+  month: "short",
+  day: "numeric",
+  hour: "2-digit",
+  minute: "2-digit",
+};
+
+/**
+ * Format an ISO date string for the Investigate session table's
+ * STARTED and LAST SEEN columns (S-TBL-1). Under 60 minutes the value
+ * renders as a relative label ("just now" / "Xm ago"); at or beyond
+ * 60 minutes it renders as an absolute date+time ("Apr 25, 09:51 PM"
+ * in en-US). Both columns share this helper so they read the same.
+ */
+export function formatSessionTimestamp(iso: string): string {
+  const date = new Date(iso);
+  const diffMs = Date.now() - date.getTime();
+  if (diffMs < SESSION_TIMESTAMP_ABSOLUTE_THRESHOLD_MS) {
+    if (diffMs < 60_000) return "just now";
+    const minutes = Math.floor(diffMs / 60_000);
+    return `${minutes}m ago`;
+  }
+  return date.toLocaleString(undefined, SESSION_ABSOLUTE_FORMAT);
+}
+
 /**
  * Format a duration in milliseconds as a compact relative-time label
  * for the timeline axis. Picks the largest natural unit (s/m/h) so the

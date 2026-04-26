@@ -39,6 +39,11 @@ var validSessionSorts = map[string]bool{
 	"flavor":       true,
 	"model":        true,
 	"hostname":     true,
+	// state sort uses a custom severity ordinal (S-TBL-2): ascending
+	// = active → idle → stale → lost → closed (most-needs-attention
+	// first); descending reverses. SQL CASE expression in
+	// store.allowedSorts.
+	"state": true,
 }
 
 // validSessionClientTypes mirrors the sessions.client_type CHECK
@@ -84,7 +89,7 @@ var validPolicyEventTypes = map[string]bool{
 // @Param        orchestration query string false "Filter by context.orchestration (repeatable)"
 // @Param        error_type query  string  false  "Filter to sessions that emitted an llm_error event of one of the listed taxonomy values (repeatable/comma). 14-entry vocabulary: rate_limit, quota_exceeded, context_overflow, content_filter, invalid_request, authentication, permission, not_found, request_too_large, api_error, overloaded, timeout, stream_error, other."
 // @Param        policy_event_type query  string  false  "Filter to sessions that emitted at least one policy enforcement event of the listed types (repeatable/comma). Vocabulary: policy_warn, policy_degrade, policy_block."
-// @Param        sort       query  string  false  "Sort field: started_at, last_seen_at, duration, tokens_used, flavor, model, hostname (default: started_at)"
+// @Param        sort       query  string  false  "Sort field: started_at, last_seen_at, duration, tokens_used, flavor, model, hostname, state (default: started_at). state sort uses severity ordinal active→idle→stale→lost→closed."
 // @Param        order      query  string  false  "Sort order: asc, desc (default: desc)"
 // @Param        limit      query  int     false  "Max results (default 25, max 100)"
 // @Param        offset     query  int     false  "Offset for pagination (default 0)"
@@ -265,7 +270,7 @@ func SessionsListHandler(s store.Querier) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest,
 				"invalid sort: "+sort+
 					". Allowed: started_at, last_seen_at, duration, "+
-					"tokens_used, flavor, model, hostname")
+					"tokens_used, flavor, model, hostname, state")
 			return
 		}
 

@@ -27,20 +27,26 @@ const mockFlavors = [
   },
 ];
 
+// Phase 4.5 M-18: PolicyEditor migrated to selector form
+// ``useFleetStore((s) => s.flavors)``. The mock now respects the
+// selector arg so callers receive the field they ask for, not the
+// full state object.
+const mockFleetState = {
+  flavors: mockFlavors,
+  loading: false,
+  error: null,
+  selectedSessionId: null,
+  agentTypeFilter: "all" as const,
+  flavorFilter: null,
+  load: vi.fn(),
+  setAgentTypeFilter: vi.fn(),
+  setFlavorFilter: vi.fn(),
+  applyUpdate: vi.fn(),
+  selectSession: vi.fn(),
+};
 vi.mock("@/store/fleet", () => ({
-  useFleetStore: () => ({
-    flavors: mockFlavors,
-    loading: false,
-    error: null,
-    selectedSessionId: null,
-    agentTypeFilter: "all",
-    flavorFilter: null,
-    load: vi.fn(),
-    setAgentTypeFilter: vi.fn(),
-    setFlavorFilter: vi.fn(),
-    applyUpdate: vi.fn(),
-    selectSession: vi.fn(),
-  }),
+  useFleetStore: <T,>(selector?: (s: typeof mockFleetState) => T) =>
+    selector ? selector(mockFleetState) : mockFleetState,
 }));
 
 beforeEach(() => {

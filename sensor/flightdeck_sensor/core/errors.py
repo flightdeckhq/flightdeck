@@ -63,6 +63,12 @@ _RETRYABLE: dict[ErrorType, bool] = {
     # everything else: False (explicit fall-through via ``.get``)
 }
 
+# Maximum length of provider exception text included in error_message
+# when capture_prompts=True. Bounds the dashboard render width and the
+# size of a payload row. Above this, the message is suffixed with "..."
+# so the operator sees content was clipped.
+_ERROR_MESSAGE_MAX_LEN = 200
+
 
 # OTel ``gen_ai.error.type`` mapping. Kept here (not in a docstring) so a
 # future exporter can import the dict rather than re-parsing documentation.
@@ -195,6 +201,7 @@ def classify_exception(
     *,
     provider_hint: str | None = None,
     is_stream_error: bool = False,
+    capture_prompts: bool = False,
 ) -> ErrorClassification:
     """Classify a live provider exception against the Phase 4 taxonomy.
 
@@ -204,6 +211,16 @@ def classify_exception(
     ``is_stream_error`` is True the classifier returns ``STREAM_ERROR``
     regardless of the underlying class -- mid-stream exceptions are not
     meaningfully distinguished by their HTTP-status-less class name.
+
+    ``capture_prompts`` gates content inclusion in ``error_message``.
+    When False (default), the message is the exception class name only —
+    no provider-controlled string is forwarded. When True, the same
+    redaction rule that applies to chat content applies here: the
+    provider's exception ``str()`` is included (clipped to
+    ``_ERROR_MESSAGE_MAX_LEN`` chars). Rule 18 enforcement (H-2 fix):
+    content_filter exceptions echo the offending prompt fragment in
+    their string representation, so capture-off must NOT pass that
+    string through.
 
     Never raises. An internal failure falls through to
     ``error_type="other"``.
@@ -228,7 +245,7 @@ def classify_exception(
                     break
             base = _override_from_status_and_code(base, http_status, provider_error_code)
 
-        message = _redacted_message(exc, cls_name)
+        message = _redacted_message(exc, cls_name, capture_prompts=capture_prompts)
         retryable = _RETRYABLE.get(base, False)
 
         return ErrorClassification(
@@ -258,6 +275,18 @@ def classify_exception(
 # Extraction helpers — each returns ``None`` on any failure rather than
 # raising. Provider SDKs expose request IDs / status codes under varying
 # attribute names; these helpers try the common ones in a safe order.
+#
+# M-9 note: every helper below uses bare ``except Exception:`` blocks
+# intentionally. The classifier is defence-in-depth — provider SDKs
+# evolve their attribute shapes between releases (e.g. a future
+# anthropic SDK may rename ``response.headers`` to a different
+# accessor), and an extractor that raises on access pattern drift
+# would propagate up through ``classify_exception``'s outer try/except
+# and degrade the entire error event to ``error_type="other"``.
+# Returning ``None`` per-helper localises the degradation to that one
+# field while keeping the classification accurate. Do NOT narrow the
+# excepts to specific classes without auditing every supported SDK
+# version's attribute access pattern.
 # ---------------------------------------------------------------------------
 
 
@@ -352,18 +381,33 @@ def _extract_retry_after(exc: BaseException) -> float | None:
     return None
 
 
-def _redacted_message(exc: BaseException, cls_name: str) -> str:
-    """Class name plus a short safe summary. Never returns prompt content."""
+def _redacted_message(
+    exc: BaseException,
+    cls_name: str,
+    *,
+    capture_prompts: bool = False,
+) -> str:
+    """Class name plus optionally the exception's clipped string repr.
+
+    ``capture_prompts`` gates the inclusion of ``str(exc)`` (Rule 18,
+    H-2 fix). When False, returns ``cls_name`` only — provider
+    exceptions can echo the user's prompt fragment in their string
+    (notably content_filter rejections), and that fragment is
+    user-prompt content that capture-off must not forward to events.
+    When True, returns ``f"{cls_name}: {str(exc)[:200]}"`` with newlines
+    replaced so the dashboard renders inline.
+    """
+    if not capture_prompts:
+        return cls_name
     try:
         raw = str(exc)
     except Exception:
         raw = ""
     if not raw:
         return cls_name
-    # Clip to 200 chars, replace newlines so the dashboard can render inline.
     clipped = raw.replace("\n", " ").replace("\r", " ")
-    if len(clipped) > 200:
-        clipped = clipped[:197] + "..."
+    if len(clipped) > _ERROR_MESSAGE_MAX_LEN:
+        clipped = clipped[: _ERROR_MESSAGE_MAX_LEN - 3] + "..."
     return f"{cls_name}: {clipped}"
 
 
@@ -384,6 +428,12 @@ class ErrorPayload:
     partial_tokens_input: int | None = None
     partial_tokens_output: int | None = None
     abort_reason: str | None = None
+    # N-2: mutable default by design. ErrorPayload is intentionally
+    # NOT frozen — callers (interceptor / GuardedStream / async
+    # variants) construct it once and append type-specific extras
+    # (e.g. abort_reason for stream aborts) before serialisation.
+    # Using ``default_factory=dict`` (not the bare-mutable-default
+    # antipattern) so each instance gets its own dict.
     fields: dict[str, Any] = field(default_factory=dict)
 
     def to_payload(self) -> dict[str, Any]:

@@ -31,7 +31,8 @@ func HeartbeatHandler(
 	return func(w http.ResponseWriter, r *http.Request) {
 		token := extractBearerToken(r)
 		if token == "" {
-			writeError(w, http.StatusUnauthorized, "missing or invalid authorization")
+			// Phase 4.5 N-1 wording parity with api/internal/auth.
+			writeError(w, http.StatusUnauthorized, "missing bearer token")
 			return
 		}
 		result, err := validator.Validate(r.Context(), token)

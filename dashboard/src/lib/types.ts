@@ -421,6 +421,7 @@ export interface CustomDirectiveParameter {
 
 /** Search result: agent summary. */
 export interface SearchResultAgent {
+  agent_id: string;
   agent_name: string;
   agent_type: string;
   last_seen: string;
@@ -476,6 +477,14 @@ export interface SessionListItem {
   state: SessionState;
   started_at: string;
   ended_at: string | null;
+  /**
+   * Most-recent activity timestamp. For active / idle / stale / lost
+   * sessions: max(events.occurred_at) across the session, projected
+   * through the worker's last_seen_at column. For closed sessions:
+   * effectively the session_end timestamp. Drives the Investigate
+   * "Last Seen" column.
+   */
+  last_seen_at: string;
   duration_s: number;
   tokens_used: number;
   token_limit: number | null;

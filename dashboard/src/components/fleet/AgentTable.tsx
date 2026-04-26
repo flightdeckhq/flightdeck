@@ -1,5 +1,6 @@
 import React, { useMemo } from "react";
 import { useNavigate } from "react-router-dom";
+import { LayoutGroup, motion } from "framer-motion";
 import type { AgentSummary, SessionState } from "@/lib/types";
 import { ClientType } from "@/lib/agent-identity";
 import { ClientTypePill } from "@/components/facets/ClientTypePill";
@@ -7,6 +8,7 @@ import { TruncatedText } from "@/components/ui/TruncatedText";
 import { CodingAgentBadge } from "@/components/ui/coding-agent-badge";
 import { ClaudeCodeLogo } from "@/components/ui/claude-code-logo";
 import { bucketFor } from "@/lib/fleet-ordering";
+import { INVESTIGATE_DEFAULT_LOOKBACK_MS } from "@/lib/constants";
 
 /**
  * Sortable column whitelist for the agent table. Mirrors the
@@ -280,6 +282,13 @@ export function AgentTable({
       className="overflow-auto"
       style={{ border: "1px solid var(--border)", borderRadius: 6 }}
     >
+      {/* F3: LayoutGroup coordinates the per-row ``layout`` animation
+          on bucket boundary crossings. Without it, each motion.tr
+          animates against its own previous bounding box but the
+          peer rows that shifted to make room would not animate
+          together — the result reads as a single row sliding
+          while everything else snaps. */}
+      <LayoutGroup>
       <table
         className="w-full text-xs"
         style={{ color: "var(--text)", tableLayout: "fixed" }}
@@ -342,8 +351,21 @@ export function AgentTable({
                 );
               }
               rendered.push(
-            <tr
+            <motion.tr
               key={a.agent_id}
+              // F3: layout animates the row to its new sort position
+              // when its bucket changes. Since the parent buckets and
+              // re-sorts on every render based on ``last_seen_at``,
+              // a row crossing a bucket boundary (LIVE→RECENT, etc.)
+              // moves to a different DOM position; ``layout`` runs
+              // a 300ms FLIP transition rather than a hard cut. The
+              // ``layout="position"`` form animates only translation
+              // — not size — so the row never deforms during the
+              // transition (which a plain ``layout`` would do for
+              // table cells whose width is constrained by the
+              // colgroup).
+              layout="position"
+              transition={{ duration: 0.3, ease: "easeOut" }}
               onClick={() => {
                 // D115 deep-link: include an explicit 7-day time
                 // window so the Investigate page hits the same
@@ -353,7 +375,7 @@ export function AgentTable({
                 // URL looking filter-less to users who then wondered
                 // why it wasn't showing every session. Matching
                 // Investigate's default keeps the URL self-describing.
-                const from = new Date(Date.now() - 7 * 86400000).toISOString();
+                const from = new Date(Date.now() - INVESTIGATE_DEFAULT_LOOKBACK_MS).toISOString();
                 const to = new Date().toISOString();
                 const sp = new URLSearchParams();
                 sp.set("from", from);
@@ -469,7 +491,7 @@ export function AgentTable({
               <td style={{ padding: "0 12px", fontSize: 12 }}>
                 <StateDot state={a.state} />
               </td>
-            </tr>,
+            </motion.tr>,
               );
               prevBucket = b;
             }
@@ -477,6 +499,7 @@ export function AgentTable({
           })()}
         </tbody>
       </table>
+      </LayoutGroup>
     </div>
   );
 }

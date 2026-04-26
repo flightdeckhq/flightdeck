@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { LLMErrorPayload } from "@/lib/types";
+import { AccordionHeader } from "./AccordionHeader";
 
 /**
  * Collapsible details block rendered inside the expanded view of an
@@ -34,35 +35,12 @@ export function ErrorEventDetails({
         paddingTop: 8,
       }}
     >
-      <button
-        type="button"
-        onClick={() => setExpanded((v) => !v)}
-        aria-expanded={expanded}
-        data-testid={`error-event-details-toggle-${eventId}`}
-        className="flex items-center gap-2 text-left transition-colors hover:bg-surface-hover"
-        style={{
-          padding: "2px 4px",
-          borderRadius: 3,
-          fontSize: 11,
-          fontWeight: 600,
-          letterSpacing: "0.06em",
-          textTransform: "uppercase",
-          color: "var(--text-secondary)",
-          width: "100%",
-        }}
-      >
-        <span
-          style={{
-            display: "inline-block",
-            transform: expanded ? "rotate(90deg)" : "rotate(0deg)",
-            transition: "transform 150ms ease",
-            color: "var(--text-muted)",
-          }}
-        >
-          ▶
-        </span>
-        <span>Error details</span>
-      </button>
+      <AccordionHeader
+        expanded={expanded}
+        onToggle={() => setExpanded((v) => !v)}
+        label="Error details"
+        testId={`error-event-details-toggle-${eventId}`}
+      />
       {expanded && (
         <div
           className="mt-2 grid gap-x-3 gap-y-1"

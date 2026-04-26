@@ -192,4 +192,28 @@ describe("SessionEventRow", () => {
       screen.queryByTestId("session-row-token-name"),
     ).not.toBeInTheDocument();
   });
+
+  // S-SWIM session-row sticky-left regression guard. The left column
+  // wrapper that hosts the sequence number, hostname/hash label, and
+  // token-count pill must be position:sticky;left:0 with a z-index
+  // above the event circles (z 2). When that wrapper drops sticky
+  // (or its z-index falls back below the circles) the column either
+  // drifts with the scrolling timeline or gets painted over — both
+  // observed live on PR #29 before the fix landed.
+  it("anchors the left column with position:sticky;left:0 above event circles", () => {
+    renderRow(baseSession);
+    const indexSpan = screen.getByTestId("session-row-index");
+    const leftCol = indexSpan.parentElement;
+    expect(leftCol).not.toBeNull();
+    if (!leftCol) return;
+    expect(leftCol.style.position).toBe("sticky");
+    expect(leftCol.style.left).toBe("0px");
+    const z = parseInt(leftCol.style.zIndex, 10);
+    expect(Number.isNaN(z)).toBe(false);
+    expect(z).toBeGreaterThanOrEqual(3);
+    // Opaque background means timeline content sliding under the
+    // column is hidden by the column rather than bleeding through.
+    expect(leftCol.style.background).not.toBe("");
+    expect(leftCol.style.background).not.toBe("transparent");
+  });
 });

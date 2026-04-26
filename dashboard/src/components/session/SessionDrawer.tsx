@@ -5,6 +5,8 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { TruncatedText } from "@/components/ui/TruncatedText";
 import { invalidateSessionCache, useSession } from "@/hooks/useSession";
 import { useFleetStore } from "@/store/fleet";
+import { SUCCESS_MESSAGE_DISPLAY_MS } from "@/lib/constants";
+import { CLIENT_TYPE_LABEL, ClientType } from "@/lib/agent-identity";
 import { DirectiveCard } from "@/components/directives/DirectiveCard";
 import { Button } from "@/components/ui/button";
 import {
@@ -294,7 +296,14 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
     ? internalDetailEvent
     : (directEventDetail ?? internalDetailEvent);
 
-  // Get events: prefer eventsCache (live), fall back to REST data
+  // Get events: prefer eventsCache (live), fall back to REST data.
+  // Phase 4.5 M-29 justification: ``eventsCache`` is a Map ref read
+  // inside the memo body. We intentionally re-run the memo on every
+  // ``version`` / ``paginationVersion`` bump (which signal that the
+  // cache contents changed) rather than on the cache reference,
+  // because the Map is mutated in place. Including ``eventsCache``
+  // in deps would force re-run on every render via reference
+  // identity but never on actual content changes — backwards.
   const drawerEvents = useMemo(() => {
     if (sessionId) {
       const cached = eventsCache.get(sessionId);
@@ -408,7 +417,7 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
       markShuttingDown(session.session_id);
       setKillSent(true);
       setDialogOpen(false);
-      setTimeout(() => setKillSent(false), 2000);
+      setTimeout(() => setKillSent(false), SUCCESS_MESSAGE_DISPLAY_MS);
     } catch (e) {
       setKillError((e as Error).message);
     } finally {
@@ -597,7 +606,12 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
                     className="text-[13px] font-semibold"
                     style={{ color: "var(--text)" }}
                   >
-                    Claude Code
+                    {/* S-LBL-2 centralisation: the visible label
+                        comes from the shared CLIENT_TYPE_LABEL map
+                        so the drawer badge can never diverge from
+                        the Fleet pill / Investigate AGENT facet
+                        pill / AgentTable client column. */}
+                    {CLIENT_TYPE_LABEL[ClientType.ClaudeCode]}
                   </span>
                   {/* Matches the CODING AGENT pill the Investigate
                       table (pages/Investigate.tsx) and Fleet sidebar

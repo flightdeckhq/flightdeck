@@ -232,12 +232,15 @@ describe("Timeline", () => {
     expect(TIMELINE_WIDTH_PX).toBe(900);
   });
 
-  it("scroll container clips both axes without becoming a scroll container", () => {
+  it("scroll container does not establish either-axis scroll context", () => {
     renderWithRouter(<Timeline {...defaultProps} timeRange="1h" />);
     const scrollEl = screen.getByTestId("timeline-scroll");
-    // overflow-x: hidden clips circles that extend past the right
-    // edge of the fixed-width canvas.
-    expect(scrollEl.style.overflowX).toBe("hidden");
+    // S-SWIM: overflow-x went hidden→visible so Timeline's natural
+    // content width (leftPanelWidth + 900px) extends INTO Fleet's
+    // main-scroll context. Without the flip Fleet saw scrollWidth
+    // === clientWidth and the horizontal scrollbar never appeared
+    // even on viewports where the timeline was visibly truncated.
+    expect(scrollEl.style.overflowX).toBe("visible");
     // overflow-y: clip (NOT hidden) does not create a scroll
     // container, so the sticky time axis stays pinned against
     // Fleet.tsx's outer vertical scroller as flavor rows scroll past.

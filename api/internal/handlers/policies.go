@@ -116,6 +116,7 @@ func PoliciesListHandler(s store.Querier) http.HandlerFunc {
 // @Router       /v1/policies [post]
 func PolicyCreateHandler(s store.Querier) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		limitBody(w, r)
 		var req PolicyRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid JSON")
@@ -158,6 +159,7 @@ func PolicyCreateHandler(s store.Querier) http.HandlerFunc {
 // @Router       /v1/policies/{id} [put]
 func PolicyUpdateHandler(s store.Querier) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		limitBody(w, r)
 		id := r.PathValue("id")
 		if id == "" {
 			writeError(w, http.StatusBadRequest, "policy id is required")

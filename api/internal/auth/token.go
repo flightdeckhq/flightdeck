@@ -29,9 +29,24 @@ import (
 )
 
 const (
-	cacheTTL            = 60 * time.Second
-	cacheMaxSize        = 1000
-	devTokenRaw         = "tok_dev"
+	cacheTTL = 60 * time.Second
+	cacheMaxSize = 1000
+	// devTokenRaw is the development-only sentinel bearer token.
+	// Phase 4.5 L-1 contract: it is ONLY accepted when
+	// ENVIRONMENT=dev (or the legacy FLIGHTDECK_DEV=1). In every
+	// other environment, presenting "tok_dev" yields a 401 with
+	// devTokenReject. There is no path where this constant
+	// authenticates outside dev mode -- see Validate() below for
+	// the env-gate. CI and local docker-compose intentionally
+	// inherit the dev mode so existing tests pass without secret
+	// material.
+	devTokenRaw = "tok_dev"
+	// devAdminTokenRaw is the dev-only admin sentinel. Same env
+	// gate as devTokenRaw. In production, set
+	// FLIGHTDECK_ADMIN_ACCESS_TOKEN to a real secret instead;
+	// without it, no admin access exists anywhere in production
+	// -- the safe default for the rarely-used reconcile-agents
+	// endpoint.
 	devAdminTokenRaw    = "tok_admin_dev"
 	devTokenReject      = "tok_dev is only valid in development mode. Create a production token in the Settings page."
 	devAdminTokenReject = "tok_admin_dev is only valid in development mode. Configure FLIGHTDECK_ADMIN_ACCESS_TOKEN in production."
@@ -279,11 +294,32 @@ func constantTimeEqual(a, b string) bool {
 	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }
 
+// validationResultCtxKey is the request-context key under which a
+// successful Middleware run stashes the [ValidationResult] for
+// downstream handlers (notably [AdminRequired]) to read without
+// calling Validate again. Phase 4.5 M-2 closes a small TOCTOU
+// window where the cache could expire between the Middleware
+// validate and the AdminRequired re-validate, letting the second
+// call hit a different code path than the first.
+type validationResultCtxKey struct{}
+
+// ValidationResultFromContext returns the ValidationResult that
+// [Middleware] stashed for the current request, or zero-value +
+// false if the request did not pass through Middleware.
+func ValidationResultFromContext(ctx context.Context) (ValidationResult, bool) {
+	v, ok := ctx.Value(validationResultCtxKey{}).(ValidationResult)
+	return v, ok
+}
+
 // Middleware returns an http.Handler that requires a valid Bearer
 // token. On missing or invalid tokens it writes a JSON 401 and never
 // calls next. When the validator surfaces a specific Reason (e.g.
 // tok_dev rejected outside dev mode), that reason is used verbatim in
 // the 401 body so operators see the actionable message.
+//
+// On success the resolved [ValidationResult] is stashed in the
+// request context so downstream wrappers (e.g. [AdminRequired])
+// can consult IsAdmin without a second Validate call.
 func Middleware(v *Validator, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		raw := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
@@ -304,7 +340,8 @@ func Middleware(v *Validator, next http.Handler) http.Handler {
 			writeJSONError(w, http.StatusUnauthorized, reason)
 			return
 		}
-		next.ServeHTTP(w, r)
+		ctx := context.WithValue(r.Context(), validationResultCtxKey{}, result)
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 
@@ -321,13 +358,20 @@ func Middleware(v *Validator, next http.Handler) http.Handler {
 // it just lacks the needed scope.
 func AdminRequired(v *Validator, next http.Handler) http.Handler {
 	return Middleware(v, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Middleware already validated the token shape. Fetch the
-		// cached ValidationResult (guaranteed cache hit from the
-		// Middleware call above, <1 μs) to read IsAdmin.
-		raw := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		result, err := v.Validate(r.Context(), raw)
-		if err != nil {
-			writeJSONError(w, http.StatusInternalServerError, "auth lookup error")
+		// Phase 4.5 M-2: read the validated result from the
+		// request context that Middleware just populated, instead
+		// of calling Validate again. The double-call previously
+		// opened a TOCTOU window if the auth cache expired between
+		// the two lookups (rare but possible under cache eviction
+		// pressure). Reading from context guarantees IsAdmin is
+		// evaluated against the same row Middleware already
+		// authenticated against.
+		result, ok := ValidationResultFromContext(r.Context())
+		if !ok {
+			// Should be unreachable: Middleware always stashes the
+			// result on the success path. Fail closed if invariant
+			// is violated.
+			writeJSONError(w, http.StatusInternalServerError, "auth context missing")
 			return
 		}
 		if !result.IsAdmin {

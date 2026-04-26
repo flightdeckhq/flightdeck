@@ -9,7 +9,7 @@
 > here is wrong or has drifted from reality, update this document before
 > merging code. Record the reason in DECISIONS.md. ARCHITECTURE describes
 > what the system IS today; phase ancestry, change history, and forward-
-> looking plans live in CHANGELOG.md, audit-phase-N.md, and README.md
+> looking plans live in CHANGELOG.md, PR descriptions, and README.md
 > respectively.
 
 ---
@@ -198,8 +198,6 @@ flightdeck/
 ├── METHODOLOGY.md              # Supervisor/Executor build methodology
 ├── CHANGELOG.md                # Version history (Keep-a-Changelog)
 ├── README.md                   # User-facing documentation
-├── FOLLOWUPS.md                # Supervisor-approved deferred work
-├── audit-phase-*.md            # Phase audit notes + V-pass decisions
 ├── Makefile                    # Root Makefile -- orchestrates all components
 │
 ├── sensor/                     # flightdeck-sensor Python package (PyPI)
@@ -624,7 +622,7 @@ clients internally are intercepted without user-side wrapping.
 | CrewAI 1.14+ | `LLM(model=...).call()` via the native Anthropic and OpenAI provider classes. Model strings without a native-provider prefix (e.g. `openrouter/`, `deepseek/`) fall through to litellm |
 | litellm | `litellm.completion` / `acompletion` chat path; `embedding` / `aembedding` |
 | Claude Code plugin | Observational hook-based path; emits the same event shape as the sensor |
-| bifrost | Indirect — point the OpenAI client at bifrost's OpenAI-compatible `base_url` |
+| bifrost | Multi-protocol gateway. Point the openai SDK at bifrost's `base_url` and the OpenAI interceptor fires; point the anthropic SDK at bifrost and the Anthropic interceptor fires. Both protocols are supported as deployment topologies |
 
 ### Framework attribution
 
@@ -1787,9 +1785,9 @@ filter so the matching facet stays sticky when the filter is applied.
 
 The AGENT facet is keyed on `agent_id` with `agent_name` display labels.
 Two agents with the same `agent_name` but different `client_type` (e.g.
-plugin and SDK both running as `omria@laptop`) currently render as two
-identical-looking rows in the facet list — visual disambiguation is on
-the FOLLOWUPS list.
+plugin and SDK both running as `omria@laptop`) are disambiguated by a
+small uppercase pill (`CC` for `claude_code`, `SDK` for
+`flightdeck_sensor`) appended next to the agent name in the facet row.
 
 The ERROR TYPE facet is rendered last (after state / agent / flavor /
 agent_type / model / framework / scalar context groups). Hidden when no

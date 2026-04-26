@@ -18,6 +18,8 @@ import urllib.request
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
+from pydantic import ValidationError
+
 from flightdeck_sensor.core.policy import PolicyCache
 from flightdeck_sensor.core.types import (
     Directive,
@@ -37,6 +39,13 @@ if TYPE_CHECKING:
 _log = logging.getLogger("flightdeck_sensor.core.session")
 
 _PREFLIGHT_TIMEOUT_SECS = 1
+# Custom directive handler timeout (M-4). SIGALRM-based wall-clock
+# bound on user-supplied handlers so a hung handler cannot block the
+# directive queue indefinitely. Note: this fires only on the main
+# thread on Unix; the directive handler thread bypasses SIGALRM by
+# design (B-H two-queue refactor) and a hung handler stalls the
+# directive queue but NOT event throughput.
+_CUSTOM_DIRECTIVE_HANDLER_TIMEOUT_SECS = 5
 
 
 class Session:
@@ -285,8 +294,6 @@ class Session:
             )
             with urllib.request.urlopen(req, timeout=_PREFLIGHT_TIMEOUT_SECS) as resp:
                 data = json.loads(resp.read().decode())
-                from pydantic import ValidationError
-
                 from flightdeck_sensor.core.schemas import PolicyResponseSchema
 
                 try:
@@ -432,7 +439,6 @@ class Session:
         from flightdeck_sensor.core.schemas import DirectivePayloadSchema
 
         try:
-            from pydantic import ValidationError
             parsed_payload = DirectivePayloadSchema.model_validate(directive.payload)
             name = parsed_payload.directive_name
             fingerprint = parsed_payload.fingerprint
@@ -507,7 +513,7 @@ class Session:
                 raise TimeoutError("custom directive handler timed out")
 
             old_handler = signal.signal(signal.SIGALRM, _alarm_handler)
-            signal.alarm(5)
+            signal.alarm(_CUSTOM_DIRECTIVE_HANDLER_TIMEOUT_SECS)
             try:
                 result: Any = handler(ctx, **params)
             finally:
@@ -622,6 +628,15 @@ class Session:
 
         elif directive.action == DirectiveAction.DEGRADE:
             degrade_to = directive.payload.get("degrade_to", "")
+            # M-8 lock discipline: capture session state into locals
+            # under the lock, then use the captured values verbatim for
+            # both the policy_degrade payload and the directive_result
+            # ack. A concurrent record_model() / record_usage() would
+            # update self._model / self._tokens_used after the lock
+            # release, but we never re-read self.* after that — the
+            # snapshot below is the canonical "what the session was
+            # when DEGRADE arrived." Downstream policy.set_degrade_model
+            # doesn't depend on current_model so no further reads needed.
             with self._lock:
                 current_model = self._model or ""
                 tokens_used = self._tokens_used

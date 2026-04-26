@@ -20,9 +20,12 @@ import (
 func runFilterRoundTripTest(t *testing.T, key string) {
 	t.Helper()
 	t.Run("single value", func(t *testing.T) {
-		clause, args, idx := BuildContextFilterClause(
+		clause, args, idx, err := BuildContextFilterClause(
 			key, []string{"alice"}, []any{"prior-arg"}, 2,
 		)
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
 		wantClause := "s.context->>'" + key + "' IN ($2)"
 		if clause != wantClause {
 			t.Errorf("clause = %q, want %q", clause, wantClause)
@@ -36,9 +39,12 @@ func runFilterRoundTripTest(t *testing.T, key string) {
 	})
 
 	t.Run("multi value", func(t *testing.T) {
-		clause, args, idx := BuildContextFilterClause(
+		clause, args, idx, err := BuildContextFilterClause(
 			key, []string{"alice", "bob", "carol"}, []any{}, 1,
 		)
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
 		// Placeholders advance in order; value list preserved order too.
 		re := regexp.MustCompile(`^s\.context->>'` + regexp.QuoteMeta(key) + `' IN \(\$1, \$2, \$3\)$`)
 		if !re.MatchString(clause) {
@@ -53,9 +59,12 @@ func runFilterRoundTripTest(t *testing.T, key string) {
 	})
 
 	t.Run("empty values is a no-op", func(t *testing.T) {
-		clause, args, idx := BuildContextFilterClause(
+		clause, args, idx, err := BuildContextFilterClause(
 			key, nil, []any{"prior"}, 5,
 		)
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
 		if clause != "" {
 			t.Errorf("clause should be empty on no-op, got %q", clause)
 		}
@@ -100,16 +109,56 @@ func TestIsAllowedContextFilterKey_Rejection(t *testing.T) {
 	}
 }
 
-// TestBuildContextFilterClause_PanicOnUnknownKey documents the
-// panic-on-programming-error contract. A direct store caller that
-// skipped the handler's whitelist check must fail fast rather than
-// silently inject an arbitrary JSONB path.
-func TestBuildContextFilterClause_PanicOnUnknownKey(t *testing.T) {
-	defer func() {
-		r := recover()
-		if r == nil {
-			t.Fatal("expected panic on unknown key")
+// TestBuildContextFilterClause_ErrorOnUnknownKey documents the
+// error-return contract for programming errors (M-11). A direct
+// store caller that skipped the handler's whitelist check must
+// fail fast with a non-nil error rather than silently inject an
+// arbitrary JSONB path. Pre-M-11 the function panicked; the
+// callers now surface a 500 instead of crashing the goroutine.
+func TestBuildContextFilterClause_ErrorOnUnknownKey(t *testing.T) {
+	clause, _, _, err := BuildContextFilterClause(
+		"evil_key", []string{"x"}, nil, 1,
+	)
+	if err == nil {
+		t.Fatal("expected error on unknown key, got nil")
+	}
+	if clause != "" {
+		t.Errorf("clause should be empty on error, got %q", clause)
+	}
+}
+
+// TestBuildContextFilterClause_SQLInjectionInValuesParameterized is
+// the Phase 4.5 M-23 regression guard: every dynamic value MUST go
+// through a $N placeholder, never get inlined into the WHERE
+// fragment. The clause shape is a literal "key IN ($1, $2, ...)"
+// with placeholder indices only -- the values themselves stay in
+// the args slice where pgx escapes them. A future contributor that
+// breaks this contract (e.g. by string-formatting a value into the
+// clause) trips this test.
+func TestBuildContextFilterClause_SQLInjectionInValuesParameterized(t *testing.T) {
+	injectionPayloads := []string{
+		"' OR '1'='1",
+		"'; DROP TABLE sessions; --",
+		"\"; SELECT * FROM access_tokens; --",
+		"\\' UNION SELECT NULL --",
+		"%' OR 1=1 --",
+	}
+	for _, payload := range injectionPayloads {
+		clause, args, _, err := BuildContextFilterClause(
+			"user", []string{payload}, []any{}, 1,
+		)
+		if err != nil {
+			t.Fatalf("payload %q: unexpected err: %v", payload, err)
 		}
-	}()
-	BuildContextFilterClause("evil_key", []string{"x"}, nil, 1)
+		// Clause must reference only $N placeholders, never the
+		// payload bytes themselves.
+		if clause != "s.context->>'user' IN ($1)" {
+			t.Errorf("payload %q produced clause %q -- value leaked into WHERE fragment instead of being parameterized", payload, clause)
+		}
+		// Args slice carries the raw payload (pgx will escape it
+		// at execute time); this is the contract.
+		if len(args) != 1 || args[0] != payload {
+			t.Errorf("payload %q: args = %v, want [%q]", payload, args, payload)
+		}
+	}
 }

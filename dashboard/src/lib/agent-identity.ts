@@ -50,6 +50,17 @@ export function isAgentType(value: unknown): value is AgentType {
  * beside the enum definition so adding a new client in the future
  * forces the caller to supply its label.
  */
+/**
+ * Canonical visible labels for ``client_type`` used everywhere a
+ * client_type renders (Fleet swimlane pill, Fleet sidebar pill,
+ * AgentTable client column, Investigate AGENT facet pill, the
+ * Claude-Code session-drawer badge). Single source of truth for the
+ * vocabulary — every label-rendering site imports from here so the
+ * Fleet view and the Investigate view never disagree on what to
+ * call a client_type. The pill component renders the value through
+ * ``text-transform: uppercase`` so the on-screen result is
+ * ``CLAUDE CODE`` / ``SENSOR``.
+ */
 export const CLIENT_TYPE_LABEL: Record<ClientType, string> = {
   [ClientType.ClaudeCode]: "Claude Code",
   [ClientType.FlightdeckSensor]: "Sensor",

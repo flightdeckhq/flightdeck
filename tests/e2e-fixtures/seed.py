@@ -493,6 +493,9 @@ def _session_is_complete(
     return True
 
 
+_VALID_FORCE_STATES = frozenset({"active", "idle", "stale", "lost", "closed"})
+
+
 def _backdate_session(
     session_id: str,
     started_offset_sec: int,
@@ -515,18 +518,48 @@ def _backdate_session(
     window does not leave the fixture in state='active'. For stale we
     leave the state alone and let the reconciler classify naturally
     based on last_seen_at.
+
+    Phase 4.5 L-17 / L-18 hardening: although every input here comes
+    from hardcoded Python literals in canonical.json or int-coerced
+    offsets (so the code is unreachable as a SQLi vector in practice),
+    we explicitly:
+      1. Validate force_state against the closed vocabulary.
+      2. Use abs(int(...)) on offsets so a non-int leak from a future
+         caller cannot land arbitrary characters.
+      3. Validate session_id as UUID format before interpolation.
+    The seeder remains f-string driven because ``docker exec psql``
+    takes a single -c argument string; switching to psycopg parameter
+    binding would require linking psycopg into the seeder which is
+    out of scope for a dev fixture.
     """
-    started_expr = f"NOW() - INTERVAL '{abs(started_offset_sec)} seconds'"
+    if force_state is not None and force_state not in _VALID_FORCE_STATES:
+        raise ValueError(
+            f"force_state={force_state!r} is not in the closed vocabulary "
+            f"{sorted(_VALID_FORCE_STATES)}",
+        )
+    # Defensive UUID-shape check on the session_id we interpolate.
+    try:
+        UUID(session_id)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"_backdate_session: session_id {session_id!r} is not a UUID") from exc
+    started_secs = abs(int(started_offset_sec))
+    started_expr = f"NOW() - INTERVAL '{started_secs} seconds'"
     parts = [
         f"started_at = {started_expr}",
-        f"last_seen_at = {started_expr}" if ended_offset_sec is None
-        else f"last_seen_at = NOW() - INTERVAL '{abs(ended_offset_sec)} seconds'",
     ]
-    if ended_offset_sec is not None:
+    if ended_offset_sec is None:
+        parts.append(f"last_seen_at = {started_expr}")
+    else:
+        ended_secs = abs(int(ended_offset_sec))
         parts.append(
-            f"ended_at = NOW() - INTERVAL '{abs(ended_offset_sec)} seconds'"
+            f"last_seen_at = NOW() - INTERVAL '{ended_secs} seconds'"
+        )
+        parts.append(
+            f"ended_at = NOW() - INTERVAL '{ended_secs} seconds'"
         )
     if force_state is not None:
+        # force_state passed the whitelist above so direct interpolation
+        # is safe at this point. (Belt-and-braces.)
         parts.append(f"state = '{force_state}'")
     set_clause = ", ".join(parts)
     sql = (

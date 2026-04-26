@@ -57,7 +57,13 @@ func (pe *PolicyEvaluator) InvalidateCache(flavor string) {
 // getPolicy returns the effective policy for a session, using cache when possible.
 // Lookup order: session scope -> flavor scope -> org scope -> nil (no policy).
 func (pe *PolicyEvaluator) getPolicy(ctx context.Context, flavor, sessionID string) *CachedPolicy {
-	// Check cache first
+	// Check cache first. Phase 4.5 M-25: an expired entry on a
+	// higher-priority scope (session > flavor > org) used to leave
+	// the entry in the map, fall through to the next scope, and
+	// rebuild only the matched scope's key — leaving the expired
+	// entry as zombie cache that would be re-checked next call. Now
+	// we evict expired entries inline so the next miss does a clean
+	// loadPolicyFromDB and repopulates from the correct scope.
 	for _, key := range []string{
 		"session:" + sessionID,
 		"flavor:" + flavor,
@@ -66,9 +72,19 @@ func (pe *PolicyEvaluator) getPolicy(ctx context.Context, flavor, sessionID stri
 		pe.cacheMu.RLock()
 		cached, ok := pe.cache[key]
 		pe.cacheMu.RUnlock()
-		if ok && time.Since(cached.LoadedAt) < policyCacheTTL {
+		if !ok {
+			continue
+		}
+		if time.Since(cached.LoadedAt) < policyCacheTTL {
 			return cached
 		}
+		pe.cacheMu.Lock()
+		// Re-check under the write lock in case another goroutine
+		// already refreshed the entry between our RLock and Lock.
+		if c2, ok2 := pe.cache[key]; ok2 && time.Since(c2.LoadedAt) >= policyCacheTTL {
+			delete(pe.cache, key)
+		}
+		pe.cacheMu.Unlock()
 	}
 
 	// Cache miss or expired -- query Postgres with cascading lookup
@@ -125,6 +141,13 @@ func (pe *PolicyEvaluator) cachePolicy(key string, p *CachedPolicy) {
 }
 
 // HasFired checks if a directive type has already fired for a session.
+//
+// Deprecated for production use. This + MarkFired form a TOCTOU
+// pair — if two goroutines run HasFired/MarkFired concurrently they
+// can both observe ``false`` and both fire. Use [CheckAndMarkFired]
+// for atomic check-and-set. Retained as exported only for tests
+// that legitimately need to inspect or seed firing state without
+// triggering the atomic semantics. Phase 4.5 M-12.
 func (pe *PolicyEvaluator) HasFired(sessionID, directiveType string) bool {
 	pe.firedMu.RLock()
 	defer pe.firedMu.RUnlock()
@@ -135,6 +158,10 @@ func (pe *PolicyEvaluator) HasFired(sessionID, directiveType string) bool {
 }
 
 // MarkFired records that a directive type has fired for a session.
+//
+// Deprecated for production use. Production code MUST use
+// [CheckAndMarkFired] for atomic check-and-set. Retained only for
+// tests that need to seed firing state. Phase 4.5 M-12.
 func (pe *PolicyEvaluator) MarkFired(sessionID, directiveType string) {
 	pe.firedMu.Lock()
 	defer pe.firedMu.Unlock()
@@ -181,6 +208,13 @@ func (pe *PolicyEvaluator) Evaluate(ctx context.Context, sessionID string) error
 	}
 
 	limit := *policy.TokenLimit
+	// Phase 4.5 L-12: Multiply before divide preserves precision but
+	// is safe from overflow at any realistic input. tokensUsed is
+	// the per-session running total (int from sessions table), and
+	// int64.Max is ~9.2e18, so tokensUsed would need to exceed
+	// ~9.2e16 (two orders of magnitude beyond any conceivable LLM
+	// session) before the multiplication overflows int64. The DB
+	// column itself caps at INT (2.1e9) so the mul is always safe.
 	pctUsed := (int64(tokensUsed) * 100) / limit
 
 	// Check block threshold

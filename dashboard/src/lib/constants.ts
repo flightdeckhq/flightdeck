@@ -99,6 +99,25 @@ export const FLEET_SIDEBAR_DEFAULT_WIDTH = 240;
 export const FLEET_SIDEBAR_WIDTH_KEY = "flightdeck.fleet.sidebarWidth";
 export const FLEET_PILL_HIDE_MIN_WIDTH = 150;
 
+/**
+ * Investigate left-sidebar resize bounds and persistence key.
+ * Mirrors the Fleet sidebar pattern (lazy-init from localStorage,
+ * clamp to [MIN, MAX], persist on drag-release). The MAX is a
+ * fraction of the viewport rather than an absolute pixel cap so
+ * the sidebar can never eat the session table even on a 4K
+ * monitor — see clampInvestigateSidebarWidth in
+ * lib/investigate-sidebar-width.ts. ``MIN_WIDTH`` of 180 is the
+ * narrowest layout that still fits the "STATE" facet header
+ * comfortably with at least one pill on a line; ``DEFAULT_WIDTH``
+ * of 260 leaves room for a typical agent_name pill on one line
+ * without truncation. Phase 4.5.
+ */
+export const INVESTIGATE_SIDEBAR_MIN_WIDTH = 180;
+export const INVESTIGATE_SIDEBAR_MAX_VIEWPORT_FRACTION = 0.4;
+export const INVESTIGATE_SIDEBAR_DEFAULT_WIDTH = 260;
+export const INVESTIGATE_SIDEBAR_WIDTH_KEY =
+  "flightdeck.investigate.sidebarWidth";
+
 /** Default live feed column widths in pixels. */
 export const FEED_COL_DEFAULTS = {
   flavor: 120,
@@ -134,3 +153,45 @@ export const TIMELINE_RANGE_MS: Record<string, number> = {
   "30m": 1_800_000,
   "1h": 3_600_000,
 };
+
+/**
+ * Default lookback window for the Investigate page on first
+ * mount. Phase 4.5 L-20: previously hardcoded as ``7 * 24 * 3600
+ * * 1000`` in two places (Investigate.tsx and AgentTable.tsx)
+ * which let the two surfaces drift if either was tweaked. This
+ * constant is the single source of truth.
+ */
+export const INVESTIGATE_DEFAULT_LOOKBACK_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * Display duration for ephemeral success / completion toasts and
+ * inline acknowledgements (DirectiveCard "Saved", FleetPanel
+ * "Stopping...", SessionDrawer "Acknowledged", Settings "Token
+ * created"). Phase 4.5 L-21: extracted from four scattered inline
+ * ``setTimeout(..., 2000)`` calls so a UX tuning that wants 1500
+ * or 3000 ms changes ONE place.
+ */
+export const SUCCESS_MESSAGE_DISPLAY_MS = 2000;
+
+/**
+ * Width in pixels of the linear-gradient fade overlays at the left
+ * and right edges of the Fleet swimlane scroll container (S-SWIM).
+ * 32px is wide enough that the gradient reads as a soft transition
+ * (not a hard edge) on a high-DPI display, and narrow enough that
+ * it covers ≤4% of the timeline canvas (900 px) at default sizing
+ * so it never visually amputates an event circle near the boundary.
+ * Smaller values (16-20 px) feel like a stripe; larger (>48 px)
+ * start eating real content.
+ */
+export const SWIM_FADE_WIDTH_PX = 32;
+
+/**
+ * Fraction of the swimlane scroll container's clientWidth that an
+ * ArrowLeft / ArrowRight keypress scrolls. 0.5 (half-page) matches
+ * the convention browser scrollbars use for PageUp/PageDown and
+ * gives the user a predictable, large-enough step that two presses
+ * traverse most narrow-viewport overflow without being so big that
+ * a single press blows past the destination. scrollBy is called
+ * with behavior:"smooth" so the visual lands cleanly.
+ */
+export const SWIM_KEYBOARD_SCROLL_FRACTION = 0.5;

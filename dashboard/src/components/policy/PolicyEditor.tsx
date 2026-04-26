@@ -49,7 +49,9 @@ export function PolicyEditor({ policy, onSave, onCancel }: PolicyEditorProps) {
   const [customFlavorInput, setCustomFlavorInput] = useState(false);
   const [customModelInput, setCustomModelInput] = useState(false);
 
-  const { flavors } = useFleetStore();
+  // Phase 4.5 M-18: selector form so the editor only re-renders
+  // when ``flavors`` changes, not on every fleet-store mutation.
+  const flavors = useFleetStore((s) => s.flavors);
 
   // Collect distinct models from fleet store for "in use" group
   const inUseModels = useMemo(() => {

@@ -69,10 +69,13 @@ type Querier interface {
 	DeleteAccessToken(ctx context.Context, id string) error
 	RenameAccessToken(ctx context.Context, id, newName string) (*AccessTokenRow, error)
 	// ReconcileAgents recomputes the denormalised rollup columns on
-	// the agents table from sessions ground truth. Called by the
-	// /v1/admin/reconcile-agents endpoint; see agents_reconcile.go
-	// for the per-agent contract + concurrency notes.
-	ReconcileAgents(ctx context.Context) (*ReconcileResult, error)
+	// the agents table from sessions ground truth, then deletes
+	// orphan rows whose ``total_sessions`` post-reconcile is 0 AND
+	// whose ``last_seen_at`` is older than ``orphanThreshold`` ago.
+	// Pass orphanThreshold <= 0 to skip the delete step (counters-
+	// only). See agents_reconcile.go for the per-agent contract,
+	// concurrency notes, and orphan-delete predicate rationale.
+	ReconcileAgents(ctx context.Context, orphanThreshold time.Duration) (*ReconcileResult, error)
 	// ListAgents powers GET /v1/agents. See store/agents.go for the
 	// full filter/sort/search contract.
 	ListAgents(ctx context.Context, params AgentListParams) (*AgentListResponse, error)

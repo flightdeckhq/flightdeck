@@ -9,6 +9,8 @@ import {
 } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { FacetIcon } from "@/components/facets/FacetIcon";
+import { ClientTypePill } from "@/components/facets/ClientTypePill";
+import { isClientType } from "@/lib/agent-identity";
 import { TruncatedText } from "@/components/ui/TruncatedText";
 import { fetchSessions, type SessionsParams } from "@/lib/api";
 import type { AgentSummary, SessionListItem, SessionState } from "@/lib/types";
@@ -27,6 +29,13 @@ import { ClaudeCodeLogo } from "@/components/ui/claude-code-logo";
 import { CodingAgentBadge } from "@/components/ui/coding-agent-badge";
 import { getProvider, isClaudeCodeSession } from "@/lib/models";
 import { truncateSessionId } from "@/lib/events";
+import { formatSessionTimestamp } from "@/lib/time";
+import { INVESTIGATE_DEFAULT_LOOKBACK_MS } from "@/lib/constants";
+import {
+  clampInvestigateSidebarWidth,
+  persistInvestigateSidebarWidth,
+  readPersistedInvestigateSidebarWidth,
+} from "@/lib/investigate-sidebar-width";
 import { cn } from "@/lib/utils";
 
 // ---------------------------------------------------------------------------
@@ -40,7 +49,7 @@ export function parseUrlState(sp: URLSearchParams) {
     : 25;
   return {
     q: sp.get("q") ?? "",
-    from: sp.get("from") ?? new Date(Date.now() - 7 * 86400000).toISOString(),
+    from: sp.get("from") ?? new Date(Date.now() - INVESTIGATE_DEFAULT_LOOKBACK_MS).toISOString(),
     to: sp.get("to") ?? new Date().toISOString(),
     states: sp.getAll("state") as SessionState[],
     flavors: sp.getAll("flavor"),
@@ -136,15 +145,18 @@ const COL_WIDTHS = {
   // (supervisor: "don't let it grow"); the percent columns divide the
   // remaining space the usual way.
   session: "100px",
-  flavor: "16%",
-  hostname: "13%",
+  flavor: "14%",
+  hostname: "11%",
   os: "4%",
   orch: "4%",
-  model: "14%",
-  started: "13%",
-  duration: "8%",
-  tokens: "8%",
-  capture: "8%",
+  model: "12%",
+  started: "11%",
+  // S-TBL-1 last-seen column. Mirrors started_at width so the relative
+  // labels render at the same length under typical session ages.
+  lastSeen: "11%",
+  duration: "7%",
+  tokens: "7%",
+  capture: "7%",
   state: "12%",
 };
 
@@ -186,8 +198,16 @@ interface FacetGroup {
   /** ``value`` is the wire value the filter clicks on (e.g. agent_id
    *  UUID for the AGENT facet); optional ``label`` is the human
    *  display string (e.g. agent_name) rendered in place of the
-   *  value. Omit ``label`` when value and display are the same. */
-  values: { value: string; count: number; label?: string }[];
+   *  value. Omit ``label`` when value and display are the same.
+   *  ``clientType`` is populated for AGENT facet rows so the renderer
+   *  can append a CC/SDK pill that disambiguates same-name agents
+   *  whose only difference is client_type (F1). */
+  values: {
+    value: string;
+    count: number;
+    label?: string;
+    clientType?: string;
+  }[];
 }
 
 /**
@@ -298,6 +318,12 @@ export function computeFacets(
   // cannot participate in an agent-based filter.
   const agentIdCounts = new Map<string, number>();
   const agentIdNames = new Map<string, string>();
+  // F1 disambiguation: track each agent_id's client_type so the
+  // facet row can append a CC/SDK pill that distinguishes two
+  // same-agent_name agents whose only difference is client_type
+  // (e.g. an ``omria@Omri-PC`` Claude Code plugin vs. an
+  // ``omria@Omri-PC`` flightdeck_sensor SDK).
+  const agentIdClientTypes = new Map<string, string>();
   // Scalar context counts. Initialised once per key so downstream code
   // can address them via the same key string the facets emit under.
   const ctxCounts: Record<ContextFacetKey, Map<string, number>> = {
@@ -355,6 +381,7 @@ export function computeFacets(
       if (s.agent_id) {
         agentIdCounts.set(s.agent_id, (agentIdCounts.get(s.agent_id) ?? 0) + 1);
         if (s.agent_name) agentIdNames.set(s.agent_id, s.agent_name);
+        if (s.client_type) agentIdClientTypes.set(s.agent_id, s.client_type);
       }
     }
   }
@@ -402,6 +429,7 @@ export function computeFacets(
     if (!sources.agent_id && s.agent_id) {
       agentIdCounts.set(s.agent_id, (agentIdCounts.get(s.agent_id) ?? 0) + 1);
       if (s.agent_name) agentIdNames.set(s.agent_id, s.agent_name);
+      if (s.client_type) agentIdClientTypes.set(s.agent_id, s.client_type);
     }
     if (!sources.error_type) {
       for (const et of s.error_types ?? []) {
@@ -449,13 +477,16 @@ export function computeFacets(
 
   // D115 AGENT group: keyed on agent_id, display label = agent_name.
   // Sorted by count DESC (toArr does this already) so the busiest
-  // agents land at the top of the facet list.
+  // agents land at the top of the facet list. F1 disambiguation
+  // attaches the captured client_type so the renderer can append
+  // a CC/SDK pill when two same-name agents differ on client_type.
   const agentGroupValues = [...agentIdCounts.entries()]
     .sort((a, b) => b[1] - a[1])
     .map(([id, count]) => ({
       value: id,
       count,
       label: agentIdNames.get(id) ?? id,
+      clientType: agentIdClientTypes.get(id),
     }));
 
   return [
@@ -588,7 +619,7 @@ function warnUnresolvedAgentOnce(agentId: string): void {
   warnedUnresolvedAgents.add(agentId);
   console.warn(
     `agent_id ${agentId} did not resolve to an agent_name via fleet store or sessions list; ` +
-      `chip label falls back to the UUID prefix. Proper fix tracked in FOLLOWUPS.md.`,
+      `chip label falls back to the UUID prefix.`,
   );
 }
 
@@ -866,6 +897,44 @@ export function Investigate() {
   const [autoRefreshMs, setAutoRefreshMs] = useState(0);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const autoRefreshRef = useRef<ReturnType<typeof setInterval>>();
+
+  // Resizable left sidebar — drag handle, localStorage round-trip,
+  // viewport-fraction max so the sidebar can never eat the session
+  // table even on a 4K monitor. Mirrors the Fleet sidebar pattern
+  // (FleetPanel.tsx) so operators see one consistent UX. The drag
+  // handler uses a ref-mirrored width so the listener doesn't
+  // rebind every re-render and the persisted write happens on
+  // mouse-up only (no per-frame storage thrash).
+  const [sidebarWidth, setSidebarWidth] = useState<number>(() =>
+    readPersistedInvestigateSidebarWidth(
+      typeof window !== "undefined" ? window.innerWidth : 0,
+    ),
+  );
+  const sidebarWidthRef = useRef(sidebarWidth);
+  useEffect(() => {
+    sidebarWidthRef.current = sidebarWidth;
+  }, [sidebarWidth]);
+  const handleSidebarResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startWidth = sidebarWidthRef.current;
+    const onMove = (ev: MouseEvent) => {
+      const delta = ev.clientX - startX;
+      setSidebarWidth(
+        clampInvestigateSidebarWidth(
+          startWidth + delta,
+          window.innerWidth,
+        ),
+      );
+    };
+    const onUp = () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      persistInvestigateSidebarWidth(sidebarWidthRef.current);
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  }, []);
 
   // Drawer state. Initialised from the ``session`` URL param so a
   // deep-link from the global search modal (or a shared URL) opens
@@ -1442,10 +1511,16 @@ export function Investigate() {
 
       {/* Body: sidebar + table */}
       <div className="flex flex-1 overflow-hidden">
-        {/* Left sidebar */}
+        {/* Left sidebar — resizable. Width persists in localStorage
+            under flightdeck.investigate.sidebarWidth via the
+            handleSidebarResizeStart drag handler defined above. */}
         <div
-          className="w-[220px] flex-shrink-0 overflow-y-auto"
-          style={{ borderRight: "1px solid var(--border-subtle)" }}
+          className="relative flex-shrink-0 overflow-y-auto"
+          style={{
+            width: sidebarWidth,
+            borderRight: "1px solid var(--border-subtle)",
+          }}
+          data-testid="investigate-sidebar"
         >
           {facets.map((group, gi) => (
             <div
@@ -1515,6 +1590,21 @@ export function Investigate() {
                     <span className="flex items-center min-w-0 flex-1" style={{ gap: 8 }}>
                       <FacetIcon groupKey={group.key} value={v.value} />
                       <TruncatedText text={v.label ?? v.value} />
+                      {/* F1 (S-LBL corrected): canonical client_type
+                          pill on AGENT facet rows so two same-
+                          agent_name agents that differ on client_type
+                          render distinguishably. Uses the same
+                          ``ClientTypePill`` Fleet renders, so the
+                          label vocabulary stays identical across
+                          surfaces (CLAUDE CODE / SENSOR via the
+                          shared CLIENT_TYPE_LABEL map). */}
+                      {group.key === "agent_id" && v.clientType && isClientType(v.clientType) && (
+                        <ClientTypePill
+                          clientType={v.clientType}
+                          size="compact"
+                          testId={`investigate-agent-facet-pill-${v.value}`}
+                        />
+                      )}
                     </span>
                     <span
                       className="shrink-0"
@@ -1538,6 +1628,35 @@ export function Investigate() {
               No facets available
             </div>
           )}
+          {/* Drag handle — 6px hit-box pinned to the right edge of
+              the sidebar. Cursor swap on hover; tinted background
+              on hover so the drag affordance is visible. role +
+              aria-label match the Fleet pattern so screen readers
+              announce the same primitive on both pages. */}
+          <div
+            data-testid="investigate-sidebar-resize-handle"
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize Investigate sidebar"
+            style={{
+              position: "absolute",
+              right: 0,
+              top: 0,
+              bottom: 0,
+              width: 6,
+              cursor: "col-resize",
+              zIndex: 10,
+              background: "transparent",
+              transition: "background 0.1s",
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.background = "var(--accent)";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.background = "transparent";
+            }}
+            onMouseDown={handleSidebarResizeStart}
+          />
         </div>
 
         {/* Main content */}
@@ -1574,14 +1693,30 @@ export function Investigate() {
                 <span
                   key={f.label}
                   data-testid="active-filter-pill"
+                  title={f.label}
                   className="inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs"
                   style={{
                     background: "var(--primary-glow)",
                     color: "var(--primary)",
+                    // Long values (UUID flavors, agent_names like
+                    // user@hostname, playground-policy-warn-7997b6)
+                    // truncate with ellipsis at the right edge of
+                    // the pill rather than overflow the row. Full
+                    // value visible on hover via the title attr
+                    // above.
+                    maxWidth: "32ch",
                   }}
                 >
-                  {f.label}
-                  <button data-testid="active-filter-remove" onClick={f.onRemove} className="hover:opacity-70 transition-opacity duration-150">
+                  <span
+                    style={{
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {f.label}
+                  </span>
+                  <button data-testid="active-filter-remove" onClick={f.onRemove} className="hover:opacity-70 transition-opacity duration-150 shrink-0">
                     <X className="h-3 w-3" />
                   </button>
                 </span>
@@ -1650,6 +1785,14 @@ export function Investigate() {
                   </th>
                   <th
                     className="group cursor-pointer uppercase transition-colors duration-150 hover:text-text"
+                    style={{ color: "var(--text-muted)", fontSize: 10, fontWeight: 600, letterSpacing: "0.07em", padding: "0 12px", width: COL_WIDTHS.lastSeen }}
+                    onClick={() => handleSort("last_seen_at")}
+                    data-testid="investigate-th-last-seen"
+                  >
+                    Last seen{sortArrow("last_seen_at")}
+                  </th>
+                  <th
+                    className="group cursor-pointer uppercase transition-colors duration-150 hover:text-text"
                     style={{ color: "var(--text-muted)", fontSize: 10, fontWeight: 600, letterSpacing: "0.07em", padding: "0 12px", width: COL_WIDTHS.duration }}
                     onClick={() => handleSort("duration")}
                   >
@@ -1691,10 +1834,12 @@ export function Investigate() {
                     </div>
                   </th>
                   <th
-                    className="uppercase"
+                    className="group cursor-pointer uppercase transition-colors duration-150 hover:text-text"
                     style={{ color: "var(--text-muted)", fontSize: 10, fontWeight: 600, letterSpacing: "0.07em", padding: "0 12px", width: COL_WIDTHS.state }}
+                    onClick={() => handleSort("state")}
+                    data-testid="investigate-th-state"
                   >
-                    State
+                    State{sortArrow("state")}
                   </th>
                 </tr>
               </thead>
@@ -1770,12 +1915,23 @@ export function Investigate() {
                       )}
                     </td>
                     <td className="whitespace-nowrap" style={{ padding: "0 12px", width: COL_WIDTHS.started, fontSize: 12, color: "var(--text-secondary)", fontVariantNumeric: "tabular-nums" }}>
-                      {new Date(s.started_at).toLocaleString(undefined, {
-                        month: "short",
-                        day: "numeric",
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      })}
+                      {formatSessionTimestamp(s.started_at)}
+                    </td>
+                    <td
+                      className="whitespace-nowrap"
+                      style={{ padding: "0 12px", width: COL_WIDTHS.lastSeen, fontSize: 12, color: "var(--text-secondary)", fontVariantNumeric: "tabular-nums" }}
+                      data-testid={`investigate-row-last-seen-${s.session_id}`}
+                    >
+                      <TooltipProvider>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <span>{formatSessionTimestamp(s.last_seen_at)}</span>
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            {new Date(s.last_seen_at).toLocaleString()}
+                          </TooltipContent>
+                        </Tooltip>
+                      </TooltipProvider>
                     </td>
                     <td style={{ padding: "0 12px", width: COL_WIDTHS.duration, fontSize: 12, color: "var(--text-secondary)", fontVariantNumeric: "tabular-nums", fontFamily: "var(--font-mono)" }}>
                       {formatDuration(s.duration_s)}

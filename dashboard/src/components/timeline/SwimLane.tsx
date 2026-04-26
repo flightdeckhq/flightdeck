@@ -183,7 +183,12 @@ function SwimLaneComponent({
             borderRight: "1px solid var(--border)",
             position: "sticky",
             left: 0,
-            zIndex: 2,
+            // z-index 3 sits above event circles (z 2) and grid
+            // lines (z 1) so the column's opaque background covers
+            // the timeline content sliding under it during S-SWIM
+            // horizontal scroll. Same rationale at every other
+            // sticky-left column in this component and SessionEventRow.
+            zIndex: 3,
             overflow: "hidden",
           }}
         >
@@ -307,7 +312,20 @@ function SwimLaneComponent({
                 : visibleSessionCount * SESSION_ROW_HEIGHT + 28 + 28)
             : 0,
           opacity: expanded ? 1 : 0,
-          overflow: "hidden",
+          // overflow: clip (NOT hidden) clips the max-height
+          // animation the same way but does NOT establish a scroll
+          // container. With overflow: hidden the sticky-left columns
+          // on every SessionEventRow and the SESSIONS sub-header
+          // anchor to THIS box (zero-scroll inside it) and drift
+          // with Fleet's outer horizontal scroll -- session
+          // sequence numbers / token counts slid off the left edge
+          // by exactly scrollLeft pixels. clip lets sticky
+          // descendants look past to Fleet's main-content scroll
+          // container so they pin at the viewport edge alongside
+          // the agent header. Same overflow-clip-vs-hidden trick
+          // Timeline.tsx uses on its outer wrapper for the sticky
+          // time axis.
+          overflow: "clip",
           transition: "max-height 300ms ease, opacity 200ms ease",
           borderLeft: expanded ? "2px solid var(--accent)" : undefined,
           background: expanded ? "var(--surface)" : undefined,
@@ -338,7 +356,7 @@ function SwimLaneComponent({
                   flexShrink: 0,
                   position: "sticky",
                   left: 0,
-                  zIndex: 2,
+                  zIndex: 3,
                   background: "var(--surface)",
                   display: "flex",
                   alignItems: "center",
@@ -504,6 +522,7 @@ function ExpandedDrawerFooter({
         width: leftPanelWidth + timelineWidth,
         position: "sticky",
         left: 0,
+        zIndex: 3,
       }}
     >
       {showCountPreamble && (
@@ -655,7 +674,7 @@ function AllSwimLaneComponent({
           borderRight: "1px solid var(--border)",
           position: "sticky",
           left: 0,
-          zIndex: 2,
+          zIndex: 3,
           display: "flex",
           alignItems: "center",
           paddingLeft: 12,
@@ -814,6 +833,14 @@ function AggregatedSessionEvents({
         directiveStatus: event.payload?.directive_status,
         isAttachment: isAttachmentStartEvent(event, attachments),
       }));
+    // Phase 4.5 M-29 justification: ``attachments`` is intentionally
+    // omitted; the memo re-runs only when ``events`` / ``scale`` /
+    // ``session.session_id`` / ``version`` change. ``attachments``
+    // identity flips on every render of the parent SwimLane — adding
+    // it to the dep array thrashes the memo. The single field we
+    // read from it (``isAttachmentStartEvent`` lookup) is a function
+    // of ``events`` and stable reference equality of the attachments
+    // entries, so events-as-dep is sufficient in practice.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [events, scale, session.session_id, version]);
 

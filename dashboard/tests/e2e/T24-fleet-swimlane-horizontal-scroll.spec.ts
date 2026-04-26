@@ -110,6 +110,107 @@ test.describe("T24 — Fleet swimlane horizontal scroll", () => {
     expect(Math.abs(stickyLeftAfter - stickyLeftBefore)).toBeLessThanOrEqual(1);
   });
 
+  test("expanded session-row left columns stay sticky across horizontal scroll", async ({
+    page,
+  }) => {
+    // Pre-fix on PR #29: the swimlane-expanded-body wrapper used
+    // overflow:hidden, which trapped sticky descendants in a zero-
+    // scroll context. Session sequence numbers and token-count
+    // pills drifted by exactly scrollLeft pixels (-460 at max
+    // scroll on a 1280-wide viewport). This test pins the agent
+    // header AND a session row's left columns at the same
+    // viewport x at three scroll positions; the spread must stay
+    // ≤ 1 px or sticky has regressed.
+    await page.setViewportSize(NARROW_VIEWPORT);
+    await page.goto(`/?flavor=${CODING_AGENT.flavor}`);
+    await waitForFleetReady(page);
+
+    const agentRow = page.locator(
+      `[data-testid="swimlane-agent-row-${CODING_AGENT.name}"]`,
+    );
+    await expect(agentRow).toBeVisible();
+    // Click the left-panel chevron, not the row's geometric center
+    // — under narrow viewports the center can land on an event
+    // circle whose onClick stops propagation (T5 uses the same
+    // workaround).
+    await agentRow.click({ position: { x: 10, y: 20 } });
+    // Expansion fires a maxHeight transition; wait for the
+    // expanded-body to paint its rows before sampling positions.
+    const sessionIndex = page
+      .locator('[data-testid="session-row-index"]')
+      .first();
+    await expect(sessionIndex).toBeVisible();
+
+    const scroll = page.locator('[data-testid="fleet-main-scroll"]');
+    const sample = async () => {
+      const headerLeft = await agentRow.evaluate((el) => {
+        const child = el.firstElementChild as HTMLElement | null;
+        return child ? child.getBoundingClientRect().left : NaN;
+      });
+      const sessionLeft = await sessionIndex.evaluate((el) => {
+        const col = el.parentElement;
+        return col ? col.getBoundingClientRect().left : NaN;
+      });
+      return { headerLeft, sessionLeft };
+    };
+
+    await scroll.evaluate((el) => {
+      el.scrollLeft = 0;
+    });
+    const atZero = await sample();
+
+    await scroll.evaluate((el) => {
+      el.scrollLeft = el.scrollWidth;
+    });
+    const atMax = await sample();
+
+    await scroll.evaluate((el) => {
+      el.scrollLeft = Math.floor((el.scrollWidth - el.clientWidth) / 2);
+    });
+    const atMid = await sample();
+
+    // 2 px tolerance accommodates the sub-pixel offset between
+    // sticky-active (scrollLeft > 0, position pinned to the scroll
+    // viewport edge) and sticky-inactive (scrollLeft === 0, sitting
+    // at its natural row-content origin). Drift larger than 2 px
+    // means the column is moving with content -- the regression
+    // class this test guards against.
+    const STICKY_TOLERANCE_PX = 2;
+
+    // Header column stays put.
+    expect(
+      Math.abs(atZero.headerLeft - atMax.headerLeft),
+    ).toBeLessThanOrEqual(STICKY_TOLERANCE_PX);
+    expect(
+      Math.abs(atZero.headerLeft - atMid.headerLeft),
+    ).toBeLessThanOrEqual(STICKY_TOLERANCE_PX);
+
+    // Session column stays put.
+    expect(
+      Math.abs(atZero.sessionLeft - atMax.sessionLeft),
+    ).toBeLessThanOrEqual(STICKY_TOLERANCE_PX);
+    expect(
+      Math.abs(atZero.sessionLeft - atMid.sessionLeft),
+    ).toBeLessThanOrEqual(STICKY_TOLERANCE_PX);
+
+    // Header column and session column pin at the SAME viewport x
+    // at every scroll position — they share the sticky-left
+    // anchor (Fleet's main scroll container).
+    expect(
+      Math.abs(atZero.sessionLeft - atZero.headerLeft),
+    ).toBeLessThanOrEqual(STICKY_TOLERANCE_PX);
+    expect(
+      Math.abs(atMax.sessionLeft - atMax.headerLeft),
+    ).toBeLessThanOrEqual(STICKY_TOLERANCE_PX);
+
+    // Sanity: at scrollLeft=max the session column's left edge is
+    // INSIDE the visible viewport, not drifted off-screen. Pre-fix,
+    // at scrollLeft=460 the session sequence number landed at
+    // x=-111 (drifted exactly scrollLeft pixels off the left edge).
+    expect(atMax.sessionLeft).toBeGreaterThanOrEqual(0);
+    expect(atMax.sessionLeft).toBeLessThan(NARROW_VIEWPORT.width);
+  });
+
   test("ArrowRight from the leftmost edge scrolls the swimlane right", async ({
     page,
   }) => {

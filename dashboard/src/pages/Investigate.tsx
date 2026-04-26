@@ -29,7 +29,7 @@ import { ClaudeCodeLogo } from "@/components/ui/claude-code-logo";
 import { CodingAgentBadge } from "@/components/ui/coding-agent-badge";
 import { getProvider, isClaudeCodeSession } from "@/lib/models";
 import { truncateSessionId } from "@/lib/events";
-import { formatRelativeTime } from "@/lib/time";
+import { formatSessionTimestamp } from "@/lib/time";
 import { INVESTIGATE_DEFAULT_LOOKBACK_MS } from "@/lib/constants";
 import {
   clampInvestigateSidebarWidth,
@@ -1915,12 +1915,7 @@ export function Investigate() {
                       )}
                     </td>
                     <td className="whitespace-nowrap" style={{ padding: "0 12px", width: COL_WIDTHS.started, fontSize: 12, color: "var(--text-secondary)", fontVariantNumeric: "tabular-nums" }}>
-                      {new Date(s.started_at).toLocaleString(undefined, {
-                        month: "short",
-                        day: "numeric",
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      })}
+                      {formatSessionTimestamp(s.started_at)}
                     </td>
                     <td
                       className="whitespace-nowrap"
@@ -1930,7 +1925,7 @@ export function Investigate() {
                       <TooltipProvider>
                         <Tooltip>
                           <TooltipTrigger asChild>
-                            <span>{formatRelativeTime(s.last_seen_at)}</span>
+                            <span>{formatSessionTimestamp(s.last_seen_at)}</span>
                           </TooltipTrigger>
                           <TooltipContent>
                             {new Date(s.last_seen_at).toLocaleString()}

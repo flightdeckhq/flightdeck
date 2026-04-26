@@ -7,9 +7,11 @@ import {
   TIMELINE_WIDTH_PX,
   LEFT_PANEL_MIN_WIDTH,
   LEFT_PANEL_MAX_WIDTH,
-  LEFT_PANEL_DEFAULT_WIDTH,
-  LEFT_PANEL_WIDTH_KEY,
 } from "@/lib/constants";
+import {
+  persistLeftPanelWidth,
+  readPersistedLeftPanelWidth,
+} from "@/lib/leftPanelWidth";
 import { TimeAxis } from "./TimeAxis";
 import { AllSwimLane } from "./SwimLane";
 import { VirtualizedSwimLane } from "./VirtualizedSwimLane";
@@ -80,19 +82,9 @@ export function Timeline({
   // user's preference survives page reloads. Clamped on init AND on
   // every drag so a stale storage value can't push the panel past
   // its bounds.
-  const [leftPanelWidth, setLeftPanelWidth] = useState<number>(() => {
-    try {
-      const stored = localStorage.getItem(LEFT_PANEL_WIDTH_KEY);
-      const n = stored ? parseInt(stored, 10) : LEFT_PANEL_DEFAULT_WIDTH;
-      if (Number.isNaN(n)) return LEFT_PANEL_DEFAULT_WIDTH;
-      return Math.min(
-        LEFT_PANEL_MAX_WIDTH,
-        Math.max(LEFT_PANEL_MIN_WIDTH, n),
-      );
-    } catch {
-      return LEFT_PANEL_DEFAULT_WIDTH;
-    }
-  });
+  const [leftPanelWidth, setLeftPanelWidth] = useState<number>(
+    readPersistedLeftPanelWidth,
+  );
 
   // Mirror leftPanelWidth into a ref so handleResizeStart can read
   // the latest value at drag-start time WITHOUT taking leftPanelWidth
@@ -119,11 +111,10 @@ export function Timeline({
         Math.max(LEFT_PANEL_MIN_WIDTH, startWidth + delta),
       );
       setLeftPanelWidth(next);
-      try {
-        localStorage.setItem(LEFT_PANEL_WIDTH_KEY, String(next));
-      } catch {
-        /* storage unavailable -- drag still works for this session */
-      }
+      // persistLeftPanelWidth writes localStorage AND fires a same-
+      // tab CustomEvent so Fleet.tsx's left-fade overlay tracks the
+      // column's right edge as the user drags.
+      persistLeftPanelWidth(next);
     };
 
     const onUp = () => {
@@ -317,14 +308,18 @@ export function Timeline({
   return (
     <div
       className="relative"
-      // overflow-x: hidden clips circles that extend past the right
-      // edge of the fixed-width canvas. overflow-y: clip (NOT hidden)
-      // does not establish a scroll container, which lets the time
-      // axis row use position: sticky; top: 0 against Fleet.tsx's
-      // outer vertical scroller. With overflow: hidden, the sticky
-      // time axis would stick to this (zero-scroll) container and
-      // scroll away with the flavor rows instead.
-      style={{ overflowX: "hidden", overflowY: "clip" }}
+      // overflow-y: clip (NOT hidden) does not establish a scroll
+      // container, which lets the time axis row use position:
+      // sticky; top: 0 against Fleet.tsx's outer vertical scroller.
+      // overflow-x: visible was overflow-x: hidden pre-S-SWIM; the
+      // hidden value clipped Timeline's content at its parent's
+      // clientWidth, which meant Fleet's S-SWIM horizontal scroll
+      // container saw no overflow even when innerWidth (leftPanel +
+      // 900px timeline) exceeded the viewport. visible lets content
+      // extend into Fleet's scroll context where the user can pan
+      // to it; the timeline's natural right edge is still at
+      // innerWidth so nothing renders beyond it.
+      style={{ overflowX: "visible", overflowY: "clip" }}
       data-testid="timeline-scroll"
     >
       <div style={{ width: innerWidth, minWidth: "100%", position: "relative" }}>

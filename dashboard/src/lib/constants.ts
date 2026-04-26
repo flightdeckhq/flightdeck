@@ -172,3 +172,26 @@ export const INVESTIGATE_DEFAULT_LOOKBACK_MS = 7 * 24 * 60 * 60 * 1000;
  * or 3000 ms changes ONE place.
  */
 export const SUCCESS_MESSAGE_DISPLAY_MS = 2000;
+
+/**
+ * Width in pixels of the linear-gradient fade overlays at the left
+ * and right edges of the Fleet swimlane scroll container (S-SWIM).
+ * 32px is wide enough that the gradient reads as a soft transition
+ * (not a hard edge) on a high-DPI display, and narrow enough that
+ * it covers ≤4% of the timeline canvas (900 px) at default sizing
+ * so it never visually amputates an event circle near the boundary.
+ * Smaller values (16-20 px) feel like a stripe; larger (>48 px)
+ * start eating real content.
+ */
+export const SWIM_FADE_WIDTH_PX = 32;
+
+/**
+ * Fraction of the swimlane scroll container's clientWidth that an
+ * ArrowLeft / ArrowRight keypress scrolls. 0.5 (half-page) matches
+ * the convention browser scrollbars use for PageUp/PageDown and
+ * gives the user a predictable, large-enough step that two presses
+ * traverse most narrow-viewport overflow without being so big that
+ * a single press blows past the destination. scrollBy is called
+ * with behavior:"smooth" so the visual lands cleanly.
+ */
+export const SWIM_KEYBOARD_SCROLL_FRACTION = 0.5;

@@ -89,4 +89,100 @@ describe("EventNode — Phase 5 MCP icons + colours", () => {
     expect(callContainer.querySelector("svg.lucide-wrench")).not.toBeNull();
     expect(llmCallContainer.querySelector("svg.lucide-wrench")).not.toBeNull();
   });
+
+  // B-5b: every MCP event renders as a HEXAGON shape (not a circle
+  // with a ring). The shape itself is the family identifier; the
+  // pre-B-5b mauve box-shadow ring around a circle was insufficient
+  // for at-a-glance discrimination on dark backgrounds at swimlane
+  // density. This describe block pins:
+  //   1. data-mcp-family marker present + data-event-shape="hexagon"
+  //   2. clip-path: polygon(...) on the inline style
+  //   3. NO ``rounded-full`` className (would clip into rounded
+  //      hexagon apexes)
+  //   4. NO box-shadow (ring dropped — shape is the signal)
+  describe("B-5b — MCP family hexagon shape", () => {
+    for (const eventType of [
+      "mcp_tool_call",
+      "mcp_tool_list",
+      "mcp_resource_read",
+      "mcp_resource_list",
+      "mcp_prompt_get",
+      "mcp_prompt_list",
+    ] as const) {
+      it(`${eventType}: renders as a hexagon (clip-path polygon, data-event-shape=hexagon)`, () => {
+        const { container } = renderNode({ eventType });
+        const node = container.querySelector(
+          "[style*='background']",
+        ) as HTMLElement;
+        expect(node.getAttribute("data-mcp-family")).toBe("true");
+        expect(node.getAttribute("data-event-shape")).toBe("hexagon");
+        // The clip-path produces the hexagon — assert it's a six-
+        // vertex polygon. jsdom doesn't compute the path; we read
+        // the inline style.
+        expect(node.style.clipPath).toContain("polygon(");
+        // Six (x y) vertex pairs separated by commas.
+        const vertexCount = (node.style.clipPath.match(/,/g) ?? []).length + 1;
+        expect(vertexCount).toBe(6);
+        // The ``rounded-full`` className would round the hex apexes
+        // into a sausage shape — the component must opt out for MCP.
+        expect(node.className).not.toContain("rounded-full");
+        // Box-shadow ring is dropped for B-5b; the shape carries
+        // the family signal, no ring needed.
+        expect(node.style.boxShadow).toBe("");
+        // Border is dropped on MCP because clip-path would slice
+        // the white border into jagged fragments at the apexes.
+        // jsdom collapses ``border: none`` so neither the shorthand
+        // getter nor the raw style attribute exposes it — instead
+        // assert that the non-MCP 1.5px white border did NOT leak
+        // onto the MCP hexagon path. This is a regression guard
+        // against a future refactor that accidentally inherits the
+        // circle's chrome border.
+        const rawStyle = node.getAttribute("style") ?? "";
+        expect(rawStyle).not.toContain("1.5px solid");
+      });
+    }
+
+    it("non-MCP events stay CIRCLES — regression guard", () => {
+      const { container } = renderNode({ eventType: "tool_call" });
+      const node = container.querySelector(
+        "[style*='background']",
+      ) as HTMLElement;
+      expect(node.getAttribute("data-mcp-family")).toBeNull();
+      expect(node.getAttribute("data-event-shape")).toBe("circle");
+      // Non-MCP retains the ``rounded-full`` Tailwind class.
+      expect(node.className).toContain("rounded-full");
+      // No clip-path on non-MCP events.
+      expect(node.style.clipPath).toBe("");
+      // The 1.5px translucent-white inner border is preserved on
+      // non-MCP circles (chrome separation against adjacent
+      // circles).
+      expect(node.style.border).toContain("1.5px");
+    });
+
+    it("attachment override still works on session_start (regression for non-MCP shape)", () => {
+      const { container } = renderNode({
+        eventType: "session_start",
+        isAttachment: true,
+      });
+      const node = container.querySelector(
+        "[style*='background']",
+      ) as HTMLElement;
+      // Attachment paints the warning amber, still circle-shaped.
+      expect(node.style.backgroundColor).toBe("var(--warning)");
+      expect(node.getAttribute("data-event-shape")).toBe("circle");
+      expect(node.className).toContain("rounded-full");
+    });
+
+    it("directive_result error override still works (regression for non-MCP shape)", () => {
+      const { container } = renderNode({
+        eventType: "directive_result",
+        directiveStatus: "error",
+      });
+      const node = container.querySelector(
+        "[style*='background']",
+      ) as HTMLElement;
+      expect(node.style.backgroundColor).toBe("var(--event-block)");
+      expect(node.getAttribute("data-event-shape")).toBe("circle");
+    });
+  });
 });

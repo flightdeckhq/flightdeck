@@ -899,6 +899,139 @@ def seed() -> None:
                 except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
                     print(f"  warn: fresh-active refresh for {session_id} failed: {exc}", file=sys.stderr)
                 continue
+            if role == "mcp-active":
+                # Phase 5 (B-5b live verification) — re-emit the six
+                # MCP_* events with timestamp=NOW each seed run so the
+                # Fleet swimlane window (max 1h) always carries fresh
+                # MCP traffic for the Supervisor's Chrome walkthrough
+                # AND for T25-13's hexagon assertion. The session_start
+                # path is gated by the standard idempotency check
+                # (already-seeded sessions are skipped) which keeps
+                # the context.mcp_servers fingerprint write-once.
+                # Re-emitting the extras only — not the session_start —
+                # avoids touching the worker's UpsertSession ON
+                # CONFLICT path on every run.
+                identity = {
+                    "agent_type": agent_cfg["agent_type"],
+                    "client_type": agent_cfg["client_type"],
+                    "user": agent_cfg["user"],
+                    "hostname": agent_cfg["hostname"],
+                    "agent_name": agent_cfg["agent_name"],
+                }
+                common = {
+                    "host": agent_cfg["host"],
+                    "framework": agent_cfg["framework"],
+                    "model": agent_cfg["model"],
+                }
+                servers = role_cfg.get("mcp_servers") or []
+                if servers:
+                    srv = servers[0]
+                    srv_name = srv["name"]
+                    srv_transport = srv["transport"]
+                    # Pin state='active' + last_seen_at=NOW so the
+                    # session row reads as live alongside the fresh
+                    # event circles.
+                    sql = (
+                        f"UPDATE sessions SET "
+                        f"state='active', "
+                        f"last_seen_at=NOW() "
+                        f"WHERE session_id='{session_id}'::uuid"
+                    )
+                    try:
+                        subprocess.run(
+                            [
+                                "docker", "exec", "docker-postgres-1", "psql",
+                                "-U", "flightdeck", "-d", "flightdeck",
+                                "-c", sql,
+                            ],
+                            capture_output=True, text=True, timeout=10,
+                            check=False,
+                        )
+                    except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
+                        print(
+                            f"  warn: mcp-active state pin for "
+                            f"{session_id} failed: {exc}",
+                            file=sys.stderr,
+                        )
+                    # Mirror the original extras emit shape from
+                    # _post_session_events. Each MCP event lands a
+                    # few seconds apart so the swimlane shows them
+                    # as a small cluster rather than overlapping.
+                    fresh_emits: list[tuple[str, dict[str, Any]]] = [
+                        ("mcp_tool_list", {"count": 3}),
+                        ("mcp_tool_call", {
+                            "tool_name": "echo",
+                            "arguments": {"text": "phase5-fixture"},
+                            "result": {
+                                "content": [
+                                    {"type": "text", "text": "phase5-fixture"},
+                                ],
+                                "isError": False,
+                            },
+                        }),
+                        ("mcp_resource_list", {"count": 1}),
+                        ("mcp_resource_read", {
+                            "resource_uri": "mem://demo",
+                            "content_bytes": 46,
+                            "mime_type": "text/plain",
+                            "content": {
+                                "contents": [
+                                    {
+                                        "uri": "mem://demo",
+                                        "mimeType": "text/plain",
+                                        "text": (
+                                            "hello from the flightdeck "
+                                            "reference MCP server"
+                                        ),
+                                    },
+                                ],
+                            },
+                        }),
+                        ("mcp_prompt_list", {"count": 1}),
+                        ("mcp_prompt_get", {
+                            "prompt_name": "greet",
+                            "arguments": {"name": "phase5"},
+                            "rendered": [
+                                {
+                                    "role": "user",
+                                    "content": {
+                                        "type": "text",
+                                        "text": "Please greet phase5.",
+                                    },
+                                },
+                                {
+                                    "role": "assistant",
+                                    "content": {
+                                        "type": "text",
+                                        "text": "Hello, phase5!",
+                                    },
+                                },
+                            ],
+                        }),
+                    ]
+                    for j, (event_type, extras) in enumerate(fresh_emits):
+                        # ts placement: each event lands at NOW - (50 -
+                        # 8*j) seconds, so the cluster spans roughly
+                        # NOW-50s through NOW-10s. The 8s-per-step
+                        # spread keeps the six circles distinguishable
+                        # in the swimlane. The 50s upper bound leaves
+                        # comfortable margin under the 1m (60s) Fleet
+                        # swimlane default — even after a few seconds
+                        # of seed propagation latency, every event
+                        # stays inside the window.
+                        ts = _shift_timestamp(-(50 - 8 * j))
+                        post_event(make_event(
+                            session_id, agent_cfg["flavor"], event_type,
+                            timestamp=ts,
+                            server_name=srv_name,
+                            transport=srv_transport,
+                            duration_ms=18 + 4 * j,
+                            **extras,
+                            **identity,
+                            **common,
+                        ))
+                    backdated += 1
+                continue
             if role not in ("aged-closed", "stale", "ancient-only"):
                 continue
             # Force state for deterministic E2E assertions. Letting the

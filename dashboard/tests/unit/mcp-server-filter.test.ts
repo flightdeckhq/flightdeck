@@ -94,12 +94,27 @@ describe("computeFacets — MCP SERVER aggregation", () => {
     expect(names).toEqual(["demo", "filesystem", "github"]);
   });
 
-  it("sits at the very end of the facet ordering", () => {
+  it("sits between FRAMEWORK and the scalar context group (B-1)", () => {
+    // Pre-B-1 MCP_SERVER was at position 18 (after every scalar
+    // context facet plus ERROR TYPE / POLICY). Operators couldn't
+    // see it without scrolling the sidebar. Promoted to position 7
+    // — right after FRAMEWORK and ahead of the OS / ARCH / HOSTNAME
+    // / etc. block — so it surfaces alongside MODEL / FRAMEWORK
+    // among the other operational identity dimensions.
     const sessions = [
-      makeSession({ mcp_server_names: ["demo"], error_types: ["rate_limit"] }),
+      makeSession({
+        mcp_server_names: ["demo"],
+        error_types: ["rate_limit"],
+        context: { os: "Linux" },
+      }),
     ];
     const facets = computeFacets(sessions);
-    expect(facets[facets.length - 1].key).toBe("mcp_server");
+    const order = facets.map((g) => g.key);
+    const mcpIdx = order.indexOf("mcp_server");
+    const frameworkIdx = order.indexOf("framework");
+    const osIdx = order.indexOf("os");
+    expect(mcpIdx).toBeGreaterThan(frameworkIdx);
+    expect(mcpIdx).toBeLessThan(osIdx);
   });
 });
 

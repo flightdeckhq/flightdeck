@@ -34,24 +34,32 @@ function makeMCPEvent(overrides: Partial<AgentEvent>): AgentEvent {
   } as AgentEvent;
 }
 
-describe("eventBadgeConfig — Phase 5 MCP entries", () => {
+describe("eventBadgeConfig — Phase 5 MCP entries (B-4 verb labels)", () => {
   const expected: Record<string, { cssVar: string; label: string; filled?: boolean }> = {
-    mcp_tool_call: { cssVar: "var(--event-mcp-tool)", label: "MCP TOOL", filled: true },
-    mcp_tool_list: { cssVar: "var(--event-mcp-tool)", label: "MCP TOOLS", filled: false },
+    mcp_tool_call: { cssVar: "var(--event-mcp-tool)", label: "TOOL CALL", filled: true },
+    mcp_tool_list: {
+      cssVar: "var(--event-mcp-tool)",
+      label: "TOOLS DISCOVERED",
+      filled: false,
+    },
     mcp_resource_read: {
       cssVar: "var(--event-mcp-resource)",
-      label: "MCP RESOURCE",
+      label: "RESOURCE READ",
       filled: true,
     },
     mcp_resource_list: {
       cssVar: "var(--event-mcp-resource)",
-      label: "MCP RESOURCES",
+      label: "RESOURCES DISCOVERED",
       filled: false,
     },
-    mcp_prompt_get: { cssVar: "var(--event-mcp-prompt)", label: "MCP PROMPT", filled: true },
+    mcp_prompt_get: {
+      cssVar: "var(--event-mcp-prompt)",
+      label: "PROMPT FETCHED",
+      filled: true,
+    },
     mcp_prompt_list: {
       cssVar: "var(--event-mcp-prompt)",
-      label: "MCP PROMPTS",
+      label: "PROMPTS DISCOVERED",
       filled: false,
     },
   };
@@ -71,6 +79,31 @@ describe("eventBadgeConfig — Phase 5 MCP entries", () => {
     for (const eventType of Object.keys(expected)) {
       const badge = getBadge(eventType);
       expect(badge.label).toBe(expected[eventType].label);
+    }
+  });
+
+  it("regression guard: legacy MCP labels MUST NOT appear in any badge config (B-4)", () => {
+    // Pre-B-4 labels were "MCP TOOL"/"MCP TOOLS"/"MCP RESOURCE"/
+    // "MCP RESOURCES"/"MCP PROMPT"/"MCP PROMPTS". The plural-only-s
+    // distinction was confusing — operators couldn't read at a
+    // glance whether the badge meant "agent invoked" vs "agent
+    // discovered". This test fails loudly if any of the legacy
+    // strings reappear, including via partial-match (e.g. someone
+    // typing "MCP TOOL CALL" would also fail this guard).
+    const banned = [
+      "MCP TOOL",
+      "MCP TOOLS",
+      "MCP RESOURCE",
+      "MCP RESOURCES",
+      "MCP PROMPT",
+      "MCP PROMPTS",
+    ];
+    const allLabels = Object.values(eventBadgeConfig).map((c) => c.label);
+    for (const ban of banned) {
+      // Use exact match — the new verb labels do NOT include the
+      // "MCP" prefix at all, so "MCP TOOL CALL" etc. cannot occur.
+      const hits = allLabels.filter((l) => l === ban);
+      expect(hits, `legacy badge label "${ban}" reappeared`).toHaveLength(0);
     }
   });
 });

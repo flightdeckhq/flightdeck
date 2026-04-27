@@ -524,6 +524,15 @@ export function computeFacets(
     { key: "agent_type", label: "AGENT TYPE", values: toArr(agentTypeCounts) },
     { key: "model", label: "MODEL", values: toArr(modelCounts) },
     { key: "framework", label: "FRAMEWORK", values: toArr(frameworkCounts) },
+    // Phase 5 — MCP SERVER sits with the other operational identity
+    // facets (MODEL / FRAMEWORK) above the scalar-context group. It
+    // started life at the very end of the list (B-1 verification
+    // round): with 18 facets total, MCP SERVER fell below the fold
+    // on a typical viewport and operators couldn't find it. Hidden
+    // by the ``.filter()`` below when the visible result set has no
+    // MCP-connected sessions, so non-MCP deployments don't see it
+    // either.
+    { key: "mcp_server", label: "MCP SERVER", values: toArr(mcpServerCounts) },
     ...scalarCtxGroups,
     // Phase 4: ERROR TYPE facet sits last in the sidebar so the
     // existing facet ordering is preserved for users who learned
@@ -535,11 +544,6 @@ export function computeFacets(
     // visible result set has any. Hidden by the .filter() below
     // otherwise.
     { key: "policy_event_type", label: "POLICY", values: toArr(policyEventTypeCounts) },
-    // Phase 5 MCP SERVER facet — sits at the very end so it does not
-    // disrupt the existing facet ordering for users who learned the
-    // pre-Phase-5 layout. Hidden by the ``.filter()`` below when the
-    // visible result set has no MCP-connected sessions.
-    { key: "mcp_server", label: "MCP SERVER", values: toArr(mcpServerCounts) },
   ].filter((g) => g.values.length > 0);
 }
 
@@ -958,27 +962,42 @@ export function Investigate() {
   useEffect(() => {
     sidebarWidthRef.current = sidebarWidth;
   }, [sidebarWidth]);
-  const handleSidebarResizeStart = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    const startX = e.clientX;
-    const startWidth = sidebarWidthRef.current;
-    const onMove = (ev: MouseEvent) => {
-      const delta = ev.clientX - startX;
-      setSidebarWidth(
-        clampInvestigateSidebarWidth(
-          startWidth + delta,
-          window.innerWidth,
-        ),
-      );
-    };
-    const onUp = () => {
-      document.removeEventListener("mousemove", onMove);
-      document.removeEventListener("mouseup", onUp);
-      persistInvestigateSidebarWidth(sidebarWidthRef.current);
-    };
-    document.addEventListener("mousemove", onMove);
-    document.addEventListener("mouseup", onUp);
-  }, []);
+  const handleSidebarResizeStart = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      // Pointer Events rather than mouse events. Firefox aborts a
+      // global ``mousemove`` drag the moment its text-selection
+      // heuristic kicks in over any text-bearing ancestor (the
+      // facet-pill labels, agent names) — ``e.preventDefault()`` on
+      // mousedown isn't sufficient because Firefox restarts the
+      // selection on the first ``mousemove`` it gets to itself.
+      // Pointer events sit in a separate event class that bypasses
+      // text-selection heuristics in every modern browser. Mirrors
+      // the fix in ``components/timeline/Timeline.tsx`` and
+      // ``components/fleet/FleetPanel.tsx``.
+      e.preventDefault();
+      const startX = e.clientX;
+      const startWidth = sidebarWidthRef.current;
+      const onMove = (ev: PointerEvent) => {
+        const delta = ev.clientX - startX;
+        setSidebarWidth(
+          clampInvestigateSidebarWidth(
+            startWidth + delta,
+            window.innerWidth,
+          ),
+        );
+      };
+      const onUp = () => {
+        document.removeEventListener("pointermove", onMove);
+        document.removeEventListener("pointerup", onUp);
+        document.removeEventListener("pointercancel", onUp);
+        persistInvestigateSidebarWidth(sidebarWidthRef.current);
+      };
+      document.addEventListener("pointermove", onMove);
+      document.addEventListener("pointerup", onUp);
+      document.addEventListener("pointercancel", onUp);
+    },
+    [],
+  );
 
   // Drawer state. Initialised from the ``session`` URL param so a
   // deep-link from the global search modal (or a shared URL) opens
@@ -1720,7 +1739,10 @@ export function Investigate() {
             onMouseLeave={(e) => {
               e.currentTarget.style.background = "transparent";
             }}
-            onMouseDown={handleSidebarResizeStart}
+            // Pointer events for cross-browser drag (Firefox).
+            // See handleSidebarResizeStart docstring.
+            onPointerDown={handleSidebarResizeStart}
+            onTouchStart={(e) => e.preventDefault()}
           />
         </div>
 
@@ -2061,6 +2083,30 @@ export function Investigate() {
                               </TooltipTrigger>
                               <TooltipContent>
                                 {`Errors: ${s.error_types.join(", ")}`}
+                              </TooltipContent>
+                            </Tooltip>
+                          </TooltipProvider>
+                        )}
+                        {s.mcp_server_names && s.mcp_server_names.length > 0 && (
+                          <TooltipProvider>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <span
+                                  data-testid={`session-row-mcp-indicator-${s.session_id}`}
+                                  aria-label={`Session connected to MCP servers: ${s.mcp_server_names.join(", ")}`}
+                                  className="inline-block rounded-full"
+                                  style={{
+                                    width: 7,
+                                    height: 7,
+                                    background: "var(--event-mcp-tool)",
+                                    boxShadow:
+                                      "0 0 0 2px color-mix(in srgb, var(--event-mcp-tool) 25%, transparent)",
+                                    flexShrink: 0,
+                                  }}
+                                />
+                              </TooltipTrigger>
+                              <TooltipContent>
+                                {`MCP servers: ${s.mcp_server_names.join(", ")}`}
                               </TooltipContent>
                             </Tooltip>
                           </TooltipProvider>

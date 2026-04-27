@@ -41,13 +41,19 @@ const MCP_EVENT_TYPES = [
   "mcp_prompt_list",
 ] as const;
 
+// B-4 — verb labels match what the agent actually did
+// (called, read, fetched, discovered). The "MCP" prefix is dropped
+// from the badge text because the colour family + the swimlane
+// shared-ring + the timeline detail header all already attribute the
+// row as MCP. Pre-B-4 labels (MCP TOOL / MCP TOOLS / etc.) collided
+// on a single plural-s and confused operators at scan time.
 const BADGE_LABELS: Record<(typeof MCP_EVENT_TYPES)[number], string> = {
-  mcp_tool_call: "MCP TOOL",
-  mcp_tool_list: "MCP TOOLS",
-  mcp_resource_read: "MCP RESOURCE",
-  mcp_resource_list: "MCP RESOURCES",
-  mcp_prompt_get: "MCP PROMPT",
-  mcp_prompt_list: "MCP PROMPTS",
+  mcp_tool_call: "TOOL CALL",
+  mcp_tool_list: "TOOLS DISCOVERED",
+  mcp_resource_read: "RESOURCE READ",
+  mcp_resource_list: "RESOURCES DISCOVERED",
+  mcp_prompt_get: "PROMPT FETCHED",
+  mcp_prompt_list: "PROMPTS DISCOVERED",
 };
 
 // Icon glyph contract is pinned by tests/unit/EventNode-mcp.test.tsx,
@@ -225,6 +231,111 @@ test.describe("T25 — MCP observability rendering", () => {
       "EVENT_FILTER_PILLS must include the MCP entry on Fleet's filter bar",
     ).toBeVisible();
     await expect(mcpPill).toContainText("MCP");
+  });
+
+  // T25-11 (B-1) — MCP SERVER facet renders on default Investigate URL
+  // (no flavor filter) when any visible session has mcp_server_names.
+  // Pre-B-1 the facet was hidden at the very bottom of an 18-facet
+  // sidebar; the seeded mcp-active session is enough to surface it.
+  test("T25-11: MCP SERVER facet renders on default Investigate URL", async ({
+    page,
+  }) => {
+    const params = new URLSearchParams({
+      from: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
+      to: new Date().toISOString(),
+    });
+    await page.goto(`/investigate?${params.toString()}`);
+    await waitForInvestigateReady(page);
+    const facet = page.locator(
+      '[data-testid="investigate-mcp-server-facet"]',
+    );
+    await expect(
+      facet,
+      "MCP SERVER facet must render on default Investigate URL when seeded mcp-active session is in the result set",
+    ).toBeVisible();
+    // B-1: facet sits between FRAMEWORK and the scalar-context block.
+    // Assert ordering by reading every facet's data-testid in DOM
+    // order and checking the MCP_SERVER index.
+    const allFacetSections = await page
+      .locator('[data-testid="investigate-sidebar"] > div')
+      .all();
+    let mcpIdx = -1;
+    let osIdx = -1;
+    for (let i = 0; i < allFacetSections.length; i++) {
+      const tid =
+        (await allFacetSections[i].getAttribute("data-testid")) ?? "";
+      const txt = (await allFacetSections[i].textContent()) ?? "";
+      if (tid === "investigate-mcp-server-facet") mcpIdx = i;
+      // The OS section has no testid; identify by its leading label
+      // text. We just need it to come after MCP SERVER.
+      if (txt.startsWith("OS") && osIdx === -1) osIdx = i;
+    }
+    expect(mcpIdx).toBeGreaterThan(-1);
+    expect(osIdx).toBeGreaterThan(-1);
+    expect(mcpIdx).toBeLessThan(osIdx);
+  });
+
+  // T25-12 (B-2) — Row-level MCP indicator dot on session listings.
+  test("T25-12: session row carries MCP indicator dot when mcp_server_names is non-empty", async ({
+    page,
+  }) => {
+    const sid = await fetchMCPSessionId(page);
+    const params = new URLSearchParams({
+      from: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
+      to: new Date().toISOString(),
+      flavor: SENSOR_AGENT.flavor,
+    });
+    await page.goto(`/investigate?${params.toString()}`);
+    await waitForInvestigateReady(page);
+    const indicator = page.locator(
+      `[data-testid="session-row-mcp-indicator-${sid}"]`,
+    );
+    await expect(indicator).toBeVisible();
+    const aria = await indicator.getAttribute("aria-label");
+    expect(aria).toContain("fixture-stdio-server");
+    expect(aria).toContain("fixture-http-server");
+  });
+
+  // T25-13 (B-5b) — Fleet swimlane renders MCP events as HEXAGONS
+  // (not circles with rings). The mcp-active fixture role is
+  // refreshed on every seed run with six fresh MCP events landing
+  // in the last ~50s, comfortably inside the 1m default swimlane
+  // window — see seed.py's mcp-active branch. T25-13 asserts the
+  // data-event-shape="hexagon" + data-mcp-family="true" markers
+  // are visible on the Fleet swimlane, both themes.
+  test("T25-13: Fleet swimlane renders MCP events as hexagons (not circles)", async ({
+    page,
+  }) => {
+    page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto("/");
+    // Click the 5m time-range pill so a slightly aged seed (events
+    // are seeded at NOW-50s but the full-suite playwright run can
+    // execute T25-13 minutes after the globalSetup seed) still
+    // lands every MCP event inside the swimlane window.
+    // Operators using the default 1m view will still see fresh MCP
+    // hexagons in normal use — this widening exists to make the
+    // test robust against full-suite time drift, not because the
+    // production UX needs it.
+    await page.getByRole("button", { name: "5m" }).first().click();
+    const mcpHexagons = page.locator(
+      '[data-testid^="session-circle-"][data-mcp-family="true"][data-event-shape="hexagon"]',
+    );
+    await expect(
+      mcpHexagons.first(),
+      "Fleet swimlane must render at least one MCP-family hexagon",
+    ).toBeVisible({ timeout: 10000 });
+    // Regression guard: at least one non-MCP circle is also rendered
+    // alongside the hexagons (the canonical fixture seeds non-MCP
+    // sessions with fresh activity), and they retain the circle
+    // shape — i.e. the hexagon override does NOT spill onto every
+    // event.
+    const nonMcpCircles = page.locator(
+      '[data-testid^="session-circle-"][data-event-shape="circle"]',
+    );
+    await expect(
+      nonMcpCircles.first(),
+      "Fleet swimlane must continue to render circles for non-MCP events",
+    ).toBeVisible();
   });
 
   // T25-10 — Session drawer header MCP SERVERS panel.

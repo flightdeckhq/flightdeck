@@ -81,38 +81,47 @@ export const eventBadgeConfig: Record<string, BadgeConfig> = {
   // distinct via its badge family).
   embeddings: { cssVar: "var(--event-embeddings)", label: "EMBED" },
   llm_error: { cssVar: "var(--event-error)", label: "ERROR" },
-  // Phase 5 — MCP observability. Three colour families with each
-  // family carrying a solid (call/read/get) and an outline (list)
-  // variant via the ``filled`` flag interpreted by getBadge consumers.
-  // Cyan family for tools, green for resources, purple for prompts.
-  // Outline variants share the same cssVar; the BadgeConfig.filled
-  // toggle drives the rendering branch in <EventBadge> (solid-fill
-  // vs CSS-var border-only).
+  // Phase 5 — MCP observability. Verb-based labels distinguish
+  // "agent invoked" vs "agent discovered" at a glance — the previous
+  // singular/plural pairs (MCP TOOL / MCP TOOLS) put a single 's'
+  // between two fundamentally different operations (B-4). The "MCP"
+  // prefix is dropped from the badge text because the badge colour
+  // family + the swimlane shared-ring (B-5) + the timeline detail
+  // header all already attribute the row as MCP — repeating the
+  // prefix forces every badge to truncate or shrink. The EventType
+  // enum strings (mcp_tool_call etc.) are unchanged; this is display
+  // text only.
+  //
+  // Three colour families × two variants (filled = invoked, outline
+  // = discovered):
+  //   tool family       cyan    Wrench / ListChecks
+  //   resource family   green   FileText / Folder
+  //   prompt family     purple  MessageSquare / List
   mcp_tool_call: {
     cssVar: "var(--event-mcp-tool)",
-    label: "MCP TOOL",
+    label: "TOOL CALL",
   },
   mcp_tool_list: {
     cssVar: "var(--event-mcp-tool)",
-    label: "MCP TOOLS",
+    label: "TOOLS DISCOVERED",
     filled: false,
   },
   mcp_resource_read: {
     cssVar: "var(--event-mcp-resource)",
-    label: "MCP RESOURCE",
+    label: "RESOURCE READ",
   },
   mcp_resource_list: {
     cssVar: "var(--event-mcp-resource)",
-    label: "MCP RESOURCES",
+    label: "RESOURCES DISCOVERED",
     filled: false,
   },
   mcp_prompt_get: {
     cssVar: "var(--event-mcp-prompt)",
-    label: "MCP PROMPT",
+    label: "PROMPT FETCHED",
   },
   mcp_prompt_list: {
     cssVar: "var(--event-mcp-prompt)",
-    label: "MCP PROMPTS",
+    label: "PROMPTS DISCOVERED",
     filled: false,
   },
 };

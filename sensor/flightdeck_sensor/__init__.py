@@ -43,6 +43,10 @@ from flightdeck_sensor.interceptor.litellm import (
     patch_litellm_functions,
     unpatch_litellm_functions,
 )
+from flightdeck_sensor.interceptor.mcp import (
+    patch_mcp_classes,
+    unpatch_mcp_classes,
+)
 from flightdeck_sensor.interceptor.openai import (
     SensorOpenAI,
     _OrigAsyncOpenAI,
@@ -125,9 +129,7 @@ _directive_registry: dict[str, DirectiveRegistration] = {}
 # ------------------------------------------------------------------
 
 
-def _compute_fingerprint(
-    name: str, description: str, parameters: list[DirectiveParameter]
-) -> str:
+def _compute_fingerprint(name: str, description: str, parameters: list[DirectiveParameter]) -> str:
     """Compute a deterministic SHA-256 fingerprint for a directive schema."""
     import base64
     import hashlib
@@ -306,9 +308,7 @@ def init(
 
         resolved_api_url = os.environ.get(_env.ENV_API_URL) or api_url
         if not resolved_api_url:
-            resolved_api_url = resolved_server.rstrip("/").replace(
-                "/ingest", "/api"
-            )
+            resolved_api_url = resolved_server.rstrip("/").replace("/ingest", "/api")
 
         capture = _env_bool(_env.ENV_CAPTURE_PROMPTS, capture_prompts)
 
@@ -319,9 +319,7 @@ def init(
         # misconfigured shell (FLIGHTDECK_SESSION_ID="") still auto-
         # generates a UUID rather than posting a session_start with a
         # blank session_id that the ingestion API rejects.
-        resolved_session_id = (
-            os.environ.get(_env.ENV_SESSION_ID) or session_id or None
-        )
+        resolved_session_id = os.environ.get(_env.ENV_SESSION_ID) or session_id or None
         if resolved_session_id and not _is_valid_uuid(resolved_session_id):
             # The sessions table column is UUID-typed; accepting a
             # non-UUID here would trip Postgres at worker time and
@@ -366,9 +364,7 @@ def init(
                 "see CHANGELOG.md for the v0.4.0 Phase 1 migration."
             )
 
-        resolved_hostname = (
-            os.environ.get(_env.ENV_HOSTNAME) or socket.gethostname()
-        )
+        resolved_hostname = os.environ.get(_env.ENV_HOSTNAME) or socket.gethostname()
         resolved_user = _resolve_user_name()
         resolved_agent_name = (
             agent_name
@@ -395,17 +391,13 @@ def init(
             "token": resolved_token,
             "api_url": resolved_api_url,
             "capture_prompts": capture,
-            "unavailable_policy": os.environ.get(
-                _env.ENV_UNAVAILABLE_POLICY, "continue"
-            ),
+            "unavailable_policy": os.environ.get(_env.ENV_UNAVAILABLE_POLICY, "continue"),
             # Legacy wire-level ``flavor`` field stays populated for
             # backward compat with every downstream surface that still
             # reads sessions.flavor (dashboard flavor facet, analytics
             # group_by=flavor, etc.). Default now mirrors agent_name so
             # the two fields agree for sensor-default deployments.
-            "agent_flavor": os.environ.get(
-                _env.ENV_AGENT_FLAVOR_LEGACY, resolved_agent_name
-            ),
+            "agent_flavor": os.environ.get(_env.ENV_AGENT_FLAVOR_LEGACY, resolved_agent_name),
             "agent_type": resolved_agent_type,
             "agent_id": resolved_agent_id,
             "agent_name": resolved_agent_name,
@@ -542,14 +534,21 @@ def patch(
 
     Args:
         providers: list of provider names to patch. Default patches all
-            available providers (``["anthropic", "openai", "litellm"]``).
-            litellm joins the patch set as the third interceptor (KI21).
-            Its patch mutates module-level ``litellm.completion`` /
-            ``litellm.acompletion`` rather than SDK classes; streaming
-            is not yet supported and raises NotImplementedError (KI26).
+            available providers (``["anthropic", "openai", "litellm",
+            "mcp"]``). litellm joins the patch set as the third
+            interceptor (KI21). Its patch mutates module-level
+            ``litellm.completion`` / ``litellm.acompletion`` rather than
+            SDK classes; streaming is not yet supported and raises
+            NotImplementedError (KI26). ``mcp`` adds Phase 5 MCP-server
+            observability — patches ``mcp.client.session.ClientSession``
+            so any framework that uses the official Python ``mcp`` SDK
+            (LangChain via langchain-mcp-adapters, LlamaIndex via
+            llama-index-tools-mcp, CrewAI via mcpadapt, raw SDK callers)
+            emits MCP_TOOL_CALL / _LIST / _RESOURCE_* / _PROMPT_* events.
+            Silent no-op when a target's SDK is not installed.
     """
     _require_session("patch")
-    targets = providers or ["anthropic", "openai", "litellm"]
+    targets = providers or ["anthropic", "openai", "litellm", "mcp"]
 
     with _patch_lock:
         if "anthropic" in targets:
@@ -558,6 +557,8 @@ def patch(
             patch_openai_classes(quiet=quiet)
         if "litellm" in targets:
             patch_litellm_functions(quiet=quiet)
+        if "mcp" in targets:
+            patch_mcp_classes(quiet=quiet)
 
 
 def unpatch() -> None:
@@ -579,6 +580,7 @@ def unpatch() -> None:
         unpatch_anthropic_classes()
         unpatch_openai_classes()
         unpatch_litellm_functions()
+        unpatch_mcp_classes()
 
 
 def get_status() -> StatusResponse:

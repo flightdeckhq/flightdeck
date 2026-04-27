@@ -33,6 +33,16 @@ openai = ["openai>=1.0", "tiktoken>=0.5"]
 # sensor's SensorLitellm wrapper then intercepts ``litellm.completion``
 # / ``litellm.acompletion`` via module-level patching.
 litellm = ["litellm>=1.0"]
+# Phase 5: Model Context Protocol (MCP) observability. The sensor's
+# MCP interceptor patches ``mcp.client.session.ClientSession`` so any
+# framework that uses the official Python ``mcp`` SDK (LangChain via
+# langchain-mcp-adapters, LlamaIndex via llama-index-tools-mcp, CrewAI
+# via mcpadapt, raw SDK callers) emits MCP_TOOL_CALL / MCP_TOOL_LIST /
+# MCP_RESOURCE_* / MCP_PROMPT_* events transitively. Floor 1.20 chosen
+# below LlamaIndex tool-mcp's ``mcp >=1.24,<2`` and CrewAI mcpadapt's
+# ``mcp[ws]>=1.10.1`` to cover both transitively without forcing a
+# bump on either.
+mcp = ["mcp>=1.20"]
 dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.21",
@@ -72,6 +82,11 @@ dev = [
     # ARCHITECTURE.md "Framework limitations". See
     # test_crewai_native_openai_patched_intercepts_call.
     "crewai>=1.14",
+    # Phase 5: MCP unit tests construct a ClientSession against in-memory
+    # anyio streams, apply the patch, and assert event-emission shape.
+    # The smoke matrix uses the same package against a real reference
+    # MCP server subprocess. Both share this dev install.
+    "mcp>=1.20",
 ]
 
 [tool.hatch.build.targets.wheel]

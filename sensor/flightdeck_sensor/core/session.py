@@ -27,6 +27,7 @@ from flightdeck_sensor.core.types import (
     DirectiveContext,
     DirectiveRegistration,
     EventType,
+    MCPServerFingerprint,
     SensorConfig,
     SessionState,
     StatusResponse,
@@ -100,6 +101,13 @@ class Session:
         # to the session_start event payload only. The control plane
         # stores it once in sessions.context and never updates it.
         self._context: dict[str, Any] = {}
+
+        # MCP server fingerprints captured during ClientSession.initialize().
+        # Append-only list (a session may connect to multiple MCP servers).
+        # Merged into ``context.mcp_servers`` on the session_start event
+        # payload — see _build_payload. Held under self._lock for the
+        # same multi-thread reasons as _tokens_used / _model.
+        self._mcp_servers: list[MCPServerFingerprint] = []
 
         # Lazy import to avoid circular dependency at module level.
         from flightdeck_sensor.transport.client import EventQueue as LocalEventQueue
@@ -193,6 +201,24 @@ class Session:
         """Record the framework if detected."""
         with self._lock:
             self._framework = framework
+
+    def record_mcp_server(self, fingerprint: MCPServerFingerprint) -> None:
+        """Append an MCP server fingerprint captured at initialize time.
+
+        Called by the MCP interceptor's patched ``ClientSession.initialize``
+        once per server handshake. Order of arrival is preserved so the
+        dashboard can render servers in the order the agent connected.
+        Duplicates (same name + transport) are de-duplicated in case a
+        framework reconstructs a session against the same server.
+        """
+        with self._lock:
+            for existing in self._mcp_servers:
+                if (
+                    existing.name == fingerprint.name
+                    and existing.transport == fingerprint.transport
+                ):
+                    return
+            self._mcp_servers.append(fingerprint)
 
     def post_call_event(
         self,
@@ -322,9 +348,7 @@ class Session:
     # Custom directives
     # ------------------------------------------------------------------
 
-    def _sync_directives(
-        self, registry: dict[str, DirectiveRegistration]
-    ) -> None:
+    def _sync_directives(self, registry: dict[str, DirectiveRegistration]) -> None:
         """Sync registered custom directives with the control plane.
 
         Sends fingerprints to the server. For any the server does not
@@ -333,12 +357,9 @@ class Session:
         """
         try:
             summaries = [
-                {"name": reg.name, "fingerprint": reg.fingerprint}
-                for reg in registry.values()
+                {"name": reg.name, "fingerprint": reg.fingerprint} for reg in registry.values()
             ]
-            unknown_fps = self.client.sync_directives(
-                self.config.agent_flavor, summaries
-            )
+            unknown_fps = self.client.sync_directives(self.config.agent_flavor, summaries)
             if unknown_fps:
                 unknown_set = set(unknown_fps)
                 to_register = [
@@ -362,13 +383,9 @@ class Session:
                     if reg.fingerprint in unknown_set
                 ]
                 if to_register:
-                    self.client.register_directives(
-                        self.config.agent_flavor, to_register
-                    )
+                    self.client.register_directives(self.config.agent_flavor, to_register)
         except Exception:
-            _log.debug(
-                "directive sync failed, proceeding without sync", exc_info=True
-            )
+            _log.debug("directive sync failed, proceeding without sync", exc_info=True)
 
     def _build_directive_context(self) -> DirectiveContext:
         """Build an execution context for a custom directive handler."""
@@ -449,9 +466,7 @@ class Session:
 
         reg = _directive_registry.get(name)
         if reg is None:
-            _log.warning(
-                "[flightdeck] custom directive '%s' not found in registry", name
-            )
+            _log.warning("[flightdeck] custom directive '%s' not found in registry", name)
             payload = self._build_directive_result_event(
                 name, success=False, error="handler not found"
             )
@@ -460,8 +475,7 @@ class Session:
 
         if reg.fingerprint != fingerprint:
             _log.warning(
-                "[flightdeck] custom directive '%s' fingerprint mismatch "
-                "(expected %s, got %s)",
+                "[flightdeck] custom directive '%s' fingerprint mismatch (expected %s, got %s)",
                 name,
                 reg.fingerprint,
                 fingerprint,
@@ -476,25 +490,15 @@ class Session:
 
         try:
             result = self._run_handler_with_timeout(reg.handler, ctx, params)
-            payload = self._build_directive_result_event(
-                name, success=True, result=result
-            )
+            payload = self._build_directive_result_event(name, success=True, result=result)
             self.event_queue.enqueue(payload)
         except TimeoutError:
-            _log.warning(
-                "[flightdeck] custom directive '%s' timed out after 5s", name
-            )
-            payload = self._build_directive_result_event(
-                name, success=False, error="timeout"
-            )
+            _log.warning("[flightdeck] custom directive '%s' timed out after 5s", name)
+            payload = self._build_directive_result_event(name, success=False, error="timeout")
             self.event_queue.enqueue(payload)
         except Exception as exc:
-            _log.warning(
-                "[flightdeck] custom directive '%s' raised: %s", name, exc
-            )
-            payload = self._build_directive_result_event(
-                name, success=False, error=str(exc)
-            )
+            _log.warning("[flightdeck] custom directive '%s' raised: %s", name, exc)
+            payload = self._build_directive_result_event(name, success=False, error=str(exc))
             self.event_queue.enqueue(payload)
 
     @staticmethod
@@ -509,6 +513,7 @@ class Session:
         a timeout (the handler is trusted to return quickly).
         """
         if os.name != "nt" and threading.current_thread() is threading.main_thread():
+
             def _alarm_handler(signum: int, frame: Any) -> None:
                 raise TimeoutError("custom directive handler timed out")
 
@@ -564,6 +569,12 @@ class Session:
             framework = self._framework
             model = self._model
 
+        is_mcp = event_type.value.startswith("mcp_")
+
+        # Common identity + session-level state. Every event (LLM-shaped
+        # or MCP-shaped) carries these — they describe WHO the event
+        # belongs to and the session's running token state, both of
+        # which are meaningful regardless of payload semantics.
         payload: dict[str, Any] = {
             "session_id": self.config.session_id,
             "flavor": self.config.agent_flavor,
@@ -577,31 +588,57 @@ class Session:
             "event_type": event_type.value,
             "host": self._host,
             "framework": framework,
-            "model": model,
-            "tokens_input": None,
-            "tokens_output": None,
-            "tokens_total": None,
-            # D100: cache-token breakdown. Default 0 so the worker always
-            # receives a non-null value for the NOT NULL DEFAULT 0 columns.
-            "tokens_cache_read": 0,
-            "tokens_cache_creation": 0,
             "tokens_used_session": tokens_used_session,
             "token_limit_session": self._token_limit,
-            "latency_ms": None,
-            "tool_name": None,
-            "tool_input": None,
-            "tool_result": None,
-            "has_content": False,
-            "content": None,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
+
+        if not is_mcp:
+            # LLM-shaped baseline. Fields are nullable for non-LLM event
+            # types (e.g. policy_*, directive_result) where they don't
+            # apply, but the columns are part of the established wire
+            # contract for everything except MCP events. Phase 5 split
+            # MCP events out so they don't carry six perpetually-null
+            # LLM fields through every wire trip and Postgres row.
+            payload.update(
+                {
+                    "model": model,
+                    "tokens_input": None,
+                    "tokens_output": None,
+                    "tokens_total": None,
+                    # D100: cache-token breakdown. Default 0 so the worker
+                    # always receives a non-null value for the NOT NULL
+                    # DEFAULT 0 columns.
+                    "tokens_cache_read": 0,
+                    "tokens_cache_creation": 0,
+                    "latency_ms": None,
+                    "tool_name": None,
+                    "tool_input": None,
+                    "tool_result": None,
+                    "has_content": False,
+                    "content": None,
+                }
+            )
 
         # Attach runtime context only on session_start events. The
         # control plane stores sessions.context once and never updates
         # it on conflict, so sending it on every event would be
         # wasteful network traffic.
-        if event_type == EventType.SESSION_START and self._context:
-            payload["context"] = self._context
+        if event_type == EventType.SESSION_START:
+            ctx = dict(self._context) if self._context else {}
+            with self._lock:
+                if self._mcp_servers:
+                    # Phase 5: merge the per-session MCP server fingerprint
+                    # list into context. The worker's UpsertSession ON
+                    # CONFLICT writes context once and never updates it,
+                    # so any MCP servers connected before session_start
+                    # land permanently; servers connected later in the
+                    # session do NOT update sessions.context (the per-
+                    # event server_name on each MCP_* event is the
+                    # authoritative real-time signal).
+                    ctx["mcp_servers"] = [fp.to_dict() for fp in self._mcp_servers]
+            if ctx:
+                payload["context"] = ctx
 
         payload.update(extra)
         return payload
@@ -678,14 +715,13 @@ class Session:
 
         elif directive.action == DirectiveAction.POLICY_UPDATE:
             allowed = {
-                "token_limit", "warn_at_pct", "degrade_at_pct",
-                "degrade_to", "block_at_pct",
+                "token_limit",
+                "warn_at_pct",
+                "degrade_at_pct",
+                "degrade_to",
+                "block_at_pct",
             }
-            fields = {
-                k: v
-                for k, v in directive.payload.items()
-                if k in allowed
-            }
+            fields = {k: v for k, v in directive.payload.items() if k in allowed}
             self.policy.update(fields)
             _log.debug("[flightdeck] policy updated from directive")
 
@@ -715,8 +751,7 @@ class Session:
                 self.event_queue.flush()
             except Exception as exc:
                 _log.warning(
-                    "[flightdeck] shutdown: failed to flush "
-                    "acknowledgement event: %s",
+                    "[flightdeck] shutdown: failed to flush acknowledgement event: %s",
                     exc,
                 )
             with self._lock:
@@ -746,8 +781,7 @@ class Session:
                 self.event_queue.flush()
             except Exception as exc:
                 _log.warning(
-                    "[flightdeck] shutdown_flavor: failed to flush "
-                    "acknowledgement event: %s",
+                    "[flightdeck] shutdown_flavor: failed to flush acknowledgement event: %s",
                     exc,
                 )
             with self._lock:

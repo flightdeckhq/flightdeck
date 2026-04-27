@@ -6,6 +6,7 @@ import { cn } from "@/lib/utils";
 import {
   Zap, Wrench, AlertTriangle, XCircle, ArrowDown,
   Play, Square, Check, Circle, X, Database, AlertCircle,
+  ListChecks, FileText, Folder, MessageSquare, List,
 } from "lucide-react";
 
 const eventTypeConfig: Record<
@@ -34,6 +35,19 @@ const eventTypeConfig: Record<
   // separates them.
   embeddings: { cssVar: "var(--event-embeddings)", Icon: Database, label: "Embeddings" },
   llm_error: { cssVar: "var(--event-error)", Icon: AlertCircle, label: "LLM Error" },
+  // Phase 5 — MCP. Three colour families × two glyph variants per
+  // family. Solid (call/read/get) gets the more pictographic glyph;
+  // outline (list) gets the list-style glyph. Wrench shares with the
+  // LLM tool_call type but the cyan-2 chroma + label disambiguate at
+  // any size. ListChecks is the discovery shape; FileText reads as a
+  // document for resource reads; Folder reads as the resource bucket;
+  // MessageSquare for prompt fetches; List for prompt enumeration.
+  mcp_tool_call: { cssVar: "var(--event-mcp-tool)", Icon: Wrench, label: "MCP Tool Call" },
+  mcp_tool_list: { cssVar: "var(--event-mcp-tool)", Icon: ListChecks, label: "MCP Tools" },
+  mcp_resource_read: { cssVar: "var(--event-mcp-resource)", Icon: FileText, label: "MCP Resource Read" },
+  mcp_resource_list: { cssVar: "var(--event-mcp-resource)", Icon: Folder, label: "MCP Resources" },
+  mcp_prompt_get: { cssVar: "var(--event-mcp-prompt)", Icon: MessageSquare, label: "MCP Prompt Get" },
+  mcp_prompt_list: { cssVar: "var(--event-mcp-prompt)", Icon: List, label: "MCP Prompts" },
 };
 
 // Failed directive_result events (error/timeout) render with the

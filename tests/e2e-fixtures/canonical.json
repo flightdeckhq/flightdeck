@@ -56,6 +56,43 @@
         "policy_degrade",
         "policy_block"
       ]
+    },
+    "mcp-active": {
+      "started_offset_sec": -240,
+      "ended_offset_sec": null,
+      "purpose": "Phase 5 T25 anchor: live session that connected to two MCP servers (one stdio, one http) and emitted one event of each Phase 5 type (mcp_tool_list, mcp_tool_call, mcp_resource_list, mcp_resource_read, mcp_prompt_list, mcp_prompt_get). The mcp_tool_call additionally has capture_prompts=True so the dashboard's MCPEventDetails shows arguments + result. context.mcp_servers carries both server fingerprints so the session-drawer MCP SERVERS panel and the Investigate MCP SERVER facet aggregation both have data to render. Sensor agent only — Python sensor emits all six per Phase 5 D1; the Claude Code plugin emits MCP_TOOL_CALL only.",
+      "phase4_extras": [
+        "mcp_tool_list",
+        "mcp_tool_call",
+        "mcp_resource_list",
+        "mcp_resource_read",
+        "mcp_prompt_list",
+        "mcp_prompt_get"
+      ],
+      "mcp_servers": [
+        {
+          "name": "fixture-stdio-server",
+          "transport": "stdio",
+          "protocol_version": "2025-11-25",
+          "version": "1.0.0",
+          "capabilities": {
+            "tools": {"listChanged": false},
+            "resources": {"listChanged": false, "subscribe": false},
+            "prompts": {"listChanged": false}
+          },
+          "instructions": "T25 fixture stdio MCP server."
+        },
+        {
+          "name": "fixture-http-server",
+          "transport": "http",
+          "protocol_version": "2025-11-25",
+          "version": "0.9.2",
+          "capabilities": {
+            "tools": {"listChanged": false}
+          },
+          "instructions": null
+        }
+      ]
     }
   },
   "agents": [
@@ -81,7 +118,7 @@
       "model": "gpt-4o-mini",
       "framework": "langchain",
       "host": "e2e-host-sensor-prod",
-      "session_roles": ["fresh-active", "recent-closed", "aged-closed", "stale"]
+      "session_roles": ["fresh-active", "recent-closed", "aged-closed", "stale", "mcp-active"]
     },
     {
       "agent_name": "e2e-test-sensor-agent-long-name-for-truncation-testing-really-quite-long",

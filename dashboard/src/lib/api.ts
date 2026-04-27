@@ -308,6 +308,13 @@ export interface SessionsParams {
    * 400.
    */
   policy_event_type?: string[];
+  /**
+   * Phase 5: filter to sessions that connected to at least one MCP
+   * server with a matching name. Repeatable; OR within. Backed by an
+   * EXISTS subquery against ``sessions.context.mcp_servers`` JSONB on
+   * the API side. Powers the Investigate MCP SERVER facet.
+   */
+  mcp_server?: string[];
   model?: string;
   sort?: string;
   order?: string;
@@ -359,6 +366,9 @@ export async function fetchSessions(params: SessionsParams, signal?: AbortSignal
   }
   if (params.policy_event_type) {
     for (const pt of params.policy_event_type) sp.append("policy_event_type", pt);
+  }
+  if (params.mcp_server) {
+    for (const m of params.mcp_server) sp.append("mcp_server", m);
   }
   if (params.model) sp.set("model", params.model);
   if (params.sort) sp.set("sort", params.sort);

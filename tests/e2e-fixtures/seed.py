@@ -153,11 +153,25 @@ def _post_session_events(
     }
 
     # 1. session_start, then wait for persistence.
+    #
+    # Phase 5 T25: when the role declares ``mcp_servers``, attach the
+    # fingerprint list as ``context.mcp_servers`` on session_start so
+    # the worker persists it into ``sessions.context`` (set-once
+    # semantics — see ARCHITECTURE.md). Subsequent reads via the
+    # listing's ``mcp_server_names[]`` aggregation and the detail
+    # endpoint's ``context`` envelope both surface this list. Other
+    # roles emit session_start without context, matching the
+    # pre-Phase-5 baseline.
+    session_start_kwargs: dict[str, Any] = {}
+    role_mcp_servers = role_cfg.get("mcp_servers")
+    if role_mcp_servers:
+        session_start_kwargs["context"] = {"mcp_servers": role_mcp_servers}
     post_event(make_event(
         session_id, agent_cfg["flavor"], "session_start",
         timestamp=_shift_timestamp(event_started),
         **identity,
         **common,
+        **session_start_kwargs,
     ))
     if wait_for_session_in_fleet(session_id, timeout=5.0) is None:
         print(
@@ -376,6 +390,140 @@ def _post_session_events(
                 **common,
             ))
             posted += 1
+        elif extra.startswith("mcp_"):
+            # Phase 5 — MCP event extras. Six event types, lean wire
+            # shape (no LLM-baseline fields). The seeded ``server_name``
+            # / ``transport`` use the first entry on the role's
+            # ``mcp_servers`` list so per-event attribution lines up
+            # with the session-level fingerprint the drawer shows.
+            # capture_prompts ON for ``mcp_tool_call`` (arguments +
+            # result), ``mcp_resource_read`` (content + mime), and
+            # ``mcp_prompt_get`` (arguments + rendered) so T25's
+            # capture-on assertions have something to read; the list
+            # variants don't have capture-gated content.
+            servers = role_cfg.get("mcp_servers") or []
+            if not servers:
+                # The mcp-active role declares ``mcp_servers``; without
+                # it we can't seed coherent per-event attribution.
+                # Skip with a warn rather than panic.
+                print(
+                    f"  warn: extras tag {extra!r} requires role.mcp_servers; "
+                    f"skipping for {session_id[:8]}",
+                    file=sys.stderr,
+                )
+                continue
+            srv = servers[0]
+            srv_name = srv["name"]
+            srv_transport = srv["transport"]
+            mcp_common: dict[str, Any] = {
+                "server_name": srv_name,
+                "transport": srv_transport,
+                "duration_ms": 18 + 4 * i,
+            }
+            if extra == "mcp_tool_list":
+                post_event(make_event(
+                    session_id, agent_cfg["flavor"], "mcp_tool_list",
+                    timestamp=ts,
+                    count=3,
+                    **mcp_common,
+                    **identity,
+                    **common,
+                ))
+                posted += 1
+            elif extra == "mcp_tool_call":
+                post_event(make_event(
+                    session_id, agent_cfg["flavor"], "mcp_tool_call",
+                    timestamp=ts,
+                    tool_name="echo",
+                    arguments={"text": "phase5-fixture"},
+                    result={
+                        "content": [
+                            {"type": "text", "text": "phase5-fixture"},
+                        ],
+                        "isError": False,
+                    },
+                    **mcp_common,
+                    **identity,
+                    **common,
+                ))
+                posted += 1
+            elif extra == "mcp_resource_list":
+                post_event(make_event(
+                    session_id, agent_cfg["flavor"], "mcp_resource_list",
+                    timestamp=ts,
+                    count=1,
+                    **mcp_common,
+                    **identity,
+                    **common,
+                ))
+                posted += 1
+            elif extra == "mcp_resource_read":
+                post_event(make_event(
+                    session_id, agent_cfg["flavor"], "mcp_resource_read",
+                    timestamp=ts,
+                    resource_uri="mem://demo",
+                    content_bytes=46,
+                    mime_type="text/plain",
+                    content={
+                        "contents": [
+                            {
+                                "uri": "mem://demo",
+                                "mimeType": "text/plain",
+                                "text": (
+                                    "hello from the flightdeck "
+                                    "reference MCP server"
+                                ),
+                            },
+                        ],
+                    },
+                    **mcp_common,
+                    **identity,
+                    **common,
+                ))
+                posted += 1
+            elif extra == "mcp_prompt_list":
+                post_event(make_event(
+                    session_id, agent_cfg["flavor"], "mcp_prompt_list",
+                    timestamp=ts,
+                    count=1,
+                    **mcp_common,
+                    **identity,
+                    **common,
+                ))
+                posted += 1
+            elif extra == "mcp_prompt_get":
+                post_event(make_event(
+                    session_id, agent_cfg["flavor"], "mcp_prompt_get",
+                    timestamp=ts,
+                    prompt_name="greet",
+                    arguments={"name": "phase5"},
+                    rendered=[
+                        {
+                            "role": "user",
+                            "content": {
+                                "type": "text",
+                                "text": "Please greet phase5.",
+                            },
+                        },
+                        {
+                            "role": "assistant",
+                            "content": {
+                                "type": "text",
+                                "text": "Hello, phase5!",
+                            },
+                        },
+                    ],
+                    **mcp_common,
+                    **identity,
+                    **common,
+                ))
+                posted += 1
+            else:
+                print(
+                    f"  warn: unknown mcp_* extras tag {extra!r} for "
+                    f"{session_id[:8]}; ignored",
+                    file=sys.stderr,
+                )
         elif extra.startswith("llm_error_"):
             err_type = extra[len("llm_error_"):]
             # Per-taxonomy http_status / retry_after defaults so the
@@ -467,6 +615,19 @@ def _session_is_complete(
             expected_counts["embeddings"] = expected_counts.get("embeddings", 0) + 1
         elif tag.startswith("llm_error_"):
             expected_counts["llm_error"] = expected_counts.get("llm_error", 0) + 1
+        elif tag in (
+            "mcp_tool_list",
+            "mcp_tool_call",
+            "mcp_resource_list",
+            "mcp_resource_read",
+            "mcp_prompt_list",
+            "mcp_prompt_get",
+        ):
+            # Phase 5: each MCP extras tag maps directly to its own
+            # event_type row. Counted independently so a session
+            # declaring all six needs six events of distinct types
+            # to be considered complete.
+            expected_counts[tag] = expected_counts.get(tag, 0) + 1
         elif tag in ("policy_warn", "policy_degrade", "policy_block"):
             # Each policy_* tag maps directly to its own event_type
             # row. Counted independently so a session declaring all

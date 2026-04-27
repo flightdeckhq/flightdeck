@@ -2,6 +2,7 @@ import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { X } from "lucide-react";
 import { PromptViewer } from "@/components/session/PromptViewer";
+import { MCPEventDetails, isMCPEvent } from "@/components/session/MCPEventDetails";
 import { SyntaxJson } from "@/components/ui/syntax-json";
 import { getBadge, getSummaryRows, truncateSessionId } from "@/lib/events";
 import { getProvider } from "@/lib/models";
@@ -160,6 +161,10 @@ export function EventDetailDrawer({ event, onClose }: EventDetailDrawerProps) {
                   </div>
                 ))}
               </div>
+
+              {isMCPEvent(event.event_type) && (
+                <MCPEventDetails event={event} />
+              )}
 
               <div className="mb-3" style={{ borderTop: "1px solid var(--border-subtle)" }} />
 

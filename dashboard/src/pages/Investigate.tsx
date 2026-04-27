@@ -84,6 +84,11 @@ export function parseUrlState(sp: URLSearchParams) {
     // policy_degrade / policy_block. Drives the POLICY sidebar facet
     // and the severity-ranked session-row dot indicator.
     policyEventTypes: sp.getAll("policy_event_type"),
+    // Phase 5: MCP server filter. Repeatable; OR within. Backed by an
+    // EXISTS subquery against ``sessions.context.mcp_servers`` JSONB.
+    // Drives the MCP SERVER sidebar facet aggregating
+    // ``mcp_server_names[]`` across the visible result set.
+    mcpServers: sp.getAll("mcp_server"),
     // ``session`` carries the session id of an open drawer so a
     // deep-link (e.g. clicking a result in the global search modal)
     // routes the user into Investigate AND pops the drawer in one
@@ -120,6 +125,7 @@ export function buildUrlParams(s: ReturnType<typeof parseUrlState>): URLSearchPa
   for (const oc of s.contextOrchestrations) p.append("orchestration", oc);
   for (const et of s.errorTypes) p.append("error_type", et);
   for (const pt of s.policyEventTypes) p.append("policy_event_type", pt);
+  for (const m of s.mcpServers) p.append("mcp_server", m);
   if (s.session) p.set("session", s.session);
   if (s.model) p.set("model", s.model);
   if (s.sort !== "started_at") p.set("sort", s.sort);
@@ -257,6 +263,12 @@ export interface FacetSources {
    *  filter is active, holds the result set with the policy filter
    *  stripped. */
   policy_event_type?: SessionListItem[];
+  /** Phase 5 sticky-facet source for the MCP SERVER sidebar facet.
+   *  Same pattern as error_type / policy_event_type — when at least
+   *  one mcp_server filter is active, holds the result set with the
+   *  mcp_server filter stripped so the facet keeps showing every
+   *  server the user could toggle to. */
+  mcp_server?: SessionListItem[];
 }
 
 /** Scalar context keys that render as facets in the Investigate
@@ -312,6 +324,10 @@ export function computeFacets(
   // here.
   const errorTypeCounts = new Map<string, number>();
   const policyEventTypeCounts = new Map<string, number>();
+  // Phase 5 MCP SERVER facet: per-session mcp_server_names[] aggregates
+  // across the visible result set. Same one-vote-per-session-per-name
+  // semantics as error_type / policy_event_type.
+  const mcpServerCounts = new Map<string, number>();
   // D115 AGENT facet: keyed on agent_id (clickable filter value) with
   // an accompanying name map for display rendering. Sessions without
   // agent_id (pre-v0.4.0 legacy rows) are silently skipped -- they
@@ -399,6 +415,13 @@ export function computeFacets(
       }
     }
   }
+  if (sources.mcp_server) {
+    for (const s of sources.mcp_server) {
+      for (const name of s.mcp_server_names ?? []) {
+        mcpServerCounts.set(name, (mcpServerCounts.get(name) ?? 0) + 1);
+      }
+    }
+  }
   // Sticky-source pass for scalar context facets. A key whose source
   // override is present consumes THAT list; the main-loop branch
   // below skips it to avoid double-counting.
@@ -439,6 +462,11 @@ export function computeFacets(
     if (!sources.policy_event_type) {
       for (const pt of s.policy_event_types ?? []) {
         policyEventTypeCounts.set(pt, (policyEventTypeCounts.get(pt) ?? 0) + 1);
+      }
+    }
+    if (!sources.mcp_server) {
+      for (const name of s.mcp_server_names ?? []) {
+        mcpServerCounts.set(name, (mcpServerCounts.get(name) ?? 0) + 1);
       }
     }
     for (const key of CONTEXT_FACET_KEYS) {
@@ -507,6 +535,11 @@ export function computeFacets(
     // visible result set has any. Hidden by the .filter() below
     // otherwise.
     { key: "policy_event_type", label: "POLICY", values: toArr(policyEventTypeCounts) },
+    // Phase 5 MCP SERVER facet — sits at the very end so it does not
+    // disrupt the existing facet ordering for users who learned the
+    // pre-Phase-5 layout. Hidden by the ``.filter()`` below when the
+    // visible result set has no MCP-connected sessions.
+    { key: "mcp_server", label: "MCP SERVER", values: toArr(mcpServerCounts) },
   ].filter((g) => g.values.length > 0);
 }
 
@@ -718,6 +751,16 @@ export function buildActiveFilters(
         }),
     });
   }
+  for (const m of urlState.mcpServers) {
+    pills.push({
+      label: `mcp_server:${m}`,
+      onRemove: () =>
+        updateUrl({
+          mcpServers: urlState.mcpServers.filter((x) => x !== m),
+          page: 1,
+        }),
+    });
+  }
   if (urlState.agentId) {
     // ``?? []`` guards against a caller handing a runtime null where
     // the type asserts an array (e.g. a fleet fetch that nominally
@@ -797,6 +840,7 @@ export const CLEAR_ALL_FILTERS_PATCH: Partial<UrlStateSnapshot> = {
   contextOrchestrations: [],
   errorTypes: [],
   policyEventTypes: [],
+  mcpServers: [],
   model: "",
   q: "",
   page: 1,
@@ -993,6 +1037,7 @@ export function Investigate() {
         error_type: state.errorTypes.length > 0 ? state.errorTypes : undefined,
         policy_event_type:
           state.policyEventTypes.length > 0 ? state.policyEventTypes : undefined,
+        mcp_server: state.mcpServers.length > 0 ? state.mcpServers : undefined,
         sort: state.sort,
         order: state.order,
         limit: state.perPage,
@@ -1071,6 +1116,12 @@ export function Investigate() {
         policy_event_type: state.policyEventTypes.length > 0
           ? fetchSessions(
               { ...facetBase, policy_event_type: undefined },
+              controller.signal,
+            )
+          : null,
+        mcp_server: state.mcpServers.length > 0
+          ? fetchSessions(
+              { ...facetBase, mcp_server: undefined },
               controller.signal,
             )
           : null,
@@ -1275,6 +1326,15 @@ export function Investigate() {
           ? current.filter((x) => x !== value)
           : [...current, value];
         updateUrl({ errorTypes: next, page: 1 });
+      } else if (group === "mcp_server") {
+        // Phase 5 MCP SERVER facet — multi-select toggle, same shape
+        // as ERROR TYPE. Clicking a server name in the sidebar adds
+        // or removes it from the URL ``mcp_server`` filter list.
+        const current = urlState.mcpServers;
+        const next = current.includes(value)
+          ? current.filter((x) => x !== value)
+          : [...current, value];
+        updateUrl({ mcpServers: next, page: 1 });
       } else {
         // Scalar context facets. Lookup table keeps the per-facet
         // boilerplate (urlState slot, toggle, URL key) in one place
@@ -1530,6 +1590,8 @@ export function Investigate() {
                   ? "investigate-error-type-facet"
                   : group.key === "policy_event_type"
                   ? "investigate-policy-facet"
+                  : group.key === "mcp_server"
+                  ? "investigate-mcp-server-facet"
                   : undefined
               }
             >
@@ -1555,6 +1617,7 @@ export function Investigate() {
                   (group.key === "agent_id" && urlState.agentId === v.value) ||
                   (group.key === "error_type" && urlState.errorTypes.includes(v.value)) ||
                   (group.key === "policy_event_type" && urlState.policyEventTypes.includes(v.value)) ||
+                  (group.key === "mcp_server" && urlState.mcpServers.includes(v.value)) ||
                   (group.key === "os" && urlState.contextOS.includes(v.value)) ||
                   (group.key === "arch" && urlState.contextArch.includes(v.value)) ||
                   (group.key === "hostname" && urlState.contextHostnames.includes(v.value)) ||
@@ -1573,6 +1636,8 @@ export function Investigate() {
                         ? `investigate-error-type-pill-${v.value}`
                         : group.key === "policy_event_type"
                         ? `investigate-policy-pill-${v.value}`
+                        : group.key === "mcp_server"
+                        ? `investigate-mcp-server-pill-${v.value}`
                         : undefined
                     }
                     onClick={() => handleFacetClick(group.key, v.value)}

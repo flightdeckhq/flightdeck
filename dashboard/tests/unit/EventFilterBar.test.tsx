@@ -41,7 +41,8 @@ describe("EventFilterBar", () => {
   it("each non-All pill has a colored dot", () => {
     render(<EventFilterBar activeFilter={null} onFilterChange={() => {}} />);
     const dots = screen.getAllByTestId("filter-dot");
-    // 7 non-All pills (Phase 4 added Embeddings + Errors for 7 total).
-    expect(dots).toHaveLength(7);
+    // 8 non-All pills: LLM Calls, Tools, Embeddings, MCP (Phase 5),
+    // Errors, Policy, Directives, Session.
+    expect(dots).toHaveLength(8);
   });
 });

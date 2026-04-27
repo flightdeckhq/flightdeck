@@ -50,14 +50,15 @@ const BADGE_LABELS: Record<(typeof MCP_EVENT_TYPES)[number], string> = {
   mcp_prompt_list: "MCP PROMPTS",
 };
 
-const ICON_CLASSES: Record<(typeof MCP_EVENT_TYPES)[number], string> = {
-  mcp_tool_call: "lucide-wrench",
-  mcp_tool_list: "lucide-list-checks",
-  mcp_resource_read: "lucide-file-text",
-  mcp_resource_list: "lucide-folder",
-  mcp_prompt_get: "lucide-message-square",
-  mcp_prompt_list: "lucide-list",
-};
+// Icon glyph contract is pinned by tests/unit/EventNode-mcp.test.tsx,
+// not here. The Investigate drawer's event-row renders only the badge +
+// detail-text — the lucide circles live on the Fleet swimlane via
+// <EventNode>, which Investigate does not mount. Asserting icon
+// presence at this URL would either time out or accidentally match an
+// unrelated icon elsewhere on the page (e.g. lucide-file-text used by
+// the capture indicator), so the row tests focus on what is actually
+// in the drawer DOM at this navigation: the badge label, the row
+// container, and the server-name attribution string.
 
 async function fetchMCPSessionId(page: Page): Promise<string> {
   // The mcp-active role lands on the sensor agent. Filter on flavor
@@ -112,41 +113,27 @@ async function openMCPSession(page: Page): Promise<string> {
 }
 
 test.describe("T25 — MCP observability rendering", () => {
-  // T25-1 .. T25-6: per-event-type badge + icon rendering.
+  // T25-1 .. T25-6: per-event-type row + badge.
   for (const eventType of MCP_EVENT_TYPES) {
-    test(`row for ${eventType} carries ${BADGE_LABELS[eventType]} badge + ${ICON_CLASSES[eventType]} icon`, async ({
+    test(`row for ${eventType} carries ${BADGE_LABELS[eventType]} badge + server attribution`, async ({
       page,
     }) => {
       await openMCPSession(page);
       const drawer = page.locator('[data-testid="session-drawer"]');
-      const row = drawer
-        .locator('[data-testid^="mcp-event-row-"]')
-        .filter({ has: page.locator(`[data-event-type="${eventType}"]`) })
-        .or(drawer.locator(`[data-event-type="${eventType}"]`).first());
-      // Two locator strategies because the row's data-event-type lives
-      // on the row container itself (so the .filter chain may match
-      // the row directly). Both forms target the same element.
-      const targetRow = drawer.locator(`[data-event-type="${eventType}"]`).first();
-      await expect(targetRow).toBeVisible();
+      const row = drawer.locator(`[data-event-type="${eventType}"]`).first();
       await expect(
-        targetRow.locator('[data-testid="event-badge"]'),
-      ).toHaveText(BADGE_LABELS[eventType]);
-      // Bypassing the swimlane circles entirely — those aren't
-      // visible at default scroll. The drawer event-row itself does
-      // not carry the lucide glyph; the swimlane circle does. So
-      // for the icon assertion we navigate to the swimlane via the
-      // ``session-circle-<sessionId>`` testid family on the
-      // Investigate timeline. But the drawer is what renders here —
-      // assert via a separate element.
-      const iconCircle = page
-        .locator(`svg.${ICON_CLASSES[eventType]}`)
-        .first();
-      // The circle is rendered both in the timeline + the drawer's
-      // EventNode mini-icons; ``.first()`` is enough.
-      await expect(iconCircle).toBeVisible();
-      // Also assert the row's row-detail string carries the server
-      // name from the fixture so the row is recognisably MCP.
-      const detail = (await targetRow.textContent()) ?? "";
+        row,
+        `expected one drawer row for event_type=${eventType}`,
+      ).toBeVisible();
+      // Badge label is the user-visible signal that this row is MCP.
+      await expect(row.locator('[data-testid="event-badge"]')).toHaveText(
+        BADGE_LABELS[eventType],
+      );
+      // Server name appears in the row's detail text (per the
+      // ``getEventDetail`` MCP branch). Confirms the row binds the
+      // MCP-payload-extras projection on the worker side end-to-end
+      // through the dashboard.
+      const detail = (await row.textContent()) ?? "";
       expect(detail).toContain(MCP_FIXTURE.servers[0].name);
     });
   }

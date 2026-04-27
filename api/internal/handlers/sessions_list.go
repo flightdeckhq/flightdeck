@@ -89,6 +89,7 @@ var validPolicyEventTypes = map[string]bool{
 // @Param        orchestration query string false "Filter by context.orchestration (repeatable)"
 // @Param        error_type query  string  false  "Filter to sessions that emitted an llm_error event of one of the listed taxonomy values (repeatable/comma). 14-entry vocabulary: rate_limit, quota_exceeded, context_overflow, content_filter, invalid_request, authentication, permission, not_found, request_too_large, api_error, overloaded, timeout, stream_error, other."
 // @Param        policy_event_type query  string  false  "Filter to sessions that emitted at least one policy enforcement event of the listed types (repeatable/comma). Vocabulary: policy_warn, policy_degrade, policy_block."
+// @Param        mcp_server query  string  false  "Filter to sessions that connected to an MCP server with the given name (repeatable/comma). Phase 5: backed by the JSONB array sessions.context.mcp_servers. Each row in the response carries mcp_server_names[] for facet rendering."
 // @Param        sort       query  string  false  "Sort field: started_at, last_seen_at, duration, tokens_used, flavor, model, hostname, state (default: started_at). state sort uses severity ordinal active→idle→stale→lost→closed."
 // @Param        order      query  string  false  "Sort order: asc, desc (default: desc)"
 // @Param        limit      query  int     false  "Max results (default 25, max 100)"
@@ -223,6 +224,22 @@ func SessionsListHandler(s store.Querier) http.HandlerFunc {
 			}
 		}
 
+		// MCP-server filter (repeatable/comma). Phase 5. No fixed
+		// vocabulary — server names are user-defined at the agent's
+		// .mcp.json / claude.json layer; an unknown name yields an
+		// empty result, same posture as the framework / model
+		// filters. Backs the MCP SERVER facet on the Investigate
+		// sidebar.
+		var mcpServers []string
+		for _, m := range q["mcp_server"] {
+			for _, v := range strings.Split(m, ",") {
+				v = strings.TrimSpace(v)
+				if v != "" {
+					mcpServers = append(mcpServers, v)
+				}
+			}
+		}
+
 		// Parse client_type filter (repeatable). Validated against
 		// the CHECK-constraint vocabulary so a typo returns a 400
 		// with the allowed set rather than silently zero results --
@@ -328,6 +345,7 @@ func SessionsListHandler(s store.Querier) http.HandlerFunc {
 			ErrorTypes:       errorTypes,
 			PolicyEventTypes: policyEventTypes,
 			Frameworks:       frameworks,
+			MCPServers:       mcpServers,
 			ContextFilters: contextFilters,
 			Model:          q.Get("model"),
 			Sort:           sort,

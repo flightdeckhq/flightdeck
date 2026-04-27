@@ -2245,6 +2245,34 @@ func TestSessionsListHandler_ErrorTypeFilter_MultiValue(t *testing.T) {
 	)
 }
 
+func TestSessionsListHandler_MCPServerFilter_MultiValue(t *testing.T) {
+	// Phase 5: ?mcp_server= forwards a comma-or-repeated list of names
+	// to params.MCPServers. The store EXISTS subquery against
+	// jsonb_array_elements(sessions.context->'mcp_servers') is covered
+	// by integration tests; this case proves the handler parses and
+	// threads the list through.
+	s := &mockStore{}
+	handler := handlers.SessionsListHandler(store.WrapStore(s))
+	req := httptest.NewRequest(
+		"GET",
+		"/v1/sessions?mcp_server=demo,filesystem&mcp_server=github",
+		nil,
+	)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	p := s.lastSessionsParams
+	if p == nil {
+		t.Fatal("GetSessions not called")
+	}
+	assertStringSliceEqual(
+		t, "mcp_server", p.MCPServers,
+		[]string{"demo", "filesystem", "github"},
+	)
+}
+
 func TestSessionsListHandler_ClientTypeFilter_MultiValue(t *testing.T) {
 	s := &mockStore{}
 	handler := handlers.SessionsListHandler(store.WrapStore(s))

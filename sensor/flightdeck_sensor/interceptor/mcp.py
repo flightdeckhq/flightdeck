@@ -59,8 +59,10 @@ caller constructs ClientSession with manually-built streams)
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
 import time
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable
 
 from flightdeck_sensor.core.types import EventType, MCPServerFingerprint
@@ -102,6 +104,31 @@ _TRANSPORT_MARKER = "_flightdeck_transport"
 # call-time wrappers can attribute events without recomputing.
 _INSTANCE_TRANSPORT_ATTR = "_flightdeck_mcp_transport"
 _INSTANCE_SERVER_NAME_ATTR = "_flightdeck_mcp_server_name"
+
+# Phase 5 (B-6) — content-overflow thresholds.
+#
+# Inline threshold (8 KiB): fields below this serialized size land
+# inline in the event payload. Common-case MCP responses (small tool
+# call results, short rendered prompts) stay inline so the timeline
+# row renders without a follow-up fetch.
+#
+# Hard cap (2 MiB): fields above this size are dropped entirely with a
+# ``_capped`` marker and only their byte count is recorded. An agent
+# calling ``read_resource`` against a 500 MB log file shouldn't crash
+# Flightdeck or bloat Postgres rows past TOAST sanity.
+#
+# Range between threshold and hard cap: full content is stripped from
+# the inline payload, replaced with a ``{"_truncated": true, "size":
+# N}`` marker, AND shipped to the event_content table via the
+# existing has_content=true path (the same machinery LLM prompts use
+# for the same problem class). The dashboard's MCPEventDetails reads
+# the marker, surfaces a "Load full response" affordance, and fetches
+# /v1/events/:id/content on click.
+#
+# Exact byte values, not bit-shifted, so a future operator reading the
+# constants understands the threshold at a glance without arithmetic.
+_MCP_INLINE_THRESHOLD_BYTES = 8 * 1024
+_MCP_HARD_CAP_BYTES = 2 * 1024 * 1024
 
 
 # ----------------------------------------------------------------------
@@ -155,6 +182,122 @@ def _capabilities_dict(capabilities: Any) -> dict[str, Any]:
     if isinstance(dumped, dict):
         return dumped
     return {}
+
+
+# ----------------------------------------------------------------------
+# Phase 5 (B-6) — content-size gating helpers
+# ----------------------------------------------------------------------
+
+
+def _serialized_size_bytes(value: Any) -> int:
+    """Estimate the wire size of ``value`` in UTF-8-encoded JSON bytes.
+
+    The threshold check at emit time uses this estimate to decide
+    inline vs event_content overflow. ``json.dumps`` covers the common
+    case (dicts/lists/primitives the SDK already produced); on a
+    serialisation failure we treat the field as "very large" so the
+    overflow path runs and the operator sees a truncation marker
+    rather than a silently-dropped field. ``default=str`` accepts
+    pydantic model fragments / datetimes / AnyUrl instances cleanly.
+    """
+    if value is None:
+        return 0
+    try:
+        return len(json.dumps(value, default=str).encode("utf-8"))
+    except (TypeError, ValueError):  # pragma: no cover - defensive
+        return _MCP_HARD_CAP_BYTES + 1
+
+
+def _truncation_marker(size: int, *, capped: bool = False) -> dict[str, Any]:
+    """Sentinel placed inline in the event payload when a content field
+    is moved to event_content (or dropped entirely at the hard cap).
+
+    The dashboard branches on ``_truncated`` to render the "Load full
+    response" affordance; ``size`` shows the operator the original
+    serialized byte count. ``_capped`` indicates the field was over
+    the 2 MiB hard cap — no full content was preserved at all.
+    """
+    marker: dict[str, Any] = {"_truncated": True, "size": size}
+    if capped:
+        marker["_capped"] = True
+    return marker
+
+
+def _gate_mcp_field(value: Any) -> tuple[Any, Any, dict[str, Any] | None]:
+    """Decide inline vs overflow for a single capture-gated MCP field.
+
+    Returns ``(inline_value, overflow_value, marker)``:
+
+    * ``inline_value``: what to put in the inline event payload extras.
+      ``value`` itself when below threshold; the truncation marker
+      (a small dict) when above; ``None`` when the input was ``None``.
+    * ``overflow_value``: the full content destined for the
+      event_content row, or ``None`` if the field stays inline / was
+      dropped at the hard cap.
+    * ``marker``: the raw marker dict when overflow happened, or
+      ``None`` when the field stayed inline / was null. Surfaced
+      separately so the caller can summarise overflow at the
+      event level.
+
+    The hard cap is enforced strictly: at >2 MiB we do NOT preserve
+    the full content (the wire transfer would itself become a
+    pathology). The marker carries ``_capped: True`` so the dashboard
+    can render "content too large to capture" rather than offering a
+    "Load full response" affordance that returns nothing.
+    """
+    if value is None:
+        return None, None, None
+    size = _serialized_size_bytes(value)
+    if size <= _MCP_INLINE_THRESHOLD_BYTES:
+        return value, None, None
+    if size > _MCP_HARD_CAP_BYTES:
+        marker = _truncation_marker(size, capped=True)
+        return marker, None, marker
+    marker = _truncation_marker(size)
+    return marker, value, marker
+
+
+def _build_overflow_event_content(
+    *,
+    arguments_overflow: Any,
+    response_overflow: Any,
+    server_name: str | None,
+    session_id: str,
+) -> dict[str, Any] | None:
+    """Build the event_content-shaped wire dict for an MCP event whose
+    capture-gated fields exceeded the inline threshold.
+
+    Returns ``None`` when nothing overflowed (caller stays on the
+    inline path). When overflow exists, populates the existing
+    ``event_content`` columns the LLM path uses:
+
+    * ``provider`` -- ``"mcp"``
+    * ``model``    -- the connected MCP server name
+    * ``input``    -- arguments dict (when overflowing); null otherwise
+    * ``response`` -- the large content blob (result / content /
+                      rendered messages depending on event type)
+    * ``system`` / ``messages`` / ``tools`` -- LLM-only, always null /
+      empty for MCP
+
+    The shape matches what the worker's ``InsertEventContent`` already
+    parses (workers/internal/writer/postgres.go), so no worker change
+    is needed -- the existing has_content=true path runs and persists
+    the row.
+    """
+    if arguments_overflow is None and response_overflow is None:
+        return None
+    return {
+        "system": None,
+        "messages": [],
+        "tools": None,
+        "response": response_overflow if response_overflow is not None else {},
+        "input": arguments_overflow,
+        "provider": "mcp",
+        "model": server_name or "",
+        "session_id": session_id,
+        "event_id": "",
+        "captured_at": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 # ----------------------------------------------------------------------
@@ -253,7 +396,13 @@ def _emit_tool_list(
     latency_ms: int,
     error: BaseException | None,
     capture_prompts: bool,
+    session_id: str,
 ) -> dict[str, Any]:
+    # ``session_id`` and ``capture_prompts`` are unused for list events
+    # (no capture-gated content) but kept in the signature for ABI
+    # parity with the gated handlers — the wrapper factory passes the
+    # same kwargs to every entry in _PATCH_TABLE.
+    del capture_prompts, session_id
     extras = _common_extras(server_name, transport, latency_ms, error)
     if result is not None and error is None:
         tools = getattr(result, "tools", None) or []
@@ -273,6 +422,7 @@ def _emit_tool_call(
     latency_ms: int,
     error: BaseException | None,
     capture_prompts: bool,
+    session_id: str,
 ) -> dict[str, Any]:
     extras = _common_extras(server_name, transport, latency_ms, error)
     # call_tool(self, name, arguments=None, ...) — name is positional[0]
@@ -281,9 +431,29 @@ def _emit_tool_call(
     extras["tool_name"] = tool_name
     if capture_prompts:
         arguments = args[1] if len(args) > 1 else kwargs.get("arguments")
-        extras["arguments"] = arguments
-        if result is not None and error is None:
-            extras["result"] = _model_to_dict(result)
+        result_dict = (
+            _model_to_dict(result) if (result is not None and error is None) else None
+        )
+        # B-6 — gate each capture-on field independently. arguments
+        # below 8 KiB stay inline alongside a small result; arguments
+        # above 8 KiB get a marker inline and the full value goes to
+        # event_content. Same for result. has_content fires when any
+        # field overflowed.
+        args_inline, args_overflow, args_marker = _gate_mcp_field(arguments)
+        result_inline, result_overflow, result_marker = _gate_mcp_field(result_dict)
+        if args_inline is not None or args_marker is not None:
+            extras["arguments"] = args_inline
+        if result_inline is not None or result_marker is not None:
+            extras["result"] = result_inline
+        overflow_content = _build_overflow_event_content(
+            arguments_overflow=args_overflow,
+            response_overflow=result_overflow,
+            server_name=server_name,
+            session_id=session_id,
+        )
+        if overflow_content is not None:
+            extras["has_content"] = True
+            extras["content"] = overflow_content
     return extras
 
 
@@ -297,7 +467,9 @@ def _emit_resource_list(
     latency_ms: int,
     error: BaseException | None,
     capture_prompts: bool,
+    session_id: str,
 ) -> dict[str, Any]:
+    del capture_prompts, session_id
     extras = _common_extras(server_name, transport, latency_ms, error)
     if result is not None and error is None:
         resources = getattr(result, "resources", None) or []
@@ -317,6 +489,7 @@ def _emit_resource_read(
     latency_ms: int,
     error: BaseException | None,
     capture_prompts: bool,
+    session_id: str,
 ) -> dict[str, Any]:
     extras = _common_extras(server_name, transport, latency_ms, error)
     # read_resource(self, uri) — uri is positional[0].
@@ -351,7 +524,38 @@ def _emit_resource_read(
         extras["content_bytes"] = total_bytes
         if capture_prompts:
             extras["mime_type"] = mime_type
-            extras["content"] = _model_to_dict(result)
+            content_dict = _model_to_dict(result)
+            # B-6 — gate the resource body. read_resource against a
+            # multi-MB log file / PDF extract overflows to event_content
+            # via the existing has_content=true path. The wire
+            # ``content`` field shape is meaning-shifted by has_content:
+            #   has_content=false: inline ReadResourceResult (worker's
+            #     MCP-inline branch projects into events.payload).
+            #   has_content=true:  event_content shape (worker's
+            #     InsertEventContent persists the row).
+            # The dashboard discriminates via has_content alone — when
+            # true on an MCP event, the "Load full response" affordance
+            # fetches /v1/events/:id/content. No inline marker on
+            # ``content`` is needed (and would conflict with the wire-
+            # shape doubling).
+            _, content_overflow, _ = _gate_mcp_field(content_dict)
+            if content_overflow is not None:
+                overflow_content = _build_overflow_event_content(
+                    arguments_overflow=None,
+                    response_overflow=content_overflow,
+                    server_name=server_name,
+                    session_id=session_id,
+                )
+                if overflow_content is not None:
+                    extras["has_content"] = True
+                    extras["content"] = overflow_content
+            else:
+                # Below threshold — inline (or hard-cap dropped).
+                # _gate_mcp_field returns (marker, None, marker) on hard
+                # cap, in which case we record the marker inline and do
+                # NOT set has_content (no full content was preserved).
+                inline_value, _, _ = _gate_mcp_field(content_dict)
+                extras["content"] = inline_value
     elif error is None:
         extras["content_bytes"] = 0
     return extras
@@ -367,7 +571,9 @@ def _emit_prompt_list(
     latency_ms: int,
     error: BaseException | None,
     capture_prompts: bool,
+    session_id: str,
 ) -> dict[str, Any]:
+    del capture_prompts, session_id
     extras = _common_extras(server_name, transport, latency_ms, error)
     if result is not None and error is None:
         prompts = getattr(result, "prompts", None) or []
@@ -387,6 +593,7 @@ def _emit_prompt_get(
     latency_ms: int,
     error: BaseException | None,
     capture_prompts: bool,
+    session_id: str,
 ) -> dict[str, Any]:
     extras = _common_extras(server_name, transport, latency_ms, error)
     # get_prompt(self, name, arguments=None) — name is positional[0].
@@ -394,10 +601,30 @@ def _emit_prompt_get(
     extras["prompt_name"] = prompt_name
     if capture_prompts:
         arguments = args[1] if len(args) > 1 else kwargs.get("arguments")
-        extras["arguments"] = arguments
+        rendered = None
         if result is not None and error is None:
             messages = getattr(result, "messages", None) or []
-            extras["rendered"] = [_model_to_dict(m) for m in messages]
+            rendered = [_model_to_dict(m) for m in messages]
+        # B-6 — gate arguments and rendered independently. Multi-message
+        # rendered prompts with embedded context routinely cross 10 KiB
+        # in real templates.
+        args_inline, args_overflow, args_marker = _gate_mcp_field(arguments)
+        rendered_inline, rendered_overflow, rendered_marker = _gate_mcp_field(
+            rendered,
+        )
+        if args_inline is not None or args_marker is not None:
+            extras["arguments"] = args_inline
+        if rendered_inline is not None or rendered_marker is not None:
+            extras["rendered"] = rendered_inline
+        overflow_content = _build_overflow_event_content(
+            arguments_overflow=args_overflow,
+            response_overflow=rendered_overflow,
+            server_name=server_name,
+            session_id=session_id,
+        )
+        if overflow_content is not None:
+            extras["has_content"] = True
+            extras["content"] = overflow_content
     return extras
 
 
@@ -489,6 +716,7 @@ def _make_async_wrapper(
                 latency_ms=latency_ms,
                 error=error,
                 capture_prompts=sensor_session.config.capture_prompts,
+                session_id=sensor_session.config.session_id,
             )
             payload = sensor_session._build_payload(event_type, **extras)
             sensor_session.event_queue.enqueue(payload)

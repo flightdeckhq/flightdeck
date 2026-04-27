@@ -82,6 +82,38 @@ describe("eventBadgeConfig — Phase 5 MCP entries (B-4 verb labels)", () => {
     }
   });
 
+  it("B-7: every Phase 5 badge label fits on a single line (no wrap)", () => {
+    // Pre-B-7 the badge container was fixed w-[88px] which clipped
+    // the longer Phase 5 verb labels (TOOLS DISCOVERED / RESOURCES
+    // DISCOVERED / PROMPTS DISCOVERED). After B-7 the container is
+    // ``min-w-[88px] px-2 whitespace-nowrap`` — auto-widens to fit.
+    // We can't measure pixel width in jsdom (no CSS layout), but we
+    // CAN assert the contract that prevents wrapping: the badge
+    // labels live in eventBadgeConfig and must not contain newlines
+    // or soft-wrap hints. Keeping each label as a single token
+    // string is the structural floor.
+    const phase5LabelKeys = [
+      "mcp_tool_call",
+      "mcp_tool_list",
+      "mcp_resource_read",
+      "mcp_resource_list",
+      "mcp_prompt_get",
+      "mcp_prompt_list",
+    ];
+    for (const key of phase5LabelKeys) {
+      const label = eventBadgeConfig[key].label;
+      expect(label).not.toContain("\n");
+      expect(label.trim()).toBe(label);
+      // Every label still fits in 22 characters (sanity floor — at
+      // the 10px font this is roughly 132 px which the new
+      // min-w-[88px] + px-2 happily expands to). A future label
+      // longer than 22 chars triggers this test as a deliberate
+      // tap on the shoulder so the author either tightens the
+      // wording or revisits the badge container width.
+      expect(label.length).toBeLessThanOrEqual(22);
+    }
+  });
+
   it("regression guard: legacy MCP labels MUST NOT appear in any badge config (B-4)", () => {
     // Pre-B-4 labels were "MCP TOOL"/"MCP TOOLS"/"MCP RESOURCE"/
     // "MCP RESOURCES"/"MCP PROMPT"/"MCP PROMPTS". The plural-only-s

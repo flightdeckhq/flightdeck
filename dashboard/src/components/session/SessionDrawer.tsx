@@ -1403,7 +1403,7 @@ function EventFeed({
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <span
-                        className="flex h-[18px] w-[88px] shrink-0 items-center justify-center rounded font-mono text-[10px] font-semibold uppercase"
+                        className="flex h-[18px] min-w-[88px] shrink-0 items-center justify-center whitespace-nowrap rounded px-2 font-mono text-[10px] font-semibold uppercase"
                         style={{
                           background: `color-mix(in srgb, ${badge.cssVar} 15%, transparent)`,
                           color: badge.cssVar,
@@ -1422,7 +1422,7 @@ function EventFeed({
                 </TooltipProvider>
               ) : (
                 <span
-                  className="flex h-[18px] w-[88px] shrink-0 items-center justify-center rounded font-mono text-[10px] font-semibold uppercase"
+                  className="flex h-[18px] min-w-[88px] shrink-0 items-center justify-center whitespace-nowrap rounded px-2 font-mono text-[10px] font-semibold uppercase"
                   style={{
                     background: `color-mix(in srgb, ${badge.cssVar} 15%, transparent)`,
                     color: badge.cssVar,
@@ -1702,7 +1702,7 @@ function EventDetailView({ event, session, onBack }: { event: AgentEvent; sessio
         <button className="text-xs" style={{ color: "var(--accent)" }} onClick={onBack} data-testid="back-to-session">← Back to session</button>
       </div>
       <div className="flex h-14 shrink-0 items-center gap-2 px-4" style={{ borderBottom: "1px solid var(--border)" }}>
-        <span className="flex h-[18px] w-[88px] shrink-0 items-center justify-center rounded font-mono text-[10px] font-semibold uppercase"
+        <span className="flex h-[18px] min-w-[88px] shrink-0 items-center justify-center whitespace-nowrap rounded px-2 font-mono text-[10px] font-semibold uppercase"
           style={{ background: `color-mix(in srgb, ${badge.cssVar} 15%, transparent)`, color: badge.cssVar, border: `1px solid color-mix(in srgb, ${badge.cssVar} 30%, transparent)`, borderRadius: 3 }}>
           {badge.label}
         </span>
@@ -1837,7 +1837,7 @@ function PromptsTab({
             }}
             onClick={() => onSelectEvent(event.id)}
           >
-            <span className="flex h-[18px] w-[88px] shrink-0 items-center justify-center rounded font-mono text-[10px] font-semibold uppercase"
+            <span className="flex h-[18px] min-w-[88px] shrink-0 items-center justify-center whitespace-nowrap rounded px-2 font-mono text-[10px] font-semibold uppercase"
               style={{ background: `color-mix(in srgb, ${badge.cssVar} 15%, transparent)`, color: badge.cssVar, border: `1px solid color-mix(in srgb, ${badge.cssVar} 30%, transparent)`, borderRadius: 3 }}>
               {badge.label}
             </span>

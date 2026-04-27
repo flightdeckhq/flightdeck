@@ -303,6 +303,110 @@ test.describe("T25 — MCP observability rendering", () => {
   // window — see seed.py's mcp-active branch. T25-13 asserts the
   // data-event-shape="hexagon" + data-mcp-family="true" markers
   // are visible on the Fleet swimlane, both themes.
+  // T25-14 (B-6) — large MCP content routes to event_content; drawer
+  // shows Load Full Response affordance and the click fetches the
+  // full body. The seeder lands one fresh has_content=true
+  // mcp_resource_read each refresh — see seed.py's mcp-active branch.
+  test("T25-14: large MCP content surfaces Load full response + fetch round-trips", async ({
+    page,
+  }) => {
+    const sid = await fetchMCPSessionId(page);
+    const params = new URLSearchParams({
+      from: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
+      to: new Date().toISOString(),
+      flavor: SENSOR_AGENT.flavor,
+      session: sid,
+    });
+    await page.goto(`/investigate?${params.toString()}`);
+    await waitForInvestigateReady(page);
+    const drawer = page.locator('[data-testid="session-drawer"]');
+    // Find the resource-read row whose data-event-type is set AND
+    // whose has_content attribute reflects overflow. The drawer's
+    // ``mcp-event-row-<id>`` testid wraps each MCP row regardless of
+    // overflow state; we identify the overflowed one via the
+    // resource_uri text "mem://big-log" the seeder uses for the
+    // overflow fixture.
+    const overflowRow = drawer
+      .locator('[data-event-type="mcp_resource_read"]')
+      .filter({ hasText: "mem://big-log" })
+      .first();
+    await expect(overflowRow).toBeVisible();
+    await overflowRow.click();
+    // Open the MCP details accordion on the same row.
+    const accordion = overflowRow
+      .locator('xpath=following-sibling::*[1]')
+      .locator('[data-testid^="mcp-event-details-toggle-"]')
+      .first();
+    // Fallback: the accordion may be a sibling of the row container.
+    // Use a less-fragile approach: pick the accordion belonging to
+    // ANY MCP details block visible after the row click.
+    const detailsToggle = drawer
+      .locator('[data-testid^="mcp-event-details-toggle-"]')
+      .last();
+    await detailsToggle.click().catch(() => accordion.click());
+    // The "Load full response" affordance appears for the truncated
+    // content field. Locate by its placeholder testid suffix.
+    const loadButton = drawer
+      .locator(
+        '[data-testid$="-truncated"] button',
+      )
+      .filter({ hasText: /Load full/ })
+      .first();
+    await expect(
+      loadButton,
+      "expected Load full response button on the overflow row",
+    ).toBeVisible();
+    await loadButton.click();
+    // After fetch, the placeholder is replaced by the CodeBlock
+    // <pre> carrying the testid ``mcp-event-detail-content-<id>``
+    // (un-suffixed; the suffixed variants -truncated and -capped
+    // belong to the placeholder + capped-notice paths). Wait for the
+    // unsuffixed pre to materialise and assert the body text.
+    const loadedBody = drawer.locator(
+      "pre[data-testid^=\"mcp-event-detail-content-\"]:not([data-testid$=\"-truncated\"]):not([data-testid$=\"-capped\"])",
+    ).first();
+    await expect(loadedBody, "loaded body must be visible").toBeVisible({
+      timeout: 5000,
+    });
+    // The 12 KiB body the seeder stamps starts with "x" repeats.
+    expect((await loadedBody.textContent()) ?? "").toContain("xxxxx");
+  });
+
+  // T25-15 (B-7) — every Phase 5 MCP badge fits inside the pill.
+  // The pill container's bounding rect must not be smaller than the
+  // text span's bounding rect (i.e. no clip).
+  test("T25-15: MCP badges fit on a single line (no clip)", async ({
+    page,
+  }) => {
+    const sid = await fetchMCPSessionId(page);
+    const params = new URLSearchParams({
+      from: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
+      to: new Date().toISOString(),
+      flavor: SENSOR_AGENT.flavor,
+      session: sid,
+    });
+    await page.goto(`/investigate?${params.toString()}`);
+    await waitForInvestigateReady(page);
+    const drawer = page.locator('[data-testid="session-drawer"]');
+    // Iterate every MCP event row's badge and confirm scrollWidth
+    // <= clientWidth (no horizontal overflow / clip).
+    const badges = drawer
+      .locator('[data-event-type^="mcp_"] [data-testid="event-badge"]');
+    const count = await badges.count();
+    expect(count).toBeGreaterThan(0);
+    for (let i = 0; i < count; i++) {
+      const badge = badges.nth(i);
+      const overflow = await badge.evaluate(
+        (el) => el.scrollWidth > el.clientWidth,
+      );
+      const text = await badge.textContent();
+      expect(
+        overflow,
+        `badge "${text}" overflows its container (scrollWidth > clientWidth)`,
+      ).toBe(false);
+    }
+  });
+
   test("T25-13: Fleet swimlane renders MCP events as hexagons (not circles)", async ({
     page,
   }) => {

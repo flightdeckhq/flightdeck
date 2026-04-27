@@ -57,7 +57,7 @@ export function EventDetailDrawer({ event, onClose }: EventDetailDrawerProps) {
         >
           {/* Badge */}
           <span
-            className="flex h-[18px] w-[88px] shrink-0 items-center justify-center rounded font-mono text-[10px] font-semibold uppercase"
+            className="flex h-[18px] min-w-[88px] shrink-0 items-center justify-center whitespace-nowrap rounded px-2 font-mono text-[10px] font-semibold uppercase"
             style={{
               background: `color-mix(in srgb, ${badge.cssVar} 15%, transparent)`,
               color: badge.cssVar,

@@ -1,5 +1,6 @@
-import { useState } from "react";
-import type { AgentEvent } from "@/lib/types";
+import { useCallback, useState } from "react";
+import type { AgentEvent, EventContent } from "@/lib/types";
+import { fetchEventContent } from "@/lib/api";
 import { AccordionHeader } from "./AccordionHeader";
 
 /**
@@ -19,6 +20,17 @@ import { AccordionHeader } from "./AccordionHeader";
  * ``capture_prompts`` on the sensor side — when capture is off the
  * fields are absent from the payload and we render an explicit
  * "capture disabled" notice rather than an empty accordion.
+ *
+ * B-6 — content-overflow handling. Fields above the sensor's 8 KiB
+ * inline threshold are stripped from the inline payload and replaced
+ * with a ``{"_truncated": true, "size": N}`` marker; the full content
+ * lives in the event_content row, fetched on click via
+ * ``GET /v1/events/:id/content``. The component lazily fetches once
+ * the user requests any truncated field and reuses the cached
+ * response across all per-field reveals on the same event. The hard-
+ * cap case (``_capped: true``) renders a "content too large to
+ * capture" notice with no fetch button — no full content was
+ * preserved on the wire.
  *
  * Failure paths share rendering with ``ErrorEventDetails`` semantically
  * but the MCP error taxonomy (JSON-RPC codes, ``error_class``) differs
@@ -45,32 +57,83 @@ interface MCPEventDetailsProps {
   event: AgentEvent;
 }
 
+interface TruncationMarker {
+  _truncated: true;
+  size?: number;
+  _capped?: boolean;
+}
+
+function isTruncationMarker(value: unknown): value is TruncationMarker {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as { _truncated?: unknown })._truncated === true
+  );
+}
+
+function isCappedMarker(value: unknown): boolean {
+  return (
+    isTruncationMarker(value) && (value as TruncationMarker)._capped === true
+  );
+}
+
 export function MCPEventDetails({ event }: MCPEventDetailsProps) {
   const [expanded, setExpanded] = useState(false);
+  const [fullContent, setFullContent] = useState<EventContent | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const loadFull = useCallback(async () => {
+    if (loading || fullContent) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const c = await fetchEventContent(event.id);
+      if (c == null) {
+        setError("Content unavailable for this event.");
+      } else {
+        setFullContent(c);
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load content.");
+    } finally {
+      setLoading(false);
+    }
+  }, [event.id, fullContent, loading]);
+
   const p = event.payload;
   if (!p) return null;
   if (!isMCPEvent(event.event_type)) return null;
 
   // Failure path: surface the structured MCP taxonomy regardless of
   // capture state. Errors carry no sensitive content.
-  const error = p.error;
-  const isStructuredError = !!error && typeof error !== "string";
+  const errPayload = p.error;
+  const isStructuredError = !!errPayload && typeof errPayload !== "string";
 
-  // Capture-gated content for the three operations that have
-  // request/response payloads to render. List events have no
-  // capture-gated payload — they get a "no detail" notice when
-  // expanded so the row stays self-explanatory.
-  const hasCapturedPayload =
-    (event.event_type === "mcp_tool_call" &&
-      (p.arguments != null || p.result != null)) ||
-    (event.event_type === "mcp_resource_read" && p.content != null) ||
-    (event.event_type === "mcp_prompt_get" &&
-      (p.arguments != null || (p.rendered && p.rendered.length > 0)));
-
+  // Per-field state. Captured payload is present when the inline
+  // field has a value OR when it carries a truncation marker. Lists
+  // get their own notice branch.
   const isListEvent =
     event.event_type === "mcp_tool_list" ||
     event.event_type === "mcp_resource_list" ||
     event.event_type === "mcp_prompt_list";
+
+  // For resource_read, the inline ``content`` field is absent when the
+  // body overflowed (the wire ``content`` was repurposed for the
+  // event_content payload, which the worker consumed). The presence
+  // of has_content=true is the discriminant for a truncated body.
+  const resourceContentTruncated =
+    event.event_type === "mcp_resource_read" &&
+    p.content == null &&
+    event.has_content === true;
+
+  const hasCapturedPayload =
+    (event.event_type === "mcp_tool_call" &&
+      (p.arguments != null || p.result != null)) ||
+    (event.event_type === "mcp_resource_read" &&
+      (p.content != null || resourceContentTruncated)) ||
+    (event.event_type === "mcp_prompt_get" &&
+      (p.arguments != null || (p.rendered && p.rendered.length > 0)));
 
   return (
     <div
@@ -90,10 +153,16 @@ export function MCPEventDetails({ event }: MCPEventDetailsProps) {
       {expanded && (
         <div className="mt-2 space-y-3">
           {isStructuredError && (
-            <ErrorBlock event={event} error={error as MCPErrorShape} />
+            <ErrorBlock event={event} error={errPayload as MCPErrorShape} />
           )}
           {!isStructuredError && hasCapturedPayload && (
-            <CapturedPayloadBlock event={event} />
+            <CapturedPayloadBlock
+              event={event}
+              fullContent={fullContent}
+              loading={loading}
+              loadError={error}
+              onLoadFull={loadFull}
+            />
           )}
           {!isStructuredError && !hasCapturedPayload && !isListEvent && (
             <CaptureDisabledNotice eventId={event.id} />
@@ -172,61 +241,262 @@ function ErrorBlock({
   );
 }
 
-function CapturedPayloadBlock({ event }: { event: AgentEvent }) {
+function CapturedPayloadBlock({
+  event,
+  fullContent,
+  loading,
+  loadError,
+  onLoadFull,
+}: {
+  event: AgentEvent;
+  fullContent: EventContent | null;
+  loading: boolean;
+  loadError: string | null;
+  onLoadFull: () => void;
+}) {
   const p = event.payload;
   if (!p) return null;
+
+  // Per-event field map: which payload field maps to which
+  // event_content slot when the field overflowed (B-6).
+  //   mcp_tool_call:    arguments → input,    result   → response
+  //   mcp_resource_read: content   → response  (no arguments)
+  //   mcp_prompt_get:    arguments → input,    rendered → response
   return (
     <div className="space-y-2">
-      {/* Tool call: arguments → result */}
       {event.event_type === "mcp_tool_call" && (
         <>
-          {p.arguments != null && (
-            <CodeBlock
-              label="Arguments"
-              value={p.arguments}
-              testId={`mcp-event-detail-arguments-${event.id}`}
-            />
-          )}
-          {p.result != null && (
-            <CodeBlock
-              label="Result"
-              value={p.result}
-              testId={`mcp-event-detail-result-${event.id}`}
-            />
-          )}
+          <CaptureField
+            label="Arguments"
+            inline={p.arguments}
+            externalValue={fullContent?.input}
+            testId={`mcp-event-detail-arguments-${event.id}`}
+            loading={loading}
+            loadError={loadError}
+            onLoadFull={onLoadFull}
+          />
+          <CaptureField
+            label="Result"
+            inline={p.result}
+            externalValue={fullContent?.response}
+            testId={`mcp-event-detail-result-${event.id}`}
+            loading={loading}
+            loadError={loadError}
+            onLoadFull={onLoadFull}
+          />
         </>
       )}
-      {/* Resource read: full content body. The summary row already
-          rendered ``content_bytes`` and ``mime_type`` so this block
-          is just the body. */}
-      {event.event_type === "mcp_resource_read" && p.content != null && (
-        <CodeBlock
+      {event.event_type === "mcp_resource_read" && (
+        <CaptureField
           label="Content"
-          value={p.content}
+          inline={p.content}
+          // For resource_read, the body lives on event_content.response
+          // when overflowed. The implicit-truncation flag (has_content
+          // true with no inline content) propagates via the inline
+          // value being null + the externalValue being available
+          // after fetch.
+          externalValue={fullContent?.response}
+          forceTruncated={
+            p.content == null && event.has_content === true
+              ? { _truncated: true }
+              : null
+          }
           testId={`mcp-event-detail-content-${event.id}`}
+          loading={loading}
+          loadError={loadError}
+          onLoadFull={onLoadFull}
         />
       )}
-      {/* Prompt get: arguments → rendered messages */}
       {event.event_type === "mcp_prompt_get" && (
         <>
-          {p.arguments != null && (
-            <CodeBlock
-              label="Arguments"
-              value={p.arguments}
-              testId={`mcp-event-detail-arguments-${event.id}`}
-            />
-          )}
-          {p.rendered && p.rendered.length > 0 && (
-            <CodeBlock
-              label="Rendered"
-              value={p.rendered}
-              testId={`mcp-event-detail-rendered-${event.id}`}
-            />
-          )}
+          <CaptureField
+            label="Arguments"
+            inline={p.arguments}
+            externalValue={fullContent?.input}
+            testId={`mcp-event-detail-arguments-${event.id}`}
+            loading={loading}
+            loadError={loadError}
+            onLoadFull={onLoadFull}
+          />
+          <CaptureField
+            label="Rendered"
+            inline={p.rendered}
+            externalValue={fullContent?.response}
+            testId={`mcp-event-detail-rendered-${event.id}`}
+            loading={loading}
+            loadError={loadError}
+            onLoadFull={onLoadFull}
+          />
         </>
       )}
     </div>
   );
+}
+
+function CaptureField({
+  label,
+  inline,
+  externalValue,
+  forceTruncated,
+  testId,
+  loading,
+  loadError,
+  onLoadFull,
+}: {
+  label: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  inline: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  externalValue?: any;
+  forceTruncated?: TruncationMarker | null;
+  testId?: string;
+  loading: boolean;
+  loadError: string | null;
+  onLoadFull: () => void;
+}) {
+  // When the field is null/empty AND no truncation is implied, render
+  // nothing — keeps the per-event-type field set sparse (e.g.
+  // mcp_tool_call with capture but no arguments emits result only).
+  const truncationCandidate = forceTruncated ?? inline;
+  const truncated = isTruncationMarker(truncationCandidate);
+  if (!truncated && (inline == null || inline === "")) {
+    return null;
+  }
+  if (truncated) {
+    const marker = truncationCandidate as TruncationMarker;
+    if (isCappedMarker(marker)) {
+      return (
+        <CappedNotice
+          label={label}
+          size={marker.size}
+          testId={testId ? `${testId}-capped` : undefined}
+        />
+      );
+    }
+    if (externalValue != null) {
+      return (
+        <CodeBlock
+          label={`${label} (loaded from event_content)`}
+          value={externalValue}
+          testId={testId}
+        />
+      );
+    }
+    return (
+      <TruncatedFieldBlock
+        label={label}
+        size={marker.size}
+        loading={loading}
+        loadError={loadError}
+        onLoadFull={onLoadFull}
+        testId={testId ? `${testId}-truncated` : undefined}
+      />
+    );
+  }
+  return <CodeBlock label={label} value={inline} testId={testId} />;
+}
+
+function TruncatedFieldBlock({
+  label,
+  size,
+  loading,
+  loadError,
+  onLoadFull,
+  testId,
+}: {
+  label: string;
+  size?: number;
+  loading: boolean;
+  loadError: string | null;
+  onLoadFull: () => void;
+  testId?: string;
+}) {
+  const sizeLabel = typeof size === "number" ? formatBytes(size) : "large";
+  return (
+    <div
+      data-testid={testId}
+      className="flex items-center justify-between"
+      style={{
+        background: "var(--bg-elevated)",
+        border: "1px dashed var(--border)",
+        borderRadius: 4,
+        padding: "8px 10px",
+      }}
+    >
+      <div className="text-xs">
+        <span style={{ color: "var(--text-muted)" }}>{label}</span>
+        <span className="ml-2" style={{ color: "var(--text-muted)" }}>
+          ·
+        </span>
+        <span className="ml-2" style={{ color: "var(--text)" }}>
+          {sizeLabel} captured to event_content
+        </span>
+        {loadError && (
+          <div
+            className="mt-1 text-[11px]"
+            style={{ color: "var(--event-error)" }}
+          >
+            {loadError}
+          </div>
+        )}
+      </div>
+      <button
+        type="button"
+        disabled={loading}
+        className="text-xs"
+        style={{
+          color: loading ? "var(--text-muted)" : "var(--accent)",
+          cursor: loading ? "default" : "pointer",
+        }}
+        onClick={(e) => {
+          e.stopPropagation();
+          onLoadFull();
+        }}
+      >
+        {loading ? "Loading..." : "Load full response"}
+      </button>
+    </div>
+  );
+}
+
+function CappedNotice({
+  label,
+  size,
+  testId,
+}: {
+  label: string;
+  size?: number;
+  testId?: string;
+}) {
+  const sizeLabel = typeof size === "number" ? formatBytes(size) : "very large";
+  return (
+    <div
+      data-testid={testId}
+      className="text-xs"
+      style={{
+        background: "color-mix(in srgb, var(--warning) 10%, transparent)",
+        border:
+          "1px solid color-mix(in srgb, var(--warning) 30%, transparent)",
+        borderRadius: 4,
+        padding: "8px 10px",
+        color: "var(--text)",
+      }}
+    >
+      <span style={{ color: "var(--text-muted)" }}>{label}</span>
+      <span className="ml-2" style={{ color: "var(--text-muted)" }}>
+        ·
+      </span>
+      <span className="ml-2">
+        Content too large to capture ({sizeLabel}). Only metadata recorded.
+      </span>
+    </div>
+  );
+}
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(2)} MB`;
 }
 
 function CaptureDisabledNotice({ eventId }: { eventId: string }) {

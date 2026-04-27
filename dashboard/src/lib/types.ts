@@ -497,7 +497,16 @@ export interface EventContent {
    * ``EmbeddingsContentViewer`` branches on the type to render the
    * single-input or batch-list view.
    */
-  input?: string | string[] | null;
+  // ``input`` is overloaded across event-content sources:
+  //   * Phase 4 ``embeddings``: string (single-input embed) or string[]
+  //     (batch embed) — the OpenAI / litellm input parameter.
+  //   * Phase 5 ``mcp_tool_call`` / ``mcp_prompt_get`` overflow (B-6):
+  //     dict carrying the call's full ``arguments`` when the inline
+  //     payload field overflowed the 8 KiB threshold.
+  // Components branch on the parent event's event_type to render
+  // appropriately.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  input?: string | string[] | Record<string, any> | null;
   captured_at: string;
 }
 

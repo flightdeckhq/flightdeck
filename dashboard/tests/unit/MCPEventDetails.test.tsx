@@ -1,10 +1,11 @@
-import { describe, it, expect } from "vitest";
-import { render, fireEvent } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { render, fireEvent, waitFor } from "@testing-library/react";
 import {
   MCPEventDetails,
   isMCPEvent,
 } from "@/components/session/MCPEventDetails";
-import type { AgentEvent } from "@/lib/types";
+import type { AgentEvent, EventContent } from "@/lib/types";
+import * as api from "@/lib/api";
 
 // Phase 5 — MCPEventDetails component contract. Mirrors the frozen
 // dashboard fixture in dashboard/tests/e2e/fixtures/mcp-events.json
@@ -187,6 +188,130 @@ describe("MCPEventDetails — list events", () => {
     expect(
       getByTestId("mcp-event-detail-list-notice-mcp-evt-1"),
     ).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------
+// B-6 — content-overflow handling (truncation markers + Load full)
+// ---------------------------------------------------------------------
+
+describe("MCPEventDetails — B-6 truncation markers", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("mcp_tool_call: truncated arguments shows Load full button + size", () => {
+    const event = makeMCPEvent({
+      event_type: "mcp_tool_call",
+      tool_name: "ingest",
+      payload: {
+        server_name: "demo",
+        transport: "stdio",
+        // Inline marker — full content lives in event_content.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        arguments: { _truncated: true, size: 9216 } as any,
+        result: { isError: false, content: [] },
+      },
+    });
+    const { getByTestId, queryByTestId } = render(<MCPEventDetails event={event} />);
+    fireEvent.click(getByTestId("mcp-event-details-toggle-mcp-evt-1"));
+    const placeholder = getByTestId(
+      "mcp-event-detail-arguments-mcp-evt-1-truncated",
+    );
+    expect(placeholder.textContent).toContain("Load full response");
+    expect(placeholder.textContent).toContain("9.0 KB");
+    // Result stayed inline — its CodeBlock pre is rendered.
+    expect(getByTestId("mcp-event-detail-result-mcp-evt-1")).toBeDefined();
+    // Capped notice is NOT shown (this is regular truncation).
+    expect(
+      queryByTestId("mcp-event-detail-arguments-mcp-evt-1-capped"),
+    ).toBeNull();
+  });
+
+  it("mcp_tool_call: capped marker (>2 MiB) shows no Load button", () => {
+    const event = makeMCPEvent({
+      event_type: "mcp_tool_call",
+      tool_name: "log_dump",
+      payload: {
+        server_name: "demo",
+        transport: "stdio",
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        result: { _truncated: true, _capped: true, size: 5_242_880 } as any,
+      },
+    });
+    const { getByTestId } = render(<MCPEventDetails event={event} />);
+    fireEvent.click(getByTestId("mcp-event-details-toggle-mcp-evt-1"));
+    const capped = getByTestId(
+      "mcp-event-detail-result-mcp-evt-1-capped",
+    );
+    expect(capped.textContent).toContain("Content too large to capture");
+    expect(capped.textContent).toContain("5.00 MB");
+  });
+
+  it("mcp_resource_read: has_content=true with no inline content shows Load full", () => {
+    const event = makeMCPEvent({
+      event_type: "mcp_resource_read",
+      has_content: true,
+      payload: {
+        server_name: "demo",
+        transport: "stdio",
+        resource_uri: "mem://big-log",
+        content_bytes: 20480,
+        mime_type: "text/plain",
+        // No inline ``content`` — body overflowed to event_content.
+      },
+    });
+    const { getByTestId } = render(<MCPEventDetails event={event} />);
+    fireEvent.click(getByTestId("mcp-event-details-toggle-mcp-evt-1"));
+    expect(
+      getByTestId("mcp-event-detail-content-mcp-evt-1-truncated"),
+    ).toBeDefined();
+  });
+
+  it("Load full button fetches /v1/events/:id/content and renders the response", async () => {
+    const fetchSpy = vi
+      .spyOn(api, "fetchEventContent")
+      .mockResolvedValue({
+        event_id: "mcp-evt-1",
+        session_id: "00000000-0000-0000-0000-000000000001",
+        provider: "mcp",
+        model: "demo",
+        system_prompt: null,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        messages: [] as any,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        tools: null as any,
+        response: {
+          contents: [{ text: "loaded-from-event-content", uri: "mem://demo" }],
+        },
+        input: null,
+        captured_at: "2026-04-27T00:00:00Z",
+      } satisfies EventContent);
+    const event = makeMCPEvent({
+      event_type: "mcp_resource_read",
+      has_content: true,
+      payload: {
+        server_name: "demo",
+        transport: "stdio",
+        resource_uri: "mem://big-log",
+        content_bytes: 20480,
+        mime_type: "text/plain",
+      },
+    });
+    const { getByTestId, findByTestId } = render(
+      <MCPEventDetails event={event} />,
+    );
+    fireEvent.click(getByTestId("mcp-event-details-toggle-mcp-evt-1"));
+    const placeholder = getByTestId(
+      "mcp-event-detail-content-mcp-evt-1-truncated",
+    );
+    fireEvent.click(placeholder.querySelector("button")!);
+    expect(fetchSpy).toHaveBeenCalledWith("mcp-evt-1");
+    // The placeholder is replaced by the loaded CodeBlock.
+    const loaded = await findByTestId("mcp-event-detail-content-mcp-evt-1");
+    await waitFor(() => {
+      expect(loaded.textContent).toContain("loaded-from-event-content");
+    });
   });
 });
 

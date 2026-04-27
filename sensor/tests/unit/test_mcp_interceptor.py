@@ -815,3 +815,254 @@ def test_patch_unpatch_cycle_restores_every_method() -> None:
 
     for name, orig in originals.items():
         assert getattr(ClientSession, name) is orig, f"unpatch did not restore ClientSession.{name}"
+
+
+# ---------------------------------------------------------------------
+# B-6 — content overflow gating
+#
+# The 8 KiB inline threshold + 2 MiB hard cap routing live in
+# interceptor/mcp.py::_gate_mcp_field. Tests exercise the wrapper
+# factory at the threshold boundaries to confirm:
+#   * small content: inline as today, no has_content flag.
+#   * large content: per-field marker inline, has_content=true,
+#     wire ``content`` carries an event_content-shaped dict.
+#   * hard-cap content: marker inline with _capped, has_content NOT
+#     set (no full content preserved).
+# ---------------------------------------------------------------------
+
+
+def _big_dict(approx_bytes: int) -> dict[str, Any]:
+    """Build a JSON-serialisable dict whose JSON-bytes length is
+    approximately ``approx_bytes``. The character-per-byte ratio is
+    1:1 for ASCII keys and values, so a single ``"x" * approx_bytes``
+    string buys the budget without nesting explosion."""
+    return {"blob": "x" * approx_bytes}
+
+
+@pytest.mark.asyncio
+async def test_b6_call_tool_below_threshold_stays_inline(
+    install_capturing_session: Session,
+) -> None:
+    """Small arguments + small result: inline path, no overflow flag."""
+    fake_result = SimpleNamespace(content=[])
+    fake_result.model_dump = lambda mode="json": {"content": []}  # noqa: ARG005
+
+    async def fake_orig(self: Any, name: str, arguments: Any = None) -> Any:
+        return fake_result
+
+    wrapped = _make_async_wrapper(
+        "call_tool", fake_orig, EventType.MCP_TOOL_CALL, _emit_tool_call,
+    )
+    await wrapped(_bound_receiver(), "echo", {"text": "small"})
+
+    payload = _last_enqueue(install_capturing_session)
+    assert payload["arguments"] == {"text": "small"}
+    assert payload["result"] == {"content": []}
+    assert payload.get("has_content", False) is False
+
+
+@pytest.mark.asyncio
+async def test_b6_call_tool_large_result_overflows_to_event_content(
+    install_capturing_session: Session,
+) -> None:
+    """Large result: marker inline, has_content=true, content carries event_content shape."""
+    big = _big_dict(20 * 1024)  # 20 KiB — well over 8 KiB threshold
+    fake_result = SimpleNamespace(content=[])
+    fake_result.model_dump = lambda mode="json": big  # noqa: ARG005
+
+    async def fake_orig(self: Any, name: str, arguments: Any = None) -> Any:
+        return fake_result
+
+    wrapped = _make_async_wrapper(
+        "call_tool", fake_orig, EventType.MCP_TOOL_CALL, _emit_tool_call,
+    )
+    await wrapped(_bound_receiver(), "fetch", {"url": "ex"})
+
+    payload = _last_enqueue(install_capturing_session)
+    # Arguments stay inline (small).
+    assert payload["arguments"] == {"url": "ex"}
+    # Result is replaced by the truncation marker inline.
+    assert payload["result"] == {"_truncated": True, "size": pytest.approx(
+        len(__import__("json").dumps(big).encode("utf-8")), rel=0.05,
+    )}
+    # has_content flips true; wire content carries the event_content
+    # shape.
+    assert payload["has_content"] is True
+    content = payload["content"]
+    assert content["provider"] == "mcp"
+    assert content["response"] == big
+    assert content["input"] is None  # arguments stayed inline
+
+
+@pytest.mark.asyncio
+async def test_b6_call_tool_large_arguments_overflows(
+    install_capturing_session: Session,
+) -> None:
+    """Symmetric: large arguments / small result — input populated."""
+    big_args = _big_dict(20 * 1024)
+    fake_result = SimpleNamespace(content=[])
+    fake_result.model_dump = lambda mode="json": {"content": []}  # noqa: ARG005
+
+    async def fake_orig(self: Any, name: str, arguments: Any = None) -> Any:
+        return fake_result
+
+    wrapped = _make_async_wrapper(
+        "call_tool", fake_orig, EventType.MCP_TOOL_CALL, _emit_tool_call,
+    )
+    await wrapped(_bound_receiver(), "ingest", big_args)
+
+    payload = _last_enqueue(install_capturing_session)
+    assert payload["arguments"] == {
+        "_truncated": True,
+        "size": pytest.approx(
+            len(__import__("json").dumps(big_args).encode("utf-8")), rel=0.05,
+        ),
+    }
+    assert payload["result"] == {"content": []}  # small, inline
+    assert payload["has_content"] is True
+    assert payload["content"]["input"] == big_args
+    # Result stayed inline — event_content.response is the empty
+    # placeholder (the small result lives in payload.result, no need
+    # to duplicate).
+    assert payload["content"]["response"] == {}
+
+
+@pytest.mark.asyncio
+async def test_b6_call_tool_hard_cap_drops_content_no_event_content(
+    install_capturing_session: Session,
+) -> None:
+    """At >2 MiB, the field is dropped entirely with _capped marker.
+
+    No event_content row should be produced (the wire transfer of a
+    >2 MiB blob is itself a pathology — the cap exists to protect
+    Postgres + NATS + dashboard from the worst case).
+    """
+    huge = _big_dict(3 * 1024 * 1024)  # 3 MiB
+    fake_result = SimpleNamespace(content=[])
+    fake_result.model_dump = lambda mode="json": huge  # noqa: ARG005
+
+    async def fake_orig(self: Any, name: str, arguments: Any = None) -> Any:
+        return fake_result
+
+    wrapped = _make_async_wrapper(
+        "call_tool", fake_orig, EventType.MCP_TOOL_CALL, _emit_tool_call,
+    )
+    await wrapped(_bound_receiver(), "log_dump", {})
+
+    payload = _last_enqueue(install_capturing_session)
+    marker = payload["result"]
+    assert marker["_truncated"] is True
+    assert marker["_capped"] is True
+    assert marker["size"] > 2 * 1024 * 1024
+    # has_content stays false because no full content is preserved at
+    # the hard cap. The dashboard renders "content too large" rather
+    # than offering a Load-Full affordance that would 404.
+    assert payload.get("has_content", False) is False
+
+
+@pytest.mark.asyncio
+async def test_b6_resource_read_large_content_overflows(
+    install_capturing_session: Session,
+) -> None:
+    """Large file content via read_resource: has_content=true,
+    wire content = event_content shape (not the inline body).
+    """
+    big_text = "x" * (20 * 1024)
+    text_piece = SimpleNamespace(text=big_text, blob=None, mimeType="text/plain")
+    fake_result = SimpleNamespace(contents=[text_piece])
+    fake_result.model_dump = lambda mode="json": {  # noqa: ARG005
+        "contents": [{"text": big_text, "mimeType": "text/plain"}],
+    }
+
+    async def fake_orig(self: Any, uri: Any) -> Any:
+        return fake_result
+
+    wrapped = _make_async_wrapper(
+        "read_resource", fake_orig, EventType.MCP_RESOURCE_READ, _emit_resource_read,
+    )
+    await wrapped(_bound_receiver(), "mem://big-log")
+
+    payload = _last_enqueue(install_capturing_session)
+    # Always-emitted metadata stays in payload regardless of overflow.
+    assert payload["resource_uri"] == "mem://big-log"
+    assert payload["content_bytes"] == len(big_text)
+    assert payload["mime_type"] == "text/plain"
+    # Overflowed: has_content flips true; the inline ``content`` field
+    # carries the event_content shape (worker InsertEventContent
+    # consumes it). The dashboard discriminates via has_content alone.
+    assert payload["has_content"] is True
+    assert payload["content"]["provider"] == "mcp"
+    assert (
+        payload["content"]["response"]
+        == {"contents": [{"text": big_text, "mimeType": "text/plain"}]}
+    )
+
+
+@pytest.mark.asyncio
+async def test_b6_resource_read_small_content_stays_inline(
+    install_capturing_session: Session,
+) -> None:
+    """Below threshold: inline ReadResourceResult, has_content=false."""
+    small_text = "hello"
+    text_piece = SimpleNamespace(
+        text=small_text, blob=None, mimeType="text/plain",
+    )
+    fake_result = SimpleNamespace(contents=[text_piece])
+    fake_result.model_dump = lambda mode="json": {  # noqa: ARG005
+        "contents": [{"text": small_text}],
+    }
+
+    async def fake_orig(self: Any, uri: Any) -> Any:
+        return fake_result
+
+    wrapped = _make_async_wrapper(
+        "read_resource", fake_orig,
+        EventType.MCP_RESOURCE_READ, _emit_resource_read,
+    )
+    await wrapped(_bound_receiver(), "mem://demo")
+
+    payload = _last_enqueue(install_capturing_session)
+    assert payload["content"] == {"contents": [{"text": small_text}]}
+    assert payload.get("has_content", False) is False
+
+
+@pytest.mark.asyncio
+async def test_b6_prompt_get_large_rendered_overflows(
+    install_capturing_session: Session,
+) -> None:
+    """Large rendered messages: marker inline, content via event_content."""
+    big_msg_text = "x" * (15 * 1024)
+    msg = SimpleNamespace(role="user", content=big_msg_text)
+    msg.model_dump = lambda mode="json": {  # noqa: ARG005
+        "role": "user",
+        "content": big_msg_text,
+    }
+
+    async def fake_orig(self: Any, name: str, arguments: Any = None) -> Any:
+        return SimpleNamespace(messages=[msg])
+
+    wrapped = _make_async_wrapper(
+        "get_prompt", fake_orig, EventType.MCP_PROMPT_GET, _emit_prompt_get,
+    )
+    await wrapped(_bound_receiver(), "system_prompt", {"name": "Ada"})
+
+    payload = _last_enqueue(install_capturing_session)
+    # Arguments stay inline (small).
+    assert payload["arguments"] == {"name": "Ada"}
+    # Rendered messages overflow.
+    assert payload["rendered"]["_truncated"] is True
+    assert payload["rendered"]["size"] > 8 * 1024
+    assert payload["has_content"] is True
+    # event_content shape: input=arguments (None or arguments stayed
+    # inline depending on size), response=rendered list.
+    assert payload["content"]["response"] == [
+        {"role": "user", "content": big_msg_text},
+    ]
+
+
+def test_b6_constants_are_named() -> None:
+    """B-6 thresholds live as named constants so the
+    ``feedback_named_constants_justification`` memory rule is honoured.
+    """
+    assert mcp_interceptor._MCP_INLINE_THRESHOLD_BYTES == 8 * 1024
+    assert mcp_interceptor._MCP_HARD_CAP_BYTES == 2 * 1024 * 1024

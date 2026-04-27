@@ -32,6 +32,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID, uuid5
 
@@ -1030,6 +1031,56 @@ def seed() -> None:
                             **identity,
                             **common,
                         ))
+
+                    # B-6 — one fresh ``mcp_resource_read`` with an
+                    # overflowed body so live verification of the
+                    # "Load full response" affordance has data to
+                    # exercise. The wire shape mirrors what the
+                    # sensor's overflow path produces:
+                    # has_content=true and ``content`` carrying the
+                    # event_content dict (provider/model/response).
+                    # The worker's existing has_content=true branch
+                    # then writes an event_content row. Time-stamped
+                    # at NOW-2s so it sits at the cluster edge.
+                    big_text = "x" * (12 * 1024)  # 12 KiB body
+                    overflow_event_content = {
+                        "system": None,
+                        "messages": [],
+                        "tools": None,
+                        "response": {
+                            "contents": [
+                                {
+                                    "uri": "mem://big-log",
+                                    "mimeType": "text/plain",
+                                    "text": big_text,
+                                },
+                            ],
+                        },
+                        "input": None,
+                        "provider": "mcp",
+                        "model": srv_name,
+                        "session_id": session_id,
+                        "event_id": "",
+                        "captured_at": (
+                            datetime.now(timezone.utc)
+                            .isoformat()
+                            .replace("+00:00", "Z")
+                        ),
+                    }
+                    post_event(make_event(
+                        session_id, agent_cfg["flavor"], "mcp_resource_read",
+                        timestamp=_shift_timestamp(-2),
+                        server_name=srv_name,
+                        transport=srv_transport,
+                        resource_uri="mem://big-log",
+                        content_bytes=len(big_text),
+                        mime_type="text/plain",
+                        duration_ms=42,
+                        has_content=True,
+                        content=overflow_event_content,
+                        **identity,
+                        **common,
+                    ))
                     backdated += 1
                 continue
             if role not in ("aged-closed", "stale", "ancient-only"):

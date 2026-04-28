@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useRef, useState, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { X, FileText } from "lucide-react";
+import { X, FileText, AlertCircle } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { TruncatedText } from "@/components/ui/TruncatedText";
 import { invalidateSessionCache, useSession } from "@/hooks/useSession";
@@ -1434,6 +1434,7 @@ function EventFeed({
                   {badge.label}
                 </span>
               )}
+              <MCPErrorIndicator event={event} />
               <span
                 // Mixed inline content (provider logo + detail text).
                 // Native ``title`` surfaces the text on hover.
@@ -1503,6 +1504,50 @@ function EventFeed({
  * Renders nothing when ``payload.streaming`` is absent (the row's
  * existing layout is unchanged for non-streaming post_calls).
  */
+/**
+ * Phase 5 — small inline error indicator rendered between the badge
+ * and the detail text on MCP event rows whose ``payload.error`` is
+ * populated. The drawer's row layout otherwise inherits the MCP
+ * colour family (cyan/green/purple) regardless of success vs. failure
+ * — without this, an operator scanning the event feed cannot
+ * distinguish a successful ``mcp_tool_call`` from a failed one
+ * without expanding the row to read MCPEventDetails.
+ *
+ * Renders nothing when the event isn't MCP, when there's no error
+ * field, or when ``payload`` is missing.
+ */
+function MCPErrorIndicator({ event }: { event: AgentEvent }) {
+  if (!isMCPEvent(event.event_type)) return null;
+  const err = event.payload?.error;
+  if (err == null) return null;
+  const message =
+    typeof err === "string"
+      ? err
+      : err && typeof err === "object"
+      ? (err as { message?: string }).message ||
+        (err as { error_class?: string }).error_class ||
+        (err as { error_type?: string }).error_type ||
+        "MCP call failed"
+      : "MCP call failed";
+  return (
+    <TooltipProvider>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span
+            data-testid={`mcp-error-indicator-${event.id}`}
+            aria-label={`MCP call failed: ${message}`}
+            className="inline-flex shrink-0 items-center justify-center"
+            style={{ color: "var(--event-error)" }}
+          >
+            <AlertCircle size={12} strokeWidth={2.5} />
+          </span>
+        </TooltipTrigger>
+        <TooltipContent>{`Failed: ${message}`}</TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  );
+}
+
 function StreamingPill({ event }: { event: AgentEvent }) {
   const stream = event.payload?.streaming;
   if (!stream) return null;

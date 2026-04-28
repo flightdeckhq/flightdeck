@@ -296,6 +296,37 @@ test.describe("T25 — MCP observability rendering", () => {
     expect(aria).toContain("fixture-http-server");
   });
 
+  // T25-17 — session-row red MCP error indicator. Phase 5 D-MCP-FAIL.
+  // Mirrors T25-12 (cyan MCP servers dot) but for sessions that
+  // emitted at least one mcp_* event with a structured payload.error.
+  // The canonical seed's ``mcp_tool_call_failed`` extras tag on the
+  // mcp-active session anchors this. Asserts the dot renders with
+  // the right testid + aria-label, and that the seeded error_type
+  // appears in the aria text.
+  test("T25-17: session row carries MCP error indicator when an mcp_* event has payload.error", async ({
+    page,
+  }) => {
+    const sid = await fetchMCPSessionId(page);
+    const params = new URLSearchParams({
+      from: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
+      to: new Date().toISOString(),
+      flavor: SENSOR_AGENT.flavor,
+    });
+    await page.goto(`/investigate?${params.toString()}`);
+    await waitForInvestigateReady(page);
+    const indicator = page.locator(
+      `[data-testid="session-row-mcp-error-indicator-${sid}"]`,
+    );
+    await expect(indicator).toBeVisible();
+    const aria = await indicator.getAttribute("aria-label");
+    expect(aria).toMatch(/^Session emitted MCP error events: /);
+    // The seeder posts ``error_type: "invalid_params"`` on the
+    // failed mcp_tool_call. Lock the value in so a future seeder
+    // change to the error taxonomy surfaces here as a test diff
+    // rather than silent drift.
+    expect(aria).toContain("invalid_params");
+  });
+
   // T25-13 (B-5b) — Fleet swimlane renders MCP events as HEXAGONS
   // (not circles with rings). The mcp-active fixture role is
   // refreshed on every seed run with six fresh MCP events landing
@@ -440,6 +471,55 @@ test.describe("T25 — MCP observability rendering", () => {
       nonMcpCircles.first(),
       "Fleet swimlane must continue to render circles for non-MCP events",
     ).toBeVisible();
+  });
+
+  // T25-16 — MCPErrorIndicator on a failed mcp_tool_call row.
+  // The canonical seed includes one mcp_tool_call_failed extras tag on
+  // the mcp-active session that emits an mcp_tool_call event with a
+  // structured payload.error. The dashboard's MCPErrorIndicator
+  // component renders a red AlertCircle inline immediately after the
+  // badge whenever event_type is MCP and payload.error is populated;
+  // see DECISIONS.md "MCP failure surfacing on event-feed rows".
+  //
+  // Theme-agnostic: asserts on data-testid + aria-label structure,
+  // not colour. Indicator MUST render on the failed row, MUST NOT
+  // render on a successful mcp_tool_call row (regression guard
+  // against the indicator spilling onto every MCP row).
+  test("T25-16: MCPErrorIndicator decorates only the failed mcp_tool_call row", async ({
+    page,
+  }) => {
+    await openMCPSession(page);
+    const drawer = page.locator('[data-testid="session-drawer"]');
+    const indicators = drawer.locator(
+      '[data-testid^="mcp-error-indicator-"]',
+    );
+    // Exactly one indicator on the seeded fixture (one failed call).
+    await expect(indicators).toHaveCount(1);
+    // aria-label format is the contract surfaced to screen readers
+    // and the regression-guard for the message format change. The
+    // seed posts message="Invalid SQL: 'banned' is not a recognized
+    // status" via the canonical ``mcp_tool_call_failed`` extras tag.
+    await expect(indicators.first()).toHaveAttribute(
+      "aria-label",
+      /^MCP call failed: Invalid SQL: 'banned' is not a recognized status$/,
+    );
+    // Regression guard: indicator scope is event-row-only, not
+    // session-level. The synthetic row's containing event row must
+    // be a mcp_tool_call (not, say, a sibling embeddings row that
+    // happened to inherit the indicator).
+    const decoratedRow = drawer.locator(
+      '[data-event-type="mcp_tool_call"]:has([data-testid^="mcp-error-indicator-"])',
+    );
+    await expect(decoratedRow).toHaveCount(1);
+    // Successful mcp_tool_call rows on the same session must NOT
+    // carry the indicator. The seed emits at least one success row
+    // alongside the failure; assert that any mcp_tool_call row
+    // WITHOUT an indicator child also exists, so the decoration is
+    // not spilling onto every MCP row in the family.
+    const undecoratedRow = drawer.locator(
+      '[data-event-type="mcp_tool_call"]:not(:has([data-testid^="mcp-error-indicator-"]))',
+    );
+    expect(await undecoratedRow.count()).toBeGreaterThan(0);
   });
 
   // T25-10 — Session drawer header MCP SERVERS panel.

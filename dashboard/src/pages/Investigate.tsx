@@ -2111,6 +2111,41 @@ export function Investigate() {
                             </Tooltip>
                           </TooltipProvider>
                         )}
+                        {s.mcp_error_types && s.mcp_error_types.length > 0 && (
+                          // Phase 5 D-MCP-FAIL — session-level rollup
+                          // for failed MCP calls. Red dot parallel to
+                          // the llm_error indicator above, scoped to
+                          // ``payload.error`` on any mcp_* event so an
+                          // operator scanning the table can see at a
+                          // glance which sessions had MCP failures
+                          // without opening every drawer. Sits next to
+                          // the cyan MCP-servers dot so both signals
+                          // stay readable: cyan = "this session
+                          // touched MCP", red = "and at least one
+                          // call failed".
+                          <TooltipProvider>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <span
+                                  data-testid={`session-row-mcp-error-indicator-${s.session_id}`}
+                                  aria-label={`Session emitted MCP error events: ${s.mcp_error_types.join(", ")}`}
+                                  className="inline-block rounded-full"
+                                  style={{
+                                    width: 7,
+                                    height: 7,
+                                    background: "var(--event-error)",
+                                    boxShadow:
+                                      "0 0 0 2px color-mix(in srgb, var(--event-error) 25%, transparent)",
+                                    flexShrink: 0,
+                                  }}
+                                />
+                              </TooltipTrigger>
+                              <TooltipContent>
+                                {`MCP errors: ${s.mcp_error_types.join(", ")}`}
+                              </TooltipContent>
+                            </Tooltip>
+                          </TooltipProvider>
+                        )}
                         {s.policy_event_types && s.policy_event_types.length > 0 && (() => {
                           // Severity-ranked dot color: block > degrade > warn.
                           // The single dot reports the most-severe enforcement

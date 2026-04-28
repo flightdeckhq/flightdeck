@@ -448,6 +448,32 @@ def _post_session_events(
                     **common,
                 ))
                 posted += 1
+            elif extra == "mcp_tool_call_failed":
+                # Phase 5 — failed MCP tool call. Anchors the
+                # MCPErrorIndicator E2E assertion (T25-16). The wire
+                # ``error`` shape mirrors
+                # sensor/flightdeck_sensor/interceptor/mcp.py::
+                # _classify_mcp_error so the dashboard sees the same
+                # structure a real sensor would emit.
+                post_event(make_event(
+                    session_id, agent_cfg["flavor"], "mcp_tool_call",
+                    timestamp=ts,
+                    tool_name="search_database",
+                    arguments={"query": "users where status='banned'"},
+                    error={
+                        "error_type": "invalid_params",
+                        "error_class": "McpError",
+                        "message": (
+                            "Invalid SQL: 'banned' is not a "
+                            "recognized status"
+                        ),
+                        "code": -32602,
+                    },
+                    **mcp_common,
+                    **identity,
+                    **common,
+                ))
+                posted += 1
             elif extra == "mcp_resource_list":
                 post_event(make_event(
                     session_id, agent_cfg["flavor"], "mcp_resource_list",
@@ -629,6 +655,15 @@ def _session_is_complete(
             # declaring all six needs six events of distinct types
             # to be considered complete.
             expected_counts[tag] = expected_counts.get(tag, 0) + 1
+        elif tag == "mcp_tool_call_failed":
+            # Phase 5 D-MCP-FAIL — failed mcp_tool_call. Same event_type
+            # as the success variant but disambiguated by payload.error
+            # in the actual_counts loop below. Counted under a private
+            # synthetic key so the success and failure variants can
+            # coexist on the same session without one masking the other.
+            expected_counts["__mcp_tool_call_failed__"] = (
+                expected_counts.get("__mcp_tool_call_failed__", 0) + 1
+            )
         elif tag in ("policy_warn", "policy_degrade", "policy_block"):
             # Each policy_* tag maps directly to its own event_type
             # row. Counted independently so a session declaring all
@@ -644,9 +679,17 @@ def _session_is_complete(
     actual_counts: dict[str, int] = {}
     for e in events:
         et = e.get("event_type", "")
+        payload = e.get("payload") or {}
+        # mcp_tool_call_failed gets counted BEFORE the generic mcp_tool_call
+        # bump so a single failure row doesn't double-credit success +
+        # failure under one event.
+        if et == "mcp_tool_call" and payload.get("error"):
+            key = "__mcp_tool_call_failed__"
+            actual_counts[key] = actual_counts.get(key, 0) + 1
+            continue
         if et in expected_counts:
             actual_counts[et] = actual_counts.get(et, 0) + 1
-        if et == "post_call" and (e.get("payload") or {}).get("streaming"):
+        if et == "post_call" and payload.get("streaming"):
             key = "__streaming_post_call__"
             actual_counts[key] = actual_counts.get(key, 0) + 1
     for key, want in expected_counts.items():

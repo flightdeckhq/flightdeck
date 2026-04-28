@@ -29,6 +29,12 @@ Covers:
 * IT-MCP-5: A session whose only post-start activity is MCP events
   still advances ``last_seen_at`` (HandlePostCall's no-token-delta
   branch) and does not corrupt ``tokens_used_session``.
+* IT-MCP-6 (D-MCP-FAIL): The session listing row surfaces
+  ``mcp_error_types`` aggregated from every distinct
+  ``payload.error.error_type`` observed across the session's
+  MCP events. Drives the Investigate session-row red MCP error
+  indicator parallel to the existing ``error_types`` (llm_error)
+  rollup.
 """
 
 from __future__ import annotations
@@ -389,6 +395,113 @@ def test_mcp_failure_event_carries_structured_error_taxonomy() -> None:
     assert payload_error.get("error_type") == "connection_closed"
     assert payload_error.get("error_class") == "McpError"
     assert "stream closed" in (payload_error.get("message") or "")
+
+
+def test_mcp_error_types_rollup_on_session_listing() -> None:
+    """IT-MCP-6 (D-MCP-FAIL): The session listing row surfaces
+    ``mcp_error_types`` — every distinct
+    ``payload.error.error_type`` observed across mcp_* events on the
+    session — so the dashboard can render a session-level red MCP
+    error indicator without per-session follow-up fetches.
+
+    Mirrors the existing ``error_types`` (llm_error rollup)
+    contract:
+    * empty array (not null) when no MCP event failed
+    * deduplicated when multiple events share an error_type
+    * scoped to mcp_* events; an LLM error on the same session does
+      NOT contribute to ``mcp_error_types``
+    """
+    sid_with_failures = str(uuid.uuid4())
+    sid_clean = str(uuid.uuid4())
+    flavor = f"test-mcp-err-rollup-{uuid.uuid4().hex[:6]}"
+
+    # Session that emits two mcp_tool_call events with two distinct
+    # error_types plus a clean mcp_resource_read alongside.
+    post_event(make_event(sid_with_failures, flavor, "session_start"))
+    post_event(make_event(
+        sid_with_failures, flavor, "mcp_tool_call",
+        server_name="demo", transport="stdio", tool_name="echo",
+        duration_ms=12,
+        error={
+            "error_type": "invalid_params",
+            "error_class": "McpError",
+            "message": "bad arguments",
+        },
+    ))
+    post_event(make_event(
+        sid_with_failures, flavor, "mcp_tool_call",
+        server_name="demo", transport="stdio", tool_name="echo",
+        duration_ms=8,
+        error={
+            "error_type": "connection_closed",
+            "error_class": "McpError",
+            "message": "transport dropped",
+        },
+    ))
+    # Duplicate of the first error_type — should de-dup in the rollup.
+    post_event(make_event(
+        sid_with_failures, flavor, "mcp_tool_call",
+        server_name="demo", transport="stdio", tool_name="echo",
+        duration_ms=11,
+        error={
+            "error_type": "invalid_params",
+            "error_class": "McpError",
+            "message": "bad arguments again",
+        },
+    ))
+    # Clean MCP event on the same session — must NOT contribute to
+    # the rollup.
+    post_event(make_event(
+        sid_with_failures, flavor, "mcp_resource_read",
+        server_name="demo", transport="stdio",
+        resource_uri="mem://demo", content_bytes=4,
+    ))
+
+    # Control session: no MCP errors. Listing row's mcp_error_types
+    # must be ``[]`` (empty array, not null).
+    post_event(make_event(sid_clean, flavor, "session_start"))
+    post_event(make_event(
+        sid_clean, flavor, "mcp_tool_call",
+        server_name="demo", transport="stdio", tool_name="echo",
+        duration_ms=15,
+    ))
+
+    _wait_for_event_count(sid_with_failures, 5)
+    _wait_for_event_count(sid_clean, 2)
+
+    body = _fetch_session_listing(flavor=flavor)
+    by_id = {s["session_id"]: s for s in body.get("sessions", [])}
+    assert sid_with_failures in by_id, (
+        f"failures session missing from listing: {list(by_id)!r}"
+    )
+    assert sid_clean in by_id, (
+        f"clean session missing from listing: {list(by_id)!r}"
+    )
+    failures_row = by_id[sid_with_failures]
+    clean_row = by_id[sid_clean]
+
+    # Failures session: rolls up the two distinct error_types,
+    # de-duped despite the duplicate ``invalid_params`` event.
+    got = sorted(failures_row.get("mcp_error_types") or [])
+    assert got == ["connection_closed", "invalid_params"], (
+        f"expected deduplicated mcp_error_types, got {got!r} "
+        f"on row {failures_row!r}"
+    )
+
+    # Clean session: empty array (not null) — same wire posture as
+    # the existing error_types / mcp_server_names fields.
+    assert clean_row.get("mcp_error_types") == [], (
+        f"clean session must carry empty mcp_error_types, got "
+        f"{clean_row.get('mcp_error_types')!r}"
+    )
+
+    # Cross-field independence: failures_row's ``error_types`` (the
+    # llm_error rollup) is empty because no llm_error fired on this
+    # session. The MCP rollup is scoped strictly to mcp_* events.
+    assert failures_row.get("error_types") == [], (
+        f"mcp errors must NOT pollute llm error_types, got "
+        f"{failures_row.get('error_types')!r}"
+    )
 
 
 def test_mcp_only_session_advances_last_seen_without_token_pollution() -> None:

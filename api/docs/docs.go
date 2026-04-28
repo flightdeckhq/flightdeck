@@ -2364,6 +2364,13 @@ const docTemplate = `{
                     "description": "LastSeenAt is the most-recent activity timestamp on the session.\nFor active/idle/stale/lost: max(events.occurred_at), projected\nthrough the worker's last_seen_at column. For closed: aligned\nwith ended_at. Drives the Investigate \"Last Seen\" column\n(S-TBL-1) and is sortable via ?sort=last_seen_at.",
                     "type": "string"
                 },
+                "mcp_error_types": {
+                    "description": "MCPErrorTypes (Phase 5) lists every distinct\n` + "`" + `` + "`" + `payload-\u003e'error'-\u003e\u003e'error_type'` + "`" + `` + "`" + ` observed across the\nsession's MCP events (any event_type starting with ` + "`" + `` + "`" + `mcp_` + "`" + `` + "`" + `\nwhose payload carries an ` + "`" + `` + "`" + `error` + "`" + `` + "`" + ` object). Always present on\nthe wire (empty array when no MCP event in the session\nfailed). Mirrors the ErrorTypes correlated-subquery pattern,\nscoped to MCP rather than llm_error rows so the Investigate\nsession-row red MCP indicator can render without a per-session\nfollow-up fetch.",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
                 "mcp_server_names": {
                     "description": "MCPServerNames (Phase 5) lists every distinct MCP server name\nthe session connected to, derived at query time from\n` + "`" + `` + "`" + `sessions.context-\u003e'mcp_servers'` + "`" + `` + "`" + ` JSONB. Always present on\nthe wire (empty array when the session connected to no MCP\nserver) so dashboard code treats the slice as non-nullable.\nNames only — the listing payload stays lean; the full\nfingerprint (transport, version, capabilities, instructions)\nrides along on the detail endpoint via the existing context\nenvelope. Mirrors the ErrorTypes / PolicyEventTypes shape.",
                     "type": "array",

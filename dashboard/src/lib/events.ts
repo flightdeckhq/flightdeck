@@ -86,11 +86,12 @@ export const eventBadgeConfig: Record<string, BadgeConfig> = {
   // singular/plural pairs (MCP TOOL / MCP TOOLS) put a single 's'
   // between two fundamentally different operations (B-4). The "MCP"
   // prefix is dropped from the badge text because the badge colour
-  // family + the swimlane shared-ring (B-5) + the timeline detail
-  // header all already attribute the row as MCP — repeating the
-  // prefix forces every badge to truncate or shrink. The EventType
-  // enum strings (mcp_tool_call etc.) are unchanged; this is display
-  // text only.
+  // family (cyan/green/purple), the swimlane hexagon shape (B-5b),
+  // and the row's adjacent detail text (which always carries the
+  // server name + transport for MCP rows) all already attribute the
+  // row as MCP — repeating the prefix only forces every badge to
+  // grow without adding signal. The EventType enum strings
+  // (mcp_tool_call etc.) are unchanged; this is display text only.
   //
   // Three colour families × two variants (filled = invoked, outline
   // = discovered):

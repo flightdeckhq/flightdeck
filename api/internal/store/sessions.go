@@ -219,6 +219,16 @@ type SessionListItem struct {
 	// rides along on the detail endpoint via the existing context
 	// envelope. Mirrors the ErrorTypes / PolicyEventTypes shape.
 	MCPServerNames []string `json:"mcp_server_names"`
+	// MCPErrorTypes (Phase 5) lists every distinct
+	// ``payload->'error'->>'error_type'`` observed across the
+	// session's MCP events (any event_type starting with ``mcp_``
+	// whose payload carries an ``error`` object). Always present on
+	// the wire (empty array when no MCP event in the session
+	// failed). Mirrors the ErrorTypes correlated-subquery pattern,
+	// scoped to MCP rather than llm_error rows so the Investigate
+	// session-row red MCP indicator can render without a per-session
+	// follow-up fetch.
+	MCPErrorTypes []string `json:"mcp_error_types"`
 }
 
 // SessionsResponse is the paginated response for GET /v1/sessions.
@@ -560,7 +570,18 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 					WHERE srv->>'name' IS NOT NULL
 				),
 				ARRAY[]::text[]
-			) AS mcp_server_names
+			) AS mcp_server_names,
+			COALESCE(
+				ARRAY(
+					SELECT DISTINCT e.payload->'error'->>'error_type'
+					FROM events e
+					WHERE e.session_id = s.session_id
+					AND e.event_type LIKE 'mcp_%%'
+					AND e.payload->'error' IS NOT NULL
+					AND e.payload->'error'->>'error_type' IS NOT NULL
+				),
+				ARRAY[]::text[]
+			) AS mcp_error_types
 		FROM sessions s
 		%s
 		ORDER BY %s %s
@@ -601,6 +622,7 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 			&item.ErrorTypes,
 			&item.PolicyEventTypes,
 			&item.MCPServerNames,
+			&item.MCPErrorTypes,
 		); err != nil {
 			return nil, fmt.Errorf("scan session: %w", err)
 		}
@@ -612,6 +634,9 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 		}
 		if item.MCPServerNames == nil {
 			item.MCPServerNames = []string{}
+		}
+		if item.MCPErrorTypes == nil {
+			item.MCPErrorTypes = []string{}
 		}
 		if len(contextRaw) > 0 {
 			var v map[string]interface{}

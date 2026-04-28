@@ -639,6 +639,16 @@ export interface SessionListItem {
    * on the detail endpoint via ``Session.context.mcp_servers``.
    */
   mcp_server_names?: string[];
+  /**
+   * Phase 5: every distinct ``payload.error.error_type`` observed across
+   * the session's MCP events (any event_type starting with ``mcp_`` whose
+   * payload carries an ``error`` object). Always present on the wire
+   * (empty array when no MCP event in the session failed). Drives the
+   * red MCP-error session-row indicator on Investigate, parallel to
+   * the existing ``error_types`` indicator that covers ``llm_error``
+   * rows. See DECISIONS.md "MCP failure surfacing on event-feed rows".
+   */
+  mcp_error_types?: string[];
 }
 
 /** Paginated response from GET /v1/sessions. */

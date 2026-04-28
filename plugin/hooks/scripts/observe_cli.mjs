@@ -40,7 +40,7 @@ import {
   tmpdir,
   userInfo,
 } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { deriveAgentId } from "./agent_id.mjs";
@@ -305,6 +305,24 @@ export function collectContext(extras = {}) {
   frameworks.push(version ? `claude-code/${version}` : "claude-code");
   ctx.frameworks = frameworks;
 
+  // Phase 5 — MCP server fingerprint capture from .mcp.json + ~/.claude.json.
+  // Per Phase 5 D1, the Claude Code plugin emits MCP_TOOL_CALL events
+  // and the session-level mcp_servers context but cannot observe MCP
+  // resource reads / prompt fetches / list operations (those bypass
+  // the hook surface entirely). The mcp_servers fingerprint list
+  // surfaces in the SessionDrawer's MCP SERVERS panel and feeds the
+  // Investigate MCP SERVER facet aggregation. Version + capabilities
+  // are best-effort because the plugin can't inspect the actual MCP
+  // handshake — see plugin/README.md for the documented gap.
+  try {
+    const mcpServers = loadMcpServerFingerprints(extras.cwd || process.cwd());
+    if (mcpServers && mcpServers.length > 0) {
+      ctx.mcp_servers = mcpServers;
+    }
+  } catch {
+    /* silent — never crash a hook on broken user config */
+  }
+
   // Mark hook-based sessions as observer-only so the dashboard hides
   // the kill-switch UI. Claude Code hooks fire after the event has
   // already happened and the plugin never sits in the agent's hot
@@ -356,6 +374,169 @@ export function sanitizeToolInput(input) {
   if (input.pattern) safe.pattern = String(input.pattern).slice(0, 200);
   if (input.prompt) safe.prompt = String(input.prompt).slice(0, 100);
   return Object.keys(safe).length > 0 ? safe : null;
+}
+
+// ---------------------------------------------------------------------
+// Phase 5 — MCP tool-name parsing + server fingerprint discovery.
+//
+// Claude Code namespaces MCP tools as ``mcp__<server>__<tool>``. The
+// hook payload's ``tool_name`` is the prefixed string; this helper
+// splits it back into (server_name, tool_name) for per-event
+// attribution. Server names containing ``__`` cannot be unambiguously
+// disambiguated from a plain tool name with double underscores — the
+// parser falls back to a "best-effort split on the first inner ``__``"
+// strategy with a documented limitation. ``claude mcp list`` could
+// validate at SessionStart but spawning a subprocess on every hook is
+// not free; we accept the ambiguity and document.
+//
+// A null return signals "this is NOT an MCP tool name." Callers use
+// that to route the event through the standard tool_call path
+// instead.
+// ---------------------------------------------------------------------
+
+const MCP_TOOL_PREFIX = "mcp__";
+
+export function parseMcpToolName(name) {
+  if (typeof name !== "string" || !name.startsWith(MCP_TOOL_PREFIX)) {
+    return null;
+  }
+  const rest = name.slice(MCP_TOOL_PREFIX.length);
+  if (rest.length === 0) {
+    return null;
+  }
+  const split = rest.indexOf("__");
+  if (split <= 0 || split >= rest.length - 2) {
+    // No inner ``__``, or it lands at the very start / end — the name
+    // is malformed. Best-effort fallback: treat the whole rest as the
+    // tool name with a null server attribution. Callers log a warn.
+    return { server_name: null, tool_name: rest, parsed: false };
+  }
+  return {
+    server_name: rest.slice(0, split),
+    tool_name: rest.slice(split + 2),
+    parsed: true,
+  };
+}
+
+// ``.mcp.json`` (project-scoped) + ``~/.claude.json`` (user-scoped)
+// declare the MCP servers Claude Code is configured with for the
+// current working directory. Both files are JSON; missing or
+// malformed files yield an empty list (we never crash a hook on
+// corrupt user config). Fields per server entry mirror the
+// MCPServerFingerprint shape the Python sensor emits, with one
+// asymmetry per Phase 5 D1: the plugin cannot inspect the actual
+// MCP handshake (handshakes are invisible to hooks), so capability
+// discovery + server version are best-effort or absent. Operators
+// reading the dashboard see name + transport + command/URL — the
+// fingerprint shape the asymmetric-coverage README documents.
+
+export function loadMcpServerFingerprints(cwd) {
+  const fingerprints = [];
+  const seen = new Set();
+
+  // Project-scoped .mcp.json sits at the repository root. Walk up
+  // from cwd until we find one or hit filesystem root — the same
+  // walk Claude Code itself does to resolve project-scoped servers.
+  let dir = cwd;
+  for (let i = 0; i < 32; i++) {
+    const candidate = join(dir, ".mcp.json");
+    try {
+      const raw = readFileSync(candidate, "utf8");
+      const parsed = JSON.parse(raw);
+      const servers = parsed && typeof parsed === "object" ? parsed.mcpServers : null;
+      if (servers && typeof servers === "object") {
+        for (const [name, spec] of Object.entries(servers)) {
+          if (seen.has(name)) continue;
+          seen.add(name);
+          fingerprints.push(buildFingerprintFromSpec(name, spec));
+        }
+      }
+      break;
+    } catch {
+      /* continue walking up */
+    }
+    const parent = dirname(dir);
+    if (!parent || parent === dir) break;
+    dir = parent;
+  }
+
+  // User-scoped ~/.claude.json carries a ``projects.<cwd>.mcpServers``
+  // block per project plus a top-level ``mcpServers`` block for
+  // user-global servers. We parse both. The walk-up cwd matching is
+  // approximate — Claude Code normalizes paths internally; we accept
+  // an exact-match-or-no-match here because the alternative
+  // (re-implementing Claude's path normalization) is fragile.
+  try {
+    const home = process.env.HOME || process.env.USERPROFILE;
+    if (home) {
+      const userFile = join(home, ".claude.json");
+      const raw = readFileSync(userFile, "utf8");
+      const parsed = JSON.parse(raw);
+      // Top-level user-global servers.
+      if (parsed && typeof parsed === "object" && parsed.mcpServers) {
+        for (const [name, spec] of Object.entries(parsed.mcpServers)) {
+          if (seen.has(name)) continue;
+          seen.add(name);
+          fingerprints.push(buildFingerprintFromSpec(name, spec));
+        }
+      }
+      // Per-project servers — find the entry matching cwd.
+      const projects = parsed?.projects;
+      if (projects && typeof projects === "object" && projects[cwd]?.mcpServers) {
+        for (const [name, spec] of Object.entries(projects[cwd].mcpServers)) {
+          if (seen.has(name)) continue;
+          seen.add(name);
+          fingerprints.push(buildFingerprintFromSpec(name, spec));
+        }
+      }
+    }
+  } catch {
+    /* silent */
+  }
+
+  return fingerprints;
+}
+
+function buildFingerprintFromSpec(name, spec) {
+  // The mcpServers entry shape varies by transport:
+  //   stdio: {"command": "npx", "args": [...], "env": {...}}
+  //   http:  {"url": "https://...", "headers": {...}}
+  //   sse:   {"type": "sse", "url": "..."}
+  // We surface the human-readable fingerprint fields the dashboard's
+  // MCPServersPanel renders. Capabilities are absent (the plugin
+  // can't observe a handshake) — emitted as an empty object so the
+  // wire shape matches what the sensor produces.
+  let transport = null;
+  let endpoint = null;
+  if (spec && typeof spec === "object") {
+    if (spec.url) {
+      endpoint = String(spec.url);
+      transport =
+        typeof spec.type === "string"
+          ? String(spec.type)
+          : spec.url.startsWith("https://") || spec.url.startsWith("http://")
+            ? "http"
+            : "sse";
+    } else if (spec.command) {
+      transport = "stdio";
+      const args = Array.isArray(spec.args) ? spec.args.join(" ") : "";
+      endpoint = args ? `${spec.command} ${args}` : String(spec.command);
+    }
+  }
+  return {
+    name: String(name),
+    transport,
+    protocol_version: "",
+    version: null,
+    capabilities: {},
+    instructions: null,
+    // ``endpoint`` is plugin-only metadata — the Python sensor cannot
+    // observe it because the SDK hides transport details below the
+    // ClientSession surface. Documented in the dashboard contract as
+    // "may be null on Python-sensor sessions, populated on plugin-
+    // sourced sessions."
+    endpoint,
+  };
 }
 
 // ---------------------------------------------------------------------
@@ -532,6 +713,117 @@ export const EVENT_MAP = {
   SessionEnd: "session_end",
   PreCompact: "tool_call",
 };
+
+// ---------------------------------------------------------------------
+// Phase 5 — MCP tool-call emission (Claude Code plugin path).
+//
+// Per Phase 5 D1, the plugin emits MCP_TOOL_CALL only — resource
+// reads, prompt fetches, and list operations are invisible to the
+// hook surface. The wire shape matches what the Python sensor's
+// MCP interceptor produces (Phase 5 addition C parity check):
+//
+//   server_name, transport, tool_name, arguments, result, duration_ms
+//
+// Differences from the sensor path:
+//
+//   * ``transport`` is read from the session's mcp_servers fingerprint
+//     list (loaded from .mcp.json + ~/.claude.json). The hook payload
+//     itself does not carry transport metadata, so we look up by
+//     server_name. If the server isn't in the fingerprint list (e.g.
+//     a server added mid-session via ``claude mcp add``) we emit
+//     transport=null and the dashboard renders "—".
+//   * ``error`` is populated on PostToolUseFailure events with the
+//     hookEvent.error string lifted into the structured taxonomy
+//     shape (error_type=other, error_class=PluginToolError). The
+//     plugin doesn't get JSON-RPC error codes — those live below the
+//     hook surface — so the taxonomy stays coarse.
+//   * ``arguments`` and ``result`` capture is gated on the existing
+//     captureToolInputs / capturePrompts knobs (D4 + D103). MCP
+//     bypasses the sanitiser whitelist (the keep-list would drop
+//     every MCP arg shape).
+// ---------------------------------------------------------------------
+
+async function emitMCPToolCallEvent({
+  cfg,
+  sessionId,
+  basePayload,
+  hookEvent,
+  hookName,
+  mcpParse,
+  startTime,
+}) {
+  // Look up transport by server_name from the session's fingerprint
+  // list. The cache is built once per process via collectContext for
+  // SessionStart but the dispatch branch here runs in fresh hook
+  // processes — re-load each time. Best-effort; on failure transport
+  // is null and the dashboard renders that gracefully.
+  let transport = null;
+  try {
+    const fingerprints = loadMcpServerFingerprints(process.cwd());
+    if (mcpParse.server_name) {
+      const match = fingerprints.find(
+        (s) => s.name === mcpParse.server_name,
+      );
+      if (match) transport = match.transport;
+    }
+  } catch {
+    /* silent */
+  }
+
+  // Capture-on arguments: bypass the whitelist sanitiser per D4.
+  const argumentsCapture =
+    cfg.captureToolInputs && hookEvent.tool_input != null
+      ? hookEvent.tool_input
+      : null;
+
+  // Capture-on result: same posture as the existing tool_call path,
+  // gated on capturePrompts. The wire shape mirrors what the sensor
+  // produces — a CallToolResult-like dict with the response content.
+  let resultCapture = null;
+  if (cfg.capturePrompts && hookEvent.tool_response != null) {
+    resultCapture =
+      typeof hookEvent.tool_response === "string"
+        ? { content: [{ type: "text", text: hookEvent.tool_response }] }
+        : hookEvent.tool_response;
+  }
+
+  // Failure path — PostToolUseFailure. Hook event carries an ``error``
+  // (string or object). Lift into the structured MCP error shape so
+  // the dashboard's MCPEventDetails error block renders consistently
+  // with sensor-produced errors.
+  let errorPayload = null;
+  if (hookName === "PostToolUseFailure" && hookEvent.error != null) {
+    const message =
+      typeof hookEvent.error === "string"
+        ? hookEvent.error
+        : JSON.stringify(hookEvent.error);
+    errorPayload = {
+      error_type: "other",
+      error_class: "PluginToolError",
+      message: message.length > 1000 ? `${message.slice(0, 1000)}…` : message,
+    };
+  }
+
+  const duration_ms =
+    hookName === "PostToolUse" || hookName === "PostToolUseFailure"
+      ? Date.now() - startTime
+      : null;
+
+  const payload = {
+    ...basePayload,
+    event_type: "mcp_tool_call",
+    server_name: mcpParse.server_name,
+    transport,
+    tool_name: mcpParse.tool_name,
+    duration_ms,
+    timestamp: new Date().toISOString(),
+  };
+  if (argumentsCapture != null) payload.arguments = argumentsCapture;
+  if (resultCapture != null) payload.result = resultCapture;
+  if (errorPayload != null) payload.error = errorPayload;
+
+  await postEvent(cfg.server, cfg.token, sessionId, payload);
+}
 
 // ---------------------------------------------------------------------
 // HTTP POST helper + unreachable-session logging.
@@ -813,7 +1105,12 @@ async function main() {
 
   const hookName = hookEvent.hook_event_name || hookEvent.event || "";
   const eventType = EVENT_MAP[hookName];
-  if (!eventType) return; // unknown / unhandled hook, silently ignore
+  // PostToolUseFailure is intentionally absent from EVENT_MAP — it is
+  // observable for MCP tools only (Phase 5 D1) and is dropped for
+  // generic Claude Code tool failures. Let it through so the MCP
+  // dispatch branch below can route it to mcp_tool_call; non-MCP
+  // PostToolUseFailure falls through and is dropped after that branch.
+  if (!eventType && hookName !== "PostToolUseFailure") return;
 
   const sessionId = getSessionId(hookEvent);
   const transcriptPath = hookEvent.transcript_path;
@@ -1054,6 +1351,39 @@ async function main() {
     hookEvent.tool_use?.name ||
     hookEvent.tool ||
     null;
+
+  // Phase 5 — MCP tool calls are namespaced as ``mcp__<server>__<tool>``
+  // by Claude Code. Detect via prefix and route to the dedicated MCP
+  // emit branch BEFORE the standard tool sanitiser runs. Per Phase 5
+  // D4, the whitelist sanitiser is BYPASSED for MCP tools — its keep-
+  // list (file_path / command / query / pattern / prompt) drops every
+  // MCP-specific argument shape and would render the plugin-sourced
+  // MCP_TOOL_CALL payload empty. The MCP path captures the raw
+  // arguments verbatim under the existing ``captureToolInputs`` knob.
+  const mcpParse = parseMcpToolName(toolName);
+  if (mcpParse) {
+    if (!mcpParse.parsed) {
+      process.stderr.write(
+        `flightdeck: ambiguous MCP tool name "${toolName}"; ` +
+          `server attribution falling back to null. See plugin README.\n`,
+      );
+    }
+    await emitMCPToolCallEvent({
+      cfg,
+      sessionId,
+      basePayload,
+      hookEvent,
+      hookName,
+      mcpParse,
+      startTime,
+    });
+    return;
+  }
+
+  // Non-MCP PostToolUseFailure is dropped — there is no generic
+  // tool_failure event_type today (Phase 5 D1: failure granularity is
+  // MCP-only). Avoids POSTing a payload with event_type=undefined.
+  if (!eventType) return;
 
   const sanitizedInput =
     cfg.captureToolInputs && hookEvent.tool_input

@@ -31,6 +31,17 @@
         ]
       }
     ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/observe_cli.mjs"
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "hooks": [

@@ -1,4 +1,4 @@
-.PHONY: help build test test-plugin test-integration test-sensor-e2e test-e2e test-e2e-ui test-smoke-playground seed-e2e lint dev dev-reset down logs release migrate-local-up migrate-local-status smoke-anthropic smoke-openai smoke-litellm smoke-langchain smoke-claude-code smoke-bifrost smoke-policies smoke-all
+.PHONY: help build test test-plugin test-integration test-sensor-e2e test-e2e test-e2e-ui test-smoke-playground seed-e2e lint dev dev-reset down logs release migrate-local-up migrate-local-status smoke-anthropic smoke-openai smoke-litellm smoke-langchain smoke-claude-code smoke-bifrost smoke-policies smoke-mcp-python smoke-mcp-langchain smoke-mcp-langgraph smoke-mcp-llamaindex smoke-mcp-crewai smoke-mcp-claude-code smoke-mcp-all smoke-all
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-12s %s\n", $$1, $$2}'
@@ -65,7 +65,33 @@ smoke-bifrost: ## Rule 40d smoke: bifrost gateway (optional). Requires BIFROST_U
 smoke-policies: ## Rule 40d smoke: policy enforcement events (warn/degrade/block) via real Anthropic + flavor policy. Requires ANTHROPIC_API_KEY.
 	cd tests/smoke && pytest -v test_smoke_policies.py
 
-smoke-all: smoke-anthropic smoke-openai smoke-litellm smoke-langchain smoke-claude-code smoke-policies ## Run every Phase 4 framework smoke test (bifrost is optional; run separately).
+# Phase 5 MCP smoke matrix (Rule 40d). Each target spawns the in-tree
+# reference server (tests/smoke/fixtures/mcp_reference_server.py) over
+# stdio so the schema and fingerprint contract stays aligned across
+# frameworks. Targets pytest-skip when the relevant framework adapter
+# is not installed; smoke-mcp-all runs cleanly on a box that has only
+# the python smoke's prerequisites (just `mcp` itself).
+smoke-mcp-python: ## Rule 40d smoke (Phase 5): direct mcp SDK against the in-tree reference server.
+	pytest -v tests/smoke/test_smoke_mcp_python.py
+
+smoke-mcp-langchain: ## Rule 40d smoke (Phase 5): LangChain MultiServerMCPClient. Requires `langchain-mcp-adapters`.
+	pytest -v tests/smoke/test_smoke_mcp_langchain.py
+
+smoke-mcp-langgraph: ## Rule 40d smoke (Phase 5): LangGraph ToolNode driving an MCP-adapter tool. Requires `langgraph` + `langchain-mcp-adapters`.
+	pytest -v tests/smoke/test_smoke_mcp_langgraph.py
+
+smoke-mcp-llamaindex: ## Rule 40d smoke (Phase 5): LlamaIndex McpToolSpec. Requires `llama-index-tools-mcp`.
+	pytest -v tests/smoke/test_smoke_mcp_llamaindex.py
+
+smoke-mcp-crewai: ## Rule 40d smoke (Phase 5): CrewAI via mcpadapt. Requires `mcpadapt` (pinned per D5) + `crewai`.
+	pytest -v tests/smoke/test_smoke_mcp_crewai.py
+
+smoke-mcp-claude-code: ## Rule 40d smoke (Phase 5): Claude Code plugin MCP path. Requires Node 20+.
+	pytest -v tests/smoke/test_smoke_mcp_claude_code.py
+
+smoke-mcp-all: smoke-mcp-python smoke-mcp-langchain smoke-mcp-langgraph smoke-mcp-llamaindex smoke-mcp-crewai smoke-mcp-claude-code ## Run every Phase 5 MCP smoke test (skips uninstalled adapters cleanly).
+
+smoke-all: smoke-anthropic smoke-openai smoke-litellm smoke-langchain smoke-claude-code smoke-policies smoke-mcp-all ## Run every framework smoke test (Phase 4 + Phase 5 MCP; bifrost is optional, run separately).
 
 # Phase 3 retired the duplicate `test-e2e` target. The prior target
 # at this line drove sensor pytest e2e (now `test-sensor-e2e` above)

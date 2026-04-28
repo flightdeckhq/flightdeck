@@ -643,7 +643,11 @@ lists `("langchain", "langchain_core")` so split-package installs
 detected via the always-present core package.
 
 `MCP calls routed through any framework attribute to the framework, not
-"mcp" as a framework itself` — design rule covering future MCP support.
+"mcp" as a framework itself` — every event the MCP interceptor emits
+carries the surrounding framework's bare-name `framework` field
+(`langchain`, `langgraph`, etc.); the `mcp_*` event_type itself
+identifies the protocol axis. The MCP server name lives on the
+event payload (`server_name`) and on `context.mcp_servers`.
 
 ### Runtime context auto-collection
 
@@ -2095,11 +2099,13 @@ arrive in the response envelope of `POST /v1/events` (see Directives
 section); the sensor's acknowledgement is the `DIRECTIVE_RESULT`
 event.
 
-11 emitted event types:
+17 emitted event types:
 
 `SESSION_START`, `SESSION_END`, `PRE_CALL`, `POST_CALL`, `TOOL_CALL`,
 `EMBEDDINGS`, `LLM_ERROR`, `POLICY_WARN`, `POLICY_DEGRADE`,
-`POLICY_BLOCK`, `DIRECTIVE_RESULT`.
+`POLICY_BLOCK`, `DIRECTIVE_RESULT`, `MCP_TOOL_LIST`, `MCP_TOOL_CALL`,
+`MCP_RESOURCE_LIST`, `MCP_RESOURCE_READ`, `MCP_PROMPT_LIST`,
+`MCP_PROMPT_GET`.
 
 ### `session_start`
 
@@ -2257,6 +2263,93 @@ Sensor's acknowledgement / execution response. Fields:
 - `error`: plain string when `directive_status="error"`. (Distinct from
   the structured `LLM_ERROR` payload.)
 - `duration_ms`: handler execution time.
+
+### MCP event types (`mcp_tool_list`, `mcp_tool_call`, `mcp_resource_list`, `mcp_resource_read`, `mcp_prompt_list`, `mcp_prompt_get`)
+
+First-class observability for Model Context Protocol (MCP) traffic. The
+sensor patches `mcp.client.session.ClientSession` directly (D116) so
+every framework that mediates MCP through the official SDK
+(LangChain via `langchain-mcp-adapters`, LangGraph via the same,
+LlamaIndex via `llama-index-tools-mcp`, CrewAI via `mcpadapt`,
+plus the raw mcp SDK) routes through one patch surface and emits
+the same six event types.
+
+The Claude Code plugin emits **only** `MCP_TOOL_CALL` (D1 in PR #29
+— `mcp__<server>__<tool>` is the only MCP namespace visible from
+the hook surface; resource reads, prompt fetches, and list
+operations are below the hook layer). Both surfaces share the same
+wire schema for tool calls so the dashboard renders identically
+across origin.
+
+**Lean payload** (D2). MCP events drop the LLM-baseline fields
+(`tokens_input`, `tokens_output`, `tokens_total`, `tokens_cache_*`,
+`model`, `latency_ms`, `tool_input`, `tool_result`, `has_content`)
+and carry only MCP-specific fields:
+
+| Field | List events | tool_call | resource_read | prompt_get |
+|---|---|---|---|---|
+| `server_name` | ✓ | ✓ | ✓ | ✓ |
+| `transport` | ✓ | ✓ | ✓ | ✓ |
+| `duration_ms` | ✓ | ✓ | ✓ | ✓ |
+| `count` | ✓ | — | — | — |
+| `tool_name` (top-level) | — | ✓ | — | — |
+| `arguments` | — | gated | — | gated |
+| `result` | — | gated | — | — |
+| `resource_uri` | — | — | ✓ | — |
+| `content_bytes` | — | — | ✓ | — |
+| `mime_type` | — | — | gated | — |
+| `prompt_name` | — | — | — | ✓ |
+| `rendered` | — | — | — | gated |
+| `error` | optional | optional | optional | optional |
+
+`gated` fields appear only when `capture_prompts=True`. The structured
+`error` block (taxonomy: `invalid_params` / `connection_closed` /
+`timeout` / `api_error` / `other`) is populated on failure paths
+across every type.
+
+**Server fingerprint at session level**. `ClientSession.initialize()`
+is patched silently (no wire event) to capture the
+`InitializeResult` and stamp an `MCPServerFingerprint` onto the
+sensor session. When the sensor's session_start ships AFTER the
+initialize call, `context.mcp_servers` carries the full fingerprint
+list — name, transport, protocol_version (str | int, preserved
+verbatim per Override 5), version, capabilities, instructions —
+which the worker writes once into `sessions.context` (UpsertSession
+ON CONFLICT does not update context, see Override 2). For sessions
+where flightdeck init runs BEFORE MCP init, the per-event
+`server_name` + `transport` is the authoritative real-time
+attribution.
+
+**Content overflow** (B-6). `MCP_RESOURCE_READ` payloads can carry
+large captured bodies. The wire envelope routes content one of two
+ways:
+
+- **Inline** when the captured body fits the events.payload column
+  (≤ 8 KiB threshold) — `content` lands in `events.payload.content`
+  via the worker's MCP-content projection.
+- **Overflow** when `has_content=true` is set on the wire — the
+  worker's existing `event_content` table path takes over (the same
+  path LLM prompt content uses), and the dashboard fetches via
+  `GET /v1/events/{id}/content`. A 2 MiB hard cap applies; bodies
+  beyond that are truncated with a marker.
+
+`MCP_TOOL_CALL` and `MCP_PROMPT_GET` use per-field truncation
+markers in `payload.extras` rather than has_content routing, since
+their captured shapes are smaller and inlining is always cheap.
+
+**Dashboard surfacing**. Every MCP event_type renders with its own
+TYPE pill ("MCP TOOL CALL", "MCP TOOLS DISCOVERED", "MCP RESOURCE
+READ", "MCP RESOURCES DISCOVERED", "MCP PROMPT FETCHED", "MCP
+PROMPTS DISCOVERED" — verbs distinguish "agent invoked" from
+"agent discovered", "MCP" prefix disambiguates from the generic
+`tool_call` "TOOL" pill in contexts without colour-family
+attribution). The Fleet swimlane renders MCP events with a
+hexagon clip-path shape (B-5b) so the family is identifiable
+from the timeline at a glance even without reading badge text. A
+small inline error indicator (red AlertCircle) decorates rows
+whose `payload.error` is populated so failures surface without
+expanding the row. The session detail drawer's MCP SERVERS panel
+lists every fingerprint from `context.mcp_servers`.
 
 ### Per-event `framework` field
 

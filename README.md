@@ -86,6 +86,12 @@ Per-event ``framework`` field carries the bare name (``langchain``, ``crewai``, 
 
 **Bifrost** is a multi-provider LLM gateway. Flightdeck observes agents routing through bifrost via the protocol used — point the openai SDK at bifrost's `base_url` and the OpenAI interceptor fires; point the anthropic SDK at bifrost and the Anthropic interceptor fires. Both protocols are supported as deployment topologies.
 
+### MCP (Model Context Protocol)
+
+Flightdeck observes MCP traffic as a first-class event surface alongside chat and embeddings. Six event types — `mcp_tool_list`, `mcp_tool_call`, `mcp_resource_list`, `mcp_resource_read`, `mcp_prompt_list`, `mcp_prompt_get` — emit per operation. The sensor patches `mcp.client.session.ClientSession` directly, so every framework that mediates MCP through the official SDK lights up automatically: LangChain via `langchain-mcp-adapters`, LangGraph via the same, LlamaIndex via `llama-index-tools-mcp`, CrewAI via `mcpadapt`, plus the raw `mcp` SDK. Each event carries `server_name` + `transport` for attribution; the session-level `MCPServerFingerprint` (name, transport, protocol_version, version, capabilities, instructions) lands in `context.mcp_servers` when MCP init runs before sensor init.
+
+The Claude Code plugin emits `mcp_tool_call` only — the plugin's hook surface only sees `mcp__<server>__<tool>` invocations; resource reads, prompt fetches, and list operations are below the hook layer.
+
 ---
 
 ## Capabilities
@@ -451,9 +457,8 @@ Set expectations early so the boundaries are clear:
 
 ## Roadmap
 
-Tracked post-v0.5.0 work. Prioritized when users tell us which matters most.
+Tracked post-Phase-5 work. Prioritized when users tell us which matters most.
 
-- **Phase 5 — MCP first-class support.** Treat Model Context Protocol calls as a first-class event surface alongside chat and embeddings. Cover MCP server lifecycle, tool inventory, per-tool latency, and structured error events for MCP transports.
 - **Phase 6 — sub-agent observability.** First-class events for sub-agent spawn, hand-off, and join across CrewAI / LangGraph / AutoGen multi-agent topologies. Render parent / child relationships in the fleet timeline.
 - **Phase 7a — landing page + agent detail.** Per-agent deep-link page (today's Investigate filter is the closest equivalent). Token / latency / error trends per agent over rolling windows.
 - **Phase 8 — framework verification matrix.** Continuous live-API smoke tests across every supported framework on a schedule, not just on PR. Catches SDK class-rename breakage (anthropic ``RateLimitError`` → ``QuotaError`` etc.) before users hit it.

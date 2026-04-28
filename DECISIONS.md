@@ -4069,3 +4069,266 @@ misbehaving integration learns its payload is wrong in production.
 **Related decisions.** D114 (agent_type vocabulary lock) is what
 this validation enforces. D115 (agent identity model) introduced the
 fields being validated.
+
+
+## D117 -- MCP interceptor patches `ClientSession` directly, not framework adapters
+
+**Problem.** Phase 5 introduces first-class observability for Model
+Context Protocol traffic across multiple agent frameworks (LangChain
+via langchain-mcp-adapters, LangGraph via the same, LlamaIndex via
+llama-index-tools-mcp, CrewAI via mcpadapt, plus the raw `mcp` SDK).
+Patching one adapter per framework means six interceptors with their
+own version drift, six places where a future SDK rename can silently
+disable observability, and six independent test surfaces.
+
+**Decision.** The MCP interceptor patches
+`mcp.client.session.ClientSession` at the class level — its async
+methods (`list_tools`, `call_tool`, `list_resources`, `read_resource`,
+`list_prompts`, `get_prompt`, `initialize`) are the actual
+wire-protocol contract. Every framework adapter ultimately constructs
+and drives a `ClientSession`, so a single patch surface covers them
+all. Framework attribution lives on the per-event `framework` field
+(set at sensor `init()` from the same `FrameworkCollector` other
+interceptors use); the MCP `event_type` identifies the protocol axis.
+
+**Why.** The `mcp` SDK is the one contract every adapter shares. It
+moves in lockstep with the protocol spec, has a small published API,
+and is owned by the Model Context Protocol working group rather than
+any one framework. Patching adapters would require Flightdeck to
+track six independently-versioned community packages; patching
+`ClientSession` requires tracking one upstream that moves slowly and
+deliberately.
+
+**Trade-offs.** Adapter glue that bypasses `ClientSession` (none
+currently exist; theoretically a framework could ship its own MCP
+client) would not be observed. The dict-literal `_PATCH_TABLE` in
+`sensor/flightdeck_sensor/interceptor/mcp.py` keeps the six
+operations explicit so adding a future SDK method is one line.
+
+**Related decisions.** D118 (asymmetric coverage between sensor and
+plugin). D119 (lean MCP payload).
+
+
+## D118 -- Asymmetric MCP coverage between Python sensor and Claude Code plugin
+
+**Problem.** Phase 5 ships MCP observability across two distinct
+emission surfaces — the Python sensor (which patches `ClientSession`
+and sees every operation) and the Claude Code plugin (which
+observes from the hook layer above the wire protocol). The plugin's
+`PostToolUse` payload only carries the executed tool's name and
+arguments; resource reads, prompt fetches, and list operations are
+below the hook surface. We need a coherent story for what each
+emitter is responsible for so the dashboard contract doesn't fork.
+
+**Decision.** The Python sensor emits all six MCP event types. The
+Claude Code plugin emits `mcp_tool_call` only — when the hook
+payload's `tool_name` matches `mcp__<server>__<tool>`, the plugin
+parses the namespace, looks up the server fingerprint from
+`.mcp.json` + `~/.claude.json`, and emits a Phase-5-shaped
+`mcp_tool_call` event. `PostToolUseFailure` on the same namespace
+routes through the same path with a structured `error` block
+(`error_class=PluginToolError`).
+
+**Why.** The hook surface is the constraint, not a design choice.
+Hook-mediated tools enter `PostToolUse` after Claude Code resolves
+them — there is no equivalent hook for "agent listed available MCP
+tools" or "agent fetched a prompt template" because those operations
+happen within the Claude Code runtime, not on the agent-tool boundary
+the hook layer exposes. Synthesizing fake `mcp_tool_list` events
+from the fingerprint config every session would be noise without
+observability — list operations would all emit at session_start
+regardless of whether the agent ever actually queried them.
+
+**Trade-offs.** Operators wanting full six-type coverage of an MCP
+deployment must use the Python sensor (production agents) or treat
+the plugin's `mcp_tool_call` events as a strict subset. The dashboard
+treats both surfaces' wire shape identically — a `mcp_tool_call`
+event from the plugin and one from the sensor render the same row,
+with the same TYPE pill, the same colour family, and the same
+MCPEventDetails accordion.
+
+**Related decisions.** D117 (canonical MCP patch surface). D119
+(lean MCP payload).
+
+
+## D119 -- Lean MCP wire payload (drop LLM-baseline fields)
+
+**Problem.** Pre-Phase-5 every Flightdeck event carried the LLM
+baseline shape (`tokens_input`, `tokens_output`, `tokens_total`,
+`tokens_cache_read`, `tokens_cache_creation`, `model`, `latency_ms`,
+`tool_input`, `tool_result`, `has_content`, `content`). Most of those
+fields are meaningless for MCP traffic — a `mcp_tool_call` doesn't
+have model attribution because MCP runs below the LLM layer; a
+`mcp_resource_list` doesn't have token counts because no LLM call
+fired. Including them as nulls bloats the payload, dilutes the
+dashboard's facets ("model" populated as null on every MCP row),
+and forces every consumer to handle the "MCP variant" of every field.
+
+**Decision.** MCP events ship with a lean payload: only MCP-specific
+fields appear on the wire. The LLM-baseline fields are absent
+entirely, not nulled. Dashboard components that read those fields
+treat MCP rows via type-discriminated branches
+(`event_type.startswith("mcp_")`), not via null-handling.
+
+**Why.** MCP is a different protocol surface from LLM calls. Mixing
+them on one schema produced a worst-of-both: MCP fields had no home
+(cluttering payloads with `arguments`/`result`/`resource_uri` on
+every event), and LLM fields populated as null on MCP events lied
+about what the data meant.
+
+**Trade-offs.** Dashboard rendering branches: the MCPEventDetails
+component has its own accordion (separate from the existing event
+detail body), and the session drawer's row layout reads MCP-specific
+extras directly from `events.payload`. The savings: no schema
+migration to add new MCP-specific columns, no per-MCP-event-type
+field-multiplication.
+
+**Related decisions.** D117 (canonical MCP patch surface). D118
+(asymmetric coverage).
+
+
+## D120 -- `mcpadapt` pinned in optional `[mcp-crewai]` extras
+
+**Problem.** CrewAI does not ship a first-party MCP integration. The
+community adapter `mcpadapt` (https://github.com/grll/mcpadapt) is
+the production path for CrewAI agents calling MCP servers. It is
+small, has no major-version baseline, and its public API has shifted
+across releases. Without a pin, a future `pip install` could drag in
+a version whose adapter signature has changed and silently break the
+CrewAI smoke test (which is the only thing that exercises the real
+class hierarchy).
+
+**Decision.** `mcpadapt` is pinned in the sensor's optional
+`[mcp-crewai]` extras with a known-working version. Upgrading the
+pin is a deliberate decision (a code change with a smoke run, not a
+side effect of a transitive resolution). Other framework adapters
+(`langchain-mcp-adapters`, `llama-index-tools-mcp`) are not pinned
+because they sit under foundation packages with stable release
+cadences and large user bases that surface SDK breakage quickly;
+`mcpadapt` does not.
+
+**Why.** Real-provider smoke tests are the only thing that verifies
+adapter glue against a live `ClientSession`. Mocking the adapter at
+its public surface tests our mock, not the adapter. A pinned
+`mcpadapt` keeps the smoke test stable enough to be a meaningful
+gate; an unpinned one would intermittently break on `pip install -e .`
+for reasons unrelated to Flightdeck changes.
+
+**Related decisions.** Rule 40d (real-provider smoke tests). D117
+(canonical MCP patch surface).
+
+
+## D121 -- MCP failure surfacing on event-feed rows + session-row rollup
+
+**Problem.** Phase 5 lands MCP event types as a peer family to LLM
+calls (D119). The cyan/green/purple colour families plus the
+swimlane hexagon shape (B-5b) attribute every MCP event as MCP at a
+glance. But success vs. failure is invisible at scan-time: a
+mcp_tool_call rendered in cyan looks identical whether the call
+returned a result or raised `McpError("invalid_params: ...")`. An
+operator landing in the session drawer can read the structured
+error inside `MCPEventDetails` only AFTER expanding the row.
+
+The same gap exists at the session-listing level. Investigate's
+session row already carries a red dot when the session emitted any
+`llm_error` event (`error_types[]` rollup). Without a parallel
+MCP-error rollup, an operator scanning the table sees only the cyan
+"this session touched MCP" dot — not "and at least one MCP call
+failed."
+
+**Decision.** Two coordinated indicators, both scoped to MCP-only
+rows so non-MCP UI is unchanged:
+
+1. **Event-row indicator.** Inside the session drawer's event feed,
+   every row whose `event_type` matches `mcp_*` AND whose
+   `payload.error` is populated renders an inline red `AlertCircle`
+   (lucide, 12px, strokeWidth 2.5) immediately after the badge,
+   before the detail text. The component lives at
+   `dashboard/src/components/session/SessionDrawer.tsx ::
+   MCPErrorIndicator` and is gated by `isMCPEvent(event_type) &&
+   event.payload?.error != null`.
+
+   - Colour: `var(--event-error)` — the same red used by `llm_error`
+     rows and by policy `block` enforcement, so the visual vocabulary
+     is consistent across the dashboard.
+   - aria-label: `MCP call failed: <message>` — the message extracted
+     from `payload.error.message` (falling back to `error_class` or
+     `error_type`, finally to the literal "MCP call failed" if the
+     error is a bare string). The format matches what
+     `_classify_mcp_error` produces in the sensor's MCP interceptor
+     and what the Claude Code plugin emits on PostToolUseFailure.
+   - Tooltip on hover: `Failed: <message>`.
+   - Test contract: `data-testid="mcp-error-indicator-<event_id>"`.
+
+2. **Session-row indicator.** The session-listing API
+   (`GET /v1/sessions`) gains an `mcp_error_types: string[]` field —
+   every distinct `payload.error.error_type` observed across the
+   session's `mcp_*` events, deduplicated, empty array when no MCP
+   call failed. Investigate's session row renders a red dot
+   (`var(--event-error)`, 7×7px, 25%-opacity halo) next to the cyan
+   MCP-servers dot when the rollup is non-empty. Tooltip:
+   `MCP errors: <type1>, <type2>`. Test contract:
+   `data-testid="session-row-mcp-error-indicator-<session_id>"`.
+
+   The SQL is a correlated subquery on the listing query (mirroring
+   the existing `error_types` and `policy_event_types` patterns), so
+   no per-session follow-up fetch is needed and the dashboard renders
+   the indicator on first paint.
+
+**Why this scope, not less.** Event-row only would have left
+operators having to open every drawer to find which sessions have
+MCP failures. The session-listing rollup is the at-a-glance signal
+that drives operator triage at scale — exactly the role
+`error_types` plays for `llm_error`. Asymmetric surfacing (event-row
+indicator without a session-level rollup) would have been a
+documented gap until the next phase, and the no-defer rule (Rule 51)
+points to landing it now.
+
+**Why this scope, not more.** A red row-tinting on the session row
+itself (rather than a discrete dot) would over-claim — most sessions
+with MCP errors still ran successfully overall, and the existing
+state column already encodes liveness (active / idle / closed / lost).
+A separate "MCP-error session state" was rejected for the same
+reason. The dot is the smallest signal that does the at-a-glance
+job; the rollup tooltip carries the detail.
+
+**Why red, specifically.** The `var(--event-error)` token is shared
+across `llm_error` rows, the `llm_error_*` red severity dot in
+session listing, and the `policy_block` red-orange chroma. Adding a
+fourth red surface for MCP failures keeps the dashboard's red
+budget tight: red always means "something failed." Variations in
+MCP-tool family (cyan/green/purple per resource type) are
+preserved; the indicator overlays the family colour, not replaces
+it.
+
+**Boundary.** The indicator is row-level + session-level only. The
+fleet-level swimlane hexagons stay one colour per family regardless
+of success — adding red hexagons would force every MCP family to
+have two shape-and-colour variants and would over-claim at the
+fleet view (where individual rows are too small to distinguish "this
+session has one bad MCP call out of 50" from "this session is
+broken"). The session-row dot already serves the cross-session
+triage need; the event-row indicator serves the in-session inspect
+need.
+
+**Test coverage.**
+- `dashboard/tests/unit/SessionDrawer.test.tsx` — three Vitest cases
+  (positive on failed mcp_tool_call, negative on successful
+  mcp_tool_call, negative on llm_error to confirm scope).
+- `dashboard/tests/e2e/T25-mcp-observability.spec.ts` —
+  T25-16 (event-row indicator) and T25-17 (session-row indicator),
+  both running under both theme projects per Rule 40c.3.
+- `tests/integration/test_mcp_events.py::test_mcp_error_types_rollup_on_session_listing`
+  — IT-MCP-6 covers the SQL rollup contract end-to-end through
+  ingestion → worker → API.
+- Canonical fixture extras tag `mcp_tool_call_failed` (added to
+  `tests/e2e-fixtures/canonical.json` + `seed.py`) anchors the
+  failed event in the seeded mcp-active session so both E2E tests
+  hit a stable target.
+
+**Related decisions.** D117 (canonical MCP patch surface, where the
+sensor produces the structured `error` payload this surface
+consumes). D119 (lean MCP wire payload — `error` is one of the
+extras allowed on the lean schema). Rule 51 (no-defer discipline —
+the session-row rollup landed in this push because event-row alone
+was a clear gap, not a deferred follow-up).

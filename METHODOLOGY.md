@@ -167,3 +167,39 @@ handler and low in a dev seed script. "Looks dangerous" is not
 the same as "is dangerous." Every HIGH or CRITICAL needs the
 trace recorded in the PR; pattern-matching on shape alone produces
 false alarms that crowd out real issues.
+
+### L7 — Patch the protocol contract, not the framework adapter
+
+When a protocol or wire layer is mediated by multiple framework
+adapters (Phase 5: MCP via langchain-mcp-adapters, langgraph,
+llama-index-tools-mcp, mcpadapt, plus the raw `mcp` SDK), patch
+the protocol's canonical client class — not each adapter. The
+adapters share one upstream and drift independently; one patch
+surface against the upstream covers them all and tracks one
+release cadence instead of N. Framework attribution lives on the
+existing per-event `framework` field, not on the patched layer.
+
+Applied first in Phase 5 with `ClientSession`-level patching for
+MCP (D117). The same principle applies to any future protocol
+that grows multi-framework adoption (a hypothetical
+agent-to-agent transport, structured tool schemas, etc.) — find
+the single contract every adapter shares and patch there.
+
+### L8 — Surface failures on the row, not only inside the event
+
+Phase 5's MCP event family ships in three colour families
+(cyan/green/purple) regardless of success vs. failure. Pre-fix,
+an operator scanning the session-drawer event feed could not
+distinguish a successful `mcp_tool_call` from a failed one
+without expanding the row to read MCPEventDetails. The fix
+(MCPErrorIndicator: small inline AlertCircle when
+`payload.error` is populated) restores parity with the
+Investigate session-row dot used for `llm_error`.
+
+The lesson: any new event shape that has both success and
+failure variants needs a row-level visual cue. The existing
+patterns in the codebase (per-row error dot on the listing,
+`directive_result` colour override on the swimlane) work
+because they're self-evident from a glance — applying them to
+new event types is mandatory before merge, not a polish
+follow-up.

@@ -30,6 +30,18 @@ the Rule 40d convention:
 | `make smoke-langchain` | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` | `ChatAnthropic.invoke`, `ChatOpenAI.invoke`, `OpenAIEmbeddings`, error propagation |
 | `make smoke-claude-code` | (none) | Claude Code plugin against a locally installed `claude` CLI |
 | `make smoke-bifrost` | `BIFROST_URL` + upstream provider key | OpenAI-compatible indirect path |
+| `make smoke-mcp-python` | (none — uses in-tree reference server) | Direct mcp SDK: list/call_tool, list/read_resource, list/get_prompt, per-event server attribution |
+| `make smoke-mcp-langchain` | `langchain-mcp-adapters` | LangChain MultiServerMCPClient → tool invocation routes through patched `ClientSession` |
+| `make smoke-mcp-langgraph` | `langgraph` + `langchain-mcp-adapters` | LangGraph `ToolNode` driving an MCP-adapter tool |
+| `make smoke-mcp-llamaindex` | `llama-index-tools-mcp` | LlamaIndex `McpToolSpec` / `BasicMCPClient` |
+| `make smoke-mcp-crewai` | `mcpadapt` (pinned per D5) + `crewai` | CrewAI tools via `MCPAdapt` + `CrewAIAdapter` |
+| `make smoke-mcp-claude-code` | (none — Node 20+) | Claude Code plugin path: `mcp__server__tool` hook payload routed to `mcp_tool_call`, including failure path |
+
+The MCP smokes use a shared in-tree reference server
+(`tests/smoke/fixtures/mcp_reference_server.py`) over stdio so the
+schema and fingerprint contract stays aligned across frameworks —
+what the python smoke sees on the wire is what every adapter smoke
+sees, modulo each framework's adapter glue.
 
 Each target calls its corresponding `pytest` file under this
 directory. Tests that need a missing env var skip cleanly with a

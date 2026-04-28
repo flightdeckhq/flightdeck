@@ -132,6 +132,28 @@ def make_sensor_session(
     return fd._session  # type: ignore[attr-defined]
 
 
+def mcp_reference_server_params():
+    """Return ``StdioServerParameters`` for the in-tree reference MCP
+    server (``tests/smoke/fixtures/mcp_reference_server.py``). Phase 5
+    smoke tests across every framework spawn this same server over
+    stdio so the dashboard's fixture-freeze contract and the wire
+    schema stay aligned across languages — what the python smoke
+    sees is what the langchain / langgraph / llamaindex / crewai
+    smokes also see, modulo each framework's adapter glue.
+
+    Imports the mcp SDK lazily so smoke files for non-Python
+    frameworks that don't import mcp directly still load on a clean
+    venv (each test will skip via ``require_env`` or
+    ``pytest.importorskip`` before reaching this helper).
+    """
+    import sys
+    from mcp import StdioServerParameters
+    return StdioServerParameters(
+        command=sys.executable,
+        args=["-m", "tests.smoke.fixtures.mcp_reference_server"],
+    )
+
+
 def fetch_events_for_session(
     session_id: str,
     *,

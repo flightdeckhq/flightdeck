@@ -10,11 +10,22 @@ const ACCESS_TOKEN = "tok_dev";
 // clean-light. Playwright projects map onto those themes by
 // pre-setting the persisted theme in localStorage before each test,
 // so a single spec file runs in both aesthetics without per-test
-// branching. The theme key mirrors dashboard/src/hooks/useTheme.ts.
-// Rule 40c.3 (theme coverage) relies on this shape: every spec runs
-// under both projects and must not hardcode theme-specific selectors
-// or colours.
-const THEME_STORAGE_KEY = "flightdeck:theme";
+// branching. Project NAMES use the design labels (neon-dark /
+// clean-light) for human readability; the localStorage VALUES must
+// be ``dark`` / ``light`` because that's what useTheme accepts (see
+// dashboard/src/hooks/useTheme.ts: getInitialTheme rejects any other
+// value and falls to "dark"). Pre-fix the values matched the project
+// names, which silently degraded clean-light into a second dark-theme
+// run for an unknown number of phases — Rule 40c.3 (theme coverage)
+// requires the matrix to actually exercise both themes.
+// Mirrors dashboard/src/lib/constants.ts::THEME_STORAGE_KEY exactly.
+// Drift here means the seeded localStorage entry lands at a key the
+// app never reads, useTheme falls to its "dark" default, and the
+// matrix silently runs single-theme — exactly the regression this
+// config fix is closing.
+const THEME_STORAGE_KEY = "flightdeck-theme";
+const THEME_DARK = "dark";
+const THEME_LIGHT = "light";
 
 export default defineConfig({
   testDir: "./tests/e2e",
@@ -77,7 +88,7 @@ export default defineConfig({
             {
               origin: "http://localhost:4000",
               localStorage: [
-                { name: THEME_STORAGE_KEY, value: "neon-dark" },
+                { name: THEME_STORAGE_KEY, value: THEME_DARK },
               ],
             },
           ],
@@ -96,7 +107,7 @@ export default defineConfig({
             {
               origin: "http://localhost:4000",
               localStorage: [
-                { name: THEME_STORAGE_KEY, value: "clean-light" },
+                { name: THEME_STORAGE_KEY, value: THEME_LIGHT },
               ],
             },
           ],
@@ -133,7 +144,7 @@ export default defineConfig({
             {
               origin: "http://localhost:4000",
               localStorage: [
-                { name: THEME_STORAGE_KEY, value: "neon-dark" },
+                { name: THEME_STORAGE_KEY, value: THEME_DARK },
               ],
             },
           ],
@@ -153,7 +164,7 @@ export default defineConfig({
             {
               origin: "http://localhost:4000",
               localStorage: [
-                { name: THEME_STORAGE_KEY, value: "clean-light" },
+                { name: THEME_STORAGE_KEY, value: THEME_LIGHT },
               ],
             },
           ],

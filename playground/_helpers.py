@@ -44,7 +44,7 @@ def init_sensor(
     ``flavor`` propagates via the ``AGENT_FLAVOR`` env var so the
     wire-level ``flavor`` column on sessions carries the playground
     script's intent. ``agent_type`` is passed as a kwarg directly to
-    ``flightdeck_sensor.init`` (v0.4.0 Phase 1 added the kwarg).
+    ``flightdeck_sensor.init``.
 
     Env overrides: FLIGHTDECK_SERVER (default http://localhost:4000/ingest),
     FLIGHTDECK_TOKEN (default tok_dev), FLIGHTDECK_API_URL (derived).

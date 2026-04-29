@@ -1,10 +1,10 @@
-"""litellm Phase 4 smoke test. Runs manually; NOT in CI.
+"""litellm smoke test. Runs manually; NOT in CI.
 
-Coverage: multi-provider chat, embeddings (new module-level patch),
+Coverage: multi-provider chat, embeddings (module-level patch),
 provider-specific error pass-through.
 
-litellm streaming remains out of scope (KI26); we don't smoke-test a
-path that's explicitly unsupported.
+litellm streaming is out of scope; we don't smoke-test a path that's
+explicitly unsupported.
 """
 
 from __future__ import annotations
@@ -62,7 +62,7 @@ def test_litellm_embedding_emits_embeddings_event() -> None:
     sess = _sensor_session()
     litellm.embedding(
         model="text-embedding-3-small",
-        input=["phase 4 smoke test"],
+        input=["smoke test"],
     )
     events = fetch_events_for_session(
         sess.config.session_id, expect_event_types=["embeddings"],
@@ -72,12 +72,12 @@ def test_litellm_embedding_emits_embeddings_event() -> None:
 
 
 def test_litellm_embeddings_capture_routes_to_openai() -> None:
-    """Phase 4 polish S-EMBED-6: litellm-routed embedding with
-    capture_prompts=True. Routes to OpenAI's text-embedding-3-small;
-    verifies has_content=True and the input round-trips intact."""
+    """litellm-routed embedding with capture_prompts=True. Routes to
+    OpenAI's text-embedding-3-small; verifies has_content=True and the
+    input round-trips intact."""
     import litellm
     sess = _sensor_session()
-    payload = "phase 4 smoke litellm route to openai"
+    payload = "smoke litellm route to openai"
     litellm.embedding(
         model="text-embedding-3-small",
         input=payload,

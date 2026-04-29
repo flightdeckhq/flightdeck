@@ -90,6 +90,6 @@ This asymmetry is intentional and documented in `README.md` under
 event types for plugin-source sessions; it does NOT synthesise events
 that don't exist.
 
-`test_smoke_mcp_claude_code.py` asserts byte-for-byte schema parity on
-the one event type both sources emit (`MCP_TOOL_CALL`) — see Phase 5
-addition C.
+`test_smoke_claude_code.py`'s MCP path tests assert byte-for-byte
+schema parity on the one event type both sources emit
+(`MCP_TOOL_CALL`).

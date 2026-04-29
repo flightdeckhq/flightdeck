@@ -1,4 +1,4 @@
-.PHONY: help build test test-plugin test-integration test-sensor-e2e test-e2e test-e2e-ui test-smoke-playground seed-e2e lint dev dev-reset down logs release migrate-local-up migrate-local-status smoke-anthropic smoke-openai smoke-litellm smoke-langchain smoke-claude-code smoke-bifrost smoke-policies smoke-mcp-python smoke-mcp-langchain smoke-mcp-langgraph smoke-mcp-llamaindex smoke-mcp-crewai smoke-mcp-claude-code smoke-mcp-all smoke-all
+.PHONY: help build test test-plugin test-integration test-sensor-e2e test-e2e test-e2e-ui test-smoke-playground seed-e2e lint dev dev-reset down logs release migrate-local-up migrate-local-status smoke-anthropic smoke-openai smoke-litellm smoke-langchain smoke-langgraph smoke-llamaindex smoke-crewai smoke-claude-code smoke-bifrost smoke-policies smoke-mcp smoke-all
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-12s %s\n", $$1, $$2}'
@@ -31,11 +31,11 @@ test-smoke-playground: ## Run the playground against a live stack (requires ANTH
 	python playground/run_all.py
 
 # ---------------------------------------------------------------------------
-# Phase 4 Rule 40d smoke targets. Each runs the per-framework smoke
-# test against a live provider; NONE of these run in CI (they cost
-# money and need real API keys). Run manually before a PR that
-# touches framework-emission behaviour and document the results in
-# the phase's audit doc.
+# Rule 40d smoke targets. Each runs the per-framework smoke test
+# against a live provider; NONE of these run in CI (they cost money
+# and need real API keys). Run manually before a release that touches
+# framework-emission behaviour and document the results in the
+# matching audit doc.
 #
 # Smoke tests skip cleanly when the relevant env var is unset, so
 # the target never fails the user's local pytest invocation; a skip
@@ -53,10 +53,10 @@ smoke-openai: ## Rule 40d smoke: OpenAI SDK. Requires OPENAI_API_KEY.
 smoke-litellm: ## Rule 40d smoke: litellm multi-provider. Requires ANTHROPIC_API_KEY + OPENAI_API_KEY.
 	cd tests/smoke && pytest -v test_smoke_litellm.py
 
-smoke-langchain: ## Rule 40d smoke: LangChain (Anthropic + OpenAI paths). Requires ANTHROPIC_API_KEY + OPENAI_API_KEY.
+smoke-langchain: ## Rule 40d smoke: LangChain (chat via Anthropic + OpenAI; MCP via langchain-mcp-adapters). Requires ANTHROPIC_API_KEY + OPENAI_API_KEY (+ `langchain-mcp-adapters` for the MCP half).
 	cd tests/smoke && pytest -v test_smoke_langchain.py
 
-smoke-claude-code: ## Rule 40d smoke: Claude Code plugin against locally installed `claude` CLI.
+smoke-claude-code: ## Rule 40d smoke: Claude Code plugin (CLI lifecycle gated on CLAUDE_CLI_AVAILABLE=1; MCP path requires Node 20+).
 	cd tests/smoke && pytest -v test_smoke_claude_code.py
 
 smoke-bifrost: ## Rule 40d smoke: bifrost gateway (optional). Requires BIFROST_URL + upstream provider key.
@@ -65,40 +65,30 @@ smoke-bifrost: ## Rule 40d smoke: bifrost gateway (optional). Requires BIFROST_U
 smoke-policies: ## Rule 40d smoke: policy enforcement events (warn/degrade/block) via real Anthropic + flavor policy. Requires ANTHROPIC_API_KEY.
 	cd tests/smoke && pytest -v test_smoke_policies.py
 
-# Phase 5 MCP smoke matrix (Rule 40d). Each target spawns the in-tree
-# reference server (tests/smoke/fixtures/mcp_reference_server.py) over
-# stdio so the schema and fingerprint contract stays aligned across
-# frameworks. Targets pytest-skip when the relevant framework adapter
-# is not installed; smoke-mcp-all runs cleanly on a box that has only
-# the python smoke's prerequisites (just `mcp` itself).
-smoke-mcp-python: ## Rule 40d smoke (Phase 5): direct mcp SDK against the in-tree reference server.
-	pytest -v tests/smoke/test_smoke_mcp_python.py
+# Per-framework smoke tests (Rule 40d). Each target covers chat
+# (where the framework wraps an LLM provider) AND any MCP integration
+# the framework exposes -- one target per framework, MCP folded in.
+# The bare-SDK MCP smoke is a separate target. Tests pytest-skip when
+# the relevant adapter is not installed.
+smoke-langgraph: ## Rule 40d smoke: LangGraph (StateGraph chat + ToolNode MCP). Requires `langgraph` (+ `langchain-mcp-adapters` for the MCP half).
+	cd tests/smoke && pytest -v test_smoke_langgraph.py
 
-smoke-mcp-langchain: ## Rule 40d smoke (Phase 5): LangChain MultiServerMCPClient. Requires `langchain-mcp-adapters`.
-	pytest -v tests/smoke/test_smoke_mcp_langchain.py
+smoke-llamaindex: ## Rule 40d smoke: LlamaIndex (LLM .complete + McpToolSpec). Requires `llama-index-llms-*` (+ `llama-index-tools-mcp` for the MCP half).
+	cd tests/smoke && pytest -v test_smoke_llamaindex.py
 
-smoke-mcp-langgraph: ## Rule 40d smoke (Phase 5): LangGraph ToolNode driving an MCP-adapter tool. Requires `langgraph` + `langchain-mcp-adapters`.
-	pytest -v tests/smoke/test_smoke_mcp_langgraph.py
+smoke-crewai: ## Rule 40d smoke: CrewAI (native-provider chat + MCPAdapt tools). Requires `crewai` (+ `mcpadapt` for the MCP half, pinned per D5).
+	cd tests/smoke && pytest -v test_smoke_crewai.py
 
-smoke-mcp-llamaindex: ## Rule 40d smoke (Phase 5): LlamaIndex McpToolSpec. Requires `llama-index-tools-mcp`.
-	pytest -v tests/smoke/test_smoke_mcp_llamaindex.py
+smoke-mcp: ## Rule 40d smoke: direct mcp SDK against the in-tree reference server (all six event types + multi-server attribution).
+	pytest -v tests/smoke/test_smoke_mcp.py
 
-smoke-mcp-crewai: ## Rule 40d smoke (Phase 5): CrewAI via mcpadapt. Requires `mcpadapt` (pinned per D5) + `crewai`.
-	pytest -v tests/smoke/test_smoke_mcp_crewai.py
+smoke-all: smoke-anthropic smoke-openai smoke-litellm smoke-langchain smoke-langgraph smoke-llamaindex smoke-crewai smoke-claude-code smoke-policies smoke-mcp ## Run every framework smoke test (bifrost is optional, run separately).
 
-smoke-mcp-claude-code: ## Rule 40d smoke (Phase 5): Claude Code plugin MCP path. Requires Node 20+.
-	pytest -v tests/smoke/test_smoke_mcp_claude_code.py
-
-smoke-mcp-all: smoke-mcp-python smoke-mcp-langchain smoke-mcp-langgraph smoke-mcp-llamaindex smoke-mcp-crewai smoke-mcp-claude-code ## Run every Phase 5 MCP smoke test (skips uninstalled adapters cleanly).
-
-smoke-all: smoke-anthropic smoke-openai smoke-litellm smoke-langchain smoke-claude-code smoke-policies smoke-mcp-all ## Run every framework smoke test (Phase 4 + Phase 5 MCP; bifrost is optional, run separately).
-
-# Phase 3 retired the duplicate `test-e2e` target. The prior target
-# at this line drove sensor pytest e2e (now `test-sensor-e2e` above)
-# but shared the name with the Playwright target the dashboard team
-# added later — whichever target `make` picked up last silently won,
-# hiding the other. `test-e2e` now means the browser end-to-end
-# suite; `test-sensor-e2e` is the pytest respx suite.
+# `test-e2e` is the Playwright browser-end-to-end suite;
+# `test-sensor-e2e` is the pytest respx suite. Two separate targets
+# because the older `test-e2e` name collided when the Playwright
+# target was added — whichever target `make` picked up last silently
+# won, hiding the other. The split below avoids that ambiguity.
 test-e2e: ## Run Playwright E2E tests (requires make dev; fixtures seed automatically via globalSetup)
 	cd dashboard && npx playwright test
 

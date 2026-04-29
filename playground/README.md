@@ -10,15 +10,17 @@ The suite also doubles as a pre-release smoke check: `python playground/run_all.
 |---|---|---|
 | `01_direct_anthropic.py` | anthropic SDK | sync / async / streaming / beta.messages |
 | `02_direct_openai.py` | openai SDK | sync / async / streaming / responses / embeddings |
-| `03_langchain.py` | `langchain-anthropic`, `langchain-openai` | `ChatAnthropic.invoke` + `ChatOpenAI.invoke` |
-| `04_langgraph.py` | langgraph | StateGraph routing through ChatAnthropic |
-| `05_llamaindex.py` | `llama-index-llms-anthropic`, `llama-index-llms-openai` | `.complete(...)` for both providers |
-| `06_crewai.py` | crewai | `LLM("anthropic/...").call(...)` + `LLM("openai/...").call(...)` |
+| `03_langchain.py` | `langchain-anthropic`, `langchain-openai` (+ optional `langchain-mcp-adapters`) | `ChatAnthropic.invoke` + `ChatOpenAI.invoke` + MCP tool call via the adapter |
+| `04_langgraph.py` | `langgraph` (+ optional `langchain-mcp-adapters`) | StateGraph routing through ChatAnthropic + `ToolNode` driving an MCP-adapter tool |
+| `05_llamaindex.py` | `llama-index-llms-anthropic`, `llama-index-llms-openai` (+ optional `llama-index-tools-mcp`) | `.complete(...)` for both providers + MCP tool call via `McpToolSpec` |
+| `06_crewai.py` | `crewai` (+ optional `crewai-tools[mcp]`) | `LLM("anthropic/...").call(...)` + `LLM("openai/...").call(...)` + MCP tool call via `MCPServerAdapter` |
 | `07_directives.py` | anthropic | register → POST custom directive → handler runs |
 | `08_enforcement.py` | anthropic | server policy `block_at_pct=1` → `BudgetExceededError` |
 | `09_capture.py` | anthropic | `capture_prompts` OFF (404) vs ON (200) |
 | `10_killswitch.py` | anthropic | POST `shutdown` directive → `DirectiveError` |
 | `11_unavailability.py` | anthropic | `continue` vs `halt` against a dead URL |
+| `12_litellm.py` | `litellm` | multi-provider chat through litellm's module-level interceptor |
+| `13_mcp.py` | bare `mcp` SDK | All six MCP event types against the in-tree reference server, plus a multi-server attribution scenario using a sibling secondary server (`_secondary_mcp_server.py`) |
 
 ## Running
 

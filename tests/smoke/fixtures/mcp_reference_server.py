@@ -1,8 +1,8 @@
-"""Reference MCP server used by Phase 5 smoke tests and the dashboard
-fixture-freeze step (Step 6h).
+"""Reference MCP server used by smoke tests and the dashboard
+fixture-freeze step.
 
-DESIGN AND FIXTURE-SCOPE NOTE (Phase 5 addition A)
-==================================================
+DESIGN AND FIXTURE-SCOPE NOTE
+=============================
 This server is **stateless** and may be safely shared across tests:
 
 * Every tool is a pure function (``echo``, ``add``, ``slow_echo``).
@@ -73,7 +73,7 @@ _SERVER_NAME = "flightdeck-mcp-reference"
 mcp_server: FastMCP = FastMCP(
     name=_SERVER_NAME,
     instructions=(
-        "Flightdeck Phase 5 reference MCP server. Three demo tools "
+        "Flightdeck reference MCP server. Three demo tools "
         "(echo, add, slow_echo), one demo resource (mem://demo), one "
         "demo prompt (greet). Stateless. Safe to share across tests."
     ),

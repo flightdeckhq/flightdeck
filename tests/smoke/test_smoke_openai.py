@@ -1,7 +1,7 @@
-"""OpenAI SDK Phase 4 smoke test. Runs manually; NOT in CI.
+"""OpenAI SDK smoke test. Runs manually; NOT in CI.
 
-Coverage: non-stream chat, sync stream, async stream, embeddings
-(event_type promotion), auth error (bad key).
+Coverage: non-stream chat, sync stream, async stream, embeddings,
+auth error (bad key).
 """
 
 from __future__ import annotations
@@ -49,7 +49,7 @@ def test_openai_embeddings_emits_embeddings_event() -> None:
     client = openai.OpenAI()
     client.embeddings.create(
         model="text-embedding-3-small",
-        input=["phase 4 smoke test"],
+        input=["smoke test"],
     )
     events = fetch_events_for_session(
         sess.config.session_id, expect_event_types=["embeddings"],
@@ -59,13 +59,13 @@ def test_openai_embeddings_emits_embeddings_event() -> None:
 
 
 def test_openai_embeddings_capture_single_string() -> None:
-    """Phase 4 polish S-EMBED-6: capture_prompts=True with a
-    single-string input must populate ``has_content=true`` AND the
-    fetched ``content.input`` round-trips intact."""
+    """capture_prompts=True with a single-string input must populate
+    ``has_content=true`` AND the fetched ``content.input`` round-trips
+    intact."""
     import openai
     sess = _sensor_session()  # make_sensor_session defaults capture_prompts=True
     client = openai.OpenAI()
-    payload = "phase 4 smoke single-string capture"
+    payload = "smoke single-string capture"
     client.embeddings.create(
         model="text-embedding-3-small",
         input=payload,
@@ -96,9 +96,8 @@ def test_openai_embeddings_capture_single_string() -> None:
 
 
 def test_openai_embeddings_capture_list_of_strings() -> None:
-    """Phase 4 polish S-EMBED-6: list-of-strings input round-trips
-    too. Distinct test so a single failure narrows the regression
-    to one input shape."""
+    """list-of-strings input round-trips too. Distinct test so a single
+    failure narrows the regression to one input shape."""
     import openai
     sess = _sensor_session()
     client = openai.OpenAI()

@@ -1,12 +1,12 @@
-"""Anthropic SDK Phase 4 smoke test. Runs manually; NOT in CI.
+"""Anthropic SDK smoke test. Runs manually; NOT in CI.
 
-Coverage: non-streaming chat, sync streaming, async streaming, rate-limit
-error path (via an intentionally bad request that tickles the error
-classifier without eating quota).
+Coverage: non-streaming chat, sync streaming, async streaming, error
+classification (via an intentionally bad request that tickles the
+error classifier without eating quota).
 
-Rule 40d: do not land Phase 4 framework changes without running this
-target at least once against a real provider and recording the result
-in ``audit-phase-4.md``.
+Rule 40d: do not land framework-touching changes without running this
+target at least once against a real provider so SDK class-rename or
+streaming-shape drift surfaces before users hit it.
 """
 
 from __future__ import annotations

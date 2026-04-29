@@ -109,21 +109,34 @@ and docs.
   Playwright per-project ``storageState`` ever drifts out of
   agreement with ``useTheme``'s accepted values, locking in the
   fix that re-enabled actual dual-theme coverage.
-- **Tests:** Phase 5 MCP smoke matrix
-  (``tests/smoke/test_smoke_mcp_python.py`` plus per-framework files
-  for langchain / langgraph / llamaindex / crewai / claude_code).
-  Shared in-tree reference server at
-  ``tests/smoke/fixtures/mcp_reference_server.py``. Framework
-  smokes pytest-skip when the relevant adapter package isn't
-  installed.
-- **Playground:** ``mcp_demo_basic.py`` (direct mcp SDK),
-  ``mcp_demo_langchain.py`` (langchain-mcp-adapters),
-  ``mcp_demo_multi_server.py`` (two MCP servers in one Flightdeck
-  session) plus a sibling ``mcp_demo_secondary_server.py`` fixture.
-- **Make:** ``smoke-mcp-python``, ``smoke-mcp-langchain``,
-  ``smoke-mcp-langgraph``, ``smoke-mcp-llamaindex``,
-  ``smoke-mcp-crewai``, ``smoke-mcp-claude-code``,
-  ``smoke-mcp-all``. ``smoke-all`` now includes ``smoke-mcp-all``.
+- **Tests (smoke):** Phase 5 MCP coverage folded into the existing
+  per-framework smoke files
+  (``test_smoke_langchain.py``, ``test_smoke_claude_code.py``) plus
+  three new per-framework files
+  (``test_smoke_langgraph.py``, ``test_smoke_llamaindex.py``,
+  ``test_smoke_crewai.py``) that gain chat smokes alongside their
+  MCP coverage. Bare-``mcp``-SDK coverage lives in
+  ``test_smoke_mcp.py``. Shared in-tree reference server at
+  ``tests/smoke/fixtures/mcp_reference_server.py``; the bare-SDK
+  smoke's multi-server attribution test uses a sibling
+  ``tests/smoke/fixtures/mcp_secondary_server.py`` fixture.
+  Framework smokes pytest-skip when the relevant adapter package
+  isn't installed.
+- **Playground:** ``13_mcp.py`` covers the bare ``mcp`` SDK against
+  the in-tree reference server and a multi-server attribution
+  scenario via a sibling ``_secondary_mcp_server.py`` utility module.
+  Framework MCP coverage rides as an additional section inside the
+  existing per-provider playground files (``03_langchain.py``,
+  ``04_langgraph.py``, ``05_llamaindex.py``, ``06_crewai.py``);
+  each MCP block skips cleanly when its adapter isn't installed.
+- **Make:** Per-framework smoke targets
+  (``smoke-langgraph``, ``smoke-llamaindex``, ``smoke-crewai``)
+  cover both chat and MCP for their framework. ``smoke-langchain``
+  and ``smoke-claude-code`` extend their existing scope with MCP
+  coverage. ``smoke-mcp`` runs the bare-SDK target. ``smoke-all``
+  enumerates every per-framework target plus ``smoke-mcp``; the
+  prior ``smoke-mcp-*`` per-framework targets are removed in favour
+  of the unified per-framework convention.
 - **Dashboard:** Live feed hides MCP discovery events
   (``mcp_tool_list`` / ``mcp_resource_list`` /
   ``mcp_prompt_list``) by default. A "Discovery events" toggle in

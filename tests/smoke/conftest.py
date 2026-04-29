@@ -1,4 +1,4 @@
-"""Shared Phase 4 smoke-test helpers.
+"""Shared smoke-test helpers.
 
 Every per-framework file expects the local dev stack to be running --
 these tests talk to real providers but POST their events back to the
@@ -13,20 +13,19 @@ The helpers here cover:
 * :func:`wait_for_dev_stack` -- block until ``/health`` returns 200 on
   both ingestion and api ports. Mirrors the helper the integration
   suite uses so smoke tests fail fast on a cold stack.
-* :func:`fetch_latest_events_for_session` -- poll the query API's
+* :func:`fetch_events_for_session` -- poll the query API's
   ``/v1/events`` endpoint for events written against the test's
   session and return them parsed. Used by smoke tests to assert that
-  the Phase 4 event shape actually landed on the wire, not just
+  the expected event shape actually landed on the wire, not just
   in the sensor's queue.
 * :func:`make_sensor_session` -- canonical sensor bootstrap. Wraps
   ``flightdeck_sensor.init`` + ``patch`` with the per-smoke flavor
   threaded through ``AGENT_FLAVOR`` so the wire-level ``flavor``
-  column reflects which framework run this is. Pre-fix the smoke
-  files each rolled their own bootstrap that called ``init`` with a
-  ``SensorConfig`` object (wrong signature; ``init`` takes kwargs)
-  and skipped ``patch`` entirely (so framework SDKs never routed
-  through the sensor). Both bugs surfaced on the first ``make
-  smoke-anthropic`` run; this helper is the fix.
+  column reflects which framework run this is. Without ``patch()``,
+  raw SDK constructors return clients whose method descriptors are
+  NOT routed through the sensor and no events get emitted -- the
+  smoke would PASS the SDK call and FAIL the
+  ``fetch_events_for_session`` assertion silently.
 """
 
 from __future__ import annotations
@@ -134,12 +133,12 @@ def make_sensor_session(
 
 def mcp_reference_server_params():
     """Return ``StdioServerParameters`` for the in-tree reference MCP
-    server (``tests/smoke/fixtures/mcp_reference_server.py``). Phase 5
-    smoke tests across every framework spawn this same server over
-    stdio so the dashboard's fixture-freeze contract and the wire
-    schema stay aligned across languages — what the python smoke
-    sees is what the langchain / langgraph / llamaindex / crewai
-    smokes also see, modulo each framework's adapter glue.
+    server (``tests/smoke/fixtures/mcp_reference_server.py``). Smoke
+    tests across every framework spawn this same server over stdio
+    so the dashboard's fixture-freeze contract and the wire schema
+    stay aligned across languages — what the bare-SDK smoke sees is
+    what the per-framework smokes also see, modulo each framework's
+    adapter glue.
 
     Imports the mcp SDK lazily so smoke files for non-Python
     frameworks that don't import mcp directly still load on a clean

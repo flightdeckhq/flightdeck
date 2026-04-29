@@ -124,6 +124,15 @@ and docs.
   ``smoke-mcp-langgraph``, ``smoke-mcp-llamaindex``,
   ``smoke-mcp-crewai``, ``smoke-mcp-claude-code``,
   ``smoke-mcp-all``. ``smoke-all`` now includes ``smoke-mcp-all``.
+- **Dashboard:** Live feed hides MCP discovery events
+  (``mcp_tool_list`` / ``mcp_resource_list`` /
+  ``mcp_prompt_list``) by default. A "Discovery events" toggle in
+  the filter bar restores them; preference persists in
+  ``localStorage`` under ``flightdeck.feed.showDiscoveryEvents``.
+  The session drawer event timeline is unaffected and always shows
+  the full event history. The Fleet swimlane dims discovery
+  hexagons when the toggle is off (mirroring how it dims
+  filter-mismatched events). See **D122**.
 
 ### Fixed
 
@@ -159,6 +168,11 @@ and docs.
   new ``mcp_error_types[]`` rollup). Boundaries: row-level + table-
   level only; no fleet-swimlane red hexagons (rejected for
   over-claiming at the cross-session view).
+- **D122** MCP discovery event visibility — hide the three
+  ``_list`` event types from Fleet's live feed and dim them in
+  the swimlane by default. Toggle restores. Drawer is unaffected.
+  Operational density problem solved without retracting D118
+  (six-event audit-trail granularity stands).
 - **Override 2** has_content=true overflow routing for
   ``MCP_RESOURCE_READ`` reuses the LLM event_content table path;
   no schema change needed.

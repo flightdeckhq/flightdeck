@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { EventFilterBar } from "@/components/fleet/EventFilterBar";
 
@@ -44,5 +44,41 @@ describe("EventFilterBar", () => {
     // 8 non-All pills: LLM Calls, Tools, Embeddings, MCP (Phase 5),
     // Errors, Policy, Directives, Session.
     expect(dots).toHaveLength(8);
+  });
+});
+
+// D122 — Show discovery events toggle. Right-aligned switch in the
+// filter bar. Default off, persists in localStorage. Off / on style
+// mirrors the muted / active filter pills above.
+describe("EventFilterBar — D122 discovery toggle", () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  it("renders the discovery toggle as off by default (aria-checked=false)", () => {
+    render(<EventFilterBar activeFilter={null} onFilterChange={() => {}} />);
+    const toggle = screen.getByTestId("filter-pill-show-discovery");
+    expect(toggle).toBeInTheDocument();
+    expect(toggle.getAttribute("aria-checked")).toBe("false");
+    expect(toggle.getAttribute("role")).toBe("switch");
+  });
+
+  it("renders the discovery toggle as on when localStorage seeds true", () => {
+    localStorage.setItem("flightdeck.feed.showDiscoveryEvents", "true");
+    render(<EventFilterBar activeFilter={null} onFilterChange={() => {}} />);
+    const toggle = screen.getByTestId("filter-pill-show-discovery");
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
+  });
+
+  it("clicking the toggle flips state and persists to localStorage", () => {
+    render(<EventFilterBar activeFilter={null} onFilterChange={() => {}} />);
+    const toggle = screen.getByTestId("filter-pill-show-discovery");
+    expect(toggle.getAttribute("aria-checked")).toBe("false");
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
+    expect(localStorage.getItem("flightdeck.feed.showDiscoveryEvents")).toBe("true");
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute("aria-checked")).toBe("false");
+    expect(localStorage.getItem("flightdeck.feed.showDiscoveryEvents")).toBe("false");
   });
 });

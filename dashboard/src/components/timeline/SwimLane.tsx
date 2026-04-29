@@ -13,7 +13,8 @@ import { ChevronRight } from "lucide-react";
 import { SessionEventRow } from "./SessionEventRow";
 import { EventNode } from "./EventNode";
 import { useSessionEvents, attachmentsCache } from "@/hooks/useSessionEvents";
-import { isAttachmentStartEvent, isEventVisible } from "@/lib/events";
+import { isAttachmentStartEvent, isDiscoveryEvent, isEventVisible } from "@/lib/events";
+import { useShowDiscoveryEvents } from "@/lib/discoveryEventsPref";
 import { ClaudeCodeLogo } from "@/components/ui/claude-code-logo";
 import { useFleetStore } from "@/store/fleet";
 
@@ -798,6 +799,10 @@ function AggregatedSessionEvents({
 }) {
   const isActive = session.state === "active";
   const { events } = useSessionEvents(session.session_id, isActive, version);
+  // D122 — same dim-on-discovery treatment as SessionEventRow. The
+  // aggregated-row swimlane mirrors per-session circle visibility,
+  // so the predicate must match per-row visibility one-to-one.
+  const [showDiscovery] = useShowDiscoveryEvents();
 
   // Clip events to the current scale domain before building nodes.
   // useSessionEvents caches every event ever fetched for a session, so
@@ -866,7 +871,10 @@ function AggregatedSessionEvents({
             onSessionClick(session.session_id, eid, fullEvent);
           }}
           size={EVENT_CIRCLE_SIZE}
-          isVisible={isEventVisible(node.eventType, activeFilter)}
+          isVisible={
+            isEventVisible(node.eventType, activeFilter) &&
+            (showDiscovery || !isDiscoveryEvent(node.eventType))
+          }
           isAttachment={node.isAttachment}
         />
       ))}

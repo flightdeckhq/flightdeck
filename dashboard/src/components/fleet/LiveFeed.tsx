@@ -1,6 +1,7 @@
 import { useEffect, useState, useMemo } from "react";
 import type { AgentEvent, FeedEvent } from "@/lib/types";
-import { getBadge, getEventDetail, flavorColor, isEventVisible, truncateSessionId } from "@/lib/events";
+import { getBadge, getEventDetail, flavorColor, isDiscoveryEvent, isEventVisible, truncateSessionId } from "@/lib/events";
+import { useShowDiscoveryEvents } from "@/lib/discoveryEventsPref";
 import { getProvider } from "@/lib/models";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import { ClaudeCodeLogo } from "@/components/ui/claude-code-logo";
@@ -85,7 +86,18 @@ export function LiveFeed({ events, onEventClick, activeFilter, onFilterChange, i
   const [sortCol, setSortCol] = useState<SortCol>("time");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
 
-  const capped = events.slice(-FEED_MAX_EVENTS);
+  // D122 — hide MCP discovery events (mcp_*_list) by default. The
+  // discovery filter is applied BEFORE the FEED_MAX_EVENTS cap so
+  // the cap reflects "last N visible events", not "last N raw
+  // events of which some are hidden". An MCP-heavy session that
+  // bursts list events at startup would otherwise push all the
+  // useful tool/resource/prompt rows out of the cap window before
+  // the operator could read them.
+  const [showDiscovery] = useShowDiscoveryEvents();
+  const visibleAfterDiscovery = showDiscovery
+    ? events
+    : events.filter((fe) => !isDiscoveryEvent(fe.event.event_type));
+  const capped = visibleAfterDiscovery.slice(-FEED_MAX_EVENTS);
   const filtered = activeFilter
     ? capped.filter((fe) => isEventVisible(fe.event.event_type, activeFilter))
     : capped;

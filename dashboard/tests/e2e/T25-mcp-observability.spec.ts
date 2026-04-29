@@ -554,4 +554,104 @@ test.describe("T25 — MCP observability rendering", () => {
       ).toHaveText(srv.version);
     }
   });
+
+  // T25-18 (D122) — MCP discovery events hidden by default in Fleet's
+  // live feed. Three sub-cases:
+  //   * default state: discovery events absent from the feed even
+  //     though the canonical seed emits them.
+  //   * toggle on: every MCP event_type appears.
+  //   * drawer: full timeline renders regardless of the Fleet
+  //     toggle state — the drawer is the detail view and never
+  //     applies the Fleet-level visibility decision.
+  test("T25-18: discovery events hidden by default in Fleet live feed", async ({
+    page,
+    context,
+  }) => {
+    // Wipe any previous test's persisted preference so this run
+    // starts from the documented default.
+    await context.clearCookies();
+    await page.goto("/");
+    await page.evaluate(() =>
+      localStorage.removeItem("flightdeck.feed.showDiscoveryEvents"),
+    );
+    await page.reload();
+    await page.waitForLoadState("networkidle");
+    // Widen the time range so the canonical fixture's mcp-active
+    // session events (started ~240s ago) fall inside the visible
+    // window. Default 1m is too narrow for the seeded data.
+    await page.getByRole("button", { name: "5m" }).first().click();
+    await page.waitForTimeout(300);
+    // Toggle exists and reads as off.
+    const toggle = page.locator('[data-testid="filter-pill-show-discovery"]');
+    await expect(toggle).toBeVisible();
+    await expect(toggle).toHaveAttribute("aria-checked", "false");
+
+    // Click the MCP filter pill so the feed narrows to MCP rows
+    // only — this gives us a deterministic count to assert against
+    // the canonical fixture (which seeds 6 MCP events on the
+    // mcp-active session: 3 discovery + 3 usage, plus 1 failed
+    // mcp_tool_call from the mcp_tool_call_failed extras tag).
+    await page.locator('[data-testid="filter-pill-MCP"]').click();
+    // Wait for the feed to reflect the filter.
+    await page.waitForTimeout(500);
+    // None of the discovery badge labels should be present.
+    await expect(page.locator('[data-testid="feed-badge"]', { hasText: "TOOLS DISCOVERED" })).toHaveCount(0);
+    await expect(page.locator('[data-testid="feed-badge"]', { hasText: "RESOURCES DISCOVERED" })).toHaveCount(0);
+    await expect(page.locator('[data-testid="feed-badge"]', { hasText: "PROMPTS DISCOVERED" })).toHaveCount(0);
+  });
+
+  test("T25-18: discovery events appear when toggle is on", async ({
+    page,
+    context,
+  }) => {
+    await context.clearCookies();
+    await page.goto("/");
+    await page.evaluate(() =>
+      localStorage.setItem("flightdeck.feed.showDiscoveryEvents", "true"),
+    );
+    await page.reload();
+    await page.waitForLoadState("networkidle");
+    // Widen to 5m so the seeded mcp-active events fall inside the
+    // visible window (same reasoning as the default-hidden case).
+    await page.getByRole("button", { name: "5m" }).first().click();
+    await page.waitForTimeout(300);
+    const toggle = page.locator('[data-testid="filter-pill-show-discovery"]');
+    await expect(toggle).toHaveAttribute("aria-checked", "true");
+
+    await page.locator('[data-testid="filter-pill-MCP"]').click();
+    await page.waitForTimeout(500);
+    // At least one of each discovery type should be visible
+    // (the seed emits one of each on the mcp-active session).
+    const allBadges = page.locator('[data-testid="feed-badge"]');
+    const allBadgeTexts = await allBadges.allTextContents();
+    expect(allBadgeTexts).toContain("TOOLS DISCOVERED");
+    expect(allBadgeTexts).toContain("RESOURCES DISCOVERED");
+    expect(allBadgeTexts).toContain("PROMPTS DISCOVERED");
+  });
+
+  test("T25-18: drawer event timeline shows discovery events regardless of Fleet toggle", async ({
+    page,
+    context,
+  }) => {
+    // Default-off Fleet state. The drawer must still render the
+    // full timeline including all discovery events — the drawer is
+    // the detail view and intentionally diverges from the Fleet-
+    // level visibility decision.
+    await context.clearCookies();
+    await page.goto("/");
+    await page.evaluate(() =>
+      localStorage.removeItem("flightdeck.feed.showDiscoveryEvents"),
+    );
+    await openMCPSession(page);
+    const drawer = page.locator('[data-testid="session-drawer"]');
+    // Each of the six MCP event_types should be present in the
+    // drawer timeline (the canonical fixture seeds one of each).
+    for (const eventType of MCP_EVENT_TYPES) {
+      const row = drawer.locator(`[data-event-type="${eventType}"]`).first();
+      await expect(
+        row,
+        `drawer must show ${eventType} regardless of Fleet discovery toggle`,
+      ).toBeVisible();
+    }
+  });
 });

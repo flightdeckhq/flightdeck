@@ -4332,3 +4332,96 @@ consumes). D119 (lean MCP wire payload — `error` is one of the
 extras allowed on the lean schema). Rule 51 (no-defer discipline —
 the session-row rollup landed in this push because event-row alone
 was a clear gap, not a deferred follow-up).
+
+
+## D122 -- MCP discovery event visibility (hide-by-default in the live feed)
+
+**Problem.** Phase 5 ships all six MCP event types as first-class
+events (D118, granularity choice A: per-call events, not rolled-up
+session metadata). That decision prioritized audit-trail fidelity
+over visual density. Operational feedback during phase close-out
+revealed the live feed becomes visually crowded on sessions with
+heavy MCP usage — the three "list" event types
+(`mcp_tool_list` / `mcp_resource_list` / `mcp_prompt_list`)
+fire in bursts at session start and again whenever the agent
+needs to refresh its capability picture. They are operationally
+useful for audit but push the actually-interesting tool / resource /
+prompt rows out of the visible window for an operator scanning
+the feed.
+
+**Decision.** Hide the three discovery event types from Fleet's
+live feed and dim them in the Fleet swimlane by default. A
+"Discovery events" toggle in the filter bar restores them;
+preference persists in `localStorage` under
+`flightdeck.feed.showDiscoveryEvents`. The session drawer event
+timeline is unaffected — the drawer is the detail view that
+preserves full fidelity per session.
+
+The toggle is right-aligned in `EventFilterBar` with `role="switch"`
++ `aria-checked` for accessibility. Off-state styling matches
+the muted filter-pill aesthetic; on-state matches the active
+filter-pill aesthetic (border-strong, bg-elevated). The MCP-tool
+chroma dot is dimmed to 40% alpha when off so the toggle's
+"about MCP" semantic stays visible at a glance.
+
+The discovery filter is applied BEFORE the `FEED_MAX_EVENTS` cap
+in `LiveFeed.tsx` so the cap reflects "last N visible events",
+not "last N raw events of which some are hidden". An MCP-heavy
+session that bursts list events at startup would otherwise push
+all the useful tool/resource/prompt rows out of the cap window
+before the operator could read them.
+
+In the swimlane, discovery events are dimmed (via
+`isVisible={false}` on `EventNode`) rather than removed,
+mirroring how the existing `EventFilterBar` filter pills
+already handle event-type filtering. The composition is at the
+`SessionEventRow` / `AggregatedSessionEvents` per-circle call
+sites: `isEventVisible(eventType, activeFilter) && (showDiscovery || !isDiscoveryEvent(eventType))`.
+
+**Why not...**
+
+- **Roll up to session metadata instead?** Would retract D118.
+  Lose per-call timing of discovery handshakes (operationally
+  useful when debugging "why does this agent re-discover three
+  times mid-session"), can't detect agents that re-discover
+  mid-session, schema-change cascade through worker / API /
+  dashboard. Too invasive for the problem.
+- **Hide in the drawer too?** The drawer is the detail view.
+  Operators who drill in want the full picture — they're
+  investigating a specific session, not scanning the fleet.
+  Hiding there is destructive.
+- **Apply the same pattern to Tools / LLM Calls proactively?**
+  No. Apply the pattern when density becomes a real operational
+  problem on a specific event class. Don't pre-optimize other
+  event classes on speculation; doing so erodes the "all events
+  visible by default" contract that is the live feed's reason
+  for existing.
+- **Filter at the API boundary?** No. `/v1/events` always
+  returns all six types. Programmatic consumers (export tooling,
+  audit, future dashboards) need the full stream.
+  Client-side filtering keeps the API contract clean and the
+  UX decision reversible per-user.
+
+**Test coverage.**
+
+- `dashboard/tests/unit/discoveryEventsPref.test.ts` — predicate
+  closed-set tests + `readShowDiscoveryEvents` /
+  `persistShowDiscoveryEvents` round-trip + `useShowDiscoveryEvents`
+  hook (default off, multi-subscriber sync via the same-tab
+  `CustomEvent`).
+- `dashboard/tests/unit/LiveFeed.test.tsx` — hide-by-default,
+  toggle-on, count consistency under MCP filter, and the
+  cap-after-discovery ordering invariant.
+- `dashboard/tests/unit/EventFilterBar.test.tsx` — toggle
+  rendering + state + `localStorage` persistence + `aria-checked`
+  contract.
+- `dashboard/tests/e2e/T25-mcp-observability.spec.ts` —
+  T25-18 covers Fleet default-hidden, toggle-on-shows, and
+  drawer-unaffected (three sub-cases × two themes).
+
+**Related decisions.** D118 (granularity choice — per-call events
+that this preference now hides by default but never erases). D119
+(lean wire payload — discovery events still ride the same lean
+shape; only their visibility changes). Rule 14 (both themes work
+at all times — toggle is theme-agnostic and the new T26 canary
+ensures the matrix actually exercises both themes).

@@ -4,7 +4,8 @@ import type { Session, AgentEvent } from "@/lib/types";
 import { SESSION_ROW_HEIGHT, EVENT_CIRCLE_SIZE } from "@/lib/constants";
 import { EventNode } from "./EventNode";
 import { useSessionEvents, attachmentsCache } from "@/hooks/useSessionEvents";
-import { isAttachmentStartEvent, isEventVisible, truncateSessionId } from "@/lib/events";
+import { isAttachmentStartEvent, isDiscoveryEvent, isEventVisible, truncateSessionId } from "@/lib/events";
+import { useShowDiscoveryEvents } from "@/lib/discoveryEventsPref";
 import { OSIcon } from "@/components/ui/OSIcon";
 import { TruncatedText } from "@/components/ui/TruncatedText";
 import {
@@ -76,6 +77,11 @@ function SessionEventRowComponent({
   const isActive = session.state === "active";
   const { events, loading } = useSessionEvents(session.session_id, isActive, version);
   const badge = stateBadgeColors[session.state] ?? stateBadgeColors.closed;
+  // D122 — Fleet swimlane dims MCP discovery events when the toggle
+  // is off, mirroring how it dims event-type-filter mismatches.
+  // Composed with isEventVisible(activeFilter) at the per-circle
+  // call site below.
+  const [showDiscovery] = useShowDiscoveryEvents();
 
   // Pull display fields off the optional runtime context. Hostname
   // (when available) replaces the truncated session id as the primary
@@ -360,7 +366,10 @@ function SessionEventRowComponent({
                 onClick(eid, fullEvent);
               }}
               size={EVENT_CIRCLE_SIZE}
-              isVisible={isEventVisible(node.eventType, activeFilter)}
+              isVisible={
+                isEventVisible(node.eventType, activeFilter) &&
+                (showDiscovery || !isDiscoveryEvent(node.eventType))
+              }
               isAttachment={node.isAttachment}
             />
           ))}

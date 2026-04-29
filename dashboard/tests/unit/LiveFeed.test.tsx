@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { LiveFeed } from "@/components/fleet/LiveFeed";
 import type { AgentEvent, FeedEvent } from "@/lib/types";
@@ -223,5 +223,108 @@ describe("LiveFeed", () => {
     expect(screen.getByTestId("sort-pause-banner")).toBeInTheDocument();
     fireEvent.click(screen.getByText("Return to live"));
     expect(onResume).toHaveBeenCalled();
+  });
+});
+
+// --------------------------------------------------------------------
+// D122 — MCP discovery events hide-by-default in the live feed.
+//
+// The feed receives the full upstream event stream and applies the
+// discovery filter BEFORE the FEED_MAX_EVENTS cap so that the cap
+// reflects "last N visible" rather than "last N raw of which some
+// are hidden". The activeFilter ("MCP" pill etc.) composes on top —
+// counts shown to the operator are visible-only.
+// --------------------------------------------------------------------
+
+describe("LiveFeed — D122 discovery hide", () => {
+  const mixedEvents: FeedEvent[] = [
+    makeFeedEvent({ id: "e1", event_type: "session_start", model: null, tokens_total: null, latency_ms: null }, 1000),
+    makeFeedEvent({ id: "e2", event_type: "mcp_tool_list", model: null, tokens_total: null, latency_ms: null }, 2000),
+    makeFeedEvent({ id: "e3", event_type: "mcp_tool_call", tool_name: "echo", model: null, tokens_total: null, latency_ms: null }, 3000),
+    makeFeedEvent({ id: "e4", event_type: "mcp_resource_list", model: null, tokens_total: null, latency_ms: null }, 4000),
+    makeFeedEvent({ id: "e5", event_type: "mcp_resource_read", model: null, tokens_total: null, latency_ms: null }, 5000),
+    makeFeedEvent({ id: "e6", event_type: "mcp_prompt_list", model: null, tokens_total: null, latency_ms: null }, 6000),
+    makeFeedEvent({ id: "e7", event_type: "mcp_prompt_get", model: null, tokens_total: null, latency_ms: null }, 7000),
+  ];
+
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  it("hides discovery events by default (off)", () => {
+    render(<LiveFeed events={mixedEvents} onEventClick={() => {}} />);
+    // 7 input events - 3 discovery types = 4 visible:
+    // session_start + mcp_tool_call + mcp_resource_read + mcp_prompt_get.
+    expect(screen.getAllByTestId("feed-row")).toHaveLength(4);
+    expect(screen.queryByText("TOOLS DISCOVERED")).not.toBeInTheDocument();
+    expect(screen.queryByText("RESOURCES DISCOVERED")).not.toBeInTheDocument();
+    expect(screen.queryByText("PROMPTS DISCOVERED")).not.toBeInTheDocument();
+    // Usage events still visible.
+    expect(screen.getByText("TOOL CALL")).toBeInTheDocument();
+    expect(screen.getByText("RESOURCE READ")).toBeInTheDocument();
+    expect(screen.getByText("PROMPT FETCHED")).toBeInTheDocument();
+  });
+
+  it("shows discovery events when preference is on", () => {
+    localStorage.setItem("flightdeck.feed.showDiscoveryEvents", "true");
+    render(<LiveFeed events={mixedEvents} onEventClick={() => {}} />);
+    // All 7 visible.
+    expect(screen.getAllByTestId("feed-row")).toHaveLength(7);
+    expect(screen.getByText("TOOLS DISCOVERED")).toBeInTheDocument();
+    expect(screen.getByText("RESOURCES DISCOVERED")).toBeInTheDocument();
+    expect(screen.getByText("PROMPTS DISCOVERED")).toBeInTheDocument();
+  });
+
+  it("count reflects visible-events rule when MCP filter is active and discovery is off", () => {
+    render(
+      <LiveFeed
+        events={mixedEvents}
+        onEventClick={() => {}}
+        activeFilter="MCP"
+      />,
+    );
+    // Discovery hidden, MCP filter active → 3 use events visible
+    // (call/read/get). Capped count = 6 visible MCP-or-not in feed
+    // after discovery hide; "X of Y" reads "3 of 4" because the
+    // session_start row is not in the MCP group.
+    expect(screen.getByTestId("feed-count").textContent).toBe("3 of 4 events");
+  });
+
+  it("count reflects visible-events rule when MCP filter is active and discovery is on", () => {
+    localStorage.setItem("flightdeck.feed.showDiscoveryEvents", "true");
+    render(
+      <LiveFeed
+        events={mixedEvents}
+        onEventClick={() => {}}
+        activeFilter="MCP"
+      />,
+    );
+    // All 7 events; 6 are MCP, 1 is session_start → "6 of 7".
+    expect(screen.getByTestId("feed-count").textContent).toBe("6 of 7 events");
+  });
+
+  it("discovery filter applies BEFORE the FEED_MAX_EVENTS cap", () => {
+    // 600 events: 300 discovery (mcp_tool_list) + 300 usage
+    // (mcp_tool_call). Discovery hidden → 300 usage events stay
+    // within the 500 cap, so all 300 should render.
+    const burst: FeedEvent[] = Array.from({ length: 600 }, (_, i) => {
+      const isDiscovery = i % 2 === 0;
+      return makeFeedEvent(
+        {
+          id: `e${i}`,
+          event_type: isDiscovery ? "mcp_tool_list" : "mcp_tool_call",
+          model: null,
+          tokens_total: null,
+          latency_ms: null,
+          tool_name: isDiscovery ? null : "echo",
+        },
+        1000 + i,
+      );
+    });
+    render(<LiveFeed events={burst} onEventClick={() => {}} />);
+    // 300 visible after discovery hide; cap is 500 so all 300 show.
+    expect(screen.getByTestId("feed-count").textContent).toContain("300 events");
+    // No discovery rows.
+    expect(screen.queryByText("TOOLS DISCOVERED")).not.toBeInTheDocument();
   });
 });

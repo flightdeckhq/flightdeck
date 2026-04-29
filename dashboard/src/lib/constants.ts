@@ -118,6 +118,17 @@ export const INVESTIGATE_SIDEBAR_DEFAULT_WIDTH = 260;
 export const INVESTIGATE_SIDEBAR_WIDTH_KEY =
   "flightdeck.investigate.sidebarWidth";
 
+/**
+ * LocalStorage key for the "Show MCP discovery events" toggle in the
+ * Fleet event filter bar. Default off (D122) — the three MCP
+ * discovery event types (``mcp_tool_list`` / ``mcp_resource_list`` /
+ * ``mcp_prompt_list``) are hidden from Fleet's LiveFeed and dimmed
+ * in the swimlane when this preference is unset or false. Per the
+ * established naming convention (``flightdeck.<surface>.<pref>``).
+ */
+export const FEED_SHOW_DISCOVERY_EVENTS_KEY =
+  "flightdeck.feed.showDiscoveryEvents";
+
 /** Default live feed column widths in pixels. */
 export const FEED_COL_DEFAULTS = {
   flavor: 120,

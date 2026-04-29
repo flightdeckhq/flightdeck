@@ -571,6 +571,41 @@ export function isEventVisible(eventType: string, activeFilter: string | null | 
   return group ? group.includes(eventType) : true;
 }
 
+/**
+ * Phase 5 — the three MCP "list/discovery" event types. These represent
+ * the agent ASKING the server "what's available" rather than actually
+ * USING something (call_tool / read_resource / get_prompt). They tend
+ * to fire in bursts at session start and again whenever the agent
+ * needs to refresh its capability picture, which is operationally
+ * useful for audit but visually noisy in the Fleet live feed when
+ * an MCP-heavy session is active. D122 hides them by default in the
+ * Fleet surfaces with a toggle to restore.
+ *
+ * The list is closed — the six MCP event types are pinned by D119
+ * (lean wire payload) and only the three ``_list`` / ``_get?`` no,
+ * the three ``_list``-style event types qualify as discovery. The
+ * three ``_call`` / ``_read`` / ``_get`` event types represent
+ * actual MCP usage and are never discovery.
+ */
+export const MCP_DISCOVERY_EVENT_TYPES = [
+  "mcp_tool_list",
+  "mcp_resource_list",
+  "mcp_prompt_list",
+] as const;
+
+const MCP_DISCOVERY_EVENT_TYPE_SET = new Set<string>(MCP_DISCOVERY_EVENT_TYPES);
+
+/**
+ * True when ``eventType`` is one of the three MCP discovery event
+ * types (``mcp_tool_list`` / ``mcp_resource_list`` /
+ * ``mcp_prompt_list``). Returns false for the three MCP usage event
+ * types and for every non-MCP event_type. Safe to call with
+ * arbitrary strings — anything not in the closed set returns false.
+ */
+export function isDiscoveryEvent(eventType: string): boolean {
+  return MCP_DISCOVERY_EVENT_TYPE_SET.has(eventType);
+}
+
 /* ---- Session ID truncation ---- */
 
 export function truncateSessionId(sessionId: string): string {

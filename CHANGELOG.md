@@ -34,6 +34,14 @@ API, dashboard, plugin, integration tests, playground demos, and docs.
   through ``$(PYTHON)`` (defaults to ``./sensor/.venv/bin/python``);
   CI overrides via env where ``actions/setup-python`` already pinned
   the right interpreter.
+- **Sensor public API:** ``flightdeck_sensor.Provider`` enum is the
+  canonical way to specify ``patch()`` targets (D125). Each member
+  IS a string (``(str, Enum)`` mixin), so existing raw-string call
+  shapes (``patch(providers=["anthropic"])``) keep working unchanged
+  and mixed lists (``[Provider.ANTHROPIC, "openai"]``) work for
+  callers mid-migration. Playground demos migrated to the enum
+  form; unit / integration tests stay on raw strings as the
+  backward-compat contract proof.
 
 ### Added
 

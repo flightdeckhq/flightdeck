@@ -20,6 +20,7 @@ except ImportError:
     sys.exit(2)
 
 import flightdeck_sensor
+from flightdeck_sensor import Provider
 from _helpers import (
     assert_event_landed,
     fetch_events_for_session,
@@ -34,7 +35,7 @@ HI = [{"role": "user", "content": "hi"}]
 def main() -> None:
     session_id = str(uuid.uuid4())
     init_sensor(session_id, flavor="playground-direct-anthropic")
-    flightdeck_sensor.patch(providers=["anthropic"], quiet=True)
+    flightdeck_sensor.patch(providers=[Provider.ANTHROPIC], quiet=True)
     print(f"[playground:01_direct_anthropic] session_id={session_id}")
 
     t0 = time.monotonic()

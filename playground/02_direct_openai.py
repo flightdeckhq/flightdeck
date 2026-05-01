@@ -21,6 +21,7 @@ except ImportError:
     sys.exit(2)
 
 import flightdeck_sensor
+from flightdeck_sensor import Provider
 from _helpers import (
     API_TOKEN,
     API_URL,
@@ -48,7 +49,7 @@ def _fetch_event_content(event_id: str) -> dict:
 def main() -> None:
     session_id = str(uuid.uuid4())
     init_sensor(session_id, flavor="playground-direct-openai")
-    flightdeck_sensor.patch(providers=["openai"], quiet=True)
+    flightdeck_sensor.patch(providers=[Provider.OPENAI], quiet=True)
     print(f"[playground:02_direct_openai] session_id={session_id}")
 
     t0 = time.monotonic()

@@ -19,7 +19,7 @@ except ImportError:
     print("SKIP: pip install anthropic"); sys.exit(2)
 
 import flightdeck_sensor
-from flightdeck_sensor import DirectiveError
+from flightdeck_sensor import DirectiveError, Provider
 from _helpers import init_sensor, print_result
 
 API = os.environ.get("FLIGHTDECK_API_URL", "http://localhost:4000/api")
@@ -29,7 +29,7 @@ MODEL, HI = "claude-haiku-4-5-20251001", [{"role": "user", "content": "hi"}]
 def main():
     sid = str(uuid.uuid4())
     init_sensor(sid, flavor="playground-killswitch")
-    flightdeck_sensor.patch(providers=["anthropic"], quiet=True)
+    flightdeck_sensor.patch(providers=[Provider.ANTHROPIC], quiet=True)
     print(f"[playground:10_killswitch] session_id={sid}")
     c = anthropic.Anthropic()
     c.messages.create(model=MODEL, max_tokens=5, messages=HI)

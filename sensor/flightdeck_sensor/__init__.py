@@ -54,6 +54,7 @@ from flightdeck_sensor.interceptor.openai import (
     patch_openai_classes,
     unpatch_openai_classes,
 )
+from flightdeck_sensor.provider import Provider
 from flightdeck_sensor.transport.client import ControlPlaneClient
 
 Parameter = DirectiveParameter
@@ -67,6 +68,7 @@ __all__ = [
     "teardown",
     "directive",
     "Parameter",
+    "Provider",
     "BudgetExceededError",
     "ConfigurationError",
     "DirectiveError",
@@ -499,7 +501,7 @@ def wrap(client: Any, quiet: bool = False) -> Any:
 
 def patch(
     quiet: bool = False,
-    providers: list[str] | None = None,
+    providers: list[str | Provider] | None = None,
 ) -> None:
     """Class-level patch the Anthropic and OpenAI SDKs.
 
@@ -533,31 +535,61 @@ def patch(
     ``init()`` must be called first.
 
     Args:
-        providers: list of provider names to patch. Default patches all
-            available providers (``["anthropic", "openai", "litellm",
-            "mcp"]``). litellm joins the patch set as the third
-            interceptor (KI21). Its patch mutates module-level
-            ``litellm.completion`` / ``litellm.acompletion`` rather than
-            SDK classes; streaming is not yet supported and raises
-            NotImplementedError (KI26). ``mcp`` adds Phase 5 MCP-server
-            observability — patches ``mcp.client.session.ClientSession``
-            so any framework that uses the official Python ``mcp`` SDK
-            (LangChain via langchain-mcp-adapters, LlamaIndex via
-            llama-index-tools-mcp, CrewAI via mcpadapt, raw SDK callers)
-            emits MCP_TOOL_CALL / _LIST / _RESOURCE_* / _PROMPT_* events.
-            Silent no-op when a target's SDK is not installed.
+        providers: list of providers to patch. Accepts either
+            :class:`Provider` enum members or raw strings; mixed lists
+            also work for callers mid-migration (every member of
+            :class:`Provider` IS a string, so equality holds across
+            both forms). Default (``None``) patches every member of
+            :class:`Provider`. The enum is the single source of truth
+            for the valid set: adding a new interceptor means adding
+            a new enum member and a new branch below. The current
+            members are ``ANTHROPIC`` (anthropic SDK class patch),
+            ``OPENAI`` (openai SDK class patch), ``LITELLM``
+            (module-level ``litellm.completion`` / ``litellm.acompletion``
+            wrap, KI21; streaming raises ``NotImplementedError`` per
+            KI26), and ``MCP`` (Phase 5 / D117 — patches
+            ``mcp.client.session.ClientSession`` so every framework
+            that uses the official Python ``mcp`` SDK emits
+            ``mcp_tool_call`` / ``mcp_*_list`` / ``mcp_resource_read``
+            / ``mcp_prompt_get`` events). Silent no-op when a target's
+            SDK is not installed; raw strings outside the canonical
+            set are silently ignored to preserve backward compat.
+
+    Examples:
+        Canonical, enum-based::
+
+            from flightdeck_sensor import Provider, patch
+            patch(providers=[Provider.ANTHROPIC, Provider.MCP])
+
+        Backward-compat (strings still accepted)::
+
+            patch(providers=["anthropic", "mcp"])
+
+        Mixed (callers mid-migration)::
+
+            patch(providers=[Provider.ANTHROPIC, "openai"])
     """
     _require_session("patch")
-    targets = providers or ["anthropic", "openai", "litellm", "mcp"]
+    if providers is None:
+        targets: set[str] = {p.value for p in Provider}
+    else:
+        # Normalize Provider members → str. Members ARE str (mixin
+        # form), so this is a no-op equality-wise but it gives every
+        # downstream branch a clean ``str``-typed lookup target and
+        # keeps the unknown-string-silently-ignored behavior intact.
+        targets = {
+            t.value if isinstance(t, Provider) else t
+            for t in providers
+        }
 
     with _patch_lock:
-        if "anthropic" in targets:
+        if Provider.ANTHROPIC.value in targets:
             patch_anthropic_classes(quiet=quiet)
-        if "openai" in targets:
+        if Provider.OPENAI.value in targets:
             patch_openai_classes(quiet=quiet)
-        if "litellm" in targets:
+        if Provider.LITELLM.value in targets:
             patch_litellm_functions(quiet=quiet)
-        if "mcp" in targets:
+        if Provider.MCP.value in targets:
             patch_mcp_classes(quiet=quiet)
 
 

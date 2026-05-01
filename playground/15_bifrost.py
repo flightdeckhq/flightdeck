@@ -29,6 +29,7 @@ import time
 import uuid
 
 import flightdeck_sensor
+from flightdeck_sensor import Provider
 from _helpers import (
     assert_event_landed,
     init_sensor,
@@ -50,7 +51,7 @@ def _run_openai_route() -> None:
 
     session_id = str(uuid.uuid4())
     init_sensor(session_id, flavor="playground-bifrost-openai")
-    flightdeck_sensor.patch(providers=["openai"], quiet=True)
+    flightdeck_sensor.patch(providers=[Provider.OPENAI], quiet=True)
     print(f"[playground:15_bifrost] openai-route session_id={session_id}")
 
     client = openai.OpenAI(
@@ -86,7 +87,7 @@ def _run_anthropic_route() -> None:
 
     session_id = str(uuid.uuid4())
     init_sensor(session_id, flavor="playground-bifrost-anthropic")
-    flightdeck_sensor.patch(providers=["anthropic"], quiet=True)
+    flightdeck_sensor.patch(providers=[Provider.ANTHROPIC], quiet=True)
     print(f"[playground:15_bifrost] anthropic-route session_id={session_id}")
 
     client = anthropic.Anthropic(

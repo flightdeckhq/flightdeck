@@ -18,7 +18,7 @@ except ImportError:
     print("SKIP: pip install anthropic"); sys.exit(2)
 
 import flightdeck_sensor
-from flightdeck_sensor import DirectiveError
+from flightdeck_sensor import DirectiveError, Provider
 from _helpers import print_result
 
 DEAD = "http://127.0.0.1:9999"
@@ -42,7 +42,7 @@ def main():
     os.environ["FLIGHTDECK_UNAVAILABLE_POLICY"] = "continue"
     flightdeck_sensor.init(server=DEAD, token="tok_dev",
         session_id=str(uuid.uuid4()), capture_prompts=True, quiet=True)
-    flightdeck_sensor.patch(providers=["anthropic"], quiet=True)
+    flightdeck_sensor.patch(providers=[Provider.ANTHROPIC], quiet=True)
     anthropic.Anthropic().messages.create(model=MODEL, max_tokens=5, messages=HI)
     print_result("continue + dead URL: LLM call succeeds", True, 0)
     flightdeck_sensor.teardown()

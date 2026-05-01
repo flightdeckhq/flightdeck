@@ -18,6 +18,7 @@ try:
 except ImportError:
     print("SKIP: pip install anthropic"); sys.exit(2)
 import flightdeck_sensor
+from flightdeck_sensor import Provider
 from _helpers import init_sensor, print_result
 
 API = os.environ.get("FLIGHTDECK_API_URL", "http://localhost:4000/api")
@@ -44,7 +45,7 @@ def main() -> None:
     })
     try:
         init_sensor(session_id, flavor=flavor)
-        flightdeck_sensor.patch(providers=["anthropic"], quiet=True)
+        flightdeck_sensor.patch(providers=[Provider.ANTHROPIC], quiet=True)
         print(f"[playground:policy_warn] session_id={session_id} flavor={flavor}")
         c = anthropic.Anthropic()
         # Two calls. First crosses threshold; second receives the

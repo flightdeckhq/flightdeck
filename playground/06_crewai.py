@@ -27,6 +27,7 @@ except ImportError:
     sys.exit(2)
 
 import flightdeck_sensor
+from flightdeck_sensor import Provider
 from _helpers import (
     assert_event_landed,
     fetch_events_for_session,
@@ -36,7 +37,7 @@ from _helpers import (
 )
 
 
-def _run_chat(label: str, provider: str, model: str, contains: str) -> None:
+def _run_chat(label: str, provider: Provider, model: str, contains: str) -> None:
     # Fresh session_id per block -- assertion queries filter by
     # session_id, so distinct ids keep the two blocks independent.
     session_id = str(uuid.uuid4())
@@ -114,8 +115,8 @@ def _run_mcp() -> None:
 
 
 def main() -> None:
-    _run_chat("anthropic", "anthropic", "anthropic/claude-haiku-4-5-20251001", "claude-haiku-4-5")
-    _run_chat("openai", "openai", "openai/gpt-4o-mini", "gpt-4o-mini")
+    _run_chat("anthropic", Provider.ANTHROPIC, "anthropic/claude-haiku-4-5-20251001", "claude-haiku-4-5")
+    _run_chat("openai", Provider.OPENAI, "openai/gpt-4o-mini", "gpt-4o-mini")
     _run_mcp()
 
 

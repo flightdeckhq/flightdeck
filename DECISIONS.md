@@ -4650,3 +4650,103 @@ plugin observation-only), D118 (per-call MCP events), D120
 ``[dev]``-bundled mcpadapt). Rule 40d (live-stack verification —
 playground is now the surface that satisfies it).
 
+## D125 -- Provider enum for ``flightdeck_sensor.patch()``
+
+**Problem.** ``patch()`` accepted ``providers: list[str]``. Valid
+values were hardcoded inside the function body
+(``["anthropic", "openai", "litellm", "mcp"]``) and duplicated in
+the docstring. Playground scripts and user code passed raw strings.
+Two consequences:
+
+1. No IDE autocomplete or static type-checker signal for valid
+   values in user code. ``patch(providers=["anthropc"])`` (typo)
+   silently no-op'd, masking a wiring mistake.
+2. Adding a new interceptor target required edits in three places
+   (interceptor module + ``patch()`` body + docstring) with no
+   cross-reference guard. Enum drift vs interceptor branch drift
+   was invisible.
+
+**Decision.** Add ``flightdeck_sensor.Provider`` enum. Each member
+is ``(str, Enum)`` — IS a string, works anywhere a string was
+accepted before. Single source of truth for ``patch()`` defaults
+and member set. Public API at the top level: ``from
+flightdeck_sensor import Provider``.
+
+The four current members are ``Provider.ANTHROPIC`` /
+``Provider.OPENAI`` / ``Provider.LITELLM`` / ``Provider.MCP``,
+matching the four interceptor targets ``patch()`` knows how to
+install. ``patch()``'s default behavior (when ``providers=None``)
+patches every member of the enum, so adding a fifth target means
+adding a fifth member and a fifth branch — the unit test suite
+fails loudly on enum drift via
+``test_provider_values_match_patch_branches``.
+
+**Why ``(str, Enum)`` not ``StrEnum``.** ``StrEnum`` landed in
+Python 3.11. The project floor (after D124) is 3.10. The
+``(str, Enum)`` mixin form gives identical "member IS a string"
+semantics on 3.10 without needing a Python-version branch.
+
+**Backward compat.** ``patch()`` still accepts ``list[str]``.
+Mixed lists of ``Provider`` and ``str`` also work for callers
+mid-migration (every member of ``Provider`` IS-A str so a
+``set``-based normalisation in ``patch()`` collapses both forms
+to the same canonical string lookup). Unknown raw strings in the
+list are silently ignored — preserved verbatim from the pre-D125
+contract; tightening to raise ``ConfigurationError`` would be a
+behavior change unrelated to enum-vs-string.
+
+**Migration scope.** Playground scripts (the user-facing demos
+where the canonical API matters) migrated to enum form.
+``sensor/tests/unit/test_patch.py`` and the integration test
+suite stay on raw strings — those serve as the backward-compat
+contract proof. A new unit file
+``sensor/tests/unit/test_provider_enum.py`` exercises the enum
+path, the string path, the mixed path, the default-None path,
+and the silent-ignore-on-unknown-string path. Filename ends in
+``_enum`` rather than ``_provider`` because the existing
+``test_providers.py`` covers the unrelated payload-extractor
+``AnthropicProvider`` / ``OpenAIProvider`` classes.
+
+**What this does NOT change.**
+
+- The set of valid providers — still the four current
+  interceptor targets.
+- ``patch()`` semantics — same idempotency, same default,
+  same instance-cache limitation.
+- The ``ConfigurationError`` (or absence thereof) on unknown
+  string entries — still silently ignored, as before.
+- Any sensor unit / integration test that currently uses raw
+  strings — those stay as the backward-compat contract proof.
+
+**Files touched.**
+
+- ``sensor/flightdeck_sensor/provider.py`` — NEW. Enum
+  definition. (Filename ``provider.py`` singular because
+  ``flightdeck_sensor/providers/`` is an existing package for
+  the payload extractors; the singular form avoids the name
+  collision while keeping the public API at
+  ``from flightdeck_sensor import Provider``.)
+- ``sensor/flightdeck_sensor/__init__.py`` — re-exports
+  ``Provider`` and adds it to ``__all__``; ``patch()``
+  signature widened to ``list[str | Provider] | None``;
+  body uses the enum as the default-set source of truth and
+  normalises to ``str`` for branch lookup.
+- ``sensor/tests/unit/test_provider_enum.py`` — NEW.
+- 14 playground patch-sites migrated:
+  ``01_direct_anthropic`` / ``02_direct_openai`` /
+  ``06_crewai`` / ``07_directives`` / ``08_enforcement`` /
+  ``09_capture`` / ``10_killswitch`` / ``11_unavailability`` /
+  ``15_bifrost`` / ``policy_demo_block`` /
+  ``policy_demo_degrade`` / ``policy_demo_forced_degrade`` /
+  ``policy_demo_warn``. ``06_crewai._run_chat`` helper signature
+  changed from ``provider: str`` to ``provider: Provider``;
+  callers pass ``Provider.ANTHROPIC`` / ``Provider.OPENAI``.
+- ``CHANGELOG.md`` — Unreleased section entry noting the
+  Provider enum addition + playground migration.
+
+**Related decisions.** D124 (single venv / Python bound that
+makes ``(str, Enum)`` the right shape choice — ``StrEnum``
+would have required 3.11+). The interceptor-target list is
+unchanged from prior phases (Anthropic / OpenAI / litellm /
+MCP).
+

@@ -8,8 +8,9 @@ import { fileURLToPath } from "node:url";
 // The seeder lives outside the dashboard package because the same
 // event-builder helpers (tests/shared/fixtures.py) drive the pytest
 // integration suite — one copy of the HTTP/identity contract is
-// better than two that drift. Shelling to python3 from TypeScript is
-// the cost of that sharing, paid once per `playwright test` invocation.
+// better than two that drift. Shelling to the project venv's python
+// from TypeScript is the cost of that sharing, paid once per
+// `playwright test` invocation.
 //
 // The script is idempotent: repeat runs against an already-seeded
 // stack skip sessions whose event counts clear the completeness bar,
@@ -24,9 +25,15 @@ const __dirname = dirname(__filename);
 export default async function globalSetup(): Promise<void> {
   const repoRoot = resolve(__dirname, "..", "..", "..");
   const seedScript = resolve(repoRoot, "tests", "e2e-fixtures", "seed.py");
+  // D124: route through the project venv so flightdeck_sensor (which
+  // tests/shared/fixtures.py imports) resolves identically in local
+  // dev and CI. CI creates sensor/.venv as part of the workflow's
+  // Python install step; local dev creates it via
+  // ``python3.12 -m venv sensor/.venv`` per the root README setup.
+  const venvPython = resolve(repoRoot, "sensor", ".venv", "bin", "python");
 
   const t0 = Date.now();
-  const result = spawnSync("python3", [seedScript], {
+  const result = spawnSync(venvPython, [seedScript], {
     cwd: repoRoot,
     stdio: "inherit",
     env: process.env,
@@ -34,8 +41,9 @@ export default async function globalSetup(): Promise<void> {
 
   if (result.error) {
     throw new Error(
-      `globalSetup: failed to spawn python3 seeder: ${result.error.message}. ` +
-        `Is python3 on PATH? Is the dev stack running (make dev)?`,
+      `globalSetup: failed to spawn ${venvPython}: ${result.error.message}. ` +
+        `Did you create the venv? See root README "Local development environment". ` +
+        `Is the dev stack running (make dev)?`,
     );
   }
   if (result.status !== 0) {

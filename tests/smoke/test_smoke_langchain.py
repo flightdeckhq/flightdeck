@@ -174,9 +174,16 @@ def test_langchain_mcp_adapter_routes_tool_calls_through_sensor() -> None:
     pytest.importorskip("langchain_mcp_adapters")
     import asyncio
     import sys
-    from langchain_mcp_adapters.client import MultiServerMCPClient  # type: ignore[import-untyped]
 
+    # patch() must run BEFORE langchain_mcp_adapters is imported. The
+    # adapter's sessions module captures ``stdio_client`` via
+    # ``from mcp.client.stdio import stdio_client`` at module load time;
+    # if that import precedes the sensor's patch, the local binding
+    # holds the unwrapped factory and the per-event ``transport``
+    # attribution lands as null. Sensor docs call this out explicitly
+    # ("hand-built streams without the marker → transport=None").
     sess = _sensor_session()
+    from langchain_mcp_adapters.client import MultiServerMCPClient  # type: ignore[import-untyped]  # noqa: E402
 
     async def run() -> None:
         client = MultiServerMCPClient(

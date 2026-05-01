@@ -43,8 +43,14 @@ def main() -> None:
     print_result("AsyncAnthropic().messages.create", True, int((time.monotonic() - t0) * 1000))
 
     t0 = time.monotonic()
+    # Iterate the stream rather than calling ``s.get_final_text()`` --
+    # that helper consumes the underlying SDK stream directly, bypassing
+    # GuardedStream's __next__ where chunk timestamps + counts are
+    # captured. Iteration matches what tests/smoke/test_smoke_anthropic.py
+    # does and produces complete TTFT / streaming metrics.
     with anthropic.Anthropic().messages.stream(model=MODEL, max_tokens=5, messages=HI) as s:
-        s.get_final_text()
+        for _ in s:
+            pass
     print_result("Anthropic().messages.stream", True, int((time.monotonic() - t0) * 1000))
 
     t0 = time.monotonic()

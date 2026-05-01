@@ -12,9 +12,11 @@ SDK's ``ClientSession``, which the sensor patches directly.
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 import time
 import uuid
+from pathlib import Path
 
 try:
     from llama_index.llms.anthropic import Anthropic as LlamaAnthropic
@@ -25,6 +27,8 @@ except ImportError:
 
 import flightdeck_sensor
 from _helpers import assert_event_landed, init_sensor, print_result
+
+_PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
 
 
 def _run_chat() -> None:
@@ -57,10 +61,21 @@ def _run_mcp(session_id: str) -> None:
         print("SKIP MCP section: pip install mcp llama-index-tools-mcp")
         return
 
+    # PYTHONPATH so ``python -m tests.smoke.fixtures.mcp_reference_server``
+    # resolves when this script is run from ``playground/`` (run_all.py
+    # cwd). BasicMCPClient passes ``env`` through to the spawned process
+    # but does not expose a ``cwd`` parameter, so PYTHONPATH is the only
+    # lever — fortunately enough on its own for module-style spawns.
+    server_env = dict(os.environ)
+    server_env["PYTHONPATH"] = (
+        _PROJECT_ROOT + os.pathsep + server_env.get("PYTHONPATH", "")
+    )
+
     async def run() -> None:
         client = BasicMCPClient(
             command_or_url=sys.executable,
             args=["-m", "tests.smoke.fixtures.mcp_reference_server"],
+            env=server_env,
         )
         spec = McpToolSpec(client=client)
         tools = await spec.to_tool_list_async()

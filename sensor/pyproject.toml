@@ -69,10 +69,27 @@ dev = [
     # The framework instantiates its own internal Anthropic / OpenAI
     # client; the sensor's class-level patching descriptor wraps it
     # on first .messages / .chat access. See Phase 4.5+ Phase 3.
-    "langchain-anthropic>=0.1",
-    "langchain-openai>=0.1",
+    #
+    # The langchain ecosystem upper bound is pinned <1.0 because
+    # langchain-mcp-adapters>=0.2 / langgraph>=1 introduced a stricter
+    # ToolNode runtime contract (RunnableConfig with explicit runtime
+    # key) that the playground/smoke MCP path doesn't supply. Pre-1.0
+    # ToolNode.ainvoke({"messages":[...]}) works without the runtime
+    # config — sensor patching is unaffected by the version pin.
+    "langchain-anthropic>=0.1,<1",
+    "langchain-openai>=0.1,<1",
     "llama-index-llms-anthropic>=0.1",
     "llama-index-llms-openai>=0.1",
+    # MCP adapters per framework. langgraph's ToolNode + langchain
+    # MCP adapter and llama-index-tools-mcp BasicMCPClient drive
+    # the MCP smoke tests; mcpadapt (via crewai-tools[mcp]) drives
+    # the CrewAI MCP path. Without these, smoke / playground MCP
+    # sections skip and the wire-level event emission isn't
+    # exercised.
+    "langchain-mcp-adapters<0.2",
+    "langgraph<1",
+    "llama-index-tools-mcp>=0.1",
+    "mcpadapt>=0.0.6",
     # CrewAI 1.14+ ships native provider classes that use the official
     # openai/anthropic SDKs directly (NOT litellm). The default
     # LLM(model=...).call(...) flow is intercepted via the sensor's
@@ -81,7 +98,13 @@ dev = [
     # NOT intercepted -- documented as a known constraint in
     # ARCHITECTURE.md "Framework limitations". See
     # test_crewai_native_openai_patched_intercepts_call.
-    "crewai>=1.14",
+    #
+    # Python upper bound: crewai 1.x metadata declares
+    # ``requires-python = "<3.14,>=3.10"``. On Python 3.14+ pip silently
+    # skips this dep via the marker rather than failing the whole
+    # ``pip install -e .[dev]`` invocation. Smoke / playground crewai
+    # paths SKIP cleanly when crewai is missing.
+    "crewai>=1.14; python_version < '3.14'",
     # Phase 5: MCP unit tests construct a ClientSession against in-memory
     # anyio streams, apply the patch, and assert event-emission shape.
     # The smoke matrix uses the same package against a real reference

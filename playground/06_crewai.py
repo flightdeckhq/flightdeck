@@ -15,9 +15,11 @@ produces an ``mcp_tool_call`` event regardless of the wrapper.
 """
 from __future__ import annotations
 
+import os
 import sys
 import time
 import uuid
+from pathlib import Path
 
 try:
     from crewai import LLM
@@ -27,6 +29,8 @@ except ImportError:
 
 import flightdeck_sensor
 from _helpers import assert_event_landed, init_sensor, print_result
+
+_PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
 
 
 def _run_chat(label: str, provider: str, model: str, contains: str) -> None:
@@ -63,9 +67,18 @@ def _run_mcp() -> None:
     flightdeck_sensor.patch(quiet=True)
     print(f"[playground:06_crewai] mcp session_id={session_id}")
 
+    # cwd + PYTHONPATH so ``python -m tests.smoke.fixtures.mcp_reference_server``
+    # resolves when this script is run from ``playground/`` (run_all.py cwd).
+    # Same wiring as 13_mcp.py.
+    server_env = dict(os.environ)
+    server_env["PYTHONPATH"] = (
+        _PROJECT_ROOT + os.pathsep + server_env.get("PYTHONPATH", "")
+    )
     params = StdioServerParameters(
         command=sys.executable,
         args=["-m", "tests.smoke.fixtures.mcp_reference_server"],
+        cwd=_PROJECT_ROOT,
+        env=server_env,
     )
     with MCPServerAdapter(params) as tools:
         echo = next((t for t in tools if t.name == "echo"), None)

@@ -11,9 +11,11 @@ patched ``ClientSession`` regardless of the surrounding graph runtime.
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 import time
 import uuid
+from pathlib import Path
 
 try:
     from langgraph.graph import END, START, StateGraph
@@ -25,6 +27,8 @@ except ImportError:
 
 import flightdeck_sensor
 from _helpers import assert_event_landed, init_sensor, print_result
+
+_PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
 
 
 class State(TypedDict):
@@ -63,6 +67,16 @@ def _run_mcp(session_id: str) -> None:
         print("SKIP MCP section: pip install mcp langchain-mcp-adapters")
         return
 
+    # ``tests.smoke.fixtures.mcp_reference_server`` resolves only with the
+    # project root on PYTHONPATH; running from ``playground/`` (the canonical
+    # invocation, see run_all.py) loses it, so the spawned server's
+    # ``python -m`` lookup fails with "Connection closed". Pin cwd + PYTHONPATH
+    # the same way 13_mcp.py does.
+    server_env = dict(os.environ)
+    server_env["PYTHONPATH"] = (
+        _PROJECT_ROOT + os.pathsep + server_env.get("PYTHONPATH", "")
+    )
+
     async def run() -> None:
         client = MultiServerMCPClient(
             {
@@ -70,6 +84,8 @@ def _run_mcp(session_id: str) -> None:
                     "command": sys.executable,
                     "args": ["-m", "tests.smoke.fixtures.mcp_reference_server"],
                     "transport": "stdio",
+                    "cwd": _PROJECT_ROOT,
+                    "env": server_env,
                 },
             },
         )

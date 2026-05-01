@@ -44,26 +44,33 @@ test-smoke-playground: ## Run the playground against a live stack (requires ANTH
 # (see tests/smoke/README.md).
 # ---------------------------------------------------------------------------
 
+# Smoke tests must run from the repo root, not ``tests/smoke``: the
+# in-tree reference MCP server is spawned via
+# ``python -m tests.smoke.fixtures.mcp_reference_server``, and that
+# module path only resolves when the working directory is the repo
+# root (or PYTHONPATH includes it). Per-framework MCP tests skip
+# silently with this misconfigured before, masking real failures —
+# uniform repo-root pytest invocations close that gap.
 smoke-anthropic: ## Rule 40d smoke: Anthropic SDK. Requires ANTHROPIC_API_KEY.
-	cd tests/smoke && pytest -v test_smoke_anthropic.py
+	pytest -v tests/smoke/test_smoke_anthropic.py
 
 smoke-openai: ## Rule 40d smoke: OpenAI SDK. Requires OPENAI_API_KEY.
-	cd tests/smoke && pytest -v test_smoke_openai.py
+	pytest -v tests/smoke/test_smoke_openai.py
 
 smoke-litellm: ## Rule 40d smoke: litellm multi-provider. Requires ANTHROPIC_API_KEY + OPENAI_API_KEY.
-	cd tests/smoke && pytest -v test_smoke_litellm.py
+	pytest -v tests/smoke/test_smoke_litellm.py
 
 smoke-langchain: ## Rule 40d smoke: LangChain (chat via Anthropic + OpenAI; MCP via langchain-mcp-adapters). Requires ANTHROPIC_API_KEY + OPENAI_API_KEY (+ `langchain-mcp-adapters` for the MCP half).
-	cd tests/smoke && pytest -v test_smoke_langchain.py
+	pytest -v tests/smoke/test_smoke_langchain.py
 
 smoke-claude-code: ## Rule 40d smoke: Claude Code plugin (CLI lifecycle gated on CLAUDE_CLI_AVAILABLE=1; MCP path requires Node 20+).
-	cd tests/smoke && pytest -v test_smoke_claude_code.py
+	pytest -v tests/smoke/test_smoke_claude_code.py
 
 smoke-bifrost: ## Rule 40d smoke: bifrost gateway (optional). Requires BIFROST_URL + upstream provider key.
-	cd tests/smoke && pytest -v test_smoke_bifrost.py
+	pytest -v tests/smoke/test_smoke_bifrost.py
 
 smoke-policies: ## Rule 40d smoke: policy enforcement events (warn/degrade/block) via real Anthropic + flavor policy. Requires ANTHROPIC_API_KEY.
-	cd tests/smoke && pytest -v test_smoke_policies.py
+	pytest -v tests/smoke/test_smoke_policies.py
 
 # Per-framework smoke tests (Rule 40d). Each target covers chat
 # (where the framework wraps an LLM provider) AND any MCP integration
@@ -71,13 +78,13 @@ smoke-policies: ## Rule 40d smoke: policy enforcement events (warn/degrade/block
 # The bare-SDK MCP smoke is a separate target. Tests pytest-skip when
 # the relevant adapter is not installed.
 smoke-langgraph: ## Rule 40d smoke: LangGraph (StateGraph chat + ToolNode MCP). Requires `langgraph` (+ `langchain-mcp-adapters` for the MCP half).
-	cd tests/smoke && pytest -v test_smoke_langgraph.py
+	pytest -v tests/smoke/test_smoke_langgraph.py
 
 smoke-llamaindex: ## Rule 40d smoke: LlamaIndex (LLM .complete + McpToolSpec). Requires `llama-index-llms-*` (+ `llama-index-tools-mcp` for the MCP half).
-	cd tests/smoke && pytest -v test_smoke_llamaindex.py
+	pytest -v tests/smoke/test_smoke_llamaindex.py
 
 smoke-crewai: ## Rule 40d smoke: CrewAI (native-provider chat + MCPAdapt tools). Requires `crewai` (+ `mcpadapt` for the MCP half, pinned per D5).
-	cd tests/smoke && pytest -v test_smoke_crewai.py
+	pytest -v tests/smoke/test_smoke_crewai.py
 
 smoke-mcp: ## Rule 40d smoke: direct mcp SDK against the in-tree reference server (all six event types + multi-server attribution).
 	pytest -v tests/smoke/test_smoke_mcp.py

@@ -57,15 +57,16 @@ and docs.
   clip-path circles, three colour families (cyan/green/purple)
   × two glyph variants (filled = invoked, outline = list).
 - **Dashboard:** TYPE pill labels for MCP events
-  (``TOOL CALL`` / ``TOOLS DISCOVERED`` / ``RESOURCE READ`` /
-  ``RESOURCES DISCOVERED`` / ``PROMPT FETCHED`` /
-  ``PROMPTS DISCOVERED``). Verb-based labels distinguish "agent
-  invoked" from "agent discovered" without the bare singular/plural-s
-  ambiguity of pre-B-4 labels (``MCP TOOL`` vs ``MCP TOOLS``).
-  Family attribution comes from the cyan/green/purple colour family
-  + the swimlane hexagon shape (B-5b) + the row's adjacent server
-  name in the detail text — repeating an "MCP" prefix on every
-  badge would consume drawer width without adding signal.
+  (``MCP TOOL CALL`` / ``MCP TOOLS DISCOVERED`` /
+  ``MCP RESOURCE READ`` / ``MCP RESOURCES DISCOVERED`` /
+  ``MCP PROMPT FETCHED`` / ``MCP PROMPTS DISCOVERED``). Verbs
+  (CALL / READ / FETCHED / DISCOVERED) distinguish "agent invoked"
+  from "agent discovered" without the bare singular/plural-s
+  ambiguity considered earlier (``MCP TOOL`` vs ``MCP TOOLS``).
+  The ``MCP `` prefix carries category in the Fleet live feed
+  table (D123), where badges render without the swimlane hexagon
+  shape and would otherwise sit next to the non-MCP ``TOOL`` badge
+  with only verb-tense disambiguation.
 - **Dashboard:** inline ``MCPErrorIndicator`` (red AlertCircle, 12px,
   ``var(--event-error)``) on session-drawer event-feed rows whose
   ``event_type`` matches ``mcp_*`` AND ``payload.error`` is

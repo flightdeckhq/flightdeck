@@ -82,16 +82,23 @@ export const eventBadgeConfig: Record<string, BadgeConfig> = {
   embeddings: { cssVar: "var(--event-embeddings)", label: "EMBED" },
   llm_error: { cssVar: "var(--event-error)", label: "ERROR" },
   // Phase 5 — MCP observability. Verb-based labels distinguish
-  // "agent invoked" vs "agent discovered" at a glance — the previous
-  // singular/plural pairs (MCP TOOL / MCP TOOLS) put a single 's'
-  // between two fundamentally different operations (B-4). The "MCP"
-  // prefix is dropped from the badge text because the badge colour
-  // family (cyan/green/purple), the swimlane hexagon shape (B-5b),
-  // and the row's adjacent detail text (which always carries the
-  // server name + transport for MCP rows) all already attribute the
-  // row as MCP — repeating the prefix only forces every badge to
-  // grow without adding signal. The EventType enum strings
-  // (mcp_tool_call etc.) are unchanged; this is display text only.
+  // "agent invoked" vs "agent discovered" at a glance — the
+  // singular/plural-only pairs we considered (MCP TOOL / MCP TOOLS)
+  // put a single 's' between two fundamentally different operations
+  // (B-4). Verbs (CALL / READ / FETCHED / DISCOVERED) carry the
+  // operation distinction.
+  //
+  // The "MCP " prefix is RESTORED on every label (D123, supersedes
+  // B-4's no-prefix decision in 89333a8). Rationale: the Fleet live
+  // feed table renders badges in a tabular row WITHOUT hexagons
+  // (hexagon clip-paths are swimlane-only), right next to the
+  // non-MCP TOOL badge. In that context "TOOL CALL" vs "TOOL" is
+  // verb-tense disambiguation, not category disambiguation, and
+  // operators new to Flightdeck shouldn't have to learn the verb
+  // convention to read category off the label. The prefix puts
+  // category back in the label where shape would carry it in the
+  // swimlane. The EventType enum strings (mcp_tool_call etc.) are
+  // unchanged; this is display text only.
   //
   // Three colour families × two variants (filled = invoked, outline
   // = discovered):
@@ -100,29 +107,29 @@ export const eventBadgeConfig: Record<string, BadgeConfig> = {
   //   prompt family     purple  MessageSquare / List
   mcp_tool_call: {
     cssVar: "var(--event-mcp-tool)",
-    label: "TOOL CALL",
+    label: "MCP TOOL CALL",
   },
   mcp_tool_list: {
     cssVar: "var(--event-mcp-tool)",
-    label: "TOOLS DISCOVERED",
+    label: "MCP TOOLS DISCOVERED",
     filled: false,
   },
   mcp_resource_read: {
     cssVar: "var(--event-mcp-resource)",
-    label: "RESOURCE READ",
+    label: "MCP RESOURCE READ",
   },
   mcp_resource_list: {
     cssVar: "var(--event-mcp-resource)",
-    label: "RESOURCES DISCOVERED",
+    label: "MCP RESOURCES DISCOVERED",
     filled: false,
   },
   mcp_prompt_get: {
     cssVar: "var(--event-mcp-prompt)",
-    label: "PROMPT FETCHED",
+    label: "MCP PROMPT FETCHED",
   },
   mcp_prompt_list: {
     cssVar: "var(--event-mcp-prompt)",
-    label: "PROMPTS DISCOVERED",
+    label: "MCP PROMPTS DISCOVERED",
     filled: false,
   },
 };

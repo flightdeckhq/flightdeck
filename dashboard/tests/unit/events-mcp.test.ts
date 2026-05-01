@@ -34,32 +34,32 @@ function makeMCPEvent(overrides: Partial<AgentEvent>): AgentEvent {
   } as AgentEvent;
 }
 
-describe("eventBadgeConfig — Phase 5 MCP entries (B-4 verb labels)", () => {
+describe("eventBadgeConfig — Phase 5 MCP entries (verb labels + MCP prefix)", () => {
   const expected: Record<string, { cssVar: string; label: string; filled?: boolean }> = {
-    mcp_tool_call: { cssVar: "var(--event-mcp-tool)", label: "TOOL CALL", filled: true },
+    mcp_tool_call: { cssVar: "var(--event-mcp-tool)", label: "MCP TOOL CALL", filled: true },
     mcp_tool_list: {
       cssVar: "var(--event-mcp-tool)",
-      label: "TOOLS DISCOVERED",
+      label: "MCP TOOLS DISCOVERED",
       filled: false,
     },
     mcp_resource_read: {
       cssVar: "var(--event-mcp-resource)",
-      label: "RESOURCE READ",
+      label: "MCP RESOURCE READ",
       filled: true,
     },
     mcp_resource_list: {
       cssVar: "var(--event-mcp-resource)",
-      label: "RESOURCES DISCOVERED",
+      label: "MCP RESOURCES DISCOVERED",
       filled: false,
     },
     mcp_prompt_get: {
       cssVar: "var(--event-mcp-prompt)",
-      label: "PROMPT FETCHED",
+      label: "MCP PROMPT FETCHED",
       filled: true,
     },
     mcp_prompt_list: {
       cssVar: "var(--event-mcp-prompt)",
-      label: "PROMPTS DISCOVERED",
+      label: "MCP PROMPTS DISCOVERED",
       filled: false,
     },
   };
@@ -82,16 +82,15 @@ describe("eventBadgeConfig — Phase 5 MCP entries (B-4 verb labels)", () => {
     }
   });
 
-  it("B-7: every Phase 5 badge label fits on a single line (no wrap)", () => {
-    // Pre-B-7 the badge container was fixed w-[88px] which clipped
-    // the longer Phase 5 verb labels (TOOLS DISCOVERED / RESOURCES
-    // DISCOVERED / PROMPTS DISCOVERED). After B-7 the container is
-    // ``min-w-[88px] px-2 whitespace-nowrap`` — auto-widens to fit.
-    // We can't measure pixel width in jsdom (no CSS layout), but we
-    // CAN assert the contract that prevents wrapping: the badge
-    // labels live in eventBadgeConfig and must not contain newlines
-    // or soft-wrap hints. Keeping each label as a single token
-    // string is the structural floor.
+  it("B-7: every Phase 5 badge label has no wrap hints and fits the layout cap", () => {
+    // The badge container is ``min-w-[88px] px-2`` and accepts
+    // two-line wrap on the longest labels (the longest is "MCP
+    // RESOURCES DISCOVERED" at 24 chars after the D123 prefix
+    // restore). We can't measure pixel width in jsdom, but we CAN
+    // pin the structural floor: no newlines, no leading/trailing
+    // whitespace, and a 30-char ceiling so a future label that
+    // grows past two reasonable wrap lines triggers this test as
+    // a deliberate tap on the shoulder.
     const phase5LabelKeys = [
       "mcp_tool_call",
       "mcp_tool_list",
@@ -104,24 +103,40 @@ describe("eventBadgeConfig — Phase 5 MCP entries (B-4 verb labels)", () => {
       const label = eventBadgeConfig[key].label;
       expect(label).not.toContain("\n");
       expect(label.trim()).toBe(label);
-      // Every label still fits in 22 characters (sanity floor — at
-      // the 10px font this is roughly 132 px which the new
-      // min-w-[88px] + px-2 happily expands to). A future label
-      // longer than 22 chars triggers this test as a deliberate
-      // tap on the shoulder so the author either tightens the
-      // wording or revisits the badge container width.
-      expect(label.length).toBeLessThanOrEqual(22);
+      expect(label.length).toBeLessThanOrEqual(30);
     }
   });
 
-  it("regression guard: legacy MCP labels MUST NOT appear in any badge config (B-4)", () => {
-    // Pre-B-4 labels were "MCP TOOL"/"MCP TOOLS"/"MCP RESOURCE"/
-    // "MCP RESOURCES"/"MCP PROMPT"/"MCP PROMPTS". The plural-only-s
-    // distinction was confusing — operators couldn't read at a
-    // glance whether the badge meant "agent invoked" vs "agent
-    // discovered". This test fails loudly if any of the legacy
-    // strings reappear, including via partial-match (e.g. someone
-    // typing "MCP TOOL CALL" would also fail this guard).
+  it("regression guard: every MCP badge label carries the 'MCP ' prefix (D123)", () => {
+    // D123 restored the "MCP " prefix on every MCP badge label after
+    // B-4 had dropped it. Rationale lives in the lib/events.ts
+    // comment block + DECISIONS.md: the Fleet live feed table
+    // renders badges without the swimlane hexagon, so without the
+    // prefix "TOOL CALL" sits next to "TOOL" with only verb-tense
+    // disambiguation, not category disambiguation. This guard
+    // ensures a future refactor doesn't silently drop the prefix.
+    const mcpKeys = [
+      "mcp_tool_call",
+      "mcp_tool_list",
+      "mcp_resource_read",
+      "mcp_resource_list",
+      "mcp_prompt_get",
+      "mcp_prompt_list",
+    ];
+    for (const key of mcpKeys) {
+      const label = eventBadgeConfig[key].label;
+      expect(label.startsWith("MCP "), `badge label "${label}" missing MCP prefix`).toBe(true);
+    }
+  });
+
+  it("regression guard: bare-prefix MCP labels MUST NOT reappear (B-4 ambiguity)", () => {
+    // Pre-B-4 the labels were "MCP TOOL"/"MCP TOOLS"/"MCP RESOURCE"/
+    // "MCP RESOURCES"/"MCP PROMPT"/"MCP PROMPTS" — distinguished by
+    // a single plural 's' between "agent invoked" and "agent
+    // discovered". That ambiguity is what verbs (CALL / READ /
+    // FETCHED / DISCOVERED) fixed. This guard ensures the bare
+    // prefix-only labels can't slip back in even though we now
+    // also have the "MCP " prefix on every label.
     const banned = [
       "MCP TOOL",
       "MCP TOOLS",
@@ -132,10 +147,8 @@ describe("eventBadgeConfig — Phase 5 MCP entries (B-4 verb labels)", () => {
     ];
     const allLabels = Object.values(eventBadgeConfig).map((c) => c.label);
     for (const ban of banned) {
-      // Use exact match — the new verb labels do NOT include the
-      // "MCP" prefix at all, so "MCP TOOL CALL" etc. cannot occur.
       const hits = allLabels.filter((l) => l === ban);
-      expect(hits, `legacy badge label "${ban}" reappeared`).toHaveLength(0);
+      expect(hits, `bare-prefix label "${ban}" reappeared`).toHaveLength(0);
     }
   });
 });

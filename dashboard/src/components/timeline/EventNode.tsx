@@ -42,15 +42,16 @@ const eventTypeConfig: Record<
   // any size. ListChecks is the discovery shape; FileText reads as a
   // document for resource reads; Folder reads as the resource bucket;
   // MessageSquare for prompt fetches; List for prompt enumeration.
-  // Phase 5 MCP — verb labels match the timeline-row badges (B-4)
-  // so a hover tooltip on a swimlane circle reads identically to the
-  // badge of the corresponding drawer row.
-  mcp_tool_call: { cssVar: "var(--event-mcp-tool)", Icon: Wrench, label: "Tool Call" },
-  mcp_tool_list: { cssVar: "var(--event-mcp-tool)", Icon: ListChecks, label: "Tools Discovered" },
-  mcp_resource_read: { cssVar: "var(--event-mcp-resource)", Icon: FileText, label: "Resource Read" },
-  mcp_resource_list: { cssVar: "var(--event-mcp-resource)", Icon: Folder, label: "Resources Discovered" },
-  mcp_prompt_get: { cssVar: "var(--event-mcp-prompt)", Icon: MessageSquare, label: "Prompt Fetched" },
-  mcp_prompt_list: { cssVar: "var(--event-mcp-prompt)", Icon: List, label: "Prompts Discovered" },
+  // Phase 5 MCP — Title-Case "MCP " prefix matches the badge labels
+  // in lib/events.ts (D123 restores the prefix). A hover tooltip on
+  // the swimlane circle now reads identically to the badge of the
+  // corresponding drawer row, including the category prefix.
+  mcp_tool_call: { cssVar: "var(--event-mcp-tool)", Icon: Wrench, label: "MCP Tool Call" },
+  mcp_tool_list: { cssVar: "var(--event-mcp-tool)", Icon: ListChecks, label: "MCP Tools Discovered" },
+  mcp_resource_read: { cssVar: "var(--event-mcp-resource)", Icon: FileText, label: "MCP Resource Read" },
+  mcp_resource_list: { cssVar: "var(--event-mcp-resource)", Icon: Folder, label: "MCP Resources Discovered" },
+  mcp_prompt_get: { cssVar: "var(--event-mcp-prompt)", Icon: MessageSquare, label: "MCP Prompt Fetched" },
+  mcp_prompt_list: { cssVar: "var(--event-mcp-prompt)", Icon: List, label: "MCP Prompts Discovered" },
 };
 
 // Failed directive_result events (error/timeout) render with the

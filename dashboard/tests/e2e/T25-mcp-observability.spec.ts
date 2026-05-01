@@ -41,19 +41,22 @@ const MCP_EVENT_TYPES = [
   "mcp_prompt_list",
 ] as const;
 
-// B-4 — verb labels match what the agent actually did
-// (called, read, fetched, discovered). The "MCP" prefix is dropped
-// from the badge text because the colour family + the swimlane
-// shared-ring + the timeline detail header all already attribute the
-// row as MCP. Pre-B-4 labels (MCP TOOL / MCP TOOLS / etc.) collided
-// on a single plural-s and confused operators at scan time.
+// Verb-based labels (CALL / READ / FETCHED / DISCOVERED) carry the
+// invoked-vs-discovered distinction — the singular/plural-s pairs we
+// considered (MCP TOOL / MCP TOOLS) collided on a single 's'.
+// D123 restored the "MCP " prefix on top of the verb labels because
+// Fleet's live feed table renders badges WITHOUT the swimlane hexagon
+// shape, putting "TOOL CALL" right next to the non-MCP "TOOL" badge —
+// that's verb-tense disambiguation, not category disambiguation.
+// Prefix puts category back in the label where shape carries it in
+// the swimlane.
 const BADGE_LABELS: Record<(typeof MCP_EVENT_TYPES)[number], string> = {
-  mcp_tool_call: "TOOL CALL",
-  mcp_tool_list: "TOOLS DISCOVERED",
-  mcp_resource_read: "RESOURCE READ",
-  mcp_resource_list: "RESOURCES DISCOVERED",
-  mcp_prompt_get: "PROMPT FETCHED",
-  mcp_prompt_list: "PROMPTS DISCOVERED",
+  mcp_tool_call: "MCP TOOL CALL",
+  mcp_tool_list: "MCP TOOLS DISCOVERED",
+  mcp_resource_read: "MCP RESOURCE READ",
+  mcp_resource_list: "MCP RESOURCES DISCOVERED",
+  mcp_prompt_get: "MCP PROMPT FETCHED",
+  mcp_prompt_list: "MCP PROMPTS DISCOVERED",
 };
 
 // Icon glyph contract is pinned by tests/unit/EventNode-mcp.test.tsx,
@@ -595,9 +598,9 @@ test.describe("T25 — MCP observability rendering", () => {
     // Wait for the feed to reflect the filter.
     await page.waitForTimeout(500);
     // None of the discovery badge labels should be present.
-    await expect(page.locator('[data-testid="feed-badge"]', { hasText: "TOOLS DISCOVERED" })).toHaveCount(0);
-    await expect(page.locator('[data-testid="feed-badge"]', { hasText: "RESOURCES DISCOVERED" })).toHaveCount(0);
-    await expect(page.locator('[data-testid="feed-badge"]', { hasText: "PROMPTS DISCOVERED" })).toHaveCount(0);
+    await expect(page.locator('[data-testid="feed-badge"]', { hasText: "MCP TOOLS DISCOVERED" })).toHaveCount(0);
+    await expect(page.locator('[data-testid="feed-badge"]', { hasText: "MCP RESOURCES DISCOVERED" })).toHaveCount(0);
+    await expect(page.locator('[data-testid="feed-badge"]', { hasText: "MCP PROMPTS DISCOVERED" })).toHaveCount(0);
   });
 
   test("T25-18: discovery events appear when toggle is on", async ({
@@ -624,9 +627,9 @@ test.describe("T25 — MCP observability rendering", () => {
     // (the seed emits one of each on the mcp-active session).
     const allBadges = page.locator('[data-testid="feed-badge"]');
     const allBadgeTexts = await allBadges.allTextContents();
-    expect(allBadgeTexts).toContain("TOOLS DISCOVERED");
-    expect(allBadgeTexts).toContain("RESOURCES DISCOVERED");
-    expect(allBadgeTexts).toContain("PROMPTS DISCOVERED");
+    expect(allBadgeTexts).toContain("MCP TOOLS DISCOVERED");
+    expect(allBadgeTexts).toContain("MCP RESOURCES DISCOVERED");
+    expect(allBadgeTexts).toContain("MCP PROMPTS DISCOVERED");
   });
 
   test("T25-18: drawer event timeline shows discovery events regardless of Fleet toggle", async ({

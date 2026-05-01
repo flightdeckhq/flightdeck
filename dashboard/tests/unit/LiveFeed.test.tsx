@@ -256,13 +256,13 @@ describe("LiveFeed — D122 discovery hide", () => {
     // 7 input events - 3 discovery types = 4 visible:
     // session_start + mcp_tool_call + mcp_resource_read + mcp_prompt_get.
     expect(screen.getAllByTestId("feed-row")).toHaveLength(4);
-    expect(screen.queryByText("TOOLS DISCOVERED")).not.toBeInTheDocument();
-    expect(screen.queryByText("RESOURCES DISCOVERED")).not.toBeInTheDocument();
-    expect(screen.queryByText("PROMPTS DISCOVERED")).not.toBeInTheDocument();
+    expect(screen.queryByText("MCP TOOLS DISCOVERED")).not.toBeInTheDocument();
+    expect(screen.queryByText("MCP RESOURCES DISCOVERED")).not.toBeInTheDocument();
+    expect(screen.queryByText("MCP PROMPTS DISCOVERED")).not.toBeInTheDocument();
     // Usage events still visible.
-    expect(screen.getByText("TOOL CALL")).toBeInTheDocument();
-    expect(screen.getByText("RESOURCE READ")).toBeInTheDocument();
-    expect(screen.getByText("PROMPT FETCHED")).toBeInTheDocument();
+    expect(screen.getByText("MCP TOOL CALL")).toBeInTheDocument();
+    expect(screen.getByText("MCP RESOURCE READ")).toBeInTheDocument();
+    expect(screen.getByText("MCP PROMPT FETCHED")).toBeInTheDocument();
   });
 
   it("shows discovery events when preference is on", () => {
@@ -270,9 +270,9 @@ describe("LiveFeed — D122 discovery hide", () => {
     render(<LiveFeed events={mixedEvents} onEventClick={() => {}} />);
     // All 7 visible.
     expect(screen.getAllByTestId("feed-row")).toHaveLength(7);
-    expect(screen.getByText("TOOLS DISCOVERED")).toBeInTheDocument();
-    expect(screen.getByText("RESOURCES DISCOVERED")).toBeInTheDocument();
-    expect(screen.getByText("PROMPTS DISCOVERED")).toBeInTheDocument();
+    expect(screen.getByText("MCP TOOLS DISCOVERED")).toBeInTheDocument();
+    expect(screen.getByText("MCP RESOURCES DISCOVERED")).toBeInTheDocument();
+    expect(screen.getByText("MCP PROMPTS DISCOVERED")).toBeInTheDocument();
   });
 
   it("count reflects visible-events rule when MCP filter is active and discovery is off", () => {
@@ -325,6 +325,6 @@ describe("LiveFeed — D122 discovery hide", () => {
     // 300 visible after discovery hide; cap is 500 so all 300 show.
     expect(screen.getByTestId("feed-count").textContent).toContain("300 events");
     // No discovery rows.
-    expect(screen.queryByText("TOOLS DISCOVERED")).not.toBeInTheDocument();
+    expect(screen.queryByText("MCP TOOLS DISCOVERED")).not.toBeInTheDocument();
   });
 });

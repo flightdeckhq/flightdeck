@@ -4425,3 +4425,90 @@ that this preference now hides by default but never erases). D119
 shape; only their visibility changes). Rule 14 (both themes work
 at all times — toggle is theme-agnostic and the new T26 canary
 ensures the matrix actually exercises both themes).
+
+## D123 -- MCP badge prefix restored
+
+**Problem.** Phase 5 commit 89333a8 (B-4) dropped the ``MCP `` prefix
+from all six MCP badge labels and reduced them to verb-only forms
+(``TOOL CALL``, ``TOOLS DISCOVERED``, ``RESOURCE READ``,
+``RESOURCES DISCOVERED``, ``PROMPT FETCHED``, ``PROMPTS DISCOVERED``).
+The reasoning at the time: the cyan/green/purple colour family,
+the swimlane hexagon shape (B-5b), and the row's adjacent detail
+text (server name + transport) already attribute the row as MCP, so
+repeating an ``MCP`` prefix on every badge consumes width without
+adding signal.
+
+That reasoning held for the **swimlane** and the **session drawer**
+(both render the hexagon shape and a server-name detail string
+adjacent to every MCP badge). Live operational review during PR #30
+revealed it does **not** hold for the **Fleet live feed table**.
+The live feed renders badges in a tabular row WITHOUT hexagons —
+hexagon clip-paths are swimlane-only — and right next to the
+non-MCP ``TOOL`` badge from the LLM ``tool_call`` event type. In
+that context ``TOOL CALL`` vs ``TOOL`` is verb-tense
+disambiguation, not category disambiguation. An operator new to
+Flightdeck would have to learn the convention "the one with CALL
+is the MCP one" rather than reading category off the label
+directly.
+
+**Decision.** Restore the ``MCP `` prefix on every MCP badge label:
+
+- ``mcp_tool_call``      → ``MCP TOOL CALL``
+- ``mcp_tool_list``      → ``MCP TOOLS DISCOVERED``
+- ``mcp_resource_read``  → ``MCP RESOURCE READ``
+- ``mcp_resource_list``  → ``MCP RESOURCES DISCOVERED``
+- ``mcp_prompt_get``     → ``MCP PROMPT FETCHED``
+- ``mcp_prompt_list``    → ``MCP PROMPTS DISCOVERED``
+
+The ``EventNode`` swimlane tooltip Title-Case strings get the
+matching prefix (``MCP Tool Call``, etc.) so the swimlane hover
+reads identically to the drawer badge of the same row. Accept the
+~30 px width cost per pill; B-7 already accommodates long labels
+with two-line wrap on the longest ones.
+
+**What this does NOT change.**
+
+- The swimlane hexagon clip-path shape (B-5b stays).
+- The cyan/green/purple colour families (B-3 stays).
+- The verb-based distinction between invoked vs discovered (B-4's
+  verbs survive — ``CALL`` / ``READ`` / ``FETCHED`` /
+  ``DISCOVERED``). The plural-only-s pairs we considered earlier
+  (``MCP TOOL`` vs ``MCP TOOLS``) stay banned by an explicit unit
+  regression guard.
+- ``EventType`` enum strings (``mcp_tool_call`` etc.) — wire shape
+  is unchanged. Display text only.
+
+**Test contract changes.**
+
+- ``dashboard/tests/unit/events-mcp.test.ts`` — assertion table
+  updated to the prefixed labels; the bare-prefix regression guard
+  stays (still bans ``MCP TOOL`` / ``MCP TOOLS`` / etc. as exact
+  matches); a NEW guard asserts every MCP badge label STARTS with
+  ``MCP `` so a future refactor cannot silently drop the prefix
+  again. The B-7 length ceiling rises from 22 to 30 chars to
+  accommodate ``MCP RESOURCES DISCOVERED`` (24 chars).
+- ``dashboard/tests/e2e/T25-mcp-observability.spec.ts`` —
+  ``BADGE_LABELS`` constants updated to the prefixed text;
+  comment block rewritten to describe the new rationale.
+- ``CHANGELOG.md`` — Phase 5 ``Added`` entry rewritten to list the
+  prefixed labels and reference D123 instead of the no-prefix
+  reasoning.
+
+**B-4 is superseded by this entry.** Code that previously cited
+B-4 as the no-prefix authority should cite D123 going forward.
+
+**Files touched.**
+
+- ``dashboard/src/lib/events.ts`` — six badge label values + the
+  multi-line comment block above them.
+- ``dashboard/src/components/timeline/EventNode.tsx`` — six
+  swimlane tooltip Title-Case label strings.
+- ``dashboard/tests/unit/events-mcp.test.ts`` — test table +
+  regression guards.
+- ``dashboard/tests/e2e/T25-mcp-observability.spec.ts`` —
+  ``BADGE_LABELS`` constants + comment.
+- ``CHANGELOG.md`` — Phase 5 unreleased section.
+
+**Related decisions.** D118 / D119 / D121 / D122 (other Phase 5
+display + payload decisions; none affected by the prefix change).
+B-4 in commit 89333a8 (no-prefix decision, superseded).

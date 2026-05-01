@@ -256,13 +256,7 @@ jobs:
         # the duplicate doubled the slowest CI stage with no
         # additional coverage. ``make test-e2e`` still works locally
         # for targeted runs.
-        #
-        # PYTHON override: the Makefile defaults $(PYTHON) to
-        # ./sensor/.venv/bin/python (D124 single-venv discipline).
-        # CI uses actions/setup-python instead of a project venv, so
-        # we override to the bare interpreter -- pip install -e .
-        # ran above against the same one.
-        run: PYTHON=python make test-integration
+        run: make test-integration
 
       - name: Dump stack logs on failure
         if: failure()
@@ -322,13 +316,7 @@ jobs:
         # surfaces as its own job step rather than hiding inside
         # Playwright's globalSetup stdout. globalSetup will re-run
         # (and skip) during the playwright test invocation below.
-        #
-        # PYTHON override: the Makefile defaults $(PYTHON) to
-        # ./sensor/.venv/bin/python (D124 single-venv discipline).
-        # CI uses actions/setup-python instead of a project venv, so
-        # we override to the bare interpreter -- pip install -e .
-        # ran above against the same one.
-        run: PYTHON=python make seed-e2e
+        run: make seed-e2e
 
       - name: Run Playwright tests (neon-dark + clean-light)
         working-directory: dashboard

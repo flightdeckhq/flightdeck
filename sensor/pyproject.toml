@@ -8,7 +8,7 @@ version = "0.3.1"
 description = "In-process agent observability sensor for Flightdeck"
 readme = "README.md"
 license = "Apache-2.0"
-requires-python = ">=3.9"
+requires-python = ">=3.10,<3.14"
 dependencies = [
     "pydantic>=2.0",
 ]
@@ -17,7 +17,6 @@ classifiers = [
     "Intended Audience :: Developers",
     "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -97,14 +96,11 @@ dev = [
     # (responses API, beta.messages, beta.chat.completions.parse) are
     # NOT intercepted -- documented as a known constraint in
     # ARCHITECTURE.md "Framework limitations". See
-    # test_crewai_native_openai_patched_intercepts_call.
-    #
-    # Python upper bound: crewai 1.x metadata declares
-    # ``requires-python = "<3.14,>=3.10"``. On Python 3.14+ pip silently
-    # skips this dep via the marker rather than failing the whole
-    # ``pip install -e .[dev]`` invocation. Smoke / playground crewai
-    # paths SKIP cleanly when crewai is missing.
-    "crewai>=1.14; python_version < '3.14'",
+    # test_crewai_native_openai_patched_intercepts_call. The
+    # project-level ``requires-python`` already bars 3.14, so no
+    # per-dep marker is needed here -- pip resolves crewai cleanly on
+    # every supported Python.
+    "crewai>=1.14",
     # Phase 5: MCP unit tests construct a ClientSession against in-memory
     # anyio streams, apply the patch, and assert event-emission shape.
     # The smoke matrix uses the same package against a real reference

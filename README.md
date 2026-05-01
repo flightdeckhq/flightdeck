@@ -55,6 +55,21 @@ Working examples for every supported framework -- LangChain, LangGraph, LlamaInd
 
 To run the sensor from source instead of PyPI: `pip install -e sensor/` from the repo root.
 
+### Local development environment
+
+Flightdeck pins **Python 3.12** for local development. The project bound is `3.10 ≤ x < 3.14` (sensor `pyproject.toml`); the venv at `sensor/.venv` is the canonical interpreter for every Make target that runs Python (playground demos, integration tests, seed scripts).
+
+Fresh-clone setup:
+
+```bash
+python3.12 -m venv sensor/.venv
+./sensor/.venv/bin/python -m pip install -e "./sensor[dev,anthropic,openai]"
+```
+
+Every `make` target that runs Python resolves through `$(PYTHON)`, defaulting to `./sensor/.venv/bin/python`. CI overrides via env (`PYTHON=python make ...`) where `actions/setup-python` already pinned the right interpreter. See [`sensor/README.md`](sensor/README.md) for the recreation step if the venv is nuked.
+
+`make playground-all` runs the canonical manual-exercise matrix against a live dev stack — every framework + every event shape Flightdeck observes. Each script self-skips on missing API keys / optional gateway URLs / optional CLI binaries; a clean run on a fresh box has only those acceptable skips. See [`playground/README.md`](playground/README.md).
+
 ---
 
 ## What it covers

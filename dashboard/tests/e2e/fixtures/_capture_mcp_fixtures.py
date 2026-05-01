@@ -131,7 +131,7 @@ def _release_session(session: Session) -> None:
 async def _exercise_reference_server() -> None:
     params = StdioServerParameters(
         command=sys.executable,
-        args=["-m", "tests.smoke.fixtures.mcp_reference_server"],
+        args=["-m", "playground._mcp_reference_server"],
     )
     # Attribute access (not local binding) so we get the post-patch
     # wrapped factory, which marks the streams with the transport label.
@@ -296,7 +296,7 @@ def main() -> int:
     output = {
         "_meta": {
             "phase": "5",
-            "source": "flightdeck-sensor against tests/smoke/fixtures/mcp_reference_server.py",
+            "source": "flightdeck-sensor against playground/_mcp_reference_server.py",
             "capture_prompts": True,
             "agent_type": "coding",
             "flavor": "phase5-fixture-freeze",

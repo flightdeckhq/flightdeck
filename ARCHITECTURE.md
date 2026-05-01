@@ -2636,8 +2636,8 @@ targets:
 | `make dev` | Boot the dev stack via docker-compose.dev.yml |
 | `make test` | Per-component unit tests (sensor, ingestion, workers, api, dashboard) |
 | `make test-integration` | Run pytest against the dev stack |
-| `make smoke-<framework>` | Live-API regression test for `<framework>` (Rule 40d) |
-| `make smoke-all` | All framework smoke targets, skip those without API keys |
+| `make playground-<script>` | Live-API regression demo for `<script>` (Rule 40d) |
+| `make playground-all` | All playground demos, skip those without API keys |
 | `make lint` | Per-component lint (ruff, golangci-lint, ESLint, mypy) |
 | `make build` | Docker images for ingestion, workers, api, dashboard |
 | `make release VERSION=vX.Y.Z` | Validate, bump version, tag, push (release pipeline) |
@@ -2689,28 +2689,35 @@ Postgres) via `make test-integration`:
 - `test_sensor_e2e.py` — end-to-end sensor lifecycle including
   acknowledgement events and singleton behaviour
 
-### Smoke tests
+### Manual playground demos (Rule 40d)
 
-`tests/smoke/` runs real-API regression tests per supported framework
-(Rule 40d). Manual, NOT in CI — they cost money and need live API
-credentials. pytest-skip when the relevant env var is missing so
-`make smoke-all` runs cleanly on any box.
+`playground/` runs real-API regression demos per supported framework.
+Manual, NOT in CI — they cost money and need live API credentials.
+Each script self-skips (exit 2) when its framework / API key /
+optional gateway URL is missing so `make playground-all` runs cleanly
+on any box.
 
 | Target | Driver |
 |---|---|
-| `make smoke-anthropic` | `tests/smoke/test_smoke_anthropic.py` |
-| `make smoke-openai` | `tests/smoke/test_smoke_openai.py` |
-| `make smoke-litellm` | `tests/smoke/test_smoke_litellm.py` |
-| `make smoke-langchain` | `tests/smoke/test_smoke_langchain.py` |
-| `make smoke-claude-code` | `tests/smoke/test_smoke_claude_code.py` |
-| `make smoke-bifrost` | `tests/smoke/test_smoke_bifrost.py` (optional) |
-| `make smoke-all` | Runs every target, skips missing-env-var ones |
+| `make playground-anthropic` | `playground/01_direct_anthropic.py` |
+| `make playground-openai` | `playground/02_direct_openai.py` |
+| `make playground-langchain` | `playground/03_langchain.py` |
+| `make playground-langgraph` | `playground/04_langgraph.py` |
+| `make playground-llamaindex` | `playground/05_llamaindex.py` |
+| `make playground-crewai` | `playground/06_crewai.py` |
+| `make playground-litellm` | `playground/12_litellm.py` |
+| `make playground-mcp` | `playground/13_mcp.py` |
+| `make playground-claude-code` | `playground/14_claude_code_plugin.py` |
+| `make playground-bifrost` | `playground/15_bifrost.py` (optional) |
+| `make playground-policies` | `playground/policy_demo_*.py` × 4 |
+| `make playground-all` | Runs every script, skips missing-env-var ones |
 
-`tests/smoke/conftest.py::make_sensor_session` is the shared bootstrap:
-`teardown()` first, set `AGENT_FLAVOR`, init kwargs, `patch()`. The
-shared `fetch_events_for_session` helper poll-waits for an
-`expect_event_types` set so smoke runs assert against the events the
-test cares about, not "any events at all".
+`playground/_helpers.py` carries the shared bootstrap (`init_sensor`,
+`require_env`, `wait_for_dev_stack`, `mcp_server_params`,
+`fetch_events_for_session`, `assert_event_landed`) so each demo stays
+focused on what it's demonstrating. Scripts assert payload shape
+inline using `print_result` + `raise AssertionError`; `run_all.py`
+exits 0 only when every script returned 0 (PASS) or 2 (SKIP).
 
 ### End-to-end (Playwright)
 

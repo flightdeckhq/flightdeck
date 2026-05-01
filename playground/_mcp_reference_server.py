@@ -1,9 +1,9 @@
-"""Reference MCP server used by smoke tests and the dashboard
+"""Reference MCP server used by playground demos and the dashboard
 fixture-freeze step.
 
-DESIGN AND FIXTURE-SCOPE NOTE
-=============================
-This server is **stateless** and may be safely shared across tests:
+DESIGN NOTE
+===========
+This server is **stateless** and safe to share across runs:
 
 * Every tool is a pure function (``echo``, ``add``, ``slow_echo``).
   None of them touch module globals or persist anything.
@@ -11,34 +11,25 @@ This server is **stateless** and may be safely shared across tests:
 * The single prompt (``greet``) renders deterministically from the
   ``name`` argument.
 
-Because state is invariant across calls, **module-scoped** pytest
-fixtures are the recommended consumer pattern. Spawning the server
-per-test (function scope) costs ~150 ms per test for stdio handshake
-without buying any isolation benefit. The fixture in
-``tests/smoke/conftest.py`` should set ``scope="module"``.
-
-If a future smoke test needs to mutate server state (e.g. test write
-semantics), that test should run its own per-function fixture against
-a different server file rather than promoting this server to mutable.
-Keeping THIS server stateless is what makes the shared-fixture
-pattern safe.
+If a future demo needs to mutate server state (e.g. test write
+semantics), that demo should run its own server module rather than
+promoting this server to mutable. Keeping THIS server stateless is
+what makes the shared-fixture pattern safe.
 
 USAGE
 =====
 Run as a stdio MCP server::
 
-    python -m tests.smoke.fixtures.mcp_reference_server
+    python -m playground._mcp_reference_server
 
-Smoke tests / playgrounds connect via the official mcp SDK::
+Playground scripts connect via the helper factory in
+``playground/_helpers.py``::
 
-    from mcp import StdioServerParameters
-    from mcp.client.stdio import stdio_client
+    from _helpers import mcp_server_params
     from mcp.client.session import ClientSession
+    from mcp.client.stdio import stdio_client
 
-    params = StdioServerParameters(
-        command=sys.executable,
-        args=["-m", "tests.smoke.fixtures.mcp_reference_server"],
-    )
+    params = mcp_server_params("playground._mcp_reference_server")
     async with stdio_client(params) as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
@@ -47,8 +38,8 @@ Smoke tests / playgrounds connect via the official mcp SDK::
 The reference server is intentionally tiny — its purpose is to drive
 the sensor's MCP interceptor through every patched code path with
 deterministic, inspectable output. Real-world MCP servers (filesystem,
-github, sqlite, ...) are exercised separately in the per-framework
-smoke files; this fixture is for the schema-and-fingerprint contract.
+github, sqlite, ...) are exercised by user code; this fixture is for
+the schema-and-fingerprint contract.
 """
 
 from __future__ import annotations
@@ -164,9 +155,9 @@ def main() -> None:
     The mcp SDK's FastMCP.run() method dispatches on the transport
     name. ``"stdio"`` runs over the calling process's stdin/stdout
     pipes — required for ``stdio_client(StdioServerParameters(command=
-    sys.executable, args=["-m", "tests.smoke.fixtures.mcp_reference_server"]))``
+    sys.executable, args=["-m", "playground._mcp_reference_server"]))``
     to work. Other transports (sse, streamable-http) are out of scope
-    for this fixture; per-transport coverage lives in the smoke matrix.
+    for this fixture.
     """
     mcp_server.run("stdio")
 

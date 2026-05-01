@@ -6,8 +6,34 @@ All notable changes to Flightdeck are documented here.
 
 Treats Model Context Protocol calls as a first-class event surface
 alongside chat and embeddings. Single PR covering sensor, worker,
-API, dashboard, plugin, integration tests, smoke matrix, playground,
-and docs.
+API, dashboard, plugin, integration tests, playground demos, and docs.
+
+### Changed
+
+- **Project layout:** ``tests/smoke/`` retired in favor of
+  ``playground/`` as the single canonical Rule 40d manual-exercise
+  surface (D124). Coverage unique to smoke migrated into the
+  corresponding playground script as inline print + assert. New
+  ``playground/14_claude_code_plugin.py`` and
+  ``playground/15_bifrost.py`` cover the previously smoke-only paths.
+  The reference MCP server moved to
+  ``playground/_mcp_reference_server.py``; helpers consolidated to
+  ``playground/_helpers.py``.
+- **Make targets:** every ``smoke-*`` target removed.
+  ``make playground-anthropic`` / ``-openai`` / ``-langchain`` /
+  ``-langgraph`` / ``-llamaindex`` / ``-crewai`` / ``-litellm`` /
+  ``-mcp`` / ``-claude-code`` / ``-bifrost`` / ``-policies`` /
+  ``-all`` are the replacements.
+- **Python bound:** ``sensor/pyproject.toml``
+  ``requires-python = ">=3.10,<3.14"`` (was ``>=3.9``); classifier
+  list dropped 3.9. The ``python_version < '3.14'`` marker on the
+  ``crewai`` dev dep was redundant with the project-level bar and
+  was removed. ``playground/run_all.py`` adds a top-of-file gate
+  refusing to run on the wrong interpreter.
+- **Single venv:** every Make target that runs Python resolves
+  through ``$(PYTHON)`` (defaults to ``./sensor/.venv/bin/python``);
+  CI overrides via env where ``actions/setup-python`` already pinned
+  the right interpreter.
 
 ### Added
 
@@ -110,34 +136,28 @@ and docs.
   Playwright per-project ``storageState`` ever drifts out of
   agreement with ``useTheme``'s accepted values, locking in the
   fix that re-enabled actual dual-theme coverage.
-- **Tests (smoke):** Phase 5 MCP coverage folded into the existing
-  per-framework smoke files
-  (``test_smoke_langchain.py``, ``test_smoke_claude_code.py``) plus
-  three new per-framework files
-  (``test_smoke_langgraph.py``, ``test_smoke_llamaindex.py``,
-  ``test_smoke_crewai.py``) that gain chat smokes alongside their
-  MCP coverage. Bare-``mcp``-SDK coverage lives in
-  ``test_smoke_mcp.py``. Shared in-tree reference server at
-  ``tests/smoke/fixtures/mcp_reference_server.py``; the bare-SDK
-  smoke's multi-server attribution test uses a sibling
-  ``tests/smoke/fixtures/mcp_secondary_server.py`` fixture.
-  Framework smokes pytest-skip when the relevant adapter package
+- **Playground (Rule 40d):** every framework demonstrates every
+  event Flightdeck emits for it — chat (sync/async/sync-stream/async-stream),
+  embeddings (event emission + capture round-trip), MCP (all six
+  event types + ``transport`` + ``server_name`` + arguments
+  round-trip), policy (WARN/DEGRADE/BLOCK with payload-shape
+  asserts), and error classification (auth-error, invalid-model).
+  ``13_mcp.py`` covers the bare ``mcp`` SDK against the in-tree
+  reference server (``playground/_mcp_reference_server.py``) plus
+  a multi-server attribution scenario via
+  ``playground/_secondary_mcp_server.py``.
+  ``14_claude_code_plugin.py`` exercises the plugin's MCP-emission
+  paths via synthetic ``PostToolUse`` JSON. ``15_bifrost.py``
+  covers the optional bifrost gateway. Framework MCP coverage
+  rides as a section inside each per-provider playground file
+  (``03_langchain.py``, ``04_langgraph.py``, ``05_llamaindex.py``,
+  ``06_crewai.py``); each block skips cleanly when its adapter
   isn't installed.
-- **Playground:** ``13_mcp.py`` covers the bare ``mcp`` SDK against
-  the in-tree reference server and a multi-server attribution
-  scenario via a sibling ``_secondary_mcp_server.py`` utility module.
-  Framework MCP coverage rides as an additional section inside the
-  existing per-provider playground files (``03_langchain.py``,
-  ``04_langgraph.py``, ``05_llamaindex.py``, ``06_crewai.py``);
-  each MCP block skips cleanly when its adapter isn't installed.
-- **Make:** Per-framework smoke targets
-  (``smoke-langgraph``, ``smoke-llamaindex``, ``smoke-crewai``)
-  cover both chat and MCP for their framework. ``smoke-langchain``
-  and ``smoke-claude-code`` extend their existing scope with MCP
-  coverage. ``smoke-mcp`` runs the bare-SDK target. ``smoke-all``
-  enumerates every per-framework target plus ``smoke-mcp``; the
-  prior ``smoke-mcp-*`` per-framework targets are removed in favour
-  of the unified per-framework convention.
+- **Make:** Per-script playground targets (``playground-anthropic``,
+  ``-openai``, ``-langchain``, ``-langgraph``, ``-llamaindex``,
+  ``-crewai``, ``-litellm``, ``-mcp``, ``-claude-code``,
+  ``-bifrost``, ``-policies``) plus ``playground-all`` driving
+  every script through ``run_all.py``.
 - **Dashboard:** Live feed hides MCP discovery events
   (``mcp_tool_list`` / ``mcp_resource_list`` /
   ``mcp_prompt_list``) by default. A "Discovery events" toggle in

@@ -4512,3 +4512,141 @@ B-4 as the no-prefix authority should cite D123 going forward.
 **Related decisions.** D118 / D119 / D121 / D122 (other Phase 5
 display + payload decisions; none affected by the prefix change).
 B-4 in commit 89333a8 (no-prefix decision, superseded).
+
+## D124 -- Smoke folder retired; playground is the single Rule 40d surface
+
+**Problem.** The project shipped two parallel manual-exercise
+surfaces. ``tests/smoke/`` was pytest-based with assert-shaped tests.
+``playground/`` was script-based with print-shaped demos. Both
+covered the same provider + framework matrix. Duplication produced
+three concrete failure modes during Phase 5 close-out:
+
+1. **Silent SKIPs masked real coverage gaps.** ``make smoke-all``
+   reported "1 SKIP — Py3.14 upstream constraint" for crewai. The
+   "1 SKIP" was crewai's ``python_version < '3.14'`` marker firing
+   on the dev box's ambient Python, NOT a missing API key.
+   Operators couldn't tell from the green output that the matrix
+   had a hole the size of CrewAI.
+2. **Two helper styles, two import surfaces.** Smoke's
+   ``make_sensor_session`` (returns a Session object) and
+   playground's ``init_sensor`` (takes session_id as a value)
+   were structurally incompatible. Helpers shared between the two
+   surfaces (cwd + PYTHONPATH wiring for MCP server spawn) were
+   duplicated inline across four playground scripts.
+3. **Reference fixtures lived in the smoke tree but were
+   load-bearing for playground.** ``playground/13_mcp.py`` and the
+   four MCP-touching playground scripts spawned ``python -m
+   tests.smoke.fixtures.mcp_reference_server``; the cross-tree
+   dependency was structural drift that would have widened with
+   any further coverage migration.
+
+**Decision.** Retire ``tests/smoke/`` entirely. Playground is the
+single canonical Rule 40d manual-exercise surface. Helpers and
+fixtures consolidated under ``playground/``:
+
+- Reference MCP server moved to
+  ``playground/_mcp_reference_server.py`` (matches the existing
+  ``_secondary_mcp_server.py`` naming convention; underscore-prefix
+  marks it as a utility module that ``run_all.py`` skips).
+- Helpers consolidated to ``playground/_helpers.py``: gained
+  ``API_URL`` / ``API_TOKEN`` / ``INGESTION_URL`` constants,
+  ``require_env``, ``wait_for_dev_stack``,
+  ``fetch_events_for_session``, and ``mcp_server_params``. The
+  ``init_sensor`` shape is the surviving canonical bootstrap;
+  smoke's ``make_sensor_session`` was dropped.
+- Coverage unique to smoke migrated into the corresponding
+  playground script as print + assert. Areas covered:
+  async-streaming TTFT (01, 02), embeddings event + capture
+  round-trip (02, 03, 12), ``session.framework="langchain"``
+  attribution (03), MCP per-event ``transport=stdio`` consistency
+  (13), policy ``source=server`` / ``intended_model`` /
+  ``token_limit`` exact matches (policy_demo_*).
+- Two new playground scripts cover the previously-smoke-only
+  paths: ``14_claude_code_plugin.py`` (pipes synthetic
+  ``PostToolUse`` JSON to ``observe_cli.mjs`` to exercise the
+  plugin's MCP-emission paths), ``15_bifrost.py`` (opt-in
+  multi-protocol gateway demo).
+
+**Single venv.** ``sensor/.venv`` is the canonical interpreter.
+Every Make target that runs Python resolves through ``$(PYTHON)``
+(defaults to ``./sensor/.venv/bin/python``). CI overrides via env
+where ``actions/setup-python@v5`` already pinned
+``python-version: "3.12"`` in the Sensor + Integration jobs.
+
+**Python bound tightened.** ``sensor/pyproject.toml``
+``requires-python = ">=3.10,<3.14"`` (was ``>=3.9``); classifier
+list dropped 3.9. The ``python_version < '3.14'`` marker on the
+``crewai`` dev dep dropped — the project itself now bars 3.14, so
+the silent-skip failure mode is structurally eliminated.
+``run_all.py`` adds a top-of-file gate that refuses to run on the
+wrong interpreter so a misconfigured local environment fails
+loudly.
+
+**Smoke targets retired.** ``make smoke-anthropic`` /
+``smoke-openai`` / ``smoke-litellm`` / ``smoke-langchain`` /
+``smoke-langgraph`` / ``smoke-llamaindex`` / ``smoke-crewai`` /
+``smoke-claude-code`` / ``smoke-bifrost`` / ``smoke-policies`` /
+``smoke-mcp`` / ``smoke-all`` / ``test-smoke-playground`` are all
+removed. Replaced by ``make playground-anthropic`` /
+``playground-openai`` / ``playground-langchain`` /
+``playground-langgraph`` / ``playground-llamaindex`` /
+``playground-crewai`` / ``playground-litellm`` / ``playground-mcp``
+/ ``playground-claude-code`` / ``playground-bifrost`` /
+``playground-policies`` / ``playground-all``.
+
+**What this does NOT change.**
+
+- ``sensor/tests/unit/`` (real unit tests, not smoke). Stays as-is.
+- ``tests/integration/`` (real integration tests against the dev
+  stack with mocked providers). Stays as-is.
+- The Rule 40d intent: every framework-touching change still
+  needs a real-provider exercise alongside mocked integration
+  tests. Playground demos serve that role going forward; the
+  rule wording in ``CLAUDE.md`` was rewritten to reference
+  ``playground/`` and ``make playground-<script>`` targets while
+  preserving the "manual / not in CI / costs money" semantics.
+- CI: ``.github/workflows/ci.yml`` and ``release.yml`` already
+  pinned 3.12 on every Python job and never referenced
+  ``tests/smoke/`` or ``make smoke-*``. No CI changes were needed.
+
+**Files touched.**
+
+- ``tests/smoke/`` — DELETED.
+- ``playground/_helpers.py`` — gained the migrated helpers + endpoint constants.
+- ``playground/_mcp_reference_server.py`` — moved from the smoke tree;
+  docstring updated to reference the new module path.
+- ``playground/01..06`` + ``12``, ``13_mcp.py`` — coverage
+  migrated; payload-shape asserts added inline.
+- ``playground/14_claude_code_plugin.py`` — NEW.
+- ``playground/15_bifrost.py`` — NEW.
+- ``playground/policy_demo_*.py`` × 4 — converted from
+  print-and-continue to print-and-assert.
+- ``playground/run_all.py`` — Python-version gate at top;
+  picks up ``policy_demo_*.py`` set in addition to the
+  numbered files.
+- ``Makefile`` + ``sensor/Makefile`` — ``$(PYTHON)`` variable;
+  smoke targets removed; playground targets added.
+- ``sensor/pyproject.toml`` — Python bound tightened; crewai
+  marker dropped.
+- ``README.md`` + ``sensor/README.md`` + ``playground/README.md``
+  — updated to point at ``./sensor/.venv/bin/python`` /
+  ``make playground-all``.
+- ``ARCHITECTURE.md`` — current-state references updated.
+- ``CLAUDE.md`` rule 40d — rewritten to reference playground.
+- ``dashboard/tests/e2e/fixtures/_capture_mcp_fixtures.py`` —
+  spawn-path updated to ``playground._mcp_reference_server``.
+- ``tests/integration/test_policy.py`` — stale docstring
+  reference corrected to point at the playground policy demos.
+
+**Historical references kept intact.** ``CHANGELOG.md`` past
+release entries and ``DECISIONS.md`` past D-entries that mention
+``tests/smoke/`` describe what shipped at the time and stay
+unchanged. The new ``Unreleased`` CHANGELOG entry records the
+consolidation; this D124 entry is the durable archive.
+
+**Related decisions.** D5 (mcpadapt pin), D113 (Claude Code
+plugin observation-only), D118 (per-call MCP events), D120
+(``[mcp-crewai]`` extras retired in favor of
+``[dev]``-bundled mcpadapt). Rule 40d (live-stack verification —
+playground is now the surface that satisfies it).
+

@@ -5,7 +5,7 @@
     "flavor": "phase5-fixture-freeze",
     "note": "Volatile fields (session_id, agent_id, timestamp, host, user, agent_name, duration_ms) replaced with placeholder values so the JSON is deterministic. Regenerate by running this script when the sensor's MCP payload shape changes.",
     "phase": "5",
-    "source": "flightdeck-sensor against tests/smoke/fixtures/mcp_reference_server.py"
+    "source": "flightdeck-sensor against playground/_mcp_reference_server.py"
   },
   "events": {
     "mcp_prompt_get": {

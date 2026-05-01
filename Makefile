@@ -1,4 +1,21 @@
-.PHONY: help build test test-plugin test-integration test-sensor-e2e test-e2e test-e2e-ui test-smoke-playground seed-e2e lint dev dev-reset down logs release migrate-local-up migrate-local-status smoke-anthropic smoke-openai smoke-litellm smoke-langchain smoke-langgraph smoke-llamaindex smoke-crewai smoke-claude-code smoke-bifrost smoke-policies smoke-mcp smoke-all
+.PHONY: help build test test-plugin test-integration test-sensor-e2e test-e2e test-e2e-ui seed-e2e lint dev dev-reset down logs release migrate-local-up migrate-local-status playground-anthropic playground-openai playground-langchain playground-langgraph playground-llamaindex playground-crewai playground-litellm playground-mcp playground-claude-code playground-bifrost playground-policies playground-all
+
+# ---------------------------------------------------------------------------
+# Python interpreter resolution.
+#
+# Every Python invocation in this Makefile (playground demos, integration
+# tests, seed scripts) resolves through ``$(PYTHON)`` and points at the
+# project's pinned 3.12 venv by default. CI overrides via the env --
+# ``PYTHON=python make ...`` works because actions/setup-python already
+# pinned the right interpreter at job start.
+#
+# Required Python: 3.10 ≤ x < 3.14 (sensor/pyproject.toml requires-python).
+# Reasoning: crewai 1.x metadata declares <3.14, our floor matches the
+# project's classifier list. The single 3.12 venv discipline (D124) is
+# what eliminates the "silent skip on wrong Python" failure mode that
+# bit us pre-D124 when ambient ``python`` was 3.14.
+# ---------------------------------------------------------------------------
+PYTHON ?= ./sensor/.venv/bin/python
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-12s %s\n", $$1, $$2}'
@@ -21,75 +38,63 @@ test-plugin: ## Run the Claude Code plugin unit tests (zero-dep, node --test)
 
 test-integration: ## Run integration tests (requires running stack)
 	$(MAKE) -C docker dev
-	cd tests/integration && pytest -v -m "not manual"
+	cd tests/integration && $(abspath $(PYTHON)) -m pytest -v -m "not manual"
 
 test-sensor-e2e: ## Run sensor respx-driven end-to-end tests (requires running stack)
 	$(MAKE) -C docker dev
-	cd tests/integration && pytest -v test_sensor_e2e.py
-
-test-smoke-playground: ## Run the playground against a live stack (requires ANTHROPIC_API_KEY + OPENAI_API_KEY). See playground/README.md.
-	python playground/run_all.py
+	cd tests/integration && $(abspath $(PYTHON)) -m pytest -v test_sensor_e2e.py
 
 # ---------------------------------------------------------------------------
-# Rule 40d smoke targets. Each runs the per-framework smoke test
-# against a live provider; NONE of these run in CI (they cost money
-# and need real API keys). Run manually before a release that touches
-# framework-emission behaviour and document the results in the
-# matching audit doc.
+# Rule 40d playground demos. Each runs the per-framework playground
+# script against a live provider; NONE of these run in CI (they cost
+# money and need real API keys). Run manually before a release that
+# touches framework-emission behaviour and document the results in
+# the matching audit doc.
 #
-# Smoke tests skip cleanly when the relevant env var is unset, so
-# the target never fails the user's local pytest invocation; a skip
-# just means "not exercised on this run". Operators who want to force
-# a skipped target to fail can pass ``-o pytest.ini.addopts='--no-skips'``
-# (see tests/smoke/README.md).
+# Each playground script self-skips (exit 2) when the relevant API
+# key / framework / optional gateway URL is missing, so the matrix
+# never fails the user's local invocation; a skip just means "not
+# exercised on this run".
 # ---------------------------------------------------------------------------
 
-# Smoke tests must run from the repo root, not ``tests/smoke``: the
-# in-tree reference MCP server is spawned via
-# ``python -m tests.smoke.fixtures.mcp_reference_server``, and that
-# module path only resolves when the working directory is the repo
-# root (or PYTHONPATH includes it). Per-framework MCP tests skip
-# silently with this misconfigured before, masking real failures —
-# uniform repo-root pytest invocations close that gap.
-smoke-anthropic: ## Rule 40d smoke: Anthropic SDK. Requires ANTHROPIC_API_KEY.
-	pytest -v tests/smoke/test_smoke_anthropic.py
+playground-anthropic: ## Rule 40d playground: Anthropic SDK. Requires ANTHROPIC_API_KEY.
+	$(PYTHON) playground/01_direct_anthropic.py
 
-smoke-openai: ## Rule 40d smoke: OpenAI SDK. Requires OPENAI_API_KEY.
-	pytest -v tests/smoke/test_smoke_openai.py
+playground-openai: ## Rule 40d playground: OpenAI SDK. Requires OPENAI_API_KEY.
+	$(PYTHON) playground/02_direct_openai.py
 
-smoke-litellm: ## Rule 40d smoke: litellm multi-provider. Requires ANTHROPIC_API_KEY + OPENAI_API_KEY.
-	pytest -v tests/smoke/test_smoke_litellm.py
+playground-langchain: ## Rule 40d playground: LangChain (chat + MCP). Requires ANTHROPIC_API_KEY + OPENAI_API_KEY.
+	$(PYTHON) playground/03_langchain.py
 
-smoke-langchain: ## Rule 40d smoke: LangChain (chat via Anthropic + OpenAI; MCP via langchain-mcp-adapters). Requires ANTHROPIC_API_KEY + OPENAI_API_KEY (+ `langchain-mcp-adapters` for the MCP half).
-	pytest -v tests/smoke/test_smoke_langchain.py
+playground-langgraph: ## Rule 40d playground: LangGraph (StateGraph chat + ToolNode MCP). Requires ANTHROPIC_API_KEY.
+	$(PYTHON) playground/04_langgraph.py
 
-smoke-claude-code: ## Rule 40d smoke: Claude Code plugin (CLI lifecycle gated on CLAUDE_CLI_AVAILABLE=1; MCP path requires Node 20+).
-	pytest -v tests/smoke/test_smoke_claude_code.py
+playground-llamaindex: ## Rule 40d playground: LlamaIndex (.complete + McpToolSpec). Requires ANTHROPIC_API_KEY + OPENAI_API_KEY.
+	$(PYTHON) playground/05_llamaindex.py
 
-smoke-bifrost: ## Rule 40d smoke: bifrost gateway (optional). Requires BIFROST_URL + upstream provider key.
-	pytest -v tests/smoke/test_smoke_bifrost.py
+playground-crewai: ## Rule 40d playground: CrewAI (native chat + mcpadapt MCP canary). Requires ANTHROPIC_API_KEY + OPENAI_API_KEY.
+	$(PYTHON) playground/06_crewai.py
 
-smoke-policies: ## Rule 40d smoke: policy enforcement events (warn/degrade/block) via real Anthropic + flavor policy. Requires ANTHROPIC_API_KEY.
-	pytest -v tests/smoke/test_smoke_policies.py
+playground-litellm: ## Rule 40d playground: litellm multi-provider chat + embeddings + invalid-model error.
+	$(PYTHON) playground/12_litellm.py
 
-# Per-framework smoke tests (Rule 40d). Each target covers chat
-# (where the framework wraps an LLM provider) AND any MCP integration
-# the framework exposes -- one target per framework, MCP folded in.
-# The bare-SDK MCP smoke is a separate target. Tests pytest-skip when
-# the relevant adapter is not installed.
-smoke-langgraph: ## Rule 40d smoke: LangGraph (StateGraph chat + ToolNode MCP). Requires `langgraph` (+ `langchain-mcp-adapters` for the MCP half).
-	pytest -v tests/smoke/test_smoke_langgraph.py
+playground-mcp: ## Rule 40d playground: bare mcp SDK, all six event types + multi-server attribution.
+	$(PYTHON) playground/13_mcp.py
 
-smoke-llamaindex: ## Rule 40d smoke: LlamaIndex (LLM .complete + McpToolSpec). Requires `llama-index-llms-*` (+ `llama-index-tools-mcp` for the MCP half).
-	pytest -v tests/smoke/test_smoke_llamaindex.py
+playground-claude-code: ## Rule 40d playground: Claude Code plugin MCP-emission demo (success + PluginToolError). Requires Node 20+.
+	$(PYTHON) playground/14_claude_code_plugin.py
 
-smoke-crewai: ## Rule 40d smoke: CrewAI (native-provider chat + MCPAdapt tools). Requires `crewai` (+ `mcpadapt` for the MCP half, pinned per D5).
-	pytest -v tests/smoke/test_smoke_crewai.py
+playground-bifrost: ## Rule 40d playground: bifrost gateway (optional). Requires BIFROST_URL.
+	$(PYTHON) playground/15_bifrost.py
 
-smoke-mcp: ## Rule 40d smoke: direct mcp SDK against the in-tree reference server (all six event types + multi-server attribution).
-	pytest -v tests/smoke/test_smoke_mcp.py
+playground-policies: ## Rule 40d playground: policy WARN / DEGRADE / BLOCK / forced-DEGRADE demos via real Anthropic.
+	$(PYTHON) playground/policy_demo_warn.py
+	$(PYTHON) playground/policy_demo_block.py
+	$(PYTHON) playground/policy_demo_degrade.py
+	$(PYTHON) playground/policy_demo_forced_degrade.py
 
-smoke-all: smoke-anthropic smoke-openai smoke-litellm smoke-langchain smoke-langgraph smoke-llamaindex smoke-crewai smoke-claude-code smoke-policies smoke-mcp ## Run every framework smoke test (bifrost is optional, run separately).
+playground-all: ## Run every playground script (skips on missing API keys / optional CLI / optional gateway URL).
+	$(PYTHON) playground/run_all.py
 
 # `test-e2e` is the Playwright browser-end-to-end suite;
 # `test-sensor-e2e` is the pytest respx suite. Two separate targets
@@ -103,7 +108,7 @@ test-e2e-ui: ## Run Playwright E2E tests in Playwright UI mode
 	cd dashboard && npx playwright test --ui
 
 seed-e2e: ## Seed the canonical E2E fixture dataset into the running dev stack (idempotent)
-	python3 tests/e2e-fixtures/seed.py
+	$(PYTHON) tests/e2e-fixtures/seed.py
 
 lint: ## Lint all components
 	$(MAKE) -C sensor lint

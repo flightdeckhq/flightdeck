@@ -8,7 +8,7 @@ between the sensor / worker / Query API and the dashboard.
 
 | File | Source | What it represents |
 |---|---|---|
-| `mcp-events.json` | Captured live by `_capture_mcp_fixtures.py` running flightdeck-sensor against `tests/smoke/fixtures/mcp_reference_server.py` | Top-level keys: `events` (one canonical payload per MCP event type + `session_start` with `context.mcp_servers`), `session_listing_item` (synthetic — what `GET /v1/sessions` returns per row, including `mcp_server_names[]`), `session_detail` (synthetic — what `GET /v1/sessions/:id` returns, including `context.mcp_servers[]`) |
+| `mcp-events.json` | Captured live by `_capture_mcp_fixtures.py` running flightdeck-sensor against `playground/_mcp_reference_server.py` | Top-level keys: `events` (one canonical payload per MCP event type + `session_start` with `context.mcp_servers`), `session_listing_item` (synthetic — what `GET /v1/sessions` returns per row, including `mcp_server_names[]`), `session_detail` (synthetic — what `GET /v1/sessions/:id` returns, including `context.mcp_servers[]`) |
 | `_capture_mcp_fixtures.py` | Generator script | Re-run when the sensor's MCP payload shape legitimately changes |
 
 ## Why fixtures, not live captures, in dashboard tests

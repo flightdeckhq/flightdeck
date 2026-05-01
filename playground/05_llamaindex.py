@@ -12,11 +12,9 @@ SDK's ``ClientSession``, which the sensor patches directly.
 from __future__ import annotations
 
 import asyncio
-import os
 import sys
 import time
 import uuid
-from pathlib import Path
 
 try:
     from llama_index.llms.anthropic import Anthropic as LlamaAnthropic
@@ -26,9 +24,13 @@ except ImportError:
     sys.exit(2)
 
 import flightdeck_sensor
-from _helpers import assert_event_landed, init_sensor, print_result
-
-_PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
+from _helpers import (
+    assert_event_landed,
+    fetch_events_for_session,
+    init_sensor,
+    mcp_server_params,
+    print_result,
+)
 
 
 def _run_chat() -> None:
@@ -61,21 +63,16 @@ def _run_mcp(session_id: str) -> None:
         print("SKIP MCP section: pip install mcp llama-index-tools-mcp")
         return
 
-    # PYTHONPATH so ``python -m tests.smoke.fixtures.mcp_reference_server``
-    # resolves when this script is run from ``playground/`` (run_all.py
-    # cwd). BasicMCPClient passes ``env`` through to the spawned process
-    # but does not expose a ``cwd`` parameter, so PYTHONPATH is the only
-    # lever — fortunately enough on its own for module-style spawns.
-    server_env = dict(os.environ)
-    server_env["PYTHONPATH"] = (
-        _PROJECT_ROOT + os.pathsep + server_env.get("PYTHONPATH", "")
-    )
+    # BasicMCPClient passes ``env`` to the spawned subprocess but does
+    # not expose ``cwd``. PYTHONPATH carries the same hook so the
+    # ``python -m playground._mcp_reference_server`` lookup resolves.
+    params = mcp_server_params("playground._mcp_reference_server")
 
     async def run() -> None:
         client = BasicMCPClient(
-            command_or_url=sys.executable,
-            args=["-m", "tests.smoke.fixtures.mcp_reference_server"],
-            env=server_env,
+            command_or_url=params.command,
+            args=list(params.args),
+            env=dict(params.env or {}),
         )
         spec = McpToolSpec(client=client)
         tools = await spec.to_tool_list_async()
@@ -92,7 +89,24 @@ def _run_mcp(session_id: str) -> None:
         )
 
     asyncio.run(run())
-    assert_event_landed(session_id, "mcp_tool_call", timeout=8)
+
+    events = fetch_events_for_session(
+        session_id,
+        expect_event_types=["mcp_tool_call"],
+        timeout_s=20.0,
+    )
+    tcs = [e for e in events if e["event_type"] == "mcp_tool_call"]
+    if not tcs:
+        raise AssertionError(f"no mcp_tool_call observed; events={events!r}")
+    payload = tcs[-1].get("payload") or {}
+    server_ok = payload.get("server_name") == "flightdeck-mcp-reference"
+    args_ok = (payload.get("arguments") or {}).get("text") == "hello from llamaindex playground"
+    tool_ok = tcs[-1].get("tool_name") == "echo"
+    print_result("mcp payload.server_name", server_ok, 0)
+    print_result("mcp payload.arguments round-trip", args_ok, 0)
+    print_result("mcp tool_name=echo", tool_ok, 0)
+    if not (server_ok and args_ok and tool_ok):
+        raise AssertionError(f"mcp_tool_call payload mismatch: {tcs[-1]!r}")
 
 
 def main() -> None:

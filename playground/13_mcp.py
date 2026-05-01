@@ -1,5 +1,6 @@
 """Direct mcp SDK -- list/call_tool, list/read_resource, list/get_prompt,
-plus a multi-server attribution scenario.
+plus a multi-server attribution scenario and full payload-shape
+verification for every event the sensor emits.
 
 A developer using the raw ``mcp`` package copies this file, points
 ``StdioServerParameters`` at their own MCP server, and gets Flightdeck
@@ -20,58 +21,40 @@ server, two from the secondary server).
 from __future__ import annotations
 
 import asyncio
-import json
-import os
 import sys
 import time
-import urllib.request
 import uuid
-from pathlib import Path
 
 try:
-    from mcp import StdioServerParameters
+    import mcp.client.stdio as _mcp_stdio
     from mcp.client.session import ClientSession
-    from mcp.client.stdio import stdio_client
 except ImportError:
     print("SKIP: pip install mcp to run this example")
     sys.exit(2)
+# Use ``_mcp_stdio.stdio_client`` (attribute access at call time) rather
+# than ``from mcp.client.stdio import stdio_client`` so we always pick
+# up the post-patch wrapped factory. ``flightdeck_sensor.patch()``
+# replaces ``mcp.client.stdio.stdio_client`` to mark streams with the
+# transport label; a local ``from`` import would capture the unpatched
+# factory before patch runs and ``payload.transport`` would land null.
 
 import flightdeck_sensor
-from _helpers import assert_event_landed, init_sensor, print_result
+from _helpers import (
+    fetch_events_for_session,
+    init_sensor,
+    mcp_server_params,
+    print_result,
+)
 
 
-REFERENCE_SERVER_MODULE = "tests.smoke.fixtures.mcp_reference_server"
-SECONDARY_SERVER_MODULE = "playground._secondary_mcp_server"
-
-# Project root resolution. The reference server lives at
-# ``tests.smoke.fixtures.mcp_reference_server`` -- that import path
-# only resolves when the project root is on ``PYTHONPATH``. Running
-# the playground from ``playground/`` (the canonical place) loses
-# that path, so the spawned server's ``python -m`` lookup fails with
-# "Connection closed". Pinning ``cwd`` + ``PYTHONPATH`` on the
-# StdioServerParameters fixes it without forcing the operator to run
-# the playground from the project root. Same constraint applies to
-# the secondary server module.
-_PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
-
-
-def _params_for(module: str) -> StdioServerParameters:
-    server_env = dict(os.environ)
-    server_env["PYTHONPATH"] = (
-        _PROJECT_ROOT + os.pathsep + server_env.get("PYTHONPATH", "")
-    )
-    return StdioServerParameters(
-        command=sys.executable,
-        args=["-m", module],
-        cwd=_PROJECT_ROOT,
-        env=server_env,
-    )
+REFERENCE_MODULE = "playground._mcp_reference_server"
+SECONDARY_MODULE = "playground._secondary_mcp_server"
 
 
 async def _exercise_reference_server() -> None:
     """Open a session against the reference server and exercise every
     op the sensor patches so the six MCP event types all land."""
-    async with stdio_client(_params_for(REFERENCE_SERVER_MODULE)) as (read, write):
+    async with _mcp_stdio.stdio_client(mcp_server_params(REFERENCE_MODULE)) as (read, write):
         async with ClientSession(read, write) as session:
             t0 = time.monotonic()
             await session.initialize()
@@ -131,7 +114,7 @@ async def _exercise_reference_server() -> None:
 async def _exercise_secondary_server() -> None:
     """Sequential, not gathered: deterministic event ordering for live
     inspection in the dashboard."""
-    async with stdio_client(_params_for(SECONDARY_SERVER_MODULE)) as (read, write):
+    async with _mcp_stdio.stdio_client(mcp_server_params(SECONDARY_MODULE)) as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
             t0 = time.monotonic()
@@ -143,31 +126,115 @@ async def _exercise_secondary_server() -> None:
             )
 
 
-def _assert_multi_server_attribution(session_id: str) -> None:
-    """Poll /v1/sessions/{id} until every mcp_tool_call event carries a
-    server_name and the union of those names covers both fixture
-    servers."""
-    api = os.environ.get("FLIGHTDECK_API_URL", "http://localhost:4000/api")
-    tok = os.environ.get("FLIGHTDECK_TOKEN", "tok_dev")
-    req = urllib.request.Request(
-        f"{api}/v1/sessions/{session_id}",
-        headers={"Authorization": f"Bearer {tok}"},
+def _assert_six_event_types_with_payload_contract(session_id: str) -> None:
+    """All six MCP event types land + each carries the expected
+    structured fields the dashboard contract depends on."""
+    expected = [
+        "mcp_tool_list",
+        "mcp_tool_call",
+        "mcp_resource_list",
+        "mcp_resource_read",
+        "mcp_prompt_list",
+        "mcp_prompt_get",
+    ]
+    events = fetch_events_for_session(
+        session_id,
+        expect_event_types=["session_start", *expected],
+        timeout_s=20.0,
     )
+    by_type: dict[str, list[dict]] = {}
+    for e in events:
+        by_type.setdefault(e["event_type"], []).append(e)
+
+    for et in expected:
+        present = bool(by_type.get(et))
+        print_result(f"event landed: {et}", present, 0)
+        if not present:
+            raise AssertionError(
+                f"missing {et} event; observed types={list(by_type)!r}",
+            )
+
+    # mcp_tool_call: tool_name + server_name + transport=stdio +
+    # arguments round-trip. Pick the reference-server's ``echo`` call
+    # specifically -- the secondary server's ``reverse`` call lands
+    # in the same bucket and would be selected by ``[-1]``.
+    echo_calls = [
+        e for e in by_type["mcp_tool_call"]
+        if e.get("tool_name") == "echo"
+    ]
+    if not echo_calls:
+        raise AssertionError(
+            f"no mcp_tool_call carrying tool_name='echo'; calls: "
+            f"{[e.get('tool_name') for e in by_type['mcp_tool_call']]!r}",
+        )
+    tc = echo_calls[-1]
+    payload = tc.get("payload") or {}
+    server_ok = payload.get("server_name") == "flightdeck-mcp-reference"
+    transport_ok = payload.get("transport") == "stdio"
+    args_ok = (payload.get("arguments") or {}).get("text") == "hello mcp"
+    print_result("mcp_tool_call.tool_name=echo", True, 0)
+    print_result("mcp_tool_call.server_name", server_ok, 0)
+    print_result("mcp_tool_call.transport=stdio", transport_ok, 0)
+    print_result("mcp_tool_call.arguments round-trip", args_ok, 0)
+    if not (server_ok and transport_ok and args_ok):
+        raise AssertionError(f"mcp_tool_call payload mismatch: {tc!r}")
+
+    # mcp_resource_read: resource_uri + content_bytes > 0.
+    rr = by_type["mcp_resource_read"][-1]
+    rr_payload = rr.get("payload") or {}
+    uri_ok = rr_payload.get("resource_uri") == "mem://demo"
+    bytes_ok = (rr_payload.get("content_bytes") or 0) > 0
+    print_result("mcp_resource_read.resource_uri", uri_ok, 0)
+    print_result("mcp_resource_read.content_bytes>0", bytes_ok, 0,
+                 f"content_bytes={rr_payload.get('content_bytes')}")
+    if not (uri_ok and bytes_ok):
+        raise AssertionError(f"mcp_resource_read payload mismatch: {rr!r}")
+
+    # mcp_prompt_get: prompt_name + arguments round-trip.
+    pg = by_type["mcp_prompt_get"][-1]
+    pg_payload = pg.get("payload") or {}
+    name_ok = pg_payload.get("prompt_name") == "greet"
+    pg_args_ok = (pg_payload.get("arguments") or {}).get("name") == "playground"
+    print_result("mcp_prompt_get.prompt_name=greet", name_ok, 0)
+    print_result("mcp_prompt_get.arguments round-trip", pg_args_ok, 0)
+    if not (name_ok and pg_args_ok):
+        raise AssertionError(f"mcp_prompt_get payload mismatch: {pg!r}")
+
+    # Per-event server_name + transport consistency on EVERY MCP event.
+    # Reference-server events all carry server_name=flightdeck-mcp-reference;
+    # secondary-server events carry flightdeck-mcp-secondary. Transport
+    # is stdio for every event regardless of server.
+    bad = [
+        e for e in events
+        if e.get("event_type", "").startswith("mcp_")
+        and (e.get("payload") or {}).get("transport") != "stdio"
+    ]
+    print_result(
+        "every mcp_* event carries transport=stdio",
+        not bad, 0,
+        f"{len(bad)} events with wrong transport" if bad else "",
+    )
+    if bad:
+        raise AssertionError(
+            f"transport attribution missing on: "
+            f"{[(e.get('event_type'), (e.get('payload') or {}).get('transport')) for e in bad]!r}",
+        )
+
+
+def _assert_multi_server_attribution(session_id: str) -> None:
+    """Both server names appear in the mcp_tool_call payloads. A single
+    event must NOT inherit the wrong server's attribution."""
     deadline = time.monotonic() + 10.0
     seen: set[str] = set()
     while time.monotonic() < deadline:
-        try:
-            with urllib.request.urlopen(req, timeout=2) as r:
-                events = json.loads(r.read()).get("events", [])
-            seen = {
-                (e.get("payload") or {}).get("server_name") or ""
-                for e in events
-                if e.get("event_type") == "mcp_tool_call"
-            }
-            if {"flightdeck-mcp-reference", "flightdeck-mcp-secondary"} <= seen:
-                break
-        except Exception:  # noqa: BLE001 -- transient ingest lag
-            pass
+        events = fetch_events_for_session(session_id, timeout_s=2.0)
+        seen = {
+            (e.get("payload") or {}).get("server_name") or ""
+            for e in events
+            if e.get("event_type") == "mcp_tool_call"
+        }
+        if {"flightdeck-mcp-reference", "flightdeck-mcp-secondary"} <= seen:
+            break
         time.sleep(0.3)
 
     expected = {"flightdeck-mcp-reference", "flightdeck-mcp-secondary"}
@@ -192,21 +259,12 @@ def main() -> None:
     asyncio.run(_exercise_reference_server())
     asyncio.run(_exercise_secondary_server())
 
-    # Wait for each event_type the demo produced to surface in the
-    # query API. Six independent assertions because the sensor flushes
-    # the MCP event queue asynchronously and we want a clear failure
-    # message if any one type fails to land.
-    for et in (
-        "mcp_tool_list",
-        "mcp_tool_call",
-        "mcp_resource_list",
-        "mcp_resource_read",
-        "mcp_prompt_list",
-        "mcp_prompt_get",
-    ):
-        assert_event_landed(session_id, et, timeout=8)
-
+    _assert_six_event_types_with_payload_contract(session_id)
     _assert_multi_server_attribution(session_id)
+
+    # Silence unused-import vigilance on uuid (kept for parity with
+    # the rest of the playground scripts).
+    _ = uuid.uuid4
 
     flightdeck_sensor.teardown()
 

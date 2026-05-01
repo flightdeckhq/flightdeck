@@ -1,4 +1,4 @@
-"""CrewAI native providers + MCP tools via ``crewai-tools[mcp]``.
+"""CrewAI native providers + MCP tools via ``mcpadapt``.
 
 CrewAI 1.14.1's LLM factory routes `anthropic/` and `openai/` model
 prefixes to native provider classes that construct
@@ -7,19 +7,18 @@ prefixes to native provider classes that construct
 land on the same interception path as direct SDK usage. Both chat
 blocks below prove this end-to-end.
 
-The MCP section uses ``crewai-tools[mcp]`` -- the user-facing API
-surface for CrewAI MCP integration. ``crewai-tools[mcp]`` installs
-``mcpadapt`` under the hood, which wraps an MCP ``ClientSession``;
-the sensor patches ``ClientSession`` directly, so the tool call
-produces an ``mcp_tool_call`` event regardless of the wrapper.
+The MCP section uses ``mcpadapt`` directly. ``mcpadapt`` is the
+production path for CrewAI tools and is what ``crewai-tools[mcp]``
+installs under the hood; importing ``mcpadapt`` directly here gives
+us a version canary that fires when a future ``crewai-tools`` upgrade
+silently bumps to an incompatible mcpadapt release. D5 / D120 pin
+mcpadapt in the sensor's optional ``[dev]`` extras for the same reason.
 """
 from __future__ import annotations
 
-import os
 import sys
 import time
 import uuid
-from pathlib import Path
 
 try:
     from crewai import LLM
@@ -28,9 +27,13 @@ except ImportError:
     sys.exit(2)
 
 import flightdeck_sensor
-from _helpers import assert_event_landed, init_sensor, print_result
-
-_PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
+from _helpers import (
+    assert_event_landed,
+    fetch_events_for_session,
+    init_sensor,
+    mcp_server_params,
+    print_result,
+)
 
 
 def _run_chat(label: str, provider: str, model: str, contains: str) -> None:
@@ -53,13 +56,22 @@ def _run_chat(label: str, provider: str, model: str, contains: str) -> None:
 
 
 def _run_mcp() -> None:
-    """Demonstrate CrewAI MCP via ``crewai-tools[mcp]``. Skipped cleanly
-    when the optional extra isn't installed."""
+    """Demonstrate CrewAI MCP via ``mcpadapt`` directly. Skipped cleanly
+    when the optional dep isn't installed.
+
+    Using ``mcpadapt.core.MCPAdapt + mcpadapt.crewai_adapter.CrewAIAdapter``
+    rather than the user-facing ``crewai_tools.MCPServerAdapter`` makes
+    this script a *version-drift canary*: a future ``crewai-tools``
+    upgrade that silently bumps to an incompatible ``mcpadapt`` release
+    breaks the demo loudly here, even when the user-facing API still
+    appears to work.
+    """
     try:
-        from crewai_tools import MCPServerAdapter  # type: ignore[import-untyped]
-        from mcp import StdioServerParameters  # type: ignore[import-untyped]
+        from mcpadapt.core import MCPAdapt  # type: ignore[import-untyped]
+        from mcpadapt.crewai_adapter import CrewAIAdapter  # type: ignore[import-untyped]
+        import mcp  # noqa: F401
     except ImportError:
-        print("SKIP MCP section: pip install 'crewai-tools[mcp]' mcp")
+        print("SKIP MCP section: pip install mcp mcpadapt")
         return
 
     session_id = str(uuid.uuid4())
@@ -67,24 +79,12 @@ def _run_mcp() -> None:
     flightdeck_sensor.patch(quiet=True)
     print(f"[playground:06_crewai] mcp session_id={session_id}")
 
-    # cwd + PYTHONPATH so ``python -m tests.smoke.fixtures.mcp_reference_server``
-    # resolves when this script is run from ``playground/`` (run_all.py cwd).
-    # Same wiring as 13_mcp.py.
-    server_env = dict(os.environ)
-    server_env["PYTHONPATH"] = (
-        _PROJECT_ROOT + os.pathsep + server_env.get("PYTHONPATH", "")
-    )
-    params = StdioServerParameters(
-        command=sys.executable,
-        args=["-m", "tests.smoke.fixtures.mcp_reference_server"],
-        cwd=_PROJECT_ROOT,
-        env=server_env,
-    )
-    with MCPServerAdapter(params) as tools:
+    params = mcp_server_params("playground._mcp_reference_server")
+    with MCPAdapt(params, CrewAIAdapter()) as tools:
         echo = next((t for t in tools if t.name == "echo"), None)
         if echo is None:
             raise AssertionError(
-                f"crewai-tools[mcp] did not expose 'echo'; got "
+                f"mcpadapt CrewAIAdapter did not expose 'echo'; got "
                 f"{[t.name for t in tools]!r}",
             )
         t0 = time.monotonic()
@@ -93,7 +93,23 @@ def _run_mcp() -> None:
             "echo.run", True, int((time.monotonic() - t0) * 1000),
         )
 
-    assert_event_landed(session_id, "mcp_tool_call", timeout=8)
+    events = fetch_events_for_session(
+        session_id,
+        expect_event_types=["mcp_tool_call"],
+        timeout_s=20.0,
+    )
+    tcs = [e for e in events if e["event_type"] == "mcp_tool_call"]
+    if not tcs:
+        raise AssertionError(f"no mcp_tool_call observed; events={events!r}")
+    payload = tcs[-1].get("payload") or {}
+    server_ok = payload.get("server_name") == "flightdeck-mcp-reference"
+    args_ok = (payload.get("arguments") or {}).get("text") == "hello from crewai playground"
+    tool_ok = tcs[-1].get("tool_name") == "echo"
+    print_result("mcp payload.server_name", server_ok, 0)
+    print_result("mcp payload.arguments round-trip", args_ok, 0)
+    print_result("mcp tool_name=echo", tool_ok, 0)
+    if not (server_ok and args_ok and tool_ok):
+        raise AssertionError(f"mcp_tool_call payload mismatch: {tcs[-1]!r}")
     flightdeck_sensor.teardown()
 
 

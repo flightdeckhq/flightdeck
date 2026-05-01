@@ -11,11 +11,9 @@ patched ``ClientSession`` regardless of the surrounding graph runtime.
 from __future__ import annotations
 
 import asyncio
-import os
 import sys
 import time
 import uuid
-from pathlib import Path
 
 try:
     from langgraph.graph import END, START, StateGraph
@@ -26,9 +24,13 @@ except ImportError:
     sys.exit(2)
 
 import flightdeck_sensor
-from _helpers import assert_event_landed, init_sensor, print_result
-
-_PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
+from _helpers import (
+    assert_event_landed,
+    fetch_events_for_session,
+    init_sensor,
+    mcp_server_params,
+    print_result,
+)
 
 
 class State(TypedDict):
@@ -67,25 +69,17 @@ def _run_mcp(session_id: str) -> None:
         print("SKIP MCP section: pip install mcp langchain-mcp-adapters")
         return
 
-    # ``tests.smoke.fixtures.mcp_reference_server`` resolves only with the
-    # project root on PYTHONPATH; running from ``playground/`` (the canonical
-    # invocation, see run_all.py) loses it, so the spawned server's
-    # ``python -m`` lookup fails with "Connection closed". Pin cwd + PYTHONPATH
-    # the same way 13_mcp.py does.
-    server_env = dict(os.environ)
-    server_env["PYTHONPATH"] = (
-        _PROJECT_ROOT + os.pathsep + server_env.get("PYTHONPATH", "")
-    )
+    params = mcp_server_params("playground._mcp_reference_server")
 
     async def run() -> None:
         client = MultiServerMCPClient(
             {
                 "flightdeck-ref": {
-                    "command": sys.executable,
-                    "args": ["-m", "tests.smoke.fixtures.mcp_reference_server"],
+                    "command": params.command,
+                    "args": list(params.args),
                     "transport": "stdio",
-                    "cwd": _PROJECT_ROOT,
-                    "env": server_env,
+                    "cwd": params.cwd,
+                    "env": dict(params.env or {}),
                 },
             },
         )
@@ -109,7 +103,24 @@ def _run_mcp(session_id: str) -> None:
         )
 
     asyncio.run(run())
-    assert_event_landed(session_id, "mcp_tool_call", timeout=8)
+
+    events = fetch_events_for_session(
+        session_id,
+        expect_event_types=["mcp_tool_call"],
+        timeout_s=20.0,
+    )
+    tcs = [e for e in events if e["event_type"] == "mcp_tool_call"]
+    if not tcs:
+        raise AssertionError(f"no mcp_tool_call observed; events={events!r}")
+    payload = tcs[-1].get("payload") or {}
+    server_ok = payload.get("server_name") == "flightdeck-mcp-reference"
+    args_ok = (payload.get("arguments") or {}).get("text") == "hello from langgraph playground"
+    tool_ok = tcs[-1].get("tool_name") == "echo"
+    print_result("mcp payload.server_name", server_ok, 0)
+    print_result("mcp payload.arguments round-trip", args_ok, 0)
+    print_result("mcp tool_name=echo", tool_ok, 0)
+    if not (server_ok and args_ok and tool_ok):
+        raise AssertionError(f"mcp_tool_call payload mismatch: {tcs[-1]!r}")
 
 
 def main() -> None:

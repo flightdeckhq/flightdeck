@@ -71,16 +71,35 @@ def main() -> None:
         degrades = [e for e in events if e["event_type"] == "policy_degrade"]
         post_calls = [e for e in events if e["event_type"] == "post_call"]
         haiku_calls = sum(1 for pc in post_calls if pc.get("model") == haiku)
+        # Decision 1 lock: exactly one POLICY_DEGRADE event per arm,
+        # regardless of how many subsequent post_calls fire on the
+        # armed session. The worker dedups directive writes; rare
+        # transient races can produce 2.
+        once_only = len(degrades) == 1
         print_result(
             "exactly one policy_degrade event across many calls",
-            len(degrades) == 1,
+            once_only,
             0,
             f"got {len(degrades)} policy_degrade events from {N} calls",
         )
-        print(
-            f"  post_calls={len(post_calls)} haiku_calls={haiku_calls} "
+        if not once_only:
+            raise AssertionError(
+                f"Decision 1 lock violated: expected 1 policy_degrade, got "
+                f"{len(degrades)}; events={degrades!r}",
+            )
+        # Per-call swap should be visible on post_call.model -- the
+        # actual proof that the directive landed and was applied.
+        swap_landed = haiku_calls >= 1
+        print_result(
+            "post_call.model swapped to haiku at least once", swap_landed, 0,
+            f"post_calls={len(post_calls)} haiku_calls={haiku_calls} "
             f"(per-call swap visible via post_call.model only)",
         )
+        if not swap_landed:
+            raise AssertionError(
+                f"degrade swap did not land in any post_call.model; "
+                f"models seen: {[pc.get('model') for pc in post_calls]!r}",
+            )
     finally:
         try:
             _api("DELETE", f"/v1/policies/{policy['id']}")

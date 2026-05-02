@@ -29,7 +29,44 @@ export const SENSOR_AGENT = {
   flavor: "e2e-research-agent",
   model: "gpt-4o-mini",
   framework: "langchain",
-  sessionRoles: ["fresh-active", "recent-closed", "aged-closed", "stale"],
+  // Phase 5 — ``mcp-active`` carries one event of each of the six
+  // MCP types plus ``context.mcp_servers[]`` populated with two
+  // server fingerprints. T25 (Phase 5 dashboard E2E) deep-links to
+  // a session of this role and asserts on badge / icon / drawer
+  // panel / facet rendering. Only the sensor agent gets it because
+  // the Python sensor emits all six event types per Phase 5 D1;
+  // the Claude Code plugin path will be tested separately.
+  sessionRoles: [
+    "fresh-active",
+    "recent-closed",
+    "aged-closed",
+    "stale",
+    "mcp-active",
+  ],
+} as const;
+
+/** Phase 5 — MCP fixture metadata. Mirrors the ``mcp-active`` role
+ *  on the sensor agent in canonical.json. T25 reads these names to
+ *  assert the MCP SERVER facet, the drawer's MCP SERVERS panel, and
+ *  the session listing's ``mcp_server_names[]`` aggregation surface
+ *  the right names. */
+export const MCP_FIXTURE = {
+  role: "mcp-active",
+  servers: [
+    {
+      name: "fixture-stdio-server",
+      transport: "stdio",
+      version: "1.0.0",
+    },
+    {
+      name: "fixture-http-server",
+      transport: "http",
+      version: "0.9.2",
+    },
+  ],
+  toolCallToolName: "echo",
+  resourceUri: "mem://demo",
+  promptName: "greet",
 } as const;
 
 // Long-named fixture drives T6 (truncation + title tooltip). At the

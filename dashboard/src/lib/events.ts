@@ -53,6 +53,15 @@ export function getDirectiveBadge(
 export interface BadgeConfig {
   cssVar: string;
   label: string;
+  /**
+   * Phase 5 MCP badge variants. ``filled`` defaults to ``true`` (solid
+   * fill, the existing single-style behaviour for every pre-Phase-5
+   * event type). The list-style MCP badges set ``filled: false`` to
+   * render as outline-only — operators distinguish "the agent
+   * discovered N MCP tools" (outline) from "the agent invoked an MCP
+   * tool" (solid) at a glance.
+   */
+  filled?: boolean;
 }
 
 export const eventBadgeConfig: Record<string, BadgeConfig> = {
@@ -72,6 +81,57 @@ export const eventBadgeConfig: Record<string, BadgeConfig> = {
   // distinct via its badge family).
   embeddings: { cssVar: "var(--event-embeddings)", label: "EMBED" },
   llm_error: { cssVar: "var(--event-error)", label: "ERROR" },
+  // Phase 5 — MCP observability. Verb-based labels distinguish
+  // "agent invoked" vs "agent discovered" at a glance — the
+  // singular/plural-only pairs we considered (MCP TOOL / MCP TOOLS)
+  // put a single 's' between two fundamentally different operations
+  // (B-4). Verbs (CALL / READ / FETCHED / DISCOVERED) carry the
+  // operation distinction.
+  //
+  // The "MCP " prefix is RESTORED on every label (D123, supersedes
+  // B-4's no-prefix decision in 89333a8). Rationale: the Fleet live
+  // feed table renders badges in a tabular row WITHOUT hexagons
+  // (hexagon clip-paths are swimlane-only), right next to the
+  // non-MCP TOOL badge. In that context "TOOL CALL" vs "TOOL" is
+  // verb-tense disambiguation, not category disambiguation, and
+  // operators new to Flightdeck shouldn't have to learn the verb
+  // convention to read category off the label. The prefix puts
+  // category back in the label where shape would carry it in the
+  // swimlane. The EventType enum strings (mcp_tool_call etc.) are
+  // unchanged; this is display text only.
+  //
+  // Three colour families × two variants (filled = invoked, outline
+  // = discovered):
+  //   tool family       cyan    Wrench / ListChecks
+  //   resource family   green   FileText / Folder
+  //   prompt family     purple  MessageSquare / List
+  mcp_tool_call: {
+    cssVar: "var(--event-mcp-tool)",
+    label: "MCP TOOL CALL",
+  },
+  mcp_tool_list: {
+    cssVar: "var(--event-mcp-tool)",
+    label: "MCP TOOLS DISCOVERED",
+    filled: false,
+  },
+  mcp_resource_read: {
+    cssVar: "var(--event-mcp-resource)",
+    label: "MCP RESOURCE READ",
+  },
+  mcp_resource_list: {
+    cssVar: "var(--event-mcp-resource)",
+    label: "MCP RESOURCES DISCOVERED",
+    filled: false,
+  },
+  mcp_prompt_get: {
+    cssVar: "var(--event-mcp-prompt)",
+    label: "MCP PROMPT FETCHED",
+  },
+  mcp_prompt_list: {
+    cssVar: "var(--event-mcp-prompt)",
+    label: "MCP PROMPTS DISCOVERED",
+    filled: false,
+  },
 };
 
 export const defaultBadge: BadgeConfig = { cssVar: "var(--event-lifecycle)", label: "EVENT" };
@@ -226,6 +286,56 @@ export function getEventDetail(event: AgentEvent): string {
       }
       return "llm error";
     }
+    case "mcp_tool_call": {
+      // Phase 5: ``<server> · <tool> · <duration>``. The server is
+      // useful enough at scan-time (multi-server agents are common)
+      // that it earns the leading position; the tool name comes from
+      // events.tool_name (top-level) for filter compatibility. The
+      // arguments / result detail lives in <MCPEventDetails/>.
+      const parts: string[] = [];
+      if (event.payload?.server_name) parts.push(event.payload.server_name);
+      if (event.tool_name) parts.push(event.tool_name);
+      const dur = event.payload?.duration_ms;
+      if (typeof dur === "number") parts.push(`${dur}ms`);
+      if (parts.length === 0) return "mcp tool call";
+      return parts.join(" · ");
+    }
+    case "mcp_resource_read": {
+      const parts: string[] = [];
+      if (event.payload?.server_name) parts.push(event.payload.server_name);
+      if (event.payload?.resource_uri) parts.push(event.payload.resource_uri);
+      const bytes = event.payload?.content_bytes;
+      if (typeof bytes === "number") {
+        parts.push(`${bytes.toLocaleString()} bytes`);
+      }
+      if (parts.length === 0) return "mcp resource read";
+      return parts.join(" · ");
+    }
+    case "mcp_prompt_get": {
+      const parts: string[] = [];
+      if (event.payload?.server_name) parts.push(event.payload.server_name);
+      if (event.payload?.prompt_name) parts.push(event.payload.prompt_name);
+      const dur = event.payload?.duration_ms;
+      if (typeof dur === "number") parts.push(`${dur}ms`);
+      if (parts.length === 0) return "mcp prompt get";
+      return parts.join(" · ");
+    }
+    case "mcp_tool_list":
+    case "mcp_resource_list":
+    case "mcp_prompt_list": {
+      const parts: string[] = [];
+      if (event.payload?.server_name) parts.push(event.payload.server_name);
+      const count = event.payload?.count;
+      if (typeof count === "number") parts.push(`${count} discovered`);
+      if (parts.length === 0) {
+        return event.event_type === "mcp_tool_list"
+          ? "mcp tool list"
+          : event.event_type === "mcp_resource_list"
+            ? "mcp resource list"
+            : "mcp prompt list";
+      }
+      return parts.join(" · ");
+    }
     default:
       return event.event_type;
   }
@@ -375,6 +485,50 @@ export function getSummaryRows(event: AgentEvent): [string, string][] {
       }
       return rows;
     }
+    // Phase 5 MCP rows. The MCPEventDetails component renders the
+    // bulk of the structured detail (arguments / result / rendered /
+    // resource content); these summary rows are the at-a-glance
+    // metadata the swimlane drawer surfaces above the accordion.
+    case "mcp_tool_call":
+    case "mcp_tool_list":
+    case "mcp_resource_read":
+    case "mcp_resource_list":
+    case "mcp_prompt_get":
+    case "mcp_prompt_list": {
+      const p = event.payload;
+      const rows: [string, string][] = [];
+      if (p?.server_name) rows.push(["Server", p.server_name]);
+      if (p?.transport) rows.push(["Transport", p.transport]);
+      if (event.event_type === "mcp_tool_call" && event.tool_name) {
+        rows.push(["Tool", event.tool_name]);
+      }
+      if (event.event_type === "mcp_resource_read" && p?.resource_uri) {
+        rows.push(["URI", p.resource_uri]);
+      }
+      if (event.event_type === "mcp_prompt_get" && p?.prompt_name) {
+        rows.push(["Prompt", p.prompt_name]);
+      }
+      if (typeof p?.count === "number") {
+        rows.push(["Count", p.count.toLocaleString()]);
+      }
+      if (event.event_type === "mcp_resource_read" && typeof p?.content_bytes === "number") {
+        rows.push(["Size", `${p.content_bytes.toLocaleString()} bytes`]);
+      }
+      if (event.event_type === "mcp_resource_read" && p?.mime_type) {
+        rows.push(["MIME", p.mime_type]);
+      }
+      if (typeof p?.duration_ms === "number") {
+        rows.push(["Duration", `${p.duration_ms.toLocaleString()}ms`]);
+      }
+      // Failed MCP op: surface the taxonomy classification in the
+      // summary row so a glance at the row tells the operator what
+      // failed without expanding.
+      const err = p?.error;
+      if (err && typeof err !== "string") {
+        rows.push(["Error", err.error_type]);
+      }
+      return rows;
+    }
     default:
       return [["Type", event.event_type]];
   }
@@ -390,6 +544,20 @@ export const EVENT_TYPE_GROUPS: Record<string, string[]> = {
   "Policy": ["policy_warn", "policy_block", "policy_degrade"],
   "Directives": ["directive", "directive_result"],
   "Session": ["session_start", "session_end"],
+  // Phase 5 — MCP filter group spans all six MCP event types. The
+  // filter pill colour is the tool family's cyan (rather than the
+  // resource green or prompt purple) because tool calls are the
+  // dominant traffic shape; the per-event-type badge family is what
+  // distinguishes them once visible. See README "MCP Observability
+  // by Source" for the per-source coverage matrix.
+  "MCP": [
+    "mcp_tool_list",
+    "mcp_tool_call",
+    "mcp_resource_list",
+    "mcp_resource_read",
+    "mcp_prompt_list",
+    "mcp_prompt_get",
+  ],
 };
 
 export const EVENT_FILTER_PILLS = [
@@ -397,6 +565,7 @@ export const EVENT_FILTER_PILLS = [
   { label: "LLM Calls", color: "var(--event-llm)" },
   { label: "Tools", color: "var(--event-tool)" },
   { label: "Embeddings", color: "var(--event-embeddings)" },
+  { label: "MCP", color: "var(--event-mcp-tool)" },
   { label: "Errors", color: "var(--event-error)" },
   { label: "Policy", color: "var(--event-warn)" },
   { label: "Directives", color: "var(--event-directive)" },
@@ -407,6 +576,41 @@ export function isEventVisible(eventType: string, activeFilter: string | null | 
   if (!activeFilter) return true;
   const group = EVENT_TYPE_GROUPS[activeFilter];
   return group ? group.includes(eventType) : true;
+}
+
+/**
+ * Phase 5 — the three MCP "list/discovery" event types. These represent
+ * the agent ASKING the server "what's available" rather than actually
+ * USING something (call_tool / read_resource / get_prompt). They tend
+ * to fire in bursts at session start and again whenever the agent
+ * needs to refresh its capability picture, which is operationally
+ * useful for audit but visually noisy in the Fleet live feed when
+ * an MCP-heavy session is active. D122 hides them by default in the
+ * Fleet surfaces with a toggle to restore.
+ *
+ * The list is closed — the six MCP event types are pinned by D119
+ * (lean wire payload) and only the three ``_list`` / ``_get?`` no,
+ * the three ``_list``-style event types qualify as discovery. The
+ * three ``_call`` / ``_read`` / ``_get`` event types represent
+ * actual MCP usage and are never discovery.
+ */
+export const MCP_DISCOVERY_EVENT_TYPES = [
+  "mcp_tool_list",
+  "mcp_resource_list",
+  "mcp_prompt_list",
+] as const;
+
+const MCP_DISCOVERY_EVENT_TYPE_SET = new Set<string>(MCP_DISCOVERY_EVENT_TYPES);
+
+/**
+ * True when ``eventType`` is one of the three MCP discovery event
+ * types (``mcp_tool_list`` / ``mcp_resource_list`` /
+ * ``mcp_prompt_list``). Returns false for the three MCP usage event
+ * types and for every non-MCP event_type. Safe to call with
+ * arbitrary strings — anything not in the closed set returns false.
+ */
+export function isDiscoveryEvent(eventType: string): boolean {
+  return MCP_DISCOVERY_EVENT_TYPE_SET.has(eventType);
 }
 
 /* ---- Session ID truncation ---- */

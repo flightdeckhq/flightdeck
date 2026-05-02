@@ -1028,3 +1028,124 @@ describe("SessionDrawer pagination (D113)", () => {
     eventsCache.delete("s1");
   });
 });
+
+
+// -----------------------------------------------------------------------
+// Phase 5 — MCP failure surfacing on event-feed rows
+//
+// Pre-fix the drawer's event feed rendered every MCP row in the
+// family colour (cyan / green / purple) regardless of success vs.
+// failure. An operator scanning the list could not tell a successful
+// mcp_tool_call from a failed one without expanding the row to read
+// MCPEventDetails. The MCPErrorIndicator component restores parity
+// with the Investigate session-row dot for llm_error: a small
+// AlertCircle inline immediately after the badge whenever
+// payload.error is populated.
+// -----------------------------------------------------------------------
+
+describe("SessionDrawer MCP error surfacing (Phase 5)", () => {
+  beforeEach(() => {
+    mockSessionOverride = {};
+    mockEventsOverride = null;
+    mockCustomDirectives = [];
+    mockAttachments = [];
+    vi.clearAllMocks();
+  });
+
+  it("renders an inline error indicator on a failed mcp_tool_call row", () => {
+    mockEventsOverride = [
+      ...baseEvents,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ({
+        id: "e-mcp-err",
+        session_id: "s1",
+        flavor: "test",
+        event_type: "mcp_tool_call",
+        model: null,
+        tokens_input: null,
+        tokens_output: null,
+        tokens_total: null,
+        latency_ms: null,
+        tool_name: "echo",
+        has_content: false,
+        occurred_at: "2026-04-07T10:05:00Z",
+        payload: {
+          server_name: "demo",
+          transport: "stdio",
+          error: {
+            error_type: "connection_closed",
+            error_class: "McpError",
+            message: "stream closed before response",
+          },
+        },
+      } as any),
+    ];
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    const indicator = screen.getByTestId("mcp-error-indicator-e-mcp-err");
+    expect(indicator).toBeInTheDocument();
+    expect(indicator.getAttribute("aria-label")).toContain("MCP call failed");
+    expect(indicator.getAttribute("aria-label")).toContain(
+      "stream closed before response",
+    );
+  });
+
+  it("omits the indicator on a successful mcp_tool_call row", () => {
+    mockEventsOverride = [
+      ...baseEvents,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ({
+        id: "e-mcp-ok",
+        session_id: "s1",
+        flavor: "test",
+        event_type: "mcp_tool_call",
+        model: null,
+        tokens_input: null,
+        tokens_output: null,
+        tokens_total: null,
+        latency_ms: null,
+        tool_name: "echo",
+        has_content: false,
+        occurred_at: "2026-04-07T10:05:00Z",
+        payload: {
+          server_name: "demo",
+          transport: "stdio",
+          arguments: { text: "hi" },
+        },
+      } as any),
+    ];
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    expect(
+      screen.queryByTestId("mcp-error-indicator-e-mcp-ok"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("omits the indicator on non-MCP events even when they carry an error field", () => {
+    mockEventsOverride = [
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ({
+        id: "e-llm-err",
+        session_id: "s1",
+        flavor: "test",
+        event_type: "llm_error",
+        model: "claude-sonnet-4-20250514",
+        tokens_input: null,
+        tokens_output: null,
+        tokens_total: null,
+        latency_ms: 120,
+        tool_name: null,
+        has_content: false,
+        occurred_at: "2026-04-07T10:05:00Z",
+        payload: {
+          error: { error_type: "rate_limit", error_class: "RateLimitError", message: "x" },
+        },
+      } as any),
+    ];
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    // The LLM_ERROR row's existing rendering is the entire-row red
+    // colour family — the new MCP indicator is intentionally MCP-
+    // only and must NOT decorate llm_error rows.
+    expect(
+      screen.queryByTestId("mcp-error-indicator-e-llm-err"),
+    ).not.toBeInTheDocument();
+  });
+});

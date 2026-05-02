@@ -35,3 +35,16 @@ Thumbs.db
 # Claude
 .claude/
 tests/smoke/.venv-py312/
+
+# Local scratch space + agent indices. Both are working scratchpads
+# (probe screenshots, throwaway diffs, ChunkHound's local code-search
+# index). They are per-developer artifacts and never belong in the
+# tree.
+.scratch/
+.chunkhound/
+
+# Playwright + go test outputs. Generated on every run; bulky and
+# noisy in git status.
+test-results/
+playwright-report/
+docker/test-results/

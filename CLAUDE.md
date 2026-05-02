@@ -350,12 +350,16 @@
      framework support OR changes framework-emission behaviour
      MUST include BOTH:
 
-     1. **Real-provider smoke tests** per affected framework --
+     1. **Real-provider playground demos** per affected framework --
         manual, NOT in CI (they cost money and need live API
-        credentials). Live under ``tests/smoke/`` with pytest-skip
-        when the relevant env var is missing so ``make smoke-all``
-        runs cleanly on any box. Driven via ``make smoke-<framework>``
-        targets. Results documented in the phase's audit doc before
+        credentials). Live under ``playground/`` and self-skip
+        (exit 2) when the relevant API key / framework / optional
+        gateway URL is missing so ``make playground-all`` runs
+        cleanly on any box. Driven via ``make playground-<script>``
+        targets. Each demo asserts payload shape inline using
+        ``print_result`` + ``raise AssertionError``; ``run_all.py``
+        exits 0 only when every script returned 0 (PASS) or 2
+        (SKIP). Results documented in the phase's audit doc before
         PR merge.
      2. **Integration tests** per framework × behaviour combo,
         mock-free (or lightly mocked at the network boundary),
@@ -363,9 +367,10 @@
         realistic event payload for each new framework + behaviour
         combination and verify end-to-end landing.
 
-     V-pass for such a phase MUST enumerate the smoke and
-     integration tests that will be added before implementation
-     starts. Skipping either is a phase-gate failure.
+     V-pass for such a phase MUST enumerate the playground demos
+     and integration tests that will be added before
+     implementation starts. Skipping either is a phase-gate
+     failure.
 
      Why: Phase 4 (agent communication coverage hardening) shipped
      embeddings, streaming semantics, structured error events, and
@@ -373,8 +378,8 @@
      have let a future SDK upgrade silently break the classifier
      (anthropic renames ``RateLimitError`` to ``QuotaError`` and
      our classifier falls through to ``other``; no CI gate catches
-     it). The smoke matrix is the only thing that exercises the
-     real class hierarchy every provider ships.
+     it). The playground matrix is the only thing that exercises
+     the real class hierarchy every provider ships.
 
      Applies to: every phase from Phase 4 onwards that touches
      ``sensor/flightdeck_sensor/interceptor/*``, adds a new

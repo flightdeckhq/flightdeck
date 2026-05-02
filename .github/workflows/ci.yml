@@ -26,6 +26,16 @@ jobs:
         with:
           python-version: "3.12"
 
+      # Install directly into the actions/setup-python interpreter --
+      # NOT into a fresh sensor/.venv. A previous attempt to mirror the
+      # local-dev venv layout in CI segfaulted pytest under --cov on
+      # the GHA Linux x86_64 runner during collection: identical
+      # package set as the system install, but the venv-installed
+      # variant crashes the coverage tracer (likely a C-extension
+      # RPATH interaction in the heavy onnxruntime/protobuf chain
+      # pulled in transitively via crewai). System pip-install is the
+      # configuration that worked through every prior green run; keep
+      # it that way.
       - name: Install dependencies
         run: pip install -e ".[dev,anthropic,openai]"
 
@@ -219,8 +229,16 @@ jobs:
     runs-on: ubuntu-latest
     needs: [sensor, go, dashboard]
     # KI24: opt this job's JavaScript actions into Node 24.
+    #
+    # PYTHON: the Makefile defaults $(PYTHON) to
+    # ./sensor/.venv/bin/python (D124 single-venv discipline for local
+    # dev). CI uses actions/setup-python directly without a project
+    # venv, so we override here at the job level — every Make target
+    # invoked below ($(PYTHON), $(MAKE) -C sensor, etc.) inherits this
+    # without per-step overrides. One env-var, no per-step trap.
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+      PYTHON: python
     steps:
       - uses: actions/checkout@v4
 
@@ -280,8 +298,13 @@ jobs:
     # fixture dataset must happen against the same Postgres the
     # dashboard later queries, and multiple jobs sharing one stack
     # across runners isn't supported by ``make dev``.
+    #
+    # PYTHON: same job-level override as the integration job above —
+    # the Makefile's $(PYTHON) default points at the local sensor/.venv
+    # which CI doesn't create. ``make seed-e2e`` resolves through this.
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+      PYTHON: python
     steps:
       - uses: actions/checkout@v4
 

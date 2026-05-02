@@ -6,6 +6,7 @@ import { cn } from "@/lib/utils";
 import {
   Zap, Wrench, AlertTriangle, XCircle, ArrowDown,
   Play, Square, Check, Circle, X, Database, AlertCircle,
+  ListChecks, FileText, Folder, MessageSquare, List,
 } from "lucide-react";
 
 const eventTypeConfig: Record<
@@ -34,6 +35,23 @@ const eventTypeConfig: Record<
   // separates them.
   embeddings: { cssVar: "var(--event-embeddings)", Icon: Database, label: "Embeddings" },
   llm_error: { cssVar: "var(--event-error)", Icon: AlertCircle, label: "LLM Error" },
+  // Phase 5 — MCP. Three colour families × two glyph variants per
+  // family. Solid (call/read/get) gets the more pictographic glyph;
+  // outline (list) gets the list-style glyph. Wrench shares with the
+  // LLM tool_call type but the cyan-2 chroma + label disambiguate at
+  // any size. ListChecks is the discovery shape; FileText reads as a
+  // document for resource reads; Folder reads as the resource bucket;
+  // MessageSquare for prompt fetches; List for prompt enumeration.
+  // Phase 5 MCP — Title-Case "MCP " prefix matches the badge labels
+  // in lib/events.ts (D123 restores the prefix). A hover tooltip on
+  // the swimlane circle now reads identically to the badge of the
+  // corresponding drawer row, including the category prefix.
+  mcp_tool_call: { cssVar: "var(--event-mcp-tool)", Icon: Wrench, label: "MCP Tool Call" },
+  mcp_tool_list: { cssVar: "var(--event-mcp-tool)", Icon: ListChecks, label: "MCP Tools Discovered" },
+  mcp_resource_read: { cssVar: "var(--event-mcp-resource)", Icon: FileText, label: "MCP Resource Read" },
+  mcp_resource_list: { cssVar: "var(--event-mcp-resource)", Icon: Folder, label: "MCP Resources Discovered" },
+  mcp_prompt_get: { cssVar: "var(--event-mcp-prompt)", Icon: MessageSquare, label: "MCP Prompt Fetched" },
+  mcp_prompt_list: { cssVar: "var(--event-mcp-prompt)", Icon: List, label: "MCP Prompts Discovered" },
 };
 
 // Failed directive_result events (error/timeout) render with the
@@ -105,6 +123,33 @@ function EventNodeComponent({
   const attachColor =
     isAttachment && eventType === "session_start" ? "var(--warning)" : null;
   const color = attachColor ?? override?.cssVar ?? config.cssVar;
+  // Phase 5 (B-5b) — MCP family is rendered as HEXAGONS, not circles.
+  // The shape itself is the family identifier so an operator scanning
+  // the swimlane can tell at a glance which events are MCP vs LLM /
+  // tool / embeddings / policy. The pre-B-5b 3px mauve box-shadow
+  // ring around a still-circular shape was insufficient (Supervisor
+  // verified live in Chrome at 1280×800: ring is too subtle at
+  // swimlane density on dark backgrounds, every event still reads as
+  // a circle). The hexagon is shaped via CSS clip-path applied to
+  // the same container element — Tailwind's ``rounded-full`` class
+  // is overridden by ``borderRadius: 0`` and the white border is
+  // dropped on MCP events because clip-path would otherwise reveal
+  // jagged border fragments at the hex apexes. Per-type fill colour
+  // and glyph remain unchanged so within-family differentiation
+  // (tool / resource / prompt families and call vs discover within)
+  // is still legible. Hover scale-up scales the clip-path with the
+  // element so the hex stays hex at 1.25×.
+  const isMCP = eventType.startsWith("mcp_");
+  // Pointy-top regular hexagon. 50% 0% is the top apex; 7%/93% on the
+  // left/right edges follow from the regular-hexagon geometry
+  // (``cos(30°) ≈ 0.866`` → 50% ± 43.3%, but pulled in slightly to
+  // 7%/93% so the bounding-box leaves a 1px breathing margin against
+  // adjacent circles in the swimlane). The 25%/75% Y-coords are the
+  // hexagon's flat-side endpoints. Pointy-top reads as "node in a
+  // network/protocol mesh," matching MCP's "protocol between agent
+  // and external tooling" semantic.
+  const HEXAGON_CLIP_PATH =
+    "polygon(50% 0%, 93% 25%, 93% 75%, 50% 100%, 7% 75%, 7% 25%)";
   // Failed directive_result events use the plain X glyph in place of
   // the success Check. The tooltip label switches to "RESULT · status"
   // for any directive_result event so the status is visible without
@@ -141,7 +186,14 @@ function EventNodeComponent({
       <div
         data-testid={`session-circle-${sessionId}`}
         className={cn(
-          "absolute top-1/2 -translate-y-1/2 cursor-pointer rounded-full flex items-center justify-center flex-shrink-0",
+          "absolute top-1/2 -translate-y-1/2 cursor-pointer flex items-center justify-center flex-shrink-0",
+          // Non-MCP events keep the rounded-full circle shape via
+          // Tailwind. MCP events are clip-path hexagons (see B-5b)
+          // and override border-radius inline — applying
+          // ``rounded-full`` AND a hexagon clip-path together would
+          // round the visible hexagon's apexes which is not what we
+          // want.
+          !isMCP && "rounded-full",
           // Transform transition is scoped to the hover state only.
           // Keeping it on all 900+ circles as a permanent inline
           // style meant React diffed the `transition` declaration
@@ -154,10 +206,22 @@ function EventNodeComponent({
           // immediately when they render.
           hovered && "transition-transform duration-150 ease-out",
         )}
+        // Phase 5 (B-5b) — ``data-mcp-family`` is the structural
+        // marker E2E + unit tests use to identify the hexagon
+        // primitive without depending on inline-style introspection.
+        // Always emitted on MCP events; never on non-MCP.
+        data-mcp-family={isMCP ? "true" : undefined}
+        data-event-shape={isMCP ? "hexagon" : "circle"}
         style={{
           left: x, width: size, height: size,
           backgroundColor: color, color: "white",
-          border: "1.5px solid rgba(255,255,255,0.1)",
+          // MCP hexagon: drop the white border because clip-path
+          // would clip it into jagged fragments at the apexes; the
+          // hexagon edges are sharp by design. Non-MCP circles keep
+          // the existing 1.5px translucent-white inner border for
+          // chrome separation against adjacent circles.
+          border: isMCP ? "none" : "1.5px solid rgba(255,255,255,0.1)",
+          clipPath: isMCP ? HEXAGON_CLIP_PATH : undefined,
           transform: hovered ? "translateY(-50%) scale(1.25)" : "translateY(-50%) scale(1)",
           // zIndex 2 (was 1) so circles paint above the timeline
           // grid line overlay which now sits at zIndex 1.

@@ -6,9 +6,10 @@ NATS, the workers update sessions.tokens_used and run the evaluator,
 and the evaluator writes warn / degrade / shutdown directive rows that
 these tests assert on via ``query_directives``.
 
-The smoke suite (tests/smoke/smoke_test.py GROUP 3 + GROUP 4) covers
-the same enforcement paths with real LLM calls; these tests are the
-fast, deterministic counterpart.
+The playground policy demos (playground/policy_demo_warn.py /
+policy_demo_block.py / policy_demo_degrade.py / policy_demo_forced_degrade.py)
+cover the same enforcement paths with real LLM calls; these
+integration tests are the fast, deterministic counterpart.
 
 Requires ``make dev`` to be running.
 """

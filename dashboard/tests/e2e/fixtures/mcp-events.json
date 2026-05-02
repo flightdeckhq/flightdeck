@@ -1,0 +1,324 @@
+{
+  "_meta": {
+    "agent_type": "coding",
+    "capture_prompts": true,
+    "flavor": "phase5-fixture-freeze",
+    "note": "Volatile fields (session_id, agent_id, timestamp, host, user, agent_name, duration_ms) replaced with placeholder values so the JSON is deterministic. Regenerate by running this script when the sensor's MCP payload shape changes.",
+    "phase": "5",
+    "source": "flightdeck-sensor against playground/_mcp_reference_server.py"
+  },
+  "events": {
+    "mcp_prompt_get": {
+      "agent_id": "<agent-id>",
+      "agent_name": "<agent-name>",
+      "agent_type": "coding",
+      "arguments": {
+        "name": "fixture"
+      },
+      "client_type": "flightdeck_sensor",
+      "duration_ms": 42,
+      "event_type": "mcp_prompt_get",
+      "flavor": "phase5-fixture-freeze",
+      "framework": null,
+      "host": "<host>",
+      "hostname": "<host>",
+      "prompt_name": "greet",
+      "rendered": [
+        {
+          "content": {
+            "annotations": null,
+            "meta": null,
+            "text": "Please greet fixture.",
+            "type": "text"
+          },
+          "role": "user"
+        },
+        {
+          "content": {
+            "annotations": null,
+            "meta": null,
+            "text": "Hello, fixture!",
+            "type": "text"
+          },
+          "role": "assistant"
+        }
+      ],
+      "server_name": "flightdeck-mcp-reference",
+      "session_id": "<session-id>",
+      "timestamp": "<timestamp>",
+      "token_limit_session": null,
+      "tokens_used_session": 0,
+      "transport": "stdio",
+      "user": "<user>"
+    },
+    "mcp_prompt_list": {
+      "agent_id": "<agent-id>",
+      "agent_name": "<agent-name>",
+      "agent_type": "coding",
+      "client_type": "flightdeck_sensor",
+      "count": 1,
+      "duration_ms": 42,
+      "event_type": "mcp_prompt_list",
+      "flavor": "phase5-fixture-freeze",
+      "framework": null,
+      "host": "<host>",
+      "hostname": "<host>",
+      "server_name": "flightdeck-mcp-reference",
+      "session_id": "<session-id>",
+      "timestamp": "<timestamp>",
+      "token_limit_session": null,
+      "tokens_used_session": 0,
+      "transport": "stdio",
+      "user": "<user>"
+    },
+    "mcp_resource_list": {
+      "agent_id": "<agent-id>",
+      "agent_name": "<agent-name>",
+      "agent_type": "coding",
+      "client_type": "flightdeck_sensor",
+      "count": 1,
+      "duration_ms": 42,
+      "event_type": "mcp_resource_list",
+      "flavor": "phase5-fixture-freeze",
+      "framework": null,
+      "host": "<host>",
+      "hostname": "<host>",
+      "server_name": "flightdeck-mcp-reference",
+      "session_id": "<session-id>",
+      "timestamp": "<timestamp>",
+      "token_limit_session": null,
+      "tokens_used_session": 0,
+      "transport": "stdio",
+      "user": "<user>"
+    },
+    "mcp_resource_read": {
+      "agent_id": "<agent-id>",
+      "agent_name": "<agent-name>",
+      "agent_type": "coding",
+      "client_type": "flightdeck_sensor",
+      "content": {
+        "contents": [
+          {
+            "meta": null,
+            "mimeType": "text/plain",
+            "text": "hello from the flightdeck reference MCP server",
+            "uri": "mem://demo"
+          }
+        ],
+        "meta": null
+      },
+      "content_bytes": 46,
+      "duration_ms": 42,
+      "event_type": "mcp_resource_read",
+      "flavor": "phase5-fixture-freeze",
+      "framework": null,
+      "host": "<host>",
+      "hostname": "<host>",
+      "mime_type": "text/plain",
+      "resource_uri": "mem://demo",
+      "server_name": "flightdeck-mcp-reference",
+      "session_id": "<session-id>",
+      "timestamp": "<timestamp>",
+      "token_limit_session": null,
+      "tokens_used_session": 0,
+      "transport": "stdio",
+      "user": "<user>"
+    },
+    "mcp_tool_call": {
+      "agent_id": "<agent-id>",
+      "agent_name": "<agent-name>",
+      "agent_type": "coding",
+      "arguments": {
+        "text": "fixture"
+      },
+      "client_type": "flightdeck_sensor",
+      "duration_ms": 42,
+      "event_type": "mcp_tool_call",
+      "flavor": "phase5-fixture-freeze",
+      "framework": null,
+      "host": "<host>",
+      "hostname": "<host>",
+      "result": {
+        "content": [
+          {
+            "annotations": null,
+            "meta": null,
+            "text": "fixture",
+            "type": "text"
+          }
+        ],
+        "isError": false,
+        "meta": null,
+        "structuredContent": {
+          "result": "fixture"
+        }
+      },
+      "server_name": "flightdeck-mcp-reference",
+      "session_id": "<session-id>",
+      "timestamp": "<timestamp>",
+      "token_limit_session": null,
+      "tokens_used_session": 0,
+      "tool_name": "echo",
+      "transport": "stdio",
+      "user": "<user>"
+    },
+    "mcp_tool_list": {
+      "agent_id": "<agent-id>",
+      "agent_name": "<agent-name>",
+      "agent_type": "coding",
+      "client_type": "flightdeck_sensor",
+      "count": 3,
+      "duration_ms": 42,
+      "event_type": "mcp_tool_list",
+      "flavor": "phase5-fixture-freeze",
+      "framework": null,
+      "host": "<host>",
+      "hostname": "<host>",
+      "server_name": "flightdeck-mcp-reference",
+      "session_id": "<session-id>",
+      "timestamp": "<timestamp>",
+      "token_limit_session": null,
+      "tokens_used_session": 0,
+      "transport": "stdio",
+      "user": "<user>"
+    },
+    "session_start": {
+      "agent_id": "<agent-id>",
+      "agent_name": "<agent-name>",
+      "agent_type": "coding",
+      "client_type": "flightdeck_sensor",
+      "content": null,
+      "context": {
+        "mcp_servers": [
+          {
+            "capabilities": {
+              "completions": null,
+              "experimental": {},
+              "logging": null,
+              "prompts": {
+                "listChanged": false
+              },
+              "resources": {
+                "listChanged": false,
+                "subscribe": false
+              },
+              "tasks": null,
+              "tools": {
+                "listChanged": false
+              }
+            },
+            "instructions": "Flightdeck Phase 5 reference MCP server. Three demo tools (echo, add, slow_echo), one demo resource (mem://demo), one demo prompt (greet). Stateless. Safe to share across tests.",
+            "name": "flightdeck-mcp-reference",
+            "protocol_version": "2025-11-25",
+            "transport": "stdio",
+            "version": "1.26.0"
+          }
+        ]
+      },
+      "event_type": "session_start",
+      "flavor": "phase5-fixture-freeze",
+      "framework": null,
+      "has_content": false,
+      "host": "<host>",
+      "hostname": "<host>",
+      "latency_ms": null,
+      "model": null,
+      "session_id": "<session-id>",
+      "timestamp": "<timestamp>",
+      "token_limit_session": null,
+      "tokens_cache_creation": 0,
+      "tokens_cache_read": 0,
+      "tokens_input": null,
+      "tokens_output": null,
+      "tokens_total": null,
+      "tokens_used_session": 0,
+      "tool_input": null,
+      "tool_name": null,
+      "tool_result": null,
+      "user": "<user>"
+    }
+  },
+  "session_detail": {
+    "agent_id": "<agent-id>",
+    "agent_name": "<agent-name>",
+    "agent_type": "coding",
+    "attachments": [],
+    "client_type": "flightdeck_sensor",
+    "context": {
+      "mcp_servers": [
+        {
+          "capabilities": {
+            "completions": null,
+            "experimental": {},
+            "logging": null,
+            "prompts": {
+              "listChanged": false
+            },
+            "resources": {
+              "listChanged": false,
+              "subscribe": false
+            },
+            "tasks": null,
+            "tools": {
+              "listChanged": false
+            }
+          },
+          "instructions": "Flightdeck Phase 5 reference MCP server. Three demo tools (echo, add, slow_echo), one demo resource (mem://demo), one demo prompt (greet). Stateless. Safe to share across tests.",
+          "name": "flightdeck-mcp-reference",
+          "protocol_version": "2025-11-25",
+          "transport": "stdio",
+          "version": "1.26.0"
+        }
+      ]
+    },
+    "ended_at": null,
+    "error_types": [],
+    "events": [],
+    "flavor": "phase5-fixture-freeze",
+    "framework": null,
+    "host": "<host>",
+    "last_attached_at": null,
+    "last_seen_at": "<timestamp>",
+    "mcp_server_names": [
+      "flightdeck-mcp-reference"
+    ],
+    "model": null,
+    "policy_event_types": [],
+    "session_id": "<session-id>",
+    "started_at": "<timestamp>",
+    "state": "active",
+    "token_limit": null,
+    "tokens_cache_creation": 0,
+    "tokens_cache_read": 0,
+    "tokens_input": 0,
+    "tokens_output": 0,
+    "tokens_used": 0
+  },
+  "session_listing_item": {
+    "agent_id": "<agent-id>",
+    "agent_name": "<agent-name>",
+    "agent_type": "coding",
+    "client_type": "flightdeck_sensor",
+    "ended_at": null,
+    "error_types": [],
+    "flavor": "phase5-fixture-freeze",
+    "framework": null,
+    "host": "<host>",
+    "last_attached_at": null,
+    "last_seen_at": "<timestamp>",
+    "mcp_server_names": [
+      "flightdeck-mcp-reference"
+    ],
+    "model": null,
+    "policy_event_types": [],
+    "session_id": "<session-id>",
+    "started_at": "<timestamp>",
+    "state": "active",
+    "token_limit": null,
+    "tokens_cache_creation": 0,
+    "tokens_cache_read": 0,
+    "tokens_input": 0,
+    "tokens_output": 0,
+    "tokens_used": 0
+  }
+}

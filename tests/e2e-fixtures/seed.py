@@ -32,6 +32,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID, uuid5
 
@@ -153,11 +154,25 @@ def _post_session_events(
     }
 
     # 1. session_start, then wait for persistence.
+    #
+    # Phase 5 T25: when the role declares ``mcp_servers``, attach the
+    # fingerprint list as ``context.mcp_servers`` on session_start so
+    # the worker persists it into ``sessions.context`` (set-once
+    # semantics — see ARCHITECTURE.md). Subsequent reads via the
+    # listing's ``mcp_server_names[]`` aggregation and the detail
+    # endpoint's ``context`` envelope both surface this list. Other
+    # roles emit session_start without context, matching the
+    # pre-Phase-5 baseline.
+    session_start_kwargs: dict[str, Any] = {}
+    role_mcp_servers = role_cfg.get("mcp_servers")
+    if role_mcp_servers:
+        session_start_kwargs["context"] = {"mcp_servers": role_mcp_servers}
     post_event(make_event(
         session_id, agent_cfg["flavor"], "session_start",
         timestamp=_shift_timestamp(event_started),
         **identity,
         **common,
+        **session_start_kwargs,
     ))
     if wait_for_session_in_fleet(session_id, timeout=5.0) is None:
         print(
@@ -376,6 +391,166 @@ def _post_session_events(
                 **common,
             ))
             posted += 1
+        elif extra.startswith("mcp_"):
+            # Phase 5 — MCP event extras. Six event types, lean wire
+            # shape (no LLM-baseline fields). The seeded ``server_name``
+            # / ``transport`` use the first entry on the role's
+            # ``mcp_servers`` list so per-event attribution lines up
+            # with the session-level fingerprint the drawer shows.
+            # capture_prompts ON for ``mcp_tool_call`` (arguments +
+            # result), ``mcp_resource_read`` (content + mime), and
+            # ``mcp_prompt_get`` (arguments + rendered) so T25's
+            # capture-on assertions have something to read; the list
+            # variants don't have capture-gated content.
+            servers = role_cfg.get("mcp_servers") or []
+            if not servers:
+                # The mcp-active role declares ``mcp_servers``; without
+                # it we can't seed coherent per-event attribution.
+                # Skip with a warn rather than panic.
+                print(
+                    f"  warn: extras tag {extra!r} requires role.mcp_servers; "
+                    f"skipping for {session_id[:8]}",
+                    file=sys.stderr,
+                )
+                continue
+            srv = servers[0]
+            srv_name = srv["name"]
+            srv_transport = srv["transport"]
+            mcp_common: dict[str, Any] = {
+                "server_name": srv_name,
+                "transport": srv_transport,
+                "duration_ms": 18 + 4 * i,
+            }
+            if extra == "mcp_tool_list":
+                post_event(make_event(
+                    session_id, agent_cfg["flavor"], "mcp_tool_list",
+                    timestamp=ts,
+                    count=3,
+                    **mcp_common,
+                    **identity,
+                    **common,
+                ))
+                posted += 1
+            elif extra == "mcp_tool_call":
+                post_event(make_event(
+                    session_id, agent_cfg["flavor"], "mcp_tool_call",
+                    timestamp=ts,
+                    tool_name="echo",
+                    arguments={"text": "phase5-fixture"},
+                    result={
+                        "content": [
+                            {"type": "text", "text": "phase5-fixture"},
+                        ],
+                        "isError": False,
+                    },
+                    **mcp_common,
+                    **identity,
+                    **common,
+                ))
+                posted += 1
+            elif extra == "mcp_tool_call_failed":
+                # Phase 5 — failed MCP tool call. Anchors the
+                # MCPErrorIndicator E2E assertion (T25-16). The wire
+                # ``error`` shape mirrors
+                # sensor/flightdeck_sensor/interceptor/mcp.py::
+                # _classify_mcp_error so the dashboard sees the same
+                # structure a real sensor would emit.
+                post_event(make_event(
+                    session_id, agent_cfg["flavor"], "mcp_tool_call",
+                    timestamp=ts,
+                    tool_name="search_database",
+                    arguments={"query": "users where status='banned'"},
+                    error={
+                        "error_type": "invalid_params",
+                        "error_class": "McpError",
+                        "message": (
+                            "Invalid SQL: 'banned' is not a "
+                            "recognized status"
+                        ),
+                        "code": -32602,
+                    },
+                    **mcp_common,
+                    **identity,
+                    **common,
+                ))
+                posted += 1
+            elif extra == "mcp_resource_list":
+                post_event(make_event(
+                    session_id, agent_cfg["flavor"], "mcp_resource_list",
+                    timestamp=ts,
+                    count=1,
+                    **mcp_common,
+                    **identity,
+                    **common,
+                ))
+                posted += 1
+            elif extra == "mcp_resource_read":
+                post_event(make_event(
+                    session_id, agent_cfg["flavor"], "mcp_resource_read",
+                    timestamp=ts,
+                    resource_uri="mem://demo",
+                    content_bytes=46,
+                    mime_type="text/plain",
+                    content={
+                        "contents": [
+                            {
+                                "uri": "mem://demo",
+                                "mimeType": "text/plain",
+                                "text": (
+                                    "hello from the flightdeck "
+                                    "reference MCP server"
+                                ),
+                            },
+                        ],
+                    },
+                    **mcp_common,
+                    **identity,
+                    **common,
+                ))
+                posted += 1
+            elif extra == "mcp_prompt_list":
+                post_event(make_event(
+                    session_id, agent_cfg["flavor"], "mcp_prompt_list",
+                    timestamp=ts,
+                    count=1,
+                    **mcp_common,
+                    **identity,
+                    **common,
+                ))
+                posted += 1
+            elif extra == "mcp_prompt_get":
+                post_event(make_event(
+                    session_id, agent_cfg["flavor"], "mcp_prompt_get",
+                    timestamp=ts,
+                    prompt_name="greet",
+                    arguments={"name": "phase5"},
+                    rendered=[
+                        {
+                            "role": "user",
+                            "content": {
+                                "type": "text",
+                                "text": "Please greet phase5.",
+                            },
+                        },
+                        {
+                            "role": "assistant",
+                            "content": {
+                                "type": "text",
+                                "text": "Hello, phase5!",
+                            },
+                        },
+                    ],
+                    **mcp_common,
+                    **identity,
+                    **common,
+                ))
+                posted += 1
+            else:
+                print(
+                    f"  warn: unknown mcp_* extras tag {extra!r} for "
+                    f"{session_id[:8]}; ignored",
+                    file=sys.stderr,
+                )
         elif extra.startswith("llm_error_"):
             err_type = extra[len("llm_error_"):]
             # Per-taxonomy http_status / retry_after defaults so the
@@ -467,6 +642,28 @@ def _session_is_complete(
             expected_counts["embeddings"] = expected_counts.get("embeddings", 0) + 1
         elif tag.startswith("llm_error_"):
             expected_counts["llm_error"] = expected_counts.get("llm_error", 0) + 1
+        elif tag in (
+            "mcp_tool_list",
+            "mcp_tool_call",
+            "mcp_resource_list",
+            "mcp_resource_read",
+            "mcp_prompt_list",
+            "mcp_prompt_get",
+        ):
+            # Phase 5: each MCP extras tag maps directly to its own
+            # event_type row. Counted independently so a session
+            # declaring all six needs six events of distinct types
+            # to be considered complete.
+            expected_counts[tag] = expected_counts.get(tag, 0) + 1
+        elif tag == "mcp_tool_call_failed":
+            # Phase 5 D-MCP-FAIL — failed mcp_tool_call. Same event_type
+            # as the success variant but disambiguated by payload.error
+            # in the actual_counts loop below. Counted under a private
+            # synthetic key so the success and failure variants can
+            # coexist on the same session without one masking the other.
+            expected_counts["__mcp_tool_call_failed__"] = (
+                expected_counts.get("__mcp_tool_call_failed__", 0) + 1
+            )
         elif tag in ("policy_warn", "policy_degrade", "policy_block"):
             # Each policy_* tag maps directly to its own event_type
             # row. Counted independently so a session declaring all
@@ -482,9 +679,17 @@ def _session_is_complete(
     actual_counts: dict[str, int] = {}
     for e in events:
         et = e.get("event_type", "")
+        payload = e.get("payload") or {}
+        # mcp_tool_call_failed gets counted BEFORE the generic mcp_tool_call
+        # bump so a single failure row doesn't double-credit success +
+        # failure under one event.
+        if et == "mcp_tool_call" and payload.get("error"):
+            key = "__mcp_tool_call_failed__"
+            actual_counts[key] = actual_counts.get(key, 0) + 1
+            continue
         if et in expected_counts:
             actual_counts[et] = actual_counts.get(et, 0) + 1
-        if et == "post_call" and (e.get("payload") or {}).get("streaming"):
+        if et == "post_call" and payload.get("streaming"):
             key = "__streaming_post_call__"
             actual_counts[key] = actual_counts.get(key, 0) + 1
     for key, want in expected_counts.items():
@@ -737,6 +942,189 @@ def seed() -> None:
                     backdated += 1
                 except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
                     print(f"  warn: fresh-active refresh for {session_id} failed: {exc}", file=sys.stderr)
+                continue
+            if role == "mcp-active":
+                # Phase 5 (B-5b live verification) — re-emit the six
+                # MCP_* events with timestamp=NOW each seed run so the
+                # Fleet swimlane window (max 1h) always carries fresh
+                # MCP traffic for the Supervisor's Chrome walkthrough
+                # AND for T25-13's hexagon assertion. The session_start
+                # path is gated by the standard idempotency check
+                # (already-seeded sessions are skipped) which keeps
+                # the context.mcp_servers fingerprint write-once.
+                # Re-emitting the extras only — not the session_start —
+                # avoids touching the worker's UpsertSession ON
+                # CONFLICT path on every run.
+                identity = {
+                    "agent_type": agent_cfg["agent_type"],
+                    "client_type": agent_cfg["client_type"],
+                    "user": agent_cfg["user"],
+                    "hostname": agent_cfg["hostname"],
+                    "agent_name": agent_cfg["agent_name"],
+                }
+                common = {
+                    "host": agent_cfg["host"],
+                    "framework": agent_cfg["framework"],
+                    "model": agent_cfg["model"],
+                }
+                servers = role_cfg.get("mcp_servers") or []
+                if servers:
+                    srv = servers[0]
+                    srv_name = srv["name"]
+                    srv_transport = srv["transport"]
+                    # Pin state='active' + last_seen_at=NOW so the
+                    # session row reads as live alongside the fresh
+                    # event circles.
+                    sql = (
+                        f"UPDATE sessions SET "
+                        f"state='active', "
+                        f"last_seen_at=NOW() "
+                        f"WHERE session_id='{session_id}'::uuid"
+                    )
+                    try:
+                        subprocess.run(
+                            [
+                                "docker", "exec", "docker-postgres-1", "psql",
+                                "-U", "flightdeck", "-d", "flightdeck",
+                                "-c", sql,
+                            ],
+                            capture_output=True, text=True, timeout=10,
+                            check=False,
+                        )
+                    except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
+                        print(
+                            f"  warn: mcp-active state pin for "
+                            f"{session_id} failed: {exc}",
+                            file=sys.stderr,
+                        )
+                    # Mirror the original extras emit shape from
+                    # _post_session_events. Each MCP event lands a
+                    # few seconds apart so the swimlane shows them
+                    # as a small cluster rather than overlapping.
+                    fresh_emits: list[tuple[str, dict[str, Any]]] = [
+                        ("mcp_tool_list", {"count": 3}),
+                        ("mcp_tool_call", {
+                            "tool_name": "echo",
+                            "arguments": {"text": "phase5-fixture"},
+                            "result": {
+                                "content": [
+                                    {"type": "text", "text": "phase5-fixture"},
+                                ],
+                                "isError": False,
+                            },
+                        }),
+                        ("mcp_resource_list", {"count": 1}),
+                        ("mcp_resource_read", {
+                            "resource_uri": "mem://demo",
+                            "content_bytes": 46,
+                            "mime_type": "text/plain",
+                            "content": {
+                                "contents": [
+                                    {
+                                        "uri": "mem://demo",
+                                        "mimeType": "text/plain",
+                                        "text": (
+                                            "hello from the flightdeck "
+                                            "reference MCP server"
+                                        ),
+                                    },
+                                ],
+                            },
+                        }),
+                        ("mcp_prompt_list", {"count": 1}),
+                        ("mcp_prompt_get", {
+                            "prompt_name": "greet",
+                            "arguments": {"name": "phase5"},
+                            "rendered": [
+                                {
+                                    "role": "user",
+                                    "content": {
+                                        "type": "text",
+                                        "text": "Please greet phase5.",
+                                    },
+                                },
+                                {
+                                    "role": "assistant",
+                                    "content": {
+                                        "type": "text",
+                                        "text": "Hello, phase5!",
+                                    },
+                                },
+                            ],
+                        }),
+                    ]
+                    for j, (event_type, extras) in enumerate(fresh_emits):
+                        # ts placement: each event lands at NOW - (50 -
+                        # 8*j) seconds, so the cluster spans roughly
+                        # NOW-50s through NOW-10s. The 8s-per-step
+                        # spread keeps the six circles distinguishable
+                        # in the swimlane. The 50s upper bound leaves
+                        # comfortable margin under the 1m (60s) Fleet
+                        # swimlane default — even after a few seconds
+                        # of seed propagation latency, every event
+                        # stays inside the window.
+                        ts = _shift_timestamp(-(50 - 8 * j))
+                        post_event(make_event(
+                            session_id, agent_cfg["flavor"], event_type,
+                            timestamp=ts,
+                            server_name=srv_name,
+                            transport=srv_transport,
+                            duration_ms=18 + 4 * j,
+                            **extras,
+                            **identity,
+                            **common,
+                        ))
+
+                    # B-6 — one fresh ``mcp_resource_read`` with an
+                    # overflowed body so live verification of the
+                    # "Load full response" affordance has data to
+                    # exercise. The wire shape mirrors what the
+                    # sensor's overflow path produces:
+                    # has_content=true and ``content`` carrying the
+                    # event_content dict (provider/model/response).
+                    # The worker's existing has_content=true branch
+                    # then writes an event_content row. Time-stamped
+                    # at NOW-2s so it sits at the cluster edge.
+                    big_text = "x" * (12 * 1024)  # 12 KiB body
+                    overflow_event_content = {
+                        "system": None,
+                        "messages": [],
+                        "tools": None,
+                        "response": {
+                            "contents": [
+                                {
+                                    "uri": "mem://big-log",
+                                    "mimeType": "text/plain",
+                                    "text": big_text,
+                                },
+                            ],
+                        },
+                        "input": None,
+                        "provider": "mcp",
+                        "model": srv_name,
+                        "session_id": session_id,
+                        "event_id": "",
+                        "captured_at": (
+                            datetime.now(timezone.utc)
+                            .isoformat()
+                            .replace("+00:00", "Z")
+                        ),
+                    }
+                    post_event(make_event(
+                        session_id, agent_cfg["flavor"], "mcp_resource_read",
+                        timestamp=_shift_timestamp(-2),
+                        server_name=srv_name,
+                        transport=srv_transport,
+                        resource_uri="mem://big-log",
+                        content_bytes=len(big_text),
+                        mime_type="text/plain",
+                        duration_ms=42,
+                        has_content=True,
+                        content=overflow_event_content,
+                        **identity,
+                        **common,
+                    ))
+                    backdated += 1
                 continue
             if role not in ("aged-closed", "stale", "ancient-only"):
                 continue

@@ -116,6 +116,39 @@ type EventPayload struct {
 	// worker does not touch the session's token columns.
 	TokenID   string `json:"token_id,omitempty"`
 	TokenName string `json:"token_name,omitempty"`
+
+	// Phase 5 MCP fields. Populated by the sensor's MCP interceptor on
+	// the six MCP_* event types only. Lean payload (Phase 5 override 2):
+	// these are the only MCP-specific fields on the wire; the LLM-
+	// baseline tokens_input/output/total/cache_*, model, latency_ms,
+	// tool_input, tool_result, has_content, content fields are absent
+	// from MCP event payloads entirely. ServerName + Transport identify
+	// which MCP server the call hit; DurationMs (already declared above
+	// for directive_result events) doubles as MCP-call latency.
+	//
+	// MCP_TOOL_LIST / MCP_RESOURCE_LIST / MCP_PROMPT_LIST: ServerName,
+	// Transport, Count.
+	// MCP_TOOL_CALL: ServerName, Transport, ToolName (top-level — also
+	// populated into events.tool_name column for filter compatibility),
+	// Arguments + Result (gated by capture_prompts).
+	// MCP_RESOURCE_READ: ServerName, Transport, ResourceURI,
+	// ContentBytes (always — size, not contents), MimeType + Content
+	// (gated).
+	// MCP_PROMPT_GET: ServerName, Transport, PromptName, Arguments +
+	// Rendered (gated).
+	// Failure path on any of the above: Error projects via the existing
+	// Error json.RawMessage field, classified by the sensor's MCP
+	// taxonomy (invalid_params / connection_closed / timeout / api_error
+	// / other).
+	ServerName   string          `json:"server_name,omitempty"`
+	Transport    string          `json:"transport,omitempty"`
+	Count        *int            `json:"count,omitempty"`
+	Arguments    json.RawMessage `json:"arguments,omitempty"`
+	ResourceURI  string          `json:"resource_uri,omitempty"`
+	ContentBytes *int64          `json:"content_bytes,omitempty"`
+	MimeType     string          `json:"mime_type,omitempty"`
+	PromptName   string          `json:"prompt_name,omitempty"`
+	Rendered     json.RawMessage `json:"rendered,omitempty"`
 }
 
 // Processor processes a single event payload.

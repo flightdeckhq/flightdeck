@@ -38,6 +38,12 @@ class EventType(enum.Enum):
     DIRECTIVE_RESULT = "directive_result"
     EMBEDDINGS = "embeddings"
     LLM_ERROR = "llm_error"
+    MCP_TOOL_LIST = "mcp_tool_list"
+    MCP_TOOL_CALL = "mcp_tool_call"
+    MCP_RESOURCE_LIST = "mcp_resource_list"
+    MCP_RESOURCE_READ = "mcp_resource_read"
+    MCP_PROMPT_LIST = "mcp_prompt_list"
+    MCP_PROMPT_GET = "mcp_prompt_get"
 
 
 class DirectiveAction(enum.Enum):
@@ -177,3 +183,41 @@ class DirectiveContext:
     flavor: str
     tokens_used: int
     model: str
+
+
+@dataclass(frozen=True)
+class MCPServerFingerprint:
+    """Identity record for an MCP server a session connected to.
+
+    Captured exactly once per server during ``ClientSession.initialize()``
+    by the MCP interceptor and appended to the session's ``mcp_servers``
+    list. Surfaces on the ``session_start`` event payload under
+    ``context.mcp_servers`` so the worker can persist it into
+    ``sessions.context``.
+
+    The full fingerprint sits at session level; per-event payloads carry
+    only ``server_name`` + ``transport`` to keep events lean.
+
+    ``protocol_version`` matches the SDK's ``InitializeResult.protocolVersion``
+    type (``str | int``) verbatim. Recent MCP spec drafts ship integer-coded
+    versions and the SDK preserves the source type. The dashboard handles
+    both with a one-line type guard rather than us coercing here — preserves
+    source data for future-proofing.
+    """
+
+    name: str
+    transport: str | None
+    protocol_version: str | int
+    version: str | None
+    capabilities: dict[str, Any] = field(default_factory=dict)
+    instructions: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "transport": self.transport,
+            "protocol_version": self.protocol_version,
+            "version": self.version,
+            "capabilities": self.capabilities,
+            "instructions": self.instructions,
+        }

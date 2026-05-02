@@ -51,6 +51,14 @@ type SessionsParams struct {
 	// array of strings like "langgraph/1.1.6"). Multi-value: any
 	// match across the array passes (``?|`` operator).
 	Frameworks []string
+	// MCPServers (Phase 5) filters sessions to those that connected
+	// to at least one MCP server with a matching ``name``. Multi-
+	// value OR within. Backed by an EXISTS over jsonb_array_elements
+	// of ``sessions.context->'mcp_servers'`` rather than a session
+	// column — server identity is stored in the context JSONB on
+	// session_start with set-once semantics, parallel to the
+	// frameworks[] pattern. Empty slice = no MCP-server filter.
+	MCPServers []string
 	// ContextFilters carries the generic scalar-key filters on
 	// sessions.context JSONB (user, os, arch, hostname, process_name,
 	// node_version, python_version, git_branch, git_commit, git_repo,
@@ -201,6 +209,26 @@ type SessionListItem struct {
 	// dashboard renders the POLICY facet and severity-ranked
 	// session-row indicator without a per-session follow-up fetch.
 	PolicyEventTypes []string `json:"policy_event_types"`
+	// MCPServerNames (Phase 5) lists every distinct MCP server name
+	// the session connected to, derived at query time from
+	// ``sessions.context->'mcp_servers'`` JSONB. Always present on
+	// the wire (empty array when the session connected to no MCP
+	// server) so dashboard code treats the slice as non-nullable.
+	// Names only — the listing payload stays lean; the full
+	// fingerprint (transport, version, capabilities, instructions)
+	// rides along on the detail endpoint via the existing context
+	// envelope. Mirrors the ErrorTypes / PolicyEventTypes shape.
+	MCPServerNames []string `json:"mcp_server_names"`
+	// MCPErrorTypes (Phase 5) lists every distinct
+	// ``payload->'error'->>'error_type'`` observed across the
+	// session's MCP events (any event_type starting with ``mcp_``
+	// whose payload carries an ``error`` object). Always present on
+	// the wire (empty array when no MCP event in the session
+	// failed). Mirrors the ErrorTypes correlated-subquery pattern,
+	// scoped to MCP rather than llm_error rows so the Investigate
+	// session-row red MCP indicator can render without a per-session
+	// follow-up fetch.
+	MCPErrorTypes []string `json:"mcp_error_types"`
 }
 
 // SessionsResponse is the paginated response for GET /v1/sessions.
@@ -366,6 +394,23 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 		argIdx++
 	}
 
+	// MCP-server filter (Phase 5). Multi-value OR-within: a session
+	// passes when its context.mcp_servers list contains at least one
+	// entry whose ``name`` matches a supplied value. The aggregation
+	// reads sessions.context JSONB rather than touching events, so a
+	// session that bootstrapped an MCP fingerprint at session_start
+	// matches even when no MCP_* events have been emitted yet.
+	if len(params.MCPServers) > 0 {
+		conditions = append(conditions, fmt.Sprintf(
+			"EXISTS (SELECT 1 FROM jsonb_array_elements("+
+				"COALESCE(s.context->'mcp_servers', '[]'::jsonb)) AS srv "+
+				"WHERE srv->>'name' = ANY($%d::text[]))",
+			argIdx,
+		))
+		args = append(args, params.MCPServers)
+		argIdx++
+	}
+
 	// Framework filter. Phase 4 polish: this filter now matches BOTH
 	// the new bare-name per-event attribution (``sessions.framework``,
 	// populated from ``Session.record_framework``) AND the legacy
@@ -515,7 +560,28 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 					AND e.event_type IN ('policy_warn', 'policy_degrade', 'policy_block')
 				),
 				ARRAY[]::text[]
-			) AS policy_event_types
+			) AS policy_event_types,
+			COALESCE(
+				ARRAY(
+					SELECT DISTINCT srv->>'name'
+					FROM jsonb_array_elements(
+						COALESCE(s.context->'mcp_servers', '[]'::jsonb)
+					) AS srv
+					WHERE srv->>'name' IS NOT NULL
+				),
+				ARRAY[]::text[]
+			) AS mcp_server_names,
+			COALESCE(
+				ARRAY(
+					SELECT DISTINCT e.payload->'error'->>'error_type'
+					FROM events e
+					WHERE e.session_id = s.session_id
+					AND e.event_type LIKE 'mcp_%%'
+					AND e.payload->'error' IS NOT NULL
+					AND e.payload->'error'->>'error_type' IS NOT NULL
+				),
+				ARRAY[]::text[]
+			) AS mcp_error_types
 		FROM sessions s
 		%s
 		ORDER BY %s %s
@@ -555,6 +621,8 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 			&item.TokenName,
 			&item.ErrorTypes,
 			&item.PolicyEventTypes,
+			&item.MCPServerNames,
+			&item.MCPErrorTypes,
 		); err != nil {
 			return nil, fmt.Errorf("scan session: %w", err)
 		}
@@ -563,6 +631,12 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 		}
 		if item.PolicyEventTypes == nil {
 			item.PolicyEventTypes = []string{}
+		}
+		if item.MCPServerNames == nil {
+			item.MCPServerNames = []string{}
+		}
+		if item.MCPErrorTypes == nil {
+			item.MCPErrorTypes = []string{}
 		}
 		if len(contextRaw) > 0 {
 			var v map[string]interface{}

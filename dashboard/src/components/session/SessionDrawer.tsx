@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useRef, useState, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { X, FileText } from "lucide-react";
+import { X, FileText, AlertCircle } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { TruncatedText } from "@/components/ui/TruncatedText";
 import { invalidateSessionCache, useSession } from "@/hooks/useSession";
@@ -21,6 +21,7 @@ import { PromptViewer } from "./PromptViewer";
 import { ErrorEventDetails } from "./ErrorEventDetails";
 import { PolicyEventDetails } from "./PolicyEventDetails";
 import { EmbeddingsContentViewer } from "./EmbeddingsContentViewer";
+import { MCPEventDetails, isMCPEvent } from "./MCPEventDetails";
 import { createDirective, fetchOlderEvents } from "@/lib/api";
 import { sessionSupportsDirectives } from "@/lib/directives";
 import { ClaudeCodeLogo } from "@/components/ui/claude-code-logo";
@@ -275,6 +276,7 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
     string | null
   >(null);
   const [runtimeExpanded, setRuntimeExpanded] = useState(false);
+  const [mcpServersExpanded, setMcpServersExpanded] = useState(false);
 
   // Filter the fleet-wide custom directive list down to ones
   // registered for this session's flavor. The Directives tab button
@@ -653,6 +655,17 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
                 onToggle={() => setRuntimeExpanded((v) => !v)}
               />
 
+              {/* Phase 5 — MCP servers panel. Hidden when the session
+                  connected to no MCP server (the array is missing or
+                  empty). At-rest the row shows ``name · transport`` per
+                  server; expanded reveals the full fingerprint
+                  (version, protocol, capabilities, instructions). */}
+              <MCPServersPanel
+                context={data.session.context}
+                expanded={mcpServersExpanded}
+                onToggle={() => setMcpServersExpanded((v) => !v)}
+              />
+
               {/* Tab bar -- "Directives" tab only renders when the
                   session's flavor has at least one registered
                   custom directive. Hidden entirely otherwise so
@@ -860,6 +873,234 @@ function RuntimePanel({ context, expanded, onToggle }: RuntimePanelProps) {
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+/* ---- Phase 5 — MCP servers panel ---- */
+
+interface MCPServersPanelProps {
+  context: Record<string, unknown> | undefined;
+  expanded: boolean;
+  onToggle: () => void;
+}
+
+interface MCPServerEntry {
+  name?: string;
+  transport?: string | null;
+  protocol_version?: string | number;
+  version?: string | null;
+  capabilities?: Record<string, unknown>;
+  instructions?: string | null;
+}
+
+/**
+ * Collapsible MCP SERVERS panel rendered below RUNTIME in the session
+ * drawer. Hidden entirely when ``context.mcp_servers`` is missing or
+ * empty -- only sessions that connected to at least one MCP server
+ * surface this panel.
+ *
+ * At-rest the row shows ``name · transport`` per server. Expanded
+ * reveals the full fingerprint per server: protocol version, server
+ * version, capabilities (one row per non-null capability key), and
+ * instructions. The fingerprint shape matches
+ * ``dashboard/tests/e2e/fixtures/mcp-events.json`` exactly — that
+ * fixture is the contract for this rendering.
+ *
+ * ``protocol_version`` is rendered as-is for both string and integer
+ * shapes. The MCP SDK ships either depending on protocol version
+ * negotiation; we do not coerce so a future spec change is visible
+ * to operators verbatim.
+ */
+function MCPServersPanel({ context, expanded, onToggle }: MCPServersPanelProps) {
+  const servers = useMemo<MCPServerEntry[]>(() => {
+    if (!context) return [];
+    const raw = (context as { mcp_servers?: unknown }).mcp_servers;
+    if (!Array.isArray(raw)) return [];
+    return raw.filter((s): s is MCPServerEntry => typeof s === "object" && s !== null);
+  }, [context]);
+
+  if (servers.length === 0) return null;
+
+  return (
+    <div
+      data-testid="mcp-servers-panel"
+      style={{
+        background: "var(--bg-elevated)",
+        borderBottom: "1px solid var(--border-subtle)",
+      }}
+    >
+      <button
+        type="button"
+        onClick={onToggle}
+        data-testid="mcp-servers-panel-toggle"
+        className="flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors hover:bg-surface-hover"
+        style={{
+          fontSize: 11,
+          fontWeight: 600,
+          letterSpacing: "0.06em",
+          textTransform: "uppercase",
+          color: "var(--text-secondary)",
+        }}
+        aria-expanded={expanded}
+      >
+        <span
+          style={{
+            display: "inline-block",
+            transform: expanded ? "rotate(90deg)" : "rotate(0deg)",
+            transition: "transform 150ms ease",
+            color: "var(--text-muted)",
+          }}
+        >
+          ▶
+        </span>
+        <span>MCP servers</span>
+        <span
+          style={{
+            color: "var(--text-muted)",
+            fontWeight: 400,
+            textTransform: "none",
+            letterSpacing: 0,
+          }}
+        >
+          ({servers.length})
+        </span>
+        {!expanded && (
+          <span
+            data-testid="mcp-servers-panel-summary"
+            className="ml-2 truncate font-mono"
+            style={{
+              fontSize: 11,
+              fontWeight: 400,
+              letterSpacing: 0,
+              textTransform: "none",
+              color: "var(--text-muted)",
+            }}
+          >
+            {servers
+              .map((s) => formatServerSummary(s))
+              .join(", ")}
+          </span>
+        )}
+      </button>
+      {expanded && (
+        <div
+          data-testid="mcp-servers-panel-grid"
+          style={{
+            padding: "8px 12px",
+            display: "flex",
+            flexDirection: "column",
+            gap: 12,
+          }}
+        >
+          {servers.map((server, idx) => (
+            <MCPServerRow
+              key={`${server.name ?? "unknown"}-${idx}`}
+              server={server}
+              index={idx}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function formatServerSummary(s: MCPServerEntry): string {
+  const parts: string[] = [];
+  if (s.name) parts.push(s.name);
+  if (s.transport) parts.push(s.transport);
+  return parts.length > 0 ? parts.join(" · ") : "unknown server";
+}
+
+function MCPServerRow({
+  server,
+  index,
+}: {
+  server: MCPServerEntry;
+  index: number;
+}) {
+  const id = server.name ?? `unknown-${index}`;
+  const protocol =
+    server.protocol_version == null ? "—" : String(server.protocol_version);
+  const capabilities = Object.entries(server.capabilities ?? {}).filter(
+    ([, v]) => v != null && v !== false,
+  );
+  return (
+    <div
+      data-testid={`mcp-server-row-${id}`}
+      style={{
+        display: "grid",
+        gridTemplateColumns: "120px 1fr",
+        gap: "3px 12px",
+        padding: "6px 8px",
+        background: "var(--bg)",
+        border: "1px solid var(--border-subtle)",
+        borderRadius: 4,
+      }}
+    >
+      <DetailLabel>name</DetailLabel>
+      <DetailValue testId={`mcp-server-name-${id}`}>
+        {server.name ?? "unknown"}
+      </DetailValue>
+      <DetailLabel>transport</DetailLabel>
+      <DetailValue testId={`mcp-server-transport-${id}`}>
+        {server.transport ?? "—"}
+      </DetailValue>
+      <DetailLabel>protocol</DetailLabel>
+      <DetailValue testId={`mcp-server-protocol-${id}`}>{protocol}</DetailValue>
+      {server.version != null && (
+        <>
+          <DetailLabel>version</DetailLabel>
+          <DetailValue testId={`mcp-server-version-${id}`}>
+            {server.version}
+          </DetailValue>
+        </>
+      )}
+      {capabilities.length > 0 && (
+        <>
+          <DetailLabel>capabilities</DetailLabel>
+          <DetailValue testId={`mcp-server-capabilities-${id}`}>
+            {capabilities.map(([k]) => k).join(", ")}
+          </DetailValue>
+        </>
+      )}
+      {server.instructions && (
+        <>
+          <DetailLabel>instructions</DetailLabel>
+          <DetailValue testId={`mcp-server-instructions-${id}`}>
+            {server.instructions}
+          </DetailValue>
+        </>
+      )}
+    </div>
+  );
+}
+
+function DetailLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <div style={{ fontSize: 11, color: "var(--text-muted)" }}>{children}</div>
+  );
+}
+
+function DetailValue({
+  children,
+  testId,
+}: {
+  children: React.ReactNode;
+  testId?: string;
+}) {
+  return (
+    <div
+      data-testid={testId}
+      style={{
+        fontSize: 12,
+        fontFamily: "var(--font-mono)",
+        color: "var(--text)",
+        wordBreak: "break-all",
+      }}
+    >
+      {children}
     </div>
   );
 }
@@ -1150,6 +1391,8 @@ function EventFeed({
                       event.event_type === "policy_degrade" ||
                       event.event_type === "policy_block"
                   ? `policy-event-row-${event.id}`
+                  : isMCPEvent(event.event_type)
+                  ? `mcp-event-row-${event.id}`
                   : "event-row"
               }
               data-event-type={event.event_type}
@@ -1160,7 +1403,7 @@ function EventFeed({
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <span
-                        className="flex h-[18px] w-[88px] shrink-0 items-center justify-center rounded font-mono text-[10px] font-semibold uppercase"
+                        className="flex h-[18px] min-w-[88px] shrink-0 items-center justify-center whitespace-nowrap rounded px-2 font-mono text-[10px] font-semibold uppercase"
                         style={{
                           background: `color-mix(in srgb, ${badge.cssVar} 15%, transparent)`,
                           color: badge.cssVar,
@@ -1179,7 +1422,7 @@ function EventFeed({
                 </TooltipProvider>
               ) : (
                 <span
-                  className="flex h-[18px] w-[88px] shrink-0 items-center justify-center rounded font-mono text-[10px] font-semibold uppercase"
+                  className="flex h-[18px] min-w-[88px] shrink-0 items-center justify-center whitespace-nowrap rounded px-2 font-mono text-[10px] font-semibold uppercase"
                   style={{
                     background: `color-mix(in srgb, ${badge.cssVar} 15%, transparent)`,
                     color: badge.cssVar,
@@ -1191,6 +1434,7 @@ function EventFeed({
                   {badge.label}
                 </span>
               )}
+              <MCPErrorIndicator event={event} />
               <span
                 // Mixed inline content (provider logo + detail text).
                 // Native ``title`` surfaces the text on hover.
@@ -1260,6 +1504,50 @@ function EventFeed({
  * Renders nothing when ``payload.streaming`` is absent (the row's
  * existing layout is unchanged for non-streaming post_calls).
  */
+/**
+ * Phase 5 — small inline error indicator rendered between the badge
+ * and the detail text on MCP event rows whose ``payload.error`` is
+ * populated. The drawer's row layout otherwise inherits the MCP
+ * colour family (cyan/green/purple) regardless of success vs. failure
+ * — without this, an operator scanning the event feed cannot
+ * distinguish a successful ``mcp_tool_call`` from a failed one
+ * without expanding the row to read MCPEventDetails.
+ *
+ * Renders nothing when the event isn't MCP, when there's no error
+ * field, or when ``payload`` is missing.
+ */
+function MCPErrorIndicator({ event }: { event: AgentEvent }) {
+  if (!isMCPEvent(event.event_type)) return null;
+  const err = event.payload?.error;
+  if (err == null) return null;
+  const message =
+    typeof err === "string"
+      ? err
+      : err && typeof err === "object"
+      ? (err as { message?: string }).message ||
+        (err as { error_class?: string }).error_class ||
+        (err as { error_type?: string }).error_type ||
+        "MCP call failed"
+      : "MCP call failed";
+  return (
+    <TooltipProvider>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span
+            data-testid={`mcp-error-indicator-${event.id}`}
+            aria-label={`MCP call failed: ${message}`}
+            className="inline-flex shrink-0 items-center justify-center"
+            style={{ color: "var(--event-error)" }}
+          >
+            <AlertCircle size={12} strokeWidth={2.5} />
+          </span>
+        </TooltipTrigger>
+        <TooltipContent>{`Failed: ${message}`}</TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  );
+}
+
 function StreamingPill({ event }: { event: AgentEvent }) {
   const stream = event.payload?.streaming;
   if (!stream) return null;
@@ -1419,6 +1707,7 @@ function ExpandedEvent({
           hasContent={event.has_content}
         />
       )}
+      {isMCPEvent(event.event_type) && <MCPEventDetails event={event} />}
       <div className="my-2" style={{ borderTop: "1px solid var(--border-subtle)" }} />
       <SyntaxJson data={payload} />
       <div className="mt-2 flex items-center gap-3">
@@ -1458,7 +1747,7 @@ function EventDetailView({ event, session, onBack }: { event: AgentEvent; sessio
         <button className="text-xs" style={{ color: "var(--accent)" }} onClick={onBack} data-testid="back-to-session">← Back to session</button>
       </div>
       <div className="flex h-14 shrink-0 items-center gap-2 px-4" style={{ borderBottom: "1px solid var(--border)" }}>
-        <span className="flex h-[18px] w-[88px] shrink-0 items-center justify-center rounded font-mono text-[10px] font-semibold uppercase"
+        <span className="flex h-[18px] min-w-[88px] shrink-0 items-center justify-center whitespace-nowrap rounded px-2 font-mono text-[10px] font-semibold uppercase"
           style={{ background: `color-mix(in srgb, ${badge.cssVar} 15%, transparent)`, color: badge.cssVar, border: `1px solid color-mix(in srgb, ${badge.cssVar} 30%, transparent)`, borderRadius: 3 }}>
           {badge.label}
         </span>
@@ -1593,7 +1882,7 @@ function PromptsTab({
             }}
             onClick={() => onSelectEvent(event.id)}
           >
-            <span className="flex h-[18px] w-[88px] shrink-0 items-center justify-center rounded font-mono text-[10px] font-semibold uppercase"
+            <span className="flex h-[18px] min-w-[88px] shrink-0 items-center justify-center whitespace-nowrap rounded px-2 font-mono text-[10px] font-semibold uppercase"
               style={{ background: `color-mix(in srgb, ${badge.cssVar} 15%, transparent)`, color: badge.cssVar, border: `1px solid color-mix(in srgb, ${badge.cssVar} 30%, transparent)`, borderRadius: 3 }}>
               {badge.label}
             </span>

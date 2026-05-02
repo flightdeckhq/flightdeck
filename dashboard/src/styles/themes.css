@@ -87,6 +87,19 @@
   --event-embeddings: #06b6d4;
   --event-error: #ef4444;
 
+  /* Phase 5 MCP event palette. Three families distinguish the three
+     MCP operation classes:
+       --event-mcp-tool      cyan-2  — tool calls + tool list
+       --event-mcp-resource  green   — resource reads + list
+       --event-mcp-prompt    purple  — prompt fetches + list
+     Cyan-2 sits beside ``--event-tool`` (LLM tool calls) without
+     colliding because the badge labels disambiguate; green is the
+     resource RAG family adjacent; purple aligns with directives
+     since prompts are agent-instructional content. */
+  --event-mcp-tool: #22d3ee;
+  --event-mcp-resource: #10b981;
+  --event-mcp-prompt: #c084fc;
+
   /* Cost disclaimer tone -- amber on dark theme. */
   --color-warn-soft: rgba(234, 179, 8, 0.12);
   --color-warn-border: rgba(234, 179, 8, 0.35);
@@ -180,6 +193,12 @@
      with slightly darker chromas to stay legible against ``--bg``. */
   --event-embeddings: #0891b2;
   --event-error: #dc2626;
+
+  /* Phase 5 MCP palette -- light-theme variants. Same three families
+     (tool / resource / prompt) at darker chromas. */
+  --event-mcp-tool: #0891b2;
+  --event-mcp-resource: #059669;
+  --event-mcp-prompt: #9333ea;
 
   /* Cost disclaimer tone -- amber on light theme. */
   --color-warn-soft: rgba(202, 138, 4, 0.08);

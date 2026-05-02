@@ -13,7 +13,9 @@ import {
   collectContext,
   computeLatencyMs,
   getSessionId,
+  loadMcpServerFingerprints,
   parseBool,
+  parseMcpToolName,
   readLatestTurn,
   readTurns,
   resolveConfig,
@@ -1573,6 +1575,74 @@ describe("observe_cli end-to-end (new fields)", () => {
     assert.equal(postCalls[1].tokens_output, 7); // msg_B
     assert.equal(postCalls[2].tokens_output, 3); // msg_C
     rmSync(dir, { recursive: true, force: true });
+  });
+
+  // Phase 5 — MCP tool-call emission. The plugin emits MCP_TOOL_CALL
+  // (not the generic tool_call) when the hook payload's tool_name
+  // starts with the ``mcp__<server>__<tool>`` namespace. Per Phase 5
+  // D1 + D4, the whitelist sanitiser is bypassed for MCP tools so the
+  // arguments survive the round-trip.
+  it("Phase 5 — PostToolUse on mcp__server__tool emits mcp_tool_call", async () => {
+    clearAllPluginMarkers();
+    const before = capture.bodies().length;
+    const result = await runScript(
+      JSON.stringify({
+        hook_event_name: "PostToolUse",
+        session_id: "sess-mcp-1",
+        tool_name: "mcp__filesystem__read_file",
+        tool_input: { path: "/etc/hosts", anything_else: "kept-by-mcp-bypass" },
+        tool_response: { content: [{ type: "text", text: "127.0.0.1 ..." }] },
+      }),
+      {
+        FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
+        FLIGHTDECK_TOKEN: "tok_test",
+        CLAUDE_SESSION_ID: "sess-mcp-1",
+        FLIGHTDECK_CAPTURE_PROMPTS: "true",
+        FLIGHTDECK_CAPTURE_TOOL_INPUTS: "true",
+      },
+    );
+    assert.equal(result.code, 0);
+    const posted = capture.bodies().slice(before);
+    const mcpEvent = posted.find((b) => b.event_type === "mcp_tool_call");
+    assert.ok(mcpEvent, "expected mcp_tool_call event");
+    assert.equal(mcpEvent.server_name, "filesystem");
+    assert.equal(mcpEvent.tool_name, "read_file");
+    // Whitelist sanitiser BYPASSED for MCP per D4 — anything_else
+    // survives.
+    assert.deepEqual(mcpEvent.arguments, {
+      path: "/etc/hosts",
+      anything_else: "kept-by-mcp-bypass",
+    });
+    // capturePrompts=true → result captured.
+    assert.ok(mcpEvent.result, "result must be present with capturePrompts=true");
+  });
+
+  it("Phase 5 — PostToolUseFailure on MCP tool emits mcp_tool_call with error", async () => {
+    clearAllPluginMarkers();
+    const before = capture.bodies().length;
+    const result = await runScript(
+      JSON.stringify({
+        hook_event_name: "PostToolUseFailure",
+        session_id: "sess-mcp-fail-1",
+        tool_name: "mcp__github__create_issue",
+        tool_input: { repo: "x/y" },
+        error: "401 Unauthorized — token expired",
+      }),
+      {
+        FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
+        FLIGHTDECK_TOKEN: "tok_test",
+        CLAUDE_SESSION_ID: "sess-mcp-fail-1",
+      },
+    );
+    assert.equal(result.code, 0);
+    const posted = capture.bodies().slice(before);
+    const mcpEvent = posted.find((b) => b.event_type === "mcp_tool_call");
+    assert.ok(mcpEvent, "expected mcp_tool_call event from PostToolUseFailure");
+    assert.equal(mcpEvent.server_name, "github");
+    assert.equal(mcpEvent.tool_name, "create_issue");
+    assert.ok(mcpEvent.error, "error must be populated on failure path");
+    assert.equal(mcpEvent.error.error_class, "PluginToolError");
+    assert.match(mcpEvent.error.message, /Unauthorized/);
   });
 
   it("PostToolUse tool_call still emits when transcript is missing", async () => {

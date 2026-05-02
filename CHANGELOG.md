@@ -2,6 +2,226 @@
 
 All notable changes to Flightdeck are documented here.
 
+## Unreleased — Phase 5 MCP first-class observability
+
+Treats Model Context Protocol calls as a first-class event surface
+alongside chat and embeddings. Single PR covering sensor, worker,
+API, dashboard, plugin, integration tests, playground demos, and docs.
+
+### Changed
+
+- **Project layout:** ``tests/smoke/`` retired in favor of
+  ``playground/`` as the single canonical Rule 40d manual-exercise
+  surface (D124). Coverage unique to smoke migrated into the
+  corresponding playground script as inline print + assert. New
+  ``playground/14_claude_code_plugin.py`` and
+  ``playground/15_bifrost.py`` cover the previously smoke-only paths.
+  The reference MCP server moved to
+  ``playground/_mcp_reference_server.py``; helpers consolidated to
+  ``playground/_helpers.py``.
+- **Make targets:** every ``smoke-*`` target removed.
+  ``make playground-anthropic`` / ``-openai`` / ``-langchain`` /
+  ``-langgraph`` / ``-llamaindex`` / ``-crewai`` / ``-litellm`` /
+  ``-mcp`` / ``-claude-code`` / ``-bifrost`` / ``-policies`` /
+  ``-all`` are the replacements.
+- **Python bound:** ``sensor/pyproject.toml``
+  ``requires-python = ">=3.10,<3.14"`` (was ``>=3.9``); classifier
+  list dropped 3.9. The ``python_version < '3.14'`` marker on the
+  ``crewai`` dev dep was redundant with the project-level bar and
+  was removed. ``playground/run_all.py`` adds a top-of-file gate
+  refusing to run on the wrong interpreter.
+- **Single venv:** every Make target that runs Python resolves
+  through ``$(PYTHON)`` (defaults to ``./sensor/.venv/bin/python``);
+  CI overrides via env where ``actions/setup-python`` already pinned
+  the right interpreter.
+- **Sensor public API:** ``flightdeck_sensor.Provider`` enum is the
+  canonical way to specify ``patch()`` targets (D125). Each member
+  IS a string (``(str, Enum)`` mixin), so existing raw-string call
+  shapes (``patch(providers=["anthropic"])``) keep working unchanged
+  and mixed lists (``[Provider.ANTHROPIC, "openai"]``) work for
+  callers mid-migration. Playground demos migrated to the enum
+  form; unit / integration tests stay on raw strings as the
+  backward-compat contract proof.
+
+### Added
+
+- **Sensor:** six MCP event types — ``mcp_tool_list``,
+  ``mcp_tool_call``, ``mcp_resource_list``, ``mcp_resource_read``,
+  ``mcp_prompt_list``, ``mcp_prompt_get``. The interceptor patches
+  ``mcp.client.session.ClientSession`` directly, so every framework
+  that mediates MCP through the official SDK (LangChain, LangGraph,
+  LlamaIndex, CrewAI via mcpadapt, plus the raw mcp SDK) routes
+  through one patch surface. Lean payload (D2) drops the LLM-baseline
+  fields and carries only MCP-specific shape.
+- **Sensor:** ``MCPServerFingerprint`` dataclass.
+  ``ClientSession.initialize()`` is patched silently to capture
+  name / transport / protocol_version (str | int preserved verbatim
+  per Override 5) / version / capabilities / instructions and stamp
+  them on the session. When session_start ships AFTER MCP init,
+  ``context.mcp_servers`` carries the full fingerprint list.
+- **Sensor:** structured MCP error taxonomy
+  (``invalid_params`` / ``connection_closed`` / ``timeout`` /
+  ``api_error`` / ``other``) populated on every failure path.
+- **Sensor:** capture_prompts gates per-field MCP content with an
+  8 KiB inline / 2 MiB hard-cap overflow path that reuses the
+  existing event_content table for resource_read bodies.
+- **Worker:** ``isMCPEventType()`` routing branch in ``Process``;
+  MCP-specific extras projection in ``BuildEventExtra`` covering
+  ``server_name``, ``transport``, ``count``, ``tool_name``,
+  ``arguments``, ``result``, ``resource_uri``, ``content_bytes``,
+  ``mime_type``, ``prompt_name``, ``rendered``, ``error``.
+- **Worker:** MCP_RESOURCE_READ inline-content projection into
+  ``events.payload.content`` (small bodies); has_content=true bodies
+  route through the existing event_content table path.
+- **API:** ``GET /v1/sessions?mcp_server=<name>`` filter (repeatable)
+  backed by the JSONB EXISTS subquery on
+  ``sessions.context->'mcp_servers'``. Each session row carries
+  ``mcp_server_names: []string`` derived at query time.
+- **Plugin (Claude Code):** ``mcp_tool_call`` emission only (D1 — the
+  hook surface only sees ``mcp__<server>__<tool>`` invocations).
+  ``PostToolUseFailure`` routes to ``mcp_tool_call`` with structured
+  error block (``error_class=PluginToolError``). Server fingerprints
+  loaded from ``.mcp.json`` + ``~/.claude.json`` and stamped on
+  session_start. Sanitiser bypass for MCP arguments (D4).
+- **Dashboard:** ``MCPEventDetails`` panel in the session drawer
+  with accordion sections for arguments / result / rendered,
+  capture-on / capture-off branches, and lazy "Load full response"
+  via ``GET /v1/events/{id}/content``.
+- **Dashboard:** Fleet swimlane MCP family rendering — hexagon
+  clip-path circles, three colour families (cyan/green/purple)
+  × two glyph variants (filled = invoked, outline = list).
+- **Dashboard:** TYPE pill labels for MCP events
+  (``MCP TOOL CALL`` / ``MCP TOOLS DISCOVERED`` /
+  ``MCP RESOURCE READ`` / ``MCP RESOURCES DISCOVERED`` /
+  ``MCP PROMPT FETCHED`` / ``MCP PROMPTS DISCOVERED``). Verbs
+  (CALL / READ / FETCHED / DISCOVERED) distinguish "agent invoked"
+  from "agent discovered" without the bare singular/plural-s
+  ambiguity considered earlier (``MCP TOOL`` vs ``MCP TOOLS``).
+  The ``MCP `` prefix carries category in the Fleet live feed
+  table (D123), where badges render without the swimlane hexagon
+  shape and would otherwise sit next to the non-MCP ``TOOL`` badge
+  with only verb-tense disambiguation.
+- **Dashboard:** inline ``MCPErrorIndicator`` (red AlertCircle, 12px,
+  ``var(--event-error)``) on session-drawer event-feed rows whose
+  ``event_type`` matches ``mcp_*`` AND ``payload.error`` is
+  populated. aria-label format
+  ``MCP call failed: <message>`` and tooltip ``Failed: <message>``
+  give an operator the failure reason without expanding the row.
+  See **D121** for the complete rationale + scope boundary.
+- **Dashboard:** Investigate session-row red MCP error indicator —
+  parallel to the existing ``error_types`` (``llm_error``) red dot
+  and the cyan ``mcp_server_names`` dot. Renders when the
+  session listing's new ``mcp_error_types[]`` rollup is non-empty;
+  the tooltip lists every distinct ``error_type`` observed across
+  the session's MCP events. Drives at-a-glance triage without
+  per-session drawer opens. See **D121**.
+- **API:** ``mcp_error_types: string[]`` field on every session
+  listing row (correlated subquery, same shape as the existing
+  ``error_types`` and ``policy_event_types`` rollups). Always
+  present on the wire (empty array when no MCP event in the
+  session failed). Swagger spec regenerated.
+- **Dashboard:** Investigate ``MCP_SERVER`` facet (sticky position 7,
+  above scalar context) sourced from
+  ``sessions.context.mcp_servers`` and per-row indicator dot.
+- **Dashboard:** session-drawer ``MCP SERVERS`` panel listing every
+  fingerprint (name / transport / protocol_version / version /
+  capabilities / instructions).
+- **Tests:** ``tests/integration/test_mcp_events.py`` — 6 IT-MCP
+  cases covering all six event types' wire shape, fingerprint
+  persistence + ``mcp_server`` filter, content overflow round-trip,
+  structured error taxonomy, MCP-only session last-seen advancement,
+  and (IT-MCP-6) the new ``mcp_error_types`` listing rollup
+  (deduplicated, scoped to ``mcp_*`` events, empty array on
+  unaffected sessions).
+- **Tests (E2E):** T25-16 (MCPErrorIndicator on the failed
+  mcp_tool_call row) and T25-17 (session-row MCP error indicator)
+  in ``T25-mcp-observability.spec.ts``, both running under both
+  themes per Rule 40c.3. Anchored by the new
+  ``mcp_tool_call_failed`` extras tag in
+  ``tests/e2e-fixtures/canonical.json`` + ``seed.py``.
+- **Tests (E2E):** T26 theme matrix canary
+  (``T26-theme-matrix-canary.spec.ts``) — fails LOUDLY if the
+  Playwright per-project ``storageState`` ever drifts out of
+  agreement with ``useTheme``'s accepted values, locking in the
+  fix that re-enabled actual dual-theme coverage.
+- **Playground (Rule 40d):** every framework demonstrates every
+  event Flightdeck emits for it — chat (sync/async/sync-stream/async-stream),
+  embeddings (event emission + capture round-trip), MCP (all six
+  event types + ``transport`` + ``server_name`` + arguments
+  round-trip), policy (WARN/DEGRADE/BLOCK with payload-shape
+  asserts), and error classification (auth-error, invalid-model).
+  ``13_mcp.py`` covers the bare ``mcp`` SDK against the in-tree
+  reference server (``playground/_mcp_reference_server.py``) plus
+  a multi-server attribution scenario via
+  ``playground/_secondary_mcp_server.py``.
+  ``14_claude_code_plugin.py`` exercises the plugin's MCP-emission
+  paths via synthetic ``PostToolUse`` JSON. ``15_bifrost.py``
+  covers the optional bifrost gateway. Framework MCP coverage
+  rides as a section inside each per-provider playground file
+  (``03_langchain.py``, ``04_langgraph.py``, ``05_llamaindex.py``,
+  ``06_crewai.py``); each block skips cleanly when its adapter
+  isn't installed.
+- **Make:** Per-script playground targets (``playground-anthropic``,
+  ``-openai``, ``-langchain``, ``-langgraph``, ``-llamaindex``,
+  ``-crewai``, ``-litellm``, ``-mcp``, ``-claude-code``,
+  ``-bifrost``, ``-policies``) plus ``playground-all`` driving
+  every script through ``run_all.py``.
+- **Dashboard:** Live feed hides MCP discovery events
+  (``mcp_tool_list`` / ``mcp_resource_list`` /
+  ``mcp_prompt_list``) by default. A "Discovery events" toggle in
+  the filter bar restores them; preference persists in
+  ``localStorage`` under ``flightdeck.feed.showDiscoveryEvents``.
+  The session drawer event timeline is unaffected and always shows
+  the full event history. The Fleet swimlane dims discovery
+  hexagons when the toggle is off (mirroring how it dims
+  filter-mismatched events). See **D122**.
+
+### Fixed
+
+- **Dashboard E2E:** Playwright's per-project ``storageState`` was
+  seeding ``localStorage`` with values the dashboard's ``useTheme``
+  hook rejects (project labels ``neon-dark`` / ``clean-light``
+  rather than the accepted ``dark`` / ``light``) AND under a key
+  that didn't match ``constants.ts::THEME_STORAGE_KEY``
+  (``flightdeck:theme`` with a colon vs. ``flightdeck-theme`` with
+  a hyphen). Consequence: the ``clean-light`` project ran a second
+  copy of the dark-theme suite for an unknown number of phases,
+  silently degrading Rule 40c.3 (theme coverage). Both fixes
+  shipped together; the new T26 canary makes future drift visible
+  on first failed run.
+
+### Decisions
+
+- **D117** ``ClientSession``-level patching is the canonical MCP
+  patch surface across every framework adapter (the official SDK is
+  the single contract that doesn't drift).
+- **D118** Asymmetric coverage — Python sensor emits all six MCP
+  event types; Claude Code plugin emits ``mcp_tool_call`` only
+  (the hook surface is the constraint, not a design choice).
+- **D119** Lean MCP wire payload — drop LLM-baseline fields from
+  the wire envelope. The dashboard's MCPEventDetails component
+  reads MCP-specific extras from ``events.payload`` directly.
+- **D120** ``mcpadapt`` pinned in the sensor's optional
+  ``[mcp-crewai]`` extras — the upstream is small and fast-moving;
+  pinning lets a future upgrade be a deliberate change.
+- **D121** MCP failure surfacing on event-feed rows + session-row
+  rollup — deliberate two-tier surface (red AlertCircle inline
+  after the badge, plus a session-listing red dot driven by the
+  new ``mcp_error_types[]`` rollup). Boundaries: row-level + table-
+  level only; no fleet-swimlane red hexagons (rejected for
+  over-claiming at the cross-session view).
+- **D122** MCP discovery event visibility — hide the three
+  ``_list`` event types from Fleet's live feed and dim them in
+  the swimlane by default. Toggle restores. Drawer is unaffected.
+  Operational density problem solved without retracting D118
+  (six-event audit-trail granularity stands).
+- **Override 2** has_content=true overflow routing for
+  ``MCP_RESOURCE_READ`` reuses the LLM event_content table path;
+  no schema change needed.
+- **Override 5** ``protocol_version`` preserved verbatim as
+  ``str | int`` — the dashboard handles both at render time
+  rather than coercing at the wire boundary.
+
 ## v0.5.0 — Agent communication coverage hardening (2026-04-25)
 
 Closes the "we observe what we claim to observe" gap before launch.

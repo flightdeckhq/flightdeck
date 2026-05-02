@@ -21,7 +21,7 @@ try:
 except ImportError:
     print("SKIP: pip install anthropic"); sys.exit(2)
 import flightdeck_sensor
-from flightdeck_sensor import BudgetExceededError
+from flightdeck_sensor import BudgetExceededError, Provider
 from _helpers import init_sensor, print_result
 
 API = os.environ.get("FLIGHTDECK_API_URL", "http://localhost:4000/api")
@@ -46,7 +46,7 @@ def main() -> None:
     })
     try:
         init_sensor(session_id, flavor=flavor)
-        flightdeck_sensor.patch(providers=["anthropic"], quiet=True)
+        flightdeck_sensor.patch(providers=[Provider.ANTHROPIC], quiet=True)
         print(f"[playground:policy_block] session_id={session_id} flavor={flavor}")
         c = anthropic.Anthropic()
         t0 = time.monotonic()
@@ -74,19 +74,34 @@ def main() -> None:
             f"/v1/events?from=1970-01-01T00:00:00Z&session_id={session_id}",
         )["events"]
         blocks = [e for e in events if e["event_type"] == "policy_block"]
+        block_count_ok = len(blocks) >= 1
         print_result(
             "policy_block event landed",
-            len(blocks) >= 1, 0,
+            block_count_ok, 0,
             f"got {len(blocks)} policy_block events",
         )
-        if blocks:
-            payload = blocks[0].get("payload") or {}
-            print(
-                f"  source={payload.get('source')} "
-                f"intended_model={payload.get('intended_model')} "
-                f"tokens_used={payload.get('tokens_used')} "
-                f"token_limit={payload.get('token_limit')}"
+        if not block_count_ok:
+            raise AssertionError(
+                f"no policy_block observed; events={events!r}",
             )
+        payload = blocks[0].get("payload") or {}
+        source_ok = payload.get("source") == "server"
+        intended_ok = payload.get("intended_model") == intended
+        limit_ok = payload.get("token_limit") == 20
+        print_result(
+            "policy_block.source=server", source_ok, 0,
+            f"source={payload.get('source')!r}",
+        )
+        print_result(
+            "policy_block.intended_model", intended_ok, 0,
+            f"intended_model={payload.get('intended_model')!r}",
+        )
+        print_result(
+            "policy_block.token_limit=20", limit_ok, 0,
+            f"token_limit={payload.get('token_limit')!r} tokens_used={payload.get('tokens_used')!r}",
+        )
+        if not (source_ok and intended_ok and limit_ok):
+            raise AssertionError(f"policy_block payload mismatch: {payload!r}")
     finally:
         try:
             _api("DELETE", f"/v1/policies/{policy['id']}")

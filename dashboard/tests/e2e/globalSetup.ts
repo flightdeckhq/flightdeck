@@ -11,6 +11,12 @@ import { fileURLToPath } from "node:url";
 // better than two that drift. Shelling to python3 from TypeScript is
 // the cost of that sharing, paid once per `playwright test` invocation.
 //
+// Interpreter selection: respect the PYTHON env var when set
+// (CI threads PYTHON=python through the workflow; local dev loops
+// without venv activation can point at sensor/.venv/bin/python). Fall
+// back to python3 on PATH — works whether the user has the venv
+// activated or installed flightdeck_sensor into the system interpreter.
+//
 // The script is idempotent: repeat runs against an already-seeded
 // stack skip sessions whose event counts clear the completeness bar,
 // so local dev loops don't pay the seed cost every time the user
@@ -24,9 +30,10 @@ const __dirname = dirname(__filename);
 export default async function globalSetup(): Promise<void> {
   const repoRoot = resolve(__dirname, "..", "..", "..");
   const seedScript = resolve(repoRoot, "tests", "e2e-fixtures", "seed.py");
+  const python = process.env.PYTHON ?? "python3";
 
   const t0 = Date.now();
-  const result = spawnSync("python3", [seedScript], {
+  const result = spawnSync(python, [seedScript], {
     cwd: repoRoot,
     stdio: "inherit",
     env: process.env,
@@ -34,8 +41,9 @@ export default async function globalSetup(): Promise<void> {
 
   if (result.error) {
     throw new Error(
-      `globalSetup: failed to spawn python3 seeder: ${result.error.message}. ` +
-        `Is python3 on PATH? Is the dev stack running (make dev)?`,
+      `globalSetup: failed to spawn ${python} seeder: ${result.error.message}. ` +
+        `Is ${python} on PATH? Set PYTHON to override. ` +
+        `Is the dev stack running (make dev)?`,
     );
   }
   if (result.status !== 0) {

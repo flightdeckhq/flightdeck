@@ -16,6 +16,7 @@ except ImportError:
     print("SKIP: pip install anthropic"); sys.exit(2)
 
 import flightdeck_sensor
+from flightdeck_sensor import Provider
 from _helpers import assert_event_landed, init_sensor, print_result
 
 API = os.environ.get("FLIGHTDECK_API_URL", "http://localhost:4000/api")
@@ -40,7 +41,7 @@ def _run(capture, label):
     # True from _helpers.init_sensor is overridden per-run here on
     # purpose -- the script's whole point is the on/off matrix.
     init_sensor(sid, flavor="playground-capture", capture_prompts=capture)
-    flightdeck_sensor.patch(providers=["anthropic"], quiet=True)
+    flightdeck_sensor.patch(providers=[Provider.ANTHROPIC], quiet=True)
     t0 = time.monotonic()
     anthropic.Anthropic().messages.create(model="claude-haiku-4-5-20251001",
         max_tokens=5, messages=[{"role": "user", "content": "hi"}])

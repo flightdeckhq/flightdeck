@@ -4069,3 +4069,684 @@ misbehaving integration learns its payload is wrong in production.
 **Related decisions.** D114 (agent_type vocabulary lock) is what
 this validation enforces. D115 (agent identity model) introduced the
 fields being validated.
+
+
+## D117 -- MCP interceptor patches `ClientSession` directly, not framework adapters
+
+**Problem.** Phase 5 introduces first-class observability for Model
+Context Protocol traffic across multiple agent frameworks (LangChain
+via langchain-mcp-adapters, LangGraph via the same, LlamaIndex via
+llama-index-tools-mcp, CrewAI via mcpadapt, plus the raw `mcp` SDK).
+Patching one adapter per framework means six interceptors with their
+own version drift, six places where a future SDK rename can silently
+disable observability, and six independent test surfaces.
+
+**Decision.** The MCP interceptor patches
+`mcp.client.session.ClientSession` at the class level — its async
+methods (`list_tools`, `call_tool`, `list_resources`, `read_resource`,
+`list_prompts`, `get_prompt`, `initialize`) are the actual
+wire-protocol contract. Every framework adapter ultimately constructs
+and drives a `ClientSession`, so a single patch surface covers them
+all. Framework attribution lives on the per-event `framework` field
+(set at sensor `init()` from the same `FrameworkCollector` other
+interceptors use); the MCP `event_type` identifies the protocol axis.
+
+**Why.** The `mcp` SDK is the one contract every adapter shares. It
+moves in lockstep with the protocol spec, has a small published API,
+and is owned by the Model Context Protocol working group rather than
+any one framework. Patching adapters would require Flightdeck to
+track six independently-versioned community packages; patching
+`ClientSession` requires tracking one upstream that moves slowly and
+deliberately.
+
+**Trade-offs.** Adapter glue that bypasses `ClientSession` (none
+currently exist; theoretically a framework could ship its own MCP
+client) would not be observed. The dict-literal `_PATCH_TABLE` in
+`sensor/flightdeck_sensor/interceptor/mcp.py` keeps the six
+operations explicit so adding a future SDK method is one line.
+
+**Related decisions.** D118 (asymmetric coverage between sensor and
+plugin). D119 (lean MCP payload).
+
+
+## D118 -- Asymmetric MCP coverage between Python sensor and Claude Code plugin
+
+**Problem.** Phase 5 ships MCP observability across two distinct
+emission surfaces — the Python sensor (which patches `ClientSession`
+and sees every operation) and the Claude Code plugin (which
+observes from the hook layer above the wire protocol). The plugin's
+`PostToolUse` payload only carries the executed tool's name and
+arguments; resource reads, prompt fetches, and list operations are
+below the hook surface. We need a coherent story for what each
+emitter is responsible for so the dashboard contract doesn't fork.
+
+**Decision.** The Python sensor emits all six MCP event types. The
+Claude Code plugin emits `mcp_tool_call` only — when the hook
+payload's `tool_name` matches `mcp__<server>__<tool>`, the plugin
+parses the namespace, looks up the server fingerprint from
+`.mcp.json` + `~/.claude.json`, and emits a Phase-5-shaped
+`mcp_tool_call` event. `PostToolUseFailure` on the same namespace
+routes through the same path with a structured `error` block
+(`error_class=PluginToolError`).
+
+**Why.** The hook surface is the constraint, not a design choice.
+Hook-mediated tools enter `PostToolUse` after Claude Code resolves
+them — there is no equivalent hook for "agent listed available MCP
+tools" or "agent fetched a prompt template" because those operations
+happen within the Claude Code runtime, not on the agent-tool boundary
+the hook layer exposes. Synthesizing fake `mcp_tool_list` events
+from the fingerprint config every session would be noise without
+observability — list operations would all emit at session_start
+regardless of whether the agent ever actually queried them.
+
+**Trade-offs.** Operators wanting full six-type coverage of an MCP
+deployment must use the Python sensor (production agents) or treat
+the plugin's `mcp_tool_call` events as a strict subset. The dashboard
+treats both surfaces' wire shape identically — a `mcp_tool_call`
+event from the plugin and one from the sensor render the same row,
+with the same TYPE pill, the same colour family, and the same
+MCPEventDetails accordion.
+
+**Related decisions.** D117 (canonical MCP patch surface). D119
+(lean MCP payload).
+
+
+## D119 -- Lean MCP wire payload (drop LLM-baseline fields)
+
+**Problem.** Pre-Phase-5 every Flightdeck event carried the LLM
+baseline shape (`tokens_input`, `tokens_output`, `tokens_total`,
+`tokens_cache_read`, `tokens_cache_creation`, `model`, `latency_ms`,
+`tool_input`, `tool_result`, `has_content`, `content`). Most of those
+fields are meaningless for MCP traffic — a `mcp_tool_call` doesn't
+have model attribution because MCP runs below the LLM layer; a
+`mcp_resource_list` doesn't have token counts because no LLM call
+fired. Including them as nulls bloats the payload, dilutes the
+dashboard's facets ("model" populated as null on every MCP row),
+and forces every consumer to handle the "MCP variant" of every field.
+
+**Decision.** MCP events ship with a lean payload: only MCP-specific
+fields appear on the wire. The LLM-baseline fields are absent
+entirely, not nulled. Dashboard components that read those fields
+treat MCP rows via type-discriminated branches
+(`event_type.startswith("mcp_")`), not via null-handling.
+
+**Why.** MCP is a different protocol surface from LLM calls. Mixing
+them on one schema produced a worst-of-both: MCP fields had no home
+(cluttering payloads with `arguments`/`result`/`resource_uri` on
+every event), and LLM fields populated as null on MCP events lied
+about what the data meant.
+
+**Trade-offs.** Dashboard rendering branches: the MCPEventDetails
+component has its own accordion (separate from the existing event
+detail body), and the session drawer's row layout reads MCP-specific
+extras directly from `events.payload`. The savings: no schema
+migration to add new MCP-specific columns, no per-MCP-event-type
+field-multiplication.
+
+**Related decisions.** D117 (canonical MCP patch surface). D118
+(asymmetric coverage).
+
+
+## D120 -- `mcpadapt` pinned in optional `[mcp-crewai]` extras
+
+**Problem.** CrewAI does not ship a first-party MCP integration. The
+community adapter `mcpadapt` (https://github.com/grll/mcpadapt) is
+the production path for CrewAI agents calling MCP servers. It is
+small, has no major-version baseline, and its public API has shifted
+across releases. Without a pin, a future `pip install` could drag in
+a version whose adapter signature has changed and silently break the
+CrewAI smoke test (which is the only thing that exercises the real
+class hierarchy).
+
+**Decision.** `mcpadapt` is pinned in the sensor's optional
+`[mcp-crewai]` extras with a known-working version. Upgrading the
+pin is a deliberate decision (a code change with a smoke run, not a
+side effect of a transitive resolution). Other framework adapters
+(`langchain-mcp-adapters`, `llama-index-tools-mcp`) are not pinned
+because they sit under foundation packages with stable release
+cadences and large user bases that surface SDK breakage quickly;
+`mcpadapt` does not.
+
+**Why.** Real-provider smoke tests are the only thing that verifies
+adapter glue against a live `ClientSession`. Mocking the adapter at
+its public surface tests our mock, not the adapter. A pinned
+`mcpadapt` keeps the smoke test stable enough to be a meaningful
+gate; an unpinned one would intermittently break on `pip install -e .`
+for reasons unrelated to Flightdeck changes.
+
+**Related decisions.** Rule 40d (real-provider smoke tests). D117
+(canonical MCP patch surface).
+
+
+## D121 -- MCP failure surfacing on event-feed rows + session-row rollup
+
+**Problem.** Phase 5 lands MCP event types as a peer family to LLM
+calls (D119). The cyan/green/purple colour families plus the
+swimlane hexagon shape (B-5b) attribute every MCP event as MCP at a
+glance. But success vs. failure is invisible at scan-time: a
+mcp_tool_call rendered in cyan looks identical whether the call
+returned a result or raised `McpError("invalid_params: ...")`. An
+operator landing in the session drawer can read the structured
+error inside `MCPEventDetails` only AFTER expanding the row.
+
+The same gap exists at the session-listing level. Investigate's
+session row already carries a red dot when the session emitted any
+`llm_error` event (`error_types[]` rollup). Without a parallel
+MCP-error rollup, an operator scanning the table sees only the cyan
+"this session touched MCP" dot — not "and at least one MCP call
+failed."
+
+**Decision.** Two coordinated indicators, both scoped to MCP-only
+rows so non-MCP UI is unchanged:
+
+1. **Event-row indicator.** Inside the session drawer's event feed,
+   every row whose `event_type` matches `mcp_*` AND whose
+   `payload.error` is populated renders an inline red `AlertCircle`
+   (lucide, 12px, strokeWidth 2.5) immediately after the badge,
+   before the detail text. The component lives at
+   `dashboard/src/components/session/SessionDrawer.tsx ::
+   MCPErrorIndicator` and is gated by `isMCPEvent(event_type) &&
+   event.payload?.error != null`.
+
+   - Colour: `var(--event-error)` — the same red used by `llm_error`
+     rows and by policy `block` enforcement, so the visual vocabulary
+     is consistent across the dashboard.
+   - aria-label: `MCP call failed: <message>` — the message extracted
+     from `payload.error.message` (falling back to `error_class` or
+     `error_type`, finally to the literal "MCP call failed" if the
+     error is a bare string). The format matches what
+     `_classify_mcp_error` produces in the sensor's MCP interceptor
+     and what the Claude Code plugin emits on PostToolUseFailure.
+   - Tooltip on hover: `Failed: <message>`.
+   - Test contract: `data-testid="mcp-error-indicator-<event_id>"`.
+
+2. **Session-row indicator.** The session-listing API
+   (`GET /v1/sessions`) gains an `mcp_error_types: string[]` field —
+   every distinct `payload.error.error_type` observed across the
+   session's `mcp_*` events, deduplicated, empty array when no MCP
+   call failed. Investigate's session row renders a red dot
+   (`var(--event-error)`, 7×7px, 25%-opacity halo) next to the cyan
+   MCP-servers dot when the rollup is non-empty. Tooltip:
+   `MCP errors: <type1>, <type2>`. Test contract:
+   `data-testid="session-row-mcp-error-indicator-<session_id>"`.
+
+   The SQL is a correlated subquery on the listing query (mirroring
+   the existing `error_types` and `policy_event_types` patterns), so
+   no per-session follow-up fetch is needed and the dashboard renders
+   the indicator on first paint.
+
+**Why this scope, not less.** Event-row only would have left
+operators having to open every drawer to find which sessions have
+MCP failures. The session-listing rollup is the at-a-glance signal
+that drives operator triage at scale — exactly the role
+`error_types` plays for `llm_error`. Asymmetric surfacing (event-row
+indicator without a session-level rollup) would have been a
+documented gap until the next phase, and the no-defer rule (Rule 51)
+points to landing it now.
+
+**Why this scope, not more.** A red row-tinting on the session row
+itself (rather than a discrete dot) would over-claim — most sessions
+with MCP errors still ran successfully overall, and the existing
+state column already encodes liveness (active / idle / closed / lost).
+A separate "MCP-error session state" was rejected for the same
+reason. The dot is the smallest signal that does the at-a-glance
+job; the rollup tooltip carries the detail.
+
+**Why red, specifically.** The `var(--event-error)` token is shared
+across `llm_error` rows, the `llm_error_*` red severity dot in
+session listing, and the `policy_block` red-orange chroma. Adding a
+fourth red surface for MCP failures keeps the dashboard's red
+budget tight: red always means "something failed." Variations in
+MCP-tool family (cyan/green/purple per resource type) are
+preserved; the indicator overlays the family colour, not replaces
+it.
+
+**Boundary.** The indicator is row-level + session-level only. The
+fleet-level swimlane hexagons stay one colour per family regardless
+of success — adding red hexagons would force every MCP family to
+have two shape-and-colour variants and would over-claim at the
+fleet view (where individual rows are too small to distinguish "this
+session has one bad MCP call out of 50" from "this session is
+broken"). The session-row dot already serves the cross-session
+triage need; the event-row indicator serves the in-session inspect
+need.
+
+**Test coverage.**
+- `dashboard/tests/unit/SessionDrawer.test.tsx` — three Vitest cases
+  (positive on failed mcp_tool_call, negative on successful
+  mcp_tool_call, negative on llm_error to confirm scope).
+- `dashboard/tests/e2e/T25-mcp-observability.spec.ts` —
+  T25-16 (event-row indicator) and T25-17 (session-row indicator),
+  both running under both theme projects per Rule 40c.3.
+- `tests/integration/test_mcp_events.py::test_mcp_error_types_rollup_on_session_listing`
+  — IT-MCP-6 covers the SQL rollup contract end-to-end through
+  ingestion → worker → API.
+- Canonical fixture extras tag `mcp_tool_call_failed` (added to
+  `tests/e2e-fixtures/canonical.json` + `seed.py`) anchors the
+  failed event in the seeded mcp-active session so both E2E tests
+  hit a stable target.
+
+**Related decisions.** D117 (canonical MCP patch surface, where the
+sensor produces the structured `error` payload this surface
+consumes). D119 (lean MCP wire payload — `error` is one of the
+extras allowed on the lean schema). Rule 51 (no-defer discipline —
+the session-row rollup landed in this push because event-row alone
+was a clear gap, not a deferred follow-up).
+
+
+## D122 -- MCP discovery event visibility (hide-by-default in the live feed)
+
+**Problem.** Phase 5 ships all six MCP event types as first-class
+events (D118, granularity choice A: per-call events, not rolled-up
+session metadata). That decision prioritized audit-trail fidelity
+over visual density. Operational feedback during phase close-out
+revealed the live feed becomes visually crowded on sessions with
+heavy MCP usage — the three "list" event types
+(`mcp_tool_list` / `mcp_resource_list` / `mcp_prompt_list`)
+fire in bursts at session start and again whenever the agent
+needs to refresh its capability picture. They are operationally
+useful for audit but push the actually-interesting tool / resource /
+prompt rows out of the visible window for an operator scanning
+the feed.
+
+**Decision.** Hide the three discovery event types from Fleet's
+live feed and dim them in the Fleet swimlane by default. A
+"Discovery events" toggle in the filter bar restores them;
+preference persists in `localStorage` under
+`flightdeck.feed.showDiscoveryEvents`. The session drawer event
+timeline is unaffected — the drawer is the detail view that
+preserves full fidelity per session.
+
+The toggle is right-aligned in `EventFilterBar` with `role="switch"`
++ `aria-checked` for accessibility. Off-state styling matches
+the muted filter-pill aesthetic; on-state matches the active
+filter-pill aesthetic (border-strong, bg-elevated). The MCP-tool
+chroma dot is dimmed to 40% alpha when off so the toggle's
+"about MCP" semantic stays visible at a glance.
+
+The discovery filter is applied BEFORE the `FEED_MAX_EVENTS` cap
+in `LiveFeed.tsx` so the cap reflects "last N visible events",
+not "last N raw events of which some are hidden". An MCP-heavy
+session that bursts list events at startup would otherwise push
+all the useful tool/resource/prompt rows out of the cap window
+before the operator could read them.
+
+In the swimlane, discovery events are dimmed (via
+`isVisible={false}` on `EventNode`) rather than removed,
+mirroring how the existing `EventFilterBar` filter pills
+already handle event-type filtering. The composition is at the
+`SessionEventRow` / `AggregatedSessionEvents` per-circle call
+sites: `isEventVisible(eventType, activeFilter) && (showDiscovery || !isDiscoveryEvent(eventType))`.
+
+**Why not...**
+
+- **Roll up to session metadata instead?** Would retract D118.
+  Lose per-call timing of discovery handshakes (operationally
+  useful when debugging "why does this agent re-discover three
+  times mid-session"), can't detect agents that re-discover
+  mid-session, schema-change cascade through worker / API /
+  dashboard. Too invasive for the problem.
+- **Hide in the drawer too?** The drawer is the detail view.
+  Operators who drill in want the full picture — they're
+  investigating a specific session, not scanning the fleet.
+  Hiding there is destructive.
+- **Apply the same pattern to Tools / LLM Calls proactively?**
+  No. Apply the pattern when density becomes a real operational
+  problem on a specific event class. Don't pre-optimize other
+  event classes on speculation; doing so erodes the "all events
+  visible by default" contract that is the live feed's reason
+  for existing.
+- **Filter at the API boundary?** No. `/v1/events` always
+  returns all six types. Programmatic consumers (export tooling,
+  audit, future dashboards) need the full stream.
+  Client-side filtering keeps the API contract clean and the
+  UX decision reversible per-user.
+
+**Test coverage.**
+
+- `dashboard/tests/unit/discoveryEventsPref.test.ts` — predicate
+  closed-set tests + `readShowDiscoveryEvents` /
+  `persistShowDiscoveryEvents` round-trip + `useShowDiscoveryEvents`
+  hook (default off, multi-subscriber sync via the same-tab
+  `CustomEvent`).
+- `dashboard/tests/unit/LiveFeed.test.tsx` — hide-by-default,
+  toggle-on, count consistency under MCP filter, and the
+  cap-after-discovery ordering invariant.
+- `dashboard/tests/unit/EventFilterBar.test.tsx` — toggle
+  rendering + state + `localStorage` persistence + `aria-checked`
+  contract.
+- `dashboard/tests/e2e/T25-mcp-observability.spec.ts` —
+  T25-18 covers Fleet default-hidden, toggle-on-shows, and
+  drawer-unaffected (three sub-cases × two themes).
+
+**Related decisions.** D118 (granularity choice — per-call events
+that this preference now hides by default but never erases). D119
+(lean wire payload — discovery events still ride the same lean
+shape; only their visibility changes). Rule 14 (both themes work
+at all times — toggle is theme-agnostic and the new T26 canary
+ensures the matrix actually exercises both themes).
+
+## D123 -- MCP badge prefix restored
+
+**Problem.** Phase 5 commit 89333a8 (B-4) dropped the ``MCP `` prefix
+from all six MCP badge labels and reduced them to verb-only forms
+(``TOOL CALL``, ``TOOLS DISCOVERED``, ``RESOURCE READ``,
+``RESOURCES DISCOVERED``, ``PROMPT FETCHED``, ``PROMPTS DISCOVERED``).
+The reasoning at the time: the cyan/green/purple colour family,
+the swimlane hexagon shape (B-5b), and the row's adjacent detail
+text (server name + transport) already attribute the row as MCP, so
+repeating an ``MCP`` prefix on every badge consumes width without
+adding signal.
+
+That reasoning held for the **swimlane** and the **session drawer**
+(both render the hexagon shape and a server-name detail string
+adjacent to every MCP badge). Live operational review during PR #30
+revealed it does **not** hold for the **Fleet live feed table**.
+The live feed renders badges in a tabular row WITHOUT hexagons —
+hexagon clip-paths are swimlane-only — and right next to the
+non-MCP ``TOOL`` badge from the LLM ``tool_call`` event type. In
+that context ``TOOL CALL`` vs ``TOOL`` is verb-tense
+disambiguation, not category disambiguation. An operator new to
+Flightdeck would have to learn the convention "the one with CALL
+is the MCP one" rather than reading category off the label
+directly.
+
+**Decision.** Restore the ``MCP `` prefix on every MCP badge label:
+
+- ``mcp_tool_call``      → ``MCP TOOL CALL``
+- ``mcp_tool_list``      → ``MCP TOOLS DISCOVERED``
+- ``mcp_resource_read``  → ``MCP RESOURCE READ``
+- ``mcp_resource_list``  → ``MCP RESOURCES DISCOVERED``
+- ``mcp_prompt_get``     → ``MCP PROMPT FETCHED``
+- ``mcp_prompt_list``    → ``MCP PROMPTS DISCOVERED``
+
+The ``EventNode`` swimlane tooltip Title-Case strings get the
+matching prefix (``MCP Tool Call``, etc.) so the swimlane hover
+reads identically to the drawer badge of the same row. Accept the
+~30 px width cost per pill; B-7 already accommodates long labels
+with two-line wrap on the longest ones.
+
+**What this does NOT change.**
+
+- The swimlane hexagon clip-path shape (B-5b stays).
+- The cyan/green/purple colour families (B-3 stays).
+- The verb-based distinction between invoked vs discovered (B-4's
+  verbs survive — ``CALL`` / ``READ`` / ``FETCHED`` /
+  ``DISCOVERED``). The plural-only-s pairs we considered earlier
+  (``MCP TOOL`` vs ``MCP TOOLS``) stay banned by an explicit unit
+  regression guard.
+- ``EventType`` enum strings (``mcp_tool_call`` etc.) — wire shape
+  is unchanged. Display text only.
+
+**Test contract changes.**
+
+- ``dashboard/tests/unit/events-mcp.test.ts`` — assertion table
+  updated to the prefixed labels; the bare-prefix regression guard
+  stays (still bans ``MCP TOOL`` / ``MCP TOOLS`` / etc. as exact
+  matches); a NEW guard asserts every MCP badge label STARTS with
+  ``MCP `` so a future refactor cannot silently drop the prefix
+  again. The B-7 length ceiling rises from 22 to 30 chars to
+  accommodate ``MCP RESOURCES DISCOVERED`` (24 chars).
+- ``dashboard/tests/e2e/T25-mcp-observability.spec.ts`` —
+  ``BADGE_LABELS`` constants updated to the prefixed text;
+  comment block rewritten to describe the new rationale.
+- ``CHANGELOG.md`` — Phase 5 ``Added`` entry rewritten to list the
+  prefixed labels and reference D123 instead of the no-prefix
+  reasoning.
+
+**B-4 is superseded by this entry.** Code that previously cited
+B-4 as the no-prefix authority should cite D123 going forward.
+
+**Files touched.**
+
+- ``dashboard/src/lib/events.ts`` — six badge label values + the
+  multi-line comment block above them.
+- ``dashboard/src/components/timeline/EventNode.tsx`` — six
+  swimlane tooltip Title-Case label strings.
+- ``dashboard/tests/unit/events-mcp.test.ts`` — test table +
+  regression guards.
+- ``dashboard/tests/e2e/T25-mcp-observability.spec.ts`` —
+  ``BADGE_LABELS`` constants + comment.
+- ``CHANGELOG.md`` — Phase 5 unreleased section.
+
+**Related decisions.** D118 / D119 / D121 / D122 (other Phase 5
+display + payload decisions; none affected by the prefix change).
+B-4 in commit 89333a8 (no-prefix decision, superseded).
+
+## D124 -- Smoke folder retired; playground is the single Rule 40d surface
+
+**Problem.** The project shipped two parallel manual-exercise
+surfaces. ``tests/smoke/`` was pytest-based with assert-shaped tests.
+``playground/`` was script-based with print-shaped demos. Both
+covered the same provider + framework matrix. Duplication produced
+three concrete failure modes during Phase 5 close-out:
+
+1. **Silent SKIPs masked real coverage gaps.** ``make smoke-all``
+   reported "1 SKIP — Py3.14 upstream constraint" for crewai. The
+   "1 SKIP" was crewai's ``python_version < '3.14'`` marker firing
+   on the dev box's ambient Python, NOT a missing API key.
+   Operators couldn't tell from the green output that the matrix
+   had a hole the size of CrewAI.
+2. **Two helper styles, two import surfaces.** Smoke's
+   ``make_sensor_session`` (returns a Session object) and
+   playground's ``init_sensor`` (takes session_id as a value)
+   were structurally incompatible. Helpers shared between the two
+   surfaces (cwd + PYTHONPATH wiring for MCP server spawn) were
+   duplicated inline across four playground scripts.
+3. **Reference fixtures lived in the smoke tree but were
+   load-bearing for playground.** ``playground/13_mcp.py`` and the
+   four MCP-touching playground scripts spawned ``python -m
+   tests.smoke.fixtures.mcp_reference_server``; the cross-tree
+   dependency was structural drift that would have widened with
+   any further coverage migration.
+
+**Decision.** Retire ``tests/smoke/`` entirely. Playground is the
+single canonical Rule 40d manual-exercise surface. Helpers and
+fixtures consolidated under ``playground/``:
+
+- Reference MCP server moved to
+  ``playground/_mcp_reference_server.py`` (matches the existing
+  ``_secondary_mcp_server.py`` naming convention; underscore-prefix
+  marks it as a utility module that ``run_all.py`` skips).
+- Helpers consolidated to ``playground/_helpers.py``: gained
+  ``API_URL`` / ``API_TOKEN`` / ``INGESTION_URL`` constants,
+  ``require_env``, ``wait_for_dev_stack``,
+  ``fetch_events_for_session``, and ``mcp_server_params``. The
+  ``init_sensor`` shape is the surviving canonical bootstrap;
+  smoke's ``make_sensor_session`` was dropped.
+- Coverage unique to smoke migrated into the corresponding
+  playground script as print + assert. Areas covered:
+  async-streaming TTFT (01, 02), embeddings event + capture
+  round-trip (02, 03, 12), ``session.framework="langchain"``
+  attribution (03), MCP per-event ``transport=stdio`` consistency
+  (13), policy ``source=server`` / ``intended_model`` /
+  ``token_limit`` exact matches (policy_demo_*).
+- Two new playground scripts cover the previously-smoke-only
+  paths: ``14_claude_code_plugin.py`` (pipes synthetic
+  ``PostToolUse`` JSON to ``observe_cli.mjs`` to exercise the
+  plugin's MCP-emission paths), ``15_bifrost.py`` (opt-in
+  multi-protocol gateway demo).
+
+**Single venv.** ``sensor/.venv`` is the canonical interpreter.
+Every Make target that runs Python resolves through ``$(PYTHON)``
+(defaults to ``./sensor/.venv/bin/python``). CI overrides via env
+where ``actions/setup-python@v5`` already pinned
+``python-version: "3.12"`` in the Sensor + Integration jobs.
+
+**Python bound tightened.** ``sensor/pyproject.toml``
+``requires-python = ">=3.10,<3.14"`` (was ``>=3.9``); classifier
+list dropped 3.9. The ``python_version < '3.14'`` marker on the
+``crewai`` dev dep dropped — the project itself now bars 3.14, so
+the silent-skip failure mode is structurally eliminated.
+``run_all.py`` adds a top-of-file gate that refuses to run on the
+wrong interpreter so a misconfigured local environment fails
+loudly.
+
+**Smoke targets retired.** ``make smoke-anthropic`` /
+``smoke-openai`` / ``smoke-litellm`` / ``smoke-langchain`` /
+``smoke-langgraph`` / ``smoke-llamaindex`` / ``smoke-crewai`` /
+``smoke-claude-code`` / ``smoke-bifrost`` / ``smoke-policies`` /
+``smoke-mcp`` / ``smoke-all`` / ``test-smoke-playground`` are all
+removed. Replaced by ``make playground-anthropic`` /
+``playground-openai`` / ``playground-langchain`` /
+``playground-langgraph`` / ``playground-llamaindex`` /
+``playground-crewai`` / ``playground-litellm`` / ``playground-mcp``
+/ ``playground-claude-code`` / ``playground-bifrost`` /
+``playground-policies`` / ``playground-all``.
+
+**What this does NOT change.**
+
+- ``sensor/tests/unit/`` (real unit tests, not smoke). Stays as-is.
+- ``tests/integration/`` (real integration tests against the dev
+  stack with mocked providers). Stays as-is.
+- The Rule 40d intent: every framework-touching change still
+  needs a real-provider exercise alongside mocked integration
+  tests. Playground demos serve that role going forward; the
+  rule wording in ``CLAUDE.md`` was rewritten to reference
+  ``playground/`` and ``make playground-<script>`` targets while
+  preserving the "manual / not in CI / costs money" semantics.
+- CI: ``.github/workflows/ci.yml`` and ``release.yml`` already
+  pinned 3.12 on every Python job and never referenced
+  ``tests/smoke/`` or ``make smoke-*``. No CI changes were needed.
+
+**Files touched.**
+
+- ``tests/smoke/`` — DELETED.
+- ``playground/_helpers.py`` — gained the migrated helpers + endpoint constants.
+- ``playground/_mcp_reference_server.py`` — moved from the smoke tree;
+  docstring updated to reference the new module path.
+- ``playground/01..06`` + ``12``, ``13_mcp.py`` — coverage
+  migrated; payload-shape asserts added inline.
+- ``playground/14_claude_code_plugin.py`` — NEW.
+- ``playground/15_bifrost.py`` — NEW.
+- ``playground/policy_demo_*.py`` × 4 — converted from
+  print-and-continue to print-and-assert.
+- ``playground/run_all.py`` — Python-version gate at top;
+  picks up ``policy_demo_*.py`` set in addition to the
+  numbered files.
+- ``Makefile`` + ``sensor/Makefile`` — ``$(PYTHON)`` variable;
+  smoke targets removed; playground targets added.
+- ``sensor/pyproject.toml`` — Python bound tightened; crewai
+  marker dropped.
+- ``README.md`` + ``sensor/README.md`` + ``playground/README.md``
+  — updated to point at ``./sensor/.venv/bin/python`` /
+  ``make playground-all``.
+- ``ARCHITECTURE.md`` — current-state references updated.
+- ``CLAUDE.md`` rule 40d — rewritten to reference playground.
+- ``dashboard/tests/e2e/fixtures/_capture_mcp_fixtures.py`` —
+  spawn-path updated to ``playground._mcp_reference_server``.
+- ``tests/integration/test_policy.py`` — stale docstring
+  reference corrected to point at the playground policy demos.
+
+**Historical references kept intact.** ``CHANGELOG.md`` past
+release entries and ``DECISIONS.md`` past D-entries that mention
+``tests/smoke/`` describe what shipped at the time and stay
+unchanged. The new ``Unreleased`` CHANGELOG entry records the
+consolidation; this D124 entry is the durable archive.
+
+**Related decisions.** D5 (mcpadapt pin), D113 (Claude Code
+plugin observation-only), D118 (per-call MCP events), D120
+(``[mcp-crewai]`` extras retired in favor of
+``[dev]``-bundled mcpadapt). Rule 40d (live-stack verification —
+playground is now the surface that satisfies it).
+
+## D125 -- Provider enum for ``flightdeck_sensor.patch()``
+
+**Problem.** ``patch()`` accepted ``providers: list[str]``. Valid
+values were hardcoded inside the function body
+(``["anthropic", "openai", "litellm", "mcp"]``) and duplicated in
+the docstring. Playground scripts and user code passed raw strings.
+Two consequences:
+
+1. No IDE autocomplete or static type-checker signal for valid
+   values in user code. ``patch(providers=["anthropc"])`` (typo)
+   silently no-op'd, masking a wiring mistake.
+2. Adding a new interceptor target required edits in three places
+   (interceptor module + ``patch()`` body + docstring) with no
+   cross-reference guard. Enum drift vs interceptor branch drift
+   was invisible.
+
+**Decision.** Add ``flightdeck_sensor.Provider`` enum. Each member
+is ``(str, Enum)`` — IS a string, works anywhere a string was
+accepted before. Single source of truth for ``patch()`` defaults
+and member set. Public API at the top level: ``from
+flightdeck_sensor import Provider``.
+
+The four current members are ``Provider.ANTHROPIC`` /
+``Provider.OPENAI`` / ``Provider.LITELLM`` / ``Provider.MCP``,
+matching the four interceptor targets ``patch()`` knows how to
+install. ``patch()``'s default behavior (when ``providers=None``)
+patches every member of the enum, so adding a fifth target means
+adding a fifth member and a fifth branch — the unit test suite
+fails loudly on enum drift via
+``test_provider_values_match_patch_branches``.
+
+**Why ``(str, Enum)`` not ``StrEnum``.** ``StrEnum`` landed in
+Python 3.11. The project floor (after D124) is 3.10. The
+``(str, Enum)`` mixin form gives identical "member IS a string"
+semantics on 3.10 without needing a Python-version branch.
+
+**Backward compat.** ``patch()`` still accepts ``list[str]``.
+Mixed lists of ``Provider`` and ``str`` also work for callers
+mid-migration (every member of ``Provider`` IS-A str so a
+``set``-based normalisation in ``patch()`` collapses both forms
+to the same canonical string lookup). Unknown raw strings in the
+list are silently ignored — preserved verbatim from the pre-D125
+contract; tightening to raise ``ConfigurationError`` would be a
+behavior change unrelated to enum-vs-string.
+
+**Migration scope.** Playground scripts (the user-facing demos
+where the canonical API matters) migrated to enum form.
+``sensor/tests/unit/test_patch.py`` and the integration test
+suite stay on raw strings — those serve as the backward-compat
+contract proof. A new unit file
+``sensor/tests/unit/test_provider_enum.py`` exercises the enum
+path, the string path, the mixed path, the default-None path,
+and the silent-ignore-on-unknown-string path. Filename ends in
+``_enum`` rather than ``_provider`` because the existing
+``test_providers.py`` covers the unrelated payload-extractor
+``AnthropicProvider`` / ``OpenAIProvider`` classes.
+
+**What this does NOT change.**
+
+- The set of valid providers — still the four current
+  interceptor targets.
+- ``patch()`` semantics — same idempotency, same default,
+  same instance-cache limitation.
+- The ``ConfigurationError`` (or absence thereof) on unknown
+  string entries — still silently ignored, as before.
+- Any sensor unit / integration test that currently uses raw
+  strings — those stay as the backward-compat contract proof.
+
+**Files touched.**
+
+- ``sensor/flightdeck_sensor/provider.py`` — NEW. Enum
+  definition. (Filename ``provider.py`` singular because
+  ``flightdeck_sensor/providers/`` is an existing package for
+  the payload extractors; the singular form avoids the name
+  collision while keeping the public API at
+  ``from flightdeck_sensor import Provider``.)
+- ``sensor/flightdeck_sensor/__init__.py`` — re-exports
+  ``Provider`` and adds it to ``__all__``; ``patch()``
+  signature widened to ``list[str | Provider] | None``;
+  body uses the enum as the default-set source of truth and
+  normalises to ``str`` for branch lookup.
+- ``sensor/tests/unit/test_provider_enum.py`` — NEW.
+- 14 playground patch-sites migrated:
+  ``01_direct_anthropic`` / ``02_direct_openai`` /
+  ``06_crewai`` / ``07_directives`` / ``08_enforcement`` /
+  ``09_capture`` / ``10_killswitch`` / ``11_unavailability`` /
+  ``15_bifrost`` / ``policy_demo_block`` /
+  ``policy_demo_degrade`` / ``policy_demo_forced_degrade`` /
+  ``policy_demo_warn``. ``06_crewai._run_chat`` helper signature
+  changed from ``provider: str`` to ``provider: Provider``;
+  callers pass ``Provider.ANTHROPIC`` / ``Provider.OPENAI``.
+- ``CHANGELOG.md`` — Unreleased section entry noting the
+  Provider enum addition + playground migration.
+
+**Related decisions.** D124 (single venv / Python bound that
+makes ``(str, Enum)`` the right shape choice — ``StrEnum``
+would have required 3.11+). The interceptor-target list is
+unchanged from prior phases (Anthropic / OpenAI / litellm /
+MCP).
+

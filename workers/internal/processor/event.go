@@ -96,10 +96,79 @@ func BuildEventExtra(e consumer.EventPayload) ([]byte, error) {
 	if e.IntendedModel != "" {
 		extra["intended_model"] = e.IntendedModel
 	}
+	// Phase 5 MCP fields. Project unconditionally when the sensor sent
+	// them — only MCP_* events carry these on the wire. The dashboard's
+	// MCPEventDetails component reads them directly from events.payload.
+	if e.ServerName != "" {
+		extra["server_name"] = e.ServerName
+	}
+	if e.Transport != "" {
+		extra["transport"] = e.Transport
+	}
+	if e.Count != nil {
+		extra["count"] = *e.Count
+	}
+	if len(e.Arguments) > 0 {
+		var v interface{}
+		if err := json.Unmarshal(e.Arguments, &v); err == nil {
+			extra["arguments"] = v
+		}
+	}
+	if e.ResourceURI != "" {
+		extra["resource_uri"] = e.ResourceURI
+	}
+	if e.ContentBytes != nil {
+		extra["content_bytes"] = *e.ContentBytes
+	}
+	if e.MimeType != "" {
+		extra["mime_type"] = e.MimeType
+	}
+	if e.PromptName != "" {
+		extra["prompt_name"] = e.PromptName
+	}
+	if len(e.Rendered) > 0 {
+		var v interface{}
+		if err := json.Unmarshal(e.Rendered, &v); err == nil {
+			extra["rendered"] = v
+		}
+	}
+	// Phase 5 MCP_RESOURCE_READ content. The sensor's lean MCP payload
+	// drops the ``has_content`` flag entirely, so the existing
+	// HasContent gate (which routes LLM PromptContent into the
+	// event_content table) never fires for MCP. Instead the MCP wrapper
+	// puts the captured ReadResourceResult JSON into the wire ``content``
+	// field, which arrives here in EventPayload.Content as a json.RawMessage.
+	// We project it into events.payload JSONB inline — MCP content is
+	// small (KB at most), high-cardinality, and dashboards render it
+	// inline without an extra fetch round-trip. See dashboard contract
+	// in dashboard/tests/e2e/fixtures/README.md.
+	if !e.HasContent && len(e.Content) > 0 && isMCPEventType(e.EventType) {
+		var v interface{}
+		if err := json.Unmarshal(e.Content, &v); err == nil {
+			extra["content"] = v
+		}
+	}
 	if len(extra) == 0 {
 		return nil, nil
 	}
 	return json.Marshal(extra)
+}
+
+// isMCPEventType reports whether ``eventType`` is one of the six Phase 5
+// MCP event types. Used by BuildEventExtra to gate the MCP-content
+// projection: ``content`` on MCP_RESOURCE_READ goes inline into
+// events.payload (small, render-inline), whereas ``content`` on LLM
+// events routes via HasContent into the event_content table (large,
+// fetch-on-demand). Centralising the membership test keeps every
+// MCP-specific branch in BuildEventExtra and Process self-consistent.
+func isMCPEventType(eventType string) bool {
+	switch eventType {
+	case "mcp_tool_list", "mcp_tool_call",
+		"mcp_resource_list", "mcp_resource_read",
+		"mcp_prompt_list", "mcp_prompt_get":
+		return true
+	}
+	return false
 }
 
 // Processor routes incoming events to the session processor, writer,
@@ -171,6 +240,25 @@ func (p *Processor) Process(ctx context.Context, e consumer.EventPayload) error 
 		// activity. Policy is NOT re-evaluated — these events ARE the
 		// evaluation outcome; the worker would otherwise emit a
 		// duplicate directive.
+		if err := p.session.HandlePostCall(ctx, e); err != nil {
+			return err
+		}
+	case "mcp_tool_list", "mcp_tool_call",
+		"mcp_resource_list", "mcp_resource_read",
+		"mcp_prompt_list", "mcp_prompt_get":
+		// Phase 5 MCP events. Route through HandlePostCall: the lean
+		// MCP payload (override 2) carries no token deltas (TokensTotal
+		// is nil) and no model field, so HandlePostCall's branch logic
+		// short-circuits the token / model UPDATEs and just advances
+		// last_seen_at via the no-delta else branch. Policy evaluation
+		// stays gated on event_type=="post_call" below so MCP traffic
+		// does not trigger LLM-budget directives.
+		//
+		// MCP_RESOURCE_READ content + MCP_TOOL_CALL/PROMPT_GET arguments
+		// + result + rendered survive into events.payload via
+		// BuildEventExtra above; server_name + transport land there too
+		// for the dashboard MCPEventDetails component to read inline.
+		// See dashboard/tests/e2e/fixtures/README.md for the contract.
 		if err := p.session.HandlePostCall(ctx, e); err != nil {
 			return err
 		}

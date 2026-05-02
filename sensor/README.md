@@ -2,6 +2,23 @@
 
 In-process agent observability sensor for [Flightdeck](https://github.com/flightdeckhq/flightdeck).
 
+## Local development venv
+
+Flightdeck pins **Python 3.12** for local development. The project
+bound is `3.10 ≤ x < 3.14` (pyproject `requires-python`); `sensor/.venv`
+is the canonical interpreter for every Make target that runs Python.
+
+Recreate from a fresh clone or after a `rm -rf sensor/.venv`:
+
+```bash
+python3.12 -m venv sensor/.venv
+./sensor/.venv/bin/python -m pip install -e ".[dev,anthropic,openai]"
+```
+
+`make -C sensor install` does the same once the venv exists. CI
+overrides via env (`PYTHON=python make -C sensor test`) where
+`actions/setup-python` already pinned the interpreter.
+
 ## Optional `session_id` hint (D094)
 
 By default `init()` auto-generates a fresh UUID every time the process

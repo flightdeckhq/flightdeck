@@ -99,32 +99,48 @@ export function Timeline({
     leftPanelWidthRef.current = leftPanelWidth;
   }, [leftPanelWidth]);
 
-  const handleResizeStart = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    const startX = e.clientX;
-    const startWidth = leftPanelWidthRef.current;
+  const handleResizeStart = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      // Pointer Events rather than mouse events. Firefox aborts a
+      // global ``mousemove`` drag the moment its text-selection
+      // heuristic kicks in over any text-bearing ancestor (the
+      // swimlane's flavor labels / agent names) —
+      // ``e.preventDefault()`` on mousedown isn't sufficient because
+      // Firefox restarts the selection on the first ``mousemove`` it
+      // gets to itself. Pointer events sit in a separate event class
+      // that bypasses text-selection heuristics in every modern
+      // browser. Same fix applied in
+      // ``components/fleet/FleetPanel.tsx`` and
+      // ``pages/Investigate.tsx``.
+      e.preventDefault();
+      const startX = e.clientX;
+      const startWidth = leftPanelWidthRef.current;
 
-    const onMove = (ev: MouseEvent) => {
-      const delta = ev.clientX - startX;
-      const next = Math.min(
-        LEFT_PANEL_MAX_WIDTH,
-        Math.max(LEFT_PANEL_MIN_WIDTH, startWidth + delta),
-      );
-      setLeftPanelWidth(next);
-      // persistLeftPanelWidth writes localStorage AND fires a same-
-      // tab CustomEvent so Fleet.tsx's left-fade overlay tracks the
-      // column's right edge as the user drags.
-      persistLeftPanelWidth(next);
-    };
+      const onMove = (ev: PointerEvent) => {
+        const delta = ev.clientX - startX;
+        const next = Math.min(
+          LEFT_PANEL_MAX_WIDTH,
+          Math.max(LEFT_PANEL_MIN_WIDTH, startWidth + delta),
+        );
+        setLeftPanelWidth(next);
+        // persistLeftPanelWidth writes localStorage AND fires a same-
+        // tab CustomEvent so Fleet.tsx's left-fade overlay tracks the
+        // column's right edge as the user drags.
+        persistLeftPanelWidth(next);
+      };
 
-    const onUp = () => {
-      document.removeEventListener("mousemove", onMove);
-      document.removeEventListener("mouseup", onUp);
-    };
+      const onUp = () => {
+        document.removeEventListener("pointermove", onMove);
+        document.removeEventListener("pointerup", onUp);
+        document.removeEventListener("pointercancel", onUp);
+      };
 
-    document.addEventListener("mousemove", onMove);
-    document.addEventListener("mouseup", onUp);
-  }, []);
+      document.addEventListener("pointermove", onMove);
+      document.addEventListener("pointerup", onUp);
+      document.addEventListener("pointercancel", onUp);
+    },
+    [],
+  );
 
   // Live-updating "now" — throttled to 10fps (100ms) for performance.
   // The tick is kept alive as long as there is at least one event
@@ -404,7 +420,14 @@ export function Timeline({
           onMouseLeave={(e) => {
             e.currentTarget.style.background = "transparent";
           }}
-          onMouseDown={handleResizeStart}
+          // Pointer events (not mouse) so Firefox does not abort the
+          // drag the moment its text-selection heuristic fires over a
+          // label-bearing ancestor — see handleResizeStart docstring.
+          onPointerDown={handleResizeStart}
+          // ``touch-action: none`` opts the handle out of the
+          // browser's default touch panning so a finger drag also
+          // resizes instead of scrolling the page.
+          onTouchStart={(e) => e.preventDefault()}
         />
 
         {/* Shared time axis. Sticky on the vertical axis so it stays

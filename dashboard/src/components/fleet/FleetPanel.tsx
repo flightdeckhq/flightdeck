@@ -140,38 +140,53 @@ export function FleetPanel({
     sidebarWidthRef.current = sidebarWidth;
   }, [sidebarWidth]);
 
-  const handleResizeStart = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    const startX = e.clientX;
-    const startWidth = sidebarWidthRef.current;
+  const handleResizeStart = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      // Pointer Events rather than mouse events. Firefox aborts a
+      // global ``mousemove`` drag the moment its text-selection
+      // heuristic kicks in over any text-bearing ancestor (the
+      // sidebar's flavor / agent labels) — ``e.preventDefault()`` on
+      // mousedown isn't sufficient because Firefox restarts the
+      // selection on the first ``mousemove`` it gets to itself.
+      // Pointer events sit in a separate event class that bypasses
+      // text-selection heuristics in every modern browser. Same fix
+      // applied in ``components/timeline/Timeline.tsx`` and
+      // ``pages/Investigate.tsx``.
+      e.preventDefault();
+      const startX = e.clientX;
+      const startWidth = sidebarWidthRef.current;
 
-    const onMove = (ev: MouseEvent) => {
-      const delta = ev.clientX - startX;
-      const next = Math.min(
-        FLEET_SIDEBAR_MAX_WIDTH,
-        Math.max(FLEET_SIDEBAR_MIN_WIDTH, startWidth + delta),
-      );
-      setSidebarWidth(next);
-    };
-
-    const onUp = () => {
-      document.removeEventListener("mousemove", onMove);
-      document.removeEventListener("mouseup", onUp);
-      // Supervisor-specified: persist on release only, not on every
-      // move, to avoid localStorage write thrash during a drag.
-      try {
-        localStorage.setItem(
-          FLEET_SIDEBAR_WIDTH_KEY,
-          String(sidebarWidthRef.current),
+      const onMove = (ev: PointerEvent) => {
+        const delta = ev.clientX - startX;
+        const next = Math.min(
+          FLEET_SIDEBAR_MAX_WIDTH,
+          Math.max(FLEET_SIDEBAR_MIN_WIDTH, startWidth + delta),
         );
-      } catch {
-        /* storage unavailable -- width applies for this session */
-      }
-    };
+        setSidebarWidth(next);
+      };
 
-    document.addEventListener("mousemove", onMove);
-    document.addEventListener("mouseup", onUp);
-  }, []);
+      const onUp = () => {
+        document.removeEventListener("pointermove", onMove);
+        document.removeEventListener("pointerup", onUp);
+        document.removeEventListener("pointercancel", onUp);
+        // Supervisor-specified: persist on release only, not on every
+        // move, to avoid localStorage write thrash during a drag.
+        try {
+          localStorage.setItem(
+            FLEET_SIDEBAR_WIDTH_KEY,
+            String(sidebarWidthRef.current),
+          );
+        } catch {
+          /* storage unavailable -- width applies for this session */
+        }
+      };
+
+      document.addEventListener("pointermove", onMove);
+      document.addEventListener("pointerup", onUp);
+      document.addEventListener("pointercancel", onUp);
+    },
+    [],
+  );
 
   return (
     <div
@@ -432,7 +447,10 @@ export function FleetPanel({
         onMouseLeave={(e) => {
           e.currentTarget.style.background = "transparent";
         }}
-        onMouseDown={handleResizeStart}
+        // Pointer events for cross-browser drag (Firefox).
+        // See handleResizeStart docstring.
+        onPointerDown={handleResizeStart}
+        onTouchStart={(e) => e.preventDefault()}
       />
     </div>
   );

@@ -1,10 +1,10 @@
 """Policy WARN demo — server policy fires WARN at the configured threshold.
 
-Creates a flavor-scoped policy with warn_at_pct=50 (token_limit=20, so warn
-fires past 10 tokens). Runs two short Anthropic calls; the first burns
-enough input+output tokens to cross the threshold, the second triggers
-the worker policy evaluator → ``warn`` directive → sensor's
-``_apply_directive(WARN)`` emits a ``policy_warn`` event with
+Creates a flavor-scoped policy with warn_at_pct=1 (token_limit=1000, so
+warn fires after the first call's tokens cross 10). Runs two short
+Anthropic calls; the first burns enough tokens to cross the threshold,
+the second triggers the worker policy evaluator → ``warn`` directive →
+sensor's ``_apply_directive(WARN)`` emits a ``policy_warn`` event with
 ``source="server"``.
 
 Run: ``python playground/policy_demo_warn.py``
@@ -18,6 +18,7 @@ try:
 except ImportError:
     print("SKIP: pip install anthropic"); sys.exit(2)
 import flightdeck_sensor
+from flightdeck_sensor import Provider
 from _helpers import init_sensor, print_result
 
 API = os.environ.get("FLIGHTDECK_API_URL", "http://localhost:4000/api")
@@ -44,7 +45,7 @@ def main() -> None:
     })
     try:
         init_sensor(session_id, flavor=flavor)
-        flightdeck_sensor.patch(providers=["anthropic"], quiet=True)
+        flightdeck_sensor.patch(providers=[Provider.ANTHROPIC], quiet=True)
         print(f"[playground:policy_warn] session_id={session_id} flavor={flavor}")
         c = anthropic.Anthropic()
         # Two calls. First crosses threshold; second receives the
@@ -69,15 +70,26 @@ def main() -> None:
             f"/v1/events?from=1970-01-01T00:00:00Z&session_id={session_id}",
         )["events"]
         warns = [e for e in events if e["event_type"] == "policy_warn"]
+        warn_count_ok = len(warns) >= 1
         print_result(
             "policy_warn event landed",
-            len(warns) >= 1,
-            0,
+            warn_count_ok, 0,
             f"got {len(warns)} policy_warn events",
         )
-        if warns:
-            payload = warns[0].get("payload") or {}
-            print(f"  source={payload.get('source')} reason={payload.get('reason')}")
+        if not warn_count_ok:
+            raise AssertionError(
+                f"no policy_warn observed; events={events!r}",
+            )
+        payload = warns[0].get("payload") or {}
+        source_ok = payload.get("source") == "server"
+        print_result(
+            "policy_warn.source=server", source_ok, 0,
+            f"source={payload.get('source')!r} reason={payload.get('reason')!r}",
+        )
+        if not source_ok:
+            raise AssertionError(
+                f"policy_warn.source != 'server': {payload!r}",
+            )
     finally:
         try:
             _api("DELETE", f"/v1/policies/{policy['id']}")

@@ -22,6 +22,7 @@ try:
 except ImportError:
     print("SKIP: pip install anthropic"); sys.exit(2)
 import flightdeck_sensor
+from flightdeck_sensor import Provider
 from _helpers import init_sensor, print_result
 
 API = os.environ.get("FLIGHTDECK_API_URL", "http://localhost:4000/api")
@@ -51,7 +52,7 @@ def main() -> None:
     })
     try:
         init_sensor(session_id, flavor=flavor)
-        flightdeck_sensor.patch(providers=["anthropic"], quiet=True)
+        flightdeck_sensor.patch(providers=[Provider.ANTHROPIC], quiet=True)
         print(f"[playground:policy_degrade] session_id={session_id} flavor={flavor}")
         c = anthropic.Anthropic()
         for i in range(3):
@@ -78,22 +79,36 @@ def main() -> None:
         # most timing the sensor receives a single DEGRADE
         # directive → emits a single POLICY_DEGRADE event. Worker
         # dedup is best-effort; transient races can produce 2 (rare).
+        degrade_count_ok = len(degrades) >= 1
         print_result(
             "policy_degrade event landed",
-            len(degrades) >= 1,
+            degrade_count_ok,
             0,
             f"got {len(degrades)} policy_degrade events",
         )
-        if degrades:
-            payload = degrades[0].get("payload") or {}
-            print(
-                f"  from_model={payload.get('from_model')} "
-                f"to_model={payload.get('to_model')}"
+        if not degrade_count_ok:
+            raise AssertionError(
+                f"no policy_degrade observed; events={events!r}",
             )
-        haiku_calls = sum(1 for pc in post_calls if pc.get("model") == haiku)
-        print(
-            f"  post_calls={len(post_calls)} of which {haiku_calls} on the degraded model",
+        payload = degrades[0].get("payload") or {}
+        to_ok = payload.get("to_model") == haiku
+        print_result(
+            "policy_degrade.to_model=haiku", to_ok, 0,
+            f"from_model={payload.get('from_model')!r} to_model={payload.get('to_model')!r}",
         )
+        if not to_ok:
+            raise AssertionError(f"policy_degrade.to_model mismatch: {payload!r}")
+        haiku_calls = sum(1 for pc in post_calls if pc.get("model") == haiku)
+        swap_landed = haiku_calls >= 1
+        print_result(
+            "post_call.model swapped to haiku at least once", swap_landed, 0,
+            f"post_calls={len(post_calls)} of which {haiku_calls} on the degraded model",
+        )
+        if not swap_landed:
+            raise AssertionError(
+                f"degrade swap did not land in any post_call.model; "
+                f"models seen: {[pc.get('model') for pc in post_calls]!r}",
+            )
     finally:
         try:
             _api("DELETE", f"/v1/policies/{policy['id']}")

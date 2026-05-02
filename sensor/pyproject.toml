@@ -8,7 +8,7 @@ version = "0.3.1"
 description = "In-process agent observability sensor for Flightdeck"
 readme = "README.md"
 license = "Apache-2.0"
-requires-python = ">=3.9"
+requires-python = ">=3.10,<3.14"
 dependencies = [
     "pydantic>=2.0",
 ]
@@ -17,7 +17,6 @@ classifiers = [
     "Intended Audience :: Developers",
     "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -33,6 +32,16 @@ openai = ["openai>=1.0", "tiktoken>=0.5"]
 # sensor's SensorLitellm wrapper then intercepts ``litellm.completion``
 # / ``litellm.acompletion`` via module-level patching.
 litellm = ["litellm>=1.0"]
+# Phase 5: Model Context Protocol (MCP) observability. The sensor's
+# MCP interceptor patches ``mcp.client.session.ClientSession`` so any
+# framework that uses the official Python ``mcp`` SDK (LangChain via
+# langchain-mcp-adapters, LlamaIndex via llama-index-tools-mcp, CrewAI
+# via mcpadapt, raw SDK callers) emits MCP_TOOL_CALL / MCP_TOOL_LIST /
+# MCP_RESOURCE_* / MCP_PROMPT_* events transitively. Floor 1.20 chosen
+# below LlamaIndex tool-mcp's ``mcp >=1.24,<2`` and CrewAI mcpadapt's
+# ``mcp[ws]>=1.10.1`` to cover both transitively without forcing a
+# bump on either.
+mcp = ["mcp>=1.20"]
 dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.21",
@@ -59,10 +68,27 @@ dev = [
     # The framework instantiates its own internal Anthropic / OpenAI
     # client; the sensor's class-level patching descriptor wraps it
     # on first .messages / .chat access. See Phase 4.5+ Phase 3.
-    "langchain-anthropic>=0.1",
-    "langchain-openai>=0.1",
+    #
+    # The langchain ecosystem upper bound is pinned <1.0 because
+    # langchain-mcp-adapters>=0.2 / langgraph>=1 introduced a stricter
+    # ToolNode runtime contract (RunnableConfig with explicit runtime
+    # key) that the playground/smoke MCP path doesn't supply. Pre-1.0
+    # ToolNode.ainvoke({"messages":[...]}) works without the runtime
+    # config — sensor patching is unaffected by the version pin.
+    "langchain-anthropic>=0.1,<1",
+    "langchain-openai>=0.1,<1",
     "llama-index-llms-anthropic>=0.1",
     "llama-index-llms-openai>=0.1",
+    # MCP adapters per framework. langgraph's ToolNode + langchain
+    # MCP adapter and llama-index-tools-mcp BasicMCPClient drive
+    # the MCP smoke tests; mcpadapt (via crewai-tools[mcp]) drives
+    # the CrewAI MCP path. Without these, smoke / playground MCP
+    # sections skip and the wire-level event emission isn't
+    # exercised.
+    "langchain-mcp-adapters<0.2",
+    "langgraph<1",
+    "llama-index-tools-mcp>=0.1",
+    "mcpadapt>=0.0.6",
     # CrewAI 1.14+ ships native provider classes that use the official
     # openai/anthropic SDKs directly (NOT litellm). The default
     # LLM(model=...).call(...) flow is intercepted via the sensor's
@@ -70,8 +96,16 @@ dev = [
     # (responses API, beta.messages, beta.chat.completions.parse) are
     # NOT intercepted -- documented as a known constraint in
     # ARCHITECTURE.md "Framework limitations". See
-    # test_crewai_native_openai_patched_intercepts_call.
+    # test_crewai_native_openai_patched_intercepts_call. The
+    # project-level ``requires-python`` already bars 3.14, so no
+    # per-dep marker is needed here -- pip resolves crewai cleanly on
+    # every supported Python.
     "crewai>=1.14",
+    # Phase 5: MCP unit tests construct a ClientSession against in-memory
+    # anyio streams, apply the patch, and assert event-emission shape.
+    # The smoke matrix uses the same package against a real reference
+    # MCP server subprocess. Both share this dev install.
+    "mcp>=1.20",
 ]
 
 [tool.hatch.build.targets.wheel]

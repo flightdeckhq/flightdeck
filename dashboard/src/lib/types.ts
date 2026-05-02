@@ -18,7 +18,17 @@ export type EventType =
   | "directive_result"
   // Phase 4 additions (v0.5.0):
   | "embeddings"
-  | "llm_error";
+  | "llm_error"
+  // Phase 5 (v0.6.0) — MCP observability. The Python sensor emits all
+  // six; the Claude Code plugin emits MCP_TOOL_CALL only (asymmetric
+  // by design — see README "MCP Observability by Source"). All six
+  // share the same wire schema regardless of source.
+  | "mcp_tool_list"
+  | "mcp_tool_call"
+  | "mcp_resource_list"
+  | "mcp_resource_read"
+  | "mcp_prompt_list"
+  | "mcp_prompt_get";
 
 /** 14-entry structured LLM API error taxonomy. Mirrors
  *  ``sensor/flightdeck_sensor/core/errors.py::ErrorType``. */
@@ -69,6 +79,63 @@ export interface StreamingMetrics {
   inter_chunk_ms: { p50: number; p95: number; max: number } | null;
   final_outcome: "completed" | "aborted";
   abort_reason: string | null;
+}
+
+/** MCP transport used to talk to a server. ``stdio`` for local
+ *  subprocess servers, ``http`` for streamable-http, ``sse`` for
+ *  Server-Sent Events, ``websocket`` for WS. ``null`` when the
+ *  sensor could not detect (e.g. caller built ClientSession with
+ *  hand-built streams). The dashboard renders the label as-is. */
+export type MCPTransport = "stdio" | "http" | "sse" | "websocket" | null;
+
+/** Identity record for an MCP server a session connected to.
+ *
+ *  Captured exactly once per server during ``ClientSession.initialize()``
+ *  by the Python sensor's MCP interceptor. Stored in
+ *  ``sessions.context.mcp_servers`` JSONB and surfaced on the session
+ *  detail response. The listing surfaces only the names array
+ *  (``mcp_server_names[]``); the full fingerprint rides the detail
+ *  endpoint.
+ *
+ *  ``protocol_version`` is intentionally typed ``string | number`` to
+ *  match the SDK's ``InitializeResult.protocolVersion``. Recent MCP
+ *  spec drafts ship integer-coded versions; older releases ship date
+ *  strings (``"2025-11-25"``). The dashboard handles both with a
+ *  one-line type guard at render time -- see ``MCPServersPanel``.
+ */
+export interface MCPServerFingerprint {
+  name: string;
+  transport: MCPTransport;
+  protocol_version: string | number;
+  version: string | null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  capabilities: Record<string, any>;
+  instructions: string | null;
+}
+
+/** Structured ``error`` taxonomy emitted by the sensor's MCP
+ *  interceptor on any failed MCP operation. Mirrors the shape of
+ *  ``LLMErrorPayload`` so the dashboard can reuse the
+ *  ``ErrorEventDetails`` accordion pattern, but error codes here are
+ *  JSON-RPC error codes (-32600/-32602/-32000/-32601/408 plus
+ *  ``other``) rather than provider HTTP statuses. */
+export interface MCPErrorPayload {
+  error_type: string;
+  error_class: string;
+  message: string;
+  code?: number;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  data?: any;
+}
+
+/** A single MCP rendered prompt message. Mirrors the SDK's
+ *  ``GetPromptResult.messages[]`` shape after pydantic ``model_dump``.
+ *  ``content`` is provider-specific (text block, tool result, image,
+ *  etc.) so we keep it untyped. */
+export interface MCPRenderedMessage {
+  role: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  content: any;
 }
 
 /** Agent flavor (persistent identity). */
@@ -162,6 +229,43 @@ export interface EventPayloadFields {
   to_model?: string;
   // policy_block addition: the model the blocked call was going to use.
   intended_model?: string;
+
+  // Phase 5 MCP fields. Populated on the six MCP_* event types by the
+  // sensor's MCP interceptor (and on MCP_TOOL_CALL by the Claude Code
+  // plugin). Absent on every other event type — the lean payload
+  // shape (Phase 5 override 2) means non-MCP events do not carry
+  // these fields at all. Field semantics by event type:
+  //
+  //   mcp_tool_list / mcp_resource_list / mcp_prompt_list:
+  //     server_name, transport, count, duration_ms.
+  //   mcp_tool_call:
+  //     server_name, transport, duration_ms, plus arguments + result
+  //     when capture_prompts=true. ``tool_name`` rides the canonical
+  //     events.tool_name column at the AgentEvent top level for
+  //     filter compatibility.
+  //   mcp_resource_read:
+  //     server_name, transport, resource_uri, content_bytes (always),
+  //     duration_ms, plus mime_type + content when capture_prompts=true.
+  //   mcp_prompt_get:
+  //     server_name, transport, prompt_name, duration_ms, plus
+  //     arguments + rendered when capture_prompts=true.
+  //   any failure path:
+  //     ``error`` carries the structured MCP taxonomy (overload of
+  //     the LLMErrorPayload union). Components that read
+  //     ``payload.error`` on MCP events must narrow via ``error_class``
+  //     or by checking the parent event_type.
+  server_name?: string;
+  transport?: MCPTransport;
+  count?: number;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  arguments?: Record<string, any>;
+  resource_uri?: string;
+  content_bytes?: number;
+  mime_type?: string;
+  prompt_name?: string;
+  rendered?: MCPRenderedMessage[];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  content?: any;
 }
 
 /** Event metadata (no prompt content inline). */
@@ -393,7 +497,16 @@ export interface EventContent {
    * ``EmbeddingsContentViewer`` branches on the type to render the
    * single-input or batch-list view.
    */
-  input?: string | string[] | null;
+  // ``input`` is overloaded across event-content sources:
+  //   * Phase 4 ``embeddings``: string (single-input embed) or string[]
+  //     (batch embed) — the OpenAI / litellm input parameter.
+  //   * Phase 5 ``mcp_tool_call`` / ``mcp_prompt_get`` overflow (B-6):
+  //     dict carrying the call's full ``arguments`` when the inline
+  //     payload field overflowed the 8 KiB threshold.
+  // Components branch on the parent event's event_type to render
+  // appropriately.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  input?: string | string[] | Record<string, any> | null;
   captured_at: string;
 }
 
@@ -516,6 +629,26 @@ export interface SessionListItem {
    * severity-ranked row-level dot indicator (block > degrade > warn).
    */
   policy_event_types?: string[];
+  /**
+   * Phase 5: every distinct MCP server name the session connected to,
+   * derived at query time from ``sessions.context.mcp_servers`` JSONB.
+   * Always present on the wire (empty array when the session connected
+   * to no MCP server). Drives the Investigate MCP SERVER facet
+   * aggregation. Names only — the listing payload stays lean; the full
+   * fingerprint (transport, version, capabilities, instructions) lives
+   * on the detail endpoint via ``Session.context.mcp_servers``.
+   */
+  mcp_server_names?: string[];
+  /**
+   * Phase 5: every distinct ``payload.error.error_type`` observed across
+   * the session's MCP events (any event_type starting with ``mcp_`` whose
+   * payload carries an ``error`` object). Always present on the wire
+   * (empty array when no MCP event in the session failed). Drives the
+   * red MCP-error session-row indicator on Investigate, parallel to
+   * the existing ``error_types`` indicator that covers ``llm_error``
+   * rows. See DECISIONS.md "MCP failure surfacing on event-feed rows".
+   */
+  mcp_error_types?: string[];
 }
 
 /** Paginated response from GET /v1/sessions. */

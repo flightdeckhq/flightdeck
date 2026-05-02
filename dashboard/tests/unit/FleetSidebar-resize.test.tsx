@@ -163,12 +163,20 @@ describe("FleetPanel sidebar width: resize handle", () => {
     expect(sidebar.style.width).toBe(`${FLEET_SIDEBAR_DEFAULT_WIDTH}px`);
 
     act(() => {
-      fireEvent.mouseDown(handle, { clientX: 240 });
+      // jsdom's PointerEvent constructor silently drops the clientX
+      // init field; dispatch a MouseEvent with the pointer event type
+      // instead — PointerEvent extends MouseEvent so the registered
+      // pointerXXX listener fires and ev.clientX is honoured.
+      handle.dispatchEvent(
+        new MouseEvent("pointerdown", { bubbles: true, clientX: 240 }),
+      );
     });
     // Drag 80px to the right while the button is held. Width should
     // update live but the write should not have happened yet.
     act(() => {
-      fireEvent.mouseMove(document, { clientX: 320 });
+      document.dispatchEvent(
+        new MouseEvent("pointermove", { bubbles: true, clientX: 320 }),
+      );
     });
     expect(sidebar.style.width).toBe("320px");
     expect(
@@ -179,7 +187,7 @@ describe("FleetPanel sidebar width: resize handle", () => {
 
     // Release -- now the single persist fires.
     act(() => {
-      fireEvent.mouseUp(document);
+      document.dispatchEvent(new MouseEvent("pointerup", { bubbles: true }));
     });
     const writes = setItemSpy.mock.calls.filter(
       ([k]) => k === FLEET_SIDEBAR_WIDTH_KEY,
@@ -192,13 +200,21 @@ describe("FleetPanel sidebar width: resize handle", () => {
     render(<FleetPanel flavors={mkFlavors()} />);
     const handle = screen.getByTestId("fleet-sidebar-resize-handle");
     act(() => {
-      fireEvent.mouseDown(handle, { clientX: 240 });
+      // jsdom's PointerEvent constructor silently drops the clientX
+      // init field; dispatch a MouseEvent with the pointer event type
+      // instead — PointerEvent extends MouseEvent so the registered
+      // pointerXXX listener fires and ev.clientX is honoured.
+      handle.dispatchEvent(
+        new MouseEvent("pointerdown", { bubbles: true, clientX: 240 }),
+      );
     });
     act(() => {
-      fireEvent.mouseMove(document, { clientX: 9999 });
+      document.dispatchEvent(
+        new MouseEvent("pointermove", { bubbles: true, clientX: 9999 }),
+      );
     });
     act(() => {
-      fireEvent.mouseUp(document);
+      document.dispatchEvent(new MouseEvent("pointerup", { bubbles: true }));
     });
     expect(screen.getByTestId("fleet-sidebar").style.width).toBe(
       `${FLEET_SIDEBAR_MAX_WIDTH}px`,
@@ -209,13 +225,21 @@ describe("FleetPanel sidebar width: resize handle", () => {
     render(<FleetPanel flavors={mkFlavors()} />);
     const handle = screen.getByTestId("fleet-sidebar-resize-handle");
     act(() => {
-      fireEvent.mouseDown(handle, { clientX: 240 });
+      // jsdom's PointerEvent constructor silently drops the clientX
+      // init field; dispatch a MouseEvent with the pointer event type
+      // instead — PointerEvent extends MouseEvent so the registered
+      // pointerXXX listener fires and ev.clientX is honoured.
+      handle.dispatchEvent(
+        new MouseEvent("pointerdown", { bubbles: true, clientX: 240 }),
+      );
     });
     act(() => {
-      fireEvent.mouseMove(document, { clientX: -9999 });
+      document.dispatchEvent(
+        new MouseEvent("pointermove", { bubbles: true, clientX: -9999 }),
+      );
     });
     act(() => {
-      fireEvent.mouseUp(document);
+      document.dispatchEvent(new MouseEvent("pointerup", { bubbles: true }));
     });
     expect(screen.getByTestId("fleet-sidebar").style.width).toBe(
       `${FLEET_SIDEBAR_MIN_WIDTH}px`,

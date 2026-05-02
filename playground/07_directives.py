@@ -15,7 +15,7 @@ except ImportError:
     sys.exit(2)
 
 import flightdeck_sensor
-from flightdeck_sensor import Parameter
+from flightdeck_sensor import Parameter, Provider
 from _helpers import assert_event_landed, init_sensor, print_result
 
 API = os.environ.get("FLIGHTDECK_API_URL", "http://localhost:4000/api")
@@ -45,7 +45,7 @@ def main() -> None:
     # on the directive registration, so each run gets its own.
     flavor = f"playground-directives-{uuid.uuid4().hex[:6]}"
     init_sensor(session_id, flavor=flavor)
-    flightdeck_sensor.patch(providers=["anthropic"], quiet=True)
+    flightdeck_sensor.patch(providers=[Provider.ANTHROPIC], quiet=True)
     print(f"[playground:07_directives] session={session_id} flavor={flavor}")
     # init_sensor fires sync + register but the server row is not
     # readable until the writes settle -- poll briefly.

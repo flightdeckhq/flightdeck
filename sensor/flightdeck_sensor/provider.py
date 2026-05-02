@@ -34,6 +34,14 @@ class Provider(str, Enum):
     * ``Provider.MCP`` — class-level patch on
       ``mcp.client.session.ClientSession`` plus the four transport
       factories (Phase 5 / D117).
+    * ``Provider.CREWAI`` — context-manager wrap around
+      ``crewai.Agent.execute_task`` / ``aexecute_task`` for
+      sub-agent observability (D126).
+    * ``Provider.LANGGRAPH`` — wrap around the registered callable
+      on ``StateGraph.add_node`` for sub-agent observability;
+      agent-bearing predicate is default-on per node, narrowable
+      via the optional regex override
+      ``init(langgraph_agent_node_pattern=…)`` (D126).
 
     Each member's ``.value`` is the canonical string name. The string
     name is what ``patch()`` matches against internally, so passing
@@ -44,3 +52,5 @@ class Provider(str, Enum):
     OPENAI = "openai"
     LITELLM = "litellm"
     MCP = "mcp"
+    CREWAI = "crewai"
+    LANGGRAPH = "langgraph"

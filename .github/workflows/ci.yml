@@ -16,6 +16,9 @@ jobs:
     # actions/checkout, setup-python, upload-artifact, etc.
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+    defaults:
+      run:
+        working-directory: sensor
     steps:
       - uses: actions/checkout@v4
 
@@ -23,27 +26,28 @@ jobs:
         with:
           python-version: "3.12"
 
-      # D124: create the project venv at sensor/.venv so the Makefile's
-      # $(PYTHON) default (./sensor/.venv/bin/python) resolves
-      # identically to local dev. CI and local share ONE Python-management
-      # story -- no env overrides per-step, no auto-detect magic.
-      - name: Create sensor/.venv and install dev + provider extras
-        run: |
-          python -m venv sensor/.venv
-          ./sensor/.venv/bin/pip install -e "./sensor[dev,anthropic,openai]"
+      # Install directly into the actions/setup-python interpreter --
+      # NOT into a fresh sensor/.venv. A previous attempt to mirror the
+      # local-dev venv layout in CI segfaulted pytest under --cov on
+      # the GHA Linux x86_64 runner during collection: identical
+      # package set as the system install, but the venv-installed
+      # variant crashes the coverage tracer (likely a C-extension
+      # RPATH interaction in the heavy onnxruntime/protobuf chain
+      # pulled in transitively via crewai). System pip-install is the
+      # configuration that worked through every prior green run; keep
+      # it that way.
+      - name: Install dependencies
+        run: pip install -e ".[dev,anthropic,openai]"
 
       - name: mypy --strict
-        working-directory: sensor
-        run: .venv/bin/python -m mypy flightdeck_sensor/ --strict
+        run: mypy flightdeck_sensor/ --strict
 
       - name: ruff check
-        working-directory: sensor
-        run: .venv/bin/python -m ruff check flightdeck_sensor/
+        run: ruff check flightdeck_sensor/
 
       - name: Test with coverage
-        working-directory: sensor
         run: |
-          .venv/bin/python -m pytest tests/ -v \
+          pytest tests/ -v \
             --cov=flightdeck_sensor \
             --cov-report=term-missing \
             --cov-report=html:htmlcov \
@@ -225,8 +229,16 @@ jobs:
     runs-on: ubuntu-latest
     needs: [sensor, go, dashboard]
     # KI24: opt this job's JavaScript actions into Node 24.
+    #
+    # PYTHON: the Makefile defaults $(PYTHON) to
+    # ./sensor/.venv/bin/python (D124 single-venv discipline for local
+    # dev). CI uses actions/setup-python directly without a project
+    # venv, so we override here at the job level — every Make target
+    # invoked below ($(PYTHON), $(MAKE) -C sensor, etc.) inherits this
+    # without per-step overrides. One env-var, no per-step trap.
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+      PYTHON: python
     steps:
       - uses: actions/checkout@v4
 
@@ -234,12 +246,9 @@ jobs:
         with:
           python-version: "3.12"
 
-      # D124: create the project venv at sensor/.venv so the Makefile's
-      # $(PYTHON) default resolves identically to local dev.
-      - name: Create sensor/.venv and install dev + provider extras
-        run: |
-          python -m venv sensor/.venv
-          ./sensor/.venv/bin/pip install -e "./sensor[dev,anthropic,openai]"
+      - name: Install sensor with dev + provider extras
+        working-directory: sensor
+        run: pip install -e ".[dev,anthropic,openai]"
 
       - name: Boot the dev stack
         # `make dev` returns once all services have been instructed to
@@ -289,8 +298,13 @@ jobs:
     # fixture dataset must happen against the same Postgres the
     # dashboard later queries, and multiple jobs sharing one stack
     # across runners isn't supported by ``make dev``.
+    #
+    # PYTHON: same job-level override as the integration job above —
+    # the Makefile's $(PYTHON) default points at the local sensor/.venv
+    # which CI doesn't create. ``make seed-e2e`` resolves through this.
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+      PYTHON: python
     steps:
       - uses: actions/checkout@v4
 
@@ -302,17 +316,12 @@ jobs:
         with:
           node-version: "20"
 
-      # D124: create the project venv at sensor/.venv so the Makefile's
-      # $(PYTHON) default resolves identically to local dev. The
-      # seed.py invocation via $(PYTHON) and Playwright's globalSetup
-      # both find flightdeck_sensor in the venv's site-packages.
-      - name: Create sensor/.venv and install dev + provider extras
+      - name: Install sensor (required by seed.py's event-builder helpers)
         # tests/shared/fixtures.py imports
         # flightdeck_sensor.core.agent_id.derive_agent_id. Without the
         # install the seeder crashes before POSTing anything.
-        run: |
-          python -m venv sensor/.venv
-          ./sensor/.venv/bin/pip install -e "./sensor[dev,anthropic,openai]"
+        working-directory: sensor
+        run: pip install -e ".[dev,anthropic,openai]"
 
       - name: Install dashboard deps
         working-directory: dashboard

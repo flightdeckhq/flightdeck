@@ -38,11 +38,11 @@ test-plugin: ## Run the Claude Code plugin unit tests (zero-dep, node --test)
 
 test-integration: ## Run integration tests (requires running stack)
 	$(MAKE) -C docker dev
-	cd tests/integration && $(abspath $(PYTHON)) -m pytest -v -m "not manual"
+	$(PYTHON) -m pytest tests/integration -v -m "not manual"
 
 test-sensor-e2e: ## Run sensor respx-driven end-to-end tests (requires running stack)
 	$(MAKE) -C docker dev
-	cd tests/integration && $(abspath $(PYTHON)) -m pytest -v test_sensor_e2e.py
+	$(PYTHON) -m pytest tests/integration/test_sensor_e2e.py -v
 
 # ---------------------------------------------------------------------------
 # Rule 40d playground demos. Each runs the per-framework playground

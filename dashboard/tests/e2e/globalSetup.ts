@@ -8,9 +8,14 @@ import { fileURLToPath } from "node:url";
 // The seeder lives outside the dashboard package because the same
 // event-builder helpers (tests/shared/fixtures.py) drive the pytest
 // integration suite — one copy of the HTTP/identity contract is
-// better than two that drift. Shelling to the project venv's python
-// from TypeScript is the cost of that sharing, paid once per
-// `playwright test` invocation.
+// better than two that drift. Shelling to python3 from TypeScript is
+// the cost of that sharing, paid once per `playwright test` invocation.
+//
+// Interpreter selection: respect the PYTHON env var when set
+// (CI threads PYTHON=python through the workflow; local dev loops
+// without venv activation can point at sensor/.venv/bin/python). Fall
+// back to python3 on PATH — works whether the user has the venv
+// activated or installed flightdeck_sensor into the system interpreter.
 //
 // The script is idempotent: repeat runs against an already-seeded
 // stack skip sessions whose event counts clear the completeness bar,
@@ -25,15 +30,10 @@ const __dirname = dirname(__filename);
 export default async function globalSetup(): Promise<void> {
   const repoRoot = resolve(__dirname, "..", "..", "..");
   const seedScript = resolve(repoRoot, "tests", "e2e-fixtures", "seed.py");
-  // D124: route through the project venv so flightdeck_sensor (which
-  // tests/shared/fixtures.py imports) resolves identically in local
-  // dev and CI. CI creates sensor/.venv as part of the workflow's
-  // Python install step; local dev creates it via
-  // ``python3.12 -m venv sensor/.venv`` per the root README setup.
-  const venvPython = resolve(repoRoot, "sensor", ".venv", "bin", "python");
+  const python = process.env.PYTHON ?? "python3";
 
   const t0 = Date.now();
-  const result = spawnSync(venvPython, [seedScript], {
+  const result = spawnSync(python, [seedScript], {
     cwd: repoRoot,
     stdio: "inherit",
     env: process.env,
@@ -41,8 +41,8 @@ export default async function globalSetup(): Promise<void> {
 
   if (result.error) {
     throw new Error(
-      `globalSetup: failed to spawn ${venvPython}: ${result.error.message}. ` +
-        `Did you create the venv? See root README "Local development environment". ` +
+      `globalSetup: failed to spawn ${python} seeder: ${result.error.message}. ` +
+        `Is ${python} on PATH? Set PYTHON to override. ` +
         `Is the dev stack running (make dev)?`,
     );
   }

@@ -493,6 +493,7 @@ Open work tracked here. Prioritized when users tell us which matters most.
 - **Per-agent landing page.** A dedicated agent detail view (today's Investigate filter is the closest equivalent). Token / latency / error trends per agent over rolling windows.
 - **Continuous framework verification.** Scheduled live-API smoke runs across every supported framework, not just on PR. Catches SDK class-rename breakage (anthropic ``RateLimitError`` → ``QuotaError`` etc.) before users hit it.
 - **Production hardening.** NATS authentication, Helm chart polish, nginx rate limiting, dashboard auth, litellm streaming interception, native LangChain Voyage embeddings, dedicated LlamaIndex / CrewAI interceptors where transitive coverage falls short.
+- **Helm migration parity.** Backfill missing `000014` to `000016` in `helm/migrations/` and reconcile with `docker/postgres/migrations/`. The two paths drifted across phases — production deploys via Helm currently lack the agent_type normalization (`000014`), the agent_id-keyed agents table (`000015`), and the `event_content.input` column (`000016`) that docker-compose dev applies automatically.
 
 The roadmap is intentionally loose. User demand reorders priorities.
 

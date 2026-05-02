@@ -1388,7 +1388,7 @@ CREATE TABLE agents (
     agent_type      TEXT NOT NULL CHECK (agent_type IN ('coding', 'production')),
     client_type     TEXT NOT NULL CHECK (client_type IN ('claude_code', 'flightdeck_sensor')),
     agent_name      TEXT NOT NULL,
-    "user"          TEXT NOT NULL,
+    user_name       TEXT NOT NULL,         -- wire field is "user"; column avoids the SQL reserved word
     hostname        TEXT,
     first_seen_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     last_seen_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),

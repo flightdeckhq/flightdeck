@@ -43,7 +43,8 @@ import {
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { deriveAgentId } from "./agent_id.mjs";
+import { deriveAgentId, NAMESPACE_FLIGHTDECK } from "./agent_id.mjs";
+import { uuid5 } from "./uuid5.mjs";
 
 const TIMEOUT_MS = 2000;
 
@@ -826,6 +827,173 @@ async function emitMCPToolCallEvent({
 }
 
 // ---------------------------------------------------------------------
+// D126 — SubagentStart / SubagentStop emission.
+//
+// The plugin's standard dispatch emits events for the OUTER session
+// — the one Claude Code invocation owns. When a Task subagent
+// spawns, Claude Code fires SubagentStart with a hookEvent that
+// carries:
+//
+//   * ``session_id`` — the outer session's id (the parent)
+//   * the subagent's type / role (``subagent_type`` or
+//     ``agent_type``, depending on Claude Code version; we read
+//     either as the role string)
+//   * ``tool_use_id`` — a stable correlator for THIS specific Task
+//     invocation; SubagentStop carries the same value
+//   * ``tool_input.prompt`` — the parent's input to the subagent
+//   * (SubagentStop only) ``tool_response`` — the subagent's
+//     response back to the parent
+//
+// We emit a CHILD session_start (or session_end) whose ``session_id``
+// is a deterministic uuid5 derived from
+// ``(outer_session_id, tool_use_id)`` so SubagentStart and the
+// matching SubagentStop produce the same child id without any
+// disk-marker plumbing. ``parent_session_id`` carries the outer
+// session's id so the worker writes the relationship column.
+// ``agent_role`` joins the agent_id derivation as the conditional
+// 6th input (D126 § 1) — same uuid the Python sensor produces for
+// a parent / role pair on the same identity 5-tuple.
+//
+// SubagentStop is the canonical child end-of-life signal (D126 § 5).
+// PostToolUseFailure on a Task tool stays in the existing tool_call
+// dispatch path (parent's event with the error block); we do NOT
+// emit a child session_end here, because a delayed real
+// SubagentStop would then race a synthetic one.
+// ---------------------------------------------------------------------
+
+export function _subagentRole(hookEvent) {
+  // Claude Code's exact field name for the subagent's type label
+  // varies by version. Try the documented ones in order; fall back
+  // to the empty string (which the agent_id derivation collapses
+  // to the 5-tuple form).
+  const raw =
+    hookEvent.subagent_type ||
+    hookEvent.agent_type ||
+    hookEvent.subagent ||
+    "";
+  return typeof raw === "string" ? raw : String(raw || "");
+}
+
+export function _subagentCorrelator(hookEvent) {
+  // Stable correlator linking SubagentStart and SubagentStop to the
+  // same child session. tool_use_id is the standard hook-pair
+  // correlator in Claude Code; we accept a couple of likely
+  // alternatives so version-skew doesn't silently break the
+  // child-id pairing.
+  return (
+    hookEvent.tool_use_id ||
+    hookEvent.subagent_id ||
+    hookEvent.id ||
+    null
+  );
+}
+
+export function _subagentChildSessionId(outerSessionId, correlator) {
+  // Deterministic uuid5 in the same NAMESPACE_FLIGHTDECK as agent_id
+  // so future reverse-derivation tools have one constant to anchor
+  // against. The path scheme starts with ``flightdeck:subagent://``
+  // so it can't collide with the agent_id derivation's
+  // ``flightdeck://`` paths even if a clever adversary chose
+  // colliding inputs.
+  return uuid5(
+    NAMESPACE_FLIGHTDECK,
+    `flightdeck:subagent://${outerSessionId}/${correlator}`,
+  );
+}
+
+function _captureMessage(body) {
+  if (body == null) return null;
+  return {
+    body,
+    captured_at: new Date().toISOString(),
+  };
+}
+
+async function emitSubagentEvent({
+  cfg,
+  hookName,
+  hookEvent,
+  outerSessionId,
+  basePayload,
+  agentName,
+  identityUser,
+  identityHostname,
+}) {
+  const role = _subagentRole(hookEvent);
+  const correlator = _subagentCorrelator(hookEvent);
+  if (!correlator) {
+    // Without a correlator we can't pair Start with Stop. Log and
+    // bail rather than emitting half a relationship that the
+    // worker would later struggle to close. Step 9 playground will
+    // catch a Claude Code version that drops tool_use_id from
+    // these hooks.
+    process.stderr.write(
+      `flightdeck: ${hookName} payload missing tool_use_id; ` +
+        `child session emission skipped.\n`,
+    );
+    return;
+  }
+
+  const childSessionId = _subagentChildSessionId(outerSessionId, correlator);
+  const childAgentName = role ? `${agentName}/${role}` : agentName;
+  const childAgentId = deriveAgentId({
+    agent_type: "coding",
+    user: identityUser,
+    hostname: identityHostname,
+    client_type: "claude_code",
+    agent_name: agentName,
+    agent_role: role,
+  });
+
+  const payload = {
+    ...basePayload,
+    session_id: childSessionId,
+    parent_session_id: outerSessionId,
+    agent_role: role || null,
+    agent_id: childAgentId,
+    agent_name: childAgentName,
+    event_type: hookName === "SubagentStart" ? "session_start" : "session_end",
+    tool_name: null,
+    tool_input: null,
+    is_subagent_call: false,
+    latency_ms: null,
+    timestamp: new Date().toISOString(),
+    has_content: false,
+    content: null,
+  };
+
+  if (hookName === "SubagentStart") {
+    // Capture the Task tool's ``prompt`` argument as the parent's
+    // input to the child. Gated on capturePrompts per Rule 18 /
+    // Rule 21 — capture-off zeros the body so it never reaches the
+    // network.
+    const promptBody =
+      hookEvent.tool_input && typeof hookEvent.tool_input === "object"
+        ? hookEvent.tool_input.prompt ?? null
+        : null;
+    if (cfg.capturePrompts && promptBody != null) {
+      const incoming = _captureMessage(promptBody);
+      if (incoming != null) {
+        payload.has_content = true;
+        payload.incoming_message = incoming;
+      }
+    }
+  } else {
+    // SubagentStop. tool_response is the subagent's reply back to
+    // the parent. Same capture gating.
+    if (cfg.capturePrompts && hookEvent.tool_response != null) {
+      const outgoing = _captureMessage(hookEvent.tool_response);
+      if (outgoing != null) {
+        payload.has_content = true;
+        payload.outgoing_message = outgoing;
+      }
+    }
+  }
+
+  await postEvent(cfg.server, cfg.token, childSessionId, payload);
+}
+
+// ---------------------------------------------------------------------
 // HTTP POST helper + unreachable-session logging.
 //
 // The plugin must never block Claude Code on a broken or missing
@@ -1110,7 +1278,16 @@ async function main() {
   // generic Claude Code tool failures. Let it through so the MCP
   // dispatch branch below can route it to mcp_tool_call; non-MCP
   // PostToolUseFailure falls through and is dropped after that branch.
-  if (!eventType && hookName !== "PostToolUseFailure") return;
+  //
+  // D126 — SubagentStart and SubagentStop are also intentionally
+  // absent from EVENT_MAP because they emit CHILD session_start /
+  // session_end events (different session_id from the outer hook),
+  // not parent events. Routed to a dedicated dispatch below.
+  const isSubagentHook =
+    hookName === "SubagentStart" || hookName === "SubagentStop";
+  if (!eventType && hookName !== "PostToolUseFailure" && !isSubagentHook) {
+    return;
+  }
 
   const sessionId = getSessionId(hookEvent);
   const transcriptPath = hookEvent.transcript_path;
@@ -1190,6 +1367,30 @@ async function main() {
     const turns = getTurns();
     return turns.length > 0 ? turns.at(-1) : null;
   };
+
+  // SubagentStart / SubagentStop (D126). Emit a child session_start /
+  // session_end whose session_id is distinct from the outer
+  // (parent) session, with parent_session_id pointing back at the
+  // outer one and agent_role labeling the subagent's type. SubagentStop
+  // is the canonical end-of-life signal; PostToolUseFailure on a
+  // Task tool keeps emitting the parent's tool_call event with the
+  // structured error block and does NOT duplicate-emit a child
+  // session_end (D126 § 6 disambiguation). Crashes that never reach
+  // a clean SubagentStop fall through the worker's existing state-
+  // revival path (active → stale → lost).
+  if (isSubagentHook) {
+    await emitSubagentEvent({
+      cfg,
+      hookName,
+      hookEvent,
+      outerSessionId: sessionId,
+      basePayload,
+      agentName,
+      identityUser,
+      identityHostname,
+    });
+    return;
+  }
 
   // SessionStart: real first hook. Emit session_start with the model
   // and context, cache the model for subsequent UserPromptSubmit hooks,

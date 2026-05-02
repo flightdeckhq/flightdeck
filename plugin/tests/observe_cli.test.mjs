@@ -10,6 +10,9 @@ import { dirname, join } from "node:path";
 
 import {
   EVENT_MAP,
+  _subagentChildSessionId,
+  _subagentCorrelator,
+  _subagentRole,
   collectContext,
   computeLatencyMs,
   getSessionId,
@@ -22,6 +25,7 @@ import {
   sanitizeToolInput,
   tokensFromUsage,
 } from "../hooks/scripts/observe_cli.mjs";
+import { deriveAgentId } from "../hooks/scripts/agent_id.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = join(__dirname, "..", "hooks", "scripts", "observe_cli.mjs");
@@ -1670,6 +1674,304 @@ describe("observe_cli end-to-end (new fields)", () => {
     assert.equal(
       posted.filter((b) => b.event_type === "post_call").length,
       0,
+    );
+  });
+});
+
+
+// =====================================================================
+// D126 — SubagentStart / SubagentStop hooks (sub-agent observability)
+// =====================================================================
+
+describe("subagent helpers", () => {
+  it("_subagentRole reads subagent_type / agent_type / subagent in priority order", () => {
+    // Highest-priority field wins.
+    assert.equal(_subagentRole({ subagent_type: "Explore" }), "Explore");
+    assert.equal(
+      _subagentRole({ subagent_type: "Explore", agent_type: "Other" }),
+      "Explore",
+    );
+    // Falls through to agent_type when subagent_type missing.
+    assert.equal(_subagentRole({ agent_type: "Researcher" }), "Researcher");
+    // Falls through to subagent string when both missing.
+    assert.equal(_subagentRole({ subagent: "Writer" }), "Writer");
+    // Empty string when nothing maps; the agent_id derivation
+    // collapses empty role to the parent's 5-tuple.
+    assert.equal(_subagentRole({}), "");
+  });
+
+  it("_subagentCorrelator picks tool_use_id over alternatives", () => {
+    assert.equal(
+      _subagentCorrelator({ tool_use_id: "tu-1", subagent_id: "sa-1", id: "x" }),
+      "tu-1",
+    );
+    assert.equal(_subagentCorrelator({ subagent_id: "sa-2" }), "sa-2");
+    assert.equal(_subagentCorrelator({ id: "id-3" }), "id-3");
+    assert.equal(_subagentCorrelator({}), null);
+  });
+
+  it("_subagentChildSessionId is deterministic across calls", () => {
+    const a = _subagentChildSessionId("outer-sess", "tu-1");
+    const b = _subagentChildSessionId("outer-sess", "tu-1");
+    assert.equal(a, b);
+    // Different correlators produce different uuids — same outer
+    // session can spawn multiple subagents with distinct ids.
+    const c = _subagentChildSessionId("outer-sess", "tu-2");
+    assert.notEqual(a, c);
+    // Different outer sessions don't collide either.
+    const d = _subagentChildSessionId("outer-sess-2", "tu-1");
+    assert.notEqual(a, d);
+  });
+});
+
+describe("observe_cli SubagentStart / SubagentStop", () => {
+  let capture;
+
+  before(async () => {
+    capture = await startCaptureServer();
+    clearAllPluginMarkers();
+  });
+
+  after(() => {
+    capture.server.close();
+    clearAllPluginMarkers();
+  });
+
+  beforeEach(() => {
+    clearAllPluginMarkers();
+  });
+
+  it("SubagentStart emits child session_start with parent_session_id + agent_role", async () => {
+    const before = capture.bodies().length;
+    const input = JSON.stringify({
+      hook_event_name: "SubagentStart",
+      session_id: "sess-outer-1",
+      subagent_type: "Explore",
+      tool_use_id: "tu-explore-1",
+      tool_input: { prompt: "find files matching X" },
+    });
+    const result = await runScript(input, {
+      FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
+      FLIGHTDECK_TOKEN: "tok_test",
+      CLAUDE_SESSION_ID: "sess-outer-1",
+      // Plugin defaults capture-on per D103, but make it explicit
+      // here so the test is robust to any default change.
+      FLIGHTDECK_CAPTURE_PROMPTS: "true",
+    });
+    assert.equal(result.code, 0);
+
+    const newBodies = capture.bodies().slice(before);
+    const childStart = newBodies.find(
+      (b) => b.event_type === "session_start" && b.parent_session_id != null,
+    );
+    assert.ok(
+      childStart,
+      `expected a child session_start; got ${JSON.stringify(newBodies, null, 2)}`,
+    );
+    assert.equal(childStart.parent_session_id, "sess-outer-1");
+    assert.equal(childStart.agent_role, "Explore");
+    assert.notEqual(childStart.session_id, "sess-outer-1");
+    // Child agent_id derives from outer 5-tuple + role.
+    assert.equal(
+      childStart.agent_id,
+      deriveAgentId({
+        agent_type: "coding",
+        user: childStart.user,
+        hostname: childStart.hostname,
+        client_type: "claude_code",
+        agent_name: childStart.agent_name.replace(/\/Explore$/, ""),
+        agent_role: "Explore",
+      }),
+    );
+    // Child agent_name suffixes the role.
+    assert.ok(
+      childStart.agent_name.endsWith("/Explore"),
+      `agent_name should end with /Explore; got ${childStart.agent_name}`,
+    );
+    // Capture-on stamps the Task prompt as incoming_message.
+    assert.equal(childStart.has_content, true);
+    assert.deepEqual(childStart.incoming_message, {
+      body: "find files matching X",
+      captured_at: childStart.incoming_message.captured_at,
+    });
+    assert.ok(
+      typeof childStart.incoming_message.captured_at === "string",
+      "captured_at must be a string timestamp",
+    );
+  });
+
+  it("SubagentStop emits child session_end with the same child session_id when correlator matches", async () => {
+    // Drive both hooks back-to-back so the deterministic
+    // _subagentChildSessionId derivation pairs them.
+    const startInput = JSON.stringify({
+      hook_event_name: "SubagentStart",
+      session_id: "sess-outer-2",
+      subagent_type: "Explore",
+      tool_use_id: "tu-explore-2",
+      tool_input: { prompt: "stage 1" },
+    });
+    const stopInput = JSON.stringify({
+      hook_event_name: "SubagentStop",
+      session_id: "sess-outer-2",
+      subagent_type: "Explore",
+      tool_use_id: "tu-explore-2",
+      tool_response: "found 7 matches",
+    });
+    const env = {
+      FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
+      FLIGHTDECK_TOKEN: "tok_test",
+      CLAUDE_SESSION_ID: "sess-outer-2",
+      FLIGHTDECK_CAPTURE_PROMPTS: "true",
+    };
+    const before = capture.bodies().length;
+    await runScript(startInput, env);
+    await runScript(stopInput, env);
+
+    const newBodies = capture.bodies().slice(before);
+    const childStart = newBodies.find(
+      (b) => b.event_type === "session_start" && b.parent_session_id != null,
+    );
+    const childEnd = newBodies.find(
+      (b) => b.event_type === "session_end" && b.parent_session_id != null,
+    );
+    assert.ok(childStart, "expected child session_start");
+    assert.ok(childEnd, "expected child session_end");
+    assert.equal(
+      childStart.session_id,
+      childEnd.session_id,
+      "child session_id must match across Start/Stop",
+    );
+    assert.equal(childEnd.parent_session_id, "sess-outer-2");
+    assert.equal(childEnd.agent_role, "Explore");
+    assert.equal(childEnd.has_content, true);
+    assert.equal(childEnd.outgoing_message.body, "found 7 matches");
+  });
+
+  it("capture_prompts=false drops incoming_message and outgoing_message at the boundary", async () => {
+    const startInput = JSON.stringify({
+      hook_event_name: "SubagentStart",
+      session_id: "sess-outer-3",
+      subagent_type: "Explore",
+      tool_use_id: "tu-3",
+      tool_input: { prompt: "secret prompt" },
+    });
+    const stopInput = JSON.stringify({
+      hook_event_name: "SubagentStop",
+      session_id: "sess-outer-3",
+      subagent_type: "Explore",
+      tool_use_id: "tu-3",
+      tool_response: "secret response",
+    });
+    const env = {
+      FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
+      FLIGHTDECK_TOKEN: "tok_test",
+      CLAUDE_SESSION_ID: "sess-outer-3",
+      FLIGHTDECK_CAPTURE_PROMPTS: "false",
+    };
+    const before = capture.bodies().length;
+    await runScript(startInput, env);
+    await runScript(stopInput, env);
+
+    const newBodies = capture.bodies().slice(before);
+    const subagentEvents = newBodies.filter(
+      (b) => b.parent_session_id != null,
+    );
+    assert.equal(subagentEvents.length, 2);
+    for (const ev of subagentEvents) {
+      assert.equal(ev.has_content, false);
+      assert.equal(ev.incoming_message, undefined);
+      assert.equal(ev.outgoing_message, undefined);
+    }
+  });
+
+  it("missing tool_use_id correlator skips child emission with a stderr warn", async () => {
+    const input = JSON.stringify({
+      hook_event_name: "SubagentStart",
+      session_id: "sess-outer-4",
+      subagent_type: "Explore",
+      // tool_use_id deliberately missing
+      tool_input: { prompt: "no correlator here" },
+    });
+    const before = capture.bodies().length;
+    const result = await runScript(input, {
+      FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
+      FLIGHTDECK_TOKEN: "tok_test",
+      CLAUDE_SESSION_ID: "sess-outer-4",
+      FLIGHTDECK_CAPTURE_PROMPTS: "true",
+    });
+    assert.equal(result.code, 0);
+    const newBodies = capture.bodies().slice(before);
+    // No child events with parent_session_id should land.
+    const subagentEvents = newBodies.filter(
+      (b) => b.parent_session_id != null,
+    );
+    assert.equal(subagentEvents.length, 0);
+    // The plugin warned on stderr explaining why.
+    assert.ok(
+      result.stderr.includes("missing tool_use_id"),
+      `expected stderr warn about missing correlator; got: ${result.stderr}`,
+    );
+  });
+
+  it("missing subagent_type produces empty role and the parent's agent_id", async () => {
+    // No role field on the hook event. Per D126 § 1, the agent_id
+    // derivation collapses to the 5-tuple form when role is empty
+    // / whitespace, so the child session lands under the parent's
+    // own agent_id. Edge-case but must not crash.
+    const input = JSON.stringify({
+      hook_event_name: "SubagentStart",
+      session_id: "sess-outer-5",
+      tool_use_id: "tu-5",
+      tool_input: { prompt: "x" },
+    });
+    const before = capture.bodies().length;
+    const result = await runScript(input, {
+      FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
+      FLIGHTDECK_TOKEN: "tok_test",
+      CLAUDE_SESSION_ID: "sess-outer-5",
+      FLIGHTDECK_CAPTURE_PROMPTS: "true",
+    });
+    assert.equal(result.code, 0);
+    const newBodies = capture.bodies().slice(before);
+    const childStart = newBodies.find(
+      (b) => b.event_type === "session_start" && b.parent_session_id != null,
+    );
+    assert.ok(childStart, "child session_start expected even with no role");
+    // agent_role on the wire is null when source field empty.
+    assert.equal(childStart.agent_role, null);
+  });
+
+  it("PostToolUseFailure on a Task tool stays in the parent tool_call path (D126 § 5 disambiguation)", async () => {
+    // Per D126 § 5, a failed Task tool emits the parent's
+    // tool_call event with the existing structured-error block
+    // (already covered for non-Task tools by the standard
+    // PostToolUseFailure → MCP path / drop). The plugin must NOT
+    // duplicate-emit a child session_end here, because a delayed
+    // real SubagentStop would race a synthetic one.
+    const input = JSON.stringify({
+      hook_event_name: "PostToolUseFailure",
+      session_id: "sess-outer-6",
+      tool_name: "Task",
+      tool_use_id: "tu-6",
+      error: "subagent crashed mid-execution",
+    });
+    const before = capture.bodies().length;
+    const result = await runScript(input, {
+      FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
+      FLIGHTDECK_TOKEN: "tok_test",
+      CLAUDE_SESSION_ID: "sess-outer-6",
+    });
+    assert.equal(result.code, 0);
+    const newBodies = capture.bodies().slice(before);
+    // No CHILD session_end (no parent_session_id field on any body).
+    const childEnds = newBodies.filter(
+      (b) => b.event_type === "session_end" && b.parent_session_id != null,
+    );
+    assert.equal(
+      childEnds.length,
+      0,
+      `expected no child session_end on Task PostToolUseFailure; ` +
+        `got ${JSON.stringify(childEnds, null, 2)}`,
     );
   });
 });

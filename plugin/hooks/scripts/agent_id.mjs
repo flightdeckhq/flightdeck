@@ -32,13 +32,26 @@ export const NAMESPACE_FLIGHTDECK =
 /**
  * Derive the deterministic agent_id for the given identity tuple.
  *
- * Grammar (five path segments, every one required, no optional
- * components):
+ * Grammar (D115 — five path segments, every one required, no
+ * optional components):
  *
  *     flightdeck://{agent_type}/{user}@{hostname}/{client_type}/{agent_name}
  *
  * Callers substitute "unknown" for any component they cannot
  * determine -- empty strings would collide distinct identities.
+ *
+ * D126 extension — when ``agent_role`` is supplied with a non-
+ * empty value (after String.prototype.trim()) it joins as a 6th
+ * path segment:
+ *
+ *     flightdeck://{agent_type}/{user}@{hostname}/{client_type}/{agent_name}/{agent_role}
+ *
+ * Null / undefined / "" / whitespace-only role collapses to the
+ * 5-tuple form, so root and direct-SDK agent_ids stay byte-for-
+ * byte unchanged from the D115 fixture vector. Trim semantics
+ * mirror the Python sensor's :func:`derive_agent_id` so a
+ * framework-supplied role with leading / trailing whitespace
+ * lands under the same uuid on both sides of the wire.
  */
 export function deriveAgentId({
   agent_type,
@@ -46,9 +59,16 @@ export function deriveAgentId({
   hostname,
   client_type,
   agent_name,
+  agent_role,
 }) {
-  const path =
+  let path =
     `flightdeck://${agent_type}/${user}@${hostname}` +
     `/${client_type}/${agent_name}`;
+  if (agent_role != null) {
+    const trimmed = String(agent_role).trim();
+    if (trimmed) {
+      path = `${path}/${trimmed}`;
+    }
+  }
   return uuid5(NAMESPACE_FLIGHTDECK, path);
 }

@@ -270,12 +270,52 @@ func (sp *SessionProcessor) HandleSessionStart(ctx context.Context, e consumer.E
 			contextJSON = marshaled
 		}
 	}
+
+	// D126 § 3 forward-reference soft-link. When this event is a
+	// sub-agent session_start whose parent_session_id is not yet in
+	// the DB, INSERT a parent-stub row first so the child's UpsertSession
+	// satisfies the new parent_session_id FK. The real parent's later
+	// session_start (if it ever arrives) upgrades the stub via
+	// UpsertSession's existing write-once-but-upgrade-from-"unknown"
+	// branch. Stub creation failure is logged-but-non-fatal: the child
+	// INSERT will then FK-violate, the worker NAKs, NATS redelivers,
+	// and the stub path retries on the redelivery — better than
+	// failing the wider session_start path on a transient stub-INSERT
+	// hiccup. ParentSessionID is empty on root sessions and direct-SDK
+	// sessions, so the guard short-circuits for the overwhelming
+	// majority of session_start events.
+	if e.ParentSessionID != "" {
+		exists, lErr := sp.w.SessionExists(ctx, e.ParentSessionID)
+		if lErr != nil {
+			slog.Warn("parent session lookup failed",
+				"session_id", e.SessionID,
+				"parent_session_id", e.ParentSessionID,
+				"err", lErr,
+			)
+		} else if !exists {
+			startedAt, tErr := time.Parse(time.RFC3339, e.Timestamp)
+			if tErr != nil {
+				startedAt = time.Now().UTC()
+			}
+			if _, sErr := sp.w.UpsertParentStub(
+				ctx, e.ParentSessionID, startedAt,
+			); sErr != nil {
+				slog.Warn("upsert parent stub failed",
+					"session_id", e.SessionID,
+					"parent_session_id", e.ParentSessionID,
+					"err", sErr,
+				)
+			}
+		}
+	}
+
 	created, err := sp.w.UpsertSession(
 		ctx, e.SessionID, e.Flavor, e.AgentType,
 		e.Host, e.Framework, e.Model, "active",
 		e.AgentID, e.ClientType, e.AgentName,
 		contextJSON,
 		e.TokenID, e.TokenName,
+		e.ParentSessionID, e.AgentRole,
 	)
 	if err != nil {
 		return fmt.Errorf("session start: %w", err)

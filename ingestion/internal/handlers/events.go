@@ -58,6 +58,15 @@ var validClientTypes = map[string]bool{
 	"flightdeck_sensor": true,
 }
 
+// maxAgentRoleLen caps the length of D126's optional ``agent_role``
+// field on the wire. CrewAI ``Agent.role`` labels and LangGraph node
+// names are typically a few words (10-40 chars) — 256 is a generous
+// ceiling that admits every realistic role string while blocking the
+// abuse case where a misbehaving emitter dumps an unbounded blob into
+// the column. The chosen value matches the design-doc reasonable-
+// length boundary the validation contract was specified against.
+const maxAgentRoleLen = 256
+
 // uuidRegex matches the canonical 8-4-4-4-12 hex form. Any version
 // (v1/v4/v5) and any variant bits are accepted -- the identity
 // derivation produces v5 UUIDs and legacy session_ids may be v4, but
@@ -311,6 +320,51 @@ func EventsHandler(
 			writeError(w, http.StatusBadRequest,
 				"client_type must be one of: claude_code, flightdeck_sensor")
 			return
+		}
+
+		// D126 — sub-agent identity validation. parent_session_id
+		// (when present) must be canonical UUID; agent_role
+		// (when present) must be a non-empty string within a
+		// reasonable length cap. Both fields are optional on every
+		// event type; the worker's UpsertSession writes them to
+		// sessions.parent_session_id / sessions.agent_role on
+		// session_start, and BuildEventExtra projects them inline
+		// into events.payload on every event type so the dashboard
+		// reads them without a sessions-table join.
+		//
+		// The 256-char agent_role cap matches the design-doc
+		// reasonable-length boundary. CrewAI Agent.role labels and
+		// LangGraph node names are typically a few words; we cap
+		// well above the typical case so a misbehaving emitter
+		// can't dump unbounded blobs into the column.
+		if rawParent, ok := payload["parent_session_id"]; ok && rawParent != nil {
+			parentID, isStr := rawParent.(string)
+			if !isStr {
+				writeError(w, http.StatusBadRequest,
+					"parent_session_id must be a string when present")
+				return
+			}
+			if parentID != "" && !uuidRegex.MatchString(parentID) {
+				writeError(w, http.StatusBadRequest,
+					"parent_session_id must be a canonical UUID")
+				return
+			}
+		}
+		if rawRole, ok := payload["agent_role"]; ok && rawRole != nil {
+			role, isStr := rawRole.(string)
+			if !isStr {
+				writeError(w, http.StatusBadRequest,
+					"agent_role must be a string when present")
+				return
+			}
+			if len(role) > maxAgentRoleLen {
+				writeError(w, http.StatusBadRequest,
+					fmt.Sprintf(
+						"agent_role exceeds %d-character limit",
+						maxAgentRoleLen,
+					))
+				return
+			}
 		}
 
 		// On session_start, attach the resolved token id/name so the

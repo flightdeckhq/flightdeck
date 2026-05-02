@@ -15,6 +15,20 @@ const (
 	sessionsMaxLimit     = 100
 )
 
+// parseBoolQuery interprets a single URL query parameter as boolean.
+// Truthy values: ``true``, ``1``, ``yes`` (case-insensitive). Every
+// other value (including empty string and unrecognised strings)
+// returns false. The lenient shape matches the ``?has_sub_agents=true``
+// dashboard URL the Investigate facets emit; the strict shape would
+// 400 on every facet-checkbox toggle which is the wrong UX.
+func parseBoolQuery(raw string) bool {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "true", "1", "yes":
+		return true
+	}
+	return false
+}
+
 // validSessionStates is the whitelist for the state filter.
 var validSessionStates = map[string]bool{
 	"active": true,
@@ -90,6 +104,10 @@ var validPolicyEventTypes = map[string]bool{
 // @Param        error_type query  string  false  "Filter to sessions that emitted an llm_error event of one of the listed taxonomy values (repeatable/comma). 14-entry vocabulary: rate_limit, quota_exceeded, context_overflow, content_filter, invalid_request, authentication, permission, not_found, request_too_large, api_error, overloaded, timeout, stream_error, other."
 // @Param        policy_event_type query  string  false  "Filter to sessions that emitted at least one policy enforcement event of the listed types (repeatable/comma). Vocabulary: policy_warn, policy_degrade, policy_block."
 // @Param        mcp_server query  string  false  "Filter to sessions that connected to an MCP server with the given name (repeatable/comma). Phase 5: backed by the JSONB array sessions.context.mcp_servers. Each row in the response carries mcp_server_names[] for facet rendering."
+// @Param        parent_session_id query string false "D126: filter to children of one specific parent session (UUID). Used by the SessionDrawer Sub-agents tab to fetch the per-parent child list."
+// @Param        agent_role query  string  false  "D126: filter by sub-agent role string (repeatable/comma). CrewAI Agent.role, LangGraph node name, Claude Code Task agent_type. Backs the Investigate ROLE facet."
+// @Param        has_sub_agents query bool false "D126: when true, restrict to parent sessions only (those referenced as a parent_session_id by at least one other session). Backs the Investigate TOPOLOGY facet 'Has sub-agents' checkbox."
+// @Param        is_sub_agent query bool false "D126: when true, restrict to child sessions only (parent_session_id IS NOT NULL). Backs the Investigate TOPOLOGY facet 'Is sub-agent' checkbox."
 // @Param        sort       query  string  false  "Sort field: started_at, last_seen_at, duration, tokens_used, flavor, model, hostname, state (default: started_at). state sort uses severity ordinal active→idle→stale→lost→closed."
 // @Param        order      query  string  false  "Sort order: asc, desc (default: desc)"
 // @Param        limit      query  int     false  "Max results (default 25, max 100)"
@@ -329,6 +347,25 @@ func SessionsListHandler(s store.Querier) http.HandlerFunc {
 		// Search query
 		search := q.Get("q")
 
+		// D126 — sub-agent observability filters. Each is independent
+		// and composes via AND in the WHERE clause. parent_session_id
+		// is single-value (the natural one-parent-many-children
+		// shape); agent_role accepts repeatable / comma-split values
+		// for the Investigate ROLE facet's multi-select shape;
+		// has_sub_agents / is_sub_agent are boolean toggles.
+		parentSessionID := strings.TrimSpace(q.Get("parent_session_id"))
+		var agentRoles []string
+		for _, role := range q["agent_role"] {
+			for _, v := range strings.Split(role, ",") {
+				v = strings.TrimSpace(v)
+				if v != "" {
+					agentRoles = append(agentRoles, v)
+				}
+			}
+		}
+		hasSubAgents := parseBoolQuery(q.Get("has_sub_agents"))
+		isSubAgent := parseBoolQuery(q.Get("is_sub_agent"))
+
 		params := store.SessionsParams{
 			From:    from,
 			To:      to,
@@ -339,19 +376,23 @@ func SessionsListHandler(s store.Querier) http.HandlerFunc {
 			// Validated at the SQL layer via ``::uuid`` cast so a
 			// malformed value produces a query error rather than a
 			// silently-bypassed filter.
-			AgentID:        strings.TrimSpace(q.Get("agent_id")),
+			AgentID:          strings.TrimSpace(q.Get("agent_id")),
 			AgentTypes:       agentTypes,
 			ClientTypes:      clientTypes,
 			ErrorTypes:       errorTypes,
 			PolicyEventTypes: policyEventTypes,
 			Frameworks:       frameworks,
 			MCPServers:       mcpServers,
-			ContextFilters: contextFilters,
-			Model:          q.Get("model"),
-			Sort:           sort,
-			Order:          order,
-			Limit:          limit,
-			Offset:         offset,
+			ParentSessionID:  parentSessionID,
+			AgentRoles:       agentRoles,
+			HasSubAgents:     hasSubAgents,
+			IsSubAgent:       isSubAgent,
+			ContextFilters:   contextFilters,
+			Model:            q.Get("model"),
+			Sort:             sort,
+			Order:            order,
+			Limit:            limit,
+			Offset:           offset,
 		}
 
 		result, err := s.GetSessions(r.Context(), params)

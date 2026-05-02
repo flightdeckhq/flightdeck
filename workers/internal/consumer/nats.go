@@ -149,6 +149,90 @@ type EventPayload struct {
 	MimeType     string          `json:"mime_type,omitempty"`
 	PromptName   string          `json:"prompt_name,omitempty"`
 	Rendered     json.RawMessage `json:"rendered,omitempty"`
+
+	// D126 — sub-agent observability. Populated only on sub-agent
+	// session_start / session_end events:
+	//
+	//   * ParentSessionID — the outer (parent) session's UUID.
+	//     UpsertSession writes it to sessions.parent_session_id; the
+	//     HandleSessionStart guard lazy-creates a parent stub row
+	//     (UpsertParentStub) before the child INSERT when the parent
+	//     isn't yet in the DB, so the FK is always satisfied.
+	//   * AgentRole — the framework-supplied role label (CrewAI
+	//     Agent.role, LangGraph node name, Claude Code Task subagent
+	//     type). Joins the agent_id derivation as the conditional
+	//     6th input on the sensor side; the worker writes it to
+	//     sessions.agent_role for analytics group_by + Investigate
+	//     facet filtering.
+	//   * IncomingMessage / OutgoingMessage — cross-agent message
+	//     capture, gated on capture_prompts at the sensor / plugin.
+	//     Typed as *SubagentMessage so the envelope shape (body +
+	//     captured_at) is checked at decode time rather than every
+	//     time BuildEventExtra walks the payload. Body stays a
+	//     json.RawMessage inside the struct because the framework's
+	//     source shape is intentionally polymorphic (CrewAI task
+	//     description string, LangGraph state dict, Claude Code
+	//     Task ``prompt`` argument string) — Rule 20 forbids
+	//     normalising it. Small bodies project inline into
+	//     events.payload via BuildEventExtra (D126 § 7 v1 path);
+	//     the 8 KiB → event_content overflow path is deferred.
+	//   * State — overrides the default session_end → state=closed
+	//     projection. Currently used only to surface
+	//     state="error" for sub-agent emissions whose framework
+	//     execution raised; the existing Error json.RawMessage field
+	//     above carries the structured error block in that case.
+	ParentSessionID string           `json:"parent_session_id,omitempty"`
+	AgentRole       string           `json:"agent_role,omitempty"`
+	IncomingMessage *SubagentMessage `json:"incoming_message,omitempty"`
+	OutgoingMessage *SubagentMessage `json:"outgoing_message,omitempty"`
+	State           string           `json:"state,omitempty"`
+}
+
+// SubagentMessageBody is the framework-supplied body of a single
+// cross-agent message — verbatim JSON bytes the worker preserves
+// without normalising (Rule 20 + D126 § 7). The actual shape varies
+// by framework:
+//
+//   * CrewAI ``Agent.execute_task`` — string (task description) or
+//     structured object (when the user populates ``expected_output``
+//     with a JSON shape).
+//   * LangGraph node — dict (the inbound or outbound graph state).
+//   * Claude Code Task plugin — string (the Task tool ``prompt``
+//     argument).
+//   * AutoGen (Roadmap) — framework-internal message object shape.
+//
+// Aliased to ``json.RawMessage`` rather than declared as a richer
+// discriminated union because no consumer in the worker / API /
+// dashboard chain actually switches on the body shape — the
+// dashboard's MESSAGES sub-section renders whatever decodes from
+// the JSON. Adding a discriminator wrapper would be maintenance
+// without value. The named type makes the polymorphism explicit
+// at the EventPayload field signature so readers don't conflate
+// it with the structured ``Streaming`` / ``Error`` / ``Arguments``
+// fields that happen to share the same underlying type.
+type SubagentMessageBody = json.RawMessage
+
+// SubagentMessage is the wire envelope for a single cross-agent
+// message body captured at a sub-agent session boundary (D126 § 7).
+//
+// On a sub-agent ``session_start`` event the sensor or plugin
+// stamps ``IncomingMessage`` with the parent's input to the child.
+// On the matching ``session_end`` event ``OutgoingMessage`` carries
+// the child's response back to the parent. capture_prompts gates
+// emission at the sensor / plugin boundary, so capture-off events
+// land on the wire with both fields nil and the worker has nothing
+// to project.
+//
+// See SubagentMessageBody for the rationale behind the polymorphic
+// body type. CapturedAt is the ISO 8601 / RFC 3339 timestamp the
+// sensor / plugin stamped at capture time. Kept as a string on the
+// wire (rather than ``time.Time``) so a clock-skewed agent can
+// still produce a parseable payload — the dashboard renders it as
+// a relative offset from the event row's occurred_at and doesn't
+// need timezone-rich semantics.
+type SubagentMessage struct {
+	Body       SubagentMessageBody `json:"body"`
+	CapturedAt string              `json:"captured_at"`
 }
 
 // Processor processes a single event payload.

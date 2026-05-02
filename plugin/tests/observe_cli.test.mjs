@@ -1789,7 +1789,12 @@ describe("observe_cli SubagentStart / SubagentStop", () => {
       `agent_name should end with /Explore; got ${childStart.agent_name}`,
     );
     // Capture-on stamps the Task prompt as incoming_message.
-    assert.equal(childStart.has_content, true);
+    // has_content stays false — sub-agent messages route inline
+    // via events.payload (D126 § 7 v1), not event_content. Setting
+    // has_content=true without LLM PromptContent shape would trip
+    // the dashboard's /v1/events/{id}/content path with a 404
+    // (Rule 37).
+    assert.equal(childStart.has_content, false);
     assert.deepEqual(childStart.incoming_message, {
       body: "find files matching X",
       captured_at: childStart.incoming_message.captured_at,
@@ -1843,7 +1848,9 @@ describe("observe_cli SubagentStart / SubagentStop", () => {
     );
     assert.equal(childEnd.parent_session_id, "sess-outer-2");
     assert.equal(childEnd.agent_role, "Explore");
-    assert.equal(childEnd.has_content, true);
+    // has_content stays false; outgoing_message lives inline in
+    // events.payload via the worker's BuildEventExtra path.
+    assert.equal(childEnd.has_content, false);
     assert.equal(childEnd.outgoing_message.body, "found 7 matches");
   });
 

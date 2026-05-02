@@ -1378,6 +1378,30 @@ const docTemplate = `{
                     },
                     {
                         "type": "string",
+                        "description": "D126: filter to children of one specific parent session (UUID). Used by the SessionDrawer Sub-agents tab to fetch the per-parent child list.",
+                        "name": "parent_session_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "D126: filter by sub-agent role string (repeatable/comma). CrewAI Agent.role, LangGraph node name, Claude Code Task agent_type. Backs the Investigate ROLE facet.",
+                        "name": "agent_role",
+                        "in": "query"
+                    },
+                    {
+                        "type": "boolean",
+                        "description": "D126: when true, restrict to parent sessions only (those referenced as a parent_session_id by at least one other session). Backs the Investigate TOPOLOGY facet 'Has sub-agents' checkbox.",
+                        "name": "has_sub_agents",
+                        "in": "query"
+                    },
+                    {
+                        "type": "boolean",
+                        "description": "D126: when true, restrict to child sessions only (parent_session_id IS NOT NULL). Backs the Investigate TOPOLOGY facet 'Is sub-agent' checkbox.",
+                        "name": "is_sub_agent",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
                         "description": "Sort field: started_at, last_seen_at, duration, tokens_used, flavor, model, hostname, state (default: started_at). state sort uses severity ordinal active→idle→stale→lost→closed.",
                         "name": "sort",
                         "in": "query"
@@ -2244,6 +2268,9 @@ const docTemplate = `{
                 "agent_name": {
                     "type": "string"
                 },
+                "agent_role": {
+                    "type": "string"
+                },
                 "agent_type": {
                     "type": "string"
                 },
@@ -2290,6 +2317,10 @@ const docTemplate = `{
                 "model": {
                     "type": "string"
                 },
+                "parent_session_id": {
+                    "description": "D126 sub-agent observability columns. Both nullable, both\npopulated only on sub-agent sessions (Claude Code Task\nsubagent, CrewAI agent execution, LangGraph agent-bearing\nnode). Root sessions and direct-SDK sessions carry NULL on\nboth. The dashboard's swimlane relationship pill, Sub-agents\ntab, Investigate ROLE / PARENT columns, and Investigate\nTOPOLOGY facets read these directly.",
+                    "type": "string"
+                },
                 "policy_token_limit": {
                     "description": "Active policy thresholds (nullable).\nPopulated by GetSession via effective policy lookup.\nNull if no policy applies at any scope.",
                     "type": "integer"
@@ -2326,6 +2357,9 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "agent_name": {
+                    "type": "string"
+                },
+                "agent_role": {
                     "type": "string"
                 },
                 "agent_type": {
@@ -2379,6 +2413,10 @@ const docTemplate = `{
                     }
                 },
                 "model": {
+                    "type": "string"
+                },
+                "parent_session_id": {
+                    "description": "D126 sub-agent observability columns. Both nullable, both\npopulated only on sub-agent sessions (Claude Code Task\nsubagent, CrewAI agent execution, LangGraph agent-bearing\nnode). The dashboard's swimlane relationship pill,\nSessionDrawer Sub-agents tab, Investigate ROLE / PARENT\ncolumns and TOPOLOGY / ROLE facets read these directly.",
                     "type": "string"
                 },
                 "policy_event_types": {

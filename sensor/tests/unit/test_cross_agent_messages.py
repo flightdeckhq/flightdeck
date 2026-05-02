@@ -98,11 +98,19 @@ def test_session_emit_preserves_body_verbatim_when_capture_on(body: Any) -> None
     payloads = _last_payloads(client)
     assert len(payloads) == 2
     start_p, end_p = payloads
-    assert start_p["has_content"] is True
+    # D126 § 7 v1 routing: sub-agent message bodies live inline in
+    # events.payload via the worker's BuildEventExtra projection.
+    # has_content stays False on the wire because event_content
+    # storage is reserved for LLM PromptContent shape (provider /
+    # model / messages / tools / response / input). Setting
+    # has_content=True without populating those columns would trip
+    # the dashboard's GET /v1/events/{id}/content path with a 404
+    # (Rule 37).
+    assert start_p["has_content"] is False
     assert start_p["incoming_message"]["body"] == body
     assert start_p["incoming_message"]["captured_at"] == "2026-05-02T00:00:00Z"
     assert "outgoing_message" not in start_p
-    assert end_p["has_content"] is True
+    assert end_p["has_content"] is False
     assert end_p["outgoing_message"]["body"] == body
     assert "incoming_message" not in end_p
 

@@ -204,7 +204,9 @@ def test_execute_task_emits_session_start_then_session_end(
     assert start_p["agent_id"] == session.derive_subagent_id("Researcher")
     assert start_p["agent_name"] == f"{session.config.agent_name}/Researcher"
     # capture_prompts=True so incoming_message lands on the wire.
-    assert start_p["has_content"] is True
+    # has_content stays False — sub-agent messages route inline via
+    # events.payload (D126 § 7 v1), not event_content.
+    assert start_p["has_content"] is False
     assert start_p["incoming_message"]["body"] == "Find something interesting"
 
     assert end_p["event_type"] == "session_end"
@@ -212,7 +214,7 @@ def test_execute_task_emits_session_start_then_session_end(
     # omits the explicit state key (the worker's existing
     # session_end → state=closed projection takes over).
     assert "state" not in end_p
-    assert end_p["has_content"] is True
+    assert end_p["has_content"] is False
     assert end_p["outgoing_message"]["body"] == "finding text"
 
 

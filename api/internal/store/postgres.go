@@ -154,6 +154,16 @@ type Session struct {
 	// event_content). Computed via EXISTS subquery so no schema
 	// change is required.
 	CaptureEnabled bool `json:"capture_enabled"`
+
+	// D126 sub-agent observability columns. Both nullable, both
+	// populated only on sub-agent sessions (Claude Code Task
+	// subagent, CrewAI agent execution, LangGraph agent-bearing
+	// node). Root sessions and direct-SDK sessions carry NULL on
+	// both. The dashboard's swimlane relationship pill, Sub-agents
+	// tab, Investigate ROLE / PARENT columns, and Investigate
+	// TOPOLOGY facets read these directly.
+	ParentSessionID *string `json:"parent_session_id,omitempty"`
+	AgentRole       *string `json:"agent_role,omitempty"`
 }
 
 // ContextFacetValue is a single (value, count) entry inside a context
@@ -330,7 +340,9 @@ func (s *Store) GetSession(ctx context.Context, sessionID string) (*Session, err
 				WHERE e.session_id = s.session_id
 				AND e.has_content = true
 				LIMIT 1
-			) AS capture_enabled
+			) AS capture_enabled,
+			s.parent_session_id::text,
+			s.agent_role
 		FROM sessions s
 		LEFT JOIN token_policies ps
 			ON ps.scope = 'session' AND ps.scope_value = s.session_id::text
@@ -349,6 +361,7 @@ func (s *Store) GetSession(ctx context.Context, sessionID string) (*Session, err
 		&sess.PolicyTokenLimit, &sess.WarnAtPct, &sess.DegradeAtPct,
 		&sess.DegradeTo, &sess.BlockAtPct,
 		&sess.CaptureEnabled,
+		&sess.ParentSessionID, &sess.AgentRole,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil

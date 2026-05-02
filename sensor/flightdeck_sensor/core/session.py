@@ -319,7 +319,13 @@ class Session:
             agent_role=agent_role,
         )
         if incoming_message is not None and self.config.capture_prompts:
-            payload["has_content"] = True
+            # D126 § 7 — sub-agent message bodies live inline in
+            # events.payload via the worker's BuildEventExtra
+            # projection. They DO NOT route through the existing
+            # event_content table (which stores LLM PromptContent
+            # shape, not inter-agent messages); has_content stays
+            # False so the wire shape can't trip the dashboard's
+            # ``GET /v1/events/{id}/content`` lookup with a 404.
             payload["incoming_message"] = {
                 "body": incoming_message.body,
                 "captured_at": incoming_message.captured_at,
@@ -367,7 +373,8 @@ class Session:
         if error is not None:
             payload["error"] = error
         if outgoing_message is not None and self.config.capture_prompts:
-            payload["has_content"] = True
+            # See incoming_message comment in
+            # emit_subagent_session_start — same routing.
             payload["outgoing_message"] = {
                 "body": outgoing_message.body,
                 "captured_at": outgoing_message.captured_at,

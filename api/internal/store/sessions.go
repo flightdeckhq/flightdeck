@@ -59,6 +59,28 @@ type SessionsParams struct {
 	// session_start with set-once semantics, parallel to the
 	// frameworks[] pattern. Empty slice = no MCP-server filter.
 	MCPServers []string
+	// D126 sub-agent observability filters. Each field is independent;
+	// passing more than one composes via AND in the WHERE clause so a
+	// caller asking for ``?has_sub_agents=true&agent_role=Researcher``
+	// gets parents whose Researcher children are visible elsewhere on
+	// the page rather than the union.
+	//
+	// ParentSessionID filters to the children of one specific parent
+	// session — used by the Sub-agents tab to fetch the per-parent
+	// child list without a context-id-shaped JOIN. Empty string = no
+	// filter.
+	ParentSessionID string
+	// AgentRoles filters by the framework-supplied role string
+	// (CrewAI ``Agent.role``, LangGraph node name, Claude Code Task
+	// agent_type). Multi-value OR within. Empty slice = no filter.
+	AgentRoles []string
+	// HasSubAgents (when true) restricts to parent sessions — those
+	// referenced as a parent_session_id by at least one other
+	// session. EXISTS subquery on sessions self-join.
+	HasSubAgents bool
+	// IsSubAgent (when true) restricts to child sessions — those
+	// whose own parent_session_id is non-null. Cheap WHERE clause.
+	IsSubAgent bool
 	// ContextFilters carries the generic scalar-key filters on
 	// sessions.context JSONB (user, os, arch, hostname, process_name,
 	// node_version, python_version, git_branch, git_commit, git_repo,
@@ -229,6 +251,15 @@ type SessionListItem struct {
 	// session-row red MCP indicator can render without a per-session
 	// follow-up fetch.
 	MCPErrorTypes []string `json:"mcp_error_types"`
+
+	// D126 sub-agent observability columns. Both nullable, both
+	// populated only on sub-agent sessions (Claude Code Task
+	// subagent, CrewAI agent execution, LangGraph agent-bearing
+	// node). The dashboard's swimlane relationship pill,
+	// SessionDrawer Sub-agents tab, Investigate ROLE / PARENT
+	// columns and TOPOLOGY / ROLE facets read these directly.
+	ParentSessionID *string `json:"parent_session_id,omitempty"`
+	AgentRole       *string `json:"agent_role,omitempty"`
 }
 
 // SessionsResponse is the paginated response for GET /v1/sessions.
@@ -392,6 +423,44 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 		conditions = append(conditions, fmt.Sprintf("s.model = $%d", argIdx))
 		args = append(args, params.Model)
 		argIdx++
+	}
+
+	// D126 sub-agent observability filters. ParentSessionID,
+	// AgentRoles, HasSubAgents, IsSubAgent compose via AND so a
+	// caller asking for ``?has_sub_agents=true&agent_role=Researcher``
+	// gets the intersection (parents whose Researcher children
+	// surface as their own rows) rather than a union. Each branch
+	// is independent and skipped when its filter is unset.
+	if params.ParentSessionID != "" {
+		conditions = append(conditions, fmt.Sprintf(
+			"s.parent_session_id = $%d::uuid", argIdx,
+		))
+		args = append(args, params.ParentSessionID)
+		argIdx++
+	}
+	if len(params.AgentRoles) > 0 {
+		conditions = append(conditions, fmt.Sprintf(
+			"s.agent_role = ANY($%d::text[])", argIdx,
+		))
+		args = append(args, params.AgentRoles)
+		argIdx++
+	}
+	if params.IsSubAgent {
+		// child sessions only — non-null parent_session_id. Hits the
+		// partial index ``sessions_parent_session_id_idx`` directly.
+		conditions = append(conditions, "s.parent_session_id IS NOT NULL")
+	}
+	if params.HasSubAgents {
+		// parent sessions only — referenced as a parent_session_id by
+		// at least one other session. EXISTS over the same partial
+		// index. Operator note: at the data volumes the index covers
+		// (sub-agent sessions are a minority of the overall fleet),
+		// the planner picks the index lookup; the analytics
+		// known-perf-characteristic in D126 § "Accepted properties"
+		// applies to the recursive CTE in 6f, not to this filter.
+		conditions = append(conditions,
+			"EXISTS (SELECT 1 FROM sessions child "+
+				"WHERE child.parent_session_id = s.session_id)")
 	}
 
 	// MCP-server filter (Phase 5). Multi-value OR-within: a session
@@ -581,7 +650,9 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 					AND e.payload->'error'->>'error_type' IS NOT NULL
 				),
 				ARRAY[]::text[]
-			) AS mcp_error_types
+			) AS mcp_error_types,
+			s.parent_session_id::text,
+			s.agent_role
 		FROM sessions s
 		%s
 		ORDER BY %s %s
@@ -623,6 +694,8 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 			&item.PolicyEventTypes,
 			&item.MCPServerNames,
 			&item.MCPErrorTypes,
+			&item.ParentSessionID,
+			&item.AgentRole,
 		); err != nil {
 			return nil, fmt.Errorf("scan session: %w", err)
 		}

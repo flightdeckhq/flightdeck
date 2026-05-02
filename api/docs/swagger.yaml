@@ -496,6 +496,8 @@ definitions:
         type: string
       agent_name:
         type: string
+      agent_role:
+        type: string
       agent_type:
         type: string
       block_at_pct:
@@ -537,6 +539,16 @@ definitions:
         type: string
       model:
         type: string
+      parent_session_id:
+        description: |-
+          D126 sub-agent observability columns. Both nullable, both
+          populated only on sub-agent sessions (Claude Code Task
+          subagent, CrewAI agent execution, LangGraph agent-bearing
+          node). Root sessions and direct-SDK sessions carry NULL on
+          both. The dashboard's swimlane relationship pill, Sub-agents
+          tab, Investigate ROLE / PARENT columns, and Investigate
+          TOPOLOGY facets read these directly.
+        type: string
       policy_token_limit:
         description: |-
           Active policy thresholds (nullable).
@@ -575,6 +587,8 @@ definitions:
           authoritative session_start).
         type: string
       agent_name:
+        type: string
+      agent_role:
         type: string
       agent_type:
         type: string
@@ -644,6 +658,15 @@ definitions:
           type: string
         type: array
       model:
+        type: string
+      parent_session_id:
+        description: |-
+          D126 sub-agent observability columns. Both nullable, both
+          populated only on sub-agent sessions (Claude Code Task
+          subagent, CrewAI agent execution, LangGraph agent-bearing
+          node). The dashboard's swimlane relationship pill,
+          SessionDrawer Sub-agents tab, Investigate ROLE / PARENT
+          columns and TOPOLOGY / ROLE facets read these directly.
         type: string
       policy_event_types:
         description: |-
@@ -1664,6 +1687,28 @@ paths:
         in: query
         name: mcp_server
         type: string
+      - description: 'D126: filter to children of one specific parent session (UUID).
+          Used by the SessionDrawer Sub-agents tab to fetch the per-parent child list.'
+        in: query
+        name: parent_session_id
+        type: string
+      - description: 'D126: filter by sub-agent role string (repeatable/comma). CrewAI
+          Agent.role, LangGraph node name, Claude Code Task agent_type. Backs the
+          Investigate ROLE facet.'
+        in: query
+        name: agent_role
+        type: string
+      - description: 'D126: when true, restrict to parent sessions only (those referenced
+          as a parent_session_id by at least one other session). Backs the Investigate
+          TOPOLOGY facet ''Has sub-agents'' checkbox.'
+        in: query
+        name: has_sub_agents
+        type: boolean
+      - description: 'D126: when true, restrict to child sessions only (parent_session_id
+          IS NOT NULL). Backs the Investigate TOPOLOGY facet ''Is sub-agent'' checkbox.'
+        in: query
+        name: is_sub_agent
+        type: boolean
       - description: 'Sort field: started_at, last_seen_at, duration, tokens_used,
           flavor, model, hostname, state (default: started_at). state sort uses severity
           ordinal active→idle→stale→lost→closed.'

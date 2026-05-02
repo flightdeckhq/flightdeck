@@ -974,7 +974,11 @@ async function emitSubagentEvent({
     if (cfg.capturePrompts && promptBody != null) {
       const incoming = _captureMessage(promptBody);
       if (incoming != null) {
-        payload.has_content = true;
+        // D126 § 7 — sub-agent message bodies route inline via
+        // events.payload (worker's BuildEventExtra projection),
+        // not event_content. has_content stays false so the
+        // dashboard's content-fetch endpoint doesn't 404 on a
+        // sub-agent event that has data only in payload.
         payload.incoming_message = incoming;
       }
     }
@@ -984,7 +988,7 @@ async function emitSubagentEvent({
     if (cfg.capturePrompts && hookEvent.tool_response != null) {
       const outgoing = _captureMessage(hookEvent.tool_response);
       if (outgoing != null) {
-        payload.has_content = true;
+        // See incoming_message comment above for routing rationale.
         payload.outgoing_message = outgoing;
       }
     }

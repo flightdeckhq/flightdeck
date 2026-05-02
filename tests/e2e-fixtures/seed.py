@@ -1126,6 +1126,109 @@ def seed() -> None:
                     ))
                     backdated += 1
                 continue
+            if role == "policy-active":
+                # Re-emit the three policy enforcement events with
+                # timestamp=NOW each seed run so the Fleet sidebar's
+                # POLICY EVENTS panel always has live-window-fresh
+                # data to render. Without this, the
+                # ``_session_is_complete`` idempotency check skips
+                # re-emission on subsequent seed runs and the
+                # canonical events age out of every Fleet time-range
+                # button (max 1h) within hours of the first seed.
+                #
+                # Parallel rationale to ``mcp-active`` above (Phase 5
+                # B-5b live verification): the fixture role exists to
+                # anchor a UI surface whose data must stay fresh
+                # across seed runs. Re-emitting the extras only — not
+                # session_start — keeps the worker's UpsertSession ON
+                # CONFLICT path untouched on repeat runs.
+                #
+                # T17 (Investigate POLICY facet, drawer detail
+                # strings, severity-ranked dot) reads only event_type
+                # + payload shape, both of which match the first-seed
+                # payload at lines 362–393 verbatim, so re-emission
+                # is contract-equivalent and T17 cannot regress.
+                identity = {
+                    "agent_type": agent_cfg["agent_type"],
+                    "client_type": agent_cfg["client_type"],
+                    "user": agent_cfg["user"],
+                    "hostname": agent_cfg["hostname"],
+                    "agent_name": agent_cfg["agent_name"],
+                }
+                common = {
+                    "host": agent_cfg["host"],
+                    "framework": agent_cfg["framework"],
+                    "model": agent_cfg["model"],
+                }
+                # Pin state='active' + last_seen_at=NOW so the session
+                # row reads as live alongside the fresh enforcement
+                # event circles. Same docker-exec psql pattern
+                # fresh-active and mcp-active use.
+                sql = (
+                    f"UPDATE sessions SET "
+                    f"state='active', "
+                    f"last_seen_at=NOW() "
+                    f"WHERE session_id='{session_id}'::uuid"
+                )
+                try:
+                    subprocess.run(
+                        [
+                            "docker", "exec", "docker-postgres-1", "psql",
+                            "-U", "flightdeck", "-d", "flightdeck",
+                            "-c", sql,
+                        ],
+                        capture_output=True, text=True, timeout=10,
+                        check=False,
+                    )
+                except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
+                    print(
+                        f"  warn: policy-active state pin for "
+                        f"{session_id} failed: {exc}",
+                        file=sys.stderr,
+                    )
+                # Three enforcement event types, payload shape mirrors
+                # the first-seed branch in _post_session_events at
+                # lines 362–393. Each event lands a few seconds apart
+                # so the swimlane shows them as a small cluster
+                # rather than overlapping. NOW-30s / -20s / -10s
+                # leaves comfortable margin under the 1m Fleet
+                # swimlane domain AND 5+ minute margin for the Rule
+                # 40c.1 twice-in-a-row run under the spec's 1h
+                # time-range click.
+                fresh_policy_emits: list[tuple[str, dict[str, Any]]] = [
+                    ("policy_warn", {
+                        "source": "server",
+                        "threshold_pct": 80,
+                        "tokens_used": 8000,
+                        "token_limit": 10000,
+                    }),
+                    ("policy_degrade", {
+                        "source": "server",
+                        "threshold_pct": 90,
+                        "tokens_used": 9100,
+                        "token_limit": 10000,
+                        "from_model": "claude-sonnet-4-6",
+                        "to_model": "claude-haiku-4-5",
+                    }),
+                    ("policy_block", {
+                        "source": "server",
+                        "threshold_pct": 100,
+                        "tokens_used": 10100,
+                        "token_limit": 10000,
+                        "intended_model": "claude-opus-4-7",
+                    }),
+                ]
+                for j, (event_type, payload) in enumerate(fresh_policy_emits):
+                    ts = _shift_timestamp(-(30 - 10 * j))  # -30, -20, -10
+                    post_event(make_event(
+                        session_id, agent_cfg["flavor"], event_type,
+                        timestamp=ts,
+                        **payload,
+                        **identity,
+                        **common,
+                    ))
+                backdated += 1
+                continue
             if role not in ("aged-closed", "stale", "ancient-only"):
                 continue
             # Force state for deterministic E2E assertions. Letting the

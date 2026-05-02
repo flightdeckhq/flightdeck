@@ -1,7 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CustomDirective, FlavorSummary, FeedEvent } from "@/lib/types";
 import type { ContextFacets, ContextFilters } from "@/types/context";
-import { truncateSessionId, getDirectiveResultColor, getDirectiveBadge } from "@/lib/events";
+import {
+  truncateSessionId,
+  getDirectiveResultColor,
+  getDirectiveBadge,
+  eventBadgeConfig,
+  getEventDetail,
+} from "@/lib/events";
 import {
   FLEET_SIDEBAR_MIN_WIDTH,
   FLEET_SIDEBAR_MAX_WIDTH,
@@ -18,7 +24,6 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { SessionStateBar } from "./SessionStateBar";
-import { PolicyEventList } from "./PolicyEventList";
 import { createDirective } from "@/lib/api";
 import { SUCCESS_MESSAGE_DISPLAY_MS } from "@/lib/constants";
 import { flavorHasDirectiveCapableSession } from "@/lib/directives";
@@ -70,6 +75,15 @@ interface FleetPanelProps {
   activeFlavorFilter?: string | null;
   directiveEvents?: FeedEvent[];
   /**
+   * Recent policy enforcement events (policy_warn / policy_block /
+   * policy_degrade). Mirrors directiveEvents -- the parent passes the
+   * top 5 newest-first slice. When empty the POLICY EVENTS header AND
+   * body are both hidden, matching DIRECTIVE ACTIVITY's behaviour so
+   * the sidebar only carries operational sections that have something
+   * to show.
+   */
+  policyEvents?: FeedEvent[];
+  /**
    * Runtime context facets aggregated by the fleet API across every
    * non-terminal session. Powers the CONTEXT sidebar filter panel.
    */
@@ -91,6 +105,7 @@ export function FleetPanel({
   onFlavorClick,
   activeFlavorFilter,
   directiveEvents = [],
+  policyEvents = [],
   contextFacets = {},
   contextFilters = {},
   onContextFilter,
@@ -307,13 +322,91 @@ export function FleetPanel({
         )}
       </div>
 
-      {/* Policy Events */}
-      <div className="px-3 pb-2 pt-2 text-xs font-semibold uppercase tracking-[0.06em]" style={{ color: "var(--text-secondary)" }}>
-        Policy Events
-      </div>
-      <div className="px-3 pb-3">
-        <PolicyEventList />
-      </div>
+      {/* Policy Events -- header + body are BOTH hidden when there's
+          no recent enforcement activity. Mirrors DIRECTIVE ACTIVITY
+          below: the sidebar only carries operational sections that
+          have something to show. Each row reads
+            getEventDetail(evt)               (top line, font-mono)
+            flavor · trunc(session_id) · BADGE (bottom line)
+          where BADGE is WARN / BLOCK / DEGRADE coloured by the
+          eventBadgeConfig cssVar shared with the swimlane badge,
+          Investigate POLICY facet, and drawer detail row -- one
+          colour family across every surface. */}
+      {policyEvents.length > 0 && (
+        <>
+          <div
+            className="px-3 pb-2 pt-2 text-xs font-semibold uppercase tracking-[0.06em]"
+            style={{ color: "var(--text-secondary)" }}
+            data-testid="policy-events-header"
+          >
+            Policy Events
+          </div>
+          <div className="px-3 pb-3">
+            <div className="space-y-0.5">
+              {policyEvents.map((fe, i) => {
+                const evt = fe.event;
+                const badge = eventBadgeConfig[evt.event_type];
+                const dotColor = badge?.cssVar ?? "var(--event-warn)";
+                const topLine = getEventDetail(evt);
+                return (
+                  <div
+                    key={`${fe.arrivedAt}-${i}`}
+                    className="flex items-center gap-2"
+                    style={{ height: 32 }}
+                    data-testid={`policy-event-row-${evt.event_type}`}
+                  >
+                    <span
+                      className="inline-block rounded-full"
+                      style={{
+                        width: 8,
+                        height: 8,
+                        background: dotColor,
+                        flexShrink: 0,
+                      }}
+                    />
+                    <div className="flex-1 min-w-0">
+                      <TruncatedText
+                        as="div"
+                        className="font-mono text-xs"
+                        style={{ color: "var(--text)" }}
+                        text={topLine}
+                      />
+                      <div
+                        className="text-[11px] truncate"
+                        style={{ color: "var(--text-muted)" }}
+                        title={`${evt.flavor} · ${truncateSessionId(evt.session_id)}${badge ? ` · ${badge.label}` : ""}`}
+                      >
+                        {evt.flavor} · {truncateSessionId(evt.session_id)}
+                        {badge && (
+                          <>
+                            {" · "}
+                            <span
+                              className="font-semibold"
+                              style={{ color: badge.cssVar, fontSize: 10 }}
+                            >
+                              {badge.label}
+                            </span>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                    <span
+                      className="font-mono text-[11px] shrink-0"
+                      style={{ color: "var(--text-muted)" }}
+                    >
+                      {new Date(fe.arrivedAt).toLocaleTimeString([], {
+                        hour: "2-digit",
+                        minute: "2-digit",
+                        second: "2-digit",
+                      })}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </>
+      )}
 
       {/* Directive Activity -- header + body are BOTH hidden when
           there's no activity. The section only appears when there's

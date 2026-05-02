@@ -448,6 +448,23 @@ export function Fleet() {
     [feedEvents]
   );
 
+  // Recent policy enforcement events for the FleetPanel sidebar.
+  // Mirrors the directiveEvents shape (last 20, newest-first, top 5)
+  // so the sidebar's POLICY EVENTS section behaves identically to
+  // DIRECTIVE ACTIVITY across pause / catch-up / live transitions.
+  const policyEvents = useMemo(() =>
+    feedEvents
+      .filter((fe) =>
+        fe.event.event_type === "policy_warn"
+        || fe.event.event_type === "policy_block"
+        || fe.event.event_type === "policy_degrade",
+      )
+      .slice(-20)
+      .reverse()
+      .slice(0, 5),
+    [feedEvents]
+  );
+
   // Session state counts derived from the live flavors array. This
   // computation runs on every WebSocket message that updates flavors,
   // so the SESSION STATES sidebar block stays current without any
@@ -611,6 +628,7 @@ export function Fleet() {
         onFlavorClick={handleFlavorClick}
         activeFlavorFilter={flavorFilter}
         directiveEvents={directiveEvents}
+        policyEvents={policyEvents}
         contextFacets={contextFacets}
         contextFilters={contextFilters}
         onContextFilter={handleContextFilter}

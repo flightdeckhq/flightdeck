@@ -48,8 +48,9 @@ export default defineConfig({
   ],
   // Global setup seeds the canonical E2E fixtures via
   // tests/e2e-fixtures/seed.py before any project starts. The script
-  // is idempotent -- re-running over a pre-seeded stack is a no-op --
-  // so localhost dev loops don't pay the seed cost per invocation.
+  // seeds canonical sessions on first run and re-emits live-window
+  // events for active roles (mcp-active, fresh-active, error-active,
+  // policy-active) on every invocation so time-window assertions land.
   // String path rather than require.resolve — dashboard/package.json
   // is "type": "module", so CommonJS require is not in scope.
   // Playwright resolves the path relative to this config file.

@@ -175,6 +175,18 @@ API, dashboard, plugin, integration tests, playground demos, and docs.
   the full event history. The Fleet swimlane dims discovery
   hexagons when the toggle is off (mirroring how it dims
   filter-mismatched events). See **D122**.
+- **Fleet sidebar POLICY EVENTS panel** wired to live ``policy_warn``
+  / ``policy_block`` / ``policy_degrade`` events from the live feed,
+  mirroring the DIRECTIVE ACTIVITY section directly below it.
+  Replaces the prior ``No policy events yet.`` stub that rendered
+  unconditionally even though policy events have flowed through every
+  other Flightdeck surface (swimlane badge, Investigate POLICY facet,
+  drawer detail row) since Phase 4. Header and body hide together
+  when no recent enforcement activity is in window. Each row uses
+  ``getEventDetail`` for the top-line (``warn at 80% · 8,000 of
+  10,000 tokens`` etc.) and the shared ``eventBadgeConfig`` cssVar
+  + label for the WARN / BLOCK / DEGRADE badge — one colour family
+  across every surface.
 
 ### Fixed
 
@@ -189,6 +201,18 @@ API, dashboard, plugin, integration tests, playground demos, and docs.
   silently degrading Rule 40c.3 (theme coverage). Both fixes
   shipped together; the new T26 canary makes future drift visible
   on first failed run.
+- **E2E seeder (Tests):** ``tests/e2e-fixtures/seed.py`` now re-emits
+  the canonical ``policy-active`` session's three enforcement events
+  (``policy_warn`` / ``policy_degrade`` / ``policy_block``) at NOW-30
+  / -20 / -10 s on every ``make seed-e2e`` run, parallel to the
+  existing ``fresh-active`` and ``mcp-active`` re-emit branches.
+  Without this, the per-session ``_session_is_complete`` idempotency
+  check skipped policy_* re-emission on repeat seeds and the events
+  aged out of every Fleet time-range button (max 1h) within hours of
+  the first seed — leaving the new POLICY EVENTS panel without
+  in-window data for T27 to assert against. The first-seed payload
+  shape is unchanged, so T17's existing Investigate POLICY assertions
+  cannot regress.
 
 ### Decisions
 

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { FleetPanel } from "@/components/fleet/FleetPanel";
-import type { CustomDirective, FlavorSummary } from "@/lib/types";
+import type { AgentEvent, CustomDirective, FeedEvent, FlavorSummary } from "@/lib/types";
 
 vi.mock("@/lib/api", () => ({
   createDirective: vi.fn(() => Promise.resolve({ id: "dir-1" })),
@@ -73,6 +73,123 @@ describe("FleetPanel", () => {
       screen.queryByTestId("directive-activity-header"),
     ).not.toBeInTheDocument();
     expect(screen.queryByText("Directive Activity")).not.toBeInTheDocument();
+  });
+
+  it("Policy Events header is hidden when policyEvents is empty", () => {
+    // Mirror of the directive-activity-empty test above. Previously
+    // POLICY EVENTS rendered an unconditional "No policy events yet."
+    // stub even on a perfectly clean fleet; now the header AND body
+    // are both gated on policyEvents.length so the sidebar carries
+    // only operational sections that actually have something to show.
+    render(<FleetPanel flavors={mockFlavors} policyEvents={[]} />);
+    expect(
+      screen.queryByTestId("policy-events-header"),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("Policy Events")).not.toBeInTheDocument();
+  });
+
+  it("Policy Events rows render with eventBadgeConfig color + getEventDetail text", () => {
+    // Build one entry per enforcement event_type with canonical
+    // payload shapes so getEventDetail returns its deterministic
+    // strings ("warn at 80% · 8,000 of 10,000 tokens", etc.). Mirrors
+    // the canonical e2e fixture (tests/e2e-fixtures/seed.py policy_*
+    // branch) so the unit and E2E layers exercise identical wire
+    // shapes.
+    const baseEvent = {
+      id: "",
+      session_id: "11111111-1111-4111-8111-111111111111",
+      occurred_at: "",
+      flavor: "research-agent",
+      framework: null,
+      model: null,
+      tokens_input: null,
+      tokens_output: null,
+      tokens_total: null,
+      tokens_cache_read: null,
+      tokens_cache_creation: null,
+      latency_ms: null,
+      tool_name: null,
+      has_content: false,
+    } as Partial<AgentEvent>;
+
+    const events: FeedEvent[] = [
+      {
+        arrivedAt: 1_700_000_000_000,
+        event: {
+          ...baseEvent,
+          id: "ev-warn",
+          event_type: "policy_warn",
+          payload: {
+            source: "server",
+            threshold_pct: 80,
+            tokens_used: 8000,
+            token_limit: 10000,
+          },
+        } as AgentEvent,
+      },
+      {
+        arrivedAt: 1_700_000_001_000,
+        event: {
+          ...baseEvent,
+          id: "ev-degrade",
+          event_type: "policy_degrade",
+          payload: {
+            source: "server",
+            threshold_pct: 90,
+            tokens_used: 9100,
+            token_limit: 10000,
+            from_model: "claude-sonnet-4-6",
+            to_model: "claude-haiku-4-5",
+          },
+        } as AgentEvent,
+      },
+      {
+        arrivedAt: 1_700_000_002_000,
+        event: {
+          ...baseEvent,
+          id: "ev-block",
+          event_type: "policy_block",
+          payload: {
+            source: "server",
+            threshold_pct: 100,
+            tokens_used: 10100,
+            token_limit: 10000,
+            intended_model: "claude-opus-4-7",
+          },
+        } as AgentEvent,
+      },
+    ];
+
+    render(<FleetPanel flavors={mockFlavors} policyEvents={events} />);
+
+    // Header shows up.
+    expect(screen.getByTestId("policy-events-header")).toBeInTheDocument();
+
+    // One row per event_type, anchored by data-testid so theme /
+    // wrapping changes don't break the assertion.
+    expect(screen.getByTestId("policy-event-row-policy_warn")).toBeInTheDocument();
+    expect(screen.getByTestId("policy-event-row-policy_degrade")).toBeInTheDocument();
+    expect(screen.getByTestId("policy-event-row-policy_block")).toBeInTheDocument();
+
+    // Top line uses getEventDetail. Spot-check each variant: the
+    // strings are the same ones T17 asserts in the drawer detail
+    // surface so the unit + E2E vocabularies stay locked together.
+    expect(
+      screen.getByText("warn at 80% · 8,000 of 10,000 tokens"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("degraded from claude-sonnet-4-6 to claude-haiku-4-5"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("blocked at 10,100 of 10,000 tokens"),
+    ).toBeInTheDocument();
+
+    // Bottom-line badge label per row -- WARN / BLOCK / DEGRADE
+    // pulled from eventBadgeConfig so a future relabel flows through
+    // every surface that shares the config.
+    expect(screen.getByText("WARN")).toBeInTheDocument();
+    expect(screen.getByText("BLOCK")).toBeInTheDocument();
+    expect(screen.getByText("DEGRADE")).toBeInTheDocument();
   });
 
   it("Tokens row shows the count scoped to the time range", () => {

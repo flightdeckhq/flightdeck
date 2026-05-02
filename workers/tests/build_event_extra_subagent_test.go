@@ -8,7 +8,7 @@ import (
 	"github.com/flightdeckhq/flightdeck/workers/internal/processor"
 )
 
-// D126 § 7 — sub-agent observability fields project inline into
+// D126 § 6 — sub-agent observability fields project inline into
 // events.payload via BuildEventExtra. Small bodies route here; the
 // 8 KiB → event_content overflow path is deferred (D126 v1).
 //
@@ -80,6 +80,59 @@ func TestBuildEventExtra_SubagentSessionStart_ProjectsIncomingMessage(t *testing
 	}
 }
 
+func TestBuildEventExtra_SubagentSessionStart_ProjectsOverflowStub(t *testing.T) {
+	// Overflow path (D126 § 6): bodies > 8 KiB live in event_content
+	// and the wire stub on payload.incoming_message carries
+	// {has_content, content_bytes, captured_at} so the dashboard can
+	// render a "load full message" affordance with the size hint
+	// before fetching via /v1/events/{id}/content.
+	contentBytes := int64(12345)
+	e := consumer.EventPayload{
+		SessionID:       "child-uuid",
+		EventType:       "session_start",
+		ParentSessionID: "parent-uuid",
+		AgentRole:       "Researcher",
+		IncomingMessage: &consumer.SubagentMessage{
+			HasContent:   true,
+			ContentBytes: &contentBytes,
+			CapturedAt:   "2026-05-02T19:00:00Z",
+			// Body intentionally absent on the overflow path —
+			// it lives in event_content via the existing D119
+			// InsertEventContent flow driven by the event-level
+			// HasContent + Content fields, not on the
+			// SubagentMessage envelope.
+		},
+	}
+	out, err := processor.BuildEventExtra(e)
+	if err != nil {
+		t.Fatalf("BuildEventExtra: %v", err)
+	}
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(out, &parsed); err != nil {
+		t.Fatalf("parse extra: %v", err)
+	}
+	stub, ok := parsed["incoming_message"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("incoming_message: want map, got %T", parsed["incoming_message"])
+	}
+	if stub["has_content"] != true {
+		t.Errorf("stub.has_content: want true, got %v", stub["has_content"])
+	}
+	// JSON unmarshal turns numbers into float64; compare via int
+	// conversion to avoid the type mismatch.
+	if int64(stub["content_bytes"].(float64)) != contentBytes {
+		t.Errorf("stub.content_bytes: want %d, got %v",
+			contentBytes, stub["content_bytes"])
+	}
+	if stub["captured_at"] != "2026-05-02T19:00:00Z" {
+		t.Errorf("stub.captured_at: want timestamp, got %v",
+			stub["captured_at"])
+	}
+	if _, hasBody := stub["body"]; hasBody {
+		t.Error("stub must not carry body on the overflow path")
+	}
+}
+
 func TestBuildEventExtra_SubagentSessionEnd_ProjectsOutgoingAndState(t *testing.T) {
 	e := consumer.EventPayload{
 		SessionID:       "child-uuid",
@@ -143,7 +196,7 @@ func TestBuildEventExtra_RootSession_OmitsSubagentFields(t *testing.T) {
 }
 
 func TestBuildEventExtra_PreservesBodyShape(t *testing.T) {
-	// The D126 § 7 body-preservation invariant: framework-supplied
+	// The D126 § 6 body-preservation invariant: framework-supplied
 	// objects (CrewAI Task description string vs LangGraph state
 	// dict) round-trip through events.payload unchanged. The
 	// dashboard's MESSAGES sub-section reads them verbatim.

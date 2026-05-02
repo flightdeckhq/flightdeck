@@ -909,6 +909,83 @@ function _captureMessage(body) {
   };
 }
 
+// D126 § 6 sub-agent message routing thresholds. Mirror the
+// constants in sensor/flightdeck_sensor/core/session.py so the
+// plugin and Python sensor produce identical wire shapes for
+// equivalent body sizes — same inline / overflow / hard-reject
+// boundaries.
+//
+// Bodies up to SUBAGENT_INLINE_THRESHOLD_BYTES ride inline on the
+// payload's ``incoming_message`` / ``outgoing_message`` field;
+// bodies above the threshold but at or below SUBAGENT_HARD_CAP_BYTES
+// route through the existing D119 event_content path
+// (has_content=true on the event, full body on payload.content
+// in the PromptContent envelope shape the worker's
+// InsertEventContent expects); bodies above the hard cap are
+// dropped with a stderr WARN.
+const SUBAGENT_INLINE_THRESHOLD_BYTES = 8 * 1024;
+const SUBAGENT_HARD_CAP_BYTES = 2 * 1024 * 1024;
+const SUBAGENT_OVERFLOW_PROVIDER = "flightdeck-subagent";
+
+/**
+ * Resolve a sub-agent message into ``{stubOrInline, contentEnvelope}``
+ * per D126 § 6. Mirrors :py:meth:`Session._route_subagent_message`
+ * on the sensor side — same byte-size measurement (JSON-encoded
+ * body), same threshold values, same wire shapes for inline / stub
+ * / overflow envelopes.
+ *
+ * Returns ``{stubOrInline: null, contentEnvelope: null}`` when the
+ * body is absent / capture is off / body exceeds the hard cap.
+ */
+function _routeSubagentMessage(body, capturePrompts, direction) {
+  if (body == null || !capturePrompts) {
+    return { stubOrInline: null, contentEnvelope: null };
+  }
+  // JSON-encode once to size — same encoding the worker sees, so
+  // this byte count is the authoritative measure for the
+  // inline-vs-overflow decision.
+  const jsonBody = JSON.stringify(body);
+  const size = Buffer.byteLength(jsonBody, "utf8");
+  const capturedAt = new Date().toISOString();
+  if (size > SUBAGENT_HARD_CAP_BYTES) {
+    process.stderr.write(
+      `flightdeck: sub-agent ${direction}_message body exceeds ` +
+        `${SUBAGENT_HARD_CAP_BYTES}-byte hard cap (size=${size} ` +
+        `bytes); dropped per D126 § 6.\n`,
+    );
+    return { stubOrInline: null, contentEnvelope: null };
+  }
+  if (size <= SUBAGENT_INLINE_THRESHOLD_BYTES) {
+    return {
+      stubOrInline: { body, captured_at: capturedAt },
+      contentEnvelope: null,
+    };
+  }
+  // Overflow → event_content via the existing D119 path. The
+  // PromptContent envelope's NOT NULL columns
+  // (``messages`` default ``[]``, ``response`` JSONB NOT NULL) are
+  // satisfied by an empty messages list and a response object that
+  // carries the body + direction discriminator. ``provider`` =
+  // "flightdeck-subagent" lets the dashboard's content-fetch
+  // consumer pick the sub-agent renderer over PromptViewer.
+  return {
+    stubOrInline: {
+      has_content: true,
+      content_bytes: size,
+      captured_at: capturedAt,
+    },
+    contentEnvelope: {
+      provider: SUBAGENT_OVERFLOW_PROVIDER,
+      model: "",
+      system: null,
+      messages: [],
+      tools: null,
+      response: { direction, body, captured_at: capturedAt },
+      input: null,
+    },
+  };
+}
+
 async function emitSubagentEvent({
   cfg,
   hookName,
@@ -962,35 +1039,36 @@ async function emitSubagentEvent({
     content: null,
   };
 
+  // D126 § 6 — sub-agent message routing. Body size decides
+  // whether the message lives inline on payload (≤ 8 KiB) or rides
+  // through the existing D119 event_content path (> 8 KiB and ≤ 2
+  // MiB). _routeSubagentMessage handles capture-off + hard-cap
+  // rejection inline; here we just stamp whatever it returns.
   if (hookName === "SubagentStart") {
-    // Capture the Task tool's ``prompt`` argument as the parent's
-    // input to the child. Gated on capturePrompts per Rule 18 /
-    // Rule 21 — capture-off zeros the body so it never reaches the
-    // network.
     const promptBody =
       hookEvent.tool_input && typeof hookEvent.tool_input === "object"
         ? hookEvent.tool_input.prompt ?? null
         : null;
-    if (cfg.capturePrompts && promptBody != null) {
-      const incoming = _captureMessage(promptBody);
-      if (incoming != null) {
-        // D126 § 7 — sub-agent message bodies route inline via
-        // events.payload (worker's BuildEventExtra projection),
-        // not event_content. has_content stays false so the
-        // dashboard's content-fetch endpoint doesn't 404 on a
-        // sub-agent event that has data only in payload.
-        payload.incoming_message = incoming;
-      }
+    const { stubOrInline, contentEnvelope } = _routeSubagentMessage(
+      promptBody, cfg.capturePrompts, "incoming",
+    );
+    if (stubOrInline) payload.incoming_message = stubOrInline;
+    if (contentEnvelope) {
+      payload.has_content = true;
+      payload.content = contentEnvelope;
     }
   } else {
     // SubagentStop. tool_response is the subagent's reply back to
-    // the parent. Same capture gating.
-    if (cfg.capturePrompts && hookEvent.tool_response != null) {
-      const outgoing = _captureMessage(hookEvent.tool_response);
-      if (outgoing != null) {
-        // See incoming_message comment above for routing rationale.
-        payload.outgoing_message = outgoing;
-      }
+    // the parent.
+    const { stubOrInline, contentEnvelope } = _routeSubagentMessage(
+      hookEvent.tool_response ?? null,
+      cfg.capturePrompts,
+      "outgoing",
+    );
+    if (stubOrInline) payload.outgoing_message = stubOrInline;
+    if (contentEnvelope) {
+      payload.has_content = true;
+      payload.content = contentEnvelope;
     }
   }
 

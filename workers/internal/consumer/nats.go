@@ -174,7 +174,7 @@ type EventPayload struct {
 	//     description string, LangGraph state dict, Claude Code
 	//     Task ``prompt`` argument string) — Rule 20 forbids
 	//     normalising it. Small bodies project inline into
-	//     events.payload via BuildEventExtra (D126 § 7 v1 path);
+	//     events.payload via BuildEventExtra (D126 § 6 v1 path);
 	//     the 8 KiB → event_content overflow path is deferred.
 	//   * State — overrides the default session_end → state=closed
 	//     projection. Currently used only to surface
@@ -190,7 +190,7 @@ type EventPayload struct {
 
 // SubagentMessageBody is the framework-supplied body of a single
 // cross-agent message — verbatim JSON bytes the worker preserves
-// without normalising (Rule 20 + D126 § 7). The actual shape varies
+// without normalising (Rule 20 + D126 § 6). The actual shape varies
 // by framework:
 //
 //   * CrewAI ``Agent.execute_task`` — string (task description) or
@@ -213,7 +213,7 @@ type EventPayload struct {
 type SubagentMessageBody = json.RawMessage
 
 // SubagentMessage is the wire envelope for a single cross-agent
-// message body captured at a sub-agent session boundary (D126 § 7).
+// message body captured at a sub-agent session boundary (D126 § 6).
 //
 // On a sub-agent ``session_start`` event the sensor or plugin
 // stamps ``IncomingMessage`` with the parent's input to the child.
@@ -223,6 +223,26 @@ type SubagentMessageBody = json.RawMessage
 // land on the wire with both fields nil and the worker has nothing
 // to project.
 //
+// Two routing shapes per D126 § 6:
+//
+//   * **Inline** (body ≤ 8 KiB) — ``Body`` + ``CapturedAt``
+//     populated. The body lands in events.payload via
+//     BuildEventExtra; HasContent stays false on the event row.
+//
+//   * **Overflow** (body > 8 KiB and ≤ 2 MiB) — ``HasContent``
+//     true, ``ContentBytes`` set to the body size in bytes,
+//     ``CapturedAt`` populated, ``Body`` empty. The full body
+//     rides on the event payload's separate ``content`` field
+//     (PromptContent shape with ``provider="flightdeck-subagent"``)
+//     and lands in event_content via the existing D119
+//     InsertEventContent path; the dashboard fetches it via
+//     ``GET /v1/events/{id}/content``. The stub here lets the
+//     dashboard render a size-aware "load full message" affordance
+//     without an extra round-trip.
+//
+//   * Bodies above 2 MiB are dropped at the sensor / plugin with
+//     a WARN log; the worker never sees them.
+//
 // See SubagentMessageBody for the rationale behind the polymorphic
 // body type. CapturedAt is the ISO 8601 / RFC 3339 timestamp the
 // sensor / plugin stamped at capture time. Kept as a string on the
@@ -231,8 +251,10 @@ type SubagentMessageBody = json.RawMessage
 // a relative offset from the event row's occurred_at and doesn't
 // need timezone-rich semantics.
 type SubagentMessage struct {
-	Body       SubagentMessageBody `json:"body"`
-	CapturedAt string              `json:"captured_at"`
+	Body         SubagentMessageBody `json:"body,omitempty"`
+	CapturedAt   string              `json:"captured_at"`
+	HasContent   bool                `json:"has_content,omitempty"`
+	ContentBytes *int64              `json:"content_bytes,omitempty"`
 }
 
 // Processor processes a single event payload.

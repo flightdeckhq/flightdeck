@@ -1790,7 +1790,7 @@ describe("observe_cli SubagentStart / SubagentStop", () => {
     );
     // Capture-on stamps the Task prompt as incoming_message.
     // has_content stays false — sub-agent messages route inline
-    // via events.payload (D126 § 7 v1), not event_content. Setting
+    // via events.payload (D126 § 6 v1), not event_content. Setting
     // has_content=true without LLM PromptContent shape would trip
     // the dashboard's /v1/events/{id}/content path with a 404
     // (Rule 37).
@@ -1979,6 +1979,141 @@ describe("observe_cli SubagentStart / SubagentStop", () => {
       0,
       `expected no child session_end on Task PostToolUseFailure; ` +
         `got ${JSON.stringify(childEnds, null, 2)}`,
+    );
+  });
+
+  // ---------------------------------------------------------------
+  // D126 § 6 size-based routing
+  // ---------------------------------------------------------------
+
+  it("inline path: prompt just under 8 KiB lands on incoming_message; has_content stays false", async () => {
+    // 8 KiB - 16 bytes — comfortably under the threshold once
+    // JSON-encoded (the "x"... string + surrounding quotes).
+    const body = "x".repeat(8 * 1024 - 16);
+    const input = JSON.stringify({
+      hook_event_name: "SubagentStart",
+      session_id: "sess-outer-inline",
+      subagent_type: "Explore",
+      tool_use_id: "tu-inline",
+      tool_input: { prompt: body },
+    });
+    const before = capture.bodies().length;
+    await runScript(input, {
+      FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
+      FLIGHTDECK_TOKEN: "tok_test",
+      CLAUDE_SESSION_ID: "sess-outer-inline",
+      FLIGHTDECK_CAPTURE_PROMPTS: "true",
+    });
+    const newBodies = capture.bodies().slice(before);
+    const childStart = newBodies.find(
+      (b) => b.event_type === "session_start" && b.parent_session_id != null,
+    );
+    assert.ok(childStart);
+    assert.equal(childStart.has_content, false);
+    assert.equal(childStart.incoming_message.body, body);
+    assert.ok(childStart.incoming_message.captured_at);
+    assert.equal(childStart.incoming_message.has_content, undefined);
+    // payload.content is null on the inline path (no
+    // event_content row will be written by the worker).
+    assert.equal(childStart.content, null);
+  });
+
+  it("overflow path: prompt just over 8 KiB rides through event_content via D119", async () => {
+    // 8 KiB + 1 KiB — comfortably over the inline threshold.
+    const body = "x".repeat(8 * 1024 + 1024);
+    const input = JSON.stringify({
+      hook_event_name: "SubagentStart",
+      session_id: "sess-outer-overflow",
+      subagent_type: "Explore",
+      tool_use_id: "tu-overflow",
+      tool_input: { prompt: body },
+    });
+    const before = capture.bodies().length;
+    await runScript(input, {
+      FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
+      FLIGHTDECK_TOKEN: "tok_test",
+      CLAUDE_SESSION_ID: "sess-outer-overflow",
+      FLIGHTDECK_CAPTURE_PROMPTS: "true",
+    });
+    const newBodies = capture.bodies().slice(before);
+    const childStart = newBodies.find(
+      (b) => b.event_type === "session_start" && b.parent_session_id != null,
+    );
+    assert.ok(childStart);
+    // has_content=true triggers the worker's existing
+    // InsertEventContent path; the body lives in event_content.
+    assert.equal(childStart.has_content, true);
+    // PromptContent envelope on payload.content.
+    assert.equal(
+      childStart.content.provider,
+      "flightdeck-subagent",
+      "discriminator picks the sub-agent renderer",
+    );
+    assert.equal(childStart.content.response.body, body);
+    assert.equal(childStart.content.response.direction, "incoming");
+    assert.deepEqual(childStart.content.messages, []);
+    // Stub on incoming_message — no body, just the
+    // {has_content, content_bytes, captured_at} signal.
+    const stub = childStart.incoming_message;
+    assert.equal(stub.has_content, true);
+    assert.ok(stub.content_bytes > 8 * 1024);
+    assert.ok(stub.captured_at);
+    assert.equal(stub.body, undefined);
+  });
+
+  it("overflow path on SubagentStop tags response.direction=outgoing", async () => {
+    const body = "y".repeat(8 * 1024 + 512);
+    const stopInput = JSON.stringify({
+      hook_event_name: "SubagentStop",
+      session_id: "sess-outer-out",
+      subagent_type: "Explore",
+      tool_use_id: "tu-out",
+      tool_response: body,
+    });
+    const before = capture.bodies().length;
+    await runScript(stopInput, {
+      FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
+      FLIGHTDECK_TOKEN: "tok_test",
+      CLAUDE_SESSION_ID: "sess-outer-out",
+      FLIGHTDECK_CAPTURE_PROMPTS: "true",
+    });
+    const newBodies = capture.bodies().slice(before);
+    const childEnd = newBodies.find(
+      (b) => b.event_type === "session_end" && b.parent_session_id != null,
+    );
+    assert.ok(childEnd);
+    assert.equal(childEnd.has_content, true);
+    assert.equal(childEnd.content.response.direction, "outgoing");
+  });
+
+  it("hard-cap: body above 2 MiB is dropped with a stderr warn", async () => {
+    const body = "z".repeat(2 * 1024 * 1024 + 1024);
+    const input = JSON.stringify({
+      hook_event_name: "SubagentStart",
+      session_id: "sess-outer-cap",
+      subagent_type: "Explore",
+      tool_use_id: "tu-cap",
+      tool_input: { prompt: body },
+    });
+    const before = capture.bodies().length;
+    const result = await runScript(input, {
+      FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
+      FLIGHTDECK_TOKEN: "tok_test",
+      CLAUDE_SESSION_ID: "sess-outer-cap",
+      FLIGHTDECK_CAPTURE_PROMPTS: "true",
+    });
+    assert.equal(result.code, 0);
+    const newBodies = capture.bodies().slice(before);
+    const childStart = newBodies.find(
+      (b) => b.event_type === "session_start" && b.parent_session_id != null,
+    );
+    assert.ok(childStart, "session_start still emits — only the body is dropped");
+    assert.equal(childStart.has_content, false);
+    assert.equal(childStart.content, null);
+    assert.equal(childStart.incoming_message, undefined);
+    assert.ok(
+      result.stderr.includes("hard cap"),
+      `expected stderr WARN about hard cap; got: ${result.stderr}`,
     );
   });
 });

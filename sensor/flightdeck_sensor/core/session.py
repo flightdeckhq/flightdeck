@@ -50,6 +50,35 @@ _PREFLIGHT_TIMEOUT_SECS = 1
 # directive queue but NOT event throughput.
 _CUSTOM_DIRECTIVE_HANDLER_TIMEOUT_SECS = 5
 
+# D126 § 6 sub-agent message routing thresholds.
+#
+# Bodies up to ``SUBAGENT_INLINE_THRESHOLD_BYTES`` ride inline on the
+# event payload's ``incoming_message`` / ``outgoing_message`` field
+# and are projected into ``events.payload`` JSONB by the worker's
+# BuildEventExtra. Bodies above the inline threshold but at or below
+# ``SUBAGENT_HARD_CAP_BYTES`` route through the existing D119
+# event_content path: the wire stub on the payload field becomes
+# ``{has_content: True, content_bytes: <int>, captured_at: ...}``,
+# the full body lands on the wire's PromptContent envelope under
+# ``response`` (with ``provider="flightdeck-subagent"`` so the
+# dashboard's content-fetch consumer disambiguates from LLM
+# content), and the worker's existing InsertEventContent writes the
+# event_content row.
+#
+# 8 KiB chosen to match the design-doc threshold and the typical
+# upper bound for inter-agent messages we've seen empirically (CrewAI
+# Task descriptions are usually a paragraph or two; LangGraph state
+# dicts under a kilobyte for routing-style nodes). The hard cap at
+# 2 MiB is the design-doc "abuse budget" — bodies above that are
+# almost certainly someone dumping the entire conversation transcript
+# or a binary-encoded artifact into a sub-agent message; we drop +
+# warn rather than silently truncate so the operator notices.
+SUBAGENT_INLINE_THRESHOLD_BYTES = 8 * 1024
+SUBAGENT_HARD_CAP_BYTES = 2 * 1024 * 1024
+# Discriminator the dashboard's content-fetch consumer reads to pick
+# the sub-agent renderer over the LLM PromptViewer.
+SUBAGENT_OVERFLOW_PROVIDER = "flightdeck-subagent"
+
 
 class Session:
     """Manages the lifecycle of a single sensor session."""
@@ -284,6 +313,92 @@ class Session:
             )
         )
 
+    def _route_subagent_message(
+        self,
+        message: SubagentMessage | None,
+        direction: str,
+    ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+        """Resolve a sub-agent message into (payload_field, content_envelope)
+        per D126 § 6.
+
+        ``direction`` is ``"incoming"`` or ``"outgoing"`` — written
+        into the content envelope so the dashboard's content-fetch
+        consumer can label the body without inferring direction
+        from the event_type alone.
+
+        Returns:
+            ``(None, None)`` when the message is absent OR
+            ``capture_prompts`` is False OR the body exceeds the
+            hard cap (with a WARN log on the cap path so operators
+            notice).
+
+            ``({body, captured_at}, None)`` for bodies at or below
+            the inline threshold. Caller stamps the dict into
+            payload's ``incoming_message`` / ``outgoing_message``
+            field. ``has_content`` stays False; the body lives in
+            ``events.payload`` via BuildEventExtra.
+
+            ``(stub, content_envelope)`` for bodies above the
+            inline threshold but at or below the hard cap. Caller
+            stamps ``stub`` into the payload field, sets
+            ``has_content=True``, and stamps ``content_envelope``
+            into ``payload['content']`` so the worker's existing
+            D119 InsertEventContent path stores the full body in
+            ``event_content``. The dashboard fetches via
+            ``GET /v1/events/{id}/content``; the
+            ``provider="flightdeck-subagent"`` discriminator picks
+            the sub-agent renderer over the LLM PromptViewer.
+        """
+        if message is None or not self.config.capture_prompts:
+            return None, None
+        # JSON-encode the body once to size it — the same encoding
+        # the worker will see on the wire, so this byte count is
+        # the authoritative measure for the inline-vs-overflow
+        # decision (rather than ``len(str(body))`` which varies per
+        # framework body type).
+        body_bytes = json.dumps(message.body).encode("utf-8")
+        size = len(body_bytes)
+        if size > SUBAGENT_HARD_CAP_BYTES:
+            _log.warning(
+                "sub-agent %s_message body exceeds %d-byte hard cap "
+                "(size=%d bytes); dropped per D126 § 6 — capture "
+                "the trailing tail elsewhere if needed",
+                direction, SUBAGENT_HARD_CAP_BYTES, size,
+            )
+            return None, None
+        if size <= SUBAGENT_INLINE_THRESHOLD_BYTES:
+            return {
+                "body": message.body,
+                "captured_at": message.captured_at,
+            }, None
+        # Overflow: stub on the payload field, full envelope on
+        # content. The PromptContent shape required by the existing
+        # InsertEventContent has NOT NULL ``messages`` (default
+        # ``[]``) and NOT NULL ``response``; we leave messages
+        # empty (sub-agent messages aren't LLM messages) and stuff
+        # the body into ``response`` along with the direction
+        # discriminator. ``input`` stays None — embedding-only
+        # column.
+        stub = {
+            "has_content": True,
+            "content_bytes": size,
+            "captured_at": message.captured_at,
+        }
+        envelope = {
+            "provider": SUBAGENT_OVERFLOW_PROVIDER,
+            "model": "",
+            "system": None,
+            "messages": [],
+            "tools": None,
+            "response": {
+                "direction": direction,
+                "body": message.body,
+                "captured_at": message.captured_at,
+            },
+            "input": None,
+        }
+        return stub, envelope
+
     def emit_subagent_session_start(
         self,
         *,
@@ -304,12 +419,11 @@ class Session:
         UUID without re-derivation).
 
         ``incoming_message`` carries the parent's input to the child
-        (CrewAI task description, LangGraph inbound state, AutoGen
-        inbound message body, Claude Code Task ``prompt`` argument).
-        Stamped on the wire only when ``capture_prompts=True`` —
-        when capture is off the message is dropped at this boundary
-        and never reaches the network, mirroring the existing
-        capture-off contract for LLM ``content``.
+        (CrewAI task description, LangGraph inbound state, Claude
+        Code Task ``prompt`` argument). Routing depends on body size
+        per D126 § 6 — see :meth:`_route_subagent_message`.
+        ``capture_prompts=False`` drops the body at this boundary
+        regardless of size.
         """
         payload = self._build_subagent_payload(
             event_type=EventType.SESSION_START,
@@ -318,18 +432,14 @@ class Session:
             child_agent_name=child_agent_name,
             agent_role=agent_role,
         )
-        if incoming_message is not None and self.config.capture_prompts:
-            # D126 § 7 — sub-agent message bodies live inline in
-            # events.payload via the worker's BuildEventExtra
-            # projection. They DO NOT route through the existing
-            # event_content table (which stores LLM PromptContent
-            # shape, not inter-agent messages); has_content stays
-            # False so the wire shape can't trip the dashboard's
-            # ``GET /v1/events/{id}/content`` lookup with a 404.
-            payload["incoming_message"] = {
-                "body": incoming_message.body,
-                "captured_at": incoming_message.captured_at,
-            }
+        stub_or_inline, content_envelope = self._route_subagent_message(
+            incoming_message, "incoming",
+        )
+        if stub_or_inline is not None:
+            payload["incoming_message"] = stub_or_inline
+        if content_envelope is not None:
+            payload["has_content"] = True
+            payload["content"] = content_envelope
         self.client.post_event(payload)
 
     def emit_subagent_session_end(
@@ -372,13 +482,14 @@ class Session:
             payload["state"] = state
         if error is not None:
             payload["error"] = error
-        if outgoing_message is not None and self.config.capture_prompts:
-            # See incoming_message comment in
-            # emit_subagent_session_start — same routing.
-            payload["outgoing_message"] = {
-                "body": outgoing_message.body,
-                "captured_at": outgoing_message.captured_at,
-            }
+        stub_or_inline, content_envelope = self._route_subagent_message(
+            outgoing_message, "outgoing",
+        )
+        if stub_or_inline is not None:
+            payload["outgoing_message"] = stub_or_inline
+        if content_envelope is not None:
+            payload["has_content"] = True
+            payload["content"] = content_envelope
         self.client.post_event(payload)
 
     def _build_subagent_payload(

@@ -205,7 +205,7 @@ def test_execute_task_emits_session_start_then_session_end(
     assert start_p["agent_name"] == f"{session.config.agent_name}/Researcher"
     # capture_prompts=True so incoming_message lands on the wire.
     # has_content stays False — sub-agent messages route inline via
-    # events.payload (D126 § 7 v1), not event_content.
+    # events.payload (D126 § 6 v1), not event_content.
     assert start_p["has_content"] is False
     assert start_p["incoming_message"]["body"] == "Find something interesting"
 

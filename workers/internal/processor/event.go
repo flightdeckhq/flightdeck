@@ -156,7 +156,7 @@ func BuildEventExtra(e consumer.EventPayload) ([]byte, error) {
 	// table via UpsertSession; persisting them into events.payload
 	// too lets the live-feed envelope and the per-event drilldown
 	// surface the relationship without a sessions-table join. Small
-	// bodies route inline here per D126 § 7's v1 contract; the 8 KiB
+	// bodies route inline here per D126 § 6's v1 contract; the 8 KiB
 	// → event_content overflow path is deferred.
 	if e.ParentSessionID != "" {
 		extra["parent_session_id"] = e.ParentSessionID
@@ -180,23 +180,37 @@ func BuildEventExtra(e consumer.EventPayload) ([]byte, error) {
 }
 
 // subagentMessageToMap projects a typed SubagentMessage into the
-// shape BuildEventExtra writes into events.payload — a map of
-// ``{body, captured_at}`` where ``body`` is decoded back into the
-// framework's source shape (string / dict / list / scalar / null)
-// per D126 § 7 + Rule 20. Returns the map even when one of the
-// fields is missing so the dashboard's MESSAGES sub-section can
-// render a partial envelope cleanly rather than treat-as-absent.
-// json.Unmarshal failure on Body falls back to nil — the wire
-// shape was technically valid (Body is json.RawMessage so it's
-// already byte-validated), so this branch is theoretical and
-// keeps the projection panic-free.
+// shape BuildEventExtra writes into events.payload per D126 § 6 +
+// Rule 20. Two shapes land here:
+//
+//   * Inline (body ≤ 8 KiB): ``{body, captured_at}`` — body is
+//     decoded back into the framework's source shape (string /
+//     dict / list / scalar / null).
+//   * Overflow (body > 8 KiB): ``{has_content, content_bytes,
+//     captured_at}`` — body lives in event_content; the dashboard
+//     fetches via ``GET /v1/events/{id}/content``. The stub here
+//     lets the dashboard render a size-aware "load full message"
+//     affordance without an extra round-trip.
+//
+// Returns the map even when one of the fields is missing so the
+// dashboard's MESSAGES sub-section can render a partial envelope
+// cleanly rather than treat-as-absent. json.Unmarshal failure on
+// Body falls back to nil — the wire shape was technically valid
+// (Body is json.RawMessage so it's already byte-validated), so
+// this branch is theoretical and keeps the projection panic-free.
 func subagentMessageToMap(m *consumer.SubagentMessage) map[string]interface{} {
-	out := make(map[string]interface{}, 2)
+	out := make(map[string]interface{}, 4)
 	if len(m.Body) > 0 {
 		var v interface{}
 		if err := json.Unmarshal(m.Body, &v); err == nil {
 			out["body"] = v
 		}
+	}
+	if m.HasContent {
+		out["has_content"] = true
+	}
+	if m.ContentBytes != nil {
+		out["content_bytes"] = *m.ContentBytes
 	}
 	if m.CapturedAt != "" {
 		out["captured_at"] = m.CapturedAt

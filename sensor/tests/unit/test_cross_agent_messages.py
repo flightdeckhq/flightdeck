@@ -98,14 +98,12 @@ def test_session_emit_preserves_body_verbatim_when_capture_on(body: Any) -> None
     payloads = _last_payloads(client)
     assert len(payloads) == 2
     start_p, end_p = payloads
-    # D126 § 7 v1 routing: sub-agent message bodies live inline in
-    # events.payload via the worker's BuildEventExtra projection.
-    # has_content stays False on the wire because event_content
-    # storage is reserved for LLM PromptContent shape (provider /
-    # model / messages / tools / response / input). Setting
-    # has_content=True without populating those columns would trip
-    # the dashboard's GET /v1/events/{id}/content path with a 404
-    # (Rule 37).
+    # Each parametric body fits within the D126 § 6 inline
+    # threshold (8 KiB), so the wire shape is the inline form:
+    # ``has_content`` False, body lives directly under
+    # ``incoming_message`` / ``outgoing_message`` on payload.
+    # The overflow path is exercised by the size-based tests
+    # below.
     assert start_p["has_content"] is False
     assert start_p["incoming_message"]["body"] == body
     assert start_p["incoming_message"]["captured_at"] == "2026-05-02T00:00:00Z"
@@ -113,6 +111,147 @@ def test_session_emit_preserves_body_verbatim_when_capture_on(body: Any) -> None
     assert end_p["has_content"] is False
     assert end_p["outgoing_message"]["body"] == body
     assert "incoming_message" not in end_p
+
+
+# ----------------------------------------------------------------------
+# D126 § 6 size-based routing
+# ----------------------------------------------------------------------
+#
+# Three boundaries to pin:
+#   * ≤ 8 KiB → inline on payload, has_content=false.
+#   * > 8 KiB and ≤ 2 MiB → overflow via the existing D119
+#     event_content path: has_content=true, payload.content
+#     populated with the PromptContent envelope (provider=
+#     "flightdeck-subagent"), the payload field becomes a stub.
+#   * > 2 MiB → hard reject with WARN, no field on the wire.
+
+
+def _approx_bytes_string(n: int) -> str:
+    """Return a string whose JSON-encoded form is approximately n
+    bytes. JSON-encoded length of ``"<chars>"`` is ``len(chars) + 2``
+    (the surrounding quotes); we subtract the overhead so the
+    serialized payload lands at ~n bytes for size-threshold tests.
+    """
+    return "x" * max(0, n - 2)
+
+
+def test_inline_path_just_under_threshold() -> None:
+    """Body just under 8 KiB takes the inline path: payload field
+    holds ``{body, captured_at}``; no payload.content; has_content
+    stays False.
+    """
+    from flightdeck_sensor.core.session import SUBAGENT_INLINE_THRESHOLD_BYTES
+
+    session, client = _build_session(capture_prompts=True)
+    body = _approx_bytes_string(SUBAGENT_INLINE_THRESHOLD_BYTES - 16)
+    msg = SubagentMessage(body=body, captured_at="2026-05-02T00:00:00Z")
+    session.emit_subagent_session_start(
+        child_session_id="c-inline",
+        child_agent_id="agent-inline",
+        child_agent_name="parent/role",
+        agent_role="role",
+        incoming_message=msg,
+    )
+    p = _last_payloads(client)[0]
+    assert p["has_content"] is False
+    assert p["content"] is None
+    assert p["incoming_message"]["body"] == body
+    assert p["incoming_message"]["captured_at"] == "2026-05-02T00:00:00Z"
+    assert "has_content" not in p["incoming_message"]
+
+
+def test_overflow_path_just_over_threshold() -> None:
+    """Body just over 8 KiB takes the overflow path: payload.content
+    populated with PromptContent envelope, has_content=true,
+    incoming_message becomes a {has_content, content_bytes,
+    captured_at} stub.
+    """
+    from flightdeck_sensor.core.session import (
+        SUBAGENT_INLINE_THRESHOLD_BYTES,
+        SUBAGENT_OVERFLOW_PROVIDER,
+    )
+
+    session, client = _build_session(capture_prompts=True)
+    body = _approx_bytes_string(SUBAGENT_INLINE_THRESHOLD_BYTES + 1024)
+    msg = SubagentMessage(body=body, captured_at="2026-05-02T00:00:00Z")
+    session.emit_subagent_session_start(
+        child_session_id="c-overflow",
+        child_agent_id="agent-overflow",
+        child_agent_name="parent/role",
+        agent_role="role",
+        incoming_message=msg,
+    )
+    p = _last_payloads(client)[0]
+    assert p["has_content"] is True
+    # PromptContent envelope on payload.content for the worker's
+    # InsertEventContent path.
+    assert p["content"]["provider"] == SUBAGENT_OVERFLOW_PROVIDER
+    assert p["content"]["response"]["body"] == body
+    assert p["content"]["response"]["direction"] == "incoming"
+    assert p["content"]["response"]["captured_at"] == "2026-05-02T00:00:00Z"
+    # PromptContent NOT NULL columns satisfied with empty / null
+    # placeholders — the worker's existing InsertEventContent
+    # accepts these.
+    assert p["content"]["messages"] == []
+    # Stub on the payload field signals the dashboard "fetch via
+    # /v1/events/{id}/content".
+    stub = p["incoming_message"]
+    assert stub["has_content"] is True
+    assert stub["content_bytes"] > SUBAGENT_INLINE_THRESHOLD_BYTES
+    assert stub["captured_at"] == "2026-05-02T00:00:00Z"
+    # Body must NOT live on the inline field — that's the whole
+    # point of the overflow path.
+    assert "body" not in stub
+
+
+def test_overflow_outgoing_message_uses_outgoing_direction() -> None:
+    """The PromptContent envelope's ``response.direction`` field
+    discriminates incoming vs outgoing so the dashboard can label
+    the body correctly.
+    """
+    from flightdeck_sensor.core.session import SUBAGENT_INLINE_THRESHOLD_BYTES
+
+    session, client = _build_session(capture_prompts=True)
+    body = _approx_bytes_string(SUBAGENT_INLINE_THRESHOLD_BYTES + 1024)
+    msg = SubagentMessage(body=body, captured_at="2026-05-02T00:00:00Z")
+    session.emit_subagent_session_end(
+        child_session_id="c-out",
+        child_agent_id="agent-out",
+        child_agent_name="parent/role",
+        agent_role="role",
+        outgoing_message=msg,
+    )
+    p = _last_payloads(client)[0]
+    assert p["has_content"] is True
+    assert p["content"]["response"]["direction"] == "outgoing"
+
+
+def test_hard_cap_drops_oversized_body(caplog: Any) -> None:
+    """Body above 2 MiB is dropped at the sensor with a WARN log.
+    No incoming_message / outgoing_message / content on the wire.
+    """
+    from flightdeck_sensor.core.session import SUBAGENT_HARD_CAP_BYTES
+
+    session, client = _build_session(capture_prompts=True)
+    body = _approx_bytes_string(SUBAGENT_HARD_CAP_BYTES + 1024)
+    msg = SubagentMessage(body=body, captured_at="2026-05-02T00:00:00Z")
+    import logging
+    with caplog.at_level(logging.WARNING, logger="flightdeck_sensor.core.session"):
+        session.emit_subagent_session_start(
+            child_session_id="c-cap",
+            child_agent_id="agent-cap",
+            child_agent_name="parent/role",
+            agent_role="role",
+            incoming_message=msg,
+        )
+    p = _last_payloads(client)[0]
+    assert p["has_content"] is False
+    assert p["content"] is None
+    assert "incoming_message" not in p
+    # WARN must mention the hard cap so operators notice.
+    assert any("hard cap" in r.message for r in caplog.records), (
+        f"expected WARN about hard cap; got {[r.message for r in caplog.records]}"
+    )
 
 
 def test_capture_off_drops_messages_at_session_boundary() -> None:

@@ -2,6 +2,182 @@
 
 All notable changes to Flightdeck are documented here.
 
+## Unreleased — Sub-agent observability
+
+First-class events, identity, and dashboard surfaces for sub-agent
+spawn / hand-off / join across Claude Code Task subagents, CrewAI,
+LangGraph, AutoGen 0.4, and AutoGen 0.2. Single PR covering sensor,
+plugin, ingestion, workers, API, dashboard, integration tests,
+playground demos, and docs. See **D126**.
+
+### Added
+
+- **Sensor:** conditional 6th-input identity derivation. `agent_role`
+  joins the `agent_id` derivation when set; collapses to the
+  existing 5-tuple when null / empty / whitespace. CrewAI Researcher
+  and CrewAI Writer running on the same host land under distinct
+  agent_ids; root and direct-SDK agent_ids are unchanged byte-for-
+  byte from the D115 fixture vector.
+- **Sensor:** four new framework interceptors —
+  `interceptor/crewai.py` (context manager around
+  `crewai.Agent.execute()`), `interceptor/langgraph.py` (wraps
+  agent-bearing nodes; opt-in regex via
+  `init(langgraph_agent_node_pattern=…)`),
+  `interceptor/autogen_v04.py` (autogen-agentchat /
+  autogen-core RoutedAgent message handlers),
+  `interceptor/autogen_v02.py` (pyautogen `generate_reply` /
+  `receive`). Auto-detected by import availability;
+  `Provider.AUTOGEN_V04` / `Provider.AUTOGEN_V02` enum members
+  pin the choice when both are installed.
+- **Sensor:** cross-agent message capture. Child `session_start`
+  carries the parent's input as `incoming_message`; child
+  `session_end` carries the response back as `outgoing_message`.
+  Gated by `capture_prompts`. Bodies route through the existing
+  `event_content` table — small inline, large via the **D119**
+  overflow path with a 2 MiB hard cap.
+- **Sensor:** sub-agent emission failure surfacing. Exceptions
+  inside the interceptor's context manager emit child
+  `session_end` with `state=error` plus a structured error
+  block following the `llm_error` taxonomy.
+- **Plugin (Claude Code):** `SubagentStart` / `SubagentStop` hooks
+  emit child `session_start` / `session_end` events stamped with
+  `parent_session_id` and `agent_role` from hook payload.
+  `SubagentStop` is the canonical child end-of-life signal;
+  Task-tool `PostToolUseFailure` emits the parent's `tool_call`
+  with error only and does NOT duplicate-emit a child
+  `session_end` (D126 disambiguation). Crashes without a clean
+  Stop fall through the existing state-revival path
+  (D105 / D106).
+- **Schema:** migration `000017` adds `sessions.parent_session_id`
+  (uuid FK to `sessions(session_id)`) and `sessions.agent_role`
+  (text). Both nullable, populated only on sub-agent sessions.
+  Partial index on `parent_session_id WHERE NOT NULL`. Parallel
+  migration in `helm/migrations/`.
+- **Worker:** `UpsertParentStub` lazy-creates a parent stub row
+  when a child arrives with an unknown `parent_session_id`,
+  extending the **D106** lazy-create primitive. The FK stays
+  enforced; `UpsertSession ON CONFLICT` fills in the stub's
+  `"unknown"` sentinels when the real parent's `session_start`
+  arrives later via the existing write-once-but-upgrade branch.
+- **Ingestion / API:** new query parameters and response fields.
+  `GET /v1/sessions` supports `?parent_session_id=`,
+  `?agent_role=`, `?has_sub_agents=true`, `?is_sub_agent=true`
+  filters; session listing rows carry `parent_session_id` and
+  `agent_role` (omitempty when null).
+- **Analytics:** new `agent_role` dimension joins
+  `flavor` / `model` / `framework` / `host` / `agent_type` /
+  `team` / `provider`. New metrics `parent_token_sum`,
+  `child_token_sum`, `child_count`,
+  `parent_to_first_child_latency_ms` operate over the parent /
+  child relationship via recursive CTE on `parent_session_id`.
+  New filters `filter_parent_session_id`, `filter_is_sub_agent`,
+  `filter_has_sub_agents`. CLAUDE.md Rules 25 + 26 updated to
+  match.
+- **Dashboard (Fleet):** swimlane left panel renders a
+  relationship pill — `→ N` for parents, `← {parent_name}` for
+  children — always-on regardless of activity bucket. Click
+  navigates between rows. Spawn-event Bezier connectors anchor
+  per-child on the parent's spawn event circle (top / bottom by
+  activity-bucket direction); 10% opacity default, 50% on hover.
+  D3 stays math-only.
+- **Dashboard (Fleet):** AgentTable gains ROLE column
+  (agent_role pill or blank for root) and TOPOLOGY column
+  (`spawns N` for parents, `child of {name}` for children).
+- **Dashboard (Investigate):** TOPOLOGY facet (Has sub-agents /
+  Is sub-agent), ROLE facet (auto-hides when all sessions are
+  root), ROLE column between AGENT and HOSTNAME, PARENT column
+  between SESSION and AGENT. URL-state round-trips.
+- **Dashboard (SessionDrawer):** new SPAWNED FROM metadata field
+  (children), SPAWNS metadata field (parents), role pill near
+  the agent name. Conditional Sub-agents tab between Timeline
+  and Prompts with two stacked sections — SPAWNED FROM
+  (parent header + sibling list, top) and SUB-AGENTS (children
+  list, bottom). MESSAGES sub-section per child entry rendering
+  INPUT / OUTPUT preview with click-to-expand via
+  `GET /v1/events/{id}/content`. Child drawer top metadata gains
+  INCOMING MESSAGE / OUTGOING MESSAGE fields. Capture-off
+  disabled state per Rule 21.
+- **Dashboard (Analytics):** `DimensionPicker` gains `agent_role`
+  option. New `ParentChildBreakdownChart` stacked-bar variant
+  (one bar per parent, segments per child role). New "Sub-agent
+  activity" facet on the Analytics sidebar (parity with
+  Investigate TOPOLOGY).
+- **Dashboard (L8 row-level failure cue):** red `AlertCircle`
+  dot on Investigate session row, Fleet AgentTable row, and
+  Fleet swimlane left panel when a sub-agent ends with
+  `state=error`. Tooltip surfaces the exception class and first
+  100 chars of the error message. Mirrors the existing
+  `error_types` / `mcp_error_types` patterns.
+- **Tests:** sensor unit (+50 to +75) covering identity
+  derivation extension, session payload fields, four new
+  interceptor modules, cross-agent message capture parity,
+  AutoGen 0.4 + 0.2 split. Plugin Node tests (+8 to +12)
+  covering SubagentStart / SubagentStop / Task prompt + response
+  capture / PostToolUseFailure error path. Go tests (+30 to +55)
+  across ingestion / workers / API including UpsertParentStub
+  forward-reference race ordering and recursive-CTE correctness.
+  Vitest (+40 to +60) covering relationship pill, Sub-agents
+  tab MESSAGES sub-section, Analytics dimension picker,
+  ParentChildBreakdownChart, and `L8-row-failure-cue.test.tsx`
+  cross-cutting test. Integration (+8 to +14):
+  `test_subagent_landing.py`, `test_cross_agent_messages.py`,
+  `test_subagent_analytics.py`. Playwright (+13 specs × 2 themes
+  = 26 runs): T28 to T40, including T31a / T31b AutoGen split,
+  T38 cross-agent messages, T39 analytics dimensions, T40
+  failure-cue.
+- **Playground (Rule 40d):** extended
+  `playground/14_claude_code_plugin.py` (Task subagent path +
+  cross-agent message capture round-trip);
+  `playground/16_subagents_crewai.py`,
+  `playground/17_subagents_langgraph.py`,
+  `playground/18_subagents_autogen_v04.py`,
+  `playground/19_subagents_autogen_v02.py` (new). Each
+  self-skips when its framework / API key is missing per the
+  existing playground convention. New Make targets:
+  `playground-subagents-crewai`,
+  `playground-subagents-langgraph`,
+  `playground-subagents-autogen-v04`,
+  `playground-subagents-autogen-v02`.
+
+### Changed
+
+- **D100 bullet on the SubagentStart / SubagentStop hooks
+  (DECISIONS.md L2616-2618)** rewritten to reflect the actual
+  pre-D126 wire shape (informational `is_subagent_call=true`
+  flag on the parent's `tool_call`; no child session row, no
+  parent linkage). The full hook bracketing, child-session
+  emission, and `parent_session_id` column land in D126, not
+  D100.
+- **ARCHITECTURE.md drift fixes:** repository structure tree
+  hooks.json comment now lists the real seven-hook surface plus
+  the two new SubagentStart / SubagentStop entries; `tests/smoke/`
+  reference replaced with `tests/e2e-fixtures/` (smoke retired
+  in **D124**); `is_subagent_call` description updated from
+  "informational only" to describe the new
+  `parent_session_id` consumption path.
+- **METHODOLOGY.md** gains a "Post-implementation review" section
+  codifying the five-hat audit (Python principal / Go principal /
+  TypeScript & UI / Architect / QA Validation & Automation) with
+  Block / Recommend / Defer categorization.
+- **CLAUDE.md** gains an "Always start from latest main" rule
+  under Git Discipline. CLAUDE.md Rules 25 + 26 (locked
+  dimension / metric lists) extended with `agent_role` and the
+  four sub-agent-aware metrics.
+
+### Decisions
+
+- **D126** sub-agent observability — identity, parent linkage,
+  message capture, analytics. Documents the conditional 6th-input
+  identity derivation, paired `parent_session_id` / `agent_role`
+  columns, the lazy-create-parent-stub forward-reference contract
+  (extends D106), the per-framework attribution matrix, the
+  AutoGen 0.4 + 0.2 dual interceptor (extends D125 with new
+  Provider enum members), the SubagentStop disambiguation,
+  cross-agent message capture via the D119 overflow path, the
+  sub-agent-aware analytics dimension + metrics, and the
+  accepted properties (renaming creates new identity; recursive
+  CTE cost on large datasets; forward-reference stub orphans).
+
 ## Unreleased — Phase 5 MCP first-class observability
 
 Treats Model Context Protocol calls as a first-class event surface

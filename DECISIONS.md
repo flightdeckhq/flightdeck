@@ -2613,9 +2613,14 @@ sensors that did report tokens.
 - Synthetic first-hook `session_start` replaced by the real
   `SessionStart` hook. Source (`startup` / `resume` / `clear` /
   `compact`) and `model` now come from the hook payload.
-- `SubagentStart` and `SubagentStop` hooks emit child `session_start`
-  and `session_end` events with `parent_session_id`, so Task
-  sub-agents appear as proper child sessions in the fleet.
+- `is_subagent_call: toolName === "Task"` is emitted on the wire
+  on the parent's `tool_call` event, as a forward-compat hint that
+  a sub-agent was spawned. As of D100 this flag was informational
+  only; the `SubagentStart` / `SubagentStop` hook bracketing,
+  `parent_session_id` column, and child-session emission described
+  here as a follow-on land in D126, not in this phase. The
+  pre-D126 wire shape is `is_subagent_call=true` on the parent's
+  `tool_call` event with no corresponding child session row.
 
 **Code locations.**
 
@@ -4749,4 +4754,382 @@ makes ``(str, Enum)`` the right shape choice — ``StrEnum``
 would have required 3.11+). The interceptor-target list is
 unchanged from prior phases (Anthropic / OpenAI / litellm /
 MCP).
+
+---
+
+## D126 -- Sub-agent observability: identity, parent linkage, message capture, analytics
+
+**Date:** 2026-05-02
+**Phase:** Sub-agent observability
+
+**Context.** Pre-D126 the platform had no first-class concept of a
+sub-agent. Multi-agent frameworks (CrewAI, LangGraph, AutoGen) and
+Claude Code's Task tool spawned sub-agents whose execution was
+either invisible to Flightdeck or visible only as untyped extra
+events on the parent's session. The Claude Code plugin emitted an
+``is_subagent_call=true`` hint on the parent's ``tool_call`` event
+(D100) as forward-compat scaffolding; no child session row, no
+parent linkage, no role attribution, no cross-agent message
+visibility. The user-facing consequences: a CrewAI Crew with a
+Researcher and a Writer rendered as a single agent in the fleet
+view, the Investigate page had no way to filter by role or by
+parent / child relationship, and analytics could not answer "what
+did the Writer subagent cost across the last 7 days." The
+identity model (D115) treated every emission with a given 5-tuple
+as the same agent, so a CrewAI Researcher and CrewAI Writer
+running in the same process were indistinguishable.
+
+**Decision.** Treat sub-agents as first-class sessions with a
+deterministic identity that distinguishes them from their parent,
+a paired pair of nullable columns on ``sessions`` for the
+relationship and the role, framework-specific interceptors that
+emit child sessions, and dashboard surfaces that render the
+relationship at every level.
+
+This decision has nine components:
+
+### 1. Conditional 6th identity input
+
+D115's 5-tuple
+``(agent_type, user, hostname, client_type, agent_name)`` stays as
+the universal core. ``agent_role`` is a conditional 6th input that
+participates in the ``agent_id`` derivation only when the
+framework supplies it:
+
+```
+derive_agent_id(agent_type, user, hostname, client_type,
+                agent_name, agent_role=None):
+    inputs = (agent_type, user, hostname, client_type, agent_name)
+    if agent_role and agent_role.strip():
+        inputs = inputs + (agent_role.strip(),)
+    return uuid5(NAMESPACE_FLIGHTDECK, ":".join(inputs))
+```
+
+When ``agent_role`` is null, empty, or whitespace-only, the
+derivation collapses to D115's 5-tuple — root and direct-SDK
+sessions on a given host produce the exact agent_id they did
+before D126 (the D115 fixture vector is still asserted byte-for-
+byte). When ``agent_role`` is set, it joins the input tuple, so a
+CrewAI Researcher and a CrewAI Writer running on the same host
+land under distinct agent_ids despite sharing the rest of the
+5-tuple.
+
+### 2. Paired nullable columns on ``sessions``
+
+Two columns added via migration ``000017``:
+
+- ``parent_session_id uuid NULL REFERENCES sessions(session_id)``
+- ``agent_role text NULL``
+
+Both are populated only on sub-agent sessions; both are null on
+root sessions. The reverse (role set, parent unset) is a sensor
+bug; the sensor emits both together or neither. A partial index
+on ``parent_session_id WHERE NOT NULL`` keeps the index small
+while supporting ``?has_sub_agents`` / ``?is_sub_agent`` /
+``?parent_session_id`` filter and ``agent_role`` analytics
+dimension.
+
+### 3. Forward-reference contract: lazy-create parent stub (extends D106)
+
+The ``parent_session_id`` FK is enforced at write time. Forward
+references where the child's ``session_start`` arrives before the
+parent's are handled by a parent-stub variant of D106's lazy-
+create path, NOT by relaxing the FK or adding a deferred-
+constraint window:
+
+```
+on incoming child session_start with parent_session_id != null:
+    if NOT exists(SELECT 1 FROM sessions WHERE session_id = parent_session_id):
+        INSERT INTO sessions (
+            session_id    = parent_session_id,
+            agent_id      = NULL_PLACEHOLDER,    -- upgraded later
+            agent_name    = "unknown",
+            agent_type    = "unknown",
+            client_type   = "unknown",
+            flavor        = "unknown",
+            state         = "active",
+            started_at    = child.started_at,    -- placeholder
+            last_seen_at  = NOW(),
+            ...
+        )
+    -- child INSERT now satisfies the FK
+    INSERT INTO sessions (..., parent_session_id, agent_role) ...
+
+on later real parent session_start arrival:
+    UpsertSession ON CONFLICT (session_id) DO UPDATE
+      SET agent_id     = EXCLUDED.agent_id,
+          agent_name   = EXCLUDED.agent_name,
+          ...           -- only when prior value is the "unknown" sentinel
+    -- existing write-once-but-upgrade-from-"unknown" branch (D106)
+```
+
+This is the same primitive as D106's create-on-unknown, with a
+different trigger: FK satisfaction at child INSERT time vs an
+event for an unknown ``session_id``. The four-site revival
+contract (D094 Attach, D094 UpsertSession, D105
+ReviveIfRevivable, D106 ReviveOrCreateSession) gains a fifth
+site, ``UpsertParentStub``, called from the worker's session_start
+handler when ``parent_session_id`` is set and unknown. The
+cross-reference comment on ``ReviveIfRevivable`` enumerates all
+five sites.
+
+**Rejected alternative (option b):** drop the FK entirely and
+store ``parent_session_id`` as a free-form UUID with no
+referential check. Rejected because the FK catches sensor bugs
+that emit a parent_session_id that doesn't correspond to any
+real session, and because the lazy-create stub costs at most one
+extra INSERT per first-time forward reference (rare in practice
+— frameworks emit ``session_start`` for the parent before
+spawning children, and NATS subjects-per-event-type ordering is
+usually preserved). Keeping the FK is worth the cost.
+
+**Rejected alternative (option c):** require strict ordering at
+ingestion (reject child ``session_start`` if parent is not in
+DB). Rejected because the asynchronous NATS pipeline doesn't
+guarantee ordering, and rejection would manifest as silent drops
+or 400s at the sensor for benign timing skew.
+
+### 4. Per-framework attribution matrix
+
+| Mechanism | parent_session_id source | agent_role source | Interceptor |
+|---|---|---|---|
+| Claude Code primary session | null | null | n/a (root) |
+| Claude Code Task subagent | hook payload ``session_id`` | hook payload ``agent_type`` (e.g. ``"Explore"``) | ``plugin/hooks/scripts/observe_cli.mjs`` (``SubagentStart`` / ``SubagentStop``) |
+| Direct Anthropic / OpenAI SDK | null | null | n/a |
+| litellm | null (unless inside multi-agent framework) | null | n/a |
+| CrewAI parent (Crew.kickoff) | null | null | n/a |
+| CrewAI agent execution | parent crew's session | ``Agent.role`` attribute | ``sensor/.../interceptor/crewai.py`` |
+| LangGraph graph runner | null | null | n/a |
+| LangGraph agent-bearing node | parent runner's session | node name | ``sensor/.../interceptor/langgraph.py`` |
+| AutoGen 0.4 runtime | null | null | n/a |
+| AutoGen 0.4 participant message handler | parent runtime's session | ``participant.name`` | ``sensor/.../interceptor/autogen_v04.py`` |
+| AutoGen 0.2 runtime | null | null | n/a |
+| AutoGen 0.2 participant message handler | parent runtime's session | ``agent.name`` | ``sensor/.../interceptor/autogen_v02.py`` |
+
+LangGraph's "agent-bearing node" predicate: nodes whose function
+body invokes a patched LLM client OR whose name matches the regex
+supplied via ``flightdeck_sensor.init(langgraph_agent_node_pattern=…)``.
+The first criterion is the default zero-config behaviour; the
+regex override exists for graphs whose agent nodes don't directly
+invoke the LLM (delegating through helpers).
+
+### 5. AutoGen 0.4 + 0.2 dual interceptor
+
+AutoGen 0.4 was a complete rewrite: different package
+(``autogen-agentchat`` + ``autogen-core`` vs ``pyautogen``),
+different import paths, different message-handling API. The two
+versions are two libraries that share a name. This phase ships
+interceptors for both so users on either version are observed
+equally:
+
+- ``sensor/flightdeck_sensor/interceptor/autogen_v04.py`` patches
+  the ``autogen-agentchat`` participant message handlers
+  (RoutedAgent dispatch).
+- ``sensor/flightdeck_sensor/interceptor/autogen_v02.py`` patches
+  the ``pyautogen`` ``generate_reply`` / ``receive`` hooks.
+
+``flightdeck_sensor.patch()`` auto-detects which is installed by
+import availability (``autogen_agentchat`` import success →
+``autogen_v04``; ``autogen`` import without
+``autogen_agentchat`` → ``autogen_v02``). Manual override via
+``Provider.AUTOGEN_V04`` / ``Provider.AUTOGEN_V02`` enum members
+(D125, ``(str, Enum)`` mixin so raw-string call shapes still
+work) for users with both installed (rare).
+
+**Rejected alternative:** ship a single ``autogen.py`` interceptor
+that branches at import time on the installed version. Rejected
+because the v04 and v02 message-handling APIs share almost no
+shape — branching turns the file into two interleaved
+implementations that drift independently. Two files match the
+two libraries; their tests are independent; release-note
+attribution per version is precise.
+
+### 6. SubagentStop is the canonical child session_end (Claude Code path)
+
+For the Claude Code plugin path specifically, ``SubagentStop`` is
+the authoritative end-of-life signal for the child session. The
+plugin emits child ``session_end`` exclusively on this hook.
+
+``PostToolUseFailure`` on a Task tool emits the parent's
+``tool_call`` event with the structured error block; it does NOT
+emit a duplicate child ``session_end``. The error surfaces on
+the parent's tool_call row (existing pattern); the child's
+state continues until SubagentStop fires (or the worker's state-
+revival path closes it).
+
+Subagent crashes that never reach a clean ``SubagentStop`` (the
+Task tool process is killed, the user aborts, network drops mid-
+execution) fall through the worker's existing state-revival path
+(D105 + D106). The child session ages from ``active`` to
+``stale`` (2 min) to ``lost`` (30 min); the next event for the
+``session_id`` revives it (D105) or the reconciler closes the
+loop. There is no plugin-side fallback that synthesises a child
+``session_end`` — that would be a second authoritative emission
+path which would race with a delayed real ``SubagentStop``,
+producing duplicate child end events.
+
+**Rejected alternative:** emit a child ``session_end`` on
+``PostToolUseFailure`` as a "best-effort" fallback. Rejected for
+the duplicate-emission race above; the existing state-revival
+path already handles this case correctly without adding a new
+authoritative source.
+
+### 7. Cross-agent message capture
+
+When ``capture_prompts=True``, each interceptor captures two
+bodies per child execution:
+
+- ``incoming_message`` — the parent's input to the child (CrewAI
+  task description, LangGraph inbound state, AutoGen inbound
+  message body, Claude Code Task ``prompt`` argument). Stamped on
+  the child ``session_start`` payload.
+- ``outgoing_message`` — the child's response back (CrewAI
+  return value, LangGraph outbound state, AutoGen outbound
+  message body, Claude Code Task tool response). Stamped on the
+  child ``session_end`` payload.
+
+Bodies route through the existing ``event_content`` table (no
+schema change). Small bodies inline in ``events.payload``;
+bodies above 8 KiB use the D119 overflow path (``has_content=true``
+on the wire, separate-table storage, fetched via
+``GET /v1/events/{id}/content``); 2 MiB hard cap applies. When
+``capture_prompts=False``, both fields are absent on the wire and
+``has_content=false``; the dashboard renders the standard "Prompt
+capture is not enabled for this deployment" disabled state per
+the existing capture-off contract.
+
+### 8. Sub-agent-aware analytics
+
+The analytics endpoint (``GET /v1/analytics``) gains:
+
+- New dimension ``agent_role`` (groups by the framework-supplied
+  role; null buckets as ``(root)``).
+- New metrics: ``parent_token_sum``, ``child_token_sum``,
+  ``child_count``, ``parent_to_first_child_latency_ms``.
+- New filters: ``filter_parent_session_id``,
+  ``filter_is_sub_agent``, ``filter_has_sub_agents``.
+
+CLAUDE.md Rules 25 and 26 (locked dimension / metric lists) are
+extended in the same PR per Rule 33 (no schema change without
+ARCHITECTURE.md update first); the dimensions and metrics are
+written into ARCHITECTURE.md before any code lands.
+
+The dashboard's ``DimensionPicker`` gains the new option (Rule 22
+— must be functional). A new ``ParentChildBreakdownChart``
+component renders parent-vs-children stacked bars (one bar per
+parent, segments per child role). A "Sub-agent activity" facet
+on the Analytics sidebar mirrors the Investigate TOPOLOGY facet
+for muscle memory.
+
+### 9. Renaming-without-loss is an accepted property, not engineered around
+
+Renaming a framework agent (CrewAI's "Researcher" → "Senior
+Researcher", a LangGraph node renamed mid-development) creates a
+new ``agent_id`` because ``agent_role`` participates in the
+derivation. Historical sessions stay tagged under the old name;
+new sessions land under the new. There is no rename-mapping
+table and no analytics-continuity engineering in this phase.
+
+Operators who need continuity have two options: keep names
+stable, or use the existing ``filter_parent_session_id`` /
+session-listing facets to query across both old and new role
+labels manually. If user demand for a rename-mapping surface
+materialises post-launch, that is a follow-up feature, not part
+of this phase.
+
+**Rejected alternative:** introduce a ``role_aliases`` table that
+maps old → new role labels, applied at ``agent_id`` derivation
+time so the same logical agent keeps a single identity across
+renames. Rejected because (a) the same primitive would silently
+collapse genuinely-different agents that happen to share an
+alias, (b) the canonical agent_id derivation gains a server-side
+lookup that breaks the "client and server agree on the UUID
+before the wire" property of D115, (c) no concrete user demand
+exists yet — solving it speculatively risks shipping the wrong
+shape.
+
+### Accepted properties / known performance characteristics
+
+- **``parent_token_sum`` recursive CTE cost.** The metric walks
+  ``parent_session_id`` recursively to roll up tokens across a
+  parent and every descendant. Accurate; expensive on large
+  datasets — the recursion is bounded by tree depth (1-2 in
+  practice) but the per-step seek-set grows with the parent's
+  descendant count, and there is no covering index on the
+  recursive frontier. Analytics queries over wide time windows
+  with ``group_by=agent_role`` AND high-fan-out parents will
+  notice. Profiling at 100k+ session scales is deferred; this
+  phase ships the correct query and lets future contributors
+  optimise (denorm rollup column? materialised view? bounded-
+  depth pre-aggregation?) when real production load shows the
+  ceiling. Flagged here so the next contributor profiling the
+  analytics path knows where to look.
+
+- **Renaming creates new identity.** Already detailed in § 9.
+
+- **Forward-reference stub orphans.** A child can land with a
+  parent_session_id that never receives a real ``session_start``
+  (parent process killed before emitting, network drop, sensor
+  crash). The stub row stays with ``flavor="unknown"`` /
+  ``agent_type="unknown"`` indefinitely; the dashboard renders
+  it as "← unknown parent" gracefully. No reaper sweeps stub
+  rows; the existing reconciler aging path applies normally
+  (active → stale → lost). Not a bug, an explicit floor.
+
+### Code locations (forward references; this entry lands before the code per L2)
+
+- ``docker/postgres/migrations/000017_sub_agent_observability.{up,down}.sql``
+  + parallel in ``helm/migrations/``
+- ``sensor/flightdeck_sensor/core/agent_id.py`` — 6th-input
+  derivation
+- ``sensor/flightdeck_sensor/core/types.py`` —
+  ``parent_session_id`` / ``agent_role`` /
+  ``incoming_message`` / ``outgoing_message`` fields
+- ``sensor/flightdeck_sensor/core/session.py`` — payload
+  population, exception path, capture_prompts gating
+- ``sensor/flightdeck_sensor/provider.py`` — ``AUTOGEN_V04`` /
+  ``AUTOGEN_V02`` enum members
+- ``sensor/flightdeck_sensor/interceptor/crewai.py`` (new)
+- ``sensor/flightdeck_sensor/interceptor/langgraph.py`` (new)
+- ``sensor/flightdeck_sensor/interceptor/autogen_v04.py`` (new)
+- ``sensor/flightdeck_sensor/interceptor/autogen_v02.py`` (new)
+- ``plugin/hooks/hooks.json`` — ``SubagentStart`` /
+  ``SubagentStop`` entries
+- ``plugin/hooks/scripts/observe_cli.mjs`` — branches for
+  SubagentStart, SubagentStop, Task PostToolUseFailure
+- ``ingestion/internal/validation/`` — payload checks
+- ``workers/internal/processor/event.go`` +
+  ``workers/internal/writer/postgres.go`` — UpsertParentStub +
+  UpsertSession upgrade-from-"unknown" branch
+- ``api/internal/store/postgres.go`` — session listing fields
+  + filters
+- ``api/internal/store/analytics.go`` — recursive CTE for
+  ``parent_token_sum``, new dimension + metrics + filters
+- ``dashboard/src/components/timeline/SwimLane.tsx`` —
+  relationship pill + L8 red dot
+- ``dashboard/src/components/timeline/SubAgentConnector.tsx``
+  (new) — Bezier connector
+- ``dashboard/src/components/session/SubAgentsTab.tsx`` (new) —
+  SPAWNED FROM / SUB-AGENTS / MESSAGES sections
+- ``dashboard/src/components/analytics/ParentChildBreakdownChart.tsx``
+  (new)
+- ``dashboard/src/pages/Analytics.tsx`` — agent_role dimension
+  wiring
+- ``dashboard/src/pages/Investigate.tsx`` — TOPOLOGY + ROLE
+  facets, ROLE + PARENT columns, L8 red dot
+
+**Related decisions.** D094 (session attachment) — sub-agent
+sessions ride on the same attachment semantics; the
+``last_attached_at`` column applies normally if a child's
+``session_id`` re-attaches. D100 (the original
+``is_subagent_call`` flag) — informational hint that becomes
+load-bearing under D126 as the parent-side spawn marker the
+swimlane connectors anchor to. D105 / D106 (revive / lazy-
+create) — the parent-stub path extends this primitive.
+D115 (5-tuple identity) — universal core; D126 adds the
+conditional 6th input without superseding. D116 (ingestion
+validation) — extended to validate the new fields. D119 (lean
+MCP wire payload + content overflow) — the cross-agent message
+capture reuses the same overflow path. D125 (Provider enum) —
+extended with ``AUTOGEN_V04`` and ``AUTOGEN_V02`` members.
 

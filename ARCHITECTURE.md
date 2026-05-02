@@ -347,7 +347,9 @@ flightdeck/
 │   ├── package.json
 │   ├── .claude-plugin/plugin.json
 │   ├── hooks/
-│   │   ├── hooks.json          # PreToolUse, PostToolUse, Stop, SubagentSpawn
+│   │   ├── hooks.json          # SessionStart, UserPromptSubmit, PostToolUse,
+│   │   │                       # PostToolUseFailure, Stop, SessionEnd, PreCompact,
+│   │   │                       # SubagentStart, SubagentStop
 │   │   └── scripts/observe_cli.mjs
 │   └── skills/flightdeck.md    # /flightdeck skill
 │
@@ -359,7 +361,7 @@ flightdeck/
 ├── docker/                     # docker-compose.{yml,dev.yml,prod.yml}, nginx, postgres/migrations
 ├── tests/
 │   ├── integration/            # Full-pipeline pytest suite (real NATS + Postgres)
-│   └── smoke/                  # Per-framework live-API regression tests (Rule 40d)
+│   └── e2e-fixtures/           # Canonical seed dataset for Playwright dev-stack runs
 └── .github/workflows/          # ci.yml, release.yml
 ```
 
@@ -649,6 +651,56 @@ carries the surrounding framework's bare-name `framework` field
 identifies the protocol axis. The MCP server name lives on the
 event payload (`server_name`) and on `context.mcp_servers`.
 
+### Sub-agent framework coverage
+
+The sensor opens a child session for every framework-recognised
+sub-agent execution. Each child session carries
+`parent_session_id` pointing back to the outer session and
+`agent_role` set to the framework-supplied role label
+(see Identity model above). Five mechanisms are covered (D126):
+
+| Mechanism | parent_session_id source | agent_role source | Interceptor |
+|---|---|---|---|
+| Claude Code Task subagent | hook payload `session_id` | hook payload `agent_type` (e.g. `"Explore"`) | `plugin/hooks/scripts/observe_cli.mjs` (`SubagentStart` / `SubagentStop`) |
+| CrewAI agent execution | parent crew's session | `Agent.role` attribute | `sensor/.../interceptor/crewai.py` (context manager around `Agent.execute()`) |
+| LangGraph node execution | parent runner's session | node name | `sensor/.../interceptor/langgraph.py` (agent-bearing nodes only — node body invokes a patched LLM client OR matches `langgraph_agent_node_pattern` regex) |
+| AutoGen 0.4 participant | parent runtime's session | `participant.name` | `sensor/.../interceptor/autogen_v04.py` (autogen-agentchat / autogen-core) |
+| AutoGen 0.2 participant | parent runtime's session | `agent.name` | `sensor/.../interceptor/autogen_v02.py` (pyautogen `generate_reply` / `receive`) |
+
+Direct Anthropic / OpenAI SDK calls and litellm calls outside a
+multi-agent framework emit root sessions with
+`parent_session_id=null` and `agent_role=null`; the existing 5-tuple
+identity (D115) is unchanged for those paths.
+
+AutoGen 0.4 and 0.2 are two separate libraries that share a name
+(autogen-agentchat / autogen-core vs pyautogen — different
+packages, import paths, and message-handling APIs). Each ships its
+own interceptor under `sensor/flightdeck_sensor/interceptor/` and
+its own `Provider` enum member (D125 — `Provider.AUTOGEN_V04`,
+`Provider.AUTOGEN_V02`). `flightdeck_sensor.patch()` auto-detects
+which is installed by import availability and wires the matching
+interceptor; users with both installed pin the choice via the enum.
+
+Cross-agent message capture rides on the same
+`capture_prompts` gate as LLM prompt content (D019). Each
+interceptor extracts the parent's input to the child at child
+context entry and stamps it on the child `session_start` payload as
+`incoming_message`; the child's response back lands on the child
+`session_end` payload as `outgoing_message`. Bodies route through
+the existing `event_content` table — small bodies inline, large
+bodies through the D119 overflow path (8 KiB inline / 2 MiB hard
+cap). `capture_prompts=false` produces neither field.
+
+Sub-agent emission failure (the framework's `Agent.execute()` or
+equivalent raises an exception inside the interceptor's context
+manager) emits child `session_end` with `state=error` plus a
+structured error block following the `llm_error` taxonomy. The
+dashboard surfaces failures via the row-level red-dot pattern on
+the child session row in Investigate, the child agent row in
+Fleet AgentTable, and the child agent's swimlane left panel —
+mirroring the existing `error_types` (`llm_error`) and
+`mcp_error_types` indicators.
+
 ### Runtime context auto-collection
 
 `sensor/flightdeck_sensor/core/context.py` runs a pluggable collector chain
@@ -856,7 +908,34 @@ forwarded.
 
 `is_subagent_call: toolName === "Task"` is emitted on the wire so the
 dashboard can distinguish sub-agent spawns from regular tool calls.
-Currently informational only.
+Consumed alongside `parent_session_id` (D126) by the dashboard's
+swimlane connectors and the SessionDrawer Sub-agents tab to render
+the parent's spawn event as the anchor for child rows.
+
+### Subagent hooks
+
+Two hooks bracket every Claude Code Task subagent invocation
+(D126):
+
+- `SubagentStart` — emitted when Claude Code spawns a Task subagent.
+  The plugin emits a child `session_start` whose `parent_session_id`
+  carries the outer session's id and whose `agent_role` carries the
+  hook payload's `agent_type` (e.g. `"Explore"`). When
+  `capturePrompts=true`, the Task tool's `prompt` argument is
+  captured as `incoming_message` on the child's `session_start`
+  payload.
+- `SubagentStop` — emitted when the Task subagent returns. The
+  plugin emits a child `session_end` and (when capture is on) the
+  tool's response as `outgoing_message`. `SubagentStop` is the
+  canonical end-of-life signal for the child (D126).
+
+`PostToolUseFailure` on a Task tool emits the parent's `tool_call`
+event with the structured error block; it does NOT emit a child
+`session_end` (D126 disambiguation). Subagent crashes that never
+reach a clean `SubagentStop` fall through the worker's existing
+state-revival path (D105 / D106): the child session ages from
+`active` to `stale` to `lost`, and the next event for the
+`session_id` (or the reconciler) closes the loop.
 
 ### Per-turn flush
 
@@ -882,26 +961,65 @@ Sessions carry `flavor=claude-code`, `agent_type=coding`, and
 
 ## Identity model
 
-Every event payload carries a 5-tuple identity (D115):
+Every event payload carries a 5-tuple identity (D115). Sub-agent
+sessions extend the derivation with a conditional 6th input,
+`agent_role` (D126).
 
 | Field | Vocabulary | Source |
 |---|---|---|
-| `agent_id` | UUID | Deterministically derived from the other four fields via `core/agent_id.py` |
+| `agent_id` | UUID | Deterministically derived from the other identity fields via `core/agent_id.py` |
 | `agent_type` | `coding` \| `production` | Sensor `init()` kwarg or `AGENT_TYPE` / `FLIGHTDECK_AGENT_TYPE` env (D114). Plugin always emits `coding` |
 | `client_type` | `claude_code` \| `flightdeck_sensor` | Sensor literal or plugin literal |
 | `agent_name` | string | Sensor `AGENT_FLAVOR` / `FLIGHTDECK_AGENT_NAME` env. Default `{user}@{hostname}`. Plugin uses the user's chosen flavor |
 | `user` | string | Resolved from `getpass.getuser()` (sensor) or `process.env.USER` (plugin) |
+| `agent_role` (optional 6th, D126) | string \| null | Framework-driven on sub-agent sessions. CrewAI: `Agent.role`. LangGraph: node name. AutoGen: `participant.name`. Claude Code Task: hook payload `agent_type`. Null on root sessions and direct-SDK sessions |
 
 Plus `hostname` (separate field, not part of the agent_id derivation).
 
-Ingestion returns 400 if any of these are missing or outside their
-vocabulary (D116).
+Ingestion returns 400 if any of the core 5-tuple fields are missing or
+outside their vocabulary (D116). `agent_role` is optional; both
+absent on the wire and explicit-null are accepted.
 
-`agent_id` is stable across process restarts: same 5-tuple → same UUID.
-The same laptop running the sensor against multiple repos or branches
-converges to ONE agent row because `agent_name` defaults to `{user}@{hostname}`
-which is stable. Branch / repo distinctions land in
-`context.git_branch` / `context.git_repo`, not in identity.
+`agent_id` is stable across process restarts: same identity tuple →
+same UUID. When `agent_role` is null or empty (after `.strip()`), the
+derivation collapses to the D115 5-tuple — root and direct-SDK
+sessions on a given host produce the same agent_id whether or not
+the platform supports sub-agent emission. When `agent_role` is set,
+it joins the input tuple, so a CrewAI Researcher and a CrewAI Writer
+running on the same host land under distinct agent_ids despite
+sharing the rest of the 5-tuple. The same laptop running the sensor
+against multiple repos or branches still converges to ONE root agent
+because `agent_name` defaults to `{user}@{hostname}`. Branch / repo
+distinctions land in `context.git_branch` / `context.git_repo`, not
+in identity.
+
+### Sub-agent sessions
+
+Sub-agent sessions (Claude Code Task subagents, CrewAI agent turns,
+LangGraph agent-bearing nodes, AutoGen participant message handlers)
+carry two paired columns on `sessions` (D126):
+
+- `parent_session_id uuid` — references `sessions(session_id)`, set to
+  the outer session's id.
+- `agent_role text` — the framework-supplied role label.
+
+Both columns are nullable. Both are populated only on sub-agent
+sessions; both are null on root sessions. The reverse (role set,
+parent unset) is a sensor bug — the sensor emits both together or
+neither (D126).
+
+The `parent_session_id` FK is enforced. Forward references (a child
+`session_start` arriving before its parent is in the DB) are handled
+by a parent-stub variant of the worker's lazy-create path that
+extends D106: when a child arrives with a `parent_session_id` that
+isn't in `sessions`, the worker INSERTs a stub row with
+`flavor="unknown"` / `agent_type="unknown"` / placeholder identity
+sentinels and a synthetic `started_at` matching the child's. The
+child INSERT then satisfies the FK. When the real parent's
+`session_start` arrives later, `UpsertSession ON CONFLICT` upgrades
+the stub's `"unknown"` sentinels to real values via the existing
+write-once-but-upgrade-from-`"unknown"` branch (D106). See D126 for
+the full pseudocode.
 
 ### Re-attachment
 
@@ -926,7 +1044,8 @@ the columns from the sessions table.
 ### `POST /v1/events`
 
 Every event payload carries the D115 identity 5-tuple, plus session-level
-fields. The canonical shape:
+fields. Sub-agent sessions (D126) additionally carry
+`parent_session_id` and `agent_role`. The canonical shape:
 
 ```json
 {
@@ -955,9 +1074,23 @@ fields. The canonical shape:
   "tool_result":          null,
   "has_content":          false,
   "content":              null,
+  "parent_session_id":    null,
+  "agent_role":           null,
   "timestamp":            "2026-04-07T10:00:00Z"
 }
 ```
+
+Sub-agent `session_start` events set `parent_session_id` to the
+outer session's id and `agent_role` to the framework-supplied role.
+Cross-agent message capture (D126): when `capture_prompts=true`,
+the child `session_start` payload carries an `incoming_message`
+field with the parent's input to the child, and the child
+`session_end` payload carries an `outgoing_message` field with the
+child's response back. Bodies route through the existing
+`event_content` table (no schema change) — small bodies inline,
+bodies above 8 KiB use the D119 overflow path with a 2 MiB hard
+cap. When `capture_prompts=false` both fields are absent and
+`has_content=false`.
 
 When `capture_prompts=true`, the `content` field contains a `PromptContent`
 object. The worker stores it in `event_content` and sets `has_content=true`
@@ -1203,6 +1336,17 @@ event's assumption. Three scenarios, three code paths:
   event payload with `state=active`, `started_at = event.occurred_at`,
   and `"unknown"` sentinels on fields the event doesn't carry (typically
   `flavor`, `agent_type`).
+- **Create-parent-stub** (D126, extends D106). A child `session_start`
+  whose `parent_session_id` does not yet exist in `sessions` triggers
+  a parent-stub INSERT before the child is written, so the new
+  `sessions.parent_session_id` FK is satisfied. The stub uses the
+  same `"unknown"` sentinel pattern as create-on-unknown plus
+  `started_at = child.started_at` as a placeholder. When the real
+  parent's `session_start` arrives later, `UpsertSession ON CONFLICT`
+  upgrades the stub's sentinels to real values via the existing
+  write-once-but-upgrade branch (D106). Same primitive as
+  create-on-unknown, different trigger (FK satisfaction vs
+  unknown-session-id event).
 
 ### Policy evaluator
 
@@ -1287,16 +1431,20 @@ CREATE TABLE sessions (
     last_attached_at     TIMESTAMPTZ,
     context              JSONB DEFAULT '{}'::jsonb,
     token_id             UUID REFERENCES access_tokens(id) ON DELETE SET NULL,
-    token_name           TEXT
+    token_name           TEXT,
+    parent_session_id    UUID REFERENCES sessions(session_id),  -- D126
+    agent_role           TEXT                                   -- D126
 );
 
-CREATE INDEX sessions_agent_id_idx     ON sessions (agent_id);
-CREATE INDEX sessions_state_idx        ON sessions (state);
-CREATE INDEX sessions_last_seen_idx    ON sessions (last_seen_at DESC);
-CREATE INDEX sessions_flavor_idx       ON sessions (flavor);
-CREATE INDEX sessions_framework_idx    ON sessions (framework);
-CREATE INDEX sessions_started_at_idx   ON sessions (started_at DESC);
-CREATE INDEX sessions_context_gin      ON sessions USING GIN (context);
+CREATE INDEX sessions_agent_id_idx          ON sessions (agent_id);
+CREATE INDEX sessions_state_idx             ON sessions (state);
+CREATE INDEX sessions_last_seen_idx         ON sessions (last_seen_at DESC);
+CREATE INDEX sessions_flavor_idx            ON sessions (flavor);
+CREATE INDEX sessions_framework_idx         ON sessions (framework);
+CREATE INDEX sessions_started_at_idx        ON sessions (started_at DESC);
+CREATE INDEX sessions_context_gin           ON sessions USING GIN (context);
+CREATE INDEX sessions_parent_session_id_idx ON sessions (parent_session_id)
+    WHERE parent_session_id IS NOT NULL;       -- D126 partial
 ```
 
 `agent_name`, `agent_type`, and `client_type` are denormalized from
@@ -1306,6 +1454,19 @@ CREATE INDEX sessions_context_gin      ON sessions USING GIN (context);
 `framework` is the bare-name analytics dimension. The full
 `context.frameworks[]` JSONB array carries versioned strings
 (`langchain/0.3.27`) for diagnostic detail.
+
+`parent_session_id` and `agent_role` are paired sub-agent columns
+(D126). Both nullable, both populated only on sub-agent sessions
+(Claude Code Task, CrewAI agent turn, LangGraph agent-bearing node,
+AutoGen participant message handler). The FK on `parent_session_id`
+references `sessions(session_id)` and is enforced at write time;
+forward references where the child's `session_start` arrives before
+the parent's are handled by the worker's parent-stub lazy-create
+path that extends D106 (see Three revival scenarios above and
+D126). The partial index excludes the null-majority root sessions
+so the index stays small while supporting fast lookups for the
+`?has_sub_agents` / `?is_sub_agent` / `?parent_session_id` filters
+and the `agent_role` analytics dimension.
 
 ### `session_attachments` (D094)
 
@@ -1494,6 +1655,7 @@ always create a new numbered migration.
 | 000014 | Normalize legacy `agent_type` values |
 | 000015 | Drop and recreate `agents` table with `agent_id` PK (D115) |
 | 000016 | `event_content.input` JSONB column for embeddings capture |
+| 000017 | `sessions.parent_session_id` FK + `sessions.agent_role` text + partial index (D126) |
 
 ---
 
@@ -1642,29 +1804,54 @@ renaming fields is not.
 `GET /v1/analytics` accepts:
 
 - `metric` (required): one of `tokens`, `sessions`, `latency_avg`,
-  `latency_p50`, `latency_p95`, `policy_events`, `estimated_cost`.
+  `latency_p50`, `latency_p95`, `policy_events`, `estimated_cost`,
+  `parent_token_sum`, `child_token_sum`, `child_count`,
+  `parent_to_first_child_latency_ms`. The four sub-agent-aware
+  metrics (D126) operate over the parent / child relationship:
+  `parent_token_sum` rolls up token usage across a parent session
+  AND all its descendants via recursive CTE on `parent_session_id`;
+  `child_token_sum` rolls up descendants only; `child_count` reports
+  the number of distinct child sessions per parent;
+  `parent_to_first_child_latency_ms` reports
+  `MIN(child.started_at) - parent.started_at`.
 - `group_by` (optional): one of `flavor`, `model`, `framework`, `host`,
-  `agent_type`, `team`, `provider`. `provider` is derived at query time
-  via SQL CASE over `model` (D098).
+  `agent_type`, `team`, `provider`, `agent_role`. `provider` is
+  derived at query time via SQL CASE over `model` (D098).
+  `agent_role` (D126) groups by the framework-supplied role string;
+  sessions with null `agent_role` bucket as `(root)`.
 - `range` (optional): `7d`, `30d`, `90d`, or `custom`.
 - `from` / `to` (ISO 8601, used when `range=custom`).
 - `granularity`: `hour`, `day`, `week`.
 - `filter_flavor`, `filter_model`, `filter_agent_type`, `filter_framework`,
   `filter_host` (optional).
+- `filter_parent_session_id`, `filter_is_sub_agent`,
+  `filter_has_sub_agents` (optional, D126). Filter analytics scope to
+  the children of a specific parent session, to children only, or to
+  parents only.
 
 Returns a series array with per-dimension totals and time-series data.
 GROUP BY queries are built dynamically with parameterized inputs; no raw
 string interpolation.
 
-Dimensions that live on `sessions` (`framework`, `host`, `agent_type`)
-are accessed via a JOIN against `sessions` when the metric's base table
-is `events`, so event-based metrics can group by session-level
-attributes. `framework` accepts both bare names (`langchain`) and
-versioned strings via `context.frameworks[]`; the SQL OR-combines both
-sources.
+Dimensions that live on `sessions` (`framework`, `host`, `agent_type`,
+`agent_role`) are accessed via a JOIN against `sessions` when the
+metric's base table is `events`, so event-based metrics can group by
+session-level attributes. `framework` accepts both bare names
+(`langchain`) and versioned strings via `context.frameworks[]`; the
+SQL OR-combines both sources.
 
 Latency aggregates use `events.latency_ms` and fall back to 0 via
 `COALESCE` when no events fall in the bucket.
+
+`parent_token_sum` uses a recursive CTE walking
+`parent_session_id` to aggregate the parent and every descendant in
+the same scope. The recursion is bounded by the actual tree depth
+(typically 1-2 levels in practice); query cost grows roughly with
+the size of the parent's descendant set. The traversal is accurate
+but unindexed at the deep-recursion frontier, so analytics over
+large historical windows on parents with many descendants pay a
+seq-scan-like cost on the recursive step. See D126 for the
+known-performance-characteristic note.
 
 ### Cost estimation
 

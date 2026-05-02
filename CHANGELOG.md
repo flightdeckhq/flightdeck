@@ -6,9 +6,10 @@ All notable changes to Flightdeck are documented here.
 
 First-class events, identity, and dashboard surfaces for sub-agent
 spawn / hand-off / join across Claude Code Task subagents, CrewAI,
-LangGraph, AutoGen 0.4, and AutoGen 0.2. Single PR covering sensor,
-plugin, ingestion, workers, API, dashboard, integration tests,
-playground demos, and docs. See **D126**.
+and LangGraph. Single PR covering sensor, plugin, ingestion,
+workers, API, dashboard, integration tests, playground demos, and
+docs. See **D126**. AutoGen support is on the Roadmap (LLM-call
+interception is a prerequisite that does not exist yet).
 
 ### Added
 
@@ -18,17 +19,14 @@ playground demos, and docs. See **D126**.
   and CrewAI Writer running on the same host land under distinct
   agent_ids; root and direct-SDK agent_ids are unchanged byte-for-
   byte from the D115 fixture vector.
-- **Sensor:** four new framework interceptors —
+- **Sensor:** two new framework interceptors —
   `interceptor/crewai.py` (context manager around
-  `crewai.Agent.execute()`), `interceptor/langgraph.py` (wraps
-  agent-bearing nodes; opt-in regex via
-  `init(langgraph_agent_node_pattern=…)`),
-  `interceptor/autogen_v04.py` (autogen-agentchat /
-  autogen-core RoutedAgent message handlers),
-  `interceptor/autogen_v02.py` (pyautogen `generate_reply` /
-  `receive`). Auto-detected by import availability;
-  `Provider.AUTOGEN_V04` / `Provider.AUTOGEN_V02` enum members
-  pin the choice when both are installed.
+  `crewai.Agent.execute_task` / `aexecute_task`) and
+  `interceptor/langgraph.py` (wraps the registered callable on
+  `StateGraph.add_node`; default-on per node, narrowable via the
+  opt-in regex `init(langgraph_agent_node_pattern=…)`).
+  `Provider.CREWAI` / `Provider.LANGGRAPH` enum members extend
+  the D125 enum.
 - **Sensor:** cross-agent message capture. Child `session_start`
   carries the parent's input as `incoming_message`; child
   `session_end` carries the response back as `outgoing_message`.
@@ -108,36 +106,32 @@ playground demos, and docs. See **D126**.
   `state=error`. Tooltip surfaces the exception class and first
   100 chars of the error message. Mirrors the existing
   `error_types` / `mcp_error_types` patterns.
-- **Tests:** sensor unit (+50 to +75) covering identity
-  derivation extension, session payload fields, four new
-  interceptor modules, cross-agent message capture parity,
-  AutoGen 0.4 + 0.2 split. Plugin Node tests (+8 to +12)
-  covering SubagentStart / SubagentStop / Task prompt + response
-  capture / PostToolUseFailure error path. Go tests (+30 to +55)
-  across ingestion / workers / API including UpsertParentStub
-  forward-reference race ordering and recursive-CTE correctness.
-  Vitest (+40 to +60) covering relationship pill, Sub-agents
-  tab MESSAGES sub-section, Analytics dimension picker,
-  ParentChildBreakdownChart, and `L8-row-failure-cue.test.tsx`
-  cross-cutting test. Integration (+8 to +14):
-  `test_subagent_landing.py`, `test_cross_agent_messages.py`,
-  `test_subagent_analytics.py`. Playwright (+13 specs × 2 themes
-  = 26 runs): T28 to T40, including T31a / T31b AutoGen split,
-  T38 cross-agent messages, T39 analytics dimensions, T40
-  failure-cue.
+- **Tests:** sensor unit (+30 to +50) covering identity
+  derivation extension, session payload fields, two new
+  interceptor modules, cross-agent message capture parity.
+  Plugin Node tests (+8 to +12) covering SubagentStart /
+  SubagentStop / Task prompt + response capture /
+  PostToolUseFailure error path. Go tests (+30 to +55) across
+  ingestion / workers / API including UpsertParentStub
+  forward-reference race ordering and recursive-CTE
+  correctness. Vitest (+40 to +60) covering relationship pill,
+  Sub-agents tab MESSAGES sub-section, Analytics dimension
+  picker, ParentChildBreakdownChart, and
+  `L8-row-failure-cue.test.tsx` cross-cutting test. Integration
+  (+8 to +14): `test_subagent_landing.py`,
+  `test_cross_agent_messages.py`, `test_subagent_analytics.py`.
+  Playwright (+11 specs × 2 themes = 22 runs): T28 to T40
+  excluding the AutoGen-only T31a / T31b, T38 cross-agent
+  messages, T39 analytics dimensions, T40 failure-cue.
 - **Playground (Rule 40d):** extended
   `playground/14_claude_code_plugin.py` (Task subagent path +
   cross-agent message capture round-trip);
   `playground/16_subagents_crewai.py`,
-  `playground/17_subagents_langgraph.py`,
-  `playground/18_subagents_autogen_v04.py`,
-  `playground/19_subagents_autogen_v02.py` (new). Each
+  `playground/17_subagents_langgraph.py` (new). Each
   self-skips when its framework / API key is missing per the
   existing playground convention. New Make targets:
   `playground-subagents-crewai`,
-  `playground-subagents-langgraph`,
-  `playground-subagents-autogen-v04`,
-  `playground-subagents-autogen-v02`.
+  `playground-subagents-langgraph`.
 
 ### Changed
 
@@ -170,13 +164,13 @@ playground demos, and docs. See **D126**.
   message capture, analytics. Documents the conditional 6th-input
   identity derivation, paired `parent_session_id` / `agent_role`
   columns, the lazy-create-parent-stub forward-reference contract
-  (extends D106), the per-framework attribution matrix, the
-  AutoGen 0.4 + 0.2 dual interceptor (extends D125 with new
-  Provider enum members), the SubagentStop disambiguation,
-  cross-agent message capture via the D119 overflow path, the
-  sub-agent-aware analytics dimension + metrics, and the
-  accepted properties (renaming creates new identity; recursive
-  CTE cost on large datasets; forward-reference stub orphans).
+  (extends D106), the per-framework attribution matrix
+  (Claude Code Task plugin path + CrewAI + LangGraph; AutoGen
+  on the Roadmap), the SubagentStop disambiguation, cross-agent
+  message capture via the D119 overflow path, the sub-agent-aware
+  analytics dimension + metrics, and the accepted properties
+  (renaming creates new identity; recursive CTE cost on large
+  datasets; forward-reference stub orphans).
 
 ## Unreleased — Phase 5 MCP first-class observability
 

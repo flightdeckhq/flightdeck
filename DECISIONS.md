@@ -4763,7 +4763,7 @@ MCP).
 **Phase:** Sub-agent observability
 
 **Context.** Pre-D126 the platform had no first-class concept of a
-sub-agent. Multi-agent frameworks (CrewAI, LangGraph, AutoGen) and
+sub-agent. Multi-agent frameworks (CrewAI, LangGraph) and
 Claude Code's Task tool spawned sub-agents whose execution was
 either invisible to Flightdeck or visible only as untyped extra
 events on the parent's session. The Claude Code plugin emitted an
@@ -4786,7 +4786,7 @@ relationship and the role, framework-specific interceptors that
 emit child sessions, and dashboard surfaces that render the
 relationship at every level.
 
-This decision has nine components:
+This decision has eight components:
 
 ### 1. Conditional 6th identity input
 
@@ -4901,10 +4901,6 @@ or 400s at the sensor for benign timing skew.
 | CrewAI agent execution | parent crew's session | ``Agent.role`` attribute | ``sensor/.../interceptor/crewai.py`` |
 | LangGraph graph runner | null | null | n/a |
 | LangGraph agent-bearing node | parent runner's session | node name | ``sensor/.../interceptor/langgraph.py`` |
-| AutoGen 0.4 runtime | null | null | n/a |
-| AutoGen 0.4 participant message handler | parent runtime's session | ``participant.name`` | ``sensor/.../interceptor/autogen_v04.py`` |
-| AutoGen 0.2 runtime | null | null | n/a |
-| AutoGen 0.2 participant message handler | parent runtime's session | ``agent.name`` | ``sensor/.../interceptor/autogen_v02.py`` |
 
 LangGraph's "agent-bearing node" predicate: nodes whose function
 body invokes a patched LLM client OR whose name matches the regex
@@ -4913,38 +4909,21 @@ The first criterion is the default zero-config behaviour; the
 regex override exists for graphs whose agent nodes don't directly
 invoke the LLM (delegating through helpers).
 
-### 5. AutoGen 0.4 + 0.2 dual interceptor
+Sub-agent coverage tracks Flightdeck's existing LLM-interception
+matrix — a framework lands here only after the sensor observes
+its plain LLM calls. AutoGen (both the 0.4 ``autogen-agentchat``
++ ``autogen-core`` rewrite and the 0.2 ``pyautogen`` legacy
+package) is NOT covered in this phase: no LLM-call interceptor
+exists for it yet, so adding sub-agent observability without that
+foundation would surface child-session events for an agent whose
+LLM activity is otherwise invisible — half a feature. The
+README Roadmap carries an "AutoGen framework support" bullet
+covering both LLM-call interception and sub-agent observability;
+when that lands the matrix above gains the AutoGen rows in the
+shape originally planned for this phase (`participant.name` /
+`agent.name` as the role source).
 
-AutoGen 0.4 was a complete rewrite: different package
-(``autogen-agentchat`` + ``autogen-core`` vs ``pyautogen``),
-different import paths, different message-handling API. The two
-versions are two libraries that share a name. This phase ships
-interceptors for both so users on either version are observed
-equally:
-
-- ``sensor/flightdeck_sensor/interceptor/autogen_v04.py`` patches
-  the ``autogen-agentchat`` participant message handlers
-  (RoutedAgent dispatch).
-- ``sensor/flightdeck_sensor/interceptor/autogen_v02.py`` patches
-  the ``pyautogen`` ``generate_reply`` / ``receive`` hooks.
-
-``flightdeck_sensor.patch()`` auto-detects which is installed by
-import availability (``autogen_agentchat`` import success →
-``autogen_v04``; ``autogen`` import without
-``autogen_agentchat`` → ``autogen_v02``). Manual override via
-``Provider.AUTOGEN_V04`` / ``Provider.AUTOGEN_V02`` enum members
-(D125, ``(str, Enum)`` mixin so raw-string call shapes still
-work) for users with both installed (rare).
-
-**Rejected alternative:** ship a single ``autogen.py`` interceptor
-that branches at import time on the installed version. Rejected
-because the v04 and v02 message-handling APIs share almost no
-shape — branching turns the file into two interleaved
-implementations that drift independently. Two files match the
-two libraries; their tests are independent; release-note
-attribution per version is precise.
-
-### 6. SubagentStop is the canonical child session_end (Claude Code path)
+### 5. SubagentStop is the canonical child session_end (Claude Code path)
 
 For the Claude Code plugin path specifically, ``SubagentStop`` is
 the authoritative end-of-life signal for the child session. The
@@ -4974,19 +4953,18 @@ the duplicate-emission race above; the existing state-revival
 path already handles this case correctly without adding a new
 authoritative source.
 
-### 7. Cross-agent message capture
+### 6. Cross-agent message capture
 
 When ``capture_prompts=True``, each interceptor captures two
 bodies per child execution:
 
 - ``incoming_message`` — the parent's input to the child (CrewAI
-  task description, LangGraph inbound state, AutoGen inbound
-  message body, Claude Code Task ``prompt`` argument). Stamped on
-  the child ``session_start`` payload.
+  task description, LangGraph inbound state, Claude Code Task
+  ``prompt`` argument). Stamped on the child ``session_start``
+  payload.
 - ``outgoing_message`` — the child's response back (CrewAI
-  return value, LangGraph outbound state, AutoGen outbound
-  message body, Claude Code Task tool response). Stamped on the
-  child ``session_end`` payload.
+  return value, LangGraph outbound state, Claude Code Task tool
+  response). Stamped on the child ``session_end`` payload.
 
 Bodies route through the existing ``event_content`` table (no
 schema change). Small bodies inline in ``events.payload``;
@@ -4998,7 +4976,7 @@ on the wire, separate-table storage, fetched via
 capture is not enabled for this deployment" disabled state per
 the existing capture-off contract.
 
-### 8. Sub-agent-aware analytics
+### 7. Sub-agent-aware analytics
 
 The analytics endpoint (``GET /v1/analytics``) gains:
 
@@ -5021,7 +4999,7 @@ parent, segments per child role). A "Sub-agent activity" facet
 on the Analytics sidebar mirrors the Investigate TOPOLOGY facet
 for muscle memory.
 
-### 9. Renaming-without-loss is an accepted property, not engineered around
+### 8. Renaming-without-loss is an accepted property, not engineered around
 
 Renaming a framework agent (CrewAI's "Researcher" → "Senior
 Researcher", a LangGraph node renamed mid-development) creates a
@@ -5065,7 +5043,7 @@ shape.
   ceiling. Flagged here so the next contributor profiling the
   analytics path knows where to look.
 
-- **Renaming creates new identity.** Already detailed in § 9.
+- **Renaming creates new identity.** Already detailed in § 8.
 
 - **Forward-reference stub orphans.** A child can land with a
   parent_session_id that never receives a real ``session_start``
@@ -5087,12 +5065,10 @@ shape.
   ``incoming_message`` / ``outgoing_message`` fields
 - ``sensor/flightdeck_sensor/core/session.py`` — payload
   population, exception path, capture_prompts gating
-- ``sensor/flightdeck_sensor/provider.py`` — ``AUTOGEN_V04`` /
-  ``AUTOGEN_V02`` enum members
+- ``sensor/flightdeck_sensor/provider.py`` — ``CREWAI`` /
+  ``LANGGRAPH`` enum members
 - ``sensor/flightdeck_sensor/interceptor/crewai.py`` (new)
 - ``sensor/flightdeck_sensor/interceptor/langgraph.py`` (new)
-- ``sensor/flightdeck_sensor/interceptor/autogen_v04.py`` (new)
-- ``sensor/flightdeck_sensor/interceptor/autogen_v02.py`` (new)
 - ``plugin/hooks/hooks.json`` — ``SubagentStart`` /
   ``SubagentStop`` entries
 - ``plugin/hooks/scripts/observe_cli.mjs`` — branches for
@@ -5131,5 +5107,5 @@ conditional 6th input without superseding. D116 (ingestion
 validation) — extended to validate the new fields. D119 (lean
 MCP wire payload + content overflow) — the cross-agent message
 capture reuses the same overflow path. D125 (Provider enum) —
-extended with ``AUTOGEN_V04`` and ``AUTOGEN_V02`` members.
+extended with ``CREWAI`` and ``LANGGRAPH`` members.
 

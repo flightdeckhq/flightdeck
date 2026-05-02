@@ -110,10 +110,8 @@ Multi-agent frameworks render as a tree in the fleet view: a parent session for 
 | Claude Code Task subagent | hook payload ``session_id`` | hook payload ``agent_type`` (e.g. ``"Explore"``) |
 | CrewAI agent execution | parent crew's session | ``Agent.role`` attribute |
 | LangGraph agent-bearing node | parent runner's session | node name |
-| AutoGen 0.4 (autogen-agentchat) participant | parent runtime's session | ``participant.name`` |
-| AutoGen 0.2 (pyautogen) participant | parent runtime's session | ``agent.name`` |
 
-Direct Anthropic / OpenAI SDK and litellm calls outside a multi-agent framework emit root sessions with both fields null — the existing 5-tuple identity is unchanged. AutoGen 0.4 and 0.2 are two separate libraries that share a name and ship as separate interceptors auto-detected by import availability (``Provider.AUTOGEN_V04`` / ``Provider.AUTOGEN_V02`` pin the choice when both are installed).
+Direct Anthropic / OpenAI SDK and litellm calls outside a multi-agent framework emit root sessions with both fields null — the existing 5-tuple identity is unchanged. Sub-agent observability ships only for frameworks Flightdeck already supports for LLM-call interception (Frameworks table above); AutoGen support is on the Roadmap.
 
 When ``capture_prompts=True``, each child session carries the parent's input as ``incoming_message`` and the child's response back as ``outgoing_message`` — visible in the SessionDrawer's Sub-agents tab MESSAGES sub-section. The Fleet swimlane renders a ``→ N`` pill on parents and a ``← {parent_name}`` pill on children, plus Bezier connectors from each parent spawn event to its child's first event circle. Sub-agent emission failures surface as red row-level dots on Investigate, the Fleet AgentTable, and the swimlane left panel — same pattern as ``llm_error`` and ``mcp_error``.
 
@@ -494,6 +492,7 @@ Open work tracked here. Prioritized when users tell us which matters most.
 - **Continuous framework verification.** Scheduled live-API smoke runs across every supported framework, not just on PR. Catches SDK class-rename breakage (anthropic ``RateLimitError`` → ``QuotaError`` etc.) before users hit it.
 - **Production hardening.** NATS authentication, Helm chart polish, nginx rate limiting, dashboard auth, litellm streaming interception, native LangChain Voyage embeddings, dedicated LlamaIndex / CrewAI interceptors where transitive coverage falls short.
 - **Helm migration parity.** Backfill missing `000014` to `000016` in `helm/migrations/` and reconcile with `docker/postgres/migrations/`. The two paths drifted across phases — production deploys via Helm currently lack the agent_type normalization (`000014`), the agent_id-keyed agents table (`000015`), and the `event_content.input` column (`000016`) that docker-compose dev applies automatically.
+- **AutoGen framework support.** LLM-call interception via `autogen-core` / `autogen-agentchat` (the 0.4 rewrite) or `pyautogen` (0.2 legacy), plus sub-agent observability for it (`agent_role` from `participant.name`, child session per RoutedAgent dispatch / `generate_reply`). AutoGen ships two libraries that share a name with different APIs; both versions need their own interceptor.
 
 The roadmap is intentionally loose. User demand reorders priorities.
 

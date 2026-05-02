@@ -657,29 +657,24 @@ The sensor opens a child session for every framework-recognised
 sub-agent execution. Each child session carries
 `parent_session_id` pointing back to the outer session and
 `agent_role` set to the framework-supplied role label
-(see Identity model above). Five mechanisms are covered (D126):
+(see Identity model above). Three mechanisms are covered (D126):
 
 | Mechanism | parent_session_id source | agent_role source | Interceptor |
 |---|---|---|---|
 | Claude Code Task subagent | hook payload `session_id` | hook payload `agent_type` (e.g. `"Explore"`) | `plugin/hooks/scripts/observe_cli.mjs` (`SubagentStart` / `SubagentStop`) |
 | CrewAI agent execution | parent crew's session | `Agent.role` attribute | `sensor/.../interceptor/crewai.py` (context manager around `Agent.execute()`) |
 | LangGraph node execution | parent runner's session | node name | `sensor/.../interceptor/langgraph.py` (agent-bearing nodes only — node body invokes a patched LLM client OR matches `langgraph_agent_node_pattern` regex) |
-| AutoGen 0.4 participant | parent runtime's session | `participant.name` | `sensor/.../interceptor/autogen_v04.py` (autogen-agentchat / autogen-core) |
-| AutoGen 0.2 participant | parent runtime's session | `agent.name` | `sensor/.../interceptor/autogen_v02.py` (pyautogen `generate_reply` / `receive`) |
 
 Direct Anthropic / OpenAI SDK calls and litellm calls outside a
 multi-agent framework emit root sessions with
 `parent_session_id=null` and `agent_role=null`; the existing 5-tuple
 identity (D115) is unchanged for those paths.
 
-AutoGen 0.4 and 0.2 are two separate libraries that share a name
-(autogen-agentchat / autogen-core vs pyautogen — different
-packages, import paths, and message-handling APIs). Each ships its
-own interceptor under `sensor/flightdeck_sensor/interceptor/` and
-its own `Provider` enum member (D125 — `Provider.AUTOGEN_V04`,
-`Provider.AUTOGEN_V02`). `flightdeck_sensor.patch()` auto-detects
-which is installed by import availability and wires the matching
-interceptor; users with both installed pin the choice via the enum.
+Sub-agent coverage tracks the LLM-interception coverage matrix above
+— a framework lands here only after Flightdeck observes its plain
+LLM calls. AutoGen support is on the Roadmap (LLM-call interception
+plus sub-agent observability for both the 0.4 rewrite and the 0.2
+legacy package).
 
 Cross-agent message capture rides on the same
 `capture_prompts` gate as LLM prompt content (D019). Each
@@ -972,7 +967,7 @@ sessions extend the derivation with a conditional 6th input,
 | `client_type` | `claude_code` \| `flightdeck_sensor` | Sensor literal or plugin literal |
 | `agent_name` | string | Sensor `AGENT_FLAVOR` / `FLIGHTDECK_AGENT_NAME` env. Default `{user}@{hostname}`. Plugin uses the user's chosen flavor |
 | `user` | string | Resolved from `getpass.getuser()` (sensor) or `process.env.USER` (plugin) |
-| `agent_role` (optional 6th, D126) | string \| null | Framework-driven on sub-agent sessions. CrewAI: `Agent.role`. LangGraph: node name. AutoGen: `participant.name`. Claude Code Task: hook payload `agent_type`. Null on root sessions and direct-SDK sessions |
+| `agent_role` (optional 6th, D126) | string \| null | Framework-driven on sub-agent sessions. CrewAI: `Agent.role`. LangGraph: node name. Claude Code Task: hook payload `agent_type`. Null on root sessions and direct-SDK sessions |
 
 Plus `hostname` (separate field, not part of the agent_id derivation).
 
@@ -996,8 +991,8 @@ in identity.
 ### Sub-agent sessions
 
 Sub-agent sessions (Claude Code Task subagents, CrewAI agent turns,
-LangGraph agent-bearing nodes, AutoGen participant message handlers)
-carry two paired columns on `sessions` (D126):
+LangGraph agent-bearing nodes) carry two paired columns on
+`sessions` (D126):
 
 - `parent_session_id uuid` — references `sessions(session_id)`, set to
   the outer session's id.
@@ -1457,8 +1452,8 @@ CREATE INDEX sessions_parent_session_id_idx ON sessions (parent_session_id)
 
 `parent_session_id` and `agent_role` are paired sub-agent columns
 (D126). Both nullable, both populated only on sub-agent sessions
-(Claude Code Task, CrewAI agent turn, LangGraph agent-bearing node,
-AutoGen participant message handler). The FK on `parent_session_id`
+(Claude Code Task, CrewAI agent turn, LangGraph agent-bearing
+node). The FK on `parent_session_id`
 references `sessions(session_id)` and is enforced at write time;
 forward references where the child's `session_start` arrives before
 the parent's are handled by the worker's parent-stub lazy-create

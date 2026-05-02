@@ -1519,6 +1519,101 @@ func TestGetAnalyticsCustomRangeValid(t *testing.T) {
 	}
 }
 
+// --- D126 sub-agent analytics tests ---
+
+func TestGetAnalyticsAcceptsAgentRoleDimension(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.AnalyticsHandler(store.WrapStore(s))
+	req := httptest.NewRequest(
+		"GET",
+		"/v1/analytics?metric=tokens&group_by=agent_role",
+		nil,
+	)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["group_by"] != "agent_role" {
+		t.Errorf("expected group_by=agent_role, got %v", resp["group_by"])
+	}
+}
+
+func TestGetAnalyticsAcceptsSubagentMetrics(t *testing.T) {
+	cases := []string{
+		"parent_token_sum",
+		"child_token_sum",
+		"child_count",
+		"parent_to_first_child_latency_ms",
+	}
+	for _, metric := range cases {
+		t.Run(metric, func(t *testing.T) {
+			s := &mockStore{}
+			handler := handlers.AnalyticsHandler(store.WrapStore(s))
+			req := httptest.NewRequest(
+				"GET",
+				"/v1/analytics?metric="+metric+"&group_by=agent_role",
+				nil,
+			)
+			w := httptest.NewRecorder()
+			handler(w, req)
+			if w.Code != http.StatusOK {
+				t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+			}
+			var resp map[string]any
+			_ = json.Unmarshal(w.Body.Bytes(), &resp)
+			if resp["metric"] != metric {
+				t.Errorf("expected metric=%s, got %v", metric, resp["metric"])
+			}
+		})
+	}
+}
+
+func TestGetAnalyticsAcceptsSubagentFilters(t *testing.T) {
+	// Each filter should land cleanly without 400 — the mock store's
+	// QueryAnalytics doesn't inspect them, so this test pins the
+	// handler-side parsing for parent_session_id /
+	// has_sub_agents / is_sub_agent.
+	cases := []string{
+		"/v1/analytics?metric=tokens&filter_parent_session_id=" +
+			"11111111-1111-4111-8111-111111111111",
+		"/v1/analytics?metric=parent_token_sum&filter_has_sub_agents=true",
+		"/v1/analytics?metric=child_count&filter_is_sub_agent=1",
+	}
+	for _, url := range cases {
+		t.Run(url, func(t *testing.T) {
+			s := &mockStore{}
+			handler := handlers.AnalyticsHandler(store.WrapStore(s))
+			req := httptest.NewRequest("GET", url, nil)
+			w := httptest.NewRecorder()
+			handler(w, req)
+			if w.Code != http.StatusOK {
+				t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
+func TestGetAnalyticsRejectsUnknownSubagentMetric(t *testing.T) {
+	// Sanity: a metric name in the right "family" but not on the
+	// approved list still 400s. Catches typos in the validMetrics
+	// map.
+	s := &mockStore{}
+	handler := handlers.AnalyticsHandler(store.WrapStore(s))
+	req := httptest.NewRequest(
+		"GET",
+		"/v1/analytics?metric=parent_tokens",
+		nil,
+	)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for typo metric, got %d", w.Code)
+	}
+}
+
 // --- Event Content Tests ---
 
 func TestContentHandler_ReturnsContent(t *testing.T) {

@@ -1063,12 +1063,16 @@ paths:
         grouped by dimension.
       parameters:
       - description: 'Metric: tokens, sessions, latency_avg, latency_p50, latency_p95,
-          policy_events, estimated_cost (default: tokens)'
+          policy_events, estimated_cost, parent_token_sum, child_token_sum, child_count,
+          parent_to_first_child_latency_ms (default: tokens). The four sub-agent metrics
+          (D126) operate over the parent / child relationship via recursive CTE on
+          parent_session_id.'
         in: query
         name: metric
         type: string
       - description: 'Dimension: flavor, model, framework, host, agent_type, team,
-          provider (default: flavor)'
+          provider, agent_role (default: flavor). agent_role (D126) groups by the
+          framework-supplied sub-agent role string; null buckets as ''unknown''.'
         in: query
         name: group_by
         type: string
@@ -1105,6 +1109,21 @@ paths:
         in: query
         name: filter_provider
         type: string
+      - description: 'D126: filter analytics scope to children of one specific parent
+          session (UUID).'
+        in: query
+        name: filter_parent_session_id
+        type: string
+      - description: 'D126: when true, restrict to parent sessions only (those referenced
+          as a parent_session_id by at least one other session).'
+        in: query
+        name: filter_has_sub_agents
+        type: boolean
+      - description: 'D126: when true, restrict to child sessions only (parent_session_id
+          IS NOT NULL).'
+        in: query
+        name: filter_is_sub_agent
+        type: boolean
       produces:
       - application/json
       responses:

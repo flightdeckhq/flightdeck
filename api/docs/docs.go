@@ -487,13 +487,13 @@ const docTemplate = `{
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "Metric: tokens, sessions, latency_avg, latency_p50, latency_p95, policy_events, estimated_cost (default: tokens)",
+                        "description": "Metric: tokens, sessions, latency_avg, latency_p50, latency_p95, policy_events, estimated_cost, parent_token_sum, child_token_sum, child_count, parent_to_first_child_latency_ms (default: tokens). The four sub-agent metrics (D126) operate over the parent / child relationship via recursive CTE on parent_session_id.",
                         "name": "metric",
                         "in": "query"
                     },
                     {
                         "type": "string",
-                        "description": "Dimension: flavor, model, framework, host, agent_type, team, provider (default: flavor)",
+                        "description": "Dimension: flavor, model, framework, host, agent_type, team, provider, agent_role (default: flavor). agent_role (D126) groups by the framework-supplied sub-agent role string; null buckets as 'unknown'.",
                         "name": "group_by",
                         "in": "query"
                     },
@@ -543,6 +543,24 @@ const docTemplate = `{
                         "type": "string",
                         "description": "Filter to specific provider (anthropic, openai, google, xai, mistral, meta, other)",
                         "name": "filter_provider",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "D126: filter analytics scope to children of one specific parent session (UUID).",
+                        "name": "filter_parent_session_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "boolean",
+                        "description": "D126: when true, restrict to parent sessions only (those referenced as a parent_session_id by at least one other session).",
+                        "name": "filter_has_sub_agents",
+                        "in": "query"
+                    },
+                    {
+                        "type": "boolean",
+                        "description": "D126: when true, restrict to child sessions only (parent_session_id IS NOT NULL).",
+                        "name": "filter_is_sub_agent",
                         "in": "query"
                     }
                 ],

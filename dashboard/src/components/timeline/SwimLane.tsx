@@ -218,6 +218,7 @@ function SwimLaneComponent({
   return (
     <div
       data-agent-id={flavor}
+      data-rel-mode={relationship.mode}
       style={{ borderBottom: "1px solid var(--border-subtle)" }}
     >
       {/* Collapsed flavor header — 48px */}

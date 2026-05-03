@@ -39,7 +39,15 @@ test.describe("T7 — Fleet CONTEXT filter does not leak into Investigate deep-l
 
     const tableRow = findAgentTableRow(page, CODING_AGENT.name);
     await expect(tableRow).toBeVisible();
-    await Promise.all([page.waitForURL(/\/investigate/), tableRow.click()]);
+    // Click the agent_name cell explicitly. Clicking the row's
+    // centre lands on the D126 TOPOLOGY button which stops
+    // propagation (its own click target is "scroll to related
+    // agent"); the row's navigate-to-Investigate handler fires
+    // from any other cell.
+    await Promise.all([
+      page.waitForURL(/\/investigate/),
+      tableRow.locator("td").first().click(),
+    ]);
 
     // Investigate deep-link must carry the fleet trio.
     const params = investigateParamsFromUrl(page.url());

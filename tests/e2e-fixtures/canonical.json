@@ -2,7 +2,7 @@
   "_comment": "Declarative E2E fixture dataset. Every agent name starts with 'e2e-test-' so the Playwright suite can discriminate its own fixtures amid any other data in the shared dev DB. session_ids are derived deterministically in seed.py via uuid5(NAMESPACE_FLIGHTDECK, 'flightdeck-e2e/<agent_name>/<role>'), so each seed run addresses the same session rows and idempotency is a per-session HTTP GET.",
   "agent_name_prefix": "e2e-test-",
   "session_roles": {
-    "_comment": "Timeline offsets drive the UI state each fixture tests. Offsets are seconds relative to seed-time. 'aged-closed' and 'stale' require a post-seed SQL backdate because the worker stamps last_seen_at = NOW() regardless of event payload timestamp; see seed.py :: backdate_sessions. 'phase4_extras' (when present) is a list of additional event-shape strings the seeder emits on top of the base session_start / pre_call / post_call / tool_call / session_end timeline. Recognised values: 'embeddings' (no-content), 'embeddings_with_content_string' (has_content=true, single-string input), 'embeddings_with_content_list' (has_content=true, list-of-strings input), 'streaming_post_call', 'streaming_post_call_aborted', 'llm_error_rate_limit', 'llm_error_context_overflow', 'llm_error_authentication', 'llm_error_timeout', 'policy_warn', 'policy_degrade', 'policy_block', 'mcp_tool_list', 'mcp_tool_call', 'mcp_tool_call_failed' (mcp_tool_call with structured payload.error — MCPErrorIndicator anchor), 'mcp_resource_list', 'mcp_resource_read', 'mcp_prompt_list', 'mcp_prompt_get'.",
+    "_comment": "Timeline offsets drive the UI state each fixture tests. Offsets are seconds relative to seed-time. 'aged-closed' and 'stale' require a post-seed SQL backdate because the worker stamps last_seen_at = NOW() regardless of event payload timestamp; see seed.py :: backdate_sessions. 'phase4_extras' (when present) is a list of additional event-shape strings the seeder emits on top of the base session_start / pre_call / post_call / tool_call / session_end timeline. Recognised values: 'embeddings' (no-content), 'embeddings_with_content_string' (has_content=true, single-string input), 'embeddings_with_content_list' (has_content=true, list-of-strings input), 'streaming_post_call', 'streaming_post_call_aborted', 'llm_error_rate_limit', 'llm_error_context_overflow', 'llm_error_authentication', 'llm_error_timeout', 'policy_warn', 'policy_degrade', 'policy_block', 'mcp_tool_list', 'mcp_tool_call', 'mcp_tool_call_failed' (mcp_tool_call with structured payload.error \u2014 MCPErrorIndicator anchor), 'mcp_resource_list', 'mcp_resource_read', 'mcp_prompt_list', 'mcp_prompt_get'.",
     "fresh-active": {
       "started_offset_sec": -30,
       "ended_offset_sec": null,
@@ -18,7 +18,9 @@
       "started_offset_sec": -600,
       "ended_offset_sec": -120,
       "purpose": "T1 RECENT bucket; T5 closed-state badge; T16 carries one llm_error event so the session row's red error-indicator dot appears alongside the closed badge",
-      "phase4_extras": ["llm_error_rate_limit"]
+      "phase4_extras": [
+        "llm_error_rate_limit"
+      ]
     },
     "aged-closed": {
       "started_offset_sec": -100800,
@@ -57,10 +59,99 @@
         "policy_block"
       ]
     },
+    "claude-subagent": {
+      "started_offset_sec": -120,
+      "ended_offset_sec": -90,
+      "purpose": "T28 anchor \u2014 Claude Code Task subagent. Child session_start carries agent_role='Explore' and parent_session_id pointing back at a Claude Code parent. T28 verifies the child swimlane row + relationship pill + parent-link surface. ``parent_role`` references which parent agent's session is referenced; resolved by seed.py to the concrete UUID.",
+      "agent_role": "Explore",
+      "parent_role": "fresh-active",
+      "parent_agent": "e2e-test-coding-agent",
+      "captured_input": "Investigate the auth module and surface every place that calls AuthMiddleware.",
+      "captured_output": "Found 4 callers in src/api/auth.py; the entry point is server.go:142."
+    },
+    "crewai-researcher": {
+      "started_offset_sec": -180,
+      "ended_offset_sec": -150,
+      "purpose": "T29 anchor \u2014 CrewAI Researcher child. Pairs with crewai-writer under the same crewai-parent fixture so the parent's relationship pill renders '\u2192 2'.",
+      "agent_role": "Researcher",
+      "parent_role": "fresh-active",
+      "parent_agent": "e2e-test-crewai-parent",
+      "captured_input": "Gather sources for the quarterly report on Q3 token usage.",
+      "captured_output": "Pulled 12 sources from internal Grafana dashboards + 3 external benchmarks."
+    },
+    "crewai-writer": {
+      "started_offset_sec": -150,
+      "ended_offset_sec": -120,
+      "purpose": "T29 anchor \u2014 CrewAI Writer child. See crewai-researcher comment.",
+      "agent_role": "Writer",
+      "parent_role": "fresh-active",
+      "parent_agent": "e2e-test-crewai-parent",
+      "captured_input": "Draft the Q3 token usage section using the Researcher's notes.",
+      "captured_output": "Drafted three paragraphs covering the 28% MoM growth + the spike on May 1."
+    },
+    "langgraph-research-node": {
+      "started_offset_sec": -240,
+      "ended_offset_sec": -200,
+      "purpose": "T30 anchor \u2014 LangGraph agent-bearing node 'research_node'. Pairs with langgraph-writer-node under the same langgraph-parent.",
+      "agent_role": "research_node",
+      "parent_role": "fresh-active",
+      "parent_agent": "e2e-test-langgraph-parent",
+      "captured_input": "Research the latency spike on the ingest path between 04:00 and 05:00 UTC.",
+      "captured_output": "Identified a runaway worker on docker-workers-2; CPU saturation 04:14-04:42."
+    },
+    "langgraph-writer-node": {
+      "started_offset_sec": -200,
+      "ended_offset_sec": -160,
+      "purpose": "T30 anchor \u2014 LangGraph agent-bearing node 'writer_node'.",
+      "agent_role": "writer_node",
+      "parent_role": "fresh-active",
+      "parent_agent": "e2e-test-langgraph-parent",
+      "captured_input": "Compose an incident note based on the research_node findings.",
+      "captured_output": "Posted incident note INC-2026-148 summarising the worker saturation."
+    },
+    "subagent-error": {
+      "started_offset_sec": -300,
+      "ended_offset_sec": null,
+      "force_state": "lost",
+      "purpose": "T40 (L8) anchor \u2014 sub-agent that ended in lost state. seed.py emits session_start with parent_session_id + agent_role but NO matching session_end so the worker's state-revival path lands on lost. Drives the red-dot row-level failure cue across Investigate / AgentTable / Swimlane per METHODOLOGY L8.",
+      "agent_role": "Reviewer",
+      "parent_role": "fresh-active",
+      "parent_agent": "e2e-test-coding-agent"
+    },
+    "subagent-overflow-input": {
+      "started_offset_sec": -360,
+      "ended_offset_sec": -330,
+      "purpose": "T38 anchor \u2014 sub-agent with a >8 KiB incoming_message body. seed.py forces D119 overflow path: incoming_message.has_content=true on the wire and the full body lands in event_content. Drives the click-to-expand fetch via /v1/events/{id}/content.",
+      "agent_role": "Critic",
+      "parent_role": "fresh-active",
+      "parent_agent": "e2e-test-coding-agent",
+      "captured_input": "OVERFLOW",
+      "captured_output": "Critic feedback inline (small)."
+    },
+    "depth-2-middle": {
+      "started_offset_sec": -420,
+      "ended_offset_sec": -380,
+      "purpose": "T35 anchor \u2014 middle layer of a depth-2 tree. Itself a child of e2e-test-depth2-grand (the grandparent) AND a parent of depth-2-leaf. Drives the SubAgentsTab combined view.",
+      "agent_role": "Coordinator",
+      "parent_role": "fresh-active",
+      "parent_agent": "e2e-test-depth2-grand",
+      "captured_input": "Coordinate two sub-tasks across the leaf agent.",
+      "captured_output": "Both leaf sub-tasks completed."
+    },
+    "depth-2-leaf": {
+      "started_offset_sec": -380,
+      "ended_offset_sec": -350,
+      "purpose": "T35 anchor \u2014 leaf of a depth-2 tree. Child of depth-2-middle (which is itself a child of e2e-test-depth2-grand). Drives '+N more levels' depth-aware UX cues.",
+      "agent_role": "Worker",
+      "parent_role": "depth-2-middle",
+      "parent_agent": "e2e-test-depth2-middle",
+      "captured_input": "Execute leaf sub-task 1.",
+      "captured_output": "Leaf sub-task 1 done."
+    },
     "mcp-active": {
       "started_offset_sec": -240,
       "ended_offset_sec": null,
-      "purpose": "Phase 5 T25 anchor: live session that connected to two MCP servers (one stdio, one http) and emitted one event of each Phase 5 type (mcp_tool_list, mcp_tool_call, mcp_resource_list, mcp_resource_read, mcp_prompt_list, mcp_prompt_get) plus one mcp_tool_call_failed (anchors T25-16 / D-MCP-FAIL — MCPErrorIndicator on a structured-error MCP row). The mcp_tool_call additionally has capture_prompts=True so the dashboard's MCPEventDetails shows arguments + result. context.mcp_servers carries both server fingerprints so the session-drawer MCP SERVERS panel and the Investigate MCP SERVER facet aggregation both have data to render. Sensor agent only — Python sensor emits all six per Phase 5 D1; the Claude Code plugin emits MCP_TOOL_CALL only.",
+      "purpose": "Phase 5 T25 anchor: live session that connected to two MCP servers (one stdio, one http) and emitted one event of each Phase 5 type (mcp_tool_list, mcp_tool_call, mcp_resource_list, mcp_resource_read, mcp_prompt_list, mcp_prompt_get) plus one mcp_tool_call_failed (anchors T25-16 / D-MCP-FAIL \u2014 MCPErrorIndicator on a structured-error MCP row). The mcp_tool_call additionally has capture_prompts=True so the dashboard's MCPEventDetails shows arguments + result. context.mcp_servers carries both server fingerprints so the session-drawer MCP SERVERS panel and the Investigate MCP SERVER facet aggregation both have data to render. Sensor agent only \u2014 Python sensor emits all six per Phase 5 D1; the Claude Code plugin emits MCP_TOOL_CALL only.",
       "phase4_extras": [
         "mcp_tool_list",
         "mcp_tool_call",
@@ -77,9 +168,16 @@
           "protocol_version": "2025-11-25",
           "version": "1.0.0",
           "capabilities": {
-            "tools": {"listChanged": false},
-            "resources": {"listChanged": false, "subscribe": false},
-            "prompts": {"listChanged": false}
+            "tools": {
+              "listChanged": false
+            },
+            "resources": {
+              "listChanged": false,
+              "subscribe": false
+            },
+            "prompts": {
+              "listChanged": false
+            }
           },
           "instructions": "T25 fixture stdio MCP server."
         },
@@ -89,7 +187,9 @@
           "protocol_version": "2025-11-25",
           "version": "0.9.2",
           "capabilities": {
-            "tools": {"listChanged": false}
+            "tools": {
+              "listChanged": false
+            }
           },
           "instructions": null
         }
@@ -107,7 +207,14 @@
       "model": "claude-sonnet-4-5",
       "framework": "claude-code",
       "host": "e2e-host-coding",
-      "session_roles": ["fresh-active", "recent-closed", "aged-closed", "stale", "error-active", "policy-active"]
+      "session_roles": [
+        "fresh-active",
+        "recent-closed",
+        "aged-closed",
+        "stale",
+        "error-active",
+        "policy-active"
+      ]
     },
     {
       "agent_name": "e2e-test-sensor-agent-prod",
@@ -119,7 +226,13 @@
       "model": "gpt-4o-mini",
       "framework": "langchain",
       "host": "e2e-host-sensor-prod",
-      "session_roles": ["fresh-active", "recent-closed", "aged-closed", "stale", "mcp-active"]
+      "session_roles": [
+        "fresh-active",
+        "recent-closed",
+        "aged-closed",
+        "stale",
+        "mcp-active"
+      ]
     },
     {
       "agent_name": "e2e-test-sensor-agent-long-name-for-truncation-testing-really-quite-long",
@@ -131,7 +244,10 @@
       "model": "claude-sonnet-4-5",
       "framework": "langchain",
       "host": "e2e-host-truncation",
-      "session_roles": ["fresh-active", "recent-closed"]
+      "session_roles": [
+        "fresh-active",
+        "recent-closed"
+      ]
     },
     {
       "agent_name": "e2e-test-ancient-agent",
@@ -143,7 +259,183 @@
       "model": "gpt-4o-mini",
       "framework": "langchain",
       "host": "e2e-host-ancient",
-      "session_roles": ["ancient-only"]
+      "session_roles": [
+        "ancient-only"
+      ]
+    },
+    {
+      "agent_name": "e2e-test-claude-subagent",
+      "agent_type": "coding",
+      "client_type": "claude_code",
+      "user": "e2e-runner",
+      "hostname": "e2e-host-coding",
+      "flavor": "e2e-claude-subagent",
+      "model": "claude-sonnet-4-5",
+      "framework": "claude-code",
+      "host": "e2e-host-coding",
+      "session_roles": [
+        "claude-subagent"
+      ],
+      "_comment": "T28 child agent. agent_role 'Explore' lives on each session; D126 \u00a7 2 derives a distinct agent_id because the agent_role joins the 6-tuple input."
+    },
+    {
+      "agent_name": "e2e-test-crewai-parent",
+      "agent_type": "production",
+      "client_type": "flightdeck_sensor",
+      "user": "e2e-runner",
+      "hostname": "e2e-host-crewai",
+      "flavor": "e2e-crewai-parent",
+      "model": "gpt-4o-mini",
+      "framework": "crewai",
+      "host": "e2e-host-crewai",
+      "session_roles": [
+        "fresh-active"
+      ],
+      "_comment": "T29 parent \u2014 Crew kickoff. Children (crewai-researcher / crewai-writer) reference this agent's fresh-active session as their parent_session_id."
+    },
+    {
+      "agent_name": "e2e-test-crewai-researcher",
+      "agent_type": "production",
+      "client_type": "flightdeck_sensor",
+      "user": "e2e-runner",
+      "hostname": "e2e-host-crewai",
+      "flavor": "e2e-crewai-researcher",
+      "model": "gpt-4o-mini",
+      "framework": "crewai",
+      "host": "e2e-host-crewai",
+      "session_roles": [
+        "crewai-researcher"
+      ]
+    },
+    {
+      "agent_name": "e2e-test-crewai-writer",
+      "agent_type": "production",
+      "client_type": "flightdeck_sensor",
+      "user": "e2e-runner",
+      "hostname": "e2e-host-crewai",
+      "flavor": "e2e-crewai-writer",
+      "model": "gpt-4o-mini",
+      "framework": "crewai",
+      "host": "e2e-host-crewai",
+      "session_roles": [
+        "crewai-writer"
+      ]
+    },
+    {
+      "agent_name": "e2e-test-langgraph-parent",
+      "agent_type": "production",
+      "client_type": "flightdeck_sensor",
+      "user": "e2e-runner",
+      "hostname": "e2e-host-langgraph",
+      "flavor": "e2e-langgraph-parent",
+      "model": "gpt-4o-mini",
+      "framework": "langgraph",
+      "host": "e2e-host-langgraph",
+      "session_roles": [
+        "fresh-active"
+      ],
+      "_comment": "T30 parent \u2014 LangGraph runner. Agent-bearing node children point at this agent's fresh-active session."
+    },
+    {
+      "agent_name": "e2e-test-langgraph-research",
+      "agent_type": "production",
+      "client_type": "flightdeck_sensor",
+      "user": "e2e-runner",
+      "hostname": "e2e-host-langgraph",
+      "flavor": "e2e-langgraph-research",
+      "model": "gpt-4o-mini",
+      "framework": "langgraph",
+      "host": "e2e-host-langgraph",
+      "session_roles": [
+        "langgraph-research-node"
+      ]
+    },
+    {
+      "agent_name": "e2e-test-langgraph-writer",
+      "agent_type": "production",
+      "client_type": "flightdeck_sensor",
+      "user": "e2e-runner",
+      "hostname": "e2e-host-langgraph",
+      "flavor": "e2e-langgraph-writer",
+      "model": "gpt-4o-mini",
+      "framework": "langgraph",
+      "host": "e2e-host-langgraph",
+      "session_roles": [
+        "langgraph-writer-node"
+      ]
+    },
+    {
+      "agent_name": "e2e-test-subagent-error",
+      "agent_type": "coding",
+      "client_type": "claude_code",
+      "user": "e2e-runner",
+      "hostname": "e2e-host-coding",
+      "flavor": "e2e-subagent-error",
+      "model": "claude-sonnet-4-5",
+      "framework": "claude-code",
+      "host": "e2e-host-coding",
+      "session_roles": [
+        "subagent-error"
+      ],
+      "_comment": "T40 (L8) anchor \u2014 sub-agent whose state ends in lost. seed.py force_state='lost' bakes the row state."
+    },
+    {
+      "agent_name": "e2e-test-subagent-overflow",
+      "agent_type": "coding",
+      "client_type": "claude_code",
+      "user": "e2e-runner",
+      "hostname": "e2e-host-coding",
+      "flavor": "e2e-subagent-overflow",
+      "model": "claude-sonnet-4-5",
+      "framework": "claude-code",
+      "host": "e2e-host-coding",
+      "session_roles": [
+        "subagent-overflow-input"
+      ],
+      "_comment": "T38 anchor \u2014 sub-agent with a >8 KiB incoming_message body driving the D119 overflow fetch path."
+    },
+    {
+      "agent_name": "e2e-test-depth2-grand",
+      "agent_type": "coding",
+      "client_type": "claude_code",
+      "user": "e2e-runner",
+      "hostname": "e2e-host-coding",
+      "flavor": "e2e-depth2-grand",
+      "model": "claude-sonnet-4-5",
+      "framework": "claude-code",
+      "host": "e2e-host-coding",
+      "session_roles": [
+        "fresh-active"
+      ],
+      "_comment": "T35 grandparent \u2014 top of the depth-2 tree."
+    },
+    {
+      "agent_name": "e2e-test-depth2-middle",
+      "agent_type": "coding",
+      "client_type": "claude_code",
+      "user": "e2e-runner",
+      "hostname": "e2e-host-coding",
+      "flavor": "e2e-depth2-middle",
+      "model": "claude-sonnet-4-5",
+      "framework": "claude-code",
+      "host": "e2e-host-coding",
+      "session_roles": [
+        "depth-2-middle"
+      ]
+    },
+    {
+      "agent_name": "e2e-test-depth2-leaf",
+      "agent_type": "coding",
+      "client_type": "claude_code",
+      "user": "e2e-runner",
+      "hostname": "e2e-host-coding",
+      "flavor": "e2e-depth2-leaf",
+      "model": "claude-sonnet-4-5",
+      "framework": "claude-code",
+      "host": "e2e-host-coding",
+      "session_roles": [
+        "depth-2-leaf"
+      ]
     }
   ]
 }

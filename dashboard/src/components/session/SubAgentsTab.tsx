@@ -40,7 +40,31 @@ export function SubAgentsTab({
   onOpenSession: (sessionId: string) => void;
 }) {
   const isChild = !!session.parent_session_id;
-  const captureEnabled = session.capture_enabled === true;
+  // ``session.capture_enabled`` is computed by the API as EXISTS
+  // event with has_content=true, which doesn't reflect D126 § 6
+  // cross-agent message capture (messages ride on session_start /
+  // session_end payloads inline; only the >8 KiB overflow path
+  // sets has_content=true). Treat the SubAgentsTab as
+  // capture-enabled when EITHER the API flag fires OR any of this
+  // session's events carries an incoming/outgoing message body.
+  // The Rule 21 disabled state still fires when neither condition
+  // holds — e.g., a root session with capture_prompts=false and no
+  // sub-agent linkage.
+  const hasAnyMessageBody = useMemo(
+    () =>
+      events.some(
+        (e) =>
+          e.event_type === "session_start" &&
+          !!e.payload?.incoming_message,
+      ) ||
+      events.some(
+        (e) =>
+          e.event_type === "session_end" &&
+          !!e.payload?.outgoing_message,
+      ),
+    [events],
+  );
+  const captureEnabled = session.capture_enabled === true || hasAnyMessageBody;
 
   // session_start carries this session's incoming_message; session_end
   // carries outgoing_message. Used for the SPAWNED FROM section's
@@ -455,6 +479,28 @@ function ChildRow({
 
 const PREVIEW_CHARS = 200;
 
+/**
+ * Coerce the wire-level ``body`` (polymorphic per framework — the
+ * worker stores a string for Claude Code Task subagent prompts and
+ * a dict / list for CrewAI / LangGraph state) into a renderable
+ * string. Plain strings pass through; structured shapes are JSON-
+ * formatted so the operator can read the underlying data without
+ * losing the source detail.
+ */
+function bodyToString(body: unknown): string {
+  if (body == null) return "";
+  if (typeof body === "string") return body;
+  return JSON.stringify(body, null, 2);
+}
+
+function bodyByteSize(message: SubagentMessage): number {
+  if (message.has_content && typeof message.content_bytes === "number") {
+    return message.content_bytes;
+  }
+  const inline = bodyToString(message.body);
+  return inline.length;
+}
+
 function MessagePreview({
   label,
   message,
@@ -516,13 +562,18 @@ function MessagePreview({
   }, [expanded, message.has_content, eventId, overflowBody]);
 
   // Inline body when small; overflow placeholder otherwise. The
-  // preview is whichever string we have, truncated.
+  // preview is whichever string we have, truncated. The wire
+  // shape's ``body`` is polymorphic (string | object); coerce
+  // through bodyToString so previews render readably regardless
+  // of the source framework.
+  const inlineBody = bodyToString(message.body);
   const fullBody = message.has_content
     ? overflowBody ?? ""
-    : message.message;
-  const previewBody = (message.message || "").slice(0, PREVIEW_CHARS);
+    : inlineBody;
+  const previewBody = inlineBody.slice(0, PREVIEW_CHARS);
   const previewIsTruncated =
-    message.has_content || (message.message?.length ?? 0) > PREVIEW_CHARS;
+    !!message.has_content || inlineBody.length > PREVIEW_CHARS;
+  const sizeBytes = bodyByteSize(message);
 
   return (
     <div
@@ -555,7 +606,7 @@ function MessagePreview({
             textTransform: "none",
           }}
         >
-          {message.bytes.toLocaleString()} bytes
+          {sizeBytes.toLocaleString()} bytes
           {message.has_content && " · overflow"}
         </span>
         {previewIsTruncated && (

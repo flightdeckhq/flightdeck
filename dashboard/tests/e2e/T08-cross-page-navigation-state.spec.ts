@@ -26,7 +26,12 @@ test.describe("T8 — Cross-page navigation preserves URL state", () => {
     expect(fleetUrlBefore).toMatch(/view=table/);
 
     const row = findAgentTableRow(page, CODING_AGENT.name);
-    await Promise.all([page.waitForURL(/\/investigate/), row.click()]);
+    // Click the agent_name cell — see T07 for rationale (the
+    // D126 TOPOLOGY button at row centre stops propagation).
+    await Promise.all([
+      page.waitForURL(/\/investigate/),
+      row.locator("td").first().click(),
+    ]);
     const investigateUrlAfter = page.url();
 
     // The deep-link trio is present.

@@ -198,6 +198,16 @@ function listItemToSession(li: SessionListItem): Session {
     context: (li.context ?? {}) as Record<string, unknown>,
     capture_enabled: li.capture_enabled,
     token_name: li.token_name ?? null,
+    // D126 — preserve sub-agent linkage so SwimLane's
+    // ``deriveRelationship`` (and any other downstream consumer)
+    // can render the relationship pill, the L8 lost-dot, and the
+    // SubAgentsTab's parent / child links off the same Session
+    // shape that read directly from the session-detail endpoint.
+    // Stripping these fields silently drops every sub-agent
+    // surface on the swimlane — a step-7.fix gap that surfaced in
+    // step 8 when the seeded D126 fixtures rendered without pills.
+    parent_session_id: li.parent_session_id ?? null,
+    agent_role: li.agent_role ?? null,
   };
 }
 

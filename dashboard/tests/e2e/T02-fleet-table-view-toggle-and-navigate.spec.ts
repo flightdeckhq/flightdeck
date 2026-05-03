@@ -34,7 +34,12 @@ test.describe("T2 — Fleet view toggle and table→investigate navigation", () 
     await expect(row, "table row for coding fixture must be visible").toBeVisible();
 
     // Click the row and wait for navigation to /investigate.
-    await Promise.all([page.waitForURL(/\/investigate/), row.click()]);
+    // Click the agent_name cell explicitly — see T07 for the
+    // D126 TOPOLOGY-button propagation rationale.
+    await Promise.all([
+      page.waitForURL(/\/investigate/),
+      row.locator("td").first().click(),
+    ]);
 
     const params = investigateParamsFromUrl(page.url());
     expect(params.agentId, "agent_id param must be present").not.toBeNull();

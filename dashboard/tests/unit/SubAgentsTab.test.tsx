@@ -245,7 +245,7 @@ describe("SubAgentsTab — MESSAGES preview", () => {
         capture_enabled: true,
       }),
       events: mkEvents({
-        incomingMessage: { message: longBody, has_content: false, bytes: 500 },
+        incomingMessage: { body: longBody, captured_at: "" },
       }),
     });
     await waitFor(() =>
@@ -272,7 +272,7 @@ describe("SubAgentsTab — MESSAGES preview", () => {
         capture_enabled: true,
       }),
       events: mkEvents({
-        incomingMessage: { message: longBody, has_content: false, bytes: 350 },
+        incomingMessage: { body: longBody, captured_at: "" },
       }),
     });
     const expandBtn = await screen.findByTestId("sub-agents-own-input-expand");
@@ -309,7 +309,7 @@ describe("SubAgentsTab — MESSAGES preview", () => {
         capture_enabled: true,
       }),
       events: mkEvents({
-        incomingMessage: { message: "", has_content: true, bytes: 9000 },
+        incomingMessage: { has_content: true, content_bytes: 9000, captured_at: "" },
       }),
     });
     const expandBtn = await screen.findByTestId("sub-agents-own-input-expand");
@@ -324,7 +324,15 @@ describe("SubAgentsTab — MESSAGES preview", () => {
     });
   });
 
-  it("capture_prompts=false renders Rule 21 disabled state in SPAWNED FROM section", async () => {
+  it("capture_prompts=false AND no message bodies renders Rule 21 disabled state", async () => {
+    // SubAgentsTab's capture-enabled gate fires when EITHER the
+    // API flag is true OR the session's events carry an inline
+    // message body (D126 § 6 — sub-agent messages bypass the
+    // existing has_content=true convention used for LLM prompts).
+    // A user with capture_prompts=false produces no message body;
+    // both conditions are false → the Rule 21 disabled state
+    // surfaces. The fixture below builds that scenario by passing
+    // events without an incoming_message payload.
     fetchSessionMock.mockResolvedValue({
       session: mkSession({ session_id: "p-1", flavor: "parent" }),
       events: [],
@@ -335,9 +343,7 @@ describe("SubAgentsTab — MESSAGES preview", () => {
         parent_session_id: "p-1",
         capture_enabled: false,
       }),
-      events: mkEvents({
-        incomingMessage: { message: "won't render", has_content: false, bytes: 12 },
-      }),
+      events: mkEvents({}), // no incoming/outgoing message
     });
     await waitFor(() =>
       expect(screen.getByTestId("sub-agents-spawned-from")).toBeTruthy(),
@@ -345,7 +351,6 @@ describe("SubAgentsTab — MESSAGES preview", () => {
     expect(
       screen.getByTestId("sub-agents-spawned-from").textContent,
     ).toContain("Prompt capture is not enabled");
-    // Inline preview must NOT render — Rule 21 contract.
     expect(screen.queryByTestId("sub-agents-own-input")).toBeNull();
   });
 
@@ -377,9 +382,8 @@ describe("SubAgentsTab — MESSAGES preview", () => {
           has_content: false,
           payload: {
             incoming_message: {
-              message: "do the research",
-              has_content: false,
-              bytes: 15,
+              body: "do the research",
+              captured_at: "",
             },
           },
           occurred_at: "2026-05-03T00:00:00Z",
@@ -398,9 +402,8 @@ describe("SubAgentsTab — MESSAGES preview", () => {
           has_content: false,
           payload: {
             outgoing_message: {
-              message: "found the answer",
-              has_content: false,
-              bytes: 16,
+              body: "found the answer",
+              captured_at: "",
             },
           },
           occurred_at: "2026-05-03T00:01:00Z",

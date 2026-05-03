@@ -151,16 +151,26 @@ export interface Agent {
  * D126 sub-agent message capture. Populated on the wire when
  * ``capture_prompts=true`` and the body fits inline. Bodies above
  * the 8 KiB inline threshold route through the D119 overflow path
- * (``has_content=true`` on the parent session_start / session_end
- * event; the full body lives in ``event_content`` and is fetched
- * via ``GET /v1/events/{id}/content``). The ``has_content`` flag on
- * the body is the discriminator: ``true`` means inline ``message``
- * is empty and the dashboard must follow the overflow fetch.
+ * (``has_content=true`` + ``content_bytes`` on the parent
+ * session_start / session_end event; the full body lives in
+ * ``event_content`` and is fetched via
+ * ``GET /v1/events/{id}/content``).
+ *
+ * Wire shape mirrors ``workers/internal/consumer/nats.go::SubagentMessage``:
+ *   * ``body``: framework-supplied payload (string for Claude
+ *     Code Task subagent prompts, dict for CrewAI / LangGraph
+ *     state). Polymorphic per the source framework.
+ *   * ``has_content`` + ``content_bytes``: overflow indicators.
+ *     ``content_bytes`` is the size in bytes of the body that
+ *     lives in event_content.
+ *   * ``captured_at``: timestamp the sensor captured the body.
  */
 export interface SubagentMessage {
-  message: string;
-  has_content: boolean;
-  bytes: number;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  body?: any;
+  captured_at?: string;
+  has_content?: boolean;
+  content_bytes?: number;
 }
 
 /** Session (ephemeral identity). */

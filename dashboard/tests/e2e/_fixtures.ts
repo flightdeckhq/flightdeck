@@ -148,9 +148,16 @@ export function findSwimlaneRow(page: Page, agentName: string): Locator {
  * in a cell (no TruncatedText on the primary name column).
  */
 export function findAgentTableRow(page: Page, agentName: string): Locator {
+  // Exact-text match via Playwright's exact: true to avoid
+  // substring collisions with other fixtures whose agent_name
+  // happens to contain this name as a prefix (e.g.
+  // ``e2e-test-subagent-error`` substring-matches
+  // ``e2e-test-subagent`` queries).
   return page
     .locator('[data-testid^="fleet-agent-row-"]')
-    .filter({ hasText: agentName });
+    .filter({
+      has: page.getByText(agentName, { exact: true }),
+    });
 }
 
 /**
@@ -270,6 +277,32 @@ export async function bringSwimlaneRowIntoView(
     `[data-testid="swimlane-agent-row-${agentName}"]`,
   );
   // Cheap path: row already mounted (top of LIVE bucket / small DB).
+  if ((await target.count()) > 0) {
+    await target.first().scrollIntoViewIfNeeded({ timeout: 2000 });
+    return target;
+  }
+  // D126 step 8: agents may live ABOVE the initial viewport (top
+  // of the activity bucket — fresh sub-agents that closed seconds
+  // ago land high in the swimlane sort but the initial scroll
+  // position is mid-list on a populated fleet). Try a snap to the
+  // top of the swimlane container so the bucket head materializes
+  // before the down-scroll loop kicks in.
+  await page.evaluate(() => {
+    const anyRow = document.querySelector(
+      '[data-testid^="swimlane-agent-row-"]',
+    ) as HTMLElement | null;
+    if (!anyRow) return;
+    let node: HTMLElement | null = anyRow;
+    while (node) {
+      const style = window.getComputedStyle(node);
+      if (style.overflowY === "auto" || style.overflowY === "scroll") {
+        node.scrollTop = 0;
+        return;
+      }
+      node = node.parentElement;
+    }
+  });
+  await page.waitForTimeout(150);
   if ((await target.count()) > 0) {
     await target.first().scrollIntoViewIfNeeded({ timeout: 2000 });
     return target;

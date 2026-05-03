@@ -1395,22 +1395,42 @@ export function Investigate() {
     [selectedSessionId]
   );
 
-  // Initial fetch + refetch on URL state change
+  // Listing-state key (D126 UX revision 2026-05-03 step 11.fix.fix).
+  // Hash of every urlState field that affects the table's listing
+  // contents — but NOT ``session``. We use this key for the doFetch
+  // useEffect and the expansion-cache invalidation so a session-only
+  // URL change (drawer drill-down on a row, shared deep-link load)
+  // doesn't unnecessarily refetch the listing or collapse the
+  // user's currently-open inline expansion. Without this guard,
+  // clicking a child sub-row (which now updates ``?session=child``
+  // for reload-preservation) would fire doFetch + clear
+  // expandedParents, losing the user's parent context.
+  const listingStateKey = useMemo(() => {
+    // Strip ``session`` so a drawer-only URL change doesn't fire
+    // the listing-refresh effects below.
+    const { session: _drop, ...listing } = urlState;
+    void _drop;
+    return JSON.stringify(listing);
+  }, [urlState]);
+
+  // Initial fetch + refetch on URL state change (excluding session).
   useEffect(() => {
     doFetch(urlState);
     return () => abortRef.current?.abort();
-  }, [urlState, doFetch]);
+    // listingStateKey captures every relevant field; doFetch is the
+    // stable callback. urlState is read inside but its identity isn't
+    // a meaningful trigger here — listingStateKey is.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [listingStateKey, doFetch]);
 
-  // D126 UX revision 2026-05-03 — clear the per-parent children
-  // cache whenever the URL state changes. The visible parent list
-  // refreshes; a stale cached child set could render a child whose
-  // parent now sits outside the page or whose own state has moved
-  // on. Cheap to refetch (lazy on next expand) so eviction is safer
-  // than reuse.
+  // Clear the per-parent children cache whenever the listing
+  // refreshes (filters / time range / pagination change). Skips
+  // session-only URL updates so the drawer rebind path doesn't
+  // wipe the user's open inline expansion.
   useEffect(() => {
     setExpandedParents(new Set());
     setParentChildren(new Map());
-  }, [urlState]);
+  }, [listingStateKey]);
 
   // URL-param -> drawer state sync. Fires when an external navigation
   // (global search click, shared link, browser history) changes the
@@ -2273,16 +2293,29 @@ export function Investigate() {
                         : undefined
                     }
                     onClick={() => {
+                      // D126 UX revision 2026-05-03 — row click
+                      // opens / rebinds the SessionDrawer for this
+                      // row's session. Parent rows additionally
+                      // toggle the inline child expansion (the
+                      // drawer + expansion are independent
+                      // affordances stacked on the same gesture).
+                      // Child sub-rows in an active expansion fall
+                      // through to drawer-rebind only — the
+                      // expansion stays open so the user remains
+                      // in the parent's tree context.
+                      //
+                      // Step 11.fix.fix — also persist the
+                      // selection to the URL so a reload preserves
+                      // the drawer's open session. The
+                      // ``listing-state`` memo (urlState minus
+                      // session) keeps the expansion / cache /
+                      // doFetch from re-firing on session-only
+                      // changes; see the ``useEffect`` block above
+                      // that clears ``expandedParents`` for the
+                      // dep-list rationale.
                       setDrawerInitialTab(undefined);
                       setSelectedSessionId(s.session_id);
-                      // D126 UX revision 2026-05-03 — clicking a
-                      // parent row also toggles the inline child
-                      // expansion. Lone sessions (child_count=0)
-                      // skip the toggle so their click only opens
-                      // the drawer. Child sub-rows fall through to
-                      // setSelectedSessionId only — the drawer
-                      // rebinds via the ``onSwitchSession`` path
-                      // below.
+                      updateUrl({ session: s.session_id });
                       if (
                         topology === "root" &&
                         (s.child_count ?? 0) > 0

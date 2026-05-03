@@ -164,8 +164,11 @@ func (s *Store) ListAgents(
 			a.agent_id::text, a.agent_name, a.agent_type, a.client_type,
 			a.user_name, a.hostname, a.first_seen_at, a.last_seen_at,
 			a.total_sessions, a.total_tokens,
-			COALESCE(rollup.state, '') AS state
-		FROM agents a` + rollupSQL + whereSQL + `
+			COALESCE(rollup.state, '') AS state,
+			d126.agent_role,
+			d126.topology
+		FROM agents a` + rollupSQL + `
+		LEFT JOIN LATERAL (` + d126AgentRollupSQL + `) d126 ON TRUE` + whereSQL + `
 		ORDER BY ` + sortCol + ` ` + direction + `, a.agent_id ASC
 		LIMIT ` + limitPlaceholder + ` OFFSET ` + offsetPlaceholder
 
@@ -179,15 +182,22 @@ func (s *Store) ListAgents(
 	for rows.Next() {
 		var a AgentSummary
 		var rollupState *string
+		var topology *string
 		if err := rows.Scan(
 			&a.AgentID, &a.AgentName, &a.AgentType, &a.ClientType,
 			&a.UserName, &a.Hostname, &a.FirstSeenAt, &a.LastSeenAt,
 			&a.TotalSessions, &a.TotalTokens, &rollupState,
+			&a.AgentRole, &topology,
 		); err != nil {
 			return nil, fmt.Errorf("scan agent: %w", err)
 		}
 		if rollupState != nil {
 			a.State = *rollupState
+		}
+		if topology != nil {
+			a.Topology = *topology
+		} else {
+			a.Topology = "lone"
 		}
 		result = append(result, a)
 	}
@@ -217,7 +227,9 @@ func (s *Store) GetAgentByID(
 			a.agent_id::text, a.agent_name, a.agent_type, a.client_type,
 			a.user_name, a.hostname, a.first_seen_at, a.last_seen_at,
 			a.total_sessions, a.total_tokens,
-			COALESCE(rollup.state, '') AS state
+			COALESCE(rollup.state, '') AS state,
+			d126.agent_role,
+			d126.topology
 		FROM agents a
 		LEFT JOIN LATERAL (
 			SELECT CASE
@@ -234,15 +246,18 @@ func (s *Store) GetAgentByID(
 				)
 			END AS state
 		) rollup ON TRUE
+		LEFT JOIN LATERAL (` + d126AgentRollupSQL + `) d126 ON TRUE
 		WHERE a.agent_id = $1::uuid
 		LIMIT 1`
 
 	var a AgentSummary
 	var rollupState *string
+	var topology *string
 	err := s.pool.QueryRow(ctx, query, agentID).Scan(
 		&a.AgentID, &a.AgentName, &a.AgentType, &a.ClientType,
 		&a.UserName, &a.Hostname, &a.FirstSeenAt, &a.LastSeenAt,
 		&a.TotalSessions, &a.TotalTokens, &rollupState,
+		&a.AgentRole, &topology,
 	)
 	if err != nil {
 		// pgx returns ErrNoRows as a sentinel; bubble up so the
@@ -254,6 +269,11 @@ func (s *Store) GetAgentByID(
 	}
 	if rollupState != nil {
 		a.State = *rollupState
+	}
+	if topology != nil {
+		a.Topology = *topology
+	} else {
+		a.Topology = "lone"
 	}
 	return &a, nil
 }

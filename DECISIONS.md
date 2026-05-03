@@ -5078,7 +5078,12 @@ shape.
   ``workers/internal/writer/postgres.go`` — UpsertParentStub +
   UpsertSession upgrade-from-"unknown" branch
 - ``api/internal/store/postgres.go`` — session listing fields
-  + filters
+  + filters; ``AgentSummary`` gains ``agent_role`` and
+  ``topology`` (``lone`` / ``parent`` / ``child``) via the
+  shared ``d126AgentRollupSQL`` LATERAL subquery
+- ``api/internal/store/agents.go`` — same rollup applied to
+  ``ListAgents`` and ``GetAgentByID`` so the three projection
+  sites stay byte-identical on the new columns
 - ``api/internal/store/analytics.go`` — recursive CTE for
   ``parent_token_sum``, new dimension + metrics + filters
 - ``dashboard/src/components/timeline/SwimLane.tsx`` —
@@ -5093,6 +5098,9 @@ shape.
   wiring
 - ``dashboard/src/pages/Investigate.tsx`` — TOPOLOGY + ROLE
   facets, ROLE + PARENT columns, L8 red dot
+- ``dashboard/src/components/fleet/AgentTable.tsx`` — ROLE
+  pill + TOPOLOGY column reading the new
+  ``AgentSummary.agent_role`` / ``AgentSummary.topology`` fields
 
 **Related decisions.** D094 (session attachment) — sub-agent
 sessions ride on the same attachment semantics; the

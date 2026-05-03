@@ -24,7 +24,7 @@ type FleetResponse struct {
 // FleetHandler handles GET /v1/fleet.
 //
 // @Summary      Get fleet state (agent-level, D115)
-// @Description  Returns agents with aggregated state rollup and pagination. Includes runtime context facets aggregated across all non-terminal sessions for the dashboard CONTEXT sidebar.
+// @Description  Returns agents with aggregated state rollup and pagination. Each row also carries D126 sub-agent rollup fields (``agent_role`` — null for root agents, the framework-supplied role string when this agent represents a sub-agent identity; ``topology`` — one of ``lone`` / ``parent`` / ``child``). Includes runtime context facets aggregated across all non-terminal sessions for the dashboard CONTEXT sidebar.
 // @Tags         fleet
 // @Produce      json
 // @Param        page        query  int     false  "Page number (1-based, default 1)"

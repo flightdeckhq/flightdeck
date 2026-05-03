@@ -74,7 +74,7 @@ var validAgentSorts = map[string]bool{
 // AgentsListHandler handles GET /v1/agents.
 //
 // @Summary      List agents with filters, search, sort, and pagination
-// @Description  Returns agents matching the supplied filters. Multi-value filters (state, agent_type, client_type, hostname, user, os, orchestration) accept comma-separated values and repeated query params; values within a dimension are OR, values across dimensions are AND. ``search`` is a case-insensitive substring match against ``agent_name`` and ``hostname``. ``updated_since`` filters on ``last_seen_at >= ts``. State is computed via LATERAL subquery against the most-recent session. Pagination defaults to 25/page, max 100.
+// @Description  Returns agents matching the supplied filters. Multi-value filters (state, agent_type, client_type, hostname, user, os, orchestration) accept comma-separated values and repeated query params; values within a dimension are OR, values across dimensions are AND. ``search`` is a case-insensitive substring match against ``agent_name`` and ``hostname``. ``updated_since`` filters on ``last_seen_at >= ts``. State is computed via LATERAL subquery against the most-recent session. Each row also carries D126 sub-agent rollup fields (``agent_role`` — null for root agents, the framework-supplied role string when this agent represents a sub-agent identity; ``topology`` — one of ``lone`` / ``parent`` / ``child``, computed from whether this agent's sessions carry a parent_session_id and whether they are referenced as a parent by other agents). Pagination defaults to 25/page, max 100.
 // @Tags         agents
 // @Produce      json
 // @Param        agent_type      query     string  false  "Filter by agent_type (repeatable/comma: coding, production)"
@@ -234,6 +234,9 @@ func AgentsListHandler(s store.Querier) http.HandlerFunc {
 }
 
 // AgentByIDHandler handles GET /v1/agents/{agent_id}.
+//
+// Returns the same row shape as AgentsListHandler — including the
+// D126 rollup fields ``agent_role`` and ``topology``.
 //
 // @Summary      Get agent detail by id
 // @Description  Returns the full AgentSummary for a single agent including rollup counters and the LATERAL-computed rollup state. Powers the Investigate chip agent-name resolver so the UI no longer has to fall back to a UUID prefix when the filtered sessions list is empty.

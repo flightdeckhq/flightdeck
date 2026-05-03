@@ -1,9 +1,10 @@
 import React, { useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { LayoutGroup, motion } from "framer-motion";
-import type { AgentSummary, SessionState } from "@/lib/types";
+import type { AgentSummary, AgentTopology, SessionState } from "@/lib/types";
 import { ClientType } from "@/lib/agent-identity";
 import { ClientTypePill } from "@/components/facets/ClientTypePill";
+import { SubAgentRolePill } from "@/components/facets/SubAgentRolePill";
 import { TruncatedText } from "@/components/ui/TruncatedText";
 import { CodingAgentBadge } from "@/components/ui/coding-agent-badge";
 import { ClaudeCodeLogo } from "@/components/ui/claude-code-logo";
@@ -302,19 +303,39 @@ export function AgentTable({
               height: 32,
             }}
           >
-            {renderHeader("agent_name", "Agent", { width: "28%" })}
-            {renderHeader("client_type", "Client", { width: "10%" })}
-            {renderHeader("agent_type", "Type", { width: "10%" })}
+            {renderHeader("agent_name", "Agent", { width: "22%" })}
+            {renderHeader("client_type", "Client", { width: "8%" })}
+            {renderHeader("agent_type", "Type", { width: "8%" })}
+            {/* D126 ROLE + TOPOLOGY headers. Not sortable: the
+                AgentTableSortColumn whitelist is server-backed and
+                role/topology aren't valid sort columns yet (the
+                store-side ORDER BY map doesn't include them and
+                adding them is a follow-up). Render as plain header
+                cells so the click-to-sort treatment is suppressed. */}
+            <th
+              className="uppercase"
+              style={{ ...HEADER_STYLE, width: "10%" }}
+              data-testid="agent-table-header-role"
+            >
+              Role
+            </th>
+            <th
+              className="uppercase"
+              style={{ ...HEADER_STYLE, width: "10%" }}
+              data-testid="agent-table-header-topology"
+            >
+              Topology
+            </th>
             {renderHeader("total_sessions", "Sessions", {
-              width: "10%",
+              width: "8%",
               textAlign: "right",
             })}
             {renderHeader("total_tokens", "Tokens", {
-              width: "10%",
+              width: "8%",
               textAlign: "right",
             })}
-            {renderHeader("last_seen_at", "Last Active", { width: "14%" })}
-            {renderHeader("state", "State", { width: "18%" })}
+            {renderHeader("last_seen_at", "Last Active", { width: "12%" })}
+            {renderHeader("state", "State", { width: "14%" })}
           </tr>
         </thead>
         <tbody>
@@ -338,7 +359,7 @@ export function AgentTable({
                     aria-hidden
                   >
                     <td
-                      colSpan={7}
+                      colSpan={9}
                       style={{
                         height: 1,
                         padding: 0,
@@ -468,6 +489,38 @@ export function AgentTable({
                 )}
               </td>
               <td
+                style={{
+                  padding: "0 12px",
+                  fontSize: 12,
+                  color: "var(--text-secondary)",
+                  overflow: "hidden",
+                }}
+                data-testid={`agent-table-role-${a.agent_id}`}
+              >
+                {a.agent_role ? (
+                  <TruncatedText
+                    style={{
+                      fontFamily: "var(--font-mono)",
+                      fontSize: 11,
+                      color: "var(--text)",
+                    }}
+                    text={a.agent_role}
+                  />
+                ) : (
+                  <span style={{ color: "var(--text-muted)" }}>—</span>
+                )}
+              </td>
+              <td
+                style={{
+                  padding: "0 12px",
+                  fontSize: 12,
+                  color: "var(--text-secondary)",
+                }}
+                data-testid={`agent-table-topology-${a.agent_id}`}
+              >
+                <TopologyPill topology={a.topology} role={a.agent_role ?? undefined} />
+              </td>
+              <td
                 className="text-right"
                 style={CELL_NUMERIC_STYLE}
               >
@@ -501,6 +554,45 @@ export function AgentTable({
       </table>
       </LayoutGroup>
     </div>
+  );
+}
+
+/**
+ * D126 topology pill. ``lone`` renders as a muted em-dash so the
+ * column doesn't shout for non-relationship rows; ``parent`` and
+ * ``child`` reuse SubAgentRolePill so the visual language matches
+ * the SwimLane and SubAgentsTab. The ``role`` prop is forwarded for
+ * child/parent rendering — ``parent`` rows never carry an
+ * agent_role themselves, so the pill renders the literal label
+ * "parent" via SubAgentRolePill's empty-role fallback.
+ */
+function TopologyPill({
+  topology,
+  role,
+}: {
+  topology: AgentTopology;
+  role?: string;
+}) {
+  if (topology === "lone") {
+    return (
+      <span
+        style={{
+          fontSize: 11,
+          color: "var(--text-muted)",
+          fontFamily: "var(--font-mono)",
+        }}
+        data-testid="agent-table-topology-pill-lone"
+      >
+        lone
+      </span>
+    );
+  }
+  return (
+    <SubAgentRolePill
+      role={role ?? ""}
+      topology={topology}
+      testId={`agent-table-topology-pill-${topology}`}
+    />
   );
 }
 

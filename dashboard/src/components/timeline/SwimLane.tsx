@@ -7,6 +7,7 @@ import {
   type ClientType as ClientTypeT,
 } from "@/lib/agent-identity";
 import { ClientTypePill } from "@/components/facets/ClientTypePill";
+import { SubAgentRolePill, SubAgentLostDot } from "@/components/facets/SubAgentRolePill";
 import { TruncatedText } from "@/components/ui/TruncatedText";
 import { SESSION_ROW_HEIGHT, EVENT_CIRCLE_SIZE } from "@/lib/constants";
 import { ChevronRight } from "lucide-react";
@@ -105,6 +106,34 @@ function SwimLaneComponent({
   // muted gray when 0).
   const liveCount = useMemo(
     () => sessions.filter((s) => s.state === "active" || s.state === "idle").length,
+    [sessions],
+  );
+
+  // D126 sub-agent rollup. The agent_id grouping in the swimlane
+  // collapses every session under one persistent agent into a single
+  // row; per D126 derivation those sessions share the same 6-tuple
+  // including agent_role, so any session's role is authoritative.
+  // ``isParent`` cannot be derived purely from this row's sessions
+  // (a parent's sessions don't carry parent_session_id; the
+  // relationship is the inverse), so the swimlane only flags
+  // ``child``-side rows here. Parent-side rows render as plain
+  // root agents until the relationship pill data arrives via the
+  // /v1/fleet endpoint's ``topology`` field — left as a follow-on
+  // when the swimlane consumes the AgentSummary directly.
+  const subAgentRole = useMemo(() => {
+    for (const s of sessions) {
+      if (s.agent_role && s.parent_session_id) return s.agent_role;
+    }
+    return null;
+  }, [sessions]);
+
+  // L8 red dot: any sub-agent session in this row that ended in
+  // ``lost`` state. The clean SubagentStop / child session_end
+  // signal never fired and the worker's state-revival path closed
+  // the row. METHODOLOGY.md L8: surface the failure on the row,
+  // not only inside the event.
+  const hasLostSubAgent = useMemo(
+    () => sessions.some((s) => s.parent_session_id != null && s.state === "lost"),
     [sessions],
   );
 
@@ -221,6 +250,16 @@ function SwimLaneComponent({
               size="compact"
               testId="swimlane-client-type-pill"
             />
+          )}
+          {subAgentRole && (
+            <SubAgentRolePill
+              role={subAgentRole}
+              topology="child"
+              testId="swimlane-sub-agent-role-pill"
+            />
+          )}
+          {hasLostSubAgent && (
+            <SubAgentLostDot testId="swimlane-sub-agent-lost-dot" />
           )}
           {agentType && (
             <span

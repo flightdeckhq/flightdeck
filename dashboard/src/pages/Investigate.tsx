@@ -89,6 +89,21 @@ export function parseUrlState(sp: URLSearchParams) {
     // Drives the MCP SERVER sidebar facet aggregating
     // ``mcp_server_names[]`` across the visible result set.
     mcpServers: sp.getAll("mcp_server"),
+    // D126: agent_role filter (repeatable). Backs the Investigate
+    // ROLE sidebar facet's multi-select shape. Sessions whose
+    // ``agent_role`` matches any selected value are kept (OR
+    // within). Round-trips as ``?agent_role=Researcher&agent_role=Writer``.
+    agentRoles: sp.getAll("agent_role"),
+    // D126 TOPOLOGY facet booleans. ``isSubAgent`` restricts to
+    // children only; ``hasSubAgents`` to parents only; both AND
+    // composes server-side. Round-trip as
+    // ``?is_sub_agent=true`` / ``?has_sub_agents=true``.
+    isSubAgent: sp.get("is_sub_agent") === "true",
+    hasSubAgents: sp.get("has_sub_agents") === "true",
+    // D126: scope to children of one specific parent session UUID.
+    // Set by the SubAgentsTab "View all in Investigate" deep-link
+    // and the PARENT column's click-to-filter affordance.
+    parentSessionId: sp.get("parent_session_id") ?? "",
     // ``session`` carries the session id of an open drawer so a
     // deep-link (e.g. clicking a result in the global search modal)
     // routes the user into Investigate AND pops the drawer in one
@@ -126,6 +141,10 @@ export function buildUrlParams(s: ReturnType<typeof parseUrlState>): URLSearchPa
   for (const et of s.errorTypes) p.append("error_type", et);
   for (const pt of s.policyEventTypes) p.append("policy_event_type", pt);
   for (const m of s.mcpServers) p.append("mcp_server", m);
+  for (const r of s.agentRoles) p.append("agent_role", r);
+  if (s.isSubAgent) p.set("is_sub_agent", "true");
+  if (s.hasSubAgents) p.set("has_sub_agents", "true");
+  if (s.parentSessionId) p.set("parent_session_id", s.parentSessionId);
   if (s.session) p.set("session", s.session);
   if (s.model) p.set("model", s.model);
   if (s.sort !== "started_at") p.set("sort", s.sort);
@@ -151,19 +170,27 @@ const COL_WIDTHS = {
   // (supervisor: "don't let it grow"); the percent columns divide the
   // remaining space the usual way.
   session: "100px",
-  flavor: "14%",
-  hostname: "11%",
+  flavor: "12%",
+  hostname: "9%",
   os: "4%",
   orch: "4%",
-  model: "12%",
-  started: "11%",
+  // D126 ROLE column. Renders the agent_role string as a compact
+  // monospace pill; muted em-dash for root sessions. Sized so it
+  // doesn't crowd the narrower right-side analytics columns.
+  role: "8%",
+  // D126 PARENT column. Truncated parent_session_id with click-to-
+  // filter affordance — clicking sets the URL parent_session_id
+  // filter, scoping the table to the parent's children.
+  parent: "8%",
+  model: "10%",
+  started: "9%",
   // S-TBL-1 last-seen column. Mirrors started_at width so the relative
   // labels render at the same length under typical session ages.
-  lastSeen: "11%",
-  duration: "7%",
-  tokens: "7%",
-  capture: "7%",
-  state: "12%",
+  lastSeen: "9%",
+  duration: "6%",
+  tokens: "6%",
+  capture: "5%",
+  state: "10%",
 };
 
 function formatDuration(seconds: number): string {
@@ -269,6 +296,10 @@ export interface FacetSources {
    *  mcp_server filter stripped so the facet keeps showing every
    *  server the user could toggle to. */
   mcp_server?: SessionListItem[];
+  /** D126 sticky-facet source for the ROLE sidebar facet. When at
+   *  least one agent_role filter is active, holds the result set
+   *  with the agent_role filter stripped. */
+  agent_role?: SessionListItem[];
 }
 
 /** Scalar context keys that render as facets in the Investigate
@@ -328,6 +359,16 @@ export function computeFacets(
   // across the visible result set. Same one-vote-per-session-per-name
   // semantics as error_type / policy_event_type.
   const mcpServerCounts = new Map<string, number>();
+  // D126 ROLE facet: per-session agent_role aggregates. One vote per
+  // session that carries a role string (sub-agents). Sessions
+  // without a role bucket as ``(root)``.
+  const roleCounts = new Map<string, number>();
+  // D126 TOPOLOGY facet — count of children visible in the result
+  // set. Surfaces alongside an actionable "Has sub-agents" toggle
+  // (which has no per-row count signal on the wire today; the
+  // checkbox is rendered without a number, paired with the Is
+  // sub-agent count below).
+  let isSubAgentCount = 0;
   // D115 AGENT facet: keyed on agent_id (clickable filter value) with
   // an accompanying name map for display rendering. Sessions without
   // agent_id (pre-v0.4.0 legacy rows) are silently skipped -- they
@@ -422,6 +463,13 @@ export function computeFacets(
       }
     }
   }
+  if (sources.agent_role) {
+    for (const s of sources.agent_role) {
+      const r = s.agent_role ?? "(root)";
+      roleCounts.set(r, (roleCounts.get(r) ?? 0) + 1);
+      if (s.parent_session_id) isSubAgentCount += 1;
+    }
+  }
   // Sticky-source pass for scalar context facets. A key whose source
   // override is present consumes THAT list; the main-loop branch
   // below skips it to avoid double-counting.
@@ -468,6 +516,11 @@ export function computeFacets(
       for (const name of s.mcp_server_names ?? []) {
         mcpServerCounts.set(name, (mcpServerCounts.get(name) ?? 0) + 1);
       }
+    }
+    if (!sources.agent_role) {
+      const r = s.agent_role ?? "(root)";
+      roleCounts.set(r, (roleCounts.get(r) ?? 0) + 1);
+      if (s.parent_session_id) isSubAgentCount += 1;
     }
     for (const key of CONTEXT_FACET_KEYS) {
       if (sources[key]) continue;
@@ -544,6 +597,36 @@ export function computeFacets(
     // visible result set has any. Hidden by the .filter() below
     // otherwise.
     { key: "policy_event_type", label: "POLICY", values: toArr(policyEventTypeCounts) },
+    // D126 ROLE facet — multi-select over distinct agent_role
+    // strings present in the visible result set. Sessions without
+    // a role are excluded so the facet only surfaces when at least
+    // one sub-agent session is visible. Hiding the (root) pseudo-
+    // bucket keeps the facet from rendering on root-only result
+    // sets where it would have no actionable click target.
+    {
+      key: "agent_role",
+      label: "ROLE",
+      values: toArr(roleCounts).filter((v) => v.value !== "(root)"),
+    },
+    // D126 TOPOLOGY facet — boolean checkboxes. Surfaces only
+    // when at least one sub-agent is visible so root-only result
+    // sets don't see a checkbox they can't meaningfully click.
+    // The "Is sub-agent" value carries the per-row count; "Has
+    // sub-agents" has no per-row signal on the wire so its count
+    // is 0 and the renderer presents the checkbox without a
+    // number.
+    ...(isSubAgentCount > 0
+      ? [
+          {
+            key: "topology",
+            label: "TOPOLOGY",
+            values: [
+              { value: "is_sub_agent", count: isSubAgentCount },
+              { value: "has_sub_agents", count: 0 },
+            ],
+          },
+        ]
+      : []),
   ].filter((g) => g.values.length > 0);
 }
 
@@ -611,6 +694,12 @@ function SkeletonRows() {
           </td>
           <td style={{ padding: "0 8px", width: COL_WIDTHS.orch }}>
             <div className="h-4 w-4 animate-pulse rounded" style={{ background: "var(--border)", margin: "0 auto" }} />
+          </td>
+          <td style={{ padding: "0 8px", width: COL_WIDTHS.role }}>
+            <div className="h-3 w-2/3 animate-pulse rounded" style={{ background: "var(--border)" }} />
+          </td>
+          <td style={{ padding: "0 8px", width: COL_WIDTHS.parent }}>
+            <div className="h-3 w-2/3 animate-pulse rounded" style={{ background: "var(--border)" }} />
           </td>
           <td style={{ padding: "0 12px", width: COL_WIDTHS.model }}>
             <div className="h-3.5 w-3/4 animate-pulse rounded" style={{ background: "var(--border)" }} />
@@ -765,6 +854,34 @@ export function buildActiveFilters(
         }),
     });
   }
+  for (const r of urlState.agentRoles) {
+    pills.push({
+      label: `role:${r}`,
+      onRemove: () =>
+        updateUrl({
+          agentRoles: urlState.agentRoles.filter((x) => x !== r),
+          page: 1,
+        }),
+    });
+  }
+  if (urlState.isSubAgent) {
+    pills.push({
+      label: "topology:is_sub_agent",
+      onRemove: () => updateUrl({ isSubAgent: false, page: 1 }),
+    });
+  }
+  if (urlState.hasSubAgents) {
+    pills.push({
+      label: "topology:has_sub_agents",
+      onRemove: () => updateUrl({ hasSubAgents: false, page: 1 }),
+    });
+  }
+  if (urlState.parentSessionId) {
+    pills.push({
+      label: `parent:${urlState.parentSessionId.slice(0, 8)}`,
+      onRemove: () => updateUrl({ parentSessionId: "", page: 1 }),
+    });
+  }
   if (urlState.agentId) {
     // ``?? []`` guards against a caller handing a runtime null where
     // the type asserts an array (e.g. a fleet fetch that nominally
@@ -845,6 +962,10 @@ export const CLEAR_ALL_FILTERS_PATCH: Partial<UrlStateSnapshot> = {
   errorTypes: [],
   policyEventTypes: [],
   mcpServers: [],
+  agentRoles: [],
+  isSubAgent: false,
+  hasSubAgents: false,
+  parentSessionId: "",
   model: "",
   q: "",
   page: 1,
@@ -1057,6 +1178,11 @@ export function Investigate() {
         policy_event_type:
           state.policyEventTypes.length > 0 ? state.policyEventTypes : undefined,
         mcp_server: state.mcpServers.length > 0 ? state.mcpServers : undefined,
+        agent_role:
+          state.agentRoles.length > 0 ? state.agentRoles : undefined,
+        is_sub_agent: state.isSubAgent || undefined,
+        has_sub_agents: state.hasSubAgents || undefined,
+        parent_session_id: state.parentSessionId || undefined,
         sort: state.sort,
         order: state.order,
         limit: state.perPage,
@@ -1141,6 +1267,12 @@ export function Investigate() {
         mcp_server: state.mcpServers.length > 0
           ? fetchSessions(
               { ...facetBase, mcp_server: undefined },
+              controller.signal,
+            )
+          : null,
+        agent_role: state.agentRoles.length > 0
+          ? fetchSessions(
+              { ...facetBase, agent_role: undefined },
               controller.signal,
             )
           : null,
@@ -1354,6 +1486,27 @@ export function Investigate() {
           ? current.filter((x) => x !== value)
           : [...current, value];
         updateUrl({ mcpServers: next, page: 1 });
+      } else if (group === "agent_role") {
+        // D126 ROLE facet — multi-select toggle. The "(root)"
+        // pseudo-value is non-actionable; it surfaces in the count
+        // so the user understands the result-set composition but
+        // clicking it would generate a filter without a server-side
+        // matching value, so the renderer suppresses the click on
+        // that one entry.
+        if (value === "(root)") return;
+        const current = urlState.agentRoles;
+        const next = current.includes(value)
+          ? current.filter((x) => x !== value)
+          : [...current, value];
+        updateUrl({ agentRoles: next, page: 1 });
+      } else if (group === "topology") {
+        // D126 TOPOLOGY facet — boolean checkboxes. Each value maps
+        // to one of the two state booleans.
+        if (value === "is_sub_agent") {
+          updateUrl({ isSubAgent: !urlState.isSubAgent, page: 1 });
+        } else if (value === "has_sub_agents") {
+          updateUrl({ hasSubAgents: !urlState.hasSubAgents, page: 1 });
+        }
       } else {
         // Scalar context facets. Lookup table keeps the per-facet
         // boilerplate (urlState slot, toggle, URL key) in one place
@@ -1646,7 +1799,10 @@ export function Investigate() {
                   (group.key === "python_version" && urlState.contextPythonVersions.includes(v.value)) ||
                   (group.key === "git_branch" && urlState.contextGitBranches.includes(v.value)) ||
                   (group.key === "git_repo" && urlState.contextGitRepos.includes(v.value)) ||
-                  (group.key === "orchestration" && urlState.contextOrchestrations.includes(v.value));
+                  (group.key === "orchestration" && urlState.contextOrchestrations.includes(v.value)) ||
+                  (group.key === "agent_role" && urlState.agentRoles.includes(v.value)) ||
+                  (group.key === "topology" && v.value === "is_sub_agent" && urlState.isSubAgent) ||
+                  (group.key === "topology" && v.value === "has_sub_agents" && urlState.hasSubAgents);
                 return (
                   <button
                     key={v.value}
@@ -1859,6 +2015,20 @@ export function Investigate() {
                   </th>
                   <th
                     className="uppercase"
+                    style={{ color: "var(--text-muted)", fontSize: 10, fontWeight: 600, letterSpacing: "0.07em", padding: "0 8px", width: COL_WIDTHS.role }}
+                    data-testid="investigate-th-role"
+                  >
+                    Role
+                  </th>
+                  <th
+                    className="uppercase"
+                    style={{ color: "var(--text-muted)", fontSize: 10, fontWeight: 600, letterSpacing: "0.07em", padding: "0 8px", width: COL_WIDTHS.parent }}
+                    data-testid="investigate-th-parent"
+                  >
+                    Parent
+                  </th>
+                  <th
+                    className="uppercase"
                     style={{ color: "var(--text-muted)", fontSize: 10, fontWeight: 600, letterSpacing: "0.07em", padding: "0 12px", width: COL_WIDTHS.model }}
                   >
                     Model
@@ -1990,6 +2160,70 @@ export function Investigate() {
                         orchestration={(s.context?.orchestration as string) ?? ""}
                         size={16}
                       />
+                    </td>
+                    <td
+                      style={{ padding: "0 8px", width: COL_WIDTHS.role, fontSize: 12, overflow: "hidden" }}
+                      data-testid={`investigate-row-role-${s.session_id}`}
+                    >
+                      {s.agent_role ? (
+                        <span
+                          style={{
+                            fontFamily: "var(--font-mono)",
+                            fontSize: 10,
+                            padding: "2px 6px",
+                            borderRadius: 3,
+                            background:
+                              "color-mix(in srgb, var(--accent) 12%, transparent)",
+                            color: "var(--accent)",
+                            display: "inline-block",
+                            maxWidth: "100%",
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          {s.agent_role}
+                        </span>
+                      ) : (
+                        <span style={{ color: "var(--text-muted)" }}>—</span>
+                      )}
+                    </td>
+                    <td
+                      style={{ padding: "0 8px", width: COL_WIDTHS.parent, fontSize: 12, color: "var(--text-secondary)", overflow: "hidden" }}
+                      data-testid={`investigate-row-parent-${s.session_id}`}
+                    >
+                      {s.parent_session_id ? (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            // Stop the row's onClick from firing the
+                            // drawer; the parent click is a filter
+                            // shortcut, not a navigation.
+                            e.stopPropagation();
+                            updateUrl({
+                              parentSessionId: s.parent_session_id ?? "",
+                              page: 1,
+                            });
+                          }}
+                          style={{
+                            fontFamily: "var(--font-mono)",
+                            fontSize: 11,
+                            color: "var(--accent)",
+                            background: "transparent",
+                            border: "none",
+                            cursor: "pointer",
+                            padding: 0,
+                            textDecoration: "underline",
+                            textDecorationColor:
+                              "color-mix(in srgb, var(--accent) 40%, transparent)",
+                          }}
+                          title={`Filter to children of ${s.parent_session_id}`}
+                        >
+                          {s.parent_session_id.slice(0, 8)}
+                        </button>
+                      ) : (
+                        <span style={{ color: "var(--text-muted)" }}>—</span>
+                      )}
                     </td>
                     <td style={{ padding: "0 12px", width: COL_WIDTHS.model, fontSize: 12, color: "var(--text-secondary)", overflow: "hidden" }}>
                       {s.model ? (
@@ -2146,6 +2380,36 @@ export function Investigate() {
                             </Tooltip>
                           </TooltipProvider>
                         )}
+                        {s.parent_session_id && s.state === "lost" && (
+                          // D126 § L8 — sub-agent ended in lost
+                          // state. Mirrors the llm_error / mcp_error
+                          // dot pattern: surface the failure on the
+                          // row so an operator scanning the table
+                          // doesn't miss broken sub-agents.
+                          <TooltipProvider>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <span
+                                  data-testid={`session-row-sub-agent-lost-indicator-${s.session_id}`}
+                                  aria-label="Sub-agent ended in lost state"
+                                  className="inline-block rounded-full"
+                                  style={{
+                                    width: 7,
+                                    height: 7,
+                                    background: "var(--status-lost)",
+                                    boxShadow:
+                                      "0 0 0 2px color-mix(in srgb, var(--status-lost) 25%, transparent)",
+                                    flexShrink: 0,
+                                  }}
+                                />
+                              </TooltipTrigger>
+                              <TooltipContent>
+                                Sub-agent ended in <strong>lost</strong> state — the
+                                clean end-of-life signal never arrived.
+                              </TooltipContent>
+                            </Tooltip>
+                          </TooltipProvider>
+                        )}
                         {s.policy_event_types && s.policy_event_types.length > 0 && (() => {
                           // Severity-ranked dot color: block > degrade > warn.
                           // The single dot reports the most-severe enforcement
@@ -2251,6 +2515,15 @@ export function Investigate() {
           }
         }}
         initialTab={drawerInitialTab}
+        onSwitchSession={(id) => {
+          // D126: in-place rebind for SubAgentsTab parent / child
+          // navigation; mirrors Fleet.tsx wiring.
+          setDrawerInitialTab(undefined);
+          setSelectedSessionId(id);
+          if (urlState.session) {
+            updateUrl({ session: id, page: urlState.page });
+          }
+        }}
       />
     </div>
   );

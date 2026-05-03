@@ -83,6 +83,18 @@ vi.mock("@/lib/api", () => ({
   fetchOlderEvents: vi.fn(() =>
     Promise.resolve({ events: [], total: 0, limit: 50, offset: 0, has_more: false }),
   ),
+  // D126: SessionDrawer probes for child sessions to gate the
+  // Sub-agents tab. Default mock returns an empty list so the tab
+  // hides; tests covering the sub-agent surface re-mock per case.
+  fetchSessions: vi.fn(() =>
+    Promise.resolve({ sessions: [], total: 0, limit: 1, offset: 0, has_more: false }),
+  ),
+  // SubAgentsTab fetches the parent session via fetchSession when
+  // a session is a child. Default to a "no parent found" stub so
+  // legacy tests that don't seed sub-agent data still pass.
+  fetchSession: vi.fn(() =>
+    Promise.resolve({ session: null, events: [] }),
+  ),
 }));
 
 import { createDirective, fetchEventContent, triggerCustomDirective } from "@/lib/api";

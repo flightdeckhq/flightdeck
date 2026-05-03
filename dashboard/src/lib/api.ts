@@ -315,6 +315,18 @@ export interface SessionsParams {
    * the API side. Powers the Investigate MCP SERVER facet.
    */
   mcp_server?: string[];
+  /**
+   * D126 sub-agent observability filters. ``parent_session_id``
+   * scopes to children of one specific parent (powers the
+   * SubAgentsTab "Sub-agents" list). ``agent_role`` is repeatable
+   * — backs the Investigate ROLE facet's multi-select shape. The
+   * ``has_sub_agents`` / ``is_sub_agent`` booleans back the
+   * TOPOLOGY facet checkboxes.
+   */
+  parent_session_id?: string;
+  agent_role?: string[];
+  has_sub_agents?: boolean;
+  is_sub_agent?: boolean;
   model?: string;
   sort?: string;
   order?: string;
@@ -370,6 +382,12 @@ export async function fetchSessions(params: SessionsParams, signal?: AbortSignal
   if (params.mcp_server) {
     for (const m of params.mcp_server) sp.append("mcp_server", m);
   }
+  if (params.parent_session_id) sp.set("parent_session_id", params.parent_session_id);
+  if (params.agent_role) {
+    for (const r of params.agent_role) sp.append("agent_role", r);
+  }
+  if (params.has_sub_agents) sp.set("has_sub_agents", "true");
+  if (params.is_sub_agent) sp.set("is_sub_agent", "true");
   if (params.model) sp.set("model", params.model);
   if (params.sort) sp.set("sort", params.sort);
   if (params.order) sp.set("order", params.order);

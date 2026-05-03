@@ -18,11 +18,12 @@ import {
 } from "@/components/ui/dialog";
 import { TokenUsageBar } from "./TokenUsageBar";
 import { PromptViewer } from "./PromptViewer";
+import { SubAgentsTab } from "./SubAgentsTab";
 import { ErrorEventDetails } from "./ErrorEventDetails";
 import { PolicyEventDetails } from "./PolicyEventDetails";
 import { EmbeddingsContentViewer } from "./EmbeddingsContentViewer";
 import { MCPEventDetails, isMCPEvent } from "./MCPEventDetails";
-import { createDirective, fetchOlderEvents } from "@/lib/api";
+import { createDirective, fetchOlderEvents, fetchSessions } from "@/lib/api";
 import { sessionSupportsDirectives } from "@/lib/directives";
 import { ClaudeCodeLogo } from "@/components/ui/claude-code-logo";
 import { CodingAgentBadge } from "@/components/ui/coding-agent-badge";
@@ -39,7 +40,7 @@ import { SyntaxJson } from "@/components/ui/syntax-json";
 import { eventsCache } from "@/hooks/useSessionEvents";
 import type { AgentEvent, Session as SessionType } from "@/lib/types";
 
-export type DrawerTab = "timeline" | "prompts" | "directives";
+export type DrawerTab = "timeline" | "prompts" | "sub-agents" | "directives";
 
 // D113 drawer pagination. Flat pill selector (mirrors Fleet's time-range
 // pills at Fleet.tsx:492-515) in place of a dropdown so the control
@@ -220,9 +221,19 @@ interface SessionDrawerProps {
    * user having to switch from Timeline manually.
    */
   initialTab?: DrawerTab;
+  /**
+   * D126: switch the drawer to a different session_id without
+   * closing it. Wired by the SubAgentsTab parent / child links so
+   * "open the parent" / "open the child" rebinds the drawer in
+   * place. When omitted (legacy callers) the sub-agent navigation
+   * falls back to closing + a parent-owned re-open path. Pages
+   * that own the drawer's session-id state should pass this so the
+   * inline navigation works without a flicker.
+   */
+  onSwitchSession?: (sessionId: string) => void;
 }
 
-export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDirectEvent, version = 0, initialTab }: SessionDrawerProps) {
+export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDirectEvent, version = 0, initialTab, onSwitchSession }: SessionDrawerProps) {
   // Page-size pill state. Resets to DEFAULT_EVENTS_LIMIT on every
   // drawer open (no localStorage per Supervisor directive for v0.3.0)
   // so a user tuning down to 50 on one session doesn't silently carry
@@ -287,6 +298,42 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
       (d) => d.flavor === data.session.flavor,
     );
   }, [customDirectives, data?.session.flavor]);
+
+  // D126 — gate the Sub-agents tab. The tab surfaces when EITHER
+  // this session is a sub-agent (has parent_session_id) OR it has
+  // spawned at least one child. The cheap-check here only knows
+  // about the parent linkage; the children-spawned case needs a
+  // server fetch (the SubAgentsSection performs it). For the tab-
+  // gating step we make a simpler call: if the session is a child,
+  // always show the tab; otherwise show iff the SUB-AGENTS section
+  // has children. To avoid a flicker on root sessions that don't
+  // yet know their child count, we eagerly fetch a children-count
+  // hint. Fetch is keyed on session_id so opening + reopening a
+  // session re-fires.
+  const [hasChildren, setHasChildren] = useState<boolean>(false);
+  useEffect(() => {
+    if (!data?.session.session_id) {
+      setHasChildren(false);
+      return;
+    }
+    let alive = true;
+    // Cheapest possible probe: limit=1 returns at most one row.
+    // Worker keeps the partial index sessions_parent_session_id_idx
+    // hot so the EXISTS-equivalent under the hood costs ~ms.
+    fetchSessions({ parent_session_id: data.session.session_id, limit: 1 })
+      .then((r) => {
+        if (alive) setHasChildren((r.sessions?.length ?? 0) > 0);
+      })
+      .catch(() => {
+        if (alive) setHasChildren(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [data?.session.session_id]);
+
+  const showSubAgentsTab =
+    !!data?.session.parent_session_id || hasChildren;
 
   // Internal detail event — set when user clicks "Open full detail" within the drawer
   const [internalDetailEvent, setInternalDetailEvent] = useState<AgentEvent | null>(null);
@@ -668,8 +715,12 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
 
               {/* Tab bar -- "Directives" tab only renders when the
                   session's flavor has at least one registered
-                  custom directive. Hidden entirely otherwise so
-                  users aren't confronted with a dead tab. */}
+                  custom directive. "Sub-agents" tab only renders when
+                  the session is a sub-agent (has parent_session_id)
+                  or has spawned children — D126's "no placeholder
+                  UI" floor (Rule 17): the tab is gated on its
+                  content, not always-on. Hidden entirely otherwise
+                  so users aren't confronted with a dead tab. */}
               <div
                 className="flex h-9 shrink-0 items-end gap-4 px-4"
                 style={{ borderBottom: "1px solid var(--border)" }}
@@ -679,6 +730,7 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
                   [
                     "timeline",
                     "prompts",
+                    ...(showSubAgentsTab ? ["sub-agents" as const] : []),
                     ...(flavorDirectives.length > 0 ? ["directives" as const] : []),
                   ] as DrawerTab[]
                 ).map((tab) => (
@@ -695,7 +747,9 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
                       ? "Timeline"
                       : tab === "prompts"
                         ? "Prompts"
-                        : "Directives"}
+                        : tab === "sub-agents"
+                          ? "Sub-agents"
+                          : "Directives"}
                   </button>
                 ))}
               </div>
@@ -744,6 +798,26 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
                       // the user back on their originating row.
                       if (id !== null && id !== focusedPromptEventId) {
                         setFocusedPromptEventId(null);
+                      }
+                    }}
+                  />
+                )}
+                {activeTab === "sub-agents" && (
+                  <SubAgentsTab
+                    session={data.session}
+                    events={drawerEvents}
+                    onOpenSession={(id) => {
+                      if (onSwitchSession) {
+                        onSwitchSession(id);
+                      } else {
+                        // Legacy fallback: close the drawer and let
+                        // the URL state pick up. Pages that wire
+                        // ``onSwitchSession`` skip this branch and
+                        // get an in-place rebind without flicker.
+                        onClose();
+                        window.setTimeout(() => {
+                          window.location.search = `session=${encodeURIComponent(id)}`;
+                        }, 0);
                       }
                     }}
                   />

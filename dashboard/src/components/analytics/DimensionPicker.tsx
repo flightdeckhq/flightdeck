@@ -13,6 +13,10 @@ export const DIMENSIONS = [
   { value: "host", label: "Host" },
   { value: "agent_type", label: "Agent Type" },
   { value: "team", label: "Team" },
+  // D126: groups by sub-agent role string (CrewAI Agent.role,
+  // LangGraph node, Claude Code Task agent_type). Sessions with
+  // null agent_role bucket as ``(root)`` server-side.
+  { value: "agent_role", label: "Sub-agent Role" },
 ] as const;
 
 /** Resolve a group_by value to the human-readable label used in the

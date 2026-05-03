@@ -7,6 +7,7 @@ import { ModelBarChart } from "@/components/analytics/ModelBarChart";
 import { CostChart } from "@/components/analytics/CostChart";
 import { LatencyDistribution } from "@/components/analytics/LatencyDistribution";
 import { DimensionChart } from "@/components/analytics/DimensionChart";
+import { ParentChildBreakdownChart } from "@/components/analytics/ParentChildBreakdownChart";
 import { PROVIDER_META, type Provider } from "@/lib/models";
 
 type RangePreset = "today" | "7d" | "30d" | "90d" | "custom";
@@ -201,6 +202,17 @@ export function Analytics() {
             showDimensionPicker={false}
           />
         </div>
+
+        {/* Row 7 — D126 sub-agent breakdown. Renders only when the
+            time window contains sub-agent sessions; the chart's own
+            empty-state copy handles the no-activity case so the row
+            never collapses awkwardly. */}
+        <ParentChildBreakdownChart
+          range={range}
+          from={from}
+          to={to}
+          filterProvider={filterProvider}
+        />
       </div>
     </div>
   );

@@ -384,7 +384,7 @@ class Session:
             "content_bytes": size,
             "captured_at": message.captured_at,
         }
-        envelope = {
+        envelope: dict[str, Any] = {
             "provider": SUBAGENT_OVERFLOW_PROVIDER,
             "model": "",
             "system": None,

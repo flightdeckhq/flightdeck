@@ -83,67 +83,106 @@ test.describe("T33 — Sub-agent Investigate facets", () => {
     await expect(parentChip).toBeVisible();
   });
 
-  // D126 UX revision step 11.fix.fix — parent → expansion → child
-  // rebind. The drawer follows the row click; the URL persists the
-  // open session so a reload preserves it; the parent's inline
-  // expansion stays open while the user inspects a child.
-  test("parent row click opens drawer + expands; child row click rebinds drawer + keeps expansion", async ({
+  // D126 UX revision step 11.fix.fix.fix — parent → expansion →
+  // child rebind. The drawer follows the row click; the URL
+  // persists the open session so a reload preserves it; the
+  // parent's inline expansion stays open while the user inspects a
+  // child. Crucially, the drawer's RENDERED CONTENT (the
+  // session-metadata-bar's Agent field, the session_id at the
+  // header, the events feed) must reflect the child's data — not
+  // just the URL. The Block from manual Chrome step 11.fix.fix was
+  // exactly this: URL flipped but drawer stayed showing the
+  // parent's content. The assertions below pin the drawer's
+  // rendered Agent field to the expected value at each step.
+  //
+  // Uses the canonical e2e-crewai-parent / e2e-crewai-researcher
+  // fixture pair so the assertions read concrete agent names rather
+  // than "first available pill" — the Supervisor reproduced the
+  // Block specifically against this pair, and pinning the test to
+  // it lets a future regression compare against the same workflow
+  // they exercised manually.
+  test("parent → child rebind syncs drawer's rendered Agent field with the URL", async ({
     page,
   }) => {
     await page.goto("/investigate");
     await waitForInvestigateReady(page);
 
-    // Locate the first parent (a row with the ``→ N`` pill).
-    const parentPill = page
-      .locator('[data-testid^="investigate-row-parent-pill-"]')
+    // Locate the parent row by its e2e-crewai-parent flavor text.
+    const parentRow = page
+      .locator("tr", { has: page.locator("text=e2e-crewai-parent") })
       .first();
-    await expect(parentPill).toBeVisible();
-    const parentPillTestid = await parentPill.getAttribute("data-testid");
-    const parentSessionId = parentPillTestid!.replace(
-      "investigate-row-parent-pill-",
-      "",
-    );
+    await expect(parentRow).toBeVisible();
 
-    // Click the parent's SESSION cell to open the drawer + trigger
-    // expansion.
-    await page
-      .locator(`[data-testid="investigate-row-session-${parentSessionId}"]`)
+    // Click the parent's SESSION cell (no buttons there, click
+    // bubbles cleanly to the row's onClick handler).
+    await parentRow
+      .locator('[data-testid^="investigate-row-session-"]')
       .click();
-    await expect(page.locator('[data-testid="session-drawer"]').first())
-      .toBeVisible();
-    // URL now carries the parent's session id (reload-preservation).
-    await expect(page).toHaveURL(new RegExp(`session=${parentSessionId}`));
 
-    // Wait for the inline expansion's first child row.
+    // Drawer opens with the parent's metadata.
+    const drawer = page.locator('[data-testid="session-drawer"]').first();
+    await expect(drawer).toBeVisible();
+    await expect(
+      drawer.locator('[data-testid="session-metadata-bar"]'),
+    ).toContainText("e2e-crewai-parent");
+    await expect(page).toHaveURL(/session=[a-f0-9-]+/);
+
+    // Inline expansion materialises with the children.
     await expect(
       page.locator('[data-testid^="investigate-child-row-"]').first(),
     ).toBeAttached();
-    const childTr = page
-      .locator('[data-testid^="investigate-child-row-"]')
-      .first();
-    const childTestid = await childTr.getAttribute("data-testid");
-    const childSessionId = childTestid!.replace("investigate-child-row-", "");
 
-    // Click the child sub-row's SESSION cell — scoped to the
-    // ``investigate-child-row-`` ancestor so we don't accidentally
-    // hit the same session_id's standalone row (a depth-2 child
-    // that itself has descendants surfaces in the default-scope
-    // listing AS WELL AS in its parent's expansion). ``force:
-    // true`` because the AnimatePresence drawer mount briefly
-    // overlaps the table during the slide-in animation.
-    await childTr
-      .locator(`[data-testid="investigate-row-session-${childSessionId}"]`)
+    // Locate the e2e-crewai-researcher child sub-row inside the
+    // parent's expansion. The pure-child case (no descendants
+    // anywhere else) means the locator is unambiguous.
+    const researcherRow = page
+      .locator('[data-testid^="investigate-child-row-"]', {
+        has: page.locator("text=e2e-crewai-researcher"),
+      })
+      .first();
+    await expect(researcherRow).toBeAttached();
+
+    // Click the researcher row's SESSION cell. ``force: true``
+    // because the AnimatePresence drawer mount briefly overlaps
+    // the table during the slide-in animation.
+    await researcherRow
+      .locator('[data-testid^="investigate-row-session-"]')
       .click({ force: true });
 
     // URL flips to the child's session id.
-    await expect(page).toHaveURL(new RegExp(`session=${childSessionId}`));
-    // Expansion still open: at least one child row still attached.
+    await expect(page).toHaveURL(/session=3f9d2b65/);
+    // Expansion still open.
     await expect(
       page.locator('[data-testid^="investigate-child-row-"]').first(),
     ).toBeAttached();
-    // Drawer's exit animation completes — only one drawer remains.
-    await expect.poll(async () =>
-      page.locator('[data-testid="session-drawer"]').count(),
-    ).toBe(1);
+    // Drawer rebinds — its rendered Agent field flips to the
+    // researcher. Polling on the drawer's bar text ensures we
+    // wait for both the AnimatePresence exit-animation completion
+    // AND the new motion.div's content to settle.
+    await expect.poll(async () => {
+      const drawers = page.locator('[data-testid="session-drawer"]');
+      const count = await drawers.count();
+      if (count !== 1) return null;
+      return await drawers
+        .first()
+        .locator('[data-testid="session-metadata-bar"]')
+        .textContent();
+    }).toContain("e2e-crewai-researcher");
+
+    // Click the parent row again — drawer should rebind back to
+    // the parent. Pins the round-trip behaviour.
+    await parentRow
+      .locator('[data-testid^="investigate-row-session-"]')
+      .click({ force: true });
+    await expect.poll(async () => {
+      const drawers = page.locator('[data-testid="session-drawer"]');
+      const count = await drawers.count();
+      if (count !== 1) return null;
+      return await drawers
+        .first()
+        .locator('[data-testid="session-metadata-bar"]')
+        .textContent();
+    }).toContain("e2e-crewai-parent");
+    await expect(page).toHaveURL(/session=e69d1efb/);
   });
 });

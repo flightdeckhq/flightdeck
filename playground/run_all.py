@@ -12,6 +12,7 @@ Usage::
 
 Exit: 0 iff every file returned 0 (PASS) or 2 (SKIP).
 """
+
 from __future__ import annotations
 
 import glob
@@ -58,13 +59,21 @@ def main() -> int:
     rows: list[tuple[str, int, float, str]] = []
     for path in files:
         name = os.path.basename(path)
+        # Per-script subprocess timeout. 60s covers single-call
+        # demos comfortably; the D126 multi-agent demos
+        # (16_subagents_crewai, 17_subagents_langgraph) make
+        # multiple sequential real-API calls and routinely run
+        # 30–90s end-to-end (network jitter, model warm-up,
+        # post-call drain). 180s caps them while still flagging a
+        # genuinely stuck run loud and early.
+        timeout_s = 180 if "subagents" in name else 60
         print(f"\n=== {name} ===", flush=True)
         t0 = time.monotonic()
         try:
-            rc = subprocess.call([sys.executable, path], cwd=here, timeout=60)
+            rc = subprocess.call([sys.executable, path], cwd=here, timeout=timeout_s)
             reason = ""
         except subprocess.TimeoutExpired:
-            rc, reason = 124, "timeout after 60s"
+            rc, reason = 124, f"timeout after {timeout_s}s"
         rows.append((name, rc, time.monotonic() - t0, reason))
 
     print("\nplayground summary\n------------------")

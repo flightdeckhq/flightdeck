@@ -106,11 +106,17 @@
     Do not create separate endpoints per chart.
 
 25. **Available dimensions are exactly:** `flavor`, `model`, `framework`, `host`,
-    `agent_type`, `team`, `provider`, `agent_role`. No other values. Do not add
-    dimensions without updating ARCHITECTURE.md first. `provider` is derived at
-    query time via SQL CASE over `model` (see DECISIONS.md D098). `agent_role`
-    (D126) groups by the framework-supplied sub-agent role string; sessions with
-    null `agent_role` bucket as `(root)`.
+    `agent_type`, `team`, `provider`, `agent_role`, `parent_session_id`. No other
+    values. Do not add dimensions without updating ARCHITECTURE.md first.
+    `provider` is derived at query time via SQL CASE over `model` (see
+    DECISIONS.md D098). `agent_role` (D126) groups by the framework-supplied
+    sub-agent role string; sessions with null `agent_role` bucket as `(root)`.
+    `parent_session_id` (D126 § 6.4) groups by the parent session UUID; root
+    sessions bucket as `(root)`. The `group_by` query param accepts **one or
+    two** dimensions comma-separated (D126 § 6.4): `?group_by=dim1` keeps the
+    pre-D126 single-axis shape; `?group_by=dim1,dim2` returns a two-key rollup
+    where `dim1` is the primary (outer) axis and `dim2` is the secondary
+    (inner) axis. Both positions accept any value from the locked list above.
 
 26. **Available metrics are exactly:** `tokens`, `sessions`, `latency_avg`,
     `latency_p50`, `latency_p95`, `policy_events`, `estimated_cost`,

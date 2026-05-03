@@ -493,7 +493,7 @@ const docTemplate = `{
                     },
                     {
                         "type": "string",
-                        "description": "Dimension: flavor, model, framework, host, agent_type, team, provider, agent_role (default: flavor). agent_role (D126) groups by the framework-supplied sub-agent role string; null buckets as 'unknown'.",
+                        "description": "Dimension(s) (default: flavor). One or two dimensions, comma-separated (D126 § 6.4): ?group_by=dim1 keeps the pre-D126 single-axis shape; ?group_by=dim1,dim2 returns a two-key rollup where dim1 is the primary (outer) axis and dim2 is the secondary (inner) axis. Allowed values in either position: flavor, model, framework, host, agent_type, team, provider, agent_role, parent_session_id. agent_role (D126) groups by the framework-supplied sub-agent role string and parent_session_id (D126 § 6.4) groups by parent UUID; both bucket nulls as '(root)'. Two-dim payloads carry per-DataPoint ` + "`" + `` + "`" + `breakdown[]` + "`" + `` + "`" + ` segments (key+value); single-dim payloads keep the flat ` + "`" + `` + "`" + `value` + "`" + `` + "`" + ` shape exactly.",
                         "name": "group_by",
                         "in": "query"
                     },
@@ -1906,6 +1906,17 @@ const docTemplate = `{
                 }
             }
         },
+        "store.BreakdownBucket": {
+            "type": "object",
+            "properties": {
+                "key": {
+                    "type": "string"
+                },
+                "value": {
+                    "type": "number"
+                }
+            }
+        },
         "store.ContextFacetValue": {
             "type": "object",
             "properties": {
@@ -1967,6 +1978,12 @@ const docTemplate = `{
         "store.DataPoint": {
             "type": "object",
             "properties": {
+                "breakdown": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/store.BreakdownBucket"
+                    }
+                },
                 "date": {
                     "type": "string"
                 },

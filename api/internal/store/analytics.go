@@ -13,6 +13,7 @@ import (
 type AnalyticsParams struct {
 	Metric          string
 	GroupBy         string
+	GroupBySecondary string
 	Range           string
 	From            time.Time
 	To              time.Time
@@ -42,9 +43,25 @@ type AnalyticsParams struct {
 	FilterIsSubAgent bool
 }
 
-// DataPoint is a single time series data point.
+// DataPoint is a single time series data point. ``Breakdown`` carries
+// per-secondary-axis segments when the caller passes a two-dimension
+// ``group_by`` (D126 § 6.4). Single-dim queries leave ``Breakdown``
+// nil — the JSON ``omitempty`` keeps the wire shape byte-identical to
+// the pre-6.4 contract for those callers.
 type DataPoint struct {
-	Date  string  `json:"date"`
+	Date      string            `json:"date"`
+	Value     float64           `json:"value"`
+	Breakdown []BreakdownBucket `json:"breakdown,omitempty"`
+}
+
+// BreakdownBucket is one segment of a two-dim DataPoint. ``Key`` is
+// the secondary-axis bucket value; ``Value`` is the metric aggregate
+// for that primary × secondary × time-bucket triple. The sum of all
+// Breakdown[].Value within a single DataPoint equals DataPoint.Value
+// (the row total), so a chart can render either the stacked or the
+// flat representation off the same payload.
+type BreakdownBucket struct {
+	Key   string  `json:"key"`
 	Value float64 `json:"value"`
 }
 
@@ -143,17 +160,31 @@ var dimensions = map[string]dimensionSource{
 	// team maps to flavor until a real team field lands.
 	"team":     {exprEvents: "e.flavor", exprSessions: "s.flavor"},
 	"provider": {exprEvents: providerCase("e.model"), exprSessions: providerCase("s.model")},
-	// D126 — sub-agent observability dimension. Buckets sessions by
-	// the framework-supplied role string (CrewAI Agent.role,
-	// LangGraph node name, Claude Code Task agent_type). NULL
-	// agent_role (root sessions and direct-SDK sessions) groups
-	// under the COALESCE 'unknown' bucket alongside every other
-	// missing-dimension fallback. needsSessionJoin so events-based
-	// metrics can group by the role of the session that produced
-	// the event.
+	// D126 — sub-agent observability dimensions. Both bake their
+	// COALESCE-to-(root) into the expression so the outer
+	// ``COALESCE(<dim>, 'unknown')`` in the query builder never
+	// overrides the (root) label. Standardising on (root) for these
+	// two dims matches the design spec (ARCHITECTURE.md analytics
+	// section + CLAUDE.md Rule 25 + DECISIONS.md D126 § 6.4) where
+	// "no parent" / "no role" is a meaningful bucket label, not
+	// the unknown-data fallback that ``unknown`` implies for the
+	// other dimensions.
+	//
+	// agent_role: framework-supplied role string (CrewAI Agent.role,
+	// LangGraph node name, Claude Code Task agent_type). NULL on
+	// root sessions and direct-SDK sessions.
 	"agent_role": {
-		exprEvents:       "s.agent_role",
-		exprSessions:     "s.agent_role",
+		exprEvents:       "COALESCE(s.agent_role, '(root)')",
+		exprSessions:     "COALESCE(s.agent_role, '(root)')",
+		needsSessionJoin: true,
+	},
+	// parent_session_id: parent session UUID, NULL on root + direct-
+	// SDK sessions. The ::text cast is the cheapest way to render
+	// UUIDs as strings; pgx scans the resulting column into a Go
+	// string without a custom unmarshaller.
+	"parent_session_id": {
+		exprEvents:       "COALESCE(s.parent_session_id::text, '(root)')",
+		exprSessions:     "COALESCE(s.parent_session_id::text, '(root)')",
 		needsSessionJoin: true,
 	},
 }
@@ -266,6 +297,53 @@ func metricSpecs() map[string]metricSpec {
 	}
 }
 
+// appendBreakdownPoint folds a (bucket, subDim, value) row into a
+// series whose Data points carry per-secondary-axis breakdowns.
+// Rows arrive ORDER BY dimension, bucket, sub_dimension so the
+// last-data-point lookup is O(1): when the most recent point matches
+// the bucket, we extend its Breakdown; otherwise we start a new
+// point and seed Value as the running row total.
+//
+// Maintains the invariant that DataPoint.Value == sum of every
+// Breakdown[].Value within the same point. A chart can therefore
+// render either the stacked breakdown or a flat-Value line off the
+// same payload without re-summing client-side.
+func appendBreakdownPoint(
+	series *AnalyticsSeries,
+	bucket time.Time,
+	subDim string,
+	value float64,
+) {
+	dateStr := bucket.Format("2006-01-02")
+	if n := len(series.Data); n > 0 && series.Data[n-1].Date == dateStr {
+		// Same primary × bucket → append to the existing point.
+		series.Data[n-1].Breakdown = append(
+			series.Data[n-1].Breakdown,
+			BreakdownBucket{Key: subDim, Value: value},
+		)
+		series.Data[n-1].Value += value
+		return
+	}
+	series.Data = append(series.Data, DataPoint{
+		Date:      dateStr,
+		Value:     value,
+		Breakdown: []BreakdownBucket{{Key: subDim, Value: value}},
+	})
+}
+
+// groupByWireValue mirrors the request param as written by the
+// caller. Single-dim queries echo back ``params.GroupBy`` exactly;
+// two-dim queries return ``primary,secondary`` so a client can
+// re-construct the request from the response without an additional
+// round trip. Mirrors the parsing convention in the analytics
+// handler.
+func groupByWireValue(params AnalyticsParams) string {
+	if params.GroupBySecondary == "" {
+		return params.GroupBy
+	}
+	return params.GroupBy + "," + params.GroupBySecondary
+}
+
 // timeRange calculates the start and end times for a range string.
 func timeRange(rangeStr string, from, to time.Time) (time.Time, time.Time) {
 	now := time.Now().UTC()
@@ -292,13 +370,35 @@ func (s *Store) QueryAnalytics(ctx context.Context, params AnalyticsParams) (*An
 	if !ok {
 		return nil, fmt.Errorf("invalid group_by: %s", params.GroupBy)
 	}
+	// D126 § 6.4 — optional secondary dimension. Validated against
+	// the same locked vocabulary as the primary dim so the two-dim
+	// path inherits the dimension whitelist without duplication.
+	var secDim dimensionSource
+	hasSecondary := params.GroupBySecondary != ""
+	if hasSecondary {
+		var ok2 bool
+		secDim, ok2 = dimensions[params.GroupBySecondary]
+		if !ok2 {
+			return nil, fmt.Errorf("invalid group_by secondary: %s", params.GroupBySecondary)
+		}
+		// Reject secondary == primary — two identical axes would
+		// produce one bucket per primary key (the secondary collapses
+		// to itself) which is meaningless and almost certainly a
+		// caller bug. Better to surface the error than silently
+		// return a flat single-axis chart with extra payload weight.
+		if params.GroupBySecondary == params.GroupBy {
+			return nil, fmt.Errorf(
+				"group_by primary and secondary must differ; both = %s",
+				params.GroupBy)
+		}
+	}
 	// D126 — sub-agent metrics dispatch to a dedicated query path
 	// because their shape (recursive CTE for parent_token_sum /
 	// child_token_sum, correlated subqueries for child_count and
 	// parent_to_first_child_latency_ms) doesn't fit the standard
 	// per-bucket aggregate builder below.
 	if subagentMetricNames[params.Metric] {
-		return s.querySubagentAnalytics(ctx, params, dim)
+		return s.querySubagentAnalytics(ctx, params, dim, secDim, hasSecondary)
 	}
 	specs := metricSpecs()
 	spec, ok := specs[params.Metric]
@@ -419,24 +519,65 @@ func (s *Store) QueryAnalytics(ctx context.Context, params AnalyticsParams) (*An
 		whereAnd = spec.whereClause + " AND "
 	}
 
+	// Resolve the secondary dim's expression. The secondary axis
+	// always picks from the same alias set as the primary because
+	// both end up in the same SELECT list; the join requirements
+	// already accumulated above (needsSessionJoin or
+	// subagentFiltersActive) cover the case where the secondary
+	// needs the sessions join even when the primary doesn't.
+	var secDimExpr string
+	if hasSecondary {
+		if spec.baseTable == "events" {
+			secDimExpr = secDim.exprEvents
+			if secDim.needsSessionJoin && !needsJoin && !subagentFiltersActive {
+				fromClause = "events e JOIN sessions s ON e.session_id = s.session_id"
+			}
+		} else {
+			secDimExpr = secDim.exprSessions
+		}
+	}
+
 	// Main series query. Time bucket rounds down to the chosen
 	// granularity (day default). COALESCE(dim, 'unknown') keeps null
 	// model / framework values from collapsing into a single empty
 	// dimension label.
 	//
-	//nolint:gosec // dimExpr comes from a validated whitelist; spec
-	// strings come from the metricSpecs map; params.Granularity is
-	// validated by the handler.
-	seriesSQL := fmt.Sprintf(`
-		SELECT COALESCE(%s, 'unknown') AS dimension,
-		       date_trunc('%s', %s)::date AS bucket,
-		       %s AS value
-		FROM %s
-		WHERE %s%s >= $1 AND %s < $2 %s
-		GROUP BY dimension, bucket
-		ORDER BY dimension, bucket
-	`, dimExpr, params.Granularity, spec.timeCol, spec.agg, fromClause,
-		whereAnd, spec.timeCol, spec.timeCol, filterSQL)
+	// Two-dim shape (D126 § 6.4): when ``hasSecondary``, the SELECT
+	// projects three keys (primary, secondary, bucket) and the GROUP
+	// BY follows. Single-dim queries take the original two-key
+	// shape. The fold loop below walks the rows once and dispatches
+	// on row arity so the standard / two-dim paths share scan
+	// machinery rather than duplicating the cursor management.
+	//
+	//nolint:gosec // dimExpr / secDimExpr from the validated
+	// whitelist; spec strings come from the metricSpecs map;
+	// params.Granularity is validated by the handler.
+	var seriesSQL string
+	if hasSecondary {
+		seriesSQL = fmt.Sprintf(`
+			SELECT COALESCE(%s, 'unknown') AS dimension,
+			       COALESCE(%s, 'unknown') AS sub_dimension,
+			       date_trunc('%s', %s)::date AS bucket,
+			       %s AS value
+			FROM %s
+			WHERE %s%s >= $1 AND %s < $2 %s
+			GROUP BY dimension, sub_dimension, bucket
+			ORDER BY dimension, bucket, sub_dimension
+		`, dimExpr, secDimExpr, params.Granularity, spec.timeCol,
+			spec.agg, fromClause, whereAnd, spec.timeCol,
+			spec.timeCol, filterSQL)
+	} else {
+		seriesSQL = fmt.Sprintf(`
+			SELECT COALESCE(%s, 'unknown') AS dimension,
+			       date_trunc('%s', %s)::date AS bucket,
+			       %s AS value
+			FROM %s
+			WHERE %s%s >= $1 AND %s < $2 %s
+			GROUP BY dimension, bucket
+			ORDER BY dimension, bucket
+		`, dimExpr, params.Granularity, spec.timeCol, spec.agg, fromClause,
+			whereAnd, spec.timeCol, spec.timeCol, filterSQL)
+	}
 
 	rows, err := s.pool.Query(ctx, seriesSQL, filterArgs...)
 	if err != nil {
@@ -450,10 +591,17 @@ func (s *Store) QueryAnalytics(ctx context.Context, params AnalyticsParams) (*An
 
 	for rows.Next() {
 		var dimVal string
+		var subDimVal string
 		var bucket time.Time
 		var value float64
-		if err := rows.Scan(&dimVal, &bucket, &value); err != nil {
-			return nil, fmt.Errorf("analytics scan: %w", err)
+		if hasSecondary {
+			if err := rows.Scan(&dimVal, &subDimVal, &bucket, &value); err != nil {
+				return nil, fmt.Errorf("analytics scan: %w", err)
+			}
+		} else {
+			if err := rows.Scan(&dimVal, &bucket, &value); err != nil {
+				return nil, fmt.Errorf("analytics scan: %w", err)
+			}
 		}
 		series, exists := seriesMap[dimVal]
 		if !exists {
@@ -461,10 +609,14 @@ func (s *Store) QueryAnalytics(ctx context.Context, params AnalyticsParams) (*An
 			seriesMap[dimVal] = series
 			order = append(order, dimVal)
 		}
-		series.Data = append(series.Data, DataPoint{
-			Date:  bucket.Format("2006-01-02"),
-			Value: value,
-		})
+		if hasSecondary {
+			appendBreakdownPoint(series, bucket, subDimVal, value)
+		} else {
+			series.Data = append(series.Data, DataPoint{
+				Date:  bucket.Format("2006-01-02"),
+				Value: value,
+			})
+		}
 		series.Total += value
 		grandTotal += value
 	}
@@ -497,7 +649,7 @@ func (s *Store) QueryAnalytics(ctx context.Context, params AnalyticsParams) (*An
 
 	resp := &AnalyticsResponse{
 		Metric:      params.Metric,
-		GroupBy:     params.GroupBy,
+		GroupBy:     groupByWireValue(params),
 		Range:       params.Range,
 		Granularity: params.Granularity,
 		Series:      series,
@@ -637,6 +789,8 @@ func (s *Store) querySubagentAnalytics(
 	ctx context.Context,
 	params AnalyticsParams,
 	dim dimensionSource,
+	secDim dimensionSource,
+	hasSecondary bool,
 ) (*AnalyticsResponse, error) {
 	selectExpr, aggregate := subagentMetricExpr(params.Metric)
 	if selectExpr == "" {
@@ -651,6 +805,10 @@ func (s *Store) querySubagentAnalytics(
 	// originally events-flavored. The standard path branches on
 	// spec.baseTable; here every metric is sessions-rooted.
 	dimExpr := dim.exprSessions
+	var secDimExpr string
+	if hasSecondary {
+		secDimExpr = secDim.exprSessions
+	}
 
 	// Filter chain. Sub-agent metrics share the same filter
 	// vocabulary as the standard path. parent_session_id /
@@ -699,19 +857,49 @@ func (s *Store) querySubagentAnalytics(
 	// child_count and latency metrics ignore it (their per-row
 	// expressions are correlated subqueries against sessions
 	// directly).
+	//
+	// Two-dim shape (D126 § 6.4) folds a secondary dimension into
+	// the GROUP BY exactly like the standard path — see
+	// QueryAnalytics for the matching shape. The recursive CTE
+	// remains the parent / child anchor, which means
+	// ``parent_session_id × agent_role`` (the canonical pair)
+	// renders one row per (session, role-of-that-session, bucket)
+	// rather than per (parent, role-of-its-children) — for charts
+	// that want the per-parent / per-child-role decomposition the
+	// caller should also pass ``filter_is_sub_agent=true`` so the
+	// primary axis (parent_session_id) carries only sub-agent
+	// rows under their actual parent's UUID.
+	//
 	//nolint:gosec // dimExpr / selectExpr / aggregate from validated
 	// whitelists; granularity validated by the handler.
-	seriesSQL := subagentRecursiveCTE + fmt.Sprintf(`
-		SELECT
-			COALESCE(%s, 'unknown') AS dimension,
-			date_trunc('%s', s.started_at)::date AS bucket,
-			%s(%s) AS value
-		FROM sessions s
-		LEFT JOIN subtree_tokens st ON st.root_id = s.session_id
-		WHERE s.started_at >= $1 AND s.started_at < $2 %s
-		GROUP BY dimension, bucket
-		ORDER BY dimension, bucket
-	`, dimExpr, params.Granularity, aggregate, selectExpr, filterSQL)
+	var seriesSQL string
+	if hasSecondary {
+		seriesSQL = subagentRecursiveCTE + fmt.Sprintf(`
+			SELECT
+				COALESCE(%s, 'unknown') AS dimension,
+				COALESCE(%s, 'unknown') AS sub_dimension,
+				date_trunc('%s', s.started_at)::date AS bucket,
+				%s(%s) AS value
+			FROM sessions s
+			LEFT JOIN subtree_tokens st ON st.root_id = s.session_id
+			WHERE s.started_at >= $1 AND s.started_at < $2 %s
+			GROUP BY dimension, sub_dimension, bucket
+			ORDER BY dimension, bucket, sub_dimension
+		`, dimExpr, secDimExpr, params.Granularity, aggregate,
+			selectExpr, filterSQL)
+	} else {
+		seriesSQL = subagentRecursiveCTE + fmt.Sprintf(`
+			SELECT
+				COALESCE(%s, 'unknown') AS dimension,
+				date_trunc('%s', s.started_at)::date AS bucket,
+				%s(%s) AS value
+			FROM sessions s
+			LEFT JOIN subtree_tokens st ON st.root_id = s.session_id
+			WHERE s.started_at >= $1 AND s.started_at < $2 %s
+			GROUP BY dimension, bucket
+			ORDER BY dimension, bucket
+		`, dimExpr, params.Granularity, aggregate, selectExpr, filterSQL)
+	}
 
 	rows, err := s.pool.Query(ctx, seriesSQL, filterArgs...)
 	if err != nil {
@@ -724,16 +912,29 @@ func (s *Store) querySubagentAnalytics(
 	var grandTotal float64
 	for rows.Next() {
 		var dimVal string
+		var subDimVal string
 		var bucket time.Time
 		var value float64
-		if err := rows.Scan(&dimVal, &bucket, &value); err != nil {
-			return nil, fmt.Errorf("subagent analytics scan: %w", err)
+		if hasSecondary {
+			if err := rows.Scan(&dimVal, &subDimVal, &bucket, &value); err != nil {
+				return nil, fmt.Errorf("subagent analytics scan: %w", err)
+			}
+		} else {
+			if err := rows.Scan(&dimVal, &bucket, &value); err != nil {
+				return nil, fmt.Errorf("subagent analytics scan: %w", err)
+			}
 		}
 		series, exists := seriesMap[dimVal]
 		if !exists {
 			series = &AnalyticsSeries{Dimension: dimVal}
 			seriesMap[dimVal] = series
 			order = append(order, dimVal)
+		}
+		if hasSecondary {
+			appendBreakdownPoint(series, bucket, subDimVal, value)
+			series.Total += value
+			grandTotal += value
+			continue
 		}
 		series.Data = append(series.Data, DataPoint{
 			Date:  bucket.Format("2006-01-02"),
@@ -775,7 +976,7 @@ func (s *Store) querySubagentAnalytics(
 
 	return &AnalyticsResponse{
 		Metric:      params.Metric,
-		GroupBy:     params.GroupBy,
+		GroupBy:     groupByWireValue(params),
 		Range:       params.Range,
 		Granularity: params.Granularity,
 		Series:      series,

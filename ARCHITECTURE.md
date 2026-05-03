@@ -1809,11 +1809,27 @@ renaming fields is not.
   the number of distinct child sessions per parent;
   `parent_to_first_child_latency_ms` reports
   `MIN(child.started_at) - parent.started_at`.
-- `group_by` (optional): one of `flavor`, `model`, `framework`, `host`,
-  `agent_type`, `team`, `provider`, `agent_role`. `provider` is
-  derived at query time via SQL CASE over `model` (D098).
-  `agent_role` (D126) groups by the framework-supplied role string;
-  sessions with null `agent_role` bucket as `(root)`.
+- `group_by` (optional): one or two dimensions, comma-separated. The
+  first dimension is the **primary** axis (outer GROUP BY); when a
+  second dimension is supplied it is the **secondary** axis (inner
+  GROUP BY, returned as nested buckets so a chart can render
+  per-primary stacked segments). Single-dim queries (no comma)
+  preserve the pre-D126 wire shape exactly; the per-series payload
+  contains a flat `data: [{date,value}]` array. Two-dim queries
+  return per-series payloads of shape `data: [{date, breakdown:
+  [{key, value}]}]` where `key` is the secondary-axis bucket value.
+  Allowed dimension values (in either position): `flavor`, `model`,
+  `framework`, `host`, `agent_type`, `team`, `provider`,
+  `agent_role`, `parent_session_id`. `provider` is derived at query
+  time via SQL CASE over `model` (D098). `agent_role` (D126) groups
+  by the framework-supplied role string; sessions with null
+  `agent_role` bucket as `(root)`. `parent_session_id` (D126)
+  groups by parent session UUID; sessions without a parent (root
+  sessions and direct-SDK sessions) bucket as `(root)`. The two-dim
+  shape is supported for any pair where both dimensions resolve to
+  the standard query path; the canonical pair is
+  `parent_session_id,agent_role` driving the dashboard's per-parent
+  stacked breakdown chart.
 - `range` (optional): `7d`, `30d`, `90d`, or `custom`.
 - `from` / `to` (ISO 8601, used when `range=custom`).
 - `granularity`: `hour`, `day`, `week`.

@@ -4999,6 +4999,55 @@ parent, segments per child role). A "Sub-agent activity" facet
 on the Analytics sidebar mirrors the Investigate TOPOLOGY facet
 for muscle memory.
 
+### 6.4. Two-dimension ``group_by`` for parent × child stacks
+
+The per-parent stacked-bar contract above ("one bar per parent,
+segments per child role") cannot be expressed by a single-axis
+GROUP BY. The analytics endpoint extends ``group_by`` to accept
+**two comma-separated dimensions** so the stacked chart can land
+the data with one query:
+
+- ``?group_by=parent_session_id,agent_role`` — primary axis is
+  the parent session, secondary axis is the child role string. The
+  response shape changes per series:
+
+  ```
+  series[].data[]: { date, breakdown: [{ key, value }] }
+  ```
+
+  Single-dim queries (no comma) keep the pre-6.4 shape exactly:
+
+  ```
+  series[].data[]: { date, value }
+  ```
+
+  Adding a second dimension is opt-in; existing single-dim callers
+  see byte-for-byte the same payloads they did before.
+
+The dimension whitelist applies to both positions. The canonical
+pair driving the stacked chart is
+``parent_session_id × agent_role``; other pairs (``framework ×
+provider``, ``host × agent_type``, etc.) work too — the store
+dispatch is dimension-agnostic so a future chart can pick any
+locked pair without server changes.
+
+Sessions without a ``parent_session_id`` (root + direct-SDK)
+bucket as ``(root)`` on the primary axis when
+``parent_session_id`` is selected, mirroring the ``(root)``
+convention already in place for the ``agent_role`` dimension. The
+``filter_is_sub_agent=true`` filter pairs naturally with the
+``parent_session_id`` primary axis to drop the ``(root)`` bucket
+when a chart is exclusively about real sub-agent traffic.
+
+**Rejected alternative:** add a separate ``/v1/analytics/breakdown``
+endpoint shaped specifically for stacked charts. Rejected because
+(a) it would duplicate the dimension-validation, filter-parsing,
+and time-bucketing layers; (b) the dashboard would carry two
+analytics fetch paths to maintain; (c) extending the existing
+contract is backward compatible — single-dim consumers see no
+change. The locked dimensions list still serves as the single
+source of truth.
+
 ### 8. Renaming-without-loss is an accepted property, not engineered around
 
 Renaming a framework agent (CrewAI's "Researcher" → "Senior

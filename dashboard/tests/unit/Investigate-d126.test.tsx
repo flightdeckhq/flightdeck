@@ -131,9 +131,12 @@ describe("computeFacets — D126 TOPOLOGY facet", () => {
     expect(topo).toBeDefined();
     const map = Object.fromEntries(topo!.values.map((v) => [v.value, v.count]));
     expect(map.is_sub_agent).toBe(2);
-    // has_sub_agents has no per-row signal on the wire so its
-    // count is always 0; the renderer drops the count display
-    // for that one entry but the toggle stays clickable.
+    // has_sub_agents counts sessions whose own session_id
+    // appears as another session's parent_session_id. In this
+    // fixture the parents (p1, p2) aren't materialised as
+    // visible sessions, so the count is 0. Step 8.fix's
+    // sub-agent-facets.test.ts adds the positive case where the
+    // parent session is also visible and the count goes to 1.
     expect(map.has_sub_agents).toBe(0);
   });
 });

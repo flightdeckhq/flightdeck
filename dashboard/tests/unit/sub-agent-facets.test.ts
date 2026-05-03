@@ -75,11 +75,39 @@ describe("computeFacets -- D126 sub-agent facets", () => {
     expect(topo).toBeDefined();
     const map = Object.fromEntries(topo!.values.map((v) => [v.value, v.count]));
     // is_sub_agent counts every visible session whose
-    // parent_session_id is set; has_sub_agents has no per-row
-    // signal on the wire so the count surfaces as 0 — the renderer
-    // shows the checkbox without a number, but the entry must be
-    // present so the user can toggle it.
+    // parent_session_id is set; has_sub_agents counts sessions
+    // whose own session_id appears as some other session's
+    // parent_session_id. In this fixture neither parent (p1, p2)
+    // appears as a session in ``sessions``, so has_sub_agents is 0.
     expect(map.is_sub_agent).toBe(2);
     expect(map.has_sub_agents).toBe(0);
+  });
+
+  it("emits has_sub_agents > 0 when a parent session is visible alongside its child", () => {
+    // D126 § 8.fix — the has_sub_agents count was hardcoded to 0
+    // in step 7.fix because no per-row signal was wired through
+    // from the API. Step 8.fix computes it client-side: collect
+    // every distinct parent_session_id across visible sessions,
+    // then tally sessions whose own session_id sits in that set.
+    // This matches the AgentTable's ``→ N`` pill semantics from
+    // the same data source.
+    const sessions = [
+      // Parent — its session_id IS referenced as parent by the
+      // children below.
+      mk("p1", "parent-flavor"),
+      mk("c1", "child-flavor", {
+        parent_session_id: "p1",
+        agent_role: "Researcher",
+      }),
+      mk("c2", "child-flavor", {
+        parent_session_id: "p1",
+        agent_role: "Writer",
+      }),
+    ];
+    const topo = computeFacets(sessions).find((g) => g.key === "topology");
+    expect(topo).toBeDefined();
+    const map = Object.fromEntries(topo!.values.map((v) => [v.value, v.count]));
+    expect(map.is_sub_agent).toBe(2); // c1 + c2
+    expect(map.has_sub_agents).toBe(1); // p1 only
   });
 });

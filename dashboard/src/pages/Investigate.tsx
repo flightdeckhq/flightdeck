@@ -369,6 +369,18 @@ export function computeFacets(
   // checkbox is rendered without a number, paired with the Is
   // sub-agent count below).
   let isSubAgentCount = 0;
+  // D126 TOPOLOGY facet — count of PARENT sessions visible in the
+  // result set. A session is "has_sub_agents" when at least one
+  // other session in the same scope references its session_id as
+  // ``parent_session_id``. Computed in two passes: the first pass
+  // collects every distinct parent_session_id seen across the
+  // visible sessions; the second pass tallies sessions whose own
+  // session_id appears in that set. Step 8.fix replaces the
+  // hardcoded ``0`` that step 7.fix shipped — that placeholder
+  // contradicted the AgentTable's `→ N` pill which DOES surface
+  // the same relationship from the same data.
+  const parentIdSet = new Set<string>();
+  let hasSubAgentsCount = 0;
   // D115 AGENT facet: keyed on agent_id (clickable filter value) with
   // an accompanying name map for display rendering. Sessions without
   // agent_id (pre-v0.4.0 legacy rows) are silently skipped -- they
@@ -467,7 +479,10 @@ export function computeFacets(
     for (const s of sources.agent_role) {
       const r = s.agent_role ?? "(root)";
       roleCounts.set(r, (roleCounts.get(r) ?? 0) + 1);
-      if (s.parent_session_id) isSubAgentCount += 1;
+      if (s.parent_session_id) {
+        isSubAgentCount += 1;
+        parentIdSet.add(s.parent_session_id);
+      }
     }
   }
   // Sticky-source pass for scalar context facets. A key whose source
@@ -520,12 +535,29 @@ export function computeFacets(
     if (!sources.agent_role) {
       const r = s.agent_role ?? "(root)";
       roleCounts.set(r, (roleCounts.get(r) ?? 0) + 1);
-      if (s.parent_session_id) isSubAgentCount += 1;
+      if (s.parent_session_id) {
+        isSubAgentCount += 1;
+        parentIdSet.add(s.parent_session_id);
+      }
     }
     for (const key of CONTEXT_FACET_KEYS) {
       if (sources[key]) continue;
       const v = readScalarContext(s, key);
       if (v) ctxCounts[key].set(v, (ctxCounts[key].get(v) ?? 0) + 1);
+    }
+  }
+  // Second pass: tally sessions whose session_id appears in
+  // parentIdSet → those sessions ARE parents → they qualify for
+  // the "Has sub-agents" facet's count.
+  for (const s of sessions) {
+    if (parentIdSet.has(s.session_id)) hasSubAgentsCount += 1;
+  }
+  // Sticky-source agent_role pass also contributes parents that
+  // would otherwise be excluded when the agent_role filter is
+  // active. Apply the same tally over the sticky-source list.
+  if (sources.agent_role) {
+    for (const s of sources.agent_role) {
+      if (parentIdSet.has(s.session_id)) hasSubAgentsCount += 1;
     }
   }
 
@@ -612,17 +644,19 @@ export function computeFacets(
     // visible so the user can toggle "Has sub-agents" to find
     // parent sessions even on a result set that currently shows
     // none (the toggle widens the search; hiding it on the empty-
-    // visible-set case would be a dead-end UX). The "Is sub-agent"
-    // value carries the per-row count; "Has sub-agents" has no
-    // per-row signal on the wire so its count is 0 and the
-    // renderer presents the checkbox without a number. When both
-    // are checked the server OR-composes them per D126 § 7.fix.F.
+    // visible-set case would be a dead-end UX). Both values now
+    // carry real counts (D126 § 8.fix). ``has_sub_agents`` is
+    // computed by collecting every distinct ``parent_session_id``
+    // across the visible sessions, then tallying sessions whose
+    // own ``session_id`` appears in that set — matching the
+    // AgentTable's ``→ N`` pill semantics. When both checkboxes
+    // are checked the server OR-composes them.
     {
       key: "topology",
       label: "TOPOLOGY",
       values: [
         { value: "is_sub_agent", count: isSubAgentCount },
-        { value: "has_sub_agents", count: 0 },
+        { value: "has_sub_agents", count: hasSubAgentsCount },
       ],
     },
   ].filter((g) => g.values.length > 0);

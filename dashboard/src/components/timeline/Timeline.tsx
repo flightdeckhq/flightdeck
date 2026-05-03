@@ -1,4 +1,4 @@
-import React, { useMemo, useState, useEffect, useCallback, useRef } from "react";
+import React, { useLayoutEffect, useMemo, useState, useEffect, useCallback, useRef } from "react";
 import { scaleTime } from "d3-scale";
 import type { FlavorSummary } from "@/lib/types";
 import type { TimeRange } from "@/pages/Fleet";
@@ -7,6 +7,7 @@ import {
   TIMELINE_WIDTH_PX,
   LEFT_PANEL_MIN_WIDTH,
   LEFT_PANEL_MAX_WIDTH,
+  EVENT_CIRCLE_SIZE,
 } from "@/lib/constants";
 import {
   persistLeftPanelWidth,
@@ -15,6 +16,11 @@ import {
 import { TimeAxis } from "./TimeAxis";
 import { AllSwimLane } from "./SwimLane";
 import { VirtualizedSwimLane } from "./VirtualizedSwimLane";
+import {
+  SubAgentConnector,
+  pickSpawnEvent,
+  type SubAgentConnectorSpec,
+} from "./SubAgentConnector";
 import { bucketFor } from "@/lib/fleet-ordering";
 import { eventsCache } from "@/hooks/useSessionEvents";
 
@@ -306,6 +312,128 @@ export function Timeline({
     });
   }, [scale, rangeMs, scaleEndMs]);
 
+  // D126 § 4.3 — sub-agent time-flow connector overlay. Hooks
+  // declared BEFORE the empty-fleet early return below per the
+  // rules-of-hooks contract; the useLayoutEffect's body short-
+  // circuits cleanly when there's nothing to measure.
+  const innerContentRef = useRef<HTMLDivElement | null>(null);
+  const [connectorSpecs, setConnectorSpecs] = useState<
+    SubAgentConnectorSpec[]
+  >([]);
+  const [overlaySize, setOverlaySize] = useState<{
+    width: number;
+    height: number;
+  }>({ width: 0, height: 0 });
+  // Connector specs depend on ``eventsCache`` which is a module-
+  // level Map populated asynchronously by ``useSessionEvents``
+  // per-session fetches. The cache mutation does NOT trigger a
+  // Timeline re-render (the per-session hooks bump their own
+  // local state, not Timeline's), so the layout effect would
+  // freeze on its empty-cache snapshot. Bumping a nonce on a
+  // short interval forces the effect to re-fire until specs
+  // are stable. The interval clears itself once specs are
+  // non-empty AND a maximum back-off elapses to keep the
+  // overhead bounded on long-lived dashboards.
+  const [connectorNonce, setConnectorNonce] = useState(0);
+  useEffect(() => {
+    // Bump every 1s for the lifetime of the page. The cost is one
+    // useLayoutEffect re-run per second per Timeline mount, which
+    // is dwarfed by the rAF cadence the rest of the timeline
+    // already drives. Keeping the bump always-on rather than time-
+    // boxing covers slow-fetch scenarios where the test runner
+    // takes > 10s to settle a page (parallel-worker contention,
+    // cold-cache reload), which surfaced as flaky T34 runs.
+    const id = window.setInterval(() => {
+      setConnectorNonce((n) => n + 1);
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, []);
+  useLayoutEffect(() => {
+    const container = innerContentRef.current;
+    if (!container) return;
+    const containerRect = container.getBoundingClientRect();
+    setOverlaySize({
+      width: containerRect.width,
+      height: containerRect.height,
+    });
+    // session_id → row element via the SwimLane outer wrapper's
+    // data-agent-id attribute. Each session lives under exactly one
+    // agent (D126 § 2 identity model) so the lookup is single-hop.
+    const sessionToRow = new Map<string, HTMLElement>();
+    for (const f of filteredFlavors) {
+      const row = container.querySelector<HTMLElement>(
+        `[data-agent-id="${CSS.escape(f.flavor)}"]`,
+      );
+      if (!row) continue;
+      for (const s of f.sessions) {
+        sessionToRow.set(s.session_id, row);
+      }
+    }
+    const specs: SubAgentConnectorSpec[] = [];
+    const seen = new Set<string>();
+    const domainStart = scale.domain()[0].getTime();
+    const domainEnd = scale.domain()[1].getTime();
+    for (const childFlavor of filteredFlavors) {
+      for (const childSession of childFlavor.sessions) {
+        const parentId = childSession.parent_session_id;
+        if (!parentId) continue;
+        const parentRow = sessionToRow.get(parentId);
+        const childRow = sessionToRow.get(childSession.session_id);
+        // Both rows must currently be MOUNTED (not virtualized as a
+        // spacer). VirtualizedSwimLane's spacer carries no
+        // data-agent-id, so the lookup naturally returns undefined
+        // for evicted rows and the connector skips them.
+        if (!parentRow || !childRow) continue;
+        if (parentRow === childRow) continue;
+        const parentEvents = eventsCache.get(parentId);
+        const childEvents = eventsCache.get(childSession.session_id);
+        if (!parentEvents?.length || !childEvents?.length) continue;
+        const childFirstEvent = childEvents[0];
+        const parentSpawnEvent = pickSpawnEvent(parentEvents, childFirstEvent);
+        if (!parentSpawnEvent) continue;
+        const parentTs = new Date(parentSpawnEvent.occurred_at).getTime();
+        const childTs = new Date(childFirstEvent.occurred_at).getTime();
+        if (
+          parentTs < domainStart ||
+          parentTs > domainEnd ||
+          childTs < domainStart ||
+          childTs > domainEnd
+        ) {
+          continue;
+        }
+        const parentX =
+          leftPanelWidth + (scale(new Date(parentTs)) as number);
+        const childX =
+          leftPanelWidth + (scale(new Date(childTs)) as number);
+        const parentRect = parentRow.getBoundingClientRect();
+        const childRect = childRow.getBoundingClientRect();
+        const parentY =
+          parentRect.top - containerRect.top + parentRect.height / 2;
+        const childY =
+          childRect.top - containerRect.top + childRect.height / 2;
+        const id = `${parentId}->${childSession.session_id}`;
+        if (seen.has(id)) continue;
+        seen.add(id);
+        specs.push({
+          id,
+          parentX,
+          parentY,
+          parentR: EVENT_CIRCLE_SIZE / 2,
+          childX,
+          childY,
+        });
+      }
+    }
+    setConnectorSpecs(specs);
+  }, [
+    filteredFlavors,
+    scale,
+    leftPanelWidth,
+    expandedFlavors,
+    sessionVersions,
+    connectorNonce,
+  ]);
+
   if (flavors.length === 0) {
     return (
       <div className="flex h-64 items-center justify-center text-text-muted">
@@ -317,7 +445,7 @@ export function Timeline({
 
   // Total content width = leftPanelWidth + TIMELINE_WIDTH_PX. The
   // timeline area is fixed at 900px; only the left panel resizes.
-  // No horizontal scrollbar -- the entire row fits in the visible
+  // No horizontal scrollbar — the entire row fits in the visible
   // area at every range.
   const innerWidth = timelineWidth + leftPanelWidth;
 
@@ -338,7 +466,22 @@ export function Timeline({
       style={{ overflowX: "visible", overflowY: "clip" }}
       data-testid="timeline-scroll"
     >
-      <div style={{ width: innerWidth, minWidth: "100%", position: "relative" }}>
+      <div
+        ref={innerContentRef}
+        style={{ width: innerWidth, minWidth: "100%", position: "relative" }}
+      >
+        {/* D126 § 4.3 — sub-agent connector overlay. Sits at
+            z-index 2 (above grid lines, below event circles) so
+            connector lines paint between the parent's spawn event
+            and the child's first event without obscuring either
+            endpoint. The overlay's pointerEvents are limited to
+            the path stroke so swimlane row clicks pass through
+            empty connector space. */}
+        <SubAgentConnector
+          connectors={connectorSpecs}
+          width={overlaySize.width}
+          height={overlaySize.height}
+        />
         {/* Vertical grid line overlay. Six lines at the same x
             positions as the time axis labels, dropping from the top
             of the inner content div to the bottom of the last

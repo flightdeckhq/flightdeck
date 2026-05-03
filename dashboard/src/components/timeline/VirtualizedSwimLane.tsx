@@ -40,6 +40,10 @@ interface VirtualizedSwimLaneProps {
   /** D126 § 7.fix.A — forwarded to SwimLane for relationship-pill
    *  click navigation. */
   onScrollToAgent?: (agentId: string) => void;
+  /** D126 UX revision 2026-05-03 — row topology (``"root"`` or
+   *  ``"child"``); forwarded verbatim to SwimLane so the
+   *  ``data-topology`` attribute drives the indent + bg tint. */
+  topology?: "root" | "child";
 }
 
 /**

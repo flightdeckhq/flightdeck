@@ -110,4 +110,70 @@ describe("computeFacets -- D126 sub-agent facets", () => {
     expect(map.is_sub_agent).toBe(2); // c1 + c2
     expect(map.has_sub_agents).toBe(1); // p1 only
   });
+
+  // D126 UX revision 2026-05-03 — TOPOLOGY facet behaviour under
+  // the new default scope (parents-with-children + lone). The
+  // facet stays visible regardless of whether either checkbox is
+  // selected; selecting "Has sub-agents" is a visual no-op (the
+  // default scope ALREADY filters to parents-with-children + lone)
+  // while "Is sub-agent" overrides to children-only.
+
+  it("renders TOPOLOGY facet even when default scope hides pure children (always-on)", () => {
+    // Simulate what the default scope returns: only parents (which
+    // have children referenced) + lone sessions. The facet
+    // computation should still emit both checkboxes so the user
+    // can override.
+    const sessions = [
+      mk("p1", "parent-flavor"),
+      mk("lone", "lone-flavor"),
+      // child of p1 IS in the visible set here so has_sub_agents > 0
+      mk("c1", "child-flavor", {
+        parent_session_id: "p1",
+        agent_role: "Researcher",
+      }),
+    ];
+    const topo = computeFacets(sessions).find((g) => g.key === "topology");
+    expect(topo).toBeDefined();
+    const values = topo!.values.map((v) => v.value).sort();
+    expect(values).toEqual(["has_sub_agents", "is_sub_agent"]);
+  });
+
+  it("is_sub_agent count covers depth-2 children whose parents also have parents", () => {
+    // gp (root) → mid (child + has_sub_agents) → leaf (pure child)
+    // mid is BOTH is_sub_agent (parent_session_id set) AND
+    // has_sub_agents (referenced by leaf). The facet count for
+    // is_sub_agent should include mid AND leaf (= 2); has_sub_agents
+    // should include gp AND mid (= 2).
+    const sessions = [
+      mk("gp", "root-flavor"),
+      mk("mid", "mid-flavor", {
+        parent_session_id: "gp",
+        agent_role: "Coordinator",
+      }),
+      mk("leaf", "leaf-flavor", {
+        parent_session_id: "mid",
+        agent_role: "Worker",
+      }),
+    ];
+    const topo = computeFacets(sessions).find((g) => g.key === "topology");
+    const map = Object.fromEntries(topo!.values.map((v) => [v.value, v.count]));
+    expect(map.is_sub_agent).toBe(2); // mid + leaf
+    expect(map.has_sub_agents).toBe(2); // gp + mid
+  });
+
+  it("TOPOLOGY facet survives a children-only override view", () => {
+    // What the user sees with ``is_sub_agent=true``: only
+    // children. The facet checkbox is still rendered so the user
+    // can toggle BACK to default. The ROLE facet drives
+    // disambiguation in this view; TOPOLOGY shouldn't disappear
+    // because the user clicked into it.
+    const sessions = [
+      mk("c1", "x", { parent_session_id: "p1", agent_role: "A" }),
+      mk("c2", "x", { parent_session_id: "p1", agent_role: "B" }),
+    ];
+    const topo = computeFacets(sessions).find((g) => g.key === "topology");
+    expect(topo).toBeDefined();
+    const values = topo!.values.map((v) => v.value).sort();
+    expect(values).toEqual(["has_sub_agents", "is_sub_agent"]);
+  });
 });

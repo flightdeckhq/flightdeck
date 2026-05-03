@@ -33,6 +33,7 @@ function mk(
     context: overrides.context ?? {},
     parent_session_id: overrides.parent_session_id,
     agent_role: overrides.agent_role,
+    child_count: overrides.child_count,
   };
 }
 
@@ -138,5 +139,81 @@ describe("computeFacets — D126 TOPOLOGY facet", () => {
     // sub-agent-facets.test.ts adds the positive case where the
     // parent session is also visible and the count goes to 1.
     expect(map.has_sub_agents).toBe(0);
+  });
+});
+
+// D126 UX revision 2026-05-03 — default scope + parent-pill + inline
+// expansion behaviour tests. Drives the buildUrlParams /
+// parseUrlState round-trip for the new state plus the SessionListItem
+// child_count contract that powers the parent-row pill render.
+
+describe("Investigate UX revision — child_count semantics", () => {
+  it("parents with child_count > 0 are distinguishable from lone sessions", () => {
+    const parent = mk("p1", "x", { child_count: 3 });
+    const lone = mk("lone", "y", { child_count: 0 });
+    expect(parent.child_count).toBe(3);
+    expect(lone.child_count).toBe(0);
+  });
+
+  it("absent child_count treats the row as lone (legacy back-compat)", () => {
+    const legacy = mk("legacy", "x");
+    expect(legacy.child_count).toBeUndefined();
+    // Render-side check: ``(s.child_count ?? 0) > 0`` is the
+    // discriminator. Undefined → falsy → not a parent.
+    const isParent = (legacy.child_count ?? 0) > 0;
+    expect(isParent).toBe(false);
+  });
+
+  it("parents whose own parent_session_id is set still report child_count", () => {
+    // Depth-2 nesting: a session that's both a child of someone
+    // and has children of its own. The parent-pill should render
+    // (child_count > 0) AND the "Filter to parent" link should
+    // render (parent_session_id set). Two independent affordances
+    // on the same row.
+    const middle = mk("mid", "x", {
+      parent_session_id: "gp",
+      agent_role: "Coordinator",
+      child_count: 2,
+    });
+    expect((middle.child_count ?? 0) > 0).toBe(true);
+    expect(middle.parent_session_id).toBe("gp");
+  });
+});
+
+describe("Investigate UX revision — TOPOLOGY facet override semantics", () => {
+  // The facet checkboxes drive the listing scope:
+  //   - default: parents-with-children + lone (pure children hidden)
+  //   - "Has sub-agents" alone: same as default (visual no-op)
+  //   - "Is sub-agent" alone: children-only override
+  //   - both: union (existing OR composition stays)
+  it("default urlState carries no facet override", () => {
+    const parsed = parseUrlState(new URLSearchParams());
+    expect(parsed.isSubAgent).toBe(false);
+    expect(parsed.hasSubAgents).toBe(false);
+  });
+
+  it("only is_sub_agent set means override-to-children-only", () => {
+    const parsed = parseUrlState(new URLSearchParams("is_sub_agent=true"));
+    expect(parsed.isSubAgent).toBe(true);
+    expect(parsed.hasSubAgents).toBe(false);
+  });
+
+  it("only has_sub_agents set means stay-at-default-scope", () => {
+    const parsed = parseUrlState(new URLSearchParams("has_sub_agents=true"));
+    expect(parsed.hasSubAgents).toBe(true);
+    expect(parsed.isSubAgent).toBe(false);
+  });
+
+  it("both set composes via the existing OR semantics on the server", () => {
+    const parsed = parseUrlState(
+      new URLSearchParams("is_sub_agent=true&has_sub_agents=true"),
+    );
+    expect(parsed.isSubAgent).toBe(true);
+    expect(parsed.hasSubAgents).toBe(true);
+  });
+
+  it("CLEAR_ALL_FILTERS_PATCH zeros both facet flags", () => {
+    expect(CLEAR_ALL_FILTERS_PATCH.isSubAgent).toBe(false);
+    expect(CLEAR_ALL_FILTERS_PATCH.hasSubAgents).toBe(false);
   });
 });

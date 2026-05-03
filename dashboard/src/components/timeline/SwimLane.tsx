@@ -88,6 +88,16 @@ interface SwimLaneProps {
    * still mount the component without a navigation handler.
    */
   onScrollToAgent?: (agentId: string) => void;
+  /**
+   * D126 UX revision 2026-05-03 — row topology, drives the
+   * ``data-topology`` attribute on the row container. ``"child"``
+   * activates the indent + bg-tint styling defined in globals.css
+   * via the ``[data-topology="child"]`` selector. Defaults to
+   * ``"root"`` for backward compatibility on callers that don't
+   * pass it (legacy swimlanes mounted before the β-grouping
+   * shipped).
+   */
+  topology?: "root" | "child";
 }
 
 function SwimLaneComponent({
@@ -108,6 +118,7 @@ function SwimLaneComponent({
   sessionVersions,
   matchingSessionIds = null,
   onScrollToAgent,
+  topology = "root",
 }: SwimLaneProps) {
   // Live count = sessions that are currently active OR idle. The
   // server-side `activeCount` prop only counts state="active", but
@@ -219,6 +230,7 @@ function SwimLaneComponent({
     <div
       data-agent-id={flavor}
       data-rel-mode={relationship.mode}
+      data-topology={topology}
       style={{ borderBottom: "1px solid var(--border-subtle)" }}
     >
       {/* Collapsed flavor header — 48px */}
@@ -230,9 +242,12 @@ function SwimLaneComponent({
       >
         {/* Left panel — sticky so it stays pinned during horizontal scroll.
             Width tracks the resizable leftPanelWidth state owned by
-            Timeline.tsx. */}
+            Timeline.tsx. The ``swimlane-row-label`` class is the
+            indent target for ``[data-topology="child"]`` rows; the
+            CSS rule lives in globals.css so the same class works
+            for swimlane + Investigate sub-rows. */}
         <div
-          className="flex h-full items-center gap-2 px-3"
+          className="swimlane-row-label flex h-full items-center gap-2 px-3"
           style={{
             width: leftPanelWidth,
             flexShrink: 0,

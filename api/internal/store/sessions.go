@@ -81,6 +81,18 @@ type SessionsParams struct {
 	// IsSubAgent (when true) restricts to child sessions — those
 	// whose own parent_session_id is non-null. Cheap WHERE clause.
 	IsSubAgent bool
+	// IncludePureChildren (D126 UX revision 2026-05-03). When nil
+	// the listing returns every session matching the other filters
+	// (existing behaviour preserved for any client that doesn't
+	// know about the flag). When set to false, excludes pure
+	// children — sessions whose parent_session_id is non-null AND
+	// no other session references them as parent — leaving
+	// parents-with-children + lone sessions in the response. The
+	// Investigate page sends false as its default scope; the
+	// "Is sub-agent" facet override switches to IsSubAgent=true
+	// instead. Pointer-to-bool so omit / explicit-true / explicit-
+	// false are three distinct states on the wire.
+	IncludePureChildren *bool
 	// ContextFilters carries the generic scalar-key filters on
 	// sessions.context JSONB (user, os, arch, hostname, process_name,
 	// node_version, python_version, git_branch, git_commit, git_repo,
@@ -260,6 +272,17 @@ type SessionListItem struct {
 	// columns and TOPOLOGY / ROLE facets read these directly.
 	ParentSessionID *string `json:"parent_session_id,omitempty"`
 	AgentRole       *string `json:"agent_role,omitempty"`
+	// ChildCount (D126 UX revision 2026-05-03) — derived count of
+	// sessions whose parent_session_id equals this row's
+	// session_id. Always present on the wire (zero on lone agents
+	// and on pure children that have no descendants of their
+	// own). Surfaced server-side via a correlated subquery on the
+	// listing query so the Investigate parent-row pill (``→ N``)
+	// renders without a per-row follow-up fetch — same pattern as
+	// ErrorTypes / PolicyEventTypes / MCPErrorTypes above. Hits
+	// the existing ``sessions_parent_session_id_idx`` partial
+	// index.
+	ChildCount int `json:"child_count"`
 }
 
 // SessionsResponse is the paginated response for GET /v1/sessions.
@@ -478,6 +501,26 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 				"WHERE child.parent_session_id = s.session_id)")
 	}
 
+	// D126 UX revision 2026-05-03 — IncludePureChildren=false
+	// excludes pure children (rows whose parent_session_id is set
+	// AND who themselves have no descendants). Rendered in SQL as
+	// the negation of the pure-child predicate so a row passes
+	// when EITHER it's a root (parent_session_id IS NULL) OR it
+	// has at least one descendant. AND-composes cleanly with the
+	// IsSubAgent / HasSubAgents branches above; the Investigate
+	// page's default scope sends IncludePureChildren=false alone,
+	// while the "Is sub-agent" facet override sends
+	// IsSubAgent=true (omitting IncludePureChildren) so the two
+	// don't fight. Pointer-to-bool gates omit-vs-explicit; nil
+	// preserves the existing API contract for any caller that
+	// doesn't know about the flag.
+	if params.IncludePureChildren != nil && !*params.IncludePureChildren {
+		conditions = append(conditions,
+			"(s.parent_session_id IS NULL OR "+
+				"EXISTS (SELECT 1 FROM sessions child "+
+				"WHERE child.parent_session_id = s.session_id))")
+	}
+
 	// MCP-server filter (Phase 5). Multi-value OR-within: a session
 	// passes when its context.mcp_servers list contains at least one
 	// entry whose ``name`` matches a supplied value. The aggregation
@@ -667,7 +710,8 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 				ARRAY[]::text[]
 			) AS mcp_error_types,
 			s.parent_session_id::text,
-			s.agent_role
+			s.agent_role,
+			(SELECT COUNT(*) FROM sessions c WHERE c.parent_session_id = s.session_id) AS child_count
 		FROM sessions s
 		%s
 		ORDER BY %s %s
@@ -711,6 +755,7 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 			&item.MCPErrorTypes,
 			&item.ParentSessionID,
 			&item.AgentRole,
+			&item.ChildCount,
 		); err != nil {
 			return nil, fmt.Errorf("scan session: %w", err)
 		}

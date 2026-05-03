@@ -157,6 +157,40 @@ interception is a prerequisite that does not exist yet).
   under Git Discipline. CLAUDE.md Rules 25 + 26 (locked
   dimension / metric lists) extended with `agent_role` and the
   four sub-agent-aware metrics.
+- **Swimlane β-grouping (D126 UX revision 2026-05-03):** child
+  rows now group immediately under their parent in the Fleet
+  swimlane sort, indented 28 px on the left panel and tinted via
+  the new `--swimlane-row-child-bg` CSS variable (declared on
+  both `.dark` and `.light` themes per Rule 15). The
+  ``data-topology="child"`` attribute on the row container drives
+  both the indent and a subtle 2 px `--accent` left-border accent
+  via globals.css. The connector overlay (D126 § 4.3),
+  relationship pills, and L8 red dot all continue to render
+  unchanged. Lone agents and parents whose parent isn't visible
+  keep their natural activity-bucket position.
+- **Investigate parents-only default (D126 UX revision
+  2026-05-03):** the Investigate listing's default scope hides
+  pure children (sessions whose `parent_session_id` is set AND
+  that themselves have no descendants), leaving
+  parents-with-children + lone sessions in the table. Parent
+  rows render a `→ N` pill in the PARENT column and expand
+  inline downward on click — each child sub-row carries the full
+  column set (SESSION / AGENT / ROLE / MODEL / STARTED / LAST
+  SEEN / DURATION / TOKENS / STATE) at one indent level with
+  the same `data-topology="child"` styling. Click on a child
+  sub-row rebinds the SessionDrawer to the child's session via
+  the existing `onSwitchSession` path. The TOPOLOGY facet's
+  "Is sub-agent" checkbox remains the explicit override that
+  flips the listing scope to children-only for cross-tree
+  search; "Has sub-agents" is the implicit default state.
+- **API extensions (D126 UX revision 2026-05-03):** every
+  `GET /v1/sessions` row now carries a derived `child_count`
+  integer field (zero on lone agents and pure children); a new
+  `include_pure_children` boolean filter excludes pure children
+  when explicitly false (default scope of the Investigate page),
+  preserves existing behaviour when omitted. Both surfaced via
+  the existing `sessions_parent_session_id_idx` partial index.
+  See ARCHITECTURE.md "Sub-agent sessions" section.
 
 ### Decisions
 

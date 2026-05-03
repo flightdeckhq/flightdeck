@@ -1003,6 +1003,27 @@ sessions; both are null on root sessions. The reverse (role set,
 parent unset) is a sensor bug — the sensor emits both together or
 neither (D126).
 
+`GET /v1/sessions` listing rows carry a derived `child_count int`
+field — the count of sessions whose `parent_session_id` equals
+this row's `session_id`. Always present; zero on lone agents and
+on pure children (sub-agents that have no descendants of their
+own). Populated server-side via a correlated subquery on the
+listing query so the dashboard's parent-row pill (`→ N`)
+renders without a per-row follow-up fetch. Hits the
+`sessions_parent_session_id_idx` partial index.
+
+`GET /v1/sessions` accepts an `include_pure_children` boolean
+filter (D126 UX revision). When omitted or `true` the listing
+returns every session matching the other filters (existing
+behaviour). When `false` the listing excludes pure children
+(rows whose `parent_session_id IS NOT NULL` AND no other
+session references this row as parent), returning only
+parents-with-children + lone sessions. The Investigate page
+sends `include_pure_children=false` as its default scope so
+deep sub-agent trees don't drown root activity in the table; the
+"Is sub-agent" facet flips to `is_sub_agent=true` to surface
+children-only.
+
 The `parent_session_id` FK is enforced. Forward references (a child
 `session_start` arriving before its parent is in the DB) are handled
 by a parent-stub variant of the worker's lazy-create path that
@@ -1665,7 +1686,7 @@ authoritative parameter-level reference.
 | Method | Path | Purpose |
 |---|---|---|
 | `GET` | `/v1/fleet` | Fleet summary: agents with state rollup, total sessions, total tokens, context_facets |
-| `GET` | `/v1/sessions` | Paginated session listing; filters: `agent_id`, `flavor`, `framework`, `state`, `error_type`, `from`, `to`, `q`; returns `error_types[]` per session |
+| `GET` | `/v1/sessions` | Paginated session listing; filters: `agent_id`, `flavor`, `framework`, `state`, `error_type`, `from`, `to`, `q`, `parent_session_id`, `is_sub_agent`, `has_sub_agents`, `agent_role[]`, `include_pure_children`; returns `error_types[]` and `child_count` per session |
 | `GET` | `/v1/sessions/:id` | Session detail: metadata + chronological events + attachments array |
 | `GET` | `/v1/agents/:id` | Single agent's identity record (backs Investigate AGENT facet identity-cache resolver) |
 | `GET` | `/v1/events` | Bulk events query: `from` (required), `to`, `flavor`, `event_type`, `session_id`, `limit` (max 2000), `offset` |

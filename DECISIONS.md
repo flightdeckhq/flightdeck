@@ -5166,3 +5166,105 @@ MCP wire payload + content overflow) — the cross-agent message
 capture reuses the same overflow path. D125 (Provider enum) —
 extended with ``CREWAI`` and ``LANGGRAPH`` members.
 
+### UX revision 2026-05-03 — swimlane β-grouping + Investigate parents-only default
+
+**Decision.** The original swimlane and Investigate UX (sub-agent
+rows render in their natural activity-bucket position alongside
+parents and lone sessions, the swimlane does NOT reflow into a
+tree view) is superseded by the following lock during the step
+10 / 11 transition:
+
+**Swimlane (option β — children grouped under parent).** The
+activity-bucket sort applies at the parent level only. Within a
+parent group, child rows appear immediately below their parent
+in ``started_at`` ASC order. Child rows carry
+``data-topology="child"`` on the row container; this attribute
+selector activates a left-panel indent (``padding-left: 28px``,
+matching the natural single-level nesting visual) plus a subtle
+background tint via the new CSS variable
+``--swimlane-row-child-bg`` declared in
+``dashboard/src/styles/themes.css`` under both
+``[data-theme="neon-dark"]`` and ``[data-theme="clean-light"]``
+blocks (low contrast — ~5–8% delta from the parent row's
+background; lighter on dark theme, darker on light). The
+relationship pill (``→ N`` on parents, ``↳ <parent_name>`` on
+children) stays in place — indent + bg tint are additive, not a
+replacement. The connector overlay (D126 § 4.3) continues to
+work unchanged. The vertical-line variant ("thin line from
+parent's left edge down through its children reinforcing the
+visual group") is held in reserve; v1 ships indent + bg only and
+re-evaluates if the manual Chrome pass surfaces a need.
+
+**Investigate (option γ — parents-only default + inline
+expansion).** The default listing scope becomes
+"parents-with-children + lone sessions". Pure children
+(sessions with ``parent_session_id`` set AND no descendants of
+their own) are HIDDEN from the default table, surfaced only
+when the user explicitly requests them via the "Is sub-agent"
+TOPOLOGY facet (which flips the listing scope to
+children-only). Parent rows gain a ``→ N`` pill (the existing
+``RelationshipPill`` component, ``mode="parent"``) adjacent to
+the existing ROLE / PARENT columns. Click on a parent row:
+(1) opens the SessionDrawer for the parent session (existing
+behaviour preserved); (2) the row expands inline DOWN to show
+the parent's children as sub-rows. Each child sub-row carries
+the full column set (SESSION, AGENT, ROLE, MODEL, STARTED, LAST
+SEEN, DURATION, TOKENS, STATE) — same as a top-level row, just
+indented with the same ``data-topology="child"`` styling
+parallel to the swimlane. Click on a child sub-row → drawer
+rebinds to the child's session via the existing
+``onSwitchSession`` path. Lone sessions render exactly as they
+do today: no pill, no expansion, no indent.
+
+**TOPOLOGY facet behaviour adjusts.** "Has sub-agents" is the
+implicit default state of the table (parents-with-children +
+lone) — selecting the checkbox is a no-op visually but stays
+visible for explicitness. "Is sub-agent" is the only facet
+override that meaningfully changes the listing: it flips the
+scope to children-only (useful for searching across the full
+set of sub-agents). The empty state (both unselected) renders
+the new default scope.
+
+**API extensions.** The ``GET /v1/sessions`` endpoint gains:
+
+- A boolean ``include_pure_children`` query param. Default
+  omitted (return all sessions matching the other filters,
+  preserves existing API contract). When ``false``, excludes
+  pure children — returns only parents-with-children + lone.
+  Server-side via the existing
+  ``sessions_parent_session_id_idx`` partial index. Required
+  rather than client-side because fleets routinely carry
+  thousands of pure children that would ship over the wire
+  unnecessarily.
+- A derived ``child_count`` integer field on every listing row.
+  Server-side correlated subquery
+  (``(SELECT COUNT(*) FROM sessions c WHERE c.parent_session_id
+  = s.session_id) AS child_count``). Always present; zero on
+  lone agents and pure children. The Investigate parent-row
+  pill reads this directly so ``→ N`` renders without a
+  follow-up fetch. Hits the same partial index.
+
+**Reasoning.** The original natural-position layout works on
+fleets with small flat structures but degrades fast as
+multi-agent frameworks (CrewAI Crews, LangGraph branching
+graphs, Claude Code recursive Tasks) make depth-2+ trees
+common. A flat list with 8 children scattered across 4 parents
+makes "what spawned what" a manual scan exercise. β-grouping +
+indent + bg tint reads as a tree visually without losing the
+activity-bucket sort that organises the parent layer. On
+Investigate, pure children drowning the table is the same
+problem applied to a wider surface — the parents-only default
+keeps the table's information density correct, with the
+"Is sub-agent" override and the inline expansion covering the
+"I want to find a specific child" workflow.
+
+**Touch list.** Single PR landing the dashboard surfaces, the
+two API extensions, ARCHITECTURE.md updates first per Rule 33,
+this DECISIONS.md subsection, and the corresponding test
+extensions (unit + E2E both themes per Rule 40c.3). Code
+locations follow the original D126 manifest plus
+``dashboard/src/lib/fleet-ordering.ts`` (extended with
+``groupChildrenUnderParents``) and minimal additions to
+``dashboard/src/styles/themes.css`` (Rule 15 approval granted
+inline with this revision).
+

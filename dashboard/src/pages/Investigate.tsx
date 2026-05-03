@@ -1166,6 +1166,25 @@ export function Investigate() {
   // row click defaults back to Timeline.
   const [drawerInitialTab, setDrawerInitialTab] = useState<DrawerTab | undefined>(undefined);
 
+  // D126 UX revision 2026-05-03 — inline parent-row expansion. The
+  // default scope hides pure children from the table; clicking a
+  // parent row opens the drawer (existing behaviour) AND toggles a
+  // collapsible block of child sub-rows beneath the parent. Children
+  // are fetched on first expand via the existing
+  // ``parent_session_id`` filter and cached per parent so a re-
+  // expand reads from memory. The cache is invalidated on every
+  // primary fetch (URL state change / refresh) so a child landing
+  // mid-session shows up next time the user expands.
+  const [expandedParents, setExpandedParents] = useState<Set<string>>(
+    () => new Set<string>(),
+  );
+  const [parentChildren, setParentChildren] = useState<
+    Map<string, SessionListItem[]>
+  >(() => new Map());
+  const [loadingChildren, setLoadingChildren] = useState<Set<string>>(
+    () => new Set<string>(),
+  );
+
   // Abort controller for in-flight requests
   const abortRef = useRef<AbortController>();
 
@@ -1215,6 +1234,18 @@ export function Investigate() {
         is_sub_agent: state.isSubAgent || undefined,
         has_sub_agents: state.hasSubAgents || undefined,
         parent_session_id: state.parentSessionId || undefined,
+        // D126 UX revision 2026-05-03 — default scope hides pure
+        // children. The "Is sub-agent" facet override (state.isSubAgent
+        // = true) flips to children-only via the existing
+        // ``is_sub_agent`` server filter; in that mode we DON'T send
+        // include_pure_children=false because the override is the
+        // explicit "show children" intent. Otherwise default to
+        // false so the table reads as "parents-with-children + lone
+        // sessions". A user-set ``parent_session_id`` (drawer drill-
+        // through into a single parent's children) also opts out so
+        // every child of the targeted parent is visible.
+        include_pure_children:
+          state.isSubAgent || state.parentSessionId ? undefined : false,
         sort: state.sort,
         order: state.order,
         limit: state.perPage,
@@ -1309,6 +1340,17 @@ export function Investigate() {
             )
           : null,
       };
+      // D126 UX revision 2026-05-03 — under the new default scope
+      // (``include_pure_children=false``) the main ``sessions`` list
+      // omits every pure child, so the ROLE facet computed from
+      // ``sessions`` would collapse to empty. The role facet is
+      // intentionally only meaningful once the user clicks the "Is
+      // sub-agent" override — at that point the listing flips to
+      // children-only and roles populate naturally. We therefore do
+      // NOT spin up a separate aux fetch on default scope; an empty
+      // ROLE facet is the correct signal, and the aux-fetch
+      // reduction also drops one round-trip per Investigate mount
+      // back to the baseline cost.
 
       try {
         const resp = await fetchSessions(baseParams, controller.signal);
@@ -1359,6 +1401,17 @@ export function Investigate() {
     return () => abortRef.current?.abort();
   }, [urlState, doFetch]);
 
+  // D126 UX revision 2026-05-03 — clear the per-parent children
+  // cache whenever the URL state changes. The visible parent list
+  // refreshes; a stale cached child set could render a child whose
+  // parent now sits outside the page or whose own state has moved
+  // on. Cheap to refetch (lazy on next expand) so eviction is safer
+  // than reuse.
+  useEffect(() => {
+    setExpandedParents(new Set());
+    setParentChildren(new Map());
+  }, [urlState]);
+
   // URL-param -> drawer state sync. Fires when an external navigation
   // (global search click, shared link, browser history) changes the
   // ``session`` param out from under us. Local drawer state stays
@@ -1375,6 +1428,73 @@ export function Investigate() {
     // the close handler further down.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [urlState.session]);
+
+  // D126 UX revision 2026-05-03 — fetch a parent's children on
+  // demand. Cached in ``parentChildren`` once resolved so a re-
+  // expand reads from memory without a network round trip; the
+  // cache is per-parent and survives across URL-state changes
+  // because the parent_session_id is stable. Bulk re-fetch isn't
+  // needed; ``doFetch`` clears the cache on completion so a child
+  // added mid-session shows up next time the user expands.
+  const fetchChildrenForParent = useCallback(
+    async (parentSessionId: string) => {
+      if (parentChildren.has(parentSessionId)) return;
+      if (loadingChildren.has(parentSessionId)) return;
+      setLoadingChildren((prev) => {
+        const next = new Set(prev);
+        next.add(parentSessionId);
+        return next;
+      });
+      try {
+        // Wide ``from`` so children whose session_start lands
+        // outside the current default 7-day window still surface
+        // (the parent may have spawned a child far back, paused
+        // for a week, then re-attached). limit=100 covers the
+        // realistic max children-per-parent on a single fleet.
+        const resp = await fetchSessions({
+          parent_session_id: parentSessionId,
+          from: "2020-01-01T00:00:00Z",
+          limit: 100,
+          // Children only — bypass the default scope's pure-child
+          // exclusion since we explicitly want the children.
+          include_pure_children: true,
+        });
+        setParentChildren((prev) => {
+          const next = new Map(prev);
+          next.set(parentSessionId, resp.sessions);
+          return next;
+        });
+      } catch {
+        // Silent failure leaves the parent in loading state on
+        // re-toggle the user can retry.
+      } finally {
+        setLoadingChildren((prev) => {
+          const next = new Set(prev);
+          next.delete(parentSessionId);
+          return next;
+        });
+      }
+    },
+    [parentChildren, loadingChildren],
+  );
+
+  const toggleParentExpansion = useCallback(
+    (sessionId: string) => {
+      setExpandedParents((prev) => {
+        const next = new Set(prev);
+        if (next.has(sessionId)) {
+          next.delete(sessionId);
+        } else {
+          next.add(sessionId);
+          // Fire the fetch on transition-to-expanded; no-op when
+          // already cached.
+          void fetchChildrenForParent(sessionId);
+        }
+        return next;
+      });
+    },
+    [fetchChildrenForParent],
+  );
 
   // "Last updated" label tick
   useEffect(() => {
@@ -2134,12 +2254,41 @@ export function Investigate() {
               </thead>
               <tbody>
                 {loading && sessions.length === 0 && <SkeletonRows />}
-                {sessions.map((s) => (
+                {sessions.flatMap((s) => {
+                  const isParent = (s.child_count ?? 0) > 0;
+                  const isExpanded = expandedParents.has(s.session_id);
+                  const childRows: SessionListItem[] = isExpanded
+                    ? parentChildren.get(s.session_id) ?? []
+                    : [];
+                  const renderTr = (
+                    s: SessionListItem,
+                    topology: "root" | "child",
+                  ) => (
                   <tr
                     key={s.session_id}
+                    data-topology={topology}
+                    data-testid={
+                      topology === "child"
+                        ? `investigate-child-row-${s.session_id}`
+                        : undefined
+                    }
                     onClick={() => {
                       setDrawerInitialTab(undefined);
                       setSelectedSessionId(s.session_id);
+                      // D126 UX revision 2026-05-03 — clicking a
+                      // parent row also toggles the inline child
+                      // expansion. Lone sessions (child_count=0)
+                      // skip the toggle so their click only opens
+                      // the drawer. Child sub-rows fall through to
+                      // setSelectedSessionId only — the drawer
+                      // rebinds via the ``onSwitchSession`` path
+                      // below.
+                      if (
+                        topology === "root" &&
+                        (s.child_count ?? 0) > 0
+                      ) {
+                        toggleParentExpansion(s.session_id);
+                      }
                     }}
                     className="cursor-pointer transition-colors duration-150"
                     style={{
@@ -2253,6 +2402,34 @@ export function Investigate() {
                         >
                           {s.parent_session_id.slice(0, 8)}
                         </button>
+                      ) : (s.child_count ?? 0) > 0 ? (
+                        // D126 UX revision 2026-05-03 — parent-row
+                        // pill rendering ``→ N``. Same glyph and
+                        // semantics as RelationshipPill mode="parent"
+                        // on Fleet AgentTable / SwimLane; rendered
+                        // inline here to avoid the agent-id-keyed
+                        // ``onClick`` flow the shared component
+                        // expects (Investigate is session-keyed). The
+                        // pill is decorative — clicking the row
+                        // (parent or pill) toggles the inline
+                        // expansion via the row-level onClick handler.
+                        <span
+                          data-testid={`investigate-row-parent-pill-${s.session_id}`}
+                          data-mode="parent"
+                          style={{
+                            fontFamily: "var(--font-mono)",
+                            fontSize: 11,
+                            padding: "2px 6px",
+                            borderRadius: 3,
+                            background:
+                              "color-mix(in srgb, var(--accent) 12%, transparent)",
+                            color: "var(--accent)",
+                            display: "inline-block",
+                          }}
+                          title={`Click row to expand ${s.child_count} sub-agent${s.child_count === 1 ? "" : "s"}`}
+                        >
+                          → {s.child_count}
+                        </span>
                       ) : (
                         <span style={{ color: "var(--text-muted)" }}>—</span>
                       )}
@@ -2481,7 +2658,44 @@ export function Investigate() {
                       </span>
                     </td>
                   </tr>
-                ))}
+                  );
+                  const out: React.ReactNode[] = [renderTr(s, "root")];
+                  for (const c of childRows) {
+                    out.push(renderTr(c, "child"));
+                  }
+                  // Loading-state placeholder for in-flight child
+                  // fetches — the cache populates async after
+                  // ``toggleParentExpansion``; without this the
+                  // expand toggles silently with nothing visible
+                  // beneath until the response lands.
+                  if (
+                    isParent &&
+                    isExpanded &&
+                    childRows.length === 0 &&
+                    loadingChildren.has(s.session_id)
+                  ) {
+                    out.push(
+                      <tr
+                        key={`${s.session_id}-loading`}
+                        data-testid={`investigate-children-loading-${s.session_id}`}
+                      >
+                        <td
+                          colSpan={14}
+                          style={{
+                            padding: "8px 12px",
+                            paddingLeft: 28,
+                            fontSize: 12,
+                            color: "var(--text-muted)",
+                            background: "var(--swimlane-row-child-bg)",
+                          }}
+                        >
+                          Loading children…
+                        </td>
+                      </tr>,
+                    );
+                  }
+                  return out;
+                })}
               </tbody>
             </table>
 

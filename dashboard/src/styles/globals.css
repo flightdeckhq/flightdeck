@@ -85,3 +85,39 @@ body {
   background: var(--border);
   border-radius: 2px;
 }
+
+/* D126 UX revision 2026-05-03 — sub-agent row styling. The
+   ``data-topology="child"`` attribute is stamped on swimlane row
+   containers (left panel) and Investigate inline-expansion sub-
+   rows by their parent components; the variable itself lives in
+   themes.css so dark/light values cohabit the rest of the theme
+   palette. Indent value (28px) is the natural single-level
+   nesting indent — wide enough that the relationship pill on
+   children sits clearly under-and-right-of its parent's first
+   column, narrow enough to keep depth-2 trees from running off
+   the panel. The 2px ``--accent``-coloured left border (the
+   "thin vertical line" from D126 § 4.1) lights up the group
+   visually so a parent-and-children block reads as a unit
+   rather than free-floating rows. The Supervisor's spec marked
+   the vertical line optional; the inline-expansion drawer in
+   Investigate needed it for the expansion to read as a drawer
+   distinct from neighbouring lone rows. The same line on
+   swimlane child rows is a no-op cost (the swimlane left panel
+   is already indented) and keeps the two surfaces visually
+   consistent. */
+[data-topology="child"] {
+  background-color: var(--swimlane-row-child-bg);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+[data-topology="child"] .swimlane-row-label,
+[data-topology="child"] .investigate-row-indent-target {
+  padding-left: 28px;
+}
+/* Investigate sub-row first-column indent. The Investigate table
+   stamps ``data-topology="child"`` on the ``<tr>``; the first-
+   column padding-left applies via this descendant selector
+   directly so callers don't need to wrap each TD in an
+   indent-target div. */
+[data-topology="child"] > td:first-child {
+  padding-left: 28px;
+}

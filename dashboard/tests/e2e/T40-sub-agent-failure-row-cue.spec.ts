@@ -17,13 +17,16 @@ test.describe("T40 — Sub-agent failure row cue (L8)", () => {
   test("Investigate row carries the L8 red dot for a sub-agent in lost state", async ({
     page,
   }) => {
-    await page.goto("/investigate");
+    // D126 UX revision 2026-05-03 — Investigate's default scope
+    // hides pure children (parents-with-children + lone only).
+    // The seeded subagent-error session is a pure child (parent
+    // visible, no descendants of its own) so it falls outside the
+    // default. Land on the Investigate page with the
+    // ``is_sub_agent=true`` override on so the children-only scope
+    // surfaces every sub-agent row, including the lost one — which
+    // is the exact use case the override exists for.
+    await page.goto("/investigate?is_sub_agent=true");
     await waitForInvestigateReady(page);
-    // The seeded subagent-error session has parent_session_id set
-    // AND state=lost, which fires the L8 dot inside the State
-    // column. The session_id is deterministic; use the substring
-    // match on the row testid so the locator survives a future
-    // session_id rotation.
     const indicator = page
       .locator('[data-testid^="session-row-sub-agent-lost-indicator-"]')
       .first();

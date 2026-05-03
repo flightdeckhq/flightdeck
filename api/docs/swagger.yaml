@@ -631,6 +631,19 @@ definitions:
         type: string
       capture_enabled:
         type: boolean
+      child_count:
+        description: |-
+          ChildCount (D126 UX revision 2026-05-03) — derived count of
+          sessions whose parent_session_id equals this row's
+          session_id. Always present on the wire (zero on lone agents
+          and on pure children that have no descendants of their
+          own). Surfaced server-side via a correlated subquery on the
+          listing query so the Investigate parent-row pill (``→ N``)
+          renders without a per-row follow-up fetch — same pattern as
+          ErrorTypes / PolicyEventTypes / MCPErrorTypes above. Hits
+          the existing ``sessions_parent_session_id_idx`` partial
+          index.
+        type: integer
       client_type:
         type: string
       context:
@@ -1778,6 +1791,13 @@ paths:
           IS NOT NULL). Backs the Investigate TOPOLOGY facet ''Is sub-agent'' checkbox.'
         in: query
         name: is_sub_agent
+        type: boolean
+      - description: 'D126 UX revision 2026-05-03: when false, exclude pure children
+          (rows whose parent_session_id is set AND that themselves have no descendants),
+          leaving parents-with-children + lone sessions. Default scope of the Investigate
+          page. Omit or set true to preserve the legacy ''all sessions'' behaviour.'
+        in: query
+        name: include_pure_children
         type: boolean
       - description: 'Sort field: started_at, last_seen_at, duration, tokens_used,
           flavor, model, hostname, state (default: started_at). state sort uses severity

@@ -21,7 +21,8 @@ import {
   pickSpawnEvent,
   type SubAgentConnectorSpec,
 } from "./SubAgentConnector";
-import { bucketFor } from "@/lib/fleet-ordering";
+import { bucketFor, groupChildrenUnderParents } from "@/lib/fleet-ordering";
+import { deriveRelationship } from "@/lib/relationship";
 import { eventsCache } from "@/hooks/useSessionEvents";
 
 interface TimelineProps {
@@ -269,8 +270,53 @@ export function Timeline({
         f.sessions.some((s) => matchingSessionIds.has(s.session_id)),
       );
     }
-    return result;
+    // D126 UX revision 2026-05-03 — β-grouping. Group child flavors
+    // immediately under their parent flavor in the visible list.
+    // ``deriveRelationship`` resolves each flavor's
+    // ``parentAgentId`` against the visible fleet; ``groupChildren-
+    // UnderParents`` reorders so each child sits right after its
+    // parent. Within a parent group, children sort by their
+    // earliest session's ``started_at`` ASC (spawn-time order).
+    // Lone flavors and parents whose parent isn't visible keep
+    // their natural activity-bucket position from the upstream
+    // sort owned by Fleet's store.
+    const earliestStartedAt = (f: typeof result[number]): string => {
+      let earliest: string | undefined;
+      for (const s of f.sessions) {
+        if (!earliest || s.started_at < earliest) earliest = s.started_at;
+      }
+      return earliest ?? "";
+    };
+    const parentByFlavor = new Map<string, string | null>();
+    for (const f of result) {
+      const rel = deriveRelationship(f.flavor, f.sessions, result);
+      parentByFlavor.set(
+        f.flavor,
+        rel.mode === "child" ? rel.parentAgentId : null,
+      );
+    }
+    return groupChildrenUnderParents(result, {
+      id: (f) => f.flavor,
+      parentId: (f) => parentByFlavor.get(f.flavor) ?? null,
+      childOrder: (f) => earliestStartedAt(f),
+    });
   }, [flavors, flavorFilter, matchingSessionIds]);
+
+  // D126 UX revision 2026-05-03 — topology lookup keyed by flavor.
+  // Built once per filteredFlavors change so the per-row prop look-
+  // up stays O(1) at render time. ``"child"`` rows light up the
+  // ``[data-topology="child"]`` indent + bg-tint via globals.css.
+  const topologyByFlavor = useMemo(() => {
+    const m = new Map<string, "root" | "child">();
+    const visibleIds = new Set(filteredFlavors.map((f) => f.flavor));
+    for (const f of filteredFlavors) {
+      const rel = deriveRelationship(f.flavor, f.sessions, filteredFlavors);
+      const isChild =
+        rel.mode === "child" && visibleIds.has(rel.parentAgentId);
+      m.set(f.flavor, isChild ? "child" : "root");
+    }
+    return m;
+  }, [filteredFlavors]);
 
   // Floor the scale's right-hand domain to 1-second granularity.
   // The rAF loop above still ticks `now` every 100ms so derived
@@ -750,6 +796,7 @@ export function Timeline({
                 activeFilter={activeFilter}
                 sessionVersions={sessionVersions}
                 matchingSessionIds={matchingSessionIds}
+                topology={topologyByFlavor.get(f.flavor) ?? "root"}
                 onScrollToAgent={(agentId) => {
                   // D126 § 7.fix.A — clicking the relationship pill
                   // jumps to another agent's swimlane row. We

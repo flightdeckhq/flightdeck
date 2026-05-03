@@ -27,11 +27,10 @@ test.describe("T34 — Sub-agent time flow connectors", () => {
     // the swimlane's visible domain. The default 1m window omits
     // them; 15m comfortably covers every D126 fixture.
     await page.getByRole("button", { name: "1h", exact: true }).click();
-    // Let the timeline finish reflowing on the new range before we
-    // try to scroll rows into view. Without this, the scroll target
-    // can shift mid-action and ``scrollIntoViewIfNeeded`` trips its
-    // "stable element" wait under parallel-worker contention.
-    await page.waitForTimeout(500);
+    // bringSwimlaneRowIntoView below internally polls
+    // (maxSteps=80, retrying scrollIntoViewIfNeeded between
+    // scrolls) so it absorbs the timeline's reflow latency
+    // without a fixed wait. No-fixed-timeouts rule.
 
     // Force both endpoints into view: the CrewAI parent and one
     // of its children. The connector overlay's useLayoutEffect
@@ -67,9 +66,8 @@ test.describe("T34 — Sub-agent time flow connectors", () => {
     await page.goto("/");
     await waitForFleetReady(page);
     await page.getByRole("button", { name: "1h", exact: true }).click();
-    // Let the timeline finish reflowing on the new range before we
-    // scroll rows into view (see test 1 for the same wait).
-    await page.waitForTimeout(500);
+    // bringSwimlaneRowIntoView's internal scroll-and-find loop
+    // absorbs the timeline reflow latency (see test 1 for rationale).
     await bringSwimlaneRowIntoView(page, "e2e-test-crewai-parent");
     await bringSwimlaneRowIntoView(page, "e2e-test-crewai-researcher");
 
@@ -94,12 +92,29 @@ test.describe("T34 — Sub-agent time flow connectors", () => {
     await expect(path).toBeAttached();
     await expect(path).toHaveAttribute("data-hover", "false");
     await expect(path).toHaveAttribute("opacity", "0.1");
-    // Hover the path. ``force: true`` because Playwright's hover
-    // safety check fires the same low-opacity heuristic; we
-    // intentionally hover the stroke geometry. The internal
-    // hover state on the SubAgentConnector responds to the
-    // pointer event regardless.
-    await path.hover({ force: true });
+    // Drive the React hover handler directly via the SVG element's
+    // native ``mouseover`` event. Playwright's ``hover()`` aims at
+    // the locator's bounding-box centre, which on a quadratic
+    // Bezier with a slowly-drifting parent end (the time axis
+    // advances ~0.1px per rAF tick) sometimes lands just outside
+    // the stroke geometry — Playwright reports "hovered" but the
+    // SVG element never registered a mouseenter and the React
+    // ``setInternalHover`` setter never fires. Dispatching the
+    // event directly on the resolved element bypasses both the
+    // bounding-box geometry and the rAF drift. The same
+    // ``mouseover`` event React maps to its synthetic
+    // ``onMouseEnter`` handler when bubbling through the SVG
+    // subtree (mouseenter doesn't bubble; mouseover does and
+    // React's syntheticEvent system normalises both).
+    await path.evaluate((el) => {
+      el.dispatchEvent(
+        new MouseEvent("mouseover", {
+          bubbles: true,
+          cancelable: true,
+          view: window,
+        }),
+      );
+    });
     await expect(path).toHaveAttribute("data-hover", "true");
     await expect(path).toHaveAttribute("opacity", "0.5");
   });

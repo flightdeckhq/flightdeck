@@ -108,6 +108,7 @@ var validPolicyEventTypes = map[string]bool{
 // @Param        agent_role query  string  false  "D126: filter by sub-agent role string (repeatable/comma). CrewAI Agent.role, LangGraph node name, Claude Code Task agent_type. Backs the Investigate ROLE facet."
 // @Param        has_sub_agents query bool false "D126: when true, restrict to parent sessions only (those referenced as a parent_session_id by at least one other session). Backs the Investigate TOPOLOGY facet 'Has sub-agents' checkbox."
 // @Param        is_sub_agent query bool false "D126: when true, restrict to child sessions only (parent_session_id IS NOT NULL). Backs the Investigate TOPOLOGY facet 'Is sub-agent' checkbox."
+// @Param        include_pure_children query bool false "D126 UX revision 2026-05-03: when false, exclude pure children (rows whose parent_session_id is set AND that themselves have no descendants), leaving parents-with-children + lone sessions. Default scope of the Investigate page. Omit or set true to preserve the legacy 'all sessions' behaviour."
 // @Param        sort       query  string  false  "Sort field: started_at, last_seen_at, duration, tokens_used, flavor, model, hostname, state (default: started_at). state sort uses severity ordinal active→idle→stale→lost→closed."
 // @Param        order      query  string  false  "Sort order: asc, desc (default: desc)"
 // @Param        limit      query  int     false  "Max results (default 25, max 100)"
@@ -365,6 +366,19 @@ func SessionsListHandler(s store.Querier) http.HandlerFunc {
 		}
 		hasSubAgents := parseBoolQuery(q.Get("has_sub_agents"))
 		isSubAgent := parseBoolQuery(q.Get("is_sub_agent"))
+		// D126 UX revision 2026-05-03 — include_pure_children
+		// gates the new Investigate default scope. Tri-state on
+		// the wire: omit (nil) preserves existing API behaviour;
+		// "true" (explicit) returns all rows matching the other
+		// filters (the existing default rephrased); "false"
+		// excludes pure children. Stored as *bool in the params
+		// struct so the SQL layer can distinguish omit from
+		// explicit-true.
+		var includePureChildren *bool
+		if raw := q.Get("include_pure_children"); raw != "" {
+			b := parseBoolQuery(raw)
+			includePureChildren = &b
+		}
 
 		params := store.SessionsParams{
 			From:    from,
@@ -383,10 +397,11 @@ func SessionsListHandler(s store.Querier) http.HandlerFunc {
 			PolicyEventTypes: policyEventTypes,
 			Frameworks:       frameworks,
 			MCPServers:       mcpServers,
-			ParentSessionID:  parentSessionID,
-			AgentRoles:       agentRoles,
-			HasSubAgents:     hasSubAgents,
-			IsSubAgent:       isSubAgent,
+			ParentSessionID:     parentSessionID,
+			AgentRoles:          agentRoles,
+			HasSubAgents:        hasSubAgents,
+			IsSubAgent:          isSubAgent,
+			IncludePureChildren: includePureChildren,
 			ContextFilters:   contextFilters,
 			Model:            q.Get("model"),
 			Sort:             sort,

@@ -760,6 +760,16 @@ export interface SessionListItem {
    */
   parent_session_id?: string | null;
   agent_role?: string | null;
+  /**
+   * D126 UX revision 2026-05-03 — count of sessions whose
+   * ``parent_session_id`` equals this row's ``session_id``.
+   * Always present (zero on lone agents and on pure children that
+   * have no descendants of their own). Surfaced server-side via a
+   * correlated subquery on the listing query so the Investigate
+   * parent-row pill (``→ N``) renders without a per-row follow-up
+   * fetch — same shape as ``error_types`` / ``mcp_error_types``.
+   */
+  child_count?: number;
 }
 
 /** Paginated response from GET /v1/sessions. */

@@ -22,12 +22,16 @@ test.describe("T33 — Sub-agent Investigate facets", () => {
   });
 
   test("ROLE facet lists distinct seeded roles", async ({ page }) => {
-    await page.goto("/investigate");
+    // D126 UX revision 2026-05-03 — Investigate's default scope
+    // hides pure children. The ROLE facet computed from the
+    // visible result set is empty by default; sub-agent roles
+    // populate it only once the user activates the "Is sub-agent"
+    // override which flips the listing to children-only. Land on
+    // the page with the override already on so the facet has
+    // sub-agents to compute roles from.
+    await page.goto("/investigate?is_sub_agent=true");
     await waitForInvestigateReady(page);
     const sidebar = page.locator('[data-testid="investigate-sidebar"]');
-    // ROLE facet surfaces only when at least one sub-agent role
-    // exists in the visible result set. Seeded fixtures provide
-    // Researcher, Writer, Explore, etc., so the section renders.
     await expect(sidebar).toContainText("ROLE");
     await expect(sidebar).toContainText("Researcher");
     await expect(sidebar).toContainText("Writer");

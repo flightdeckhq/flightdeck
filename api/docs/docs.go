@@ -1419,6 +1419,12 @@ const docTemplate = `{
                         "in": "query"
                     },
                     {
+                        "type": "boolean",
+                        "description": "D126 UX revision 2026-05-03: when false, exclude pure children (rows whose parent_session_id is set AND that themselves have no descendants), leaving parents-with-children + lone sessions. Default scope of the Investigate page. Omit or set true to preserve the legacy 'all sessions' behaviour.",
+                        "name": "include_pure_children",
+                        "in": "query"
+                    },
+                    {
                         "type": "string",
                         "description": "Sort field: started_at, last_seen_at, duration, tokens_used, flavor, model, hostname, state (default: started_at). state sort uses severity ordinal active→idle→stale→lost→closed.",
                         "name": "sort",
@@ -2410,6 +2416,10 @@ const docTemplate = `{
                 },
                 "capture_enabled": {
                     "type": "boolean"
+                },
+                "child_count": {
+                    "description": "ChildCount (D126 UX revision 2026-05-03) — derived count of\nsessions whose parent_session_id equals this row's\nsession_id. Always present on the wire (zero on lone agents\nand on pure children that have no descendants of their\nown). Surfaced server-side via a correlated subquery on the\nlisting query so the Investigate parent-row pill (` + "`" + `` + "`" + `→ N` + "`" + `` + "`" + `)\nrenders without a per-row follow-up fetch — same pattern as\nErrorTypes / PolicyEventTypes / MCPErrorTypes above. Hits\nthe existing ` + "`" + `` + "`" + `sessions_parent_session_id_idx` + "`" + `` + "`" + ` partial\nindex.",
+                    "type": "integer"
                 },
                 "client_type": {
                     "type": "string"

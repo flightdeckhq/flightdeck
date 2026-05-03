@@ -152,3 +152,110 @@ export function seedBucketEntries(
   }
   return map;
 }
+
+/**
+ * D126 UX revision 2026-05-03 — group children under their parent
+ * in a sorted row list.
+ *
+ * Takes a list of rows already sorted by some primary criterion
+ * (typically the activity-bucket sort above) and reorders so that
+ * every row whose ``parentId`` references another visible row in
+ * the list is moved to immediately after its parent. Within a
+ * parent group, children appear in ``childOrder`` ASC order
+ * (typically a started_at timestamp string, since lexicographic
+ * compare on ISO 8601 matches chronological order). Pure children
+ * whose parent is not visible in the list keep their natural
+ * position; lone rows (parentId is undefined / null) keep theirs
+ * too. Mutates nothing; returns a fresh array.
+ *
+ * The β-grouping spec is purely visual — the swimlane's activity
+ * bucket sort still drives the parent layer; this helper just
+ * re-stitches children adjacent to their parent so the operator
+ * reads the relationship without scanning a flat list.
+ */
+export function groupChildrenUnderParents<T>(
+  rows: T[],
+  accessors: {
+    id: (row: T) => string;
+    parentId: (row: T) => string | null | undefined;
+    childOrder: (row: T) => string;
+  },
+): T[] {
+  // Index rows by id so the reorder pass can look up parents in
+  // O(1). Use a plain Map rather than an object so non-stringy ids
+  // (none expected, but defensive) survive the round-trip.
+  const byId = new Map<string, T>();
+  for (const row of rows) byId.set(accessors.id(row), row);
+
+  // Bucket children under their (visible) parent. Order within each
+  // bucket is the input order at first; sorted by childOrder
+  // afterwards so parents whose own children are out of natural
+  // order in the input still emit deterministic children sequences.
+  const children = new Map<string, T[]>();
+  const orphansAndParents: T[] = [];
+  for (const row of rows) {
+    const pid = accessors.parentId(row);
+    if (pid && byId.has(pid)) {
+      const list = children.get(pid) ?? [];
+      list.push(row);
+      children.set(pid, list);
+    } else {
+      // Pure children whose parent isn't in this list keep their
+      // position (no group to attach to). Lone rows ride here too.
+      orphansAndParents.push(row);
+    }
+  }
+
+  // Sort each child bucket by childOrder ASC (ISO 8601 string
+  // compare matches chronological order). Preserves spawn-time
+  // sequence regardless of how the upstream sort handed children
+  // back.
+  for (const [pid, list] of children) {
+    list.sort((a, b) =>
+      accessors.childOrder(a).localeCompare(accessors.childOrder(b)),
+    );
+    children.set(pid, list);
+  }
+
+  // Walk the parent-and-orphan list, splicing each parent's
+  // children — and any grandchildren — immediately after it via a
+  // depth-first descent. Iterative stack to avoid recursion depth
+  // limits on pathological hierarchies, and a visited set to keep
+  // a self-referential row (parentId pointing back at itself) from
+  // looping forever.
+  const result: T[] = [];
+  const visited = new Set<string>();
+  const emit = (row: T) => {
+    const id = accessors.id(row);
+    if (visited.has(id)) return;
+    visited.add(id);
+    result.push(row);
+    const kids = children.get(id);
+    if (kids) {
+      for (const kid of kids) emit(kid);
+    }
+  };
+  for (const row of orphansAndParents) {
+    emit(row);
+  }
+  return result;
+}
+
+/**
+ * Topology classification used by SwimLane / Investigate row
+ * styling (D126 UX revision). ``root`` covers both lone agents
+ * and parents-with-children; ``child`` covers any row whose
+ * ``parentId`` references another visible row. Callers stamp
+ * ``data-topology={topology}`` on the row container so a single
+ * CSS rule in globals.css handles both surfaces.
+ */
+export type RowTopology = "root" | "child";
+
+export function topologyFor<T>(
+  row: T,
+  visibleIds: Set<string>,
+  parentId: (row: T) => string | null | undefined,
+): RowTopology {
+  const pid = parentId(row);
+  return pid && visibleIds.has(pid) ? "child" : "root";
+}

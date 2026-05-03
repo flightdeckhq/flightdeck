@@ -327,6 +327,16 @@ export interface SessionsParams {
   agent_role?: string[];
   has_sub_agents?: boolean;
   is_sub_agent?: boolean;
+  /**
+   * D126 UX revision 2026-05-03 — when explicitly false, excludes
+   * pure children (sessions whose ``parent_session_id`` is set
+   * AND that themselves have no descendants), leaving
+   * parents-with-children + lone sessions in the response. The
+   * Investigate page sets this to false as its default scope.
+   * Omit (undefined) preserves the legacy "all sessions" behaviour
+   * — the param is tri-state on the wire (omit / true / false).
+   */
+  include_pure_children?: boolean;
   model?: string;
   sort?: string;
   order?: string;
@@ -388,6 +398,12 @@ export async function fetchSessions(params: SessionsParams, signal?: AbortSignal
   }
   if (params.has_sub_agents) sp.set("has_sub_agents", "true");
   if (params.is_sub_agent) sp.set("is_sub_agent", "true");
+  if (params.include_pure_children !== undefined) {
+    sp.set(
+      "include_pure_children",
+      params.include_pure_children ? "true" : "false",
+    );
+  }
   if (params.model) sp.set("model", params.model);
   if (params.sort) sp.set("sort", params.sort);
   if (params.order) sp.set("order", params.order);

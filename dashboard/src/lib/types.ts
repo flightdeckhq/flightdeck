@@ -515,10 +515,28 @@ export interface AnalyticsParams {
   filter_has_sub_agents?: "true" | "false";
 }
 
-/** A single time-series data point. */
+/**
+ * D126 § 6.4 — one segment of a two-dim DataPoint. ``key`` is the
+ * secondary-axis bucket value (e.g. an ``agent_role`` string when
+ * the chart's primary axis is ``parent_session_id``); ``value`` is
+ * the metric aggregate for that primary × secondary × time-bucket
+ * triple. The sum of every Breakdown.value within a single
+ * DataPoint equals the DataPoint.value (the row total), so a chart
+ * can render either the stacked breakdown or a flat-Value line off
+ * the same payload without re-summing client-side.
+ */
+export interface BreakdownBucket {
+  key: string;
+  value: number;
+}
+
+/** A single time-series data point. ``breakdown`` is populated only
+ *  for two-dim ``group_by`` queries (D126 § 6.4); single-dim queries
+ *  leave it undefined to preserve the pre-6.4 wire shape exactly. */
 export interface DataPoint {
   date: string;
   value: number;
+  breakdown?: BreakdownBucket[];
 }
 
 /** One dimension series in the analytics response. */

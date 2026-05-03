@@ -445,12 +445,27 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 		args = append(args, params.AgentRoles)
 		argIdx++
 	}
-	if params.IsSubAgent {
+	// D126 TOPOLOGY filters. Single flag → AND'd into the WHERE
+	// clause as expected. Both flags set simultaneously → OR'd
+	// together (D126 § 7.fix.F: "Both selectable simultaneously
+	// (the OR of the two)"). The OR composition is the union of
+	// "is sub-agent" and "has sub-agents", which renders as "any
+	// sub-agent relationship" — what an operator scanning the
+	// whole sub-agent graph wants. AND'ing both would only match
+	// depth-2 nested sub-agents (children that themselves spawn
+	// children) which is a rare niche, and would also be the
+	// surprising default given the dashboard checkbox UX.
+	switch {
+	case params.IsSubAgent && params.HasSubAgents:
+		conditions = append(conditions,
+			"(s.parent_session_id IS NOT NULL OR "+
+				"EXISTS (SELECT 1 FROM sessions child "+
+				"WHERE child.parent_session_id = s.session_id))")
+	case params.IsSubAgent:
 		// child sessions only — non-null parent_session_id. Hits the
 		// partial index ``sessions_parent_session_id_idx`` directly.
 		conditions = append(conditions, "s.parent_session_id IS NOT NULL")
-	}
-	if params.HasSubAgents {
+	case params.HasSubAgents:
 		// parent sessions only — referenced as a parent_session_id by
 		// at least one other session. EXISTS over the same partial
 		// index. Operator note: at the data volumes the index covers

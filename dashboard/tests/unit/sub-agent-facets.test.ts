@@ -52,11 +52,18 @@ describe("computeFacets -- D126 sub-agent facets", () => {
     expect(map).toEqual({ Researcher: 2, Writer: 1 });
   });
 
-  it("hides the TOPOLOGY facet on root-only result sets", () => {
+  it("renders the TOPOLOGY facet with count=0 on root-only result sets", () => {
+    // D126 § 7.fix.F — TOPOLOGY facet is always visible so the
+    // user can toggle "Has sub-agents" to widen the search even
+    // when the current visible set has no sub-agents. Hiding it
+    // would be a dead-end UX (the user would have nothing to
+    // click). The is_sub_agent count is 0 in this case.
     const sessions = [mk("a", "x"), mk("b", "y")];
-    expect(
-      computeFacets(sessions).find((g) => g.key === "topology"),
-    ).toBeUndefined();
+    const topo = computeFacets(sessions).find((g) => g.key === "topology");
+    expect(topo).toBeDefined();
+    const map = Object.fromEntries(topo!.values.map((v) => [v.value, v.count]));
+    expect(map.is_sub_agent).toBe(0);
+    expect(map.has_sub_agents).toBe(0);
   });
 
   it("emits the TOPOLOGY facet with two boolean values when sub-agents are visible", () => {

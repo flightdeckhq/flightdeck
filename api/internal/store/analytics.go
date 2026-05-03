@@ -502,12 +502,22 @@ func (s *Store) QueryAnalytics(ctx context.Context, params AnalyticsParams) (*An
 		// that does bind requires re-introducing the increment in
 		// the same edit.
 	}
-	if params.FilterIsSubAgent {
+	// D126 TOPOLOGY composition. When both filters are set, OR them
+	// (D126 § 7.fix.F — "(the OR of the two)"). Single-flag paths
+	// preserved exactly. See sessions.go for the same logic on the
+	// list endpoint.
+	switch {
+	case params.FilterIsSubAgent && params.FilterHasSubAgents:
+		filterSQL += fmt.Sprintf(
+			" AND (%s.parent_session_id IS NOT NULL OR "+
+				"EXISTS (SELECT 1 FROM sessions child "+
+				"WHERE child.parent_session_id = %s.session_id))",
+			subagentAlias, subagentAlias)
+	case params.FilterIsSubAgent:
 		// Hits the partial index sessions_parent_session_id_idx.
 		filterSQL += fmt.Sprintf(
 			" AND %s.parent_session_id IS NOT NULL", subagentAlias)
-	}
-	if params.FilterHasSubAgents {
+	case params.FilterHasSubAgents:
 		filterSQL += fmt.Sprintf(
 			" AND EXISTS (SELECT 1 FROM sessions child "+
 				"WHERE child.parent_session_id = %s.session_id)",
@@ -845,10 +855,16 @@ func (s *Store) querySubagentAnalytics(
 		// No argIdx++ here — see comment in QueryAnalytics' main
 		// dispatch path for the same chain.
 	}
-	if params.FilterIsSubAgent {
+	// D126 TOPOLOGY composition — same OR-when-both rule as the
+	// standard analytics + sessions list paths.
+	switch {
+	case params.FilterIsSubAgent && params.FilterHasSubAgents:
+		filterSQL += " AND (s.parent_session_id IS NOT NULL OR " +
+			"EXISTS (SELECT 1 FROM sessions child " +
+			"WHERE child.parent_session_id = s.session_id))"
+	case params.FilterIsSubAgent:
 		filterSQL += " AND s.parent_session_id IS NOT NULL"
-	}
-	if params.FilterHasSubAgents {
+	case params.FilterHasSubAgents:
 		filterSQL += " AND EXISTS (SELECT 1 FROM sessions child " +
 			"WHERE child.parent_session_id = s.session_id)"
 	}

@@ -619,15 +619,28 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
             />
           )}
 
-          {/* Loading */}
-          {loading && !activeDetailEvent && displayEvents.length === 0 && (
+          {/* Loading. Fires until ``data`` arrives — checking only
+              ``loading`` is not enough because the hook reports
+              loading=false on a successful empty-events fetch (the
+              session itself loaded, the Timeline is just empty). */}
+          {loading && !activeDetailEvent && !data && (
             <div className="flex flex-1 items-center justify-center text-xs text-text-muted">
               Loading...
             </div>
           )}
 
-          {/* Mode 1: Session view */}
-          {!activeDetailEvent && displayEvents.length > 0 && data && (
+          {/* Mode 1: Session view. Body renders whenever ``data`` is
+              present — independent of how many events the session
+              has. D126 sub-agent task children commonly close without
+              ever making an LLM call (the Task tool returned a
+              cached / non-LLM result), so ``displayEvents`` is
+              legitimately empty. The original guard
+              ``displayEvents.length > 0`` made the drawer body blank
+              for those rows: header rendered, metadata + tabs +
+              everything else didn't. The Timeline tab below carries
+              its own empty-state copy so the drop-through is
+              graceful even on zero events. */}
+          {!activeDetailEvent && data && (
             <>
               {/* Claude Code session badge — only renders for sessions
                   produced by the Claude Code plugin. Sits above the

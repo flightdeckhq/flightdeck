@@ -1,15 +1,16 @@
 import React, { useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { LayoutGroup, motion } from "framer-motion";
-import type { AgentSummary, AgentTopology, SessionState } from "@/lib/types";
+import type { AgentSummary, SessionState } from "@/lib/types";
 import { ClientType } from "@/lib/agent-identity";
 import { ClientTypePill } from "@/components/facets/ClientTypePill";
-import { SubAgentRolePill } from "@/components/facets/SubAgentRolePill";
 import { TruncatedText } from "@/components/ui/TruncatedText";
 import { CodingAgentBadge } from "@/components/ui/coding-agent-badge";
 import { ClaudeCodeLogo } from "@/components/ui/claude-code-logo";
 import { bucketFor } from "@/lib/fleet-ordering";
 import { INVESTIGATE_DEFAULT_LOOKBACK_MS } from "@/lib/constants";
+import { useFleetStore } from "@/store/fleet";
+import { deriveRelationship, scrollToAgentRow } from "@/lib/relationship";
 
 /**
  * Sortable column whitelist for the agent table. Mirrors the
@@ -416,6 +417,7 @@ export function AgentTable({
                 e.currentTarget.style.background = "";
               }}
               data-testid={`fleet-agent-row-${a.agent_id}`}
+              data-agent-id={a.agent_id}
             >
               <td
                 style={{
@@ -515,10 +517,11 @@ export function AgentTable({
                   padding: "0 12px",
                   fontSize: 12,
                   color: "var(--text-secondary)",
+                  overflow: "hidden",
                 }}
                 data-testid={`agent-table-topology-${a.agent_id}`}
               >
-                <TopologyPill topology={a.topology} role={a.agent_role ?? undefined} />
+                <TopologyCell agentId={a.agent_id} topology={a.topology} />
               </td>
               <td
                 className="text-right"
@@ -558,22 +561,37 @@ export function AgentTable({
 }
 
 /**
- * D126 topology pill. ``lone`` renders as a muted em-dash so the
- * column doesn't shout for non-relationship rows; ``parent`` and
- * ``child`` reuse SubAgentRolePill so the visual language matches
- * the SwimLane and SubAgentsTab. The ``role`` prop is forwarded for
- * child/parent rendering — ``parent`` rows never carry an
- * agent_role themselves, so the pill renders the literal label
- * "parent" via SubAgentRolePill's empty-role fallback.
+ * D126 § 7.fix.H topology cell. The TOPOLOGY column carries
+ * relationship information distinct from ROLE: parents render
+ * "⤴ spawns N" with the count of distinct child agents and a
+ * click-to-jump to the first child's swimlane row; children render
+ * "↳ child of <parent_name>" with click-to-jump back to the
+ * parent's row. Lone agents render the muted em-dash so the
+ * column doesn't shout for non-relationship rows.
+ *
+ * The cell reads ``useFleetStore`` to derive parent_name +
+ * child_count from the same session-linkage scan SwimLane uses, so
+ * the two surfaces stay in lock-step. ``a.topology`` from
+ * AgentSummary is consulted as the cheap-fast hint (server-side
+ * decision); the relationship lookup runs only for non-lone rows
+ * to avoid scanning the entire fleet for every lone row.
  */
-function TopologyPill({
+function TopologyCell({
+  agentId,
   topology,
-  role,
 }: {
-  topology: AgentTopology;
-  role?: string;
+  agentId: string;
+  topology: import("@/lib/types").AgentTopology;
 }) {
-  if (topology === "lone") {
+  const flavors = useFleetStore((s) => s.flavors);
+  const ownSessions = useMemo(() => {
+    return flavors.find((f) => f.flavor === agentId)?.sessions ?? [];
+  }, [flavors, agentId]);
+  const rel = useMemo(
+    () => deriveRelationship(agentId, ownSessions, flavors),
+    [agentId, ownSessions, flavors],
+  );
+  if (topology === "lone" || rel.mode === "lone") {
     return (
       <span
         style={{
@@ -587,12 +605,57 @@ function TopologyPill({
       </span>
     );
   }
+  if (rel.mode === "child") {
+    return (
+      <button
+        type="button"
+        data-testid={`agent-table-topology-pill-child-${agentId}`}
+        onClick={(e) => {
+          e.stopPropagation();
+          scrollToAgentRow(rel.parentAgentId);
+        }}
+        style={{
+          background: "transparent",
+          border: "none",
+          padding: 0,
+          cursor: "pointer",
+          fontFamily: "var(--font-mono)",
+          fontSize: 10,
+          color: "var(--accent)",
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 4,
+          maxWidth: "100%",
+          minWidth: 0,
+        }}
+        title={`child of ${rel.parentName}`}
+      >
+        <span style={{ flexShrink: 0 }}>↳</span>
+        <TruncatedText text={`child of ${rel.parentName}`} />
+      </button>
+    );
+  }
   return (
-    <SubAgentRolePill
-      role={role ?? ""}
-      topology={topology}
-      testId={`agent-table-topology-pill-${topology}`}
-    />
+    <button
+      type="button"
+      data-testid={`agent-table-topology-pill-parent-${agentId}`}
+      onClick={(e) => {
+        e.stopPropagation();
+        if (rel.firstChildAgentId) scrollToAgentRow(rel.firstChildAgentId);
+      }}
+      style={{
+        background: "transparent",
+        border: "none",
+        padding: 0,
+        cursor: rel.firstChildAgentId ? "pointer" : "default",
+        fontFamily: "var(--font-mono)",
+        fontSize: 10,
+        color: "var(--accent)",
+      }}
+      title={`spawns ${rel.childCount} sub-agent${rel.childCount === 1 ? "" : "s"}`}
+    >
+      ⤴ spawns {rel.childCount}
+    </button>
   );
 }
 

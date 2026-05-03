@@ -1,31 +1,31 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
-import { ChevronRight } from "lucide-react";
-import type { AgentEvent, Session, SessionListItem, SubagentMessage } from "@/lib/types";
+import { ChevronDown, ChevronRight } from "lucide-react";
+import type { AgentEvent, Session, SessionDetail, SessionListItem, SubagentMessage } from "@/lib/types";
 import { fetchEventContent, fetchSession, fetchSessions } from "@/lib/api";
 import { truncateSessionId } from "@/lib/events";
 import { SubAgentLostDot } from "@/components/facets/SubAgentRolePill";
 
 /**
- * D126 Sub-agents tab. Three sections:
+ * D126 § 7.fix.E — SessionDrawer Sub-agents tab. Three layouts per
+ * design doc § 4.2:
  *
- *   * SPAWNED FROM — shown when this session is a sub-agent (has a
- *     ``parent_session_id``). Identifies the parent session by
- *     agent_name + role + a deep link that swaps the drawer to the
- *     parent.
- *   * SUB-AGENTS — shown when this session has spawned at least
- *     one child. Lists every child session with its role, state,
- *     and a link that opens the child in the drawer.
- *   * MESSAGES — incoming + outgoing cross-agent messages. Inline
- *     bodies render directly; bodies above the 8 KiB inline
- *     threshold (D119 overflow contract) lazy-fetch via
- *     ``GET /v1/events/{id}/content``.
+ *   * Parent only (has children, no parent): SUB-AGENTS section only.
+ *   * Child only (has parent, no children): SPAWNED FROM section
+ *     only, plus INPUT / OUTPUT previews captured on this session's
+ *     own session_start / session_end.
+ *   * Both (depth-2): SPAWNED FROM on top + SUB-AGENTS below.
  *
- * The tab self-hides via the SessionDrawer wiring when none of the
- * three sections has content (root session, no children, no
- * messages). When capture_prompts=false the messages section
- * renders the standard disabled message instead of an empty list,
- * matching the Prompts tab disabled-state contract.
+ * MESSAGES per child (parent-side): each child entry carries an
+ * INPUT preview (200 chars) + OUTPUT preview (200 chars). Bodies
+ * above the 8 KiB inline threshold (D119 overflow contract) lazy-
+ * fetch via ``GET /v1/events/{id}/content`` on expand. When
+ * ``capture_prompts=false`` for the deployment, the previews
+ * collapse to the standard "Prompt capture is not enabled" copy
+ * (Rule 21 disabled-state contract).
+ *
+ * The SPAWNED FROM section also surfaces the parent → child INPUT
+ * and child → parent OUTPUT for the *current* child session
+ * (mirrors what the parent view shows for that session).
  */
 export function SubAgentsTab({
   session,
@@ -40,20 +40,23 @@ export function SubAgentsTab({
   onOpenSession: (sessionId: string) => void;
 }) {
   const isChild = !!session.parent_session_id;
+  const captureEnabled = session.capture_enabled === true;
 
-  // The session_start event carries the incoming_message body for
-  // sub-agent children; session_end carries outgoing_message.
-  // Pre-Phase-7 sessions don't have these payload fields and the
-  // section renders empty + (for capture-on sessions) a "no
-  // messages captured" footer.
-  const sessionStart = useMemo(
-    () => events.find((e) => e.event_type === "session_start"),
-    [events],
-  );
-  const sessionEnd = useMemo(
-    () => events.find((e) => e.event_type === "session_end"),
-    [events],
-  );
+  // session_start carries this session's incoming_message; session_end
+  // carries outgoing_message. Used for the SPAWNED FROM section's
+  // own-side preview when this session is a child.
+  const ownIncoming = useMemo(() => {
+    const e = events.find((x) => x.event_type === "session_start");
+    return e?.payload?.incoming_message
+      ? { event: e, message: e.payload.incoming_message }
+      : null;
+  }, [events]);
+  const ownOutgoing = useMemo(() => {
+    const e = events.find((x) => x.event_type === "session_end");
+    return e?.payload?.outgoing_message
+      ? { event: e, message: e.payload.outgoing_message }
+      : null;
+  }, [events]);
 
   return (
     <div
@@ -63,17 +66,16 @@ export function SubAgentsTab({
       {isChild && session.parent_session_id && (
         <SpawnedFromSection
           parentSessionId={session.parent_session_id}
+          captureEnabled={captureEnabled}
+          ownIncoming={ownIncoming}
+          ownOutgoing={ownOutgoing}
           onOpenSession={onOpenSession}
         />
       )}
       <SubAgentsSection
         sessionId={session.session_id}
+        captureEnabled={captureEnabled}
         onOpenSession={onOpenSession}
-      />
-      <MessagesSection
-        sessionStart={sessionStart}
-        sessionEnd={sessionEnd}
-        captureEnabled={session.capture_enabled === true}
       />
     </div>
   );
@@ -83,29 +85,35 @@ export function SubAgentsTab({
 
 function SpawnedFromSection({
   parentSessionId,
+  captureEnabled,
+  ownIncoming,
+  ownOutgoing,
   onOpenSession,
 }: {
   parentSessionId: string;
+  captureEnabled: boolean;
+  ownIncoming: { event: AgentEvent; message: SubagentMessage } | null;
+  ownOutgoing: { event: AgentEvent; message: SubagentMessage } | null;
   onOpenSession: (sessionId: string) => void;
 }) {
   const [parent, setParent] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    let alive = true;
     setLoading(true);
+    let cancelled = false;
     fetchSession(parentSessionId, 1)
       .then((d) => {
-        if (alive) setParent(d.session);
+        if (!cancelled) setParent(d.session);
       })
       .catch(() => {
-        if (alive) setParent(null);
+        if (!cancelled) setParent(null);
       })
       .finally(() => {
-        if (alive) setLoading(false);
+        setLoading(false);
       });
     return () => {
-      alive = false;
+      cancelled = true;
     };
   }, [parentSessionId]);
 
@@ -124,49 +132,76 @@ function SpawnedFromSection({
         </RowEmpty>
       )}
       {!loading && parent && (
-        <button
-          type="button"
-          onClick={() => onOpenSession(parent.session_id)}
-          data-testid="sub-agents-spawned-from-link"
-          style={{
-            background: "transparent",
-            border: "1px solid var(--border)",
-            borderRadius: 6,
-            padding: "8px 10px",
-            display: "flex",
-            alignItems: "center",
-            gap: 8,
-            cursor: "pointer",
-            textAlign: "left",
-            width: "100%",
-          }}
-        >
-          <ChevronRight size={14} style={{ color: "var(--text-muted)" }} />
-          <span style={{ flex: 1, minWidth: 0 }}>
-            <div
-              style={{
-                fontSize: 13,
-                fontWeight: 500,
-                color: "var(--text)",
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-              }}
-            >
-              {parent.agent_name ?? parent.flavor}
-            </div>
-            <div
-              style={{
-                fontSize: 11,
-                color: "var(--text-muted)",
-                fontFamily: "var(--font-mono)",
-              }}
-            >
-              {truncateSessionId(parent.session_id)} ·{" "}
-              {parent.state}
-            </div>
-          </span>
-        </button>
+        <>
+          <button
+            type="button"
+            onClick={() => onOpenSession(parent.session_id)}
+            data-testid="sub-agents-spawned-from-link"
+            style={{
+              background: "transparent",
+              border: "1px solid var(--border)",
+              borderRadius: 6,
+              padding: "8px 10px",
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              cursor: "pointer",
+              textAlign: "left",
+              width: "100%",
+            }}
+          >
+            <ChevronRight size={14} style={{ color: "var(--text-muted)" }} />
+            <span style={{ flex: 1, minWidth: 0 }}>
+              <div
+                style={{
+                  fontSize: 13,
+                  fontWeight: 500,
+                  color: "var(--text)",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {parent.agent_name ?? parent.flavor}
+              </div>
+              <div
+                style={{
+                  fontSize: 11,
+                  color: "var(--text-muted)",
+                  fontFamily: "var(--font-mono)",
+                }}
+              >
+                {truncateSessionId(parent.session_id)} ·{" "}
+                {parent.state}
+              </div>
+            </span>
+          </button>
+          {/* INPUT received from parent + OUTPUT sent back. Both
+              sourced from this session's own session_start /
+              session_end payloads. capture_enabled=false collapses
+              to the disabled-state copy per Rule 21. */}
+          {!captureEnabled && (
+            <RowEmpty>
+              Prompt capture is not enabled for this deployment.
+            </RowEmpty>
+          )}
+          {captureEnabled && ownIncoming && (
+            <MessagePreview
+              label="Input from parent"
+              eventId={ownIncoming.event.id}
+              message={ownIncoming.message}
+              testId="sub-agents-own-input"
+            />
+          )}
+          {captureEnabled && ownOutgoing && (
+            <MessagePreview
+              label="Output to parent"
+              eventId={ownOutgoing.event.id}
+              message={ownOutgoing.message}
+              testId="sub-agents-own-output"
+            />
+          )}
+        </>
       )}
     </Section>
   );
@@ -176,24 +211,26 @@ function SpawnedFromSection({
 
 function SubAgentsSection({
   sessionId,
+  captureEnabled,
   onOpenSession,
 }: {
   sessionId: string;
+  captureEnabled: boolean;
   onOpenSession: (sessionId: string) => void;
 }) {
   const [children, setChildren] = useState<SessionListItem[] | null>(null);
 
   useEffect(() => {
-    let alive = true;
+    let cancelled = false;
     fetchSessions({ parent_session_id: sessionId, limit: 100 })
       .then((r) => {
-        if (alive) setChildren(r.sessions);
+        if (!cancelled) setChildren(r.sessions);
       })
       .catch(() => {
-        if (alive) setChildren([]);
+        if (!cancelled) setChildren([]);
       });
     return () => {
-      alive = false;
+      cancelled = true;
     };
   }, [sessionId]);
 
@@ -217,7 +254,7 @@ function SubAgentsSection({
         style={{
           display: "flex",
           flexDirection: "column",
-          gap: 4,
+          gap: 6,
           listStyle: "none",
           padding: 0,
           margin: 0,
@@ -225,65 +262,11 @@ function SubAgentsSection({
       >
         {children.map((c) => (
           <li key={c.session_id}>
-            <button
-              type="button"
-              onClick={() => onOpenSession(c.session_id)}
-              data-testid={`sub-agents-child-row-${c.session_id}`}
-              style={{
-                background: "transparent",
-                border: "1px solid var(--border)",
-                borderRadius: 6,
-                padding: "6px 10px",
-                width: "100%",
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-                cursor: "pointer",
-                textAlign: "left",
-              }}
-            >
-              <span
-                style={{
-                  fontFamily: "var(--font-mono)",
-                  fontSize: 10,
-                  padding: "2px 6px",
-                  borderRadius: 3,
-                  background:
-                    "color-mix(in srgb, var(--accent) 12%, transparent)",
-                  color: "var(--accent)",
-                  flexShrink: 0,
-                }}
-              >
-                {c.agent_role ?? "(role unknown)"}
-              </span>
-              <span
-                style={{
-                  fontSize: 12,
-                  color: "var(--text)",
-                  flex: 1,
-                  minWidth: 0,
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  whiteSpace: "nowrap",
-                }}
-              >
-                {truncateSessionId(c.session_id)}
-              </span>
-              <span
-                style={{
-                  fontSize: 11,
-                  color: "var(--text-muted)",
-                  fontFamily: "var(--font-mono)",
-                }}
-              >
-                {c.state}
-              </span>
-              {c.state === "lost" && (
-                <SubAgentLostDot
-                  testId={`sub-agents-child-lost-dot-${c.session_id}`}
-                />
-              )}
-            </button>
+            <ChildRow
+              child={c}
+              captureEnabled={captureEnabled}
+              onOpenSession={onOpenSession}
+            />
           </li>
         ))}
       </ul>
@@ -291,116 +274,60 @@ function SubAgentsSection({
   );
 }
 
-/* ---------------- MESSAGES ---------------- */
-
-function MessagesSection({
-  sessionStart,
-  sessionEnd,
+function ChildRow({
+  child,
   captureEnabled,
+  onOpenSession,
 }: {
-  sessionStart: AgentEvent | undefined;
-  sessionEnd: AgentEvent | undefined;
+  child: SessionListItem;
   captureEnabled: boolean;
+  onOpenSession: (sessionId: string) => void;
 }) {
-  const incoming = sessionStart?.payload?.incoming_message;
-  const outgoing = sessionEnd?.payload?.outgoing_message;
-
-  const hasAny = !!incoming || !!outgoing;
-
-  if (!captureEnabled) {
-    return (
-      <Section title="Messages" testId="sub-agents-messages">
-        <RowEmpty>
-          Prompt capture is not enabled for this deployment.
-        </RowEmpty>
-      </Section>
-    );
-  }
-
-  if (!hasAny) {
-    // Either a root session (no cross-agent messages exist) or a
-    // sub-agent that hasn't emitted session_start with a body yet.
-    // No section in either case — keeps the tab compact.
-    return null;
-  }
-
-  return (
-    <Section title="Messages" testId="sub-agents-messages">
-      {incoming && sessionStart && (
-        <MessageBlock
-          label="Incoming"
-          message={incoming}
-          eventId={sessionStart.id}
-        />
-      )}
-      {outgoing && sessionEnd && (
-        <MessageBlock
-          label="Outgoing"
-          message={outgoing}
-          eventId={sessionEnd.id}
-        />
-      )}
-    </Section>
-  );
-}
-
-function MessageBlock({
-  label,
-  message,
-  eventId,
-}: {
-  label: string;
-  message: SubagentMessage;
-  eventId: string;
-}) {
-  // ``has_content=true`` is the D119 overflow discriminator. Inline
-  // body is empty; the full message lives in event_content. Lazy-
-  // fetch on first render so a long thread of messages doesn't
-  // hammer the API. ``loaded`` once false-positively indicates "fetch
-  // in flight"; the empty-string fallback below distinguishes the
-  // overflow-fetch-failed case.
-  const [overflowBody, setOverflowBody] = useState<string | null>(null);
-  const [loadingOverflow, setLoadingOverflow] = useState(false);
+  // Per-child detail loaded on first expand. Carries the child's
+  // session_start (incoming_message) + session_end (outgoing_message)
+  // so the previews render off the same payload shape the parent
+  // view above uses for its own session.
+  const [detail, setDetail] = useState<SessionDetail | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [expanded, setExpanded] = useState(false);
 
   useEffect(() => {
-    if (!message.has_content) return;
-    let alive = true;
-    setLoadingOverflow(true);
-    fetchEventContent(eventId)
-      .then((c) => {
-        if (!alive) return;
-        // Worker stores the full body in event_content.input
-        // (string for the D126 case — contrast Phase 4 embeddings
-        // which can be a list). Fall back to system_prompt /
-        // response if a future writer change moves the field.
-        const raw = c?.input;
-        const text = typeof raw === "string" ? raw : raw == null ? "" : JSON.stringify(raw, null, 2);
-        setOverflowBody(text);
+    if (!expanded || detail !== null) return;
+    setLoading(true);
+    let cancelled = false;
+    fetchSession(child.session_id)
+      .then((d) => {
+        if (!cancelled) setDetail(d);
       })
       .catch(() => {
-        if (alive) setOverflowBody("");
+        if (!cancelled) {
+          setDetail({ session: child as unknown as Session, events: [] });
+        }
       })
       .finally(() => {
-        if (alive) setLoadingOverflow(false);
+        // Clear loading unconditionally — see MessagePreview for
+        // the same React-18-strict-mode rationale.
+        setLoading(false);
       });
     return () => {
-      alive = false;
+      cancelled = true;
     };
-  }, [message.has_content, eventId]);
+  }, [expanded, detail, child.session_id, child]);
 
-  const body = message.has_content ? overflowBody : message.message;
-  const isLoading = message.has_content && loadingOverflow;
+  const incoming = detail?.events.find((e) => e.event_type === "session_start")
+    ?.payload?.incoming_message;
+  const incomingEvent = detail?.events.find((e) => e.event_type === "session_start");
+  const outgoing = detail?.events.find((e) => e.event_type === "session_end")
+    ?.payload?.outgoing_message;
+  const outgoingEvent = detail?.events.find((e) => e.event_type === "session_end");
 
   return (
     <div
-      data-testid={`sub-agents-message-${label.toLowerCase()}`}
+      data-testid={`sub-agents-child-${child.session_id}`}
       style={{
         border: "1px solid var(--border)",
         borderRadius: 6,
-        padding: 10,
-        display: "flex",
-        flexDirection: "column",
-        gap: 6,
+        overflow: "hidden",
       }}
     >
       <div
@@ -408,11 +335,215 @@ function MessageBlock({
           display: "flex",
           alignItems: "center",
           gap: 8,
+          padding: "6px 10px",
+          background: expanded ? "var(--bg-elevated)" : "transparent",
+        }}
+      >
+        <button
+          type="button"
+          aria-label={expanded ? "Collapse" : "Expand"}
+          onClick={() => setExpanded((v) => !v)}
+          data-testid={`sub-agents-child-toggle-${child.session_id}`}
+          style={{
+            background: "transparent",
+            border: "none",
+            color: "var(--text-muted)",
+            cursor: "pointer",
+            padding: 0,
+            display: "inline-flex",
+            alignItems: "center",
+          }}
+        >
+          {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+        </button>
+        <span
+          style={{
+            fontFamily: "var(--font-mono)",
+            fontSize: 10,
+            padding: "2px 6px",
+            borderRadius: 3,
+            background: "color-mix(in srgb, var(--accent) 12%, transparent)",
+            color: "var(--accent)",
+            flexShrink: 0,
+          }}
+        >
+          {child.agent_role ?? "(role unknown)"}
+        </span>
+        <button
+          type="button"
+          onClick={() => onOpenSession(child.session_id)}
+          data-testid={`sub-agents-child-open-${child.session_id}`}
+          style={{
+            background: "transparent",
+            border: "none",
+            cursor: "pointer",
+            color: "var(--text)",
+            fontSize: 12,
+            padding: 0,
+            flex: 1,
+            textAlign: "left",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+            textDecoration: "underline",
+            textDecorationColor:
+              "color-mix(in srgb, var(--accent) 40%, transparent)",
+          }}
+        >
+          {truncateSessionId(child.session_id)}
+        </button>
+        <span
+          style={{
+            fontSize: 11,
+            color: "var(--text-muted)",
+            fontFamily: "var(--font-mono)",
+          }}
+        >
+          {child.state}
+        </span>
+        {child.state === "lost" && (
+          <SubAgentLostDot
+            role={child.agent_role ?? undefined}
+            sessionIdSuffix={child.session_id.slice(-8)}
+            testId={`sub-agents-child-lost-dot-${child.session_id}`}
+          />
+        )}
+      </div>
+      {expanded && (
+        <div
+          style={{
+            padding: "8px 10px",
+            display: "flex",
+            flexDirection: "column",
+            gap: 6,
+            borderTop: "1px solid var(--border-subtle)",
+            background: "var(--surface)",
+          }}
+        >
+          {!captureEnabled && (
+            <RowEmpty>
+              Prompt capture is not enabled for this deployment.
+            </RowEmpty>
+          )}
+          {captureEnabled && loading && <RowEmpty>Loading…</RowEmpty>}
+          {captureEnabled && !loading && incoming && incomingEvent && (
+            <MessagePreview
+              label="Input"
+              eventId={incomingEvent.id}
+              message={incoming}
+              testId={`sub-agents-child-input-${child.session_id}`}
+            />
+          )}
+          {captureEnabled && !loading && outgoing && outgoingEvent && (
+            <MessagePreview
+              label="Output"
+              eventId={outgoingEvent.id}
+              message={outgoing}
+              testId={`sub-agents-child-output-${child.session_id}`}
+            />
+          )}
+          {captureEnabled && !loading && !incoming && !outgoing && (
+            <RowEmpty>No messages captured for this sub-agent.</RowEmpty>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------------- MESSAGE preview ---------------- */
+
+const PREVIEW_CHARS = 200;
+
+function MessagePreview({
+  label,
+  message,
+  eventId,
+  testId,
+}: {
+  label: string;
+  message: SubagentMessage;
+  eventId: string;
+  testId: string;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [overflowBody, setOverflowBody] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  // Lazy-fetch the overflow body only on expand. Inline messages
+  // (has_content=false) skip this entirely; the inline string is
+  // already in ``message.message``. The 200-char preview always
+  // truncates from the inline copy when present, falling back to
+  // the fetched body when the inline is empty (overflow case
+  // pre-expand).
+  //
+  // No ``alive`` cleanup flag — under React 18 strict mode the
+  // double-invoke pattern would set ``alive = false`` on the first
+  // cleanup, dropping the .finally setLoading(false) for the first
+  // fetch. The second invocation's fetch eventually fires but the
+  // visible state was momentarily stuck on "Loading…", which broke
+  // the unit test environment. Letting both writes land is benign
+  // — the second one wins, and React's strict-mode contract is
+  // explicitly that effects must be idempotent under double-invoke.
+  useEffect(() => {
+    if (!expanded || !message.has_content || overflowBody !== null) return;
+    setLoading(true);
+    let cancelled = false;
+    fetchEventContent(eventId)
+      .then((c) => {
+        if (cancelled) return;
+        const raw = c?.input;
+        const text =
+          typeof raw === "string"
+            ? raw
+            : raw == null
+              ? ""
+              : JSON.stringify(raw, null, 2);
+        setOverflowBody(text);
+      })
+      .catch(() => {
+        if (!cancelled) setOverflowBody("");
+      })
+      .finally(() => {
+        // Always clear loading, even if cancelled — the alternative
+        // strands the spinner on a remounted component whose state
+        // is otherwise current.
+        setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [expanded, message.has_content, eventId, overflowBody]);
+
+  // Inline body when small; overflow placeholder otherwise. The
+  // preview is whichever string we have, truncated.
+  const fullBody = message.has_content
+    ? overflowBody ?? ""
+    : message.message;
+  const previewBody = (message.message || "").slice(0, PREVIEW_CHARS);
+  const previewIsTruncated =
+    message.has_content || (message.message?.length ?? 0) > PREVIEW_CHARS;
+
+  return (
+    <div
+      data-testid={testId}
+      style={{
+        border: "1px solid var(--border-subtle)",
+        borderRadius: 4,
+        padding: 6,
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
           fontSize: 10,
           fontWeight: 700,
           letterSpacing: "0.08em",
           textTransform: "uppercase",
           color: "var(--text-muted)",
+          marginBottom: 4,
         }}
       >
         <span>{label}</span>
@@ -427,40 +558,49 @@ function MessageBlock({
           {message.bytes.toLocaleString()} bytes
           {message.has_content && " · overflow"}
         </span>
-      </div>
-      {isLoading && <RowEmpty>Loading message body…</RowEmpty>}
-      {!isLoading && body !== null && body !== "" && (
-        <pre
-          style={{
-            margin: 0,
-            fontFamily: "var(--font-mono)",
-            fontSize: 12,
-            background: "var(--bg)",
-            padding: 8,
-            borderRadius: 4,
-            whiteSpace: "pre-wrap",
-            wordBreak: "break-word",
-            maxHeight: 300,
-            overflowY: "auto",
-            color: "var(--text)",
-          }}
-        >
-          {body}
-        </pre>
-      )}
-      {!isLoading && (body === "" || body === null) && message.has_content && (
-        <RowEmpty>
-          Overflow body could not be loaded.{" "}
-          <Link
-            to={`/v1/events/${eventId}/content`}
-            style={{ color: "var(--accent)" }}
-            target="_blank"
-            rel="noreferrer"
+        {previewIsTruncated && (
+          <button
+            type="button"
+            onClick={() => setExpanded((v) => !v)}
+            data-testid={`${testId}-expand`}
+            style={{
+              marginLeft: "auto",
+              background: "transparent",
+              border: "none",
+              color: "var(--accent)",
+              cursor: "pointer",
+              fontSize: 11,
+              padding: 0,
+              textTransform: "none",
+              letterSpacing: 0,
+              fontWeight: 500,
+            }}
           >
-            Open raw
-          </Link>
-        </RowEmpty>
-      )}
+            {expanded ? "Collapse" : "Expand"}
+          </button>
+        )}
+      </div>
+      <pre
+        style={{
+          margin: 0,
+          fontFamily: "var(--font-mono)",
+          fontSize: 12,
+          background: "var(--bg)",
+          padding: 6,
+          borderRadius: 3,
+          whiteSpace: "pre-wrap",
+          wordBreak: "break-word",
+          maxHeight: expanded ? 400 : 80,
+          overflowY: "auto",
+          color: "var(--text)",
+        }}
+      >
+        {expanded
+          ? loading
+            ? "Loading…"
+            : fullBody || previewBody || "(empty)"
+          : previewBody || (message.has_content ? "(overflow — expand to load)" : "(empty)")}
+      </pre>
     </div>
   );
 }

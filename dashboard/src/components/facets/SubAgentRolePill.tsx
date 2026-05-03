@@ -73,8 +73,29 @@ export function SubAgentRolePill({
  * and the worker's state-revival path swept the row to lost. Per
  * METHODOLOGY.md L8 (Phase 5 lesson) the dot belongs on the row,
  * not buried inside the event detail.
+ *
+ * Optional ``role`` and ``sessionIdSuffix`` enrich the tooltip so
+ * an operator can identify which sub-agent failed without having
+ * to expand the row. Both arrive from the SwimLane / Investigate
+ * call-site and are best-effort — the dot still renders without
+ * them when the full context isn't available (the original step-7
+ * call-site supplied neither).
  */
-export function SubAgentLostDot({ testId }: { testId?: string }) {
+export function SubAgentLostDot({
+  role,
+  sessionIdSuffix,
+  testId,
+}: {
+  role?: string;
+  sessionIdSuffix?: string;
+  testId?: string;
+}) {
+  const detail = [
+    role ? `Role: ${role}` : null,
+    sessionIdSuffix ? `Session: …${sessionIdSuffix}` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
   return (
     <TooltipProvider delayDuration={200}>
       <Tooltip>
@@ -92,8 +113,11 @@ export function SubAgentLostDot({ testId }: { testId?: string }) {
           </span>
         </TooltipTrigger>
         <TooltipContent>
-          Sub-agent ended in <strong>lost</strong> state — the
-          clean end-of-life signal never arrived.
+          <div>
+            Sub-agent ended in <strong>lost</strong> state — the
+            clean end-of-life signal never arrived.
+          </div>
+          {detail && <div style={{ marginTop: 4 }}>{detail}</div>}
         </TooltipContent>
       </Tooltip>
     </TooltipProvider>

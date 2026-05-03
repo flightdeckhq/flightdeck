@@ -2,12 +2,14 @@ import { memo, useMemo } from "react";
 import type { ScaleTime } from "d3-scale";
 import { Link } from "react-router-dom";
 import type { Session, AgentEvent } from "@/lib/types";
+import { deriveRelationship } from "@/lib/relationship";
 import {
   ClientType,
   type ClientType as ClientTypeT,
 } from "@/lib/agent-identity";
 import { ClientTypePill } from "@/components/facets/ClientTypePill";
-import { SubAgentRolePill, SubAgentLostDot } from "@/components/facets/SubAgentRolePill";
+import { SubAgentLostDot } from "@/components/facets/SubAgentRolePill";
+import { RelationshipPill } from "@/components/facets/RelationshipPill";
 import { TruncatedText } from "@/components/ui/TruncatedText";
 import { SESSION_ROW_HEIGHT, EVENT_CIRCLE_SIZE } from "@/lib/constants";
 import { ChevronRight } from "lucide-react";
@@ -78,6 +80,14 @@ interface SwimLaneProps {
    * pointer-events: none.
    */
   matchingSessionIds?: Set<string> | null;
+  /**
+   * D126 § 7.fix.A — invoked when the user clicks the always-on
+   * relationship pill (parent or child). The argument is the target
+   * agent_id; the caller scrolls that agent's swimlane row into
+   * view. Optional so legacy callers without sub-agent awareness
+   * still mount the component without a navigation handler.
+   */
+  onScrollToAgent?: (agentId: string) => void;
 }
 
 function SwimLaneComponent({
@@ -97,6 +107,7 @@ function SwimLaneComponent({
   activeFilter,
   sessionVersions,
   matchingSessionIds = null,
+  onScrollToAgent,
 }: SwimLaneProps) {
   // Live count = sessions that are currently active OR idle. The
   // server-side `activeCount` prop only counts state="active", but
@@ -109,33 +120,45 @@ function SwimLaneComponent({
     [sessions],
   );
 
-  // D126 sub-agent rollup. The agent_id grouping in the swimlane
-  // collapses every session under one persistent agent into a single
-  // row; per D126 derivation those sessions share the same 6-tuple
-  // including agent_role, so any session's role is authoritative.
-  // ``isParent`` cannot be derived purely from this row's sessions
-  // (a parent's sessions don't carry parent_session_id; the
-  // relationship is the inverse), so the swimlane only flags
-  // ``child``-side rows here. Parent-side rows render as plain
-  // root agents until the relationship pill data arrives via the
-  // /v1/fleet endpoint's ``topology`` field — left as a follow-on
-  // when the swimlane consumes the AgentSummary directly.
-  const subAgentRole = useMemo(() => {
-    for (const s of sessions) {
-      if (s.agent_role && s.parent_session_id) return s.agent_role;
-    }
-    return null;
-  }, [sessions]);
+  // D126 § 7.fix.A — always-on relationship pill. Derives the row's
+  // place in the sub-agent graph from data already in the fleet
+  // store. ``flavor`` is the agent_id (D115 swimlane re-key); we
+  // cross-reference with ``store.flavors[]`` (which carries every
+  // agent's recent sessions in scope) to find:
+  //   * parent agent_id + name when this row is a child (any of our
+  //     sessions has a parent_session_id pointing to a session under
+  //     a different agent in the store).
+  //   * distinct child-agent count when this row is a parent (other
+  //     agents' sessions list us as their parent_session_id source).
+  //
+  // Lone agents (no inbound or outbound relationship) get neither
+  // pill. Cost: O(N*M) per render where N=fleet agents and M=
+  // sessions per agent in the swimlane window. Memoized on
+  // (agent_id, fleetSessionsVersion) so the scan only re-runs when
+  // either side actually changes.
+  const fleetFlavors = useFleetStore((s) => s.flavors);
+  const relationship = useMemo(() => {
+    return deriveRelationship(flavor, sessions, fleetFlavors);
+  }, [flavor, sessions, fleetFlavors]);
 
   // L8 red dot: any sub-agent session in this row that ended in
   // ``lost`` state. The clean SubagentStop / child session_end
   // signal never fired and the worker's state-revival path closed
   // the row. METHODOLOGY.md L8: surface the failure on the row,
-  // not only inside the event.
-  const hasLostSubAgent = useMemo(
-    () => sessions.some((s) => s.parent_session_id != null && s.state === "lost"),
-    [sessions],
-  );
+  // not only inside the event. Captures the role + session id
+  // suffix for the tooltip so an operator can identify which sub-
+  // agent failed without expanding the row.
+  const lostSubAgent = useMemo(() => {
+    for (const s of sessions) {
+      if (s.parent_session_id != null && s.state === "lost") {
+        return {
+          role: s.agent_role ?? undefined,
+          sessionIdSuffix: s.session_id.slice(-8),
+        };
+      }
+    }
+    return null;
+  }, [sessions]);
 
   // Pick a representative state suffix to display next to the flavor
   // name when no sessions are currently active or idle. Priority:
@@ -193,7 +216,10 @@ function SwimLaneComponent({
   }, [expandedSessionList, matchingSessionIds]);
 
   return (
-    <div style={{ borderBottom: "1px solid var(--border-subtle)" }}>
+    <div
+      data-agent-id={flavor}
+      style={{ borderBottom: "1px solid var(--border-subtle)" }}
+    >
       {/* Collapsed flavor header — 48px */}
       <div
         className="flex h-12 cursor-pointer items-center"
@@ -251,15 +277,36 @@ function SwimLaneComponent({
               testId="swimlane-client-type-pill"
             />
           )}
-          {subAgentRole && (
-            <SubAgentRolePill
-              role={subAgentRole}
-              topology="child"
-              testId="swimlane-sub-agent-role-pill"
+          {relationship.mode === "child" && (
+            <RelationshipPill
+              mode="child"
+              parentName={relationship.parentName}
+              testId="swimlane-relationship-pill"
+              onClick={
+                onScrollToAgent && relationship.parentAgentId
+                  ? () => onScrollToAgent(relationship.parentAgentId!)
+                  : undefined
+              }
             />
           )}
-          {hasLostSubAgent && (
-            <SubAgentLostDot testId="swimlane-sub-agent-lost-dot" />
+          {relationship.mode === "parent" && relationship.childCount > 0 && (
+            <RelationshipPill
+              mode="parent"
+              childCount={relationship.childCount}
+              testId="swimlane-relationship-pill"
+              onClick={
+                onScrollToAgent && relationship.firstChildAgentId
+                  ? () => onScrollToAgent(relationship.firstChildAgentId!)
+                  : undefined
+              }
+            />
+          )}
+          {lostSubAgent && (
+            <SubAgentLostDot
+              role={lostSubAgent.role}
+              sessionIdSuffix={lostSubAgent.sessionIdSuffix}
+              testId="swimlane-sub-agent-lost-dot"
+            />
           )}
           {agentType && (
             <span

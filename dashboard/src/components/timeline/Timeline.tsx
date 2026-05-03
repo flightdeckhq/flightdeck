@@ -607,6 +607,27 @@ export function Timeline({
                 activeFilter={activeFilter}
                 sessionVersions={sessionVersions}
                 matchingSessionIds={matchingSessionIds}
+                onScrollToAgent={(agentId) => {
+                  // D126 § 7.fix.A — clicking the relationship pill
+                  // jumps to another agent's swimlane row. We
+                  // already stamp ``data-testid="swimlane-agent-row-
+                  // <name>"`` on every collapsed header, but the
+                  // robust selector for client-side scroll uses the
+                  // agent_id itself; tag added on the SwimLane
+                  // outermost wrapper for this lookup. Fallback to
+                  // hash anchor when querySelector misses (e.g. the
+                  // target agent isn't in the rendered viewport;
+                  // the virtualizer hasn't materialized it).
+                  const target = document.querySelector(
+                    `[data-agent-id="${CSS.escape(agentId)}"]`,
+                  );
+                  if (target && "scrollIntoView" in target) {
+                    (target as HTMLElement).scrollIntoView({
+                      behavior: "smooth",
+                      block: "center",
+                    });
+                  }
+                }}
               />,
             );
             prevBucket = b;

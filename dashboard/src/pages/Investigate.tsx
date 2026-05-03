@@ -608,25 +608,23 @@ export function computeFacets(
       label: "ROLE",
       values: toArr(roleCounts).filter((v) => v.value !== "(root)"),
     },
-    // D126 TOPOLOGY facet — boolean checkboxes. Surfaces only
-    // when at least one sub-agent is visible so root-only result
-    // sets don't see a checkbox they can't meaningfully click.
-    // The "Is sub-agent" value carries the per-row count; "Has
-    // sub-agents" has no per-row signal on the wire so its count
-    // is 0 and the renderer presents the checkbox without a
-    // number.
-    ...(isSubAgentCount > 0
-      ? [
-          {
-            key: "topology",
-            label: "TOPOLOGY",
-            values: [
-              { value: "is_sub_agent", count: isSubAgentCount },
-              { value: "has_sub_agents", count: 0 },
-            ],
-          },
-        ]
-      : []),
+    // D126 § 7.fix.F TOPOLOGY facet — boolean checkboxes. Always
+    // visible so the user can toggle "Has sub-agents" to find
+    // parent sessions even on a result set that currently shows
+    // none (the toggle widens the search; hiding it on the empty-
+    // visible-set case would be a dead-end UX). The "Is sub-agent"
+    // value carries the per-row count; "Has sub-agents" has no
+    // per-row signal on the wire so its count is 0 and the
+    // renderer presents the checkbox without a number. When both
+    // are checked the server OR-composes them per D126 § 7.fix.F.
+    {
+      key: "topology",
+      label: "TOPOLOGY",
+      values: [
+        { value: "is_sub_agent", count: isSubAgentCount },
+        { value: "has_sub_agents", count: 0 },
+      ],
+    },
   ].filter((g) => g.values.length > 0);
 }
 

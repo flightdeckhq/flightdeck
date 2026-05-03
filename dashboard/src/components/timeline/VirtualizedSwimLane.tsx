@@ -37,6 +37,9 @@ interface VirtualizedSwimLaneProps {
   activeFilter?: string | null;
   sessionVersions?: Record<string, number>;
   matchingSessionIds?: Set<string> | null;
+  /** D126 § 7.fix.A — forwarded to SwimLane for relationship-pill
+   *  click navigation. */
+  onScrollToAgent?: (agentId: string) => void;
 }
 
 /**

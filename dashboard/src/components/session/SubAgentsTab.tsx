@@ -4,6 +4,36 @@ import type { AgentEvent, Session, SessionDetail, SessionListItem, SubagentMessa
 import { fetchEventContent, fetchSession, fetchSessions } from "@/lib/api";
 import { truncateSessionId } from "@/lib/events";
 import { SubAgentLostDot } from "@/components/facets/SubAgentRolePill";
+import { EventDetail } from "./EventDetail";
+
+// D126 UX revision (post-merge polish, pre-merge land) — cap on the
+// inline mini-timeline rendered when a related-session row is
+// chevron-expanded inside the Sub-agents tab. Above this many events
+// we render the first N and a "View N more in Timeline tab"
+// affordance that navigates to the related session's drawer (whose
+// default tab is Timeline). 12 sits comfortably between "shows
+// enough activity to gauge what the sub-agent did" and "doesn't
+// turn the parent's drawer into a vertical scroll fight". The
+// supervisor's spec gave 10–15 as the acceptable range.
+const MINI_TIMELINE_MAX_EVENTS = 12;
+
+// Investigate PARENT-column link styling (Investigate.tsx:2410-2437)
+// reused on every session-id navigation affordance in this tab so
+// the visual cue stays consistent with the page-level pattern. The
+// chevron toggle is intentionally a different visual class — it's
+// a row-control, not a navigation link.
+const SESSION_ID_LINK_STYLE: React.CSSProperties = {
+  fontFamily: "var(--font-mono)",
+  fontSize: 11,
+  color: "var(--accent)",
+  background: "transparent",
+  border: "none",
+  cursor: "pointer",
+  padding: 0,
+  textDecoration: "underline",
+  textDecorationColor:
+    "color-mix(in srgb, var(--accent) 40%, transparent)",
+};
 
 /**
  * D126 § 7.fix.E — SessionDrawer Sub-agents tab. Three layouts per
@@ -120,11 +150,23 @@ function SpawnedFromSection({
   ownOutgoing: { event: AgentEvent; message: SubagentMessage } | null;
   onOpenSession: (sessionId: string) => void;
 }) {
+  // The header card carries minimal session metadata regardless of
+  // whether the row is expanded — agent_name + truncated id + state.
+  // Expanding fetches the parent's recent events (capped at the
+  // mini-timeline limit) so the inline preview shows what the
+  // parent has been doing without forcing the user to navigate
+  // away from this drawer.
   const [parent, setParent] = useState<Session | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [parentEvents, setParentEvents] = useState<AgentEvent[] | null>(null);
+  const [headerLoading, setHeaderLoading] = useState(true);
+  const [eventsLoading, setEventsLoading] = useState(false);
+  const [expanded, setExpanded] = useState(false);
 
+  // Fetch the parent header (just the session row; events stay
+  // unfetched until the user expands the card so we don't pay the
+  // events-list cost up front).
   useEffect(() => {
-    setLoading(true);
+    setHeaderLoading(true);
     let cancelled = false;
     fetchSession(parentSessionId, 1)
       .then((d) => {
@@ -134,17 +176,41 @@ function SpawnedFromSection({
         if (!cancelled) setParent(null);
       })
       .finally(() => {
-        setLoading(false);
+        setHeaderLoading(false);
       });
     return () => {
       cancelled = true;
     };
   }, [parentSessionId]);
 
+  // Lazy-fetch parent events on first expand. Cached for the
+  // lifetime of this component instance so collapse → re-expand
+  // doesn't re-fetch.
+  useEffect(() => {
+    if (!expanded || parentEvents !== null) return;
+    setEventsLoading(true);
+    let cancelled = false;
+    fetchSession(parentSessionId)
+      .then((d) => {
+        if (!cancelled) setParentEvents(d.events);
+      })
+      .catch(() => {
+        if (!cancelled) setParentEvents([]);
+      })
+      .finally(() => {
+        // Always clear loading even if cancelled — see MessagePreview
+        // for the React-18-strict-mode rationale on this pattern.
+        setEventsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [expanded, parentEvents, parentSessionId]);
+
   return (
     <Section title="Spawned from" testId="sub-agents-spawned-from">
-      {loading && <RowEmpty>Loading parent session…</RowEmpty>}
-      {!loading && !parent && (
+      {headerLoading && <RowEmpty>Loading parent session…</RowEmpty>}
+      {!headerLoading && !parent && (
         <RowEmpty>
           Parent session{" "}
           <code style={{ fontFamily: "var(--font-mono)" }}>
@@ -155,55 +221,49 @@ function SpawnedFromSection({
           parent's session_start lands.
         </RowEmpty>
       )}
-      {!loading && parent && (
-        <>
-          <button
-            type="button"
-            onClick={() => onOpenSession(parent.session_id)}
-            data-testid="sub-agents-spawned-from-link"
-            style={{
-              background: "transparent",
-              border: "1px solid var(--border)",
-              borderRadius: 6,
-              padding: "8px 10px",
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-              cursor: "pointer",
-              textAlign: "left",
-              width: "100%",
-            }}
-          >
-            <ChevronRight size={14} style={{ color: "var(--text-muted)" }} />
-            <span style={{ flex: 1, minWidth: 0 }}>
-              <div
-                style={{
-                  fontSize: 13,
-                  fontWeight: 500,
-                  color: "var(--text)",
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  whiteSpace: "nowrap",
-                }}
-              >
-                {parent.agent_name ?? parent.flavor}
-              </div>
-              <div
-                style={{
-                  fontSize: 11,
-                  color: "var(--text-muted)",
-                  fontFamily: "var(--font-mono)",
-                }}
-              >
-                {truncateSessionId(parent.session_id)} ·{" "}
-                {parent.state}
-              </div>
+      {!headerLoading && parent && (
+        <ExpandableSessionCard
+          headerTestId="sub-agents-spawned-from-card"
+          expanded={expanded}
+          onToggleExpand={() => setExpanded((v) => !v)}
+          onOpenSession={() => onOpenSession(parent.session_id)}
+          sessionIdLinkTestId="sub-agents-spawned-from-link"
+          chevronToggleTestId="sub-agents-spawned-from-toggle"
+          identifier={
+            <span
+              style={{
+                fontSize: 13,
+                fontWeight: 500,
+                color: "var(--text)",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {parent.agent_name ?? parent.flavor}
             </span>
-          </button>
-          {/* INPUT received from parent + OUTPUT sent back. Both
-              sourced from this session's own session_start /
-              session_end payloads. capture_enabled=false collapses
-              to the disabled-state copy per Rule 21. */}
+          }
+          sessionIdLabel={truncateSessionId(parent.session_id)}
+          state={parent.state}
+        >
+          {/* Inline-expanded body: summary metrics, mini-timeline,
+              and existing IN/OUT messages from this child's own
+              session_start / session_end payloads. The mini-timeline
+              gives the user a view of recent parent activity without
+              leaving this drawer; clicking the session-id link in
+              the header navigates to the parent's drawer for the
+              full Timeline / Prompts / Directives tabs. */}
+          <ExpansionMetricsSummary
+            session={parent}
+            events={parentEvents ?? []}
+            loading={eventsLoading}
+          />
+          <EventMiniTimeline
+            events={parentEvents ?? []}
+            loading={eventsLoading}
+            onViewMore={() => onOpenSession(parent.session_id)}
+            testIdPrefix="sub-agents-spawned-from"
+          />
           {!captureEnabled && (
             <RowEmpty>
               Prompt capture is not enabled for this deployment.
@@ -225,7 +285,7 @@ function SpawnedFromSection({
               testId="sub-agents-own-output"
             />
           )}
-        </>
+        </ExpandableSessionCard>
       )}
     </Section>
   );
@@ -298,6 +358,263 @@ function SubAgentsSection({
   );
 }
 
+/* ---------------- shared expansion chrome ---------------- */
+
+/**
+ * Two-affordance row used by both SpawnedFromSection and ChildRow.
+ *
+ *   * Left chevron button — toggles inline expansion. Hover state on
+ *     the chevron only; click does NOT navigate.
+ *   * Right session-id button — link-styled (Investigate PARENT
+ *     column visual; ``var(--accent)`` colour, underlined). Click
+ *     calls ``onOpenSession`` to rebind the drawer.
+ *
+ * The two affordances do NOT overlap. Clicking the chevron never
+ * navigates; clicking the session id never expands. This is the
+ * supervisor's UX revision contract — pre-fix the SpawnedFrom
+ * section was a single monolithic button that navigated on any
+ * click, which read as expand-affordance to users (the chevron
+ * looked like a tree-toggle) but behaved as navigation.
+ */
+function ExpandableSessionCard({
+  headerTestId,
+  expanded,
+  onToggleExpand,
+  onOpenSession,
+  sessionIdLinkTestId,
+  chevronToggleTestId,
+  identifier,
+  sessionIdLabel,
+  state,
+  trailing,
+  children,
+}: {
+  headerTestId: string;
+  expanded: boolean;
+  onToggleExpand: () => void;
+  onOpenSession: () => void;
+  sessionIdLinkTestId: string;
+  chevronToggleTestId: string;
+  identifier: React.ReactNode;
+  sessionIdLabel: string;
+  state: string;
+  trailing?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <div
+      data-testid={headerTestId}
+      style={{
+        border: "1px solid var(--border)",
+        borderRadius: 6,
+        overflow: "hidden",
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          padding: "6px 10px",
+          background: expanded ? "var(--bg-elevated)" : "transparent",
+        }}
+      >
+        <button
+          type="button"
+          aria-label={expanded ? "Collapse" : "Expand"}
+          aria-expanded={expanded}
+          onClick={onToggleExpand}
+          data-testid={chevronToggleTestId}
+          style={{
+            background: "transparent",
+            border: "none",
+            color: "var(--text-muted)",
+            cursor: "pointer",
+            padding: 0,
+            display: "inline-flex",
+            alignItems: "center",
+          }}
+        >
+          {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+        </button>
+        <span style={{ flex: 1, minWidth: 0 }}>{identifier}</span>
+        <button
+          type="button"
+          onClick={onOpenSession}
+          data-testid={sessionIdLinkTestId}
+          title="Open this session in the drawer"
+          style={SESSION_ID_LINK_STYLE}
+        >
+          {sessionIdLabel}
+        </button>
+        <span
+          style={{
+            fontSize: 11,
+            color: "var(--text-muted)",
+            fontFamily: "var(--font-mono)",
+          }}
+        >
+          {state}
+        </span>
+        {trailing}
+      </div>
+      {expanded && (
+        <div
+          style={{
+            padding: "8px 10px",
+            display: "flex",
+            flexDirection: "column",
+            gap: 6,
+            borderTop: "1px solid var(--border-subtle)",
+            background: "var(--surface)",
+          }}
+        >
+          {children}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Compact summary line shown at the top of every expanded row:
+ * total tokens, LLM call count, tool call count. Computed from the
+ * session's events (when fetched) — falls back to the session
+ * row's ``tokens_used`` rollup for the token total when events are
+ * still loading or absent. The supervisor explicitly noted that
+ * pre-219a5c0a sub-agents have only session_start + session_end
+ * events; this component renders "0 LLM calls / 0 tool calls" for
+ * those, which is correct historical data, not a bug.
+ */
+function ExpansionMetricsSummary({
+  session,
+  events,
+  loading,
+}: {
+  session: Session | null;
+  events: AgentEvent[];
+  loading: boolean;
+}) {
+  const llmCalls = events.filter((e) => e.event_type === "post_call").length;
+  const toolCalls = events.filter((e) => e.event_type === "tool_call").length;
+  const eventTokens = events.reduce(
+    (acc, e) => acc + (e.tokens_total ?? 0),
+    0,
+  );
+  // Prefer the session-row rollup when we have it (covers post-call
+  // events the events listing may have paginated past); fall back to
+  // the events-array sum when the row's tokens_used is 0 / missing
+  // so the summary still renders something useful when the session
+  // row hasn't loaded yet OR the rollup hasn't caught up to the
+  // event stream. ``||`` (not ``??``) so a 0 rollup falls through
+  // — a session with non-zero events shouldn't show 0 tokens.
+  const tokens = session?.tokens_used || eventTokens;
+
+  return (
+    <div
+      data-testid="sub-agents-expansion-metrics"
+      style={{
+        display: "flex",
+        gap: 12,
+        fontSize: 11,
+        color: "var(--text-muted)",
+        fontFamily: "var(--font-mono)",
+      }}
+    >
+      <span>
+        <strong style={{ color: "var(--text)" }}>
+          {tokens.toLocaleString()}
+        </strong>{" "}
+        tokens
+      </span>
+      <span>
+        <strong style={{ color: "var(--text)" }}>{llmCalls}</strong> LLM call
+        {llmCalls === 1 ? "" : "s"}
+      </span>
+      <span>
+        <strong style={{ color: "var(--text)" }}>{toolCalls}</strong> tool call
+        {toolCalls === 1 ? "" : "s"}
+      </span>
+      {loading && (
+        <span style={{ fontStyle: "italic" }}>loading events…</span>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Capped event list rendered inside a row's expanded body. Renders
+ * up to MINI_TIMELINE_MAX_EVENTS most recent events using the same
+ * ``EventDetail`` component the full Timeline tab uses, so visual
+ * patterns and click-to-expand behaviour stay consistent. When the
+ * session has more events than the cap, a "View N more in Timeline
+ * tab" footer link calls ``onViewMore`` (which navigates to the
+ * related session via ``onOpenSession`` — the drawer opens on
+ * Timeline by default).
+ */
+function EventMiniTimeline({
+  events,
+  loading,
+  onViewMore,
+  testIdPrefix,
+}: {
+  events: AgentEvent[];
+  loading: boolean;
+  onViewMore: () => void;
+  testIdPrefix: string;
+}) {
+  // Always wrap in the testid'd container so callers (tests and
+  // the parent layout) can target the mini-timeline regardless of
+  // whether events have loaded yet — empty / loading states are
+  // legitimate post-D126 shapes (pre-219a5c0a sub-agents have only
+  // session_start + session_end events; those collapse to "0
+  // visible events" once we filter the session_start out, but the
+  // mini-timeline still exists).
+  const visible = events.slice(0, MINI_TIMELINE_MAX_EVENTS);
+  const hidden = Math.max(0, events.length - visible.length);
+  return (
+    <div
+      data-testid={`${testIdPrefix}-mini-timeline`}
+      style={{
+        border: "1px solid var(--border-subtle)",
+        borderRadius: 4,
+        overflow: "hidden",
+      }}
+    >
+      {visible.length === 0 && loading && (
+        <RowEmpty>Loading recent events…</RowEmpty>
+      )}
+      {visible.length === 0 && !loading && (
+        <RowEmpty>No events recorded for this session.</RowEmpty>
+      )}
+      {visible.map((e) => (
+        <EventDetail key={e.id} event={e} />
+      ))}
+      {hidden > 0 && (
+        <button
+          type="button"
+          onClick={onViewMore}
+          data-testid={`${testIdPrefix}-mini-timeline-view-more`}
+          style={{
+            display: "block",
+            width: "100%",
+            textAlign: "center",
+            padding: "6px 10px",
+            background: "transparent",
+            border: "none",
+            borderTop: "1px solid var(--border-subtle)",
+            color: "var(--accent)",
+            fontSize: 11,
+            cursor: "pointer",
+          }}
+        >
+          View {hidden} more in Timeline tab →
+        </button>
+      )}
+    </div>
+  );
+}
+
 function ChildRow({
   child,
   captureEnabled,
@@ -310,7 +627,8 @@ function ChildRow({
   // Per-child detail loaded on first expand. Carries the child's
   // session_start (incoming_message) + session_end (outgoing_message)
   // so the previews render off the same payload shape the parent
-  // view above uses for its own session.
+  // view above uses for its own session AND the events list that
+  // drives the inline mini-timeline + metrics summary.
   const [detail, setDetail] = useState<SessionDetail | null>(null);
   const [loading, setLoading] = useState(false);
   const [expanded, setExpanded] = useState(false);
@@ -338,48 +656,23 @@ function ChildRow({
     };
   }, [expanded, detail, child.session_id, child]);
 
-  const incoming = detail?.events.find((e) => e.event_type === "session_start")
+  const events = detail?.events ?? [];
+  const incoming = events.find((e) => e.event_type === "session_start")
     ?.payload?.incoming_message;
-  const incomingEvent = detail?.events.find((e) => e.event_type === "session_start");
-  const outgoing = detail?.events.find((e) => e.event_type === "session_end")
+  const incomingEvent = events.find((e) => e.event_type === "session_start");
+  const outgoing = events.find((e) => e.event_type === "session_end")
     ?.payload?.outgoing_message;
-  const outgoingEvent = detail?.events.find((e) => e.event_type === "session_end");
+  const outgoingEvent = events.find((e) => e.event_type === "session_end");
 
   return (
-    <div
-      data-testid={`sub-agents-child-${child.session_id}`}
-      style={{
-        border: "1px solid var(--border)",
-        borderRadius: 6,
-        overflow: "hidden",
-      }}
-    >
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-          padding: "6px 10px",
-          background: expanded ? "var(--bg-elevated)" : "transparent",
-        }}
-      >
-        <button
-          type="button"
-          aria-label={expanded ? "Collapse" : "Expand"}
-          onClick={() => setExpanded((v) => !v)}
-          data-testid={`sub-agents-child-toggle-${child.session_id}`}
-          style={{
-            background: "transparent",
-            border: "none",
-            color: "var(--text-muted)",
-            cursor: "pointer",
-            padding: 0,
-            display: "inline-flex",
-            alignItems: "center",
-          }}
-        >
-          {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-        </button>
+    <ExpandableSessionCard
+      headerTestId={`sub-agents-child-${child.session_id}`}
+      expanded={expanded}
+      onToggleExpand={() => setExpanded((v) => !v)}
+      onOpenSession={() => onOpenSession(child.session_id)}
+      sessionIdLinkTestId={`sub-agents-child-open-${child.session_id}`}
+      chevronToggleTestId={`sub-agents-child-toggle-${child.session_id}`}
+      identifier={
         <span
           style={{
             fontFamily: "var(--font-mono)",
@@ -393,85 +686,62 @@ function ChildRow({
         >
           {child.agent_role ?? "(role unknown)"}
         </span>
-        <button
-          type="button"
-          onClick={() => onOpenSession(child.session_id)}
-          data-testid={`sub-agents-child-open-${child.session_id}`}
-          style={{
-            background: "transparent",
-            border: "none",
-            cursor: "pointer",
-            color: "var(--text)",
-            fontSize: 12,
-            padding: 0,
-            flex: 1,
-            textAlign: "left",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-            textDecoration: "underline",
-            textDecorationColor:
-              "color-mix(in srgb, var(--accent) 40%, transparent)",
-          }}
-        >
-          {truncateSessionId(child.session_id)}
-        </button>
-        <span
-          style={{
-            fontSize: 11,
-            color: "var(--text-muted)",
-            fontFamily: "var(--font-mono)",
-          }}
-        >
-          {child.state}
-        </span>
-        {child.state === "lost" && (
+      }
+      sessionIdLabel={truncateSessionId(child.session_id)}
+      state={child.state}
+      trailing={
+        child.state === "lost" ? (
           <SubAgentLostDot
             role={child.agent_role ?? undefined}
             sessionIdSuffix={child.session_id.slice(-8)}
             testId={`sub-agents-child-lost-dot-${child.session_id}`}
           />
-        )}
-      </div>
-      {expanded && (
-        <div
-          style={{
-            padding: "8px 10px",
-            display: "flex",
-            flexDirection: "column",
-            gap: 6,
-            borderTop: "1px solid var(--border-subtle)",
-            background: "var(--surface)",
-          }}
-        >
-          {!captureEnabled && (
-            <RowEmpty>
-              Prompt capture is not enabled for this deployment.
-            </RowEmpty>
-          )}
-          {captureEnabled && loading && <RowEmpty>Loading…</RowEmpty>}
-          {captureEnabled && !loading && incoming && incomingEvent && (
-            <MessagePreview
-              label="Input"
-              eventId={incomingEvent.id}
-              message={incoming}
-              testId={`sub-agents-child-input-${child.session_id}`}
-            />
-          )}
-          {captureEnabled && !loading && outgoing && outgoingEvent && (
-            <MessagePreview
-              label="Output"
-              eventId={outgoingEvent.id}
-              message={outgoing}
-              testId={`sub-agents-child-output-${child.session_id}`}
-            />
-          )}
-          {captureEnabled && !loading && !incoming && !outgoing && (
-            <RowEmpty>No messages captured for this sub-agent.</RowEmpty>
-          )}
-        </div>
+        ) : undefined
+      }
+    >
+      {/* W consolidation — when chevron-expanded, show summary
+          metrics + mini-timeline + IN/OUT messages all together so
+          the user sees what the sub-agent did without leaving the
+          parent's drawer. The session-id link in the header
+          handles "navigate to this sub-agent's full drawer" for
+          deeper inspection (Timeline / Prompts / Directives tabs). */}
+      <ExpansionMetricsSummary
+        session={detail?.session ?? null}
+        events={events}
+        loading={loading}
+      />
+      <EventMiniTimeline
+        events={events}
+        loading={loading}
+        onViewMore={() => onOpenSession(child.session_id)}
+        testIdPrefix={`sub-agents-child-${child.session_id}`}
+      />
+      {!captureEnabled && (
+        <RowEmpty>
+          Prompt capture is not enabled for this deployment.
+        </RowEmpty>
       )}
-    </div>
+      {captureEnabled && loading && <RowEmpty>Loading…</RowEmpty>}
+      {captureEnabled && !loading && incoming && incomingEvent && (
+        <MessagePreview
+          label="Input"
+          eventId={incomingEvent.id}
+          message={incoming}
+          testId={`sub-agents-child-input-${child.session_id}`}
+        />
+      )}
+      {captureEnabled && !loading && outgoing && outgoingEvent && (
+        <MessagePreview
+          label="Output"
+          eventId={outgoingEvent.id}
+          message={outgoing}
+          testId={`sub-agents-child-output-${child.session_id}`}
+        />
+      )}
+      {captureEnabled && !loading && !incoming && !outgoing && (
+        <RowEmpty>No messages captured for this sub-agent.</RowEmpty>
+      )}
+    </ExpandableSessionCard>
   );
 }
 

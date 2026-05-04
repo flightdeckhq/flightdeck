@@ -24,6 +24,13 @@ test.describe("T38 — Cross-agent message rendering", () => {
     await page.locator('[data-testid="drawer-tab-sub-agents"]').click();
 
     const drawer = page.locator('[data-testid="session-drawer"]');
+    // Per the D126 UX revision (DECISIONS.md "UX revision 2026-05-04"),
+    // own-side INPUT/OUTPUT messages live INSIDE the chevron-
+    // expanded body of the SPAWNED FROM card alongside the metrics
+    // summary + mini-timeline. Expand the card first.
+    await drawer
+      .locator('[data-testid="sub-agents-spawned-from-toggle"]')
+      .click();
     // Own-side INPUT (received from parent) renders.
     await expect(drawer.locator('[data-testid="sub-agents-own-input"]'))
       .toContainText("Gather sources");
@@ -49,6 +56,11 @@ test.describe("T38 — Cross-agent message rendering", () => {
     await page.locator('[data-testid="drawer-tab-sub-agents"]').click();
 
     const drawer = page.locator('[data-testid="session-drawer"]');
+    // UX revision: expand the SPAWNED FROM card before the message
+    // previews materialise.
+    await drawer
+      .locator('[data-testid="sub-agents-spawned-from-toggle"]')
+      .click();
     const ownInput = drawer.locator('[data-testid="sub-agents-own-input"]');
     await expect(ownInput).toBeVisible();
     // The header annotation flags the overflow shape.

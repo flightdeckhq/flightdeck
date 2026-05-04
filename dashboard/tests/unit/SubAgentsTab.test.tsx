@@ -34,7 +34,7 @@ function mkSession(overrides: Partial<Session> = {}): Session {
     started_at: "2026-05-03T00:00:00Z",
     last_seen_at: "2026-05-03T00:01:00Z",
     ended_at: null,
-    tokens_used: 0,
+    tokens_used: overrides.tokens_used ?? 0,
     token_limit: null,
     capture_enabled: overrides.capture_enabled,
     parent_session_id: overrides.parent_session_id,
@@ -248,6 +248,12 @@ describe("SubAgentsTab — MESSAGES preview", () => {
         incomingMessage: { body: longBody, captured_at: "" },
       }),
     });
+    // Per the D126 UX revision, message previews render INSIDE the
+    // chevron-expanded body. Expand the SPAWNED FROM card first.
+    const cardToggle = await screen.findByTestId(
+      "sub-agents-spawned-from-toggle",
+    );
+    fireEvent.click(cardToggle);
     await waitFor(() =>
       expect(screen.getByTestId("sub-agents-own-input")).toBeTruthy(),
     );
@@ -275,6 +281,10 @@ describe("SubAgentsTab — MESSAGES preview", () => {
         incomingMessage: { body: longBody, captured_at: "" },
       }),
     });
+    // Two-step expansion: card chevron, then message-level expand.
+    fireEvent.click(
+      await screen.findByTestId("sub-agents-spawned-from-toggle"),
+    );
     const expandBtn = await screen.findByTestId("sub-agents-own-input-expand");
     fireEvent.click(expandBtn);
     // Inline body fully visible after expand; fetchEventContent
@@ -312,6 +322,9 @@ describe("SubAgentsTab — MESSAGES preview", () => {
         incomingMessage: { has_content: true, content_bytes: 9000, captured_at: "" },
       }),
     });
+    fireEvent.click(
+      await screen.findByTestId("sub-agents-spawned-from-toggle"),
+    );
     const expandBtn = await screen.findByTestId("sub-agents-own-input-expand");
     fireEvent.click(expandBtn);
     await waitFor(() => {
@@ -345,12 +358,17 @@ describe("SubAgentsTab — MESSAGES preview", () => {
       }),
       events: mkEvents({}), // no incoming/outgoing message
     });
-    await waitFor(() =>
-      expect(screen.getByTestId("sub-agents-spawned-from")).toBeTruthy(),
+    // Capture-off disabled state lives inside the chevron-expanded
+    // body per the UX revision (alongside metrics + mini-timeline);
+    // expand the card first to assert it's visible.
+    fireEvent.click(
+      await screen.findByTestId("sub-agents-spawned-from-toggle"),
     );
-    expect(
-      screen.getByTestId("sub-agents-spawned-from").textContent,
-    ).toContain("Prompt capture is not enabled");
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("sub-agents-spawned-from").textContent,
+      ).toContain("Prompt capture is not enabled"),
+    );
     expect(screen.queryByTestId("sub-agents-own-input")).toBeNull();
   });
 
@@ -467,5 +485,227 @@ describe("SubAgentsTab — drawer rebind via onSwitchSession", () => {
     const childLink = await screen.findByTestId("sub-agents-child-open-c-99");
     fireEvent.click(childLink);
     expect(onOpenSession).toHaveBeenCalledWith("c-99");
+  });
+});
+
+// D126 UX revision (post-merge polish, pre-merge land):
+// chevron-expand-inline + session-id-link-navigate split. The
+// chevron and the session-id link are independent affordances —
+// clicking one does NOT invoke the other's behaviour. Inline
+// expansion shows summary metrics + mini-timeline + IN/OUT
+// messages so the user can see what the related session did
+// without leaving the parent's drawer.
+describe("SubAgentsTab — UX revision: chevron-expand-inline split", () => {
+  it("SPAWNED FROM chevron click toggles expansion WITHOUT invoking onOpenSession", async () => {
+    fetchSessionMock.mockResolvedValue({
+      session: mkSession({ session_id: "p-1", flavor: "parent" }),
+      events: [],
+    });
+    const onOpenSession = vi.fn();
+    renderTab({
+      session: mkSession({
+        session_id: "c-1",
+        parent_session_id: "p-1",
+      }),
+      onOpenSession,
+    });
+    const toggle = await screen.findByTestId(
+      "sub-agents-spawned-from-toggle",
+    );
+    fireEvent.click(toggle);
+    // Mini-timeline appears (loading then resolved) — clear signal
+    // that the row is now expanded.
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("sub-agents-spawned-from-mini-timeline"),
+      ).toBeTruthy(),
+    );
+    // Chevron click MUST NOT have triggered drawer navigation.
+    expect(onOpenSession).not.toHaveBeenCalled();
+  });
+
+  it("SPAWNED FROM session-id link click invokes onOpenSession AND does not toggle expansion", async () => {
+    fetchSessionMock.mockResolvedValue({
+      session: mkSession({ session_id: "p-1", flavor: "parent" }),
+      events: [],
+    });
+    const onOpenSession = vi.fn();
+    renderTab({
+      session: mkSession({
+        session_id: "c-1",
+        parent_session_id: "p-1",
+      }),
+      onOpenSession,
+    });
+    const link = await screen.findByTestId("sub-agents-spawned-from-link");
+    fireEvent.click(link);
+    expect(onOpenSession).toHaveBeenCalledWith("p-1");
+    // No mini-timeline — the link click does NOT expand. The
+    // expansion body element (which would carry the mini-timeline
+    // testid) should not exist.
+    expect(
+      screen.queryByTestId("sub-agents-spawned-from-mini-timeline"),
+    ).toBeNull();
+  });
+
+  it("child-row chevron toggles expansion WITHOUT invoking onOpenSession", async () => {
+    fetchSessionsMock.mockResolvedValue({
+      sessions: [mkChild({ session_id: "c-99" })],
+      total: 1,
+      limit: 100,
+      offset: 0,
+      has_more: false,
+    });
+    fetchSessionMock.mockResolvedValue({
+      session: mkSession({ session_id: "c-99" }),
+      events: [],
+    });
+    const onOpenSession = vi.fn();
+    renderTab({
+      session: mkSession({ session_id: "p-1" }),
+      onOpenSession,
+    });
+    const toggle = await screen.findByTestId(
+      "sub-agents-child-toggle-c-99",
+    );
+    fireEvent.click(toggle);
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("sub-agents-child-c-99-mini-timeline"),
+      ).toBeTruthy(),
+    );
+    expect(onOpenSession).not.toHaveBeenCalled();
+  });
+
+  it("inline-expanded SPAWNED FROM body shows metrics summary + mini-timeline", async () => {
+    fetchSessionMock.mockResolvedValue({
+      session: mkSession({
+        session_id: "p-1",
+        flavor: "parent",
+        tokens_used: 12345,
+      }),
+      events: [
+        {
+          id: "e-1",
+          session_id: "p-1",
+          flavor: "parent",
+          event_type: "post_call",
+          model: "claude-sonnet-4-6",
+          tokens_input: 100,
+          tokens_output: 50,
+          tokens_total: 150,
+          latency_ms: 200,
+          tool_name: null,
+          has_content: false,
+          payload: null,
+          occurred_at: "2026-05-03T00:00:01Z",
+        },
+        {
+          id: "e-2",
+          session_id: "p-1",
+          flavor: "parent",
+          event_type: "tool_call",
+          model: null,
+          tokens_input: null,
+          tokens_output: null,
+          tokens_total: null,
+          latency_ms: null,
+          tool_name: "Bash",
+          has_content: false,
+          payload: null,
+          occurred_at: "2026-05-03T00:00:02Z",
+        },
+      ],
+    });
+    renderTab({
+      session: mkSession({
+        session_id: "c-1",
+        parent_session_id: "p-1",
+      }),
+    });
+    fireEvent.click(
+      await screen.findByTestId("sub-agents-spawned-from-toggle"),
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("sub-agents-spawned-from-mini-timeline"),
+      ).toBeTruthy(),
+    );
+    const metrics = screen.getByTestId("sub-agents-expansion-metrics");
+    // 12,345 tokens (session rollup) + 1 LLM call + 1 tool call.
+    expect(metrics.textContent).toContain("12,345");
+    expect(metrics.textContent).toContain("1 LLM call");
+    expect(metrics.textContent).toContain("1 tool call");
+  });
+
+  it("multiple child rows expand independently (each chevron only toggles its own row)", async () => {
+    fetchSessionsMock.mockResolvedValue({
+      sessions: [
+        mkChild({ session_id: "c-1", agent_role: "Researcher" }),
+        mkChild({ session_id: "c-2", agent_role: "Writer" }),
+      ],
+      total: 2,
+      limit: 100,
+      offset: 0,
+      has_more: false,
+    });
+    fetchSessionMock.mockImplementation(async (id: string) => ({
+      session: mkSession({ session_id: id }),
+      events: [],
+    }));
+    renderTab({ session: mkSession({ session_id: "p-1" }) });
+    fireEvent.click(
+      await screen.findByTestId("sub-agents-child-toggle-c-1"),
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("sub-agents-child-c-1-mini-timeline"),
+      ).toBeTruthy(),
+    );
+    // c-2's mini-timeline should NOT have rendered — only c-1 is
+    // expanded. Independent expansion state per row.
+    expect(
+      screen.queryByTestId("sub-agents-child-c-2-mini-timeline"),
+    ).toBeNull();
+    // Now expand c-2 too — both should coexist.
+    fireEvent.click(screen.getByTestId("sub-agents-child-toggle-c-2"));
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("sub-agents-child-c-2-mini-timeline"),
+      ).toBeTruthy(),
+    );
+    expect(
+      screen.getByTestId("sub-agents-child-c-1-mini-timeline"),
+    ).toBeTruthy();
+  });
+
+  it("child-row mini-timeline lazy-fetches /v1/sessions/{id} only on first expand", async () => {
+    fetchSessionsMock.mockResolvedValue({
+      sessions: [mkChild({ session_id: "c-99" })],
+      total: 1,
+      limit: 100,
+      offset: 0,
+      has_more: false,
+    });
+    fetchSessionMock.mockResolvedValue({
+      session: mkSession({ session_id: "c-99" }),
+      events: [],
+    });
+    renderTab({ session: mkSession({ session_id: "p-1" }) });
+    // Wait for the children list to render. fetchSession should NOT
+    // have been called yet — the child row is collapsed by default,
+    // and lazy-fetch only fires on first expand.
+    await screen.findByTestId("sub-agents-child-toggle-c-99");
+    expect(fetchSessionMock).not.toHaveBeenCalled();
+    // First expand fires the fetch.
+    fireEvent.click(screen.getByTestId("sub-agents-child-toggle-c-99"));
+    await waitFor(() => {
+      expect(fetchSessionMock).toHaveBeenCalledWith("c-99");
+    });
+    // Collapse + re-expand must NOT re-fetch (cached for the
+    // component instance's lifetime).
+    fireEvent.click(screen.getByTestId("sub-agents-child-toggle-c-99"));
+    fireEvent.click(screen.getByTestId("sub-agents-child-toggle-c-99"));
+    expect(fetchSessionMock).toHaveBeenCalledTimes(1);
   });
 });

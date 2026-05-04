@@ -5268,3 +5268,92 @@ locations follow the original D126 manifest plus
 ``dashboard/src/styles/themes.css`` (Rule 15 approval granted
 inline with this revision).
 
+### UX revision 2026-05-04 — SubAgentsTab chevron-expand-inline + session-id-link-navigate
+
+**Decision.** The SubAgentsTab's SPAWNED FROM card and child rows
+split the click affordance into two distinct, non-overlapping
+controls:
+
+1. **Chevron toggle** (▸ collapsed / ▾ expanded) — toggles inline
+   expansion of the row. Click never navigates. Hover state is on
+   the chevron only.
+2. **Session-id link** — link-styled (matches the Investigate
+   PARENT-column visual: ``var(--font-mono)``, ``var(--accent)``
+   colour, underlined with
+   ``color-mix(in srgb, var(--accent) 40%, transparent)``). Click
+   calls ``onSwitchSession`` to rebind the drawer to the related
+   session. Click never expands.
+
+The inline-expanded body of every related row carries (in order):
+
+a. Summary metrics line — total tokens + LLM call count + tool
+   call count, computed from the session's events (with a
+   fallback to the session-row's ``tokens_used`` rollup when
+   events haven't been fetched).
+b. Mini-timeline — up to 12 most recent events rendered via the
+   shared ``EventDetail`` primitive (same component the full
+   Timeline tab uses, so visual cues stay consistent). When the
+   session has more events than the cap, a "View N more in
+   Timeline tab →" footer link calls ``onSwitchSession`` to
+   navigate to the related session's drawer (whose default tab
+   is Timeline).
+c. INPUT / OUTPUT cross-agent message previews — same shape as
+   the pre-revision contract; the existing
+   ``has_content`` overflow path through
+   ``GET /v1/events/{id}/content`` is unchanged. Capture-off
+   (Rule 21) disabled state stays inside the expanded body.
+
+**Reasoning.** Pre-fix the SPAWNED FROM card was a single
+monolithic ``<button>`` that wrapped the whole row including a
+decorative chevron icon — clicking anywhere on the card called
+``onOpenSession``. The chevron read as an expand-affordance to
+users (per supervisor's manual UX exploration of D126); clicking
+it produced unexpected drawer navigation instead. The Sub-agents
+tab also had no event preview, forcing users to switch to
+Timeline tab to see what the related session actually did — extra
+friction for what is the most-common follow-up.
+
+The split mirrors the Investigate inline-expansion pattern locked
+at step 11.fix.fix (chevron expands inline, session-id link
+navigates), which means operators learn ONE interaction pattern
+and apply it across both surfaces. The mini-timeline +
+metrics-summary consolidation collapses the most-common drill-
+down (parent → "what did this child do?") into the parent's own
+drawer — the user only navigates when they want the full
+Prompts / Directives / etc. tabs of the related session.
+
+**L3 dead-end UX.** Pre-fix the Sub-agents tab showing only
+SPAWNED FROM + IN/OUT messages without any event preview was
+exactly the L3 class — it surfaced the existence of a related
+session but made the user navigate to see anything about it. The
+mini-timeline closes that gap.
+
+**Rejected alternative.** Make the entire row clickable for
+expansion (Investigate's parent-row pattern) AND keep the
+session-id text as the navigation affordance via
+``e.stopPropagation()``. Rejected because the row-wide click
+target makes the navigation affordance harder to discover — users
+would learn to click the row to expand, then need a separate
+mental model for "the small underlined text is the navigation
+escape hatch". The dedicated chevron + dedicated link is more
+discoverable and matches the Investigate row-style precedent.
+
+**Touch list.** Single commit on the same PR.
+``dashboard/src/components/session/SubAgentsTab.tsx`` adds the
+``ExpandableSessionCard`` / ``ExpansionMetricsSummary`` /
+``EventMiniTimeline`` helpers, refactors ``SpawnedFromSection``
+to use them, and threads metrics + mini-timeline into
+``ChildRow``'s existing inline expansion. Tests
+(``dashboard/tests/unit/SubAgentsTab.test.tsx`` +
+``dashboard/tests/e2e/T32-sub-agent-drawer-tab.spec.ts``) extend
+the suite per Rule 40c.3 (theme matrix; structural assertions,
+no hardcoded colours).
+
+**Historical-data note.** Pre-219a5c0a Claude Code subagents
+landed in the DB with only ``session_start`` + ``session_end``
+events (the interior-routing fix in 219a5c0a is what made
+interior tool / LLM events route to the child session at all).
+The mini-timeline correctly renders 2 events for those legacy
+rows; that's accurate historical data, not a bug. Post-fix
+sub-agents will show the full event list.
+

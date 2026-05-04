@@ -875,12 +875,25 @@ export function _subagentRole(hookEvent) {
 }
 
 export function _subagentCorrelator(hookEvent) {
-  // Stable correlator linking SubagentStart and SubagentStop to the
-  // same child session. tool_use_id is the standard hook-pair
-  // correlator in Claude Code; we accept a couple of likely
-  // alternatives so version-skew doesn't silently break the
-  // child-id pairing.
+  // Stable correlator linking SubagentStart, every interior hook
+  // fired during the subagent's execution, and SubagentStop to the
+  // same child session.
+  //
+  // Real Claude Code (Opus 4.7+) populates ``agent_id`` on every
+  // hook fired in subagent context — SubagentStart, every interior
+  // PostToolUse / PreToolUse / Stop, and SubagentStop — with the
+  // SAME value. This is the authoritative correlator for the modern
+  // Agent tool surface and the only field present on SubagentStart
+  // (which Claude Code does NOT supply tool_use_id for).
+  //
+  // ``tool_use_id`` / ``subagent_id`` / ``id`` remain as fallbacks
+  // for older Claude Code versions, the playground/14 synthetic
+  // harness, and any future surface that uses a different field
+  // name. The first non-empty value wins; agent_id is checked first
+  // so the modern surface routes correctly without touching the
+  // playground / unit-test fixtures.
   return (
+    hookEvent.agent_id ||
     hookEvent.tool_use_id ||
     hookEvent.subagent_id ||
     hookEvent.id ||
@@ -899,6 +912,81 @@ export function _subagentChildSessionId(outerSessionId, correlator) {
     NAMESPACE_FLIGHTDECK,
     `flightdeck:subagent://${outerSessionId}/${correlator}`,
   );
+}
+
+// D126 — interior-event routing for Claude Code subagents.
+//
+// When Claude Code runs an Agent-tool subagent, every interior hook
+// (PostToolUse, PreToolUse, Stop, etc.) fires with the OUTER session's
+// ``session_id`` but with two extra fields populated:
+//
+//   * ``agent_id``   — the subagent's stable correlator (same value
+//                      Claude Code passed on SubagentStart and will
+//                      pass on SubagentStop).
+//   * ``agent_type`` — the subagent's role label (e.g. ``"Explore"``).
+//
+// Both fields are absent (null / undefined) on hooks fired outside
+// subagent context — i.e. the parent's own tool-call lifecycle.
+// Their presence is the discriminator: when we see ``agent_id`` set
+// on a non-Subagent-named hook, we are inside the subagent's
+// execution and the event must land under the CHILD session, not
+// the parent.
+//
+// Pre-fix the plugin used the parent's session_id for these interior
+// events, leaving the child session row empty in the dashboard while
+// the parent collected the subagent's tool calls and LLM turns —
+// architecturally wrong, and the gap that survived the playground/14
+// synthetic harness because the harness never simulates the
+// SubagentStart → interior-PostToolUse → SubagentStop sequence (it
+// fires the boundary events alone). See DECISIONS.md D126 § 5
+// "interior-event routing" for the lesson.
+//
+// Returns null when the hook is NOT in subagent context (parent's
+// own event); returns a context object with the remapped child
+// identity when it IS. The caller (main()) overlays the returned
+// fields onto basePayload before emission so every downstream event
+// type — pre_call, post_call, tool_call, mcp_*, the synthetic
+// session_start backstop — automatically lands under the child.
+export function _subagentInteriorContext({
+  hookEvent,
+  hookName,
+  parentSessionId,
+  parentAgentName,
+  identityUser,
+  identityHostname,
+}) {
+  // SubagentStart / SubagentStop have their own dedicated dispatch
+  // (emitSubagentEvent) and do NOT take this path. Recognising them
+  // here would double-emit the child session_start / session_end.
+  if (hookName === "SubagentStart" || hookName === "SubagentStop") {
+    return null;
+  }
+  const agentIdField = hookEvent && hookEvent.agent_id;
+  if (!agentIdField || typeof agentIdField !== "string") {
+    return null;
+  }
+  const role =
+    hookEvent.subagent_type ||
+    hookEvent.agent_type ||
+    hookEvent.subagent ||
+    "";
+  const childSessionId = _subagentChildSessionId(parentSessionId, agentIdField);
+  const childAgentName = role ? `${parentAgentName}/${role}` : parentAgentName;
+  const childAgentId = deriveAgentId({
+    agent_type: "coding",
+    user: identityUser,
+    hostname: identityHostname,
+    client_type: "claude_code",
+    agent_name: parentAgentName,
+    agent_role: role,
+  });
+  return {
+    sessionId: childSessionId,
+    parentSessionId,
+    agentRole: role || null,
+    agentId: childAgentId,
+    agentName: childAgentName,
+  };
 }
 
 function _captureMessage(body) {
@@ -1001,12 +1089,14 @@ async function emitSubagentEvent({
   if (!correlator) {
     // Without a correlator we can't pair Start with Stop. Log and
     // bail rather than emitting half a relationship that the
-    // worker would later struggle to close. Step 9 playground will
-    // catch a Claude Code version that drops tool_use_id from
-    // these hooks.
+    // worker would later struggle to close. The modern Claude Code
+    // surface populates ``agent_id`` on Subagent hooks; older
+    // surfaces fell back to ``tool_use_id``. Either should be
+    // present; absence here means a Claude Code version skew the
+    // plugin's correlator list doesn't yet cover.
     process.stderr.write(
-      `flightdeck: ${hookName} payload missing tool_use_id; ` +
-        `child session emission skipped.\n`,
+      `flightdeck: ${hookName} payload missing agent_id and ` +
+        `tool_use_id; child session emission skipped.\n`,
     );
     return;
   }
@@ -1371,7 +1461,16 @@ async function main() {
     return;
   }
 
-  const sessionId = getSessionId(hookEvent);
+  // ``outerSessionId`` is what Claude Code passes on hookEvent —
+  // ALWAYS the parent invocation's id, regardless of whether the
+  // hook fires inside subagent context. ``sessionId`` is what we
+  // EMIT under, which equals ``outerSessionId`` for parent events
+  // and equals the deterministic child id for interior subagent
+  // events (computed below). Keep both names — the parent linkage
+  // on subagent children needs the outer, the dispatch downstream
+  // needs the resolved.
+  const outerSessionId = getSessionId(hookEvent);
+  let sessionId = outerSessionId;
   const transcriptPath = hookEvent.transcript_path;
 
   // Base identity fields used by every event for this session.
@@ -1401,15 +1500,38 @@ async function main() {
     process.env.FLIGHTDECK_HOSTNAME ||
     baseContext?.hostname ||
     osHostname();
-  const agentName =
+  const baseAgentName =
     process.env.FLIGHTDECK_AGENT_NAME || `${identityUser}@${identityHostname}`;
-  const agentId = deriveAgentId({
+  const baseAgentId = deriveAgentId({
     agent_type: "coding",
     user: identityUser,
     hostname: identityHostname,
     client_type: "claude_code",
-    agent_name: agentName,
+    agent_name: baseAgentName,
   });
+
+  // D126 interior-event routing. When this hook fired inside a
+  // subagent's execution, swap (sessionId, agentId, agentName) to
+  // the CHILD identity so every downstream emission lands under
+  // the right session — and stamp parent_session_id / agent_role
+  // on basePayload so the worker writes the relationship through.
+  // Returns null for parent-context hooks; resolved fields apply
+  // unchanged for those.
+  const interiorCtx = _subagentInteriorContext({
+    hookEvent,
+    hookName,
+    parentSessionId: outerSessionId,
+    parentAgentName: baseAgentName,
+    identityUser,
+    identityHostname,
+  });
+  let agentId = baseAgentId;
+  let agentName = baseAgentName;
+  if (interiorCtx) {
+    sessionId = interiorCtx.sessionId;
+    agentId = interiorCtx.agentId;
+    agentName = interiorCtx.agentName;
+  }
 
   const basePayload = {
     session_id: sessionId,
@@ -1433,6 +1555,12 @@ async function main() {
     token_limit_session: null,
     has_content: false,
     content: null,
+    ...(interiorCtx
+      ? {
+          parent_session_id: interiorCtx.parentSessionId,
+          agent_role: interiorCtx.agentRole,
+        }
+      : {}),
     ...(baseContext ? { context: baseContext } : {}),
   };
 
@@ -1461,13 +1589,19 @@ async function main() {
   // a clean SubagentStop fall through the worker's existing state-
   // revival path (active → stale → lost).
   if (isSubagentHook) {
+    // emitSubagentEvent derives the child's agent_id and display
+    // name from the PARENT's agent_name (D126 § 1 — agent_role is
+    // the conditional 6th input on top of the parent's 5-tuple).
+    // Pass ``baseAgentName`` explicitly so the right value flows
+    // even if a future change makes ``agentName`` carry the child's
+    // composed form for some other reason.
     await emitSubagentEvent({
       cfg,
       hookName,
       hookEvent,
-      outerSessionId: sessionId,
+      outerSessionId,
       basePayload,
-      agentName,
+      agentName: baseAgentName,
       identityUser,
       identityHostname,
     });
@@ -1709,6 +1843,14 @@ async function main() {
     hasContent = true;
   }
 
+  // D126 — preserve basePayload's parent_session_id when interior
+  // subagent context set it (the modern Agent tool path). Fall back
+  // to the legacy ``isSubagentCall ? sessionId : null`` shape for
+  // the deprecated Task-tool informational hint (D100, retained as
+  // forward-compat on the parent's tool_call event for any consumer
+  // still reading it). The two paths are mutually exclusive — when
+  // interior context is active, basePayload.parent_session_id is
+  // the OUTER session id; when it isn't, the legacy line applies.
   const payload = {
     ...basePayload,
     event_type: eventType,
@@ -1716,7 +1858,9 @@ async function main() {
     tool_input: toolInputJson,
     tool_result: null,
     is_subagent_call: isSubagentCall,
-    parent_session_id: isSubagentCall ? sessionId : null,
+    parent_session_id:
+      basePayload.parent_session_id ??
+      (isSubagentCall ? sessionId : null),
     latency_ms: hookName === "PostToolUse" ? Date.now() - startTime : null,
     timestamp: new Date().toISOString(),
     has_content: hasContent,

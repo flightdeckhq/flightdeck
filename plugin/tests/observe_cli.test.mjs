@@ -1891,12 +1891,15 @@ describe("observe_cli SubagentStart / SubagentStop", () => {
     }
   });
 
-  it("missing tool_use_id correlator skips child emission with a stderr warn", async () => {
+  it("missing correlator (no agent_id and no tool_use_id) skips child emission with a stderr warn", async () => {
+    // Both correlator fields deliberately missing. Real Claude Code
+    // (Opus 4.7+) supplies agent_id on Subagent hooks; older surfaces
+    // supplied tool_use_id. Absence of both is the genuine correlator-
+    // gap case the plugin should report rather than half-emit.
     const input = JSON.stringify({
       hook_event_name: "SubagentStart",
       session_id: "sess-outer-4",
       subagent_type: "Explore",
-      // tool_use_id deliberately missing
       tool_input: { prompt: "no correlator here" },
     });
     const before = capture.bodies().length;
@@ -1913,11 +1916,198 @@ describe("observe_cli SubagentStart / SubagentStop", () => {
       (b) => b.parent_session_id != null,
     );
     assert.equal(subagentEvents.length, 0);
-    // The plugin warned on stderr explaining why.
+    // The plugin warned on stderr explaining why. Match the
+    // post-fix message which names both correlator fields.
     assert.ok(
-      result.stderr.includes("missing tool_use_id"),
+      result.stderr.includes("missing agent_id and tool_use_id"),
       `expected stderr warn about missing correlator; got: ${result.stderr}`,
     );
+  });
+
+  it("interior-event routing: PostToolUse fired during a subagent lands under the CHILD session, not the parent (D126 § 5)", async () => {
+    // Regression test for the gap that survived to manual Supervisor
+    // smoke. Real Claude Code (Opus 4.7+) fires the full sequence:
+    //
+    //   SubagentStart  — sessionId=parent, agent_id=<sub>, agent_type=<role>
+    //   PostToolUse    — sessionId=parent (!), agent_id=<sub>, agent_type=<role>
+    //   SubagentStop   — sessionId=parent, agent_id=<sub>, agent_type=<role>
+    //
+    // The parent's own session_id appears on every hook including
+    // interior ones; the only discriminator that "this hook fired
+    // inside subagent context" is hookEvent.agent_id being set
+    // (it's null on parent-context hooks). Pre-fix, the plugin
+    // used the parent's session_id for interior events, so the
+    // subagent's tool calls and LLM turns landed under the
+    // PARENT row in the dashboard while the child session row
+    // sat empty. The mock unit tests pinned only the SubagentStart
+    // / SubagentStop boundary shape (the playground/14 synthetic
+    // harness mirrored that), so the routing gap shipped.
+    //
+    // This test fires the full three-event sequence verbatim from
+    // the empirical hook firing captured in the diagnostic log,
+    // then asserts the interior PostToolUse lands under the
+    // child session id (the deterministic uuid5 derived from
+    // outerSessionId + agent_id) with parent_session_id and
+    // agent_role stamped through. The parent's own basePayload
+    // identity is also asserted unchanged on a fourth hook fired
+    // OUTSIDE subagent context, to catch a future regression
+    // where the interior swap would leak across hook invocations.
+    const PARENT_ID = "11111111-1111-4111-8111-111111111101";
+    const SUBAGENT_AGENT_ID = "a3017b22f63bf2583";
+    const ROLE = "Explore";
+    const expectedChildId = _subagentChildSessionId(
+      PARENT_ID,
+      SUBAGENT_AGENT_ID,
+    );
+
+    const env = {
+      FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
+      FLIGHTDECK_TOKEN: "tok_test",
+      CLAUDE_SESSION_ID: PARENT_ID,
+      FLIGHTDECK_CAPTURE_PROMPTS: "true",
+    };
+
+    const before = capture.bodies().length;
+
+    // 1. SubagentStart — emits child session_start with parent
+    //    linkage. agent_id (not tool_use_id) is the correlator;
+    //    real Claude Code does not include tool_use_id here.
+    const startInput = JSON.stringify({
+      hook_event_name: "SubagentStart",
+      session_id: PARENT_ID,
+      agent_id: SUBAGENT_AGENT_ID,
+      agent_type: ROLE,
+      transcript_path: "/tmp/none.jsonl",
+    });
+    const r1 = await runScript(startInput, env);
+    assert.equal(r1.code, 0);
+
+    // 2. Interior PostToolUse — fires WITH the parent's session_id
+    //    AND the subagent's agent_id. Pre-fix this landed under
+    //    PARENT_ID; post-fix it must land under expectedChildId.
+    const interiorInput = JSON.stringify({
+      hook_event_name: "PostToolUse",
+      session_id: PARENT_ID,
+      agent_id: SUBAGENT_AGENT_ID,
+      agent_type: ROLE,
+      tool_name: "Bash",
+      tool_use_id: "toolu_interior_0001",
+      tool_input: { command: "ls" },
+      tool_response: { output: "agent_id.mjs\nobserve_cli.mjs\n" },
+      duration_ms: 12,
+      transcript_path: "/tmp/none.jsonl",
+    });
+    const r2 = await runScript(interiorInput, env);
+    assert.equal(r2.code, 0);
+
+    // 3. SubagentStop — emits child session_end.
+    const stopInput = JSON.stringify({
+      hook_event_name: "SubagentStop",
+      session_id: PARENT_ID,
+      agent_id: SUBAGENT_AGENT_ID,
+      agent_type: ROLE,
+      stop_hook_active: true,
+      last_assistant_message: "done",
+      transcript_path: "/tmp/none.jsonl",
+    });
+    const r3 = await runScript(stopInput, env);
+    assert.equal(r3.code, 0);
+
+    // 4. Parent-context PostToolUse fired AFTER the subagent
+    //    finished. agent_id absent → no interior remap. Asserts
+    //    the swap doesn't bleed across hook invocations (each
+    //    hook is a fresh process so this is also a structural
+    //    check that nothing on disk persisted the subagent
+    //    state).
+    const parentAfterInput = JSON.stringify({
+      hook_event_name: "PostToolUse",
+      session_id: PARENT_ID,
+      tool_name: "Read",
+      tool_use_id: "toolu_parent_after_0001",
+      tool_input: { file_path: "/tmp/x" },
+      tool_response: { content: "..." },
+      duration_ms: 3,
+      transcript_path: "/tmp/none.jsonl",
+    });
+    const r4 = await runScript(parentAfterInput, env);
+    assert.equal(r4.code, 0);
+
+    const newBodies = capture.bodies().slice(before);
+
+    // ── Child session_start landed under expected child id ──────
+    const childStart = newBodies.find(
+      (b) =>
+        b.event_type === "session_start" &&
+        b.session_id === expectedChildId,
+    );
+    assert.ok(
+      childStart,
+      `expected child session_start under ${expectedChildId}; ` +
+        `got bodies: ${JSON.stringify(
+          newBodies.map((b) => ({
+            type: b.event_type,
+            sid: b.session_id,
+            psid: b.parent_session_id,
+            role: b.agent_role,
+          })),
+        )}`,
+    );
+    assert.equal(childStart.parent_session_id, PARENT_ID);
+    assert.equal(childStart.agent_role, ROLE);
+
+    // ── Interior tool_call landed under CHILD id, with linkage ──
+    const interiorCall = newBodies.find(
+      (b) => b.event_type === "tool_call" && b.tool_name === "Bash",
+    );
+    assert.ok(interiorCall, "interior Bash tool_call expected");
+    assert.equal(
+      interiorCall.session_id,
+      expectedChildId,
+      `interior tool_call must land under child ${expectedChildId}, ` +
+        `got ${interiorCall.session_id} (parent=${PARENT_ID})`,
+    );
+    assert.equal(interiorCall.parent_session_id, PARENT_ID);
+    assert.equal(interiorCall.agent_role, ROLE);
+    // Child agent_id is the role-augmented derivation, NOT the
+    // parent's bare-5-tuple agent_id.
+    const expectedChildAgentId = deriveAgentId({
+      agent_type: "coding",
+      user: childStart.user,
+      hostname: childStart.hostname,
+      client_type: "claude_code",
+      agent_name: childStart.user + "@" + childStart.hostname,
+      agent_role: ROLE,
+    });
+    assert.equal(interiorCall.agent_id, expectedChildAgentId);
+
+    // ── Child session_end landed under expected child id ────────
+    const childEnd = newBodies.find(
+      (b) =>
+        b.event_type === "session_end" &&
+        b.session_id === expectedChildId,
+    );
+    assert.ok(childEnd, "expected child session_end under child id");
+    assert.equal(childEnd.parent_session_id, PARENT_ID);
+    assert.equal(childEnd.agent_role, ROLE);
+
+    // ── Parent-context PostToolUse stayed under parent id ──────
+    const parentAfterCall = newBodies.find(
+      (b) => b.event_type === "tool_call" && b.tool_name === "Read",
+    );
+    assert.ok(parentAfterCall, "parent-context Read tool_call expected");
+    assert.equal(
+      parentAfterCall.session_id,
+      PARENT_ID,
+      "parent-context event must NOT remap to child",
+    );
+    // For non-Task parent tools the legacy emission path stamps
+    // parent_session_id explicitly to null (pre-D126 wire shape
+    // preserved for downstream consumers; ingestion validator
+    // treats absent and null identically). agent_role is omitted
+    // entirely on parent-context events because basePayload's
+    // interiorCtx spread is empty.
+    assert.equal(parentAfterCall.parent_session_id, null);
+    assert.equal(parentAfterCall.agent_role, undefined);
   });
 
   it("missing subagent_type produces empty role and the parent's agent_id", async () => {

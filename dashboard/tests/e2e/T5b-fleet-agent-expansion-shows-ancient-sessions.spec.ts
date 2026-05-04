@@ -26,9 +26,33 @@ import {
 // the dead-end the fix exists to prevent. Negative assertion is
 // the load-bearing one.
 test.describe("T5b — Ancient agent's expanded drawer is not a dead-end", () => {
-  test("ancient agent (sessions > 7 days) drawer shows session row + Investigate footer", async ({
+  test.skip("ancient agent (sessions > 7 days) drawer shows session row + Investigate footer", async ({
     page,
   }) => {
+    // Skipped per Rule 40c.1 (no flaky tests merged as-is) + Rule
+    // 49 (declined-with-reason in the commit body). Test logic is
+    // correct and passes 100% in isolation (``npx playwright test
+    // T5b`` returns 2/2 across both themes). Fails intermittently
+    // in CI under the full parallel suite — the virtualized
+    // swimlane's IntersectionObserver mount cycle races
+    // ``bringSwimlaneRowIntoView``'s scroll loop when 8+ Playwright
+    // workers hit the dev stack simultaneously with WebSocket-
+    // driven re-renders. Defensive helper improvements landed in
+    // commit ``4e13bcd3`` (networkidle wait + detach-race
+    // try/catch in ``_fixtures.ts``) reduced but did not eliminate
+    // the flake.
+    //
+    // Re-enable once the flake is genuinely closed. Likely fix
+    // candidates: replace the scroll-step loop with an
+    // ``expect.poll`` + longer total budget; OR add a Fleet-level
+    // "search by agent_name" input so the test can target the row
+    // directly without scroll-to-find. Rule 40c.1 permits
+    // ``test.skip`` as the softer form of "deleted" when the
+    // underlying surface is worth keeping coverage for once the
+    // flake is closed — the V-DRAWER fix this exercises (sessions
+    // older than the swimlane's 24h default window must surface
+    // in the expanded drawer) is a real and load-bearing
+    // contract, not a test-of-test-infrastructure.
     await page.goto("/");
     await waitForFleetReady(page);
 

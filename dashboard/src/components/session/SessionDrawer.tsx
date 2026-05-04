@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useRef, useState, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { X, FileText, AlertCircle } from "lucide-react";
+import { X, FileText } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { TruncatedText } from "@/components/ui/TruncatedText";
 import { invalidateSessionCache, useSession } from "@/hooks/useSession";
@@ -19,16 +19,13 @@ import {
 import { TokenUsageBar } from "./TokenUsageBar";
 import { PromptViewer } from "./PromptViewer";
 import { SubAgentsTab } from "./SubAgentsTab";
-import { ErrorEventDetails } from "./ErrorEventDetails";
-import { PolicyEventDetails } from "./PolicyEventDetails";
-import { EmbeddingsContentViewer } from "./EmbeddingsContentViewer";
-import { MCPEventDetails, isMCPEvent } from "./MCPEventDetails";
+import { EventRow } from "./EventRow";
 import { createDirective, fetchOlderEvents, fetchSessions } from "@/lib/api";
 import { sessionSupportsDirectives } from "@/lib/directives";
 import { ClaudeCodeLogo } from "@/components/ui/claude-code-logo";
 import { CodingAgentBadge } from "@/components/ui/coding-agent-badge";
 import { getClaudeCodeVersion, isClaudeCodeSession } from "@/lib/models";
-import { attachBadge, getBadge, getEventDetail, getSummaryRows, isAttachmentStartEvent, truncateSessionId } from "@/lib/events";
+import { getBadge, getSummaryRows, truncateSessionId } from "@/lib/events";
 import { getProvider } from "@/lib/models";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import { OSIcon } from "@/components/ui/OSIcon";
@@ -1449,110 +1446,25 @@ function EventFeed({
           No events recorded for this session.
         </div>
       ) : (
-        events.map((event) => {
-        const isAttachment = isAttachmentStartEvent(event, attachments);
-        const badge = isAttachment ? attachBadge : getBadge(event.event_type);
-        const isExpanded = expandedEventId === event.id;
-        const detail = getEventDetail(event);
-
-        return (
-          <div key={event.id}>
-            {/* Row — 32px */}
-            <div
-              className="flex h-8 cursor-pointer items-center gap-2 px-3 transition-colors hover:bg-surface-hover"
-              style={{ borderBottom: "1px solid var(--border-subtle)" }}
-              onClick={() => onToggleExpand(event.id)}
-              // Generic ``event-row`` testid stays for the existing
-              // E2E suite. New per-type testids (Phase 4 polish)
-              // pin a specific shape so T14/T15/T16 can locate
-              // exactly the row they assert against — e.g.
-              // ``embeddings-event-row-<id>``. Type-specific id
-              // sits alongside the generic via data-event-type so
-              // both selectors keep working.
-              data-testid={
-                event.event_type === "embeddings"
-                  ? `embeddings-event-row-${event.id}`
-                  : event.event_type === "llm_error"
-                  ? `error-event-row-${event.id}`
-                  : event.event_type === "policy_warn" ||
-                      event.event_type === "policy_degrade" ||
-                      event.event_type === "policy_block"
-                  ? `policy-event-row-${event.id}`
-                  : isMCPEvent(event.event_type)
-                  ? `mcp-event-row-${event.id}`
-                  : "event-row"
-              }
-              data-event-type={event.event_type}
-              data-event-id={event.id}
-            >
-              {isAttachment ? (
-                <TooltipProvider>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <span
-                        className="flex h-[18px] min-w-[88px] shrink-0 items-center justify-center whitespace-nowrap rounded px-2 font-mono text-[10px] font-semibold uppercase"
-                        style={{
-                          background: `color-mix(in srgb, ${badge.cssVar} 15%, transparent)`,
-                          color: badge.cssVar,
-                          border: `1px solid color-mix(in srgb, ${badge.cssVar} 30%, transparent)`,
-                          borderRadius: 3,
-                        }}
-                        data-testid="event-badge"
-                      >
-                        {badge.label}
-                      </span>
-                    </TooltipTrigger>
-                    <TooltipContent>
-                      Agent re-attached with the same session ID
-                    </TooltipContent>
-                  </Tooltip>
-                </TooltipProvider>
-              ) : (
-                <span
-                  className="flex h-[18px] min-w-[88px] shrink-0 items-center justify-center whitespace-nowrap rounded px-2 font-mono text-[10px] font-semibold uppercase"
-                  style={{
-                    background: `color-mix(in srgb, ${badge.cssVar} 15%, transparent)`,
-                    color: badge.cssVar,
-                    border: `1px solid color-mix(in srgb, ${badge.cssVar} 30%, transparent)`,
-                    borderRadius: 3,
-                  }}
-                  data-testid="event-badge"
-                >
-                  {badge.label}
-                </span>
-              )}
-              <MCPErrorIndicator event={event} />
-              <span
-                // Mixed inline content (provider logo + detail text).
-                // Native ``title`` surfaces the text on hover.
-                className="flex-1 truncate text-[13px] flex items-center gap-1"
-                style={{ color: "var(--text)" }}
-                title={detail}
-              >
-                {(event.event_type === "post_call" || event.event_type === "pre_call") && event.model && (
-                  <ProviderLogo provider={getProvider(event.model)} size={12} />
-                )}
-                {detail}
-                <StreamingPill event={event} />
-              </span>
-              <span className="w-[72px] shrink-0 text-right font-mono text-[11px]" style={{ color: "var(--text-muted)" }}>
-                {new Date(event.occurred_at).toLocaleTimeString()}
-              </span>
-            </div>
-
-            {/* Expanded content — no transition, just show/hide */}
-            {isExpanded && (
-              <ExpandedEvent
-                event={event}
-                onViewPrompts={
-                  event.has_content ? () => onViewPrompts(event.id) : undefined
-                }
-                onOpenDetail={onOpenDetail ? () => onOpenDetail(event) : undefined}
-              />
-            )}
-          </div>
-        );
-      })
+        // Per-row rendering lives in ./EventRow so the SubAgentsTab
+        // inline mini-timeline can share the exact same component
+        // (D126 UX revision 2026-05-04: Timeline-fidelity event
+        // rendering inside the Sub-agents tab — colour-pill badges,
+        // streaming pills, MCP error indicators, provider logos,
+        // expand-into-ExpandedEvent on click — all match this tab
+        // byte-for-byte). Don't inline-duplicate this row again;
+        // shape changes belong in EventRow.tsx.
+        events.map((event) => (
+          <EventRow
+            key={event.id}
+            event={event}
+            attachments={attachments}
+            isExpanded={expandedEventId === event.id}
+            onToggleExpand={onToggleExpand}
+            onViewPrompts={onViewPrompts}
+            onOpenDetail={onOpenDetail}
+          />
+        ))
       )}
       {events.length > 0 && hasMoreOlder && (
         <button
@@ -1573,105 +1485,10 @@ function EventFeed({
   );
 }
 
-/* ---- Streaming pill (Phase 4 polish) ---- */
-
-/**
- * Inline ``STREAM`` pill rendered alongside the row's detail text
- * for any post_call event whose payload carries the streaming
- * sub-object. Two visual variants:
- *
- *  - completed: muted lavender pill labelled ``STREAM``. Title
- *    attribute carries chunks/p50/p95/max_gap so a hover reveals
- *    the per-chunk latency summary without expanding the row.
- *  - aborted: red pill labelled ``ABORTED``. Title appends the
- *    sensor's ``abort_reason`` so the operator sees why the
- *    stream gave up. Carries a separate ``stream-aborted-<id>``
- *    testid so T15 can branch its assertion path on outcome.
- *
- * Renders nothing when ``payload.streaming`` is absent (the row's
- * existing layout is unchanged for non-streaming post_calls).
- */
-/**
- * Phase 5 — small inline error indicator rendered between the badge
- * and the detail text on MCP event rows whose ``payload.error`` is
- * populated. The drawer's row layout otherwise inherits the MCP
- * colour family (cyan/green/purple) regardless of success vs. failure
- * — without this, an operator scanning the event feed cannot
- * distinguish a successful ``mcp_tool_call`` from a failed one
- * without expanding the row to read MCPEventDetails.
- *
- * Renders nothing when the event isn't MCP, when there's no error
- * field, or when ``payload`` is missing.
- */
-function MCPErrorIndicator({ event }: { event: AgentEvent }) {
-  if (!isMCPEvent(event.event_type)) return null;
-  const err = event.payload?.error;
-  if (err == null) return null;
-  const message =
-    typeof err === "string"
-      ? err
-      : err && typeof err === "object"
-      ? (err as { message?: string }).message ||
-        (err as { error_class?: string }).error_class ||
-        (err as { error_type?: string }).error_type ||
-        "MCP call failed"
-      : "MCP call failed";
-  return (
-    <TooltipProvider>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <span
-            data-testid={`mcp-error-indicator-${event.id}`}
-            aria-label={`MCP call failed: ${message}`}
-            className="inline-flex shrink-0 items-center justify-center"
-            style={{ color: "var(--event-error)" }}
-          >
-            <AlertCircle size={12} strokeWidth={2.5} />
-          </span>
-        </TooltipTrigger>
-        <TooltipContent>{`Failed: ${message}`}</TooltipContent>
-      </Tooltip>
-    </TooltipProvider>
-  );
-}
-
-function StreamingPill({ event }: { event: AgentEvent }) {
-  const stream = event.payload?.streaming;
-  if (!stream) return null;
-  const aborted = stream.final_outcome === "aborted";
-  const ic = stream.inter_chunk_ms;
-  const titleParts: string[] = [`chunks=${stream.chunk_count}`];
-  if (ic) {
-    titleParts.push(`p50=${ic.p50}ms`);
-    titleParts.push(`p95=${ic.p95}ms`);
-    titleParts.push(`max_gap=${ic.max}ms`);
-  }
-  if (aborted && stream.abort_reason) {
-    titleParts.push(`abort_reason=${stream.abort_reason}`);
-  }
-  const title = titleParts.join(" · ");
-  const colorVar = aborted ? "var(--event-error)" : "var(--event-llm)";
-  const label = aborted ? "ABORTED" : "STREAM";
-  return (
-    <span
-      data-testid={
-        aborted ? `stream-aborted-${event.id}` : `stream-badge-${event.id}`
-      }
-      title={title}
-      className="ml-1 inline-flex h-[16px] shrink-0 items-center rounded font-mono text-[9px] font-semibold uppercase"
-      style={{
-        padding: "0 5px",
-        background: `color-mix(in srgb, ${colorVar} 15%, transparent)`,
-        color: colorVar,
-        border: `1px solid color-mix(in srgb, ${colorVar} 30%, transparent)`,
-        borderRadius: 3,
-        letterSpacing: "0.04em",
-      }}
-    >
-      {label}
-    </span>
-  );
-}
+// ``MCPErrorIndicator`` and ``StreamingPill`` moved to ./EventRow
+// alongside the per-event row component (D126 UX revision
+// 2026-05-04 — Sub-agents tab inline mini-timeline shares
+// rendering with the Timeline tab).
 
 /* ---- Events-limit pill selector (D113) ---- */
 
@@ -1739,79 +1556,10 @@ function EventsLimitPills({
   );
 }
 
-/* ---- Expanded event detail ---- */
-
-function ExpandedEvent({
-  event,
-  onViewPrompts,
-  onOpenDetail,
-}: {
-  event: AgentEvent;
-  onViewPrompts?: () => void;
-  onOpenDetail?: () => void;
-}) {
-  const summaryRows = getSummaryRows(event);
-  const payload = {
-    id: event.id, event_type: event.event_type, model: event.model,
-    tokens_input: event.tokens_input, tokens_output: event.tokens_output,
-    tokens_total: event.tokens_total, latency_ms: event.latency_ms,
-    tool_name: event.tool_name, has_content: event.has_content, occurred_at: event.occurred_at,
-  };
-
-  // Phase 4 polish: when this is an llm_error event with a
-  // structured payload.error, lift it out so we can pass it to
-  // <ErrorEventDetails/>. Narrowing here keeps the accordion
-  // component itself unaware of the directive_result string
-  // overload — it accepts only the structured shape.
-  const errorPayload =
-    event.event_type === "llm_error" &&
-    event.payload?.error &&
-    typeof event.payload.error !== "string"
-      ? event.payload.error
-      : null;
-
-  return (
-    <div className="px-3 py-2.5" style={{ background: "var(--bg)", borderBottom: "1px solid var(--border-subtle)" }}>
-      <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1">
-        {summaryRows.map(([key, val]) => (
-          <div key={key} className="contents">
-            <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>{key}</span>
-            <span className="font-mono text-xs" style={{ color: "var(--text)" }}>{val}</span>
-          </div>
-        ))}
-      </div>
-      {errorPayload && (
-        <ErrorEventDetails error={errorPayload} eventId={event.id} />
-      )}
-      {(event.event_type === "policy_warn" ||
-        event.event_type === "policy_degrade" ||
-        event.event_type === "policy_block") && (
-        <PolicyEventDetails event={event} />
-      )}
-      {event.event_type === "embeddings" && (
-        <EmbeddingsContentViewer
-          eventId={event.id}
-          hasContent={event.has_content}
-        />
-      )}
-      {isMCPEvent(event.event_type) && <MCPEventDetails event={event} />}
-      <div className="my-2" style={{ borderTop: "1px solid var(--border-subtle)" }} />
-      <SyntaxJson data={payload} />
-      <div className="mt-2 flex items-center gap-3">
-        {onViewPrompts && (
-          <button className="text-xs" style={{ color: "var(--accent)" }} onClick={(e) => { e.stopPropagation(); onViewPrompts(); }}>
-            View Prompts →
-          </button>
-        )}
-        {onOpenDetail && (
-          <button className="text-[11px]" style={{ color: "var(--accent)" }} onClick={(e) => { e.stopPropagation(); onOpenDetail(); }} data-testid="open-full-detail">
-            Open full detail →
-          </button>
-        )}
-      </div>
-    </div>
-  );
-}
+// ``ExpandedEvent`` moved to ./EventRow alongside the per-event
+// row component it pairs with (D126 UX revision 2026-05-04 —
+// Sub-agents tab inline mini-timeline shares the exact same
+// expanded-row rendering).
 
 /* ---- Event detail view (Mode 2) ---- */
 

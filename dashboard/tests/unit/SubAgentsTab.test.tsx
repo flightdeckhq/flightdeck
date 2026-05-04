@@ -577,6 +577,88 @@ describe("SubAgentsTab — UX revision: chevron-expand-inline split", () => {
     expect(onOpenSession).not.toHaveBeenCalled();
   });
 
+  it("inline mini-timeline renders the SAME EventRow component the Timeline tab uses (Timeline-fidelity)", async () => {
+    // D126 UX revision 2026-05-04 — Issue 2. The supervisor's
+    // explicit contract: the inline mini-timeline must reuse the
+    // EXACT same event-row component the Timeline tab uses, not a
+    // simplified copy. ``EventRow``'s row contract carries an
+    // ``event-badge`` testid (the colour-coded type pill) on
+    // every event, plus the per-type testids
+    // (``embeddings-event-row-...``, etc.). Pre-fix the mini-
+    // timeline used a stripped-down ``EventDetail`` that emitted
+    // none of those testids — the bare-event-list state the
+    // supervisor flagged. Asserting the post-fix testid presence
+    // pins the contract that the row component is shared.
+    fetchSessionMock.mockResolvedValue({
+      session: mkSession({ session_id: "p-1", flavor: "parent" }),
+      events: [
+        {
+          id: "e-post",
+          session_id: "p-1",
+          flavor: "parent",
+          event_type: "post_call",
+          model: "claude-sonnet-4-6",
+          tokens_input: 100,
+          tokens_output: 50,
+          tokens_total: 150,
+          latency_ms: 200,
+          tool_name: null,
+          has_content: false,
+          payload: null,
+          occurred_at: "2026-05-03T00:00:01Z",
+        },
+        {
+          id: "e-tool",
+          session_id: "p-1",
+          flavor: "parent",
+          event_type: "tool_call",
+          model: null,
+          tokens_input: null,
+          tokens_output: null,
+          tokens_total: null,
+          latency_ms: null,
+          tool_name: "Bash",
+          has_content: false,
+          payload: null,
+          occurred_at: "2026-05-03T00:00:02Z",
+        },
+      ],
+    });
+    renderTab({
+      session: mkSession({
+        session_id: "c-1",
+        parent_session_id: "p-1",
+      }),
+    });
+    fireEvent.click(
+      await screen.findByTestId("sub-agents-spawned-from-toggle"),
+    );
+    // Wait for the mini-timeline container to mount.
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("sub-agents-spawned-from-mini-timeline"),
+      ).toBeTruthy(),
+    );
+    // Two ``event-badge`` testids appear inside the mini-timeline
+    // — one per event row. EventRow emits this testid on the
+    // colour pill; the legacy ``EventDetail`` did not.
+    const miniTimeline = screen.getByTestId(
+      "sub-agents-spawned-from-mini-timeline",
+    );
+    const badges = miniTimeline.querySelectorAll(
+      '[data-testid="event-badge"]',
+    );
+    expect(badges.length).toBe(2);
+    // Per-event-type generic ``event-row`` testid (set by EventRow
+    // for non-special types) — confirms the row container is
+    // EventRow, not EventDetail (which uses no testid at the
+    // outer wrapper).
+    const tooLcallRows = miniTimeline.querySelectorAll(
+      '[data-testid="event-row"]',
+    );
+    expect(tooLcallRows.length).toBeGreaterThanOrEqual(1);
+  });
+
   it("inline-expanded SPAWNED FROM body shows metrics summary + mini-timeline", async () => {
     fetchSessionMock.mockResolvedValue({
       session: mkSession({

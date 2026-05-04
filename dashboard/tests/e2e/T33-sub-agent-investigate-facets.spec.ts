@@ -185,4 +185,68 @@ test.describe("T33 — Sub-agent Investigate facets", () => {
     }).toContain("e2e-crewai-parent");
     await expect(page).toHaveURL(/session=e69d1efb/);
   });
+
+  // D126 UX revision 2026-05-04 — Issue 1: clicking a different
+  // parent row collapses the previously-expanded parent's inline
+  // children. Pre-fix the expandedParents Set accumulated, so
+  // clicking parent A then parent B left BOTH expanded (5 inline
+  // children where the active parent's pill said "→ 3").
+  test("clicking a different parent collapses the previously-expanded parent's inline children", async ({
+    page,
+  }) => {
+    await page.goto("/investigate");
+    await waitForInvestigateReady(page);
+
+    // The seeded fixture set has e2e-crewai-parent (2 children:
+    // researcher + writer) and e2e-test-langgraph-parent (1
+    // child: research_node) within the default 7-day window. Both
+    // are parents-with-children so they render in the parents-
+    // only default scope. Pre-fix click parent A then parent B
+    // accumulated children in expandedParents Set. Post-fix B's
+    // click resets the set to {B} only.
+    const parentA = page
+      .locator("tr", { has: page.locator("text=e2e-crewai-parent") })
+      .first();
+    // Match the existing crewai-parent locator's pattern — use
+    // the visible FLAVOR string (column-rendered) rather than
+    // the agent_name. ``e2e-langgraph-parent`` IS the flavor;
+    // ``e2e-test-langgraph-parent`` is the agent_name and
+    // appears in a different column.
+    const parentB = page
+      .locator("tr", { has: page.locator("text=e2e-langgraph-parent") })
+      .first();
+    await expect(parentA).toBeVisible();
+    await expect(parentB).toBeVisible();
+
+    // Expand parent A. Its researcher / writer children appear.
+    await parentA
+      .locator('[data-testid^="investigate-row-session-"]')
+      .click();
+    await expect(
+      page.locator('[data-testid^="investigate-child-row-"]', {
+        has: page.locator("text=e2e-crewai-researcher"),
+      }),
+    ).toBeAttached();
+
+    // Click parent B. Force-click because the AnimatePresence
+    // drawer mount briefly overlaps the table during slide-in.
+    await parentB
+      .locator('[data-testid^="investigate-row-session-"]')
+      .click({ force: true });
+
+    // After the swap, parent A's children must be GONE — assert
+    // via the e2e-crewai-researcher child specifically (a known
+    // child of parent A only). Poll until the swap settles
+    // (React batches the expansion + drawer rebind across a few
+    // frames).
+    await expect
+      .poll(async () => {
+        return await page
+          .locator('[data-testid^="investigate-child-row-"]', {
+            has: page.locator("text=e2e-crewai-researcher"),
+          })
+          .count();
+      })
+      .toBe(0);
+  });
 });

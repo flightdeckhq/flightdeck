@@ -126,6 +126,37 @@ test.describe("T32 — Sub-agents drawer tab", () => {
     expect(page.url()).toMatch(/session=[0-9a-f-]{36}/);
   });
 
+  test("UX revision: inline mini-timeline renders the SAME event-badge testid the Timeline tab uses (Timeline-fidelity)", async ({
+    page,
+  }) => {
+    // CrewAI Researcher session has post_call + tool_call events
+    // seeded; the inline mini-timeline (rendered when its parent
+    // row is chevron-expanded inside the parent's drawer Sub-
+    // agents tab) must use the same EventRow component the
+    // Timeline tab uses, which carries the ``event-badge`` testid
+    // on every event's coloured type pill. Pre-fix the mini-
+    // timeline used a stripped EventDetail that emitted no badge
+    // testids — the bare-event-list state Supervisor flagged.
+    await openSessionDrawer(page, "e69d1efb-bef3-509a-9bf5-576b23422206");
+    const drawer = page.locator('[data-testid="session-drawer"]');
+    const firstChildToggle = drawer
+      .locator('[data-testid^="sub-agents-child-toggle-"]')
+      .first();
+    await firstChildToggle.click();
+    const miniTimeline = drawer
+      .locator(
+        '[data-testid^="sub-agents-child-"][data-testid$="-mini-timeline"]',
+      )
+      .first();
+    await expect(miniTimeline).toBeVisible();
+    // At least one ``event-badge`` testid exists inside the
+    // mini-timeline. Same testid the Timeline tab uses; same
+    // EventRow component.
+    await expect(
+      miniTimeline.locator('[data-testid="event-badge"]').first(),
+    ).toBeVisible();
+  });
+
   test("UX revision: child row chevron expands inline (independent of the row's session-id link)", async ({
     page,
   }) => {

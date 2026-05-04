@@ -5357,3 +5357,80 @@ The mini-timeline correctly renders 2 events for those legacy
 rows; that's accurate historical data, not a bug. Post-fix
 sub-agents will show the full event list.
 
+### UX revision 2026-05-04 (round 2) — Investigate single-parent inline expansion + SubAgentsTab Timeline-fidelity event rendering
+
+Two follow-ups from the supervisor's manual UX exploration of
+the round-1 fixes:
+
+**Decision 1 — Investigate single-parent inline expansion.**
+Clicking a parent row that opens the side drawer + adds the row
+to the inline-expansion set must RESET the set to contain ONLY
+the just-clicked parent. Pre-fix the ``expandedParents`` Set
+accumulated across clicks: clicking parent A (2 children) then
+parent B (3 children) left BOTH expanded with 5 inline children
+visible — even though the active parent's pill said "→ 3".
+
+Pure helper ``nextExpandedParentsOnToggle(prev, sessionId)`` in
+``Investigate.tsx`` encapsulates the reducer:
+
+  * If ``sessionId`` is already in ``prev`` → return a copy with
+    it removed (collapse on same-parent re-click).
+  * Otherwise → return ``new Set([sessionId])`` (replace, don't
+    accumulate).
+
+The pre-fix ``new Set(prev); next.add(sessionId)`` mutate-then-
+add pattern stays only as the rejected-alternative reference
+in this entry. Multi-expand is intentionally NOT a default — if
+it becomes useful, it lands as an explicit affordance (shift-
+click / "+" button) so single-click remains "click parent →
+expand THIS parent" without surprise.
+
+**Decision 2 — SubAgentsTab inline mini-timeline must render
+with EXACT Timeline-tab fidelity.** Round-1's UX revision added
+a mini-timeline using ``EventDetail`` as the per-row primitive,
+which dropped the colour-pill type badges, streaming pills, MCP
+error indicators, provider logos, and click-to-expand behaviour
+the Timeline tab carries. The supervisor's spec: reuse the
+EXACT same event-row component the Timeline tab uses.
+
+The shared component ``components/session/EventRow.tsx`` was
+extracted from the SessionDrawer's private ``EventFeed`` so
+both surfaces render byte-identical:
+
+  * Type-coloured badge with per-event-type testid
+    (``embeddings-event-row-…``, ``error-event-row-…``,
+    ``policy-event-row-…``, ``mcp-event-row-…``, generic
+    ``event-row``).
+  * MCPErrorIndicator (red AlertCircle on failed MCP rows).
+  * StreamingPill (STREAM / ABORTED with hover-reveal stats).
+  * Provider logo + detail string + timestamp.
+  * Click-to-expand → ExpandedEvent (summary rows + type-
+    specific details + raw payload JSON).
+
+``MCPErrorIndicator``, ``StreamingPill``, and ``ExpandedEvent``
+moved alongside ``EventRow`` in the new file; SessionDrawer's
+``EventFeed`` now imports ``EventRow`` and the local
+duplicates are replaced with one-line redirect comments.
+SubAgentsTab's ``EventMiniTimeline`` imports the same
+``EventRow`` for the inline expansion. Future row-shape
+changes land in both places without manual sync.
+
+**Touch list.** Single commit:
+``dashboard/src/components/session/EventRow.tsx`` (new),
+``dashboard/src/components/session/SessionDrawer.tsx``
+(EventFeed map → EventRow; local helpers removed),
+``dashboard/src/components/session/SubAgentsTab.tsx``
+(``EventDetail`` import → ``EventRow``; per-row expansion
+state added so each event in the mini-timeline expands
+independently),
+``dashboard/src/pages/Investigate.tsx``
+(``toggleParentExpansion`` callback now uses the new pure
+``nextExpandedParentsOnToggle`` reducer; pure helper exported
+for testing). Tests
+(``Investigate-d126.test.tsx`` +5 reducer tests;
+``SubAgentsTab.test.tsx`` +1 Timeline-fidelity testid
+assertion; ``T33`` E2E + new "clicking a different parent
+collapses" spec across both themes; ``T32`` E2E + new
+"mini-timeline renders the SAME event-badge testid"
+spec across both themes).
+

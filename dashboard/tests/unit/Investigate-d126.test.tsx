@@ -5,6 +5,7 @@ import {
   parseUrlState,
   computeFacets,
   CLEAR_ALL_FILTERS_PATCH,
+  nextExpandedParentsOnToggle,
 } from "@/pages/Investigate";
 
 // D126 § 7.fix.N — Investigate D126 surface tests. Covers the
@@ -215,5 +216,54 @@ describe("Investigate UX revision — TOPOLOGY facet override semantics", () => 
   it("CLEAR_ALL_FILTERS_PATCH zeros both facet flags", () => {
     expect(CLEAR_ALL_FILTERS_PATCH.isSubAgent).toBe(false);
     expect(CLEAR_ALL_FILTERS_PATCH.hasSubAgents).toBe(false);
+  });
+});
+
+// D126 UX revision 2026-05-04: clicking a different parent row
+// collapses the previously-expanded parent. The pre-fix Set-add
+// behaviour accumulated children across clicks; the new pure
+// reducer ``nextExpandedParentsOnToggle`` resets to a single-id
+// Set on every transition-to-expanded. Toggling off the same
+// parent collapses it without auto-expanding anything else.
+describe("Investigate inline expansion — single-parent reducer", () => {
+  it("clicking a fresh parent returns a Set containing ONLY that parent", () => {
+    const next = nextExpandedParentsOnToggle(new Set(), "p-1");
+    expect([...next]).toEqual(["p-1"]);
+  });
+
+  it("clicking a different parent collapses the previously-expanded one", () => {
+    // Supervisor's repro: expand p-1 (2 children), then click
+    // p-2 (3 children). Pre-fix the result was {p-1, p-2}; post-
+    // fix it is just {p-2}.
+    const after1 = nextExpandedParentsOnToggle(new Set(), "p-1");
+    const after2 = nextExpandedParentsOnToggle(after1, "p-2");
+    expect([...after2]).toEqual(["p-2"]);
+    expect(after2.has("p-1")).toBe(false);
+  });
+
+  it("clicking the SAME parent again toggles it off without auto-expanding any other", () => {
+    const expanded = nextExpandedParentsOnToggle(new Set(), "p-1");
+    const collapsed = nextExpandedParentsOnToggle(expanded, "p-1");
+    expect([...collapsed]).toEqual([]);
+  });
+
+  it("does not mutate the input Set (returns a fresh Set on every call)", () => {
+    const input = new Set(["p-1"]);
+    const out = nextExpandedParentsOnToggle(input, "p-2");
+    // Input untouched.
+    expect([...input]).toEqual(["p-1"]);
+    // Output is a different Set instance.
+    expect(out).not.toBe(input);
+    expect([...out]).toEqual(["p-2"]);
+  });
+
+  it("rapid alternating clicks A → B → A always lands on the just-clicked parent", () => {
+    let s: Set<string> = new Set();
+    s = nextExpandedParentsOnToggle(s, "p-A");
+    expect([...s]).toEqual(["p-A"]);
+    s = nextExpandedParentsOnToggle(s, "p-B");
+    expect([...s]).toEqual(["p-B"]);
+    s = nextExpandedParentsOnToggle(s, "p-A");
+    expect([...s]).toEqual(["p-A"]);
   });
 });

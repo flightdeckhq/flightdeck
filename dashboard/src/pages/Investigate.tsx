@@ -1012,6 +1012,41 @@ export const CLEAR_ALL_FILTERS_PATCH: Partial<UrlStateSnapshot> = {
  * facet counts from the main result set. Pure function, testable in
  * isolation.
  */
+/**
+ * D126 UX revision (2026-05-04) — single-parent inline expansion.
+ *
+ * Returns the next ``expandedParents`` Set when the user clicks
+ * ``sessionId`` on a parent row:
+ *
+ *   * If ``sessionId`` is already expanded → collapse it (return
+ *     a copy with ``sessionId`` removed). Honours an explicit
+ *     toggle-off; doesn't auto-expand anything else.
+ *   * Otherwise → return a fresh Set containing ONLY ``sessionId``.
+ *     Any previously-expanded parents collapse. Pre-fix the branch
+ *     mutated the existing Set with ``add(sessionId)``, so each
+ *     parent click stacked inline children on top of the previous
+ *     parent's children — Supervisor's manual UX finding 2026-05-04
+ *     described 5 inline children under two parents whose pills
+ *     read "→ 2" and "→ 3".
+ *
+ * Pure function so the toggle logic is testable in isolation.
+ * Multi-expand is intentionally NOT a default — if it becomes
+ * useful it should land as an explicit affordance (shift-click,
+ * "+" button) so the default reads as "click parent → expand
+ * THIS parent" without surprise.
+ */
+export function nextExpandedParentsOnToggle(
+  prev: ReadonlySet<string>,
+  sessionId: string,
+): Set<string> {
+  if (prev.has(sessionId)) {
+    const next = new Set(prev);
+    next.delete(sessionId);
+    return next;
+  }
+  return new Set([sessionId]);
+}
+
 export function collectFacetSources(
   settled: PromiseSettledResult<readonly [string, SessionListItem[] | undefined]>[],
   keys: readonly string[],
@@ -1501,13 +1536,12 @@ export function Investigate() {
   const toggleParentExpansion = useCallback(
     (sessionId: string) => {
       setExpandedParents((prev) => {
-        const next = new Set(prev);
+        const next = nextExpandedParentsOnToggle(prev, sessionId);
+        // Fire the children fetch on transition-to-expanded (i.e.
+        // the new Set CONTAINS the clicked sessionId — we just
+        // expanded it). No-op when collapsing OR when already
+        // cached (fetchChildrenForParent dedupes).
         if (next.has(sessionId)) {
-          next.delete(sessionId);
-        } else {
-          next.add(sessionId);
-          // Fire the fetch on transition-to-expanded; no-op when
-          // already cached.
           void fetchChildrenForParent(sessionId);
         }
         return next;

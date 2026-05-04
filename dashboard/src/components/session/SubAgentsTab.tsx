@@ -4,7 +4,7 @@ import type { AgentEvent, Session, SessionDetail, SessionListItem, SubagentMessa
 import { fetchEventContent, fetchSession, fetchSessions } from "@/lib/api";
 import { truncateSessionId } from "@/lib/events";
 import { SubAgentLostDot } from "@/components/facets/SubAgentRolePill";
-import { EventDetail } from "./EventDetail";
+import { EventRow } from "./EventRow";
 
 // D126 UX revision (post-merge polish, pre-merge land) — cap on the
 // inline mini-timeline rendered when a related-session row is
@@ -563,13 +563,33 @@ function EventMiniTimeline({
   onViewMore: () => void;
   testIdPrefix: string;
 }) {
+  // Per the D126 UX revision (DECISIONS.md "UX revision
+  // 2026-05-04"), the mini-timeline must render with EXACT
+  // Timeline-tab fidelity — colour-pill badges, streaming
+  // indicators, MCP error indicators, provider logos, expand-
+  // into-ExpandedEvent on click — same as the full Timeline tab.
+  // Sharing the ``EventRow`` component (which the SessionDrawer's
+  // own EventFeed also uses) is the load-bearing piece of that
+  // contract; future row-shape changes land in both places
+  // without manual sync.
+  //
+  // Per-row expansion state is tracked here (one event open at a
+  // time) so the user can click any row to drill into details
+  // without leaving the parent's drawer. ``attachments`` is
+  // empty by default — the inline mini-timeline doesn't have
+  // access to the related session's attachment timestamps. The
+  // ATTACH-circle recolouring is a Timeline-tab-only affordance
+  // for now; the supervisor's spec explicitly listed badges +
+  // streaming/MCP indicators + provider logos, not attach
+  // recolouring, so this divergence is acceptable.
+  const [expandedEventId, setExpandedEventId] = useState<string | null>(null);
   // Always wrap in the testid'd container so callers (tests and
   // the parent layout) can target the mini-timeline regardless of
   // whether events have loaded yet — empty / loading states are
-  // legitimate post-D126 shapes (pre-219a5c0a sub-agents have only
-  // session_start + session_end events; those collapse to "0
-  // visible events" once we filter the session_start out, but the
-  // mini-timeline still exists).
+  // legitimate post-D126 shapes (pre-219a5c0a sub-agents have
+  // only session_start + session_end events; those still render
+  // as 2 EventRows, accurate historical data per the supervisor's
+  // explicit note).
   const visible = events.slice(0, MINI_TIMELINE_MAX_EVENTS);
   const hidden = Math.max(0, events.length - visible.length);
   return (
@@ -588,7 +608,15 @@ function EventMiniTimeline({
         <RowEmpty>No events recorded for this session.</RowEmpty>
       )}
       {visible.map((e) => (
-        <EventDetail key={e.id} event={e} />
+        <EventRow
+          key={e.id}
+          event={e}
+          attachments={[]}
+          isExpanded={expandedEventId === e.id}
+          onToggleExpand={(id) =>
+            setExpandedEventId((prev) => (prev === id ? null : id))
+          }
+        />
       ))}
       {hidden > 0 && (
         <button

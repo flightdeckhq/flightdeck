@@ -1132,7 +1132,16 @@ def seed(mode: str = "full") -> None:
                     )
                     # Emit a fresh tool_call so the session has an
                     # in-window event for the default 1m swimlane
-                    # domain.
+                    # domain. Skipped in active-only (keep-alive)
+                    # mode — the watchdog runs every 30 sec during
+                    # the test suite and a steady stream of fresh
+                    # events perturbs swimlane-scroll-position
+                    # tests like T24 (the rendering rightmost-edge
+                    # auto-follow recomputes on each new circle).
+                    # The reconciler-defeating purpose of the
+                    # watchdog is satisfied entirely by the SQL pin
+                    # above; the swimlane-window concern only
+                    # matters once at seed time, not every 30 sec.
                     identity = {
                         "agent_type": agent_cfg["agent_type"],
                         "client_type": agent_cfg["client_type"],
@@ -1140,6 +1149,9 @@ def seed(mode: str = "full") -> None:
                         "hostname": agent_cfg["hostname"],
                         "agent_name": agent_cfg["agent_name"],
                     }
+                    if mode == "active-only":
+                        backdated += 1
+                        continue
                     post_event(
                         make_event(
                             session_id,

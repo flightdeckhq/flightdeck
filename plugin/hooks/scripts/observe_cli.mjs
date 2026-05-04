@@ -40,7 +40,7 @@ import {
   tmpdir,
   userInfo,
 } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { deriveAgentId, NAMESPACE_FLIGHTDECK } from "./agent_id.mjs";
@@ -914,6 +914,47 @@ export function _subagentChildSessionId(outerSessionId, correlator) {
   );
 }
 
+// D126 — derive the subagent's per-execution transcript path from
+// the parent's transcript path and the subagent's agent_id.
+//
+// Claude Code stores each subagent's LLM turns in a SEPARATE JSONL
+// file at:
+//
+//   <parent_transcript_dir>/<parent_session_id>/subagents/agent-<agent_id>.jsonl
+//
+// e.g. parent ``…/<dir>/47a0eaef-…-9130fcdca5df.jsonl`` →
+//   subagent ``…/<dir>/47a0eaef-…-9130fcdca5df/subagents/agent-a3017….jsonl``
+//
+// The plugin's transcript reader (``readTurns``) operates on a
+// single .jsonl file. Without this derivation, interior PostToolUse
+// hooks fired during a subagent's execution see the PARENT'S
+// transcript — which contains the subagent's tool calls but NOT
+// the subagent's LLM assistant turns (those live in the per-
+// subagent file). The result: post_call events for the subagent
+// land with tokens_input/output/total = 0 because the assistant
+// turn carrying ``message.usage`` was never read.
+//
+// SubagentStop hooks DO carry an explicit ``agent_transcript_path``
+// field on the hook payload — when present we prefer that over
+// the derivation. Interior PostToolUse hooks don't, so the
+// derivation is the only path.
+//
+// Returns null when either input is missing — callers must fall
+// back to the parent's transcript_path so the function never
+// silently produces a malformed path.
+export function _subagentTranscriptPath(parentTranscriptPath, subagentAgentId) {
+  if (!parentTranscriptPath || typeof parentTranscriptPath !== "string") {
+    return null;
+  }
+  if (!subagentAgentId || typeof subagentAgentId !== "string") {
+    return null;
+  }
+  const parentDir = dirname(parentTranscriptPath);
+  const parentBase = basename(parentTranscriptPath).replace(/\.jsonl$/i, "");
+  if (!parentBase) return null;
+  return join(parentDir, parentBase, "subagents", `agent-${subagentAgentId}.jsonl`);
+}
+
 // D126 — interior-event routing for Claude Code subagents.
 //
 // When Claude Code runs an Agent-tool subagent, every interior hook
@@ -980,12 +1021,24 @@ export function _subagentInteriorContext({
     agent_name: parentAgentName,
     agent_role: role,
   });
+  // Subagent's per-execution transcript path. Interior PostToolUse
+  // hooks fired during the subagent's run carry the PARENT'S
+  // transcript_path on hookEvent — the per-subagent JSONL lives at
+  // a derived location (see _subagentTranscriptPath). flushPostCall
+  // Turns reads this path so the subagent's assistant turns
+  // (carrying ``message.usage``) emit post_call events with real
+  // tokens_input/output/total instead of zeros.
+  const subagentTranscriptPath = _subagentTranscriptPath(
+    hookEvent && hookEvent.transcript_path,
+    agentIdField,
+  );
   return {
     sessionId: childSessionId,
     parentSessionId,
     agentRole: role || null,
     agentId: childAgentId,
     agentName: childAgentName,
+    subagentTranscriptPath,
   };
 }
 
@@ -1148,8 +1201,55 @@ async function emitSubagentEvent({
       payload.content = contentEnvelope;
     }
   } else {
-    // SubagentStop. tool_response is the subagent's reply back to
-    // the parent.
+    // SubagentStop. Two responsibilities here:
+    //
+    //   1. Flush any unemitted assistant turns from the subagent's
+    //      per-execution transcript as post_call events, mirroring
+    //      what SessionEnd does for parent sessions. Without this
+    //      the subagent's FINAL LLM turn (the one not followed by
+    //      a tool call, so no interior PostToolUse triggered the
+    //      flush) lands as zero-token void in the dashboard.
+    //      Prefer the explicit ``agent_transcript_path`` field on
+    //      the SubagentStop payload (Claude Code provides it);
+    //      fall back to the derived path so older Claude Code
+    //      versions or subtle layout differences still work.
+    //
+    //   2. Stamp ``outgoing_message`` with the subagent's response
+    //      back to the parent (D126 § 6 cross-agent message
+    //      capture).
+    const subagentTranscript =
+      (typeof hookEvent.agent_transcript_path === "string" &&
+        hookEvent.agent_transcript_path) ||
+      _subagentTranscriptPath(hookEvent.transcript_path, correlator);
+    if (subagentTranscript) {
+      try {
+        const childBasePayload = {
+          ...basePayload,
+          session_id: childSessionId,
+          parent_session_id: outerSessionId,
+          agent_role: role || null,
+          agent_id: childAgentId,
+          agent_name: childAgentName,
+        };
+        await flushPostCallTurns({
+          cfg,
+          sessionId: childSessionId,
+          basePayload: childBasePayload,
+          turns: readTurns(subagentTranscript),
+          capturePrompts: cfg.capturePrompts,
+        });
+      } catch (err) {
+        // Transcript-read failures are not fatal — we still emit
+        // the session_end so the child session closes cleanly. The
+        // missing post_calls just means the subagent's final turn
+        // won't show in the dashboard; D106 lazy-create still
+        // tracks the session itself.
+        process.stderr.write(
+          `flightdeck: SubagentStop transcript flush failed for ` +
+            `${childSessionId}: ${err?.message || err}\n`,
+        );
+      }
+    }
     const { stubOrInline, contentEnvelope } = _routeSubagentMessage(
       hookEvent.tool_response ?? null,
       cfg.capturePrompts,
@@ -1471,7 +1571,12 @@ async function main() {
   // needs the resolved.
   const outerSessionId = getSessionId(hookEvent);
   let sessionId = outerSessionId;
-  const transcriptPath = hookEvent.transcript_path;
+  // ``transcriptPath`` defaults to the parent's transcript path
+  // from hookEvent. When the hook fires inside subagent context,
+  // we swap to the subagent's per-execution transcript so the
+  // assistant-turn token usage is captured correctly. See
+  // _subagentTranscriptPath comment for the path derivation.
+  let transcriptPath = hookEvent.transcript_path;
 
   // Base identity fields used by every event for this session.
   //
@@ -1531,6 +1636,9 @@ async function main() {
     sessionId = interiorCtx.sessionId;
     agentId = interiorCtx.agentId;
     agentName = interiorCtx.agentName;
+    if (interiorCtx.subagentTranscriptPath) {
+      transcriptPath = interiorCtx.subagentTranscriptPath;
+    }
   }
 
   const basePayload = {

@@ -13,6 +13,7 @@ import {
   _subagentChildSessionId,
   _subagentCorrelator,
   _subagentRole,
+  _subagentTranscriptPath,
   collectContext,
   computeLatencyMs,
   getSessionId,
@@ -1721,6 +1722,33 @@ describe("subagent helpers", () => {
     // Different outer sessions don't collide either.
     const d = _subagentChildSessionId("outer-sess-2", "tu-1");
     assert.notEqual(a, d);
+  });
+
+  it("_subagentTranscriptPath derives Claude Code's per-subagent JSONL path", () => {
+    // Real path shape captured from
+    //   ~/.claude/projects/-mnt-c-Users-omria-dev-flightdeck/47a0eaef-…-9130fcdca5df/subagents/agent-a3017….jsonl
+    const parent =
+      "/home/omria/.claude/projects/-mnt-c-Users-omria-dev-flightdeck/" +
+      "47a0eaef-ed28-4459-bf02-9130fcdca5df.jsonl";
+    const agentId = "a3017b22f63bf2583";
+    const got = _subagentTranscriptPath(parent, agentId);
+    assert.equal(
+      got,
+      "/home/omria/.claude/projects/-mnt-c-Users-omria-dev-flightdeck/" +
+        "47a0eaef-ed28-4459-bf02-9130fcdca5df/subagents/" +
+        "agent-a3017b22f63bf2583.jsonl",
+    );
+  });
+
+  it("_subagentTranscriptPath returns null on missing inputs", () => {
+    assert.equal(_subagentTranscriptPath(null, "a3017"), null);
+    assert.equal(_subagentTranscriptPath(undefined, "a3017"), null);
+    assert.equal(_subagentTranscriptPath("", "a3017"), null);
+    assert.equal(_subagentTranscriptPath("/x.jsonl", null), null);
+    assert.equal(_subagentTranscriptPath("/x.jsonl", ""), null);
+    // Non-string values must not throw — return null instead.
+    assert.equal(_subagentTranscriptPath(42, "a3017"), null);
+    assert.equal(_subagentTranscriptPath("/x.jsonl", { id: "x" }), null);
   });
 });
 

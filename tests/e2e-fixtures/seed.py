@@ -999,7 +999,23 @@ def _wait_for_fleet_visibility(expected_agent_names: list[str], timeout: float) 
     )
 
 
-def seed() -> None:
+def seed(mode: str = "full") -> None:
+    """Seed canonical E2E fixtures.
+
+    ``mode="full"`` (default): seed sessions that aren't already complete,
+    wait for fleet visibility, then run the active-role refresh + backdate
+    pass. The Playwright globalSetup invokes this once at job start.
+
+    ``mode="active-only"``: skip the initial-seed loop, the fleet-visibility
+    wait, AND the closed/aged/stale backdating. Run ONLY the active-role
+    refresh path (fresh-active / error-active / mcp-active / policy-active).
+    Used by the Playwright globalSetup keep-alive watchdog so the workers'
+    reconciler (postgres.go:651, 60-second tick, 2-min stale threshold)
+    cannot age the seeded "fresh"-class fixtures past ``state='active'``
+    while the test suite runs. D126 added 13 E2E specs (T28–T40) that
+    push the suite past 5 minutes — well beyond the original 2-min
+    seed-to-test-completion window the no-keep-alive design assumed.
+    """
     print(f"[seed] waiting for services at {INGESTION_URL} / {API_URL} ...")
     wait_for_services(timeout=30)
 
@@ -1018,33 +1034,36 @@ def seed() -> None:
     skipped: int = 0
     backdated: int = 0
 
-    for agent_cfg in agents_cfg:
-        for role in agent_cfg["session_roles"]:
-            role_cfg = roles_cfg[role]
-            session_id = _derive_session_id(agent_cfg["agent_name"], role)
+    if mode == "full":
+        for agent_cfg in agents_cfg:
+            for role in agent_cfg["session_roles"]:
+                role_cfg = roles_cfg[role]
+                session_id = _derive_session_id(agent_cfg["agent_name"], role)
 
-            if _session_is_complete(session_id, role_cfg):
-                print(
-                    f"  skip {agent_cfg['agent_name']}/{role} ({session_id[:8]}) — already has events"
+                if _session_is_complete(session_id, role_cfg):
+                    print(
+                        f"  skip {agent_cfg['agent_name']}/{role} ({session_id[:8]}) — already has events"
+                    )
+                    skipped += 1
+                    continue
+
+                posted = _post_session_events(
+                    agent_cfg=agent_cfg,
+                    session_id=session_id,
+                    role_cfg=role_cfg,
                 )
-                skipped += 1
-                continue
+                seeded += 1
+                print(
+                    f"  seeded {agent_cfg['agent_name']}/{role} ({session_id[:8]}) — {posted} events"
+                )
 
-            posted = _post_session_events(
-                agent_cfg=agent_cfg,
-                session_id=session_id,
-                role_cfg=role_cfg,
-            )
-            seeded += 1
-            print(
-                f"  seeded {agent_cfg['agent_name']}/{role} ({session_id[:8]}) — {posted} events"
-            )
-
-    expected_agent_names = [a["agent_name"] for a in agents_cfg]
-    print(
-        f"[seed] waiting for worker to persist {len(expected_agent_names)} agents ..."
-    )
-    _wait_for_fleet_visibility(expected_agent_names, timeout=SEED_READY_TIMEOUT_SEC)
+        expected_agent_names = [a["agent_name"] for a in agents_cfg]
+        print(
+            f"[seed] waiting for worker to persist {len(expected_agent_names)} agents ..."
+        )
+        _wait_for_fleet_visibility(
+            expected_agent_names, timeout=SEED_READY_TIMEOUT_SEC
+        )
 
     # Backdate aged-closed / stale sessions so their visible timestamps
     # match the declared offsets. Done AFTER the fleet-visibility wait
@@ -1479,6 +1498,13 @@ def seed() -> None:
                     )
                 backdated += 1
                 continue
+            # In active-only mode the keep-alive watchdog only refreshes
+            # active fixtures — closed/aged/stale rows are write-once at
+            # initial seed and don't drift, so re-running the backdate
+            # path on every tick is wasted work and could race with
+            # tests asserting on those rows.
+            if mode != "full":
+                continue
             # D126 § 7.fix step 8 — generic ``force_state`` opt-in.
             # Any role that declares ``force_state`` in canonical.json
             # gets a backdate with that state, regardless of whether
@@ -1533,8 +1559,32 @@ def seed() -> None:
 
 
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description=(
+            "Seed canonical E2E fixtures. Default mode does the full "
+            "seed + active-refresh + backdate pass. ``--reseed-active-"
+            "only`` runs only the active-role refresh — used by the "
+            "Playwright globalSetup keep-alive watchdog so the workers "
+            "reconciler doesn't age fresh-class fixtures past "
+            "state='active' during long test runs."
+        ),
+    )
+    parser.add_argument(
+        "--reseed-active-only",
+        action="store_true",
+        help=(
+            "Skip initial seeding, fleet-visibility wait, and "
+            "closed/aged/stale backdating. Refresh only the four "
+            "active roles (fresh-active, error-active, mcp-active, "
+            "policy-active). Idempotent and safe to call repeatedly."
+        ),
+    )
+    args = parser.parse_args()
+    mode = "active-only" if args.reseed_active_only else "full"
     try:
-        seed()
+        seed(mode=mode)
     except Exception as exc:
         print(f"[seed] FAILED: {exc}", file=sys.stderr)
         sys.exit(1)

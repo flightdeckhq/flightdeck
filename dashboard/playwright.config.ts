@@ -55,6 +55,11 @@ export default defineConfig({
   // is "type": "module", so CommonJS require is not in scope.
   // Playwright resolves the path relative to this config file.
   globalSetup: "./tests/e2e/globalSetup.ts",
+  // globalTeardown stops the keep-alive watchdog globalSetup spawns —
+  // see globalSetup.ts for rationale. Without teardown the bash loop
+  // outlives the runner and leaks across consecutive ``npm run
+  // test:e2e`` invocations on local dev boxes.
+  globalTeardown: "./tests/e2e/globalTeardown.ts",
   use: {
     baseURL: "http://localhost:4000",
     // Auth-gated /v1/* endpoints need the bearer token on every

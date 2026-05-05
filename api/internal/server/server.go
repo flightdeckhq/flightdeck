@@ -147,6 +147,17 @@ func newServer(addr string, s store.Querier, hub *ws.Hub, validator *auth.Valida
 	mux.Handle("POST /v1/admin/reconcile-agents",
 		adminGate(handlers.AdminReconcileAgentsHandler(s)))
 
+	// MCP Protection Policy (D128). Read + resolve are read-only
+	// scope — any valid bearer token. Mutations / history / power
+	// features are admin-grade (adminGate). The resolve endpoint
+	// is GET-only by design (idempotent + safe + cacheable).
+	mux.Handle("GET /v1/mcp-policies/global",
+		gate(handlers.GetGlobalMCPPolicyHandler(s)))
+	mux.Handle("GET /v1/mcp-policies/resolve",
+		gate(handlers.ResolveMCPPolicyHandler(s)))
+	mux.Handle("GET /v1/mcp-policies/{flavor}",
+		gate(handlers.GetMCPPolicyHandler(s)))
+
 	mux.Handle("GET /health", withRESTTimeout(handlers.HealthHandler()))
 
 	// Swagger UI. The swag/v2 v2.0.0-rc5 + http-swagger v2.0.2

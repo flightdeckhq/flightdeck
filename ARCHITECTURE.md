@@ -2738,6 +2738,359 @@ flag (D109).
 
 ---
 
+## MCP Protection Policy
+
+The MCP Protection Policy gates which Model Context Protocol servers an
+agent is allowed to talk to. It rides on the same `ClientSession` patch
+surface that powers MCP first-class observability (D117) — the policy
+machinery evaluates each `call_tool` against a fingerprinted server
+identity and emits warn / block decisions through the standard event
+pipeline. The policy is fetched once per session at sensor `init()`
+(Python) or `SessionStart` (Claude Code plugin) and cached for the
+session's lifetime; mid-session policy updates apply at the next
+`session_start`.
+
+### Identity model
+
+Server identity is the pair `(URL, name)`. The URL is the security key
+— two servers with the same URL but different declared names are the
+same enforcement target. The name is the display label and the
+tamper-evidence axis: when an agent declares a server with a known URL
+under a new name, the sensor emits a `mcp_server_name_changed` event so
+operators can see drift, but the policy decision still resolves on the
+URL (D127).
+
+**HTTP canonical form.** Lowercase scheme + host. Strip default ports
+(`:80` for `http`, `:443` for `https`). Strip a trailing slash only at
+the root (`https://example.com/` → `https://example.com`; deeper paths
+preserve their trailing slash because path semantics carry). Preserve
+path case beyond the root segment. Drop user-info, fragment, and query
+entirely.
+
+**Stdio canonical form.** Prefix with `stdio://`. Concatenate the
+literal command and its args with single-space separators after
+collapsing internal whitespace runs to one space. Resolve env-var
+references (`$VAR`, `${VAR}`) at fingerprint time using the agent's
+current environment. Args are case-sensitive (file paths and flags
+matter byte-for-byte).
+
+**Hash recipe.** `sha256(canonical_url + 0x00 + name)`, hex-encoded.
+The first 16 hex characters are the display fingerprint; the full hash
+is the storage key. The 0x00 separator prevents
+`("https://a.com", "bservice")` and `("https://a.combservice", "")`
+from colliding.
+
+### Two-scope policy model
+
+One **global** policy plus zero or more **per-flavor** policies. The
+global policy carries the **mode** (allowlist or blocklist) and a list
+of entries; per-flavor policies carry only allow / deny entry deltas
+against whatever the global resolves to. A flavor policy never carries
+its own mode (D134).
+
+On install the platform auto-creates an empty global policy in
+`blocklist` mode with zero entries — fully permissive by default. No
+operator action is required for MCP traffic to keep flowing on a fresh
+deployment; locking down a flavor is opt-in.
+
+### Per-server resolution
+
+For an `(URL, name)` evaluated against `(global, flavor)`:
+
+1. If the per-flavor policy has an entry whose canonical URL matches,
+   use that entry's enforcement decision (allow / deny + warn / block /
+   interactive).
+2. Else if the global policy has an entry whose canonical URL matches,
+   use that.
+3. Else apply the global mode default: `allowlist` mode → block;
+   `blocklist` mode → allow.
+
+Worked example. Global is `allowlist` mode with entries
+`[https://maps.example.com, https://search.example.com]`. Flavor
+`production` overrides with a deny entry for `https://maps.example.com`
+and an allow entry for `https://wiki.internal/`.
+
+| Request | Step 1 (flavor) | Step 2 (global) | Step 3 (mode default) | Result |
+|---|---|---|---|---|
+| `https://maps.example.com` | flavor deny | — | — | block (flavor wins) |
+| `https://search.example.com` | no entry | global allow | — | allow |
+| `https://wiki.internal/` | flavor allow | — | — | allow |
+| `https://other.example.com` | no entry | no entry | allowlist → block | block |
+
+### Enforcement
+
+Per-entry decisions carry an enforcement value:
+
+- `warn` — emit `policy_mcp_warn`, let the call proceed.
+- `block` — emit `policy_mcp_block`, raise `flightdeck.MCPPolicyBlocked`
+  before the wire request leaves the agent.
+- `interactive` — Claude Code plugin only. The plugin's `SessionStart`
+  hook prompts the user via `PermissionRequest` for unknown servers in
+  `allowlist` mode. The sensor's per-call path never sees `interactive`
+  (the plugin resolves the prompt before the session starts; resolved
+  decisions become standard allow / deny entries on the policy or are
+  remembered locally — see Plugin remembered decisions below).
+
+`block_on_uncertainty` is a per-flavor boolean toggle, default false,
+only meaningful in `allowlist` mode. When true, the resolution
+algorithm's step 3 fallback becomes "block + emit `policy_mcp_block`"
+instead of the standard allowlist-mode block. The semantic difference
+is auditing: `block_on_uncertainty=true` means "I want a block decision
+recorded against this URL the first time it's seen so I can promote it
+to a deliberate allow." Under `blocklist` mode the toggle is ignored
+because the mode default is already permissive.
+
+### Storage schema
+
+> **Binding contract.** The schema below is the spec for migration
+> `000018_mcp_protection_policy.{up,down}.sql` (parallel pair in
+> `helm/migrations/`). Step 2 implements it byte-for-byte. Any
+> deviation — column rename, type change, additional or removed
+> constraint, index difference — requires a new `DECISIONS.md` entry
+> recording the pivot per Rule 42 BEFORE the migration is written.
+
+```sql
+CREATE TABLE mcp_policies (
+    id                    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    scope                 TEXT NOT NULL CHECK (scope IN ('global', 'flavor')),
+    scope_value           TEXT,                                 -- NULL for global, flavor name for flavor
+    mode                  TEXT CHECK (mode IN ('allowlist', 'blocklist')),  -- NULL on flavor rows
+    block_on_uncertainty  BOOLEAN NOT NULL DEFAULT FALSE,
+    version               INT NOT NULL DEFAULT 1,
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CHECK ((scope = 'global' AND scope_value IS NULL AND mode IS NOT NULL)
+        OR (scope = 'flavor' AND scope_value IS NOT NULL AND mode IS NULL))
+);
+
+CREATE UNIQUE INDEX mcp_policies_scope_idx
+    ON mcp_policies (scope, COALESCE(scope_value, ''));
+
+CREATE TABLE mcp_policy_entries (
+    id                    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    policy_id             UUID NOT NULL REFERENCES mcp_policies(id) ON DELETE CASCADE,
+    server_url_canonical  TEXT NOT NULL,
+    server_name           TEXT NOT NULL,
+    fingerprint           TEXT NOT NULL,        -- 16-char hex (display); full sha256 not stored
+    entry_kind            TEXT NOT NULL CHECK (entry_kind IN ('allow', 'deny')),
+    enforcement           TEXT CHECK (enforcement IN ('warn', 'block', 'interactive')),
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE UNIQUE INDEX mcp_policy_entries_policy_fp_idx
+    ON mcp_policy_entries (policy_id, fingerprint);
+CREATE INDEX mcp_policy_entries_url_idx
+    ON mcp_policy_entries (server_url_canonical);
+
+CREATE TABLE mcp_policy_versions (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    policy_id   UUID NOT NULL REFERENCES mcp_policies(id) ON DELETE CASCADE,
+    version     INT NOT NULL,
+    snapshot    JSONB NOT NULL,                 -- full policy + entries at this version
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    created_by  UUID REFERENCES access_tokens(id) ON DELETE SET NULL
+);
+
+CREATE UNIQUE INDEX mcp_policy_versions_policy_version_idx
+    ON mcp_policy_versions (policy_id, version);
+
+CREATE TABLE mcp_policy_audit_log (
+    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    policy_id    UUID REFERENCES mcp_policies(id) ON DELETE SET NULL,
+    event_type   TEXT NOT NULL CHECK (event_type IN (
+        'policy_created', 'policy_updated', 'policy_deleted',
+        'mode_changed', 'entry_added', 'entry_removed',
+        'block_on_uncertainty_changed'
+    )),
+    actor        UUID REFERENCES access_tokens(id) ON DELETE SET NULL,
+    payload      JSONB NOT NULL DEFAULT '{}'::jsonb,
+    occurred_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX mcp_policy_audit_log_policy_idx
+    ON mcp_policy_audit_log (policy_id, occurred_at DESC);
+```
+
+The audit log table records **policy mutations only** — actor + diff
+of operator-initiated changes. Sensor-observed system state (name
+drift, decision events) ships through the standard event pipeline as
+typed event rows, not as audit log entries (D131).
+
+`mcp_policies.version` is bumped on every PUT; the prior snapshot is
+written to `mcp_policy_versions` so an operator can diff or roll back.
+Soft-delete is intentionally not implemented — a deleted flavor policy
+means the global takes over, and the deletion event is preserved in
+the audit log.
+
+### Fetch and cache lifecycle
+
+**Sensor (Python).** The control-plane client fetches the active
+policy at `init()` synchronously, alongside the existing token policy
+preflight. Result is cached on the `Session` object for the session's
+lifetime. A `policy_update` directive received in a response envelope
+refreshes the cache in place; the new policy applies at the next
+`session_start` (in-flight sessions keep the policy that was active at
+their start). Fail-open per Rule 28: if the control plane is
+unreachable AND `FLIGHTDECK_UNAVAILABLE_POLICY=continue` AND
+`block_on_uncertainty` is not in force on a relevant flavor, the agent
+proceeds with no enforcement.
+
+**Plugin (Claude Code).** The `SessionStart` hook fetches the policy
+applicable to the active flavor. Cached on disk at
+`~/.claude/flightdeck/mcp_policy_cache.json`, keyed by token. TTL
+defaults to one hour; subsequent `SessionStart` invocations reuse the
+cache until the TTL expires, at which point the next start re-fetches.
+Cache miss + control plane unreachable produces the same fail-open
+behaviour as the sensor.
+
+**Dashboard.** Direct REST against the new policy endpoints (see
+Enforcement contracts below). No client-side cache beyond the standard
+React-Query window.
+
+### Enforcement contracts
+
+**Sensor.** The MCP interceptor's `call_tool` patch (D117) calls
+`PolicyCache.evaluate_mcp(server_url, server_name, tool_name)` before
+invoking the wrapped method. The result is one of `allow` / `warn` /
+`block`. On `warn` the sensor emits `policy_mcp_warn` and proceeds. On
+`block` the sensor emits `policy_mcp_block`, flushes the event queue
+synchronously (so the block lands at the dashboard before the agent
+sees the failure), and raises `flightdeck.MCPPolicyBlocked` — a typed
+exception that frameworks surface as a tool-call failure to the
+agent's reasoning loop (D130). The exception carries `server_url`,
+`server_name`, `fingerprint`, `policy_id`, and `decision_path` so the
+agent (or its surrounding harness) can render an actionable failure
+message.
+
+**Plugin.** At `SessionStart` the plugin reads `.mcp.json` (and
+`~/.claude.json` overrides), fingerprints each declared server, and
+fetches the active policy. Servers whose decision is `block` are
+rejected from the session before any tool calls fire — the plugin
+emits `policy_mcp_block` events for each. Servers whose decision is
+`interactive` invoke Claude Code's `PermissionRequest` hook with
+`yes` / `no` / `yes-and-remember`. `yes-and-remember` writes the
+remembered-decisions file (below) and best-effort posts the decision
+to the control plane so the operator can promote it to a real entry.
+
+**Control-plane API.** New endpoints under `/v1/mcp-policies`. Every
+route is authenticated via the standard Bearer-token middleware; the
+mutation routes (`POST` / `PUT` / `DELETE`) are admin-grade and
+intended for operator interfaces.
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/v1/mcp-policies` | List the global + every flavor policy |
+| `GET` | `/v1/mcp-policies/:id` | Fetch one policy with its entries |
+| `POST` | `/v1/mcp-policies` | Create a flavor policy (the global is auto-created on install; cannot be created via API) |
+| `PUT` | `/v1/mcp-policies/:id` | Replace mode (global only), entries, or `block_on_uncertainty`; bumps `version` and writes a `mcp_policy_versions` snapshot |
+| `DELETE` | `/v1/mcp-policies/:id` | Delete a flavor policy; the global cannot be deleted |
+| `GET` | `/v1/mcp-policies/resolve` | Sensor / plugin preflight — query params `flavor`, `server_url`, `server_name`; returns the resolved decision and the path that produced it |
+| `GET` | `/v1/mcp-policies/audit-log` | Policy mutation history; query params `policy_id`, `from`, `to`, `event_type` |
+
+The `resolve` endpoint is what sensors and plugins call at session
+start to populate their cache. The full policy listing endpoints are
+admin-grade and back the dashboard.
+
+### Plugin remembered decisions
+
+`~/.claude/flightdeck/remembered_mcp_decisions.json` is the local
+cache of `yes-and-remember` decisions made via the `PermissionRequest`
+prompt. File schema, per token id:
+
+```json
+{
+  "token_id": "uuid",
+  "decisions": [
+    {
+      "fingerprint": "ab12cd34ef567890",
+      "server_url_canonical": "https://maps.example.com",
+      "server_name": "maps",
+      "decision": "yes",
+      "decided_at": "2026-05-05T10:00:00Z"
+    }
+  ]
+}
+```
+
+Subsequent sessions read the file, merge remembered `yes` entries on
+top of the fetched policy as if they were flavor-scope `allow` deltas,
+and re-prompt only for fingerprints not in the file. The plugin
+lazy-syncs new entries to the control plane on a best-effort basis
+(non-blocking; offline survives), and re-fetches the canonical policy
+on its standard TTL so a real `deny` entry on the server-side policy
+can override a stale local `yes` (D132).
+
+### Event taxonomy
+
+Three new event types extend the sensor's `EventType` enum and the
+worker's `events.<type>` NATS subject routing. All three ride the
+standard event pipeline; none are audit-log entries (D131).
+
+- **`policy_mcp_warn`** — emitted when an evaluation resolves to
+  `warn`. Payload: `server_url`, `server_name`, `fingerprint`,
+  `tool_name`, `policy_id`, `scope` (`global` or `flavor:<value>`),
+  `decision_path` (one of `flavor_entry`, `global_entry`,
+  `mode_default`).
+- **`policy_mcp_block`** — emitted when an evaluation resolves to
+  `block`. Same payload as warn, plus `block_on_uncertainty`
+  (true/false — distinguishes the explicit-block-list case from the
+  uncertainty-fallback case).
+- **`mcp_server_name_changed`** — emitted by the sensor when an agent
+  declares a server whose canonical URL is already known under a
+  different name. Payload: `server_url_canonical`, `fingerprint_old`,
+  `fingerprint_new`, `name_old`, `name_new`, `observed_at`. The event
+  surfaces drift on the dashboard so operators can investigate; the
+  policy decision still resolves on URL (D131).
+
+### Audit and versioning
+
+Every successful mutation through `POST` / `PUT` / `DELETE
+/v1/mcp-policies` writes one row to `mcp_policy_audit_log` with the
+`actor` resolved from the request token, the `event_type` from the
+mutation kind, and a `payload` JSONB carrying the diff (added /
+removed entries, mode change, `block_on_uncertainty` flip). Every PUT
+additionally bumps `mcp_policies.version` and snapshots the resulting
+state into `mcp_policy_versions` so operators can diff or roll back.
+
+The audit log is the authoritative record of operator-initiated
+changes — it answers "who changed this and when." Observed system
+state (decision events, name drift) lives in the events pipeline and
+is queried via the standard event endpoints.
+
+### Soft-launch transition
+
+The policy machinery ships in two phases to limit the blast radius of
+a misconfigured allowlist on a real fleet (D133):
+
+- **v0.6.** Sensor and plugin enforcement paths hard-code warn-only
+  behaviour regardless of the configured `enforcement` value. The
+  policy machinery (storage, API, dashboard, events, fingerprinting)
+  ships complete; only the block path is suppressed at the agent
+  boundary. `policy_mcp_warn` events fire normally; `policy_mcp_block`
+  is replaced with `policy_mcp_warn` at emission with a
+  `would_have_blocked=true` payload field so operators can preview
+  what a real enforcement would do.
+- **v0.7.** The hard-coded warn-only override is removed. Configured
+  `block` enforcement raises `MCPPolicyBlocked` and emits
+  `policy_mcp_block`.
+
+`FLIGHTDECK_MCP_POLICY_DEFAULT` is the operator escape hatch. Values:
+`warn` (force warn-only regardless of release) or `enforce` (honor
+configured enforcement regardless of release). Documented for
+operators who need to opt out (v0.7+) or opt in early (v0.6).
+
+### D-number cross-references
+
+D127 (identity canonical form), D128 (storage schema), D129 (fetch +
+cache contract), D130 (sensor block contract), D131 (event types),
+D132 (plugin remembered decisions), D133 (soft-launch default), D134
+(mode lives on global only), D135 (precedence). Underlying:
+D117 (MCP `ClientSession` patch surface), D119 (lean MCP wire
+payload), D125 (Provider enum — no member added; rides existing
+`Provider.MCP`).
+
+---
+
 ## Operational Concerns
 
 ### Deployment

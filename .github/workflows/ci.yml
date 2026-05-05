@@ -224,10 +224,31 @@ jobs:
       - name: Unit tests
         run: npm run test
 
+  plugin:
+    name: Plugin (Claude Code, node --test)
+    runs-on: ubuntu-latest
+    # KI24: opt this job's JavaScript actions into Node 24.
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+    steps:
+      - uses: actions/checkout@v4
+
+      # The plugin is zero-dep (`agent_id.mjs` / `uuid5.mjs` /
+      # `mcp_identity.mjs` use only Node built-ins — node:crypto,
+      # node:test, the URL global, process.env). No npm install
+      # step needed; the make target invokes `node --test` directly
+      # against tests/*.test.mjs.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Plugin unit tests
+        run: make test-plugin
+
   integration:
     name: Integration + sensor e2e
     runs-on: ubuntu-latest
-    needs: [sensor, go, dashboard]
+    needs: [sensor, go, dashboard, plugin]
     # KI24: opt this job's JavaScript actions into Node 24.
     #
     # PYTHON: the Makefile defaults $(PYTHON) to
@@ -291,7 +312,7 @@ jobs:
   e2e:
     name: E2E (Playwright)
     runs-on: ubuntu-latest
-    needs: [sensor, go, dashboard]
+    needs: [sensor, go, dashboard, plugin]
     # Rule 40c (Phase 3): browser end-to-end tests run parallel to
     # the integration job so neither blocks the other. The E2E job
     # boots its own stack — required because seeding the canonical

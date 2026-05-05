@@ -3206,3 +3206,47 @@ func TestAdminReconcileHandler_400_OnMalformedOrphanThreshold(t *testing.T) {
 		t.Fatalf("expected 400, got %d", w.Code)
 	}
 }
+
+// ----- MCP Protection Policy stubs (D128) -----------------------------
+//
+// These stubs let the existing mockStore continue to satisfy the
+// Querier interface after step 3 added 13 new methods. Tests in this
+// file don't exercise MCP policy behaviour; the handler-level MCP
+// policy tests live in api/internal/handlers/mcp_policy_test.go and
+// mcp_policy_versions_test.go with their own focused stubs.
+
+func (m *mockStore) EnsureGlobalMCPPolicy(_ context.Context) error { return nil }
+func (m *mockStore) GetGlobalMCPPolicy(_ context.Context) (*store.MCPPolicy, error) {
+	return nil, nil
+}
+func (m *mockStore) GetMCPPolicy(_ context.Context, _ string) (*store.MCPPolicy, error) {
+	return nil, nil
+}
+func (m *mockStore) CreateMCPPolicy(_ context.Context, _ string, _ store.MCPPolicyMutation, _ []store.MCPPolicyEntry, _ *string) (*store.MCPPolicy, error) {
+	return nil, nil
+}
+func (m *mockStore) UpdateMCPPolicy(_ context.Context, _, _ string, _ store.MCPPolicyMutation, _ []store.MCPPolicyEntry, _ *string, _ map[string]any) (*store.MCPPolicy, error) {
+	return nil, nil
+}
+func (m *mockStore) DeleteMCPPolicy(_ context.Context, _ string, _ *string) error { return nil }
+func (m *mockStore) ResolveMCPPolicy(_ context.Context, _, _ string) (*store.MCPPolicyResolveResult, error) {
+	return nil, nil
+}
+func (m *mockStore) ListMCPPolicyVersions(_ context.Context, _, _ string, _, _ int) ([]store.MCPPolicyVersionMeta, error) {
+	return nil, nil
+}
+func (m *mockStore) GetMCPPolicyVersion(_ context.Context, _, _ string, _ int) (*store.MCPPolicyVersion, error) {
+	return nil, nil
+}
+func (m *mockStore) DiffMCPPolicyVersions(_ context.Context, _, _ string, _, _ int) (*store.MCPPolicyDiff, error) {
+	return nil, nil
+}
+func (m *mockStore) ListMCPPolicyAuditLog(_ context.Context, _, _, _ string, _, _ *time.Time, _, _ int) ([]store.MCPPolicyAuditLog, error) {
+	return nil, nil
+}
+func (m *mockStore) GetMCPPolicyMetrics(_ context.Context, _, _, _ string) (*store.MCPPolicyMetrics, error) {
+	return nil, nil
+}
+func (m *mockStore) DryRunMCPPolicyEvents(_ context.Context, _ int) ([]store.DryRunCandidate, error) {
+	return nil, nil
+}

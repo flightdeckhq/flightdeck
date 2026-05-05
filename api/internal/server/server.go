@@ -158,6 +158,24 @@ func newServer(addr string, s store.Querier, hub *ws.Hub, validator *auth.Valida
 	mux.Handle("GET /v1/mcp-policies/{flavor}",
 		gate(handlers.GetMCPPolicyHandler(s)))
 
+	// Mutations + history: admin-grade.
+	mux.Handle("POST /v1/mcp-policies/{flavor}",
+		adminGate(handlers.CreateMCPPolicyHandler(s)))
+	mux.Handle("PUT /v1/mcp-policies/global",
+		adminGate(handlers.UpdateGlobalMCPPolicyHandler(s)))
+	mux.Handle("PUT /v1/mcp-policies/{flavor}",
+		adminGate(handlers.UpdateMCPPolicyHandler(s)))
+	mux.Handle("DELETE /v1/mcp-policies/{flavor}",
+		adminGate(handlers.DeleteMCPPolicyHandler(s)))
+	mux.Handle("GET /v1/mcp-policies/{flavor}/versions",
+		adminGate(handlers.ListMCPPolicyVersionsHandler(s)))
+	mux.Handle("GET /v1/mcp-policies/{flavor}/versions/{version}",
+		adminGate(handlers.GetMCPPolicyVersionHandler(s)))
+	mux.Handle("GET /v1/mcp-policies/{flavor}/diff",
+		adminGate(handlers.DiffMCPPolicyVersionsHandler(s)))
+	mux.Handle("GET /v1/mcp-policies/{flavor}/audit-log",
+		adminGate(handlers.ListMCPPolicyAuditLogHandler(s)))
+
 	mux.Handle("GET /health", withRESTTimeout(handlers.HealthHandler()))
 
 	// Swagger UI. The swag/v2 v2.0.0-rc5 + http-swagger v2.0.2

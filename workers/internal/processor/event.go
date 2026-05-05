@@ -132,6 +132,47 @@ func BuildEventExtra(e consumer.EventPayload) ([]byte, error) {
 			extra["rendered"] = v
 		}
 	}
+	// D131 — MCP Protection Policy event fields. Projects onto
+	// events.payload for policy_mcp_warn / policy_mcp_block /
+	// mcp_server_name_changed events; non-policy events skip via
+	// the omitempty guards because the sensor doesn't populate
+	// these fields outside the policy event paths.
+	if e.ServerURL != "" {
+		extra["server_url"] = e.ServerURL
+	}
+	if e.Fingerprint != "" {
+		extra["fingerprint"] = e.Fingerprint
+	}
+	if e.PolicyID != "" {
+		extra["policy_id"] = e.PolicyID
+	}
+	if e.Scope != "" {
+		extra["scope"] = e.Scope
+	}
+	if e.DecisionPath != "" {
+		extra["decision_path"] = e.DecisionPath
+	}
+	if e.BlockOnUncertainty != nil {
+		extra["block_on_uncertainty"] = *e.BlockOnUncertainty
+	}
+	if e.WouldHaveBlocked != nil {
+		extra["would_have_blocked"] = *e.WouldHaveBlocked
+	}
+	if e.ServerURLCanonical != "" {
+		extra["server_url_canonical"] = e.ServerURLCanonical
+	}
+	if e.FingerprintOld != "" {
+		extra["fingerprint_old"] = e.FingerprintOld
+	}
+	if e.FingerprintNew != "" {
+		extra["fingerprint_new"] = e.FingerprintNew
+	}
+	if e.NameOld != "" {
+		extra["name_old"] = e.NameOld
+	}
+	if e.NameNew != "" {
+		extra["name_new"] = e.NameNew
+	}
 	// Phase 5 MCP_RESOURCE_READ content. The sensor's lean MCP payload
 	// drops the ``has_content`` flag entirely, so the existing
 	// HasContent gate (which routes LLM PromptContent into the

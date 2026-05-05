@@ -152,8 +152,10 @@ async def run_demo() -> int:
     flightdeck_sensor.teardown()
 
     # 4. Verify the warn event landed via the events query API.
-    time.sleep(1.0)  # playground polling — sleep is acceptable in manual demos
-    events = fetch_events_for_session(session_id)
+    events = fetch_events_for_session(
+        session_id,
+        expect_event_types=["session_start", "policy_mcp_block"],
+    )
     warn_events = [e for e in events if e.get("event_type") == "policy_mcp_block"]
     if not warn_events:
         return 1
@@ -165,7 +167,10 @@ async def run_demo() -> int:
         "mode_default",
     ), f"missing decision_path: {payload}"
     assert payload.get("server_name") == server_name_for_policy
-    assert payload.get("tool_name") == "echo"
+    assert (
+        warn_events[0].get("tool_name") == "echo"
+        or warn_events[0].get("payload", {}).get("tool_name") == "echo"
+    )
     return 0
 
 

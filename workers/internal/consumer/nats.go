@@ -186,6 +186,34 @@ type EventPayload struct {
 	IncomingMessage *SubagentMessage `json:"incoming_message,omitempty"`
 	OutgoingMessage *SubagentMessage `json:"outgoing_message,omitempty"`
 	State           string           `json:"state,omitempty"`
+
+	// D131 — MCP Protection Policy event fields. Populated on
+	// policy_mcp_warn / policy_mcp_block / mcp_server_name_changed
+	// events; otherwise omitted from the wire shape via omitempty.
+	//
+	//   * ServerURL / Fingerprint / PolicyID / Scope / DecisionPath —
+	//     warn + block decision events. ServerURL is the canonical
+	//     URL the wrapper computed at call_tool time; ServerName
+	//     reuses the existing field above.
+	//   * BlockOnUncertainty — block-only flag distinguishing the
+	//     explicit deny case from the uncertainty fall-through case.
+	//   * WouldHaveBlocked — warn-only flag set by the soft-launch
+	//     downgrade path (D133); the dashboard surfaces a "this
+	//     would have blocked in v0.7" badge.
+	//   * ServerURLCanonical / FingerprintOld / FingerprintNew /
+	//     NameOld / NameNew — mcp_server_name_changed event fields.
+	ServerURL          string `json:"server_url,omitempty"`
+	Fingerprint        string `json:"fingerprint,omitempty"`
+	PolicyID           string `json:"policy_id,omitempty"`
+	Scope              string `json:"scope,omitempty"`
+	DecisionPath       string `json:"decision_path,omitempty"`
+	BlockOnUncertainty *bool  `json:"block_on_uncertainty,omitempty"`
+	WouldHaveBlocked   *bool  `json:"would_have_blocked,omitempty"`
+	ServerURLCanonical string `json:"server_url_canonical,omitempty"`
+	FingerprintOld     string `json:"fingerprint_old,omitempty"`
+	FingerprintNew     string `json:"fingerprint_new,omitempty"`
+	NameOld            string `json:"name_old,omitempty"`
+	NameNew            string `json:"name_new,omitempty"`
 }
 
 // SubagentMessageBody is the framework-supplied body of a single

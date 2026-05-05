@@ -123,8 +123,10 @@ async def run_demo() -> int:
         )
 
         # Verify the policy_mcp_block event landed.
-        time.sleep(1.0)  # playground polling — sleep is acceptable in manual demos
-        events = fetch_events_for_session(session_id)
+        events = fetch_events_for_session(
+            session_id,
+            expect_event_types=["session_start", "policy_mcp_block"],
+        )
         block_events = [e for e in events if e.get("event_type") == "policy_mcp_block"]
         assert block_events, "policy_mcp_block event did not land"
         return 0

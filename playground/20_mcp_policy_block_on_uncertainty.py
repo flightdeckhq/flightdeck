@@ -33,7 +33,6 @@ except ImportError:
     sys.exit(2)
 
 from _helpers import (
-    init_sensor,
     mcp_server_params,
     print_result,
 )
@@ -51,11 +50,20 @@ async def run_demo() -> int:
     # policy fetch fails. The mcp_block_on_uncertainty=True kwarg
     # is the failsafe that blocks unmatched URLs anyway.
     os.environ["FLIGHTDECK_MCP_POLICY_DEFAULT"] = "enforce"
-    init_sensor(
-        session_id,
-        flavor=flavor,
-        api_url="http://localhost:65535/api",  # nothing listens on this port
+    os.environ["AGENT_FLAVOR"] = flavor
+    # Bypass init_sensor (which hardcodes api_url=API_URL) so we
+    # can point the sensor at an invalid port. The whole point of
+    # this demo is to fail the preflight policy fetch — the
+    # init_sensor convention assumes a reachable API.
+    flightdeck_sensor.init(
+        server="http://localhost:4000/ingest",
+        token="tok_dev",
+        api_url="http://localhost:65535/api",  # nothing listens here
+        agent_type="coding",
+        capture_prompts=True,
+        session_id=session_id,
         mcp_block_on_uncertainty=True,
+        quiet=True,
     )
 
     flightdeck_sensor.patch(quiet=True)

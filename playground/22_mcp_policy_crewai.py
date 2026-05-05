@@ -129,8 +129,10 @@ def run_demo() -> int:
     flightdeck_sensor.unpatch()
     flightdeck_sensor.teardown()
 
-    time.sleep(1.5)  # playground polling — sleep is acceptable in manual demos
-    events = fetch_events_for_session(session_id)
+    events = fetch_events_for_session(
+        session_id,
+        expect_event_types=["session_start", "policy_mcp_warn"],
+    )
     warn_events = [e for e in events if e.get("event_type") == "policy_mcp_warn"]
     assert warn_events, (
         "no policy_mcp_warn event landed; CrewAI may not have invoked the MCP tool"

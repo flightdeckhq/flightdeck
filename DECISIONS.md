@@ -6265,3 +6265,184 @@ refactor is the structural fix the bullet pointed at.
 migrate); the refactor preserves that invariant by leaving
 ``docker/postgres/migrations/`` as the single canonical home.
 
+---
+
+## D137 -- Dry-run replay binds via `sessions.context.mcp_servers`
+
+**Date:** 2026-05-05
+**Phase:** MCP Protection Policy
+
+**Context.** The dry-run endpoint
+(``POST /v1/mcp-policies/:flavor/dry_run``) replays historical
+MCP traffic against a proposed policy to preview enforcement
+impact. The replay candidate is ``events.event_type='mcp_tool_call'``
+rows over the last N hours. Issue: the lean MCP wire payload (D119)
+carries ``server_name`` and ``transport`` but NOT the full server
+URL. The policy resolution algorithm (D135) keys on canonical URL
+fingerprints, so replay needs to recover each event's URL somehow.
+
+**Decision.** Strategy α — JOIN events to ``sessions``, walk
+``sessions.context.mcp_servers`` JSONB by ``server_name`` to find
+the matching fingerprint + URL captured at MCP handshake time per
+the Phase 5 fingerprint flow:
+
+```
+SELECT events.id, events.payload->>'server_name' AS server_name,
+       (sessions.context->'mcp_servers')::jsonb AS server_fingerprints
+  FROM events
+  JOIN sessions ON sessions.session_id = events.session_id
+ WHERE events.event_type = 'mcp_tool_call'
+   AND events.occurred_at >= NOW() - $1 * INTERVAL '1 hour'
+ ORDER BY events.occurred_at DESC
+ LIMIT 10000
+```
+
+For each row the dry-run handler walks ``server_fingerprints``
+looking for a name match, recovers the canonical URL, and
+evaluates against the proposed policy via the same per-server
+resolution algorithm the live ``ResolveMCPPolicy`` uses. Events
+whose session lacks ``context.mcp_servers`` (older sessions,
+sessions where flightdeck init ran AFTER MCP init) bucket as
+``unresolvable_count`` rather than silently skipping. Operators
+see a clean number in the dry-run response and can investigate
+the unresolvable subset if they care.
+
+The 10000-row hard cap bounds replay cost on high-volume fleets;
+``ORDER BY occurred_at DESC`` weights the sample toward recent
+traffic. ``hours`` query param defaults to 24 and caps at 168 (7
+days). Larger windows demand the cap; smaller windows return
+fewer rows and run fast.
+
+**Why not...**
+
+- *Match by ``server_name`` alone (no canonicalization).* Rejected:
+  operator-confusing. A policy declared on URL
+  ``https://maps.example.com`` against an event with
+  ``server_name="maps"`` won't link unless the policy's
+  ``server_name`` matches verbatim. Strategy α gives the URL-based
+  semantics consistent with the live resolution path.
+- *Add ``server_url_canonical`` to the MCP event payload going
+  forward.* Rejected for step 3 scope: would touch sensor +
+  ingestion + worker for a control-plane analytics feature whose
+  load characteristics are unproven. If volume becomes a problem
+  later, this remains an option — D137 is recorded so the next
+  contributor knows where to look. Premature for an unproven hot
+  path.
+- *Cross-event-table denorm column on events.* Rejected: index
+  complexity not justified at expected fleet volumes; events table
+  is already the largest in the schema and growing it further has
+  storage cost across every deployment.
+- *No replay; require operators to manually map URLs.* Rejected:
+  the dry-run feature exists to reduce operator friction. Removing
+  the replay defeats the purpose.
+
+**Limits documented in the dashboard.** The dry-run UI surfaces
+``unresolvable_count`` prominently so operators can decide whether
+their fleet's history is reliable enough for the preview to be
+trustworthy. A high unresolvable ratio means the operator is
+relying on a sparse sample; the response carries the count so the
+UI doesn't hide the limitation.
+
+**Related decisions.** D119 (lean MCP wire payload — the reason
+the URL isn't on the event payload). D135 (resolution algorithm
+the dry-run mirrors). Phase 5 fingerprint capture flow (the reason
+``sessions.context.mcp_servers`` exists at all).
+
+---
+
+## D138 -- Three locked policy templates
+
+**Date:** 2026-05-05
+**Phase:** MCP Protection Policy
+
+**Context.** The MCP Protection Policy machinery is operator-
+configured. Operators landing on the dashboard for the first time
+face a blank-slate problem: should I run allowlist or blocklist?
+What's a sensible starting set of entries? Without templates,
+operators either copy a YAML from the README, write one from
+scratch (slow, error-prone), or ask a teammate. Each path leaves
+the operator one step away from "click here to get going."
+
+**Decision.** Three locked templates ship with the API, embedded
+via ``embed.FS`` from
+``api/internal/handlers/mcp_policy_templates/*.yaml``:
+
+- **``strict-baseline``** — allowlist mode,
+  ``block_on_uncertainty=true``, zero entries. Operator adds
+  explicit allows from there. Use case: production flavor where
+  the operator wants the "everything blocks until I say so"
+  posture.
+- **``permissive-dev``** — blocklist mode,
+  ``block_on_uncertainty=false``, zero entries. Same shape as the
+  default global, but explicit. Use case: dev flavor where unknown
+  servers should pass.
+- **``strict-with-common-allows``** — allowlist mode,
+  ``block_on_uncertainty=true``, plus three pre-populated allow
+  entries for well-known MCP servers (filesystem npx package,
+  github HTTPS endpoint, slack HTTPS endpoint). Use case: the most
+  common production starting point, where the operator wants
+  immediate productivity for the public servers most fleets call.
+
+The third template carries a maintenance warning in its YAML
+file header AND in the ``description`` field surfaced via
+``GET /v1/mcp-policies/templates``: "the pre-populated server
+URLs reflect well-known MCP server endpoints as of the v0.6
+release; verify against your provider's current documentation
+before relying on them in production." The other two templates
+ship with no embedded URLs and no equivalent warning.
+
+``POST :flavor/apply_template`` takes ``{"template": "<name>"}``,
+replaces the flavor policy state with the template's content,
+bumps version, writes an audit-log entry with
+``payload.applied_template=<name>``. Same atomic version + audit
+semantics as PUT.
+
+**Why these three, not more.**
+
+- These cover the most common starting postures: strict, lax, and
+  strict-with-common-defaults. A new operator can pick one and be
+  productive immediately.
+- Adding more templates increases the maintenance footprint —
+  every shipped template carries an implicit promise that the
+  shape stays valid as the schema evolves. Three is the smallest
+  set that covers the spread.
+- The "common allows" template's URL list adds maintenance burden
+  beyond the other two (the URLs need to keep matching reality);
+  the warning shifts that responsibility back to the operator at
+  apply time.
+
+**Why locked, not user-editable.**
+
+- User-editable templates would extend the API surface (CRUD on a
+  templates table) and add a second mutation path that competes
+  with the existing import / export / apply flow. The complexity
+  isn't earned by user demand yet.
+- Operators who want a custom template can use the YAML
+  import / export endpoints to roll their own out-of-band: export
+  one of the locked templates, edit, import. No persistence
+  required from the platform.
+
+**Why not...**
+
+- *Ship dozens of granular templates.* Rejected: maintenance
+  burden, decision paralysis at the dashboard. Three is enough.
+- *Ship zero templates and force operators to write from scratch.*
+  Rejected: friction. The whole point of the templates surface is
+  to let an operator land on the dashboard and be productive in
+  one click.
+- *Make templates user-editable through the API in v0.6.*
+  Rejected: extends API surface and competes with the YAML
+  import / export path. Deferred to a Roadmap bullet if user
+  demand surfaces.
+- *Pin specific versions of the well-known MCP servers in the
+  third template.* Rejected: pin would either be too narrow (the
+  filesystem npx package version moves) or too wide (any version,
+  which is just a name match). The warning at apply time shifts
+  responsibility to the operator.
+
+**Related decisions.** D128 (policy storage shape templates write
+into). D135 (resolution algorithm template settings drive). The
+third template's URL maintenance commitment is the only known
+ongoing maintenance item; if a template ever needs updating, it's
+a code change + new release, not a hot-patch.
+

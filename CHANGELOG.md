@@ -121,6 +121,50 @@ in v0.6 as warn-only; v0.7 flips to honor configured enforcement.
   `helm/migrations/` is a build artifact (gitignored) populated by
   `helm/Makefile sync-migrations` wired as a prerequisite of every
   chart-render target.
+- **D137** Dry-run replay binds via `sessions.context.mcp_servers`
+  rather than a dedicated event field — events whose session lacks
+  the context bucket as `unresolvable_count`. Avoids a sensor /
+  ingestion / worker schema change for a control-plane analytics
+  feature whose load characteristics are unproven.
+- **D138** Three locked policy templates ship with the API
+  (`strict-baseline`, `permissive-dev`,
+  `strict-with-common-allows`); the third carries a URL-
+  maintenance warning surfaced both in the YAML file header and
+  in the `description` field returned by
+  `GET /v1/mcp-policies/templates`.
+
+### Added (control-plane API)
+
+- **17 control-plane endpoints under `/v1/mcp-policies/...`**
+  (kebab-plural, matching the `access-tokens` convention). Read +
+  resolve (3): `GET /global`, `GET /:flavor`, `GET /resolve`.
+  Write (4): `POST /:flavor`, `PUT /global`, `PUT /:flavor`,
+  `DELETE /:flavor`. History (5): `GET /:flavor/versions`, `GET
+  /:flavor/versions/:version_id`, `GET /:flavor/diff`, `GET
+  /:flavor/audit-log`, `GET /global/audit-log`. Power features
+  (6): `POST /:flavor/dry_run`, `GET /:flavor/metrics`, `POST
+  /:flavor/import` (YAML), `GET /:flavor/export` (YAML), `GET
+  /templates`, `POST /:flavor/apply_template`.
+- **Read-only vs admin-grade scope designation per endpoint
+  group.** Read + resolve accept any valid bearer token (sensor /
+  plugin hot path); the rest are admin-grade. Same `gate()`
+  middleware as token-policy CRUD; the designation is descriptive
+  and documented per endpoint pending a future scoped-admin
+  middleware. Operators are expected to firewall mutation routes
+  at the ingress layer if separation-of-duties matters.
+- **Boot-time auto-create of the empty blocklist global policy.**
+  `store.EnsureGlobalMCPPolicy(ctx)` runs at API startup per
+  D133; idempotent INSERT with retry on unique-violation handles
+  parallel API instances on shared Postgres.
+- **Go-side identity helper at `api/internal/mcp_identity/`**
+  mirrors the Python and Node primitives. All three implementations
+  (Python, JS, Go) load the same `tests/fixtures/mcp_identity_vectors.json`
+  and produce byte-identical fingerprints.
+- **Three policy templates** (D138) embedded via `embed.FS` from
+  `api/internal/handlers/mcp_policy_templates/*.yaml`. Templates
+  surface via `GET /v1/mcp-policies/templates` and apply via
+  `POST :flavor/apply_template` (idempotent PUT-replace, bumps
+  version, audit-log entry carries `applied_template=<name>`).
 
 ## Unreleased — Sub-agent observability
 

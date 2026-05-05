@@ -5434,3 +5434,722 @@ collapses" spec across both themes; ``T32`` E2E + new
 "mini-timeline renders the SAME event-badge testid"
 spec across both themes).
 
+---
+
+## D127 -- MCP server identity canonical form
+
+**Date:** 2026-05-05
+**Phase:** MCP Protection Policy
+
+**Context.** The MCP Protection Policy gates which MCP servers an
+agent is allowed to talk to. Every gating decision needs a stable
+identity for "the same server" across multiple agents, hosts, and
+configuration files. The MCP server declarations Flightdeck observes
+take two shapes: HTTP endpoints (`https://maps.example.com/sse`) and
+stdio commands (`npx -y @modelcontextprotocol/server-filesystem
+/data`). Both shapes can vary cosmetically (trailing slashes, default
+ports, env-var references, whitespace) without changing the actual
+server reached, so a naive string-equality check would fragment one
+logical server into many distinct identities.
+
+**Decision.** Server identity is the pair ``(URL, name)``. The URL is
+the security key; two declarations with the same canonical URL and
+different names are the same enforcement target. The name is display
++ tamper-evidence: when an agent declares a known URL under a new
+name the sensor emits a ``mcp_server_name_changed`` event so
+operators can investigate drift, but the policy decision still
+resolves on the URL.
+
+The hash recipe is
+
+```
+fingerprint = sha256(canonical_url + 0x00 + name).hex()
+display     = fingerprint[:16]
+```
+
+The 0x00 byte separator prevents collisions between
+``("https://a.com", "bservice")`` and ``("https://a.combservice", "")``.
+The first 16 hex characters are the user-facing display fingerprint;
+the full hash is the storage key on ``mcp_policy_entries.fingerprint``
+and the sensor's per-call lookup key.
+
+**HTTP canonical form.** Lowercase scheme + host. Strip default ports
+(``:80`` for ``http``, ``:443`` for ``https``). Strip a trailing slash
+only at the root (``https://example.com/`` → ``https://example.com``;
+``https://example.com/api/`` keeps its trailing slash because path
+semantics carry beyond root). Preserve path case beyond the root
+segment. Drop user-info, fragment, and query entirely.
+
+**Stdio canonical form.** Prefix with ``stdio://``. Concatenate the
+literal command and its args with single-space separators after
+collapsing internal whitespace runs to one space. Resolve env-var
+references (``$VAR``, ``${VAR}``) at fingerprint time using the
+agent's current environment so identity is stable even when the
+declaration uses indirection. Args are case-sensitive — file paths
+and flags matter byte-for-byte.
+
+**Rejected alternatives.**
+
+- *Name-only identity.* Rejected: names are forgeable. Two operators
+  declaring ``"github"`` MCP servers in their flavors would collide
+  even if they pointed at different binaries; an attacker substituting
+  a server with the same name would inherit the prior decision.
+- *Composite hash without separator.* Rejected: ambiguity between
+  ``("https://a.com", "bservice")`` and ``("https://a.combservice", "")``
+  collides on a plain concatenation hash; the 0x00 separator is the
+  cheapest disambiguation.
+- *Include port in canonical form even when default.* Rejected:
+  HTTP-default ``:80`` and HTTPS-default ``:443`` are absent in most
+  declarations and present in some, with no semantic difference.
+  Stripping defaults makes ``https://example.com`` and
+  ``https://example.com:443`` the same fingerprint, which is what
+  operators expect.
+- *Path case-fold beyond root.* Rejected: HTTP path semantics are
+  case-sensitive on most servers; folding case would create
+  fingerprint collisions for two genuinely different paths.
+- *Resolve stdio env vars at policy creation time, not at fingerprint
+  time.* Rejected: the policy lives on the control plane, the env
+  lives on the agent host. Resolving at policy creation would force
+  the operator to know each agent's environment, which is exactly the
+  abstraction the policy is supposed to remove.
+- *Block name-drift instead of emitting an event.* Rejected:
+  legitimate renames happen (an MCP server gets a friendlier display
+  name; a typo is corrected). Blocking renames would produce a flood
+  of false-positive enforcement events that operators would learn to
+  ignore. Emitting the drift event lets operators investigate without
+  taking the agent offline.
+
+**Related decisions.** D117 (the ``ClientSession`` patch surface that
+extracts the URL and name at call time). D131 (the
+``mcp_server_name_changed`` event emitted on drift). D128 (the
+storage schema that uses ``fingerprint`` as the per-policy unique
+key).
+
+---
+
+## D128 -- Two-scope policy storage schema
+
+**Date:** 2026-05-05
+**Phase:** MCP Protection Policy
+
+**Context.** The MCP Protection Policy needs persistent storage for
+the global policy + per-flavor overrides, every entry on each, the
+audit trail of who changed what, and the version history that lets
+operators diff or roll back. The naive choice — one JSONB blob per
+policy — would collapse all of this into a single column with no
+queryability for the resolve endpoint and no native traceability.
+
+**Decision.** Four tables: ``mcp_policies`` (live state),
+``mcp_policy_entries`` (live entries linked to a policy),
+``mcp_policy_versions`` (per-PUT snapshots for diff / rollback), and
+``mcp_policy_audit_log`` (operator-initiated mutations). The schema
+in ARCHITECTURE.md ``## MCP Protection Policy`` ``Storage schema``
+sub-section is the canonical spec; migration ``000018`` implements
+it byte-for-byte. The ARCHITECTURE.md section carries a binding-
+contract note: any deviation in step 2 requires a new DECISIONS.md
+entry per Rule 42 BEFORE the migration is written.
+
+The split between ``mcp_policies`` and ``mcp_policy_entries`` keeps
+the per-server resolution query (``SELECT ... FROM
+mcp_policy_entries WHERE policy_id = $1 AND fingerprint = $2``)
+indexable without scanning a JSONB column. ``mcp_policy_versions``
+is append-only: every PUT bumps ``mcp_policies.version`` and writes
+the resulting snapshot; rollback is a deliberate operator action
+(POST a prior snapshot back through PUT), not an automatic time-
+travel feature.
+
+The audit log records **operator-initiated mutations only** — actor
++ diff. Sensor-observed system state (decision events, name drift)
+ships through the standard event pipeline as typed event rows, not
+as audit log entries (see D131).
+
+**The CHECK on ``mcp_policies``.** ``scope='global'`` rows have
+``scope_value IS NULL`` and ``mode IS NOT NULL``;
+``scope='flavor'`` rows have ``scope_value IS NOT NULL`` and
+``mode IS NULL``. This enforces D134's "mode lives on global only"
+rule at the storage layer so a misbehaving API caller cannot persist
+a flavor row with a mode set, then have the resolution algorithm
+fight against the schema's invariant.
+
+**Rejected alternatives.**
+
+- *Single JSONB blob per policy.* Rejected: the resolve endpoint
+  becomes a JSONB scan with no usable index. At a hundred entries
+  per policy the cost is bearable; at the thousands of entries some
+  large fleets accumulate, the resolve latency is on the agent's hot
+  path (called at every ``init()``) and a JSONB scan is the wrong
+  shape.
+- *Single ``mcp_policies`` table with scope as a tag column.*
+  Rejected: storing entries directly on the policy row (as a
+  JSONB or array column) hits the same query-cost problem above. A
+  separate entries table is the right shape regardless of how the
+  policy header is stored.
+- *PostgreSQL ENUM types for ``scope`` / ``mode`` /
+  ``entry_kind`` / ``enforcement`` / ``event_type``.* Rejected: ENUM
+  values cannot be removed, and adding new values requires a
+  migration that holds an exclusive lock. Plain ``TEXT NOT NULL
+  CHECK (... IN (...))`` is portable, supports value addition via a
+  cheap ALTER CHECK, and matches the existing convention in
+  ``sessions.state`` / ``token_policies.scope``.
+- *Soft-delete on ``mcp_policies``.* Rejected: a deleted flavor
+  policy is supposed to disappear, falling back to global. Soft-
+  delete would surface deleted rows in the resolve query and force
+  every read site to filter. The audit log preserves the deletion
+  event for traceability; the live row is gone.
+- *Foreign key from ``mcp_policy_entries.fingerprint`` to a
+  separate ``mcp_servers`` table.* Rejected: the same fingerprint
+  may legitimately appear in two policies (global allow + flavor
+  deny). A standalone ``mcp_servers`` table would either need
+  per-policy duplication of the URL / name pair (defeats the
+  normalisation) or a many-to-many join (extra table, extra query
+  cost) to no operator benefit.
+
+**Related decisions.** D127 (fingerprint format that the schema
+stores). D129 (the resolve query the schema is shaped to serve).
+D131 (event types that ship through the events pipeline rather
+than the audit log). D134 (mode-on-global-only invariant the
+CHECK enforces).
+
+---
+
+## D129 -- Fetch + cache contract per surface
+
+**Date:** 2026-05-05
+**Phase:** MCP Protection Policy
+
+**Context.** The policy applies at every ``call_tool`` (sensor) and
+at every ``SessionStart`` (Claude Code plugin). Resolving the policy
+on every call would put control-plane latency on the agent's hot
+path, violating Rule 27. A cache is mandatory; the question is when
+the cache is populated, how long it lives, and what happens when the
+control plane is unreachable.
+
+**Decision.** Three surface-specific contracts.
+
+**Sensor (Python).** The control-plane client fetches the active
+policy at ``init()`` synchronously, alongside the existing token-
+policy preflight. Result is cached on the ``Session`` object for the
+session's lifetime. A ``policy_update`` directive received in a
+response envelope refreshes the cache in place; the new policy
+applies at the **next** ``session_start`` (in-flight sessions
+deliberately keep the policy that was active at their start so a
+mid-session policy flip doesn't change behaviour for a call already
+in progress). Fail-open per Rule 28: if the control plane is
+unreachable AND ``FLIGHTDECK_UNAVAILABLE_POLICY=continue`` AND the
+flavor's ``block_on_uncertainty`` is not in force, the agent
+proceeds with no enforcement.
+
+**Plugin (Claude Code).** ``SessionStart`` hook fetches the policy
+applicable to the active flavor. Cached on disk at
+``~/.claude/flightdeck/mcp_policy_cache.json``, keyed by token id.
+TTL defaults to one hour; subsequent ``SessionStart`` invocations
+reuse the cache until the TTL expires, at which point the next
+start re-fetches. Cache miss + control plane unreachable produces
+the same fail-open behaviour as the sensor.
+
+**Dashboard.** Direct REST against ``GET /v1/mcp-policies`` and
+``GET /v1/mcp-policies/:id``. No client-side cache beyond the
+standard React-Query window — operators expect freshly-edited
+policies to appear immediately on save.
+
+**In-flight session semantics.** The "applies at next
+``session_start``" rule for sensor caches matters when the policy
+flips from ``warn`` to ``block`` mid-session: the session in
+progress finishes under the older policy. This is deliberate.
+Mid-session enforcement changes are surprising to operators and
+to agents alike; tying enforcement to session boundaries gives
+each session a single coherent decision regime.
+
+**Rejected alternatives.**
+
+- *Per-call resolve against the control plane.* Rejected: latency
+  on the agent hot path violates Rule 27. Even sub-100ms control-
+  plane round-trips, multiplied by hundreds of MCP calls per
+  session, are not acceptable.
+- *No cache; resolve in-process using a static config file.*
+  Rejected: defeats the purpose of a centrally-managed policy.
+  Operators would have to push file updates to every agent host.
+- *Push-based cache invalidation via WebSocket.* Rejected for
+  v0.6: D108's LISTEN/NOTIFY is for dashboards; sensors aren't
+  WebSocket subscribers and adding a parallel sensor channel
+  expands the threading model the sensor goes out of its way to
+  keep small (Rule 32). The ``policy_update`` directive
+  piggyback on the existing event-response envelope is the
+  cheaper invalidation path.
+- *Apply mid-session policy flips immediately.* Rejected: produces
+  surprising behaviour where an MCP call works on attempt 1 and
+  fails on attempt 2 within the same agent task. Tying enforcement
+  to session boundaries is more predictable.
+
+**Related decisions.** D117 (``ClientSession`` patch surface where
+the cache is consulted). D128 (storage schema for the policy the
+cache holds). D130 (sensor block contract that consumes the cached
+decision). D133 (soft-launch warn-only override that overlays the
+cache decision in v0.6).
+
+---
+
+## D130 -- Sensor block contract: typed exception
+
+**Date:** 2026-05-05
+**Phase:** MCP Protection Policy
+
+**Context.** When the policy resolves to ``block`` on a sensor-
+mediated MCP call, the sensor must stop the wire request from
+reaching the server. The standard Python interface for "this
+operation cannot proceed" is an exception. The question is which
+exception class and what payload it carries.
+
+**Decision.** Add a typed exception class
+``flightdeck.MCPPolicyBlocked`` (in
+``sensor/flightdeck_sensor/core/exceptions.py``, sibling of
+``BudgetExceededError`` and ``DirectiveError``). The block path:
+
+1. Resolve the cached policy decision for ``(server_url,
+   server_name)`` against the active flavor.
+2. If the decision is ``block``: emit ``policy_mcp_block`` to the
+   event queue, call ``EventQueue.flush()`` synchronously so the
+   block lands at the dashboard before the agent sees the failure,
+   then ``raise MCPPolicyBlocked`` with attributes ``server_url``,
+   ``server_name``, ``fingerprint``, ``policy_id``,
+   ``decision_path`` (one of ``flavor_entry`` / ``global_entry`` /
+   ``mode_default``), and a human-readable ``message``.
+3. The framework code surrounding the MCP call surfaces the
+   exception as a tool-call failure to the agent's reasoning loop.
+   Most agent frameworks already wrap tool calls in try/except; the
+   exception's ``message`` and structured attributes give the
+   surrounding harness enough to render an actionable failure.
+
+**Why an exception, not a return-None or a side-channel.** MCP
+client APIs don't have a "skip" return shape — every method
+returns either a result or raises. Returning ``None`` would
+require the framework to special-case it (different from real
+MCP errors), which would silently bypass agents whose framework
+doesn't have the special case. A new exception type is the
+idiomatic Python contract for "this call cannot complete."
+
+**Why a synchronous flush before raise.** Without it, the
+``policy_mcp_block`` event sits in the in-process queue while the
+exception propagates up. If the agent process terminates fast
+(e.g., a CrewAI Crew exit cascade triggered by the failed tool
+call), the event might never reach the control plane. The block
+event is the operator's evidence that enforcement fired; losing
+it defeats the audit story. Synchronous flush adds one network
+round-trip's latency to the failure path, which is acceptable
+because the agent is already failing — the latency budget for
+the happy path is not affected.
+
+**Rejected alternatives.**
+
+- *Return None and log.* Rejected: framework code would silently
+  see ``None`` and continue with degraded results, which is worse
+  than failing. Operators wouldn't get a clean signal that
+  enforcement fired against their agent.
+- *Patch ``ClientSession`` to skip the call silently.* Rejected:
+  the MCP SDK has no "skip" semantic; faking one would surface as
+  framework-specific oddities (CrewAI sees one shape, LangChain
+  sees another). The exception path is uniform across frameworks.
+- *Reuse ``DirectiveError``.* Rejected: ``DirectiveError`` is the
+  signal for "the control plane told you to stop" (kill switch,
+  shutdown directive). Policy-block is a different category — it's
+  a per-call decision evaluated against a cached policy, not a
+  delivered directive. Distinct exception classes let
+  framework-level handlers respond differently if they want
+  (retry on policy block makes no sense; retry on a delivered
+  shutdown might).
+- *Asynchronous flush.* Rejected: the event-loss window above is
+  real. The cost of synchronous flush is paid only on a path
+  that's already failing, so the extra round-trip is acceptable.
+
+**Related decisions.** D117 (``ClientSession`` patch surface where
+the exception is raised). D129 (cache that the block path
+consults). D131 (the ``policy_mcp_block`` event emitted before the
+raise). D133 (soft-launch warn-only override that suppresses the
+raise in v0.6).
+
+---
+
+## D131 -- New event types: policy_mcp_warn, policy_mcp_block, mcp_server_name_changed
+
+**Date:** 2026-05-05
+**Phase:** MCP Protection Policy
+
+**Context.** The MCP Protection Policy produces three observable
+signals: a permitted-but-noted call (``warn``), a blocked call
+(``block``), and an observed server name change for a known URL
+(name drift, see D127). All three need a wire shape and a
+dashboard rendering surface. The existing ``policy_warn`` /
+``policy_block`` / ``policy_degrade`` events are token-budget
+enforcement and would conflate two enforcement axes if reused.
+
+**Decision.** Three additions to the sensor's ``EventType`` enum,
+each with its own NATS subject (``events.policy_mcp_warn``,
+``events.policy_mcp_block``, ``events.mcp_server_name_changed``)
+auto-derived from the existing per-event-type routing pattern
+(D108's ``events.>`` catch-all consumes them with no worker
+subscription change required). Worker handler switch updates to
+write the events; dashboard event-row + filter additions surface
+them.
+
+**Wire shape.**
+
+- ``policy_mcp_warn``: ``server_url``, ``server_name``,
+  ``fingerprint``, ``tool_name``, ``policy_id``, ``scope``
+  (``global`` or ``flavor:<value>``), ``decision_path`` (one of
+  ``flavor_entry`` / ``global_entry`` / ``mode_default``).
+- ``policy_mcp_block``: same payload as ``policy_mcp_warn``, plus
+  ``block_on_uncertainty`` (true / false — distinguishes the
+  explicit-deny case from the uncertainty-fallback case).
+- ``mcp_server_name_changed``: ``server_url_canonical``,
+  ``fingerprint_old``, ``fingerprint_new``, ``name_old``,
+  ``name_new``, ``observed_at``. Sensor-emitted only — fires when
+  the sensor observes an MCP declaration whose canonical URL
+  matches a previously-seen URL under a different name. Pure
+  observation; no policy decision required.
+
+**``mcp_server_name_changed`` is an event type, not an audit log
+row.** The audit log (``mcp_policy_audit_log``, D128) records
+**operator-initiated policy mutations** — actor + diff. Name drift
+is an observation about agent / system state, not an operator
+action, and it ships through the same pipeline that carries every
+other agent-observed event so the dashboard renders it next to
+the actual MCP traffic that produced it. The audit log query
+("who changed this policy and when?") and the events query
+("what did the agent do and when?") have different shapes and
+different audiences; conflating them would force the audit-log
+endpoint to filter out system-observed rows and the events
+endpoint to know about audit shape. Keeping them separate
+preserves single-responsibility for each surface.
+
+**Why three events not one.** Events are scanning surfaces — the
+live feed, the swimlane, the session drawer event list. Distinct
+event types render distinct chromas, badges, and filters. A
+single ``policy_mcp`` event with a ``decision`` field would force
+the dashboard to inspect the payload to decide colour and badge,
+breaking the existing pattern where the event_type alone drives
+rendering (``policy_warn`` is amber, ``policy_block`` is red,
+``policy_degrade`` is orange — operators learn this at-a-glance
+vocabulary and rely on it). Three event types preserves the
+pattern.
+
+**Why not reuse ``policy_warn`` / ``policy_block``.** Token-budget
+enforcement and MCP-policy enforcement are independent axes. An
+operator triaging a fleet wants to know "did the budget fire?" vs
+"did MCP enforcement fire?" without payload inspection. Reusing
+event types would conflate two enforcement causes that share
+nothing but the word "policy."
+
+**Rejected alternatives.**
+
+- *Single ``policy_mcp`` event with ``decision`` field.* Rejected
+  for the chroma / badge / filter rationale above.
+- *Reuse ``policy_warn`` / ``policy_block``.* Rejected for the
+  cause-conflation rationale above.
+- *Make ``mcp_server_name_changed`` an audit-log row.* Rejected:
+  the audit log is for operator mutations (actor + diff). System-
+  observed drift belongs in the events pipeline alongside the
+  declarations that produced it.
+- *Skip the name-changed event entirely; just trust the URL.*
+  Rejected: an attacker substituting a same-URL server with a
+  different name is a real adversary model. Surfacing the drift
+  lets operators investigate without forcing them to compare
+  declarations across sessions manually.
+
+**Related decisions.** D108 (event pipeline ``events.>`` catch-all
+that consumes new types automatically). D117 (the patch surface
+that observes names and URLs at call time). D127 (fingerprint
+recipe used in all three payloads). D128 (audit log scope —
+operator mutations only, not system observations).
+
+---
+
+## D132 -- Plugin remembered-decisions storage
+
+**Date:** 2026-05-05
+**Phase:** MCP Protection Policy
+
+**Context.** The Claude Code plugin's ``interactive`` enforcement
+mode prompts the user via ``PermissionRequest`` for unknown
+servers in ``allowlist`` mode. The prompt offers ``yes`` / ``no``
+/ ``yes-and-remember``. The remembered decisions need persistent
+local storage so a developer doesn't get re-prompted for the same
+server every time Claude Code starts. Local storage is also the
+right shape because Claude Code must work offline — the prompt
+fires at ``SessionStart``, before any control-plane call has
+necessarily succeeded.
+
+**Decision.** Local file at
+``~/.claude/flightdeck/remembered_mcp_decisions.json``, keyed by
+``token_id`` (the access token in use). Schema:
+
+```json
+{
+  "token_id": "uuid",
+  "decisions": [
+    {
+      "fingerprint": "ab12cd34ef567890",
+      "server_url_canonical": "https://maps.example.com",
+      "server_name": "maps",
+      "decision": "yes",
+      "decided_at": "2026-05-05T10:00:00Z"
+    }
+  ]
+}
+```
+
+Subsequent ``SessionStart`` invocations read the file, merge
+remembered ``yes`` entries on top of the fetched policy as if
+they were flavor-scope ``allow`` deltas, and re-prompt only for
+fingerprints not in the file. The plugin lazy-syncs new entries
+to the control plane on a best-effort basis (non-blocking;
+offline survives). Re-fetches the canonical policy on its
+standard TTL (D129) so a real ``deny`` entry on the server-side
+policy can override a stale local ``yes``.
+
+**Why local-first.** Claude Code is a developer tool that runs
+without network reliably. The ``PermissionRequest`` prompt fires
+before any session is established and cannot block on a control-
+plane round-trip. The local file is read first; the control-
+plane sync is best-effort and runs after the prompt is resolved.
+
+**Why per-token.** Two operators on the same machine using
+different access tokens (e.g., dev token and a personal-org
+token) get different remembered-decision sets because their
+flavor / policy memberships differ. A single shared file would
+leak one operator's decisions onto the other's prompts.
+
+**Why not encrypted.** The file holds decision records, not
+secrets. The fingerprint and URL are non-sensitive; the
+``decided_at`` timestamp is non-sensitive. Standard filesystem
+permissions (``0600``) are sufficient. Keychain-backed storage
+would add cross-platform pain (separate paths for macOS Keychain
+/ Linux Secret Service / Windows Credential Locker) for low-value
+secrecy.
+
+**Rejected alternatives.**
+
+- *Control-plane-only storage.* Rejected: offline ``SessionStart``
+  fails. Developers on flights, in coffee shops with flaky WiFi,
+  or behind corporate proxies that briefly drop connections would
+  see their Claude Code sessions stall on the
+  ``PermissionRequest`` flow. Local-first lets the prompt be
+  resolved instantly from cache; the control-plane sync is the
+  best-effort enrichment.
+- *Keychain-backed storage.* Rejected for the cross-platform-pain
+  / low-value-secrecy reason above.
+- *No remembered decisions; prompt every session.* Rejected: the
+  ``yes-and-remember`` option is the ergonomic point of the
+  prompt. Without it, developers learn to mash ``yes`` on every
+  prompt and the security signal degrades to noise.
+- *Single shared file (not per-token).* Rejected for the operator-
+  separation reason above.
+
+**Related decisions.** D127 (fingerprint stored in the file).
+D129 (control-plane policy that the local file overlays).
+
+---
+
+## D133 -- Soft-launch: warn-only default in v0.6
+
+**Date:** 2026-05-05
+**Phase:** MCP Protection Policy
+
+**Context.** A misconfigured allowlist on a real fleet could halt
+every MCP-using agent simultaneously. The policy machinery is
+brand new — fingerprint normalisation edge cases, resolution
+algorithm corner cases, dashboard policy editor bugs all could
+surface in production with high blast radius. The token-policy
+enforcement that shipped earlier in the project's life had the
+same blast-radius shape (a misconfigured token limit could kill
+sessions across a flavor) and benefited from operators having
+time to validate it against real workloads before relying on it.
+
+**Decision.** v0.6 ships the policy machinery in warn-only mode
+regardless of the configured ``enforcement`` value. Sensor and
+plugin enforcement paths hard-code the warn-only behaviour:
+``policy_mcp_block`` is replaced at emission with
+``policy_mcp_warn`` carrying a ``would_have_blocked=true``
+payload field. The full policy machinery (storage, API, dashboard,
+events, fingerprinting) ships complete; only the block path is
+suppressed at the agent boundary. v0.7 removes the suppression
+and configured ``block`` enforcement raises ``MCPPolicyBlocked``
+as documented.
+
+``FLIGHTDECK_MCP_POLICY_DEFAULT`` is the operator escape hatch.
+Values: ``warn`` (force warn-only regardless of release) or
+``enforce`` (honor configured enforcement regardless of release).
+Documented for operators who need to opt out (v0.7+) or opt in
+early (v0.6).
+
+**Why ``would_have_blocked=true``.** Without the payload field,
+the v0.6 fleet looks like every block decision turned into a
+warn — operators couldn't tell which warns are genuine policy
+warns vs which were block-decisions-suppressed-by-soft-launch.
+The flag lets the dashboard surface a "this would have blocked
+in v0.7" badge so operators can preview the real enforcement
+without flipping the global switch.
+
+**Rejected alternatives.**
+
+- *Enforce by default in v0.6.* Rejected: blast radius is too
+  high for a brand-new code path. Operators need a safe window
+  to validate their policies against real workloads before the
+  block path goes live.
+- *Don't ship enforcement at all in v0.6; only ship the
+  observability bits.* Rejected: the policy machinery is one
+  unit. Splitting observability and enforcement across two
+  releases would mean the schema, API, dashboard, and event
+  types ship in v0.6 with no end-to-end purpose, then the
+  enforcement path lights up in v0.7. Shipping the complete
+  machinery in warn-only mode preserves the testability and
+  audit value (operators see what would happen) without the
+  blast risk.
+- *Feature flag in the control plane (per-deployment
+  ``mcp_enforcement_enabled`` boolean).* Rejected: operators who
+  want enforcement early would have to flip the flag on the CP
+  side for their fleet, which means the v0.6 dev-stack experience
+  differs from production. Env var on the agent side keeps the
+  per-agent escape hatch local and inspectable in agent logs.
+- *Block-by-default with an opt-out env var.* Rejected:
+  inverts the safety story. The default should be "no surprise
+  blocks" given the brand-new code path; opt-in matches Rule
+  28's fail-open posture for unfamiliar control-plane state.
+
+**Related decisions.** Rule 28 (sensor fail-open) which this
+soft-launch policy aligns with: under uncertainty, prefer the
+permissive path. D130 (sensor block contract) which is
+suppressed in v0.6 and lit up in v0.7. D131 (event types) which
+ship complete in v0.6 with the
+``would_have_blocked`` flag overlay on warn events.
+
+---
+
+## D134 -- Mode lives on the global policy only
+
+**Date:** 2026-05-05
+**Phase:** MCP Protection Policy
+
+**Context.** The policy carries a mode (``allowlist`` or
+``blocklist``) that defines what to do with unlisted servers. The
+question is whether per-flavor policies carry their own mode (so a
+flavor can be allowlist while the global is blocklist) or whether
+mode is a global-only attribute and per-flavor entries are pure
+allow / deny deltas.
+
+**Decision.** Mode lives on the global policy only. Per-flavor
+policies do not carry a mode; they carry only allow / deny entry
+deltas against whatever the global resolves to. The ``CHECK`` on
+``mcp_policies`` (D128) enforces this at the storage layer:
+``scope='global'`` requires ``mode IS NOT NULL``; ``scope='flavor'``
+requires ``mode IS NULL``.
+
+**Why.** Mode-per-flavor would create resolution ambiguity. Suppose
+the global is ``allowlist`` mode with entry ``[X]`` and a flavor is
+``blocklist`` mode with entry ``[Y]``. What happens on server ``Z``,
+unlisted in both? The global mode says block; the flavor mode says
+allow; nothing in the structure says which mode wins. Picking either
+direction (most-permissive wins, most-restrictive wins, flavor wins,
+global wins) introduces an ad-hoc rule operators have to memorise.
+
+Locking mode to global removes the question. Per-flavor entries are
+explicit allow / deny deltas applied on top of the global decision.
+The resolution algorithm (D135) becomes:
+
+1. Flavor entry exists for the URL? Use it.
+2. Global entry exists? Use it.
+3. Apply the global mode default.
+
+Three steps, deterministic, no precedence puzzles.
+
+**``block_on_uncertainty`` is per-flavor.** The toggle that says
+"under allowlist mode, treat unlisted servers as block + emit
+audit-grade ``policy_mcp_block``" is per-flavor because the
+expressiveness it provides is genuinely flavor-scoped — a
+production flavor might want it, a staging flavor might not.
+Storing it on the global would leak the flavor-scoped expressiveness
+back into the question this decision is trying to remove.
+
+**Rejected alternatives.**
+
+- *Mode-per-flavor.* Rejected for the resolution-ambiguity
+  rationale above.
+- *Mode-per-entry.* Rejected: too granular. Operators editing
+  a policy with hundreds of entries would have to track per-entry
+  modes in addition to per-entry allow/deny, which is unreadable
+  in a UI and error-prone in a YAML import.
+- *No mode at all (every entry is explicit allow OR deny; no
+  fallback).* Rejected: the secure-by-default story (allowlist =
+  block unlisted) is the primary operator pitch for the feature.
+  Removing mode would force every operator to enumerate every
+  blocked server, which is exactly the "you can't enumerate
+  forbidden behaviour" problem allowlist mode exists to dodge.
+
+**Related decisions.** D128 (the ``CHECK`` enforcing this rule
+at storage). D135 (the resolution algorithm this rule simplifies).
+
+---
+
+## D135 -- Per-server precedence: flavor → global → global-mode default
+
+**Date:** 2026-05-05
+**Phase:** MCP Protection Policy
+
+**Context.** With one global policy plus zero or more per-flavor
+policies, every per-server resolution has potentially two policies
+opining on the same URL. The order in which they're consulted —
+which "wins" when both have an entry — needs to be deterministic
+and predictable.
+
+**Decision.** Most-specific scope wins. Resolution proceeds in
+three ordered steps:
+
+1. If the per-flavor policy has an entry whose canonical URL
+   matches, use that entry's enforcement decision.
+2. Else if the global policy has an entry whose canonical URL
+   matches, use the global entry.
+3. Else apply the global mode default: ``allowlist`` →
+   block; ``blocklist`` → allow. (When the flavor's
+   ``block_on_uncertainty`` is true and the global mode is
+   ``allowlist``, step 3 emits a ``policy_mcp_block`` even though
+   the decision is the same — the audit-grade signal differs from
+   the standard allowlist-default block.)
+
+**Why most-specific scope wins.** A per-flavor policy expresses an
+operator's intent for that flavor specifically — it's the override
+mechanism the two-scope design exists to provide. If the global
+won when the two disagreed, per-flavor entries would be
+suggestions instead of overrides, and the only way to actually
+override the global would be to edit the global itself (which
+would change behaviour for every flavor). The flavor-wins rule is
+what makes per-flavor policies useful.
+
+**Why a fixed three-step algorithm, not a "merge" semantic.** A
+merge semantic ("union the entries from both policies and apply
+the global mode") would lose the override expressiveness. An
+operator who wants to deny ``X`` in flavor ``production`` while
+allowing it globally has no way to express that under a merge —
+the deny would either compose with the allow (ambiguous) or be
+ignored (no override).
+
+**Rejected alternatives.**
+
+- *Global wins over flavor.* Rejected: defeats the two-scope
+  design. Per-flavor policies become decorative.
+- *Strictest wins (block beats allow regardless of scope).*
+  Rejected: non-deterministic when a flavor allow + global deny
+  meet. Operators would have to remember "but only when the
+  global is allowlist..." sub-rules.
+- *Most-recent edit wins.* Rejected: relies on edit timestamps as
+  a load-bearing semantic. An operator restoring a prior policy
+  version (from the ``mcp_policy_versions`` snapshot) would
+  inadvertently flip precedence because the restore's
+  ``updated_at`` is now newer.
+- *Most-permissive wins.* Rejected for the same
+  non-determinism rationale as strictest-wins, just inverted.
+- *Merge entries from both scopes.* Rejected for the override-
+  expressiveness rationale above.
+
+**Related decisions.** D128 (storage schema that supports the
+flavor-then-global query order). D134 (mode-on-global-only rule
+that simplifies step 3 to a single mode lookup).
+

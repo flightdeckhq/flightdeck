@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
 
+from flightdeck_sensor.core.agent_id import derive_agent_id
 from flightdeck_sensor.core.policy import PolicyCache
 from flightdeck_sensor.core.types import (
     Directive,
@@ -31,6 +32,7 @@ from flightdeck_sensor.core.types import (
     SensorConfig,
     SessionState,
     StatusResponse,
+    SubagentMessage,
     TokenUsage,
 )
 
@@ -47,6 +49,35 @@ _PREFLIGHT_TIMEOUT_SECS = 1
 # design (B-H two-queue refactor) and a hung handler stalls the
 # directive queue but NOT event throughput.
 _CUSTOM_DIRECTIVE_HANDLER_TIMEOUT_SECS = 5
+
+# D126 § 6 sub-agent message routing thresholds.
+#
+# Bodies up to ``SUBAGENT_INLINE_THRESHOLD_BYTES`` ride inline on the
+# event payload's ``incoming_message`` / ``outgoing_message`` field
+# and are projected into ``events.payload`` JSONB by the worker's
+# BuildEventExtra. Bodies above the inline threshold but at or below
+# ``SUBAGENT_HARD_CAP_BYTES`` route through the existing D119
+# event_content path: the wire stub on the payload field becomes
+# ``{has_content: True, content_bytes: <int>, captured_at: ...}``,
+# the full body lands on the wire's PromptContent envelope under
+# ``response`` (with ``provider="flightdeck-subagent"`` so the
+# dashboard's content-fetch consumer disambiguates from LLM
+# content), and the worker's existing InsertEventContent writes the
+# event_content row.
+#
+# 8 KiB chosen to match the design-doc threshold and the typical
+# upper bound for inter-agent messages we've seen empirically (CrewAI
+# Task descriptions are usually a paragraph or two; LangGraph state
+# dicts under a kilobyte for routing-style nodes). The hard cap at
+# 2 MiB is the design-doc "abuse budget" — bodies above that are
+# almost certainly someone dumping the entire conversation transcript
+# or a binary-encoded artifact into a sub-agent message; we drop +
+# warn rather than silently truncate so the operator notices.
+SUBAGENT_INLINE_THRESHOLD_BYTES = 8 * 1024
+SUBAGENT_HARD_CAP_BYTES = 2 * 1024 * 1024
+# Discriminator the dashboard's content-fetch consumer reads to pick
+# the sub-agent renderer over the LLM PromptViewer.
+SUBAGENT_OVERFLOW_PROVIDER = "flightdeck-subagent"
 
 
 class Session:
@@ -219,6 +250,312 @@ class Session:
                 ):
                     return
             self._mcp_servers.append(fingerprint)
+
+    # ------------------------------------------------------------------
+    # Sub-agent emission (D126)
+    # ------------------------------------------------------------------
+    #
+    # Framework interceptors (CrewAI Agent.execute, LangGraph
+    # agent-bearing nodes, AutoGen 0.4 / 0.2 participant message
+    # handlers) wrap a child execution and call:
+    #
+    #     child_id  = uuid.uuid4().hex
+    #     agent_id  = session.derive_subagent_id("Researcher")
+    #     session.emit_subagent_session_start(
+    #         child_session_id=child_id,
+    #         child_agent_id=agent_id,
+    #         child_agent_name="researcher@host",
+    #         agent_role="Researcher",
+    #         incoming_message=SubagentMessage(body=task, captured_at=...),
+    #     )
+    #     try:
+    #         result = framework.execute(...)
+    #     except Exception as exc:
+    #         session.emit_subagent_session_end(
+    #             child_session_id=child_id,
+    #             child_agent_id=agent_id,
+    #             child_agent_name="researcher@host",
+    #             agent_role="Researcher",
+    #             state="error",
+    #             error={"type": type(exc).__name__, "message": str(exc)},
+    #         )
+    #         raise
+    #     else:
+    #         session.emit_subagent_session_end(
+    #             child_session_id=child_id,
+    #             ...,
+    #             outgoing_message=SubagentMessage(body=result, captured_at=...),
+    #         )
+    #
+    # The methods POST through the same control-plane client as every
+    # other event so back-pressure / unavailability / capture_prompts
+    # behaviour is uniform with the rest of the sensor.
+
+    def derive_subagent_id(self, agent_role: str) -> str:
+        """Return the deterministic ``agent_id`` for a sub-agent of
+        the given role under this Session's identity tuple.
+
+        Convenience wrapper around :func:`derive_agent_id` that
+        substitutes this Session's identity 5-tuple and joins
+        ``agent_role`` as the conditional 6th input. The framework
+        interceptors call this once per child execution so the
+        per-role agent rollups in the fleet view stay stable across
+        a parent's lifetime.
+        """
+        return str(
+            derive_agent_id(
+                agent_type=self.config.agent_type,
+                user=self.config.user_name,
+                hostname=self.config.hostname,
+                client_type=self.config.client_type,
+                agent_name=self.config.agent_name,
+                agent_role=agent_role,
+            )
+        )
+
+    def _route_subagent_message(
+        self,
+        message: SubagentMessage | None,
+        direction: str,
+    ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+        """Resolve a sub-agent message into (payload_field, content_envelope)
+        per D126 § 6.
+
+        ``direction`` is ``"incoming"`` or ``"outgoing"`` — written
+        into the content envelope so the dashboard's content-fetch
+        consumer can label the body without inferring direction
+        from the event_type alone.
+
+        Returns:
+            ``(None, None)`` when the message is absent OR
+            ``capture_prompts`` is False OR the body exceeds the
+            hard cap (with a WARN log on the cap path so operators
+            notice).
+
+            ``({body, captured_at}, None)`` for bodies at or below
+            the inline threshold. Caller stamps the dict into
+            payload's ``incoming_message`` / ``outgoing_message``
+            field. ``has_content`` stays False; the body lives in
+            ``events.payload`` via BuildEventExtra.
+
+            ``(stub, content_envelope)`` for bodies above the
+            inline threshold but at or below the hard cap. Caller
+            stamps ``stub`` into the payload field, sets
+            ``has_content=True``, and stamps ``content_envelope``
+            into ``payload['content']`` so the worker's existing
+            D119 InsertEventContent path stores the full body in
+            ``event_content``. The dashboard fetches via
+            ``GET /v1/events/{id}/content``; the
+            ``provider="flightdeck-subagent"`` discriminator picks
+            the sub-agent renderer over the LLM PromptViewer.
+        """
+        if message is None or not self.config.capture_prompts:
+            return None, None
+        # JSON-encode the body once to size it — the same encoding
+        # the worker will see on the wire, so this byte count is
+        # the authoritative measure for the inline-vs-overflow
+        # decision (rather than ``len(str(body))`` which varies per
+        # framework body type).
+        body_bytes = json.dumps(message.body).encode("utf-8")
+        size = len(body_bytes)
+        if size > SUBAGENT_HARD_CAP_BYTES:
+            _log.warning(
+                "sub-agent %s_message body exceeds %d-byte hard cap "
+                "(size=%d bytes); dropped per D126 § 6 — capture "
+                "the trailing tail elsewhere if needed",
+                direction, SUBAGENT_HARD_CAP_BYTES, size,
+            )
+            return None, None
+        if size <= SUBAGENT_INLINE_THRESHOLD_BYTES:
+            return {
+                "body": message.body,
+                "captured_at": message.captured_at,
+            }, None
+        # Overflow: stub on the payload field, full envelope on
+        # content. The PromptContent shape required by the existing
+        # InsertEventContent has NOT NULL ``messages`` (default
+        # ``[]``) and NOT NULL ``response``; we leave messages
+        # empty (sub-agent messages aren't LLM messages) and stuff
+        # the body into ``response`` along with the direction
+        # discriminator. ``input`` stays None — embedding-only
+        # column.
+        stub = {
+            "has_content": True,
+            "content_bytes": size,
+            "captured_at": message.captured_at,
+        }
+        envelope: dict[str, Any] = {
+            "provider": SUBAGENT_OVERFLOW_PROVIDER,
+            "model": "",
+            "system": None,
+            "messages": [],
+            "tools": None,
+            "response": {
+                "direction": direction,
+                "body": message.body,
+                "captured_at": message.captured_at,
+            },
+            "input": None,
+        }
+        return stub, envelope
+
+    def emit_subagent_session_start(
+        self,
+        *,
+        child_session_id: str,
+        child_agent_id: str,
+        child_agent_name: str,
+        agent_role: str,
+        incoming_message: SubagentMessage | None = None,
+    ) -> None:
+        """Emit a ``session_start`` event for a child sub-agent.
+
+        Called by the framework interceptors at child-context entry.
+        ``parent_session_id`` on the wire is this Session's
+        ``session_id``. ``child_agent_id`` is what
+        :meth:`derive_subagent_id` returns for the same role; the
+        caller passes it explicitly so the interceptor controls the
+        identity end-to-end (and so tests can assert against a known
+        UUID without re-derivation).
+
+        ``incoming_message`` carries the parent's input to the child
+        (CrewAI task description, LangGraph inbound state, Claude
+        Code Task ``prompt`` argument). Routing depends on body size
+        per D126 § 6 — see :meth:`_route_subagent_message`.
+        ``capture_prompts=False`` drops the body at this boundary
+        regardless of size.
+        """
+        payload = self._build_subagent_payload(
+            event_type=EventType.SESSION_START,
+            child_session_id=child_session_id,
+            child_agent_id=child_agent_id,
+            child_agent_name=child_agent_name,
+            agent_role=agent_role,
+        )
+        stub_or_inline, content_envelope = self._route_subagent_message(
+            incoming_message, "incoming",
+        )
+        if stub_or_inline is not None:
+            payload["incoming_message"] = stub_or_inline
+        if content_envelope is not None:
+            payload["has_content"] = True
+            payload["content"] = content_envelope
+        self.client.post_event(payload)
+
+    def emit_subagent_session_end(
+        self,
+        *,
+        child_session_id: str,
+        child_agent_id: str,
+        child_agent_name: str,
+        agent_role: str,
+        state: str = "closed",
+        outgoing_message: SubagentMessage | None = None,
+        error: dict[str, Any] | None = None,
+    ) -> None:
+        """Emit a ``session_end`` event for a child sub-agent.
+
+        ``state`` defaults to ``"closed"`` for the success path; the
+        framework interceptors pass ``state="error"`` when the
+        child's execution raised, alongside an ``error`` dict
+        carrying ``type`` (exception class name) and ``message``
+        (exception string). The L8 row-level failure cue on the
+        dashboard reads ``state=error`` to render the red dot on
+        Investigate / Fleet AgentTable / swimlane left panel.
+
+        ``outgoing_message`` carries the child's response back to
+        the parent. Same capture_prompts gating as
+        ``incoming_message``.
+        """
+        payload = self._build_subagent_payload(
+            event_type=EventType.SESSION_END,
+            child_session_id=child_session_id,
+            child_agent_id=child_agent_id,
+            child_agent_name=child_agent_name,
+            agent_role=agent_role,
+        )
+        # Default state="closed" matches the worker's existing
+        # session_end → state=closed projection. Only emit the
+        # explicit "state" key when the child ended in an error so
+        # the wire shape stays unchanged for the success path.
+        if state != "closed":
+            payload["state"] = state
+        if error is not None:
+            payload["error"] = error
+        stub_or_inline, content_envelope = self._route_subagent_message(
+            outgoing_message, "outgoing",
+        )
+        if stub_or_inline is not None:
+            payload["outgoing_message"] = stub_or_inline
+        if content_envelope is not None:
+            payload["has_content"] = True
+            payload["content"] = content_envelope
+        self.client.post_event(payload)
+
+    def _build_subagent_payload(
+        self,
+        *,
+        event_type: EventType,
+        child_session_id: str,
+        child_agent_id: str,
+        child_agent_name: str,
+        agent_role: str,
+    ) -> dict[str, Any]:
+        """Build a child sub-agent ``session_start`` / ``session_end``
+        payload.
+
+        Identity fields are overridden to the child's values;
+        non-identity fields (``flavor``, ``framework``, ``host``)
+        inherit from this Session because a sub-agent shares its
+        parent's deployment scope, framework attribution, and
+        hostname. ``parent_session_id`` is this Session's
+        ``session_id``.
+
+        The payload includes the LLM-baseline null fields so the
+        worker's existing ``EventPayload`` projection (which
+        unmarshals strict JSON) accepts the shape without changes
+        on the way in. Sub-agent-specific fields
+        (``parent_session_id``, ``agent_role``,
+        ``incoming_message``, ``outgoing_message``, ``state``,
+        ``error``) are added by the caller after this returns.
+        """
+        return {
+            "session_id": child_session_id,
+            "parent_session_id": self.config.session_id,
+            "agent_role": agent_role,
+            # Identity overridden for the child.
+            "agent_id": child_agent_id,
+            "agent_name": child_agent_name,
+            "agent_type": self.config.agent_type,
+            "client_type": self.config.client_type,
+            "user": self.config.user_name,
+            "hostname": self.config.hostname,
+            # Inherited from the parent's deployment.
+            "flavor": self.config.agent_flavor,
+            "framework": self._framework,
+            "host": self._host,
+            # Event metadata.
+            "event_type": event_type.value,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            # LLM-baseline nulls (kept for wire-shape parity with
+            # other non-MCP events; child sessions don't directly
+            # carry per-call token data on session_start /
+            # session_end).
+            "tokens_used_session": 0,
+            "token_limit_session": None,
+            "model": None,
+            "tokens_input": None,
+            "tokens_output": None,
+            "tokens_total": None,
+            "tokens_cache_read": 0,
+            "tokens_cache_creation": 0,
+            "latency_ms": None,
+            "tool_name": None,
+            "tool_input": None,
+            "tool_result": None,
+            "has_content": False,
+            "content": None,
+        }
 
     def post_call_event(
         self,

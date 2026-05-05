@@ -4,8 +4,10 @@ import {
   RECENT_THRESHOLD_MS,
   advanceBucketEntry,
   bucketFor,
+  groupChildrenUnderParents,
   seedBucketEntries,
   sortByActivityBucket,
+  topologyFor,
 } from "@/lib/fleet-ordering";
 
 // Helpers -------------------------------------------------------------------
@@ -171,5 +173,157 @@ describe("seedBucketEntries", () => {
   it("uses 0 for rows with no last_seen_at", () => {
     const map = seedBucketEntries([{ id: "a", lastSeenAt: undefined }]);
     expect(map.get("a")).toBe(0);
+  });
+});
+
+// ---- groupChildrenUnderParents (D126 UX revision 2026-05-03) -----------
+
+describe("groupChildrenUnderParents", () => {
+  // Toy row shape — minimal surface area so the helper test stays
+  // independent of FlavorSummary / SessionListItem evolution.
+  type Row = {
+    id: string;
+    parentId: string | null | undefined;
+    started: string;
+  };
+  const acc = {
+    id: (r: Row) => r.id,
+    parentId: (r: Row) => r.parentId,
+    childOrder: (r: Row) => r.started,
+  };
+
+  it("preserves order when no parent-child relationships exist", () => {
+    const rows: Row[] = [
+      { id: "a", parentId: null, started: "2026-05-03T10:00:00Z" },
+      { id: "b", parentId: null, started: "2026-05-03T10:01:00Z" },
+      { id: "c", parentId: null, started: "2026-05-03T10:02:00Z" },
+    ];
+    expect(groupChildrenUnderParents(rows, acc).map((r) => r.id)).toEqual([
+      "a",
+      "b",
+      "c",
+    ]);
+  });
+
+  it("places a child immediately after its parent", () => {
+    const rows: Row[] = [
+      { id: "p1", parentId: null, started: "2026-05-03T10:00:00Z" },
+      { id: "lone", parentId: null, started: "2026-05-03T10:01:00Z" },
+      { id: "c1", parentId: "p1", started: "2026-05-03T10:00:30Z" },
+    ];
+    expect(groupChildrenUnderParents(rows, acc).map((r) => r.id)).toEqual([
+      "p1",
+      "c1",
+      "lone",
+    ]);
+  });
+
+  it("sorts multiple children of one parent by childOrder ASC", () => {
+    const rows: Row[] = [
+      { id: "p", parentId: null, started: "2026-05-03T10:00:00Z" },
+      { id: "c2", parentId: "p", started: "2026-05-03T10:01:00Z" },
+      { id: "c1", parentId: "p", started: "2026-05-03T10:00:30Z" },
+      { id: "c3", parentId: "p", started: "2026-05-03T10:02:00Z" },
+    ];
+    expect(groupChildrenUnderParents(rows, acc).map((r) => r.id)).toEqual([
+      "p",
+      "c1",
+      "c2",
+      "c3",
+    ]);
+  });
+
+  it("preserves parent order across the input list", () => {
+    const rows: Row[] = [
+      { id: "p2", parentId: null, started: "2026-05-03T10:00:00Z" },
+      { id: "p1", parentId: null, started: "2026-05-03T11:00:00Z" },
+      { id: "c-of-p1", parentId: "p1", started: "2026-05-03T11:00:30Z" },
+      { id: "c-of-p2", parentId: "p2", started: "2026-05-03T10:00:30Z" },
+    ];
+    // p2 appears first in the input → p2 group emits first.
+    expect(groupChildrenUnderParents(rows, acc).map((r) => r.id)).toEqual([
+      "p2",
+      "c-of-p2",
+      "p1",
+      "c-of-p1",
+    ]);
+  });
+
+  it("orphans (parent not visible in list) keep their natural position", () => {
+    const rows: Row[] = [
+      { id: "a", parentId: null, started: "2026-05-03T10:00:00Z" },
+      // parent "missing" is NOT in the list → orphan rides as-is
+      { id: "orphan", parentId: "missing", started: "2026-05-03T10:00:30Z" },
+      { id: "b", parentId: null, started: "2026-05-03T10:02:00Z" },
+    ];
+    expect(groupChildrenUnderParents(rows, acc).map((r) => r.id)).toEqual([
+      "a",
+      "orphan",
+      "b",
+    ]);
+  });
+
+  it("handles depth-2 (parent-of-parent) without infinite recursion", () => {
+    // Grandparent → parent → child. The β-grouping spec only
+    // attaches direct children to their parent in one pass; the
+    // grandchild's parent (mid) is itself attached after gp.
+    // Result: gp, mid, gc — single contiguous chain.
+    const rows: Row[] = [
+      { id: "gp", parentId: null, started: "2026-05-03T10:00:00Z" },
+      { id: "mid", parentId: "gp", started: "2026-05-03T10:00:30Z" },
+      { id: "gc", parentId: "mid", started: "2026-05-03T10:01:00Z" },
+    ];
+    expect(groupChildrenUnderParents(rows, acc).map((r) => r.id)).toEqual([
+      "gp",
+      "mid",
+      "gc",
+    ]);
+  });
+
+  it("returns a new array (does not mutate input)", () => {
+    const rows: Row[] = [
+      { id: "p", parentId: null, started: "2026-05-03T10:00:00Z" },
+      { id: "c", parentId: "p", started: "2026-05-03T10:00:30Z" },
+    ];
+    const before = [...rows];
+    groupChildrenUnderParents(rows, acc);
+    expect(rows).toEqual(before);
+  });
+
+  it("survives an empty input cleanly", () => {
+    expect(groupChildrenUnderParents([], acc)).toEqual([]);
+  });
+});
+
+// ---- topologyFor -------------------------------------------------------
+
+describe("topologyFor", () => {
+  type Row = { id: string; parentId: string | null };
+  const parentId = (r: Row) => r.parentId;
+
+  it("returns 'root' for a row with no parentId", () => {
+    expect(
+      topologyFor({ id: "a", parentId: null }, new Set(["a"]), parentId),
+    ).toBe("root");
+  });
+
+  it("returns 'child' when parentId is in the visible set", () => {
+    expect(
+      topologyFor(
+        { id: "c", parentId: "p" },
+        new Set(["p", "c"]),
+        parentId,
+      ),
+    ).toBe("child");
+  });
+
+  it("falls back to 'root' when parentId is not visible (orphan)", () => {
+    expect(
+      topologyFor(
+        { id: "orphan", parentId: "missing" },
+        new Set(["orphan"]),
+        parentId,
+      ),
+    ).toBe("root");
   });
 });

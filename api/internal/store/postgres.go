@@ -154,6 +154,16 @@ type Session struct {
 	// event_content). Computed via EXISTS subquery so no schema
 	// change is required.
 	CaptureEnabled bool `json:"capture_enabled"`
+
+	// D126 sub-agent observability columns. Both nullable, both
+	// populated only on sub-agent sessions (Claude Code Task
+	// subagent, CrewAI agent execution, LangGraph agent-bearing
+	// node). Root sessions and direct-SDK sessions carry NULL on
+	// both. The dashboard's swimlane relationship pill, Sub-agents
+	// tab, Investigate ROLE / PARENT columns, and Investigate
+	// TOPOLOGY facets read these directly.
+	ParentSessionID *string `json:"parent_session_id,omitempty"`
+	AgentRole       *string `json:"agent_role,omitempty"`
 }
 
 // ContextFacetValue is a single (value, count) entry inside a context
@@ -209,6 +219,28 @@ type AgentSummary struct {
 	// Empty string when the agent has no sessions yet (freshly
 	// upserted agent row awaiting its first session linkage).
 	State string `json:"state"`
+	// AgentRole is the framework-supplied sub-agent role string
+	// (CrewAI Agent.role, LangGraph node name, Claude Code Task
+	// agent_type) when this agent represents a sub-agent identity;
+	// nil for root agents. Read from any one of the agent's sessions
+	// — by D126 derivation every session under an agent_id shares
+	// the same 6-tuple input, so agent_role is uniform across them.
+	AgentRole *string `json:"agent_role,omitempty"`
+	// Topology classifies this agent's place in the sub-agent graph
+	// (D126):
+	//   "lone"   — none of this agent's sessions carry a
+	//              parent_session_id and no other agent's sessions
+	//              reference one of ours as a parent
+	//   "child"  — at least one session has parent_session_id IS NOT
+	//              NULL (i.e. this agent runs as a sub-agent under
+	//              someone else's parent session). Wins over "parent"
+	//              when both apply: a sub-agent role's defining
+	//              property is that its sessions are spawned by a
+	//              parent, secondary nesting is incidental.
+	//   "parent" — this agent's sessions are referenced as a
+	//              parent_session_id by at least one other session,
+	//              and the agent itself is not a child.
+	Topology string `json:"topology"`
 }
 
 // GetAgentFleet returns agents with rollup state, paginated. Accepts
@@ -250,7 +282,9 @@ func (s *Store) GetAgentFleet(
 			a.agent_id::text, a.agent_name, a.agent_type, a.client_type,
 			a.user_name, a.hostname, a.first_seen_at, a.last_seen_at,
 			a.total_sessions, a.total_tokens,
-			COALESCE(rollup.state, '') AS state
+			COALESCE(rollup.state, '') AS state,
+			d126.agent_role,
+			d126.topology
 		FROM agents a
 		LEFT JOIN LATERAL (
 			SELECT CASE
@@ -266,7 +300,8 @@ func (s *Store) GetAgentFleet(
 					LIMIT 1
 				)
 			END AS state
-		) rollup ON TRUE` + filter + `
+		) rollup ON TRUE
+		LEFT JOIN LATERAL (` + d126AgentRollupSQL + `) d126 ON TRUE` + filter + `
 		-- ORDER BY: primary last_seen_at DESC matches user expectation
 		-- ("most recently active first"). Secondary client_type ASC
 		-- breaks last_seen_at ties deterministically -- critical for
@@ -293,20 +328,69 @@ func (s *Store) GetAgentFleet(
 	for rows.Next() {
 		var a AgentSummary
 		var rollupState *string
+		var topology *string
 		if err := rows.Scan(
 			&a.AgentID, &a.AgentName, &a.AgentType, &a.ClientType,
 			&a.UserName, &a.Hostname, &a.FirstSeenAt, &a.LastSeenAt,
 			&a.TotalSessions, &a.TotalTokens, &rollupState,
+			&a.AgentRole, &topology,
 		); err != nil {
 			return nil, 0, fmt.Errorf("scan agent: %w", err)
 		}
 		if rollupState != nil {
 			a.State = *rollupState
 		}
+		if topology != nil {
+			a.Topology = *topology
+		} else {
+			a.Topology = "lone"
+		}
 		result = append(result, a)
 	}
 	return result, totalCount, nil
 }
+
+// d126AgentRollupSQL is the LATERAL subquery that computes the D126
+// (sub-agent observability) per-agent rollup fields: agent_role and
+// topology. Shared by GetAgentFleet, ListAgents, and GetAgentByID so
+// the three projections stay byte-identical on the new columns.
+//
+//   agent_role — read from any one session under this agent_id whose
+//                agent_role is non-null. By D126 identity derivation
+//                every session under one agent_id shares the same
+//                6-tuple including agent_role, so any-row LIMIT 1 is
+//                authoritative.
+//
+//   topology   — "child" wins over "parent" when both apply because a
+//                sub-agent role's defining property is being spawned
+//                by a parent; secondary nesting is incidental. The
+//                EXISTS subqueries hit the partial index
+//                ``sessions_parent_session_id_idx`` directly.
+const d126AgentRollupSQL = `
+	SELECT
+		(
+			SELECT s.agent_role
+			FROM sessions s
+			WHERE s.agent_id = a.agent_id
+			  AND s.agent_role IS NOT NULL
+			LIMIT 1
+		) AS agent_role,
+		CASE
+			WHEN EXISTS (
+				SELECT 1 FROM sessions s
+				WHERE s.agent_id = a.agent_id
+				  AND s.parent_session_id IS NOT NULL
+			) THEN 'child'
+			WHEN EXISTS (
+				SELECT 1
+				FROM sessions ch
+				JOIN sessions p
+				  ON ch.parent_session_id = p.session_id
+				WHERE p.agent_id = a.agent_id
+			) THEN 'parent'
+			ELSE 'lone'
+		END AS topology
+`
 
 // GetSession returns a single session by ID, including effective policy thresholds.
 // Policy lookup cascades: session scope > flavor scope > org scope.
@@ -330,7 +414,9 @@ func (s *Store) GetSession(ctx context.Context, sessionID string) (*Session, err
 				WHERE e.session_id = s.session_id
 				AND e.has_content = true
 				LIMIT 1
-			) AS capture_enabled
+			) AS capture_enabled,
+			s.parent_session_id::text,
+			s.agent_role
 		FROM sessions s
 		LEFT JOIN token_policies ps
 			ON ps.scope = 'session' AND ps.scope_value = s.session_id::text
@@ -349,6 +435,7 @@ func (s *Store) GetSession(ctx context.Context, sessionID string) (*Session, err
 		&sess.PolicyTokenLimit, &sess.WarnAtPct, &sess.DegradeAtPct,
 		&sess.DegradeTo, &sess.BlockAtPct,
 		&sess.CaptureEnabled,
+		&sess.ParentSessionID, &sess.AgentRole,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil

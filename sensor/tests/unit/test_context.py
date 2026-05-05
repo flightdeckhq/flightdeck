@@ -261,6 +261,10 @@ def test_frameworks_never_imports() -> None:
     targets = [
         "crewai",
         "langchain",
+        # ``LangChainClassifier`` accepts ``langchain_core`` as an
+        # alias for split-package installs, so the no-framework
+        # invariant requires popping both forms.
+        "langchain_core",
         "langgraph",
         "llama_index",
         "autogen",

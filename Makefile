@@ -1,4 +1,4 @@
-.PHONY: help build test test-plugin test-integration test-sensor-e2e test-e2e test-e2e-ui seed-e2e lint dev dev-reset down logs release migrate-local-up migrate-local-status playground-anthropic playground-openai playground-langchain playground-langgraph playground-llamaindex playground-crewai playground-litellm playground-mcp playground-claude-code playground-bifrost playground-policies playground-all
+.PHONY: help build test test-plugin test-integration test-sensor-e2e test-e2e test-e2e-ui seed-e2e lint dev dev-reset down logs release migrate-local-up migrate-local-status playground-anthropic playground-openai playground-langchain playground-langgraph playground-llamaindex playground-crewai playground-litellm playground-mcp playground-claude-code playground-bifrost playground-policies playground-subagents-crewai playground-subagents-langgraph playground-all
 
 # ---------------------------------------------------------------------------
 # Python interpreter resolution.
@@ -86,6 +86,19 @@ playground-claude-code: ## Rule 40d playground: Claude Code plugin MCP-emission 
 
 playground-bifrost: ## Rule 40d playground: bifrost gateway (optional). Requires BIFROST_URL.
 	$(PYTHON) playground/15_bifrost.py
+
+# D126 § 11.9 sub-agent observability demos. The Claude Code plugin
+# variant lives in playground/14_claude_code_plugin.py (already
+# covered by playground-claude-code above — its third demo block
+# exercises synthetic SubagentStart / SubagentStop). The CrewAI and
+# LangGraph variants run real multi-agent flows against live APIs
+# and emit child sessions per agent / node.
+
+playground-subagents-crewai: ## Rule 40d D126 playground: real CrewAI Crew (Researcher + Writer). Requires ANTHROPIC_API_KEY + OPENAI_API_KEY.
+	$(PYTHON) playground/16_subagents_crewai.py
+
+playground-subagents-langgraph: ## Rule 40d D126 playground: real LangGraph (two agent-bearing nodes). Requires ANTHROPIC_API_KEY.
+	$(PYTHON) playground/17_subagents_langgraph.py
 
 playground-policies: ## Rule 40d playground: policy WARN / DEGRADE / BLOCK / forced-DEGRADE demos via real Anthropic.
 	$(PYTHON) playground/policy_demo_warn.py

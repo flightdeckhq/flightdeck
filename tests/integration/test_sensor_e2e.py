@@ -127,10 +127,22 @@ def _query_events_for_flavor(flavor: str) -> list[dict[str, Any]]:
 
 
 def _query_session_for_flavor(flavor: str) -> dict[str, Any] | None:
-    """Return the (single) session row for a given flavor as a dict."""
+    """Return the (single) PARENT session row for a given flavor as a dict.
+
+    D126 sub-agent emission produces child sessions that inherit the
+    parent's flavor (a CrewAI Crew or LangGraph StateGraph spawns
+    child rows with the same flavor as their bootstrap). Without
+    the ``parent_session_id IS NULL`` filter this helper would
+    sometimes return the child instead of the parent — children
+    don't carry runtime context (hostname / os / python_version)
+    because that context lives on the bootstrapping init() call,
+    not on per-role sub-agent sessions. Filtering to the root
+    keeps every existing context-asserting caller correct.
+    """
     rows = _psql_json(
         f"SELECT COALESCE(json_agg(row_to_json(s)), '[]'::json) "
-        f"FROM sessions s WHERE flavor = '{flavor}'"
+        f"FROM sessions s WHERE flavor = '{flavor}' "
+        f"AND parent_session_id IS NULL"
     )
     return rows[0] if rows else None
 

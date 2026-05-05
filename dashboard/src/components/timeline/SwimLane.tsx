@@ -2,11 +2,14 @@ import { memo, useMemo } from "react";
 import type { ScaleTime } from "d3-scale";
 import { Link } from "react-router-dom";
 import type { Session, AgentEvent } from "@/lib/types";
+import { deriveRelationship } from "@/lib/relationship";
 import {
   ClientType,
   type ClientType as ClientTypeT,
 } from "@/lib/agent-identity";
 import { ClientTypePill } from "@/components/facets/ClientTypePill";
+import { SubAgentLostDot } from "@/components/facets/SubAgentRolePill";
+import { RelationshipPill } from "@/components/facets/RelationshipPill";
 import { TruncatedText } from "@/components/ui/TruncatedText";
 import { SESSION_ROW_HEIGHT, EVENT_CIRCLE_SIZE } from "@/lib/constants";
 import { ChevronRight } from "lucide-react";
@@ -77,6 +80,24 @@ interface SwimLaneProps {
    * pointer-events: none.
    */
   matchingSessionIds?: Set<string> | null;
+  /**
+   * D126 § 7.fix.A — invoked when the user clicks the always-on
+   * relationship pill (parent or child). The argument is the target
+   * agent_id; the caller scrolls that agent's swimlane row into
+   * view. Optional so legacy callers without sub-agent awareness
+   * still mount the component without a navigation handler.
+   */
+  onScrollToAgent?: (agentId: string) => void;
+  /**
+   * D126 UX revision 2026-05-03 — row topology, drives the
+   * ``data-topology`` attribute on the row container. ``"child"``
+   * activates the indent + bg-tint styling defined in globals.css
+   * via the ``[data-topology="child"]`` selector. Defaults to
+   * ``"root"`` for backward compatibility on callers that don't
+   * pass it (legacy swimlanes mounted before the β-grouping
+   * shipped).
+   */
+  topology?: "root" | "child";
 }
 
 function SwimLaneComponent({
@@ -96,6 +117,8 @@ function SwimLaneComponent({
   activeFilter,
   sessionVersions,
   matchingSessionIds = null,
+  onScrollToAgent,
+  topology = "root",
 }: SwimLaneProps) {
   // Live count = sessions that are currently active OR idle. The
   // server-side `activeCount` prop only counts state="active", but
@@ -107,6 +130,46 @@ function SwimLaneComponent({
     () => sessions.filter((s) => s.state === "active" || s.state === "idle").length,
     [sessions],
   );
+
+  // D126 § 7.fix.A — always-on relationship pill. Derives the row's
+  // place in the sub-agent graph from data already in the fleet
+  // store. ``flavor`` is the agent_id (D115 swimlane re-key); we
+  // cross-reference with ``store.flavors[]`` (which carries every
+  // agent's recent sessions in scope) to find:
+  //   * parent agent_id + name when this row is a child (any of our
+  //     sessions has a parent_session_id pointing to a session under
+  //     a different agent in the store).
+  //   * distinct child-agent count when this row is a parent (other
+  //     agents' sessions list us as their parent_session_id source).
+  //
+  // Lone agents (no inbound or outbound relationship) get neither
+  // pill. Cost: O(N*M) per render where N=fleet agents and M=
+  // sessions per agent in the swimlane window. Memoized on
+  // (agent_id, fleetSessionsVersion) so the scan only re-runs when
+  // either side actually changes.
+  const fleetFlavors = useFleetStore((s) => s.flavors);
+  const relationship = useMemo(() => {
+    return deriveRelationship(flavor, sessions, fleetFlavors);
+  }, [flavor, sessions, fleetFlavors]);
+
+  // L8 red dot: any sub-agent session in this row that ended in
+  // ``lost`` state. The clean SubagentStop / child session_end
+  // signal never fired and the worker's state-revival path closed
+  // the row. METHODOLOGY.md L8: surface the failure on the row,
+  // not only inside the event. Captures the role + session id
+  // suffix for the tooltip so an operator can identify which sub-
+  // agent failed without expanding the row.
+  const lostSubAgent = useMemo(() => {
+    for (const s of sessions) {
+      if (s.parent_session_id != null && s.state === "lost") {
+        return {
+          role: s.agent_role ?? undefined,
+          sessionIdSuffix: s.session_id.slice(-8),
+        };
+      }
+    }
+    return null;
+  }, [sessions]);
 
   // Pick a representative state suffix to display next to the flavor
   // name when no sessions are currently active or idle. Priority:
@@ -164,7 +227,12 @@ function SwimLaneComponent({
   }, [expandedSessionList, matchingSessionIds]);
 
   return (
-    <div style={{ borderBottom: "1px solid var(--border-subtle)" }}>
+    <div
+      data-agent-id={flavor}
+      data-rel-mode={relationship.mode}
+      data-topology={topology}
+      style={{ borderBottom: "1px solid var(--border-subtle)" }}
+    >
       {/* Collapsed flavor header — 48px */}
       <div
         className="flex h-12 cursor-pointer items-center"
@@ -174,9 +242,12 @@ function SwimLaneComponent({
       >
         {/* Left panel — sticky so it stays pinned during horizontal scroll.
             Width tracks the resizable leftPanelWidth state owned by
-            Timeline.tsx. */}
+            Timeline.tsx. The ``swimlane-row-label`` class is the
+            indent target for ``[data-topology="child"]`` rows; the
+            CSS rule lives in globals.css so the same class works
+            for swimlane + Investigate sub-rows. */}
         <div
-          className="flex h-full items-center gap-2 px-3"
+          className="swimlane-row-label flex h-full items-center gap-2 px-3"
           style={{
             width: leftPanelWidth,
             flexShrink: 0,
@@ -195,8 +266,24 @@ function SwimLaneComponent({
         >
           <ChevronRight
             size={14}
+            // ``shrink-0`` keeps the chevron at its declared 14px even
+            // when the left-panel flex layout is cramped — child rows
+            // inherit a 28px padding-left from the [data-topology=
+            // "child"] CSS rule, which trims the available space and
+            // (without shrink-0) lets flex shrink the SVG below 14px,
+            // making it look like a dot beside the parent's full-size
+            // chevron. Parent rows stay 14px either way; this just
+            // pins the floor for the child case.
+            //
+            // Colour: child-row chevrons render in --accent so the
+            // expand affordance reads as part of the sub-agent's
+            // purple visual group (matching RelationshipPill +
+            // SubAgentRolePill). Parent / lone rows keep the muted
+            // tone so the chevron is unobtrusive on the dominant
+            // root-agent row.
+            className="shrink-0"
             style={{
-              color: "var(--text-muted)",
+              color: topology === "child" ? "var(--accent)" : "var(--text-muted)",
               transform: expanded ? "rotate(90deg)" : "rotate(0deg)",
               transition: "transform 200ms ease",
             }}
@@ -220,6 +307,37 @@ function SwimLaneComponent({
               clientType={clientType}
               size="compact"
               testId="swimlane-client-type-pill"
+            />
+          )}
+          {relationship.mode === "child" && (
+            <RelationshipPill
+              mode="child"
+              parentName={relationship.parentName}
+              testId="swimlane-relationship-pill"
+              onClick={
+                onScrollToAgent && relationship.parentAgentId
+                  ? () => onScrollToAgent(relationship.parentAgentId!)
+                  : undefined
+              }
+            />
+          )}
+          {relationship.mode === "parent" && relationship.childCount > 0 && (
+            <RelationshipPill
+              mode="parent"
+              childCount={relationship.childCount}
+              testId="swimlane-relationship-pill"
+              onClick={
+                onScrollToAgent && relationship.firstChildAgentId
+                  ? () => onScrollToAgent(relationship.firstChildAgentId!)
+                  : undefined
+              }
+            />
+          )}
+          {lostSubAgent && (
+            <SubAgentLostDot
+              role={lostSubAgent.role}
+              sessionIdSuffix={lostSubAgent.sessionIdSuffix}
+              testId="swimlane-sub-agent-lost-dot"
             />
           )}
           {agentType && (

@@ -38,6 +38,17 @@ from flightdeck_sensor.interceptor.anthropic import (
     patch_anthropic_classes,
     unpatch_anthropic_classes,
 )
+from flightdeck_sensor.interceptor.crewai import (
+    patch_crewai_classes,
+    unpatch_crewai_classes,
+)
+from flightdeck_sensor.interceptor.langgraph import (
+    patch_langgraph_classes,
+    unpatch_langgraph_classes,
+)
+from flightdeck_sensor.interceptor.langgraph import (
+    set_agent_node_pattern as _set_langgraph_agent_node_pattern,
+)
 from flightdeck_sensor.interceptor.litellm import (
     SensorLitellm,  # noqa: F401  # re-exported for flightdeck_sensor.SensorLitellm
     patch_litellm_functions,
@@ -218,6 +229,7 @@ def init(
     session_id: str | None = None,
     agent_type: str | None = None,
     agent_name: str | None = None,
+    langgraph_agent_node_pattern: str | None = None,
 ) -> None:
     """Initialize the sensor and start the session.
 
@@ -281,6 +293,15 @@ def init(
       for k8s pod grouping)
     - ``FLIGHTDECK_UNAVAILABLE_POLICY`` -- ``"continue"`` or ``"halt"``
     - ``FLIGHTDECK_CAPTURE_PROMPTS`` -- ``"true"`` to enable
+
+    ``langgraph_agent_node_pattern`` (D126) is an optional regex
+    string that narrows which LangGraph nodes the sub-agent
+    interceptor wraps. When unset, every node added via
+    ``StateGraph.add_node`` gets wrapped (default-on, accepts false
+    positives on data-transform nodes). When set, only nodes whose
+    name matches the regex emit child sessions. Use this to
+    filter out non-LLM nodes in graphs that mix data plumbing with
+    agent execution.
     """
     global _session, _client
 
@@ -460,6 +481,12 @@ def init(
             if bare:
                 _session.record_framework(bare)
 
+        # D126: wire the LangGraph agent-node regex (if any) into the
+        # langgraph interceptor's module state before patch_langgraph_classes
+        # might run. Setting None clears any previously-set pattern, so
+        # multi-test scenarios start clean.
+        _set_langgraph_agent_node_pattern(langgraph_agent_node_pattern)
+
         _session.start()
 
 
@@ -591,6 +618,10 @@ def patch(
             patch_litellm_functions(quiet=quiet)
         if Provider.MCP.value in targets:
             patch_mcp_classes(quiet=quiet)
+        if Provider.CREWAI.value in targets:
+            patch_crewai_classes(quiet=quiet)
+        if Provider.LANGGRAPH.value in targets:
+            patch_langgraph_classes(quiet=quiet)
 
 
 def unpatch() -> None:
@@ -613,6 +644,8 @@ def unpatch() -> None:
         unpatch_openai_classes()
         unpatch_litellm_functions()
         unpatch_mcp_classes()
+        unpatch_crewai_classes()
+        unpatch_langgraph_classes()
 
 
 def get_status() -> StatusResponse:

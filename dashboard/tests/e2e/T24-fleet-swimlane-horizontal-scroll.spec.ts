@@ -1,5 +1,9 @@
 import { test, expect } from "@playwright/test";
-import { CODING_AGENT, waitForFleetReady } from "./_fixtures";
+import {
+  CODING_AGENT,
+  bringSwimlaneRowIntoView,
+  waitForFleetReady,
+} from "./_fixtures";
 
 // T24 — Phase 4.5 S-SWIM-1..5: at narrow viewports the Fleet
 // swimlane gets a horizontal scrollbar, lands the user on "now"
@@ -81,9 +85,11 @@ test.describe("T24 — Fleet swimlane horizontal scroll", () => {
     await page.goto(`/?flavor=${CODING_AGENT.flavor}`);
     await waitForFleetReady(page);
 
-    const row = page.locator(
-      `[data-testid="swimlane-agent-row-${CODING_AGENT.name}"]`,
-    );
+    // Scroll the swimlane until the coding-agent row is mounted —
+    // the seeded D126 fixture set adds 12+ extra agent rows so
+    // the IntersectionObserver virtualizer no longer renders
+    // every agent on initial mount at narrow viewport.
+    const row = await bringSwimlaneRowIntoView(page, CODING_AGENT.name);
     await expect(row).toBeVisible();
 
     // The sticky agent-name column is the row's first child div
@@ -125,9 +131,7 @@ test.describe("T24 — Fleet swimlane horizontal scroll", () => {
     await page.goto(`/?flavor=${CODING_AGENT.flavor}`);
     await waitForFleetReady(page);
 
-    const agentRow = page.locator(
-      `[data-testid="swimlane-agent-row-${CODING_AGENT.name}"]`,
-    );
+    const agentRow = await bringSwimlaneRowIntoView(page, CODING_AGENT.name);
     await expect(agentRow).toBeVisible();
     // Click the left-panel chevron, not the row's geometric center
     // — under narrow viewports the center can land on an event

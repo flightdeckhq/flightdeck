@@ -7,6 +7,7 @@ import { ModelBarChart } from "@/components/analytics/ModelBarChart";
 import { CostChart } from "@/components/analytics/CostChart";
 import { LatencyDistribution } from "@/components/analytics/LatencyDistribution";
 import { DimensionChart } from "@/components/analytics/DimensionChart";
+import { ParentChildBreakdownChart } from "@/components/analytics/ParentChildBreakdownChart";
 import { PROVIDER_META, type Provider } from "@/lib/models";
 
 type RangePreset = "today" | "7d" | "30d" | "90d" | "custom";
@@ -28,6 +29,17 @@ export function Analytics() {
   const [customFrom, setCustomFrom] = useState("");
   const [customTo, setCustomTo] = useState("");
   const [filterProvider, setFilterProvider] = useState<Provider | null>(null);
+  // D126 § 7.fix.J — sub-agent activity facet. Mirrors the
+  // Investigate TOPOLOGY facet checkboxes (Has sub-agents / Is
+  // sub-agent) for muscle memory across the two pages. Both
+  // selectable simultaneously (server-side OR composition per
+  // 7.fix.F). Applied to the ParentChildBreakdownChart below; the
+  // upstream chart cards (Tokens / Cost / Latency / etc.) don't
+  // currently expose a topology axis in their UI so the filter is
+  // a no-op there — extending those charts to honour it is a
+  // future-PR item, captured by the design doc § 6.4 note.
+  const [topologyIsSubAgent, setTopologyIsSubAgent] = useState(false);
+  const [topologyHasSubAgents, setTopologyHasSubAgents] = useState(false);
 
   const isCustom = rangePreset === "custom";
   const range = isCustom ? undefined : rangePreset;
@@ -91,6 +103,40 @@ export function Analytics() {
               </Button>
             </div>
           )}
+        </div>
+
+        {/* D126 § 7.fix.J — sub-agent activity facet. Two
+            checkboxes mirror Investigate's TOPOLOGY facet so the
+            two pages read as one set of controls. */}
+        <div
+          className="flex items-center gap-3 text-xs"
+          data-testid="analytics-sub-agent-activity-facet"
+        >
+          <span className="font-medium text-text-muted">
+            Sub-agent activity:
+          </span>
+          <label
+            className="inline-flex items-center gap-1 cursor-pointer"
+            data-testid="analytics-topology-is-sub-agent"
+          >
+            <input
+              type="checkbox"
+              checked={topologyIsSubAgent}
+              onChange={(e) => setTopologyIsSubAgent(e.target.checked)}
+            />
+            <span>Is sub-agent</span>
+          </label>
+          <label
+            className="inline-flex items-center gap-1 cursor-pointer"
+            data-testid="analytics-topology-has-sub-agents"
+          >
+            <input
+              type="checkbox"
+              checked={topologyHasSubAgents}
+              onChange={(e) => setTopologyHasSubAgents(e.target.checked)}
+            />
+            <span>Has sub-agents</span>
+          </label>
         </div>
 
         {/* Row 1 -- summary cards */}
@@ -201,6 +247,22 @@ export function Analytics() {
             showDimensionPicker={false}
           />
         </div>
+
+        {/* Row 7 — D126 sub-agent breakdown. Renders only when the
+            time window contains sub-agent sessions; the chart's own
+            empty-state copy handles the no-activity case so the row
+            never collapses awkwardly. The TOPOLOGY checkboxes above
+            thread through into the chart's filter params; default
+            (both unchecked) renders children-only so the (root)
+            bucket doesn't wash out the per-parent bars. */}
+        <ParentChildBreakdownChart
+          range={range}
+          from={from}
+          to={to}
+          filterProvider={filterProvider}
+          filterIsSubAgent={topologyIsSubAgent}
+          filterHasSubAgents={topologyHasSubAgents}
+        />
       </div>
     </div>
   );

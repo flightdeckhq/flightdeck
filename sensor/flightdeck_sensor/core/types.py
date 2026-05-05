@@ -186,6 +186,42 @@ class DirectiveContext:
 
 
 @dataclass(frozen=True)
+class SubagentMessage:
+    """A single cross-agent message body for a sub-agent session (D126).
+
+    Captured by the framework interceptors (CrewAI, LangGraph, AutoGen
+    0.4 / 0.2) and the Claude Code plugin on the child session's
+    boundaries when ``capture_prompts=True``:
+
+    - ``incoming`` — the parent's input to the child (CrewAI task
+      description, LangGraph inbound state dict, AutoGen inbound
+      message body, Claude Code Task ``prompt`` argument). Stamped
+      on the child's ``session_start`` payload.
+    - ``outgoing`` — the child's response back to the parent
+      (CrewAI return value, LangGraph outbound state dict, AutoGen
+      outbound message body, Claude Code Task tool response).
+      Stamped on the child's ``session_end`` payload.
+
+    The framework's source shape is preserved verbatim as a Python
+    object (``str`` / ``dict`` / ``list``); JSON serialisation
+    happens at payload-build time so the receiving end sees exactly
+    what the framework produced.
+
+    Large bodies route through the existing event_content overflow
+    path (D119, 8 KiB inline / 2 MiB hard cap). When the body
+    exceeds the inline threshold the worker projects it into
+    ``event_content`` and the dashboard fetches via
+    ``GET /v1/events/{id}/content``; small bodies stay inline on
+    ``events.payload``. When ``capture_prompts=False`` the
+    interceptor skips construction entirely and no
+    ``SubagentMessage`` reaches the wire.
+    """
+
+    body: Any
+    captured_at: str
+
+
+@dataclass(frozen=True)
 class MCPServerFingerprint:
     """Identity record for an MCP server a session connected to.
 

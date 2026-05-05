@@ -176,7 +176,7 @@ describe("computeFacets -- scalar context facets", () => {
     expect(groups.find((g) => g.key === "user")).toBeUndefined();
   });
 
-  it("renders the 15 canonical facets in the spec order", () => {
+  it("renders the 16 canonical facets in the spec order (incl. D126 § 7.fix.F TOPOLOGY)", () => {
     // One session carrying every facet-worthy scalar. The resulting
     // .map(key) should match the canonical order in the Phase 3 #2
     // brief. Keys whose value is missing are filtered out -- this
@@ -214,6 +214,11 @@ describe("computeFacets -- scalar context facets", () => {
       "git_branch",
       "git_repo",
       "orchestration",
+      // D126 § 7.fix.F — TOPOLOGY facet always renders so the
+      // user can toggle "Has sub-agents" / "Is sub-agent" on any
+      // result set. Trailing position keeps it visually anchored
+      // below the scalar-context group.
+      "topology",
     ]);
   });
 });

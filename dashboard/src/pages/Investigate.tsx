@@ -89,6 +89,21 @@ export function parseUrlState(sp: URLSearchParams) {
     // Drives the MCP SERVER sidebar facet aggregating
     // ``mcp_server_names[]`` across the visible result set.
     mcpServers: sp.getAll("mcp_server"),
+    // D126: agent_role filter (repeatable). Backs the Investigate
+    // ROLE sidebar facet's multi-select shape. Sessions whose
+    // ``agent_role`` matches any selected value are kept (OR
+    // within). Round-trips as ``?agent_role=Researcher&agent_role=Writer``.
+    agentRoles: sp.getAll("agent_role"),
+    // D126 TOPOLOGY facet booleans. ``isSubAgent`` restricts to
+    // children only; ``hasSubAgents`` to parents only; both AND
+    // composes server-side. Round-trip as
+    // ``?is_sub_agent=true`` / ``?has_sub_agents=true``.
+    isSubAgent: sp.get("is_sub_agent") === "true",
+    hasSubAgents: sp.get("has_sub_agents") === "true",
+    // D126: scope to children of one specific parent session UUID.
+    // Set by the SubAgentsTab "View all in Investigate" deep-link
+    // and the PARENT column's click-to-filter affordance.
+    parentSessionId: sp.get("parent_session_id") ?? "",
     // ``session`` carries the session id of an open drawer so a
     // deep-link (e.g. clicking a result in the global search modal)
     // routes the user into Investigate AND pops the drawer in one
@@ -126,6 +141,10 @@ export function buildUrlParams(s: ReturnType<typeof parseUrlState>): URLSearchPa
   for (const et of s.errorTypes) p.append("error_type", et);
   for (const pt of s.policyEventTypes) p.append("policy_event_type", pt);
   for (const m of s.mcpServers) p.append("mcp_server", m);
+  for (const r of s.agentRoles) p.append("agent_role", r);
+  if (s.isSubAgent) p.set("is_sub_agent", "true");
+  if (s.hasSubAgents) p.set("has_sub_agents", "true");
+  if (s.parentSessionId) p.set("parent_session_id", s.parentSessionId);
   if (s.session) p.set("session", s.session);
   if (s.model) p.set("model", s.model);
   if (s.sort !== "started_at") p.set("sort", s.sort);
@@ -151,19 +170,27 @@ const COL_WIDTHS = {
   // (supervisor: "don't let it grow"); the percent columns divide the
   // remaining space the usual way.
   session: "100px",
-  flavor: "14%",
-  hostname: "11%",
+  flavor: "12%",
+  hostname: "9%",
   os: "4%",
   orch: "4%",
-  model: "12%",
-  started: "11%",
+  // D126 ROLE column. Renders the agent_role string as a compact
+  // monospace pill; muted em-dash for root sessions. Sized so it
+  // doesn't crowd the narrower right-side analytics columns.
+  role: "8%",
+  // D126 PARENT column. Truncated parent_session_id with click-to-
+  // filter affordance — clicking sets the URL parent_session_id
+  // filter, scoping the table to the parent's children.
+  parent: "8%",
+  model: "10%",
+  started: "9%",
   // S-TBL-1 last-seen column. Mirrors started_at width so the relative
   // labels render at the same length under typical session ages.
-  lastSeen: "11%",
-  duration: "7%",
-  tokens: "7%",
-  capture: "7%",
-  state: "12%",
+  lastSeen: "9%",
+  duration: "6%",
+  tokens: "6%",
+  capture: "5%",
+  state: "10%",
 };
 
 function formatDuration(seconds: number): string {
@@ -269,6 +296,10 @@ export interface FacetSources {
    *  mcp_server filter stripped so the facet keeps showing every
    *  server the user could toggle to. */
   mcp_server?: SessionListItem[];
+  /** D126 sticky-facet source for the ROLE sidebar facet. When at
+   *  least one agent_role filter is active, holds the result set
+   *  with the agent_role filter stripped. */
+  agent_role?: SessionListItem[];
 }
 
 /** Scalar context keys that render as facets in the Investigate
@@ -328,6 +359,28 @@ export function computeFacets(
   // across the visible result set. Same one-vote-per-session-per-name
   // semantics as error_type / policy_event_type.
   const mcpServerCounts = new Map<string, number>();
+  // D126 ROLE facet: per-session agent_role aggregates. One vote per
+  // session that carries a role string (sub-agents). Sessions
+  // without a role bucket as ``(root)``.
+  const roleCounts = new Map<string, number>();
+  // D126 TOPOLOGY facet — count of children visible in the result
+  // set. Surfaces alongside an actionable "Has sub-agents" toggle
+  // (which has no per-row count signal on the wire today; the
+  // checkbox is rendered without a number, paired with the Is
+  // sub-agent count below).
+  let isSubAgentCount = 0;
+  // D126 TOPOLOGY facet — count of PARENT sessions visible in the
+  // result set. A session is "has_sub_agents" when at least one
+  // other session in the same scope references its session_id as
+  // ``parent_session_id``. Computed in two passes: the first pass
+  // collects every distinct parent_session_id seen across the
+  // visible sessions; the second pass tallies sessions whose own
+  // session_id appears in that set. Step 8.fix replaces the
+  // hardcoded ``0`` that step 7.fix shipped — that placeholder
+  // contradicted the AgentTable's `→ N` pill which DOES surface
+  // the same relationship from the same data.
+  const parentIdSet = new Set<string>();
+  let hasSubAgentsCount = 0;
   // D115 AGENT facet: keyed on agent_id (clickable filter value) with
   // an accompanying name map for display rendering. Sessions without
   // agent_id (pre-v0.4.0 legacy rows) are silently skipped -- they
@@ -422,6 +475,16 @@ export function computeFacets(
       }
     }
   }
+  if (sources.agent_role) {
+    for (const s of sources.agent_role) {
+      const r = s.agent_role ?? "(root)";
+      roleCounts.set(r, (roleCounts.get(r) ?? 0) + 1);
+      if (s.parent_session_id) {
+        isSubAgentCount += 1;
+        parentIdSet.add(s.parent_session_id);
+      }
+    }
+  }
   // Sticky-source pass for scalar context facets. A key whose source
   // override is present consumes THAT list; the main-loop branch
   // below skips it to avoid double-counting.
@@ -469,10 +532,32 @@ export function computeFacets(
         mcpServerCounts.set(name, (mcpServerCounts.get(name) ?? 0) + 1);
       }
     }
+    if (!sources.agent_role) {
+      const r = s.agent_role ?? "(root)";
+      roleCounts.set(r, (roleCounts.get(r) ?? 0) + 1);
+      if (s.parent_session_id) {
+        isSubAgentCount += 1;
+        parentIdSet.add(s.parent_session_id);
+      }
+    }
     for (const key of CONTEXT_FACET_KEYS) {
       if (sources[key]) continue;
       const v = readScalarContext(s, key);
       if (v) ctxCounts[key].set(v, (ctxCounts[key].get(v) ?? 0) + 1);
+    }
+  }
+  // Second pass: tally sessions whose session_id appears in
+  // parentIdSet → those sessions ARE parents → they qualify for
+  // the "Has sub-agents" facet's count.
+  for (const s of sessions) {
+    if (parentIdSet.has(s.session_id)) hasSubAgentsCount += 1;
+  }
+  // Sticky-source agent_role pass also contributes parents that
+  // would otherwise be excluded when the agent_role filter is
+  // active. Apply the same tally over the sticky-source list.
+  if (sources.agent_role) {
+    for (const s of sources.agent_role) {
+      if (parentIdSet.has(s.session_id)) hasSubAgentsCount += 1;
     }
   }
 
@@ -544,6 +629,36 @@ export function computeFacets(
     // visible result set has any. Hidden by the .filter() below
     // otherwise.
     { key: "policy_event_type", label: "POLICY", values: toArr(policyEventTypeCounts) },
+    // D126 ROLE facet — multi-select over distinct agent_role
+    // strings present in the visible result set. Sessions without
+    // a role are excluded so the facet only surfaces when at least
+    // one sub-agent session is visible. Hiding the (root) pseudo-
+    // bucket keeps the facet from rendering on root-only result
+    // sets where it would have no actionable click target.
+    {
+      key: "agent_role",
+      label: "ROLE",
+      values: toArr(roleCounts).filter((v) => v.value !== "(root)"),
+    },
+    // D126 § 7.fix.F TOPOLOGY facet — boolean checkboxes. Always
+    // visible so the user can toggle "Has sub-agents" to find
+    // parent sessions even on a result set that currently shows
+    // none (the toggle widens the search; hiding it on the empty-
+    // visible-set case would be a dead-end UX). Both values now
+    // carry real counts (D126 § 8.fix). ``has_sub_agents`` is
+    // computed by collecting every distinct ``parent_session_id``
+    // across the visible sessions, then tallying sessions whose
+    // own ``session_id`` appears in that set — matching the
+    // AgentTable's ``→ N`` pill semantics. When both checkboxes
+    // are checked the server OR-composes them.
+    {
+      key: "topology",
+      label: "TOPOLOGY",
+      values: [
+        { value: "is_sub_agent", count: isSubAgentCount },
+        { value: "has_sub_agents", count: hasSubAgentsCount },
+      ],
+    },
   ].filter((g) => g.values.length > 0);
 }
 
@@ -611,6 +726,12 @@ function SkeletonRows() {
           </td>
           <td style={{ padding: "0 8px", width: COL_WIDTHS.orch }}>
             <div className="h-4 w-4 animate-pulse rounded" style={{ background: "var(--border)", margin: "0 auto" }} />
+          </td>
+          <td style={{ padding: "0 8px", width: COL_WIDTHS.role }}>
+            <div className="h-3 w-2/3 animate-pulse rounded" style={{ background: "var(--border)" }} />
+          </td>
+          <td style={{ padding: "0 8px", width: COL_WIDTHS.parent }}>
+            <div className="h-3 w-2/3 animate-pulse rounded" style={{ background: "var(--border)" }} />
           </td>
           <td style={{ padding: "0 12px", width: COL_WIDTHS.model }}>
             <div className="h-3.5 w-3/4 animate-pulse rounded" style={{ background: "var(--border)" }} />
@@ -765,6 +886,34 @@ export function buildActiveFilters(
         }),
     });
   }
+  for (const r of urlState.agentRoles) {
+    pills.push({
+      label: `role:${r}`,
+      onRemove: () =>
+        updateUrl({
+          agentRoles: urlState.agentRoles.filter((x) => x !== r),
+          page: 1,
+        }),
+    });
+  }
+  if (urlState.isSubAgent) {
+    pills.push({
+      label: "topology:is_sub_agent",
+      onRemove: () => updateUrl({ isSubAgent: false, page: 1 }),
+    });
+  }
+  if (urlState.hasSubAgents) {
+    pills.push({
+      label: "topology:has_sub_agents",
+      onRemove: () => updateUrl({ hasSubAgents: false, page: 1 }),
+    });
+  }
+  if (urlState.parentSessionId) {
+    pills.push({
+      label: `parent:${urlState.parentSessionId.slice(0, 8)}`,
+      onRemove: () => updateUrl({ parentSessionId: "", page: 1 }),
+    });
+  }
   if (urlState.agentId) {
     // ``?? []`` guards against a caller handing a runtime null where
     // the type asserts an array (e.g. a fleet fetch that nominally
@@ -845,6 +994,10 @@ export const CLEAR_ALL_FILTERS_PATCH: Partial<UrlStateSnapshot> = {
   errorTypes: [],
   policyEventTypes: [],
   mcpServers: [],
+  agentRoles: [],
+  isSubAgent: false,
+  hasSubAgents: false,
+  parentSessionId: "",
   model: "",
   q: "",
   page: 1,
@@ -859,6 +1012,41 @@ export const CLEAR_ALL_FILTERS_PATCH: Partial<UrlStateSnapshot> = {
  * facet counts from the main result set. Pure function, testable in
  * isolation.
  */
+/**
+ * D126 UX revision (2026-05-04) — single-parent inline expansion.
+ *
+ * Returns the next ``expandedParents`` Set when the user clicks
+ * ``sessionId`` on a parent row:
+ *
+ *   * If ``sessionId`` is already expanded → collapse it (return
+ *     a copy with ``sessionId`` removed). Honours an explicit
+ *     toggle-off; doesn't auto-expand anything else.
+ *   * Otherwise → return a fresh Set containing ONLY ``sessionId``.
+ *     Any previously-expanded parents collapse. Pre-fix the branch
+ *     mutated the existing Set with ``add(sessionId)``, so each
+ *     parent click stacked inline children on top of the previous
+ *     parent's children — Supervisor's manual UX finding 2026-05-04
+ *     described 5 inline children under two parents whose pills
+ *     read "→ 2" and "→ 3".
+ *
+ * Pure function so the toggle logic is testable in isolation.
+ * Multi-expand is intentionally NOT a default — if it becomes
+ * useful it should land as an explicit affordance (shift-click,
+ * "+" button) so the default reads as "click parent → expand
+ * THIS parent" without surprise.
+ */
+export function nextExpandedParentsOnToggle(
+  prev: ReadonlySet<string>,
+  sessionId: string,
+): Set<string> {
+  if (prev.has(sessionId)) {
+    const next = new Set(prev);
+    next.delete(sessionId);
+    return next;
+  }
+  return new Set([sessionId]);
+}
+
 export function collectFacetSources(
   settled: PromiseSettledResult<readonly [string, SessionListItem[] | undefined]>[],
   keys: readonly string[],
@@ -1013,6 +1201,25 @@ export function Investigate() {
   // row click defaults back to Timeline.
   const [drawerInitialTab, setDrawerInitialTab] = useState<DrawerTab | undefined>(undefined);
 
+  // D126 UX revision 2026-05-03 — inline parent-row expansion. The
+  // default scope hides pure children from the table; clicking a
+  // parent row opens the drawer (existing behaviour) AND toggles a
+  // collapsible block of child sub-rows beneath the parent. Children
+  // are fetched on first expand via the existing
+  // ``parent_session_id`` filter and cached per parent so a re-
+  // expand reads from memory. The cache is invalidated on every
+  // primary fetch (URL state change / refresh) so a child landing
+  // mid-session shows up next time the user expands.
+  const [expandedParents, setExpandedParents] = useState<Set<string>>(
+    () => new Set<string>(),
+  );
+  const [parentChildren, setParentChildren] = useState<
+    Map<string, SessionListItem[]>
+  >(() => new Map());
+  const [loadingChildren, setLoadingChildren] = useState<Set<string>>(
+    () => new Set<string>(),
+  );
+
   // Abort controller for in-flight requests
   const abortRef = useRef<AbortController>();
 
@@ -1057,6 +1264,23 @@ export function Investigate() {
         policy_event_type:
           state.policyEventTypes.length > 0 ? state.policyEventTypes : undefined,
         mcp_server: state.mcpServers.length > 0 ? state.mcpServers : undefined,
+        agent_role:
+          state.agentRoles.length > 0 ? state.agentRoles : undefined,
+        is_sub_agent: state.isSubAgent || undefined,
+        has_sub_agents: state.hasSubAgents || undefined,
+        parent_session_id: state.parentSessionId || undefined,
+        // D126 UX revision 2026-05-03 — default scope hides pure
+        // children. The "Is sub-agent" facet override (state.isSubAgent
+        // = true) flips to children-only via the existing
+        // ``is_sub_agent`` server filter; in that mode we DON'T send
+        // include_pure_children=false because the override is the
+        // explicit "show children" intent. Otherwise default to
+        // false so the table reads as "parents-with-children + lone
+        // sessions". A user-set ``parent_session_id`` (drawer drill-
+        // through into a single parent's children) also opts out so
+        // every child of the targeted parent is visible.
+        include_pure_children:
+          state.isSubAgent || state.parentSessionId ? undefined : false,
         sort: state.sort,
         order: state.order,
         limit: state.perPage,
@@ -1144,7 +1368,24 @@ export function Investigate() {
               controller.signal,
             )
           : null,
+        agent_role: state.agentRoles.length > 0
+          ? fetchSessions(
+              { ...facetBase, agent_role: undefined },
+              controller.signal,
+            )
+          : null,
       };
+      // D126 UX revision 2026-05-03 — under the new default scope
+      // (``include_pure_children=false``) the main ``sessions`` list
+      // omits every pure child, so the ROLE facet computed from
+      // ``sessions`` would collapse to empty. The role facet is
+      // intentionally only meaningful once the user clicks the "Is
+      // sub-agent" override — at that point the listing flips to
+      // children-only and roles populate naturally. We therefore do
+      // NOT spin up a separate aux fetch on default scope; an empty
+      // ROLE facet is the correct signal, and the aux-fetch
+      // reduction also drops one round-trip per Investigate mount
+      // back to the baseline cost.
 
       try {
         const resp = await fetchSessions(baseParams, controller.signal);
@@ -1189,11 +1430,42 @@ export function Investigate() {
     [selectedSessionId]
   );
 
-  // Initial fetch + refetch on URL state change
+  // Listing-state key (D126 UX revision 2026-05-03 step 11.fix.fix).
+  // Hash of every urlState field that affects the table's listing
+  // contents — but NOT ``session``. We use this key for the doFetch
+  // useEffect and the expansion-cache invalidation so a session-only
+  // URL change (drawer drill-down on a row, shared deep-link load)
+  // doesn't unnecessarily refetch the listing or collapse the
+  // user's currently-open inline expansion. Without this guard,
+  // clicking a child sub-row (which now updates ``?session=child``
+  // for reload-preservation) would fire doFetch + clear
+  // expandedParents, losing the user's parent context.
+  const listingStateKey = useMemo(() => {
+    // Strip ``session`` so a drawer-only URL change doesn't fire
+    // the listing-refresh effects below.
+    const { session: _drop, ...listing } = urlState;
+    void _drop;
+    return JSON.stringify(listing);
+  }, [urlState]);
+
+  // Initial fetch + refetch on URL state change (excluding session).
   useEffect(() => {
     doFetch(urlState);
     return () => abortRef.current?.abort();
-  }, [urlState, doFetch]);
+    // listingStateKey captures every relevant field; doFetch is the
+    // stable callback. urlState is read inside but its identity isn't
+    // a meaningful trigger here — listingStateKey is.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [listingStateKey, doFetch]);
+
+  // Clear the per-parent children cache whenever the listing
+  // refreshes (filters / time range / pagination change). Skips
+  // session-only URL updates so the drawer rebind path doesn't
+  // wipe the user's open inline expansion.
+  useEffect(() => {
+    setExpandedParents(new Set());
+    setParentChildren(new Map());
+  }, [listingStateKey]);
 
   // URL-param -> drawer state sync. Fires when an external navigation
   // (global search click, shared link, browser history) changes the
@@ -1211,6 +1483,72 @@ export function Investigate() {
     // the close handler further down.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [urlState.session]);
+
+  // D126 UX revision 2026-05-03 — fetch a parent's children on
+  // demand. Cached in ``parentChildren`` once resolved so a re-
+  // expand reads from memory without a network round trip; the
+  // cache is per-parent and survives across URL-state changes
+  // because the parent_session_id is stable. Bulk re-fetch isn't
+  // needed; ``doFetch`` clears the cache on completion so a child
+  // added mid-session shows up next time the user expands.
+  const fetchChildrenForParent = useCallback(
+    async (parentSessionId: string) => {
+      if (parentChildren.has(parentSessionId)) return;
+      if (loadingChildren.has(parentSessionId)) return;
+      setLoadingChildren((prev) => {
+        const next = new Set(prev);
+        next.add(parentSessionId);
+        return next;
+      });
+      try {
+        // Wide ``from`` so children whose session_start lands
+        // outside the current default 7-day window still surface
+        // (the parent may have spawned a child far back, paused
+        // for a week, then re-attached). limit=100 covers the
+        // realistic max children-per-parent on a single fleet.
+        const resp = await fetchSessions({
+          parent_session_id: parentSessionId,
+          from: "2020-01-01T00:00:00Z",
+          limit: 100,
+          // Children only — bypass the default scope's pure-child
+          // exclusion since we explicitly want the children.
+          include_pure_children: true,
+        });
+        setParentChildren((prev) => {
+          const next = new Map(prev);
+          next.set(parentSessionId, resp.sessions);
+          return next;
+        });
+      } catch {
+        // Silent failure leaves the parent in loading state on
+        // re-toggle the user can retry.
+      } finally {
+        setLoadingChildren((prev) => {
+          const next = new Set(prev);
+          next.delete(parentSessionId);
+          return next;
+        });
+      }
+    },
+    [parentChildren, loadingChildren],
+  );
+
+  const toggleParentExpansion = useCallback(
+    (sessionId: string) => {
+      setExpandedParents((prev) => {
+        const next = nextExpandedParentsOnToggle(prev, sessionId);
+        // Fire the children fetch on transition-to-expanded (i.e.
+        // the new Set CONTAINS the clicked sessionId — we just
+        // expanded it). No-op when collapsing OR when already
+        // cached (fetchChildrenForParent dedupes).
+        if (next.has(sessionId)) {
+          void fetchChildrenForParent(sessionId);
+        }
+        return next;
+      });
+    },
+    [fetchChildrenForParent],
+  );
 
   // "Last updated" label tick
   useEffect(() => {
@@ -1354,6 +1692,27 @@ export function Investigate() {
           ? current.filter((x) => x !== value)
           : [...current, value];
         updateUrl({ mcpServers: next, page: 1 });
+      } else if (group === "agent_role") {
+        // D126 ROLE facet — multi-select toggle. The "(root)"
+        // pseudo-value is non-actionable; it surfaces in the count
+        // so the user understands the result-set composition but
+        // clicking it would generate a filter without a server-side
+        // matching value, so the renderer suppresses the click on
+        // that one entry.
+        if (value === "(root)") return;
+        const current = urlState.agentRoles;
+        const next = current.includes(value)
+          ? current.filter((x) => x !== value)
+          : [...current, value];
+        updateUrl({ agentRoles: next, page: 1 });
+      } else if (group === "topology") {
+        // D126 TOPOLOGY facet — boolean checkboxes. Each value maps
+        // to one of the two state booleans.
+        if (value === "is_sub_agent") {
+          updateUrl({ isSubAgent: !urlState.isSubAgent, page: 1 });
+        } else if (value === "has_sub_agents") {
+          updateUrl({ hasSubAgents: !urlState.hasSubAgents, page: 1 });
+        }
       } else {
         // Scalar context facets. Lookup table keeps the per-facet
         // boilerplate (urlState slot, toggle, URL key) in one place
@@ -1646,7 +2005,10 @@ export function Investigate() {
                   (group.key === "python_version" && urlState.contextPythonVersions.includes(v.value)) ||
                   (group.key === "git_branch" && urlState.contextGitBranches.includes(v.value)) ||
                   (group.key === "git_repo" && urlState.contextGitRepos.includes(v.value)) ||
-                  (group.key === "orchestration" && urlState.contextOrchestrations.includes(v.value));
+                  (group.key === "orchestration" && urlState.contextOrchestrations.includes(v.value)) ||
+                  (group.key === "agent_role" && urlState.agentRoles.includes(v.value)) ||
+                  (group.key === "topology" && v.value === "is_sub_agent" && urlState.isSubAgent) ||
+                  (group.key === "topology" && v.value === "has_sub_agents" && urlState.hasSubAgents);
                 return (
                   <button
                     key={v.value}
@@ -1859,6 +2221,20 @@ export function Investigate() {
                   </th>
                   <th
                     className="uppercase"
+                    style={{ color: "var(--text-muted)", fontSize: 10, fontWeight: 600, letterSpacing: "0.07em", padding: "0 8px", width: COL_WIDTHS.role }}
+                    data-testid="investigate-th-role"
+                  >
+                    Role
+                  </th>
+                  <th
+                    className="uppercase"
+                    style={{ color: "var(--text-muted)", fontSize: 10, fontWeight: 600, letterSpacing: "0.07em", padding: "0 8px", width: COL_WIDTHS.parent }}
+                    data-testid="investigate-th-parent"
+                  >
+                    Parent
+                  </th>
+                  <th
+                    className="uppercase"
                     style={{ color: "var(--text-muted)", fontSize: 10, fontWeight: 600, letterSpacing: "0.07em", padding: "0 12px", width: COL_WIDTHS.model }}
                   >
                     Model
@@ -1932,12 +2308,54 @@ export function Investigate() {
               </thead>
               <tbody>
                 {loading && sessions.length === 0 && <SkeletonRows />}
-                {sessions.map((s) => (
+                {sessions.flatMap((s) => {
+                  const isParent = (s.child_count ?? 0) > 0;
+                  const isExpanded = expandedParents.has(s.session_id);
+                  const childRows: SessionListItem[] = isExpanded
+                    ? parentChildren.get(s.session_id) ?? []
+                    : [];
+                  const renderTr = (
+                    s: SessionListItem,
+                    topology: "root" | "child",
+                  ) => (
                   <tr
                     key={s.session_id}
+                    data-topology={topology}
+                    data-testid={
+                      topology === "child"
+                        ? `investigate-child-row-${s.session_id}`
+                        : undefined
+                    }
                     onClick={() => {
+                      // D126 UX revision 2026-05-03 — row click
+                      // opens / rebinds the SessionDrawer for this
+                      // row's session. Parent rows additionally
+                      // toggle the inline child expansion (the
+                      // drawer + expansion are independent
+                      // affordances stacked on the same gesture).
+                      // Child sub-rows in an active expansion fall
+                      // through to drawer-rebind only — the
+                      // expansion stays open so the user remains
+                      // in the parent's tree context.
+                      //
+                      // Step 11.fix.fix — also persist the
+                      // selection to the URL so a reload preserves
+                      // the drawer's open session. The
+                      // ``listing-state`` memo (urlState minus
+                      // session) keeps the expansion / cache /
+                      // doFetch from re-firing on session-only
+                      // changes; see the ``useEffect`` block above
+                      // that clears ``expandedParents`` for the
+                      // dep-list rationale.
                       setDrawerInitialTab(undefined);
                       setSelectedSessionId(s.session_id);
+                      updateUrl({ session: s.session_id });
+                      if (
+                        topology === "root" &&
+                        (s.child_count ?? 0) > 0
+                      ) {
+                        toggleParentExpansion(s.session_id);
+                      }
                     }}
                     className="cursor-pointer transition-colors duration-150"
                     style={{
@@ -1990,6 +2408,98 @@ export function Investigate() {
                         orchestration={(s.context?.orchestration as string) ?? ""}
                         size={16}
                       />
+                    </td>
+                    <td
+                      style={{ padding: "0 8px", width: COL_WIDTHS.role, fontSize: 12, overflow: "hidden" }}
+                      data-testid={`investigate-row-role-${s.session_id}`}
+                    >
+                      {s.agent_role ? (
+                        <span
+                          style={{
+                            fontFamily: "var(--font-mono)",
+                            fontSize: 10,
+                            padding: "2px 6px",
+                            borderRadius: 3,
+                            background:
+                              "color-mix(in srgb, var(--accent) 12%, transparent)",
+                            color: "var(--accent)",
+                            display: "inline-block",
+                            maxWidth: "100%",
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          {s.agent_role}
+                        </span>
+                      ) : (
+                        <span style={{ color: "var(--text-muted)" }}>—</span>
+                      )}
+                    </td>
+                    <td
+                      style={{ padding: "0 8px", width: COL_WIDTHS.parent, fontSize: 12, color: "var(--text-secondary)", overflow: "hidden" }}
+                      data-testid={`investigate-row-parent-${s.session_id}`}
+                    >
+                      {s.parent_session_id ? (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            // Stop the row's onClick from firing the
+                            // drawer; the parent click is a filter
+                            // shortcut, not a navigation.
+                            e.stopPropagation();
+                            updateUrl({
+                              parentSessionId: s.parent_session_id ?? "",
+                              page: 1,
+                            });
+                          }}
+                          style={{
+                            fontFamily: "var(--font-mono)",
+                            fontSize: 11,
+                            color: "var(--accent)",
+                            background: "transparent",
+                            border: "none",
+                            cursor: "pointer",
+                            padding: 0,
+                            textDecoration: "underline",
+                            textDecorationColor:
+                              "color-mix(in srgb, var(--accent) 40%, transparent)",
+                          }}
+                          title={`Filter to children of ${s.parent_session_id}`}
+                        >
+                          {s.parent_session_id.slice(0, 8)}
+                        </button>
+                      ) : (s.child_count ?? 0) > 0 ? (
+                        // D126 UX revision 2026-05-03 — parent-row
+                        // pill rendering ``→ N``. Same glyph and
+                        // semantics as RelationshipPill mode="parent"
+                        // on Fleet AgentTable / SwimLane; rendered
+                        // inline here to avoid the agent-id-keyed
+                        // ``onClick`` flow the shared component
+                        // expects (Investigate is session-keyed). The
+                        // pill is decorative — clicking the row
+                        // (parent or pill) toggles the inline
+                        // expansion via the row-level onClick handler.
+                        <span
+                          data-testid={`investigate-row-parent-pill-${s.session_id}`}
+                          data-mode="parent"
+                          style={{
+                            fontFamily: "var(--font-mono)",
+                            fontSize: 11,
+                            padding: "2px 6px",
+                            borderRadius: 3,
+                            background:
+                              "color-mix(in srgb, var(--accent) 12%, transparent)",
+                            color: "var(--accent)",
+                            display: "inline-block",
+                          }}
+                          title={`Click row to expand ${s.child_count} sub-agent${s.child_count === 1 ? "" : "s"}`}
+                        >
+                          → {s.child_count}
+                        </span>
+                      ) : (
+                        <span style={{ color: "var(--text-muted)" }}>—</span>
+                      )}
                     </td>
                     <td style={{ padding: "0 12px", width: COL_WIDTHS.model, fontSize: 12, color: "var(--text-secondary)", overflow: "hidden" }}>
                       {s.model ? (
@@ -2146,6 +2656,36 @@ export function Investigate() {
                             </Tooltip>
                           </TooltipProvider>
                         )}
+                        {s.parent_session_id && s.state === "lost" && (
+                          // D126 § L8 — sub-agent ended in lost
+                          // state. Mirrors the llm_error / mcp_error
+                          // dot pattern: surface the failure on the
+                          // row so an operator scanning the table
+                          // doesn't miss broken sub-agents.
+                          <TooltipProvider>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <span
+                                  data-testid={`session-row-sub-agent-lost-indicator-${s.session_id}`}
+                                  aria-label="Sub-agent ended in lost state"
+                                  className="inline-block rounded-full"
+                                  style={{
+                                    width: 7,
+                                    height: 7,
+                                    background: "var(--status-lost)",
+                                    boxShadow:
+                                      "0 0 0 2px color-mix(in srgb, var(--status-lost) 25%, transparent)",
+                                    flexShrink: 0,
+                                  }}
+                                />
+                              </TooltipTrigger>
+                              <TooltipContent>
+                                Sub-agent ended in <strong>lost</strong> state — the
+                                clean end-of-life signal never arrived.
+                              </TooltipContent>
+                            </Tooltip>
+                          </TooltipProvider>
+                        )}
                         {s.policy_event_types && s.policy_event_types.length > 0 && (() => {
                           // Severity-ranked dot color: block > degrade > warn.
                           // The single dot reports the most-severe enforcement
@@ -2185,7 +2725,44 @@ export function Investigate() {
                       </span>
                     </td>
                   </tr>
-                ))}
+                  );
+                  const out: React.ReactNode[] = [renderTr(s, "root")];
+                  for (const c of childRows) {
+                    out.push(renderTr(c, "child"));
+                  }
+                  // Loading-state placeholder for in-flight child
+                  // fetches — the cache populates async after
+                  // ``toggleParentExpansion``; without this the
+                  // expand toggles silently with nothing visible
+                  // beneath until the response lands.
+                  if (
+                    isParent &&
+                    isExpanded &&
+                    childRows.length === 0 &&
+                    loadingChildren.has(s.session_id)
+                  ) {
+                    out.push(
+                      <tr
+                        key={`${s.session_id}-loading`}
+                        data-testid={`investigate-children-loading-${s.session_id}`}
+                      >
+                        <td
+                          colSpan={14}
+                          style={{
+                            padding: "8px 12px",
+                            paddingLeft: 28,
+                            fontSize: 12,
+                            color: "var(--text-muted)",
+                            background: "var(--swimlane-row-child-bg)",
+                          }}
+                        >
+                          Loading children…
+                        </td>
+                      </tr>,
+                    );
+                  }
+                  return out;
+                })}
               </tbody>
             </table>
 
@@ -2251,6 +2828,22 @@ export function Investigate() {
           }
         }}
         initialTab={drawerInitialTab}
+        onSwitchSession={(id) => {
+          // D126: in-place rebind for SubAgentsTab parent / child
+          // navigation; mirrors Fleet.tsx wiring.
+          //
+          // Target-tab override (e.g. "View N more in Timeline tab"
+          // footer): handled inside SessionDrawer via setActiveTab
+          // BEFORE this callback fires, so we keep initialTab
+          // undefined here. Setting initialTab to a sticky value
+          // would force every subsequent rebind back to that tab
+          // and override manual tab switches by the user.
+          setDrawerInitialTab(undefined);
+          setSelectedSessionId(id);
+          if (urlState.session) {
+            updateUrl({ session: id, page: urlState.page });
+          }
+        }}
       />
     </div>
   );

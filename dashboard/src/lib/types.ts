@@ -147,6 +147,32 @@ export interface Agent {
   session_count: number;
 }
 
+/**
+ * D126 sub-agent message capture. Populated on the wire when
+ * ``capture_prompts=true`` and the body fits inline. Bodies above
+ * the 8 KiB inline threshold route through the D119 overflow path
+ * (``has_content=true`` + ``content_bytes`` on the parent
+ * session_start / session_end event; the full body lives in
+ * ``event_content`` and is fetched via
+ * ``GET /v1/events/{id}/content``).
+ *
+ * Wire shape mirrors ``workers/internal/consumer/nats.go::SubagentMessage``:
+ *   * ``body``: framework-supplied payload (string for Claude
+ *     Code Task subagent prompts, dict for CrewAI / LangGraph
+ *     state). Polymorphic per the source framework.
+ *   * ``has_content`` + ``content_bytes``: overflow indicators.
+ *     ``content_bytes`` is the size in bytes of the body that
+ *     lives in event_content.
+ *   * ``captured_at``: timestamp the sensor captured the body.
+ */
+export interface SubagentMessage {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  body?: any;
+  captured_at?: string;
+  has_content?: boolean;
+  content_bytes?: number;
+}
+
 /** Session (ephemeral identity). */
 export interface Session {
   session_id: string;
@@ -166,6 +192,16 @@ export interface Session {
   ended_at: string | null;
   tokens_used: number;
   token_limit: number | null;
+  /**
+   * D126 sub-agent linkage. ``parent_session_id`` points back to
+   * the outer session that spawned this child; ``agent_role`` is
+   * the framework-supplied role string (CrewAI Agent.role, LangGraph
+   * node name, Claude Code Task agent_type). Both fields are null
+   * on root sessions and direct-SDK sessions; both are populated
+   * together (one without the other is a sensor bug).
+   */
+  parent_session_id?: string | null;
+  agent_role?: string | null;
   /**
    * Runtime context dict captured by the sensor at init() time.
    * Stored once in sessions.context (JSONB) and never updated.
@@ -266,6 +302,20 @@ export interface EventPayloadFields {
   rendered?: MCPRenderedMessage[];
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   content?: any;
+  /**
+   * D126 cross-agent message capture. ``incoming_message`` is the
+   * parent's input to the child (CrewAI task description, LangGraph
+   * inbound state, Claude Code Task ``prompt`` argument); stamped on
+   * the child ``session_start`` payload. ``outgoing_message`` is the
+   * child's response back; stamped on the child ``session_end``
+   * payload. When the inline body would exceed 8 KiB the body
+   * routes through the D119 overflow path: ``has_content=true`` on
+   * the body and the full message lives in ``event_content``,
+   * fetched via ``GET /v1/events/{id}/content``. Absent entirely
+   * when ``capture_prompts=false`` for the session.
+   */
+  incoming_message?: SubagentMessage;
+  outgoing_message?: SubagentMessage;
 }
 
 /** Event metadata (no prompt content inline). */
@@ -323,6 +373,22 @@ export interface FlavorSummary {
 }
 
 /**
+ * D126 sub-agent topology classification of an agent's place in the
+ * sub-agent graph:
+ *   * ``lone``   — none of this agent's sessions carry a
+ *                  parent_session_id and no other agent's sessions
+ *                  reference one of ours as a parent.
+ *   * ``parent`` — referenced as a parent_session_id by at least one
+ *                  child session (and the agent itself is not a
+ *                  child).
+ *   * ``child``  — at least one session has parent_session_id IS
+ *                  NOT NULL. Wins over ``parent`` when both apply
+ *                  because a sub-agent role's defining property is
+ *                  being spawned by a parent.
+ */
+export type AgentTopology = "lone" | "parent" | "child";
+
+/**
  * Agent (persistent fleet entity) as returned by GET /v1/fleet in
  * the v0.4.0 Phase 1 shape (D115). Each row aggregates multiple
  * sessions under one agent_id.
@@ -342,6 +408,14 @@ export interface AgentSummary {
    *  active; otherwise the most-recent session's state; empty string
    *  when the agent has no sessions yet. */
   state: SessionState | "";
+  /**
+   * D126 sub-agent rollup fields. ``agent_role`` is null for root
+   * agents; carries the framework-supplied role string when this
+   * agent represents a sub-agent identity. ``topology`` always
+   * present (defaults to ``"lone"`` server-side).
+   */
+  agent_role?: string | null;
+  topology: AgentTopology;
 }
 
 /** Top-level fleet response. */
@@ -439,12 +513,40 @@ export interface AnalyticsParams {
   filter_model?: string;
   filter_agent_type?: string;
   filter_provider?: string;
+  /**
+   * D126 sub-agent-aware analytics filters. Compose AND with every
+   * other filter. ``filter_parent_session_id`` scopes to children
+   * of one specific parent UUID; ``filter_is_sub_agent`` restricts
+   * to child sessions only (parent_session_id IS NOT NULL);
+   * ``filter_has_sub_agents`` restricts to parent sessions only.
+   */
+  filter_parent_session_id?: string;
+  filter_is_sub_agent?: "true" | "false";
+  filter_has_sub_agents?: "true" | "false";
 }
 
-/** A single time-series data point. */
+/**
+ * D126 § 6.4 — one segment of a two-dim DataPoint. ``key`` is the
+ * secondary-axis bucket value (e.g. an ``agent_role`` string when
+ * the chart's primary axis is ``parent_session_id``); ``value`` is
+ * the metric aggregate for that primary × secondary × time-bucket
+ * triple. The sum of every Breakdown.value within a single
+ * DataPoint equals the DataPoint.value (the row total), so a chart
+ * can render either the stacked breakdown or a flat-Value line off
+ * the same payload without re-summing client-side.
+ */
+export interface BreakdownBucket {
+  key: string;
+  value: number;
+}
+
+/** A single time-series data point. ``breakdown`` is populated only
+ *  for two-dim ``group_by`` queries (D126 § 6.4); single-dim queries
+ *  leave it undefined to preserve the pre-6.4 wire shape exactly. */
 export interface DataPoint {
   date: string;
   value: number;
+  breakdown?: BreakdownBucket[];
 }
 
 /** One dimension series in the analytics response. */
@@ -649,6 +751,25 @@ export interface SessionListItem {
    * rows. See DECISIONS.md "MCP failure surfacing on event-feed rows".
    */
   mcp_error_types?: string[];
+  /**
+   * D126 sub-agent linkage. Both null on root sessions; both
+   * populated together on sub-agent sessions. ``parent_session_id``
+   * powers the Investigate PARENT column (clicking deep-links to
+   * the parent's detail) and the SubAgentsTab "Spawned from"
+   * section. ``agent_role`` powers the ROLE facet + column.
+   */
+  parent_session_id?: string | null;
+  agent_role?: string | null;
+  /**
+   * D126 UX revision 2026-05-03 — count of sessions whose
+   * ``parent_session_id`` equals this row's ``session_id``.
+   * Always present (zero on lone agents and on pure children that
+   * have no descendants of their own). Surfaced server-side via a
+   * correlated subquery on the listing query so the Investigate
+   * parent-row pill (``→ N``) renders without a per-row follow-up
+   * fetch — same shape as ``error_types`` / ``mcp_error_types``.
+   */
+  child_count?: number;
 }
 
 /** Paginated response from GET /v1/sessions. */

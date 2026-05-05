@@ -219,23 +219,38 @@ def _identity_fields(
     user: str = DEFAULT_USER,
     hostname: str = DEFAULT_HOSTNAME,
     agent_name: str | None = None,
+    agent_role: str | None = None,
 ) -> dict[str, str]:
-    """Return the D115 identity quintuple plus derived agent_id.
+    """Return the D115/D126 identity tuple plus derived agent_id.
 
     Mirrors ``sensor/flightdeck_sensor/core/session.py::_build_payload``.
     The ingestion validator (D116) rejects any event lacking agent_id /
     a vocabulary-valid agent_type / a vocabulary-valid client_type, so
     every synthetic event must carry this block.
+
+    D126 § 2 extension — when ``agent_role`` is supplied with a
+    non-empty value, it joins the input tuple so a Researcher child
+    derives a different agent_id than the same host's root session.
+    Pre-D126 callers (no agent_role) produce the same UUID they did
+    before. The integration test fixtures previously omitted this
+    forwarding, which produced the 2026-05-03 anomaly where one
+    agent_id carried both root sessions (no role) and Researcher
+    children — a direct D126 § 2 violation. Forwarding here is the
+    fix; the worker accepts agent_id as supplied and does not
+    re-derive.
     """
     if agent_name is None:
         agent_name = f"{user}@{hostname}"
-    agent_id = str(derive_agent_id(
-        agent_type=agent_type,
-        user=user,
-        hostname=hostname,
-        client_type=client_type,
-        agent_name=agent_name,
-    ))
+    agent_id = str(
+        derive_agent_id(
+            agent_type=agent_type,
+            user=user,
+            hostname=hostname,
+            client_type=client_type,
+            agent_name=agent_name,
+            agent_role=agent_role,
+        )
+    )
     return {
         "agent_id": agent_id,
         "agent_type": agent_type,
@@ -256,15 +271,24 @@ def make_event(
     user: str = DEFAULT_USER,
     hostname: str = DEFAULT_HOSTNAME,
     agent_name: str | None = None,
+    agent_role: str | None = None,
     **extra: Any,
 ) -> dict[str, Any]:
-    """Build an event payload with D115 identity fields populated."""
+    """Build an event payload with D115/D126 identity fields populated.
+
+    ``agent_role`` is the explicit named-arg path for the D126
+    sub-agent identity input (see ``_identity_fields`` docstring).
+    Callers that pass ``agent_role`` via ``**extra`` instead get the
+    role echoed onto the wire payload but the agent_id derivation
+    skips the role — the named-arg form is the contract.
+    """
     identity = _identity_fields(
         agent_type=agent_type,
         client_type=client_type,
         user=user,
         hostname=hostname,
         agent_name=agent_name,
+        agent_role=agent_role,
     )
     payload: dict[str, Any] = {
         "session_id": session_id,
@@ -287,6 +311,13 @@ def make_event(
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
     payload.update(identity)
+    # D126 — surface agent_role on the wire so the worker /
+    # ingestion validator see the role (in addition to the role
+    # participating in the agent_id derivation above). Skipped when
+    # the role is None / blank so pre-D126 events stay byte-
+    # identical to the legacy shape.
+    if agent_role is not None and agent_role.strip():
+        payload["agent_role"] = agent_role.strip()
     payload.update(extra)
     if event_type == "session_start" and "context" not in payload:
         payload["context"] = dict(DEFAULT_TEST_CONTEXT)
@@ -358,9 +389,22 @@ def query_directives(session_id: str) -> list[dict[str, Any]]:
         f"WHERE d.session_id = '{session_id}'::uuid"
     )
     result = subprocess.run(
-        ["docker", "exec", "docker-postgres-1", "psql", "-U", "flightdeck",
-         "-d", "flightdeck", "-t", "-c", sql],
-        capture_output=True, text=True, timeout=10,
+        [
+            "docker",
+            "exec",
+            "docker-postgres-1",
+            "psql",
+            "-U",
+            "flightdeck",
+            "-d",
+            "flightdeck",
+            "-t",
+            "-c",
+            sql,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=10,
     )
     raw = result.stdout.strip()
     if not raw or raw == "null":
@@ -411,7 +455,9 @@ def get_session_event_count(session_id: str) -> int:
 
 
 def wait_for_state(
-    session_id: str, expected_state: str, timeout: float = 10.0,
+    session_id: str,
+    expected_state: str,
+    timeout: float = 10.0,
 ) -> dict[str, Any]:
     """Poll until session reaches expected_state or timeout."""
     detail: dict[str, Any] = {}
@@ -471,9 +517,22 @@ def directive_has_delivered_at(directive_id: str) -> bool:
         f"WHERE id = '{directive_id}'::uuid"
     )
     result = subprocess.run(
-        ["docker", "exec", "docker-postgres-1", "psql", "-U", "flightdeck",
-         "-d", "flightdeck", "-t", "-c", sql],
-        capture_output=True, text=True, timeout=10,
+        [
+            "docker",
+            "exec",
+            "docker-postgres-1",
+            "psql",
+            "-U",
+            "flightdeck",
+            "-d",
+            "flightdeck",
+            "-t",
+            "-c",
+            sql,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=10,
     )
     return result.stdout.strip() == "t"
 
@@ -581,13 +640,15 @@ def create_drifted_agent(
     side avoids tying this helper to pytest semantics so the E2E
     suite can call it from a pure Python script.
     """
-    agent_id = str(derive_agent_id(
-        agent_type=agent_type,
-        user=user,
-        hostname=hostname,
-        client_type=client_type,
-        agent_name=agent_name,
-    ))
+    agent_id = str(
+        derive_agent_id(
+            agent_type=agent_type,
+            user=user,
+            hostname=hostname,
+            client_type=client_type,
+            agent_name=agent_name,
+        )
+    )
 
     overrides = counter_overrides or {}
     total_sessions = overrides.get("total_sessions", actual_sessions + 99)
@@ -605,10 +666,16 @@ def create_drifted_agent(
     # canonical identity tuple; the sessions INSERTs carry fixed
     # started_at / last_seen_at / tokens so ground truth is
     # predictable.
-    first_seen_default = "NOW() - INTERVAL '1 hour'" if first_seen_override is None \
+    first_seen_default = (
+        "NOW() - INTERVAL '1 hour'"
+        if first_seen_override is None
         else f"'{first_seen_override}'::timestamptz"
-    last_seen_default = "NOW() + INTERVAL '1 hour'" if last_seen_override is None \
+    )
+    last_seen_default = (
+        "NOW() + INTERVAL '1 hour'"
+        if last_seen_override is None
         else f"'{last_seen_override}'::timestamptz"
+    )
 
     # Sessions: fixed per-session offsets so MIN/MAX are easy to
     # reason about. Session N starts at NOW() - (actual_sessions-N+1)
@@ -647,7 +714,7 @@ def create_drifted_agent(
             total_tokens   = EXCLUDED.total_tokens,
             first_seen_at  = EXCLUDED.first_seen_at,
             last_seen_at   = EXCLUDED.last_seen_at;
-        {' '.join(session_inserts)}
+        {" ".join(session_inserts)}
     """
     _psql_exec(sql)
     return agent_id
@@ -680,10 +747,24 @@ def get_agent_rollup(agent_id: str) -> dict[str, Any] | None:
         f"FROM agents WHERE agent_id = '{agent_id}'::uuid"
     )
     import subprocess
+
     result = subprocess.run(
-        ["docker", "exec", "docker-postgres-1", "psql", "-U", "flightdeck",
-         "-d", "flightdeck", "-t", "-c", sql],
-        capture_output=True, text=True, timeout=10,
+        [
+            "docker",
+            "exec",
+            "docker-postgres-1",
+            "psql",
+            "-U",
+            "flightdeck",
+            "-d",
+            "flightdeck",
+            "-t",
+            "-c",
+            sql,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=10,
     )
     raw = result.stdout.strip()
     if not raw:
@@ -699,10 +780,26 @@ def _psql_exec(sql: str) -> None:
     on non-zero exit so callers see setup failures loudly rather than
     getting a silently unseeded fixture."""
     import subprocess
+
     result = subprocess.run(
-        ["docker", "exec", "docker-postgres-1", "psql", "-U", "flightdeck",
-         "-d", "flightdeck", "-v", "ON_ERROR_STOP=1", "-c", sql],
-        capture_output=True, text=True, timeout=15, check=False,
+        [
+            "docker",
+            "exec",
+            "docker-postgres-1",
+            "psql",
+            "-U",
+            "flightdeck",
+            "-d",
+            "flightdeck",
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-c",
+            sql,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
     )
     if result.returncode != 0:
         raise RuntimeError(

@@ -545,6 +545,257 @@ func TestGetAgentByID_HitMiss(t *testing.T) {
 	}
 }
 
+// --- D126 sub-agent rollup (agent_role + topology) ---
+
+// seedSubagentLink seeds a parent agent + a child agent with one
+// session each, where the child session's parent_session_id points
+// at the parent's session. Returns the (parentAgentID, childAgentID,
+// childRole) triple. Used by the topology + agent_role rollup tests
+// to exercise the parent / child / lone classification on the
+// AgentSummary projection.
+func seedSubagentLink(
+	t *testing.T, s *Store,
+	parentName, childName, childRole string,
+) (parentAgentID, childAgentID, parentSessionID, childSessionID string) {
+	t.Helper()
+	ctx := context.Background()
+
+	now := time.Now().UTC().Truncate(time.Microsecond)
+
+	parentAgentID = seedAgentForList(t, s, parentName, agentListOpts{
+		agentType:  "production",
+		clientType: "claude_code",
+		userName:   "test-d126",
+		hostname:   "test-d126-host",
+		lastSeen:   now.Add(-2 * time.Minute),
+	})
+	childAgentID = seedAgentForList(t, s, childName, agentListOpts{
+		agentType:  "production",
+		clientType: "claude_code",
+		userName:   "test-d126",
+		hostname:   "test-d126-host",
+		lastSeen:   now.Add(-1 * time.Minute),
+	})
+
+	parentSessionID = randomUUID(t)
+	if _, err := s.pool.Exec(ctx, `
+		INSERT INTO sessions (
+			session_id, agent_id, flavor, state,
+			started_at, last_seen_at, tokens_used,
+			agent_type, client_type
+		) VALUES (
+			$1::uuid, $2::uuid, $3, 'closed',
+			$4, $4, 0,
+			'production', 'claude_code'
+		)
+	`, parentSessionID, parentAgentID, "test-d126-parent",
+		now.Add(-3*time.Minute)); err != nil {
+		t.Fatalf("seed parent session: %v", err)
+	}
+
+	childSessionID = randomUUID(t)
+	if _, err := s.pool.Exec(ctx, `
+		INSERT INTO sessions (
+			session_id, agent_id, flavor, state,
+			started_at, last_seen_at, tokens_used,
+			agent_type, client_type,
+			parent_session_id, agent_role
+		) VALUES (
+			$1::uuid, $2::uuid, $3, 'closed',
+			$4, $4, 0,
+			'production', 'claude_code',
+			$5::uuid, $6
+		)
+	`, childSessionID, childAgentID, "test-d126-child",
+		now.Add(-2*time.Minute), parentSessionID, childRole); err != nil {
+		t.Fatalf("seed child session: %v", err)
+	}
+	return
+}
+
+// findAgent returns the AgentSummary with the given agent_id from a
+// list response, or nil if absent. Tests fail loudly on absence — the
+// shared test DB has interleaving fixtures so a concrete id is always
+// the right match key, never positional.
+func findAgent(resp *AgentListResponse, agentID string) *AgentSummary {
+	for i := range resp.Agents {
+		if resp.Agents[i].AgentID == agentID {
+			return &resp.Agents[i]
+		}
+	}
+	return nil
+}
+
+// TestListAgents_D126RollupFields covers the three topology states
+// (lone / parent / child) and the agent_role projection in one
+// fixture pass. A lone agent (no sessions, or sessions without
+// parent_session_id and not referenced as a parent) reports
+// topology="lone" and agent_role=nil; the parent reports "parent"
+// and nil role; the child reports "child" and the role string.
+//
+// The "child wins over parent" priority isn't exercised here — we
+// only have two-level fixtures — but the SQL CASE order is the
+// authority and is read-locked by the seed-paths in this test plus
+// the GetAgentFleet equivalent below.
+func TestListAgents_D126RollupFields(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+
+	loneID := seedAgentForList(t, s, "test-d126-lone-"+randomUUID(t)[:8], agentListOpts{
+		agentType: "production", clientType: "claude_code",
+		sessionState: "closed",
+	})
+	parentID, childID, _, _ := seedSubagentLink(
+		t, s,
+		"test-d126-parent-"+randomUUID(t)[:8],
+		"test-d126-child-"+randomUUID(t)[:8],
+		"Researcher",
+	)
+
+	resp, err := s.ListAgents(context.Background(), AgentListParams{Limit: 100})
+	if err != nil {
+		t.Fatalf("ListAgents: %v", err)
+	}
+
+	lone := findAgent(resp, loneID)
+	if lone == nil {
+		t.Fatalf("lone agent missing from response")
+	}
+	if lone.Topology != "lone" {
+		t.Errorf("lone agent topology=%q, want %q", lone.Topology, "lone")
+	}
+	if lone.AgentRole != nil {
+		t.Errorf("lone agent agent_role=%v, want nil", *lone.AgentRole)
+	}
+
+	parent := findAgent(resp, parentID)
+	if parent == nil {
+		t.Fatalf("parent agent missing from response")
+	}
+	if parent.Topology != "parent" {
+		t.Errorf("parent agent topology=%q, want %q", parent.Topology, "parent")
+	}
+	if parent.AgentRole != nil {
+		t.Errorf("parent agent agent_role=%v, want nil", *parent.AgentRole)
+	}
+
+	child := findAgent(resp, childID)
+	if child == nil {
+		t.Fatalf("child agent missing from response")
+	}
+	if child.Topology != "child" {
+		t.Errorf("child agent topology=%q, want %q", child.Topology, "child")
+	}
+	if child.AgentRole == nil || *child.AgentRole != "Researcher" {
+		var got string
+		if child.AgentRole != nil {
+			got = *child.AgentRole
+		}
+		t.Errorf("child agent agent_role=%q, want %q", got, "Researcher")
+	}
+}
+
+// TestGetAgentByID_D126RollupFields verifies the second projection
+// site (single-row fetch) returns the same shape as ListAgents. The
+// d126AgentRollupSQL constant is shared so a regression in the
+// projection would fire here too — this test exists to guard the
+// scan-side wiring, which is independent.
+func TestGetAgentByID_D126RollupFields(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+
+	parentID, childID, _, _ := seedSubagentLink(
+		t, s,
+		"test-d126-byid-parent-"+randomUUID(t)[:8],
+		"test-d126-byid-child-"+randomUUID(t)[:8],
+		"Writer",
+	)
+
+	parent, err := s.GetAgentByID(context.Background(), parentID)
+	if err != nil {
+		t.Fatalf("GetAgentByID parent: %v", err)
+	}
+	if parent == nil {
+		t.Fatalf("parent agent missing")
+	}
+	if parent.Topology != "parent" {
+		t.Errorf("parent topology=%q, want parent", parent.Topology)
+	}
+	if parent.AgentRole != nil {
+		t.Errorf("parent agent_role=%v, want nil", *parent.AgentRole)
+	}
+
+	child, err := s.GetAgentByID(context.Background(), childID)
+	if err != nil {
+		t.Fatalf("GetAgentByID child: %v", err)
+	}
+	if child == nil {
+		t.Fatalf("child agent missing")
+	}
+	if child.Topology != "child" {
+		t.Errorf("child topology=%q, want child", child.Topology)
+	}
+	if child.AgentRole == nil || *child.AgentRole != "Writer" {
+		var got string
+		if child.AgentRole != nil {
+			got = *child.AgentRole
+		}
+		t.Errorf("child agent_role=%q, want Writer", got)
+	}
+}
+
+// TestGetAgentFleet_D126RollupFields covers the fleet endpoint's
+// AgentSummary projection. Same shape as ListAgents but goes through
+// GetAgentFleet which has its own query string — the constant
+// d126AgentRollupSQL is shared but the surrounding scan loop is
+// duplicated, so this test guards the second scan.
+func TestGetAgentFleet_D126RollupFields(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+
+	parentID, childID, _, _ := seedSubagentLink(
+		t, s,
+		"test-d126-fleet-parent-"+randomUUID(t)[:8],
+		"test-d126-fleet-child-"+randomUUID(t)[:8],
+		"Reviewer",
+	)
+
+	agents, _, err := s.GetAgentFleet(context.Background(), 200, 0, "")
+	if err != nil {
+		t.Fatalf("GetAgentFleet: %v", err)
+	}
+
+	var seenParent, seenChild bool
+	for _, a := range agents {
+		if a.AgentID == parentID {
+			seenParent = true
+			if a.Topology != "parent" {
+				t.Errorf("fleet parent topology=%q, want parent", a.Topology)
+			}
+			if a.AgentRole != nil {
+				t.Errorf("fleet parent agent_role=%v, want nil", *a.AgentRole)
+			}
+		}
+		if a.AgentID == childID {
+			seenChild = true
+			if a.Topology != "child" {
+				t.Errorf("fleet child topology=%q, want child", a.Topology)
+			}
+			if a.AgentRole == nil || *a.AgentRole != "Reviewer" {
+				var got string
+				if a.AgentRole != nil {
+					got = *a.AgentRole
+				}
+				t.Errorf("fleet child agent_role=%q, want Reviewer", got)
+			}
+		}
+	}
+	if !seenParent || !seenChild {
+		t.Fatalf("seeded agents missing from fleet response: parent=%v child=%v",
+			seenParent, seenChild)
+	}
+}
+
 // --- Assertion helpers ---
 
 func assertContainsAgent(t *testing.T, resp *AgentListResponse, agentID string, expected bool) {

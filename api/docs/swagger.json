@@ -299,7 +299,7 @@
         },
         "/v1/agents": {
             "get": {
-                "description": "Returns agents matching the supplied filters. Multi-value filters (state, agent_type, client_type, hostname, user, os, orchestration) accept comma-separated values and repeated query params; values within a dimension are OR, values across dimensions are AND. ``search`` is a case-insensitive substring match against ``agent_name`` and ``hostname``. ``updated_since`` filters on ``last_seen_at \u003e= ts``. State is computed via LATERAL subquery against the most-recent session. Pagination defaults to 25/page, max 100.",
+                "description": "Returns agents matching the supplied filters. Multi-value filters (state, agent_type, client_type, hostname, user, os, orchestration) accept comma-separated values and repeated query params; values within a dimension are OR, values across dimensions are AND. ``search`` is a case-insensitive substring match against ``agent_name`` and ``hostname``. ``updated_since`` filters on ``last_seen_at \u003e= ts``. State is computed via LATERAL subquery against the most-recent session. Each row also carries D126 sub-agent rollup fields (``agent_role`` — null for root agents, the framework-supplied role string when this agent represents a sub-agent identity; ``topology`` — one of ``lone`` / ``parent`` / ``child``, computed from whether this agent's sessions carry a parent_session_id and whether they are referenced as a parent by other agents). Pagination defaults to 25/page, max 100.",
                 "produces": [
                     "application/json"
                 ],
@@ -481,13 +481,13 @@
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "Metric: tokens, sessions, latency_avg, latency_p50, latency_p95, policy_events, estimated_cost (default: tokens)",
+                        "description": "Metric: tokens, sessions, latency_avg, latency_p50, latency_p95, policy_events, estimated_cost, parent_token_sum, child_token_sum, child_count, parent_to_first_child_latency_ms (default: tokens). The four sub-agent metrics (D126) operate over the parent / child relationship via recursive CTE on parent_session_id.",
                         "name": "metric",
                         "in": "query"
                     },
                     {
                         "type": "string",
-                        "description": "Dimension: flavor, model, framework, host, agent_type, team, provider (default: flavor)",
+                        "description": "Dimension(s) (default: flavor). One or two dimensions, comma-separated (D126 § 6.4): ?group_by=dim1 keeps the pre-D126 single-axis shape; ?group_by=dim1,dim2 returns a two-key rollup where dim1 is the primary (outer) axis and dim2 is the secondary (inner) axis. Allowed values in either position: flavor, model, framework, host, agent_type, team, provider, agent_role, parent_session_id. agent_role (D126) groups by the framework-supplied sub-agent role string and parent_session_id (D126 § 6.4) groups by parent UUID; both bucket nulls as '(root)'. Two-dim payloads carry per-DataPoint ``breakdown[]`` segments (key+value); single-dim payloads keep the flat ``value`` shape exactly.",
                         "name": "group_by",
                         "in": "query"
                     },
@@ -537,6 +537,24 @@
                         "type": "string",
                         "description": "Filter to specific provider (anthropic, openai, google, xai, mistral, meta, other)",
                         "name": "filter_provider",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "D126: filter analytics scope to children of one specific parent session (UUID).",
+                        "name": "filter_parent_session_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "boolean",
+                        "description": "D126: when true, restrict to parent sessions only (those referenced as a parent_session_id by at least one other session).",
+                        "name": "filter_has_sub_agents",
+                        "in": "query"
+                    },
+                    {
+                        "type": "boolean",
+                        "description": "D126: when true, restrict to child sessions only (parent_session_id IS NOT NULL).",
+                        "name": "filter_is_sub_agent",
                         "in": "query"
                     }
                 ],
@@ -943,7 +961,7 @@
         },
         "/v1/fleet": {
             "get": {
-                "description": "Returns agents with aggregated state rollup and pagination. Includes runtime context facets aggregated across all non-terminal sessions for the dashboard CONTEXT sidebar.",
+                "description": "Returns agents with aggregated state rollup and pagination. Each row also carries D126 sub-agent rollup fields (``agent_role`` — null for root agents, the framework-supplied role string when this agent represents a sub-agent identity; ``topology`` — one of ``lone`` / ``parent`` / ``child``). Includes runtime context facets aggregated across all non-terminal sessions for the dashboard CONTEXT sidebar.",
                 "produces": [
                     "application/json"
                 ],
@@ -1372,6 +1390,36 @@
                     },
                     {
                         "type": "string",
+                        "description": "D126: filter to children of one specific parent session (UUID). Used by the SessionDrawer Sub-agents tab to fetch the per-parent child list.",
+                        "name": "parent_session_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "D126: filter by sub-agent role string (repeatable/comma). CrewAI Agent.role, LangGraph node name, Claude Code Task agent_type. Backs the Investigate ROLE facet.",
+                        "name": "agent_role",
+                        "in": "query"
+                    },
+                    {
+                        "type": "boolean",
+                        "description": "D126: when true, restrict to parent sessions only (those referenced as a parent_session_id by at least one other session). Backs the Investigate TOPOLOGY facet 'Has sub-agents' checkbox.",
+                        "name": "has_sub_agents",
+                        "in": "query"
+                    },
+                    {
+                        "type": "boolean",
+                        "description": "D126: when true, restrict to child sessions only (parent_session_id IS NOT NULL). Backs the Investigate TOPOLOGY facet 'Is sub-agent' checkbox.",
+                        "name": "is_sub_agent",
+                        "in": "query"
+                    },
+                    {
+                        "type": "boolean",
+                        "description": "D126 UX revision 2026-05-03: when false, exclude pure children (rows whose parent_session_id is set AND that themselves have no descendants), leaving parents-with-children + lone sessions. Default scope of the Investigate page. Omit or set true to preserve the legacy 'all sessions' behaviour.",
+                        "name": "include_pure_children",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
                         "description": "Sort field: started_at, last_seen_at, duration, tokens_used, flavor, model, hostname, state (default: started_at). state sort uses severity ordinal active→idle→stale→lost→closed.",
                         "name": "sort",
                         "in": "query"
@@ -1763,6 +1811,10 @@
                 "agent_name": {
                     "type": "string"
                 },
+                "agent_role": {
+                    "description": "AgentRole is the framework-supplied sub-agent role string\n(CrewAI Agent.role, LangGraph node name, Claude Code Task\nagent_type) when this agent represents a sub-agent identity;\nnil for root agents. Read from any one of the agent's sessions\n— by D126 derivation every session under an agent_id shares\nthe same 6-tuple input, so agent_role is uniform across them.",
+                    "type": "string"
+                },
                 "agent_type": {
                     "type": "string"
                 },
@@ -1780,6 +1832,10 @@
                 },
                 "state": {
                     "description": "State rollup: \"active\" when any session under this agent is\ncurrently active; otherwise the most-recent session's state.\nEmpty string when the agent has no sessions yet (freshly\nupserted agent row awaiting its first session linkage).",
+                    "type": "string"
+                },
+                "topology": {
+                    "description": "Topology classifies this agent's place in the sub-agent graph\n(D126):\n  \"lone\"   — none of this agent's sessions carry a\n             parent_session_id and no other agent's sessions\n             reference one of ours as a parent\n  \"child\"  — at least one session has parent_session_id IS NOT\n             NULL (i.e. this agent runs as a sub-agent under\n             someone else's parent session). Wins over \"parent\"\n             when both apply: a sub-agent role's defining\n             property is that its sessions are spawned by a\n             parent, secondary nesting is incidental.\n  \"parent\" — this agent's sessions are referenced as a\n             parent_session_id by at least one other session,\n             and the agent itself is not a child.",
                     "type": "string"
                 },
                 "total_sessions": {
@@ -1850,6 +1906,17 @@
                 }
             }
         },
+        "store.BreakdownBucket": {
+            "type": "object",
+            "properties": {
+                "key": {
+                    "type": "string"
+                },
+                "value": {
+                    "type": "number"
+                }
+            }
+        },
         "store.ContextFacetValue": {
             "type": "object",
             "properties": {
@@ -1911,6 +1978,12 @@
         "store.DataPoint": {
             "type": "object",
             "properties": {
+                "breakdown": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/store.BreakdownBucket"
+                    }
+                },
                 "date": {
                     "type": "string"
                 },
@@ -2238,6 +2311,9 @@
                 "agent_name": {
                     "type": "string"
                 },
+                "agent_role": {
+                    "type": "string"
+                },
                 "agent_type": {
                     "type": "string"
                 },
@@ -2284,6 +2360,10 @@
                 "model": {
                     "type": "string"
                 },
+                "parent_session_id": {
+                    "description": "D126 sub-agent observability columns. Both nullable, both\npopulated only on sub-agent sessions (Claude Code Task\nsubagent, CrewAI agent execution, LangGraph agent-bearing\nnode). Root sessions and direct-SDK sessions carry NULL on\nboth. The dashboard's swimlane relationship pill, Sub-agents\ntab, Investigate ROLE / PARENT columns, and Investigate\nTOPOLOGY facets read these directly.",
+                    "type": "string"
+                },
                 "policy_token_limit": {
                     "description": "Active policy thresholds (nullable).\nPopulated by GetSession via effective policy lookup.\nNull if no policy applies at any scope.",
                     "type": "integer"
@@ -2322,11 +2402,18 @@
                 "agent_name": {
                     "type": "string"
                 },
+                "agent_role": {
+                    "type": "string"
+                },
                 "agent_type": {
                     "type": "string"
                 },
                 "capture_enabled": {
                     "type": "boolean"
+                },
+                "child_count": {
+                    "description": "ChildCount (D126 UX revision 2026-05-03) — derived count of\nsessions whose parent_session_id equals this row's\nsession_id. Always present on the wire (zero on lone agents\nand on pure children that have no descendants of their\nown). Surfaced server-side via a correlated subquery on the\nlisting query so the Investigate parent-row pill (``→ N``)\nrenders without a per-row follow-up fetch — same pattern as\nErrorTypes / PolicyEventTypes / MCPErrorTypes above. Hits\nthe existing ``sessions_parent_session_id_idx`` partial\nindex.",
+                    "type": "integer"
                 },
                 "client_type": {
                     "type": "string"
@@ -2373,6 +2460,10 @@
                     }
                 },
                 "model": {
+                    "type": "string"
+                },
+                "parent_session_id": {
+                    "description": "D126 sub-agent observability columns. Both nullable, both\npopulated only on sub-agent sessions (Claude Code Task\nsubagent, CrewAI agent execution, LangGraph agent-bearing\nnode). The dashboard's swimlane relationship pill,\nSessionDrawer Sub-agents tab, Investigate ROLE / PARENT\ncolumns and TOPOLOGY / ROLE facets read these directly.",
                     "type": "string"
                 },
                 "policy_event_types": {

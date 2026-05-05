@@ -101,6 +101,20 @@ Per-event ``framework`` field carries the bare name (``langchain``, ``crewai``, 
 
 **Bifrost** is a multi-provider LLM gateway. Flightdeck observes agents routing through bifrost via the protocol used — point the openai SDK at bifrost's `base_url` and the OpenAI interceptor fires; point the anthropic SDK at bifrost and the Anthropic interceptor fires. Both protocols are supported as deployment topologies.
 
+### Sub-agent observability
+
+Multi-agent frameworks render as a tree in the fleet view: a parent session for the orchestrator and a separate child session per sub-agent execution, linked by ``parent_session_id`` and labeled with ``agent_role`` (D126).
+
+| Mechanism | parent_session_id source | agent_role source |
+|---|---|---|
+| Claude Code Task subagent | hook payload ``session_id`` | hook payload ``agent_type`` (e.g. ``"Explore"``) |
+| CrewAI agent execution | parent crew's session | ``Agent.role`` attribute |
+| LangGraph agent-bearing node | parent runner's session | node name |
+
+Direct Anthropic / OpenAI SDK and litellm calls outside a multi-agent framework emit root sessions with both fields null — the existing 5-tuple identity is unchanged. Sub-agent observability ships only for frameworks Flightdeck already supports for LLM-call interception (Frameworks table above); AutoGen support is on the Roadmap.
+
+When ``capture_prompts=True``, each child session carries the parent's input as ``incoming_message`` and the child's response back as ``outgoing_message`` — visible in the SessionDrawer's Sub-agents tab MESSAGES sub-section. The Fleet swimlane renders a ``→ N`` pill on parents and a ``← {parent_name}`` pill on children, plus Bezier connectors from each parent spawn event to its child's first event circle. Sub-agent emission failures surface as red row-level dots on Investigate, the Fleet AgentTable, and the swimlane left panel — same pattern as ``llm_error`` and ``mcp_error``.
+
 ### MCP (Model Context Protocol)
 
 Flightdeck observes MCP traffic as a first-class event surface alongside chat and embeddings. Six event types — `mcp_tool_list`, `mcp_tool_call`, `mcp_resource_list`, `mcp_resource_read`, `mcp_prompt_list`, `mcp_prompt_get` — emit per operation. The sensor patches `mcp.client.session.ClientSession` directly, so every framework that mediates MCP through the official SDK lights up automatically: LangChain via `langchain-mcp-adapters`, LangGraph via the same, LlamaIndex via `llama-index-tools-mcp`, CrewAI via `mcpadapt`, plus the raw `mcp` SDK. Each event carries `server_name` + `transport` for attribution; the session-level `MCPServerFingerprint` (name, transport, protocol_version, version, capabilities, instructions) lands in `context.mcp_servers` when MCP init runs before sensor init.
@@ -474,10 +488,11 @@ Set expectations early so the boundaries are clear:
 
 Open work tracked here. Prioritized when users tell us which matters most.
 
-- **Sub-agent observability.** First-class events for sub-agent spawn, hand-off, and join across CrewAI / LangGraph / AutoGen multi-agent topologies. Render parent / child relationships in the fleet timeline.
 - **Per-agent landing page.** A dedicated agent detail view (today's Investigate filter is the closest equivalent). Token / latency / error trends per agent over rolling windows.
 - **Continuous framework verification.** Scheduled live-API smoke runs across every supported framework, not just on PR. Catches SDK class-rename breakage (anthropic ``RateLimitError`` → ``QuotaError`` etc.) before users hit it.
 - **Production hardening.** NATS authentication, Helm chart polish, nginx rate limiting, dashboard auth, litellm streaming interception, native LangChain Voyage embeddings, dedicated LlamaIndex / CrewAI interceptors where transitive coverage falls short.
+- **Helm migration parity.** Backfill missing `000014` to `000016` in `helm/migrations/` and reconcile with `docker/postgres/migrations/`. The two paths drifted across phases — production deploys via Helm currently lack the agent_type normalization (`000014`), the agent_id-keyed agents table (`000015`), and the `event_content.input` column (`000016`) that docker-compose dev applies automatically.
+- **AutoGen framework support.** LLM-call interception via `autogen-core` / `autogen-agentchat` (the 0.4 rewrite) or `pyautogen` (0.2 legacy), plus sub-agent observability for it (`agent_role` from `participant.name`, child session per RoutedAgent dispatch / `generate_reply`). AutoGen ships two libraries that share a name with different APIs; both versions need their own interceptor.
 
 The roadmap is intentionally loose. User demand reorders priorities.
 

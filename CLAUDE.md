@@ -106,15 +106,27 @@
     Do not create separate endpoints per chart.
 
 25. **Available dimensions are exactly:** `flavor`, `model`, `framework`, `host`,
-    `agent_type`, `team`, `provider`. No other values. Do not add dimensions without
-    updating ARCHITECTURE.md first. `provider` is derived at query time via SQL
-    CASE over `model` (see DECISIONS.md D098).
+    `agent_type`, `team`, `provider`, `agent_role`, `parent_session_id`. No other
+    values. Do not add dimensions without updating ARCHITECTURE.md first.
+    `provider` is derived at query time via SQL CASE over `model` (see
+    DECISIONS.md D098). `agent_role` (D126) groups by the framework-supplied
+    sub-agent role string; sessions with null `agent_role` bucket as `(root)`.
+    `parent_session_id` (D126 § 6.4) groups by the parent session UUID; root
+    sessions bucket as `(root)`. The `group_by` query param accepts **one or
+    two** dimensions comma-separated (D126 § 6.4): `?group_by=dim1` keeps the
+    pre-D126 single-axis shape; `?group_by=dim1,dim2` returns a two-key rollup
+    where `dim1` is the primary (outer) axis and `dim2` is the secondary
+    (inner) axis. Both positions accept any value from the locked list above.
 
 26. **Available metrics are exactly:** `tokens`, `sessions`, `latency_avg`,
-    `latency_p50`, `latency_p95`, `policy_events`, `estimated_cost`. Same rule
-    applies. `estimated_cost` uses the static pricing table in
-    `api/internal/store/pricing.go` (D099); update the table when provider list
-    prices change.
+    `latency_p50`, `latency_p95`, `policy_events`, `estimated_cost`,
+    `parent_token_sum`, `child_token_sum`, `child_count`,
+    `parent_to_first_child_latency_ms`. Same rule applies. `estimated_cost`
+    uses the static pricing table in `api/internal/store/pricing.go` (D099);
+    update the table when provider list prices change. The four sub-agent-aware
+    metrics (D126) operate over the parent / child relationship via recursive
+    CTE on `parent_session_id`; see ARCHITECTURE.md analytics endpoint section
+    for the contract and the known-performance-characteristic note.
 
 ---
 
@@ -617,6 +629,31 @@ For normal work, stick to:
 - `git fetch` + `git merge --ff-only`
 - `git merge` (only when explicitly asked)
 - `git stash` / `git stash pop`
+
+### Always start from latest main
+
+Before beginning any task, fetch from origin, fast-forward main to
+origin/main, and create a new feature branch from there. Never start
+work on a stale branch or on a branch carried over from a previous
+task unless the Supervisor explicitly says to continue. Canonical
+sequence:
+
+```
+git fetch origin
+git checkout main
+git pull --ff-only origin main
+git checkout -b feat/<descriptive-name>
+```
+
+If the working tree is dirty, stop and ask the Supervisor before
+proceeding. Never auto-stash, auto-discard, or carry forward
+unrelated changes. If main is not fast-forwardable to origin/main
+(which would only happen with local commits on main that should
+never exist per Rule 46), stop and ask.
+
+This sequence is the FIRST step before any code reading, planning,
+or implementation. The branch name uses a descriptive slug for the
+work; future PRs use their own.
 
 ### Syncing with main
 

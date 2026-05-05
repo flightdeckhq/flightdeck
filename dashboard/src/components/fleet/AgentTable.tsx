@@ -9,6 +9,8 @@ import { CodingAgentBadge } from "@/components/ui/coding-agent-badge";
 import { ClaudeCodeLogo } from "@/components/ui/claude-code-logo";
 import { bucketFor } from "@/lib/fleet-ordering";
 import { INVESTIGATE_DEFAULT_LOOKBACK_MS } from "@/lib/constants";
+import { useFleetStore } from "@/store/fleet";
+import { deriveRelationship, scrollToAgentRow } from "@/lib/relationship";
 
 /**
  * Sortable column whitelist for the agent table. Mirrors the
@@ -302,19 +304,39 @@ export function AgentTable({
               height: 32,
             }}
           >
-            {renderHeader("agent_name", "Agent", { width: "28%" })}
-            {renderHeader("client_type", "Client", { width: "10%" })}
-            {renderHeader("agent_type", "Type", { width: "10%" })}
+            {renderHeader("agent_name", "Agent", { width: "22%" })}
+            {renderHeader("client_type", "Client", { width: "8%" })}
+            {renderHeader("agent_type", "Type", { width: "8%" })}
+            {/* D126 ROLE + TOPOLOGY headers. Not sortable: the
+                AgentTableSortColumn whitelist is server-backed and
+                role/topology aren't valid sort columns yet (the
+                store-side ORDER BY map doesn't include them and
+                adding them is a follow-up). Render as plain header
+                cells so the click-to-sort treatment is suppressed. */}
+            <th
+              className="uppercase"
+              style={{ ...HEADER_STYLE, width: "10%" }}
+              data-testid="agent-table-header-role"
+            >
+              Role
+            </th>
+            <th
+              className="uppercase"
+              style={{ ...HEADER_STYLE, width: "10%" }}
+              data-testid="agent-table-header-topology"
+            >
+              Topology
+            </th>
             {renderHeader("total_sessions", "Sessions", {
-              width: "10%",
+              width: "8%",
               textAlign: "right",
             })}
             {renderHeader("total_tokens", "Tokens", {
-              width: "10%",
+              width: "8%",
               textAlign: "right",
             })}
-            {renderHeader("last_seen_at", "Last Active", { width: "14%" })}
-            {renderHeader("state", "State", { width: "18%" })}
+            {renderHeader("last_seen_at", "Last Active", { width: "12%" })}
+            {renderHeader("state", "State", { width: "14%" })}
           </tr>
         </thead>
         <tbody>
@@ -338,7 +360,7 @@ export function AgentTable({
                     aria-hidden
                   >
                     <td
-                      colSpan={7}
+                      colSpan={9}
                       style={{
                         height: 1,
                         padding: 0,
@@ -395,6 +417,7 @@ export function AgentTable({
                 e.currentTarget.style.background = "";
               }}
               data-testid={`fleet-agent-row-${a.agent_id}`}
+              data-agent-id={a.agent_id}
             >
               <td
                 style={{
@@ -468,6 +491,39 @@ export function AgentTable({
                 )}
               </td>
               <td
+                style={{
+                  padding: "0 12px",
+                  fontSize: 12,
+                  color: "var(--text-secondary)",
+                  overflow: "hidden",
+                }}
+                data-testid={`agent-table-role-${a.agent_id}`}
+              >
+                {a.agent_role ? (
+                  <TruncatedText
+                    style={{
+                      fontFamily: "var(--font-mono)",
+                      fontSize: 11,
+                      color: "var(--text)",
+                    }}
+                    text={a.agent_role}
+                  />
+                ) : (
+                  <span style={{ color: "var(--text-muted)" }}>—</span>
+                )}
+              </td>
+              <td
+                style={{
+                  padding: "0 12px",
+                  fontSize: 12,
+                  color: "var(--text-secondary)",
+                  overflow: "hidden",
+                }}
+                data-testid={`agent-table-topology-${a.agent_id}`}
+              >
+                <TopologyCell agentId={a.agent_id} topology={a.topology} />
+              </td>
+              <td
                 className="text-right"
                 style={CELL_NUMERIC_STYLE}
               >
@@ -501,6 +557,105 @@ export function AgentTable({
       </table>
       </LayoutGroup>
     </div>
+  );
+}
+
+/**
+ * D126 § 7.fix.H topology cell. The TOPOLOGY column carries
+ * relationship information distinct from ROLE: parents render
+ * "⤴ spawns N" with the count of distinct child agents and a
+ * click-to-jump to the first child's swimlane row; children render
+ * "↳ child of <parent_name>" with click-to-jump back to the
+ * parent's row. Lone agents render the muted em-dash so the
+ * column doesn't shout for non-relationship rows.
+ *
+ * The cell reads ``useFleetStore`` to derive parent_name +
+ * child_count from the same session-linkage scan SwimLane uses, so
+ * the two surfaces stay in lock-step. ``a.topology`` from
+ * AgentSummary is consulted as the cheap-fast hint (server-side
+ * decision); the relationship lookup runs only for non-lone rows
+ * to avoid scanning the entire fleet for every lone row.
+ */
+function TopologyCell({
+  agentId,
+  topology,
+}: {
+  agentId: string;
+  topology: import("@/lib/types").AgentTopology;
+}) {
+  const flavors = useFleetStore((s) => s.flavors);
+  const ownSessions = useMemo(() => {
+    return flavors.find((f) => f.flavor === agentId)?.sessions ?? [];
+  }, [flavors, agentId]);
+  const rel = useMemo(
+    () => deriveRelationship(agentId, ownSessions, flavors),
+    [agentId, ownSessions, flavors],
+  );
+  if (topology === "lone" || rel.mode === "lone") {
+    return (
+      <span
+        style={{
+          fontSize: 11,
+          color: "var(--text-muted)",
+          fontFamily: "var(--font-mono)",
+        }}
+        data-testid="agent-table-topology-pill-lone"
+      >
+        lone
+      </span>
+    );
+  }
+  if (rel.mode === "child") {
+    return (
+      <button
+        type="button"
+        data-testid={`agent-table-topology-pill-child-${agentId}`}
+        onClick={(e) => {
+          e.stopPropagation();
+          scrollToAgentRow(rel.parentAgentId);
+        }}
+        style={{
+          background: "transparent",
+          border: "none",
+          padding: 0,
+          cursor: "pointer",
+          fontFamily: "var(--font-mono)",
+          fontSize: 10,
+          color: "var(--accent)",
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 4,
+          maxWidth: "100%",
+          minWidth: 0,
+        }}
+        title={`child of ${rel.parentName}`}
+      >
+        <span style={{ flexShrink: 0 }}>↳</span>
+        <TruncatedText text={`child of ${rel.parentName}`} />
+      </button>
+    );
+  }
+  return (
+    <button
+      type="button"
+      data-testid={`agent-table-topology-pill-parent-${agentId}`}
+      onClick={(e) => {
+        e.stopPropagation();
+        if (rel.firstChildAgentId) scrollToAgentRow(rel.firstChildAgentId);
+      }}
+      style={{
+        background: "transparent",
+        border: "none",
+        padding: 0,
+        cursor: rel.firstChildAgentId ? "pointer" : "default",
+        fontFamily: "var(--font-mono)",
+        fontSize: 10,
+        color: "var(--accent)",
+      }}
+      title={`spawns ${rel.childCount} sub-agent${rel.childCount === 1 ? "" : "s"}`}
+    >
+      ⤴ spawns {rel.childCount}
+    </button>
   );
 }
 

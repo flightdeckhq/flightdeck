@@ -148,10 +148,74 @@ func BuildEventExtra(e consumer.EventPayload) ([]byte, error) {
 			extra["content"] = v
 		}
 	}
+
+	// D126 — sub-agent observability fields. Project per-event when
+	// present so the dashboard reads them from events.payload (same
+	// inline-render path the MCP family uses). The wider sub-agent
+	// linkage (parent_session_id, agent_role) lands in the sessions
+	// table via UpsertSession; persisting them into events.payload
+	// too lets the live-feed envelope and the per-event drilldown
+	// surface the relationship without a sessions-table join. Small
+	// bodies route inline here per D126 § 6's v1 contract; the 8 KiB
+	// → event_content overflow path is deferred.
+	if e.ParentSessionID != "" {
+		extra["parent_session_id"] = e.ParentSessionID
+	}
+	if e.AgentRole != "" {
+		extra["agent_role"] = e.AgentRole
+	}
+	if e.IncomingMessage != nil {
+		extra["incoming_message"] = subagentMessageToMap(e.IncomingMessage)
+	}
+	if e.OutgoingMessage != nil {
+		extra["outgoing_message"] = subagentMessageToMap(e.OutgoingMessage)
+	}
+	if e.State != "" {
+		extra["state"] = e.State
+	}
 	if len(extra) == 0 {
 		return nil, nil
 	}
 	return json.Marshal(extra)
+}
+
+// subagentMessageToMap projects a typed SubagentMessage into the
+// shape BuildEventExtra writes into events.payload per D126 § 6 +
+// Rule 20. Two shapes land here:
+//
+//   * Inline (body ≤ 8 KiB): ``{body, captured_at}`` — body is
+//     decoded back into the framework's source shape (string /
+//     dict / list / scalar / null).
+//   * Overflow (body > 8 KiB): ``{has_content, content_bytes,
+//     captured_at}`` — body lives in event_content; the dashboard
+//     fetches via ``GET /v1/events/{id}/content``. The stub here
+//     lets the dashboard render a size-aware "load full message"
+//     affordance without an extra round-trip.
+//
+// Returns the map even when one of the fields is missing so the
+// dashboard's MESSAGES sub-section can render a partial envelope
+// cleanly rather than treat-as-absent. json.Unmarshal failure on
+// Body falls back to nil — the wire shape was technically valid
+// (Body is json.RawMessage so it's already byte-validated), so
+// this branch is theoretical and keeps the projection panic-free.
+func subagentMessageToMap(m *consumer.SubagentMessage) map[string]interface{} {
+	out := make(map[string]interface{}, 4)
+	if len(m.Body) > 0 {
+		var v interface{}
+		if err := json.Unmarshal(m.Body, &v); err == nil {
+			out["body"] = v
+		}
+	}
+	if m.HasContent {
+		out["has_content"] = true
+	}
+	if m.ContentBytes != nil {
+		out["content_bytes"] = *m.ContentBytes
+	}
+	if m.CapturedAt != "" {
+		out["captured_at"] = m.CapturedAt
+	}
+	return out
 }
 
 // isMCPEventType reports whether ``eventType`` is one of the six Phase 5

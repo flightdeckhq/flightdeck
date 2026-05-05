@@ -53,6 +53,107 @@ close until all discrepancies are resolved.
 
 ---
 
+## Post-implementation review
+
+After every phase that ships meaningful code, the Executor runs a
+five-hat review pass before declaring the audit complete. The pass
+exists to catch the issues a single read can't: cross-language
+idioms, idiom-specific anti-patterns, contract drift between
+components, and gaps in test posture that a same-author review will
+rationalise away.
+
+### The five hats
+
+The Executor reviews the entire PR five times, once per role hat,
+each pass focused exclusively on that role's concerns.
+
+1. **Python principal engineer** — sensor (every file under
+   `sensor/flightdeck_sensor/`), playground demos, plugin Node
+   tests, integration pytest suites. Concerns: idiomatic Python,
+   mypy strict compliance, async / threading discipline, context
+   manager correctness, fail-open exception handling, no
+   synchronous blocking on the LLM hot path.
+
+2. **Go principal engineer** — ingestion, workers, api, all SQL
+   migrations. Concerns: idiomatic Go, no N+1 queries, context
+   propagation through handler → store layers, error wrapping with
+   stack context, parameterised SQL only, transaction boundaries,
+   race conditions, swagger annotation completeness, golangci-lint
+   clean, index choice for the access patterns the change
+   introduces.
+
+3. **TypeScript and UI expert** — dashboard components, unit tests,
+   type definitions. Concerns: React idiomatic patterns
+   (memoisation, no rerender storms), Tailwind class hygiene, theme
+   parity at every new surface, CSS variable usage (no hardcoded
+   hex), aria attributes, keyboard navigation, shadcn/ui only, D3
+   math-only, focus management, no localStorage abuse.
+
+4. **Architect** — the PR's design fit and doc alignment.
+   ARCHITECTURE.md alignment (every section, not only the touched
+   ones), DECISIONS.md format compliance, CHANGELOG.md user-visible
+   completeness, README.md updates, schema migration design,
+   API contract design (forward-compat), cross-component contract
+   coherence (sensor payload ↔ ingestion validator ↔ worker
+   projector ↔ API store), L1 (no temporal qualifiers / phase
+   tags introduced), L2 (doc-first ordering verified via git log:
+   ARCHITECTURE / DECISIONS commits land before code commits in the
+   same PR).
+
+5. **QA Validation and Automation** — the PR's test posture and
+   verification gate. Coverage at every layer (sensor unit,
+   plugin Node, Go ingestion-workers-API, dashboard unit,
+   integration, E2E, playground), test count target deltas met,
+   verification-gate items each greened, E2E discipline (Rule 40c
+   series — covering, stability, pre-commit smoke, theme matrix),
+   integration test discipline (Rule 40b — local dev stack against
+   branch HEAD), playground real-API demos green per Rule 40d
+   (results pasted into PR description), lint passes per Rule 40e,
+   the cross-cutting L3 / L4 / L5 / L6 / L8 checklist evidenced.
+
+### Finding categorization
+
+Each hat produces a list of findings. Findings are classified into
+one of three buckets:
+
+- **Block.** Must fix before merge. Correctness, security, breaking
+  contract change, or rule violation.
+- **Recommend.** Worth doing in this PR. Quality issue that fits
+  the phase's intent (Rule 51 no-defer applies) but doesn't block
+  if the Supervisor explicitly approves deferral.
+- **Defer.** Worth doing later, files a Roadmap bullet in
+  README.md per Rule 49. Out of phase scope OR a non-trivial
+  follow-up that warrants user prioritisation.
+
+Block findings gate the merge unconditionally. Recommend findings
+gate the merge unless the Supervisor explicitly approves deferral
+in the audit response. Defer findings always file a Roadmap entry
+before they leave the audit; never an indefinite "follow-up" with
+no destination (Rule 49).
+
+### Audit output
+
+The Executor produces a single audit document for the PR, saved
+alongside the design / planning artifacts (typically the workspace
+folder where the design doc lives), containing:
+
+- The 4-column discrepancy table (every file in the PR vs
+  ARCHITECTURE.md expectation).
+- The cross-cutting checks (one row per L1 to L8 with status +
+  evidence; L7 marked NA with reason when the rule does not
+  bind).
+- The five-hat review output (one finding list per hat,
+  categorised Block / Recommend / Defer).
+- Open follow-ups (Roadmap items added to README.md per Rule 49)
+  if any.
+
+The Supervisor reads the audit document and either greenlights the
+merge or returns a fix list. The phase does not close until every
+Block is resolved, every Recommend is resolved or explicitly
+deferred, and every Defer has a Roadmap bullet filed.
+
+---
+
 ## Living Document Rule
 
 ARCHITECTURE.md is a living document, not a contract carved in stone.

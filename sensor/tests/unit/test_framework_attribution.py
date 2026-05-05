@@ -61,6 +61,15 @@ def test_init_strips_version_suffix_and_records_bare_framework(
     """``langchain/0.3.x`` from FrameworkCollector lands as bare
     ``langchain`` on the session's per-event ``framework`` field."""
     _reset_sensor()
+    # Other framework modules can be in sys.modules from prior tests
+    # importing them. Pop everything except the one we want to
+    # detect so the assertion measures the langchain attribution
+    # specifically.
+    for mod_name in (
+        "langchain_core", "langgraph", "llama_index", "crewai",
+        "autogen", "haystack", "dspy", "smolagents", "pydantic_ai",
+    ):
+        sys.modules.pop(mod_name, None)
     fake_lc = MagicMock()
     fake_lc.__version__ = "0.3.27"
     monkeypatch.setitem(sys.modules, "langchain", fake_lc)
@@ -88,7 +97,7 @@ def test_init_no_framework_keeps_session_framework_none() -> None:
     # classifier. ``anthropic`` / ``openai`` are not classifier
     # targets, so a bare-SDK session gets framework=None.
     for mod_name in (
-        "langchain", "langgraph", "llama_index", "crewai",
+        "langchain", "langchain_core", "langgraph", "llama_index", "crewai",
         "autogen", "haystack", "dspy", "smolagents", "pydantic_ai",
     ):
         sys.modules.pop(mod_name, None)

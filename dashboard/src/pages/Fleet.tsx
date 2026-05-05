@@ -1033,6 +1033,15 @@ export function Fleet() {
         directEventDetail={directEventDetail}
         onClearDirectEvent={() => setDirectEventDetail(null)}
         version={selectedSessionId ? (sessionVersions[selectedSessionId] ?? 0) : 0}
+        onSwitchSession={(id) => {
+          // D126: in-place rebind for SubAgentsTab parent / child
+          // navigation. selectSession owns the URL state so the
+          // drawer's sessionId prop updates and the
+          // useSession()-driven render swaps the body without a
+          // close-then-reopen flicker.
+          setDirectEventDetail(null);
+          selectSession(id);
+        }}
       />
 
       <EventDetailDrawer

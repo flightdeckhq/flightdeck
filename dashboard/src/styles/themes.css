@@ -104,6 +104,15 @@
   --color-warn-soft: rgba(234, 179, 8, 0.12);
   --color-warn-border: rgba(234, 179, 8, 0.35);
 
+  /* D126 UX revision 2026-05-03 — sub-agent / child-row background
+     tint. Applied via [data-topology="child"] in globals.css to
+     swimlane rows AND Investigate inline-expansion sub-rows so a
+     single CSS variable drives both surfaces. Slightly lighter
+     than --surface (#111111) on dark — translucent white at 6%
+     sits inside the supervisor-locked 5–8% delta range. Lower
+     values read as background noise; higher values shout. */
+  --swimlane-row-child-bg: rgba(255, 255, 255, 0.06);
+
   /* Fonts */
   --font-ui: "Geist", system-ui, sans-serif;
   --font-mono: "GeistMono", ui-monospace, monospace;
@@ -203,6 +212,13 @@
   /* Cost disclaimer tone -- amber on light theme. */
   --color-warn-soft: rgba(202, 138, 4, 0.08);
   --color-warn-border: rgba(202, 138, 4, 0.3);
+
+  /* D126 UX revision 2026-05-03 — sub-agent / child-row background
+     tint. Slightly darker than --surface (#ffffff) on light —
+     translucent black at 6% sits inside the supervisor-locked
+     5–8% delta range. Same brightness logic as the dark-theme
+     value: low enough to feel structural, high enough to read. */
+  --swimlane-row-child-bg: rgba(0, 0, 0, 0.06);
 
   /* Fonts */
   --font-ui: "Geist", system-ui, sans-serif;

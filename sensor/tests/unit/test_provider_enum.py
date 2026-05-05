@@ -57,30 +57,40 @@ def _reset_sensor() -> None:
 # ---------------------------------------------------------------------
 
 
-def test_provider_has_exactly_four_members() -> None:
+def test_provider_has_exactly_six_members() -> None:
     """Adding a new interceptor target requires editing the enum AND
     a new branch in ``patch()``; this test ensures one doesn't drift
     without the other (the test in
     ``test_provider_values_match_patch_branches`` catches the
-    value-side drift; this one catches the count-side)."""
+    value-side drift; this one catches the count-side).
+
+    D126 added two sub-agent targets (CREWAI, LANGGRAPH). AutoGen
+    support is on the Roadmap and ships in a future PR alongside
+    LLM-call interception for it.
+    """
     assert set(Provider) == {
         Provider.ANTHROPIC,
         Provider.OPENAI,
         Provider.LITELLM,
         Provider.MCP,
+        Provider.CREWAI,
+        Provider.LANGGRAPH,
     }
-    assert len(Provider) == 4
+    assert len(Provider) == 6
 
 
 def test_provider_values_match_patch_branches() -> None:
     """Each member's string value matches what ``patch()`` checks for
-    internally. Adding a fifth interceptor target means adding a
-    fifth member here; this test fails if the enum and the branches
-    drift apart."""
+    internally. Adding a new interceptor target means adding a new
+    member here; this test fails if the enum and the branches drift
+    apart."""
     assert Provider.ANTHROPIC.value == "anthropic"
     assert Provider.OPENAI.value == "openai"
     assert Provider.LITELLM.value == "litellm"
     assert Provider.MCP.value == "mcp"
+    # D126 sub-agent targets.
+    assert Provider.CREWAI.value == "crewai"
+    assert Provider.LANGGRAPH.value == "langgraph"
 
 
 def test_provider_member_is_a_string() -> None:

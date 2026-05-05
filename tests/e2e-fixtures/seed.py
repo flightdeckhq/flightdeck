@@ -26,7 +26,6 @@ simulate aged sessions.
 from __future__ import annotations
 
 import json
-import os
 import pathlib
 import subprocess
 import sys
@@ -136,8 +135,7 @@ def _post_session_events(
     MAX_SAFE_EVENT_OFFSET = -3600  # 1h ago, well inside the 48h bound
     event_started = max(started, MAX_SAFE_EVENT_OFFSET)
     event_ended = (
-        max(int(ended), MAX_SAFE_EVENT_OFFSET + 60)
-        if ended is not None else None
+        max(int(ended), MAX_SAFE_EVENT_OFFSET + 60) if ended is not None else None
     )
 
     identity = {
@@ -147,6 +145,14 @@ def _post_session_events(
         "hostname": agent_cfg["hostname"],
         "agent_name": agent_cfg["agent_name"],
     }
+    # D126 § 2 — when the role declares ``agent_role``, thread it
+    # through every event so the agent_id derivation upstream
+    # (fixtures.py::_identity_fields) places the child under a
+    # distinct UUID from the parent. Skipped for non-D126 roles so
+    # the existing fixtures stay byte-identical to pre-step-8.
+    role_for_id = role_cfg.get("agent_role")
+    if role_for_id:
+        identity["agent_role"] = role_for_id
     common = {
         "host": agent_cfg["host"],
         "framework": agent_cfg["framework"],
@@ -167,13 +173,75 @@ def _post_session_events(
     role_mcp_servers = role_cfg.get("mcp_servers")
     if role_mcp_servers:
         session_start_kwargs["context"] = {"mcp_servers": role_mcp_servers}
-    post_event(make_event(
-        session_id, agent_cfg["flavor"], "session_start",
-        timestamp=_shift_timestamp(event_started),
-        **identity,
-        **common,
-        **session_start_kwargs,
-    ))
+
+    # D126 § 3 — sub-agent linkage. When the role declares
+    # ``parent_role`` + ``parent_agent``, resolve the parent's
+    # session_id deterministically and stamp ``parent_session_id``
+    # on session_start. Per D126 § 3 the parent_session_id FK is
+    # enforced; the agents-order in canonical.json guarantees the
+    # parent's session lands before this child's session_start.
+    parent_role_ref = role_cfg.get("parent_role")
+    parent_agent_ref = role_cfg.get("parent_agent")
+    if parent_role_ref and parent_agent_ref:
+        session_start_kwargs["parent_session_id"] = _derive_session_id(
+            parent_agent_ref,
+            parent_role_ref,
+        )
+
+    # D126 § 6 — cross-agent message capture. ``captured_input``
+    # rides on session_start as ``incoming_message``; ``captured_
+    # output`` rides on session_end as ``outgoing_message``. The
+    # special sentinel ``"OVERFLOW"`` for captured_input synthesises
+    # a >8 KiB body via the D119 overflow path: ``has_content=true``
+    # on the inline incoming_message + the full body in the wire-
+    # level ``content`` envelope so the worker lands it in
+    # event_content (and ``GET /v1/events/{id}/content`` resolves).
+    captured_input = role_cfg.get("captured_input")
+    if captured_input == "OVERFLOW":
+        # Wire shape mirrors workers/internal/consumer/nats.go::SubagentMessage.
+        # Overflow case: has_content=true + content_bytes; the
+        # full body lands in event_content via the ``content``
+        # envelope on the session_start payload.
+        overflow_body = "OVERFLOW INPUT BODY — " + ("x" * 9000)
+        session_start_kwargs["incoming_message"] = {
+            "captured_at": _shift_timestamp(event_started),
+            "has_content": True,
+            "content_bytes": len(overflow_body),
+        }
+        session_start_kwargs["has_content"] = True
+        session_start_kwargs["content"] = {
+            "provider": "flightdeck-subagent",
+            "model": agent_cfg["model"],
+            "system": None,
+            "messages": [],
+            "tools": None,
+            "response": {},
+            "input": overflow_body,
+            "session_id": session_id,
+            "event_id": "",
+            "captured_at": _shift_timestamp(event_started),
+        }
+    elif captured_input:
+        # Inline case: ``body`` carries the framework-supplied
+        # payload (string for Claude Code Task subagent prompts;
+        # CrewAI / LangGraph fixtures here use strings too because
+        # the canonical fixtures are operator-readable text).
+        session_start_kwargs["incoming_message"] = {
+            "body": captured_input,
+            "captured_at": _shift_timestamp(event_started),
+        }
+
+    post_event(
+        make_event(
+            session_id,
+            agent_cfg["flavor"],
+            "session_start",
+            timestamp=_shift_timestamp(event_started),
+            **identity,
+            **common,
+            **session_start_kwargs,
+        )
+    )
     if wait_for_session_in_fleet(session_id, timeout=5.0) is None:
         print(
             f"  warn: {session_id[:8]} session_start did not surface in 5s; "
@@ -184,47 +252,79 @@ def _post_session_events(
     posted = 1
 
     # 2. pre_call / post_call pair (tokens on post).
-    post_event(make_event(
-        session_id, agent_cfg["flavor"], "pre_call",
-        timestamp=_shift_timestamp(event_started + 5),
-        tokens_input=240,
-        tokens_used_session=240,
-        **identity,
-        **common,
-    ))
-    post_event(make_event(
-        session_id, agent_cfg["flavor"], "post_call",
-        timestamp=_shift_timestamp(event_started + 8),
-        tokens_input=240,
-        tokens_output=80,
-        tokens_total=320,
-        tokens_used_session=320,
-        latency_ms=3100,
-        **identity,
-        **common,
-    ))
+    post_event(
+        make_event(
+            session_id,
+            agent_cfg["flavor"],
+            "pre_call",
+            timestamp=_shift_timestamp(event_started + 5),
+            tokens_input=240,
+            tokens_used_session=240,
+            **identity,
+            **common,
+        )
+    )
+    post_event(
+        make_event(
+            session_id,
+            agent_cfg["flavor"],
+            "post_call",
+            timestamp=_shift_timestamp(event_started + 8),
+            tokens_input=240,
+            tokens_output=80,
+            tokens_total=320,
+            tokens_used_session=320,
+            latency_ms=3100,
+            **identity,
+            **common,
+        )
+    )
     posted += 2
 
     # 3. tool_call carrying both input and result on one payload.
-    post_event(make_event(
-        session_id, agent_cfg["flavor"], "tool_call",
-        timestamp=_shift_timestamp(event_started + 10),
-        tool_name="read_file",
-        tool_input={"path": "/tmp/e2e.txt"},
-        tool_result={"ok": True, "bytes": 42},
-        **identity,
-        **common,
-    ))
+    post_event(
+        make_event(
+            session_id,
+            agent_cfg["flavor"],
+            "tool_call",
+            timestamp=_shift_timestamp(event_started + 10),
+            tool_name="read_file",
+            tool_input={"path": "/tmp/e2e.txt"},
+            tool_result={"ok": True, "bytes": 42},
+            **identity,
+            **common,
+        )
+    )
     posted += 1
 
     # 4. session_end for closed roles.
     if ended is not None:
-        post_event(make_event(
-            session_id, agent_cfg["flavor"], "session_end",
-            timestamp=_shift_timestamp(int(event_ended) if event_ended is not None else int(ended)),
-            **identity,
-            **common,
-        ))
+        session_end_kwargs: dict[str, Any] = {}
+        captured_output = role_cfg.get("captured_output")
+        if captured_output:
+            # D126 § 6 — outgoing_message rides on session_end. No
+            # overflow case for output bodies in this fixture set;
+            # all canonical outputs fit inline. Wire shape mirrors
+            # workers/internal/consumer/nats.go::SubagentMessage.
+            session_end_kwargs["outgoing_message"] = {
+                "body": captured_output,
+                "captured_at": _shift_timestamp(
+                    int(event_ended) if event_ended is not None else int(ended),
+                ),
+            }
+        post_event(
+            make_event(
+                session_id,
+                agent_cfg["flavor"],
+                "session_end",
+                timestamp=_shift_timestamp(
+                    int(event_ended) if event_ended is not None else int(ended)
+                ),
+                **identity,
+                **common,
+                **session_end_kwargs,
+            )
+        )
         posted += 1
 
     # 5. Phase 4 polish extras. ``role_cfg["phase4_extras"]`` lists
@@ -249,115 +349,135 @@ def _post_session_events(
             # (has_content defaults to False) -- exercises T14's
             # "(content not captured)" branch.
             embed_common = {**common, "model": "text-embedding-3-small"}
-            post_event(make_event(
-                session_id, agent_cfg["flavor"], "embeddings",
-                timestamp=ts,
-                tokens_input=1024,
-                tokens_used_session=320 + 1024,
-                latency_ms=180,
-                **identity,
-                **embed_common,
-            ))
+            post_event(
+                make_event(
+                    session_id,
+                    agent_cfg["flavor"],
+                    "embeddings",
+                    timestamp=ts,
+                    tokens_input=1024,
+                    tokens_used_session=320 + 1024,
+                    latency_ms=180,
+                    **identity,
+                    **embed_common,
+                )
+            )
             posted += 1
         elif extra == "embeddings_with_content_string":
             # Embedding event with capture: single-string input.
             # Exercises T14's truncated-text + expand-on-click branch
             # of EmbeddingsContentViewer.
             embed_common = {**common, "model": "text-embedding-3-small"}
-            post_event(make_event(
-                session_id, agent_cfg["flavor"], "embeddings",
-                timestamp=ts,
-                tokens_input=512,
-                tokens_used_session=320 + 512,
-                latency_ms=140,
-                has_content=True,
-                content={
-                    "provider": "openai",
-                    "model": "text-embedding-3-small",
-                    "system": None,
-                    "messages": [],
-                    "tools": None,
-                    "response": {},
-                    "input": "phase 4 e2e seeded embedding string content for T14 capture branch",
-                    "session_id": session_id,
-                    "event_id": "",
-                    "captured_at": "2026-04-25T00:00:00Z",
-                },
-                **identity,
-                **embed_common,
-            ))
+            post_event(
+                make_event(
+                    session_id,
+                    agent_cfg["flavor"],
+                    "embeddings",
+                    timestamp=ts,
+                    tokens_input=512,
+                    tokens_used_session=320 + 512,
+                    latency_ms=140,
+                    has_content=True,
+                    content={
+                        "provider": "openai",
+                        "model": "text-embedding-3-small",
+                        "system": None,
+                        "messages": [],
+                        "tools": None,
+                        "response": {},
+                        "input": "phase 4 e2e seeded embedding string content for T14 capture branch",
+                        "session_id": session_id,
+                        "event_id": "",
+                        "captured_at": "2026-04-25T00:00:00Z",
+                    },
+                    **identity,
+                    **embed_common,
+                )
+            )
             posted += 1
         elif extra == "embeddings_with_content_list":
             # Embedding event with capture: list-of-strings input.
             # Exercises T14's "<N> inputs" pill + expand-to-list
             # branch of EmbeddingsContentViewer.
             embed_common = {**common, "model": "text-embedding-3-small"}
-            post_event(make_event(
-                session_id, agent_cfg["flavor"], "embeddings",
-                timestamp=ts,
-                tokens_input=384,
-                tokens_used_session=320 + 384,
-                latency_ms=160,
-                has_content=True,
-                content={
-                    "provider": "openai",
-                    "model": "text-embedding-3-small",
-                    "system": None,
-                    "messages": [],
-                    "tools": None,
-                    "response": {},
-                    "input": [
-                        "phase 4 e2e item one",
-                        "phase 4 e2e item two",
-                        "phase 4 e2e item three",
-                    ],
-                    "session_id": session_id,
-                    "event_id": "",
-                    "captured_at": "2026-04-25T00:00:00Z",
-                },
-                **identity,
-                **embed_common,
-            ))
+            post_event(
+                make_event(
+                    session_id,
+                    agent_cfg["flavor"],
+                    "embeddings",
+                    timestamp=ts,
+                    tokens_input=384,
+                    tokens_used_session=320 + 384,
+                    latency_ms=160,
+                    has_content=True,
+                    content={
+                        "provider": "openai",
+                        "model": "text-embedding-3-small",
+                        "system": None,
+                        "messages": [],
+                        "tools": None,
+                        "response": {},
+                        "input": [
+                            "phase 4 e2e item one",
+                            "phase 4 e2e item two",
+                            "phase 4 e2e item three",
+                        ],
+                        "session_id": session_id,
+                        "event_id": "",
+                        "captured_at": "2026-04-25T00:00:00Z",
+                    },
+                    **identity,
+                    **embed_common,
+                )
+            )
             posted += 1
         elif extra == "streaming_post_call":
-            post_event(make_event(
-                session_id, agent_cfg["flavor"], "post_call",
-                timestamp=ts,
-                tokens_input=120,
-                tokens_output=240,
-                tokens_total=360,
-                tokens_used_session=320 + 360,
-                latency_ms=4500,
-                streaming={
-                    "ttft_ms": 320,
-                    "chunk_count": 42,
-                    "inter_chunk_ms": {"p50": 25, "p95": 80, "max": 150},
-                    "final_outcome": "completed",
-                    "abort_reason": None,
-                },
-                **identity,
-                **common,
-            ))
+            post_event(
+                make_event(
+                    session_id,
+                    agent_cfg["flavor"],
+                    "post_call",
+                    timestamp=ts,
+                    tokens_input=120,
+                    tokens_output=240,
+                    tokens_total=360,
+                    tokens_used_session=320 + 360,
+                    latency_ms=4500,
+                    streaming={
+                        "ttft_ms": 320,
+                        "chunk_count": 42,
+                        "inter_chunk_ms": {"p50": 25, "p95": 80, "max": 150},
+                        "final_outcome": "completed",
+                        "abort_reason": None,
+                    },
+                    **identity,
+                    **common,
+                )
+            )
             posted += 1
         elif extra == "streaming_post_call_aborted":
-            post_event(make_event(
-                session_id, agent_cfg["flavor"], "post_call",
-                timestamp=ts,
-                tokens_input=80,
-                tokens_output=18,
-                tokens_total=98,
-                tokens_used_session=320 + 98,
-                latency_ms=2100,
-                streaming={
-                    "ttft_ms": 380,
-                    "chunk_count": 7,
-                    "inter_chunk_ms": {"p50": 30, "p95": 90, "max": 220},
-                    "final_outcome": "aborted",
-                    "abort_reason": "client_aborted",
-                },
-                **identity,
-                **common,
-            ))
+            post_event(
+                make_event(
+                    session_id,
+                    agent_cfg["flavor"],
+                    "post_call",
+                    timestamp=ts,
+                    tokens_input=80,
+                    tokens_output=18,
+                    tokens_total=98,
+                    tokens_used_session=320 + 98,
+                    latency_ms=2100,
+                    streaming={
+                        "ttft_ms": 380,
+                        "chunk_count": 7,
+                        "inter_chunk_ms": {"p50": 30, "p95": 90, "max": 220},
+                        "final_outcome": "aborted",
+                        "abort_reason": "client_aborted",
+                    },
+                    **identity,
+                    **common,
+                )
+            )
             posted += 1
         elif extra.startswith("policy_"):
             # Policy enforcement events. Three variants:
@@ -370,11 +490,15 @@ def _post_session_events(
             policy_event_type = extra
             base_payload: dict[str, Any] = {
                 "source": "server",
-                "threshold_pct": 80 if policy_event_type == "policy_warn"
-                else 90 if policy_event_type == "policy_degrade"
+                "threshold_pct": 80
+                if policy_event_type == "policy_warn"
+                else 90
+                if policy_event_type == "policy_degrade"
                 else 100,
-                "tokens_used": 8000 if policy_event_type == "policy_warn"
-                else 9100 if policy_event_type == "policy_degrade"
+                "tokens_used": 8000
+                if policy_event_type == "policy_warn"
+                else 9100
+                if policy_event_type == "policy_degrade"
                 else 10100,
                 "token_limit": 10000,
             }
@@ -383,13 +507,17 @@ def _post_session_events(
                 base_payload["to_model"] = "claude-haiku-4-5"
             elif policy_event_type == "policy_block":
                 base_payload["intended_model"] = "claude-opus-4-7"
-            post_event(make_event(
-                session_id, agent_cfg["flavor"], policy_event_type,
-                timestamp=ts,
-                **base_payload,
-                **identity,
-                **common,
-            ))
+            post_event(
+                make_event(
+                    session_id,
+                    agent_cfg["flavor"],
+                    policy_event_type,
+                    timestamp=ts,
+                    **base_payload,
+                    **identity,
+                    **common,
+                )
+            )
             posted += 1
         elif extra.startswith("mcp_"):
             # Phase 5 — MCP event extras. Six event types, lean wire
@@ -422,31 +550,39 @@ def _post_session_events(
                 "duration_ms": 18 + 4 * i,
             }
             if extra == "mcp_tool_list":
-                post_event(make_event(
-                    session_id, agent_cfg["flavor"], "mcp_tool_list",
-                    timestamp=ts,
-                    count=3,
-                    **mcp_common,
-                    **identity,
-                    **common,
-                ))
+                post_event(
+                    make_event(
+                        session_id,
+                        agent_cfg["flavor"],
+                        "mcp_tool_list",
+                        timestamp=ts,
+                        count=3,
+                        **mcp_common,
+                        **identity,
+                        **common,
+                    )
+                )
                 posted += 1
             elif extra == "mcp_tool_call":
-                post_event(make_event(
-                    session_id, agent_cfg["flavor"], "mcp_tool_call",
-                    timestamp=ts,
-                    tool_name="echo",
-                    arguments={"text": "phase5-fixture"},
-                    result={
-                        "content": [
-                            {"type": "text", "text": "phase5-fixture"},
-                        ],
-                        "isError": False,
-                    },
-                    **mcp_common,
-                    **identity,
-                    **common,
-                ))
+                post_event(
+                    make_event(
+                        session_id,
+                        agent_cfg["flavor"],
+                        "mcp_tool_call",
+                        timestamp=ts,
+                        tool_name="echo",
+                        arguments={"text": "phase5-fixture"},
+                        result={
+                            "content": [
+                                {"type": "text", "text": "phase5-fixture"},
+                            ],
+                            "isError": False,
+                        },
+                        **mcp_common,
+                        **identity,
+                        **common,
+                    )
+                )
                 posted += 1
             elif extra == "mcp_tool_call_failed":
                 # Phase 5 — failed MCP tool call. Anchors the
@@ -455,95 +591,113 @@ def _post_session_events(
                 # sensor/flightdeck_sensor/interceptor/mcp.py::
                 # _classify_mcp_error so the dashboard sees the same
                 # structure a real sensor would emit.
-                post_event(make_event(
-                    session_id, agent_cfg["flavor"], "mcp_tool_call",
-                    timestamp=ts,
-                    tool_name="search_database",
-                    arguments={"query": "users where status='banned'"},
-                    error={
-                        "error_type": "invalid_params",
-                        "error_class": "McpError",
-                        "message": (
-                            "Invalid SQL: 'banned' is not a "
-                            "recognized status"
-                        ),
-                        "code": -32602,
-                    },
-                    **mcp_common,
-                    **identity,
-                    **common,
-                ))
+                post_event(
+                    make_event(
+                        session_id,
+                        agent_cfg["flavor"],
+                        "mcp_tool_call",
+                        timestamp=ts,
+                        tool_name="search_database",
+                        arguments={"query": "users where status='banned'"},
+                        error={
+                            "error_type": "invalid_params",
+                            "error_class": "McpError",
+                            "message": (
+                                "Invalid SQL: 'banned' is not a recognized status"
+                            ),
+                            "code": -32602,
+                        },
+                        **mcp_common,
+                        **identity,
+                        **common,
+                    )
+                )
                 posted += 1
             elif extra == "mcp_resource_list":
-                post_event(make_event(
-                    session_id, agent_cfg["flavor"], "mcp_resource_list",
-                    timestamp=ts,
-                    count=1,
-                    **mcp_common,
-                    **identity,
-                    **common,
-                ))
+                post_event(
+                    make_event(
+                        session_id,
+                        agent_cfg["flavor"],
+                        "mcp_resource_list",
+                        timestamp=ts,
+                        count=1,
+                        **mcp_common,
+                        **identity,
+                        **common,
+                    )
+                )
                 posted += 1
             elif extra == "mcp_resource_read":
-                post_event(make_event(
-                    session_id, agent_cfg["flavor"], "mcp_resource_read",
-                    timestamp=ts,
-                    resource_uri="mem://demo",
-                    content_bytes=46,
-                    mime_type="text/plain",
-                    content={
-                        "contents": [
-                            {
-                                "uri": "mem://demo",
-                                "mimeType": "text/plain",
-                                "text": (
-                                    "hello from the flightdeck "
-                                    "reference MCP server"
-                                ),
-                            },
-                        ],
-                    },
-                    **mcp_common,
-                    **identity,
-                    **common,
-                ))
+                post_event(
+                    make_event(
+                        session_id,
+                        agent_cfg["flavor"],
+                        "mcp_resource_read",
+                        timestamp=ts,
+                        resource_uri="mem://demo",
+                        content_bytes=46,
+                        mime_type="text/plain",
+                        content={
+                            "contents": [
+                                {
+                                    "uri": "mem://demo",
+                                    "mimeType": "text/plain",
+                                    "text": (
+                                        "hello from the flightdeck reference MCP server"
+                                    ),
+                                },
+                            ],
+                        },
+                        **mcp_common,
+                        **identity,
+                        **common,
+                    )
+                )
                 posted += 1
             elif extra == "mcp_prompt_list":
-                post_event(make_event(
-                    session_id, agent_cfg["flavor"], "mcp_prompt_list",
-                    timestamp=ts,
-                    count=1,
-                    **mcp_common,
-                    **identity,
-                    **common,
-                ))
+                post_event(
+                    make_event(
+                        session_id,
+                        agent_cfg["flavor"],
+                        "mcp_prompt_list",
+                        timestamp=ts,
+                        count=1,
+                        **mcp_common,
+                        **identity,
+                        **common,
+                    )
+                )
                 posted += 1
             elif extra == "mcp_prompt_get":
-                post_event(make_event(
-                    session_id, agent_cfg["flavor"], "mcp_prompt_get",
-                    timestamp=ts,
-                    prompt_name="greet",
-                    arguments={"name": "phase5"},
-                    rendered=[
-                        {
-                            "role": "user",
-                            "content": {
-                                "type": "text",
-                                "text": "Please greet phase5.",
+                post_event(
+                    make_event(
+                        session_id,
+                        agent_cfg["flavor"],
+                        "mcp_prompt_get",
+                        timestamp=ts,
+                        prompt_name="greet",
+                        arguments={"name": "phase5"},
+                        rendered=[
+                            {
+                                "role": "user",
+                                "content": {
+                                    "type": "text",
+                                    "text": "Please greet phase5.",
+                                },
                             },
-                        },
-                        {
-                            "role": "assistant",
-                            "content": {
-                                "type": "text",
-                                "text": "Hello, phase5!",
+                            {
+                                "role": "assistant",
+                                "content": {
+                                    "type": "text",
+                                    "text": "Hello, phase5!",
+                                },
                             },
-                        },
-                    ],
-                    **mcp_common,
-                    **identity,
-                    **common,
-                ))
+                        ],
+                        **mcp_common,
+                        **identity,
+                        **common,
+                    )
+                )
                 posted += 1
             else:
                 print(
@@ -552,7 +706,7 @@ def _post_session_events(
                     file=sys.stderr,
                 )
         elif extra.startswith("llm_error_"):
-            err_type = extra[len("llm_error_"):]
+            err_type = extra[len("llm_error_") :]
             # Per-taxonomy http_status / retry_after defaults so the
             # seeded payloads look realistic. Anything not enumerated
             # here falls through to a generic 500 — keeps the seeder
@@ -560,27 +714,37 @@ def _post_session_events(
             # a config update.
             err_meta = {
                 "rate_limit": (429, "anthropic", "rate_limit_exceeded", 30, True),
-                "context_overflow": (400, "anthropic", "context_length_exceeded", None, False),
+                "context_overflow": (
+                    400,
+                    "anthropic",
+                    "context_length_exceeded",
+                    None,
+                    False,
+                ),
                 "authentication": (401, "openai", "invalid_api_key", None, False),
                 "timeout": (None, "openai", None, None, True),
             }.get(err_type, (500, "anthropic", None, None, False))
             http_status, provider, code, retry_after, retryable = err_meta
-            post_event(make_event(
-                session_id, agent_cfg["flavor"], "llm_error",
-                timestamp=ts,
-                error={
-                    "error_type": err_type,
-                    "provider": provider,
-                    "http_status": http_status,
-                    "provider_error_code": code,
-                    "error_message": f"E2E seeded {err_type} error",
-                    "request_id": f"req_e2e_{err_type}",
-                    "retry_after": retry_after,
-                    "is_retryable": retryable,
-                },
-                **identity,
-                **common,
-            ))
+            post_event(
+                make_event(
+                    session_id,
+                    agent_cfg["flavor"],
+                    "llm_error",
+                    timestamp=ts,
+                    error={
+                        "error_type": err_type,
+                        "provider": provider,
+                        "http_status": http_status,
+                        "provider_error_code": code,
+                        "error_message": f"E2E seeded {err_type} error",
+                        "request_id": f"req_e2e_{err_type}",
+                        "retry_after": retry_after,
+                        "is_retryable": retryable,
+                    },
+                    **identity,
+                    **common,
+                )
+            )
             posted += 1
         else:
             print(
@@ -746,7 +910,9 @@ def _backdate_session(
     try:
         UUID(session_id)
     except (TypeError, ValueError) as exc:
-        raise ValueError(f"_backdate_session: session_id {session_id!r} is not a UUID") from exc
+        raise ValueError(
+            f"_backdate_session: session_id {session_id!r} is not a UUID"
+        ) from exc
     started_secs = abs(int(started_offset_sec))
     started_expr = f"NOW() - INTERVAL '{started_secs} seconds'"
     parts = [
@@ -756,26 +922,32 @@ def _backdate_session(
         parts.append(f"last_seen_at = {started_expr}")
     else:
         ended_secs = abs(int(ended_offset_sec))
-        parts.append(
-            f"last_seen_at = NOW() - INTERVAL '{ended_secs} seconds'"
-        )
-        parts.append(
-            f"ended_at = NOW() - INTERVAL '{ended_secs} seconds'"
-        )
+        parts.append(f"last_seen_at = NOW() - INTERVAL '{ended_secs} seconds'")
+        parts.append(f"ended_at = NOW() - INTERVAL '{ended_secs} seconds'")
     if force_state is not None:
         # force_state passed the whitelist above so direct interpolation
         # is safe at this point. (Belt-and-braces.)
         parts.append(f"state = '{force_state}'")
     set_clause = ", ".join(parts)
-    sql = (
-        f"UPDATE sessions SET {set_clause} "
-        f"WHERE session_id = '{session_id}'::uuid"
-    )
+    sql = f"UPDATE sessions SET {set_clause} WHERE session_id = '{session_id}'::uuid"
     try:
         result = subprocess.run(
-            ["docker", "exec", "docker-postgres-1", "psql", "-U", "flightdeck",
-             "-d", "flightdeck", "-c", sql],
-            capture_output=True, text=True, timeout=10, check=False,
+            [
+                "docker",
+                "exec",
+                "docker-postgres-1",
+                "psql",
+                "-U",
+                "flightdeck",
+                "-d",
+                "flightdeck",
+                "-c",
+                sql,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
         )
         if result.returncode != 0:
             print(
@@ -827,7 +999,23 @@ def _wait_for_fleet_visibility(expected_agent_names: list[str], timeout: float) 
     )
 
 
-def seed() -> None:
+def seed(mode: str = "full") -> None:
+    """Seed canonical E2E fixtures.
+
+    ``mode="full"`` (default): seed sessions that aren't already complete,
+    wait for fleet visibility, then run the active-role refresh + backdate
+    pass. The Playwright globalSetup invokes this once at job start.
+
+    ``mode="active-only"``: skip the initial-seed loop, the fleet-visibility
+    wait, AND the closed/aged/stale backdating. Run ONLY the active-role
+    refresh path (fresh-active / error-active / mcp-active / policy-active).
+    Used by the Playwright globalSetup keep-alive watchdog so the workers'
+    reconciler (postgres.go:651, 60-second tick, 2-min stale threshold)
+    cannot age the seeded "fresh"-class fixtures past ``state='active'``
+    while the test suite runs. D126 added 13 E2E specs (T28–T40) that
+    push the suite past 5 minutes — well beyond the original 2-min
+    seed-to-test-completion window the no-keep-alive design assumed.
+    """
     print(f"[seed] waiting for services at {INGESTION_URL} / {API_URL} ...")
     wait_for_services(timeout=30)
 
@@ -838,33 +1026,44 @@ def seed() -> None:
     agents_cfg: list[dict[str, Any]] = cfg["agents"]
 
     total_sessions = sum(len(a["session_roles"]) for a in agents_cfg)
-    print(f"[seed] canonical dataset: {len(agents_cfg)} agents, {total_sessions} sessions")
+    print(
+        f"[seed] canonical dataset: {len(agents_cfg)} agents, {total_sessions} sessions"
+    )
 
     seeded: int = 0
     skipped: int = 0
     backdated: int = 0
 
-    for agent_cfg in agents_cfg:
-        for role in agent_cfg["session_roles"]:
-            role_cfg = roles_cfg[role]
-            session_id = _derive_session_id(agent_cfg["agent_name"], role)
+    if mode == "full":
+        for agent_cfg in agents_cfg:
+            for role in agent_cfg["session_roles"]:
+                role_cfg = roles_cfg[role]
+                session_id = _derive_session_id(agent_cfg["agent_name"], role)
 
-            if _session_is_complete(session_id, role_cfg):
-                print(f"  skip {agent_cfg['agent_name']}/{role} ({session_id[:8]}) — already has events")
-                skipped += 1
-                continue
+                if _session_is_complete(session_id, role_cfg):
+                    print(
+                        f"  skip {agent_cfg['agent_name']}/{role} ({session_id[:8]}) — already has events"
+                    )
+                    skipped += 1
+                    continue
 
-            posted = _post_session_events(
-                agent_cfg=agent_cfg,
-                session_id=session_id,
-                role_cfg=role_cfg,
-            )
-            seeded += 1
-            print(f"  seeded {agent_cfg['agent_name']}/{role} ({session_id[:8]}) — {posted} events")
+                posted = _post_session_events(
+                    agent_cfg=agent_cfg,
+                    session_id=session_id,
+                    role_cfg=role_cfg,
+                )
+                seeded += 1
+                print(
+                    f"  seeded {agent_cfg['agent_name']}/{role} ({session_id[:8]}) — {posted} events"
+                )
 
-    expected_agent_names = [a["agent_name"] for a in agents_cfg]
-    print(f"[seed] waiting for worker to persist {len(expected_agent_names)} agents ...")
-    _wait_for_fleet_visibility(expected_agent_names, timeout=SEED_READY_TIMEOUT_SEC)
+        expected_agent_names = [a["agent_name"] for a in agents_cfg]
+        print(
+            f"[seed] waiting for worker to persist {len(expected_agent_names)} agents ..."
+        )
+        _wait_for_fleet_visibility(
+            expected_agent_names, timeout=SEED_READY_TIMEOUT_SEC
+        )
 
     # Backdate aged-closed / stale sessions so their visible timestamps
     # match the declared offsets. Done AFTER the fleet-visibility wait
@@ -914,13 +1113,35 @@ def seed() -> None:
                 )
                 try:
                     subprocess.run(
-                        ["docker", "exec", "docker-postgres-1", "psql",
-                         "-U", "flightdeck", "-d", "flightdeck", "-c", sql],
-                        capture_output=True, text=True, timeout=10, check=False,
+                        [
+                            "docker",
+                            "exec",
+                            "docker-postgres-1",
+                            "psql",
+                            "-U",
+                            "flightdeck",
+                            "-d",
+                            "flightdeck",
+                            "-c",
+                            sql,
+                        ],
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
+                        check=False,
                     )
                     # Emit a fresh tool_call so the session has an
                     # in-window event for the default 1m swimlane
-                    # domain.
+                    # domain. Skipped in active-only (keep-alive)
+                    # mode — the watchdog runs every 30 sec during
+                    # the test suite and a steady stream of fresh
+                    # events perturbs swimlane-scroll-position
+                    # tests like T24 (the rendering rightmost-edge
+                    # auto-follow recomputes on each new circle).
+                    # The reconciler-defeating purpose of the
+                    # watchdog is satisfied entirely by the SQL pin
+                    # above; the swimlane-window concern only
+                    # matters once at seed time, not every 30 sec.
                     identity = {
                         "agent_type": agent_cfg["agent_type"],
                         "client_type": agent_cfg["client_type"],
@@ -928,20 +1149,32 @@ def seed() -> None:
                         "hostname": agent_cfg["hostname"],
                         "agent_name": agent_cfg["agent_name"],
                     }
-                    post_event(make_event(
-                        session_id, agent_cfg["flavor"], "tool_call",
-                        timestamp=_shift_timestamp(-5),
-                        tool_name="e2e_refresh",
-                        tool_input={"reason": "seed keeps fresh-active in 1m swimlane window"},
-                        tool_result={"ok": True},
-                        framework=agent_cfg["framework"],
-                        model=agent_cfg["model"],
-                        host=agent_cfg["host"],
-                        **identity,
-                    ))
+                    if mode == "active-only":
+                        backdated += 1
+                        continue
+                    post_event(
+                        make_event(
+                            session_id,
+                            agent_cfg["flavor"],
+                            "tool_call",
+                            timestamp=_shift_timestamp(-5),
+                            tool_name="e2e_refresh",
+                            tool_input={
+                                "reason": "seed keeps fresh-active in 1m swimlane window"
+                            },
+                            tool_result={"ok": True},
+                            framework=agent_cfg["framework"],
+                            model=agent_cfg["model"],
+                            host=agent_cfg["host"],
+                            **identity,
+                        )
+                    )
                     backdated += 1
                 except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
-                    print(f"  warn: fresh-active refresh for {session_id} failed: {exc}", file=sys.stderr)
+                    print(
+                        f"  warn: fresh-active refresh for {session_id} failed: {exc}",
+                        file=sys.stderr,
+                    )
                 continue
             if role == "mcp-active":
                 # Phase 5 (B-5b live verification) — re-emit the six
@@ -984,11 +1217,20 @@ def seed() -> None:
                     try:
                         subprocess.run(
                             [
-                                "docker", "exec", "docker-postgres-1", "psql",
-                                "-U", "flightdeck", "-d", "flightdeck",
-                                "-c", sql,
+                                "docker",
+                                "exec",
+                                "docker-postgres-1",
+                                "psql",
+                                "-U",
+                                "flightdeck",
+                                "-d",
+                                "flightdeck",
+                                "-c",
+                                sql,
                             ],
-                            capture_output=True, text=True, timeout=10,
+                            capture_output=True,
+                            text=True,
+                            timeout=10,
                             check=False,
                         )
                     except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
@@ -1003,55 +1245,64 @@ def seed() -> None:
                     # as a small cluster rather than overlapping.
                     fresh_emits: list[tuple[str, dict[str, Any]]] = [
                         ("mcp_tool_list", {"count": 3}),
-                        ("mcp_tool_call", {
-                            "tool_name": "echo",
-                            "arguments": {"text": "phase5-fixture"},
-                            "result": {
-                                "content": [
-                                    {"type": "text", "text": "phase5-fixture"},
-                                ],
-                                "isError": False,
+                        (
+                            "mcp_tool_call",
+                            {
+                                "tool_name": "echo",
+                                "arguments": {"text": "phase5-fixture"},
+                                "result": {
+                                    "content": [
+                                        {"type": "text", "text": "phase5-fixture"},
+                                    ],
+                                    "isError": False,
+                                },
                             },
-                        }),
+                        ),
                         ("mcp_resource_list", {"count": 1}),
-                        ("mcp_resource_read", {
-                            "resource_uri": "mem://demo",
-                            "content_bytes": 46,
-                            "mime_type": "text/plain",
-                            "content": {
-                                "contents": [
+                        (
+                            "mcp_resource_read",
+                            {
+                                "resource_uri": "mem://demo",
+                                "content_bytes": 46,
+                                "mime_type": "text/plain",
+                                "content": {
+                                    "contents": [
+                                        {
+                                            "uri": "mem://demo",
+                                            "mimeType": "text/plain",
+                                            "text": (
+                                                "hello from the flightdeck "
+                                                "reference MCP server"
+                                            ),
+                                        },
+                                    ],
+                                },
+                            },
+                        ),
+                        ("mcp_prompt_list", {"count": 1}),
+                        (
+                            "mcp_prompt_get",
+                            {
+                                "prompt_name": "greet",
+                                "arguments": {"name": "phase5"},
+                                "rendered": [
                                     {
-                                        "uri": "mem://demo",
-                                        "mimeType": "text/plain",
-                                        "text": (
-                                            "hello from the flightdeck "
-                                            "reference MCP server"
-                                        ),
+                                        "role": "user",
+                                        "content": {
+                                            "type": "text",
+                                            "text": "Please greet phase5.",
+                                        },
+                                    },
+                                    {
+                                        "role": "assistant",
+                                        "content": {
+                                            "type": "text",
+                                            "text": "Hello, phase5!",
+                                        },
                                     },
                                 ],
                             },
-                        }),
-                        ("mcp_prompt_list", {"count": 1}),
-                        ("mcp_prompt_get", {
-                            "prompt_name": "greet",
-                            "arguments": {"name": "phase5"},
-                            "rendered": [
-                                {
-                                    "role": "user",
-                                    "content": {
-                                        "type": "text",
-                                        "text": "Please greet phase5.",
-                                    },
-                                },
-                                {
-                                    "role": "assistant",
-                                    "content": {
-                                        "type": "text",
-                                        "text": "Hello, phase5!",
-                                    },
-                                },
-                            ],
-                        }),
+                        ),
                     ]
                     for j, (event_type, extras) in enumerate(fresh_emits):
                         # ts placement: each event lands at NOW - (50 -
@@ -1064,16 +1315,20 @@ def seed() -> None:
                         # of seed propagation latency, every event
                         # stays inside the window.
                         ts = _shift_timestamp(-(50 - 8 * j))
-                        post_event(make_event(
-                            session_id, agent_cfg["flavor"], event_type,
-                            timestamp=ts,
-                            server_name=srv_name,
-                            transport=srv_transport,
-                            duration_ms=18 + 4 * j,
-                            **extras,
-                            **identity,
-                            **common,
-                        ))
+                        post_event(
+                            make_event(
+                                session_id,
+                                agent_cfg["flavor"],
+                                event_type,
+                                timestamp=ts,
+                                server_name=srv_name,
+                                transport=srv_transport,
+                                duration_ms=18 + 4 * j,
+                                **extras,
+                                **identity,
+                                **common,
+                            )
+                        )
 
                     # B-6 — one fresh ``mcp_resource_read`` with an
                     # overflowed body so live verification of the
@@ -1110,20 +1365,24 @@ def seed() -> None:
                             .replace("+00:00", "Z")
                         ),
                     }
-                    post_event(make_event(
-                        session_id, agent_cfg["flavor"], "mcp_resource_read",
-                        timestamp=_shift_timestamp(-2),
-                        server_name=srv_name,
-                        transport=srv_transport,
-                        resource_uri="mem://big-log",
-                        content_bytes=len(big_text),
-                        mime_type="text/plain",
-                        duration_ms=42,
-                        has_content=True,
-                        content=overflow_event_content,
-                        **identity,
-                        **common,
-                    ))
+                    post_event(
+                        make_event(
+                            session_id,
+                            agent_cfg["flavor"],
+                            "mcp_resource_read",
+                            timestamp=_shift_timestamp(-2),
+                            server_name=srv_name,
+                            transport=srv_transport,
+                            resource_uri="mem://big-log",
+                            content_bytes=len(big_text),
+                            mime_type="text/plain",
+                            duration_ms=42,
+                            has_content=True,
+                            content=overflow_event_content,
+                            **identity,
+                            **common,
+                        )
+                    )
                     backdated += 1
                 continue
             if role == "policy-active":
@@ -1173,11 +1432,20 @@ def seed() -> None:
                 try:
                     subprocess.run(
                         [
-                            "docker", "exec", "docker-postgres-1", "psql",
-                            "-U", "flightdeck", "-d", "flightdeck",
-                            "-c", sql,
+                            "docker",
+                            "exec",
+                            "docker-postgres-1",
+                            "psql",
+                            "-U",
+                            "flightdeck",
+                            "-d",
+                            "flightdeck",
+                            "-c",
+                            sql,
                         ],
-                        capture_output=True, text=True, timeout=10,
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
                         check=False,
                     )
                 except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
@@ -1196,40 +1464,72 @@ def seed() -> None:
                 # 40c.1 twice-in-a-row run under the spec's 1h
                 # time-range click.
                 fresh_policy_emits: list[tuple[str, dict[str, Any]]] = [
-                    ("policy_warn", {
-                        "source": "server",
-                        "threshold_pct": 80,
-                        "tokens_used": 8000,
-                        "token_limit": 10000,
-                    }),
-                    ("policy_degrade", {
-                        "source": "server",
-                        "threshold_pct": 90,
-                        "tokens_used": 9100,
-                        "token_limit": 10000,
-                        "from_model": "claude-sonnet-4-6",
-                        "to_model": "claude-haiku-4-5",
-                    }),
-                    ("policy_block", {
-                        "source": "server",
-                        "threshold_pct": 100,
-                        "tokens_used": 10100,
-                        "token_limit": 10000,
-                        "intended_model": "claude-opus-4-7",
-                    }),
+                    (
+                        "policy_warn",
+                        {
+                            "source": "server",
+                            "threshold_pct": 80,
+                            "tokens_used": 8000,
+                            "token_limit": 10000,
+                        },
+                    ),
+                    (
+                        "policy_degrade",
+                        {
+                            "source": "server",
+                            "threshold_pct": 90,
+                            "tokens_used": 9100,
+                            "token_limit": 10000,
+                            "from_model": "claude-sonnet-4-6",
+                            "to_model": "claude-haiku-4-5",
+                        },
+                    ),
+                    (
+                        "policy_block",
+                        {
+                            "source": "server",
+                            "threshold_pct": 100,
+                            "tokens_used": 10100,
+                            "token_limit": 10000,
+                            "intended_model": "claude-opus-4-7",
+                        },
+                    ),
                 ]
                 for j, (event_type, payload) in enumerate(fresh_policy_emits):
                     ts = _shift_timestamp(-(30 - 10 * j))  # -30, -20, -10
-                    post_event(make_event(
-                        session_id, agent_cfg["flavor"], event_type,
-                        timestamp=ts,
-                        **payload,
-                        **identity,
-                        **common,
-                    ))
+                    post_event(
+                        make_event(
+                            session_id,
+                            agent_cfg["flavor"],
+                            event_type,
+                            timestamp=ts,
+                            **payload,
+                            **identity,
+                            **common,
+                        )
+                    )
                 backdated += 1
                 continue
-            if role not in ("aged-closed", "stale", "ancient-only"):
+            # In active-only mode the keep-alive watchdog only refreshes
+            # active fixtures — closed/aged/stale rows are write-once at
+            # initial seed and don't drift, so re-running the backdate
+            # path on every tick is wasted work and could race with
+            # tests asserting on those rows.
+            if mode != "full":
+                continue
+            # D126 § 7.fix step 8 — generic ``force_state`` opt-in.
+            # Any role that declares ``force_state`` in canonical.json
+            # gets a backdate with that state, regardless of whether
+            # it's one of the legacy aged-closed / stale / ancient-only
+            # paths. T40 (L8 fixture, subagent-error → lost) drives
+            # this branch; older fixtures still go through the explicit
+            # match below.
+            explicit_force = role_cfg.get("force_state")
+            if explicit_force is None and role not in (
+                "aged-closed",
+                "stale",
+                "ancient-only",
+            ):
                 continue
             # Force state for deterministic E2E assertions. Letting the
             # reconciler reclassify naturally would flake: the
@@ -1239,7 +1539,9 @@ def seed() -> None:
             # on the UI behaviour per state, so pinning the enum is
             # fine and matches how test_session_states.py:54 handles
             # the same class of fixture.
-            if role == "aged-closed":
+            if explicit_force is not None:
+                forced_state = explicit_force
+            elif role == "aged-closed":
                 forced_state = "closed"
             elif role == "stale":
                 # 3h past last_seen_at is well beyond the 10-min lost
@@ -1269,8 +1571,32 @@ def seed() -> None:
 
 
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description=(
+            "Seed canonical E2E fixtures. Default mode does the full "
+            "seed + active-refresh + backdate pass. ``--reseed-active-"
+            "only`` runs only the active-role refresh — used by the "
+            "Playwright globalSetup keep-alive watchdog so the workers "
+            "reconciler doesn't age fresh-class fixtures past "
+            "state='active' during long test runs."
+        ),
+    )
+    parser.add_argument(
+        "--reseed-active-only",
+        action="store_true",
+        help=(
+            "Skip initial seeding, fleet-visibility wait, and "
+            "closed/aged/stale backdating. Refresh only the four "
+            "active roles (fresh-active, error-active, mcp-active, "
+            "policy-active). Idempotent and safe to call repeatedly."
+        ),
+    )
+    args = parser.parse_args()
+    mode = "active-only" if args.reseed_active_only else "full"
     try:
-        seed()
+        seed(mode=mode)
     except Exception as exc:
         print(f"[seed] FAILED: {exc}", file=sys.stderr)
         sys.exit(1)

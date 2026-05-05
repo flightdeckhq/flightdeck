@@ -10,6 +10,10 @@ import { dirname, join } from "node:path";
 
 import {
   EVENT_MAP,
+  _subagentChildSessionId,
+  _subagentCorrelator,
+  _subagentRole,
+  _subagentTranscriptPath,
   collectContext,
   computeLatencyMs,
   getSessionId,
@@ -22,6 +26,7 @@ import {
   sanitizeToolInput,
   tokensFromUsage,
 } from "../hooks/scripts/observe_cli.mjs";
+import { deriveAgentId } from "../hooks/scripts/agent_id.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = join(__dirname, "..", "hooks", "scripts", "observe_cli.mjs");
@@ -1670,6 +1675,663 @@ describe("observe_cli end-to-end (new fields)", () => {
     assert.equal(
       posted.filter((b) => b.event_type === "post_call").length,
       0,
+    );
+  });
+});
+
+
+// =====================================================================
+// D126 — SubagentStart / SubagentStop hooks (sub-agent observability)
+// =====================================================================
+
+describe("subagent helpers", () => {
+  it("_subagentRole reads subagent_type / agent_type / subagent in priority order", () => {
+    // Highest-priority field wins.
+    assert.equal(_subagentRole({ subagent_type: "Explore" }), "Explore");
+    assert.equal(
+      _subagentRole({ subagent_type: "Explore", agent_type: "Other" }),
+      "Explore",
+    );
+    // Falls through to agent_type when subagent_type missing.
+    assert.equal(_subagentRole({ agent_type: "Researcher" }), "Researcher");
+    // Falls through to subagent string when both missing.
+    assert.equal(_subagentRole({ subagent: "Writer" }), "Writer");
+    // Empty string when nothing maps; the agent_id derivation
+    // collapses empty role to the parent's 5-tuple.
+    assert.equal(_subagentRole({}), "");
+  });
+
+  it("_subagentCorrelator picks tool_use_id over alternatives", () => {
+    assert.equal(
+      _subagentCorrelator({ tool_use_id: "tu-1", subagent_id: "sa-1", id: "x" }),
+      "tu-1",
+    );
+    assert.equal(_subagentCorrelator({ subagent_id: "sa-2" }), "sa-2");
+    assert.equal(_subagentCorrelator({ id: "id-3" }), "id-3");
+    assert.equal(_subagentCorrelator({}), null);
+  });
+
+  it("_subagentChildSessionId is deterministic across calls", () => {
+    const a = _subagentChildSessionId("outer-sess", "tu-1");
+    const b = _subagentChildSessionId("outer-sess", "tu-1");
+    assert.equal(a, b);
+    // Different correlators produce different uuids — same outer
+    // session can spawn multiple subagents with distinct ids.
+    const c = _subagentChildSessionId("outer-sess", "tu-2");
+    assert.notEqual(a, c);
+    // Different outer sessions don't collide either.
+    const d = _subagentChildSessionId("outer-sess-2", "tu-1");
+    assert.notEqual(a, d);
+  });
+
+  it("_subagentTranscriptPath derives Claude Code's per-subagent JSONL path", () => {
+    // Real path shape captured from
+    //   ~/.claude/projects/-mnt-c-Users-omria-dev-flightdeck/47a0eaef-…-9130fcdca5df/subagents/agent-a3017….jsonl
+    const parent =
+      "/home/omria/.claude/projects/-mnt-c-Users-omria-dev-flightdeck/" +
+      "47a0eaef-ed28-4459-bf02-9130fcdca5df.jsonl";
+    const agentId = "a3017b22f63bf2583";
+    const got = _subagentTranscriptPath(parent, agentId);
+    assert.equal(
+      got,
+      "/home/omria/.claude/projects/-mnt-c-Users-omria-dev-flightdeck/" +
+        "47a0eaef-ed28-4459-bf02-9130fcdca5df/subagents/" +
+        "agent-a3017b22f63bf2583.jsonl",
+    );
+  });
+
+  it("_subagentTranscriptPath returns null on missing inputs", () => {
+    assert.equal(_subagentTranscriptPath(null, "a3017"), null);
+    assert.equal(_subagentTranscriptPath(undefined, "a3017"), null);
+    assert.equal(_subagentTranscriptPath("", "a3017"), null);
+    assert.equal(_subagentTranscriptPath("/x.jsonl", null), null);
+    assert.equal(_subagentTranscriptPath("/x.jsonl", ""), null);
+    // Non-string values must not throw — return null instead.
+    assert.equal(_subagentTranscriptPath(42, "a3017"), null);
+    assert.equal(_subagentTranscriptPath("/x.jsonl", { id: "x" }), null);
+  });
+});
+
+describe("observe_cli SubagentStart / SubagentStop", () => {
+  let capture;
+
+  before(async () => {
+    capture = await startCaptureServer();
+    clearAllPluginMarkers();
+  });
+
+  after(() => {
+    capture.server.close();
+    clearAllPluginMarkers();
+  });
+
+  beforeEach(() => {
+    clearAllPluginMarkers();
+  });
+
+  it("SubagentStart emits child session_start with parent_session_id + agent_role", async () => {
+    const before = capture.bodies().length;
+    const input = JSON.stringify({
+      hook_event_name: "SubagentStart",
+      session_id: "sess-outer-1",
+      subagent_type: "Explore",
+      tool_use_id: "tu-explore-1",
+      tool_input: { prompt: "find files matching X" },
+    });
+    const result = await runScript(input, {
+      FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
+      FLIGHTDECK_TOKEN: "tok_test",
+      CLAUDE_SESSION_ID: "sess-outer-1",
+      // Plugin defaults capture-on per D103, but make it explicit
+      // here so the test is robust to any default change.
+      FLIGHTDECK_CAPTURE_PROMPTS: "true",
+    });
+    assert.equal(result.code, 0);
+
+    const newBodies = capture.bodies().slice(before);
+    const childStart = newBodies.find(
+      (b) => b.event_type === "session_start" && b.parent_session_id != null,
+    );
+    assert.ok(
+      childStart,
+      `expected a child session_start; got ${JSON.stringify(newBodies, null, 2)}`,
+    );
+    assert.equal(childStart.parent_session_id, "sess-outer-1");
+    assert.equal(childStart.agent_role, "Explore");
+    assert.notEqual(childStart.session_id, "sess-outer-1");
+    // Child agent_id derives from outer 5-tuple + role.
+    assert.equal(
+      childStart.agent_id,
+      deriveAgentId({
+        agent_type: "coding",
+        user: childStart.user,
+        hostname: childStart.hostname,
+        client_type: "claude_code",
+        agent_name: childStart.agent_name.replace(/\/Explore$/, ""),
+        agent_role: "Explore",
+      }),
+    );
+    // Child agent_name suffixes the role.
+    assert.ok(
+      childStart.agent_name.endsWith("/Explore"),
+      `agent_name should end with /Explore; got ${childStart.agent_name}`,
+    );
+    // Capture-on stamps the Task prompt as incoming_message.
+    // has_content stays false — sub-agent messages route inline
+    // via events.payload (D126 § 6 v1), not event_content. Setting
+    // has_content=true without LLM PromptContent shape would trip
+    // the dashboard's /v1/events/{id}/content path with a 404
+    // (Rule 37).
+    assert.equal(childStart.has_content, false);
+    assert.deepEqual(childStart.incoming_message, {
+      body: "find files matching X",
+      captured_at: childStart.incoming_message.captured_at,
+    });
+    assert.ok(
+      typeof childStart.incoming_message.captured_at === "string",
+      "captured_at must be a string timestamp",
+    );
+  });
+
+  it("SubagentStop emits child session_end with the same child session_id when correlator matches", async () => {
+    // Drive both hooks back-to-back so the deterministic
+    // _subagentChildSessionId derivation pairs them.
+    const startInput = JSON.stringify({
+      hook_event_name: "SubagentStart",
+      session_id: "sess-outer-2",
+      subagent_type: "Explore",
+      tool_use_id: "tu-explore-2",
+      tool_input: { prompt: "stage 1" },
+    });
+    const stopInput = JSON.stringify({
+      hook_event_name: "SubagentStop",
+      session_id: "sess-outer-2",
+      subagent_type: "Explore",
+      tool_use_id: "tu-explore-2",
+      tool_response: "found 7 matches",
+    });
+    const env = {
+      FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
+      FLIGHTDECK_TOKEN: "tok_test",
+      CLAUDE_SESSION_ID: "sess-outer-2",
+      FLIGHTDECK_CAPTURE_PROMPTS: "true",
+    };
+    const before = capture.bodies().length;
+    await runScript(startInput, env);
+    await runScript(stopInput, env);
+
+    const newBodies = capture.bodies().slice(before);
+    const childStart = newBodies.find(
+      (b) => b.event_type === "session_start" && b.parent_session_id != null,
+    );
+    const childEnd = newBodies.find(
+      (b) => b.event_type === "session_end" && b.parent_session_id != null,
+    );
+    assert.ok(childStart, "expected child session_start");
+    assert.ok(childEnd, "expected child session_end");
+    assert.equal(
+      childStart.session_id,
+      childEnd.session_id,
+      "child session_id must match across Start/Stop",
+    );
+    assert.equal(childEnd.parent_session_id, "sess-outer-2");
+    assert.equal(childEnd.agent_role, "Explore");
+    // has_content stays false; outgoing_message lives inline in
+    // events.payload via the worker's BuildEventExtra path.
+    assert.equal(childEnd.has_content, false);
+    assert.equal(childEnd.outgoing_message.body, "found 7 matches");
+  });
+
+  it("capture_prompts=false drops incoming_message and outgoing_message at the boundary", async () => {
+    const startInput = JSON.stringify({
+      hook_event_name: "SubagentStart",
+      session_id: "sess-outer-3",
+      subagent_type: "Explore",
+      tool_use_id: "tu-3",
+      tool_input: { prompt: "secret prompt" },
+    });
+    const stopInput = JSON.stringify({
+      hook_event_name: "SubagentStop",
+      session_id: "sess-outer-3",
+      subagent_type: "Explore",
+      tool_use_id: "tu-3",
+      tool_response: "secret response",
+    });
+    const env = {
+      FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
+      FLIGHTDECK_TOKEN: "tok_test",
+      CLAUDE_SESSION_ID: "sess-outer-3",
+      FLIGHTDECK_CAPTURE_PROMPTS: "false",
+    };
+    const before = capture.bodies().length;
+    await runScript(startInput, env);
+    await runScript(stopInput, env);
+
+    const newBodies = capture.bodies().slice(before);
+    const subagentEvents = newBodies.filter(
+      (b) => b.parent_session_id != null,
+    );
+    assert.equal(subagentEvents.length, 2);
+    for (const ev of subagentEvents) {
+      assert.equal(ev.has_content, false);
+      assert.equal(ev.incoming_message, undefined);
+      assert.equal(ev.outgoing_message, undefined);
+    }
+  });
+
+  it("missing correlator (no agent_id and no tool_use_id) skips child emission with a stderr warn", async () => {
+    // Both correlator fields deliberately missing. Real Claude Code
+    // (Opus 4.7+) supplies agent_id on Subagent hooks; older surfaces
+    // supplied tool_use_id. Absence of both is the genuine correlator-
+    // gap case the plugin should report rather than half-emit.
+    const input = JSON.stringify({
+      hook_event_name: "SubagentStart",
+      session_id: "sess-outer-4",
+      subagent_type: "Explore",
+      tool_input: { prompt: "no correlator here" },
+    });
+    const before = capture.bodies().length;
+    const result = await runScript(input, {
+      FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
+      FLIGHTDECK_TOKEN: "tok_test",
+      CLAUDE_SESSION_ID: "sess-outer-4",
+      FLIGHTDECK_CAPTURE_PROMPTS: "true",
+    });
+    assert.equal(result.code, 0);
+    const newBodies = capture.bodies().slice(before);
+    // No child events with parent_session_id should land.
+    const subagentEvents = newBodies.filter(
+      (b) => b.parent_session_id != null,
+    );
+    assert.equal(subagentEvents.length, 0);
+    // The plugin warned on stderr explaining why. Match the
+    // post-fix message which names both correlator fields.
+    assert.ok(
+      result.stderr.includes("missing agent_id and tool_use_id"),
+      `expected stderr warn about missing correlator; got: ${result.stderr}`,
+    );
+  });
+
+  it("interior-event routing: PostToolUse fired during a subagent lands under the CHILD session, not the parent (D126 § 5)", async () => {
+    // Regression test for the gap that survived to manual Supervisor
+    // smoke. Real Claude Code (Opus 4.7+) fires the full sequence:
+    //
+    //   SubagentStart  — sessionId=parent, agent_id=<sub>, agent_type=<role>
+    //   PostToolUse    — sessionId=parent (!), agent_id=<sub>, agent_type=<role>
+    //   SubagentStop   — sessionId=parent, agent_id=<sub>, agent_type=<role>
+    //
+    // The parent's own session_id appears on every hook including
+    // interior ones; the only discriminator that "this hook fired
+    // inside subagent context" is hookEvent.agent_id being set
+    // (it's null on parent-context hooks). Pre-fix, the plugin
+    // used the parent's session_id for interior events, so the
+    // subagent's tool calls and LLM turns landed under the
+    // PARENT row in the dashboard while the child session row
+    // sat empty. The mock unit tests pinned only the SubagentStart
+    // / SubagentStop boundary shape (the playground/14 synthetic
+    // harness mirrored that), so the routing gap shipped.
+    //
+    // This test fires the full three-event sequence verbatim from
+    // the empirical hook firing captured in the diagnostic log,
+    // then asserts the interior PostToolUse lands under the
+    // child session id (the deterministic uuid5 derived from
+    // outerSessionId + agent_id) with parent_session_id and
+    // agent_role stamped through. The parent's own basePayload
+    // identity is also asserted unchanged on a fourth hook fired
+    // OUTSIDE subagent context, to catch a future regression
+    // where the interior swap would leak across hook invocations.
+    const PARENT_ID = "11111111-1111-4111-8111-111111111101";
+    const SUBAGENT_AGENT_ID = "a3017b22f63bf2583";
+    const ROLE = "Explore";
+    const expectedChildId = _subagentChildSessionId(
+      PARENT_ID,
+      SUBAGENT_AGENT_ID,
+    );
+
+    const env = {
+      FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
+      FLIGHTDECK_TOKEN: "tok_test",
+      CLAUDE_SESSION_ID: PARENT_ID,
+      FLIGHTDECK_CAPTURE_PROMPTS: "true",
+    };
+
+    const before = capture.bodies().length;
+
+    // 1. SubagentStart — emits child session_start with parent
+    //    linkage. agent_id (not tool_use_id) is the correlator;
+    //    real Claude Code does not include tool_use_id here.
+    const startInput = JSON.stringify({
+      hook_event_name: "SubagentStart",
+      session_id: PARENT_ID,
+      agent_id: SUBAGENT_AGENT_ID,
+      agent_type: ROLE,
+      transcript_path: "/tmp/none.jsonl",
+    });
+    const r1 = await runScript(startInput, env);
+    assert.equal(r1.code, 0);
+
+    // 2. Interior PostToolUse — fires WITH the parent's session_id
+    //    AND the subagent's agent_id. Pre-fix this landed under
+    //    PARENT_ID; post-fix it must land under expectedChildId.
+    const interiorInput = JSON.stringify({
+      hook_event_name: "PostToolUse",
+      session_id: PARENT_ID,
+      agent_id: SUBAGENT_AGENT_ID,
+      agent_type: ROLE,
+      tool_name: "Bash",
+      tool_use_id: "toolu_interior_0001",
+      tool_input: { command: "ls" },
+      tool_response: { output: "agent_id.mjs\nobserve_cli.mjs\n" },
+      duration_ms: 12,
+      transcript_path: "/tmp/none.jsonl",
+    });
+    const r2 = await runScript(interiorInput, env);
+    assert.equal(r2.code, 0);
+
+    // 3. SubagentStop — emits child session_end.
+    const stopInput = JSON.stringify({
+      hook_event_name: "SubagentStop",
+      session_id: PARENT_ID,
+      agent_id: SUBAGENT_AGENT_ID,
+      agent_type: ROLE,
+      stop_hook_active: true,
+      last_assistant_message: "done",
+      transcript_path: "/tmp/none.jsonl",
+    });
+    const r3 = await runScript(stopInput, env);
+    assert.equal(r3.code, 0);
+
+    // 4. Parent-context PostToolUse fired AFTER the subagent
+    //    finished. agent_id absent → no interior remap. Asserts
+    //    the swap doesn't bleed across hook invocations (each
+    //    hook is a fresh process so this is also a structural
+    //    check that nothing on disk persisted the subagent
+    //    state).
+    const parentAfterInput = JSON.stringify({
+      hook_event_name: "PostToolUse",
+      session_id: PARENT_ID,
+      tool_name: "Read",
+      tool_use_id: "toolu_parent_after_0001",
+      tool_input: { file_path: "/tmp/x" },
+      tool_response: { content: "..." },
+      duration_ms: 3,
+      transcript_path: "/tmp/none.jsonl",
+    });
+    const r4 = await runScript(parentAfterInput, env);
+    assert.equal(r4.code, 0);
+
+    const newBodies = capture.bodies().slice(before);
+
+    // ── Child session_start landed under expected child id ──────
+    const childStart = newBodies.find(
+      (b) =>
+        b.event_type === "session_start" &&
+        b.session_id === expectedChildId,
+    );
+    assert.ok(
+      childStart,
+      `expected child session_start under ${expectedChildId}; ` +
+        `got bodies: ${JSON.stringify(
+          newBodies.map((b) => ({
+            type: b.event_type,
+            sid: b.session_id,
+            psid: b.parent_session_id,
+            role: b.agent_role,
+          })),
+        )}`,
+    );
+    assert.equal(childStart.parent_session_id, PARENT_ID);
+    assert.equal(childStart.agent_role, ROLE);
+
+    // ── Interior tool_call landed under CHILD id, with linkage ──
+    const interiorCall = newBodies.find(
+      (b) => b.event_type === "tool_call" && b.tool_name === "Bash",
+    );
+    assert.ok(interiorCall, "interior Bash tool_call expected");
+    assert.equal(
+      interiorCall.session_id,
+      expectedChildId,
+      `interior tool_call must land under child ${expectedChildId}, ` +
+        `got ${interiorCall.session_id} (parent=${PARENT_ID})`,
+    );
+    assert.equal(interiorCall.parent_session_id, PARENT_ID);
+    assert.equal(interiorCall.agent_role, ROLE);
+    // Child agent_id is the role-augmented derivation, NOT the
+    // parent's bare-5-tuple agent_id.
+    const expectedChildAgentId = deriveAgentId({
+      agent_type: "coding",
+      user: childStart.user,
+      hostname: childStart.hostname,
+      client_type: "claude_code",
+      agent_name: childStart.user + "@" + childStart.hostname,
+      agent_role: ROLE,
+    });
+    assert.equal(interiorCall.agent_id, expectedChildAgentId);
+
+    // ── Child session_end landed under expected child id ────────
+    const childEnd = newBodies.find(
+      (b) =>
+        b.event_type === "session_end" &&
+        b.session_id === expectedChildId,
+    );
+    assert.ok(childEnd, "expected child session_end under child id");
+    assert.equal(childEnd.parent_session_id, PARENT_ID);
+    assert.equal(childEnd.agent_role, ROLE);
+
+    // ── Parent-context PostToolUse stayed under parent id ──────
+    const parentAfterCall = newBodies.find(
+      (b) => b.event_type === "tool_call" && b.tool_name === "Read",
+    );
+    assert.ok(parentAfterCall, "parent-context Read tool_call expected");
+    assert.equal(
+      parentAfterCall.session_id,
+      PARENT_ID,
+      "parent-context event must NOT remap to child",
+    );
+    // For non-Task parent tools the legacy emission path stamps
+    // parent_session_id explicitly to null (pre-D126 wire shape
+    // preserved for downstream consumers; ingestion validator
+    // treats absent and null identically). agent_role is omitted
+    // entirely on parent-context events because basePayload's
+    // interiorCtx spread is empty.
+    assert.equal(parentAfterCall.parent_session_id, null);
+    assert.equal(parentAfterCall.agent_role, undefined);
+  });
+
+  it("missing subagent_type produces empty role and the parent's agent_id", async () => {
+    // No role field on the hook event. Per D126 § 1, the agent_id
+    // derivation collapses to the 5-tuple form when role is empty
+    // / whitespace, so the child session lands under the parent's
+    // own agent_id. Edge-case but must not crash.
+    const input = JSON.stringify({
+      hook_event_name: "SubagentStart",
+      session_id: "sess-outer-5",
+      tool_use_id: "tu-5",
+      tool_input: { prompt: "x" },
+    });
+    const before = capture.bodies().length;
+    const result = await runScript(input, {
+      FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
+      FLIGHTDECK_TOKEN: "tok_test",
+      CLAUDE_SESSION_ID: "sess-outer-5",
+      FLIGHTDECK_CAPTURE_PROMPTS: "true",
+    });
+    assert.equal(result.code, 0);
+    const newBodies = capture.bodies().slice(before);
+    const childStart = newBodies.find(
+      (b) => b.event_type === "session_start" && b.parent_session_id != null,
+    );
+    assert.ok(childStart, "child session_start expected even with no role");
+    // agent_role on the wire is null when source field empty.
+    assert.equal(childStart.agent_role, null);
+  });
+
+  it("PostToolUseFailure on a Task tool stays in the parent tool_call path (D126 § 5 disambiguation)", async () => {
+    // Per D126 § 5, a failed Task tool emits the parent's
+    // tool_call event with the existing structured-error block
+    // (already covered for non-Task tools by the standard
+    // PostToolUseFailure → MCP path / drop). The plugin must NOT
+    // duplicate-emit a child session_end here, because a delayed
+    // real SubagentStop would race a synthetic one.
+    const input = JSON.stringify({
+      hook_event_name: "PostToolUseFailure",
+      session_id: "sess-outer-6",
+      tool_name: "Task",
+      tool_use_id: "tu-6",
+      error: "subagent crashed mid-execution",
+    });
+    const before = capture.bodies().length;
+    const result = await runScript(input, {
+      FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
+      FLIGHTDECK_TOKEN: "tok_test",
+      CLAUDE_SESSION_ID: "sess-outer-6",
+    });
+    assert.equal(result.code, 0);
+    const newBodies = capture.bodies().slice(before);
+    // No CHILD session_end (no parent_session_id field on any body).
+    const childEnds = newBodies.filter(
+      (b) => b.event_type === "session_end" && b.parent_session_id != null,
+    );
+    assert.equal(
+      childEnds.length,
+      0,
+      `expected no child session_end on Task PostToolUseFailure; ` +
+        `got ${JSON.stringify(childEnds, null, 2)}`,
+    );
+  });
+
+  // ---------------------------------------------------------------
+  // D126 § 6 size-based routing
+  // ---------------------------------------------------------------
+
+  it("inline path: prompt just under 8 KiB lands on incoming_message; has_content stays false", async () => {
+    // 8 KiB - 16 bytes — comfortably under the threshold once
+    // JSON-encoded (the "x"... string + surrounding quotes).
+    const body = "x".repeat(8 * 1024 - 16);
+    const input = JSON.stringify({
+      hook_event_name: "SubagentStart",
+      session_id: "sess-outer-inline",
+      subagent_type: "Explore",
+      tool_use_id: "tu-inline",
+      tool_input: { prompt: body },
+    });
+    const before = capture.bodies().length;
+    await runScript(input, {
+      FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
+      FLIGHTDECK_TOKEN: "tok_test",
+      CLAUDE_SESSION_ID: "sess-outer-inline",
+      FLIGHTDECK_CAPTURE_PROMPTS: "true",
+    });
+    const newBodies = capture.bodies().slice(before);
+    const childStart = newBodies.find(
+      (b) => b.event_type === "session_start" && b.parent_session_id != null,
+    );
+    assert.ok(childStart);
+    assert.equal(childStart.has_content, false);
+    assert.equal(childStart.incoming_message.body, body);
+    assert.ok(childStart.incoming_message.captured_at);
+    assert.equal(childStart.incoming_message.has_content, undefined);
+    // payload.content is null on the inline path (no
+    // event_content row will be written by the worker).
+    assert.equal(childStart.content, null);
+  });
+
+  it("overflow path: prompt just over 8 KiB rides through event_content via D119", async () => {
+    // 8 KiB + 1 KiB — comfortably over the inline threshold.
+    const body = "x".repeat(8 * 1024 + 1024);
+    const input = JSON.stringify({
+      hook_event_name: "SubagentStart",
+      session_id: "sess-outer-overflow",
+      subagent_type: "Explore",
+      tool_use_id: "tu-overflow",
+      tool_input: { prompt: body },
+    });
+    const before = capture.bodies().length;
+    await runScript(input, {
+      FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
+      FLIGHTDECK_TOKEN: "tok_test",
+      CLAUDE_SESSION_ID: "sess-outer-overflow",
+      FLIGHTDECK_CAPTURE_PROMPTS: "true",
+    });
+    const newBodies = capture.bodies().slice(before);
+    const childStart = newBodies.find(
+      (b) => b.event_type === "session_start" && b.parent_session_id != null,
+    );
+    assert.ok(childStart);
+    // has_content=true triggers the worker's existing
+    // InsertEventContent path; the body lives in event_content.
+    assert.equal(childStart.has_content, true);
+    // PromptContent envelope on payload.content.
+    assert.equal(
+      childStart.content.provider,
+      "flightdeck-subagent",
+      "discriminator picks the sub-agent renderer",
+    );
+    assert.equal(childStart.content.response.body, body);
+    assert.equal(childStart.content.response.direction, "incoming");
+    assert.deepEqual(childStart.content.messages, []);
+    // Stub on incoming_message — no body, just the
+    // {has_content, content_bytes, captured_at} signal.
+    const stub = childStart.incoming_message;
+    assert.equal(stub.has_content, true);
+    assert.ok(stub.content_bytes > 8 * 1024);
+    assert.ok(stub.captured_at);
+    assert.equal(stub.body, undefined);
+  });
+
+  it("overflow path on SubagentStop tags response.direction=outgoing", async () => {
+    const body = "y".repeat(8 * 1024 + 512);
+    const stopInput = JSON.stringify({
+      hook_event_name: "SubagentStop",
+      session_id: "sess-outer-out",
+      subagent_type: "Explore",
+      tool_use_id: "tu-out",
+      tool_response: body,
+    });
+    const before = capture.bodies().length;
+    await runScript(stopInput, {
+      FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
+      FLIGHTDECK_TOKEN: "tok_test",
+      CLAUDE_SESSION_ID: "sess-outer-out",
+      FLIGHTDECK_CAPTURE_PROMPTS: "true",
+    });
+    const newBodies = capture.bodies().slice(before);
+    const childEnd = newBodies.find(
+      (b) => b.event_type === "session_end" && b.parent_session_id != null,
+    );
+    assert.ok(childEnd);
+    assert.equal(childEnd.has_content, true);
+    assert.equal(childEnd.content.response.direction, "outgoing");
+  });
+
+  it("hard-cap: body above 2 MiB is dropped with a stderr warn", async () => {
+    const body = "z".repeat(2 * 1024 * 1024 + 1024);
+    const input = JSON.stringify({
+      hook_event_name: "SubagentStart",
+      session_id: "sess-outer-cap",
+      subagent_type: "Explore",
+      tool_use_id: "tu-cap",
+      tool_input: { prompt: body },
+    });
+    const before = capture.bodies().length;
+    const result = await runScript(input, {
+      FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
+      FLIGHTDECK_TOKEN: "tok_test",
+      CLAUDE_SESSION_ID: "sess-outer-cap",
+      FLIGHTDECK_CAPTURE_PROMPTS: "true",
+    });
+    assert.equal(result.code, 0);
+    const newBodies = capture.bodies().slice(before);
+    const childStart = newBodies.find(
+      (b) => b.event_type === "session_start" && b.parent_session_id != null,
+    );
+    assert.ok(childStart, "session_start still emits — only the body is dropped");
+    assert.equal(childStart.has_content, false);
+    assert.equal(childStart.content, null);
+    assert.equal(childStart.incoming_message, undefined);
+    assert.ok(
+      result.stderr.includes("hard cap"),
+      `expected stderr WARN about hard cap; got: ${result.stderr}`,
     );
   });
 });

@@ -5,9 +5,11 @@ package writer
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -122,6 +124,7 @@ func (w *Writer) UpsertSession(
 	agentID, clientType, agentName string,
 	contextJSON []byte,
 	tokenID, tokenName string,
+	parentSessionID, agentRole string,
 ) (created bool, err error) {
 	// session_start is the authoritative context source; an empty
 	// context dict from the sensor ("I tried, there was nothing to
@@ -142,13 +145,15 @@ func (w *Writer) UpsertSession(
 		INSERT INTO sessions (
 			session_id, flavor, agent_type, host, framework, model, state,
 			started_at, last_seen_at, context, token_id, token_name,
-			agent_id, client_type, agent_name
+			agent_id, client_type, agent_name,
+			parent_session_id, agent_role
 		)
 		VALUES (
 			$1::uuid, $2, $3, NULLIF($4, ''), NULLIF($5, ''), NULLIF($6, ''), $7,
 			NOW(), NOW(), $8,
 			NULLIF($9, '')::uuid, NULLIF($10, ''),
-			$11::uuid, $12, $13
+			$11::uuid, $12, $13,
+			NULLIF($14, '')::uuid, NULLIF($15, '')
 		)
 		ON CONFLICT (session_id) DO UPDATE
 		SET state = EXCLUDED.state,
@@ -178,11 +183,22 @@ func (w *Writer) UpsertSession(
 		    -- values (non-null) are preserved by COALESCE.
 		    agent_id = COALESCE(sessions.agent_id, EXCLUDED.agent_id),
 		    client_type = COALESCE(sessions.client_type, EXCLUDED.client_type),
-		    agent_name = COALESCE(sessions.agent_name, EXCLUDED.agent_name)
+		    agent_name = COALESCE(sessions.agent_name, EXCLUDED.agent_name),
+		    -- D126: sub-agent columns. Write-once on insert; preserved
+		    -- on conflict so a child's session_start can't accidentally
+		    -- rewrite the parent row's null parent_session_id /
+		    -- agent_role. The lazy-create-parent-stub branch
+		    -- (UpsertParentStub) writes NULL for both, and a later real
+		    -- parent session_start preserves NULL via COALESCE because
+		    -- the parent itself isn't a sub-agent.
+		    parent_session_id = COALESCE(
+		        sessions.parent_session_id, EXCLUDED.parent_session_id),
+		    agent_role = COALESCE(sessions.agent_role, EXCLUDED.agent_role)
 		RETURNING (xmax = 0)
 	`, sessionID, flavor, agentType, host, framework, model, state,
 		contextJSON, tokenID, tokenName,
 		agentID, clientType, agentName,
+		parentSessionID, agentRole,
 	).Scan(&wasInsert)
 	if err != nil {
 		return false, fmt.Errorf("upsert session %s: %w", sessionID, err)
@@ -523,6 +539,83 @@ func (w *Writer) ReviveOrCreateSession(
 		return true, nil
 	}
 	return false, nil
+}
+
+// SessionExists reports whether a session row with the given session_id
+// is present in the sessions table. Used by HandleSessionStart's
+// parent-stub branch (D126 § 3) to decide whether the parent of an
+// incoming sub-agent session_start is already in the DB or needs a
+// stub INSERT before the child's UpsertSession runs.
+//
+// Returns (false, nil) when the row is absent — the canonical "not
+// found" signal used by the parent-stub guard. Database errors other
+// than no-rows propagate so callers can treat them as transient.
+func (w *Writer) SessionExists(ctx context.Context, sessionID string) (bool, error) {
+	var n int
+	err := w.pool.QueryRow(ctx, `
+		SELECT 1 FROM sessions WHERE session_id = $1::uuid
+	`, sessionID).Scan(&n)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, nil
+		}
+		return false, fmt.Errorf("session exists %s: %w", sessionID, err)
+	}
+	return true, nil
+}
+
+// UpsertParentStub is the D126 § 3 forward-reference soft-link
+// extension to D106's lazy-create primitive. Triggered when a
+// sub-agent ``session_start`` arrives with a ``parent_session_id``
+// that doesn't yet exist in ``sessions`` — without a row at the
+// parent end, the child's INSERT fails the new
+// ``parent_session_id`` FK at schema-enforcement time. The stub
+// row carries the same ``"unknown"`` sentinels as
+// ``ReviveOrCreateSession`` plus a placeholder ``started_at``
+// matching the child's so the timeline ordering is sensible while
+// the real parent's authoritative data hasn't arrived yet.
+//
+// When the real parent's ``session_start`` arrives later,
+// ``UpsertSession`` runs through its existing
+// write-once-but-upgrade-from-``"unknown"`` ON CONFLICT branch and
+// fills in the stub's flavor / agent_type / agent_id /
+// client_type / agent_name from the EXCLUDED row. Identity fields
+// in the stub are NULL on insert; COALESCE in UpsertSession's
+// conflict branch upgrades them once. Same primitive as D106's
+// create-on-unknown, different trigger (FK-satisfaction vs
+// unknown-session-id event); kept as a separate helper so
+// callers don't need to express the parent-stub-specific shape
+// (started_at = child.started_at, no agents row required because
+// the real parent will UpsertAgent on its own arrival) through
+// the four-axis revive/create config surface that's the reason
+// the trio is uncoalesced. ``ON CONFLICT DO NOTHING`` covers the
+// race where two children of the same yet-unseen parent arrive
+// concurrently and both try to create the stub.
+//
+// Returns (true, nil) when the stub was actually created (FK is
+// now satisfied for the child INSERT to follow); (false, nil) if
+// the row already exists by the time the INSERT fires (the race
+// covered by ON CONFLICT DO NOTHING). Database errors propagate.
+func (w *Writer) UpsertParentStub(
+	ctx context.Context,
+	parentSessionID string,
+	childStartedAt time.Time,
+) (created bool, err error) {
+	tag, iErr := w.pool.Exec(ctx, `
+		INSERT INTO sessions (
+			session_id, flavor, agent_type, state,
+			started_at, last_seen_at, context
+		)
+		VALUES (
+			$1::uuid, 'unknown', 'unknown', 'active',
+			$2, $2, NULL
+		)
+		ON CONFLICT (session_id) DO NOTHING
+	`, parentSessionID, childStartedAt)
+	if iErr != nil {
+		return false, fmt.Errorf("upsert parent stub %s: %w", parentSessionID, iErr)
+	}
+	return tag.RowsAffected() > 0, nil
 }
 
 // BumpAgentSessionCount increments agents.total_sessions by 1. Called

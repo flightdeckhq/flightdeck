@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/flightdeckhq/flightdeck/ingestion/internal/auth"
@@ -185,6 +186,28 @@ func TestEventsHandler_AgentIdentityValidation(t *testing.T) {
 		{
 			name: "negative_tokens_total",
 			body: `{"session_id":"22222222-2222-4222-8222-222222222222","event_type":"post_call","agent_id":"` + validAgentID + `","agent_type":"coding","client_type":"claude_code","tokens_total":-1}`,
+		},
+		// D126 — sub-agent identity validation. parent_session_id
+		// (when present) is canonical UUID; agent_role (when present)
+		// is a non-empty string ≤ 256 chars. Both are optional, so
+		// "absent" is not in this rejection table — only malformed
+		// values are.
+		{
+			name: "malformed_parent_session_id",
+			body: `{"session_id":"22222222-2222-4222-8222-222222222222","event_type":"session_start","agent_id":"` + validAgentID + `","agent_type":"coding","client_type":"claude_code","parent_session_id":"not-a-uuid"}`,
+		},
+		{
+			name: "non_string_parent_session_id",
+			body: `{"session_id":"22222222-2222-4222-8222-222222222222","event_type":"session_start","agent_id":"` + validAgentID + `","agent_type":"coding","client_type":"claude_code","parent_session_id":42}`,
+		},
+		{
+			name: "non_string_agent_role",
+			body: `{"session_id":"22222222-2222-4222-8222-222222222222","event_type":"session_start","agent_id":"` + validAgentID + `","agent_type":"coding","client_type":"claude_code","agent_role":42}`,
+		},
+		{
+			// 257-char string — one over the limit.
+			name: "agent_role_too_long",
+			body: `{"session_id":"22222222-2222-4222-8222-222222222222","event_type":"session_start","agent_id":"` + validAgentID + `","agent_type":"coding","client_type":"claude_code","agent_role":"` + strings.Repeat("x", 257) + `"}`,
 		},
 	}
 	for _, tc := range cases {

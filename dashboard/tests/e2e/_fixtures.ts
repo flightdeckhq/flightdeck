@@ -148,9 +148,16 @@ export function findSwimlaneRow(page: Page, agentName: string): Locator {
  * in a cell (no TruncatedText on the primary name column).
  */
 export function findAgentTableRow(page: Page, agentName: string): Locator {
+  // Exact-text match via Playwright's exact: true to avoid
+  // substring collisions with other fixtures whose agent_name
+  // happens to contain this name as a prefix (e.g.
+  // ``e2e-test-subagent-error`` substring-matches
+  // ``e2e-test-subagent`` queries).
   return page
     .locator('[data-testid^="fleet-agent-row-"]')
-    .filter({ hasText: agentName });
+    .filter({
+      has: page.getByText(agentName, { exact: true }),
+    });
 }
 
 /**
@@ -269,10 +276,68 @@ export async function bringSwimlaneRowIntoView(
   const target = page.locator(
     `[data-testid="swimlane-agent-row-${agentName}"]`,
   );
+  // Under parallel-suite load the swimlane re-renders frequently as
+  // WebSocket events arrive from concurrent tests, so a one-shot
+  // scroll-and-grab races the IntersectionObserver. Wait for
+  // network-idle first so the initial agent roster + the first
+  // batch of WS-driven re-renders have settled before we start
+  // scrolling. networkidle returns when there have been no
+  // network requests for 500 ms, which is long enough that
+  // virtualization's mount/unmount churn isn't actively destroying
+  // rows under our scroll loop. Bounded at 5 s so a chatty CI dev
+  // stack can't hang the helper indefinitely; the existing
+  // scroll-loop fallback below handles the case where idle is
+  // never reached.
+  try {
+    await page.waitForLoadState("networkidle", { timeout: 5_000 });
+  } catch {
+    /* fall through — proceed with whatever has loaded */
+  }
   // Cheap path: row already mounted (top of LIVE bucket / small DB).
+  // Wrap the scroll in try/catch — under parallel-suite load the row
+  // can detach mid-call as the virtualized swimlane re-renders on
+  // incoming WebSocket events from other concurrent tests, throwing
+  // a 2000ms timeout that pre-fix bubbled all the way up and failed
+  // the test outright. Falling through to the snap-to-top + scroll
+  // loop below recovers cleanly because those steps re-evaluate
+  // ``target.count()`` after each scroll.
   if ((await target.count()) > 0) {
-    await target.first().scrollIntoViewIfNeeded({ timeout: 2000 });
-    return target;
+    try {
+      await target.first().scrollIntoViewIfNeeded({ timeout: 2000 });
+      return target;
+    } catch {
+      /* fall through to the scroll loop below */
+    }
+  }
+  // D126 step 8: agents may live ABOVE the initial viewport (top
+  // of the activity bucket — fresh sub-agents that closed seconds
+  // ago land high in the swimlane sort but the initial scroll
+  // position is mid-list on a populated fleet). Try a snap to the
+  // top of the swimlane container so the bucket head materializes
+  // before the down-scroll loop kicks in.
+  await page.evaluate(() => {
+    const anyRow = document.querySelector(
+      '[data-testid^="swimlane-agent-row-"]',
+    ) as HTMLElement | null;
+    if (!anyRow) return;
+    let node: HTMLElement | null = anyRow;
+    while (node) {
+      const style = window.getComputedStyle(node);
+      if (style.overflowY === "auto" || style.overflowY === "scroll") {
+        node.scrollTop = 0;
+        return;
+      }
+      node = node.parentElement;
+    }
+  });
+  await page.waitForTimeout(150);
+  if ((await target.count()) > 0) {
+    try {
+      await target.first().scrollIntoViewIfNeeded({ timeout: 2000 });
+      return target;
+    } catch {
+      /* fall through to the scroll loop below */
+    }
   }
   // Resolve the closest scrollable ancestor of any mounted swimlane
   // row. Fleet's main view sits inside a ``flex-1`` div with
@@ -311,8 +376,15 @@ export async function bringSwimlaneRowIntoView(
     // can race the layout in HMR mode.
     await page.waitForTimeout(150);
     if ((await target.count()) > 0) {
-      await target.first().scrollIntoViewIfNeeded({ timeout: 2000 });
-      return target;
+      try {
+        await target.first().scrollIntoViewIfNeeded({ timeout: 2000 });
+        return target;
+      } catch {
+        // Detach race — keep scrolling. The next iteration's count
+        // re-check + scrollBy gives virtualization another chance
+        // to settle. Without this catch the very last step that
+        // would have succeeded throws and surfaces as a test fail.
+      }
     }
   }
   // Return the locator anyway so the caller's expect.toBeVisible()

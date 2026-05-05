@@ -5,6 +5,7 @@ import { fetchEventContent, fetchSession, fetchSessions } from "@/lib/api";
 import { truncateSessionId } from "@/lib/events";
 import { SubAgentLostDot } from "@/components/facets/SubAgentRolePill";
 import { EventRow } from "./EventRow";
+import type { DrawerTab } from "./SessionDrawer";
 
 // D126 UX revision (post-merge polish, pre-merge land) — cap on the
 // inline mini-timeline rendered when a related-session row is
@@ -66,8 +67,12 @@ export function SubAgentsTab({
   events: AgentEvent[];
   /** Called when the user clicks a parent / child session link. The
    *  drawer rebinds to the supplied session_id, replacing the
-   *  current view. */
-  onOpenSession: (sessionId: string) => void;
+   *  current view. The optional `tab` arg routes the rebound drawer
+   *  to a specific tab — used by the mini-timeline "View N more in
+   *  Timeline tab" footer to land the user on Timeline rather than
+   *  whatever tab they came from. Without it the drawer keeps the
+   *  current tab (Sub-agents). */
+  onOpenSession: (sessionId: string, tab?: DrawerTab) => void;
 }) {
   const isChild = !!session.parent_session_id;
   // ``session.capture_enabled`` is computed by the API as EXISTS
@@ -148,7 +153,7 @@ function SpawnedFromSection({
   captureEnabled: boolean;
   ownIncoming: { event: AgentEvent; message: SubagentMessage } | null;
   ownOutgoing: { event: AgentEvent; message: SubagentMessage } | null;
-  onOpenSession: (sessionId: string) => void;
+  onOpenSession: (sessionId: string, tab?: DrawerTab) => void;
 }) {
   // The header card carries minimal session metadata regardless of
   // whether the row is expanded — agent_name + truncated id + state.
@@ -261,7 +266,7 @@ function SpawnedFromSection({
           <EventMiniTimeline
             events={parentEvents ?? []}
             loading={eventsLoading}
-            onViewMore={() => onOpenSession(parent.session_id)}
+            onViewMore={() => onOpenSession(parent.session_id, "timeline")}
             testIdPrefix="sub-agents-spawned-from"
           />
           {!captureEnabled && (
@@ -300,7 +305,7 @@ function SubAgentsSection({
 }: {
   sessionId: string;
   captureEnabled: boolean;
-  onOpenSession: (sessionId: string) => void;
+  onOpenSession: (sessionId: string, tab?: DrawerTab) => void;
 }) {
   const [children, setChildren] = useState<SessionListItem[] | null>(null);
 
@@ -590,8 +595,21 @@ function EventMiniTimeline({
   // only session_start + session_end events; those still render
   // as 2 EventRows, accurate historical data per the supervisor's
   // explicit note).
-  const visible = events.slice(0, MINI_TIMELINE_MAX_EVENTS);
-  const hidden = Math.max(0, events.length - visible.length);
+  //
+  // Order: newest-first (DESC by occurred_at) to match the main
+  // Timeline tab's order. The API returns events ASC; we sort on
+  // the client so a slice picks the most recent N — what the user
+  // wants to see when peeking at recent activity without leaving
+  // the parent's drawer.
+  const sorted = useMemo(
+    () =>
+      [...events].sort((a, b) =>
+        b.occurred_at.localeCompare(a.occurred_at),
+      ),
+    [events],
+  );
+  const visible = sorted.slice(0, MINI_TIMELINE_MAX_EVENTS);
+  const hidden = Math.max(0, sorted.length - visible.length);
   return (
     <div
       data-testid={`${testIdPrefix}-mini-timeline`}
@@ -650,7 +668,7 @@ function ChildRow({
 }: {
   child: SessionListItem;
   captureEnabled: boolean;
-  onOpenSession: (sessionId: string) => void;
+  onOpenSession: (sessionId: string, tab?: DrawerTab) => void;
 }) {
   // Per-child detail loaded on first expand. Carries the child's
   // session_start (incoming_message) + session_end (outgoing_message)
@@ -741,7 +759,7 @@ function ChildRow({
       <EventMiniTimeline
         events={events}
         loading={loading}
-        onViewMore={() => onOpenSession(child.session_id)}
+        onViewMore={() => onOpenSession(child.session_id, "timeline")}
         testIdPrefix={`sub-agents-child-${child.session_id}`}
       />
       {!captureEnabled && (

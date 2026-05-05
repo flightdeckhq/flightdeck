@@ -41,11 +41,20 @@ export function RelationshipPill({
     mode === "child"
       ? `↳ ${parentName ?? "(unknown parent)"}`
       : `→ ${childCount ?? 0}`;
+  // Hover tooltip copy. Plain "Spawned …" wording so the pill is
+  // self-explanatory at first hover — the visual glyph (↳ / →) is
+  // mnemonic only after the operator already knows the convention.
+  // Pluralisation lives here so "Spawned 1 sub-agent" reads naturally.
+  const tooltip =
+    mode === "child"
+      ? `Spawned from ${parentName ?? "(unknown parent)"}`
+      : `Spawned ${childCount ?? 0} sub-agent${childCount === 1 ? "" : "s"}`;
   return (
     <button
       type="button"
       data-testid={testId ?? "relationship-pill"}
       data-mode={mode}
+      title={tooltip}
       onClick={(e) => {
         e.stopPropagation();
         onClick?.();

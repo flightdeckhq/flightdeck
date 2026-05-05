@@ -266,8 +266,24 @@ function SwimLaneComponent({
         >
           <ChevronRight
             size={14}
+            // ``shrink-0`` keeps the chevron at its declared 14px even
+            // when the left-panel flex layout is cramped — child rows
+            // inherit a 28px padding-left from the [data-topology=
+            // "child"] CSS rule, which trims the available space and
+            // (without shrink-0) lets flex shrink the SVG below 14px,
+            // making it look like a dot beside the parent's full-size
+            // chevron. Parent rows stay 14px either way; this just
+            // pins the floor for the child case.
+            //
+            // Colour: child-row chevrons render in --accent so the
+            // expand affordance reads as part of the sub-agent's
+            // purple visual group (matching RelationshipPill +
+            // SubAgentRolePill). Parent / lone rows keep the muted
+            // tone so the chevron is unobtrusive on the dominant
+            // root-agent row.
+            className="shrink-0"
             style={{
-              color: "var(--text-muted)",
+              color: topology === "child" ? "var(--accent)" : "var(--text-muted)",
               transform: expanded ? "rotate(90deg)" : "rotate(0deg)",
               transition: "transform 200ms ease",
             }}

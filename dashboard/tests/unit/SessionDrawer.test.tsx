@@ -829,6 +829,104 @@ describe("SessionDrawer", () => {
 });
 
 // -----------------------------------------------------------------------
+// Headline relationship pill (parent/child topology badge next to the
+// CODING AGENT pill / above the metadata grid for non-Claude sessions).
+// -----------------------------------------------------------------------
+import { fetchSessions, fetchSession } from "@/lib/api";
+const mockFetchSessions = fetchSessions as ReturnType<typeof vi.fn>;
+const mockFetchSession = fetchSession as ReturnType<typeof vi.fn>;
+
+describe("SessionDrawer — headline relationship pill", () => {
+  it("renders ↳ <parent> for a child session", async () => {
+    mockSessionOverride = { parent_session_id: "p-1" };
+    mockFetchSessions.mockResolvedValue({
+      sessions: [],
+      total: 0,
+      limit: 1,
+      offset: 0,
+      has_more: false,
+    });
+    mockFetchSession.mockResolvedValue({
+      session: {
+        ...baseSession,
+        session_id: "p-1",
+        agent_name: "omria@Omri-PC",
+      },
+      events: [],
+    });
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    const pill = await screen.findByTestId("drawer-headline-relationship-pill");
+    expect(pill.getAttribute("data-mode")).toBe("child");
+    expect(pill.textContent).toContain("omria@Omri-PC");
+  });
+
+  it("renders → N for a parent session with children", async () => {
+    mockSessionOverride = { parent_session_id: null };
+    mockFetchSessions.mockResolvedValue({
+      sessions: [{ session_id: "c-1" }],
+      total: 4,
+      limit: 1,
+      offset: 0,
+      has_more: true,
+    });
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    const pill = await screen.findByTestId("drawer-headline-relationship-pill");
+    expect(pill.getAttribute("data-mode")).toBe("parent");
+    expect(pill.textContent).toContain("4");
+  });
+
+  it("renders nothing for a lone session (no parent, no children)", async () => {
+    mockSessionOverride = { parent_session_id: null };
+    mockFetchSessions.mockResolvedValue({
+      sessions: [],
+      total: 0,
+      limit: 1,
+      offset: 0,
+      has_more: false,
+    });
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    // The probe fetch is async — waitFor lets the effect resolve so a
+    // stale-render false negative doesn't pass this test.
+    await waitFor(() => {
+      expect(mockFetchSessions).toHaveBeenCalled();
+    });
+    expect(
+      screen.queryByTestId("drawer-headline-relationship-pill"),
+    ).toBeNull();
+  });
+
+  it("clicking the child pill invokes onSwitchSession with the parent id", async () => {
+    mockSessionOverride = { parent_session_id: "p-1" };
+    mockFetchSessions.mockResolvedValue({
+      sessions: [],
+      total: 0,
+      limit: 1,
+      offset: 0,
+      has_more: false,
+    });
+    mockFetchSession.mockResolvedValue({
+      session: {
+        ...baseSession,
+        session_id: "p-1",
+        agent_name: "omria@Omri-PC",
+      },
+      events: [],
+    });
+    const onSwitchSession = vi.fn();
+    render(
+      <SessionDrawer
+        sessionId="s1"
+        onClose={() => {}}
+        onSwitchSession={onSwitchSession}
+      />,
+    );
+    const pill = await screen.findByTestId("drawer-headline-relationship-pill");
+    fireEvent.click(pill);
+    expect(onSwitchSession).toHaveBeenCalledWith("p-1");
+  });
+});
+
+// -----------------------------------------------------------------------
 // D113: drawer events pagination
 // -----------------------------------------------------------------------
 

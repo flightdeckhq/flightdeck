@@ -65,7 +65,7 @@ function mkChild(overrides: Partial<SessionListItem> = {}): SessionListItem {
 function renderTab(props: {
   session: Session;
   events?: AgentEvent[];
-  onOpenSession?: (id: string) => void;
+  onOpenSession?: (id: string, tab?: "timeline" | "prompts" | "sub-agents" | "directives") => void;
 }) {
   return render(
     <MemoryRouter>
@@ -718,6 +718,136 @@ describe("SubAgentsTab — UX revision: chevron-expand-inline split", () => {
     expect(metrics.textContent).toContain("12,345");
     expect(metrics.textContent).toContain("1 LLM call");
     expect(metrics.textContent).toContain("1 tool call");
+  });
+
+  it("inline mini-timeline renders events DESC by occurred_at (newest first), matching the main Timeline tab", async () => {
+    // The main Timeline tab in SessionDrawer renders events
+    // newest-first. Pre-fix the SubAgentsTab mini-timeline
+    // rendered ASC (the API's wire order), so a user expanding
+    // SPAWNED FROM saw the oldest 12 events at the top — opposite
+    // of what the same user would see one tab over. The fix flips
+    // the slice to "newest 12, newest-first" so both views agree.
+    const e1 = {
+      id: "e-old",
+      session_id: "p-1",
+      flavor: "parent",
+      event_type: "post_call" as const,
+      model: "claude-sonnet-4-6",
+      tokens_input: 100,
+      tokens_output: 50,
+      tokens_total: 150,
+      latency_ms: 200,
+      tool_name: null,
+      has_content: false,
+      payload: null,
+      occurred_at: "2026-05-03T00:00:01Z",
+    };
+    const e2 = {
+      id: "e-mid",
+      session_id: "p-1",
+      flavor: "parent",
+      event_type: "tool_call" as const,
+      model: null,
+      tokens_input: null,
+      tokens_output: null,
+      tokens_total: null,
+      latency_ms: null,
+      tool_name: "Bash",
+      has_content: false,
+      payload: null,
+      occurred_at: "2026-05-03T00:00:02Z",
+    };
+    const e3 = {
+      id: "e-new",
+      session_id: "p-1",
+      flavor: "parent",
+      event_type: "post_call" as const,
+      model: "claude-sonnet-4-6",
+      tokens_input: 200,
+      tokens_output: 75,
+      tokens_total: 275,
+      latency_ms: 300,
+      tool_name: null,
+      has_content: false,
+      payload: null,
+      occurred_at: "2026-05-03T00:00:03Z",
+    };
+    fetchSessionMock.mockResolvedValue({
+      session: mkSession({ session_id: "p-1", flavor: "parent" }),
+      events: [e1, e2, e3],
+    });
+    renderTab({
+      session: mkSession({
+        session_id: "c-1",
+        parent_session_id: "p-1",
+      }),
+    });
+    fireEvent.click(
+      await screen.findByTestId("sub-agents-spawned-from-toggle"),
+    );
+    const miniTimeline = await screen.findByTestId(
+      "sub-agents-spawned-from-mini-timeline",
+    );
+    // Read each EventRow's data-event-id (set by EventRow on the
+    // outer wrapper) in document order to assert the rendered
+    // sequence is newest → oldest.
+    await waitFor(() => {
+      const rows = miniTimeline.querySelectorAll(
+        '[data-testid="event-row"], [data-testid^="embeddings-event-row"]',
+      );
+      expect(rows.length).toBe(3);
+    });
+    const renderedIds = Array.from(
+      miniTimeline.querySelectorAll(
+        '[data-testid="event-row"], [data-testid^="embeddings-event-row"]',
+      ),
+    ).map((el) => el.getAttribute("data-event-id"));
+    expect(renderedIds).toEqual(["e-new", "e-mid", "e-old"]);
+  });
+
+  it("'View N more in Timeline tab' footer invokes onOpenSession with tab='timeline'", async () => {
+    // The footer's text promises navigation to the Timeline tab.
+    // Pre-fix it called onOpenSession(id) with no tab override and
+    // the drawer kept the user on Sub-agents — text and behaviour
+    // disagreed. The contract: when the footer fires, the second
+    // argument MUST be "timeline" so the drawer routes through the
+    // tab override path in SessionDrawer (setActiveTab before the
+    // session rebind).
+    const events = Array.from({ length: 20 }, (_, i) => ({
+      id: `e-${i}`,
+      session_id: "p-1",
+      flavor: "parent",
+      event_type: "post_call" as const,
+      model: "claude-sonnet-4-6",
+      tokens_input: 10,
+      tokens_output: 5,
+      tokens_total: 15,
+      latency_ms: 100,
+      tool_name: null,
+      has_content: false,
+      payload: null,
+      occurred_at: `2026-05-03T00:00:${i.toString().padStart(2, "0")}Z`,
+    }));
+    fetchSessionMock.mockResolvedValue({
+      session: mkSession({ session_id: "p-1", flavor: "parent" }),
+      events,
+    });
+    const onOpenSession = vi.fn();
+    renderTab({
+      session: mkSession({
+        session_id: "c-1",
+        parent_session_id: "p-1",
+      }),
+      onOpenSession,
+    });
+    fireEvent.click(
+      await screen.findByTestId("sub-agents-spawned-from-toggle"),
+    );
+    const viewMore = await screen.findByTestId(
+      "sub-agents-spawned-from-mini-timeline-view-more",
+    );
+    fireEvent.click(viewMore);
+    expect(onOpenSession).toHaveBeenCalledWith("p-1", "timeline");
   });
 
   it("multiple child rows expand independently (each chevron only toggles its own row)", async () => {

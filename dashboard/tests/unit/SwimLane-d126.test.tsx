@@ -192,6 +192,28 @@ describe("RelationshipPill rendering", () => {
     getByTestId("relationship-pill").click();
     expect(called).toBe(1);
   });
+
+  it("child pill carries a 'Spawned from <parent>' tooltip", () => {
+    const { getByTestId } = render(
+      <RelationshipPill mode="child" parentName="omria@Omri-PC" />,
+    );
+    expect(getByTestId("relationship-pill").getAttribute("title")).toBe(
+      "Spawned from omria@Omri-PC",
+    );
+  });
+
+  it("parent pill carries a 'Spawned N sub-agent(s)' tooltip with correct pluralisation", () => {
+    const { getByTestId, rerender } = render(
+      <RelationshipPill mode="parent" childCount={1} />,
+    );
+    expect(getByTestId("relationship-pill").getAttribute("title")).toBe(
+      "Spawned 1 sub-agent",
+    );
+    rerender(<RelationshipPill mode="parent" childCount={4} />);
+    expect(getByTestId("relationship-pill").getAttribute("title")).toBe(
+      "Spawned 4 sub-agents",
+    );
+  });
 });
 
 describe("SubAgentLostDot rendering", () => {

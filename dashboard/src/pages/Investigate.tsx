@@ -2831,6 +2831,13 @@ export function Investigate() {
         onSwitchSession={(id) => {
           // D126: in-place rebind for SubAgentsTab parent / child
           // navigation; mirrors Fleet.tsx wiring.
+          //
+          // Target-tab override (e.g. "View N more in Timeline tab"
+          // footer): handled inside SessionDrawer via setActiveTab
+          // BEFORE this callback fires, so we keep initialTab
+          // undefined here. Setting initialTab to a sticky value
+          // would force every subsequent rebind back to that tab
+          // and override manual tab switches by the user.
           setDrawerInitialTab(undefined);
           setSelectedSessionId(id);
           if (urlState.session) {

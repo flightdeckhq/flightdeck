@@ -20,10 +20,11 @@ import { TokenUsageBar } from "./TokenUsageBar";
 import { PromptViewer } from "./PromptViewer";
 import { SubAgentsTab } from "./SubAgentsTab";
 import { EventRow } from "./EventRow";
-import { createDirective, fetchOlderEvents, fetchSessions } from "@/lib/api";
+import { createDirective, fetchOlderEvents, fetchSession, fetchSessions } from "@/lib/api";
 import { sessionSupportsDirectives } from "@/lib/directives";
 import { ClaudeCodeLogo } from "@/components/ui/claude-code-logo";
 import { CodingAgentBadge } from "@/components/ui/coding-agent-badge";
+import { RelationshipPill } from "@/components/facets/RelationshipPill";
 import { getClaudeCodeVersion, isClaudeCodeSession } from "@/lib/models";
 import { getBadge, getSummaryRows, truncateSessionId } from "@/lib/events";
 import { getProvider } from "@/lib/models";
@@ -227,7 +228,7 @@ interface SessionDrawerProps {
    * that own the drawer's session-id state should pass this so the
    * inline navigation works without a flicker.
    */
-  onSwitchSession?: (sessionId: string) => void;
+  onSwitchSession?: (sessionId: string, tab?: DrawerTab) => void;
 }
 
 export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDirectEvent, version = 0, initialTab, onSwitchSession }: SessionDrawerProps) {
@@ -307,27 +308,60 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
   // yet know their child count, we eagerly fetch a children-count
   // hint. Fetch is keyed on session_id so opening + reopening a
   // session re-fires.
-  const [hasChildren, setHasChildren] = useState<boolean>(false);
+  // Child count is the source of truth for both gating Sub-agents tab
+  // visibility AND rendering the headline "→ N" relationship pill.
+  // ``r.total`` carries the unpaginated count so a single ``limit=1``
+  // probe covers both jobs without a second round-trip.
+  const [childCount, setChildCount] = useState<number>(0);
   useEffect(() => {
     if (!data?.session.session_id) {
-      setHasChildren(false);
+      setChildCount(0);
       return;
     }
     let alive = true;
-    // Cheapest possible probe: limit=1 returns at most one row.
-    // Worker keeps the partial index sessions_parent_session_id_idx
-    // hot so the EXISTS-equivalent under the hood costs ~ms.
+    // Cheapest possible probe: limit=1 returns at most one row plus
+    // the unpaginated total. Worker keeps the partial index
+    // sessions_parent_session_id_idx hot so the underlying scan is
+    // ~ms.
     fetchSessions({ parent_session_id: data.session.session_id, limit: 1 })
       .then((r) => {
-        if (alive) setHasChildren((r.sessions?.length ?? 0) > 0);
+        if (alive) setChildCount(r.total ?? 0);
       })
       .catch(() => {
-        if (alive) setHasChildren(false);
+        if (alive) setChildCount(0);
       });
     return () => {
       alive = false;
     };
   }, [data?.session.session_id]);
+  const hasChildren = childCount > 0;
+
+  // Parent agent display name for the headline "↳ <parentName>" pill.
+  // Only fired when the current session is a child (parent_session_id
+  // is set). Falls back to the parent's flavor when agent_name is null
+  // (legacy / pre-D115 sessions). Failure is silent — the pill simply
+  // collapses to "(unknown parent)" rather than blocking the drawer.
+  const [parentAgentLabel, setParentAgentLabel] = useState<string | null>(null);
+  useEffect(() => {
+    const parentId = data?.session.parent_session_id;
+    if (!parentId) {
+      setParentAgentLabel(null);
+      return;
+    }
+    let alive = true;
+    fetchSession(parentId, 1)
+      .then((d) => {
+        if (alive) {
+          setParentAgentLabel(d.session?.agent_name ?? d.session?.flavor ?? null);
+        }
+      })
+      .catch(() => {
+        if (alive) setParentAgentLabel(null);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [data?.session.parent_session_id]);
 
   const showSubAgentsTab =
     !!data?.session.parent_session_id || hasChildren;
@@ -690,8 +724,50 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
                       </span>
                     ) : null;
                   })()}
+                  <DrawerRelationshipPill
+                    parentSessionId={data.session.parent_session_id ?? null}
+                    parentAgentLabel={parentAgentLabel}
+                    childCount={childCount}
+                    onOpenParent={() => {
+                      const pid = data.session.parent_session_id;
+                      if (!pid) return;
+                      if (onSwitchSession) onSwitchSession(pid);
+                    }}
+                    onOpenSubAgents={() => setActiveTab("sub-agents")}
+                  />
                 </div>
               )}
+              {/* Non-Claude-Code sessions don't have the chunky
+                  branding bar but still need the headline relationship
+                  pill. Render a slim badge row under the same border-
+                  bottom + accent-glow treatment so the visual rhythm
+                  matches the Claude Code variant. The row collapses
+                  entirely when the session is lone (no parent, no
+                  children) so direct-SDK root sessions don't gain
+                  empty chrome. */}
+              {!isClaudeCodeSession(data.session) &&
+                (data.session.parent_session_id || childCount > 0) && (
+                  <div
+                    data-testid="session-headline-relationship"
+                    className="flex items-center gap-2 px-4 py-2"
+                    style={{
+                      borderBottom: "1px solid var(--border-subtle)",
+                      background: "var(--accent-glow)",
+                    }}
+                  >
+                    <DrawerRelationshipPill
+                      parentSessionId={data.session.parent_session_id ?? null}
+                      parentAgentLabel={parentAgentLabel}
+                      childCount={childCount}
+                      onOpenParent={() => {
+                        const pid = data.session.parent_session_id;
+                        if (!pid) return;
+                        if (onSwitchSession) onSwitchSession(pid);
+                      }}
+                      onOpenSubAgents={() => setActiveTab("sub-agents")}
+                    />
+                  </div>
+                )}
               {/* Metadata bar — labelled grid. Auto-fits items into a
                   flowing two-row layout (identity on top, metrics
                   below) so the bar doesn't wrap unreadably on the
@@ -816,9 +892,22 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
                   <SubAgentsTab
                     session={data.session}
                     events={drawerEvents}
-                    onOpenSession={(id) => {
+                    onOpenSession={(id, tab) => {
+                      // When the SubAgentsTab signals a target tab
+                      // (e.g. "View N more in Timeline tab" footer
+                      // click), switch tabs locally before the
+                      // session rebind. The local activeTab state
+                      // persists across the rebind because the host
+                      // page's onSwitchSession passes initialTab=
+                      // undefined, and the initialTab effect only
+                      // re-applies when initialTab is truthy. Net
+                      // result: drawer rebinds to the new session
+                      // AND lands on the requested tab without
+                      // every host page needing to thread a tab
+                      // hint of its own.
+                      if (tab) setActiveTab(tab);
                       if (onSwitchSession) {
-                        onSwitchSession(id);
+                        onSwitchSession(id, tab);
                       } else {
                         // Legacy fallback: close the drawer and let
                         // the URL state pick up. Pages that wire
@@ -1252,6 +1341,56 @@ interface MetadataCellProps {
   title?: string;
   /** Optional testid forwarded to the cell wrapper. */
   testId?: string;
+}
+
+/**
+ * Headline relationship pill. Renders the same RelationshipPill the
+ * Fleet swimlane + Investigate row use, so the drawer's headline
+ * carries the same "↳ <parent>" / "→ <N>" affordance the user is
+ * already trained on from the table surfaces.
+ *
+ *   * Child mode (parent_session_id set): "↳ <parent agent name>".
+ *     Click rebinds the drawer to the parent session via
+ *     ``onOpenParent`` (which the caller wires to onSwitchSession).
+ *   * Parent mode (childCount > 0): "→ <N>". Click switches the
+ *     active tab to "sub-agents" via ``onOpenSubAgents`` so the user
+ *     can inspect the children inline.
+ *   * Lone (no parent, no children): renders nothing.
+ */
+function DrawerRelationshipPill({
+  parentSessionId,
+  parentAgentLabel,
+  childCount,
+  onOpenParent,
+  onOpenSubAgents,
+}: {
+  parentSessionId: string | null;
+  parentAgentLabel: string | null;
+  childCount: number;
+  onOpenParent: () => void;
+  onOpenSubAgents: () => void;
+}) {
+  if (parentSessionId) {
+    return (
+      <RelationshipPill
+        mode="child"
+        parentName={parentAgentLabel ?? undefined}
+        onClick={onOpenParent}
+        testId="drawer-headline-relationship-pill"
+      />
+    );
+  }
+  if (childCount > 0) {
+    return (
+      <RelationshipPill
+        mode="parent"
+        childCount={childCount}
+        onClick={onOpenSubAgents}
+        testId="drawer-headline-relationship-pill"
+      />
+    );
+  }
+  return null;
 }
 
 /**

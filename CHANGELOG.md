@@ -166,6 +166,85 @@ in v0.6 as warn-only; v0.7 flips to honor configured enforcement.
   `POST :flavor/apply_template` (idempotent PUT-replace, bumps
   version, audit-log entry carries `applied_template=<name>`).
 
+### Added (sensor enforcement)
+
+- **Sensor-side enforcement at `ClientSession.call_tool`** (D130).
+  The MCP interceptor's existing call-tool wrapper consults the
+  per-session policy cache; emits `POLICY_MCP_WARN` and proceeds
+  on warn decisions, emits `POLICY_MCP_BLOCK` + flushes the queue
+  + raises typed `flightdeck.MCPPolicyBlocked` on block decisions.
+  Frameworks surface the block as a tool-call failure in the agent
+  reasoning loop. Initialize-time wrapper additionally emits
+  `MCP_SERVER_NAME_CHANGED` when a known canonical URL appears
+  under a new declared name (D131).
+- **Three new EventType enum members** — `POLICY_MCP_WARN`,
+  `POLICY_MCP_BLOCK`, `MCP_SERVER_NAME_CHANGED`. NATS subjects auto-
+  routed via the existing `events.>` catch-all; the worker switch
+  extends to persist them through the standard pipeline (D131).
+- **`MCPPolicyCache`** at `sensor/flightdeck_sensor/core/mcp_policy.py`
+  — fetches the global + flavor policies at session preflight (two
+  HTTP calls alongside the existing token-policy fetch), caches the
+  D135 resolution algorithm's inputs in memory for the session's
+  lifetime. Refresh on `policy_update` directive applies at the next
+  `session_start` so in-flight sessions keep their policy regime
+  (D129).
+- **`init(mcp_block_on_uncertainty=True)` kwarg** — operator failsafe
+  for the cache-miss + control-plane-unreachable path. When the
+  policy fetch fails AND this kwarg is true, MCP tool calls block
+  with `decision_path="mode_default"` so a paranoid deployment
+  doesn't fall open silently. Default is `False`; operators opt in
+  per agent.
+- **`FLIGHTDECK_MCP_POLICY_DEFAULT` env var** (D133) — soft-launch
+  override. Values: `warn` (force warn-only regardless of
+  configured enforcement) and `enforce` (honor configured
+  enforcement). v0.6 default is `warn`; v0.7 will flip the default
+  to `enforce` via a constant change. The downgrade fires at the
+  emit site, AFTER policy lookup, so operator visibility into
+  what-would-have-blocked is preserved via a `would_have_blocked`
+  payload field on the synthesized warn event.
+
+### Added (ingestion + worker)
+
+- **Ingestion payload validation** for the three new event types
+  (Rule 36). Missing `fingerprint` / `server_url` / `decision_path`
+  / `policy_id` on warn / block events rejects with 400 at the API
+  boundary; missing `fingerprint_old` / `fingerprint_new` /
+  `name_old` / `name_new` on the name-changed event rejects with
+  400.
+- **Worker persistence** — the existing `event.go` switch extends
+  to route `policy_mcp_warn` / `policy_mcp_block` (alongside the
+  pre-existing `policy_warn` / `policy_block`) and
+  `mcp_server_name_changed` (alongside the pre-existing `mcp_*`
+  family). InsertEvent inserts the event_type + full payload as
+  before; no schema or insert-path change.
+
+### Added (playground demos)
+
+- **Six new Rule 40d playground demos** at `playground/16_*` through
+  `playground/21_*`:
+  - `16_mcp_policy_warn.py` — allowlist mode + warn enforcement;
+    POLICY_MCP_WARN lands; tool call proceeds.
+  - `17_mcp_policy_block.py` — allowlist mode + block enforcement;
+    POLICY_MCP_BLOCK lands; MCPPolicyBlocked raised.
+  - `18_mcp_policy_block_on_uncertainty.py` — control-plane
+    unreachable simulation + `mcp_block_on_uncertainty=True`;
+    block fires from the local failsafe.
+  - `19_mcp_policy_blocklist.py` — blocklist mode + deny entry;
+    block fires.
+  - `20_mcp_policy_crewai.py` — CrewAI transitive coverage via
+    `mcpadapt`. Self-skips without `ANTHROPIC_API_KEY` +
+    `OPENAI_API_KEY`.
+  - `21_mcp_policy_langgraph.py` — LangGraph transitive coverage
+    via `langchain-mcp-adapters`. Self-skips without
+    `ANTHROPIC_API_KEY`.
+- **New Make targets:** `playground-mcp-policy-warn`,
+  `playground-mcp-policy-block`,
+  `playground-mcp-policy-block-on-uncertainty`,
+  `playground-mcp-policy-blocklist`,
+  `playground-mcp-policy-crewai`,
+  `playground-mcp-policy-langgraph`. Each follows Rule 40a.A
+  (meaningful flavor + agent_type) and 40a.B (capture_prompts=True).
+
 ## Unreleased — Sub-agent observability
 
 First-class events, identity, and dashboard surfaces for sub-agent

@@ -5767,6 +5767,20 @@ consults). D131 (the ``policy_mcp_block`` event emitted before the
 raise). D133 (soft-launch warn-only override that suppresses the
 raise in v0.6).
 
+**Implementation note (step 4).** ``MCPPolicyBlocked`` is a sibling
+exception in the ``BudgetExceededError`` pattern, not a Python
+subclass of ``DirectiveError``. The "lineage" phrasing above was
+descriptive of conceptual family (both are control-plane-driven
+halts the sensor raises into agent code), not a literal class
+hierarchy. The actual base is ``Exception`` so the constructor is
+free of ``DirectiveError``'s ``(action, reason)`` contract — the
+fields ``MCPPolicyBlocked`` carries (``server_url``, ``server_name``,
+``fingerprint``, ``policy_id``, ``decision_path``) don't fit that
+shape. Frameworks that want to handle "any sensor-raised halt"
+generically should catch ``BudgetExceededError`` AND
+``MCPPolicyBlocked`` AND ``DirectiveError`` explicitly; the three
+are independent exception families.
+
 ---
 
 ## D131 -- New event types: policy_mcp_warn, policy_mcp_block, mcp_server_name_changed

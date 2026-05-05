@@ -297,19 +297,29 @@ func (p *Processor) Process(ctx context.Context, e consumer.EventPayload) error 
 		if err := p.session.HandlePostCall(ctx, e); err != nil {
 			return err
 		}
-	case "policy_warn", "policy_degrade", "policy_block":
+	case "policy_warn", "policy_degrade", "policy_block",
+		"policy_mcp_warn", "policy_mcp_block":
 		// Policy enforcement events emitted by the sensor's _pre_call
 		// (WARN, BLOCK) and _apply_directive(DEGRADE). Route through
 		// HandlePostCall so last_seen_at advances on enforcement
 		// activity. Policy is NOT re-evaluated — these events ARE the
 		// evaluation outcome; the worker would otherwise emit a
 		// duplicate directive.
+		//
+		// Step 4 (D131): policy_mcp_warn / policy_mcp_block ride the
+		// same routing — they're the MCP Protection Policy's
+		// equivalent of the LLM-budget enforcement events. The lean
+		// payload (server_url / server_name / fingerprint / tool_name
+		// / policy_id / scope / decision_path) lands directly in
+		// events.payload; no token / model fields fire HandlePostCall's
+		// budget-evaluation path because they're nil on the wire.
 		if err := p.session.HandlePostCall(ctx, e); err != nil {
 			return err
 		}
 	case "mcp_tool_list", "mcp_tool_call",
 		"mcp_resource_list", "mcp_resource_read",
-		"mcp_prompt_list", "mcp_prompt_get":
+		"mcp_prompt_list", "mcp_prompt_get",
+		"mcp_server_name_changed":
 		// Phase 5 MCP events. Route through HandlePostCall: the lean
 		// MCP payload (override 2) carries no token deltas (TokensTotal
 		// is nil) and no model field, so HandlePostCall's branch logic

@@ -367,6 +367,25 @@ func EventsHandler(
 			}
 		}
 
+		// D131 — MCP Protection Policy event payload validation.
+		// Reject the three new event types at the wire boundary
+		// (Rule 36) when their required fields are missing rather
+		// than letting the worker's pgx insert succeed with a
+		// malformed payload that the dashboard then has to defend
+		// against.
+		switch eventType {
+		case "policy_mcp_warn", "policy_mcp_block":
+			if msg := validateMCPPolicyDecisionPayload(payload, eventType); msg != "" {
+				writeError(w, http.StatusBadRequest, msg)
+				return
+			}
+		case "mcp_server_name_changed":
+			if msg := validateMCPServerNameChangedPayload(payload); msg != "" {
+				writeError(w, http.StatusBadRequest, msg)
+				return
+			}
+		}
+
 		// On session_start, attach the resolved token id/name so the
 		// worker's UpsertSession can persist them onto the new session
 		// row (D095). Subsequent events carry no token fields -- a
@@ -471,4 +490,48 @@ func writeError(w http.ResponseWriter, code int, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
+}
+
+// validateMCPPolicyDecisionPayload enforces the required-field set
+// for policy_mcp_warn and policy_mcp_block events at the API
+// boundary (D131 / Rule 36). Returns an empty string when the
+// payload is valid; returns a user-facing error message otherwise.
+func validateMCPPolicyDecisionPayload(payload map[string]any, eventType string) string {
+	for _, field := range []string{
+		"server_url", "server_name", "fingerprint",
+		"tool_name", "policy_id", "decision_path",
+	} {
+		v, ok := payload[field].(string)
+		if !ok || v == "" {
+			return fmt.Sprintf("%s is required for %s", field, eventType)
+		}
+	}
+	dp := payload["decision_path"].(string)
+	switch dp {
+	case "flavor_entry", "global_entry", "mode_default":
+	default:
+		return fmt.Sprintf(
+			"decision_path must be one of: flavor_entry, global_entry, mode_default (got %q)", dp,
+		)
+	}
+	return ""
+}
+
+// validateMCPServerNameChangedPayload enforces the required-field
+// set for mcp_server_name_changed events. The event is sensor-
+// emitted observation only (D131); validation here protects
+// against malformed payloads from third-party emitters.
+func validateMCPServerNameChangedPayload(payload map[string]any) string {
+	for _, field := range []string{
+		"server_url_canonical", "fingerprint_old", "fingerprint_new",
+		"name_old", "name_new",
+	} {
+		v, ok := payload[field].(string)
+		if !ok || v == "" {
+			return fmt.Sprintf(
+				"%s is required for mcp_server_name_changed", field,
+			)
+		}
+	}
+	return ""
 }

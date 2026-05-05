@@ -631,3 +631,165 @@ func TestEventsHandler_NonSessionStart_DoesNotAttach(t *testing.T) {
 		t.Errorf("attacher must not be called for non-session_start events, got %v", attacher.called)
 	}
 }
+
+// ----- D131 MCP Protection Policy event-type validation ----------
+
+// makeMCPPolicyDecisionPayload builds a baseline payload for
+// policy_mcp_warn / policy_mcp_block tests; callers mutate the
+// returned map to drop fields and verify the rejection path.
+func makeMCPPolicyDecisionPayload(eventType string) map[string]any {
+	return map[string]any{
+		"session_id":    "22222222-2222-4222-8222-222222222222",
+		"agent_id":      "11111111-1111-4111-8111-111111111111",
+		"agent_type":    "coding",
+		"client_type":   "claude_code",
+		"event_type":    eventType,
+		"server_url":    "https://maps.example.com/sse",
+		"server_name":   "maps",
+		"fingerprint":   "abc123def456ab78",
+		"tool_name":     "search",
+		"policy_id":     "p1",
+		"scope":         "flavor:production",
+		"decision_path": "flavor_entry",
+	}
+}
+
+func runEventValidationTest(t *testing.T, payload map[string]any) (int, string) {
+	t.Helper()
+	handler := handlers.EventsHandler(
+		&mockValidator{valid: true, id: "tok-id", name: "tok-name"},
+		&mockPublisher{},
+		&mockDirStore{},
+		nil,
+		nil,
+	)
+	body, _ := json.Marshal(payload)
+	req := httptest.NewRequest("POST", "/v1/events", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer t")
+	w := httptest.NewRecorder()
+	handler(w, req)
+	return w.Code, w.Body.String()
+}
+
+func TestEventsHandler_PolicyMCPWarn_AcceptsValidPayload(t *testing.T) {
+	payload := makeMCPPolicyDecisionPayload("policy_mcp_warn")
+	code, body := runEventValidationTest(t, payload)
+	if code != http.StatusOK {
+		t.Errorf("expected 200, got %d body=%s", code, body)
+	}
+}
+
+func TestEventsHandler_PolicyMCPBlock_AcceptsValidPayload(t *testing.T) {
+	payload := makeMCPPolicyDecisionPayload("policy_mcp_block")
+	code, body := runEventValidationTest(t, payload)
+	if code != http.StatusOK {
+		t.Errorf("expected 200, got %d body=%s", code, body)
+	}
+}
+
+func TestEventsHandler_PolicyMCPWarn_MissingFingerprintReturns400(t *testing.T) {
+	payload := makeMCPPolicyDecisionPayload("policy_mcp_warn")
+	delete(payload, "fingerprint")
+	code, body := runEventValidationTest(t, payload)
+	if code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d body=%s", code, body)
+	}
+	if !strings.Contains(body, "fingerprint") {
+		t.Errorf("error body should mention fingerprint, got %s", body)
+	}
+}
+
+func TestEventsHandler_PolicyMCPBlock_MissingPolicyIDReturns400(t *testing.T) {
+	payload := makeMCPPolicyDecisionPayload("policy_mcp_block")
+	delete(payload, "policy_id")
+	code, body := runEventValidationTest(t, payload)
+	if code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d body=%s", code, body)
+	}
+}
+
+func TestEventsHandler_PolicyMCPWarn_BadDecisionPathReturns400(t *testing.T) {
+	payload := makeMCPPolicyDecisionPayload("policy_mcp_warn")
+	payload["decision_path"] = "garbage"
+	code, body := runEventValidationTest(t, payload)
+	if code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d body=%s", code, body)
+	}
+	if !strings.Contains(body, "decision_path") {
+		t.Errorf("error body should mention decision_path, got %s", body)
+	}
+}
+
+func TestEventsHandler_MCPServerNameChanged_AcceptsValidPayload(t *testing.T) {
+	payload := map[string]any{
+		"session_id":           "22222222-2222-4222-8222-222222222222",
+		"agent_id":             "11111111-1111-4111-8111-111111111111",
+		"agent_type":           "coding",
+		"client_type":          "claude_code",
+		"event_type":           "mcp_server_name_changed",
+		"server_url_canonical": "https://maps.example.com/sse",
+		"fingerprint_old":      "old01234567890ab",
+		"fingerprint_new":      "new01234567890ab",
+		"name_old":             "maps",
+		"name_new":             "maps-v2",
+	}
+	code, body := runEventValidationTest(t, payload)
+	if code != http.StatusOK {
+		t.Errorf("expected 200, got %d body=%s", code, body)
+	}
+}
+
+func TestEventsHandler_MCPServerNameChanged_MissingFingerprintNewReturns400(t *testing.T) {
+	payload := map[string]any{
+		"session_id":           "22222222-2222-4222-8222-222222222222",
+		"agent_id":             "11111111-1111-4111-8111-111111111111",
+		"agent_type":           "coding",
+		"client_type":          "claude_code",
+		"event_type":           "mcp_server_name_changed",
+		"server_url_canonical": "https://maps.example.com/sse",
+		"fingerprint_old":      "old01234567890ab",
+		// fingerprint_new missing
+		"name_old": "maps",
+		"name_new": "maps-v2",
+	}
+	code, body := runEventValidationTest(t, payload)
+	if code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d body=%s", code, body)
+	}
+}
+
+func TestEventsHandler_MCPServerNameChanged_MissingNameOldReturns400(t *testing.T) {
+	payload := map[string]any{
+		"session_id":           "22222222-2222-4222-8222-222222222222",
+		"agent_id":             "11111111-1111-4111-8111-111111111111",
+		"agent_type":           "coding",
+		"client_type":          "claude_code",
+		"event_type":           "mcp_server_name_changed",
+		"server_url_canonical": "https://maps.example.com/sse",
+		"fingerprint_old":      "old01234567890ab",
+		"fingerprint_new":      "new01234567890ab",
+		// name_old missing
+		"name_new": "maps-v2",
+	}
+	code, body := runEventValidationTest(t, payload)
+	if code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d body=%s", code, body)
+	}
+}
+
+func TestEventsHandler_NonMCPEventType_BypassesMCPValidation(t *testing.T) {
+	// Sanity check — a regular post_call event without MCP fields
+	// continues to work; the new validation block is gated by
+	// event_type and must not affect other types.
+	payload := map[string]any{
+		"session_id":  "22222222-2222-4222-8222-222222222222",
+		"agent_id":    "11111111-1111-4111-8111-111111111111",
+		"agent_type":  "coding",
+		"client_type": "claude_code",
+		"event_type":  "post_call",
+	}
+	code, body := runEventValidationTest(t, payload)
+	if code != http.StatusOK {
+		t.Errorf("expected 200, got %d body=%s", code, body)
+	}
+}

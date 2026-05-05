@@ -1,0 +1,131 @@
+{
+  "version": 1,
+  "namespace": "flightdeck-mcp-identity",
+  "description": "Cross-language fixture vectors for the D127 MCP server identity primitive. Both Python (sensor/flightdeck_sensor/interceptor/mcp_identity.py) and Node (plugin/hooks/scripts/mcp_identity.mjs) implementations MUST produce byte-identical output for every vector below.",
+  "env_overrides": {
+    "FLIGHTDECK_TEST_HOME": "/home/alice",
+    "FLIGHTDECK_TEST_DATA": "/data"
+  },
+  "vectors": [
+    {
+      "id": "http-default-port-stripped",
+      "raw_url": "https://maps.example.com:443/sse",
+      "name": "maps",
+      "canonical_url": "https://maps.example.com/sse",
+      "fingerprint_full": "f7711ad4189b3d940afd7edd56bbc6166b0a72a324263d7ca886b4d862c3b0d4",
+      "fingerprint_short": "f7711ad4189b3d94"
+    },
+    {
+      "id": "http-non-default-port-preserved",
+      "raw_url": "https://api.example.com:8443/v1",
+      "name": "api",
+      "canonical_url": "https://api.example.com:8443/v1",
+      "fingerprint_full": "6c47a8cb4bb65115b5e094063203a6c3bcdee5398fe311918c5bcaa25692dc81",
+      "fingerprint_short": "6c47a8cb4bb65115"
+    },
+    {
+      "id": "http-root-trailing-slash-stripped",
+      "raw_url": "https://example.com/",
+      "name": "root",
+      "canonical_url": "https://example.com",
+      "fingerprint_full": "1a41145d9ed4a3653ddb5dc03132cfa9528f1e054dadbc3e367db77db30e69df",
+      "fingerprint_short": "1a41145d9ed4a365"
+    },
+    {
+      "id": "http-non-root-trailing-slash-preserved",
+      "raw_url": "https://example.com/api/",
+      "name": "api-subpath",
+      "canonical_url": "https://example.com/api/",
+      "fingerprint_full": "5a449917709ac86bc7608fb22c1a0c6f6a0e957617fde75cd5d470b8845fc890",
+      "fingerprint_short": "5a449917709ac86b"
+    },
+    {
+      "id": "http-path-case-preserved",
+      "raw_url": "https://example.com/V1/Search",
+      "name": "search",
+      "canonical_url": "https://example.com/V1/Search",
+      "fingerprint_full": "623c7dae4aae63936e56da808c4fde9f7e1acbeb802cd69e064000d88f1bc3e9",
+      "fingerprint_short": "623c7dae4aae6393"
+    },
+    {
+      "id": "http-userinfo-stripped",
+      "raw_url": "https://user:pass@example.com/sse",
+      "name": "withcreds",
+      "canonical_url": "https://example.com/sse",
+      "fingerprint_full": "7ce5990a696fa48f704bd085fb5defe7cba43b5146a6edac3589b2f4d1f8e98a",
+      "fingerprint_short": "7ce5990a696fa48f"
+    },
+    {
+      "id": "http-fragment-dropped",
+      "raw_url": "https://example.com/sse#frag",
+      "name": "withfrag",
+      "canonical_url": "https://example.com/sse",
+      "fingerprint_full": "126257f0e93c259d5d6e742ec8fbc24c9433e37c8dd9950f7e93aac200a37879",
+      "fingerprint_short": "126257f0e93c259d"
+    },
+    {
+      "id": "http-query-dropped",
+      "raw_url": "https://example.com/sse?token=abc",
+      "name": "withquery",
+      "canonical_url": "https://example.com/sse",
+      "fingerprint_full": "87accc8762007deafd129f0488a4e94f36637d808f4c6b9e2efbed702e3a3d85",
+      "fingerprint_short": "87accc8762007dea"
+    },
+    {
+      "id": "http-uppercase-scheme-host-lowered",
+      "raw_url": "HTTPS://Maps.Example.COM/SSE",
+      "name": "uppercase",
+      "canonical_url": "https://maps.example.com/SSE",
+      "fingerprint_full": "72afe82a9e1975fdaaa0112d065912a16eb9b2404a462dabe2da4929c9c9d5bb",
+      "fingerprint_short": "72afe82a9e1975fd"
+    },
+    {
+      "id": "http-compound-stripping",
+      "raw_url": "HTTPS://user:pass@Maps.Example.COM:443/SSE/?token=abc#frag",
+      "name": "compound",
+      "canonical_url": "https://maps.example.com/SSE/",
+      "fingerprint_full": "e9fe4be75816c9752150189d2337c60c6afcfaef13e49c339a1a72ad0cee2ee4",
+      "fingerprint_short": "e9fe4be75816c975"
+    },
+    {
+      "id": "stdio-simple",
+      "raw_url": "npx -y @modelcontextprotocol/server-filesystem /data",
+      "name": "fs",
+      "canonical_url": "stdio://npx -y @modelcontextprotocol/server-filesystem /data",
+      "fingerprint_full": "13043fe85031cf7ad61455eb0e874eb78a0b0f0d641147877faa099ed3a82c0b",
+      "fingerprint_short": "13043fe85031cf7a"
+    },
+    {
+      "id": "stdio-env-var-resolved",
+      "raw_url": "npx -y @modelcontextprotocol/server-filesystem ${FLIGHTDECK_TEST_HOME}/data",
+      "name": "fs-home",
+      "canonical_url": "stdio://npx -y @modelcontextprotocol/server-filesystem /home/alice/data",
+      "fingerprint_full": "4960ad061e80f2b2cebb89c50905d631b1293ca3642e5adc9bbed99137027030",
+      "fingerprint_short": "4960ad061e80f2b2"
+    },
+    {
+      "id": "stdio-whitespace-collapsed",
+      "raw_url": "  npx   -y    package    /data  ",
+      "name": "ws",
+      "canonical_url": "stdio://npx -y package /data",
+      "fingerprint_full": "0a729c6e0a52b1fc4cc13a811b4e30ee6e8ef05a4c89f2804795089310a791a6",
+      "fingerprint_short": "0a729c6e0a52b1fc"
+    },
+    {
+      "id": "stdio-env-var-missing-stays-literal",
+      "raw_url": "cmd ${FLIGHTDECK_TEST_MISSING}/data",
+      "name": "missing",
+      "canonical_url": "stdio://cmd ${FLIGHTDECK_TEST_MISSING}/data",
+      "fingerprint_full": "dd5803c5b69a3fd35e637ef77dd6526fddce9a2f1ae0bf14c2228263eabdc2b7",
+      "fingerprint_short": "dd5803c5b69a3fd3"
+    },
+    {
+      "id": "stdio-case-sensitive-args",
+      "raw_url": "cmd --Help arg",
+      "name": "case",
+      "canonical_url": "stdio://cmd --Help arg",
+      "fingerprint_full": "357b69eb7ccef13d9213f5c3f4c1387a5f1aead3889192642a6f18e62437b789",
+      "fingerprint_short": "357b69eb7ccef13d"
+    }
+  ]
+}

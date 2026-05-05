@@ -43,6 +43,19 @@ func main() {
 	defer pool.Close()
 
 	s := store.New(pool)
+	// D133: ensure the empty blocklist global MCP policy exists
+	// before serving traffic. Idempotent INSERT with retry on
+	// unique-violation handles parallel API instances on shared
+	// Postgres. Best-effort — a transient failure here doesn't
+	// block API startup; the next boot retries.
+	if err := s.EnsureGlobalMCPPolicy(context.Background()); err != nil {
+		slog.Warn("ensure global mcp policy at boot failed",
+			"err", err,
+			"note", "API will continue; auto-create retries at next boot",
+		)
+	} else {
+		slog.Info("ensure global mcp policy at boot complete")
+	}
 	hub := ws.NewHub(s)
 	validator := auth.NewValidator(pool)
 

@@ -44,6 +44,14 @@ class EventType(enum.Enum):
     MCP_RESOURCE_READ = "mcp_resource_read"
     MCP_PROMPT_LIST = "mcp_prompt_list"
     MCP_PROMPT_GET = "mcp_prompt_get"
+    # MCP Protection Policy (D131). policy_mcp_warn / _block emit at
+    # call_tool time when the cached policy decides warn or block
+    # respectively; mcp_server_name_changed emits at initialize time
+    # when an agent declares a server whose canonical URL is already
+    # known under a different name.
+    POLICY_MCP_WARN = "policy_mcp_warn"
+    POLICY_MCP_BLOCK = "policy_mcp_block"
+    MCP_SERVER_NAME_CHANGED = "mcp_server_name_changed"
 
 
 class DirectiveAction(enum.Enum):
@@ -123,6 +131,13 @@ class SensorConfig:
     quiet: bool = False
     limit: int | None = None
     warn_at: float = 0.8
+    # MCP Protection Policy (D128 / D129). When True AND the
+    # control plane is unreachable at session preflight (so the MCP
+    # policy cache is empty), unmatched MCP server URLs in
+    # mode-default fall-through resolve to block instead of allow.
+    # The operator failsafe for the cache-miss case. Default False
+    # preserves Rule 28's fail-open posture.
+    mcp_block_on_uncertainty: bool = False
 
     def __post_init__(self) -> None:
         if not self.api_url:

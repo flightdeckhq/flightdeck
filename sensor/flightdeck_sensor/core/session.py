@@ -103,6 +103,17 @@ class Session:
             local_limit=config.limit,
             local_warn_at=config.warn_at,
         )
+        # MCP Protection Policy cache (D128 / D129). Populated at
+        # session preflight from GET /v1/mcp-policies/global +
+        # /:flavor; refreshed on policy_update directive arrival.
+        # Empty until populate runs; fail-open per Rule 28 unless
+        # the agent opted into the local failsafe via
+        # init(mcp_block_on_uncertainty=True).
+        from flightdeck_sensor.core.mcp_policy import MCPPolicyCache
+
+        self.mcp_policy = MCPPolicyCache(
+            mcp_block_on_uncertainty=config.mcp_block_on_uncertainty,
+        )
 
         self._state = SessionState.ACTIVE
         self._tokens_used = 0
@@ -168,6 +179,7 @@ class Session:
         self._post_event(EventType.SESSION_START)
         self._register_handlers()
         self._preflight_policy()
+        self._preflight_mcp_policy()
 
         from flightdeck_sensor import _directive_registry
 
@@ -363,7 +375,9 @@ class Session:
                 "sub-agent %s_message body exceeds %d-byte hard cap "
                 "(size=%d bytes); dropped per D126 § 6 — capture "
                 "the trailing tail elsewhere if needed",
-                direction, SUBAGENT_HARD_CAP_BYTES, size,
+                direction,
+                SUBAGENT_HARD_CAP_BYTES,
+                size,
             )
             return None, None
         if size <= SUBAGENT_INLINE_THRESHOLD_BYTES:
@@ -433,7 +447,8 @@ class Session:
             agent_role=agent_role,
         )
         stub_or_inline, content_envelope = self._route_subagent_message(
-            incoming_message, "incoming",
+            incoming_message,
+            "incoming",
         )
         if stub_or_inline is not None:
             payload["incoming_message"] = stub_or_inline
@@ -483,7 +498,8 @@ class Session:
         if error is not None:
             payload["error"] = error
         stub_or_inline, content_envelope = self._route_subagent_message(
-            outgoing_message, "outgoing",
+            outgoing_message,
+            "outgoing",
         )
         if stub_or_inline is not None:
             payload["outgoing_message"] = stub_or_inline
@@ -680,6 +696,25 @@ class Session:
                     self.policy.update(policy_fields)
         except Exception:
             _log.debug("preflight policy fetch failed, proceeding with empty cache", exc_info=True)
+
+    def _preflight_mcp_policy(self) -> None:
+        """Populate the MCP Protection Policy cache from the control
+        plane at session start (D129). Fetches global + flavor policies
+        in two HTTP calls (sequential, ~1s each timeout). Failures
+        fail-open per Rule 28 — the cache stays empty and per-call
+        evaluation falls back on the local-failsafe toggle if set.
+        """
+        try:
+            self.mcp_policy.populate_from_control_plane(
+                api_url=self.config.api_url,
+                token=self.config.token,
+                flavor=self.config.agent_flavor,
+            )
+        except Exception:
+            _log.debug(
+                "preflight mcp policy fetch failed, proceeding with empty cache",
+                exc_info=True,
+            )
 
     # ------------------------------------------------------------------
     # Custom directives

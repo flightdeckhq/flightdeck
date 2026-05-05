@@ -155,6 +155,8 @@ func newServer(addr string, s store.Querier, hub *ws.Hub, validator *auth.Valida
 		gate(handlers.GetGlobalMCPPolicyHandler(s)))
 	mux.Handle("GET /v1/mcp-policies/resolve",
 		gate(handlers.ResolveMCPPolicyHandler(s)))
+	mux.Handle("GET /v1/mcp-policies/templates",
+		gate(handlers.ListMCPPolicyTemplatesHandler()))
 	mux.Handle("GET /v1/mcp-policies/{flavor}",
 		gate(handlers.GetMCPPolicyHandler(s)))
 
@@ -175,6 +177,16 @@ func newServer(addr string, s store.Querier, hub *ws.Hub, validator *auth.Valida
 		adminGate(handlers.DiffMCPPolicyVersionsHandler(s)))
 	mux.Handle("GET /v1/mcp-policies/{flavor}/audit-log",
 		adminGate(handlers.ListMCPPolicyAuditLogHandler(s)))
+	mux.Handle("GET /v1/mcp-policies/{flavor}/metrics",
+		adminGate(handlers.GetMCPPolicyMetricsHandler(s)))
+	mux.Handle("POST /v1/mcp-policies/{flavor}/dry_run",
+		adminGate(handlers.DryRunMCPPolicyHandler(s)))
+	mux.Handle("POST /v1/mcp-policies/{flavor}/import",
+		adminGate(handlers.ImportMCPPolicyHandler(s)))
+	mux.Handle("GET /v1/mcp-policies/{flavor}/export",
+		adminGate(handlers.ExportMCPPolicyHandler(s)))
+	mux.Handle("POST /v1/mcp-policies/{flavor}/apply_template",
+		adminGate(handlers.ApplyMCPPolicyTemplateHandler(s)))
 
 	mux.Handle("GET /health", withRESTTimeout(handlers.HealthHandler()))
 

@@ -1,0 +1,14 @@
+# strict-baseline — production starting posture for the strict shop.
+#
+# allowlist mode + block_on_uncertainty=true means: every server is
+# blocked until the operator adds an explicit allow entry. This is
+# the "everything blocks until I say so" posture suitable for a
+# production flavor where the operator wants tight control over
+# which MCP servers agents can talk to.
+#
+# Zero entries shipped — the operator adds explicit allows from the
+# dashboard or via YAML import after applying this template.
+
+scope: flavor
+block_on_uncertainty: true
+entries: []

@@ -6153,3 +6153,115 @@ ignored (no override).
 flavor-then-global query order). D134 (mode-on-global-only rule
 that simplifies step 3 to a single mode lookup).
 
+---
+
+## D136 -- Migration source-of-truth refactor: helm/migrations is a build artifact
+
+**Date:** 2026-05-05
+**Phase:** MCP Protection Policy
+
+**Context.** Two parallel copies of every migration have lived in
+the repo since the Helm chart was introduced:
+``docker/postgres/migrations/`` (consumed by docker-compose via a
+bind mount) and ``helm/migrations/`` (packaged into a ConfigMap by
+``helm/templates/migrations-configmap.yaml`` via
+``.Files.Glob``). A ``sync-migrations`` Makefile target existed in
+``helm/Makefile`` for operators to run after adding a new
+migration, but it was manual — the operator had to remember.
+Operator memory failed: at the start of step 2 the
+``helm/migrations/`` directory contained only ``000001-000013``
+plus ``000017``, missing ``000014`` / ``000015`` / ``000016``
+entirely. The "Helm migration parity backfill" Roadmap bullet in
+README.md (carried over from D126's audit) was the user-facing
+acknowledgment that the parallel-copy model had failed.
+
+**Decision.** ``docker/postgres/migrations/`` is the canonical
+source of truth and tracked in git. ``helm/migrations/`` is a
+build artifact, gitignored, populated by the existing
+``helm/Makefile sync-migrations`` target which is now wired as a
+**prerequisite** of every chart-render operation (``lint``,
+``template``, ``install``, ``upgrade``). The target wipes the
+destination, ensures the directory exists, and copies every
+``.sql`` file from the canonical source. Operators running these
+chart commands via the Makefile (the documented entrypoint)
+always render against an in-sync set of migrations. Direct
+``helm`` invocations bypassing the Makefile (e.g., third-party
+tooling) require the operator to run ``make -C helm
+sync-migrations`` manually first; the migrations-configmap.yaml
+header comment documents the requirement.
+
+The 28 currently-committed files under ``helm/migrations/*.sql``
+are removed in the same atomic commit that adds the
+``.gitignore`` entry, the Makefile prerequisite wiring, and the
+template header documentation update. After the commit lands the
+first ``make -C helm lint`` (or any prerequisite-bearing target)
+recreates the directory and populates it with all 18 migrations
+in lockstep with ``docker/postgres/migrations/``.
+
+**Why now.** D128's migration ``000018_mcp_protection_policy``
+would have landed in two places under the old model, perpetuating
+the drift problem the Roadmap bullet flagged. Refactoring the
+source-of-truth model in the same step that adds 000018 prevents
+the new migration from inheriting the legacy gap and closes the
+Roadmap bullet inline rather than deferring it.
+
+**Rejected alternatives.**
+
+- *Status quo (parallel copies, manual sync).* Rejected: the
+  drift evidence above (000014 / 000015 / 000016 missing for
+  weeks) is the demonstration. Manual operator discipline has
+  already failed; preserving the model means it will fail again.
+- *Symlink ``helm/migrations`` → ``../docker/postgres/migrations``.*
+  Rejected: symlinks break on Windows checkouts (and
+  ``git config core.symlinks`` defaults vary across platforms /
+  GUI clients). Self-hosters running on Windows would either
+  fail the chart build or silently render an empty ConfigMap,
+  neither of which is acceptable. The Makefile-driven copy works
+  uniformly on every platform a self-hoster might run.
+- *Helm ``package``-time pull from a URL.* Rejected: introduces
+  a network dependency at chart build time, requires hosting
+  infrastructure for the SQL files, and complicates air-gapped
+  self-hosting. Out of proportion to the problem.
+- *Subtree / submodule.* Rejected: same drift class as parallel
+  copies (a stale subtree is indistinguishable from stale
+  copies), with extra ceremony around updates.
+- *Replace ``.Files.Glob`` with a generated single-file
+  ``migrations.yaml``.* Rejected: every chart edit would still
+  need a regeneration step (drift class survives), and a
+  pre-rendered ConfigMap is harder to debug than a directory of
+  named files when a self-hoster needs to inspect what landed.
+  The Makefile-prereq pattern keeps the existing ``.Files.Glob``
+  flow working with no template changes.
+
+**Touch list (this PR's chore commit).**
+
+- ``helm/Makefile`` — ``sync-migrations`` target gains
+  ``mkdir -p migrations/`` ahead of the ``rm`` so a freshly-cloned
+  tree (where the gitignored directory doesn't yet exist) works
+  on first invocation. ``lint`` / ``template`` / ``install`` /
+  ``upgrade`` add ``sync-migrations`` as a prerequisite.
+- ``.gitignore`` (root) — new ``# Helm`` block ignoring
+  ``helm/migrations/`` with an inline note pointing at this
+  decision.
+- ``helm/migrations/*.sql`` — all 28 currently-committed files
+  removed via ``git rm``. After the commit lands the directory
+  itself disappears from the working tree until the next
+  ``sync-migrations`` recreates it.
+- ``helm/templates/migrations-configmap.yaml`` — leading comment
+  block expanded to document the new flow (one-way sync,
+  gitignored target, Makefile-prerequisite wiring).
+- ``ARCHITECTURE.md`` — Repository Structure section's ``helm/``
+  entry gains an inline note. ``MCP Protection Policy`` ``Storage
+  schema`` binding-contract block adds a pointer noting the
+  migration ships under ``docker/postgres/migrations/`` only.
+
+**Roadmap bullet closed.** README.md's "Helm migration parity
+backfill" Roadmap bullet is removed in this same commit; the
+refactor is the structural fix the bullet pointed at.
+
+**Related decisions.** D128 (the storage schema whose migration
+``000018`` is the first to land under the new model). Rule 34
+(``init.sql`` is seed-only; all schema goes through golang-
+migrate); the refactor preserves that invariant by leaving
+``docker/postgres/migrations/`` as the single canonical home.
+

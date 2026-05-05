@@ -358,6 +358,10 @@ flightdeck/
 │   └── *.py                    # one script per framework / scenario
 │
 ├── helm/                       # Kubernetes Helm chart
+│   ├── Makefile                # lint / template / install / upgrade — each gates on sync-migrations
+│   ├── templates/              # ConfigMap consumes migrations/ via .Files.Glob at chart-render time
+│   └── migrations/             # Build artifact (gitignored, D136); populated by `make sync-migrations`
+│                               # from docker/postgres/migrations/. Single source of truth lives there.
 ├── docker/                     # docker-compose.{yml,dev.yml,prod.yml}, nginx, postgres/migrations
 ├── tests/
 │   ├── integration/            # Full-pipeline pytest suite (real NATS + Postgres)
@@ -2843,11 +2847,13 @@ because the mode default is already permissive.
 ### Storage schema
 
 > **Binding contract.** The schema below is the spec for migration
-> `000018_mcp_protection_policy.{up,down}.sql` (parallel pair in
-> `helm/migrations/`). Step 2 implements it byte-for-byte. Any
-> deviation — column rename, type change, additional or removed
-> constraint, index difference — requires a new `DECISIONS.md` entry
-> recording the pivot per Rule 42 BEFORE the migration is written.
+> `000018_mcp_protection_policy.{up,down}.sql`. The migration ships
+> under `docker/postgres/migrations/` only; the Helm chart picks it
+> up via `helm/Makefile sync-migrations` per D136. Step 2 implements
+> the schema byte-for-byte. Any deviation — column rename, type
+> change, additional or removed constraint, index difference —
+> requires a new `DECISIONS.md` entry recording the pivot per
+> Rule 42 BEFORE the migration is written.
 
 ```sql
 CREATE TABLE mcp_policies (

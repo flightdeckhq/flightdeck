@@ -65,10 +65,26 @@ in v0.6 as warn-only; v0.7 flips to honor configured enforcement.
   `/v1/mcp-policies` for list / get / create / update / delete
   flavor / resolve / audit-log. Implementation lands in
   subsequent steps; contract documented in ARCHITECTURE.md.
+- **`helm/Makefile sync-migrations` is now a chart-render
+  prerequisite.** `lint`, `template`, `install`, and `upgrade`
+  targets all depend on it, so chart commands always render
+  against an in-sync set of migrations. Target now `mkdir -p
+  migrations/` ahead of the copy so a freshly-cloned tree (where
+  the gitignored directory is absent) works on first invocation
+  (D136).
 
 ### Changed
 
-(none yet — implementation steps will populate)
+- **Migration source-of-truth refactor (D136).**
+  `helm/migrations/` is no longer tracked in git; the directory
+  is now a build artifact populated by `helm/Makefile
+  sync-migrations` from `docker/postgres/migrations/` (the
+  canonical source). Closes the "Helm migration parity backfill"
+  Roadmap bullet inline. The 28 previously-committed
+  `helm/migrations/*.sql` files are removed in the same commit
+  that adds the `.gitignore` entry, the Makefile prerequisite
+  wiring, and the migrations-configmap.yaml header documentation
+  update.
 
 ### Deprecated
 
@@ -100,6 +116,11 @@ in v0.6 as warn-only; v0.7 flips to honor configured enforcement.
   carries allow / deny entry deltas. Storage CHECK enforces.
 - **D135** Per-server precedence: most-specific scope wins
   (flavor → global → global-mode default).
+- **D136** Migration source-of-truth refactor —
+  `docker/postgres/migrations/` is canonical and tracked in git;
+  `helm/migrations/` is a build artifact (gitignored) populated by
+  `helm/Makefile sync-migrations` wired as a prerequisite of every
+  chart-render target.
 
 ## Unreleased — Sub-agent observability
 

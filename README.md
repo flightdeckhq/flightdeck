@@ -327,6 +327,121 @@ Two background daemon threads run inside the sensor. `flightdeck-event-queue` dr
 
 ---
 
+## MCP Protection Policy
+
+Flightdeck can gate which MCP servers your agents are allowed to talk to. The policy lives in the control plane, applies per flavor, and is enforced inside the sensor and the Claude Code plugin without changing the wire path. See `ARCHITECTURE.md` "MCP Protection Policy" for the full design and `DECISIONS.md` D127-D135 for the rationale.
+
+### Why this exists
+
+MCP servers are external code your agents call. A misconfigured `.mcp.json`, a typo'd hostname, a colleague's experimental server, or a substituted binary all reach the agent the same way: as a server entry the agent dials at session start. The MCP Protection Policy is the fence around that. Operators define which servers a production flavor can reach; the sensor and the Claude Code plugin enforce that decision at every MCP call.
+
+### Two scopes: global + per-flavor
+
+The policy lives at two scopes:
+
+- **Global.** One per deployment. Carries the **mode** (allowlist or blocklist) and a list of entries.
+- **Per-flavor.** Zero or more. Each carries allow / deny entry deltas against whatever the global resolves to. Per-flavor policies do not carry their own mode (D134).
+
+On install Flightdeck auto-creates an empty global policy in `blocklist` mode with zero entries — fully permissive by default. No operator action is required for MCP traffic to keep flowing on a fresh deployment; locking down a flavor is opt-in.
+
+Per-server resolution proceeds in three steps (D135):
+
+1. If the per-flavor policy has an entry for the URL, use it.
+2. Else if the global policy has an entry for the URL, use it.
+3. Else apply the global mode default: allowlist → block; blocklist → allow.
+
+Most-specific scope wins; per-flavor entries are real overrides, not suggestions.
+
+### Mode comparison
+
+| Behaviour | `allowlist` | `blocklist` |
+|---|---|---|
+| Default for unlisted servers | Block | Allow |
+| Fits when… | You can enumerate every server agents may use | You can enumerate the servers agents must avoid |
+| Typical scope | Production flavor | Dev flavor |
+| `block_on_uncertainty` toggle | Meaningful — emits an audit-grade `policy_mcp_block` event with `block_on_uncertainty=true` so unknown servers surface for promotion | Ignored (mode default is already permissive) |
+
+The `block_on_uncertainty` per-flavor boolean (default off) only affects allowlist mode. With it on, unlisted-server traffic still blocks, but the block events carry an explicit "fell through to mode default" signal so operators can find them in the dashboard and promote them to deliberate allow / deny entries.
+
+### Worked fingerprint examples
+
+Server identity is the pair `(URL, name)`. The URL is the security key; the name is the display label and the tamper-evidence axis (D127). The fingerprint is `sha256(canonical_url + 0x00 + name)`; the first 16 hex characters are the display fingerprint.
+
+**HTTP example.** Declared as `https://Maps.Example.com:443/SSE/?token=abc#frag` with name `maps`.
+
+```
+canonical_url   = "https://maps.example.com/SSE/"
+                  (lowercase scheme + host, default :443 stripped,
+                   path case preserved, fragment + query dropped)
+fingerprint     = sha256("https://maps.example.com/SSE/" + 0x00 + "maps")
+display         = first 16 hex chars
+```
+
+**Stdio example.** Declared as `npx -y @modelcontextprotocol/server-filesystem $HOME/data` with name `fs`.
+
+```
+canonical_url   = "stdio://npx -y @modelcontextprotocol/server-filesystem /home/alice/data"
+                  (stdio:// prefix, single-space separators,
+                   $HOME resolved at fingerprint time, args case-sensitive)
+fingerprint     = sha256(canonical_url + 0x00 + "fs")
+display         = first 16 hex chars
+```
+
+A declaration whose URL matches a previously-seen URL under a different name produces a `mcp_server_name_changed` event so operators can investigate drift; the policy decision still resolves on URL.
+
+### Configuration walkthrough
+
+1. **Operator creates a flavor policy on the dashboard** under Settings → MCP Policies. The form lets you select a flavor (e.g., `production`), pick allow / deny entries against the global, and toggle `block_on_uncertainty`.
+2. **Sensor and plugin pick it up at the next session.** The Python sensor fetches the active policy at `init()` (synchronous, alongside the existing token-policy preflight). The Claude Code plugin fetches at every `SessionStart` with a one-hour disk cache.
+3. **Per-call enforcement.** The sensor evaluates each MCP `call_tool` against the cached policy. On `warn` it emits `policy_mcp_warn` and proceeds. On `block` it emits `policy_mcp_block`, flushes the event queue, and raises `flightdeck.MCPPolicyBlocked` — frameworks surface this as a tool-call failure to the agent's reasoning loop (D130).
+4. **Mid-session updates.** A `policy_update` directive received in a response envelope refreshes the sensor cache; the new policy applies at the **next** `session_start`. In-flight sessions deliberately keep the policy that was active at their start so a mid-session flip doesn't change behaviour for a call already in progress (D129).
+
+### Quickstart YAML — "allow exactly these three servers in production"
+
+```yaml
+# Global policy (auto-created by Flightdeck on install; shown for clarity)
+scope: global
+mode: allowlist                  # block any server not explicitly allowed
+block_on_uncertainty: false      # (toggle is per-flavor; shown here as a reminder)
+entries: []                      # global allow-list is empty; flavor below carries the entries
+
+---
+# Per-flavor policy: production
+scope: flavor
+scope_value: production
+block_on_uncertainty: true       # surface fall-through cases as audit-grade blocks
+entries:
+  - server_url: "https://maps.example.com/sse"
+    server_name: "maps"
+    entry_kind: allow
+    enforcement: block           # ignored on allow entries; matters on deny entries
+  - server_url: "https://search.example.com/sse"
+    server_name: "search"
+    entry_kind: allow
+    enforcement: block
+  - server_url: "https://wiki.internal/mcp"
+    server_name: "internal-wiki"
+    entry_kind: allow
+    enforcement: block
+```
+
+Bulk YAML import is the operator workflow for the "I have N servers, here's the list" case. The dashboard renders the same data as a sortable table.
+
+### Soft-launch in v0.6
+
+The policy machinery ships in two phases (D133). v0.6 hard-codes warn-only behaviour: configured `block` enforcement still emits an event, but the event is `policy_mcp_warn` with `would_have_blocked=true` rather than `policy_mcp_block`, and the agent's call proceeds. v0.7 removes the override and `block` raises `MCPPolicyBlocked` as designed. The full storage, API, dashboard, fingerprinting, and event surfaces ship complete in v0.6.
+
+`FLIGHTDECK_MCP_POLICY_DEFAULT` is the per-agent escape hatch. Set to `enforce` to opt in to real enforcement before v0.7, or to `warn` after v0.7 to opt out.
+
+### Troubleshooting
+
+- **"MCP call works in dev but blocked in production."** The flavor policies differ. Check `Settings → MCP Policies → production` against `dev` — production typically runs allowlist mode, dev typically runs blocklist mode (the default). The `policy_mcp_block` event payload's `decision_path` field tells you which step in the resolution algorithm produced the block (`flavor_entry`, `global_entry`, or `mode_default`).
+- **"A server name changed silently."** Look for `mcp_server_name_changed` events in the dashboard. The URL hash is stable across renames; only the display label drifted. Investigate whether the rename is legitimate (a typo fix) or suspicious (an attacker substituting a server with a familiar URL but a different declared name). The policy decision still resolves on URL, so enforcement isn't bypassed by rename.
+- **"Decisions remembered locally don't match the dashboard."** Claude Code's `yes-and-remember` decisions live at `~/.claude/flightdeck/remembered_mcp_decisions.json` (D132). The plugin lazy-syncs to the control plane and re-fetches on the standard TTL, so a real `deny` on the server-side policy will eventually override a stale local `yes`. Force a resync immediately by deleting the file and starting a new Claude Code session.
+- **"Sensor isn't enforcing in v0.6."** Soft-launch is warn-only by default. Set `FLIGHTDECK_MCP_POLICY_DEFAULT=enforce` to opt in to real enforcement before v0.7, or wait for the v0.7 release to flip enforcement on by default.
+
+---
+
 ## Known limitations
 
 - **`patch()` must run before clients are constructed.** Instances that already accessed `.messages`, `.chat`, `.responses`, or `.embeddings` before `patch()` keep the raw resource cached in `__dict__`. In practice this is a non-issue when `init()` + `patch()` runs at the top of the entrypoint.

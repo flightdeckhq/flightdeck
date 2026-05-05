@@ -23,6 +23,7 @@ from flightdeck_sensor.core.exceptions import (
     BudgetExceededError,
     ConfigurationError,
     DirectiveError,
+    MCPPolicyBlocked,
 )
 from flightdeck_sensor.core.session import Session
 from flightdeck_sensor.core.types import (
@@ -83,6 +84,7 @@ __all__ = [
     "BudgetExceededError",
     "ConfigurationError",
     "DirectiveError",
+    "MCPPolicyBlocked",
 ]
 
 _log = logging.getLogger("flightdeck_sensor")

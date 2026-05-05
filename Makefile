@@ -1,4 +1,4 @@
-.PHONY: help build test test-plugin test-integration test-sensor-e2e test-e2e test-e2e-ui seed-e2e lint dev dev-reset down logs release migrate-local-up migrate-local-status playground-anthropic playground-openai playground-langchain playground-langgraph playground-llamaindex playground-crewai playground-litellm playground-mcp playground-claude-code playground-bifrost playground-policies playground-subagents-crewai playground-subagents-langgraph playground-all
+.PHONY: help build test test-plugin test-integration test-sensor-e2e test-e2e test-e2e-ui seed-e2e lint dev dev-reset down logs release migrate-local-up migrate-local-status playground-anthropic playground-openai playground-langchain playground-langgraph playground-llamaindex playground-crewai playground-litellm playground-mcp playground-claude-code playground-bifrost playground-policies playground-subagents-crewai playground-subagents-langgraph playground-mcp-policy-warn playground-mcp-policy-block playground-mcp-policy-block-on-uncertainty playground-mcp-policy-blocklist playground-mcp-policy-crewai playground-mcp-policy-langgraph playground-all
 
 # ---------------------------------------------------------------------------
 # Python interpreter resolution.
@@ -99,6 +99,29 @@ playground-subagents-crewai: ## Rule 40d D126 playground: real CrewAI Crew (Rese
 
 playground-subagents-langgraph: ## Rule 40d D126 playground: real LangGraph (two agent-bearing nodes). Requires ANTHROPIC_API_KEY.
 	$(PYTHON) playground/17_subagents_langgraph.py
+
+# MCP Protection Policy (D128 / D130 / D131) demos. Demos 18-21 do
+# not require LLM API keys — the policy decision fires at call_tool
+# time against the in-tree reference MCP server. Demos 22 / 23 do
+# require API keys (CrewAI / LangGraph drive real LLM-led MCP calls).
+
+playground-mcp-policy-warn: ## Rule 40d MCP policy: flavor warn entry → POLICY_MCP_WARN lands; no API key required.
+	$(PYTHON) playground/18_mcp_policy_warn.py
+
+playground-mcp-policy-block: ## Rule 40d MCP policy: flavor block entry → MCPPolicyBlocked raised; no API key required.
+	$(PYTHON) playground/19_mcp_policy_block.py
+
+playground-mcp-policy-block-on-uncertainty: ## Rule 40d MCP policy: cache miss + mcp_block_on_uncertainty=True → block via local_failsafe.
+	$(PYTHON) playground/20_mcp_policy_block_on_uncertainty.py
+
+playground-mcp-policy-blocklist: ## Rule 40d MCP policy: global blocklist + deny entry → block via global_entry. Mutates global; restores at end.
+	$(PYTHON) playground/21_mcp_policy_blocklist.py
+
+playground-mcp-policy-crewai: ## Rule 40d MCP policy: CrewAI transitive via mcpadapt. Requires ANTHROPIC_API_KEY + OPENAI_API_KEY.
+	$(PYTHON) playground/22_mcp_policy_crewai.py
+
+playground-mcp-policy-langgraph: ## Rule 40d MCP policy: LangGraph transitive via langchain-mcp-adapters. Requires ANTHROPIC_API_KEY.
+	$(PYTHON) playground/23_mcp_policy_langgraph.py
 
 playground-policies: ## Rule 40d playground: policy WARN / DEGRADE / BLOCK / forced-DEGRADE demos via real Anthropic.
 	$(PYTHON) playground/policy_demo_warn.py

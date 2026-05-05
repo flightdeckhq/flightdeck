@@ -220,21 +220,24 @@ in v0.6 as warn-only; v0.7 flips to honor configured enforcement.
 
 ### Added (playground demos)
 
-- **Six new Rule 40d playground demos** at `playground/16_*` through
-  `playground/21_*`:
-  - `16_mcp_policy_warn.py` — allowlist mode + warn enforcement;
-    POLICY_MCP_WARN lands; tool call proceeds.
-  - `17_mcp_policy_block.py` — allowlist mode + block enforcement;
+- **Six new Rule 40d playground demos** at `playground/18_*` through
+  `playground/23_*` (numbers 16/17 are already taken by the D126
+  sub-agent demos):
+  - `18_mcp_policy_warn.py` — flavor deny+warn entry; POLICY_MCP_WARN
+    lands; tool call proceeds.
+  - `19_mcp_policy_block.py` — flavor deny+block entry;
     POLICY_MCP_BLOCK lands; MCPPolicyBlocked raised.
-  - `18_mcp_policy_block_on_uncertainty.py` — control-plane
-    unreachable simulation + `mcp_block_on_uncertainty=True`;
-    block fires from the local failsafe.
-  - `19_mcp_policy_blocklist.py` — blocklist mode + deny entry;
-    block fires.
-  - `20_mcp_policy_crewai.py` — CrewAI transitive coverage via
+  - `20_mcp_policy_block_on_uncertainty.py` — invalid api_url +
+    `mcp_block_on_uncertainty=True`; block fires from the local
+    failsafe with `decision_path=mode_default`,
+    `scope=local_failsafe`.
+  - `21_mcp_policy_blocklist.py` — global blocklist + global deny
+    entry; block fires via `decision_path=global_entry`. Mutates
+    the global policy; restores at end.
+  - `22_mcp_policy_crewai.py` — CrewAI transitive coverage via
     `mcpadapt`. Self-skips without `ANTHROPIC_API_KEY` +
     `OPENAI_API_KEY`.
-  - `21_mcp_policy_langgraph.py` — LangGraph transitive coverage
+  - `23_mcp_policy_langgraph.py` — LangGraph transitive coverage
     via `langchain-mcp-adapters`. Self-skips without
     `ANTHROPIC_API_KEY`.
 - **New Make targets:** `playground-mcp-policy-warn`,

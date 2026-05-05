@@ -1,1 +1,0 @@
-ALTER TABLE directives DROP COLUMN IF EXISTS payload;

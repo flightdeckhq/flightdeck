@@ -45,7 +45,7 @@ type MCPPolicyVersion struct {
 	ID        string          `json:"id"`
 	PolicyID  string          `json:"policy_id"`
 	Version   int             `json:"version"`
-	Snapshot  json.RawMessage `json:"snapshot"`
+	Snapshot  json.RawMessage `json:"snapshot" swaggertype:"object"`
 	CreatedAt time.Time       `json:"created_at"`
 	CreatedBy *string         `json:"created_by,omitempty"`
 }
@@ -67,7 +67,7 @@ type MCPPolicyAuditLog struct {
 	PolicyID   *string         `json:"policy_id,omitempty"` // NULL after policy deletion
 	EventType  string          `json:"event_type"`
 	Actor      *string         `json:"actor,omitempty"`
-	Payload    json.RawMessage `json:"payload"`
+	Payload    json.RawMessage `json:"payload" swaggertype:"object"`
 	OccurredAt time.Time       `json:"occurred_at"`
 }
 
@@ -126,8 +126,8 @@ type DryRunServerCount struct {
 type MCPPolicyDiff struct {
 	FromVersion               int              `json:"from_version"`
 	ToVersion                 int              `json:"to_version"`
-	FromSnapshot              json.RawMessage  `json:"from_snapshot"`
-	ToSnapshot                json.RawMessage  `json:"to_snapshot"`
+	FromSnapshot              json.RawMessage  `json:"from_snapshot" swaggertype:"object"`
+	ToSnapshot                json.RawMessage  `json:"to_snapshot" swaggertype:"object"`
 	ModeChanged               *DiffString      `json:"mode_changed,omitempty"`
 	BlockOnUncertaintyChanged *DiffBool        `json:"block_on_uncertainty_changed,omitempty"`
 	EntriesAdded              []MCPPolicyEntry `json:"entries_added"`

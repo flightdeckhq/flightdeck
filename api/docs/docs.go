@@ -1011,6 +1011,1113 @@ const docTemplate = `{
                 }
             }
         },
+        "/v1/mcp-policies/global": {
+            "get": {
+                "description": "Returns the singleton global policy + entries. Auto-created at API boot per D133, so this endpoint always returns 200.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "mcp-policy"
+                ],
+                "summary": "Get global MCP protection policy",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/store.MCPPolicy"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    }
+                }
+            },
+            "put": {
+                "description": "Replaces global policy state — mode, entries, block_on_uncertainty. Bumps version, writes a snapshot, writes an audit-log entry. Single-shot transaction (D128).",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "mcp-policy"
+                ],
+                "summary": "Update global MCP protection policy",
+                "parameters": [
+                    {
+                        "description": "New policy state",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/store.MCPPolicyMutation"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/store.MCPPolicy"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/mcp-policies/global/audit-log": {
+            "get": {
+                "description": "Returns operator-initiated mutation history for the global MCP policy in DESC time order, paginated. Same response shape as the flavor variant.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "mcp-policy"
+                ],
+                "summary": "List global MCP policy audit log",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Start time (RFC 3339)",
+                        "name": "from",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "End time (RFC 3339)",
+                        "name": "to",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by event type",
+                        "name": "event_type",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Max rows; 1..200; default 50",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Pagination offset; default 0",
+                        "name": "offset",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/store.MCPPolicyAuditLog"
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/mcp-policies/resolve": {
+            "get": {
+                "description": "Sensor / plugin preflight. Returns the per-D135 decision (allow / warn / block) for a (flavor, server_url, server_name) tuple, plus the decision_path that produced it (flavor_entry / global_entry / mode_default). The server canonicalizes the URL using the same algorithm as the Python and JS identity primitives.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "mcp-policy"
+                ],
+                "summary": "Resolve MCP policy decision",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Agent flavor; omit to resolve against global only",
+                        "name": "flavor",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Raw MCP server URL or stdio command",
+                        "name": "server_url",
+                        "in": "query",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Server display name",
+                        "name": "server_name",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/store.MCPPolicyResolveResult"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/mcp-policies/templates": {
+            "get": {
+                "description": "Returns the three locked templates (D138) with metadata + YAML body. Read-only scope; any valid bearer token. The strict-with-common-allows template carries a maintenance warning in its description.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "mcp-policy"
+                ],
+                "summary": "List shipped MCP policy templates",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/handlers.templateMeta"
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/mcp-policies/{flavor}": {
+            "get": {
+                "description": "Returns the flavor's policy + entries. 404 when no flavor policy exists.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "mcp-policy"
+                ],
+                "summary": "Get flavor MCP protection policy",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Agent flavor",
+                        "name": "flavor",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/store.MCPPolicy"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    }
+                }
+            },
+            "put": {
+                "description": "Replaces flavor policy state — entries, block_on_uncertainty. Mode is global-only (D134) and rejected here. Same atomic version + audit semantics as the global PUT.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "mcp-policy"
+                ],
+                "summary": "Update flavor MCP protection policy",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Agent flavor",
+                        "name": "flavor",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "New policy state",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/store.MCPPolicyMutation"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/store.MCPPolicy"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "description": "Creates a new flavor policy. Returns 409 if a flavor policy already exists. The global policy cannot be POST'd; use PUT /global to modify it.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "mcp-policy"
+                ],
+                "summary": "Create flavor MCP protection policy",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Agent flavor",
+                        "name": "flavor",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Policy state",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/store.MCPPolicyMutation"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/store.MCPPolicy"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "description": "Deletes a flavor policy. The global cannot be deleted. Audit-log row preserved via ON DELETE SET NULL on policy_id.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "mcp-policy"
+                ],
+                "summary": "Delete flavor MCP protection policy",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Agent flavor",
+                        "name": "flavor",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/mcp-policies/{flavor}/apply_template": {
+            "post": {
+                "description": "Replaces the flavor policy state with the template's content. Same atomic version + audit semantics as PUT; audit-log entry carries payload.applied_template=\u003cname\u003e.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "mcp-policy"
+                ],
+                "summary": "Apply a named template to a flavor MCP policy",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Agent flavor",
+                        "name": "flavor",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Template name",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handlers.applyTemplateRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/store.MCPPolicy"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/mcp-policies/{flavor}/audit-log": {
+            "get": {
+                "description": "Returns operator-initiated mutation history in DESC time order, paginated. event_type query filters to one mutation kind. Sensor-observed system state (decision events, name drift) lives in the events pipeline (D131), NOT here.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "mcp-policy"
+                ],
+                "summary": "List flavor MCP policy audit log",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Agent flavor",
+                        "name": "flavor",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Start time (RFC 3339)",
+                        "name": "from",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "End time (RFC 3339)",
+                        "name": "to",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by event type",
+                        "name": "event_type",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Max rows; 1..200; default 50",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Pagination offset; default 0",
+                        "name": "offset",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/store.MCPPolicyAuditLog"
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/mcp-policies/{flavor}/diff": {
+            "get": {
+                "description": "Server-computed structural diff between two versions. Returns both snapshots plus mode_changed / block_on_uncertainty_changed / entries_added / entries_removed / entries_changed buckets.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "mcp-policy"
+                ],
+                "summary": "Diff two MCP policy versions",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Agent flavor or 'global'",
+                        "name": "flavor",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "From version number",
+                        "name": "from",
+                        "in": "query",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "To version number",
+                        "name": "to",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/store.MCPPolicyDiff"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/mcp-policies/{flavor}/dry_run": {
+            "post": {
+                "description": "Replays the last N hours of mcp_tool_call events against the proposed policy in the request body. Returns per-server would_allow / would_warn / would_block counts plus an unresolvable_count for events whose session lacks context.mcp_servers (D137). Does NOT mutate state. hours param defaults to 24, max 168 (7 days).",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "mcp-policy"
+                ],
+                "summary": "Dry-run a proposed MCP policy against historical traffic",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Agent flavor or 'global'",
+                        "name": "flavor",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Replay window in hours (1..168, default 24)",
+                        "name": "hours",
+                        "in": "query"
+                    },
+                    {
+                        "description": "Proposed policy",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/store.MCPPolicyMutation"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/store.MCPPolicyDryRunResult"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/mcp-policies/{flavor}/export": {
+            "get": {
+                "description": "Serializes current flavor policy state as YAML. Use the version-fetch endpoint for historical snapshots. Returns 404 when no flavor policy exists.",
+                "produces": [
+                    "application/yaml"
+                ],
+                "tags": [
+                    "mcp-policy"
+                ],
+                "summary": "Export flavor MCP policy as YAML",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Agent flavor",
+                        "name": "flavor",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/mcp-policies/{flavor}/import": {
+            "post": {
+                "description": "Replaces flavor policy state from YAML body. Same atomic version + audit semantics as PUT; audit-log entry carries payload.via='import'. Schema matches the README quickstart YAML byte-for-byte.",
+                "consumes": [
+                    "application/yaml"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "mcp-policy"
+                ],
+                "summary": "Import flavor MCP policy from YAML",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Agent flavor",
+                        "name": "flavor",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "YAML policy state",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/store.MCPPolicy"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/mcp-policies/{flavor}/metrics": {
+            "get": {
+                "description": "Aggregates policy_mcp_warn and policy_mcp_block events emitted by the sensor / plugin enforcement path. Returns empty buckets until step 4 ships those event types. period accepts 24h / 7d / 30d.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "mcp-policy"
+                ],
+                "summary": "Get MCP policy enforcement metrics",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Agent flavor or 'global'",
+                        "name": "flavor",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Aggregation window (24h / 7d / 30d); default 24h",
+                        "name": "period",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/store.MCPPolicyMetrics"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/mcp-policies/{flavor}/versions": {
+            "get": {
+                "description": "Returns version metadata (no full snapshots) in DESC version order, paginated. Use the singular versions/{version} endpoint for full snapshots.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "mcp-policy"
+                ],
+                "summary": "List MCP policy version history",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Agent flavor or 'global'",
+                        "name": "flavor",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Max rows; 1..200; default 50",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Pagination offset; default 0",
+                        "name": "offset",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/store.MCPPolicyVersionMeta"
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/mcp-policies/{flavor}/versions/{version}": {
+            "get": {
+                "description": "Returns the full snapshot at the named version number (integer, NOT a UUID).",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "mcp-policy"
+                ],
+                "summary": "Get one MCP policy version snapshot",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Agent flavor or 'global'",
+                        "name": "flavor",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Version number",
+                        "name": "version",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/store.MCPPolicyVersion"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/v1/policies": {
             "get": {
                 "description": "Returns all token policies",
@@ -1765,6 +2872,31 @@ const docTemplate = `{
                 }
             }
         },
+        "handlers.applyTemplateRequest": {
+            "type": "object",
+            "properties": {
+                "template": {
+                    "type": "string"
+                }
+            }
+        },
+        "handlers.templateMeta": {
+            "type": "object",
+            "properties": {
+                "description": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "recommended_for": {
+                    "type": "string"
+                },
+                "yaml_body": {
+                    "type": "string"
+                }
+            }
+        },
         "store.AccessTokenRow": {
             "type": "object",
             "properties": {
@@ -1998,6 +3130,28 @@ const docTemplate = `{
                 }
             }
         },
+        "store.DiffBool": {
+            "type": "object",
+            "properties": {
+                "from": {
+                    "type": "boolean"
+                },
+                "to": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "store.DiffString": {
+            "type": "object",
+            "properties": {
+                "from": {
+                    "type": "string"
+                },
+                "to": {
+                    "type": "string"
+                }
+            }
+        },
         "store.Directive": {
             "type": "object",
             "properties": {
@@ -2032,6 +3186,40 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "session_id": {
+                    "type": "string"
+                }
+            }
+        },
+        "store.DryRunServerCount": {
+            "type": "object",
+            "properties": {
+                "fingerprint": {
+                    "type": "string"
+                },
+                "server_name": {
+                    "type": "string"
+                },
+                "would_allow": {
+                    "type": "integer"
+                },
+                "would_block": {
+                    "type": "integer"
+                },
+                "would_warn": {
+                    "type": "integer"
+                }
+            }
+        },
+        "store.EntryDiff": {
+            "type": "object",
+            "properties": {
+                "after": {
+                    "$ref": "#/definitions/store.MCPPolicyEntry"
+                },
+                "before": {
+                    "$ref": "#/definitions/store.MCPPolicyEntry"
+                },
+                "fingerprint": {
                     "type": "string"
                 }
             }
@@ -2135,6 +3323,279 @@ const docTemplate = `{
                     "type": "integer"
                 },
                 "total": {
+                    "type": "integer"
+                }
+            }
+        },
+        "store.MCPPolicy": {
+            "type": "object",
+            "properties": {
+                "block_on_uncertainty": {
+                    "type": "boolean"
+                },
+                "created_at": {
+                    "type": "string"
+                },
+                "entries": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/store.MCPPolicyEntry"
+                    }
+                },
+                "id": {
+                    "type": "string"
+                },
+                "mode": {
+                    "description": "global only — D134",
+                    "type": "string"
+                },
+                "scope": {
+                    "description": "\"global\" | \"flavor\"",
+                    "type": "string"
+                },
+                "scope_value": {
+                    "description": "NULL for global",
+                    "type": "string"
+                },
+                "updated_at": {
+                    "type": "string"
+                },
+                "version": {
+                    "type": "integer"
+                }
+            }
+        },
+        "store.MCPPolicyAuditLog": {
+            "type": "object",
+            "properties": {
+                "actor": {
+                    "type": "string"
+                },
+                "event_type": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "occurred_at": {
+                    "type": "string"
+                },
+                "payload": {
+                    "type": "object"
+                },
+                "policy_id": {
+                    "description": "NULL after policy deletion",
+                    "type": "string"
+                }
+            }
+        },
+        "store.MCPPolicyDiff": {
+            "type": "object",
+            "properties": {
+                "block_on_uncertainty_changed": {
+                    "$ref": "#/definitions/store.DiffBool"
+                },
+                "entries_added": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/store.MCPPolicyEntry"
+                    }
+                },
+                "entries_changed": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/store.EntryDiff"
+                    }
+                },
+                "entries_removed": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/store.MCPPolicyEntry"
+                    }
+                },
+                "from_snapshot": {
+                    "type": "object"
+                },
+                "from_version": {
+                    "type": "integer"
+                },
+                "mode_changed": {
+                    "$ref": "#/definitions/store.DiffString"
+                },
+                "to_snapshot": {
+                    "type": "object"
+                },
+                "to_version": {
+                    "type": "integer"
+                }
+            }
+        },
+        "store.MCPPolicyDryRunResult": {
+            "type": "object",
+            "properties": {
+                "events_replayed": {
+                    "type": "integer"
+                },
+                "hours": {
+                    "type": "integer"
+                },
+                "per_server": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/store.DryRunServerCount"
+                    }
+                },
+                "unresolvable_count": {
+                    "type": "integer"
+                }
+            }
+        },
+        "store.MCPPolicyEntry": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string"
+                },
+                "enforcement": {
+                    "type": "string"
+                },
+                "entry_kind": {
+                    "description": "\"allow\" | \"deny\"",
+                    "type": "string"
+                },
+                "fingerprint": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "policy_id": {
+                    "type": "string"
+                },
+                "server_name": {
+                    "type": "string"
+                },
+                "server_url": {
+                    "type": "string"
+                }
+            }
+        },
+        "store.MCPPolicyEntryMutation": {
+            "type": "object",
+            "properties": {
+                "enforcement": {
+                    "type": "string"
+                },
+                "entry_kind": {
+                    "type": "string"
+                },
+                "server_name": {
+                    "type": "string"
+                },
+                "server_url": {
+                    "type": "string"
+                }
+            }
+        },
+        "store.MCPPolicyMetrics": {
+            "type": "object",
+            "properties": {
+                "blocks_per_server": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/store.ServerCountBucket"
+                    }
+                },
+                "period": {
+                    "type": "string"
+                },
+                "warns_per_server": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/store.ServerCountBucket"
+                    }
+                }
+            }
+        },
+        "store.MCPPolicyMutation": {
+            "type": "object",
+            "properties": {
+                "block_on_uncertainty": {
+                    "type": "boolean"
+                },
+                "entries": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/store.MCPPolicyEntryMutation"
+                    }
+                },
+                "mode": {
+                    "type": "string"
+                }
+            }
+        },
+        "store.MCPPolicyResolveResult": {
+            "type": "object",
+            "properties": {
+                "decision": {
+                    "description": "\"allow\" | \"warn\" | \"block\"",
+                    "type": "string"
+                },
+                "decision_path": {
+                    "description": "\"flavor_entry\" | \"global_entry\" | \"mode_default\"",
+                    "type": "string"
+                },
+                "fingerprint": {
+                    "type": "string"
+                },
+                "policy_id": {
+                    "type": "string"
+                },
+                "scope": {
+                    "description": "\"global\" | \"flavor:\u003cvalue\u003e\"",
+                    "type": "string"
+                }
+            }
+        },
+        "store.MCPPolicyVersion": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string"
+                },
+                "created_by": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "policy_id": {
+                    "type": "string"
+                },
+                "snapshot": {
+                    "type": "object"
+                },
+                "version": {
+                    "type": "integer"
+                }
+            }
+        },
+        "store.MCPPolicyVersionMeta": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string"
+                },
+                "created_by": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "policy_id": {
+                    "type": "string"
+                },
+                "version": {
                     "type": "integer"
                 }
             }
@@ -2304,6 +3765,20 @@ const docTemplate = `{
                     "items": {
                         "$ref": "#/definitions/store.SearchResultSession"
                     }
+                }
+            }
+        },
+        "store.ServerCountBucket": {
+            "type": "object",
+            "properties": {
+                "count": {
+                    "type": "integer"
+                },
+                "fingerprint": {
+                    "type": "string"
+                },
+                "server_name": {
+                    "type": "string"
                 }
             }
         },

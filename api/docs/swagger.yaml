@@ -130,6 +130,22 @@ definitions:
           type: string
         type: array
     type: object
+  handlers.applyTemplateRequest:
+    properties:
+      template:
+        type: string
+    type: object
+  handlers.templateMeta:
+    properties:
+      description:
+        type: string
+      name:
+        type: string
+      recommended_for:
+        type: string
+      yaml_body:
+        type: string
+    type: object
   store.AccessTokenRow:
     properties:
       created_at:
@@ -307,6 +323,20 @@ definitions:
       value:
         type: number
     type: object
+  store.DiffBool:
+    properties:
+      from:
+        type: boolean
+      to:
+        type: boolean
+    type: object
+  store.DiffString:
+    properties:
+      from:
+        type: string
+      to:
+        type: string
+    type: object
   store.Directive:
     properties:
       action:
@@ -330,6 +360,28 @@ definitions:
       reason:
         type: string
       session_id:
+        type: string
+    type: object
+  store.DryRunServerCount:
+    properties:
+      fingerprint:
+        type: string
+      server_name:
+        type: string
+      would_allow:
+        type: integer
+      would_block:
+        type: integer
+      would_warn:
+        type: integer
+    type: object
+  store.EntryDiff:
+    properties:
+      after:
+        $ref: '#/definitions/store.MCPPolicyEntry'
+      before:
+        $ref: '#/definitions/store.MCPPolicyEntry'
+      fingerprint:
         type: string
     type: object
   store.Event:
@@ -400,6 +452,187 @@ definitions:
       offset:
         type: integer
       total:
+        type: integer
+    type: object
+  store.MCPPolicy:
+    properties:
+      block_on_uncertainty:
+        type: boolean
+      created_at:
+        type: string
+      entries:
+        items:
+          $ref: '#/definitions/store.MCPPolicyEntry'
+        type: array
+      id:
+        type: string
+      mode:
+        description: global only — D134
+        type: string
+      scope:
+        description: '"global" | "flavor"'
+        type: string
+      scope_value:
+        description: NULL for global
+        type: string
+      updated_at:
+        type: string
+      version:
+        type: integer
+    type: object
+  store.MCPPolicyAuditLog:
+    properties:
+      actor:
+        type: string
+      event_type:
+        type: string
+      id:
+        type: string
+      occurred_at:
+        type: string
+      payload:
+        type: object
+      policy_id:
+        description: NULL after policy deletion
+        type: string
+    type: object
+  store.MCPPolicyDiff:
+    properties:
+      block_on_uncertainty_changed:
+        $ref: '#/definitions/store.DiffBool'
+      entries_added:
+        items:
+          $ref: '#/definitions/store.MCPPolicyEntry'
+        type: array
+      entries_changed:
+        items:
+          $ref: '#/definitions/store.EntryDiff'
+        type: array
+      entries_removed:
+        items:
+          $ref: '#/definitions/store.MCPPolicyEntry'
+        type: array
+      from_snapshot:
+        type: object
+      from_version:
+        type: integer
+      mode_changed:
+        $ref: '#/definitions/store.DiffString'
+      to_snapshot:
+        type: object
+      to_version:
+        type: integer
+    type: object
+  store.MCPPolicyDryRunResult:
+    properties:
+      events_replayed:
+        type: integer
+      hours:
+        type: integer
+      per_server:
+        items:
+          $ref: '#/definitions/store.DryRunServerCount'
+        type: array
+      unresolvable_count:
+        type: integer
+    type: object
+  store.MCPPolicyEntry:
+    properties:
+      created_at:
+        type: string
+      enforcement:
+        type: string
+      entry_kind:
+        description: '"allow" | "deny"'
+        type: string
+      fingerprint:
+        type: string
+      id:
+        type: string
+      policy_id:
+        type: string
+      server_name:
+        type: string
+      server_url:
+        type: string
+    type: object
+  store.MCPPolicyEntryMutation:
+    properties:
+      enforcement:
+        type: string
+      entry_kind:
+        type: string
+      server_name:
+        type: string
+      server_url:
+        type: string
+    type: object
+  store.MCPPolicyMetrics:
+    properties:
+      blocks_per_server:
+        items:
+          $ref: '#/definitions/store.ServerCountBucket'
+        type: array
+      period:
+        type: string
+      warns_per_server:
+        items:
+          $ref: '#/definitions/store.ServerCountBucket'
+        type: array
+    type: object
+  store.MCPPolicyMutation:
+    properties:
+      block_on_uncertainty:
+        type: boolean
+      entries:
+        items:
+          $ref: '#/definitions/store.MCPPolicyEntryMutation'
+        type: array
+      mode:
+        type: string
+    type: object
+  store.MCPPolicyResolveResult:
+    properties:
+      decision:
+        description: '"allow" | "warn" | "block"'
+        type: string
+      decision_path:
+        description: '"flavor_entry" | "global_entry" | "mode_default"'
+        type: string
+      fingerprint:
+        type: string
+      policy_id:
+        type: string
+      scope:
+        description: '"global" | "flavor:<value>"'
+        type: string
+    type: object
+  store.MCPPolicyVersion:
+    properties:
+      created_at:
+        type: string
+      created_by:
+        type: string
+      id:
+        type: string
+      policy_id:
+        type: string
+      snapshot:
+        type: object
+      version:
+        type: integer
+    type: object
+  store.MCPPolicyVersionMeta:
+    properties:
+      created_at:
+        type: string
+      created_by:
+        type: string
+      id:
+        type: string
+      policy_id:
+        type: string
+      version:
         type: integer
     type: object
   store.Policy:
@@ -520,6 +753,15 @@ definitions:
         items:
           $ref: '#/definitions/store.SearchResultSession'
         type: array
+    type: object
+  store.ServerCountBucket:
+    properties:
+      count:
+        type: integer
+      fingerprint:
+        type: string
+      server_name:
+        type: string
     type: object
   store.Session:
     properties:
@@ -1499,6 +1741,772 @@ paths:
       summary: Get fleet state (agent-level, D115)
       tags:
       - fleet
+  /v1/mcp-policies/{flavor}:
+    delete:
+      description: Deletes a flavor policy. The global cannot be deleted. Audit-log
+        row preserved via ON DELETE SET NULL on policy_id.
+      parameters:
+      - description: Agent flavor
+        in: path
+        name: flavor
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No Content
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      summary: Delete flavor MCP protection policy
+      tags:
+      - mcp-policy
+    get:
+      description: Returns the flavor's policy + entries. 404 when no flavor policy
+        exists.
+      parameters:
+      - description: Agent flavor
+        in: path
+        name: flavor
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/store.MCPPolicy'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      summary: Get flavor MCP protection policy
+      tags:
+      - mcp-policy
+    post:
+      consumes:
+      - application/json
+      description: Creates a new flavor policy. Returns 409 if a flavor policy already
+        exists. The global policy cannot be POST'd; use PUT /global to modify it.
+      parameters:
+      - description: Agent flavor
+        in: path
+        name: flavor
+        required: true
+        type: string
+      - description: Policy state
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/store.MCPPolicyMutation'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/store.MCPPolicy'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      summary: Create flavor MCP protection policy
+      tags:
+      - mcp-policy
+    put:
+      consumes:
+      - application/json
+      description: Replaces flavor policy state — entries, block_on_uncertainty. Mode
+        is global-only (D134) and rejected here. Same atomic version + audit semantics
+        as the global PUT.
+      parameters:
+      - description: Agent flavor
+        in: path
+        name: flavor
+        required: true
+        type: string
+      - description: New policy state
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/store.MCPPolicyMutation'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/store.MCPPolicy'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      summary: Update flavor MCP protection policy
+      tags:
+      - mcp-policy
+  /v1/mcp-policies/{flavor}/apply_template:
+    post:
+      consumes:
+      - application/json
+      description: Replaces the flavor policy state with the template's content. Same
+        atomic version + audit semantics as PUT; audit-log entry carries payload.applied_template=<name>.
+      parameters:
+      - description: Agent flavor
+        in: path
+        name: flavor
+        required: true
+        type: string
+      - description: Template name
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.applyTemplateRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/store.MCPPolicy'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      summary: Apply a named template to a flavor MCP policy
+      tags:
+      - mcp-policy
+  /v1/mcp-policies/{flavor}/audit-log:
+    get:
+      description: Returns operator-initiated mutation history in DESC time order,
+        paginated. event_type query filters to one mutation kind. Sensor-observed
+        system state (decision events, name drift) lives in the events pipeline (D131),
+        NOT here.
+      parameters:
+      - description: Agent flavor
+        in: path
+        name: flavor
+        required: true
+        type: string
+      - description: Start time (RFC 3339)
+        in: query
+        name: from
+        type: string
+      - description: End time (RFC 3339)
+        in: query
+        name: to
+        type: string
+      - description: Filter by event type
+        in: query
+        name: event_type
+        type: string
+      - description: Max rows; 1..200; default 50
+        in: query
+        name: limit
+        type: integer
+      - description: Pagination offset; default 0
+        in: query
+        name: offset
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/store.MCPPolicyAuditLog'
+            type: array
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      summary: List flavor MCP policy audit log
+      tags:
+      - mcp-policy
+  /v1/mcp-policies/{flavor}/diff:
+    get:
+      description: Server-computed structural diff between two versions. Returns both
+        snapshots plus mode_changed / block_on_uncertainty_changed / entries_added
+        / entries_removed / entries_changed buckets.
+      parameters:
+      - description: Agent flavor or 'global'
+        in: path
+        name: flavor
+        required: true
+        type: string
+      - description: From version number
+        in: query
+        name: from
+        required: true
+        type: integer
+      - description: To version number
+        in: query
+        name: to
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/store.MCPPolicyDiff'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      summary: Diff two MCP policy versions
+      tags:
+      - mcp-policy
+  /v1/mcp-policies/{flavor}/dry_run:
+    post:
+      consumes:
+      - application/json
+      description: Replays the last N hours of mcp_tool_call events against the proposed
+        policy in the request body. Returns per-server would_allow / would_warn /
+        would_block counts plus an unresolvable_count for events whose session lacks
+        context.mcp_servers (D137). Does NOT mutate state. hours param defaults to
+        24, max 168 (7 days).
+      parameters:
+      - description: Agent flavor or 'global'
+        in: path
+        name: flavor
+        required: true
+        type: string
+      - description: Replay window in hours (1..168, default 24)
+        in: query
+        name: hours
+        type: integer
+      - description: Proposed policy
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/store.MCPPolicyMutation'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/store.MCPPolicyDryRunResult'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      summary: Dry-run a proposed MCP policy against historical traffic
+      tags:
+      - mcp-policy
+  /v1/mcp-policies/{flavor}/export:
+    get:
+      description: Serializes current flavor policy state as YAML. Use the version-fetch
+        endpoint for historical snapshots. Returns 404 when no flavor policy exists.
+      parameters:
+      - description: Agent flavor
+        in: path
+        name: flavor
+        required: true
+        type: string
+      produces:
+      - application/yaml
+      responses:
+        "200":
+          description: OK
+          schema:
+            type: string
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      summary: Export flavor MCP policy as YAML
+      tags:
+      - mcp-policy
+  /v1/mcp-policies/{flavor}/import:
+    post:
+      consumes:
+      - application/yaml
+      description: Replaces flavor policy state from YAML body. Same atomic version
+        + audit semantics as PUT; audit-log entry carries payload.via='import'. Schema
+        matches the README quickstart YAML byte-for-byte.
+      parameters:
+      - description: Agent flavor
+        in: path
+        name: flavor
+        required: true
+        type: string
+      - description: YAML policy state
+        in: body
+        name: body
+        required: true
+        schema:
+          type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/store.MCPPolicy'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      summary: Import flavor MCP policy from YAML
+      tags:
+      - mcp-policy
+  /v1/mcp-policies/{flavor}/metrics:
+    get:
+      description: Aggregates policy_mcp_warn and policy_mcp_block events emitted
+        by the sensor / plugin enforcement path. Returns empty buckets until step
+        4 ships those event types. period accepts 24h / 7d / 30d.
+      parameters:
+      - description: Agent flavor or 'global'
+        in: path
+        name: flavor
+        required: true
+        type: string
+      - description: Aggregation window (24h / 7d / 30d); default 24h
+        in: query
+        name: period
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/store.MCPPolicyMetrics'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      summary: Get MCP policy enforcement metrics
+      tags:
+      - mcp-policy
+  /v1/mcp-policies/{flavor}/versions:
+    get:
+      description: Returns version metadata (no full snapshots) in DESC version order,
+        paginated. Use the singular versions/{version} endpoint for full snapshots.
+      parameters:
+      - description: Agent flavor or 'global'
+        in: path
+        name: flavor
+        required: true
+        type: string
+      - description: Max rows; 1..200; default 50
+        in: query
+        name: limit
+        type: integer
+      - description: Pagination offset; default 0
+        in: query
+        name: offset
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/store.MCPPolicyVersionMeta'
+            type: array
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      summary: List MCP policy version history
+      tags:
+      - mcp-policy
+  /v1/mcp-policies/{flavor}/versions/{version}:
+    get:
+      description: Returns the full snapshot at the named version number (integer,
+        NOT a UUID).
+      parameters:
+      - description: Agent flavor or 'global'
+        in: path
+        name: flavor
+        required: true
+        type: string
+      - description: Version number
+        in: path
+        name: version
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/store.MCPPolicyVersion'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      summary: Get one MCP policy version snapshot
+      tags:
+      - mcp-policy
+  /v1/mcp-policies/global:
+    get:
+      description: Returns the singleton global policy + entries. Auto-created at
+        API boot per D133, so this endpoint always returns 200.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/store.MCPPolicy'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      summary: Get global MCP protection policy
+      tags:
+      - mcp-policy
+    put:
+      consumes:
+      - application/json
+      description: Replaces global policy state — mode, entries, block_on_uncertainty.
+        Bumps version, writes a snapshot, writes an audit-log entry. Single-shot transaction
+        (D128).
+      parameters:
+      - description: New policy state
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/store.MCPPolicyMutation'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/store.MCPPolicy'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      summary: Update global MCP protection policy
+      tags:
+      - mcp-policy
+  /v1/mcp-policies/global/audit-log:
+    get:
+      description: Returns operator-initiated mutation history for the global MCP
+        policy in DESC time order, paginated. Same response shape as the flavor variant.
+      parameters:
+      - description: Start time (RFC 3339)
+        in: query
+        name: from
+        type: string
+      - description: End time (RFC 3339)
+        in: query
+        name: to
+        type: string
+      - description: Filter by event type
+        in: query
+        name: event_type
+        type: string
+      - description: Max rows; 1..200; default 50
+        in: query
+        name: limit
+        type: integer
+      - description: Pagination offset; default 0
+        in: query
+        name: offset
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/store.MCPPolicyAuditLog'
+            type: array
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      summary: List global MCP policy audit log
+      tags:
+      - mcp-policy
+  /v1/mcp-policies/resolve:
+    get:
+      description: Sensor / plugin preflight. Returns the per-D135 decision (allow
+        / warn / block) for a (flavor, server_url, server_name) tuple, plus the decision_path
+        that produced it (flavor_entry / global_entry / mode_default). The server
+        canonicalizes the URL using the same algorithm as the Python and JS identity
+        primitives.
+      parameters:
+      - description: Agent flavor; omit to resolve against global only
+        in: query
+        name: flavor
+        type: string
+      - description: Raw MCP server URL or stdio command
+        in: query
+        name: server_url
+        required: true
+        type: string
+      - description: Server display name
+        in: query
+        name: server_name
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/store.MCPPolicyResolveResult'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      summary: Resolve MCP policy decision
+      tags:
+      - mcp-policy
+  /v1/mcp-policies/templates:
+    get:
+      description: Returns the three locked templates (D138) with metadata + YAML
+        body. Read-only scope; any valid bearer token. The strict-with-common-allows
+        template carries a maintenance warning in its description.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/handlers.templateMeta'
+            type: array
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      summary: List shipped MCP policy templates
+      tags:
+      - mcp-policy
   /v1/policies:
     get:
       description: Returns all token policies

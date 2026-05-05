@@ -194,13 +194,17 @@ func DiffMCPPolicyVersionsHandler(s store.Querier) http.HandlerFunc {
 }
 
 // ListMCPPolicyAuditLogHandler handles GET /v1/mcp-policies/{flavor}/audit-log
-// AND GET /v1/mcp-policies/global/audit-log.
+// AND GET /v1/mcp-policies/global/audit-log. The same handler serves
+// both routes; the {flavor} segment "global" is special-cased by
+// scopeAndValueFromPath. The swagger annotation below covers the
+// flavor path; see ListMCPPolicyAuditLogHandlerGlobalDoc for the
+// dedicated /global/audit-log docs entry.
 //
-// @Summary      List MCP policy audit log
+// @Summary      List flavor MCP policy audit log
 // @Description  Returns operator-initiated mutation history in DESC time order, paginated. event_type query filters to one mutation kind. Sensor-observed system state (decision events, name drift) lives in the events pipeline (D131), NOT here.
 // @Tags         mcp-policy
 // @Produce      json
-// @Param        flavor      path   string  true   "Agent flavor or 'global'"
+// @Param        flavor      path   string  true   "Agent flavor"
 // @Param        from        query  string  false  "Start time (RFC 3339)"
 // @Param        to          query  string  false  "End time (RFC 3339)"
 // @Param        event_type  query  string  false  "Filter by event type"
@@ -244,3 +248,27 @@ func ListMCPPolicyAuditLogHandler(s store.Querier) http.HandlerFunc {
 		writeJSON(w, logs)
 	}
 }
+
+// ListMCPPolicyAuditLogHandlerGlobalDoc is a documentation-only
+// stub. The /global/audit-log path is served by the same
+// ListMCPPolicyAuditLogHandler instance, but swag doesn't infer
+// parallel routes from a single function — a second annotation is
+// the cleanest way to surface both paths in the OpenAPI spec.
+// This function is never registered as a handler.
+//
+// @Summary      List global MCP policy audit log
+// @Description  Returns operator-initiated mutation history for the global MCP policy in DESC time order, paginated. Same response shape as the flavor variant.
+// @Tags         mcp-policy
+// @Produce      json
+// @Param        from        query  string  false  "Start time (RFC 3339)"
+// @Param        to          query  string  false  "End time (RFC 3339)"
+// @Param        event_type  query  string  false  "Filter by event type"
+// @Param        limit       query  int     false  "Max rows; 1..200; default 50"
+// @Param        offset      query  int     false  "Pagination offset; default 0"
+// @Success      200  {array}   store.MCPPolicyAuditLog
+// @Failure      400  {object}  ErrorResponse
+// @Failure      401  {object}  ErrorResponse
+// @Failure      403  {object}  ErrorResponse
+// @Failure      500  {object}  ErrorResponse
+// @Router       /v1/mcp-policies/global/audit-log [get]
+func ListMCPPolicyAuditLogHandlerGlobalDoc() {}

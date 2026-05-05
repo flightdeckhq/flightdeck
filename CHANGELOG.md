@@ -2,6 +2,105 @@
 
 All notable changes to Flightdeck are documented here.
 
+## Unreleased — MCP Protection Policy
+
+Per-flavor enforcement of which MCP servers an agent is allowed to
+talk to. Rides on the existing `ClientSession` patch surface (D117)
+and the standard event pipeline. Single PR covering the doc-first
+foundation; sensor / plugin / ingestion / API / dashboard / migration /
+tests follow in subsequent steps. See **D127-D135**. Soft-launches
+in v0.6 as warn-only; v0.7 flips to honor configured enforcement.
+
+### Added
+
+- **Identity model.** Server identity is `(URL, name)`. URL is the
+  security key; name is display + tamper-evidence. HTTP and stdio
+  canonical forms locked. Fingerprint = sha256(canonical_url +
+  0x00 + name); first 16 hex chars displayed (D127).
+- **Two-scope policy model.** One global policy + zero or more
+  per-flavor policies. Global carries the mode (allowlist or
+  blocklist); per-flavor carries allow / deny entry deltas.
+  Auto-created empty blocklist global on install — fully
+  permissive by default (D134).
+- **Per-server resolution.** Most-specific scope wins: flavor
+  entry → global entry → global-mode default. Three-step
+  deterministic algorithm (D135).
+- **Storage schema (binding contract for migration 000018).**
+  Four tables: `mcp_policies` (live state), `mcp_policy_entries`
+  (live entries), `mcp_policy_versions` (per-PUT snapshots for
+  diff / rollback), `mcp_policy_audit_log` (operator-initiated
+  mutations only — actor + diff). Schema documented in
+  ARCHITECTURE.md "MCP Protection Policy" → "Storage schema"
+  with binding-contract note (D128).
+- **Fetch + cache contract.** Sensor fetches at `init()` and
+  caches on Session for the session's lifetime; new policy
+  applies at the next `session_start`. Plugin fetches at
+  `SessionStart` with one-hour disk cache at
+  `~/.claude/flightdeck/mcp_policy_cache.json`. Dashboard hits
+  REST directly. Fail-open per Rule 28 on control-plane outage
+  (D129).
+- **Sensor block contract.** New typed exception
+  `flightdeck.MCPPolicyBlocked`. Block path emits
+  `policy_mcp_block`, flushes the event queue synchronously, then
+  raises so frameworks surface the failure as a tool-call error
+  (D130).
+- **Three new event types.** `policy_mcp_warn`,
+  `policy_mcp_block`, `mcp_server_name_changed`. The
+  name-changed event is sensor-emitted observation only (NOT an
+  audit-log row; the audit log records operator mutations only).
+  Auto-routes through the existing `events.>` NATS catch-all
+  (D131).
+- **Plugin remembered decisions.** Local file at
+  `~/.claude/flightdeck/remembered_mcp_decisions.json`, per-token,
+  populated by Claude Code's `PermissionRequest`
+  yes-and-remember. Lazy-syncs to control plane on a best-effort
+  basis (D132).
+- **Soft-launch.** v0.6 ships warn-only regardless of policy
+  enforcement; `policy_mcp_block` decisions emit
+  `policy_mcp_warn` with `would_have_blocked=true`. v0.7 removes
+  the override. `FLIGHTDECK_MCP_POLICY_DEFAULT` env var (`warn`
+  / `enforce`) is the operator escape hatch in either direction
+  (D133).
+- **Control-plane API surface (planned).** New endpoints under
+  `/v1/mcp-policies` for list / get / create / update / delete
+  flavor / resolve / audit-log. Implementation lands in
+  subsequent steps; contract documented in ARCHITECTURE.md.
+
+### Changed
+
+(none yet — implementation steps will populate)
+
+### Deprecated
+
+(none — reserved for the section)
+
+### Decisions
+
+- **D127** MCP server identity canonical form — URL is security
+  key, name is display + tamper-evidence; HTTP / stdio canonical
+  rules; sha256 hash with 0x00 separator.
+- **D128** Two-scope policy storage schema — four tables
+  (`mcp_policies` + entries + versions + audit log); binding
+  contract for migration 000018.
+- **D129** Fetch + cache contract per surface — sensor at
+  `init()`, plugin at `SessionStart` with disk TTL, dashboard
+  direct REST. Mid-session updates apply at next session start.
+- **D130** Sensor block contract — typed
+  `flightdeck.MCPPolicyBlocked` exception with synchronous flush
+  before raise.
+- **D131** Three new event types
+  (`policy_mcp_warn` / `policy_mcp_block` /
+  `mcp_server_name_changed`); name-changed is a sensor-emitted
+  EventType only, not an audit-log row.
+- **D132** Plugin remembered-decisions local file with lazy
+  control-plane sync.
+- **D133** v0.6 soft-launch warn-only default with
+  `FLIGHTDECK_MCP_POLICY_DEFAULT` escape hatch.
+- **D134** Mode lives on the global policy only; per-flavor
+  carries allow / deny entry deltas. Storage CHECK enforces.
+- **D135** Per-server precedence: most-specific scope wins
+  (flavor → global → global-mode default).
+
 ## Unreleased — Sub-agent observability
 
 First-class events, identity, and dashboard surfaces for sub-agent

@@ -1676,6 +1676,7 @@ always create a new numbered migration.
 | 000015 | Drop and recreate `agents` table with `agent_id` PK (D115) |
 | 000016 | `event_content.input` JSONB column for embeddings capture |
 | 000017 | `sessions.parent_session_id` FK + `sessions.agent_role` text + partial index (D126) |
+| 000018 | `mcp_policies` + `mcp_policy_entries` + `mcp_policy_versions` + `mcp_policy_audit_log` tables + indexes (D128) |
 
 ---
 

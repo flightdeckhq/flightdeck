@@ -94,6 +94,23 @@ export async function apiFetch(path: string, init: RequestInit = {}): Promise<Re
   return fetch(`${BASE}${path}`, { ...init, headers: authHeaders(init.headers) });
 }
 
+/** Builds the "Admin token required to ${action}" error string with
+ *  an inline how-to-fix hint pointing the operator at the
+ *  ``flightdeck-access-token`` localStorage key. Kept as a single
+ *  helper so the instruction stays consistent across every admin
+ *  surface (audit, metrics, dry-run, templates, YAML import/export,
+ *  version history). The Phase 5 Part 2 Settings page will replace
+ *  the hint with a Set-Token UI, at which point this helper's
+ *  second sentence collapses to a CTA. */
+export function adminTokenError(action: string): string {
+  return (
+    `Admin token required to ${action} ` +
+    `Set the ${ACCESS_TOKEN_STORAGE_KEY} localStorage key in this ` +
+    `browser to an admin-scoped token (DevTools → Application → ` +
+    `Local Storage), then reload.`
+  );
+}
+
 /** Subclass of Error that carries the HTTP status code so call
  *  sites can distinguish 401 / 403 / 404 / 5xx without parsing the
  *  message. Surfaces in MCP Protection Policy admin views render

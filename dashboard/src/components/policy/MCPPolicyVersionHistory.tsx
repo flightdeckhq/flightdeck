@@ -4,6 +4,7 @@ import { History } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { SyntaxJson } from "@/components/ui/syntax-json";
 import {
+  adminTokenError,
   ApiError,
   diffMCPPolicyVersions,
   listMCPPolicyVersions,
@@ -69,7 +70,7 @@ export function MCPPolicyVersionHistory({
     } catch (err) {
       setVersionsError(
         err instanceof ApiError && err.status === 403
-          ? "Admin token required to view version history."
+          ? adminTokenError("view version history.")
           : "Failed to load version history",
       );
     } finally {
@@ -321,7 +322,7 @@ function DiffViewer({
         if (cancelled) return;
         setDiff(null);
         if (err instanceof ApiError && err.status === 403) {
-          setError("Admin token required to view diffs.");
+          setError(adminTokenError("view diffs."));
         } else {
           setError(err instanceof Error ? err.message : "Failed to load diff");
         }

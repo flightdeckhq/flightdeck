@@ -4,6 +4,7 @@ import { AlertTriangle, BookOpen } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import {
+  adminTokenError,
   ApiError,
   applyMCPPolicyTemplate,
   listMCPPolicyTemplates,
@@ -62,7 +63,7 @@ export function MCPPolicyTemplatesPanel({
       .catch((err: unknown) => {
         if (cancelled) return;
         if (err instanceof ApiError && err.status === 403) {
-          setError("Admin token required to view templates.");
+          setError(adminTokenError("view templates."));
         } else {
           setError(err instanceof Error ? err.message : "Failed to load templates");
         }
@@ -85,7 +86,7 @@ export function MCPPolicyTemplatesPanel({
       await onApplied();
     } catch (err) {
       if (err instanceof ApiError && err.status === 403) {
-        setApplyError("Admin token required to apply templates.");
+        setApplyError(adminTokenError("apply templates."));
       } else {
         setApplyError(err instanceof Error ? err.message : "Apply failed");
       }

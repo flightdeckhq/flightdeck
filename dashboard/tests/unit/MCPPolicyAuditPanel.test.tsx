@@ -32,15 +32,17 @@ const ROW_A = {
 };
 
 describe("MCPPolicyAuditPanel", () => {
-  it("renders an empty-state message when no audit rows exist", async () => {
+  it("renders an empty-state message + actionable hint when no audit rows exist (B6)", async () => {
     listMock.mockResolvedValue([]);
     render(
       <MCPPolicyAuditPanel flavorOrGlobal="global" scopeKey="global" />,
     );
     await waitFor(() => {
-      expect(
-        screen.getByTestId("mcp-policy-audit-empty").textContent,
-      ).toBe("No audit log entries yet.");
+      const empty = screen.getByTestId("mcp-policy-audit-empty");
+      expect(empty.textContent).toContain("No audit log entries yet.");
+      expect(empty.textContent).toContain(
+        "Adding an entry, changing the mode, or importing YAML",
+      );
     });
   });
 

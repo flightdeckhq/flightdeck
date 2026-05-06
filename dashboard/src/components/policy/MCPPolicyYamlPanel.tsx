@@ -2,7 +2,12 @@ import { useState } from "react";
 import { Download, FileCode, Upload } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { ApiError, exportMCPPolicyYAML, importMCPPolicyYAML } from "@/lib/api";
+import {
+  adminTokenError,
+  ApiError,
+  exportMCPPolicyYAML,
+  importMCPPolicyYAML,
+} from "@/lib/api";
 
 export interface MCPPolicyYamlPanelProps {
   flavor: string;
@@ -56,7 +61,7 @@ export function MCPPolicyYamlPanel({
       await onImported();
     } catch (err) {
       if (err instanceof ApiError && err.status === 403) {
-        setImportError("Admin token required to import.");
+        setImportError(adminTokenError("import."));
       } else if (err instanceof Error) {
         setImportError(err.message || "Import failed");
       } else {
@@ -83,7 +88,7 @@ export function MCPPolicyYamlPanel({
       URL.revokeObjectURL(url);
     } catch (err) {
       if (err instanceof ApiError && err.status === 403) {
-        setExportError("Admin token required to export.");
+        setExportError(adminTokenError("export."));
       } else {
         setExportError(err instanceof Error ? err.message : "Export failed");
       }

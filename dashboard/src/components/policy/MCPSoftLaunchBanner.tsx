@@ -50,12 +50,22 @@ export function MCPSoftLaunchBanner() {
       data-testid="mcp-soft-launch-banner"
       className={cn(
         "flex items-start gap-3 rounded-md border px-4 py-3",
-        "border-amber-500/30 bg-amber-500/10 text-[var(--text)]",
+        "text-[var(--text)]",
       )}
+      style={{
+        // B11: theme parity — use the theme's --warning token rather
+        // than a fixed amber-500 so the banner shifts hue between
+        // neon-dark (yellow #eab308) and clean-light (amber #ca8a04).
+        borderColor:
+          "color-mix(in srgb, var(--warning) 30%, transparent)",
+        background:
+          "color-mix(in srgb, var(--warning) 10%, transparent)",
+      }}
     >
       <AlertCircle
         aria-hidden="true"
-        className="mt-0.5 h-4 w-4 shrink-0 text-amber-500"
+        className="mt-0.5 h-4 w-4 shrink-0"
+        style={{ color: "var(--warning)" }}
       />
       <div className="flex-1 text-sm leading-relaxed">
         <span className="font-semibold">Soft launch.</span>{" "}

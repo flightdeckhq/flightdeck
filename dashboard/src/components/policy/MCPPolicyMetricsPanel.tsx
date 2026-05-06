@@ -10,7 +10,7 @@ import {
   YAxis,
 } from "recharts";
 
-import { ApiError, getMCPPolicyMetrics } from "@/lib/api";
+import { adminTokenError, ApiError, getMCPPolicyMetrics } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import type {
   MCPPolicyMetrics,
@@ -115,7 +115,7 @@ export function MCPPolicyMetricsPanel({
         if (cancelled) return;
         setMetrics(null);
         if (err instanceof ApiError && err.status === 403) {
-          setError("Admin token required to view metrics.");
+          setError(adminTokenError("view metrics."));
         } else {
           setError(err instanceof Error ? err.message : "Failed to load metrics");
         }

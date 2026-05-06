@@ -10,7 +10,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { SyntaxJson } from "@/components/ui/syntax-json";
-import { ApiError, listMCPPolicyAuditLog } from "@/lib/api";
+import { adminTokenError, ApiError, listMCPPolicyAuditLog } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import type { MCPPolicyAuditLog } from "@/lib/types";
 
@@ -79,7 +79,7 @@ export function MCPPolicyAuditPanel({
       setRows(list);
     } catch (err) {
       if (err instanceof ApiError && err.status === 403) {
-        setError("Admin token required to view the audit log.");
+        setError(adminTokenError("view the audit log."));
       } else {
         setError(err instanceof Error ? err.message : "Failed to load audit log");
       }
@@ -533,9 +533,17 @@ function EmptyState({ hasFilter }: { hasFilter: boolean }) {
       style={{ color: "var(--text-muted)" }}
       data-testid="mcp-policy-audit-empty"
     >
-      {hasFilter
-        ? "No audit log entries match the active filters."
-        : "No audit log entries yet."}
+      {hasFilter ? (
+        "No audit log entries match the active filters."
+      ) : (
+        <>
+          <p>No audit log entries yet.</p>
+          <p className="mt-1 text-xs">
+            Adding an entry, changing the mode, or importing YAML
+            creates an entry here.
+          </p>
+        </>
+      )}
     </div>
   );
 }

@@ -12,7 +12,7 @@ import {
 } from "recharts";
 
 import { Button } from "@/components/ui/button";
-import { ApiError, dryRunMCPPolicy } from "@/lib/api";
+import { adminTokenError, ApiError, dryRunMCPPolicy } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import type {
   MCPPolicy,
@@ -99,7 +99,7 @@ export function MCPPolicyDryRunPanel({
     } catch (err) {
       setResult(null);
       if (err instanceof ApiError && err.status === 403) {
-        setError("Admin token required to run dry-run.");
+        setError(adminTokenError("run dry-run."));
       } else if (err instanceof ApiError && err.status === 400) {
         setError("Dry-run rejected: the policy draft failed validation.");
       } else {

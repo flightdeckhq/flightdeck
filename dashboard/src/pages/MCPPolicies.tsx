@@ -1,4 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import { MCPPolicyAuditPanel } from "@/components/policy/MCPPolicyAuditPanel";
 import { MCPPolicyDryRunPanel } from "@/components/policy/MCPPolicyDryRunPanel";
@@ -12,13 +18,6 @@ import { MCPPolicyVersionHistory } from "@/components/policy/MCPPolicyVersionHis
 import { MCPPolicyYamlPanel } from "@/components/policy/MCPPolicyYamlPanel";
 import { MCPSoftLaunchBanner } from "@/components/policy/MCPSoftLaunchBanner";
 import { Tabs, TabsContent } from "@/components/ui/tabs";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import {
   createFlavorMCPPolicy,
   fetchFlavorMCPPolicy,
@@ -128,35 +127,11 @@ export function MCPPolicies() {
           >
             Editing scope
           </label>
-          <Select value={activeTab} onValueChange={setActiveTab}>
-            {/* B10: accent left-border on the trigger so the scope
-                being edited reads as the page's primary context,
-                not just a dropdown control. The font-semibold +
-                accent-text on the value mirrors the visual weight
-                of the section header it controls. */}
-            <SelectTrigger
-              id="mcp-policies-scope-select"
-              className="h-9 w-[28rem] max-w-full border-l-2 font-semibold"
-              style={{
-                borderLeftColor: "var(--accent)",
-                color: "var(--text)",
-              }}
-              data-testid="mcp-policies-scope-select"
-            >
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {tabs.map((tab) => (
-                <SelectItem
-                  key={tab.value}
-                  value={tab.value}
-                  data-testid={`mcp-policies-tab-${tab.value}`}
-                >
-                  {tab.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <ScopePicker
+            tabs={tabs}
+            value={activeTab}
+            onChange={setActiveTab}
+          />
           <span
             className="text-[11px]"
             style={{ color: "var(--text-muted)" }}
@@ -575,4 +550,205 @@ function removeEntry(
       ),
   );
   return buildMutation(policy, { entries: remaining });
+}
+
+// Step 6.7 (d): searchable scope picker. The pre-fix dropdown was a
+// Radix Select rendering all flavors alphabetically; with 67+
+// flavors the list became impossible to scan. Standard pattern for
+// any dropdown over ~20 items is type-to-filter.
+//
+// Implementation: a button + absolute-positioned panel with a
+// search input + filtered list of buttons. Avoids adding cmdk +
+// @radix-ui/react-popover as new deps for a single use site.
+// Click-outside collapse via document mousedown listener; Escape
+// also collapses. Keyboard navigation is arrow-up/down through the
+// filtered options, Enter to select, Escape to dismiss.
+function ScopePicker({
+  tabs,
+  value,
+  onChange,
+}: {
+  tabs: { value: string; label: string }[];
+  value: string;
+  onChange: (next: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [highlight, setHighlight] = useState(0);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const filtered = useMemo(() => {
+    if (!query.trim()) return tabs;
+    const q = query.trim().toLowerCase();
+    return tabs.filter((t) => t.label.toLowerCase().includes(q));
+  }, [tabs, query]);
+
+  // Reset query + highlight whenever the panel opens. Focus the
+  // input on the next paint so the operator can type immediately.
+  useEffect(() => {
+    if (open) {
+      setQuery("");
+      setHighlight(0);
+      requestAnimationFrame(() => {
+        inputRef.current?.focus();
+      });
+    }
+  }, [open]);
+
+  // Click-outside collapse.
+  useEffect(() => {
+    if (!open) return;
+    function onClick(e: MouseEvent) {
+      if (!containerRef.current) return;
+      if (!containerRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", onClick);
+    return () => document.removeEventListener("mousedown", onClick);
+  }, [open]);
+
+  function commit(scopeValue: string) {
+    onChange(scopeValue);
+    setOpen(false);
+  }
+
+  function onKeyDown(e: React.KeyboardEvent) {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      setOpen(false);
+      return;
+    }
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setHighlight((h) => Math.min(h + 1, Math.max(0, filtered.length - 1)));
+      return;
+    }
+    if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setHighlight((h) => Math.max(0, h - 1));
+      return;
+    }
+    if (e.key === "Enter") {
+      e.preventDefault();
+      const target = filtered[highlight];
+      if (target) commit(target.value);
+      return;
+    }
+  }
+
+  const activeLabel =
+    tabs.find((t) => t.value === value)?.label ?? value ?? "Select scope";
+
+  return (
+    <div ref={containerRef} className="relative">
+      <button
+        type="button"
+        id="mcp-policies-scope-select"
+        data-testid="mcp-policies-scope-select"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        onClick={() => setOpen((o) => !o)}
+        // B10 styling preserved verbatim — accent left-border +
+        // font-semibold so the scope being edited reads as the
+        // page's primary context.
+        className="flex h-9 w-[28rem] max-w-full items-center justify-between rounded-md border border-l-2 border-border bg-surface px-3 text-sm font-semibold focus:outline-none focus:ring-1 focus:ring-primary"
+        style={{
+          borderLeftColor: "var(--accent)",
+          color: "var(--text)",
+        }}
+      >
+        <span className="truncate">{activeLabel}</span>
+        <span
+          aria-hidden="true"
+          className="ml-2 shrink-0 text-[10px] opacity-60"
+        >
+          ▼
+        </span>
+      </button>
+      {open ? (
+        <div
+          className="absolute left-0 top-[calc(100%+4px)] z-50 w-[28rem] max-w-[calc(100vw-3rem)] rounded-md border shadow-md"
+          style={{
+            borderColor: "var(--border)",
+            background: "var(--surface)",
+          }}
+          data-testid="mcp-policies-scope-panel"
+        >
+          <div
+            className="border-b p-2"
+            style={{ borderColor: "var(--border)" }}
+          >
+            <input
+              ref={inputRef}
+              type="text"
+              value={query}
+              onChange={(e) => {
+                setQuery(e.target.value);
+                setHighlight(0);
+              }}
+              onKeyDown={onKeyDown}
+              placeholder="Filter scopes…"
+              spellCheck={false}
+              className="block w-full rounded border px-2 py-1 text-xs outline-none focus:border-[var(--accent)]"
+              style={{
+                borderColor: "var(--border)",
+                background: "var(--background-elevated)",
+                color: "var(--text)",
+              }}
+              data-testid="mcp-policies-scope-search"
+            />
+          </div>
+          <div
+            className="max-h-72 overflow-auto p-1"
+            role="listbox"
+            aria-label="Scope"
+            data-testid="mcp-policies-scope-options"
+          >
+            {filtered.length === 0 ? (
+              <div
+                className="px-3 py-2 text-xs"
+                style={{ color: "var(--text-muted)" }}
+                data-testid="mcp-policies-scope-empty"
+              >
+                No scopes match “{query}”.
+              </div>
+            ) : (
+              filtered.map((tab, i) => {
+                const isActive = tab.value === value;
+                const isHighlighted = i === highlight;
+                return (
+                  <button
+                    key={tab.value}
+                    type="button"
+                    role="option"
+                    aria-selected={isActive}
+                    onClick={() => commit(tab.value)}
+                    onMouseEnter={() => setHighlight(i)}
+                    data-testid={`mcp-policies-tab-${tab.value}`}
+                    className="flex w-full cursor-pointer items-center justify-between rounded px-2 py-1.5 text-left text-sm"
+                    style={{
+                      background: isHighlighted
+                        ? "var(--background-elevated)"
+                        : "transparent",
+                      color: isActive ? "var(--accent)" : "var(--text)",
+                      fontWeight: isActive ? 600 : 400,
+                    }}
+                  >
+                    <span className="truncate">{tab.label}</span>
+                    {isActive ? (
+                      <span aria-hidden="true" className="ml-2 shrink-0">
+                        ✓
+                      </span>
+                    ) : null}
+                  </button>
+                );
+              })
+            )}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
 }

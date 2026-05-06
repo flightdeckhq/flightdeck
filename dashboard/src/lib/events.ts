@@ -156,6 +156,16 @@ export const eventBadgeConfig: Record<string, BadgeConfig> = {
     cssVar: "var(--event-result)",
     label: "MCP USER REMEMBERED",
   },
+  // Step 6.7 (c): MCP server attached events ride the same FYI
+  // chroma family as name-changed and user-remembered (info-purple
+  // via --event-result) — they're informational, not enforcement,
+  // and operators reading the timeline want them to read as the
+  // same axis at a glance. Pre-fix the type fell through to the
+  // grey defaultBadge.
+  mcp_server_attached: {
+    cssVar: "var(--event-result)",
+    label: "MCP SERVER ATTACHED",
+  },
 };
 
 export const defaultBadge: BadgeConfig = { cssVar: "var(--event-lifecycle)", label: "EVENT" };

@@ -11,7 +11,14 @@ import { MCPPolicyTemplatesPanel } from "@/components/policy/MCPPolicyTemplatesP
 import { MCPPolicyVersionHistory } from "@/components/policy/MCPPolicyVersionHistory";
 import { MCPPolicyYamlPanel } from "@/components/policy/MCPPolicyYamlPanel";
 import { MCPSoftLaunchBanner } from "@/components/policy/MCPSoftLaunchBanner";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tabs, TabsContent } from "@/components/ui/tabs";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import {
   createFlavorMCPPolicy,
   fetchFlavorMCPPolicy,
@@ -110,20 +117,46 @@ export function MCPPolicies() {
       </div>
 
       <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-        <TabsList
-          className="flex flex-wrap"
-          data-testid="mcp-policies-tablist"
+        <div
+          className="mb-4 flex items-center gap-3"
+          data-testid="mcp-policies-scope-picker"
         >
-          {tabs.map((tab) => (
-            <TabsTrigger
-              key={tab.value}
-              value={tab.value}
-              data-testid={`mcp-policies-tab-${tab.value}`}
+          <label
+            htmlFor="mcp-policies-scope-select"
+            className="text-[11px] font-semibold uppercase tracking-wide"
+            style={{ color: "var(--text-muted)" }}
+          >
+            Editing scope
+          </label>
+          <Select value={activeTab} onValueChange={setActiveTab}>
+            <SelectTrigger
+              id="mcp-policies-scope-select"
+              className="h-9 w-[28rem] max-w-full"
+              data-testid="mcp-policies-scope-select"
             >
-              {tab.label}
-            </TabsTrigger>
-          ))}
-        </TabsList>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {tabs.map((tab) => (
+                <SelectItem
+                  key={tab.value}
+                  value={tab.value}
+                  data-testid={`mcp-policies-tab-${tab.value}`}
+                >
+                  {tab.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <span
+            className="text-[11px]"
+            style={{ color: "var(--text-muted)" }}
+          >
+            {flavors.length === 0
+              ? "Global only — no flavor activity yet"
+              : `${flavors.length} flavor${flavors.length === 1 ? "" : "s"} + Global`}
+          </span>
+        </div>
 
         <TabsContent value="global" data-testid="mcp-policies-panel-global">
           <GlobalPanel

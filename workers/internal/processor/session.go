@@ -400,6 +400,83 @@ func (sp *SessionProcessor) HandlePostCall(ctx context.Context, e consumer.Event
 // CloseSession runs; a missing row yields a WARN log + dropped-events
 // counter increment + nil return so the consumer ACKs cleanly (there is
 // nothing to recover from redelivery).
+// HandleMCPServerAttached UPSERTs an MCP server fingerprint into
+// ``sessions.context.mcp_servers`` (D140 step 6.6 A2). Routed
+// from Process() alongside HandlePostCall (which advances
+// last_seen_at) so the per-server dict lands and the dashboard
+// SessionDrawer panel reflects it within ~2-3 s of attach via
+// the existing fleet WebSocket re-fetch path.
+//
+// Maps the wire payload's ``server_name``/``server_url_canonical``
+// to the existing context dict's ``name``/``server_url`` keys so
+// the stored shape stays exactly what session_start writes
+// (no schema bump). Idempotent at the SQL layer via
+// AppendMCPServerToContext's (name, server_url) tuple dedup.
+//
+// Logs and continues on marshalling / DB failure — a malformed
+// payload from a third-party emitter (validation already gates
+// these at ingestion per Rule 36, but defensive logging keeps
+// the worker resilient) must not block other event processing.
+func (sp *SessionProcessor) HandleMCPServerAttached(
+	ctx context.Context, e consumer.EventPayload,
+) error {
+	// Build the per-server dict matching the existing context shape.
+	// Field omissions: AttachedAt (audit-only), Fingerprint (dedup-
+	// only — D127 (canonical_url, name) tuple uniquely determines
+	// it). The dashboard SessionDrawer reads this dict's name /
+	// transport / protocol_version / version / capabilities /
+	// instructions / server_url fields directly.
+	dict := map[string]any{
+		"name":         e.ServerName,
+		"transport":    nilIfEmpty(e.Transport),
+		"version":      nilIfEmpty(e.Version),
+		"instructions": nilIfEmpty(e.Instructions),
+		"server_url":   e.ServerURLCanonical,
+	}
+	if len(e.ProtocolVersion) > 0 {
+		// Preserve source-type fidelity (str | int) by passing the
+		// raw JSON bytes through — json.Marshal on map[string]any
+		// will serialise json.RawMessage verbatim.
+		dict["protocol_version"] = e.ProtocolVersion
+	} else {
+		dict["protocol_version"] = ""
+	}
+	if len(e.Capabilities) > 0 {
+		dict["capabilities"] = e.Capabilities
+	} else {
+		dict["capabilities"] = map[string]any{}
+	}
+
+	dictBytes, err := json.Marshal(dict)
+	if err != nil {
+		slog.Warn("mcp_server_attached marshal dict",
+			"session_id", e.SessionID, "err", err)
+		return nil
+	}
+	if err := sp.w.AppendMCPServerToContext(
+		ctx, e.SessionID, e.ServerName, e.ServerURLCanonical, dictBytes,
+	); err != nil {
+		slog.Warn("mcp_server_attached append failed",
+			"session_id", e.SessionID,
+			"server_name", e.ServerName,
+			"err", err,
+		)
+	}
+	return nil
+}
+
+// nilIfEmpty returns nil when s is the empty string, else s.
+// Used to round-trip optional MCPServerFingerprint fields whose
+// "absent" sentinel is "" on the wire but null in the dashboard's
+// context dict (matches the existing shape's non-string fields'
+// JSON null vs "" distinction).
+func nilIfEmpty(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
 func (sp *SessionProcessor) HandleSessionEnd(ctx context.Context, e consumer.EventPayload) error {
 	switch sp.sessionLookupState(ctx, e.SessionID) {
 	case sessionLookupMissing:

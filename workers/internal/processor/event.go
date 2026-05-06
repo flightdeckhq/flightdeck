@@ -364,6 +364,19 @@ func (p *Processor) Process(ctx context.Context, e consumer.EventPayload) error 
 		if err := p.session.HandlePostCall(ctx, e); err != nil {
 			return err
 		}
+	case "mcp_server_attached":
+		// D140 step 6.6 A2 — UPSERT sessions.context.mcp_servers
+		// from the event payload so the dashboard's SessionDrawer
+		// panel populates live (within ~2-3 s of attach) for
+		// in-flight sessions. HandlePostCall advances last_seen_at;
+		// the AppendMCPServerToContext call writes the per-server
+		// dict atomically with idempotent (name, server_url) dedup.
+		if err := p.session.HandlePostCall(ctx, e); err != nil {
+			return err
+		}
+		if err := p.session.HandleMCPServerAttached(ctx, e); err != nil {
+			return err
+		}
 	case "mcp_tool_list", "mcp_tool_call",
 		"mcp_resource_list", "mcp_resource_read",
 		"mcp_prompt_list", "mcp_prompt_get",

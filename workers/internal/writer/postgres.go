@@ -250,6 +250,72 @@ func (w *Writer) UpgradeSessionContext(ctx context.Context, sessionID string, co
 	return nil
 }
 
+// AppendMCPServerToContext UPSERTs a single MCP server fingerprint
+// dict into ``sessions.context.mcp_servers`` (D140 step 6.6 A2).
+// Idempotent dedup by (name, server_url) tuple — re-emitted
+// ``mcp_server_attached`` events from a framework reconnecting to
+// the same server become no-ops at the row level. Drives live
+// dashboard SessionDrawer panel population: the worker fires this
+// on every ``mcp_server_attached`` event, the dashboard re-fetches
+// via WebSocket, the panel renders the new server within ~2-3 s.
+//
+// The dedup key intentionally uses the (name, server_url) tuple
+// rather than the wire fingerprint hex so the stored dict shape
+// stays exactly as ``sessions.context.mcp_servers`` was on
+// session_start (no schema bump). Per D127 the (canonical_url,
+// name) pair uniquely determines the fingerprint hex, so tuple
+// dedup is information-equivalent to fingerprint dedup.
+//
+// The serverDict argument is a pre-marshaled JSON object whose
+// keys match the existing context dict shape: ``{name, transport,
+// protocol_version, version, capabilities, instructions,
+// server_url}``. The processor maps the wire-event payload's
+// ``server_name``/``server_url_canonical`` to ``name``/
+// ``server_url`` before calling.
+//
+// SQL strategy: read the array, JSON-test for an existing entry
+// matching (name, server_url), append only when no match. Single
+// statement via jsonb operators so the dedup + append happens
+// atomically without a SELECT-then-UPDATE race window.
+//
+// Returns nil on success, error on DB failure or JSON
+// marshalling. The caller (event processor) logs and continues —
+// a failed UPSERT must not block other events processing.
+func (w *Writer) AppendMCPServerToContext(
+	ctx context.Context,
+	sessionID string,
+	serverName string,
+	serverURL string,
+	serverDict []byte,
+) error {
+	if len(serverDict) == 0 {
+		return errors.New("AppendMCPServerToContext: serverDict is empty")
+	}
+	_, err := w.pool.Exec(ctx, `
+		UPDATE sessions
+		SET context = jsonb_set(
+			COALESCE(context, '{}'::jsonb),
+			'{mcp_servers}',
+			COALESCE(context->'mcp_servers', '[]'::jsonb) || $2::jsonb
+		)
+		WHERE session_id = $1::uuid
+		  AND NOT EXISTS (
+			SELECT 1
+			  FROM jsonb_array_elements(
+				COALESCE(context->'mcp_servers', '[]'::jsonb)
+			  ) AS s
+			 WHERE s->>'name' = $3
+			   AND COALESCE(s->>'server_url', '') = COALESCE($4, '')
+		  )
+	`, sessionID, serverDict, serverName, serverURL)
+	if err != nil {
+		return fmt.Errorf(
+			"append mcp server to context %s: %w", sessionID, err,
+		)
+	}
+	return nil
+}
+
 // InsertEvent inserts a new event record (metadata only) and returns the generated event ID.
 //
 // The optional payload argument is a JSON-encoded blob written into the

@@ -220,6 +220,19 @@ type EventPayload struct {
 	// other fields (Fingerprint, ServerURLCanonical, ServerName,
 	// Flavor) already exist above; this is the one new field.
 	DecidedAt string `json:"decided_at,omitempty"`
+
+	// D140 step 6.6 A2 — mcp_server_attached event extra fields.
+	// ServerName / Transport / Fingerprint / ServerURLCanonical
+	// already declared above; the worker also needs the full
+	// fingerprint to write into sessions.context.mcp_servers.
+	// ProtocolVersion is preserved as RawMessage because the MCP
+	// SDK ships it as either str ("2025-03-26") or int (recent
+	// drafts) — coercing here would lose source-type fidelity.
+	ProtocolVersion json.RawMessage `json:"protocol_version,omitempty"`
+	Version         string          `json:"version,omitempty"`
+	Capabilities    json.RawMessage `json:"capabilities,omitempty"`
+	Instructions    string          `json:"instructions,omitempty"`
+	AttachedAt      string          `json:"attached_at,omitempty"`
 }
 
 // SubagentMessageBody is the framework-supplied body of a single

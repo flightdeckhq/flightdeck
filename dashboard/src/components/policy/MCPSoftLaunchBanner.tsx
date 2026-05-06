@@ -62,9 +62,11 @@ export function MCPSoftLaunchBanner() {
         Policy <span className="font-medium">block</span> decisions
         are downgraded to <span className="font-medium">warn-only</span>{" "}
         through v0.6. Configured policy state is honoured for matching
-        and event emission, but no agent calls are stopped.
-        Set <code className="rounded bg-[var(--background-elevated)] px-1.5 py-0.5 font-mono text-xs">FLIGHTDECK_MCP_POLICY_DEFAULT=enforce</code>{" "}
-        on an agent to opt that agent into full enforcement now.
+        and event emission, but no agent calls are stopped.{" "}
+        <span className="font-semibold">To opt an agent into full enforcement now</span>,
+        set{" "}
+        <code className="rounded bg-[var(--background-elevated)] px-1.5 py-0.5 font-mono text-xs">FLIGHTDECK_MCP_POLICY_DEFAULT=enforce</code>{" "}
+        on that agent.
       </div>
       <button
         type="button"

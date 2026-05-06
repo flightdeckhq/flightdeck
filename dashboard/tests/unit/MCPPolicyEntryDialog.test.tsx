@@ -79,7 +79,14 @@ describe("MCPPolicyEntryDialog", () => {
     });
   });
 
-  it("blocks submit until both URL and name are filled, then forwards the mutation entry", async () => {
+  it("defers validation errors until first submit, then forwards the mutation when fields are filled (B4)", async () => {
+    // B4: don't show validation errors before the operator has tried
+    // to submit — the dialog opens with empty fields, and showing the
+    // red "URL is required / Name is required" list immediately reads
+    // as "the form is broken". The submit button stays enabled until
+    // the first attempt; clicking it on empty fields surfaces the
+    // validation list AND disables submit until the user fixes the
+    // problem.
     const onSave = vi.fn().mockResolvedValue(undefined);
     render(
       <MCPPolicyEntryDialog
@@ -91,7 +98,21 @@ describe("MCPPolicyEntryDialog", () => {
     );
 
     const submit = screen.getByTestId("mcp-policy-entry-submit");
+    // Pre-attempt: not disabled, no validation list shown.
+    expect((submit as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.queryByTestId("mcp-policy-entry-validation")).toBeNull();
+
+    // First submit attempt on empty form → validation list appears,
+    // submit becomes disabled, onSave is NOT called. Submit the form
+    // directly because the inputs have HTML5 `required`, which jsdom
+    // would otherwise short-circuit on a button click.
+    const form = submit.closest("form")!;
+    fireEvent.submit(form);
+    await waitFor(() => {
+      expect(screen.getByTestId("mcp-policy-entry-validation")).toBeTruthy();
+    });
     expect((submit as HTMLButtonElement).disabled).toBe(true);
+    expect(onSave).not.toHaveBeenCalled();
 
     fireEvent.change(screen.getByTestId("mcp-policy-entry-url"), {
       target: { value: "https://api.example.com" },
@@ -100,6 +121,7 @@ describe("MCPPolicyEntryDialog", () => {
       target: { value: "api" },
     });
 
+    // After both fields are filled, validation passes → submit re-enables.
     expect((submit as HTMLButtonElement).disabled).toBe(false);
     fireEvent.click(submit);
 

@@ -129,9 +129,18 @@ export function MCPPolicies() {
             Editing scope
           </label>
           <Select value={activeTab} onValueChange={setActiveTab}>
+            {/* B10: accent left-border on the trigger so the scope
+                being edited reads as the page's primary context,
+                not just a dropdown control. The font-semibold +
+                accent-text on the value mirrors the visual weight
+                of the section header it controls. */}
             <SelectTrigger
               id="mcp-policies-scope-select"
-              className="h-9 w-[28rem] max-w-full"
+              className="h-9 w-[28rem] max-w-full border-l-2 font-semibold"
+              style={{
+                borderLeftColor: "var(--accent)",
+                color: "var(--text)",
+              }}
               data-testid="mcp-policies-scope-select"
             >
               <SelectValue />

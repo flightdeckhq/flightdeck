@@ -223,14 +223,22 @@ export function MCPPolicyAuditPanel({
         )}
       </div>
 
-      <Pager
-        page={page}
-        rowsOnPage={rows?.length ?? 0}
-        loading={loading}
-        onPrev={() => setPage((p) => Math.max(0, p - 1))}
-        onNext={() => setPage((p) => p + 1)}
-        scopeKey={scopeKey}
-      />
+      {/* B9: hide the pager entirely on the first-page empty state.
+          Showing "0–0 on this page" with disabled Prev/Next adds
+          noise to a panel that's already telling the operator
+          "no audit entries yet". Keep the pager visible on
+          page > 0 so the operator can step back if they paginated
+          past the end. */}
+      {page === 0 && (rows?.length ?? 0) === 0 ? null : (
+        <Pager
+          page={page}
+          rowsOnPage={rows?.length ?? 0}
+          loading={loading}
+          onPrev={() => setPage((p) => Math.max(0, p - 1))}
+          onNext={() => setPage((p) => p + 1)}
+          scopeKey={scopeKey}
+        />
+      )}
     </section>
   );
 }

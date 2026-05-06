@@ -304,7 +304,10 @@ function TemplateCard({
           className="w-full"
           data-testid={`mcp-policy-template-card-apply-${template.name}`}
         >
-          Apply to {scopeKey}
+          Apply to{" "}
+          <span className="font-semibold">
+            {scopeKey === "global" ? "Global" : scopeKey}
+          </span>
         </Button>
       </div>
     </article>

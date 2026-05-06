@@ -152,6 +152,15 @@ export function MCPPolicyYamlPanel({
             }}
             data-testid={`mcp-policy-yaml-textarea-${scopeKey}`}
           />
+          <p
+            className="mt-1.5 text-[11px]"
+            style={{ color: "var(--text-muted)" }}
+            data-testid={`mcp-policy-yaml-placeholder-caveat-${scopeKey}`}
+          >
+            Sample shape only — the API enforces the canonical schema.
+            Export an existing policy and edit it for the cleanest
+            starting point.
+          </p>
         </div>
 
         {importError ? (

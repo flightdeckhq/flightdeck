@@ -67,6 +67,11 @@ export function MCPPolicyEntryDialog({
   const [enforcement, setEnforcement] = useState<EnforcementValue>("none");
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  // B4: defer validation errors until the operator has actually
+  // attempted to submit. Showing the red "Server URL is required"
+  // list the instant the dialog opens reads as "the form is broken"
+  // before the user has typed anything.
+  const [submitAttempted, setSubmitAttempted] = useState(false);
 
   // Reset every time the dialog opens with a new ``initial``.
   useEffect(() => {
@@ -78,6 +83,7 @@ export function MCPPolicyEntryDialog({
       (initial?.enforcement as EnforcementValue | null) ?? "none",
     );
     setError(null);
+    setSubmitAttempted(false);
   }, [open, initial]);
 
   const debouncedUrl = useDebouncedValue(serverUrl, RESOLVE_DEBOUNCE_MS);
@@ -131,6 +137,7 @@ export function MCPPolicyEntryDialog({
 
   async function handleSubmit(ev: React.FormEvent) {
     ev.preventDefault();
+    setSubmitAttempted(true);
     if (validation.length > 0) return;
     setSaving(true);
     setError(null);
@@ -329,7 +336,7 @@ export function MCPPolicyEntryDialog({
             error={resolveError}
           />
 
-          {validation.length > 0 ? (
+          {submitAttempted && validation.length > 0 ? (
             <ul
               className="rounded-md border px-3 py-2 text-xs"
               style={{
@@ -367,7 +374,7 @@ export function MCPPolicyEntryDialog({
             </Button>
             <Button
               type="submit"
-              disabled={saving || validation.length > 0}
+              disabled={saving || (submitAttempted && validation.length > 0)}
               data-testid="mcp-policy-entry-submit"
             >
               {saving ? "Saving…" : initial ? "Update entry" : "Add entry"}

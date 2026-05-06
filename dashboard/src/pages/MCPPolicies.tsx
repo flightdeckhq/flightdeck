@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { MCPPolicyAuditPanel } from "@/components/policy/MCPPolicyAuditPanel";
 import { MCPPolicyDryRunPanel } from "@/components/policy/MCPPolicyDryRunPanel";
 import { MCPPolicyEntryDialog } from "@/components/policy/MCPPolicyEntryDialog";
 import { MCPPolicyEntryTable } from "@/components/policy/MCPPolicyEntryTable";
@@ -295,6 +296,8 @@ function GlobalPanel({
         scopeKey="global"
         latestVersion={policy.version}
       />
+
+      <MCPPolicyAuditPanel flavorOrGlobal="global" scopeKey="global" />
     </div>
   );
 }
@@ -441,6 +444,8 @@ function FlavorPanel({
         scopeKey={flavor}
         latestVersion={policy.version}
       />
+
+      <MCPPolicyAuditPanel flavorOrGlobal={flavor} scopeKey={flavor} />
     </div>
   );
 }

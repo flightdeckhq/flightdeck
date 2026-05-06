@@ -97,6 +97,28 @@ export function MCPPolicyHeader({
               >
                 Mode
               </span>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span
+                    className="cursor-help text-[11px] underline decoration-dotted"
+                    style={{ color: "var(--text-muted)" }}
+                    data-testid={`mcp-policy-mode-tooltip-trigger-${scopeKey}`}
+                  >
+                    info
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent
+                  className="max-w-sm text-xs leading-relaxed"
+                  data-testid={`mcp-policy-mode-tooltip-${scopeKey}`}
+                >
+                  For an (URL, name) evaluated against (global, flavor): if
+                  the per-flavor policy has a matching entry, use that entry's
+                  enforcement decision. Else if the global policy has a
+                  matching entry, use that. Else apply the global mode
+                  default: allowlist mode → block; blocklist mode → allow.
+                  Mode lives on the global policy only (D134).
+                </TooltipContent>
+              </Tooltip>
               {modeEditable && savingMode ? (
                 <span
                   className="text-[11px]"

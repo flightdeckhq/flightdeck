@@ -9,6 +9,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { resolveMCPPolicy } from "@/lib/api";
 import type {
@@ -151,19 +157,47 @@ export function MCPPolicyEntryDialog({
       }}
     >
       <DialogContent className="w-full max-w-lg">
-        <DialogTitle data-testid="mcp-policy-entry-dialog-title">
-          {initial ? "Edit entry" : "Add entry"}
-        </DialogTitle>
+        <TooltipProvider>
+          <DialogTitle data-testid="mcp-policy-entry-dialog-title">
+            {initial ? "Edit entry" : "Add entry"}
+          </DialogTitle>
 
-        <form onSubmit={handleSubmit} className="mt-4 space-y-4">
+          <form onSubmit={handleSubmit} className="mt-4 space-y-4">
           <div>
-            <label
-              htmlFor="mcp-policy-entry-url"
-              className="mb-1 block text-xs font-medium"
-              style={{ color: "var(--text)" }}
-            >
-              Server URL
-            </label>
+            <div className="mb-1 flex items-center gap-2">
+              <label
+                htmlFor="mcp-policy-entry-url"
+                className="block text-xs font-medium"
+                style={{ color: "var(--text)" }}
+              >
+                Server URL
+              </label>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span
+                    className="cursor-help text-[10px] underline decoration-dotted"
+                    style={{ color: "var(--text-muted)" }}
+                    data-testid="mcp-policy-entry-url-tooltip-trigger"
+                  >
+                    canonical form
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent
+                  className="max-w-sm text-xs leading-relaxed"
+                  data-testid="mcp-policy-entry-url-tooltip"
+                >
+                  HTTP canonical form: lowercase scheme + host. Strip default
+                  ports (:80 for http, :443 for https). Strip a trailing
+                  slash only at the root; deeper paths preserve their
+                  trailing slash. Drop user-info, fragment, and query
+                  entirely. Stdio canonical form: prefix with stdio://,
+                  concatenate command + args with single-space separators
+                  after collapsing internal whitespace, resolve env-var
+                  references at fingerprint time. Hash recipe:
+                  sha256(canonical_url + 0x00 + name).
+                </TooltipContent>
+              </Tooltip>
+            </div>
             <input
               id="mcp-policy-entry-url"
               type="text"
@@ -339,7 +373,8 @@ export function MCPPolicyEntryDialog({
               {saving ? "Saving…" : initial ? "Update entry" : "Add entry"}
             </Button>
           </div>
-        </form>
+          </form>
+        </TooltipProvider>
       </DialogContent>
     </Dialog>
   );

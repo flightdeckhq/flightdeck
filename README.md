@@ -440,6 +440,31 @@ The policy machinery ships in two phases (D133). v0.6 hard-codes warn-only behav
 - **"Decisions remembered locally don't match the dashboard."** Claude Code's `yes-and-remember` decisions live at `~/.claude/flightdeck/remembered_mcp_decisions.json` (D132). The plugin lazy-syncs to the control plane and re-fetches on the standard TTL, so a real `deny` on the server-side policy will eventually override a stale local `yes`. Force a resync immediately by deleting the file and starting a new Claude Code session.
 - **"Sensor isn't enforcing in v0.6."** Soft-launch is warn-only by default. Set `FLIGHTDECK_MCP_POLICY_DEFAULT=enforce` to opt in to real enforcement before v0.7, or wait for the v0.7 release to flip enforcement on by default.
 
+### Known framework constraints
+
+CrewAI agents using MCP via `mcpadapt` currently emit JSON Schemas that violate JSON Schema draft 2020-12 — empty `anyOf` arrays, null `enum` / `items` fields, and properties that lose their `type` annotation when the empty `anyOf` is the only type carrier. OpenAI and Anthropic both reject these schemas with cryptic errors:
+
+- OpenAI surfaces it as `"tools[0].function.parameters: None is not of type 'object', 'boolean'"` (strict-mode validation coalesces the malformed schema into `None`).
+- Anthropic returns `"tools.0.custom.input_schema: JSON schema is invalid. It must match JSON Schema draft 2020-12"`.
+
+**Workaround.** Flightdeck ships an opt-in compat helper that strips the invalid keys and infers a missing `type` from the property's default value before the schema reaches the LLM API. After constructing your CrewAI agent, call:
+
+```python
+import crewai
+from mcpadapt.core import MCPAdapt
+from mcpadapt.crewai_adapter import CrewAIAdapter
+from flightdeck_sensor.compat.crewai_mcp import crewai_mcp_schema_fixup
+
+with MCPAdapt(server_params, CrewAIAdapter()) as tools:
+    agent = crewai.Agent(role=..., goal=..., tools=tools)
+    crewai_mcp_schema_fixup(agent)
+    # agent now ready to invoke; LLM tool-call payload uses cleaned JSON Schema.
+```
+
+The fixup is idempotent and safe to call multiple times. It mutates each tool's `args_schema` Pydantic class so every downstream consumer (CrewAI's `generate_model_description`, the LLM provider's tool-conversion path, raw `model_json_schema()` calls) sees the cleaned schema.
+
+The helper will be removed in a future Flightdeck release once the underlying mcpadapt schema generation is fixed; tracked in the Roadmap below.
+
 ---
 
 ## Known limitations
@@ -608,6 +633,7 @@ Open work tracked here. Prioritized when users tell us which matters most.
 - **Production hardening.** NATS authentication, Helm chart polish, nginx rate limiting, dashboard auth, litellm streaming interception, native LangChain Voyage embeddings, dedicated LlamaIndex / CrewAI interceptors where transitive coverage falls short.
 - **AutoGen framework support.** LLM-call interception via `autogen-core` / `autogen-agentchat` (the 0.4 rewrite) or `pyautogen` (0.2 legacy), plus sub-agent observability for it (`agent_role` from `participant.name`, child session per RoutedAgent dispatch / `generate_reply`). AutoGen ships two libraries that share a name with different APIs; both versions need their own interceptor.
 - **MCP policy dry-run draft mode.** Current dry-run replays the saved policy against historical events. Pre-save 'draft' state for what-if exploration before committing changes is a post-v0.6 enhancement; user demand will drive prioritization.
+- **Remove `flightdeck_sensor.compat.crewai_mcp_schema_fixup` helper.** The helper exists as a workaround for an upstream mcpadapt schema-generation bug emitting JSON-Schema-2020-12-invalid keys (empty `anyOf`, null `enum` / `items`, missing `type` after the empty `anyOf` is removed). Remove the helper + the README "Known framework constraints" subsection once mcpadapt emits valid schemas. Verify by running playground demo 22 without the fixup call; if it PASSES, the upstream is fixed and the helper can land for removal.
 
 The roadmap is intentionally loose. User demand reorders priorities.
 

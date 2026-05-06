@@ -401,6 +401,20 @@ in v0.6 as warn-only; v0.7 flips to honor configured enforcement.
   missing the umbrella package — only the
   `langchain-anthropic` / `langchain-openai` /
   `langchain-mcp-adapters` siblings were listed).
+- **New `flightdeck_sensor.compat.crewai_mcp` module** with
+  `crewai_mcp_schema_fixup()` helper. Strips
+  JSON-Schema-2020-12-invalid keys from CrewAI tools'
+  `args_schema` serialisation (empty `anyOf`, null `enum` /
+  `items`, empty `properties` paired with empty `anyOf`) and
+  infers a missing `type` from the property's default value
+  when the empty `anyOf` was the previous type carrier. Mutates
+  each tool's `args_schema` Pydantic class so every downstream
+  consumer (CrewAI's `generate_model_description`, the LLM
+  provider's tool-conversion path, raw `model_json_schema()`
+  calls) sees the cleaned schema. Idempotent. Workaround for an
+  upstream mcpadapt schema-generation bug; see README "Known
+  framework constraints" for the operator-facing explanation
+  and the Roadmap for the removal checkbox.
 
 ## Unreleased — Sub-agent observability
 

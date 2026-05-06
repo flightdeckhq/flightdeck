@@ -28,13 +28,19 @@ if not os.environ.get("ANTHROPIC_API_KEY") or not os.environ.get("OPENAI_API_KEY
     print("SKIP: set ANTHROPIC_API_KEY + OPENAI_API_KEY to run this CrewAI demo")
     sys.exit(2)
 
-try:
-    from crewai import Agent, Crew, Task  # type: ignore[import-not-found]
-    from mcpadapt.core import MCPAdapt  # type: ignore[import-not-found]
-    from mcpadapt.crewai_adapter import CrewAIAdapter  # type: ignore[import-not-found]
-except ImportError:
-    print("SKIP: pip install crewai mcpadapt to run this example")
-    sys.exit(2)
+# NOTE: ``mcpadapt.core`` does ``from mcp.client.stdio import
+# stdio_client`` at MODULE import time, capturing a local binding
+# before the sensor's ``patch()`` rewrites the ``mcp.client.stdio``
+# attribute. Skip-check via ``find_spec`` (no actual import) at
+# file top, then lazy-import the actual classes inside ``run_demo``,
+# AFTER ``flightdeck_sensor.patch()`` has run. Demos 5 + 25 use the
+# same pattern for the same reason.
+import importlib.util as _ilu
+
+for _modname in ("crewai", "mcpadapt.core", "mcpadapt.crewai_adapter"):
+    if _ilu.find_spec(_modname) is None:
+        print("SKIP: pip install crewai mcpadapt to run this example")
+        sys.exit(2)
 
 from _helpers import (
     API_URL,
@@ -106,6 +112,12 @@ def run_demo() -> int:
     init_sensor(session_id, flavor=flavor)
     flightdeck_sensor.patch(quiet=True)
 
+    # Lazy-import after flightdeck_sensor.patch() has run — see
+    # file-top note on the mcpadapt module-import binding gotcha.
+    from crewai import Agent, Crew, Task  # type: ignore[import-not-found]
+    from mcpadapt.core import MCPAdapt  # type: ignore[import-not-found]
+    from mcpadapt.crewai_adapter import CrewAIAdapter  # type: ignore[import-not-found]
+
     server_params = mcp_server_params(server_module)
     with MCPAdapt(server_params, CrewAIAdapter()) as tools:
         agent = Agent(
@@ -115,6 +127,13 @@ def run_demo() -> int:
             tools=tools,
             verbose=False,
         )
+        # Workaround for an upstream mcpadapt schema-generation bug.
+        # See README "Known framework constraints" for the full
+        # operator-facing explanation.
+        from flightdeck_sensor.compat.crewai_mcp import (
+            crewai_mcp_schema_fixup,
+        )
+        crewai_mcp_schema_fixup(agent)
         task = Task(
             description=(
                 "Use the echo tool to echo back the literal string "

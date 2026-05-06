@@ -3357,6 +3357,150 @@ a misconfigured allowlist on a real fleet (D133):
 configured enforcement regardless of release). Documented for
 operators who need to opt out (v0.7+) or opt in early (v0.6).
 
+### Dashboard surfaces
+
+The MCP Protection Policy management UI lives at
+`/mcp-policies` as a top-level page distinct from the existing
+`/policies` page (which manages token-budget policies — a
+different feature). Cohabitation rather than unification keeps
+each feature's mental model honest; an operator never has to
+context-switch between LLM-call cost gating and MCP-server
+access gating in the same screen.
+
+#### Layout
+
+A dismissible soft-launch banner sits at the top of the page
+when `SOFT_LAUNCH_ACTIVE` is true (v0.6 default; flips to false
+in v0.7). Banner copy reads "Soft launch: policy decisions
+downgraded to warn-only until v0.7. Set
+`FLIGHTDECK_MCP_POLICY_DEFAULT=enforce` to opt in early."
+Dismissal persists per-token in `localStorage`.
+
+Below the banner sits a tabbed scope picker — one tab per scope
+the operator can edit. The Global tab is always present; one
+additional tab per flavor policy the operator has access to.
+Each tab shows that scope's own state. The mode toggle is
+editable on the Global tab only (D134 enforced in UI; on flavor
+tabs the global mode is rendered read-only as context). The
+`block_on_uncertainty` toggle is editable on every tab — it's a
+per-policy boolean.
+
+Tabs preserve scroll position on switch; the URL carries the
+active tab as a query param (`?tab=global` / `?tab=flavor:prod`)
+so deep-links work and browser back / forward survive.
+
+#### Per-tab panels
+
+- **Mode toggle** (segmented control, allowlist / blocklist).
+  Global tab only. Visually dominant — operators read mode
+  before per-entry enforcement, so the toggle sits above the
+  entry table at full width with a one-sentence explanation.
+- **`block_on_uncertainty` toggle** (Switch component). Per-
+  flavor + global. Only meaningful in allowlist mode; rendered
+  with a low-key visual treatment when the global mode is
+  blocklist (the toggle is a no-op there per D134).
+- **Entry table.** Search by URL / name, sort columns,
+  multi-select for bulk delete, status pill per row (allow /
+  deny + enforcement override). Click a row to open the edit
+  dialog. Skeleton rows during load (not bare spinner).
+  Empty state copy teaches the next action: "Add your first
+  allow rule to start gating this flavor" (allowlist mode) or
+  "Add your first deny rule to block specific servers"
+  (blocklist mode).
+- **Add / edit dialog.** Form fields URL (raw), Name, kind
+  (allow/deny), enforcement (warn/block/interactive/none).
+  Live fingerprint preview via debounced (300ms) `GET
+  /v1/mcp-policies/resolve` so the operator sees the exact
+  fingerprint the server will store. Validation per the
+  storage schema CHECKs (D128); errors render inline next to
+  the offending field.
+- **Resolve preview panel** (collapsible card at the bottom
+  of each tab). Two inputs (server URL, server name) + Resolve
+  button. Renders the API's `MCPPolicyResolveResult` as a
+  decision-color pill matching the Fleet sidebar chroma family
+  (allow=neutral, warn=amber, block=red) plus decision_path,
+  scope, fingerprint. Educational — operators verify their
+  policy's effective behavior before they save.
+- **Version history.** Calls `GET /:flavor/versions`. Table:
+  version, timestamp, actor token name, summary of changes
+  derived from the corresponding audit-log row. Click a row
+  to load the diff viewer. Empty state on a fresh policy:
+  "Version history will appear after your first save."
+- **Diff viewer.** Calls `GET /:flavor/diff?from=&to=`.
+  Server-computed structural diff renders as: mode_changed
+  badge (when set), block_on_uncertainty_changed badge,
+  entries_added / entries_removed / entries_changed sections.
+  Both snapshots accessible via expandable raw-JSON trees
+  (existing `<SyntaxJson>` component).
+- **Dry-run preview.** Calls `POST /:flavor/dry_run` with the
+  current draft + an hours selector (24h / 7d default,
+  168h max per D137). Recharts stacked-bar per server:
+  would_allow / would_warn / would_block segments + an
+  unresolvable_count callout. Reading: "this is what the new
+  policy would have done over the last N hours."
+- **Real-time metrics panel.** Calls `GET /:flavor/metrics?
+  period=24h|7d|30d`. Per-server sparkline (recharts
+  `<LineChart>`). Empty state pre-step-4-emission: "No
+  enforcement events recorded yet for this period."
+- **Bulk YAML import / export.** Plain `<textarea>` editor
+  for import; submit posts to `POST /:flavor/import` and
+  surfaces the API's 400 error inline next to the YAML body
+  on validation failure. Export button fetches `GET
+  /:flavor/export` and triggers a Blob-based download.
+- **Templates picker.** Calls `GET /templates`. Three
+  shipped templates (D138) render as cards with name,
+  description, recommended_for. The `strict-with-common-
+  allows` card surfaces the URL-maintenance warning
+  prominently. Apply triggers a confirmation dialog ("This
+  replaces your current policy. Continue?") before posting
+  to `/apply_template`.
+- **Audit trail.** Calls `GET /:flavor/audit-log`. Paginated
+  table with filters by event_type, actor, date range. Each
+  row expands to reveal the full payload JSON.
+
+#### Tooltips
+
+Non-obvious fields carry shadcn `<Tooltip>` content lifted
+verbatim from this document. Specifically: identity model
+canonical form rules (sub-section "Identity model"), mode
+semantics (sub-section "Two-scope policy model" + "Per-server
+resolution"), and soft-launch behavior (sub-section
+"Soft-launch transition"). Verbatim then trimmed only when the
+sentence is too long to fit a tooltip — never paraphrased.
+
+#### Adjacent surfaces (extensions to existing screens)
+
+- **Fleet sidebar Policy Events panel.** The existing panel
+  in `FleetPanel.tsx` renders `policy_warn` / `policy_block` /
+  `policy_degrade` events. Extended to render the four new
+  MCP-policy event types with a chroma hierarchy that
+  separates enforcement events from informational ones:
+  - `policy_mcp_warn` → amber (matches `policy_warn`).
+  - `policy_mcp_block` → red (matches `policy_block`).
+  - `mcp_server_name_changed` → purple/info (matches
+    `directive_result`).
+  - `mcp_policy_user_remembered` → purple/info (FYI signal,
+    not enforcement; operator visibility only per D139).
+
+  Result: amber/red = "policy fired" axis, purple = "FYI"
+  axis. No new theme tokens (Rule 15); chromas reuse existing
+  CSS variables already declared in `themes.css`.
+- **Investigate event-type filter.** The existing Investigate
+  page's event-type chip picker gains four chips for the new
+  event types. No new dimension on the analytics axis (Rule
+  25 lock); the new types are filterable but not group-by-
+  able. Locked deliberately: an analytics breakdown by user-
+  remembered events is interesting but not core to v1.
+- **Session drawer MCP servers panel.** The existing
+  `MCPServersPanel` in `SessionDrawer.tsx` lists each
+  declared MCP server. Extended to render a per-row policy
+  decision pill: allow (neutral) / warn (amber) / block
+  (red) / unknown (low-contrast neutral with a tooltip
+  explaining "no policy entry — using mode default").
+  Decision derived by calling `GET /resolve` for each server
+  in parallel via `Promise.all`. Loading state shows
+  skeleton pills.
+
 ### D-number cross-references
 
 D127 (identity canonical form), D128 (storage schema), D129 (fetch +
@@ -3365,9 +3509,11 @@ D132 (plugin remembered decisions), D133 (soft-launch default), D134
 (mode lives on global only), D135 (precedence), D136 (helm migration
 source-of-truth refactor), D137 (dry-run replay binds via
 `sessions.context.mcp_servers`, not a dedicated event field),
-D138 (three locked templates). Underlying: D117 (MCP `ClientSession`
-patch surface), D119 (lean MCP wire payload), D125 (Provider enum —
-no member added; rides existing `Provider.MCP`).
+D138 (three locked templates), D139 (plugin yes-and-remember:
+local cache + emit event, no policy mutation). Underlying:
+D117 (MCP `ClientSession` patch surface), D119 (lean MCP wire
+payload), D125 (Provider enum — no member added; rides existing
+`Provider.MCP`).
 
 ---
 

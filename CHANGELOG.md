@@ -302,6 +302,67 @@ in v0.6 as warn-only; v0.7 flips to honor configured enforcement.
   PreToolUse-`ask` + PostToolUse-de-facto-approval flow given
   Claude Code's `ask` is yes/no only.
 
+### Added (dashboard surfaces)
+
+- **MCP Protection Policy management page** at `/mcp-policies`,
+  distinct from the existing token-budget `/policies` page.
+  Tabbed scope picker (Global + per-flavor) with URL-synced
+  active tab. Mode toggle editable on Global only (D134); BOU
+  toggle editable per-tab.
+- **Soft-launch banner.** Top-of-page, dismissible per-token via
+  `localStorage`. Reads the new `SOFT_LAUNCH_ACTIVE` constant in
+  `lib/constants.ts` (v0.6 default `true`; flips to `false` in
+  v0.7 via the same one-line constant change as the
+  sensor / plugin defaults). Copy: precise, non-apologetic.
+- **Entry table** with search / sort / multi-select / status
+  pills. Skeleton-row loaders, teaching empty-state copy
+  ("Add your first allow rule to start gating this flavor").
+- **Add / edit dialog** with debounced (300ms) live fingerprint
+  preview via `GET /v1/mcp-policies/resolve`. Three identity
+  implementations remain locked (Python / Node mjs / Go); the
+  dashboard reuses the server-side canonicalisation rather than
+  introducing a fourth TypeScript port (Step 6 plan amendment 2).
+- **Resolve preview panel** (collapsible). Decision-color pill
+  matches Fleet sidebar chroma family for cross-surface
+  consistency.
+- **Version history list + diff viewer.** Server-computed diff;
+  client renders mode_changed / BOU_changed badges +
+  entries_added / removed / changed sections.
+- **Dry-run preview.** Recharts stacked-bar per server with
+  would_allow / would_warn / would_block segments + an
+  unresolvable_count callout. Hours selector (24h / 7d /
+  168h max).
+- **Real-time enforcement metrics panel.** Recharts sparkline
+  per server. Period selector (24h / 7d / 30d). Empty-state
+  copy reflects the pre-step-4-emission state honestly: "No
+  enforcement events recorded yet for this period."
+- **Bulk YAML import / export.** Plain `<textarea>` editor +
+  server-side YAML validation (no monaco / codemirror dep);
+  Blob-based download for export.
+- **Templates picker.** Three D138 cards. The
+  `strict-with-common-allows` card surfaces the URL-maintenance
+  warning prominently. Apply triggers a confirmation dialog
+  before posting to `/apply_template`.
+- **Audit trail panel.** Paginated table with event_type / actor
+  / date filters; expandable per-row payload JSON.
+- **Tooltips lifted verbatim** from ARCHITECTURE.md sub-sections
+  (identity model, mode semantics, soft-launch).
+- **Adjacent surfaces extensions:**
+  - Fleet sidebar `PolicyEvents` panel renders the four new
+    MCP-policy event types with a chroma hierarchy that
+    separates enforcement from FYI: amber (warn), red (block),
+    purple/info (name_changed, user_remembered). No themes.css
+    edit; reuses existing CSS variables (Step 6 plan
+    amendment 1).
+  - Investigate event-type chip picker gains four new chips for
+    the new event types. No new analytics dimension (Rule 25
+    lock).
+  - SessionDrawer `MCPServersPanel` rows gain a per-row policy-
+    decision pill via parallel `GET /resolve` calls; pill
+    colours match the Fleet sidebar chroma family.
+- **New shadcn/ui Tabs primitive** at `components/ui/tabs.tsx`
+  wrapping the new `@radix-ui/react-tabs` dependency.
+
 ## Unreleased — Sub-agent observability
 
 First-class events, identity, and dashboard surfaces for sub-agent

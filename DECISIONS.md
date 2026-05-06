@@ -6601,3 +6601,140 @@ contract). D135 (resolution algorithm — operator deny entries
 override remembered allows because the policy cache wins step 1
 or step 2 before the remembered overlay applies).
 
+---
+
+## D140 -- Live SessionDrawer MCP-server population via new ``mcp_server_attached`` event
+
+**Status:** Accepted — 2026-05-06 (step 6.6 commits 2-6 of the
+MCP Protection Policy work).
+
+**Decision.** Add a new event type ``mcp_server_attached`` emitted
+by the sensor every time an MCP server is initialised after
+``session_start``, validated at the ingestion API boundary, and
+projected into ``sessions.context.mcp_servers`` by the worker via
+an idempotent UPSERT-with-dedup. The dashboard's SessionDrawer
+re-fetches the session detail when an ``mcp_server_attached``
+event arrives on the matching session over the existing fleet
+WebSocket.
+
+**Context.** D131 introduced the four MCP-policy event types
+(``policy_mcp_warn``, ``policy_mcp_block``,
+``mcp_server_name_changed``, ``mcp_policy_user_remembered``) but
+did not cover the lifecycle question: how does
+``sessions.context.mcp_servers`` populate for servers attached
+*after* ``session_start``? The pre-D140 worker only wrote the
+``mcp_servers`` array at ``session_start`` time; later attaches
+were captured in the sensor's in-memory fingerprint set but never
+flowed to the worker. SessionDrawer's "MCP SERVERS" panel reads
+``session.context.mcp_servers``, so for any session that attached
+its MCP servers after the LLM call started (the common case for
+``mcpadapt``-style agents), the panel rendered empty until
+``session_end`` — too late for the operator looking at a live
+in-flight session.
+
+Step 6.6's two-hat Chrome verification (gap A2) surfaced the
+empty panel against three real playground sessions
+(``playground-mcp-policy-langchain``,
+``playground-mcp-policy-llamaindex-warn``, and
+``playground-mcp-13-mcp``). The sensor's own
+``interceptor/mcp.py`` comment confirmed the gap.
+
+**Alternatives considered.**
+
+(B) **Defer to ``session_end``.** Worker writes ``mcp_servers``
+on ``session_end`` from the accumulated post-call payload.
+Rejected: the operator viewing a live in-flight session is
+exactly the case the panel is most valuable for, and a
+populated-only-after-shutdown panel is functionally a stale
+read.
+
+(C) **Inline on every post-call.** Embed the ``mcp_servers``
+delta in every ``post_call`` event payload and have the worker
+upsert on each. Rejected: blows up payload size for every
+LLM call (full server fingerprint is non-trivial: URL,
+canonical URL, name, transport, protocol version, capabilities
+JSON, instructions, attached_at, fingerprint hash) on a
+hot-path event, and amplifies the dedup work on the worker.
+
+Path (A) — a dedicated low-frequency event type fired once per
+attach — keeps post-call lean, scales linearly with attach count
+(typically 1-3 per session), and reuses the existing event
+ingestion pipeline.
+
+**Wire payload.** Full fingerprint preservation so the audit log
+captures everything the sensor knew at attach time:
+
+    {
+      "fingerprint":            sha256(canonical_url + 0x00 + name),
+      "server_url_canonical":   "https://maps.example.com" | "stdio:///opt/bin/srv",
+      "server_name":            "maps",
+      "transport":              "http" | "sse" | "ws" | "stdio",
+      "protocol_version":       "2024-11-05" | null,
+      "version":                "1.0.0" | null,
+      "capabilities":           {...} | null,
+      "instructions":           "..." | null,
+      "attached_at":            "2026-05-06T15:00:00Z"
+    }
+
+Required fields validated at ingestion: ``fingerprint``,
+``server_name``, ``attached_at``, and ``server_url_canonical``
+(string, may be empty for stdio launches with no URL).
+
+**Worker projection.** ``HandleMCPServerAttached`` translates the
+wire payload to the existing ``context.mcp_servers`` dict shape
+(``server_name`` → ``name``, ``server_url_canonical`` →
+``server_url``; drops fingerprint and attached_at — the former
+is dedup-only, the latter is audit-only). Atomic
+UPSERT-with-dedup:
+
+    UPDATE sessions
+    SET context = jsonb_set(
+      COALESCE(context, '{}'::jsonb),
+      '{mcp_servers}',
+      COALESCE(context->'mcp_servers', '[]'::jsonb) || $2::jsonb
+    )
+    WHERE session_id = $1::uuid
+      AND NOT EXISTS (
+        SELECT 1 FROM jsonb_array_elements(...) AS s
+        WHERE s->>'name' = $3 AND COALESCE(s->>'server_url', '') = COALESCE($4, '')
+      )
+
+Dedup key: ``(name, server_url)`` tuple. Same hash equivalence
+as D127 — no schema bump for ``context.mcp_servers``, the dict
+shape is unchanged.
+
+**Sensor emission.** The ``record_mcp_server`` method on
+``Session`` returns a ``bool`` (True = newly recorded, False =
+duplicate). The MCP interceptor's ``_patched_initialize`` only
+emits ``mcp_server_attached`` when ``record_mcp_server`` returns
+True. Wrapped in try/except per Rule 27 — failure to emit must
+never break the agent's hot path.
+
+**Dashboard re-fetch.** ``useFleetStore`` gains a ``lastEvent``
+field; ``useFleet.handleMessage`` dispatches ``setLastEvent`` on
+every event-bearing envelope. The SessionDrawer subscribes to
+``lastEvent`` and bumps a ``revalidationKey`` when
+``event_type === "mcp_server_attached" && session_id ===
+sessionId``; ``useSession`` watches ``revalidationKey`` and
+refetches when it changes. WebSocket-driven; no polling.
+
+**Sequence.** Sensor attaches MCP server → sensor emits
+``mcp_server_attached`` event (fire-and-forget) → ingestion
+validates payload → NATS publishes → worker projects into
+``sessions.context.mcp_servers`` → fleet WS broadcasts the event
+→ SessionDrawer re-fetches → MCP SERVERS panel populates within
+2-3s of the attach.
+
+**Backward compat.** Unknown event types are dropped at ingestion
+per existing validation; older workers/dashboards ignore the
+new type cleanly. Sessions whose sensor never emitted
+``mcp_server_attached`` (pre-D140 sensors) still get the
+``session_start`` snapshot — the worker's ``HandleSessionStart``
+path is unchanged.
+
+**Related.** D127 (canonical URL + fingerprint hash recipe).
+D131 (the four pre-D140 MCP-policy event types). D137 (dry-run
+replay reads from ``sessions.context.mcp_servers`` — D140 makes
+this populate live, which strengthens dry-run accuracy for
+in-flight sessions). Rule 27 (sensor fail-open).
+

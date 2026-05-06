@@ -416,6 +416,84 @@ in v0.6 as warn-only; v0.7 flips to honor configured enforcement.
   framework constraints" for the operator-facing explanation
   and the Roadmap for the removal checkbox.
 
+### Added (step 6.6 — live MCP server population + UI polish)
+
+- **`mcp_server_attached` event type (D140).** Sensor emits
+  whenever an MCP server is initialised after `session_start`,
+  carrying the full fingerprint (URL canonical, name, transport,
+  protocol version, version, capabilities, instructions,
+  attached_at). Worker projects into `sessions.context.mcp_servers`
+  via idempotent UPSERT-with-dedup keyed on `(name, server_url)`
+  — no `context.mcp_servers` schema change. Closes the gap where
+  the SessionDrawer's MCP SERVERS panel rendered empty for live
+  in-flight sessions whose MCP servers attached after
+  `session_start` (the common case for `mcpadapt`-style agents).
+  Fail-open per Rule 27.
+- **Live SessionDrawer re-fetch via fleet WebSocket.**
+  `useFleetStore` gains a `lastEvent` field; SessionDrawer bumps
+  a `revalidationKey` when an `mcp_server_attached` event arrives
+  on the matching session, and `useSession` re-fetches the
+  session detail. MCP SERVERS panel populates within 2-3s of an
+  attach.
+- **Dedicated MCP POLICY facet on Investigate.** The four
+  MCP-policy event types (`policy_mcp_warn`, `policy_mcp_block`,
+  `mcp_server_name_changed`, `mcp_policy_user_remembered`) split
+  out of the generic POLICY facet into their own collapsible
+  filter group so operators can isolate MCP-policy traffic
+  without filtering it out of every other policy view.
+- **Rule 40c.4 in CLAUDE.md.** Codifies the live-load Chrome
+  verification pattern as a hard rule for every dashboard step.
+  Mocks-passing is necessary but insufficient; surfaces must be
+  opened in real Chrome against branch HEAD with the
+  build SHA logged in the verification report.
+
+### Changed (step 6.6 — MCP Policies UX polish)
+
+- **Tab overflow.** ``Tabs`` replaced by a shadcn ``Select``
+  scope picker with an "Editing scope" label and a
+  ``N flavor(s) + Global`` / ``Global only — no flavor activity
+  yet`` context note. Scales linearly with flavor count rather
+  than horizontal-scrolling at 6+ flavors.
+- **Mode toggle prominence.** ``MCPPolicyHeader`` rebuilt as two
+  stacked sections — "Policy mode" header + segmented control
+  + Allow-list / Block-list descriptive copy, plus a separate
+  "Block on uncertainty" sub-section that's hidden entirely
+  under blocklist mode (D134 only-meaningful-in-allowlist;
+  hide-rather-than-grey precedent: Salesforce / Atlassian /
+  Linear). Server-side BOU value persists across mode flips.
+- **Soft-launch banner copy.** Restructured the
+  FLIGHTDECK_MCP_POLICY_DEFAULT CTA to lead with the opt-in
+  imperative; theme parity via ``var(--warning)`` rather than
+  pinned amber-500.
+- **Form validation timing.** Entry dialog defers the red
+  "URL is required" list until the operator's first submit
+  attempt — opening the dialog with empty fields no longer reads
+  as "the form is broken before I've typed anything".
+- **Admin-token error CTAs (9 sites).** Every "Admin token
+  required" error funnels through a single
+  ``adminTokenError(action)`` helper in ``lib/api.ts`` that
+  appends actionable localStorage instructions:
+  "Set the flightdeck-access-token localStorage key in this
+  browser to an admin-scoped token (DevTools → Application →
+  Local Storage), then reload."
+- **YAML import placeholder caveat.** New muted note under the
+  textarea reminding the operator the API is the schema source
+  of truth (D138) and recommending export-then-edit as the
+  cleanest starting point.
+- **Apply CTA wording.** Templates panel "Apply to {scope}"
+  bolds the scope name and capitalises ``"Global"`` so the
+  target reads as a noun phrase, not flat English.
+- **Audit pager hide-on-empty.** Pager skips render on the
+  first-page empty state — no more "0–0 on this page" with
+  greyed-out Prev/Next next to an empty card.
+- **Audit empty-state hint.** "No audit log entries yet." gets
+  a second muted line: "Adding an entry, changing the mode, or
+  importing YAML creates an entry here."
+- **Active scope styling.** Scope-picker SelectTrigger gets an
+  accent left-border + font-semibold so the scope being edited
+  reads as the page's primary context, not just a dropdown
+  control.
+
 ## Unreleased — Sub-agent observability
 
 First-class events, identity, and dashboard surfaces for sub-agent

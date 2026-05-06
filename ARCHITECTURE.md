@@ -2550,17 +2550,23 @@ and carry only MCP-specific fields:
 across every type.
 
 **Server fingerprint at session level**. `ClientSession.initialize()`
-is patched silently (no wire event) to capture the
-`InitializeResult` and stamp an `MCPServerFingerprint` onto the
-sensor session. When the sensor's session_start ships AFTER the
-initialize call, `context.mcp_servers` carries the full fingerprint
-list — name, transport, protocol_version (str | int, preserved
-verbatim per Override 5), version, capabilities, instructions —
-which the worker writes once into `sessions.context` (UpsertSession
-ON CONFLICT does not update context, see Override 2). For sessions
-where flightdeck init runs BEFORE MCP init, the per-event
-`server_name` + `transport` is the authoritative real-time
-attribution.
+is patched to capture the `InitializeResult` and stamp an
+`MCPServerFingerprint` onto the sensor session. When the sensor's
+session_start ships AFTER the initialize call, `context.mcp_servers`
+carries the full fingerprint list — name, transport, protocol_version
+(str | int, preserved verbatim per Override 5), version, capabilities,
+instructions — which the worker writes once into `sessions.context`.
+For servers initialised AFTER `session_start` (the common case for
+late-attaching MCP frameworks), the sensor emits a wire event
+`mcp_server_attached` carrying the same fingerprint plus an
+`attached_at` timestamp; the worker projects it into
+`sessions.context.mcp_servers` via an idempotent UPSERT-with-dedup
+keyed on `(name, server_url)` (D140). The dashboard's SessionDrawer
+re-fetches the session detail when an `mcp_server_attached` event
+arrives on the matching session over the existing fleet WebSocket,
+so the MCP SERVERS panel populates within 2-3s of the attach for
+in-flight sessions. Emission is fire-and-forget per Rule 27 —
+failure to emit never breaks the agent's hot path.
 
 **Content overflow** (B-6). `MCP_RESOURCE_READ` payloads can carry
 large captured bodies. The wire envelope routes content one of two
@@ -3266,9 +3272,9 @@ effect.
 
 ### Event taxonomy
 
-Three new event types extend the sensor's `EventType` enum and the
-worker's `events.<type>` NATS subject routing. All three ride the
-standard event pipeline; none are audit-log entries (D131).
+Four event types extend the sensor's `EventType` enum and the
+worker's `events.<type>` NATS subject routing. All ride the
+standard event pipeline; none are audit-log entries (D131, D140).
 
 - **`policy_mcp_warn`** — emitted when an evaluation resolves to
   `warn`. Payload: `server_url`, `server_name`, `fingerprint`,
@@ -3285,6 +3291,15 @@ standard event pipeline; none are audit-log entries (D131).
   `fingerprint_new`, `name_old`, `name_new`, `observed_at`. The event
   surfaces drift on the dashboard so operators can investigate; the
   policy decision still resolves on URL (D131).
+- **`mcp_server_attached`** — emitted by the sensor every time an
+  MCP server is initialised after `session_start`. Payload:
+  `fingerprint`, `server_url_canonical`, `server_name`, `transport`,
+  `protocol_version`, `version`, `capabilities`, `instructions`,
+  `attached_at`. The worker projects it into
+  `sessions.context.mcp_servers` via an idempotent UPSERT-with-dedup
+  on `(name, server_url)`; the dashboard's SessionDrawer re-fetches
+  the session detail when one arrives so the MCP SERVERS panel
+  populates live for in-flight sessions (D140).
 
 ### Audit and versioning
 

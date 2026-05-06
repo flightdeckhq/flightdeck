@@ -1561,7 +1561,7 @@ async function flushPostCallTurns({
 // byte.
 // ---------------------------------------------------------------------
 
-async function dispatchMcpPolicySessionStart({
+export async function dispatchMcpPolicySessionStart({
   cfg,
   hookEvent,
   sessionId,
@@ -1619,7 +1619,7 @@ async function dispatchMcpPolicySessionStart({
   }
 }
 
-function dispatchMcpPolicyPreToolUse(cfg, hookEvent) {
+export function dispatchMcpPolicyPreToolUse(cfg, hookEvent) {
   const toolName =
     hookEvent.tool_name
     || hookEvent.tool_use?.name
@@ -1686,7 +1686,7 @@ function dispatchMcpPolicyPreToolUse(cfg, hookEvent) {
   return false;
 }
 
-async function dispatchMcpPolicyPostToolUse({
+export async function dispatchMcpPolicyPostToolUse({
   cfg,
   hookEvent,
   sessionId,

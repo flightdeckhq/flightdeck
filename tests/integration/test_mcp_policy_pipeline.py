@@ -51,7 +51,11 @@ def _wait_for_event(session_id: str, event_type: str, timeout: float = 5.0) -> d
             headers=auth_headers(), timeout=3,
         )
         if r.status_code == 200:
-            for event in r.json().get("events", []):
+            # API serialises events: null on a freshly-created session
+            # whose events haven't drained yet — guard against the
+            # null vs missing distinction so the helper polls instead
+            # of crashing on TypeError.
+            for event in (r.json().get("events") or []):
                 if event.get("event_type") == event_type:
                     return event
         time.sleep(0.2)
@@ -227,3 +231,162 @@ def test_mcp_policy_user_remembered_missing_decided_at_rejected() -> None:
     payload = _user_remembered_event(sid, flavor)
     del payload["decided_at"]
     assert _post_event(payload) == 400
+
+
+# ----- D140 step 6.6 A2 — mcp_server_attached live-context UPSERT --
+
+
+def _attached_event(
+    session_id: str,
+    flavor: str,
+    *,
+    name: str = "maps",
+    server_url_canonical: str = "https://maps.example.com/sse",
+    fingerprint: str = "abcdef0123456789",
+) -> dict:
+    """Build a synthesised mcp_server_attached payload matching the
+    sensor's wire shape (D140)."""
+    payload = _baseline_session_start(session_id, flavor)
+    payload["event_type"] = "mcp_server_attached"
+    payload.update({
+        "fingerprint": fingerprint,
+        "server_url_canonical": server_url_canonical,
+        "server_name": name,
+        "transport": "sse",
+        "protocol_version": "2025-11-25",
+        "version": "1.0.0",
+        "capabilities": {"tools": {"listChanged": True}},
+        "instructions": "Test server.",
+        "attached_at": "2026-05-06T15:00:00+00:00",
+    })
+    return payload
+
+
+def _wait_for_context_mcp_server(
+    session_id: str,
+    server_name: str,
+    *,
+    timeout: float = 10.0,
+) -> dict | None:
+    """Poll GET /v1/sessions/{id} until
+    ``session.context.mcp_servers`` contains an element with the
+    given ``name``, or return None on timeout. Used by D140 tests
+    to assert the worker UPSERT landed on the live row within the
+    expected window."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        r = requests.get(
+            f"{API_URL}/v1/sessions/{session_id}",
+            headers=auth_headers(), timeout=3,
+        )
+        if r.status_code == 200:
+            session = r.json().get("session") or {}
+            ctx = session.get("context") or {}
+            for srv in ctx.get("mcp_servers") or []:
+                if srv.get("name") == server_name:
+                    return srv
+        time.sleep(0.2)
+    return None
+
+
+def test_mcp_server_attached_populates_session_context() -> None:
+    """D140 — emitting mcp_server_attached after session_start
+    populates sessions.context.mcp_servers within the SLA window so
+    the dashboard SessionDrawer panel renders live."""
+    sid = str(uuid.uuid4())
+    flavor = f"test-mcp-attach-{uuid.uuid4().hex[:6]}"
+
+    assert _post_event(_baseline_session_start(sid, flavor)) == 200
+    # Wait for the session row to land so the post-attach poll
+    # has something to read against. session_start emits no event-
+    # type-keyed signal, so poll until GET /v1/sessions/<id>
+    # returns 200.
+    deadline = time.monotonic() + 10.0
+    while time.monotonic() < deadline:
+        r = requests.get(
+            f"{API_URL}/v1/sessions/{sid}",
+            headers=auth_headers(), timeout=3,
+        )
+        if r.status_code == 200:
+            break
+        time.sleep(0.2)
+    assert r.status_code == 200, f"session row never landed: {r.status_code}"
+
+    assert _post_event(_attached_event(sid, flavor)) == 200
+
+    server = _wait_for_context_mcp_server(sid, "maps", timeout=10.0)
+    assert server is not None, (
+        "mcp_server_attached did not populate context.mcp_servers within 10s"
+    )
+    assert server["name"] == "maps"
+    assert server["server_url"] == "https://maps.example.com/sse"
+    assert server["transport"] == "sse"
+    assert server["version"] == "1.0.0"
+    assert server["instructions"] == "Test server."
+    assert server["capabilities"] == {"tools": {"listChanged": True}}
+    # protocol_version round-trips as the wire-typed value (str here).
+    assert server["protocol_version"] == "2025-11-25"
+
+
+def test_mcp_server_attached_idempotent_replay() -> None:
+    """D140 — re-emitting the same mcp_server_attached payload must
+    not create a duplicate entry in context.mcp_servers. Tuple dedup
+    by (name, server_url) per the locked design."""
+    sid = str(uuid.uuid4())
+    flavor = f"test-mcp-attach-{uuid.uuid4().hex[:6]}"
+
+    assert _post_event(_baseline_session_start(sid, flavor)) == 200
+    assert _post_event(_attached_event(sid, flavor)) == 200
+    server = _wait_for_context_mcp_server(sid, "maps", timeout=10.0)
+    assert server is not None
+
+    # Replay the exact same payload — should be a no-op at the SQL
+    # layer.
+    assert _post_event(_attached_event(sid, flavor)) == 200
+    time.sleep(1.0)  # Let the worker drain.
+
+    r = requests.get(
+        f"{API_URL}/v1/sessions/{sid}",
+        headers=auth_headers(), timeout=3,
+    )
+    assert r.status_code == 200
+    session_obj = r.json().get("session") or {}
+    servers = (session_obj.get("context") or {}).get("mcp_servers") or []
+    matching = [s for s in servers if s.get("name") == "maps"]
+    assert len(matching) == 1, (
+        f"expected exactly one 'maps' entry after replay, got {len(matching)}"
+    )
+
+
+def test_mcp_server_attached_distinct_tuples_both_land() -> None:
+    """D140 — tuple dedup is by (name, server_url). Distinct tuples
+    are independent attaches and must both land in
+    context.mcp_servers."""
+    sid = str(uuid.uuid4())
+    flavor = f"test-mcp-attach-{uuid.uuid4().hex[:6]}"
+
+    assert _post_event(_baseline_session_start(sid, flavor)) == 200
+    assert _post_event(_attached_event(
+        sid, flavor, name="maps",
+        server_url_canonical="https://maps.example.com/sse",
+        fingerprint="aaaaaaaaaaaaaaaa",
+    )) == 200
+    assert _post_event(_attached_event(
+        sid, flavor, name="search",
+        server_url_canonical="https://search.example.com/sse",
+        fingerprint="bbbbbbbbbbbbbbbb",
+    )) == 200
+
+    # Both should land.
+    assert _wait_for_context_mcp_server(sid, "maps", timeout=10.0) is not None
+    assert _wait_for_context_mcp_server(sid, "search", timeout=10.0) is not None
+
+    r = requests.get(
+        f"{API_URL}/v1/sessions/{sid}",
+        headers=auth_headers(), timeout=3,
+    )
+    assert r.status_code == 200
+    session_obj = r.json().get("session") or {}
+    servers = (session_obj.get("context") or {}).get("mcp_servers") or []
+    names = sorted(s.get("name") for s in servers)
+    assert names == ["maps", "search"]

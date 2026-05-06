@@ -66,7 +66,14 @@ def main() -> int:
         # 30–90s end-to-end (network jitter, model warm-up,
         # post-call drain). 180s caps them while still flagging a
         # genuinely stuck run loud and early.
-        timeout_s = 180 if "subagents" in name else 60
+        if (
+            "subagents" in name
+            or "mcp_policy_langchain" in name
+            or "mcp_policy_llamaindex" in name
+        ):
+            timeout_s = 180
+        else:
+            timeout_s = 60
         print(f"\n=== {name} ===", flush=True)
         t0 = time.monotonic()
         try:

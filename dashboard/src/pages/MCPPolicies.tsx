@@ -6,7 +6,9 @@ import { MCPPolicyEntryTable } from "@/components/policy/MCPPolicyEntryTable";
 import { MCPPolicyHeader } from "@/components/policy/MCPPolicyHeader";
 import { MCPPolicyMetricsPanel } from "@/components/policy/MCPPolicyMetricsPanel";
 import { MCPPolicyResolvePanel } from "@/components/policy/MCPPolicyResolvePanel";
+import { MCPPolicyTemplatesPanel } from "@/components/policy/MCPPolicyTemplatesPanel";
 import { MCPPolicyVersionHistory } from "@/components/policy/MCPPolicyVersionHistory";
+import { MCPPolicyYamlPanel } from "@/components/policy/MCPPolicyYamlPanel";
 import { MCPSoftLaunchBanner } from "@/components/policy/MCPSoftLaunchBanner";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
@@ -276,6 +278,18 @@ function GlobalPanel({
 
       <MCPPolicyMetricsPanel flavorOrGlobal="global" scopeKey="global" />
 
+      <MCPPolicyTemplatesPanel
+        flavor="global"
+        scopeKey="global"
+        onApplied={onChanged}
+      />
+
+      <MCPPolicyYamlPanel
+        flavor="global"
+        scopeKey="global"
+        onImported={onChanged}
+      />
+
       <MCPPolicyVersionHistory
         flavorOrGlobal="global"
         scopeKey="global"
@@ -409,6 +423,18 @@ function FlavorPanel({
       />
 
       <MCPPolicyMetricsPanel flavorOrGlobal={flavor} scopeKey={flavor} />
+
+      <MCPPolicyTemplatesPanel
+        flavor={flavor}
+        scopeKey={flavor}
+        onApplied={reload}
+      />
+
+      <MCPPolicyYamlPanel
+        flavor={flavor}
+        scopeKey={flavor}
+        onImported={reload}
+      />
 
       <MCPPolicyVersionHistory
         flavorOrGlobal={flavor}

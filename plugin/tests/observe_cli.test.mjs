@@ -117,9 +117,11 @@ function startCaptureServer() {
  */
 function startFailingServer(status) {
   return new Promise((resolve) => {
-    let requestCount = 0;
+    let postCount = 0;
+    let totalCount = 0;
     const server = createServer((req, res) => {
-      requestCount++;
+      totalCount++;
+      if (req.method === "POST") postCount++;
       // Drain the body so the client sees a clean response.
       req.on("data", () => {});
       req.on("end", () => {
@@ -129,7 +131,17 @@ function startFailingServer(status) {
     });
     server.listen(0, "127.0.0.1", () => {
       const port = server.address().port;
-      resolve({ server, port, requestCount: () => requestCount });
+      // requestCount() counts POSTs only — the contract these tests
+      // assert is about the ingestion POST path, not unrelated GETs
+      // from D139 SessionStart MCP-policy fetch (which hit the same
+      // host:port in test fixtures because FLIGHTDECK_SERVER points
+      // at the failing server).
+      resolve({
+        server,
+        port,
+        requestCount: () => postCount,
+        totalRequestCount: () => totalCount,
+      });
     });
   });
 }

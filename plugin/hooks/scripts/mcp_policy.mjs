@@ -301,23 +301,8 @@ export function clearSessionPolicyCache(sessionId) {
   }
 }
 
-/**
- * Parse a Claude Code MCP tool name into (server, tool) pair.
- * The convention is `mcp__<server>__<tool>`. Returns null when
- * the name doesn't match.
- *
- * @param {string} toolName
- * @returns {{server: string, tool: string}|null}
- */
-export function parseMcpToolName(toolName) {
-  if (typeof toolName !== "string") {
-    return null;
-  }
-  // Match exactly the Claude Code convention. server segment
-  // cannot contain `__` to keep the split unambiguous.
-  const match = /^mcp__([^_]+(?:_[^_]+)*)__(.+)$/.exec(toolName);
-  if (!match) {
-    return null;
-  }
-  return { server: match[1], tool: match[2] };
-}
+// Note: ``parseMcpToolName`` lives in observe_cli.mjs as the
+// canonical Claude Code mcp__<server>__<tool> parser (returning
+// {server_name, tool_name, parsed}). This module deliberately
+// does not duplicate it — observe_cli.mjs imports both modules
+// and uses its local parser at the dispatch site.

@@ -384,6 +384,11 @@ func EventsHandler(
 				writeError(w, http.StatusBadRequest, msg)
 				return
 			}
+		case "mcp_policy_user_remembered":
+			if msg := validateMCPPolicyUserRememberedPayload(payload); msg != "" {
+				writeError(w, http.StatusBadRequest, msg)
+				return
+			}
 		}
 
 		// On session_start, attach the resolved token id/name so the
@@ -513,6 +518,27 @@ func validateMCPPolicyDecisionPayload(payload map[string]any, eventType string) 
 		return fmt.Sprintf(
 			"decision_path must be one of: flavor_entry, global_entry, mode_default (got %q)", dp,
 		)
+	}
+	return ""
+}
+
+// validateMCPPolicyUserRememberedPayload enforces the required-
+// field set for mcp_policy_user_remembered events emitted by the
+// Claude Code plugin's PostToolUse de-facto-approval path (D139).
+// Required fields cover both the operator-visibility surface
+// (fingerprint, server_url_canonical, server_name, flavor) AND
+// the audit timestamp (decided_at).
+func validateMCPPolicyUserRememberedPayload(payload map[string]any) string {
+	for _, field := range []string{
+		"fingerprint", "server_url_canonical", "server_name",
+		"flavor", "decided_at",
+	} {
+		v, ok := payload[field].(string)
+		if !ok || v == "" {
+			return fmt.Sprintf(
+				"%s is required for mcp_policy_user_remembered", field,
+			)
+		}
 	}
 	return ""
 }

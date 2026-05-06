@@ -189,3 +189,41 @@ def test_mcp_server_name_changed_missing_name_old_rejected() -> None:
     payload = _name_changed_event(sid, flavor)
     del payload["name_old"]
     assert _post_event(payload) == 400
+
+
+# ----- D139 mcp_policy_user_remembered ---------------------------
+
+
+def _user_remembered_event(session_id: str, flavor: str) -> dict:
+    payload = _baseline_session_start(session_id, flavor)
+    payload["event_type"] = "mcp_policy_user_remembered"
+    payload.update({
+        "fingerprint": "abc1234567890abc",
+        "server_url_canonical": "stdio://npx -y @scope/server-x",
+        "server_name": "x",
+        "decided_at": "2026-05-06T12:00:00Z",
+    })
+    return payload
+
+
+def test_mcp_policy_user_remembered_lands_with_payload() -> None:
+    sid = str(uuid.uuid4())
+    flavor = f"test-mcp-pipeline-{uuid.uuid4().hex[:6]}"
+
+    assert _post_event(_baseline_session_start(sid, flavor)) == 200
+    assert _post_event(_user_remembered_event(sid, flavor)) == 200
+
+    event = _wait_for_event(sid, "mcp_policy_user_remembered", timeout=10.0)
+    assert event is not None, "mcp_policy_user_remembered did not land within 10s"
+    payload = event.get("payload") or {}
+    assert payload.get("server_name") == "x"
+    assert payload.get("fingerprint") == "abc1234567890abc"
+    assert payload.get("decided_at") == "2026-05-06T12:00:00Z"
+
+
+def test_mcp_policy_user_remembered_missing_decided_at_rejected() -> None:
+    sid = str(uuid.uuid4())
+    flavor = f"test-mcp-pipeline-{uuid.uuid4().hex[:6]}"
+    payload = _user_remembered_event(sid, flavor)
+    del payload["decided_at"]
+    assert _post_event(payload) == 400

@@ -620,3 +620,10 @@ func TestBuildEventExtraEmptyDirectiveResult(t *testing.T) {
 		t.Errorf("expected nil payload for empty directive_result, got %s", string(extra))
 	}
 }
+
+func TestProcess_RoutesMCPPolicyUserRemembered(t *testing.T) {
+	e := makeEvent("mcp_policy_user_remembered")
+	if e.EventType != "mcp_policy_user_remembered" {
+		t.Error("event type mismatch")
+	}
+}

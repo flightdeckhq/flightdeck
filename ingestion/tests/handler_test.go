@@ -793,3 +793,70 @@ func TestEventsHandler_NonMCPEventType_BypassesMCPValidation(t *testing.T) {
 		t.Errorf("expected 200, got %d body=%s", code, body)
 	}
 }
+
+// ----- D139 mcp_policy_user_remembered validation -----------------
+
+func makeMCPPolicyUserRememberedPayload() map[string]any {
+	return map[string]any{
+		"session_id":           "33333333-3333-4333-8333-333333333333",
+		"agent_id":             "44444444-4444-4444-8444-444444444444",
+		"agent_type":           "coding",
+		"client_type":          "claude_code",
+		"event_type":           "mcp_policy_user_remembered",
+		"fingerprint":          "abc1234567890abc",
+		"server_url_canonical": "stdio://npx -y @scope/server-x",
+		"server_name":          "x",
+		"flavor":               "production",
+		"decided_at":           "2026-05-06T12:00:00Z",
+	}
+}
+
+func TestEventsHandler_MCPPolicyUserRemembered_AcceptsValidPayload(t *testing.T) {
+	payload := makeMCPPolicyUserRememberedPayload()
+	code, body := runEventValidationTest(t, payload)
+	if code != http.StatusOK {
+		t.Errorf("expected 200, got %d body=%s", code, body)
+	}
+}
+
+func TestEventsHandler_MCPPolicyUserRemembered_MissingFingerprintReturns400(t *testing.T) {
+	payload := makeMCPPolicyUserRememberedPayload()
+	delete(payload, "fingerprint")
+	code, body := runEventValidationTest(t, payload)
+	if code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d body=%s", code, body)
+	}
+	if !strings.Contains(body, "fingerprint") {
+		t.Errorf("body should mention fingerprint, got %s", body)
+	}
+}
+
+func TestEventsHandler_MCPPolicyUserRemembered_MissingServerURLCanonicalReturns400(t *testing.T) {
+	payload := makeMCPPolicyUserRememberedPayload()
+	delete(payload, "server_url_canonical")
+	code, _ := runEventValidationTest(t, payload)
+	if code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", code)
+	}
+}
+
+func TestEventsHandler_MCPPolicyUserRemembered_MissingDecidedAtReturns400(t *testing.T) {
+	payload := makeMCPPolicyUserRememberedPayload()
+	delete(payload, "decided_at")
+	code, body := runEventValidationTest(t, payload)
+	if code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", code)
+	}
+	if !strings.Contains(body, "decided_at") {
+		t.Errorf("body should mention decided_at, got %s", body)
+	}
+}
+
+func TestEventsHandler_MCPPolicyUserRemembered_MissingFlavorReturns400(t *testing.T) {
+	payload := makeMCPPolicyUserRememberedPayload()
+	delete(payload, "flavor")
+	code, _ := runEventValidationTest(t, payload)
+	if code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", code)
+	}
+}

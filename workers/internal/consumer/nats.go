@@ -214,6 +214,12 @@ type EventPayload struct {
 	FingerprintNew     string `json:"fingerprint_new,omitempty"`
 	NameOld            string `json:"name_old,omitempty"`
 	NameNew            string `json:"name_new,omitempty"`
+
+	// D139 — mcp_policy_user_remembered de-facto-approval event
+	// emitted by the Claude Code plugin's PostToolUse path. The
+	// other fields (Fingerprint, ServerURLCanonical, ServerName,
+	// Flavor) already exist above; this is the one new field.
+	DecidedAt string `json:"decided_at,omitempty"`
 }
 
 // SubagentMessageBody is the framework-supplied body of a single

@@ -173,6 +173,12 @@ func BuildEventExtra(e consumer.EventPayload) ([]byte, error) {
 	if e.NameNew != "" {
 		extra["name_new"] = e.NameNew
 	}
+	// D139 — mcp_policy_user_remembered field (the others overlap
+	// with the policy_mcp_warn / policy_mcp_block / name_changed
+	// events handled above).
+	if e.DecidedAt != "" {
+		extra["decided_at"] = e.DecidedAt
+	}
 	// Phase 5 MCP_RESOURCE_READ content. The sensor's lean MCP payload
 	// drops the ``has_content`` flag entirely, so the existing
 	// HasContent gate (which routes LLM PromptContent into the
@@ -339,7 +345,8 @@ func (p *Processor) Process(ctx context.Context, e consumer.EventPayload) error 
 			return err
 		}
 	case "policy_warn", "policy_degrade", "policy_block",
-		"policy_mcp_warn", "policy_mcp_block":
+		"policy_mcp_warn", "policy_mcp_block",
+		"mcp_policy_user_remembered":
 		// Policy enforcement events emitted by the sensor's _pre_call
 		// (WARN, BLOCK) and _apply_directive(DEGRADE). Route through
 		// HandlePostCall so last_seen_at advances on enforcement

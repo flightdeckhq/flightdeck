@@ -41,16 +41,46 @@ const BASE = import.meta.env.VITE_API_BASE_URL || "/api";
 // replace this before a dashboard bundle is shipped to end users.
 export const ACCESS_TOKEN = "tok_dev";
 
+/** localStorage key that overrides the hardcoded ``ACCESS_TOKEN``
+ *  when present. Pre-built for the Phase 5 Part 2 Settings page that
+ *  will write to it via UI; in the meantime an operator who needs
+ *  admin scope (e.g. for the MCP Protection Policy admin features)
+ *  can paste an admin token via DevTools without a code change.
+ *  Reading at request time keeps token rotation a localStorage
+ *  change rather than a redeploy. */
+export const ACCESS_TOKEN_STORAGE_KEY = "flightdeck-access-token";
+
+function getActiveAccessToken(): string {
+  if (typeof window === "undefined") return ACCESS_TOKEN;
+  try {
+    const stored = window.localStorage.getItem(ACCESS_TOKEN_STORAGE_KEY);
+    if (stored && stored.length > 0) return stored;
+  } catch {
+    // localStorage may be unavailable (e.g. SSR / strict iframe). Fall
+    // back to the build-time token rather than failing requests.
+  }
+  return ACCESS_TOKEN;
+}
+
 // WS_ACCESS_TOKEN_QUERY is the query-string form used by the
 // WebSocket /v1/stream endpoint. Browsers cannot set Authorization
 // on a WebSocket upgrade, so the server accepts the access token via
-// ``?token=`` as an alternative.
+// ``?token=`` as an alternative. Reads the active token at call
+// time so a localStorage override is honoured for new connections.
+export function wsAccessTokenQuery(): string {
+  return `token=${encodeURIComponent(getActiveAccessToken())}`;
+}
+
+/** @deprecated import {@link wsAccessTokenQuery} and call it. The
+ *  constant captures the build-time token and ignores the
+ *  localStorage override. Kept for compatibility with call sites
+ *  that haven't been migrated. */
 export const WS_ACCESS_TOKEN_QUERY = `token=${encodeURIComponent(ACCESS_TOKEN)}`;
 
 function authHeaders(init?: HeadersInit): Headers {
   const h = new Headers(init);
   if (!h.has("Authorization")) {
-    h.set("Authorization", `Bearer ${ACCESS_TOKEN}`);
+    h.set("Authorization", `Bearer ${getActiveAccessToken()}`);
   }
   return h;
 }
@@ -64,10 +94,26 @@ export async function apiFetch(path: string, init: RequestInit = {}): Promise<Re
   return fetch(`${BASE}${path}`, { ...init, headers: authHeaders(init.headers) });
 }
 
+/** Subclass of Error that carries the HTTP status code so call
+ *  sites can distinguish 401 / 403 / 404 / 5xx without parsing the
+ *  message. Surfaces in MCP Protection Policy admin views render
+ *  403 as actionable copy ("Admin token required") rather than a
+ *  generic "API 403" message. */
+export class ApiError extends Error {
+  constructor(
+    public readonly status: number,
+    public readonly path: string,
+    message?: string,
+  ) {
+    super(message ?? `API ${status}: ${path}`);
+    this.name = "ApiError";
+  }
+}
+
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await apiFetch(path, init);
   if (!res.ok) {
-    throw new Error(`API ${res.status}: ${path}`);
+    throw new ApiError(res.status, path);
   }
   return res.json() as Promise<T>;
 }

@@ -3,6 +3,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { MCPPolicyEntryDialog } from "@/components/policy/MCPPolicyEntryDialog";
 import { MCPPolicyEntryTable } from "@/components/policy/MCPPolicyEntryTable";
 import { MCPPolicyHeader } from "@/components/policy/MCPPolicyHeader";
+import { MCPPolicyResolvePanel } from "@/components/policy/MCPPolicyResolvePanel";
+import { MCPPolicyVersionHistory } from "@/components/policy/MCPPolicyVersionHistory";
 import { MCPSoftLaunchBanner } from "@/components/policy/MCPSoftLaunchBanner";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
@@ -261,6 +263,14 @@ function GlobalPanel({
           await onChanged();
         }}
       />
+
+      <MCPPolicyResolvePanel flavor={null} scopeKey="global" />
+
+      <MCPPolicyVersionHistory
+        flavorOrGlobal="global"
+        scopeKey="global"
+        latestVersion={policy.version}
+      />
     </div>
   );
 }
@@ -343,6 +353,7 @@ function FlavorPanel({
           onEdit={() => undefined}
           onDelete={async () => undefined}
         />
+        <MCPPolicyResolvePanel flavor={flavor} scopeKey={flavor} />
       </div>
     );
   }
@@ -377,6 +388,14 @@ function FlavorPanel({
           await updateFlavorMCPPolicy(flavor, removeEntry(policy, entry));
           await reload();
         }}
+      />
+
+      <MCPPolicyResolvePanel flavor={flavor} scopeKey={flavor} />
+
+      <MCPPolicyVersionHistory
+        flavorOrGlobal={flavor}
+        scopeKey={flavor}
+        latestVersion={policy.version}
       />
     </div>
   );

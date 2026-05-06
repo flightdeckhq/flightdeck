@@ -95,7 +95,16 @@ describe("MCPServerPolicyPill", () => {
     ).toBe("block");
   });
 
-  it("renders the unknown pill when the decision_path is mode_default (no entry matched)", () => {
+  // Step 6.7 A2 — mode_default subdued render. Pre-fix the
+  // fallthrough case rendered as "unknown" with bg=transparent +
+  // fg=text-muted, which read as no-pill against the drawer
+  // surface. The new contract: render the actual mode-default
+  // decision (allow/warn/block) with subdued styling — dashed
+  // border, lower-opacity fill, italic text, "(default)" suffix
+  // — so operators see what would happen AND that it's not an
+  // explicit policy entry.
+
+  it("renders mode_default block as 'block (default)' with subdued treatment", () => {
     renderPill(
       {
         kind: "ok",
@@ -109,11 +118,93 @@ describe("MCPServerPolicyPill", () => {
       },
       "fallthrough-svc",
     );
+    const pill = screen.getByTestId(
+      "mcp-server-policy-pill-fallthrough-svc-block-default",
+    );
+    expect(pill.textContent).toBe("block (default)");
+  });
+
+  it("renders mode_default allow as 'allow (default)' (blocklist-mode fallthrough)", () => {
+    renderPill(
+      {
+        kind: "ok",
+        result: {
+          decision: "allow",
+          decision_path: "mode_default",
+          policy_id: "p",
+          scope: "global",
+          fingerprint: "abcdef0123456789",
+        },
+      },
+      "blocklist-orphan",
+    );
     expect(
       screen.getByTestId(
-        "mcp-server-policy-pill-fallthrough-svc-unknown",
+        "mcp-server-policy-pill-blocklist-orphan-allow-default",
       ).textContent,
-    ).toBe("unknown");
+    ).toBe("allow (default)");
+  });
+
+  it("subdued styling distinguishes mode_default from explicit entries (dashed + italic + lower-opacity)", () => {
+    // Visual-weight lock: explicit entries render with a SOLID
+    // border, upright text, and 12% chroma fill. Mode-default
+    // renders with a DASHED border, italic text, and 4% chroma
+    // fill. These three signals stack so the difference reads
+    // in 1 second of glance — the supervisor's locked
+    // distinguishability check.
+    const explicit = render(
+      <TooltipProvider>
+        <MCPServerPolicyPill
+          decision={{
+            kind: "ok",
+            result: {
+              decision: "block",
+              decision_path: "flavor_entry",
+              policy_id: "p",
+              scope: "flavor:prod",
+              fingerprint: "abcdef0123456789",
+            },
+          }}
+          testId="explicit-block"
+        />
+      </TooltipProvider>,
+    );
+    const explicitPill = explicit.getByTestId(
+      "mcp-server-policy-pill-explicit-block-block",
+    );
+    const explicitStyle = (explicitPill as HTMLElement).style;
+    expect(explicitStyle.borderStyle).toBe("solid");
+    expect(explicitStyle.fontStyle).toBe("normal");
+    expect(explicitStyle.background).toContain("12%");
+
+    const fallthrough = render(
+      <TooltipProvider>
+        <MCPServerPolicyPill
+          decision={{
+            kind: "ok",
+            result: {
+              decision: "block",
+              decision_path: "mode_default",
+              policy_id: "p",
+              scope: "global",
+              fingerprint: "abcdef0123456789",
+            },
+          }}
+          testId="default-block"
+        />
+      </TooltipProvider>,
+    );
+    const fallthroughPill = fallthrough.getByTestId(
+      "mcp-server-policy-pill-default-block-block-default",
+    );
+    const fallthroughStyle = (fallthroughPill as HTMLElement).style;
+    expect(fallthroughStyle.borderStyle).toBe("dashed");
+    expect(fallthroughStyle.fontStyle).toBe("italic");
+    expect(fallthroughStyle.background).toContain("4%");
+    // Both pills share the same chroma colour (--danger for
+    // block) — only the visual weight signals differ.
+    expect(explicitStyle.color).toBe(fallthroughStyle.color);
+    expect(explicitStyle.borderColor).toBe(fallthroughStyle.borderColor);
   });
 
   it("renders an error pill carrying the error message when the resolve call rejected", () => {

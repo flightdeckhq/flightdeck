@@ -251,6 +251,137 @@ def test_resolve_returns_decision_path() -> None:
         _delete_flavor(flavor)
 
 
+# Step 6.7 A2 — resolve cascade contract (D135).
+#
+# The dashboard's MCPServerPolicyPill drives a `decision_path`-aware
+# render: flavor_entry / global_entry returns explicit chroma; only
+# mode_default falls through to the subdued "(default)" treatment.
+# These tests lock the cascade so a future refactor of the resolver
+# can't silently regress the precedence.
+
+
+def test_resolve_falls_through_flavor_to_global_entry() -> None:
+    """When the flavor's policy has NO matching entry but the global
+    policy does, resolve must return decision_path=global_entry with
+    the global entry's enforcement decision. Pre-D135 a buggy
+    resolver could short-circuit on flavor with a missing-match → no
+    fall-through; this test would catch that regression."""
+    # The global policy is auto-created at API boot (D133) and is
+    # initially empty. We mutate it for this test, then restore it
+    # at teardown so other tests aren't affected.
+    flavor = _unique_flavor()
+    server_url = f"https://global-only-{uuid.uuid4().hex[:6]}.example.com"
+    server_name = f"global-only-{uuid.uuid4().hex[:6]}"
+
+    # Snapshot current global so we can restore in `finally`.
+    global_get = requests.get(
+        f"{API_URL}/v1/mcp-policies/global",
+        headers=_read_headers(), timeout=5)
+    assert global_get.status_code == 200
+    saved_global = global_get.json()
+
+    try:
+        # Flavor policy exists but has NO entry for this server.
+        flavor_body = {
+            "block_on_uncertainty": False,
+            "entries": [],
+        }
+        requests.post(f"{API_URL}/v1/mcp-policies/{flavor}",
+                      headers=_admin_headers(), json=flavor_body, timeout=5)
+        # Global policy gets the matching entry.
+        global_body = {
+            "mode": saved_global.get("mode", "blocklist"),
+            "block_on_uncertainty": False,
+            "entries": [{
+                "server_url": server_url,
+                "server_name": server_name,
+                "entry_kind": "deny",
+                "enforcement": "block",
+            }],
+        }
+        requests.put(f"{API_URL}/v1/mcp-policies/global",
+                     headers=_admin_headers(), json=global_body, timeout=5)
+
+        r = requests.get(
+            f"{API_URL}/v1/mcp-policies/resolve",
+            params={
+                "flavor": flavor,
+                "server_url": server_url,
+                "server_name": server_name,
+            },
+            headers=_read_headers(), timeout=5)
+        assert r.status_code == 200, r.text
+        result = r.json()
+        assert result["decision_path"] == "global_entry", (
+            f"expected fall-through to global_entry; got {result!r}"
+        )
+        assert result["decision"] == "block"
+        assert result["scope"] == "global"
+    finally:
+        _delete_flavor(flavor)
+        # Restore global to its pre-test state (empty entries by
+        # default — boot auto-create starts empty).
+        restore_body = {
+            "mode": saved_global.get("mode", "blocklist"),
+            "block_on_uncertainty": saved_global.get("block_on_uncertainty", False),
+            "entries": saved_global.get("entries") or [],
+        }
+        requests.put(f"{API_URL}/v1/mcp-policies/global",
+                     headers=_admin_headers(), json=restore_body, timeout=5)
+
+
+def test_resolve_falls_through_to_mode_default() -> None:
+    """When neither the flavor nor the global has a matching entry,
+    resolve falls through to the global's mode default. Result
+    semantics:
+    - allowlist mode → block (nothing on the allow-list explicitly
+      permits this server, so it's blocked).
+    - blocklist mode → allow (nothing on the block-list explicitly
+      denies this server, so it's allowed).
+
+    Locks the "no explicit policy entry — using mode default"
+    semantic the dashboard pill renders as "(default)"."""
+    flavor = _unique_flavor()
+    server_url = f"https://orphan-{uuid.uuid4().hex[:6]}.example.com"
+    server_name = f"orphan-{uuid.uuid4().hex[:6]}"
+
+    global_get = requests.get(
+        f"{API_URL}/v1/mcp-policies/global",
+        headers=_read_headers(), timeout=5)
+    saved_global = global_get.json()
+
+    try:
+        # Flavor policy with no entries; global is unchanged (empty
+        # entries from boot or restored from a previous test).
+        requests.post(f"{API_URL}/v1/mcp-policies/{flavor}",
+                      headers=_admin_headers(),
+                      json={"block_on_uncertainty": False, "entries": []},
+                      timeout=5)
+
+        r = requests.get(
+            f"{API_URL}/v1/mcp-policies/resolve",
+            params={
+                "flavor": flavor,
+                "server_url": server_url,
+                "server_name": server_name,
+            },
+            headers=_read_headers(), timeout=5)
+        assert r.status_code == 200, r.text
+        result = r.json()
+        assert result["decision_path"] == "mode_default", (
+            f"expected mode_default fallthrough; got {result!r}"
+        )
+        # The actual decision depends on the global mode at boot
+        # time (default: blocklist → allow). Lock both arms via
+        # explicit assertion against the global's mode.
+        if saved_global.get("mode") == "allowlist":
+            assert result["decision"] == "block"
+        else:
+            assert result["decision"] == "allow"
+    finally:
+        _delete_flavor(flavor)
+
+
 # ----- power features ---------------------------------------------
 
 

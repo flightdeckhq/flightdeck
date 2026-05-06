@@ -28,7 +28,15 @@ import { ProviderLogo } from "@/components/ui/provider-logo";
 import { ClaudeCodeLogo } from "@/components/ui/claude-code-logo";
 import { CodingAgentBadge } from "@/components/ui/coding-agent-badge";
 import { getProvider, isClaudeCodeSession } from "@/lib/models";
-import { truncateSessionId } from "@/lib/events";
+import { truncateSessionId, EVENT_TYPE_GROUPS } from "@/lib/events";
+
+// D131 MCP Protection Policy facet (step 6.6 A1). Sourced from
+// EVENT_TYPE_GROUPS so the canonical vocabulary lives in one place
+// — adding a fifth MCP-policy event type means one edit in events.ts
+// and the facet picks it up automatically.
+const MCP_POLICY_EVENT_TYPES = new Set<string>(
+  EVENT_TYPE_GROUPS["MCP Policy"] ?? [],
+);
 import { formatSessionTimestamp } from "@/lib/time";
 import { INVESTIGATE_DEFAULT_LOOKBACK_MS } from "@/lib/constants";
 import {
@@ -355,6 +363,16 @@ export function computeFacets(
   // here.
   const errorTypeCounts = new Map<string, number>();
   const policyEventTypeCounts = new Map<string, number>();
+  // D131 MCP Protection Policy facet (step 6.6 A1) — token-budget
+  // policy enforcement (policy_warn / policy_degrade / policy_block)
+  // and MCP-server access policy (policy_mcp_warn /
+  // policy_mcp_block / mcp_server_name_changed /
+  // mcp_policy_user_remembered) are distinct concepts. Operators
+  // filtering for "show me MCP enforcement events" shouldn't have
+  // to mix with token-budget chips. Both share the same
+  // ?policy_event_type= URL key (server takes the union vocabulary)
+  // — only the sidebar visual grouping is split.
+  const mcpPolicyEventTypeCounts = new Map<string, number>();
   // Phase 5 MCP SERVER facet: per-session mcp_server_names[] aggregates
   // across the visible result set. Same one-vote-per-session-per-name
   // semantics as error_type / policy_event_type.
@@ -464,7 +482,14 @@ export function computeFacets(
   if (sources.policy_event_type) {
     for (const s of sources.policy_event_type) {
       for (const pt of s.policy_event_types ?? []) {
-        policyEventTypeCounts.set(pt, (policyEventTypeCounts.get(pt) ?? 0) + 1);
+        if (MCP_POLICY_EVENT_TYPES.has(pt)) {
+          mcpPolicyEventTypeCounts.set(
+            pt,
+            (mcpPolicyEventTypeCounts.get(pt) ?? 0) + 1,
+          );
+        } else {
+          policyEventTypeCounts.set(pt, (policyEventTypeCounts.get(pt) ?? 0) + 1);
+        }
       }
     }
   }
@@ -524,7 +549,14 @@ export function computeFacets(
     }
     if (!sources.policy_event_type) {
       for (const pt of s.policy_event_types ?? []) {
-        policyEventTypeCounts.set(pt, (policyEventTypeCounts.get(pt) ?? 0) + 1);
+        if (MCP_POLICY_EVENT_TYPES.has(pt)) {
+          mcpPolicyEventTypeCounts.set(
+            pt,
+            (mcpPolicyEventTypeCounts.get(pt) ?? 0) + 1,
+          );
+        } else {
+          policyEventTypeCounts.set(pt, (policyEventTypeCounts.get(pt) ?? 0) + 1);
+        }
       }
     }
     if (!sources.mcp_server) {
@@ -629,6 +661,15 @@ export function computeFacets(
     // visible result set has any. Hidden by the .filter() below
     // otherwise.
     { key: "policy_event_type", label: "POLICY", values: toArr(policyEventTypeCounts) },
+    // D131 MCP Protection Policy facet (step 6.6 A1) — distinct from
+    // the token-budget POLICY facet above. Hidden by the .filter()
+    // below when no session in the visible result set carries an
+    // MCP-policy event type.
+    {
+      key: "mcp_policy_event_type",
+      label: "MCP POLICY",
+      values: toArr(mcpPolicyEventTypeCounts),
+    },
     // D126 ROLE facet — multi-select over distinct agent_role
     // strings present in the visible result set. Sessions without
     // a role are excluded so the facet only surfaces when at least
@@ -1660,7 +1701,13 @@ export function Investigate() {
           ? current.filter((a) => a !== value)
           : [...current, value];
         updateUrl({ agentTypes: next, page: 1 });
-      } else if (group === "policy_event_type") {
+      } else if (
+        group === "policy_event_type" ||
+        group === "mcp_policy_event_type"
+      ) {
+        // Both groups write to the same ``policy_event_type`` URL
+        // param — server takes the union vocabulary; the split is
+        // visual only (step 6.6 A1).
         const current = urlState.policyEventTypes;
         const next = current.includes(value)
           ? current.filter((p) => p !== value)
@@ -1968,6 +2015,8 @@ export function Investigate() {
                   ? "investigate-error-type-facet"
                   : group.key === "policy_event_type"
                   ? "investigate-policy-facet"
+                  : group.key === "mcp_policy_event_type"
+                  ? "investigate-mcp-policy-facet"
                   : group.key === "mcp_server"
                   ? "investigate-mcp-server-facet"
                   : undefined
@@ -1995,6 +2044,7 @@ export function Investigate() {
                   (group.key === "agent_id" && urlState.agentId === v.value) ||
                   (group.key === "error_type" && urlState.errorTypes.includes(v.value)) ||
                   (group.key === "policy_event_type" && urlState.policyEventTypes.includes(v.value)) ||
+                  (group.key === "mcp_policy_event_type" && urlState.policyEventTypes.includes(v.value)) ||
                   (group.key === "mcp_server" && urlState.mcpServers.includes(v.value)) ||
                   (group.key === "os" && urlState.contextOS.includes(v.value)) ||
                   (group.key === "arch" && urlState.contextArch.includes(v.value)) ||
@@ -2017,6 +2067,8 @@ export function Investigate() {
                         ? `investigate-error-type-pill-${v.value}`
                         : group.key === "policy_event_type"
                         ? `investigate-policy-pill-${v.value}`
+                        : group.key === "mcp_policy_event_type"
+                        ? `investigate-mcp-policy-pill-${v.value}`
                         : group.key === "mcp_server"
                         ? `investigate-mcp-server-pill-${v.value}`
                         : undefined

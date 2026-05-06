@@ -565,12 +565,16 @@ export const EVENT_TYPE_GROUPS: Record<string, string[]> = {
   "Tools": ["tool_call"],
   "Embeddings": ["embeddings"],
   "Errors": ["llm_error"],
-  "Policy": [
-    "policy_warn",
-    "policy_block",
-    "policy_degrade",
-    // D131 MCP Protection Policy event types — filterable in
-    // Investigate but not group-by-able on analytics (Rule 25 lock).
+  "Policy": ["policy_warn", "policy_block", "policy_degrade"],
+  // D131 MCP Protection Policy event types live in their own facet
+  // group so token-budget policy filtering and MCP-server access
+  // policy filtering stay distinct in the operator's mental model.
+  // Step 6.6 A1 split — they previously co-habited the "Policy"
+  // group, but mixing token-budget chips with MCP-server-access
+  // chips made "show me all sessions where MCP enforcement fired"
+  // require checking-and-unchecking sibling chips. Filterable but
+  // not group-by-able on analytics (Rule 25 lock).
+  "MCP Policy": [
     "policy_mcp_warn",
     "policy_mcp_block",
     "mcp_server_name_changed",

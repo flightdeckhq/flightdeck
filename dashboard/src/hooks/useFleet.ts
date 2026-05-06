@@ -23,6 +23,7 @@ export function useFleet(onEvent?: (event: AgentEvent) => void) {
   // hook's downstream consumers (and thus their re-render).
   const load = useFleetStore((s) => s.load);
   const applyUpdate = useFleetStore((s) => s.applyUpdate);
+  const setLastEvent = useFleetStore((s) => s.setLastEvent);
   const flavors = useFleetStore((s) => s.flavors);
   const loading = useFleetStore((s) => s.loading);
   const error = useFleetStore((s) => s.error);
@@ -38,14 +39,19 @@ export function useFleet(onEvent?: (event: AgentEvent) => void) {
         if (update.session) {
           applyUpdate(update);
         }
-        if (update.last_event && onEvent) {
-          onEvent(update.last_event);
+        if (update.last_event) {
+          // D140 step 6.6 — broadcast the event into the fleet store
+          // so subscribers (SessionDrawer's mcp_server_attached
+          // re-fetch trigger) react regardless of whether the
+          // envelope carries a session diff.
+          setLastEvent(update.last_event);
+          if (onEvent) onEvent(update.last_event);
         }
       } catch {
         // Ignore malformed messages
       }
     },
-    [applyUpdate, onEvent]
+    [applyUpdate, setLastEvent, onEvent]
   );
 
   useWebSocket(WS_URL, handleMessage);

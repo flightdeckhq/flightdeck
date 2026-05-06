@@ -257,7 +257,26 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
   // updates cannot clobber each other's bumps.
   const [paginationVersion, setPaginationVersion] = useState(0);
 
-  const { data, loading } = useSession(sessionId, eventsLimit);
+  // D140 step 6.6 A2 — re-fetch on mcp_server_attached events for
+  // the open session so the MCP SERVERS panel populates live.
+  // Subscribes to the fleet store's lastEvent (broadcast by every
+  // WebSocket-delivered event); bumps revalidationKey when the
+  // event matches our session_id + the new event type. The
+  // revalidationKey threads into useSession as a useEffect dep so
+  // the next render fetches fresh data from the API.
+  const lastEvent = useFleetStore((s) => s.lastEvent);
+  const [revalidationKey, setRevalidationKey] = useState(0);
+  useEffect(() => {
+    if (!sessionId || !lastEvent) return;
+    if (
+      lastEvent.session_id === sessionId &&
+      lastEvent.event_type === "mcp_server_attached"
+    ) {
+      setRevalidationKey((k) => k + 1);
+    }
+  }, [lastEvent, sessionId]);
+
+  const { data, loading } = useSession(sessionId, eventsLimit, revalidationKey);
   const customDirectives = useFleetStore((s) => s.customDirectives);
   const shuttingDown = useFleetStore((s) => s.shuttingDown);
   const markShuttingDown = useFleetStore((s) => s.markShuttingDown);

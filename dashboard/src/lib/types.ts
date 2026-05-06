@@ -37,7 +37,12 @@ export type EventType =
   | "policy_mcp_warn"
   | "policy_mcp_block"
   | "mcp_server_name_changed"
-  | "mcp_policy_user_remembered";
+  | "mcp_policy_user_remembered"
+  // D140 step 6.6 A2 — emitted by the sensor on
+  // ClientSession.initialize so the dashboard's SessionDrawer
+  // re-fetches sessions.context.mcp_servers and the MCP SERVERS
+  // panel populates live for in-flight sessions.
+  | "mcp_server_attached";
 
 /** 14-entry structured LLM API error taxonomy. Mirrors
  *  ``sensor/flightdeck_sensor/core/errors.py::ErrorType``. */

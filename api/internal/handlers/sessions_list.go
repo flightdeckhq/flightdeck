@@ -248,7 +248,10 @@ func SessionsListHandler(s store.Querier) http.HandlerFunc {
 				if !validPolicyEventTypes[v] {
 					writeError(w, http.StatusBadRequest,
 						"invalid policy_event_type: "+v+
-							". Allowed: policy_warn, policy_degrade, policy_block")
+							". Allowed: policy_warn, policy_degrade, "+
+							"policy_block, policy_mcp_warn, "+
+							"policy_mcp_block, mcp_server_name_changed, "+
+							"mcp_policy_user_remembered")
 					return
 				}
 				policyEventTypes = append(policyEventTypes, v)

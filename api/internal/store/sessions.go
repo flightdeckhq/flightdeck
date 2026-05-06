@@ -39,7 +39,9 @@ type SessionsParams struct {
 	ErrorTypes []string
 	// PolicyEventTypes filters sessions to those that emitted at
 	// least one event of the listed policy enforcement types
-	// (``policy_warn`` | ``policy_degrade`` | ``policy_block``).
+	// (``policy_warn`` | ``policy_degrade`` | ``policy_block`` |
+	// ``policy_mcp_warn`` | ``policy_mcp_block`` |
+	// ``mcp_server_name_changed`` | ``mcp_policy_user_remembered``).
 	// Multi-value OR within. EXISTS subquery on the events table
 	// keyed on ``event_type``; the policy event_type IS the filter
 	// dimension (unlike error_types which lives in payload JSONB).
@@ -235,13 +237,18 @@ type SessionListItem struct {
 	// follow-up fetch.
 	ErrorTypes []string `json:"error_types"`
 	// PolicyEventTypes lists every distinct policy enforcement
-	// ``event_type`` observed in the session: any subset of
-	// ``policy_warn`` / ``policy_degrade`` / ``policy_block``.
-	// Always present on the wire (empty array when the session
-	// carries no policy events). Same surfacing pattern as
+	// ``event_type`` observed in the session. Includes both the
+	// token-budget axis (``policy_warn`` / ``policy_degrade`` /
+	// ``policy_block``) and the MCP Protection Policy axis
+	// (``policy_mcp_warn`` / ``policy_mcp_block`` /
+	// ``mcp_server_name_changed`` / ``mcp_policy_user_remembered``,
+	// per D131). Always present on the wire (empty array when the
+	// session carries no policy events). Same surfacing pattern as
 	// ErrorTypes — correlated subquery on the listing query so the
-	// dashboard renders the POLICY facet and severity-ranked
-	// session-row indicator without a per-session follow-up fetch.
+	// dashboard renders the POLICY + MCP POLICY facets and
+	// severity-ranked session-row indicator without a per-session
+	// follow-up fetch. The dashboard splits the unified array into
+	// two sidebar facets via the EVENT_TYPE_GROUPS classification.
 	PolicyEventTypes []string `json:"policy_event_types"`
 	// MCPServerNames (Phase 5) lists every distinct MCP server name
 	// the session connected to, derived at query time from
@@ -684,7 +691,11 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 					SELECT DISTINCT e.event_type
 					FROM events e
 					WHERE e.session_id = s.session_id
-					AND e.event_type IN ('policy_warn', 'policy_degrade', 'policy_block')
+					AND e.event_type IN (
+					'policy_warn', 'policy_degrade', 'policy_block',
+					'policy_mcp_warn', 'policy_mcp_block',
+					'mcp_server_name_changed', 'mcp_policy_user_remembered'
+				)
 				),
 				ARRAY[]::text[]
 			) AS policy_event_types,

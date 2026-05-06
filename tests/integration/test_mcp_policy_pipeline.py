@@ -390,3 +390,104 @@ def test_mcp_server_attached_distinct_tuples_both_land() -> None:
     servers = (session_obj.get("context") or {}).get("mcp_servers") or []
     names = sorted(s.get("name") for s in servers)
     assert names == ["maps", "search"]
+
+
+# ----- Step 6.7 A1 — SQL aggregation includes MCP-policy event types -----
+#
+# Pre-fix the API listing query's policy_event_types[] subquery only
+# matched the three token-budget event types (policy_warn /
+# policy_degrade / policy_block). Sessions that emitted MCP-policy
+# events reported policy_event_types=[] on /v1/sessions, which made
+# the dashboard's MCP POLICY facet count 0 → hidden by the
+# .filter(g => g.values.length > 0). The fix extends the IN clause
+# to the full seven-event vocabulary; this test locks the contract.
+
+
+def _list_session(session_id: str) -> dict | None:
+    """Fetch a single session row from the listing endpoint by
+    filtering on its session_id. Mirrors the path the dashboard's
+    Investigate page hits."""
+    r = requests.get(
+        f"{API_URL}/v1/sessions",
+        headers=auth_headers(),
+        params={"session_id": session_id, "from": "1970-01-01T00:00:00Z"},
+        timeout=5,
+    )
+    if r.status_code != 200:
+        return None
+    rows = r.json().get("sessions") or []
+    return rows[0] if rows else None
+
+
+def test_listing_aggregates_all_four_mcp_policy_event_types() -> None:
+    sid = str(uuid.uuid4())
+    flavor = f"test-mcp-pipeline-{uuid.uuid4().hex[:6]}"
+
+    assert _post_event(_baseline_session_start(sid, flavor)) == 200
+    assert _post_event(_policy_decision_event(sid, flavor, "policy_mcp_warn")) == 200
+    assert _post_event(_policy_decision_event(sid, flavor, "policy_mcp_block")) == 200
+    assert _post_event(_name_changed_event(sid, flavor)) == 200
+    assert _post_event(_user_remembered_event(sid, flavor)) == 200
+
+    # Wait for the worker to drain all four events into Postgres.
+    for et in (
+        "policy_mcp_warn",
+        "policy_mcp_block",
+        "mcp_server_name_changed",
+        "mcp_policy_user_remembered",
+    ):
+        assert _wait_for_event(sid, et, timeout=10.0) is not None, (
+            f"{et} did not land within 10s"
+        )
+
+    # The list endpoint's policy_event_types[] aggregation must
+    # include all four MCP-policy types alongside any token-budget
+    # types. Pre-fix this array was empty for sessions that only
+    # emitted MCP-policy events.
+    deadline = time.monotonic() + 10.0
+    row = None
+    seen: list[str] = []
+    while time.monotonic() < deadline:
+        row = _list_session(sid)
+        if row is not None:
+            seen = sorted(row.get("policy_event_types") or [])
+            if len(seen) == 4:
+                break
+        time.sleep(0.2)
+
+    assert row is not None, f"session {sid} did not appear in listing"
+    assert seen == sorted([
+        "mcp_policy_user_remembered",
+        "mcp_server_name_changed",
+        "policy_mcp_block",
+        "policy_mcp_warn",
+    ]), f"policy_event_types missing MCP-policy entries; got {seen!r}"
+
+
+def test_filter_accepts_mcp_policy_event_types_in_vocab() -> None:
+    """Smoke test for the handler's vocabulary validation: the four
+    MCP-policy event types must be accepted by the
+    ?policy_event_type=... filter without 400ing.
+
+    Pairs with the SQL fix above — together they verify both the
+    aggregation (output) and the filter (input) sides of the
+    listing endpoint accept the full seven-event vocabulary."""
+    for event_type in (
+        "policy_mcp_warn",
+        "policy_mcp_block",
+        "mcp_server_name_changed",
+        "mcp_policy_user_remembered",
+    ):
+        r = requests.get(
+            f"{API_URL}/v1/sessions",
+            headers=auth_headers(),
+            params={
+                "policy_event_type": event_type,
+                "from": "1970-01-01T00:00:00Z",
+            },
+            timeout=5,
+        )
+        assert r.status_code == 200, (
+            f"{event_type}: expected 200, got {r.status_code} "
+            f"({r.text[:200]})"
+        )

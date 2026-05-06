@@ -38,6 +38,22 @@ export const FEED_HEIGHT_STORAGE_KEY = "flightdeck-feed-height";
 export const THEME_STORAGE_KEY = "flightdeck-theme";
 
 /**
+ * MCP Protection Policy soft-launch flag (D133). When true, the
+ * sensor / plugin enforcement paths downgrade configured `block`
+ * decisions to `warn-only` — the dashboard surfaces a banner so
+ * operators understand that the policy state visible in the UI
+ * doesn't fully match the runtime enforcement. v0.6 default; flips
+ * to false in v0.7 via the same one-line constant change as the
+ * sensor / plugin defaults. The `FLIGHTDECK_MCP_POLICY_DEFAULT`
+ * env var is the per-agent escape hatch.
+ */
+export const SOFT_LAUNCH_ACTIVE = true;
+
+/** LocalStorage key for the dismiss state of the soft-launch banner. */
+export const SOFT_LAUNCH_BANNER_DISMISS_KEY =
+  "flightdeck-mcp-soft-launch-dismissed";
+
+/**
  * Width constants for the resizable left panel (flavor labels +
  * session rows) in the Timeline component. The panel state lives in
  * Timeline.tsx's useState with localStorage persistence keyed by

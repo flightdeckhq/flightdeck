@@ -802,3 +802,136 @@ export interface CreatedAccessToken {
   token: string;
   created_at: string;
 }
+
+// ----- MCP Protection Policy (D128 / D131 / D139) -----
+
+/** D128 — one row in mcp_policy_entries. */
+export interface MCPPolicyEntry {
+  id: string;
+  policy_id: string;
+  server_url: string;
+  server_name: string;
+  fingerprint: string;
+  entry_kind: "allow" | "deny";
+  enforcement?: "warn" | "block" | "interactive" | null;
+  created_at: string;
+}
+
+/** D128 — one mcp_policies row + entries. */
+export interface MCPPolicy {
+  id: string;
+  scope: "global" | "flavor";
+  scope_value?: string | null;
+  mode?: "allowlist" | "blocklist" | null;
+  block_on_uncertainty: boolean;
+  version: number;
+  created_at: string;
+  updated_at: string;
+  entries?: MCPPolicyEntry[];
+}
+
+export interface MCPPolicyMutationEntry {
+  server_url: string;
+  server_name: string;
+  entry_kind: "allow" | "deny";
+  enforcement?: "warn" | "block" | "interactive" | null;
+}
+
+/** D128 — request body for POST/PUT mutations. */
+export interface MCPPolicyMutation {
+  mode?: "allowlist" | "blocklist" | null;
+  block_on_uncertainty: boolean;
+  entries: MCPPolicyMutationEntry[];
+}
+
+/** D135 — resolve endpoint result. */
+export interface MCPPolicyResolveResult {
+  decision: "allow" | "warn" | "block";
+  decision_path: "flavor_entry" | "global_entry" | "mode_default";
+  policy_id: string;
+  scope: string;
+  fingerprint: string;
+}
+
+/** D128 — versions list metadata (no full snapshot). */
+export interface MCPPolicyVersionMeta {
+  id: string;
+  policy_id: string;
+  version: number;
+  created_at: string;
+  created_by?: string | null;
+}
+
+/** D128 — full snapshot. */
+export interface MCPPolicyVersion {
+  id: string;
+  policy_id: string;
+  version: number;
+  snapshot: Record<string, unknown>;
+  created_at: string;
+  created_by?: string | null;
+}
+
+/** D128 — diff endpoint response shape. */
+export interface MCPPolicyDiff {
+  from_version: number;
+  to_version: number;
+  from_snapshot: Record<string, unknown>;
+  to_snapshot: Record<string, unknown>;
+  mode_changed?: { from: string; to: string } | null;
+  block_on_uncertainty_changed?: { from: boolean; to: boolean } | null;
+  entries_added: MCPPolicyEntry[];
+  entries_removed: MCPPolicyEntry[];
+  entries_changed: Array<{
+    fingerprint: string;
+    before: MCPPolicyEntry;
+    after: MCPPolicyEntry;
+  }>;
+}
+
+/** D128 — audit log row. */
+export interface MCPPolicyAuditLog {
+  id: string;
+  policy_id?: string | null;
+  event_type: string;
+  actor?: string | null;
+  payload: Record<string, unknown>;
+  occurred_at: string;
+}
+
+/** D131 — metrics aggregation per server. */
+export interface MCPPolicyMetricsBucket {
+  fingerprint: string;
+  server_name: string;
+  count: number;
+}
+
+export interface MCPPolicyMetrics {
+  period: string;
+  blocks_per_server: MCPPolicyMetricsBucket[];
+  warns_per_server: MCPPolicyMetricsBucket[];
+}
+
+/** D137 — dry-run preview result. */
+export interface MCPPolicyDryRunServerCount {
+  fingerprint: string;
+  server_name: string;
+  would_allow: number;
+  would_warn: number;
+  would_block: number;
+}
+
+export interface MCPPolicyDryRunResult {
+  hours: number;
+  events_replayed: number;
+  per_server: MCPPolicyDryRunServerCount[];
+  unresolvable_count: number;
+}
+
+/** D138 — template metadata returned by GET /templates. */
+export interface MCPPolicyTemplate {
+  name: string;
+  description: string;
+  recommended_for: string;
+  yaml_body: string;
+}

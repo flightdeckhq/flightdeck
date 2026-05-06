@@ -1,4 +1,31 @@
-import type { FleetResponse, AgentSummary, SessionDetail, Policy, PolicyRequest, DirectiveRequest, Directive, AnalyticsParams, AnalyticsResponse, EventContent, SearchResults, CustomDirective, AgentEvent, SessionsResponse, AccessToken, CreatedAccessToken } from "./types";
+import type {
+  FleetResponse,
+  AgentSummary,
+  SessionDetail,
+  Policy,
+  PolicyRequest,
+  DirectiveRequest,
+  Directive,
+  AnalyticsParams,
+  AnalyticsResponse,
+  EventContent,
+  SearchResults,
+  CustomDirective,
+  AgentEvent,
+  SessionsResponse,
+  AccessToken,
+  CreatedAccessToken,
+  MCPPolicy,
+  MCPPolicyAuditLog,
+  MCPPolicyDiff,
+  MCPPolicyDryRunResult,
+  MCPPolicyMetrics,
+  MCPPolicyMutation,
+  MCPPolicyResolveResult,
+  MCPPolicyTemplate,
+  MCPPolicyVersion,
+  MCPPolicyVersionMeta,
+} from "./types";
 
 const BASE = import.meta.env.VITE_API_BASE_URL || "/api";
 
@@ -460,4 +487,213 @@ export async function renameAccessToken(id: string, name: string): Promise<Acces
     throw new Error(`API ${res.status}: PATCH /v1/access-tokens/${id}`);
   }
   return res.json() as Promise<AccessToken>;
+}
+
+// ----- MCP Protection Policy (D128 / D131 / D135 / D137 / D138 / D139) -----
+
+export function fetchGlobalMCPPolicy(): Promise<MCPPolicy> {
+  return fetchJson<MCPPolicy>("/v1/mcp-policies/global");
+}
+
+export async function fetchFlavorMCPPolicy(
+  flavor: string,
+): Promise<MCPPolicy | null> {
+  const res = await apiFetch(`/v1/mcp-policies/${encodeURIComponent(flavor)}`);
+  if (res.status === 404) return null;
+  if (!res.ok) {
+    throw new Error(`fetchFlavorMCPPolicy ${res.status}`);
+  }
+  return res.json() as Promise<MCPPolicy>;
+}
+
+export function createFlavorMCPPolicy(
+  flavor: string,
+  body: MCPPolicyMutation,
+): Promise<MCPPolicy> {
+  return fetchJson<MCPPolicy>(
+    `/v1/mcp-policies/${encodeURIComponent(flavor)}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
+  );
+}
+
+export function updateGlobalMCPPolicy(
+  body: MCPPolicyMutation,
+): Promise<MCPPolicy> {
+  return fetchJson<MCPPolicy>("/v1/mcp-policies/global", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export function updateFlavorMCPPolicy(
+  flavor: string,
+  body: MCPPolicyMutation,
+): Promise<MCPPolicy> {
+  return fetchJson<MCPPolicy>(
+    `/v1/mcp-policies/${encodeURIComponent(flavor)}`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
+  );
+}
+
+export async function deleteFlavorMCPPolicy(flavor: string): Promise<void> {
+  const res = await apiFetch(`/v1/mcp-policies/${encodeURIComponent(flavor)}`, {
+    method: "DELETE",
+  });
+  if (!res.ok && res.status !== 404) {
+    throw new Error(`deleteFlavorMCPPolicy ${res.status}`);
+  }
+}
+
+export function resolveMCPPolicy(params: {
+  flavor?: string;
+  server_url: string;
+  server_name: string;
+}): Promise<MCPPolicyResolveResult> {
+  const qs = new URLSearchParams({
+    server_url: params.server_url,
+    server_name: params.server_name,
+  });
+  if (params.flavor) qs.set("flavor", params.flavor);
+  return fetchJson<MCPPolicyResolveResult>(
+    `/v1/mcp-policies/resolve?${qs.toString()}`,
+  );
+}
+
+export function listMCPPolicyVersions(
+  flavorOrGlobal: string,
+  params: { limit?: number; offset?: number } = {},
+): Promise<MCPPolicyVersionMeta[]> {
+  const qs = new URLSearchParams();
+  if (params.limit) qs.set("limit", String(params.limit));
+  if (params.offset) qs.set("offset", String(params.offset));
+  const path =
+    `/v1/mcp-policies/${encodeURIComponent(flavorOrGlobal)}/versions`
+    + (qs.toString() ? `?${qs.toString()}` : "");
+  return fetchJson<MCPPolicyVersionMeta[]>(path);
+}
+
+export function getMCPPolicyVersion(
+  flavorOrGlobal: string,
+  version: number,
+): Promise<MCPPolicyVersion> {
+  return fetchJson<MCPPolicyVersion>(
+    `/v1/mcp-policies/${encodeURIComponent(flavorOrGlobal)}/versions/${version}`,
+  );
+}
+
+export function diffMCPPolicyVersions(
+  flavorOrGlobal: string,
+  from: number,
+  to: number,
+): Promise<MCPPolicyDiff> {
+  return fetchJson<MCPPolicyDiff>(
+    `/v1/mcp-policies/${encodeURIComponent(flavorOrGlobal)}/diff`
+    + `?from=${from}&to=${to}`,
+  );
+}
+
+export function listMCPPolicyAuditLog(
+  flavorOrGlobal: string,
+  params: {
+    event_type?: string;
+    from?: string;
+    to?: string;
+    limit?: number;
+    offset?: number;
+  } = {},
+): Promise<MCPPolicyAuditLog[]> {
+  const qs = new URLSearchParams();
+  if (params.event_type) qs.set("event_type", params.event_type);
+  if (params.from) qs.set("from", params.from);
+  if (params.to) qs.set("to", params.to);
+  if (params.limit) qs.set("limit", String(params.limit));
+  if (params.offset) qs.set("offset", String(params.offset));
+  const path =
+    `/v1/mcp-policies/${encodeURIComponent(flavorOrGlobal)}/audit-log`
+    + (qs.toString() ? `?${qs.toString()}` : "");
+  return fetchJson<MCPPolicyAuditLog[]>(path);
+}
+
+export function getMCPPolicyMetrics(
+  flavorOrGlobal: string,
+  period: "24h" | "7d" | "30d" = "24h",
+): Promise<MCPPolicyMetrics> {
+  return fetchJson<MCPPolicyMetrics>(
+    `/v1/mcp-policies/${encodeURIComponent(flavorOrGlobal)}/metrics?period=${period}`,
+  );
+}
+
+export function dryRunMCPPolicy(
+  flavor: string,
+  body: MCPPolicyMutation,
+  hours: number = 24,
+): Promise<MCPPolicyDryRunResult> {
+  return fetchJson<MCPPolicyDryRunResult>(
+    `/v1/mcp-policies/${encodeURIComponent(flavor)}/dry_run?hours=${hours}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
+  );
+}
+
+export async function importMCPPolicyYAML(
+  flavor: string,
+  yamlBody: string,
+): Promise<MCPPolicy> {
+  const res = await apiFetch(
+    `/v1/mcp-policies/${encodeURIComponent(flavor)}/import`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/yaml" },
+      body: yamlBody,
+    },
+  );
+  if (!res.ok) {
+    let detail = "";
+    try {
+      const body = (await res.json()) as { error?: string };
+      detail = body.error ?? "";
+    } catch {
+      detail = await res.text();
+    }
+    throw new Error(detail || `import failed ${res.status}`);
+  }
+  return res.json() as Promise<MCPPolicy>;
+}
+
+export async function exportMCPPolicyYAML(flavor: string): Promise<string> {
+  const res = await apiFetch(
+    `/v1/mcp-policies/${encodeURIComponent(flavor)}/export`,
+  );
+  if (!res.ok) throw new Error(`exportMCPPolicyYAML ${res.status}`);
+  return res.text();
+}
+
+export function listMCPPolicyTemplates(): Promise<MCPPolicyTemplate[]> {
+  return fetchJson<MCPPolicyTemplate[]>("/v1/mcp-policies/templates");
+}
+
+export function applyMCPPolicyTemplate(
+  flavor: string,
+  templateName: string,
+): Promise<MCPPolicy> {
+  return fetchJson<MCPPolicy>(
+    `/v1/mcp-policies/${encodeURIComponent(flavor)}/apply_template`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ template: templateName }),
+    },
+  );
 }

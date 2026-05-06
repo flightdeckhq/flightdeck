@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { MCPPolicyDryRunPanel } from "@/components/policy/MCPPolicyDryRunPanel";
 import { MCPPolicyEntryDialog } from "@/components/policy/MCPPolicyEntryDialog";
 import { MCPPolicyEntryTable } from "@/components/policy/MCPPolicyEntryTable";
 import { MCPPolicyHeader } from "@/components/policy/MCPPolicyHeader";
+import { MCPPolicyMetricsPanel } from "@/components/policy/MCPPolicyMetricsPanel";
 import { MCPPolicyResolvePanel } from "@/components/policy/MCPPolicyResolvePanel";
 import { MCPPolicyVersionHistory } from "@/components/policy/MCPPolicyVersionHistory";
 import { MCPSoftLaunchBanner } from "@/components/policy/MCPSoftLaunchBanner";
@@ -266,6 +268,14 @@ function GlobalPanel({
 
       <MCPPolicyResolvePanel flavor={null} scopeKey="global" />
 
+      <MCPPolicyDryRunPanel
+        flavor="global"
+        scopeKey="global"
+        policy={policy}
+      />
+
+      <MCPPolicyMetricsPanel flavorOrGlobal="global" scopeKey="global" />
+
       <MCPPolicyVersionHistory
         flavorOrGlobal="global"
         scopeKey="global"
@@ -391,6 +401,14 @@ function FlavorPanel({
       />
 
       <MCPPolicyResolvePanel flavor={flavor} scopeKey={flavor} />
+
+      <MCPPolicyDryRunPanel
+        flavor={flavor}
+        scopeKey={flavor}
+        policy={policy}
+      />
+
+      <MCPPolicyMetricsPanel flavorOrGlobal={flavor} scopeKey={flavor} />
 
       <MCPPolicyVersionHistory
         flavorOrGlobal={flavor}

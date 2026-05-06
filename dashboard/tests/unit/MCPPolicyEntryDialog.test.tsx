@@ -1,0 +1,143 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+
+import { MCPPolicyEntryDialog } from "@/components/policy/MCPPolicyEntryDialog";
+
+vi.mock("@/lib/api", async () => {
+  const actual = await vi.importActual<Record<string, unknown>>("@/lib/api");
+  return {
+    ...actual,
+    resolveMCPPolicy: vi.fn(),
+  };
+});
+
+import { resolveMCPPolicy } from "@/lib/api";
+
+const resolveMock = resolveMCPPolicy as unknown as ReturnType<typeof vi.fn>;
+
+beforeEach(() => {
+  resolveMock.mockReset();
+  resolveMock.mockResolvedValue({
+    decision: "block",
+    decision_path: "global_entry",
+    policy_id: "11112222-3333-4444-5555-666677778888",
+    scope: "global",
+    fingerprint: "abcdef0123456789aabbccddeeff0011",
+  });
+});
+
+afterEach(() => {
+  vi.clearAllMocks();
+});
+
+describe("MCPPolicyEntryDialog", () => {
+  it("renders an idle live-preview placeholder before URL or name is filled", () => {
+    render(
+      <MCPPolicyEntryDialog
+        open
+        flavor={null}
+        onClose={() => undefined}
+        onSave={async () => undefined}
+      />,
+    );
+
+    expect(
+      screen.getByTestId("mcp-policy-entry-resolve-empty"),
+    ).toBeTruthy();
+    expect(resolveMock).not.toHaveBeenCalled();
+  });
+
+  it("fires a debounced GET /resolve once URL and name are stable, and renders the decision pill", async () => {
+    render(
+      <MCPPolicyEntryDialog
+        open
+        flavor="prod"
+        onClose={() => undefined}
+        onSave={async () => undefined}
+      />,
+    );
+
+    fireEvent.change(screen.getByTestId("mcp-policy-entry-url"), {
+      target: { value: "https://maps.example.com" },
+    });
+    fireEvent.change(screen.getByTestId("mcp-policy-entry-name"), {
+      target: { value: "maps" },
+    });
+
+    await waitFor(() => {
+      expect(resolveMock).toHaveBeenCalledWith({
+        flavor: "prod",
+        server_url: "https://maps.example.com",
+        server_name: "maps",
+      });
+    });
+
+    await waitFor(() => {
+      expect(
+        screen.getByTestId("mcp-policy-entry-resolve-pill-block"),
+      ).toBeTruthy();
+    });
+  });
+
+  it("blocks submit until both URL and name are filled, then forwards the mutation entry", async () => {
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    render(
+      <MCPPolicyEntryDialog
+        open
+        flavor={null}
+        onClose={() => undefined}
+        onSave={onSave}
+      />,
+    );
+
+    const submit = screen.getByTestId("mcp-policy-entry-submit");
+    expect((submit as HTMLButtonElement).disabled).toBe(true);
+
+    fireEvent.change(screen.getByTestId("mcp-policy-entry-url"), {
+      target: { value: "https://api.example.com" },
+    });
+    fireEvent.change(screen.getByTestId("mcp-policy-entry-name"), {
+      target: { value: "api" },
+    });
+
+    expect((submit as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(submit);
+
+    await waitFor(() => {
+      expect(onSave).toHaveBeenCalledWith({
+        server_url: "https://api.example.com",
+        server_name: "api",
+        entry_kind: "allow",
+        enforcement: null,
+      });
+    });
+  });
+
+  it("seeds form fields from ``initial`` when editing an existing entry", () => {
+    render(
+      <MCPPolicyEntryDialog
+        open
+        flavor={null}
+        initial={{
+          id: "edit-1",
+          policy_id: "policy",
+          server_url: "stdio://existing",
+          server_name: "existing-svc",
+          fingerprint: "ff".repeat(8),
+          entry_kind: "deny",
+          enforcement: "warn",
+          created_at: "2026-05-05T00:00:00Z",
+        }}
+        onClose={() => undefined}
+        onSave={async () => undefined}
+      />,
+    );
+
+    expect(
+      (screen.getByTestId("mcp-policy-entry-url") as HTMLInputElement).value,
+    ).toBe("stdio://existing");
+    expect(
+      (screen.getByTestId("mcp-policy-entry-name") as HTMLInputElement).value,
+    ).toBe("existing-svc");
+  });
+});

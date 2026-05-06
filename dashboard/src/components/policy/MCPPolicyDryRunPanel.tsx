@@ -171,13 +171,17 @@ export function MCPPolicyDryRunPanel({
           <ErrorState message={error} />
         ) : !result ? (
           <IdleState />
-        ) : rows.length === 0 ? (
-          <EmptyState eventsReplayed={result.events_replayed} />
         ) : (
           <div className="space-y-3">
             <ResultHeader result={result} />
-            <Legend />
-            <ChartBlock rows={rows} />
+            {rows.length === 0 ? (
+              <EmptyState eventsReplayed={result.events_replayed} />
+            ) : (
+              <>
+                <Legend />
+                <ChartBlock rows={rows} />
+              </>
+            )}
           </div>
         )}
       </div>

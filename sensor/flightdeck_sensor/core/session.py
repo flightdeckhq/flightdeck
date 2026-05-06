@@ -245,7 +245,7 @@ class Session:
         with self._lock:
             self._framework = framework
 
-    def record_mcp_server(self, fingerprint: MCPServerFingerprint) -> None:
+    def record_mcp_server(self, fingerprint: MCPServerFingerprint) -> bool:
         """Append an MCP server fingerprint captured at initialize time.
 
         Called by the MCP interceptor's patched ``ClientSession.initialize``
@@ -253,6 +253,13 @@ class Session:
         dashboard can render servers in the order the agent connected.
         Duplicates (same name + transport) are de-duplicated in case a
         framework reconstructs a session against the same server.
+
+        Returns ``True`` when the fingerprint is a new addition,
+        ``False`` when it was de-duplicated. The interceptor uses
+        the boolean to gate D140 ``mcp_server_attached`` emission —
+        a duplicate initialize must not re-broadcast the attach event
+        (idempotency at the source matches the worker's idempotency
+        at the sink).
         """
         with self._lock:
             for existing in self._mcp_servers:
@@ -260,8 +267,9 @@ class Session:
                     existing.name == fingerprint.name
                     and existing.transport == fingerprint.transport
                 ):
-                    return
+                    return False
             self._mcp_servers.append(fingerprint)
+            return True
 
     # ------------------------------------------------------------------
     # Sub-agent emission (D126)

@@ -52,6 +52,13 @@ class EventType(enum.Enum):
     POLICY_MCP_WARN = "policy_mcp_warn"
     POLICY_MCP_BLOCK = "policy_mcp_block"
     MCP_SERVER_NAME_CHANGED = "mcp_server_name_changed"
+    # D140 step 6.6 A2 — emitted by record_mcp_server inside
+    # ClientSession.initialize once per (name, server_url) tuple.
+    # Drives live SessionDrawer MCP SERVERS panel population: the
+    # worker UPSERTs the per-server fingerprint into
+    # sessions.context.mcp_servers so operators investigating
+    # in-flight sessions see attached servers within ~2-3 s.
+    MCP_SERVER_ATTACHED = "mcp_server_attached"
 
 
 class DirectiveAction(enum.Enum):

@@ -512,6 +512,57 @@ def _build_policy_event_extras(
     return extras
 
 
+def _emit_mcp_server_attached(
+    *,
+    sensor_session: Any,
+    fingerprint: MCPServerFingerprint,
+) -> None:
+    """Emit ``MCP_SERVER_ATTACHED`` (D140) when a new MCP server is
+    recorded mid-session.
+
+    The worker UPSERTs ``sessions.context.mcp_servers`` from this
+    event so the dashboard's SessionDrawer panel populates within
+    ~2-3s of attach for in-flight sessions. Without this event the
+    panel only ever populated for sessions whose MCP client
+    initialised BEFORE ``init_sensor`` queued the session_start
+    payload — a narrow window most playground demos and many
+    real-world flows miss.
+
+    Wrapped in try/except per Rule 27 (the sensor never breaks the
+    agent's hot path on a metadata-emit failure).
+    """
+    from datetime import datetime, timezone
+
+    from flightdeck_sensor.interceptor.mcp_identity import (
+        canonicalize_url,
+        fingerprint_short,
+    )
+
+    try:
+        canonical_url = canonicalize_url(fingerprint.server_url or "")
+        fp_hex = fingerprint_short(canonical_url, fingerprint.name)
+        attached_at = datetime.now(timezone.utc).isoformat()
+        extras: dict[str, Any] = {
+            "fingerprint": fp_hex,
+            "server_url_canonical": canonical_url,
+            "server_name": fingerprint.name,
+            "transport": fingerprint.transport,
+            "protocol_version": fingerprint.protocol_version,
+            "version": fingerprint.version,
+            "capabilities": fingerprint.capabilities,
+            "instructions": fingerprint.instructions,
+            "attached_at": attached_at,
+        }
+        payload = sensor_session._build_payload(
+            EventType.MCP_SERVER_ATTACHED, **extras,
+        )
+        sensor_session.event_queue.enqueue(payload)
+    except Exception:
+        _log.exception(
+            "flightdeck_sensor: failed to emit mcp_server_attached event",
+        )
+
+
 def _emit_name_drift_if_any(
     *,
     sensor_session: Any,
@@ -1024,7 +1075,19 @@ def _make_initialize_wrapper(orig_initialize: Any) -> Any:
                 )
                 sensor_session = _current_session()
                 if sensor_session is not None:
-                    sensor_session.record_mcp_server(fingerprint)
+                    is_new = sensor_session.record_mcp_server(fingerprint)
+                    if is_new:
+                        # D140 step 6.6 A2 — emit only on the first
+                        # record per (name, transport) so a framework
+                        # reconnecting to the same server doesn't
+                        # re-broadcast. Worker dedups again by
+                        # (name, server_url) but suppressing the
+                        # duplicate at the source keeps the wire
+                        # quiet and the audit trail honest.
+                        _emit_mcp_server_attached(
+                            sensor_session=sensor_session,
+                            fingerprint=fingerprint,
+                        )
                     _emit_name_drift_if_any(
                         sensor_session=sensor_session,
                         client_session=self,

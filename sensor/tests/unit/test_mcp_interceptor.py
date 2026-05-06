@@ -496,9 +496,12 @@ async def test_get_prompt_capture_on_includes_arguments_and_rendered(
 
 
 @pytest.mark.asyncio
-async def test_initialize_records_server_fingerprint_and_does_not_emit(
+async def test_initialize_records_server_fingerprint_and_emits_attached(
     install_session: Session,
 ) -> None:
+    """D140 step 6.6 A2 — initialize records the fingerprint AND
+    emits one ``mcp_server_attached`` event so the worker UPSERTs
+    the dashboard's ``sessions.context.mcp_servers`` array live."""
     fake_caps = SimpleNamespace()
     fake_caps.model_dump = lambda mode="json": {  # type: ignore[attr-defined]
         "tools": {"listChanged": True},
@@ -521,23 +524,101 @@ async def test_initialize_records_server_fingerprint_and_does_not_emit(
     result = await wrapped(receiver)
 
     assert result is fake_init_result
-    # Initialize emits no event itself.
-    install_session.event_queue.enqueue.assert_not_called()  # type: ignore[attr-defined]
-    # But the fingerprint lands on the session.
+    # Fingerprint lands on the session.
     assert len(install_session._mcp_servers) == 1
     fp = install_session._mcp_servers[0]
     assert fp.name == "demo-server"
     assert fp.version == "1.0.0"
-    assert fp.transport == "stdio"
-    assert fp.protocol_version == "2025-03-26"
-    assert fp.capabilities == {
+
+    # D140 — exactly one mcp_server_attached event enqueued.
+    enqueue = install_session.event_queue.enqueue  # type: ignore[attr-defined]
+    assert enqueue.call_count == 1
+    payload = enqueue.call_args[0][0]
+    assert payload["event_type"] == "mcp_server_attached"
+    assert payload["server_name"] == "demo-server"
+    assert payload["transport"] == "stdio"
+    assert payload["protocol_version"] == "2025-03-26"
+    assert payload["version"] == "1.0.0"
+    assert payload["instructions"] == "Test server."
+    assert payload["capabilities"] == {
         "tools": {"listChanged": True},
         "resources": None,
         "prompts": None,
     }
-    assert fp.instructions == "Test server."
-    # And the per-instance attribute is stashed for downstream events.
-    assert receiver._flightdeck_mcp_server_name == "demo-server"
+    # fingerprint is the 16-hex display form per D127.
+    assert isinstance(payload["fingerprint"], str)
+    assert len(payload["fingerprint"]) == 16
+    # attached_at is an ISO 8601 timestamp.
+    assert "T" in payload["attached_at"]
+    assert payload["attached_at"].endswith("+00:00")
+    # server_url_canonical present (empty string when transport
+    # didn't expose a URL marker — matches MCPServerFingerprint
+    # default; canonicalize_url("") returns "").
+    assert "server_url_canonical" in payload
+
+
+@pytest.mark.asyncio
+async def test_initialize_dedup_does_not_re_emit_attached(
+    install_session: Session,
+) -> None:
+    """D140 idempotency at the source — a second initialize on the
+    same (name, transport) pair must not re-broadcast the attached
+    event. Worker dedups again at the sink, but suppressing the
+    duplicate at the source keeps the wire quiet."""
+    fake_caps = SimpleNamespace()
+    fake_caps.model_dump = lambda mode="json": {  # type: ignore[attr-defined]
+        "tools": None,
+        "resources": None,
+        "prompts": None,
+    }
+    fake_init_result = SimpleNamespace(
+        serverInfo=SimpleNamespace(name="demo-server", version="1.0.0"),
+        capabilities=fake_caps,
+        protocolVersion="2025-03-26",
+        instructions=None,
+    )
+
+    async def fake_orig(self: Any) -> Any:
+        return fake_init_result
+
+    wrapped = _make_initialize_wrapper(fake_orig)
+    receiver = _bound_receiver(server_name=None, transport="stdio")  # type: ignore[arg-type]
+
+    await wrapped(receiver)
+    await wrapped(receiver)
+
+    # Only one event emitted across both initializes.
+    enqueue = install_session.event_queue.enqueue  # type: ignore[attr-defined]
+    assert enqueue.call_count == 1
+
+
+def test_record_mcp_server_returns_true_for_new_server() -> None:
+    """``record_mcp_server`` returns True on a new fingerprint so
+    the interceptor knows whether to emit the attached event."""
+    session = _make_sensor_session()
+    fp = MCPServerFingerprint(
+        name="demo",
+        transport="stdio",
+        protocol_version="2025-03-26",
+        version="1.0.0",
+    )
+    assert session.record_mcp_server(fp) is True
+    # Same (name, transport) tuple — dedup hit.
+    fp_dup = MCPServerFingerprint(
+        name="demo",
+        transport="stdio",
+        protocol_version="2025-03-26",
+        version="2.0.0",  # different version — still dedups
+    )
+    assert session.record_mcp_server(fp_dup) is False
+    # Different transport — distinct entry.
+    fp_other = MCPServerFingerprint(
+        name="demo",
+        transport="http",
+        protocol_version="2025-03-26",
+        version="1.0.0",
+    )
+    assert session.record_mcp_server(fp_other) is True
 
 
 def test_session_records_mcp_server_dedup_by_name_transport() -> None:

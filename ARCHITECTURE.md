@@ -2987,15 +2987,59 @@ agent's reasoning loop (D130). The exception carries `server_url`,
 agent (or its surrounding harness) can render an actionable failure
 message.
 
-**Plugin.** At `SessionStart` the plugin reads `.mcp.json` (and
-`~/.claude.json` overrides), fingerprints each declared server, and
-fetches the active policy. Servers whose decision is `block` are
-rejected from the session before any tool calls fire — the plugin
-emits `policy_mcp_block` events for each. Servers whose decision is
-`interactive` invoke Claude Code's `PermissionRequest` hook with
-`yes` / `no` / `yes-and-remember`. `yes-and-remember` writes the
-remembered-decisions file (below) and best-effort posts the decision
-to the control plane so the operator can promote it to a real entry.
+**Plugin.** Enforcement is split across three Claude Code hooks
+(D139). The plugin uses one dispatcher script
+(`plugin/hooks/scripts/observe_cli.mjs`) registered against
+multiple hook events; the script branches on `hook_event_name`.
+
+- **`SessionStart`** — reads `.mcp.json` (the existing
+  `loadMcpServerFingerprints(cwd)` helper handles
+  `~/.claude.json` overrides), fingerprints each declared server,
+  and batch-fetches global + flavor policies in parallel via
+  `Promise.all` against `GET /v1/mcp-policies/global` +
+  `GET /v1/mcp-policies/{flavor}`. Cached to a per-session marker
+  file at `$TMPDIR/flightdeck-plugin/mcp-policy-<session_id>.json`
+  so subsequent `PreToolUse` invocations don't repeat the HTTP
+  fetch on the agent hot path. SessionStart additionally emits
+  `policy_mcp_warn` / `policy_mcp_block` events for any
+  non-`allow` decision so operators see fleet-level enforcement
+  activity at session boot. Fail-open per Rule 28: any HTTP error
+  produces an empty cache and per-call evaluation falls through
+  to mode-default.
+- **`PreToolUse`** — the per-call gate. When `tool_name` matches
+  the `mcp__<server>__<tool>` shape: parse the server segment,
+  resolve to a fingerprint, read the per-session policy cache AND
+  read the remembered-decisions file fresh (NOT cached at
+  `SessionStart` — concurrent Claude Code sessions on the same
+  machine see each other's remembered decisions in real time),
+  and emit a hook decision:
+  - **block** decision → return `{decision: "deny", reason:
+    "..."}`. Claude Code surfaces the failure to the agent reasoning
+    loop. Block in plugin context is the per-call deny rather than
+    a session-wide unreachability flag, mirroring the sensor's
+    architecture of "block at call_tool" rather than "block at
+    initialize" (D130).
+  - **unknown-allowlist + interactive** decision → return
+    `{decision: "ask"}`. Claude Code's built-in approval flow
+    prompts the user yes / no.
+  - **allow** / **warn** / **remembered allow** → return
+    normally; Claude Code proceeds.
+- **`PostToolUse`** — the de-facto-approval write path. When
+  an `mcp__<server>__<tool>` call succeeded AND the server was
+  unknown-allowlist on this session AND no remembered decision
+  exists yet for the active token: write the
+  remembered-decisions file AND emit
+  `mcp_policy_user_remembered` event. Reactive yes-and-remember
+  per D139 — Claude Code's `ask` flow returns yes/no only with
+  no built-in "remember" affordance, so the plugin treats a
+  successful post-`ask` call as evidence of de-facto approval.
+- **`Stop`** — cleans up the per-session policy marker file.
+
+Operator-side deny entries always override remembered allows.
+A remembered "yes" the user gave on day 1 stops applying the
+moment the operator pushes a flavor deny entry for that server
+— the next `SessionStart` re-fetches the policy and `PreToolUse`
+sees the deny first.
 
 **Control-plane API.** All 17 endpoints live under `/v1/mcp-policies`
 (kebab-plural, matching the `/v1/access-tokens` convention).
@@ -3165,32 +3209,60 @@ operator can answer "did someone apply a template here?" later.
 
 ### Plugin remembered decisions
 
-`~/.claude/flightdeck/remembered_mcp_decisions.json` is the local
-cache of `yes-and-remember` decisions made via the `PermissionRequest`
-prompt. File schema, per token id:
+`~/.claude/flightdeck/remembered_mcp_decisions-<tokenPrefix>.json`
+is the local cache of de-facto approvals — servers the user said
+"yes" to via Claude Code's built-in `ask` flow on first call.
+The file path is per-token: `<tokenPrefix>` is the first 16 hex
+characters of `sha256(token)`, matching the access-token prefix
+indexing pattern used by the API. Two operators on the same
+machine using different bearer tokens see distinct files.
+
+File schema:
 
 ```json
 {
-  "token_id": "uuid",
+  "version": 1,
   "decisions": [
     {
       "fingerprint": "ab12cd34ef567890",
-      "server_url_canonical": "https://maps.example.com",
-      "server_name": "maps",
-      "decision": "yes",
-      "decided_at": "2026-05-05T10:00:00Z"
+      "server_url_canonical": "stdio://npx -y @scope/server-x",
+      "server_name": "x",
+      "decided_at": "2026-05-06T10:00:00Z"
     }
   ]
 }
 ```
 
-Subsequent sessions read the file, merge remembered `yes` entries on
-top of the fetched policy as if they were flavor-scope `allow` deltas,
-and re-prompt only for fingerprints not in the file. The plugin
-lazy-syncs new entries to the control plane on a best-effort basis
-(non-blocking; offline survives), and re-fetches the canonical policy
-on its standard TTL so a real `deny` entry on the server-side policy
-can override a stale local `yes` (D132).
+Atomic writes via temp-file + `fs.rename`. Reads tolerate
+missing or corrupted files by returning an empty list (rather
+than crashing the hook).
+
+`PreToolUse` reads this file fresh on every invocation rather
+than caching the contents at `SessionStart`. Concurrent Claude
+Code sessions on the same machine therefore see each other's
+remembered decisions in real time — a "yes" the user said in
+session A applies to session B's next call without restart.
+The performance cost is one stat + read per `PreToolUse` (~tens
+of microseconds against the local filesystem), well below the
+no-hot-path-latency threshold.
+
+Operator-side deny entries always override remembered allows
+(D135 step 1 / 2 winning over the local merge). The remembered
+file is a private convenience for the user; the policy cache
+fetched at `SessionStart` is the authoritative source. When the
+operator pushes a flavor deny entry, the next `SessionStart`
+re-fetches the policy and the next `PreToolUse` returns deny
+regardless of what's in the remembered file.
+
+When the user approves an unknown-allowlist server, the plugin
+also emits `mcp_policy_user_remembered` to the standard event
+pipeline (D139). This is operator-visibility, not policy
+mutation — the dashboard shows "alice approved server X on her
+dev machine" so a security team can decide whether to promote
+to a real flavor allow entry. The remembered file does NOT
+synchronise back to the control plane via PUT; the operator
+makes the policy change deliberately if they want fleet-wide
+effect.
 
 ### Event taxonomy
 

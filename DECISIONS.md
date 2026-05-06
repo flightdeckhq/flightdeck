@@ -6460,3 +6460,144 @@ third template's URL maintenance commitment is the only known
 ongoing maintenance item; if a template ever needs updating, it's
 a code change + new release, not a hot-patch.
 
+---
+
+## D139 -- Plugin yes-and-remember: local cache + event emission, no policy mutation
+
+**Date:** 2026-05-06
+**Phase:** MCP Protection Policy
+
+**Context.** When the Claude Code plugin enforces an
+``allowlist``-mode policy and an MCP server appears that the
+operator hasn't explicitly allowed, the natural UX is to ask the
+user: yes for this call only, no, or "yes and remember so I don't
+have to answer this again." The "remember" path is what makes the
+prompt sustainable — without it, an operator running half a dozen
+MCP servers daily would face the same prompts every Claude Code
+session and would start mashing yes reflexively, defeating the
+gate.
+
+But the natural shape of "yes-and-remember" raises three
+questions: (1) where does the remember live, (2) how does the
+operator get visibility, (3) does the user's approval mutate
+fleet-wide policy.
+
+**Decision.** Three locked semantics:
+
+1. **Local cache.** A per-token JSON file at
+   ``~/.claude/flightdeck/remembered_mcp_decisions-<tokenPrefix>.json``
+   stores the user's approvals. ``PreToolUse`` reads this file
+   fresh on every invocation; subsequent sessions and concurrent
+   sessions see the approval without re-prompting. Atomic writes
+   via temp-file + rename. Per-token isolation (16-char hex SHA-256
+   prefix of the bearer token) so two operators on one machine
+   don't share remembered decisions.
+2. **Event emission.** When the user's approval is captured for
+   the first time, the plugin emits a
+   ``mcp_policy_user_remembered`` event through the standard
+   ingestion pipeline (the same path the plugin uses for every
+   other event today). The event lands in ``events`` with the
+   user, server fingerprint, server URL canonical, server name,
+   and the approval timestamp. Operators see remembered approvals
+   in the dashboard event stream alongside policy_mcp_warn /
+   policy_mcp_block.
+3. **No policy mutation.** The user's local "yes" does NOT push
+   anything to ``mcp_policies`` or ``mcp_policy_entries`` via API.
+   It is purely a private convenience for the user plus an
+   operator-visibility signal. Operators decide deliberately
+   whether to promote a remembered approval to a real flavor
+   ``allow`` entry through the dashboard policy editor.
+
+**Reactive yes-and-remember constraint (UX gap).** Claude Code's
+built-in ``ask`` decision returns yes/no only — there is no
+built-in "remember" button on the prompt itself. The plugin
+implements yes-and-remember reactively:
+
+- ``PreToolUse`` for an unknown-allowlist server returns
+  ``{decision: "ask"}``. Claude Code prompts the user yes/no.
+- If the user says yes, the tool call proceeds.
+- ``PostToolUse`` fires after the call succeeded. The plugin
+  treats this as evidence of de-facto approval: writes the
+  remembered-decisions file AND emits the
+  ``mcp_policy_user_remembered`` event.
+
+This isn't a literal three-button prompt; the user gets a binary
+yes/no and the "remember" is implicit in saying yes. From the
+user's perspective the next session just doesn't ask again — the
+mental model is "I said yes once, the system stopped asking,"
+which is a reasonable approximation. From the operator's
+perspective the event stream shows the de-facto approval and
+they can audit it.
+
+If a future Claude Code release exposes a richer prompt API
+(literal three-button yes/no/yes-and-remember), the contract
+gets simpler and the plugin can gain a ``decision: "ask_with_
+remember"`` shape. The current reactive flow lives forward-
+compatible with that future surface; D139's storage + event
+shape doesn't change.
+
+**Why local + event vs alternatives.**
+
+- *Local-only (skip event emission).* Rejected: operator loses
+  visibility into de-facto approvals. A user could approve a
+  malicious server on their machine and the security team
+  wouldn't know without auditing per-user files. Event emission
+  makes the de-facto approval observable in the standard event
+  stream the dashboard already renders.
+- *Policy-mutating PUT.* Rejected: one user's local approval
+  shouldn't change fleet-wide policy. If alice approves server
+  X on her dev machine, that's alice's decision; bob shouldn't
+  see X auto-allowed in his sessions just because alice clicked
+  yes. The operator decides fleet-wide policy, not individual
+  users.
+- *Dedicated ``POST /v1/observations`` endpoint.* Rejected:
+  extra API surface for no benefit. The existing event pipeline
+  carries the data and the dashboard already renders events with
+  filters / faceting. A separate endpoint would duplicate the
+  authentication + persistence + WebSocket-broadcast layers
+  events have already.
+- *Synchronise the remembered file to the control plane via PUT
+  on every write.* Rejected: forces network connectivity for the
+  yes-and-remember UX (Claude Code must work offline at user-
+  prompt time). The event-emission path is best-effort
+  (existing plugin behaviour swallows network failures); a
+  remembered approval persists locally even if the event
+  emission failed transiently. Eventual consistency is fine for
+  operator visibility.
+
+**Why per-token isolation.** Two engineers running Claude Code
+on the same workstation (a shared dev box, a pair-programming
+session) get different bearer tokens. Their remembered
+approvals stay separate so engineer B doesn't inherit engineer
+A's "yes" decisions. The token-prefix derivation matches the
+existing access-token indexing pattern (``access_tokens.prefix``
+column).
+
+**Why deny entries override remembered allows.** The operator's
+explicit deny on the policy is authoritative. If the user
+approved server X locally on day 1 and the operator pushes a
+flavor deny entry on day 2, the next ``SessionStart`` re-fetches
+the policy and ``PreToolUse`` sees the deny first. The local
+remember becomes operationally invisible (the policy decision
+wins) but stays on disk — if the operator later removes the deny
+entry, the local remember resumes effect without forcing the
+user to re-approve. Cleaner than wiping local state on every
+policy update.
+
+**File path naming.** The 16-char hex prefix is
+``crypto.createHash("sha256").update(token).digest("hex").slice(0, 16)``.
+Same hashing parameters as the rest of the MCP identity primitive
+so future code paths can reuse the helper without rewriting.
+
+**Related decisions.** D127 (fingerprint format used as the file's
+lookup key). D129 (per-surface fetch + cache contract — the
+plugin's SessionStart fetch mirrors the sensor's preflight).
+D131 (event types — ``mcp_policy_user_remembered`` joins
+``policy_mcp_warn`` / ``policy_mcp_block`` /
+``mcp_server_name_changed`` as the fourth plugin / sensor
+emitted MCP-policy event). D132 (the original step-1 design
+sketch for plugin remembered decisions; D139 is the finalised
+contract). D135 (resolution algorithm — operator deny entries
+override remembered allows because the policy cache wins step 1
+or step 2 before the remembered overlay applies).
+

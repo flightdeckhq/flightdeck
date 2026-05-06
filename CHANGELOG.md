@@ -248,6 +248,60 @@ in v0.6 as warn-only; v0.7 flips to honor configured enforcement.
   `playground-mcp-policy-langgraph`. Each follows Rule 40a.A
   (meaningful flavor + agent_type) and 40a.B (capture_prompts=True).
 
+### Added (plugin enforcement)
+
+- **Plugin SessionStart MCP policy fetch + cache (D139).** The
+  Claude Code plugin's `observe_cli.mjs` dispatcher branches on
+  `SessionStart` to read `.mcp.json`, fingerprint each declared
+  server via the step-2 identity primitive, and batch-fetch
+  global + flavor policies in parallel via
+  `GET /v1/mcp-policies/global` + `GET /v1/mcp-policies/{flavor}`.
+  Decisions cache to `$TMPDIR/flightdeck-plugin/mcp-policy-<session_id>.json`
+  for the session's lifetime. Non-`allow` decisions emit
+  `policy_mcp_warn` / `policy_mcp_block` events at session boot
+  for fleet visibility. Fail-open per Rule 28.
+- **Plugin PreToolUse per-call gate.** `mcp__<server>__<tool>`
+  calls hit the cached policy + the remembered-decisions file
+  (read fresh per invocation so concurrent Claude Code sessions
+  see each other's approvals in real time). The hook returns
+  `{decision: "deny", reason: "..."}` for block, `{decision:
+  "ask"}` for unknown-allowlist + interactive (Claude Code's
+  built-in yes/no prompt), and proceeds normally for allow /
+  warn / remembered-allow.
+- **Plugin PostToolUse reactive de-facto-approval write (D139).**
+  When an `mcp__<server>__<tool>` call succeeds AND the server
+  was unknown-allowlist on this session AND no remembered
+  decision exists yet for the active token: the plugin writes
+  `~/.claude/flightdeck/remembered_mcp_decisions-<tokenPrefix>.json`
+  AND emits `mcp_policy_user_remembered` event. The reactive
+  flow is the closest functional equivalent given Claude Code's
+  built-in `ask` returns yes/no only with no built-in "remember"
+  affordance — documented in D139's body.
+- **New event type `mcp_policy_user_remembered`** — emitted by
+  the plugin (not the sensor) directly via the standard
+  ingestion HTTP POST path. Ingestion validates required fields
+  at the API boundary; workers project the payload onto
+  `events.payload` via the existing BuildEventExtra path.
+- **Two new plugin helper modules:**
+  `plugin/hooks/scripts/mcp_policy.mjs` (fetch + evaluate +
+  per-session cache) and
+  `plugin/hooks/scripts/remembered_decisions.mjs` (per-token
+  local cache with atomic temp-file + rename writes). Both ship
+  zero npm dependencies — only `node:crypto`, `node:fs`,
+  `node:path`, the `URL` global, and `process.env`. Imports the
+  step-2 `mcp_identity.mjs` primitive for the cross-language
+  fingerprint contract.
+- **`Stop` hook cleanup** of the per-session policy marker file
+  so `$TMPDIR/flightdeck-plugin/mcp-policy-*.json` doesn't grow
+  unbounded.
+
+### Decisions
+
+- **D139** Plugin yes-and-remember semantics: local cache + emit
+  `mcp_policy_user_remembered` event. No policy mutation. Reactive
+  PreToolUse-`ask` + PostToolUse-de-facto-approval flow given
+  Claude Code's `ask` is yes/no only.
+
 ## Unreleased — Sub-agent observability
 
 First-class events, identity, and dashboard surfaces for sub-agent

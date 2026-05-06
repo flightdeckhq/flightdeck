@@ -184,23 +184,24 @@ export function evaluateServer(policies, serverUrl, serverName) {
  */
 export function classifyServer(policies, serverUrl, serverName) {
   const decision = evaluateServer(policies, serverUrl, serverName);
+  // Step 1: if the decision came from the mode_default branch
+  // AND the global mode is allowlist, treat it as "ask" — the
+  // user gets prompted yes/no instead of an automatic block.
+  // This is the unknown-allowlist case the D139 reactive flow
+  // is built around. Explicit deny entries (decisionPath =
+  // flavor_entry / global_entry with decision=block) still
+  // classify as block.
+  if (
+    decision.decisionPath === "mode_default"
+    && policies.global?.mode === "allowlist"
+  ) {
+    return { classification: "ask", decision };
+  }
   if (decision.decision === "block") {
     return { classification: "block", decision };
   }
   if (decision.decision === "warn") {
     return { classification: "warn", decision };
-  }
-  // allow + mode_default fall-through. Distinguish "explicit
-  // allow entry" from "unknown server in allowlist mode that
-  // resolved to the mode default" so the caller can emit ask
-  // for the latter.
-  if (
-    decision.decisionPath === "mode_default"
-    && policies.global?.mode === "allowlist"
-  ) {
-    // Hit step 3 with allowlist mode — would have blocked but
-    // the BOU/failsafe disabled. PreToolUse should ask the user.
-    return { classification: "ask", decision };
   }
   return { classification: "allow", decision };
 }

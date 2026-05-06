@@ -589,6 +589,7 @@ def test_session_start_payload_includes_mcp_servers_in_context() -> None:
             "version": "1.0.0",
             "capabilities": {},
             "instructions": None,
+            "server_url": "",
         },
     ]
 

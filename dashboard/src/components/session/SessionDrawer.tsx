@@ -20,7 +20,8 @@ import { TokenUsageBar } from "./TokenUsageBar";
 import { PromptViewer } from "./PromptViewer";
 import { SubAgentsTab } from "./SubAgentsTab";
 import { EventRow } from "./EventRow";
-import { createDirective, fetchOlderEvents, fetchSession, fetchSessions } from "@/lib/api";
+import { createDirective, fetchOlderEvents, fetchSession, fetchSessions, resolveMCPPolicy } from "@/lib/api";
+import type { MCPPolicyResolveResult } from "@/lib/types";
 import { sessionSupportsDirectives } from "@/lib/directives";
 import { ClaudeCodeLogo } from "@/components/ui/claude-code-logo";
 import { CodingAgentBadge } from "@/components/ui/coding-agent-badge";
@@ -795,6 +796,7 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
                   (version, protocol, capabilities, instructions). */}
               <MCPServersPanel
                 context={data.session.context}
+                flavor={data.session.flavor ?? null}
                 expanded={mcpServersExpanded}
                 onToggle={() => setMcpServersExpanded((v) => !v)}
               />
@@ -1054,8 +1056,23 @@ function RuntimePanel({ context, expanded, onToggle }: RuntimePanelProps) {
 
 interface MCPServersPanelProps {
   context: Record<string, unknown> | undefined;
+  /** Session flavor — used to resolve the per-server policy
+   *  decision pill against the right scope. Null when the
+   *  session lacks a flavor (rare; the resolve falls back to
+   *  the global policy). */
+  flavor: string | null;
   expanded: boolean;
   onToggle: () => void;
+}
+
+type MCPServerDecision =
+  | { kind: "loading" }
+  | { kind: "ok"; result: MCPPolicyResolveResult }
+  | { kind: "missing" }
+  | { kind: "error"; message: string };
+
+function serverDecisionKey(s: MCPServerEntry, idx: number): string {
+  return `${s.name ?? `unknown-${idx}`}|${s.server_url ?? ""}`;
 }
 
 interface MCPServerEntry {
@@ -1065,6 +1082,10 @@ interface MCPServerEntry {
   version?: string | null;
   capabilities?: Record<string, unknown>;
   instructions?: string | null;
+  /** D127 — server URL captured at initialize time. Empty string
+   *  when the transport didn't expose a URL marker. Required for
+   *  the MCP Protection Policy resolve pill (D131). */
+  server_url?: string;
 }
 
 /**
@@ -1085,13 +1106,85 @@ interface MCPServerEntry {
  * negotiation; we do not coerce so a future spec change is visible
  * to operators verbatim.
  */
-function MCPServersPanel({ context, expanded, onToggle }: MCPServersPanelProps) {
+function MCPServersPanel({ context, flavor, expanded, onToggle }: MCPServersPanelProps) {
   const servers = useMemo<MCPServerEntry[]>(() => {
     if (!context) return [];
     const raw = (context as { mcp_servers?: unknown }).mcp_servers;
     if (!Array.isArray(raw)) return [];
     return raw.filter((s): s is MCPServerEntry => typeof s === "object" && s !== null);
   }, [context]);
+
+  // Per-server policy decision (D131). Lazy-loaded on first
+  // expand so a session that never opens the panel doesn't fire
+  // resolve calls. Stored keyed by ``${name}|${url}`` so two
+  // servers with the same display name but different URLs each
+  // resolve independently.
+  const [decisions, setDecisions] = useState<Record<string, MCPServerDecision>>(
+    {},
+  );
+
+  useEffect(() => {
+    if (!expanded) return;
+    if (servers.length === 0) return;
+
+    const targets = servers
+      .map((s, idx) => ({
+        idx,
+        name: s.name ?? "",
+        url: s.server_url ?? "",
+        key: serverDecisionKey(s, idx),
+      }))
+      .filter((t) => decisions[t.key] === undefined);
+
+    if (targets.length === 0) return;
+
+    let cancelled = false;
+    setDecisions((prev) => {
+      const next = { ...prev };
+      for (const t of targets) {
+        next[t.key] = { kind: "loading" };
+      }
+      return next;
+    });
+
+    Promise.all(
+      targets.map(async (t) => {
+        if (!t.url || !t.name) {
+          return [t.key, { kind: "missing" } as MCPServerDecision] as const;
+        }
+        try {
+          const result = await resolveMCPPolicy({
+            flavor: flavor ?? undefined,
+            server_url: t.url,
+            server_name: t.name,
+          });
+          return [t.key, { kind: "ok", result } as MCPServerDecision] as const;
+        } catch (err) {
+          return [
+            t.key,
+            {
+              kind: "error",
+              message:
+                err instanceof Error ? err.message : "resolve failed",
+            } as MCPServerDecision,
+          ] as const;
+        }
+      }),
+    ).then((entries) => {
+      if (cancelled) return;
+      setDecisions((prev) => {
+        const next = { ...prev };
+        for (const [key, decision] of entries) {
+          next[key] = decision;
+        }
+        return next;
+      });
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [expanded, servers, flavor, decisions]);
 
   if (servers.length === 0) return null;
 
@@ -1171,6 +1264,7 @@ function MCPServersPanel({ context, expanded, onToggle }: MCPServersPanelProps) 
               key={`${server.name ?? "unknown"}-${idx}`}
               server={server}
               index={idx}
+              decision={decisions[serverDecisionKey(server, idx)]}
             />
           ))}
         </div>
@@ -1189,9 +1283,11 @@ function formatServerSummary(s: MCPServerEntry): string {
 function MCPServerRow({
   server,
   index,
+  decision,
 }: {
   server: MCPServerEntry;
   index: number;
+  decision: MCPServerDecision | undefined;
 }) {
   const id = server.name ?? `unknown-${index}`;
   const protocol =
@@ -1214,7 +1310,10 @@ function MCPServerRow({
     >
       <DetailLabel>name</DetailLabel>
       <DetailValue testId={`mcp-server-name-${id}`}>
-        {server.name ?? "unknown"}
+        <span className="inline-flex items-center gap-2">
+          {server.name ?? "unknown"}
+          <PolicyDecisionPill decision={decision} testId={id} />
+        </span>
       </DetailValue>
       <DetailLabel>transport</DetailLabel>
       <DetailValue testId={`mcp-server-transport-${id}`}>
@@ -1276,6 +1375,131 @@ function DetailValue({
       {children}
     </div>
   );
+}
+
+/**
+ * Per-server policy decision pill rendered next to the server
+ * name in the SessionDrawer MCP servers panel. Chroma-coded:
+ * allow=neutral (low-contrast), warn=amber, block=red, unknown=
+ * neutral with a "no policy entry — using mode default" tooltip.
+ * Skeleton pill while the resolve call is in flight; rendered
+ * but invisible (no width change) on rows whose URL wasn't
+ * captured so layout doesn't shift between sessions.
+ */
+function PolicyDecisionPill({
+  decision,
+  testId,
+}: {
+  decision: MCPServerDecision | undefined;
+  testId: string;
+}) {
+  if (!decision || decision.kind === "loading") {
+    return (
+      <span
+        className="inline-block h-3 w-12 animate-pulse rounded-full"
+        style={{
+          background: "color-mix(in srgb, var(--text-muted) 18%, transparent)",
+        }}
+        aria-hidden="true"
+        data-testid={`mcp-server-policy-pill-${testId}-skeleton`}
+      />
+    );
+  }
+  if (decision.kind === "missing") {
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span
+            className="cursor-help rounded-full border px-1.5 py-0.5 text-[10px] font-medium"
+            style={{
+              borderColor: "var(--border)",
+              background: "transparent",
+              color: "var(--text-muted)",
+            }}
+            data-testid={`mcp-server-policy-pill-${testId}-missing`}
+          >
+            no URL
+          </span>
+        </TooltipTrigger>
+        <TooltipContent className="max-w-xs text-xs">
+          The sensor didn't capture a URL for this server, so the policy
+          can't resolve it.
+        </TooltipContent>
+      </Tooltip>
+    );
+  }
+  if (decision.kind === "error") {
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span
+            className="cursor-help rounded-full border px-1.5 py-0.5 text-[10px] font-medium"
+            style={{
+              borderColor: "var(--danger)",
+              background:
+                "color-mix(in srgb, var(--danger) 10%, transparent)",
+              color: "var(--danger)",
+            }}
+            data-testid={`mcp-server-policy-pill-${testId}-error`}
+          >
+            error
+          </span>
+        </TooltipTrigger>
+        <TooltipContent className="max-w-xs text-xs">
+          {decision.message}
+        </TooltipContent>
+      </Tooltip>
+    );
+  }
+
+  const result = decision.result;
+  let label: string;
+  let bg: string;
+  let fg: string;
+  let isUnknown = false;
+
+  if (result.decision_path === "mode_default") {
+    isUnknown = true;
+    label = "unknown";
+    bg = "transparent";
+    fg = "var(--text-muted)";
+  } else if (result.decision === "allow") {
+    label = "allow";
+    bg = "color-mix(in srgb, var(--success, #16a34a) 12%, transparent)";
+    fg = "var(--success, #16a34a)";
+  } else if (result.decision === "warn") {
+    label = "warn";
+    bg = "color-mix(in srgb, var(--warning, #d97706) 12%, transparent)";
+    fg = "var(--warning, #d97706)";
+  } else {
+    label = "block";
+    bg = "color-mix(in srgb, var(--danger) 12%, transparent)";
+    fg = "var(--danger)";
+  }
+
+  const pill = (
+    <span
+      className="rounded-full border px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide"
+      style={{ borderColor: fg, background: bg, color: fg }}
+      data-testid={`mcp-server-policy-pill-${testId}-${label}`}
+    >
+      {label}
+    </span>
+  );
+
+  if (isUnknown) {
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span className="cursor-help">{pill}</span>
+        </TooltipTrigger>
+        <TooltipContent className="max-w-xs text-xs">
+          No policy entry for this server — using the global mode default.
+        </TooltipContent>
+      </Tooltip>
+    );
+  }
+  return pill;
 }
 
 /* ---- Metadata bar (labelled grid) ---- */

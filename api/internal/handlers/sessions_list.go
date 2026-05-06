@@ -72,10 +72,22 @@ var validSessionClientTypes = map[string]bool{
 // values (sensor/flightdeck_sensor/core/types.py). A typo lands as
 // 400 with the allowed set so callers can self-correct rather than
 // silently receiving an empty result.
+//
+// D131 MCP Protection Policy adds four event types into the
+// "policy_event_type" filter family per ARCHITECTURE.md →
+// "Adjacent surfaces" so the existing Investigate facet can show
+// MCP-policy filtering chips alongside the token-budget policy
+// types. The chips render on the same facet column; chroma is
+// distinguished by the per-event eventBadgeConfig (amber/red for
+// enforcement, purple/info for FYI).
 var validPolicyEventTypes = map[string]bool{
-	"policy_warn":    true,
-	"policy_degrade": true,
-	"policy_block":   true,
+	"policy_warn":                true,
+	"policy_degrade":             true,
+	"policy_block":               true,
+	"policy_mcp_warn":            true,
+	"policy_mcp_block":           true,
+	"mcp_server_name_changed":    true,
+	"mcp_policy_user_remembered": true,
 }
 
 // SessionsListHandler handles GET /v1/sessions.
@@ -102,7 +114,7 @@ var validPolicyEventTypes = map[string]bool{
 // @Param        git_repo   query  string  false  "Filter by context.git_repo (repeatable)"
 // @Param        orchestration query string false "Filter by context.orchestration (repeatable)"
 // @Param        error_type query  string  false  "Filter to sessions that emitted an llm_error event of one of the listed taxonomy values (repeatable/comma). 14-entry vocabulary: rate_limit, quota_exceeded, context_overflow, content_filter, invalid_request, authentication, permission, not_found, request_too_large, api_error, overloaded, timeout, stream_error, other."
-// @Param        policy_event_type query  string  false  "Filter to sessions that emitted at least one policy enforcement event of the listed types (repeatable/comma). Vocabulary: policy_warn, policy_degrade, policy_block."
+// @Param        policy_event_type query  string  false  "Filter to sessions that emitted at least one policy enforcement event of the listed types (repeatable/comma). Vocabulary: policy_warn, policy_degrade, policy_block, policy_mcp_warn, policy_mcp_block, mcp_server_name_changed, mcp_policy_user_remembered."
 // @Param        mcp_server query  string  false  "Filter to sessions that connected to an MCP server with the given name (repeatable/comma). Phase 5: backed by the JSONB array sessions.context.mcp_servers. Each row in the response carries mcp_server_names[] for facet rendering."
 // @Param        parent_session_id query string false "D126: filter to children of one specific parent session (UUID). Used by the SessionDrawer Sub-agents tab to fetch the per-parent child list."
 // @Param        agent_role query  string  false  "D126: filter by sub-agent role string (repeatable/comma). CrewAI Agent.role, LangGraph node name, Claude Code Task agent_type. Backs the Investigate ROLE facet."

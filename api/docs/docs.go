@@ -2491,7 +2491,7 @@ const docTemplate = `{
                     },
                     {
                         "type": "string",
-                        "description": "Filter to sessions that emitted at least one policy enforcement event of the listed types (repeatable/comma). Vocabulary: policy_warn, policy_degrade, policy_block.",
+                        "description": "Filter to sessions that emitted at least one policy enforcement event of the listed types (repeatable/comma). Vocabulary: policy_warn, policy_degrade, policy_block, policy_mcp_warn, policy_mcp_block, mcp_server_name_changed, mcp_policy_user_remembered.",
                         "name": "policy_event_type",
                         "in": "query"
                     },

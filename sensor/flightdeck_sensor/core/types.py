@@ -262,6 +262,14 @@ class MCPServerFingerprint:
     version: str | None
     capabilities: dict[str, Any] = field(default_factory=dict)
     instructions: str | None = None
+    # Server URL captured at ``ClientSession.initialize()`` time. The
+    # MCP Protection Policy identity model (D127) treats URL as the
+    # primary security key — the fingerprint without URL can't be
+    # resolved against a policy. Empty string when the transport
+    # didn't expose a URL marker (rare; preserved verbatim, not
+    # coerced to None, so the dashboard can render "no URL captured"
+    # with intent rather than as a missing field).
+    server_url: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -271,4 +279,5 @@ class MCPServerFingerprint:
             "version": self.version,
             "capabilities": self.capabilities,
             "instructions": self.instructions,
+            "server_url": self.server_url,
         }

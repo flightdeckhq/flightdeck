@@ -132,6 +132,30 @@ export const eventBadgeConfig: Record<string, BadgeConfig> = {
     label: "MCP PROMPTS DISCOVERED",
     filled: false,
   },
+  // MCP Protection Policy events (D131). The chroma map is locked in
+  // step 6 of the Protection Policy plan and ARCHITECTURE.md →
+  // "Adjacent surfaces": amber/red carry the enforcement axis (warn
+  // and block — same chromas as policy_warn / policy_block) and
+  // purple-info carries the FYI axis (name drift and the plugin's
+  // user-remembered decision — same chroma as directive_result).
+  // Rule 15 lock: no new theme tokens, every CSS variable below is
+  // already declared in themes.css.
+  policy_mcp_warn: {
+    cssVar: "var(--event-warn)",
+    label: "MCP POLICY WARN",
+  },
+  policy_mcp_block: {
+    cssVar: "var(--event-block)",
+    label: "MCP POLICY BLOCK",
+  },
+  mcp_server_name_changed: {
+    cssVar: "var(--event-result)",
+    label: "MCP NAME CHANGED",
+  },
+  mcp_policy_user_remembered: {
+    cssVar: "var(--event-result)",
+    label: "MCP USER REMEMBERED",
+  },
 };
 
 export const defaultBadge: BadgeConfig = { cssVar: "var(--event-lifecycle)", label: "EVENT" };
@@ -541,7 +565,17 @@ export const EVENT_TYPE_GROUPS: Record<string, string[]> = {
   "Tools": ["tool_call"],
   "Embeddings": ["embeddings"],
   "Errors": ["llm_error"],
-  "Policy": ["policy_warn", "policy_block", "policy_degrade"],
+  "Policy": [
+    "policy_warn",
+    "policy_block",
+    "policy_degrade",
+    // D131 MCP Protection Policy event types — filterable in
+    // Investigate but not group-by-able on analytics (Rule 25 lock).
+    "policy_mcp_warn",
+    "policy_mcp_block",
+    "mcp_server_name_changed",
+    "mcp_policy_user_remembered",
+  ],
   "Directives": ["directive", "directive_result"],
   "Session": ["session_start", "session_end"],
   // Phase 5 — MCP filter group spans all six MCP event types. The

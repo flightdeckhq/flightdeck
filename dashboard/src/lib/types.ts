@@ -28,7 +28,16 @@ export type EventType =
   | "mcp_resource_list"
   | "mcp_resource_read"
   | "mcp_prompt_list"
-  | "mcp_prompt_get";
+  | "mcp_prompt_get"
+  // MCP Protection Policy event types (D131). Two enforcement
+  // (warn / block, amber / red chroma) and two FYI (server name
+  // drift + plugin user-remembered, purple/info chroma). Filterable
+  // on Investigate via ``policy_event_type`` query param; not
+  // group-by-able on analytics (Rule 25 lock).
+  | "policy_mcp_warn"
+  | "policy_mcp_block"
+  | "mcp_server_name_changed"
+  | "mcp_policy_user_remembered";
 
 /** 14-entry structured LLM API error taxonomy. Mirrors
  *  ``sensor/flightdeck_sensor/core/errors.py::ErrorType``. */

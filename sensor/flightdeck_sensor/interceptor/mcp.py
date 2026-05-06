@@ -1000,6 +1000,12 @@ def _make_initialize_wrapper(orig_initialize: Any) -> Any:
             capabilities = _capabilities_dict(getattr(result, "capabilities", None))
             instructions = getattr(result, "instructions", None)
             transport = getattr(self, _INSTANCE_TRANSPORT_ATTR, None)
+            # MCP Protection Policy identity model (D127): URL is the
+            # primary security key. Capture into the fingerprint so
+            # the dashboard SessionDrawer pill can resolve each server
+            # against the active policy. Empty string when the
+            # transport didn't expose a URL marker (rare).
+            server_url = getattr(self, _INSTANCE_SERVER_URL_ATTR, "") or ""
 
             if name:
                 # Stash on the ClientSession instance for fast lookup
@@ -1014,6 +1020,7 @@ def _make_initialize_wrapper(orig_initialize: Any) -> Any:
                     version=version,
                     capabilities=capabilities,
                     instructions=instructions,
+                    server_url=server_url,
                 )
                 sensor_session = _current_session()
                 if sensor_session is not None:

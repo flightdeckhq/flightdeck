@@ -210,6 +210,7 @@
             "instructions": "Flightdeck Phase 5 reference MCP server. Three demo tools (echo, add, slow_echo), one demo resource (mem://demo), one demo prompt (greet). Stateless. Safe to share across tests.",
             "name": "flightdeck-mcp-reference",
             "protocol_version": "2025-11-25",
+            "server_url": "stdio:///opt/flightdeck/mcp-reference",
             "transport": "stdio",
             "version": "1.26.0"
           }

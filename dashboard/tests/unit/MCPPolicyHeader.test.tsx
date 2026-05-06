@@ -84,7 +84,7 @@ describe("MCPPolicyHeader", () => {
     const handler = vi.fn(() => Promise.resolve());
     render(
       <MCPPolicyHeader
-        policy={policy({ block_on_uncertainty: false })}
+        policy={policy({ mode: "allowlist", block_on_uncertainty: false })}
         scopeKey="global"
         modeEditable
         globalMode="allowlist"
@@ -97,7 +97,12 @@ describe("MCPPolicyHeader", () => {
     expect(handler).toHaveBeenCalledWith(true);
   });
 
-  it("notes the BOU toggle is a no-op under blocklist mode", () => {
+  it("hides the BOU toggle entirely under blocklist mode (B2)", () => {
+    // Step 6.6 B2: BOU is only meaningful under allowlist (D134).
+    // Hide-rather-than-grey matches Salesforce / Atlassian / Linear
+    // precedent of removing irrelevant controls. Server-side value
+    // persists across mode flips so flipping back to allowlist
+    // restores the prior BOU state automatically.
     render(
       <MCPPolicyHeader
         policy={policy({ mode: "blocklist", block_on_uncertainty: false })}
@@ -109,7 +114,44 @@ describe("MCPPolicyHeader", () => {
       />,
     );
 
-    const header = screen.getByTestId("mcp-policy-header-global");
-    expect(header.textContent).toContain("(no-op under blocklist mode)");
+    expect(screen.queryByTestId("mcp-policy-bou-section-global")).toBeNull();
+    expect(screen.queryByTestId("mcp-policy-bou-switch-global")).toBeNull();
+  });
+
+  it("shows the BOU toggle under allowlist mode (B2)", () => {
+    render(
+      <MCPPolicyHeader
+        policy={policy({ mode: "allowlist", block_on_uncertainty: true })}
+        scopeKey="global"
+        modeEditable
+        globalMode="allowlist"
+        onModeChange={noopAsync}
+        onBlockOnUncertaintyChange={noopAsync}
+      />,
+    );
+
+    expect(screen.getByTestId("mcp-policy-bou-section-global")).toBeTruthy();
+    expect(screen.getByTestId("mcp-policy-bou-switch-global")).toBeTruthy();
+  });
+
+  it("renders the Allow-list / Block-list descriptive copy under the segmented control (B2)", () => {
+    render(
+      <MCPPolicyHeader
+        policy={policy({ mode: "blocklist" })}
+        scopeKey="global"
+        modeEditable
+        globalMode="blocklist"
+        onModeChange={noopAsync}
+        onBlockOnUncertaintyChange={noopAsync}
+      />,
+    );
+
+    const help = screen.getByTestId("mcp-policy-mode-help-global");
+    expect(help.textContent).toContain(
+      "every server blocked by default; explicit allow entries open access.",
+    );
+    expect(help.textContent).toContain(
+      "every server allowed by default; explicit deny entries block access.",
+    );
   });
 });

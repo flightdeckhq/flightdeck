@@ -9,6 +9,8 @@ import {
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import type { MCPPolicy } from "@/lib/types";
+// ``cn`` is preserved on import because ModeSegmented uses it for
+// the segmented-control active-state styling below.
 
 export type Mode = "allowlist" | "blocklist";
 
@@ -81,90 +83,130 @@ export function MCPPolicyHeader({
   return (
     <TooltipProvider>
       <div
-        className="rounded-md border p-4"
+        className="rounded-md border p-5"
         style={{
           borderColor: "var(--border)",
           background: "var(--surface)",
         }}
         data-testid={`mcp-policy-header-${scopeKey}`}
       >
-        <div className="flex flex-wrap items-start justify-between gap-6">
-          <div className="min-w-[18rem] flex-1">
-            <div className="flex items-center gap-2">
+        {/* Policy mode — load-bearing setting, deserves prominence */}
+        <section
+          aria-labelledby={`mcp-policy-mode-heading-${scopeKey}`}
+          data-testid={`mcp-policy-mode-section-${scopeKey}`}
+        >
+          <div className="flex items-center gap-2">
+            <h3
+              id={`mcp-policy-mode-heading-${scopeKey}`}
+              className="text-base font-semibold"
+              style={{ color: "var(--text)" }}
+            >
+              Policy mode
+            </h3>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span
+                  className="cursor-help text-[11px] underline decoration-dotted"
+                  style={{ color: "var(--text-muted)" }}
+                  data-testid={`mcp-policy-mode-tooltip-trigger-${scopeKey}`}
+                >
+                  info
+                </span>
+              </TooltipTrigger>
+              <TooltipContent
+                className="max-w-sm text-xs leading-relaxed"
+                data-testid={`mcp-policy-mode-tooltip-${scopeKey}`}
+              >
+                For an (URL, name) evaluated against (global, flavor): if the
+                per-flavor policy has a matching entry, use that entry's
+                enforcement decision. Else if the global policy has a matching
+                entry, use that. Else apply the global mode default: allowlist
+                mode → block; blocklist mode → allow. Mode lives on the global
+                policy only (D134).
+              </TooltipContent>
+            </Tooltip>
+            {modeEditable && savingMode ? (
               <span
-                className="text-[11px] font-semibold uppercase tracking-wide"
+                className="text-[11px]"
                 style={{ color: "var(--text-muted)" }}
               >
-                Mode
+                Saving…
               </span>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <span
-                    className="cursor-help text-[11px] underline decoration-dotted"
-                    style={{ color: "var(--text-muted)" }}
-                    data-testid={`mcp-policy-mode-tooltip-trigger-${scopeKey}`}
-                  >
-                    info
-                  </span>
-                </TooltipTrigger>
-                <TooltipContent
-                  className="max-w-sm text-xs leading-relaxed"
-                  data-testid={`mcp-policy-mode-tooltip-${scopeKey}`}
-                >
-                  For an (URL, name) evaluated against (global, flavor): if
-                  the per-flavor policy has a matching entry, use that entry's
-                  enforcement decision. Else if the global policy has a
-                  matching entry, use that. Else apply the global mode
-                  default: allowlist mode → block; blocklist mode → allow.
-                  Mode lives on the global policy only (D134).
-                </TooltipContent>
-              </Tooltip>
-              {modeEditable && savingMode ? (
-                <span
-                  className="text-[11px]"
-                  style={{ color: "var(--text-muted)" }}
-                >
-                  Saving…
-                </span>
-              ) : null}
-            </div>
-
-            {modeEditable ? (
-              <ModeSegmented
-                value={(policy.mode as Mode) ?? "blocklist"}
-                onChange={handleMode}
-                disabled={savingMode}
-                testid={`mcp-policy-mode-segmented-${scopeKey}`}
-              />
-            ) : (
-              <div
-                className="mt-2 inline-flex items-center rounded-md border px-3 py-1.5 text-sm"
-                style={{
-                  borderColor: "var(--border)",
-                  background: "var(--background-elevated)",
-                  color: "var(--text-muted)",
-                }}
-                data-testid={`mcp-policy-mode-readonly-${scopeKey}`}
-              >
-                Inherits global mode:{" "}
-                <span
-                  className="ml-1 font-medium"
-                  style={{ color: "var(--text)" }}
-                >
-                  {globalMode ?? "—"}
-                </span>
-              </div>
-            )}
+            ) : null}
           </div>
 
-          <div className={cn("min-w-[16rem]", !bouMeaningful && "opacity-60")}>
-            <div className="flex items-center gap-2">
+          {modeEditable ? (
+            <>
+              <div className="mt-3">
+                <ModeSegmented
+                  value={(policy.mode as Mode) ?? "blocklist"}
+                  onChange={handleMode}
+                  disabled={savingMode}
+                  testid={`mcp-policy-mode-segmented-${scopeKey}`}
+                />
+              </div>
+              <div
+                className="mt-3 space-y-1 text-[12px] leading-relaxed"
+                style={{ color: "var(--text-secondary)" }}
+                data-testid={`mcp-policy-mode-help-${scopeKey}`}
+              >
+                <p>
+                  <span style={{ color: "var(--text)", fontWeight: 600 }}>
+                    Allow-list:
+                  </span>{" "}
+                  every server blocked by default; explicit allow entries
+                  open access.
+                </p>
+                <p>
+                  <span style={{ color: "var(--text)", fontWeight: 600 }}>
+                    Block-list:
+                  </span>{" "}
+                  every server allowed by default; explicit deny entries
+                  block access.
+                </p>
+              </div>
+            </>
+          ) : (
+            <div
+              className="mt-3 inline-flex items-center rounded-md border px-3 py-1.5 text-sm"
+              style={{
+                borderColor: "var(--border)",
+                background: "var(--background-elevated)",
+                color: "var(--text-muted)",
+              }}
+              data-testid={`mcp-policy-mode-readonly-${scopeKey}`}
+            >
+              Inherits global mode:{" "}
               <span
-                className="text-[11px] font-semibold uppercase tracking-wide"
-                style={{ color: "var(--text-muted)" }}
+                className="ml-1 font-medium"
+                style={{ color: "var(--text)" }}
+              >
+                {globalMode ?? "—"}
+              </span>
+            </div>
+          )}
+        </section>
+
+        {/* Block-on-uncertainty — hidden under blocklist mode (D134
+            says BOU is only meaningful under allowlist; B2 spec
+            chose hide-rather-than-grey to match Salesforce /
+            Atlassian / Linear precedent — server-side value persists
+            across mode flips so toggling allowlist back restores it). */}
+        {bouMeaningful ? (
+          <section
+            className="mt-5 border-t pt-5"
+            style={{ borderColor: "var(--border)" }}
+            aria-labelledby={`mcp-policy-bou-heading-${scopeKey}`}
+            data-testid={`mcp-policy-bou-section-${scopeKey}`}
+          >
+            <div className="flex items-center gap-2">
+              <h4
+                id={`mcp-policy-bou-heading-${scopeKey}`}
+                className="text-sm font-semibold"
+                style={{ color: "var(--text)" }}
               >
                 Block on uncertainty
-              </span>
+              </h4>
               <Tooltip>
                 <TooltipTrigger asChild>
                   <span
@@ -202,18 +244,9 @@ export function MCPPolicyHeader({
               />
               <span
                 className="text-sm"
-                style={{
-                  color: bouMeaningful
-                    ? "var(--text)"
-                    : "var(--text-muted)",
-                }}
+                style={{ color: "var(--text)" }}
               >
                 {policy.block_on_uncertainty ? "On" : "Off"}
-                {!bouMeaningful && (
-                  <span className="ml-1 text-[11px]">
-                    (no-op under {effectiveMode ?? "current"} mode)
-                  </span>
-                )}
               </span>
               {savingBOU ? (
                 <span
@@ -224,8 +257,8 @@ export function MCPPolicyHeader({
                 </span>
               ) : null}
             </div>
-          </div>
-        </div>
+          </section>
+        ) : null}
 
         {error ? (
           <div

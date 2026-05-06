@@ -573,9 +573,29 @@ definitions:
         items:
           $ref: '#/definitions/store.ServerCountBucket'
         type: array
+      buckets:
+        items:
+          $ref: '#/definitions/store.MCPPolicyMetricsBucket'
+        type: array
+      granularity:
+        description: '"hour" | "day"'
+        type: string
       period:
         type: string
       warns_per_server:
+        items:
+          $ref: '#/definitions/store.ServerCountBucket'
+        type: array
+    type: object
+  store.MCPPolicyMetricsBucket:
+    properties:
+      blocks:
+        items:
+          $ref: '#/definitions/store.ServerCountBucket'
+        type: array
+      timestamp:
+        type: string
+      warns:
         items:
           $ref: '#/definitions/store.ServerCountBucket'
         type: array

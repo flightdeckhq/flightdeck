@@ -658,15 +658,43 @@ func (s *Store) ListMCPPolicyAuditLog(ctx context.Context, scope, scopeValue, ev
 	return logs, rows.Err()
 }
 
+// granularityForPeriod maps the period query param to the
+// time-bucket granularity used by date_trunc / generate_series in
+// the metrics SQL. Locked in step 6.5: 24h → hour, 7d / 30d → day.
+// Hour-level buckets at 30d would be 720 buckets per server which
+// is too noisy for a sparkline; day-level at 24h would be a single
+// data point which defeats the trend visualization.
+func granularityForPeriod(period string) string {
+	if period == "24h" || period == "" {
+		return "hour"
+	}
+	return "day"
+}
+
+// granularityInterval returns the postgres interval string used in
+// the generate_series step size. Mirrors granularityForPeriod.
+func granularityInterval(granularity string) string {
+	if granularity == "hour" {
+		return "1 hour"
+	}
+	return "1 day"
+}
+
 // GetMCPPolicyMetrics aggregates policy_mcp_warn / policy_mcp_block
-// events scoped to the flavor's policy. Returns empty buckets until
-// step 4 ships the events. The query is correct today; it just
-// matches zero rows.
+// events scoped to the flavor's policy. Returns BOTH time-bucketed
+// series (zero-filled via generate_series so the dashboard sparkline
+// renders honest gaps) AND per-server aggregate totals (used for the
+// header summary table). Step 6.5 reshape — pre-step-6.5 callers
+// only saw the aggregates. The aggregates are still computed in the
+// SAME query as a separate windowed pass so the response stays
+// single-fetch.
 func (s *Store) GetMCPPolicyMetrics(ctx context.Context, scope, scopeValue, period string) (*MCPPolicyMetrics, error) {
 	hours, err := periodToHours(period)
 	if err != nil {
 		return nil, err
 	}
+	granularity := granularityForPeriod(period)
+	interval := granularityInterval(granularity)
 
 	policyID, err := s.lookupPolicyID(ctx, scope, scopeValue)
 	if err != nil {
@@ -675,12 +703,16 @@ func (s *Store) GetMCPPolicyMetrics(ctx context.Context, scope, scopeValue, peri
 	if policyID == "" {
 		return &MCPPolicyMetrics{
 			Period:          period,
+			Granularity:     granularity,
+			Buckets:         []MCPPolicyMetricsBucket{},
 			BlocksPerServer: []ServerCountBucket{},
 			WarnsPerServer:  []ServerCountBucket{},
 		}, nil
 	}
 
-	const sql = `
+	// Aggregate per-server totals over the whole window. Powers the
+	// header summary table on the dashboard.
+	const aggregateSQL = `
 		SELECT event_type,
 		       payload->>'fingerprint'  AS fingerprint,
 		       payload->>'server_name'  AS server_name,
@@ -692,26 +724,28 @@ func (s *Store) GetMCPPolicyMetrics(ctx context.Context, scope, scopeValue, peri
 		 GROUP BY event_type, fingerprint, server_name
 		 ORDER BY cnt DESC
 	`
-	rows, err := s.pool.Query(ctx, sql, policyID, hours)
+	aggRows, err := s.pool.Query(ctx, aggregateSQL, policyID, hours)
 	if err != nil {
-		return nil, fmt.Errorf("query metrics: %w", err)
+		return nil, fmt.Errorf("query metrics aggregates: %w", err)
 	}
-	defer rows.Close()
+	defer aggRows.Close()
 
 	metrics := &MCPPolicyMetrics{
 		Period:          period,
+		Granularity:     granularity,
+		Buckets:         []MCPPolicyMetricsBucket{},
 		BlocksPerServer: []ServerCountBucket{},
 		WarnsPerServer:  []ServerCountBucket{},
 	}
-	for rows.Next() {
+	for aggRows.Next() {
 		var (
 			eventType string
 			fp        *string
 			name      *string
 			count     int
 		)
-		if err := rows.Scan(&eventType, &fp, &name, &count); err != nil {
-			return nil, fmt.Errorf("scan metrics row: %w", err)
+		if err := aggRows.Scan(&eventType, &fp, &name, &count); err != nil {
+			return nil, fmt.Errorf("scan metrics aggregate row: %w", err)
 		}
 		bucket := ServerCountBucket{Count: count}
 		if fp != nil {
@@ -727,7 +761,104 @@ func (s *Store) GetMCPPolicyMetrics(ctx context.Context, scope, scopeValue, peri
 			metrics.BlocksPerServer = append(metrics.BlocksPerServer, bucket)
 		}
 	}
-	return metrics, rows.Err()
+	if err := aggRows.Err(); err != nil {
+		return nil, fmt.Errorf("metrics aggregate rows: %w", err)
+	}
+
+	// Zero-filled time-bucket series. generate_series produces every
+	// timestamp in the window at the chosen granularity even when no
+	// matching event landed in that bucket — sparse data on a
+	// security dashboard would render a flat-then-spike as a gradual
+	// ramp, which misleads the operator (Step 6.5 PR Part B
+	// rationale).
+	bucketSQL := fmt.Sprintf(`
+		WITH window_buckets AS (
+			SELECT generate_series(
+				date_trunc('%s', NOW() - $2 * INTERVAL '1 hour'),
+				date_trunc('%s', NOW()),
+				INTERVAL '%s'
+			) AS bucket_ts
+		),
+		bucketed_events AS (
+			SELECT date_trunc('%s', occurred_at) AS bucket_ts,
+			       event_type,
+			       payload->>'fingerprint'  AS fingerprint,
+			       payload->>'server_name'  AS server_name,
+			       COUNT(*) AS cnt
+			  FROM events
+			 WHERE event_type IN ('policy_mcp_warn', 'policy_mcp_block')
+			   AND payload->>'policy_id' = $1
+			   AND occurred_at >= NOW() - $2 * INTERVAL '1 hour'
+			 GROUP BY bucket_ts, event_type, fingerprint, server_name
+		)
+		SELECT wb.bucket_ts,
+		       be.event_type,
+		       be.fingerprint,
+		       be.server_name,
+		       COALESCE(be.cnt, 0) AS cnt
+		  FROM window_buckets wb
+		  LEFT JOIN bucketed_events be ON be.bucket_ts = wb.bucket_ts
+		 ORDER BY wb.bucket_ts ASC, be.event_type ASC
+	`, granularity, granularity, interval, granularity)
+
+	bucketRows, err := s.pool.Query(ctx, bucketSQL, policyID, hours)
+	if err != nil {
+		return nil, fmt.Errorf("query metrics buckets: %w", err)
+	}
+	defer bucketRows.Close()
+
+	bucketByTimestamp := make(map[time.Time]*MCPPolicyMetricsBucket)
+	bucketOrder := []time.Time{}
+	for bucketRows.Next() {
+		var (
+			ts        time.Time
+			eventType *string
+			fp        *string
+			name      *string
+			count     int
+		)
+		if err := bucketRows.Scan(&ts, &eventType, &fp, &name, &count); err != nil {
+			return nil, fmt.Errorf("scan metrics bucket row: %w", err)
+		}
+		// generate_series emits the timestamp UTC; preserve.
+		ts = ts.UTC()
+		entry, exists := bucketByTimestamp[ts]
+		if !exists {
+			entry = &MCPPolicyMetricsBucket{
+				Timestamp: ts,
+				Blocks:    []ServerCountBucket{},
+				Warns:     []ServerCountBucket{},
+			}
+			bucketByTimestamp[ts] = entry
+			bucketOrder = append(bucketOrder, ts)
+		}
+		// LEFT JOIN keeps empty slots — the row will have NULL
+		// event_type / fingerprint / name. Skip the empty pad row;
+		// the bucket is already in the map with empty slices.
+		if eventType == nil {
+			continue
+		}
+		serverBucket := ServerCountBucket{Count: count}
+		if fp != nil {
+			serverBucket.Fingerprint = *fp
+		}
+		if name != nil {
+			serverBucket.ServerName = *name
+		}
+		switch *eventType {
+		case "policy_mcp_warn":
+			entry.Warns = append(entry.Warns, serverBucket)
+		case "policy_mcp_block":
+			entry.Blocks = append(entry.Blocks, serverBucket)
+		}
+	}
+	if err := bucketRows.Err(); err != nil {
+		return nil, fmt.Errorf("metrics bucket rows: %w", err)
+	}
+	for _, ts := range bucketOrder {
+		metrics.Buckets = append(metrics.Buckets, *bucketByTimestamp[ts])
+	}
+	return metrics, nil
 }
 
 // DryRunCandidate is one event row pulled by DryRunMCPPolicyEvents

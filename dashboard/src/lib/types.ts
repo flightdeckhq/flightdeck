@@ -908,17 +908,36 @@ export interface MCPPolicyAuditLog {
   occurred_at: string;
 }
 
-/** D131 — metrics aggregation per server. */
-export interface MCPPolicyMetricsBucket {
+/** D131 — one (fingerprint, server_name, count) tuple inside an
+ *  aggregate or a time bucket. Step 6.5 renamed this from the
+ *  generic ``MCPPolicyMetricsBucket`` to free the bucket name for
+ *  the new time-bucket type. */
+export interface MCPPolicyServerCountBucket {
   fingerprint: string;
   server_name: string;
   count: number;
 }
 
+/** Step 6.5 — one slot in the metrics time-series. Timestamp is
+ *  the bucket-start instant (zero-filled via SQL generate_series
+ *  so empty buckets ship through with empty Blocks / Warns
+ *  arrays). The dashboard sparkline pivots per-server and sums
+ *  block + warn counts per bucket — the per-server aggregate
+ *  table beneath the sparklines splits the warn vs block
+ *  ratio. */
+export interface MCPPolicyMetricsBucket {
+  timestamp: string;
+  blocks: MCPPolicyServerCountBucket[];
+  warns: MCPPolicyServerCountBucket[];
+}
+
 export interface MCPPolicyMetrics {
   period: string;
-  blocks_per_server: MCPPolicyMetricsBucket[];
-  warns_per_server: MCPPolicyMetricsBucket[];
+  /** "hour" for period=24h, "day" for period=7d|30d (D131 step 6.5). */
+  granularity: string;
+  buckets: MCPPolicyMetricsBucket[];
+  blocks_per_server: MCPPolicyServerCountBucket[];
+  warns_per_server: MCPPolicyServerCountBucket[];
 }
 
 /** D137 — dry-run preview result. */

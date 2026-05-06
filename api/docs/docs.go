@@ -3506,10 +3506,40 @@ const docTemplate = `{
                         "$ref": "#/definitions/store.ServerCountBucket"
                     }
                 },
+                "buckets": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/store.MCPPolicyMetricsBucket"
+                    }
+                },
+                "granularity": {
+                    "description": "\"hour\" | \"day\"",
+                    "type": "string"
+                },
                 "period": {
                     "type": "string"
                 },
                 "warns_per_server": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/store.ServerCountBucket"
+                    }
+                }
+            }
+        },
+        "store.MCPPolicyMetricsBucket": {
+            "type": "object",
+            "properties": {
+                "blocks": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/store.ServerCountBucket"
+                    }
+                },
+                "timestamp": {
+                    "type": "string"
+                },
+                "warns": {
                     "type": "array",
                     "items": {
                         "$ref": "#/definitions/store.ServerCountBucket"

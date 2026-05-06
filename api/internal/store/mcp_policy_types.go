@@ -83,12 +83,34 @@ type MCPPolicyResolveResult struct {
 }
 
 // MCPPolicyMetrics is the response shape for GET /:flavor/metrics.
-// The buckets stay empty until step 4 ships the policy_mcp_warn /
-// policy_mcp_block events.
+// Carries both the time-bucketed series (Buckets, used by the
+// dashboard sparklines) and the aggregate per-server counts
+// (BlocksPerServer / WarnsPerServer, used by the panel header
+// summary table). Step 6.5 added the bucketed shape; the
+// aggregates are computed server-side from the same data so the
+// header stays single-fetch.
+//
+// Granularity is 'hour' for period=24h and 'day' for period=7d /
+// 30d. The bucket array zero-fills empty time slots via SQL
+// generate_series so the sparkline renders honest "no events"
+// valleys — sparse data on a security dashboard would render a
+// flat-then-spike pattern as a gradual ramp, which is misleading.
 type MCPPolicyMetrics struct {
-	Period          string              `json:"period"`
-	BlocksPerServer []ServerCountBucket `json:"blocks_per_server"`
-	WarnsPerServer  []ServerCountBucket `json:"warns_per_server"`
+	Period          string                   `json:"period"`
+	Granularity     string                   `json:"granularity"` // "hour" | "day"
+	Buckets         []MCPPolicyMetricsBucket `json:"buckets"`
+	BlocksPerServer []ServerCountBucket      `json:"blocks_per_server"`
+	WarnsPerServer  []ServerCountBucket      `json:"warns_per_server"`
+}
+
+// MCPPolicyMetricsBucket is one time slot in the metrics series.
+// Timestamp is the bucket-start instant (date_trunc'd to the
+// granularity); Blocks / Warns carry per-server counts inside
+// that bucket. Empty slots ship through with empty arrays.
+type MCPPolicyMetricsBucket struct {
+	Timestamp time.Time           `json:"timestamp"`
+	Blocks    []ServerCountBucket `json:"blocks"`
+	Warns     []ServerCountBucket `json:"warns"`
 }
 
 // ServerCountBucket carries one row of the metrics aggregate.

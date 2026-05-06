@@ -286,7 +286,19 @@ def test_metrics_returns_empty_pre_step_4() -> None:
         assert r.status_code == 200, r.text
         result = r.json()
         assert result["period"] == "24h"
-        # Step 4 will populate these; today they are empty.
+        # Step 6.5 reshape: response now carries granularity +
+        # zero-filled bucket array alongside the legacy
+        # *_per_server aggregates. Empty events ⇒ empty
+        # aggregates; the bucket array is zero-filled to the
+        # 24-hour window at hour granularity, so each entry has
+        # empty Blocks/Warns slices but the slot itself exists.
+        assert result["granularity"] == "hour"
+        assert isinstance(result["buckets"], list)
+        assert len(result["buckets"]) > 0
+        for bucket in result["buckets"]:
+            assert "timestamp" in bucket
+            assert bucket["blocks"] == []
+            assert bucket["warns"] == []
         assert result["blocks_per_server"] == []
         assert result["warns_per_server"] == []
     finally:

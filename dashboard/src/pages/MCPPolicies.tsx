@@ -1,49 +1,65 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { MCPPolicyEntryDialog } from "@/components/policy/MCPPolicyEntryDialog";
+import { MCPPolicyEntryTable } from "@/components/policy/MCPPolicyEntryTable";
+import { MCPPolicyHeader } from "@/components/policy/MCPPolicyHeader";
 import { MCPSoftLaunchBanner } from "@/components/policy/MCPSoftLaunchBanner";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
+  createFlavorMCPPolicy,
   fetchFlavorMCPPolicy,
   fetchFlavors,
   fetchGlobalMCPPolicy,
+  updateFlavorMCPPolicy,
+  updateGlobalMCPPolicy,
 } from "@/lib/api";
-import type { MCPPolicy } from "@/lib/types";
+import type {
+  MCPPolicy,
+  MCPPolicyEntry,
+  MCPPolicyMutation,
+  MCPPolicyMutationEntry,
+} from "@/lib/types";
 
 /**
  * MCP Protection Policy management page (D128 / D131 / D135 / D139).
  *
- * v1 surface: a tabs shell with a Global tab plus one tab per flavor
- * that has runtime activity. Each tab renders its policy's
- * configuration -- mode (warn / block / allowlist), the
- * block-on-uncertainty toggle (global only, per D134), the entry
- * list, dry-run preview, version history, audit log, and metrics.
+ * Top-level surface at ``/mcp-policies``. A tabs shell with a Global
+ * tab plus one tab per flavor that has runtime activity. Each tab
+ * renders the per-scope toolbar (mode segmented control + BOU
+ * switch), the searchable entry table with chroma-coded chips, and
+ * an add / edit dialog with debounced (300ms) live resolve preview.
  *
- * Commit 2 of step 6 ships the page scaffold + routing only. The
- * mode / BOU toggles, entry table, editor dialog, resolve preview,
- * version history, diff, dry-run, metrics, YAML i/o, templates, and
- * audit trail land in commits 3-7.
+ * Mutations follow the D128 replace-semantics: a single
+ * ``MCPPolicyMutation`` carries the full intended state and is
+ * PUT'd atomically. The page builds the mutation from the current
+ * policy + the operator's diff (toolbar change OR entry add / edit
+ * / delete) and reloads on success.
  *
- * Soft-launch behaviour (D133) is surfaced via MCPSoftLaunchBanner
- * at the top of the page when SOFT_LAUNCH_ACTIVE is true and the
- * operator hasn't dismissed it.
+ * Resolve preview / version history / diff / dry-run / metrics /
+ * YAML i/o / templates / audit trail land in commits 4-7 of step 6.
  */
 export function MCPPolicies() {
-  const [globalPolicy, setGlobalPolicy] = useState<MCPPolicy | null>(null);
+  const [globalState, setGlobalState] = useState<PolicyState>({
+    policy: null,
+    loading: true,
+    error: null,
+  });
   const [flavors, setFlavors] = useState<string[]>([]);
   const [activeTab, setActiveTab] = useState<string>("global");
-  const [globalLoading, setGlobalLoading] = useState(true);
-  const [globalError, setGlobalError] = useState<string | null>(null);
+
+  const [dialog, setDialog] = useState<DialogState>({ open: false });
 
   const loadGlobal = useCallback(async () => {
-    setGlobalLoading(true);
-    setGlobalError(null);
+    setGlobalState((s) => ({ ...s, loading: true, error: null }));
     try {
       const policy = await fetchGlobalMCPPolicy();
-      setGlobalPolicy(policy);
+      setGlobalState({ policy, loading: false, error: null });
     } catch {
-      setGlobalError("Failed to load global MCP policy");
-    } finally {
-      setGlobalLoading(false);
+      setGlobalState({
+        policy: null,
+        loading: false,
+        error: "Failed to load global MCP policy",
+      });
     }
   }, []);
 
@@ -103,13 +119,15 @@ export function MCPPolicies() {
         </TabsList>
 
         <TabsContent value="global" data-testid="mcp-policies-panel-global">
-          <PolicyPanel
-            scopeLabel="Global"
-            scopeKey="global"
-            loading={globalLoading}
-            error={globalError}
-            policy={globalPolicy}
-            allowsBOU
+          <GlobalPanel
+            state={globalState}
+            onChanged={loadGlobal}
+            onOpenAdd={(scope) =>
+              setDialog({ open: true, scope, initial: undefined })
+            }
+            onOpenEdit={(scope, entry) =>
+              setDialog({ open: true, scope, initial: entry })
+            }
           />
         </TabsContent>
 
@@ -119,204 +137,332 @@ export function MCPPolicies() {
             value={`flavor:${flavor}`}
             data-testid={`mcp-policies-panel-${flavor}`}
           >
-            <FlavorPolicyPanel flavor={flavor} />
+            <FlavorPanel
+              flavor={flavor}
+              globalMode={(globalState.policy?.mode as Mode | null) ?? null}
+              onOpenAdd={(scope) =>
+                setDialog({ open: true, scope, initial: undefined })
+              }
+              onOpenEdit={(scope, entry) =>
+                setDialog({ open: true, scope, initial: entry })
+              }
+            />
           </TabsContent>
         ))}
       </Tabs>
+
+      {dialog.open ? (
+        <MCPPolicyEntryDialog
+          open
+          initial={dialog.initial}
+          flavor={dialog.scope.kind === "flavor" ? dialog.scope.flavor : null}
+          onClose={() => setDialog({ open: false })}
+          onSave={async (entry) => {
+            await dialog.scope.onSaveEntry(entry, dialog.initial);
+            setDialog({ open: false });
+          }}
+        />
+      ) : null}
     </div>
   );
 }
 
-interface PolicyPanelProps {
-  scopeLabel: string;
-  scopeKey: string;
+type Mode = "allowlist" | "blocklist";
+
+interface PolicyState {
+  policy: MCPPolicy | null;
   loading: boolean;
   error: string | null;
-  policy: MCPPolicy | null;
-  allowsBOU: boolean;
 }
 
-/**
- * Renders the read-only summary block for a given scope (global or
- * a flavor). Mode / BOU / entry counts come straight from the
- * policy DTO. The interactive editor / entry table / dry-run panels
- * land in commits 3-5 alongside this same component.
- */
-function PolicyPanel({
-  scopeLabel,
-  scopeKey,
-  loading,
-  error,
-  policy,
-  allowsBOU,
-}: PolicyPanelProps) {
-  if (loading) {
-    return (
-      <div
-        className="mt-4 rounded-md border px-4 py-6 text-sm"
-        style={{
-          borderColor: "var(--border)",
-          background: "var(--background-elevated)",
-          color: "var(--text-muted)",
-        }}
-        data-testid={`mcp-policy-loading-${scopeKey}`}
-      >
-        Loading {scopeLabel.toLowerCase()} policy&hellip;
-      </div>
-    );
-  }
+type DialogScope =
+  | {
+      kind: "global";
+      onSaveEntry: (
+        next: MCPPolicyMutationEntry,
+        previous?: MCPPolicyEntry,
+      ) => Promise<void>;
+    }
+  | {
+      kind: "flavor";
+      flavor: string;
+      onSaveEntry: (
+        next: MCPPolicyMutationEntry,
+        previous?: MCPPolicyEntry,
+      ) => Promise<void>;
+    };
 
-  if (error) {
-    return (
-      <div
-        className="mt-4 rounded-md border px-4 py-3 text-sm"
-        style={{
-          borderColor: "var(--danger)",
-          background: "color-mix(in srgb, var(--danger) 10%, transparent)",
-          color: "var(--danger)",
-        }}
-        data-testid={`mcp-policy-error-${scopeKey}`}
-      >
-        {error}
-      </div>
-    );
-  }
+type DialogState =
+  | { open: false }
+  | { open: true; scope: DialogScope; initial?: MCPPolicyEntry };
 
-  if (!policy) {
-    return (
-      <div
-        className="mt-4 rounded-md border px-4 py-6 text-sm"
-        style={{
-          borderColor: "var(--border)",
-          background: "var(--background-elevated)",
-          color: "var(--text-muted)",
-        }}
-        data-testid={`mcp-policy-empty-${scopeKey}`}
-      >
-        No flavor policy. This flavor inherits the global policy.
-      </div>
-    );
-  }
+interface GlobalPanelProps {
+  state: PolicyState;
+  onChanged: () => Promise<void>;
+  onOpenAdd: (scope: DialogScope) => void;
+  onOpenEdit: (scope: DialogScope, entry: MCPPolicyEntry) => void;
+}
 
-  const entryCount = policy.entries?.length ?? 0;
-  const lastModified = formatTimestamp(policy.updated_at ?? policy.created_at);
+function GlobalPanel({
+  state,
+  onChanged,
+  onOpenAdd,
+  onOpenEdit,
+}: GlobalPanelProps) {
+  const policy = state.policy;
+
+  const saveEntry = useCallback(
+    async (next: MCPPolicyMutationEntry, previous?: MCPPolicyEntry) => {
+      if (!policy) return;
+      const mutation = mergeEntry(policy, next, previous);
+      await updateGlobalMCPPolicy(mutation);
+      await onChanged();
+    },
+    [policy, onChanged],
+  );
+
+  const dialogScope = useMemo<DialogScope>(
+    () => ({ kind: "global", onSaveEntry: saveEntry }),
+    [saveEntry],
+  );
+
+  if (state.loading) return <PanelStatus tone="info">Loading global policy…</PanelStatus>;
+  if (state.error) return <PanelStatus tone="error">{state.error}</PanelStatus>;
+  if (!policy) return null;
 
   return (
-    <div
-      className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4"
-      data-testid={`mcp-policy-summary-${scopeKey}`}
-    >
-      <SummaryCard
-        label="Mode"
-        value={formatMode(policy.mode)}
-        testid={`mcp-policy-mode-${scopeKey}`}
+    <div className="mt-4 space-y-4">
+      <MCPPolicyHeader
+        policy={policy}
+        scopeKey="global"
+        modeEditable
+        globalMode={(policy.mode as Mode | null) ?? null}
+        onModeChange={async (next) => {
+          await updateGlobalMCPPolicy(buildMutation(policy, { mode: next }));
+          await onChanged();
+        }}
+        onBlockOnUncertaintyChange={async (next) => {
+          await updateGlobalMCPPolicy(
+            buildMutation(policy, { block_on_uncertainty: next }),
+          );
+          await onChanged();
+        }}
       />
-      {allowsBOU ? (
-        <SummaryCard
-          label="Block on uncertainty"
-          value={policy.block_on_uncertainty ? "On" : "Off"}
-          testid={`mcp-policy-bou-${scopeKey}`}
-        />
-      ) : (
-        <SummaryCard
-          label="Block on uncertainty"
-          value="Inherits from global"
-          testid={`mcp-policy-bou-${scopeKey}`}
-        />
-      )}
-      <SummaryCard
-        label="Entries"
-        value={String(entryCount)}
-        testid={`mcp-policy-entries-${scopeKey}`}
-      />
-      <SummaryCard
-        label="Version"
-        value={`v${policy.version} · ${lastModified}`}
-        testid={`mcp-policy-version-${scopeKey}`}
+
+      <MCPPolicyEntryTable
+        entries={policy.entries ?? []}
+        mode={(policy.mode as Mode | null) ?? null}
+        scopeKey="global"
+        loading={false}
+        onAdd={() => onOpenAdd(dialogScope)}
+        onEdit={(entry) => onOpenEdit(dialogScope, entry)}
+        onDelete={async (entry) => {
+          await updateGlobalMCPPolicy(removeEntry(policy, entry));
+          await onChanged();
+        }}
       />
     </div>
   );
 }
 
-function FlavorPolicyPanel({ flavor }: { flavor: string }) {
-  const [policy, setPolicy] = useState<MCPPolicy | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+interface FlavorPanelProps {
+  flavor: string;
+  globalMode: Mode | null;
+  onOpenAdd: (scope: DialogScope) => void;
+  onOpenEdit: (scope: DialogScope, entry: MCPPolicyEntry) => void;
+}
 
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-    fetchFlavorMCPPolicy(flavor)
-      .then((p) => {
-        if (!cancelled) setPolicy(p);
-      })
-      .catch(() => {
-        if (!cancelled) setError("Failed to load flavor policy");
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
+function FlavorPanel({
+  flavor,
+  globalMode,
+  onOpenAdd,
+  onOpenEdit,
+}: FlavorPanelProps) {
+  const [state, setState] = useState<PolicyState>({
+    policy: null,
+    loading: true,
+    error: null,
+  });
+
+  const reload = useCallback(async () => {
+    setState((s) => ({ ...s, loading: true, error: null }));
+    try {
+      const policy = await fetchFlavorMCPPolicy(flavor);
+      setState({ policy, loading: false, error: null });
+    } catch {
+      setState({
+        policy: null,
+        loading: false,
+        error: "Failed to load flavor policy",
       });
-    return () => {
-      cancelled = true;
-    };
+    }
   }, [flavor]);
 
-  return (
-    <PolicyPanel
-      scopeLabel={`Flavor "${flavor}"`}
-      scopeKey={flavor}
-      loading={loading}
-      error={error}
-      policy={policy}
-      allowsBOU={false}
-    />
-  );
-}
+  useEffect(() => {
+    void reload();
+  }, [reload]);
 
-function SummaryCard({
-  label,
-  value,
-  testid,
-}: {
-  label: string;
-  value: string;
-  testid: string;
-}) {
+  const saveEntry = useCallback(
+    async (next: MCPPolicyMutationEntry, previous?: MCPPolicyEntry) => {
+      if (!state.policy) {
+        // No flavor policy yet — create it with this single entry.
+        await createFlavorMCPPolicy(flavor, {
+          block_on_uncertainty: false,
+          entries: [next],
+        });
+      } else {
+        const mutation = mergeEntry(state.policy, next, previous);
+        await updateFlavorMCPPolicy(flavor, mutation);
+      }
+      await reload();
+    },
+    [flavor, state.policy, reload],
+  );
+
+  const dialogScope = useMemo<DialogScope>(
+    () => ({ kind: "flavor", flavor, onSaveEntry: saveEntry }),
+    [flavor, saveEntry],
+  );
+
+  if (state.loading) return <PanelStatus tone="info">Loading flavor policy…</PanelStatus>;
+  if (state.error) return <PanelStatus tone="error">{state.error}</PanelStatus>;
+
+  if (!state.policy) {
+    return (
+      <div className="mt-4 space-y-4">
+        <PanelStatus tone="info">
+          No flavor policy. <em>{flavor}</em> currently inherits the global
+          policy. Add an entry below to create a flavor-scoped override.
+        </PanelStatus>
+        <MCPPolicyEntryTable
+          entries={[]}
+          mode={globalMode}
+          scopeKey={flavor}
+          loading={false}
+          onAdd={() => onOpenAdd(dialogScope)}
+          onEdit={() => undefined}
+          onDelete={async () => undefined}
+        />
+      </div>
+    );
+  }
+
+  const policy = state.policy;
   return (
-    <div
-      className="rounded-md border px-4 py-3"
-      style={{
-        borderColor: "var(--border)",
-        background: "var(--surface)",
-      }}
-      data-testid={testid}
-    >
-      <div
-        className="text-[11px] uppercase tracking-wide"
-        style={{ color: "var(--text-muted)" }}
-      >
-        {label}
-      </div>
-      <div
-        className="mt-1 text-sm font-medium"
-        style={{ color: "var(--text)" }}
-      >
-        {value}
-      </div>
+    <div className="mt-4 space-y-4">
+      <MCPPolicyHeader
+        policy={policy}
+        scopeKey={flavor}
+        modeEditable={false}
+        globalMode={globalMode}
+        onModeChange={async () => {
+          throw new Error("Mode is global-only (D134).");
+        }}
+        onBlockOnUncertaintyChange={async (next) => {
+          await updateFlavorMCPPolicy(
+            flavor,
+            buildMutation(policy, { block_on_uncertainty: next }),
+          );
+          await reload();
+        }}
+      />
+      <MCPPolicyEntryTable
+        entries={policy.entries ?? []}
+        mode={globalMode}
+        scopeKey={flavor}
+        loading={false}
+        onAdd={() => onOpenAdd(dialogScope)}
+        onEdit={(entry) => onOpenEdit(dialogScope, entry)}
+        onDelete={async (entry) => {
+          await updateFlavorMCPPolicy(flavor, removeEntry(policy, entry));
+          await reload();
+        }}
+      />
     </div>
   );
 }
 
-function formatTimestamp(iso: string | null | undefined): string {
-  if (!iso) return "—";
-  const t = new Date(iso);
-  if (Number.isNaN(t.getTime())) return "—";
-  return t.toLocaleString();
+function PanelStatus({
+  tone,
+  children,
+}: {
+  tone: "info" | "error";
+  children: React.ReactNode;
+}) {
+  const isError = tone === "error";
+  return (
+    <div
+      className="mt-4 rounded-md border px-4 py-3 text-sm"
+      style={{
+        borderColor: isError ? "var(--danger)" : "var(--border)",
+        background: isError
+          ? "color-mix(in srgb, var(--danger) 10%, transparent)"
+          : "var(--background-elevated)",
+        color: isError ? "var(--danger)" : "var(--text-muted)",
+      }}
+      data-testid={`mcp-panel-status-${tone}`}
+    >
+      {children}
+    </div>
+  );
 }
 
-function formatMode(mode: MCPPolicy["mode"]): string {
-  if (mode === "allowlist") return "Allow-list";
-  if (mode === "blocklist") return "Block-list";
-  return "Inherits global mode";
+// ----- Mutation helpers -----
+
+function buildMutation(
+  policy: MCPPolicy,
+  overrides: Partial<MCPPolicyMutation>,
+): MCPPolicyMutation {
+  return {
+    mode: overrides.mode ?? (policy.mode ?? null),
+    block_on_uncertainty:
+      overrides.block_on_uncertainty ?? policy.block_on_uncertainty,
+    entries: overrides.entries ?? entriesToMutation(policy.entries ?? []),
+  };
+}
+
+function entriesToMutation(entries: MCPPolicyEntry[]): MCPPolicyMutationEntry[] {
+  return entries.map((e) => ({
+    server_url: e.server_url,
+    server_name: e.server_name,
+    entry_kind: e.entry_kind,
+    enforcement: e.enforcement ?? null,
+  }));
+}
+
+function mergeEntry(
+  policy: MCPPolicy,
+  next: MCPPolicyMutationEntry,
+  previous?: MCPPolicyEntry,
+): MCPPolicyMutation {
+  const current = entriesToMutation(policy.entries ?? []);
+  if (previous) {
+    const idx = current.findIndex(
+      (e) =>
+        e.server_url === previous.server_url &&
+        e.server_name === previous.server_name,
+    );
+    if (idx >= 0) {
+      current[idx] = next;
+    } else {
+      current.push(next);
+    }
+  } else {
+    current.push(next);
+  }
+  return buildMutation(policy, { entries: current });
+}
+
+function removeEntry(
+  policy: MCPPolicy,
+  toRemove: MCPPolicyEntry,
+): MCPPolicyMutation {
+  const remaining = entriesToMutation(policy.entries ?? []).filter(
+    (e) =>
+      !(
+        e.server_url === toRemove.server_url &&
+        e.server_name === toRemove.server_name
+      ),
+  );
+  return buildMutation(policy, { entries: remaining });
 }

@@ -607,6 +607,7 @@ Open work tracked here. Prioritized when users tell us which matters most.
 - **Continuous framework verification.** Scheduled live-API smoke runs across every supported framework, not just on PR. Catches SDK class-rename breakage (anthropic ``RateLimitError`` → ``QuotaError`` etc.) before users hit it.
 - **Production hardening.** NATS authentication, Helm chart polish, nginx rate limiting, dashboard auth, litellm streaming interception, native LangChain Voyage embeddings, dedicated LlamaIndex / CrewAI interceptors where transitive coverage falls short.
 - **AutoGen framework support.** LLM-call interception via `autogen-core` / `autogen-agentchat` (the 0.4 rewrite) or `pyautogen` (0.2 legacy), plus sub-agent observability for it (`agent_role` from `participant.name`, child session per RoutedAgent dispatch / `generate_reply`). AutoGen ships two libraries that share a name with different APIs; both versions need their own interceptor.
+- **MCP policy dry-run draft mode.** Current dry-run replays the saved policy against historical events. Pre-save 'draft' state for what-if exploration before committing changes is a post-v0.6 enhancement; user demand will drive prioritization.
 
 The roadmap is intentionally loose. User demand reorders priorities.
 

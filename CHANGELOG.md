@@ -363,6 +363,45 @@ in v0.6 as warn-only; v0.7 flips to honor configured enforcement.
 - **New shadcn/ui Tabs primitive** at `components/ui/tabs.tsx`
   wrapping the new `@radix-ui/react-tabs` dependency.
 
+### Changed (step 6.5)
+
+- **Metrics endpoint time-series.** `GET /v1/mcp-policies/:flavor/metrics`
+  now returns `granularity` ("hour" for `period=24h`, "day" for
+  `period=7d` / `30d`) and a zero-filled `buckets` array
+  alongside the existing per-server aggregates. The dashboard
+  metrics panel switches from a stacked horizontal bar to a
+  Recharts `LineChart` — one line per server, summed
+  block + warn per bucket — with the per-server warn / block
+  split rendered as a small table beneath the sparklines.
+  Zero-fill via SQL `generate_series` so empty buckets ship
+  through with empty `Blocks` / `Warns` arrays — sparse data
+  on a security dashboard would render 3 days of nothing
+  followed by a spike as a gradual ramp, which misleads.
+  Pre-step-6.5 callers that read `blocks_per_server` /
+  `warns_per_server` continue working unchanged.
+
+### Added (step 6.5 playground demos)
+
+- **`24_mcp_policy_langchain.py`** — explicit-LangChain MCP
+  policy demo via `langchain-mcp-adapters`. Three back-to-back
+  scenarios (warn + block + allow) with policy events asserted
+  per scenario. Fills the Rule 40d coverage gap LangGraph
+  (demo 23) covers transitively but not for the explicit
+  LangChain `AgentExecutor` + `create_tool_calling_agent`
+  invocation pattern.
+- **`25_mcp_policy_llamaindex.py`** — LlamaIndex MCP policy
+  demo via `llama-index-tools-mcp` (a different adapter
+  package than `langchain-mcp-adapters` — independent drift
+  surface). Same warn / block / allow shape. Carries an
+  inline note about lazy-importing `BasicMCPClient` /
+  `McpToolSpec` after `flightdeck_sensor.patch()` runs;
+  llama-index's module-import time captures `stdio_client`
+  before the patch otherwise.
+- **`langchain>=0.3,<1`** added to sensor dev extras (was
+  missing the umbrella package — only the
+  `langchain-anthropic` / `langchain-openai` /
+  `langchain-mcp-adapters` siblings were listed).
+
 ## Unreleased — Sub-agent observability
 
 First-class events, identity, and dashboard surfaces for sub-agent

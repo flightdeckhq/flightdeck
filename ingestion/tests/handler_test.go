@@ -777,6 +777,87 @@ func TestEventsHandler_MCPServerNameChanged_MissingNameOldReturns400(t *testing.
 	}
 }
 
+// D140 step 6.6 A2 — mcp_server_attached payload validation.
+// Required non-empty: fingerprint, server_name, attached_at.
+// server_url_canonical required as a string but allowed empty
+// (sensor emits "" for stdio without a stashed URL).
+
+func makeMCPServerAttachedPayload() map[string]any {
+	return map[string]any{
+		"session_id":           "33333333-3333-4333-8333-333333333333",
+		"agent_id":             "11111111-1111-4111-8111-111111111111",
+		"agent_type":           "coding",
+		"client_type":          "claude_code",
+		"event_type":           "mcp_server_attached",
+		"fingerprint":          "abcdef0123456789",
+		"server_url_canonical": "https://maps.example.com/sse",
+		"server_name":          "maps",
+		"transport":            "sse",
+		"protocol_version":     "2025-11-25",
+		"version":              "1.0.0",
+		"capabilities":         map[string]any{"tools": map[string]any{"listChanged": true}},
+		"instructions":         "Maps server.",
+		"attached_at":          "2026-05-06T10:30:00+00:00",
+	}
+}
+
+func TestEventsHandler_MCPServerAttached_AcceptsValidPayload(t *testing.T) {
+	payload := makeMCPServerAttachedPayload()
+	code, body := runEventValidationTest(t, payload)
+	if code != http.StatusOK {
+		t.Errorf("expected 200, got %d body=%s", code, body)
+	}
+}
+
+func TestEventsHandler_MCPServerAttached_MissingFingerprintReturns400(t *testing.T) {
+	payload := makeMCPServerAttachedPayload()
+	delete(payload, "fingerprint")
+	code, body := runEventValidationTest(t, payload)
+	if code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d body=%s", code, body)
+	}
+}
+
+func TestEventsHandler_MCPServerAttached_MissingServerNameReturns400(t *testing.T) {
+	payload := makeMCPServerAttachedPayload()
+	delete(payload, "server_name")
+	code, body := runEventValidationTest(t, payload)
+	if code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d body=%s", code, body)
+	}
+}
+
+func TestEventsHandler_MCPServerAttached_MissingAttachedAtReturns400(t *testing.T) {
+	payload := makeMCPServerAttachedPayload()
+	delete(payload, "attached_at")
+	code, body := runEventValidationTest(t, payload)
+	if code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d body=%s", code, body)
+	}
+}
+
+func TestEventsHandler_MCPServerAttached_AcceptsEmptyServerURLCanonical(t *testing.T) {
+	// Stdio without a stashed URL marker — sensor legitimately emits
+	// "" here. Worker dedup falls back to (name, "") tuple. Accept.
+	payload := makeMCPServerAttachedPayload()
+	payload["server_url_canonical"] = ""
+	code, body := runEventValidationTest(t, payload)
+	if code != http.StatusOK {
+		t.Errorf("expected 200, got %d body=%s", code, body)
+	}
+}
+
+func TestEventsHandler_MCPServerAttached_MissingServerURLCanonicalKeyReturns400(t *testing.T) {
+	// Empty string OK; key entirely absent is not — that's a malformed
+	// payload from a third-party emitter.
+	payload := makeMCPServerAttachedPayload()
+	delete(payload, "server_url_canonical")
+	code, body := runEventValidationTest(t, payload)
+	if code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d body=%s", code, body)
+	}
+}
+
 func TestEventsHandler_NonMCPEventType_BypassesMCPValidation(t *testing.T) {
 	// Sanity check — a regular post_call event without MCP fields
 	// continues to work; the new validation block is gated by

@@ -389,6 +389,11 @@ func EventsHandler(
 				writeError(w, http.StatusBadRequest, msg)
 				return
 			}
+		case "mcp_server_attached":
+			if msg := validateMCPServerAttachedPayload(payload); msg != "" {
+				writeError(w, http.StatusBadRequest, msg)
+				return
+			}
 		}
 
 		// On session_start, attach the resolved token id/name so the
@@ -539,6 +544,34 @@ func validateMCPPolicyUserRememberedPayload(payload map[string]any) string {
 				"%s is required for mcp_policy_user_remembered", field,
 			)
 		}
+	}
+	return ""
+}
+
+// validateMCPServerAttachedPayload enforces the required-field
+// set for mcp_server_attached events (D140 step 6.6 A2). The
+// event is sensor-emitted at ClientSession.initialize time; the
+// worker UPSERTs sessions.context.mcp_servers from this payload
+// so the dashboard's SessionDrawer panel populates live.
+//
+// Required non-empty fields: fingerprint (16-hex per D127),
+// server_name, attached_at. server_url_canonical is required as
+// a string but allowed empty — the sensor legitimately emits
+// "" when the transport didn't expose a URL marker (rare; stdio
+// without a stashed URL). The worker's tuple-dedup by
+// (name, server_url) then collapses such servers by name alone,
+// which is the right behavior when URL identity is unavailable.
+func validateMCPServerAttachedPayload(payload map[string]any) string {
+	for _, field := range []string{"fingerprint", "server_name", "attached_at"} {
+		v, ok := payload[field].(string)
+		if !ok || v == "" {
+			return fmt.Sprintf(
+				"%s is required for mcp_server_attached", field,
+			)
+		}
+	}
+	if _, ok := payload["server_url_canonical"].(string); !ok {
+		return "server_url_canonical is required for mcp_server_attached"
 	}
 	return ""
 }

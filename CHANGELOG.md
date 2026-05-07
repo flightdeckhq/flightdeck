@@ -494,6 +494,23 @@ in v0.6 as warn-only; v0.7 flips to honor configured enforcement.
   reads as the page's primary context, not just a dropdown
   control.
 
+### Fixed
+
+- **Cold-boot 500 on `GET /v1/mcp-policies/global` after
+  `make dev-reset`.** The empty-blocklist global policy row is
+  now seeded by migration `000019_mcp_protection_policy_seed_global`
+  per **D141**, not by the `EnsureGlobalMCPPolicy` boot hook. On a
+  fresh stack postgres → workers + api came up in parallel, api's
+  boot hook raced workers' migrator to a postgres without
+  `mcp_policies`, the call failed silently with
+  `relation "mcp_policies" does not exist`, and every subsequent
+  `GET /v1/mcp-policies/global` returned 500 with
+  `global policy missing; restart API to auto-create` until manual
+  api restart. The migrator now owns the row; the boot hook stays
+  as a defensive idempotent retry for install paths that may run
+  api before the migrator (e.g. future operator-managed Helm
+  charts).
+
 ## Unreleased — Sub-agent observability
 
 First-class events, identity, and dashboard surfaces for sub-agent

@@ -27,8 +27,13 @@ import (
 // traffic always weighs.
 const dryRunReplayCap = 10000
 
-// EnsureGlobalMCPPolicy is the boot-time idempotent insert per D133.
-// Race-safe under read-committed because the unique index
+// EnsureGlobalMCPPolicy is a boot-time idempotent retry. Migration
+// 000019 seeds the global empty-blocklist row at install time per
+// D141, which closes the cold-boot race where api beat workers to a
+// fresh postgres and 500'd until manual restart. This hook stays as
+// a defensive noop for install paths where api may run before the
+// migrator (e.g. future operator-managed Helm charts). Race-safe
+// under read-committed because the unique index
 // (scope, COALESCE(scope_value, '')) rejects a concurrent second
 // insert; the unique-violation is treated as "already created" and
 // the caller continues.

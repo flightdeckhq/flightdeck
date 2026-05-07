@@ -3069,7 +3069,7 @@ designations:
 
 | Method | Path | Purpose |
 |---|---|---|
-| `GET` | `/v1/mcp-policies/global` | Fetch the global policy + entries. Always returns 200 (auto-created at API boot per D133) |
+| `GET` | `/v1/mcp-policies/global` | Fetch the global policy + entries. Always returns 200 (seeded by migration 000019 per D141; idempotently re-ensured at API boot) |
 | `GET` | `/v1/mcp-policies/:flavor` | Fetch the flavor policy + entries. 404 when no flavor policy exists |
 | `GET` | `/v1/mcp-policies/resolve` | Sensor / plugin preflight. Query params `flavor`, `server_url`, `server_name`; returns the resolved decision (`allow` / `warn` / `block`) and the `decision_path` that produced it (`flavor_entry` / `global_entry` / `mode_default`). GET-only — idempotent, safe, cacheable |
 
@@ -3130,10 +3130,12 @@ are replaced atomically with the imported content. Bumps version.
 Writes audit-log entry with `event_type='policy_updated'` and
 `payload.via='import'`.
 
-#### Boot-time auto-create
+#### Install-time seed and boot-time idempotent retry
 
-`store.EnsureGlobalMCPPolicy(ctx)` runs at API boot per D133. The
-SQL is an idempotent INSERT:
+The empty-blocklist global policy row is seeded by migration
+`000019_mcp_protection_policy_seed_global.up.sql` per D141. The
+seed SQL is an idempotent INSERT identical in shape to the boot
+hook below:
 
 ```sql
 INSERT INTO mcp_policies (scope, scope_value, mode, block_on_uncertainty)
@@ -3141,12 +3143,23 @@ SELECT 'global', NULL, 'blocklist', false
 WHERE NOT EXISTS (SELECT 1 FROM mcp_policies WHERE scope = 'global');
 ```
 
-Race-safe under read-committed because the unique index
-`(scope, COALESCE(scope_value, ''))` rejects a concurrent second
-insert; on `pgconn.PgError.Code = '23505'` (unique_violation) the
-caller treats it as "already created" and proceeds. API startup
-logs `INFO ensure global mcp policy at boot complete` on first
-boot and continues silently on subsequent boots.
+The migrator is the single writer for this row. By the time api
+can `SELECT` from `mcp_policies` the seed has already landed,
+which closes the cold-boot race where api raced workers to a
+fresh postgres and 500'd every `GET /v1/mcp-policies/global`
+until manual restart (D141 context).
+
+`store.EnsureGlobalMCPPolicy(ctx)` still runs at API boot as a
+defensive idempotent retry — same SQL, same `WHERE NOT EXISTS`
+predicate, race-safe under read-committed because the unique
+index `(scope, COALESCE(scope_value, ''))` rejects a concurrent
+second insert; on `pgconn.PgError.Code = '23505'`
+(unique_violation) the caller treats it as "already created" and
+proceeds. After D141 this hook noops on every cold boot
+(migration owns the row); it remains for install paths that
+might run api before migrations (e.g. operator-managed Helm
+charts in the future). API startup logs `INFO ensure global mcp
+policy at boot complete` on success.
 
 #### Dry-run engine
 

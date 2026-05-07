@@ -77,6 +77,52 @@ func TestEnsureGlobalMCPPolicyIdempotent(t *testing.T) {
 	}
 }
 
+// TestGlobalMCPPolicySeededByMigration asserts the post-migration
+// invariant from migration 000019: a fresh dev stack has the global
+// policy row present without anyone calling EnsureGlobalMCPPolicy.
+// This guards the cold-boot race where api boots before workers has
+// applied migrations -- the seed migration is the single writer that
+// guarantees the row exists, and this test fails loudly if the seed
+// is dropped, mode drifts off the blocklist default, or
+// block_on_uncertainty drifts off false.
+func TestGlobalMCPPolicySeededByMigration(t *testing.T) {
+	store, cleanup := newTestStore(t)
+	t.Cleanup(cleanup)
+	ctx := context.Background()
+
+	var (
+		count              int
+		mode               *string
+		blockOnUncertainty bool
+		version            int
+	)
+	if err := store.pool.QueryRow(ctx, `
+		SELECT count(*) FROM mcp_policies WHERE scope = 'global'
+	`).Scan(&count); err != nil {
+		t.Fatalf("count global rows: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected exactly 1 global mcp_policies row post-migration, got %d", count)
+	}
+
+	if err := store.pool.QueryRow(ctx, `
+		SELECT mode, block_on_uncertainty, version
+		  FROM mcp_policies
+		 WHERE scope = 'global'
+	`).Scan(&mode, &blockOnUncertainty, &version); err != nil {
+		t.Fatalf("read global row: %v", err)
+	}
+	if mode == nil || *mode != "blocklist" {
+		t.Errorf("seed mode = %v, want \"blocklist\"", mode)
+	}
+	if blockOnUncertainty {
+		t.Errorf("seed block_on_uncertainty = true, want false")
+	}
+	if version != 1 {
+		t.Errorf("seed version = %d, want 1", version)
+	}
+}
+
 func TestGetGlobalMCPPolicyAlwaysReturns(t *testing.T) {
 	store, cleanup := newTestStore(t)
 	t.Cleanup(cleanup)

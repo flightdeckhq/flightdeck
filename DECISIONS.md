@@ -6738,3 +6738,104 @@ replay reads from ``sessions.context.mcp_servers`` — D140 makes
 this populate live, which strengthens dry-run accuracy for
 in-flight sessions). Rule 27 (sensor fail-open).
 
+---
+
+## D141 -- Empty global MCP policy seeded by migration, not API boot
+
+**Date:** 2026-05-07
+**Phase:** MCP Protection Policy
+
+**Context.** The empty-blocklist global ``mcp_policies`` row is a
+contract requirement: ``GET /v1/mcp-policies/global`` always
+returns 200, and resolution falls through to ``mode='blocklist'``
++ no entries when no flavor policy matches. Migration 000018 left
+the seeding to the API layer with the note ``No seed data here —
+Rule 34 requires init.sql to be seed-only and migrations to be
+schema-only. The empty-blocklist global policy auto-create on
+install lands in the API-layer step.`` API boot wired the row
+in via ``store.EnsureGlobalMCPPolicy``.
+
+That choice exposed a cold-boot race. ``make dev-reset`` brings
+postgres → workers + api up in parallel. The api's only depends_on
+is ``postgres: service_healthy``. Workers runs the migrate-then-
+serve pattern (``workers/cmd/main.go``) but is still pulling
+go-modules when api starts. Api's ``EnsureGlobalMCPPolicy`` runs
+against a postgres that has the schema_migrations infrastructure
+but not migration 000018 applied yet, so the call fails with
+``ERROR: relation "mcp_policies" does not exist (SQLSTATE 42P01)``.
+The api logs ``WARN ensure global mcp policy at boot failed``
+and continues — and every subsequent
+``GET /v1/mcp-policies/global`` 500s with
+``global policy missing; restart API to auto-create`` until an
+operator manually restarts the api container.
+
+**Decision.** The empty-blocklist global policy row is now seeded
+by migration ``000019_mcp_protection_policy_seed_global.up.sql``.
+The migrator owns this row as part of schema state: by the time
+api can ``SELECT`` from ``mcp_policies`` the seed row is
+guaranteed present, because the same migrator wrote both. The
+seed SQL mirrors ``EnsureGlobalMCPPolicy`` byte-for-byte
+(``mode='blocklist'``, ``block_on_uncertainty=false``, no entries,
+``WHERE NOT EXISTS`` predicate to be safe against a row already
+present from the prior boot-hook era).
+
+**Boot hook stays as a defensive idempotent retry.**
+``store.EnsureGlobalMCPPolicy`` still runs at API boot. After
+000019 it noops on every cold boot (the row already exists; the
+``WHERE NOT EXISTS`` predicate falls through). It remains in the
+codebase as belt-and-suspenders for any install path where
+migrations and api don't share a single migrator (e.g. a future
+operator-managed Helm chart that runs api before applying the
+DB migrations to a fresh cluster). D133's contract — "global
+policy is always present after boot" — is preserved; D141
+strengthens the guarantee from "present after api boot completes"
+to "present from the moment migrations finish."
+
+**Why not modify 000018.** Rule 34 prohibits modifying an applied
+migration. 000018 was already in the wild on every dev box and
+operator deployment when this race was discovered. A new
+migration is the only Rule-34-compliant path.
+
+**Why not init.sql.** Rule 34 reserves ``init.sql`` for true seed
+data ("Development Token", default flavors) that's part of the
+docker-init lifecycle, not migrations. The MCP policy row is
+schema-state contract, not seed data — it's the empty default
+the resolution algorithm assumes is present, and it must exist
+on every install regardless of whether ``init.sql`` ran. Putting
+it in a numbered migration keeps the install path uniform across
+docker-compose first-boot, ``migrate up`` against a pre-existing
+postgres, and any future operator-managed migration tooling.
+
+**Why not strengthen api's depends_on.** Adding
+``api: depends_on: workers: service_healthy`` would couple the
+read-only query API's lifecycle to the worker pool's liveness,
+which is the wrong direction architecturally — the api should be
+restartable independent of workers. And workers doesn't carry a
+healthcheck signaling "migrations done"; adding one is more
+plumbing than adding a migration.
+
+**Why not lazy-ensure on read.** Calling EnsureGlobalMCPPolicy
+inside the GET handler would self-heal but moves a write side
+effect into a read path that handlers were written to assume is
+read-only. The migration approach localises the side effect
+where side effects belong (the migrator) and keeps the GET handler
+a pure read.
+
+**Verification.** A fresh ``make dev-reset`` followed
+immediately by ``curl -H 'Authorization: Bearer tok_admin_dev'
+http://localhost:4000/api/v1/mcp-policies/global`` returns 200
+with the seeded row, no api restart required. The api boot
+``WARN`` on the migrate-table-not-yet-applied still logs (the
+boot hook still races) — informational, not user-visible.
+``TestGlobalMCPPolicySeededByMigration`` in
+``api/internal/store/mcp_policy_store_test.go`` asserts the
+post-migration invariant against the dev DB.
+
+**Related.** D128 (mcp_policies storage schema). D133 (soft-
+launch warn-only — unrelated to this seeding question; the
+prior ``per D133`` references in ARCHITECTURE.md and the
+EnsureGlobalMCPPolicy doc-comment were spurious and have been
+re-pointed at D141 here). Rule 34 (migrations are schema-only,
+init.sql is seed-only — D141 treats this contract row as
+schema state). Rule 43 (every pivot recorded in DECISIONS.md).
+

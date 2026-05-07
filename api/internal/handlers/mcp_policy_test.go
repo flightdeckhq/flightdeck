@@ -60,7 +60,6 @@ func TestGetGlobalMCPPolicyHandlerSuccess(t *testing.T) {
 				Scope:              "global",
 				Mode:               &mode,
 				BlockOnUncertainty: false,
-				Version:            1,
 				CreatedAt:          time.Now(),
 				UpdatedAt:          time.Now(),
 			}, nil
@@ -114,7 +113,6 @@ func TestGetMCPPolicyHandlerSuccess(t *testing.T) {
 				ID:         "x",
 				Scope:      "flavor",
 				ScopeValue: &value,
-				Version:    1,
 			}, nil
 		},
 	}
@@ -153,7 +151,6 @@ func TestCreateMCPPolicyHandlerHappyPath(t *testing.T) {
 				Scope:              "flavor",
 				ScopeValue:         &value,
 				BlockOnUncertainty: mut.BlockOnUncertainty,
-				Version:            1,
 				Entries:            resolved,
 			}, nil
 		},

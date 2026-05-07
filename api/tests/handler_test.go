@@ -3232,21 +3232,9 @@ func (m *mockStore) DeleteMCPPolicy(_ context.Context, _ string, _ *string) erro
 func (m *mockStore) ResolveMCPPolicy(_ context.Context, _, _ string) (*store.MCPPolicyResolveResult, error) {
 	return nil, nil
 }
-func (m *mockStore) ListMCPPolicyVersions(_ context.Context, _, _ string, _, _ int) ([]store.MCPPolicyVersionMeta, error) {
-	return nil, nil
-}
-func (m *mockStore) GetMCPPolicyVersion(_ context.Context, _, _ string, _ int) (*store.MCPPolicyVersion, error) {
-	return nil, nil
-}
-func (m *mockStore) DiffMCPPolicyVersions(_ context.Context, _, _ string, _, _ int) (*store.MCPPolicyDiff, error) {
-	return nil, nil
-}
 func (m *mockStore) ListMCPPolicyAuditLog(_ context.Context, _, _, _ string, _, _ *time.Time, _, _ int) ([]store.MCPPolicyAuditLog, error) {
 	return nil, nil
 }
 func (m *mockStore) GetMCPPolicyMetrics(_ context.Context, _, _, _ string) (*store.MCPPolicyMetrics, error) {
-	return nil, nil
-}
-func (m *mockStore) DryRunMCPPolicyEvents(_ context.Context, _ int) ([]store.DryRunCandidate, error) {
 	return nil, nil
 }

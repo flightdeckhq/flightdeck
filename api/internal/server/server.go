@@ -169,22 +169,10 @@ func newServer(addr string, s store.Querier, hub *ws.Hub, validator *auth.Valida
 		adminGate(handlers.UpdateMCPPolicyHandler(s)))
 	mux.Handle("DELETE /v1/mcp-policies/{flavor}",
 		adminGate(handlers.DeleteMCPPolicyHandler(s)))
-	mux.Handle("GET /v1/mcp-policies/{flavor}/versions",
-		adminGate(handlers.ListMCPPolicyVersionsHandler(s)))
-	mux.Handle("GET /v1/mcp-policies/{flavor}/versions/{version}",
-		adminGate(handlers.GetMCPPolicyVersionHandler(s)))
-	mux.Handle("GET /v1/mcp-policies/{flavor}/diff",
-		adminGate(handlers.DiffMCPPolicyVersionsHandler(s)))
 	mux.Handle("GET /v1/mcp-policies/{flavor}/audit-log",
 		adminGate(handlers.ListMCPPolicyAuditLogHandler(s)))
 	mux.Handle("GET /v1/mcp-policies/{flavor}/metrics",
 		adminGate(handlers.GetMCPPolicyMetricsHandler(s)))
-	mux.Handle("POST /v1/mcp-policies/{flavor}/dry_run",
-		adminGate(handlers.DryRunMCPPolicyHandler(s)))
-	mux.Handle("POST /v1/mcp-policies/{flavor}/import",
-		adminGate(handlers.ImportMCPPolicyHandler(s)))
-	mux.Handle("GET /v1/mcp-policies/{flavor}/export",
-		adminGate(handlers.ExportMCPPolicyHandler(s)))
 	mux.Handle("POST /v1/mcp-policies/{flavor}/apply_template",
 		adminGate(handlers.ApplyMCPPolicyTemplateHandler(s)))
 

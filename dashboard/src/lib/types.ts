@@ -838,7 +838,6 @@ export interface MCPPolicy {
   scope_value?: string | null;
   mode?: "allowlist" | "blocklist" | null;
   block_on_uncertainty: boolean;
-  version: number;
   created_at: string;
   updated_at: string;
   entries?: MCPPolicyEntry[];
@@ -865,42 +864,6 @@ export interface MCPPolicyResolveResult {
   policy_id: string;
   scope: string;
   fingerprint: string;
-}
-
-/** D128 — versions list metadata (no full snapshot). */
-export interface MCPPolicyVersionMeta {
-  id: string;
-  policy_id: string;
-  version: number;
-  created_at: string;
-  created_by?: string | null;
-}
-
-/** D128 — full snapshot. */
-export interface MCPPolicyVersion {
-  id: string;
-  policy_id: string;
-  version: number;
-  snapshot: Record<string, unknown>;
-  created_at: string;
-  created_by?: string | null;
-}
-
-/** D128 — diff endpoint response shape. */
-export interface MCPPolicyDiff {
-  from_version: number;
-  to_version: number;
-  from_snapshot: Record<string, unknown>;
-  to_snapshot: Record<string, unknown>;
-  mode_changed?: { from: string; to: string } | null;
-  block_on_uncertainty_changed?: { from: boolean; to: boolean } | null;
-  entries_added: MCPPolicyEntry[];
-  entries_removed: MCPPolicyEntry[];
-  entries_changed: Array<{
-    fingerprint: string;
-    before: MCPPolicyEntry;
-    after: MCPPolicyEntry;
-  }>;
 }
 
 /** D128 — audit log row. */
@@ -943,22 +906,6 @@ export interface MCPPolicyMetrics {
   buckets: MCPPolicyMetricsBucket[];
   blocks_per_server: MCPPolicyServerCountBucket[];
   warns_per_server: MCPPolicyServerCountBucket[];
-}
-
-/** D137 — dry-run preview result. */
-export interface MCPPolicyDryRunServerCount {
-  fingerprint: string;
-  server_name: string;
-  would_allow: number;
-  would_warn: number;
-  would_block: number;
-}
-
-export interface MCPPolicyDryRunResult {
-  hours: number;
-  events_replayed: number;
-  per_server: MCPPolicyDryRunServerCount[];
-  unresolvable_count: number;
 }
 
 /** D138 — template metadata returned by GET /templates. */

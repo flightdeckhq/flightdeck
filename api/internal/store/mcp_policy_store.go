@@ -1,11 +1,11 @@
 // MCP Protection Policy SQL methods on Store. Per Rule 35 every SQL
 // query for the policy lives in this file. The mutation paths run
-// inside a single BEGIN/COMMIT block so version-bump + entries-replace
-// + audit-log entry land atomically.
+// inside a single BEGIN/COMMIT block so entries-replace + audit-log
+// entry land atomically.
 //
-// See ARCHITECTURE.md "MCP Protection Policy" → "Audit and versioning"
-// for the transaction shape and DECISIONS.md D128 for the storage
-// schema rationale.
+// See ARCHITECTURE.md "MCP Protection Policy" → "Audit" for the
+// transaction shape and DECISIONS.md D128 for the storage schema
+// rationale (D142 retired the version-history column + table).
 
 package store
 
@@ -20,12 +20,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
-
-// dryRunReplayCap bounds the dry-run query result set per D137 so a
-// fleet with millions of historical events can't degenerate the
-// preview. Sampled descending by occurred_at so the most recent
-// traffic always weighs.
-const dryRunReplayCap = 10000
 
 // EnsureGlobalMCPPolicy is a boot-time idempotent retry. Migration
 // 000019 seeds the global empty-blocklist row at install time per
@@ -77,13 +71,13 @@ func (s *Store) fetchPolicyByScope(ctx context.Context, scope, scopeValue string
 	)
 	const policySQL = `
 		SELECT id::text, scope, scope_value, mode, block_on_uncertainty,
-		       version, created_at, updated_at
+		       created_at, updated_at
 		  FROM mcp_policies
 		 WHERE scope = $1 AND COALESCE(scope_value, '') = $2
 	`
 	err := s.pool.QueryRow(ctx, policySQL, scope, scopeValue).Scan(
 		&policy.ID, &policy.Scope, &scopeVal, &modeNullable,
-		&policy.BlockOnUncertainty, &policy.Version,
+		&policy.BlockOnUncertainty,
 		&policy.CreatedAt, &policy.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -131,7 +125,7 @@ func (s *Store) fetchEntries(ctx context.Context, policyID string) ([]MCPPolicyE
 }
 
 // CreateMCPPolicy inserts a new flavor policy + entries inside one
-// transaction with version=1 and an audit-log entry.
+// transaction with an audit-log entry.
 //
 // Resolved entries (each entry's server_url_canonical + fingerprint)
 // must be supplied by the caller — this layer does not import the
@@ -154,14 +148,14 @@ func (s *Store) CreateMCPPolicy(
 	const insertSQL = `
 		INSERT INTO mcp_policies (scope, scope_value, mode, block_on_uncertainty)
 		VALUES ('flavor', $1, NULL, $2)
-		RETURNING id::text, version, created_at, updated_at
+		RETURNING id::text, created_at, updated_at
 	`
 	var policy MCPPolicy
 	policy.Scope = "flavor"
 	policy.ScopeValue = &flavor
 	policy.BlockOnUncertainty = mut.BlockOnUncertainty
 	if err := tx.QueryRow(ctx, insertSQL, flavor, mut.BlockOnUncertainty).Scan(
-		&policy.ID, &policy.Version, &policy.CreatedAt, &policy.UpdatedAt,
+		&policy.ID, &policy.CreatedAt, &policy.UpdatedAt,
 	); err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
@@ -177,12 +171,7 @@ func (s *Store) CreateMCPPolicy(
 	}
 	policy.Entries = persisted
 
-	// 3. INSERT version snapshot
-	if err := insertVersionSnapshot(ctx, tx, policy, actorTokenID); err != nil {
-		return nil, err
-	}
-
-	// 4. INSERT audit log
+	// 3. INSERT audit log
 	if err := insertAuditLog(ctx, tx, policy.ID, "policy_created",
 		actorTokenID, mut, nil); err != nil {
 		return nil, err
@@ -196,9 +185,9 @@ func (s *Store) CreateMCPPolicy(
 
 // UpdateMCPPolicy replaces the policy state — entries, mode (global
 // only), block_on_uncertainty — inside one transaction. SELECT FOR
-// UPDATE prevents version-bump races between concurrent PUTs. The
+// UPDATE prevents lost-update races between concurrent PUTs. The
 // auditPayload extras dict carries handler-supplied annotations like
-// {"via":"import"} or {"applied_template":"strict-baseline"}.
+// {"applied_template":"strict-baseline"}.
 func (s *Store) UpdateMCPPolicy(
 	ctx context.Context,
 	scope, scopeValue string,
@@ -215,19 +204,18 @@ func (s *Store) UpdateMCPPolicy(
 
 	// 1. SELECT FOR UPDATE current row
 	const selectSQL = `
-		SELECT id::text, mode, block_on_uncertainty, version
+		SELECT id::text, mode, block_on_uncertainty
 		  FROM mcp_policies
 		 WHERE scope = $1 AND COALESCE(scope_value, '') = $2
 		 FOR UPDATE
 	`
 	var (
-		policyID    string
-		oldMode     *string
-		oldBOU      bool
-		oldVersion  int
+		policyID string
+		oldMode  *string
+		oldBOU   bool
 	)
 	if err := tx.QueryRow(ctx, selectSQL, scope, scopeValue).Scan(
-		&policyID, &oldMode, &oldBOU, &oldVersion,
+		&policyID, &oldMode, &oldBOU,
 	); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrMCPPolicyNotFound
@@ -241,10 +229,9 @@ func (s *Store) UpdateMCPPolicy(
 		UPDATE mcp_policies
 		   SET mode = $1,
 		       block_on_uncertainty = $2,
-		       version = version + 1,
 		       updated_at = NOW()
 		 WHERE id = $3
-		RETURNING version, created_at, updated_at
+		RETURNING created_at, updated_at
 	`
 	var (
 		modeForWrite *string
@@ -263,7 +250,7 @@ func (s *Store) UpdateMCPPolicy(
 	newPolicy.BlockOnUncertainty = mut.BlockOnUncertainty
 	if err := tx.QueryRow(ctx, updateSQL,
 		modeForWrite, mut.BlockOnUncertainty, policyID,
-	).Scan(&newPolicy.Version, &newPolicy.CreatedAt, &newPolicy.UpdatedAt); err != nil {
+	).Scan(&newPolicy.CreatedAt, &newPolicy.UpdatedAt); err != nil {
 		return nil, fmt.Errorf("update mcp policy: %w", err)
 	}
 	if scope == "global" {
@@ -285,12 +272,7 @@ func (s *Store) UpdateMCPPolicy(
 	}
 	newPolicy.Entries = persisted
 
-	// 4. INSERT version snapshot
-	if err := insertVersionSnapshot(ctx, tx, newPolicy, actorTokenID); err != nil {
-		return nil, err
-	}
-
-	// 5. INSERT audit log
+	// 4. INSERT audit log
 	if err := insertAuditLog(ctx, tx, policyID, "policy_updated",
 		actorTokenID, mut, auditPayloadExtras); err != nil {
 		return nil, err
@@ -463,143 +445,6 @@ func decisionFromEntry(entryKind string, enforcement *string) string {
 		return *enforcement
 	}
 	return "block"
-}
-
-// ListMCPPolicyVersions returns version metadata (no full snapshots)
-// in DESC version order, paginated.
-func (s *Store) ListMCPPolicyVersions(ctx context.Context, scope, scopeValue string, limit, offset int) ([]MCPPolicyVersionMeta, error) {
-	const sql = `
-		SELECT v.id::text, v.policy_id::text, v.version,
-		       v.created_at, v.created_by::text
-		  FROM mcp_policy_versions v
-		  JOIN mcp_policies p ON p.id = v.policy_id
-		 WHERE p.scope = $1 AND COALESCE(p.scope_value, '') = $2
-		 ORDER BY v.version DESC
-		 LIMIT $3 OFFSET $4
-	`
-	rows, err := s.pool.Query(ctx, sql, scope, scopeValue, limit, offset)
-	if err != nil {
-		return nil, fmt.Errorf("list versions: %w", err)
-	}
-	defer rows.Close()
-
-	versions := []MCPPolicyVersionMeta{}
-	for rows.Next() {
-		var v MCPPolicyVersionMeta
-		var createdBy *string
-		if err := rows.Scan(&v.ID, &v.PolicyID, &v.Version, &v.CreatedAt, &createdBy); err != nil {
-			return nil, fmt.Errorf("scan version meta: %w", err)
-		}
-		v.CreatedBy = createdBy
-		versions = append(versions, v)
-	}
-	return versions, rows.Err()
-}
-
-// GetMCPPolicyVersion returns one historical snapshot by integer
-// version number (NOT by version_id UUID; the API path takes the
-// integer to keep operator-typed URLs human-readable).
-func (s *Store) GetMCPPolicyVersion(ctx context.Context, scope, scopeValue string, version int) (*MCPPolicyVersion, error) {
-	const sql = `
-		SELECT v.id::text, v.policy_id::text, v.version, v.snapshot,
-		       v.created_at, v.created_by::text
-		  FROM mcp_policy_versions v
-		  JOIN mcp_policies p ON p.id = v.policy_id
-		 WHERE p.scope = $1 AND COALESCE(p.scope_value, '') = $2
-		   AND v.version = $3
-	`
-	var v MCPPolicyVersion
-	var createdBy *string
-	err := s.pool.QueryRow(ctx, sql, scope, scopeValue, version).Scan(
-		&v.ID, &v.PolicyID, &v.Version, &v.Snapshot, &v.CreatedAt, &createdBy)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("get version: %w", err)
-	}
-	v.CreatedBy = createdBy
-	return &v, nil
-}
-
-// DiffMCPPolicyVersions fetches both snapshots and computes the
-// structural diff in Go (easier to test, no JSONB-complexity in
-// queries). Returns ErrMCPPolicyNotFound when either version is
-// missing.
-func (s *Store) DiffMCPPolicyVersions(ctx context.Context, scope, scopeValue string, fromVersion, toVersion int) (*MCPPolicyDiff, error) {
-	from, err := s.GetMCPPolicyVersion(ctx, scope, scopeValue, fromVersion)
-	if err != nil {
-		return nil, err
-	}
-	to, err := s.GetMCPPolicyVersion(ctx, scope, scopeValue, toVersion)
-	if err != nil {
-		return nil, err
-	}
-	if from == nil || to == nil {
-		return nil, ErrMCPPolicyNotFound
-	}
-
-	diff := &MCPPolicyDiff{
-		FromVersion:    fromVersion,
-		ToVersion:      toVersion,
-		FromSnapshot:   from.Snapshot,
-		ToSnapshot:     to.Snapshot,
-		EntriesAdded:   []MCPPolicyEntry{},
-		EntriesRemoved: []MCPPolicyEntry{},
-		EntriesChanged: []EntryDiff{},
-	}
-
-	var fromShape, toShape MCPPolicy
-	if err := json.Unmarshal(from.Snapshot, &fromShape); err != nil {
-		return nil, fmt.Errorf("decode from snapshot: %w", err)
-	}
-	if err := json.Unmarshal(to.Snapshot, &toShape); err != nil {
-		return nil, fmt.Errorf("decode to snapshot: %w", err)
-	}
-
-	if !stringPtrEqual(fromShape.Mode, toShape.Mode) {
-		diff.ModeChanged = &DiffString{
-			From: derefString(fromShape.Mode),
-			To:   derefString(toShape.Mode),
-		}
-	}
-	if fromShape.BlockOnUncertainty != toShape.BlockOnUncertainty {
-		diff.BlockOnUncertaintyChanged = &DiffBool{
-			From: fromShape.BlockOnUncertainty,
-			To:   toShape.BlockOnUncertainty,
-		}
-	}
-
-	fromByFP := map[string]MCPPolicyEntry{}
-	for _, e := range fromShape.Entries {
-		fromByFP[e.Fingerprint] = e
-	}
-	toByFP := map[string]MCPPolicyEntry{}
-	for _, e := range toShape.Entries {
-		toByFP[e.Fingerprint] = e
-	}
-
-	for fp, after := range toByFP {
-		before, ok := fromByFP[fp]
-		if !ok {
-			diff.EntriesAdded = append(diff.EntriesAdded, after)
-			continue
-		}
-		if !entriesEquivalent(before, after) {
-			diff.EntriesChanged = append(diff.EntriesChanged, EntryDiff{
-				Fingerprint: fp,
-				Before:      before,
-				After:       after,
-			})
-		}
-	}
-	for fp, before := range fromByFP {
-		if _, ok := toByFP[fp]; !ok {
-			diff.EntriesRemoved = append(diff.EntriesRemoved, before)
-		}
-	}
-
-	return diff, nil
 }
 
 // ListMCPPolicyAuditLog paginates audit-log rows for a policy.
@@ -866,48 +711,6 @@ func (s *Store) GetMCPPolicyMetrics(ctx context.Context, scope, scopeValue, peri
 	return metrics, nil
 }
 
-// DryRunCandidate is one event row pulled by DryRunMCPPolicyEvents
-// for the handler's evaluation pass. The handler walks the
-// SessionFingerprints JSONB to recover the canonical URL by name,
-// then evaluates against the proposed policy.
-type DryRunCandidate struct {
-	EventID             string
-	ServerName          string
-	SessionFingerprints []byte // raw context.mcp_servers JSONB
-}
-
-// DryRunMCPPolicyEvents pulls the candidate set per D137. The
-// proposed-policy evaluation runs in the handler so this layer stays
-// SQL-only per Rule 35.
-func (s *Store) DryRunMCPPolicyEvents(ctx context.Context, hours int) ([]DryRunCandidate, error) {
-	const sql = `
-		SELECT events.id::text,
-		       COALESCE(events.payload->>'server_name', ''),
-		       sessions.context->'mcp_servers'
-		  FROM events
-		  JOIN sessions ON sessions.session_id = events.session_id
-		 WHERE events.event_type = 'mcp_tool_call'
-		   AND events.occurred_at >= NOW() - $1 * INTERVAL '1 hour'
-		 ORDER BY events.occurred_at DESC
-		 LIMIT $2
-	`
-	rows, err := s.pool.Query(ctx, sql, hours, dryRunReplayCap)
-	if err != nil {
-		return nil, fmt.Errorf("dry run query: %w", err)
-	}
-	defer rows.Close()
-
-	candidates := []DryRunCandidate{}
-	for rows.Next() {
-		var c DryRunCandidate
-		if err := rows.Scan(&c.EventID, &c.ServerName, &c.SessionFingerprints); err != nil {
-			return nil, fmt.Errorf("scan dry run candidate: %w", err)
-		}
-		candidates = append(candidates, c)
-	}
-	return candidates, rows.Err()
-}
-
 // lookupPolicyID returns the policy id for a (scope, scopeValue)
 // pair, or empty string when no policy exists. The metrics handler
 // uses this to short-circuit when no flavor policy has been created.
@@ -955,20 +758,6 @@ func insertEntries(ctx context.Context, tx pgx.Tx, policyID string, entries []MC
 	return persisted, nil
 }
 
-func insertVersionSnapshot(ctx context.Context, tx pgx.Tx, policy MCPPolicy, actorTokenID *string) error {
-	snapshot, err := json.Marshal(policy)
-	if err != nil {
-		return fmt.Errorf("marshal snapshot: %w", err)
-	}
-	const sql = `
-		INSERT INTO mcp_policy_versions (policy_id, version, snapshot, created_by)
-		VALUES ($1, $2, $3, $4)
-	`
-	if _, err := tx.Exec(ctx, sql, policy.ID, policy.Version, snapshot, actorTokenID); err != nil {
-		return fmt.Errorf("insert version snapshot: %w", err)
-	}
-	return nil
-}
 
 func insertAuditLog(ctx context.Context, tx pgx.Tx, policyID, eventType string, actor *string, mut MCPPolicyMutation, extras map[string]any) error {
 	payload := map[string]any{
@@ -1006,30 +795,6 @@ func periodToHours(period string) (int, error) {
 	default:
 		return 0, fmt.Errorf("invalid period %q", period)
 	}
-}
-
-func entriesEquivalent(a, b MCPPolicyEntry) bool {
-	return a.ServerURLCanonical == b.ServerURLCanonical &&
-		a.ServerName == b.ServerName &&
-		a.EntryKind == b.EntryKind &&
-		stringPtrEqual(a.Enforcement, b.Enforcement)
-}
-
-func stringPtrEqual(a, b *string) bool {
-	if a == nil && b == nil {
-		return true
-	}
-	if a == nil || b == nil {
-		return false
-	}
-	return *a == *b
-}
-
-func derefString(s *string) string {
-	if s == nil {
-		return ""
-	}
-	return *s
 }
 
 // ----- typed errors --------------------------------------------

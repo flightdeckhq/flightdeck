@@ -185,3 +185,52 @@ func lookupTemplateConfig(name string) (templateMetaConfig, bool) {
 	return templateMetaConfig{}, false
 }
 
+// policyYAML is the wire shape of a shipped template's YAML body.
+// Originally also used by the YAML import/export endpoints; D144
+// retired those (step 6.8 cleanup) so the type is now templates-
+// internal. The shipped templates are the only YAML the API still
+// accepts as policy input.
+type policyYAML struct {
+	Scope              string      `yaml:"scope"`
+	ScopeValue         string      `yaml:"scope_value,omitempty"`
+	Mode               string      `yaml:"mode,omitempty"`
+	BlockOnUncertainty bool        `yaml:"block_on_uncertainty"`
+	Entries            []entryYAML `yaml:"entries"`
+}
+
+type entryYAML struct {
+	ServerURL   string `yaml:"server_url"`
+	ServerName  string `yaml:"server_name"`
+	EntryKind   string `yaml:"entry_kind"`
+	Enforcement string `yaml:"enforcement,omitempty"`
+}
+
+// yamlToMutation converts a parsed template YAML into the store's
+// MCPPolicyMutation shape. The scope arg is the apply target (always
+// "flavor" for the shipped templates) and rejects YAML that carries
+// mode on a flavor scope (D134).
+func yamlToMutation(doc policyYAML, scope string) (store.MCPPolicyMutation, string) {
+	mut := store.MCPPolicyMutation{
+		BlockOnUncertainty: doc.BlockOnUncertainty,
+	}
+	if doc.Mode != "" {
+		if scope == "flavor" {
+			return mut, "mode is global-only; flavor YAML must omit mode (D134)"
+		}
+		mode := doc.Mode
+		mut.Mode = &mode
+	}
+	for _, ye := range doc.Entries {
+		em := store.MCPPolicyEntryMutation{
+			ServerURL:  strings.TrimSpace(ye.ServerURL),
+			ServerName: strings.TrimSpace(ye.ServerName),
+			EntryKind:  strings.TrimSpace(ye.EntryKind),
+		}
+		if ye.Enforcement != "" {
+			enforcement := ye.Enforcement
+			em.Enforcement = &enforcement
+		}
+		mut.Entries = append(mut.Entries, em)
+	}
+	return mut, ""
+}

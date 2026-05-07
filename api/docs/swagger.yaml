@@ -323,20 +323,6 @@ definitions:
       value:
         type: number
     type: object
-  store.DiffBool:
-    properties:
-      from:
-        type: boolean
-      to:
-        type: boolean
-    type: object
-  store.DiffString:
-    properties:
-      from:
-        type: string
-      to:
-        type: string
-    type: object
   store.Directive:
     properties:
       action:
@@ -360,28 +346,6 @@ definitions:
       reason:
         type: string
       session_id:
-        type: string
-    type: object
-  store.DryRunServerCount:
-    properties:
-      fingerprint:
-        type: string
-      server_name:
-        type: string
-      would_allow:
-        type: integer
-      would_block:
-        type: integer
-      would_warn:
-        type: integer
-    type: object
-  store.EntryDiff:
-    properties:
-      after:
-        $ref: '#/definitions/store.MCPPolicyEntry'
-      before:
-        $ref: '#/definitions/store.MCPPolicyEntry'
-      fingerprint:
         type: string
     type: object
   store.Event:
@@ -477,8 +441,6 @@ definitions:
         type: string
       updated_at:
         type: string
-      version:
-        type: integer
     type: object
   store.MCPPolicyAuditLog:
     properties:
@@ -495,46 +457,6 @@ definitions:
       policy_id:
         description: NULL after policy deletion
         type: string
-    type: object
-  store.MCPPolicyDiff:
-    properties:
-      block_on_uncertainty_changed:
-        $ref: '#/definitions/store.DiffBool'
-      entries_added:
-        items:
-          $ref: '#/definitions/store.MCPPolicyEntry'
-        type: array
-      entries_changed:
-        items:
-          $ref: '#/definitions/store.EntryDiff'
-        type: array
-      entries_removed:
-        items:
-          $ref: '#/definitions/store.MCPPolicyEntry'
-        type: array
-      from_snapshot:
-        type: object
-      from_version:
-        type: integer
-      mode_changed:
-        $ref: '#/definitions/store.DiffString'
-      to_snapshot:
-        type: object
-      to_version:
-        type: integer
-    type: object
-  store.MCPPolicyDryRunResult:
-    properties:
-      events_replayed:
-        type: integer
-      hours:
-        type: integer
-      per_server:
-        items:
-          $ref: '#/definitions/store.DryRunServerCount'
-        type: array
-      unresolvable_count:
-        type: integer
     type: object
   store.MCPPolicyEntry:
     properties:
@@ -626,34 +548,6 @@ definitions:
       scope:
         description: '"global" | "flavor:<value>"'
         type: string
-    type: object
-  store.MCPPolicyVersion:
-    properties:
-      created_at:
-        type: string
-      created_by:
-        type: string
-      id:
-        type: string
-      policy_id:
-        type: string
-      snapshot:
-        type: object
-      version:
-        type: integer
-    type: object
-  store.MCPPolicyVersionMeta:
-    properties:
-      created_at:
-        type: string
-      created_by:
-        type: string
-      id:
-        type: string
-      policy_id:
-        type: string
-      version:
-        type: integer
     type: object
   store.Policy:
     properties:
@@ -983,13 +877,18 @@ definitions:
       policy_event_types:
         description: |-
           PolicyEventTypes lists every distinct policy enforcement
-          ``event_type`` observed in the session: any subset of
-          ``policy_warn`` / ``policy_degrade`` / ``policy_block``.
-          Always present on the wire (empty array when the session
-          carries no policy events). Same surfacing pattern as
+          ``event_type`` observed in the session. Includes both the
+          token-budget axis (``policy_warn`` / ``policy_degrade`` /
+          ``policy_block``) and the MCP Protection Policy axis
+          (``policy_mcp_warn`` / ``policy_mcp_block`` /
+          ``mcp_server_name_changed`` / ``mcp_policy_user_remembered``,
+          per D131). Always present on the wire (empty array when the
+          session carries no policy events). Same surfacing pattern as
           ErrorTypes — correlated subquery on the listing query so the
-          dashboard renders the POLICY facet and severity-ranked
-          session-row indicator without a per-session follow-up fetch.
+          dashboard renders the POLICY + MCP POLICY facets and
+          severity-ranked session-row indicator without a per-session
+          follow-up fetch. The dashboard splits the unified array into
+          two sidebar facets via the EVENT_TYPE_GROUPS classification.
         items:
           type: string
         type: array
@@ -2021,197 +1920,6 @@ paths:
       summary: List flavor MCP policy audit log
       tags:
       - mcp-policy
-  /v1/mcp-policies/{flavor}/diff:
-    get:
-      description: Server-computed structural diff between two versions. Returns both
-        snapshots plus mode_changed / block_on_uncertainty_changed / entries_added
-        / entries_removed / entries_changed buckets.
-      parameters:
-      - description: Agent flavor or 'global'
-        in: path
-        name: flavor
-        required: true
-        type: string
-      - description: From version number
-        in: query
-        name: from
-        required: true
-        type: integer
-      - description: To version number
-        in: query
-        name: to
-        required: true
-        type: integer
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/store.MCPPolicyDiff'
-        "400":
-          description: Bad Request
-          schema:
-            $ref: '#/definitions/handlers.ErrorResponse'
-        "401":
-          description: Unauthorized
-          schema:
-            $ref: '#/definitions/handlers.ErrorResponse'
-        "403":
-          description: Forbidden
-          schema:
-            $ref: '#/definitions/handlers.ErrorResponse'
-        "404":
-          description: Not Found
-          schema:
-            $ref: '#/definitions/handlers.ErrorResponse'
-        "500":
-          description: Internal Server Error
-          schema:
-            $ref: '#/definitions/handlers.ErrorResponse'
-      summary: Diff two MCP policy versions
-      tags:
-      - mcp-policy
-  /v1/mcp-policies/{flavor}/dry_run:
-    post:
-      consumes:
-      - application/json
-      description: Replays the last N hours of mcp_tool_call events against the proposed
-        policy in the request body. Returns per-server would_allow / would_warn /
-        would_block counts plus an unresolvable_count for events whose session lacks
-        context.mcp_servers (D137). Does NOT mutate state. hours param defaults to
-        24, max 168 (7 days).
-      parameters:
-      - description: Agent flavor or 'global'
-        in: path
-        name: flavor
-        required: true
-        type: string
-      - description: Replay window in hours (1..168, default 24)
-        in: query
-        name: hours
-        type: integer
-      - description: Proposed policy
-        in: body
-        name: body
-        required: true
-        schema:
-          $ref: '#/definitions/store.MCPPolicyMutation'
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/store.MCPPolicyDryRunResult'
-        "400":
-          description: Bad Request
-          schema:
-            $ref: '#/definitions/handlers.ErrorResponse'
-        "401":
-          description: Unauthorized
-          schema:
-            $ref: '#/definitions/handlers.ErrorResponse'
-        "403":
-          description: Forbidden
-          schema:
-            $ref: '#/definitions/handlers.ErrorResponse'
-        "500":
-          description: Internal Server Error
-          schema:
-            $ref: '#/definitions/handlers.ErrorResponse'
-      summary: Dry-run a proposed MCP policy against historical traffic
-      tags:
-      - mcp-policy
-  /v1/mcp-policies/{flavor}/export:
-    get:
-      description: Serializes current flavor policy state as YAML. Use the version-fetch
-        endpoint for historical snapshots. Returns 404 when no flavor policy exists.
-      parameters:
-      - description: Agent flavor
-        in: path
-        name: flavor
-        required: true
-        type: string
-      produces:
-      - application/yaml
-      responses:
-        "200":
-          description: OK
-          schema:
-            type: string
-        "400":
-          description: Bad Request
-          schema:
-            $ref: '#/definitions/handlers.ErrorResponse'
-        "401":
-          description: Unauthorized
-          schema:
-            $ref: '#/definitions/handlers.ErrorResponse'
-        "403":
-          description: Forbidden
-          schema:
-            $ref: '#/definitions/handlers.ErrorResponse'
-        "404":
-          description: Not Found
-          schema:
-            $ref: '#/definitions/handlers.ErrorResponse'
-        "500":
-          description: Internal Server Error
-          schema:
-            $ref: '#/definitions/handlers.ErrorResponse'
-      summary: Export flavor MCP policy as YAML
-      tags:
-      - mcp-policy
-  /v1/mcp-policies/{flavor}/import:
-    post:
-      consumes:
-      - application/yaml
-      description: Replaces flavor policy state from YAML body. Same atomic version
-        + audit semantics as PUT; audit-log entry carries payload.via='import'. Schema
-        matches the README quickstart YAML byte-for-byte.
-      parameters:
-      - description: Agent flavor
-        in: path
-        name: flavor
-        required: true
-        type: string
-      - description: YAML policy state
-        in: body
-        name: body
-        required: true
-        schema:
-          type: string
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/store.MCPPolicy'
-        "400":
-          description: Bad Request
-          schema:
-            $ref: '#/definitions/handlers.ErrorResponse'
-        "401":
-          description: Unauthorized
-          schema:
-            $ref: '#/definitions/handlers.ErrorResponse'
-        "403":
-          description: Forbidden
-          schema:
-            $ref: '#/definitions/handlers.ErrorResponse'
-        "404":
-          description: Not Found
-          schema:
-            $ref: '#/definitions/handlers.ErrorResponse'
-        "500":
-          description: Internal Server Error
-          schema:
-            $ref: '#/definitions/handlers.ErrorResponse'
-      summary: Import flavor MCP policy from YAML
-      tags:
-      - mcp-policy
   /v1/mcp-policies/{flavor}/metrics:
     get:
       description: Aggregates policy_mcp_warn and policy_mcp_block events emitted
@@ -2251,97 +1959,6 @@ paths:
           schema:
             $ref: '#/definitions/handlers.ErrorResponse'
       summary: Get MCP policy enforcement metrics
-      tags:
-      - mcp-policy
-  /v1/mcp-policies/{flavor}/versions:
-    get:
-      description: Returns version metadata (no full snapshots) in DESC version order,
-        paginated. Use the singular versions/{version} endpoint for full snapshots.
-      parameters:
-      - description: Agent flavor or 'global'
-        in: path
-        name: flavor
-        required: true
-        type: string
-      - description: Max rows; 1..200; default 50
-        in: query
-        name: limit
-        type: integer
-      - description: Pagination offset; default 0
-        in: query
-        name: offset
-        type: integer
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            items:
-              $ref: '#/definitions/store.MCPPolicyVersionMeta'
-            type: array
-        "400":
-          description: Bad Request
-          schema:
-            $ref: '#/definitions/handlers.ErrorResponse'
-        "401":
-          description: Unauthorized
-          schema:
-            $ref: '#/definitions/handlers.ErrorResponse'
-        "403":
-          description: Forbidden
-          schema:
-            $ref: '#/definitions/handlers.ErrorResponse'
-        "500":
-          description: Internal Server Error
-          schema:
-            $ref: '#/definitions/handlers.ErrorResponse'
-      summary: List MCP policy version history
-      tags:
-      - mcp-policy
-  /v1/mcp-policies/{flavor}/versions/{version}:
-    get:
-      description: Returns the full snapshot at the named version number (integer,
-        NOT a UUID).
-      parameters:
-      - description: Agent flavor or 'global'
-        in: path
-        name: flavor
-        required: true
-        type: string
-      - description: Version number
-        in: path
-        name: version
-        required: true
-        type: integer
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/store.MCPPolicyVersion'
-        "400":
-          description: Bad Request
-          schema:
-            $ref: '#/definitions/handlers.ErrorResponse'
-        "401":
-          description: Unauthorized
-          schema:
-            $ref: '#/definitions/handlers.ErrorResponse'
-        "403":
-          description: Forbidden
-          schema:
-            $ref: '#/definitions/handlers.ErrorResponse'
-        "404":
-          description: Not Found
-          schema:
-            $ref: '#/definitions/handlers.ErrorResponse'
-        "500":
-          description: Internal Server Error
-          schema:
-            $ref: '#/definitions/handlers.ErrorResponse'
-      summary: Get one MCP policy version snapshot
       tags:
       - mcp-policy
   /v1/mcp-policies/global:

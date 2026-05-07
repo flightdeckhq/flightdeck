@@ -94,12 +94,8 @@ type Querier interface {
 	UpdateMCPPolicy(ctx context.Context, scope, scopeValue string, mut MCPPolicyMutation, resolvedEntries []MCPPolicyEntry, actorTokenID *string, auditPayloadExtras map[string]any) (*MCPPolicy, error)
 	DeleteMCPPolicy(ctx context.Context, flavor string, actorTokenID *string) error
 	ResolveMCPPolicy(ctx context.Context, flavor, fingerprint string) (*MCPPolicyResolveResult, error)
-	ListMCPPolicyVersions(ctx context.Context, scope, scopeValue string, limit, offset int) ([]MCPPolicyVersionMeta, error)
-	GetMCPPolicyVersion(ctx context.Context, scope, scopeValue string, version int) (*MCPPolicyVersion, error)
-	DiffMCPPolicyVersions(ctx context.Context, scope, scopeValue string, fromVersion, toVersion int) (*MCPPolicyDiff, error)
 	ListMCPPolicyAuditLog(ctx context.Context, scope, scopeValue, eventType string, from, to *time.Time, limit, offset int) ([]MCPPolicyAuditLog, error)
 	GetMCPPolicyMetrics(ctx context.Context, scope, scopeValue, period string) (*MCPPolicyMetrics, error)
-	DryRunMCPPolicyEvents(ctx context.Context, hours int) ([]DryRunCandidate, error)
 }
 
 // WrapStore returns a Querier from any compatible implementation.

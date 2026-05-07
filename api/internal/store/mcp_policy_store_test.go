@@ -12,10 +12,8 @@ package store
 
 import (
 	"context"
-	"encoding/json"
 	"strings"
 	"testing"
-	"time"
 )
 
 // fingerprintLiteral mirrors the canonical D127 hash without
@@ -94,7 +92,6 @@ func TestGlobalMCPPolicySeededByMigration(t *testing.T) {
 		count              int
 		mode               *string
 		blockOnUncertainty bool
-		version            int
 	)
 	if err := store.pool.QueryRow(ctx, `
 		SELECT count(*) FROM mcp_policies WHERE scope = 'global'
@@ -106,10 +103,10 @@ func TestGlobalMCPPolicySeededByMigration(t *testing.T) {
 	}
 
 	if err := store.pool.QueryRow(ctx, `
-		SELECT mode, block_on_uncertainty, version
+		SELECT mode, block_on_uncertainty
 		  FROM mcp_policies
 		 WHERE scope = 'global'
-	`).Scan(&mode, &blockOnUncertainty, &version); err != nil {
+	`).Scan(&mode, &blockOnUncertainty); err != nil {
 		t.Fatalf("read global row: %v", err)
 	}
 	if mode == nil || *mode != "blocklist" {
@@ -117,9 +114,6 @@ func TestGlobalMCPPolicySeededByMigration(t *testing.T) {
 	}
 	if blockOnUncertainty {
 		t.Errorf("seed block_on_uncertainty = true, want false")
-	}
-	if version != 1 {
-		t.Errorf("seed version = %d, want 1", version)
 	}
 }
 
@@ -171,9 +165,6 @@ func TestCreateMCPPolicyRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateMCPPolicy: %v", err)
 	}
-	if created.Version != 1 {
-		t.Errorf("created.Version = %d, want 1", created.Version)
-	}
 	if !created.BlockOnUncertainty {
 		t.Errorf("BlockOnUncertainty = false, want true")
 	}
@@ -211,7 +202,7 @@ func TestCreateMCPPolicyRejectsDuplicateFlavor(t *testing.T) {
 	}
 }
 
-func TestUpdateMCPPolicyBumpsVersion(t *testing.T) {
+func TestUpdateMCPPolicyReplacesEntries(t *testing.T) {
 	store, cleanup := newTestStore(t)
 	t.Cleanup(cleanup)
 	ctx := context.Background()
@@ -220,12 +211,8 @@ func TestUpdateMCPPolicyBumpsVersion(t *testing.T) {
 	t.Cleanup(func() { cleanupMCPPolicyByFlavor(t, store, flavor) })
 
 	mut := MCPPolicyMutation{BlockOnUncertainty: false}
-	created, err := store.CreateMCPPolicy(ctx, flavor, mut, nil, nil)
-	if err != nil {
+	if _, err := store.CreateMCPPolicy(ctx, flavor, mut, nil, nil); err != nil {
 		t.Fatalf("create: %v", err)
-	}
-	if created.Version != 1 {
-		t.Fatalf("version = %d, want 1", created.Version)
 	}
 
 	mut2 := MCPPolicyMutation{BlockOnUncertainty: true}
@@ -241,19 +228,11 @@ func TestUpdateMCPPolicyBumpsVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("update: %v", err)
 	}
-	if updated.Version != 2 {
-		t.Errorf("version after update = %d, want 2", updated.Version)
-	}
 	if !updated.BlockOnUncertainty {
 		t.Errorf("BlockOnUncertainty = false after update, want true")
 	}
-
-	versions, err := store.ListMCPPolicyVersions(ctx, "flavor", flavor, 50, 0)
-	if err != nil {
-		t.Fatalf("list versions: %v", err)
-	}
-	if len(versions) < 2 {
-		t.Errorf("expected >= 2 version snapshots, got %d", len(versions))
+	if len(updated.Entries) != 1 {
+		t.Errorf("entry count after update = %d, want 1", len(updated.Entries))
 	}
 }
 
@@ -378,56 +357,6 @@ func TestResolveMCPPolicyPrecedence(t *testing.T) {
 	}
 }
 
-func TestDiffMCPPolicyVersions(t *testing.T) {
-	store, cleanup := newTestStore(t)
-	t.Cleanup(cleanup)
-	ctx := context.Background()
-
-	flavor := uniqueFlavor(t)
-	t.Cleanup(func() { cleanupMCPPolicyByFlavor(t, store, flavor) })
-
-	enforce := "block"
-	v1Entries := []MCPPolicyEntry{{
-		ServerURLCanonical: "https://a.example.com",
-		ServerName:         "a",
-		Fingerprint:        fingerprintLiteral("a"),
-		EntryKind:          "allow",
-		Enforcement:        &enforce,
-	}}
-	if _, err := store.CreateMCPPolicy(ctx, flavor,
-		MCPPolicyMutation{BlockOnUncertainty: false}, v1Entries, nil); err != nil {
-		t.Fatalf("create v1: %v", err)
-	}
-
-	v2Entries := []MCPPolicyEntry{{
-		ServerURLCanonical: "https://b.example.com",
-		ServerName:         "b",
-		Fingerprint:        fingerprintLiteral("b"),
-		EntryKind:          "deny",
-		Enforcement:        &enforce,
-	}}
-	if _, err := store.UpdateMCPPolicy(ctx, "flavor", flavor,
-		MCPPolicyMutation{BlockOnUncertainty: true}, v2Entries, nil, nil); err != nil {
-		t.Fatalf("update v2: %v", err)
-	}
-
-	diff, err := store.DiffMCPPolicyVersions(ctx, "flavor", flavor, 1, 2)
-	if err != nil {
-		t.Fatalf("diff: %v", err)
-	}
-	if diff.BlockOnUncertaintyChanged == nil ||
-		diff.BlockOnUncertaintyChanged.From != false ||
-		diff.BlockOnUncertaintyChanged.To != true {
-		t.Errorf("BOU diff missing or wrong: %+v", diff.BlockOnUncertaintyChanged)
-	}
-	if len(diff.EntriesAdded) != 1 || diff.EntriesAdded[0].ServerName != "b" {
-		t.Errorf("EntriesAdded mismatch: %+v", diff.EntriesAdded)
-	}
-	if len(diff.EntriesRemoved) != 1 || diff.EntriesRemoved[0].ServerName != "a" {
-		t.Errorf("EntriesRemoved mismatch: %+v", diff.EntriesRemoved)
-	}
-}
-
 func TestListMCPPolicyAuditLog(t *testing.T) {
 	store, cleanup := newTestStore(t)
 	t.Cleanup(cleanup)
@@ -505,48 +434,35 @@ func TestUpdateMissingPolicyReturnsNotFound(t *testing.T) {
 	}
 }
 
-func TestVersionSnapshotIsValidJSON(t *testing.T) {
+// TestMigration000020DroppedVersioningSchema asserts the post-D142
+// invariants: ``mcp_policy_versions`` table doesn't exist and
+// ``mcp_policies`` has no ``version`` column. Mirrors the D141 seed-
+// migration regression test pattern. Guards against a future
+// rollback or accidental migration revert.
+func TestMigration000020DroppedVersioningSchema(t *testing.T) {
 	store, cleanup := newTestStore(t)
 	t.Cleanup(cleanup)
 	ctx := context.Background()
 
-	flavor := uniqueFlavor(t)
-	t.Cleanup(func() { cleanupMCPPolicyByFlavor(t, store, flavor) })
+	var tableCount int
+	if err := store.pool.QueryRow(ctx, `
+		SELECT count(*) FROM information_schema.tables
+		 WHERE table_schema = 'public' AND table_name = 'mcp_policy_versions'
+	`).Scan(&tableCount); err != nil {
+		t.Fatalf("query information_schema for table: %v", err)
+	}
+	if tableCount != 0 {
+		t.Errorf("mcp_policy_versions table still exists post-migration 000020")
+	}
 
-	if _, err := store.CreateMCPPolicy(ctx, flavor,
-		MCPPolicyMutation{BlockOnUncertainty: true}, nil, nil); err != nil {
-		t.Fatalf("create: %v", err)
+	var colCount int
+	if err := store.pool.QueryRow(ctx, `
+		SELECT count(*) FROM information_schema.columns
+		 WHERE table_schema = 'public' AND table_name = 'mcp_policies' AND column_name = 'version'
+	`).Scan(&colCount); err != nil {
+		t.Fatalf("query information_schema for column: %v", err)
 	}
-	v, err := store.GetMCPPolicyVersion(ctx, "flavor", flavor, 1)
-	if err != nil {
-		t.Fatalf("get version: %v", err)
+	if colCount != 0 {
+		t.Errorf("mcp_policies.version column still exists post-migration 000020")
 	}
-	if v == nil {
-		t.Fatal("expected v1 snapshot, got nil")
-	}
-	var decoded MCPPolicy
-	if err := json.Unmarshal(v.Snapshot, &decoded); err != nil {
-		t.Errorf("snapshot is not valid MCPPolicy JSON: %v", err)
-	}
-	if decoded.Version != 1 {
-		t.Errorf("decoded version = %d, want 1", decoded.Version)
-	}
-}
-
-func TestDryRunMCPPolicyEventsHonorsHoursWindow(t *testing.T) {
-	store, cleanup := newTestStore(t)
-	t.Cleanup(cleanup)
-	ctx := context.Background()
-
-	// Smoke-only: no events to query against by default. The
-	// integration test seeds events and asserts replay shape.
-	candidates, err := store.DryRunMCPPolicyEvents(ctx, 1)
-	if err != nil {
-		t.Fatalf("dry run: %v", err)
-	}
-	// candidates may or may not be empty depending on dev-stack
-	// state; the contract is "no error and a slice" rather than
-	// a specific count.
-	_ = candidates
-	_ = time.Now()
 }

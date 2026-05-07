@@ -148,7 +148,6 @@ async def _scenario_warn() -> str | None:
             ],
         },
     )
-    os.environ["FLIGHTDECK_MCP_POLICY_DEFAULT"] = "enforce"
     init_sensor(session_id, flavor=flavor)
     flightdeck_sensor.patch(quiet=True)
     try:
@@ -190,7 +189,6 @@ async def _scenario_block() -> str | None:
             ],
         },
     )
-    os.environ["FLIGHTDECK_MCP_POLICY_DEFAULT"] = "enforce"
     init_sensor(session_id, flavor=flavor)
     flightdeck_sensor.patch(quiet=True)
 
@@ -259,7 +257,6 @@ async def _scenario_allow() -> str | None:
             ],
         },
     )
-    os.environ["FLIGHTDECK_MCP_POLICY_DEFAULT"] = "enforce"
     init_sensor(session_id, flavor=flavor)
     flightdeck_sensor.patch(quiet=True)
     try:

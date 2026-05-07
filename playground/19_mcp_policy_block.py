@@ -1,9 +1,7 @@
 """MCP Protection Policy -- block enforcement (D130 / D131).
 
 Provisions a flavor policy: deny entry with ``enforcement=block``.
-Sets ``FLIGHTDECK_MCP_POLICY_DEFAULT=enforce`` so the soft-launch
-override doesn't downgrade the block to warn. Opens an MCP
-ClientSession, calls a tool, expects:
+Opens an MCP ClientSession, calls a tool, expects:
 
   - ``policy_mcp_block`` event lands with the expected payload.
   - ``flightdeck.MCPPolicyBlocked`` exception raised at call time.
@@ -21,7 +19,6 @@ defaults via ``init_sensor``.
 from __future__ import annotations
 
 import asyncio
-import os
 import sys
 import time
 import urllib.error
@@ -119,9 +116,6 @@ async def run_demo() -> int:
 
     # 2. Init sensor with the provisioned flavor; preflight will
     # populate the MCP policy cache from the control plane.
-    # Force enforce mode so the soft-launch warn-only override
-    # doesn't mask warn vs block in this demo (warn fires either way).
-    os.environ["FLIGHTDECK_MCP_POLICY_DEFAULT"] = "enforce"
     init_sensor(session_id, flavor=flavor)
 
     flightdeck_sensor.patch(quiet=True)

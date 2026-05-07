@@ -155,9 +155,6 @@ func BuildEventExtra(e consumer.EventPayload) ([]byte, error) {
 	if e.BlockOnUncertainty != nil {
 		extra["block_on_uncertainty"] = *e.BlockOnUncertainty
 	}
-	if e.WouldHaveBlocked != nil {
-		extra["would_have_blocked"] = *e.WouldHaveBlocked
-	}
 	if e.ServerURLCanonical != "" {
 		extra["server_url_canonical"] = e.ServerURLCanonical
 	}

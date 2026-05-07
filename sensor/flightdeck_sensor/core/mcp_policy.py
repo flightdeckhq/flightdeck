@@ -13,13 +13,6 @@ cache + evaluation are policy-state primitives that parallel
 (``interceptor/mcp.py``) imports this module and calls
 :meth:`MCPPolicyCache.evaluate` at the call-tool wrapper site.
 
-D133 soft-launch: the env var ``FLIGHTDECK_MCP_POLICY_DEFAULT``
-overrides the configured enforcement at the emit site (NOT here in
-the cache). The cache always returns the canonical decision; the
-caller decides whether to downgrade ``block`` to ``warn`` based on
-the soft-launch toggle. This keeps operator visibility into the
-"what would have blocked" data even when enforcement is suppressed.
-
 Fail-open per Rule 28: any HTTP error during preflight produces an
 empty cache and ``evaluate`` returns ``allow`` for every URL UNLESS
 the agent opted into the local failsafe via
@@ -27,15 +20,14 @@ the agent opted into the local failsafe via
 URLs in an empty cache return ``block`` with
 ``decision_path="mode_default"`` and ``scope="local_failsafe"``.
 
-See DECISIONS.md D127-D135 and ARCHITECTURE.md "MCP Protection
-Policy" for the contract this module implements.
+See DECISIONS.md D127-D132, D134-D147 and ARCHITECTURE.md
+"MCP Protection Policy" for the contract this module implements.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import os
 import threading
 import urllib.error
 import urllib.request
@@ -50,8 +42,6 @@ from flightdeck_sensor.interceptor.mcp_identity import (
 __all__ = [
     "MCPPolicyCache",
     "MCPPolicyDecision",
-    "soft_launch_default",
-    "apply_soft_launch",
 ]
 
 _log = logging.getLogger("flightdeck_sensor.core.mcp_policy")
@@ -61,14 +51,6 @@ _log = logging.getLogger("flightdeck_sensor.core.mcp_policy")
 # Matches the 1-second budget the existing token-policy preflight
 # uses.
 _PREFLIGHT_TIMEOUT_SECS = 1
-
-# Soft-launch env var (D133). Values: "warn" forces warn-only
-# regardless of configured enforcement; "enforce" honors configured
-# enforcement. v0.6 default is "warn" (this module-level constant);
-# v0.7 will flip to "enforce" via a one-line constant change.
-_SOFT_LAUNCH_ENV_VAR = "FLIGHTDECK_MCP_POLICY_DEFAULT"
-_SOFT_LAUNCH_DEFAULT = "warn"
-
 
 Decision = Literal["allow", "warn", "block"]
 DecisionPath = Literal["flavor_entry", "global_entry", "mode_default"]
@@ -122,41 +104,6 @@ class _PolicyHeader:
     scope_value: str | None
     mode: str | None  # "allowlist" | "blocklist" — global only
     block_on_uncertainty: bool
-
-
-def soft_launch_default() -> str:
-    """Return the active soft-launch mode — ``"warn"`` or
-    ``"enforce"``. Reads the env var on every call so a runtime
-    change (debugging, test fixture) takes effect without sensor
-    restart."""
-    raw = os.environ.get(_SOFT_LAUNCH_ENV_VAR, _SOFT_LAUNCH_DEFAULT)
-    if raw not in ("warn", "enforce"):
-        _log.warning(
-            "%s=%r is invalid; expected 'warn' or 'enforce'. Using default %r.",
-            _SOFT_LAUNCH_ENV_VAR,
-            raw,
-            _SOFT_LAUNCH_DEFAULT,
-        )
-        return _SOFT_LAUNCH_DEFAULT
-    return raw
-
-
-def apply_soft_launch(decision: MCPPolicyDecision) -> tuple[Decision, bool]:
-    """Apply the soft-launch override to a canonical decision.
-
-    Returns ``(effective_decision, would_have_blocked)``. The flag is
-    true exactly when the canonical decision was ``"block"`` AND the
-    soft-launch override downgraded it to ``"warn"`` so the emit path
-    can stamp ``would_have_blocked=True`` on the synthesized warn
-    event payload (per ARCHITECTURE.md sub-section 11).
-    """
-    if soft_launch_default() == "enforce":
-        return decision.decision, False
-    # warn-only override: downgrade block to warn; allow + warn pass
-    # through unchanged.
-    if decision.decision == "block":
-        return "warn", True
-    return decision.decision, False
 
 
 class MCPPolicyCache:
@@ -304,8 +251,8 @@ class MCPPolicyCache:
     def evaluate(self, server_url: str, server_name: str) -> MCPPolicyDecision:
         """Apply the D135 resolution algorithm to the cached policy.
 
-        Returns the canonical decision; soft-launch downgrade is the
-        caller's responsibility (see :func:`apply_soft_launch`).
+        Returns the canonical decision the emit path acts on directly —
+        v0.6 enforces as configured per D145.
         """
         canonical = canonicalize_url(server_url)
         fp = fingerprint_short(canonical, server_name)

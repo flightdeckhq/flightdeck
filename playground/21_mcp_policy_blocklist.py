@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import sys
 import time
 import urllib.error
@@ -100,7 +99,6 @@ async def run_demo() -> int:
     )
 
     try:
-        os.environ["FLIGHTDECK_MCP_POLICY_DEFAULT"] = "enforce"
         init_sensor(session_id, flavor=flavor)
         flightdeck_sensor.patch(quiet=True)
 

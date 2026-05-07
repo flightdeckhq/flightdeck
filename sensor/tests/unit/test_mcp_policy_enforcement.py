@@ -21,18 +21,13 @@ from __future__ import annotations
 
 import json
 import threading
-from typing import TYPE_CHECKING, Any
+from typing import Any
 from unittest.mock import MagicMock, patch
-
-if TYPE_CHECKING:
-    import pytest
 
 from flightdeck_sensor.core.exceptions import MCPPolicyBlocked
 from flightdeck_sensor.core.mcp_policy import (
     MCPPolicyCache,
     MCPPolicyDecision,
-    apply_soft_launch,
-    soft_launch_default,
 )
 from flightdeck_sensor.core.types import EventType
 from flightdeck_sensor.interceptor.mcp import (
@@ -134,80 +129,6 @@ def _populate_cache(
             token="tok_dev",
             flavor=flavor_name,
         )
-
-
-# ----- soft_launch + apply_soft_launch ----------------------------
-
-
-def test_soft_launch_default_is_warn(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("FLIGHTDECK_MCP_POLICY_DEFAULT", raising=False)
-    assert soft_launch_default() == "warn"
-
-
-def test_soft_launch_enforce_via_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("FLIGHTDECK_MCP_POLICY_DEFAULT", "enforce")
-    assert soft_launch_default() == "enforce"
-
-
-def test_soft_launch_invalid_falls_back_to_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("FLIGHTDECK_MCP_POLICY_DEFAULT", "garbage")
-    assert soft_launch_default() == "warn"
-
-
-def test_apply_soft_launch_warn_downgrades_block(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("FLIGHTDECK_MCP_POLICY_DEFAULT", raising=False)  # default warn
-    decision = MCPPolicyDecision(
-        decision="block",
-        decision_path="flavor_entry",
-        policy_id="p",
-        scope="flavor:x",
-        fingerprint="abc",
-    )
-    effective, would_block = apply_soft_launch(decision)
-    assert effective == "warn"
-    assert would_block is True
-
-
-def test_apply_soft_launch_enforce_passes_block(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("FLIGHTDECK_MCP_POLICY_DEFAULT", "enforce")
-    decision = MCPPolicyDecision(
-        decision="block",
-        decision_path="flavor_entry",
-        policy_id="p",
-        scope="flavor:x",
-        fingerprint="abc",
-    )
-    effective, would_block = apply_soft_launch(decision)
-    assert effective == "block"
-    assert would_block is False
-
-
-def test_apply_soft_launch_warn_passes_through(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("FLIGHTDECK_MCP_POLICY_DEFAULT", raising=False)
-    decision = MCPPolicyDecision(
-        decision="warn",
-        decision_path="flavor_entry",
-        policy_id="p",
-        scope="flavor:x",
-        fingerprint="abc",
-    )
-    effective, would_block = apply_soft_launch(decision)
-    assert effective == "warn"
-    assert would_block is False
-
-
-def test_apply_soft_launch_allow_passes_through(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("FLIGHTDECK_MCP_POLICY_DEFAULT", raising=False)
-    decision = MCPPolicyDecision(
-        decision="allow",
-        decision_path="flavor_entry",
-        policy_id="p",
-        scope="flavor:x",
-        fingerprint="abc",
-    )
-    effective, would_block = apply_soft_launch(decision)
-    assert effective == "allow"
-    assert would_block is False
 
 
 # ----- MCPPolicyCache.evaluate -----------------------------------
@@ -507,8 +428,7 @@ def _make_fake_session(*, decision: MCPPolicyDecision) -> Any:
     return fake
 
 
-def test_enforce_allow_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("FLIGHTDECK_MCP_POLICY_DEFAULT", raising=False)
+def test_enforce_allow_returns_none() -> None:
     fake = _make_fake_session(
         decision=MCPPolicyDecision(
             decision="allow",
@@ -529,8 +449,7 @@ def test_enforce_allow_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
     fake.event_queue.enqueue.assert_not_called()
 
 
-def test_enforce_warn_emits_event_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("FLIGHTDECK_MCP_POLICY_DEFAULT", raising=False)
+def test_enforce_warn_emits_event_returns_none() -> None:
     fake = _make_fake_session(
         decision=MCPPolicyDecision(
             decision="warn",
@@ -562,8 +481,7 @@ def test_enforce_warn_emits_event_returns_none(monkeypatch: pytest.MonkeyPatch) 
     )
 
 
-def test_enforce_block_emits_flushes_returns_exception(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("FLIGHTDECK_MCP_POLICY_DEFAULT", "enforce")
+def test_enforce_block_emits_flushes_returns_exception() -> None:
     fake = _make_fake_session(
         decision=MCPPolicyDecision(
             decision="block",
@@ -588,36 +506,8 @@ def test_enforce_block_emits_flushes_returns_exception(monkeypatch: pytest.Monke
     fake.event_queue.flush.assert_called_once()
 
 
-def test_enforce_block_softlaunch_warn_downgrades(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("FLIGHTDECK_MCP_POLICY_DEFAULT", raising=False)  # warn default
-    fake = _make_fake_session(
-        decision=MCPPolicyDecision(
-            decision="block",
-            decision_path="flavor_entry",
-            policy_id="p",
-            scope="flavor:x",
-            fingerprint="abc",
-        )
-    )
-    blocked = _enforce_call_tool_policy(
-        sensor_session=fake,
-        server_url="https://x.example.com",
-        server_name="x",
-        transport="http",
-        tool_name="search",
-    )
-    # Soft-launch downgrade — block becomes warn, no exception, no flush.
-    assert blocked is None
-    fake.event_queue.enqueue.assert_called_once()
-    fake.event_queue.flush.assert_not_called()
-    # would_have_blocked stamped on the synthesized warn payload
-    call_kwargs = fake._build_payload.call_args.kwargs
-    assert call_kwargs.get("would_have_blocked") is True
-
-
-def test_enforce_evaluate_raises_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_enforce_evaluate_raises_returns_none() -> None:
     """A policy evaluation bug must NEVER crash the user's MCP call."""
-    monkeypatch.delenv("FLIGHTDECK_MCP_POLICY_DEFAULT", raising=False)
     fake = MagicMock()
     fake.mcp_policy = MagicMock()
     fake.mcp_policy.evaluate = MagicMock(side_effect=RuntimeError("internal bug"))
@@ -633,10 +523,9 @@ def test_enforce_evaluate_raises_returns_none(monkeypatch: pytest.MonkeyPatch) -
     fake.event_queue.enqueue.assert_not_called()
 
 
-def test_enforce_payload_build_raises_block_still_raised(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_enforce_payload_build_raises_block_still_raised() -> None:
     """Payload-build failure on a block path must NOT swallow the
     block — the agent still must not reach the server."""
-    monkeypatch.setenv("FLIGHTDECK_MCP_POLICY_DEFAULT", "enforce")
     fake = _make_fake_session(
         decision=MCPPolicyDecision(
             decision="block",
@@ -671,15 +560,12 @@ def test_build_extras_block_includes_block_on_uncertainty() -> None:
     )
     extras = _build_policy_event_extras(
         decision=decision,
-        effective_decision="block",
         server_url="https://x",
         server_name="x",
         transport="http",
         tool_name="t",
-        would_have_blocked=False,
     )
     assert extras["block_on_uncertainty"] is True
-    assert "would_have_blocked" not in extras
 
 
 def test_build_extras_warn_no_block_on_uncertainty_field() -> None:
@@ -692,34 +578,12 @@ def test_build_extras_warn_no_block_on_uncertainty_field() -> None:
     )
     extras = _build_policy_event_extras(
         decision=decision,
-        effective_decision="warn",
         server_url="https://x",
         server_name="x",
         transport="http",
         tool_name="t",
-        would_have_blocked=False,
     )
     assert "block_on_uncertainty" not in extras
-
-
-def test_build_extras_softlaunch_warn_carries_would_have_blocked() -> None:
-    decision = MCPPolicyDecision(
-        decision="block",
-        decision_path="flavor_entry",
-        policy_id="p",
-        scope="flavor:x",
-        fingerprint="abc",
-    )
-    extras = _build_policy_event_extras(
-        decision=decision,
-        effective_decision="warn",
-        server_url="https://x",
-        server_name="x",
-        transport="http",
-        tool_name="t",
-        would_have_blocked=True,
-    )
-    assert extras["would_have_blocked"] is True
 
 
 # ----- MCPPolicyBlocked exception ---------------------------------

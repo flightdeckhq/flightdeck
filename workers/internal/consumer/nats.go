@@ -197,9 +197,6 @@ type EventPayload struct {
 	//     reuses the existing field above.
 	//   * BlockOnUncertainty — block-only flag distinguishing the
 	//     explicit deny case from the uncertainty fall-through case.
-	//   * WouldHaveBlocked — warn-only flag set by the soft-launch
-	//     downgrade path (D133); the dashboard surfaces a "this
-	//     would have blocked in v0.7" badge.
 	//   * ServerURLCanonical / FingerprintOld / FingerprintNew /
 	//     NameOld / NameNew — mcp_server_name_changed event fields.
 	ServerURL          string `json:"server_url,omitempty"`
@@ -208,7 +205,6 @@ type EventPayload struct {
 	Scope              string `json:"scope,omitempty"`
 	DecisionPath       string `json:"decision_path,omitempty"`
 	BlockOnUncertainty *bool  `json:"block_on_uncertainty,omitempty"`
-	WouldHaveBlocked   *bool  `json:"would_have_blocked,omitempty"`
 	ServerURLCanonical string `json:"server_url_canonical,omitempty"`
 	FingerprintOld     string `json:"fingerprint_old,omitempty"`
 	FingerprintNew     string `json:"fingerprint_new,omitempty"`

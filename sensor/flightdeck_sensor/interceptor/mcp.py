@@ -406,17 +406,11 @@ def _enforce_call_tool_policy(
     the event queue (so the block lands at the dashboard before the
     agent sees the failure per D130), and return the exception.
 
-    The soft-launch override (D133, ``FLIGHTDECK_MCP_POLICY_DEFAULT``)
-    downgrades block → warn at this point. The synthesized warn
-    event carries ``would_have_blocked=true`` so operator visibility
-    into "what would have blocked" is preserved.
-
     Wrapper failures (e.g. payload build raises, queue.flush raises)
     log and return None — the wrapper must never crash the user's
     MCP call. Fail-open per Rule 28.
     """
     from flightdeck_sensor.core.exceptions import MCPPolicyBlocked
-    from flightdeck_sensor.core.mcp_policy import apply_soft_launch
 
     # An empty server_url means we couldn't capture the canonical URL
     # at initialize time (rare; transport without URL marker). The
@@ -433,21 +427,18 @@ def _enforce_call_tool_policy(
         _log.exception("flightdeck_sensor: MCP policy evaluation failed; allowing call")
         return None
 
-    effective_decision, would_have_blocked = apply_soft_launch(decision)
-    if effective_decision == "allow":
+    if decision.decision == "allow":
         return None
 
     payload_extras = _build_policy_event_extras(
         decision=decision,
-        effective_decision=effective_decision,
         server_url=server_url,
         server_name=server_name,
         transport=transport,
         tool_name=tool_name,
-        would_have_blocked=would_have_blocked,
     )
 
-    if effective_decision == "warn":
+    if decision.decision == "warn":
         try:
             event_type = EventType.POLICY_MCP_WARN
             payload = sensor_session._build_payload(event_type, **payload_extras)
@@ -479,20 +470,14 @@ def _enforce_call_tool_policy(
 def _build_policy_event_extras(
     *,
     decision: Any,
-    effective_decision: str,
     server_url: str,
     server_name: str,
     transport: str | None,
     tool_name: Any,
-    would_have_blocked: bool,
 ) -> dict[str, Any]:
     """Construct the payload-extras dict for POLICY_MCP_WARN /
     POLICY_MCP_BLOCK events. The event_type is selected by the
     caller; everything below is type-agnostic.
-
-    The ``would_have_blocked`` flag lands on warn payloads when the
-    soft-launch override downgraded a block (D133). It's absent on
-    block payloads and on warn payloads from genuine warn decisions.
     """
     extras: dict[str, Any] = {
         "server_url": server_url,
@@ -505,10 +490,8 @@ def _build_policy_event_extras(
     }
     if transport is not None:
         extras["transport"] = transport
-    if effective_decision == "block":
+    if decision.decision == "block":
         extras["block_on_uncertainty"] = decision.block_on_uncertainty
-    if would_have_blocked:
-        extras["would_have_blocked"] = True
     return extras
 
 

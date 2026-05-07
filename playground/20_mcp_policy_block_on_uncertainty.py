@@ -45,11 +45,9 @@ async def run_demo() -> int:
     session_id = str(uuid.uuid4())
     server_module = "playground._mcp_reference_server"
 
-    # Force enforce mode (so soft-launch doesn't downgrade) AND
-    # point the sensor at an invalid api_url so the preflight
-    # policy fetch fails. The mcp_block_on_uncertainty=True kwarg
-    # is the failsafe that blocks unmatched URLs anyway.
-    os.environ["FLIGHTDECK_MCP_POLICY_DEFAULT"] = "enforce"
+    # Point the sensor at an invalid api_url so the preflight policy
+    # fetch fails. The mcp_block_on_uncertainty=True kwarg is the
+    # failsafe that blocks unmatched URLs anyway.
     os.environ["AGENT_FLAVOR"] = flavor
     # Bypass init_sensor (which hardcodes api_url=API_URL) so we
     # can point the sensor at an invalid port. The whole point of

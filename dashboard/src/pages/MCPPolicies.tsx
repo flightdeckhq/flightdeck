@@ -16,7 +16,6 @@ import { MCPPolicyResolvePanel } from "@/components/policy/MCPPolicyResolvePanel
 import { MCPPolicyTemplatesPanel } from "@/components/policy/MCPPolicyTemplatesPanel";
 import { MCPPolicyVersionHistory } from "@/components/policy/MCPPolicyVersionHistory";
 import { MCPPolicyYamlPanel } from "@/components/policy/MCPPolicyYamlPanel";
-import { MCPSoftLaunchBanner } from "@/components/policy/MCPSoftLaunchBanner";
 import { Tabs, TabsContent } from "@/components/ui/tabs";
 import {
   createFlavorMCPPolicy,
@@ -110,10 +109,6 @@ export function MCPPolicies() {
           default (D135).
         </p>
       </header>
-
-      <div className="mb-6">
-        <MCPSoftLaunchBanner />
-      </div>
 
       <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
         <div

@@ -105,7 +105,6 @@ async def run_demo() -> int:
         },
     )
 
-    os.environ["FLIGHTDECK_MCP_POLICY_DEFAULT"] = "enforce"
     init_sensor(session_id, flavor=flavor)
     flightdeck_sensor.patch(quiet=True)
 

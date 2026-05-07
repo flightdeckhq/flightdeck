@@ -20,7 +20,6 @@ defaults via ``init_sensor``.
 from __future__ import annotations
 
 import asyncio
-import os
 import sys
 import time
 import urllib.error
@@ -119,9 +118,6 @@ async def run_demo() -> int:
 
     # 2. Init sensor with the provisioned flavor; preflight will
     # populate the MCP policy cache from the control plane.
-    # Force enforce mode so the soft-launch warn-only override
-    # doesn't mask warn vs block in this demo (warn fires either way).
-    os.environ["FLIGHTDECK_MCP_POLICY_DEFAULT"] = "enforce"
     init_sensor(session_id, flavor=flavor)
 
     flightdeck_sensor.patch(quiet=True)

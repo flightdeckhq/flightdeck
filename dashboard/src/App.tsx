@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useEffect, useState, useCallback } from "react";
 import {
   BrowserRouter,
   Routes,
@@ -21,6 +21,7 @@ import type {
   SearchResultSession,
 } from "@/lib/types";
 import { useTheme } from "@/hooks/useTheme";
+import { useWhoamiStore } from "@/store/whoami";
 
 function Nav({ onSearchClick }: { onSearchClick: () => void }) {
   const { theme, toggleTheme } = useTheme();
@@ -161,6 +162,15 @@ export function buildSearchResultHref(
 function CommandPaletteHost() {
   const [searchOpen, setSearchOpen] = useState(false);
   const navigate = useNavigate();
+
+  // D147: fetch the bearer's role once at App mount. The store
+  // gates mutation CTAs in MCPPolicyHeader / EntryTable /
+  // TemplatesPanel on the result. Mutation buttons render
+  // disabled-with-"Loading…" tooltip while in flight to prevent
+  // the brief enabled flash a viewer would otherwise see.
+  useEffect(() => {
+    void useWhoamiStore.getState().fetchWhoami();
+  }, []);
 
   const handleSearchClick = useCallback(() => {
     setSearchOpen(true);

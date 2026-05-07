@@ -1,8 +1,20 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 
 import { MCPPolicyHeader } from "@/components/policy/MCPPolicyHeader";
 import type { MCPPolicy } from "@/lib/types";
+import { useWhoamiStore } from "@/store/whoami";
+
+beforeEach(() => {
+  // D147: tests that exercise mutations assume admin role; viewer
+  // tests below override per-case.
+  useWhoamiStore.setState({
+    role: "admin",
+    tokenId: "test-token",
+    loading: false,
+    error: null,
+  });
+});
 
 function policy(override: Partial<MCPPolicy> = {}): MCPPolicy {
   return {
@@ -153,5 +165,59 @@ describe("MCPPolicyHeader", () => {
     expect(help.textContent).toContain(
       "every server allowed by default; explicit deny entries block access.",
     );
+  });
+
+  it("disables mode segmented + BOU switch with admin-token tooltip when role is viewer (D147)", () => {
+    useWhoamiStore.setState({
+      role: "viewer",
+      tokenId: "viewer-token",
+      loading: false,
+      error: null,
+    });
+    render(
+      <MCPPolicyHeader
+        policy={policy({ mode: "allowlist", block_on_uncertainty: true })}
+        scopeKey="global"
+        modeEditable
+        globalMode="allowlist"
+        onModeChange={async () => undefined}
+        onBlockOnUncertaintyChange={async () => undefined}
+      />,
+    );
+
+    const modeWrapper = screen.getByTestId(
+      "mcp-policy-mode-segmented-disabled-global",
+    );
+    expect(modeWrapper).toBeTruthy();
+    const bouWrapper = screen.getByTestId(
+      "mcp-policy-bou-switch-disabled-global",
+    );
+    expect(bouWrapper).toBeTruthy();
+  });
+
+  it("disables mode segmented + BOU switch with Loading… tooltip while whoami is in flight (D147)", () => {
+    useWhoamiStore.setState({
+      role: null,
+      tokenId: null,
+      loading: true,
+      error: null,
+    });
+    render(
+      <MCPPolicyHeader
+        policy={policy({ mode: "allowlist", block_on_uncertainty: true })}
+        scopeKey="global"
+        modeEditable
+        globalMode="allowlist"
+        onModeChange={async () => undefined}
+        onBlockOnUncertaintyChange={async () => undefined}
+      />,
+    );
+
+    expect(
+      screen.getByTestId("mcp-policy-mode-segmented-disabled-global"),
+    ).toBeTruthy();
+    expect(
+      screen.getByTestId("mcp-policy-bou-switch-disabled-global"),
+    ).toBeTruthy();
   });
 });

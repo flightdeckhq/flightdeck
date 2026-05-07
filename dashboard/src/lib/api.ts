@@ -548,7 +548,19 @@ export async function renameAccessToken(id: string, name: string): Promise<Acces
   return res.json() as Promise<AccessToken>;
 }
 
-// ----- MCP Protection Policy (D128 / D131 / D135 / D137 / D138 / D139) -----
+// ----- Whoami (D147) -----
+
+/** Response shape for GET /v1/whoami. Read-open per D147. */
+export interface WhoamiResponse {
+  role: "admin" | "viewer";
+  token_id: string;
+}
+
+export function fetchWhoami(): Promise<WhoamiResponse> {
+  return fetchJson<WhoamiResponse>("/v1/whoami");
+}
+
+// ----- MCP Protection Policy (D128 / D131 / D135 / D138 / D139 / D147) -----
 
 export function fetchGlobalMCPPolicy(): Promise<MCPPolicy> {
   return fetchJson<MCPPolicy>("/v1/mcp-policies/global");

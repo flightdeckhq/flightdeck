@@ -11,6 +11,7 @@ import {
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import type { MCPPolicyTemplate } from "@/lib/types";
+import { useWhoamiStore } from "@/store/whoami";
 
 const MAINTENANCE_WARNING_TEMPLATE = "strict-with-common-allows";
 
@@ -51,6 +52,14 @@ export function MCPPolicyTemplatesPanel({
   const [applying, setApplying] = useState(false);
   const [applyError, setApplyError] = useState<string | null>(null);
 
+  // D147: GET /templates is read-open — every authenticated bearer
+  // can browse the catalogue. Apply still requires admin scope, so
+  // hide the Apply button (and the confirm-dialog Apply CTA) for
+  // viewers; the cards remain visible so operators can read what's
+  // available before requesting an admin token.
+  const role = useWhoamiStore((s) => s.role);
+  const canMutate = role === "admin";
+
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
@@ -62,11 +71,9 @@ export function MCPPolicyTemplatesPanel({
       })
       .catch((err: unknown) => {
         if (cancelled) return;
-        if (err instanceof ApiError && err.status === 403) {
-          setError(adminTokenError("view templates."));
-        } else {
-          setError(err instanceof Error ? err.message : "Failed to load templates");
-        }
+        // GET /templates is read-open per D147; no 403 special-case
+        // — surface real errors as real errors.
+        setError(err instanceof Error ? err.message : "Failed to load templates");
       })
       .finally(() => {
         if (cancelled) return;
@@ -137,7 +144,11 @@ export function MCPPolicyTemplatesPanel({
               <TemplateCard
                 key={tpl.name}
                 template={tpl}
-                onApply={() => setConfirm({ template: tpl })}
+                onApply={
+                  canMutate
+                    ? () => setConfirm({ template: tpl })
+                    : null
+                }
                 scopeKey={scopeKey}
               />
             ))}
@@ -237,7 +248,9 @@ function TemplateCard({
   scopeKey,
 }: {
   template: MCPPolicyTemplate;
-  onApply: () => void;
+  /** ``null`` for viewer tokens; the Apply button is hidden in that
+   *  case (D147 — action-only affordances hide rather than disable). */
+  onApply: (() => void) | null;
   scopeKey: string;
 }) {
   const isMaintenanceWarning = template.name === MAINTENANCE_WARNING_TEMPLATE;
@@ -297,20 +310,22 @@ function TemplateCard({
         </span>{" "}
         {template.recommended_for}
       </p>
-      <div className="mt-auto pt-3">
-        <Button
-          size="sm"
-          variant="outline"
-          onClick={onApply}
-          className="w-full"
-          data-testid={`mcp-policy-template-card-apply-${template.name}`}
-        >
-          Apply to{" "}
-          <span className="font-semibold">
-            {scopeKey === "global" ? "Global" : scopeKey}
-          </span>
-        </Button>
-      </div>
+      {onApply ? (
+        <div className="mt-auto pt-3">
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={onApply}
+            className="w-full"
+            data-testid={`mcp-policy-template-card-apply-${template.name}`}
+          >
+            Apply to{" "}
+            <span className="font-semibold">
+              {scopeKey === "global" ? "Global" : scopeKey}
+            </span>
+          </Button>
+        </div>
+      ) : null}
     </article>
   );
 }

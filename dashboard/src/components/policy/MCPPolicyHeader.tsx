@@ -9,6 +9,7 @@ import {
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import type { MCPPolicy } from "@/lib/types";
+import { useWhoamiStore } from "@/store/whoami";
 // ``cn`` is preserved on import because ModeSegmented uses it for
 // the segmented-control active-state styling below.
 
@@ -48,6 +49,17 @@ export function MCPPolicyHeader({
   const [savingMode, setSavingMode] = useState(false);
   const [savingBOU, setSavingBOU] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // D147: viewer-mode treatment. Mode toggle + BOU switch render
+  // disabled-with-tooltip for non-admin tokens; while whoami is in
+  // flight (role === null) treat as disabled to prevent the brief
+  // enabled flash a viewer would otherwise see.
+  const role = useWhoamiStore((s) => s.role);
+  const mutationsDisabled = role !== "admin";
+  const mutationsTooltip =
+    role === null
+      ? "Loading…"
+      : "Read-only — admin token required to change mode";
 
   const effectiveMode: Mode | null = modeEditable
     ? (policy.mode ?? null)
@@ -138,12 +150,36 @@ export function MCPPolicyHeader({
           {modeEditable ? (
             <>
               <div className="mt-3">
-                <ModeSegmented
-                  value={(policy.mode as Mode) ?? "blocklist"}
-                  onChange={handleMode}
-                  disabled={savingMode}
-                  testid={`mcp-policy-mode-segmented-${scopeKey}`}
-                />
+                {mutationsDisabled ? (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span
+                        className="inline-block"
+                        data-testid={`mcp-policy-mode-segmented-disabled-${scopeKey}`}
+                      >
+                        <ModeSegmented
+                          value={(policy.mode as Mode) ?? "blocklist"}
+                          onChange={handleMode}
+                          disabled
+                          testid={`mcp-policy-mode-segmented-${scopeKey}`}
+                        />
+                      </span>
+                    </TooltipTrigger>
+                    <TooltipContent
+                      className="max-w-xs text-xs leading-relaxed"
+                      data-testid={`mcp-policy-mode-segmented-tooltip-${scopeKey}`}
+                    >
+                      {mutationsTooltip}
+                    </TooltipContent>
+                  </Tooltip>
+                ) : (
+                  <ModeSegmented
+                    value={(policy.mode as Mode) ?? "blocklist"}
+                    onChange={handleMode}
+                    disabled={savingMode}
+                    testid={`mcp-policy-mode-segmented-${scopeKey}`}
+                  />
+                )}
               </div>
               <div
                 className="mt-3 space-y-1 text-[12px] leading-relaxed"
@@ -235,13 +271,38 @@ export function MCPPolicyHeader({
             </div>
 
             <div className="mt-2 flex items-center gap-3">
-              <Switch
-                checked={policy.block_on_uncertainty}
-                onCheckedChange={handleBOU}
-                disabled={savingBOU}
-                label="Block on uncertainty"
-                data-testid={`mcp-policy-bou-switch-${scopeKey}`}
-              />
+              {mutationsDisabled ? (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <span
+                      className="inline-block"
+                      data-testid={`mcp-policy-bou-switch-disabled-${scopeKey}`}
+                    >
+                      <Switch
+                        checked={policy.block_on_uncertainty}
+                        onCheckedChange={handleBOU}
+                        disabled
+                        label="Block on uncertainty"
+                        data-testid={`mcp-policy-bou-switch-${scopeKey}`}
+                      />
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent
+                    className="max-w-xs text-xs leading-relaxed"
+                    data-testid={`mcp-policy-bou-switch-tooltip-${scopeKey}`}
+                  >
+                    {mutationsTooltip}
+                  </TooltipContent>
+                </Tooltip>
+              ) : (
+                <Switch
+                  checked={policy.block_on_uncertainty}
+                  onCheckedChange={handleBOU}
+                  disabled={savingBOU}
+                  label="Block on uncertainty"
+                  data-testid={`mcp-policy-bou-switch-${scopeKey}`}
+                />
+              )}
               <span
                 className="text-sm"
                 style={{ color: "var(--text)" }}

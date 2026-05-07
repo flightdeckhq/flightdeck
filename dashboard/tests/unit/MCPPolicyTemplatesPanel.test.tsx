@@ -12,6 +12,7 @@ vi.mock("@/lib/api", async () => {
 
 import { applyMCPPolicyTemplate, listMCPPolicyTemplates } from "@/lib/api";
 import { MCPPolicyTemplatesPanel } from "@/components/policy/MCPPolicyTemplatesPanel";
+import { useWhoamiStore } from "@/store/whoami";
 
 const listMock = listMCPPolicyTemplates as unknown as Mock;
 const applyMock = applyMCPPolicyTemplate as unknown as Mock;
@@ -33,6 +34,14 @@ const WARNING_TEMPLATE = {
 beforeEach(() => {
   listMock.mockReset();
   applyMock.mockReset();
+  // D147: most tests assume admin role; viewer-mode test below
+  // overrides per-case.
+  useWhoamiStore.setState({
+    role: "admin",
+    tokenId: "test-token",
+    loading: false,
+    error: null,
+  });
 });
 
 afterEach(() => {
@@ -148,5 +157,42 @@ describe("MCPPolicyTemplatesPanel", () => {
     expect(
       screen.getByTestId("mcp-policy-template-confirm-warning").textContent,
     ).toContain("Flightdeck does not track upstream MCP server URL changes");
+  });
+
+  it("hides Apply button on each card when role is viewer (D147)", async () => {
+    useWhoamiStore.setState({
+      role: "viewer",
+      tokenId: "viewer-token",
+      loading: false,
+      error: null,
+    });
+    listMock.mockResolvedValue([STRICT_TEMPLATE, WARNING_TEMPLATE]);
+
+    render(
+      <MCPPolicyTemplatesPanel
+        flavor="prod"
+        scopeKey="prod"
+        onApplied={async () => undefined}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(
+        screen.getByTestId("mcp-policy-template-card-strict-baseline"),
+      ).toBeTruthy();
+    });
+
+    expect(
+      screen.queryByTestId("mcp-policy-template-card-apply-strict-baseline"),
+    ).toBeNull();
+    expect(
+      screen.queryByTestId(
+        "mcp-policy-template-card-apply-strict-with-common-allows",
+      ),
+    ).toBeNull();
+    // Cards still render — the operator can read what's available.
+    expect(
+      screen.getByTestId("mcp-policy-template-card-strict-baseline").textContent,
+    ).toContain("strict-baseline");
   });
 });

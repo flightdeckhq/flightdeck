@@ -130,6 +130,14 @@ definitions:
           type: string
         type: array
     type: object
+  handlers.WhoamiResponse:
+    properties:
+      role:
+        description: '"admin" | "viewer"'
+        type: string
+      token_id:
+        type: string
+    type: object
   handlers.applyTemplateRequest:
     properties:
       template:
@@ -2545,4 +2553,28 @@ paths:
       summary: Real-time fleet stream
       tags:
       - stream
+  /v1/whoami:
+    get:
+      description: Returns the role + token_id for the bearer token in the request.
+        ``admin`` for IsAdmin tokens (env-configured admin or tok_admin_dev in dev),
+        ``viewer`` for any other valid token. The dashboard reads this once at session
+        start (D147) and gates mutation CTAs on role === "admin".
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/handlers.WhoamiResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      summary: Identify the authenticated bearer
+      tags:
+      - auth
 swagger: "2.0"

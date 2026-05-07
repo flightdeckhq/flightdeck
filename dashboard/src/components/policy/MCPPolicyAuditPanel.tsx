@@ -10,7 +10,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { SyntaxJson } from "@/components/ui/syntax-json";
-import { adminTokenError, ApiError, listMCPPolicyAuditLog } from "@/lib/api";
+import { listMCPPolicyAuditLog } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import type { MCPPolicyAuditLog } from "@/lib/types";
 
@@ -78,11 +78,9 @@ export function MCPPolicyAuditPanel({
       });
       setRows(list);
     } catch (err) {
-      if (err instanceof ApiError && err.status === 403) {
-        setError(adminTokenError("view the audit log."));
-      } else {
-        setError(err instanceof Error ? err.message : "Failed to load audit log");
-      }
+      // GET audit-log is read-open per D147; no admin-wall special-
+      // case — surface real errors as real errors.
+      setError(err instanceof Error ? err.message : "Failed to load audit log");
     } finally {
       setLoading(false);
     }

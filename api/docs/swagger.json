@@ -2253,6 +2253,38 @@
                     }
                 }
             }
+        },
+        "/v1/whoami": {
+            "get": {
+                "description": "Returns the role + token_id for the bearer token in the request. ``admin`` for IsAdmin tokens (env-configured admin or tok_admin_dev in dev), ``viewer`` for any other valid token. The dashboard reads this once at session start (D147) and gates mutation CTAs on role === \"admin\".",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "auth"
+                ],
+                "summary": "Identify the authenticated bearer",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.WhoamiResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    }
+                }
+            }
         }
     },
     "definitions": {
@@ -2455,6 +2487,18 @@
                     "items": {
                         "type": "string"
                     }
+                }
+            }
+        },
+        "handlers.WhoamiResponse": {
+            "type": "object",
+            "properties": {
+                "role": {
+                    "description": "\"admin\" | \"viewer\"",
+                    "type": "string"
+                },
+                "token_id": {
+                    "type": "string"
                 }
             }
         },

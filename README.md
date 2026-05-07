@@ -391,54 +391,16 @@ A declaration whose URL matches a previously-seen URL under a different name pro
 
 ### Configuration walkthrough
 
-1. **Operator creates a flavor policy on the dashboard** under Settings → MCP Policies. The form lets you select a flavor (e.g., `production`), pick allow / deny entries against the global, and toggle `block_on_uncertainty`.
+1. **Operator creates a flavor policy on the dashboard** under Settings → Policies → MCP Protection. The form lets you select a flavor (e.g., `production`), pick allow / deny entries against the global, and toggle `block_on_uncertainty`.
 2. **Sensor and plugin pick it up at the next session.** The Python sensor fetches the active policy at `init()` (synchronous, alongside the existing token-policy preflight). The Claude Code plugin fetches at every `SessionStart` with a one-hour disk cache.
 3. **Per-call enforcement.** The sensor evaluates each MCP `call_tool` against the cached policy. On `warn` it emits `policy_mcp_warn` and proceeds. On `block` it emits `policy_mcp_block`, flushes the event queue, and raises `flightdeck.MCPPolicyBlocked` — frameworks surface this as a tool-call failure to the agent's reasoning loop (D130).
 4. **Mid-session updates.** A `policy_update` directive received in a response envelope refreshes the sensor cache; the new policy applies at the **next** `session_start`. In-flight sessions deliberately keep the policy that was active at their start so a mid-session flip doesn't change behaviour for a call already in progress (D129).
 
-### Quickstart YAML — "allow exactly these three servers in production"
-
-```yaml
-# Global policy (auto-created by Flightdeck on install; shown for clarity)
-scope: global
-mode: allowlist                  # block any server not explicitly allowed
-block_on_uncertainty: false      # (toggle is per-flavor; shown here as a reminder)
-entries: []                      # global allow-list is empty; flavor below carries the entries
-
----
-# Per-flavor policy: production
-scope: flavor
-scope_value: production
-block_on_uncertainty: true       # surface fall-through cases as audit-grade blocks
-entries:
-  - server_url: "https://maps.example.com/sse"
-    server_name: "maps"
-    entry_kind: allow
-    enforcement: block           # ignored on allow entries; matters on deny entries
-  - server_url: "https://search.example.com/sse"
-    server_name: "search"
-    entry_kind: allow
-    enforcement: block
-  - server_url: "https://wiki.internal/mcp"
-    server_name: "internal-wiki"
-    entry_kind: allow
-    enforcement: block
-```
-
-Bulk YAML import is the operator workflow for the "I have N servers, here's the list" case. The dashboard renders the same data as a sortable table.
-
-### Soft-launch in v0.6
-
-The policy machinery ships in two phases (D133). v0.6 hard-codes warn-only behaviour: configured `block` enforcement still emits an event, but the event is `policy_mcp_warn` with `would_have_blocked=true` rather than `policy_mcp_block`, and the agent's call proceeds. v0.7 removes the override and `block` raises `MCPPolicyBlocked` as designed. The full storage, API, dashboard, fingerprinting, and event surfaces ship complete in v0.6.
-
-`FLIGHTDECK_MCP_POLICY_DEFAULT` is the per-agent escape hatch. Set to `enforce` to opt in to real enforcement before v0.7, or to `warn` after v0.7 to opt out.
-
 ### Troubleshooting
 
-- **"MCP call works in dev but blocked in production."** The flavor policies differ. Check `Settings → MCP Policies → production` against `dev` — production typically runs allowlist mode, dev typically runs blocklist mode (the default). The `policy_mcp_block` event payload's `decision_path` field tells you which step in the resolution algorithm produced the block (`flavor_entry`, `global_entry`, or `mode_default`).
+- **"MCP call works in dev but blocked in production."** The flavor policies differ. Check `Settings → Policies → MCP Protection → production` against `dev` — production typically runs allowlist mode, dev typically runs blocklist mode (the default). The `policy_mcp_block` event payload's `decision_path` field tells you which step in the resolution algorithm produced the block (`flavor_entry`, `global_entry`, or `mode_default`).
 - **"A server name changed silently."** Look for `mcp_server_name_changed` events in the dashboard. The URL hash is stable across renames; only the display label drifted. Investigate whether the rename is legitimate (a typo fix) or suspicious (an attacker substituting a server with a familiar URL but a different declared name). The policy decision still resolves on URL, so enforcement isn't bypassed by rename.
 - **"Decisions remembered locally don't match the dashboard."** Claude Code's `yes-and-remember` decisions live at `~/.claude/flightdeck/remembered_mcp_decisions.json` (D132). The plugin lazy-syncs to the control plane and re-fetches on the standard TTL, so a real `deny` on the server-side policy will eventually override a stale local `yes`. Force a resync immediately by deleting the file and starting a new Claude Code session.
-- **"Sensor isn't enforcing in v0.6."** Soft-launch is warn-only by default. Set `FLIGHTDECK_MCP_POLICY_DEFAULT=enforce` to opt in to real enforcement before v0.7, or wait for the v0.7 release to flip enforcement on by default.
 
 ### Known framework constraints
 
@@ -632,7 +594,9 @@ Open work tracked here. Prioritized when users tell us which matters most.
 - **Continuous framework verification.** Scheduled live-API smoke runs across every supported framework, not just on PR. Catches SDK class-rename breakage (anthropic ``RateLimitError`` → ``QuotaError`` etc.) before users hit it.
 - **Production hardening.** NATS authentication, Helm chart polish, nginx rate limiting, dashboard auth, litellm streaming interception, native LangChain Voyage embeddings, dedicated LlamaIndex / CrewAI interceptors where transitive coverage falls short.
 - **AutoGen framework support.** LLM-call interception via `autogen-core` / `autogen-agentchat` (the 0.4 rewrite) or `pyautogen` (0.2 legacy), plus sub-agent observability for it (`agent_role` from `participant.name`, child session per RoutedAgent dispatch / `generate_reply`). AutoGen ships two libraries that share a name with different APIs; both versions need their own interceptor.
-- **MCP policy dry-run draft mode.** Current dry-run replays the saved policy against historical events. Pre-save 'draft' state for what-if exploration before committing changes is a post-v0.6 enhancement; user demand will drive prioritization.
+- **MCP policy version history.** Per-PUT snapshots + structured diff between versions (mode_changed, BOU_changed, entries_added/removed/changed). Useful for compliance use cases. v0.6 dropped this in favour of the audit log as the durable primitive (D142). Reintroduce if user demand surfaces.
+- **MCP policy dry-run preview.** Replay the last N hours of MCP traffic against a proposed policy before saving; per-server `would_allow` / `would_warn` / `would_block` counts. v0.6 dropped this in favour of "add entry → observe live events" iteration (D143). Reintroduce if user demand surfaces.
+- **MCP policy YAML import/export.** Round-trip flavor + global policy state to YAML for CLI-driven setup or backup. v0.6 dropped this in favour of UI-as-canonical-edit-path (D144). Reintroduce if user demand surfaces.
 - **Remove `flightdeck_sensor.compat.crewai_mcp_schema_fixup` helper.** The helper exists as a workaround for an upstream mcpadapt schema-generation bug emitting JSON-Schema-2020-12-invalid keys (empty `anyOf`, null `enum` / `items`, missing `type` after the empty `anyOf` is removed). Remove the helper + the README "Known framework constraints" subsection once mcpadapt emits valid schemas. Verify by running playground demo 22 without the fixup call; if it PASSES, the upstream is fixed and the helper can land for removal.
 
 The roadmap is intentionally loose. User demand reorders priorities.

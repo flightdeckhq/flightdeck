@@ -5967,6 +5967,10 @@ D129 (control-plane policy that the local file overlays).
 
 **Date:** 2026-05-05
 **Phase:** MCP Protection Policy
+**Status:** Superseded by D145 — the soft-launch warn-only override
+is removed in step 6.8; v0.6 enforces policy decisions as configured.
+The reasoning below remains historically accurate for the
+pre-step-6.8 design.
 
 **Context.** A misconfigured allowlist on a real fleet could halt
 every MCP-using agent simultaneously. The policy machinery is
@@ -6838,4 +6842,422 @@ EnsureGlobalMCPPolicy doc-comment were spurious and have been
 re-pointed at D141 here). Rule 34 (migrations are schema-only,
 init.sql is seed-only — D141 treats this contract row as
 schema state). Rule 43 (every pivot recorded in DECISIONS.md).
+
+---
+
+## D142 -- Drop MCP policy version history; audit log is the durable primitive
+
+**Date:** 2026-05-07
+**Phase:** MCP Protection Policy (step 6.8 cleanup)
+
+**Context.** D128 shipped four MCP-policy tables: ``mcp_policies``,
+``mcp_policy_entries``, ``mcp_policy_versions``, ``mcp_policy_audit_log``.
+Each successful PUT bumped ``mcp_policies.version`` and snapshotted
+the resulting policy state into ``mcp_policy_versions``. Three
+control-plane endpoints surfaced the history (``GET /:flavor/versions``,
+``GET /:flavor/versions/:version_id``, ``GET /:flavor/diff``) and the
+dashboard rendered version-list + structural-diff views over them.
+
+The audit log already records every operator-initiated mutation —
+actor, event type, timestamp, payload diff. For "who changed this and
+when?" the audit log is sufficient. Versioning + diff piles a second
+durable record on top whose only differentiator is point-in-time
+rollback / structural diff against an arbitrary historical version.
+That capability has real value in compliance-heavy environments; it
+has zero v0.6 user demand and a meaningful implementation surface
+(table, three endpoints, two dashboard panels, snapshot-on-PUT
+transaction step, structural-diff computation logic).
+
+**Decision.** v0.6 drops version history. Migration 000020 drops the
+``mcp_policy_versions`` table AND the ``version`` column on
+``mcp_policies`` (the column has no remaining reader once snapshots
+are gone). The three history endpoints are removed from the API.
+The dashboard's version-list panel and diff viewer are removed. The
+mutation transaction simplifies from six steps to five
+(``SELECT FOR UPDATE`` → ``UPDATE`` → ``DELETE`` entries → ``INSERT``
+new entries → ``INSERT`` audit log).
+
+The audit log alone answers "who changed this and when?" in v0.6.
+Operators who need point-in-time rollback fall back to "read the
+audit log payload, reconstruct the prior state by hand, PUT it
+back" — slow but possible.
+
+**Why not soft-deprecate (keep code, hide UI).** Code that nothing
+reads is cruft (no-compat-tax memory). The ``mcp_policy_versions``
+table on a 1000-flavor fleet with weekly PUT churn grows linearly
+with no reader; dropping it now is cheaper than dropping it later.
+
+**Why not gate behind a "Pro" feature flag.** Flightdeck is single-
+tier in v1. Feature gating introduces a tier story we don't have
+the user evidence to justify.
+
+**Roadmap.** README.md Roadmap carries the version-history bullet so
+user demand can resurface it. Reintroduction is a clean re-add: new
+migration adds the table back + ``version`` column + snapshot-on-PUT
+step; new endpoints + new dashboard panels.
+
+**Related.** D128 (storage schema — versions table is dropped).
+D147 (the deleted endpoints don't move to read-open; they cease to
+exist). Rule 49 (Roadmap is the discoverable bucket for user-
+prioritisable post-v0.6 work).
+
+---
+
+## D143 -- Drop dry-run preview from v0.6
+
+**Date:** 2026-05-07
+**Phase:** MCP Protection Policy (step 6.8 cleanup)
+
+**Context.** ``POST /v1/mcp-policies/:flavor/dry_run`` replayed the
+last N hours of ``mcp_tool_call`` events against a proposed policy,
+returning per-server ``would_allow`` / ``would_warn`` / ``would_block``
+/ ``unresolvable`` counts. The dashboard rendered the response as a
+Recharts stacked-bar per server. The replay strategy bound
+historical events to fingerprints via ``sessions.context.mcp_servers``
+(D137) — events whose session lacked the context bucket counted as
+``unresolvable``.
+
+The feature has three structural limits. (a) ``unresolvable_count``
+on a fleet that ran pre-D140 sensors is large enough that the dry-
+run's signal-to-noise degrades — the operator sees a partial picture
+and can't tell whether a "0 blocks" outcome is real or an artifact
+of unresolvable events. (b) Dry-run replays a static historical
+window; it cannot anticipate operator-typing-changes-mode-then-types-
+back-and-saves churn the way a live add-then-observe loop does. (c)
+The implementation surface (handler + store + dashboard panel + test
+fixtures) is non-trivial for a feature whose user-iteration model is
+"add one entry, look at the live event stream, refine."
+
+**Decision.** v0.6 drops dry-run preview. Operators iterate via add-
+entry → observe live `policy_mcp_warn` / `policy_mcp_block` events
+on the dashboard event stream → refine. The replay endpoint, store
+method, dashboard panel, and Recharts stacked-bar are removed.
+
+The metrics endpoint (``GET /v1/mcp-policies/:flavor/metrics``) stays
+— it's observability of live enforcement, not what-if simulation, and
+sits in the same class as the events endpoint.
+
+**Why not retain as collapsed-by-default panel.** The "is the unresolvable
+count real or artifact?" interpretation problem doesn't go away when
+the panel collapses; it just gets harder to find.
+
+**Why not restrict to admin-only screen.** The discoverability and
+implementation surface are unchanged; only the audience shrinks. Doesn't
+solve the problem.
+
+**Roadmap.** README.md carries a dry-run bullet so user demand can
+prioritise reintroduction. The pre-existing "MCP policy dry-run draft
+mode" Roadmap bullet (which scoped a smaller in-memory what-if
+exploration without saving) is subsumed by this broader bullet.
+
+**Related.** D137 (the replay-via-context binding strategy that v0.6
+no longer uses). D147 (the dry-run endpoint is deleted, not auth-split).
+
+---
+
+## D144 -- Drop YAML import/export from v0.6; UI is the canonical edit path
+
+**Date:** 2026-05-07
+**Phase:** MCP Protection Policy (step 6.8 cleanup)
+
+**Context.** ``POST /v1/mcp-policies/:flavor/import`` and ``GET
+/v1/mcp-policies/:flavor/export`` round-tripped flavor + global policy
+state to a YAML schema (D138 templates use the same schema). The
+dashboard offered a plain ``<textarea>`` editor for import. The
+``gopkg.in/yaml.v3`` Go dependency was added for the API side.
+
+The YAML interchange surfaced operator workflows for (a) bulk-edit
+in a text editor, (b) checking policy into git, (c) scripted setup
+across environments. None of these have v0.6 user evidence; all add
+schema-drift risk (operator-edited YAML that fails server-side
+validation triggers the ingestion-boundary error path on import).
+The UI is sufficient for v0.6's expected operator population (per-
+flavor edit + occasional template apply).
+
+**Decision.** v0.6 drops YAML import/export. The two endpoints are
+removed. The dashboard textarea editor is removed. The
+``gopkg.in/yaml.v3`` dep stays in ``go.mod`` only if another
+consumer keeps it; the policy templates load embedded YAML via
+``embed.FS`` and a yaml decoder, which still needs the dep —
+``gopkg.in/yaml.v3`` therefore stays for templates.
+
+The templates endpoints (``GET /v1/mcp-policies/templates``,
+``POST /v1/mcp-policies/:flavor/apply_template``) stay. They have
+small surface area, support scripted setup ("apply
+strict-with-common-allows on every fresh production flavor"), and
+the YAML they ship is server-owned (D138) — operator-side schema
+drift can't happen.
+
+**Why not retain the textarea behind an "advanced" toggle.** The
+schema-drift risk doesn't change with discoverability. Operators
+who find the toggle still hit the same validation errors.
+
+**Why not restrict to admin-only.** Same surface area, same drift
+risk; just narrower audience.
+
+**Roadmap.** README.md carries a YAML import/export bullet so user
+demand can prioritise reintroduction (CLI-driven setup, git-tracked
+policy state). Reintroduction is a clean re-add: handlers + endpoint
+docs + dashboard textarea editor + tests.
+
+**Related.** D138 (templates stay; the YAML the templates ship is
+server-owned, distinct from the operator-edited YAML this entry
+drops). D146 (the dashboard's YAML import/export panel is one of
+the surfaces removed from the merged Policies page). D147 (the
+deleted endpoints are deleted, not auth-split).
+
+---
+
+## D145 -- Drop soft-launch banner + override; v0.6 enforces as configured
+
+**Date:** 2026-05-07
+**Phase:** MCP Protection Policy (step 6.8 cleanup)
+**Supersedes:** D133.
+
+**Context.** D133 hedged v0.6 against blast radius from a
+misconfigured allowlist by hard-coding warn-only behavior at the
+sensor + plugin emission sites: ``policy_mcp_block`` decisions
+emitted as ``policy_mcp_warn`` with a ``would_have_blocked=true``
+payload field. ``FLIGHTDECK_MCP_POLICY_DEFAULT={warn,enforce}`` was
+the per-agent override. The dashboard rendered a dismissible banner
+on the MCP Policies page and a per-row "would have blocked" badge
+on warn events whose flag was set. The whole apparatus was
+scheduled to retire in v0.7.
+
+The blast-radius hedge bought operator confidence at the cost of:
+the soft-launch override path (sensor ``apply_soft_launch`` +
+emission rewrite), the env-var handling, the ``would_have_blocked``
+payload field everywhere it threads through (event payload type,
+ingestion validation, dashboard render sites, tests, swagger docs),
+the dashboard banner + dismissal localStorage, the
+``SOFT_LAUNCH_ACTIVE`` constant, sensor unit tests for the soft-
+launch downgrade matrix, and ARCHITECTURE / CHANGELOG / DECISIONS
+copy across the codebase.
+
+The user evidence the hedge was protecting against does not exist
+pre-v0.6. There is no production fleet to misconfigure-and-halt.
+The hedge was insurance against a population that didn't yet exist;
+the insurance premium is paid in carrying complexity through every
+sensor / dashboard / API release until v0.7.
+
+**Decision.** v0.6 enforces policy decisions as configured. The
+soft-launch override is removed entirely:
+
+1. Sensor: ``apply_soft_launch()`` (or wherever the ``block →
+   warn`` rewrite lives in ``sensor/flightdeck_sensor/core/
+   mcp_policy.py``) is deleted. ``policy_mcp_block`` decisions
+   emit ``policy_mcp_block`` and raise ``MCPPolicyBlocked`` per
+   D130. Soft-launch unit tests retire alongside the code.
+2. ``FLIGHTDECK_MCP_POLICY_DEFAULT`` env var is removed from the
+   sensor and from ARCHITECTURE.md's environment-variables table.
+3. ``would_have_blocked`` payload field is removed from the
+   event-payload type, ingestion validation, dashboard renderers,
+   swagger docs, and any test fixtures asserting it.
+4. Dashboard ``MCPSoftLaunchBanner`` component + tests + the
+   ``SOFT_LAUNCH_ACTIVE`` constant in ``dashboard/src/lib/
+   constants.ts`` are deleted.
+5. The "Sensor isn't enforcing in v0.6" troubleshooting line in
+   README.md is deleted (the issue stops being a thing).
+
+**Why now.** Pre-v0.6 has no users. The hedge is paying premium
+on insurance for a population that doesn't exist. Cleaner cut now
+than carrying the override forward and cutting it in v0.7
+alongside a real production user base where the cut is more
+intrusive.
+
+**Why not keep the override but default to ``enforce``.** Carrying
+the override forward perpetuates the carrying complexity for an
+escape hatch operators have no current need to use. If a future
+release surfaces a real need for "warn-only at the sensor regardless
+of policy", a clean re-add is the right shape.
+
+**Why not keep just the banner without the override behavior.**
+The banner without the override is misleading copy — it announces
+warn-only behavior that no longer exists.
+
+**Verification gate.** Live playground demo per Rule 40a after
+removal — run the block-policy scenario and assert
+``policy_mcp_block`` lands as ``policy_mcp_block`` (not
+downgraded), payload does NOT contain ``would_have_blocked``, and
+``MCPPolicyBlocked`` raises at ``call_tool`` time. (Detailed
+verification chain in commit 2's plan.)
+
+**Related.** D130 (sensor block contract — fully active in v0.6
+post-D145; D133's downgrade no longer suppresses it). D131 (event
+types — ``policy_mcp_block`` is a real block now, not a downgrade
+artifact). D146 (the dashboard's soft-launch banner is one of the
+surfaces removed from the merged Policies page). Rule 28 (sensor
+fail-open — orthogonal; soft-launch was about block-as-warn,
+fail-open is about CP-unreachable-as-allow; both can coexist or
+not, and v0.6 keeps fail-open and drops soft-launch).
+
+---
+
+## D146 -- Unified Policies page (Token Budget + MCP Protection sub-tabs)
+
+**Date:** 2026-05-07
+**Phase:** MCP Protection Policy (step 6.8 cleanup)
+**Supersedes:** the step 6 commit-1 Assumption-1 split-pages
+decision (cohabitation rather than unification).
+
+**Context.** Step 6 commit 1 stipulated that the MCP Protection
+Policy management UI lives at ``/mcp-policies`` as a top-level
+page distinct from ``/policies`` (token-budget). The reasoning
+was "cohabitation rather than unification keeps each feature's
+mental model honest; an operator never has to context-switch
+between LLM-call cost gating and MCP-server access gating in the
+same screen."
+
+Six months of step 6.x iteration have surfaced the cost. Two
+top-level "Policies" entries in the dashboard nav force an
+operator to mentally taxonomise "is this a policy or an MCP
+policy?" before clicking — exactly the context-switch the split
+was supposed to prevent. The MCP Policies page also competed
+with the existing /policies page for the most natural URL slot;
+the split-by-feature URL ``/mcp-policies`` reads as "MCP
+Policies" but the operator's mental model is "this is a kind of
+policy."
+
+**Decision.** v0.6 unifies. Single ``/policies`` route with two
+sub-tabs (shadcn ``<Tabs>`` primitive, already added in step
+6/6.5):
+
+- **Token Budget** — existing ``/policies`` content unchanged.
+- **MCP Protection** — content moved from ``MCPPolicies.tsx``,
+  with the simplifications from D142-D145 (no version history,
+  no dry-run, no YAML, no soft-launch banner, no metrics panel
+  on the policy management surface, templates as quick-start
+  empty-state link not card grid).
+
+The ``/mcp-policies`` route is removed entirely. Hard 404 on
+old URLs — pre-v0.6 there are no users to protect against
+broken bookmarks. The ``?policy=mcp`` query param deep-links to
+the MCP Protection sub-tab; default tab on visit is Token
+Budget (existing operator behavior preserved).
+
+**Why not redirect ``/mcp-policies`` → ``/policies?policy=mcp``.**
+Pre-v0.6 means no real bookmarks to break. The redirect is
+permanent dead weight in App.tsx for a backwards-compatibility
+need that doesn't exist.
+
+**Why not the reverse merge (move /policies under /mcp-policies).**
+``/policies`` is the more general path and predates the MCP
+work. The merge direction follows the natural hierarchy.
+
+**Why query param over URL hash.** Query params share cleanly
+across copy/paste, web crawlers, and analytics tools; hash-based
+deep-links only survive within a single browser session.
+
+**Related.** D142-D145 (the simplifications that ship in the
+merged sub-tab). The step 6 commit-1 Assumption-1 it
+supersedes (recorded only in PR description, not in DECISIONS.md
+— this entry is the durable record of the pivot). Rule 41
+(ARCHITECTURE describes what the system IS — the merged Policies
+page is the v0.6 state).
+
+---
+
+## D147 -- Read-open / mutation-admin auth split for MCP policy endpoints
+
+**Date:** 2026-05-07
+**Phase:** MCP Protection Policy (step 6.8 cleanup)
+
+**Context.** Step 6 commit 1 designated all MCP policy endpoints
+as either "read-only (any authenticated bearer token)" or "admin-
+grade (same gate() middleware)" with the descriptive note
+"token-based admin scoping is documented as not implemented; treat
+any production token as full-access". In practice every MCP
+endpoint went through the same ``gate()`` middleware regardless of
+designation; the read/admin split was aspirational.
+
+Two costs from the aspirational design surfaced during step 6.x
+chrome verification: (a) the dashboard's MCP Policies page
+rendered "Admin token required" inline errors on read panels for
+users with ``tok_dev`` (non-admin) tokens — a wall in front of
+purely-observational data, no operator value; (b) the dashboard
+viewer experience was one big blocking error rather than a
+graceful read-only mode.
+
+The validator already returns ``IsAdmin`` (``tok_admin_dev``
+returns true; ``tok_dev`` returns false; production tokens
+inherit from the env-configured ``FLIGHTDECK_ADMIN_ACCESS_TOKEN``
+match). The aspirational designation can become real with one
+new middleware (``adminGate``) wrapping ``gate()`` and routing
+mutation handlers through it.
+
+**Decision.** v0.6 enforces a read-open / mutation-admin split
+on the MCP policy endpoints:
+
+**Read-open (any authenticated bearer token).** No admin scope
+required. Returns 200 / 404 / etc. based on data, not auth.
+
+| Method | Path |
+|---|---|
+| ``GET`` | ``/v1/mcp-policies/global`` |
+| ``GET`` | ``/v1/mcp-policies/:flavor`` |
+| ``GET`` | ``/v1/mcp-policies/resolve`` |
+| ``GET`` | ``/v1/mcp-policies/global/audit-log`` |
+| ``GET`` | ``/v1/mcp-policies/:flavor/audit-log`` |
+| ``GET`` | ``/v1/mcp-policies/:flavor/metrics`` |
+| ``GET`` | ``/v1/mcp-policies/templates`` |
+
+**Mutation-admin (admin-scope token required).** Returns 403
+otherwise.
+
+| Method | Path |
+|---|---|
+| ``POST`` | ``/v1/mcp-policies/:flavor`` (create) |
+| ``PUT`` | ``/v1/mcp-policies/global`` |
+| ``PUT`` | ``/v1/mcp-policies/:flavor`` |
+| ``DELETE`` | ``/v1/mcp-policies/:flavor`` |
+| ``POST`` | ``/v1/mcp-policies/:flavor/apply_template`` |
+
+**New ``GET /v1/whoami``.** Returns
+``{"role": "admin"|"viewer", "token_id": "<uuid>"}`` for the
+authenticated bearer. Read-open scope. The dashboard calls this
+once at session start (App.tsx or auth context bootstrap),
+stores the role in zustand or React context, and components
+that render mutation buttons gate on ``role === "admin"``.
+
+**Dashboard viewer treatment** (mixed by intent):
+- Mode toggle: disabled + tooltip ("Read-only — admin token
+  required to change mode"). Mode is informational state the
+  viewer needs to SEE; disabled-with-tooltip preserves the
+  context.
+- Add Entry / row edit/delete / template apply: hidden
+  entirely. Action-only affordances; a disabled button is
+  noise to a viewer.
+- "Admin token required" inline error wall: removed. Reads are
+  open now; the wall has no remaining trigger.
+
+**Why ``/v1/whoami`` over inferring from JWT-style claims.**
+Flightdeck access tokens are opaque (D095 / token.go). The
+validator does the lookup; whoami exposes its result. JWT-style
+claims would mean a different token shape; out of scope for v0.6.
+
+**Why not JS-side decode of token prefix.** Token prefix doesn't
+encode admin scope (D095). Tokens with the same prefix shape
+have different IsAdmin results from the validator. Inferring on
+the JS side would re-implement validator logic in the wrong
+language.
+
+**Why component-level gating over route-level redirect.** The
+viewer experience is "page renders, mutation CTAs hidden",
+NOT "page redirects to a Sorry-Admin page." Component-level
+gating preserves the operator's path through the UI.
+
+**Interaction with ``/v1/admin/*``.** Unchanged — those endpoints
+remain full-admin via the existing scope (D119 / admin scope
+section). Only the MCP policy endpoints get the new read-open /
+mutation-admin split. Future endpoints can opt in to the same
+pattern.
+
+**Related.** D095 (access token shape and validator semantics —
+``IsAdmin`` is the source of truth this entry surfaces). D146
+(the unified Policies page renders the viewer treatment for the
+MCP Protection sub-tab). Rule 28 (sensor fail-open — orthogonal;
+unchanged). The full sweep of which routes are admin-gated lives
+in ``api/internal/server/server.go`` and is audited in commit 4
+of step 6.8 cleanup before the middleware change.
+
 

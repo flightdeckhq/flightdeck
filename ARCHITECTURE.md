@@ -1676,7 +1676,9 @@ always create a new numbered migration.
 | 000015 | Drop and recreate `agents` table with `agent_id` PK (D115) |
 | 000016 | `event_content.input` JSONB column for embeddings capture |
 | 000017 | `sessions.parent_session_id` FK + `sessions.agent_role` text + partial index (D126) |
-| 000018 | `mcp_policies` + `mcp_policy_entries` + `mcp_policy_versions` + `mcp_policy_audit_log` tables + indexes (D128) |
+| 000018 | `mcp_policies` + `mcp_policy_entries` + `mcp_policy_audit_log` tables + indexes (D128). The `mcp_policy_versions` table this migration created was dropped by 000020 — see that row |
+| 000019 | Seed empty-blocklist global `mcp_policies` row (D141) |
+| 000020 | Drop `mcp_policy_versions` table + `mcp_policies.version` column (D142) |
 
 ---
 
@@ -1712,24 +1714,19 @@ authoritative parameter-level reference.
 | `DELETE` | `/v1/access-tokens/:id` | Revoke (dev-seed row protected: 403) |
 | `PATCH` | `/v1/access-tokens/:id` | Rename (dev-seed row protected: 403) |
 | `POST` | `/v1/admin/reconcile-agents` | Recompute `agents.total_sessions`/`total_tokens`/`first_seen_at`/`last_seen_at` from sessions ground truth |
-| `GET` | `/v1/mcp-policies/global` | Global MCP protection policy + entries (D128) |
-| `GET` | `/v1/mcp-policies/:flavor` | Flavor MCP protection policy + entries |
-| `GET` | `/v1/mcp-policies/resolve` | Sensor / plugin preflight resolve (D135); query params `flavor`, `server_url`, `server_name` |
-| `POST` | `/v1/mcp-policies/:flavor` | Create a flavor MCP policy |
-| `PUT` | `/v1/mcp-policies/global` | Replace global MCP policy state; auto-versions and audits |
-| `PUT` | `/v1/mcp-policies/:flavor` | Replace flavor MCP policy state; auto-versions and audits |
-| `DELETE` | `/v1/mcp-policies/:flavor` | Delete a flavor MCP policy (audit-log row preserved) |
-| `GET` | `/v1/mcp-policies/:flavor/versions` | List version metadata |
-| `GET` | `/v1/mcp-policies/:flavor/versions/:version_id` | Full historical snapshot |
-| `GET` | `/v1/mcp-policies/:flavor/diff` | Structured diff between two versions; query params `from`, `to` |
-| `GET` | `/v1/mcp-policies/:flavor/audit-log` | Mutation audit log |
-| `GET` | `/v1/mcp-policies/global/audit-log` | Global mutation audit log |
-| `POST` | `/v1/mcp-policies/:flavor/dry_run` | Replay last N hours of `mcp_tool_call` events against proposed policy (D137) |
-| `GET` | `/v1/mcp-policies/:flavor/metrics` | Aggregated `policy_mcp_warn` / `policy_mcp_block` events; `?period=24h\|7d\|30d` |
-| `POST` | `/v1/mcp-policies/:flavor/import` | Replace policy from YAML body |
-| `GET` | `/v1/mcp-policies/:flavor/export` | Serialize current policy as YAML |
-| `GET` | `/v1/mcp-policies/templates` | List shipped templates (D138) |
-| `POST` | `/v1/mcp-policies/:flavor/apply_template` | Apply a named template to a flavor policy |
+| `GET` | `/v1/mcp-policies/global` | Global MCP protection policy + entries (D128); read-open per D147 |
+| `GET` | `/v1/mcp-policies/:flavor` | Flavor MCP protection policy + entries; read-open |
+| `GET` | `/v1/mcp-policies/resolve` | Sensor / plugin preflight resolve (D135); query params `flavor`, `server_url`, `server_name`; read-open |
+| `POST` | `/v1/mcp-policies/:flavor` | Create a flavor MCP policy; admin-only per D147 |
+| `PUT` | `/v1/mcp-policies/global` | Replace global MCP policy state; admin-only |
+| `PUT` | `/v1/mcp-policies/:flavor` | Replace flavor MCP policy state; admin-only |
+| `DELETE` | `/v1/mcp-policies/:flavor` | Delete a flavor MCP policy (audit-log row preserved); admin-only |
+| `GET` | `/v1/mcp-policies/:flavor/audit-log` | Mutation audit log; read-open |
+| `GET` | `/v1/mcp-policies/global/audit-log` | Global mutation audit log; read-open |
+| `GET` | `/v1/mcp-policies/:flavor/metrics` | Aggregated `policy_mcp_warn` / `policy_mcp_block` events; `?period=24h\|7d\|30d`; read-open |
+| `GET` | `/v1/mcp-policies/templates` | List shipped templates (D138); read-open |
+| `POST` | `/v1/mcp-policies/:flavor/apply_template` | Apply a named template to a flavor policy; admin-only |
+| `GET` | `/v1/whoami` | Returns `{role, token_id}` for the authenticated bearer (D147); read-open |
 | `WS` | `/v1/stream` | Real-time WebSocket fleet updates |
 | `GET` | `/health` | Liveness check |
 | `GET` | `/metrics` | Prometheus exposition |
@@ -2871,14 +2868,15 @@ because the mode default is already permissive.
 
 ### Storage schema
 
-> **Binding contract.** The schema below is the spec for migration
-> `000018_mcp_protection_policy.{up,down}.sql`. The migration ships
-> under `docker/postgres/migrations/` only; the Helm chart picks it
-> up via `helm/Makefile sync-migrations` per D136. Step 2 implements
-> the schema byte-for-byte. Any deviation — column rename, type
-> change, additional or removed constraint, index difference —
-> requires a new `DECISIONS.md` entry recording the pivot per
-> Rule 42 BEFORE the migration is written.
+> **Binding contract.** The schema below is the live state after
+> migrations 000018 (D128 — initial four tables), 000019 (D141 —
+> seed empty-blocklist global row), and 000020 (D142 — drop the
+> `mcp_policy_versions` table and the `version` column). Migrations
+> ship under `docker/postgres/migrations/` only; the Helm chart picks
+> them up via `helm/Makefile sync-migrations` per D136. Any deviation
+> — column rename, type change, additional or removed constraint,
+> index difference — requires a new `DECISIONS.md` entry recording
+> the pivot per Rule 42 BEFORE the migration is written.
 
 ```sql
 CREATE TABLE mcp_policies (
@@ -2887,7 +2885,6 @@ CREATE TABLE mcp_policies (
     scope_value           TEXT,                                 -- NULL for global, flavor name for flavor
     mode                  TEXT CHECK (mode IN ('allowlist', 'blocklist')),  -- NULL on flavor rows
     block_on_uncertainty  BOOLEAN NOT NULL DEFAULT FALSE,
-    version               INT NOT NULL DEFAULT 1,
     created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CHECK ((scope = 'global' AND scope_value IS NULL AND mode IS NOT NULL)
@@ -2913,18 +2910,6 @@ CREATE UNIQUE INDEX mcp_policy_entries_policy_fp_idx
 CREATE INDEX mcp_policy_entries_url_idx
     ON mcp_policy_entries (server_url_canonical);
 
-CREATE TABLE mcp_policy_versions (
-    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    policy_id   UUID NOT NULL REFERENCES mcp_policies(id) ON DELETE CASCADE,
-    version     INT NOT NULL,
-    snapshot    JSONB NOT NULL,                 -- full policy + entries at this version
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    created_by  UUID REFERENCES access_tokens(id) ON DELETE SET NULL
-);
-
-CREATE UNIQUE INDEX mcp_policy_versions_policy_version_idx
-    ON mcp_policy_versions (policy_id, version);
-
 CREATE TABLE mcp_policy_audit_log (
     id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     policy_id    UUID REFERENCES mcp_policies(id) ON DELETE SET NULL,
@@ -2942,16 +2927,21 @@ CREATE INDEX mcp_policy_audit_log_policy_idx
     ON mcp_policy_audit_log (policy_id, occurred_at DESC);
 ```
 
+Three live tables: `mcp_policies`, `mcp_policy_entries`,
+`mcp_policy_audit_log`. The `mcp_policy_versions` table that
+migration 000018 created was dropped by 000020 in step 6.8 cleanup
+(D142) — the audit log is the durable modification trail; per-PUT
+snapshots and the diff endpoint are gone. The `version` column on
+`mcp_policies` was dropped by the same migration.
+
 The audit log table records **policy mutations only** — actor + diff
 of operator-initiated changes. Sensor-observed system state (name
 drift, decision events) ships through the standard event pipeline as
 typed event rows, not as audit log entries (D131).
 
-`mcp_policies.version` is bumped on every PUT; the prior snapshot is
-written to `mcp_policy_versions` so an operator can diff or roll back.
-Soft-delete is intentionally not implemented — a deleted flavor policy
-means the global takes over, and the deletion event is preserved in
-the audit log.
+Soft-delete is intentionally not implemented — a deleted flavor
+policy means the global takes over, and the deletion event is
+preserved in the audit log.
 
 ### Fetch and cache lifecycle
 
@@ -3047,88 +3037,58 @@ moment the operator pushes a flavor deny entry for that server
 — the next `SessionStart` re-fetches the policy and `PreToolUse`
 sees the deny first.
 
-**Control-plane API.** All 17 endpoints live under `/v1/mcp-policies`
+**Control-plane API.** Endpoints live under `/v1/mcp-policies`
 (kebab-plural, matching the `/v1/access-tokens` convention).
 Authentication uses the standard Bearer-token middleware that
-covers the rest of the API. Endpoints carry one of two scope
-designations:
+covers the rest of the API. Endpoints split into two scopes per
+D147:
 
-- **Read-only (sensor / plugin hot path).** Accept any valid bearer
-  token. Idempotent and cacheable. Used by sensors at `init()` and
-  by the Claude Code plugin at `SessionStart`.
-- **Admin-grade.** Same `gate()` middleware as token-policy CRUD —
-  there is no separate admin-scope middleware in the codebase
-  (token-based admin scoping is documented as not implemented;
-  treat any production token as full-access). Operators are
-  expected to firewall mutation routes at the ingress layer if
-  separation-of-duties matters. The designation is descriptive and
-  documented per endpoint so a future scoped-admin middleware can
-  enforce it without contract change.
+- **Read-open (any authenticated bearer token).** All GETs —
+  `/global`, `/:flavor`, `/resolve`, `/global/audit-log`,
+  `/:flavor/audit-log`, `/:flavor/metrics`, `/templates`. Plus
+  the new `/v1/whoami` endpoint that the dashboard uses to
+  determine role. Idempotent and cacheable. Used by sensors at
+  `init()` and by the Claude Code plugin at `SessionStart`.
+- **Mutation-admin (admin-scope token required).** All
+  mutations — `POST /:flavor` (create), `PUT /global`, `PUT
+  /:flavor`, `DELETE /:flavor`, `POST /:flavor/apply_template`.
+  Wrapped by `adminGate()` over the standard `gate()`; returns
+  403 for `IsAdmin=false` tokens. The dashboard reads
+  `GET /v1/whoami` once at session start to determine whether
+  the operator can mutate; mutation CTAs hide for `viewer` role
+  tokens, while the mode toggle disables with a tooltip
+  explanation.
 
-#### Read + resolve (read-only scope)
+The full enumeration of which routes are admin-gated lives in
+`api/internal/server/server.go`.
+
+#### Read-open (any authenticated bearer token, per D147)
+
+All GET endpoints accept any valid bearer token regardless of admin
+scope. Idempotent and cacheable.
 
 | Method | Path | Purpose |
 |---|---|---|
 | `GET` | `/v1/mcp-policies/global` | Fetch the global policy + entries. Always returns 200 (seeded by migration 000019 per D141; idempotently re-ensured at API boot) |
 | `GET` | `/v1/mcp-policies/:flavor` | Fetch the flavor policy + entries. 404 when no flavor policy exists |
 | `GET` | `/v1/mcp-policies/resolve` | Sensor / plugin preflight. Query params `flavor`, `server_url`, `server_name`; returns the resolved decision (`allow` / `warn` / `block`) and the `decision_path` that produced it (`flavor_entry` / `global_entry` / `mode_default`). GET-only — idempotent, safe, cacheable |
+| `GET` | `/v1/mcp-policies/global/audit-log` | Mutation history for the global policy. Query params `from` (ISO 8601), `to`, `event_type`, `limit`, `offset` |
+| `GET` | `/v1/mcp-policies/:flavor/audit-log` | Mutation history for the flavor policy, same query params |
+| `GET` | `/v1/mcp-policies/:flavor/metrics` | Aggregated `policy_mcp_warn` + `policy_mcp_block` events scoped to the flavor's policy. `?period=` accepts `24h` / `7d` / `30d`. Returns `granularity` ("hour" for 24h, "day" for 7d/30d) plus zero-filled `buckets` array alongside per-server aggregates |
+| `GET` | `/v1/mcp-policies/templates` | List shipped templates (D138) — name, description, recommended_for. Three templates ship: `strict-baseline`, `permissive-dev`, `strict-with-common-allows` |
+| `GET` | `/v1/whoami` | Returns `{"role": "admin"\|"viewer", "token_id": "<uuid>"}` for the authenticated bearer (D147). The dashboard calls this once at session start and gates mutation CTAs on `role === "admin"` |
 
-#### Write (admin-grade)
+#### Mutation (admin-grade, per D147)
+
+Admin-scope token required (validator's `IsAdmin=true`); 403 otherwise.
 
 | Method | Path | Purpose |
 |---|---|---|
-| `POST` | `/v1/mcp-policies/:flavor` | Create a new flavor policy. The global is auto-created on install and cannot be POST'd. 409 if the flavor policy already exists |
-| `PUT` | `/v1/mcp-policies/global` | Replace global policy state — mode, entries, `block_on_uncertainty`. Bumps `version`, writes a `mcp_policy_versions` snapshot, writes an audit-log entry. All four operations atomic in one transaction |
-| `PUT` | `/v1/mcp-policies/:flavor` | Replace flavor policy state — entries, `block_on_uncertainty` (mode is global-only per D134). Same auto-version + audit semantics as the global PUT |
+| `POST` | `/v1/mcp-policies/:flavor` | Create a new flavor policy. The global is seeded on install and cannot be POST'd. 409 if the flavor policy already exists |
+| `PUT` | `/v1/mcp-policies/global` | Replace global policy state — mode, entries, `block_on_uncertainty`. Atomic transaction: SELECT FOR UPDATE → UPDATE policy → DELETE entries → INSERT new entries → INSERT audit-log entry |
+| `PUT` | `/v1/mcp-policies/:flavor` | Replace flavor policy state — entries, `block_on_uncertainty` (mode is global-only per D134). Same atomic transaction shape as the global PUT |
 | `DELETE` | `/v1/mcp-policies/:flavor` | Delete a flavor policy. Global cannot be deleted. The audit-log entry survives via `ON DELETE SET NULL` on `policy_id`; the deletion event is preserved |
-
-#### History (admin-grade)
-
-| Method | Path | Purpose |
-|---|---|---|
-| `GET` | `/v1/mcp-policies/:flavor/versions` | List version metadata (no full snapshots) for the flavor policy. `?limit=` (max 200, default 50), `?offset=` |
-| `GET` | `/v1/mcp-policies/:flavor/versions/:version_id` | Full snapshot of one historical version |
-| `GET` | `/v1/mcp-policies/:flavor/diff` | Structured diff between two versions. Query params `from=<version>` and `to=<version>` (integer version numbers, not UUIDs). Server computes the diff so consumers don't reimplement |
-| `GET` | `/v1/mcp-policies/:flavor/audit-log` | Mutation history for the flavor policy. Query params `from` (ISO 8601), `to`, `event_type`, `limit`, `offset` |
-| `GET` | `/v1/mcp-policies/global/audit-log` | Same as above, scoped to the global policy |
-
-#### Power features (admin-grade)
-
-| Method | Path | Purpose |
-|---|---|---|
-| `POST` | `/v1/mcp-policies/:flavor/dry_run` | Replay last N hours of `mcp_tool_call` events against the proposed policy in the request body. Returns per-server `would_allow` / `would_warn` / `would_block` / `unresolvable` counts. `?hours=` defaults to 24, max 168 (7 days). Does NOT mutate state. See "Dry-run engine" below |
-| `GET` | `/v1/mcp-policies/:flavor/metrics` | Aggregated `policy_mcp_warn` + `policy_mcp_block` events scoped to the flavor's policy. `?period=` accepts `24h` / `7d` / `30d`. Returns empty buckets until step 4 ships the events |
-| `POST` | `/v1/mcp-policies/:flavor/import` | Replace flavor policy state from YAML body (`Content-Type: application/yaml`). Same atomic version + audit semantics as PUT; audit log payload carries `via=import` |
-| `GET` | `/v1/mcp-policies/:flavor/export` | Serialize the current flavor policy state as YAML (`Content-Type: application/yaml`). Use the version-fetch endpoint for historical snapshots |
-| `GET` | `/v1/mcp-policies/templates` | List shipped templates. Read-only; no auth scope required beyond bearer token |
-| `POST` | `/v1/mcp-policies/:flavor/apply_template` | Apply a named template (`{"template": "strict-baseline"}` body) to the flavor policy. Same atomic version + audit semantics as PUT; audit log payload carries `applied_template=<name>` |
-
-#### YAML schema (import / export)
-
-Both import and export use the same shape, matching the README
-quickstart example byte-for-byte:
-
-```yaml
-scope: flavor                     # or "global" on global export
-scope_value: production           # omitted on global
-mode: allowlist                   # global only; per-flavor exports
-                                  # don't carry mode (D134)
-block_on_uncertainty: true
-entries:
-  - server_url: "https://maps.example.com/sse"
-    server_name: "maps"
-    entry_kind: allow             # "allow" | "deny"
-    enforcement: block            # "warn" | "block" | "interactive"
-                                  # — only meaningful on deny entries
-                                  # in a blocklist mode + on allow
-                                  # entries that explicitly upgrade
-                                  # an unlisted server's default
-```
-
-Import is idempotent-by-PUT-replace: the entire policy + entries
-are replaced atomically with the imported content. Bumps version.
-Writes audit-log entry with `event_type='policy_updated'` and
-`payload.via='import'`.
+| `POST` | `/v1/mcp-policies/:flavor/apply_template` | Apply a named template (`{"template": "strict-baseline"}` body) to the flavor policy. Same atomic transaction as PUT; audit log payload carries `applied_template=<name>` |
 
 #### Install-time seed and boot-time idempotent retry
 
@@ -3160,39 +3120,6 @@ proceeds. After D141 this hook noops on every cold boot
 might run api before migrations (e.g. operator-managed Helm
 charts in the future). API startup logs `INFO ensure global mcp
 policy at boot complete` on success.
-
-#### Dry-run engine
-
-The dry-run endpoint replays historical MCP traffic against a
-proposed policy. The replay strategy (D137) joins the events
-table to `sessions.context.mcp_servers` to recover the server
-URL + fingerprint per event:
-
-```
-SELECT events.id, events.payload->>'server_name' AS server_name,
-       (sessions.context->'mcp_servers')::jsonb AS server_fingerprints
-  FROM events
-  JOIN sessions ON sessions.session_id = events.session_id
- WHERE events.event_type = 'mcp_tool_call'
-   AND events.occurred_at >= NOW() - $1 * INTERVAL '1 hour'
- ORDER BY events.occurred_at DESC
- LIMIT 10000
-```
-
-For each row the handler walks `server_fingerprints` looking for
-a name match, recovers the canonical URL, and evaluates against
-the proposed policy via the same per-server resolution algorithm
-the live `ResolveMCPPolicy` uses. Events whose session lacks
-`context.mcp_servers` (older sessions, sessions where flightdeck
-init ran AFTER MCP init) bucket as `unresolvable_count` rather
-than silently skipping. The 10000-row hard cap bounds replay cost
-on high-volume fleets; query results are sampled descending by
-time so the most recent events always weigh.
-
-When the proposed policy's `block_on_uncertainty=true` AND the
-mode is `allowlist`, fall-through cases (URL not in any entry)
-count toward `would_block` rather than `would_allow` — the dry-
-run preview matches what the live enforcement would do.
 
 #### Policy templates
 
@@ -3314,15 +3241,13 @@ standard event pipeline; none are audit-log entries (D131, D140).
   the session detail when one arrives so the MCP SERVERS panel
   populates live for in-flight sessions (D140).
 
-### Audit and versioning
+### Audit
 
 Every successful mutation through `POST` / `PUT` / `DELETE
 /v1/mcp-policies` writes one row to `mcp_policy_audit_log` with the
 `actor` resolved from the request token, the `event_type` from the
 mutation kind, and a `payload` JSONB carrying the diff (added /
-removed entries, mode change, `block_on_uncertainty` flip). Every PUT
-additionally bumps `mcp_policies.version` and snapshots the resulting
-state into `mcp_policy_versions` so operators can diff or roll back.
+removed entries, mode change, `block_on_uncertainty` flip).
 
 The audit log is the authoritative record of operator-initiated
 changes — it answers "who changed this and when." Observed system
@@ -3331,102 +3256,59 @@ is queried via the standard event endpoints.
 
 The mutation transaction is single-shot: PUT does (1) `SELECT FOR
 UPDATE` of the current row + entries, (2) `UPDATE mcp_policies`
-with `version = version + 1` and `updated_at = NOW()`, (3) `DELETE
-mcp_policy_entries WHERE policy_id = ?` followed by `INSERT` of
-the new entries, (4) `INSERT mcp_policy_versions` carrying the
-resulting state as a JSONB snapshot, (5) `INSERT
+with `updated_at = NOW()`, (3) `DELETE mcp_policy_entries WHERE
+policy_id = ?` followed by `INSERT` of the new entries, (4) `INSERT
 mcp_policy_audit_log`, all in one `BEGIN ... COMMIT` block. Failure
 of any step rolls the whole mutation back. `SELECT FOR UPDATE`
-prevents version-bump races between concurrent PUTs.
+prevents lost-update races between concurrent PUTs.
 
-The diff endpoint (`GET /v1/mcp-policies/:flavor/diff`) returns:
-
-```json
-{
-  "from_version": 3,
-  "to_version": 5,
-  "from_snapshot": {...},
-  "to_snapshot": {...},
-  "diff": {
-    "mode_changed": null,
-    "block_on_uncertainty_changed": {"from": false, "to": true},
-    "entries_added":   [{...}],
-    "entries_removed": [{...}],
-    "entries_changed": [{"fingerprint": "...", "before": {...}, "after": {...}}]
-  }
-}
-```
-
-`mode_changed` is null on flavor-policy diffs (mode is global-only
-per D134) and on global-policy diffs where mode didn't move. Each
-entry diff carries the full row shape so consumers don't need a
-second fetch to render the diff. Server-side computation keeps the
-diff logic in one place and out of every dashboard / CLI consumer.
-
-### Soft-launch transition
-
-The policy machinery ships in two phases to limit the blast radius of
-a misconfigured allowlist on a real fleet (D133):
-
-- **v0.6.** Sensor and plugin enforcement paths hard-code warn-only
-  behaviour regardless of the configured `enforcement` value. The
-  policy machinery (storage, API, dashboard, events, fingerprinting)
-  ships complete; only the block path is suppressed at the agent
-  boundary. `policy_mcp_warn` events fire normally; `policy_mcp_block`
-  is replaced with `policy_mcp_warn` at emission with a
-  `would_have_blocked=true` payload field so operators can preview
-  what a real enforcement would do.
-- **v0.7.** The hard-coded warn-only override is removed. Configured
-  `block` enforcement raises `MCPPolicyBlocked` and emits
-  `policy_mcp_block`.
-
-`FLIGHTDECK_MCP_POLICY_DEFAULT` is the operator escape hatch. Values:
-`warn` (force warn-only regardless of release) or `enforce` (honor
-configured enforcement regardless of release). Documented for
-operators who need to opt out (v0.7+) or opt in early (v0.6).
+Per-PUT version snapshotting and the diff endpoint were removed in
+step 6.8 cleanup (D142). The audit log carries the modification
+trail; an operator who needs point-in-time reconstruction reads the
+audit log payloads in chronological order and replays them by
+hand. Migration 000020 drops the `mcp_policy_versions` table and
+the `version` column on `mcp_policies` — no code reads either after
+D142, so leaving them in the schema would be cruft.
 
 ### Dashboard surfaces
 
-The MCP Protection Policy management UI lives at
-`/mcp-policies` as a top-level page distinct from the existing
-`/policies` page (which manages token-budget policies — a
-different feature). Cohabitation rather than unification keeps
-each feature's mental model honest; an operator never has to
-context-switch between LLM-call cost gating and MCP-server
-access gating in the same screen.
+MCP Protection lives as a sub-tab under the unified `/policies` route
+per D146. The other sub-tab is Token Budget (existing
+token-budget-policy management content, unchanged from the prior
+`/policies` page). Default tab on visit is Token Budget; the
+`?policy=mcp` query param deep-links to MCP Protection. The old
+`/mcp-policies` route is removed entirely (hard 404, no redirect;
+pre-v0.6 has no users to protect against broken bookmarks per D146).
 
-#### Layout
+#### Layout (MCP Protection sub-tab)
 
-A dismissible soft-launch banner sits at the top of the page
-when `SOFT_LAUNCH_ACTIVE` is true (v0.6 default; flips to false
-in v0.7). Banner copy reads "Soft launch: policy decisions
-downgraded to warn-only until v0.7. Set
-`FLIGHTDECK_MCP_POLICY_DEFAULT=enforce` to opt in early."
-Dismissal persists per-token in `localStorage`.
+The sub-tab opens directly to a scope picker — a shadcn `<Select>`
+with the Global scope plus one entry per flavor policy the operator
+has access to. The mode toggle is editable on the Global scope only
+(D134 enforced in UI; on flavor scopes the global mode is rendered
+read-only as context). The `block_on_uncertainty` toggle is editable
+on every scope.
 
-Below the banner sits a tabbed scope picker — one tab per scope
-the operator can edit. The Global tab is always present; one
-additional tab per flavor policy the operator has access to.
-Each tab shows that scope's own state. The mode toggle is
-editable on the Global tab only (D134 enforced in UI; on flavor
-tabs the global mode is rendered read-only as context). The
-`block_on_uncertainty` toggle is editable on every tab — it's a
-per-policy boolean.
+The active scope persists in the URL alongside the sub-tab
+(`?policy=mcp&scope=global` / `?policy=mcp&scope=flavor:prod`) so
+deep-links and browser back/forward survive.
 
-Tabs preserve scroll position on switch; the URL carries the
-active tab as a query param (`?tab=global` / `?tab=flavor:prod`)
-so deep-links work and browser back / forward survive.
-
-#### Per-tab panels
+#### Per-scope panels
 
 - **Mode toggle** (segmented control, allowlist / blocklist).
-  Global tab only. Visually dominant — operators read mode
+  Global scope only. Visually dominant — operators read mode
   before per-entry enforcement, so the toggle sits above the
   entry table at full width with a one-sentence explanation.
+  Active state is a solid background fill (var(--primary) or
+  similar accent), not text-color-only — the inactive option
+  is transparent background + muted text. Transition 150ms
+  ease-out on background-color and color, no layout reflow on
+  click. Keyboard arrow keys move active state between options.
 - **`block_on_uncertainty` toggle** (Switch component). Per-
-  flavor + global. Only meaningful in allowlist mode; rendered
-  with a low-key visual treatment when the global mode is
-  blocklist (the toggle is a no-op there per D134).
+  flavor + global. Only meaningful in allowlist mode; hidden
+  entirely when the global mode is blocklist (D134 — the
+  toggle is a no-op there, hide-rather-than-grey precedent).
+  Server-side BOU value persists across mode flips.
 - **Entry table.** Search by URL / name, sort columns,
   multi-select for bulk delete, status pill per row (allow /
   deny + enforcement override). Click a row to open the edit
@@ -3434,67 +3316,80 @@ so deep-links work and browser back / forward survive.
   Empty state copy teaches the next action: "Add your first
   allow rule to start gating this flavor" (allowlist mode) or
   "Add your first deny rule to block specific servers"
-  (blocklist mode).
+  (blocklist mode). When `entries.length === 0` AND no
+  template has been applied this session, a single "Quick
+  start: apply a template →" link appears alongside the
+  empty-state copy; clicking opens a dropdown of the three
+  shipped templates with one-line descriptions, applying
+  hides the link for the rest of the session.
 - **Add / edit dialog.** Form fields URL (raw), Name, kind
   (allow/deny), enforcement (warn/block/interactive/none).
   Live fingerprint preview via debounced (300ms) `GET
   /v1/mcp-policies/resolve` so the operator sees the exact
   fingerprint the server will store. Validation per the
   storage schema CHECKs (D128); errors render inline next to
-  the offending field.
-- **Resolve preview panel** (collapsible card at the bottom
-  of each tab). Two inputs (server URL, server name) + Resolve
-  button. Renders the API's `MCPPolicyResolveResult` as a
-  decision-color pill matching the Fleet sidebar chroma family
-  (allow=neutral, warn=amber, block=red) plus decision_path,
-  scope, fingerprint. Educational — operators verify their
-  policy's effective behavior before they save.
-- **Version history.** Calls `GET /:flavor/versions`. Table:
-  version, timestamp, actor token name, summary of changes
-  derived from the corresponding audit-log row. Click a row
-  to load the diff viewer. Empty state on a fresh policy:
-  "Version history will appear after your first save."
-- **Diff viewer.** Calls `GET /:flavor/diff?from=&to=`.
-  Server-computed structural diff renders as: mode_changed
-  badge (when set), block_on_uncertainty_changed badge,
-  entries_added / entries_removed / entries_changed sections.
-  Both snapshots accessible via expandable raw-JSON trees
-  (existing `<SyntaxJson>` component).
-- **Dry-run preview.** Calls `POST /:flavor/dry_run` with the
-  current draft + an hours selector (24h / 7d default,
-  168h max per D137). Recharts stacked-bar per server:
-  would_allow / would_warn / would_block segments + an
-  unresolvable_count callout. Reading: "this is what the new
-  policy would have done over the last N hours."
-- **Real-time metrics panel.** Calls `GET /:flavor/metrics?
-  period=24h|7d|30d`. Per-server sparkline (recharts
-  `<LineChart>`). Empty state pre-step-4-emission: "No
-  enforcement events recorded yet for this period."
-- **Bulk YAML import / export.** Plain `<textarea>` editor
-  for import; submit posts to `POST /:flavor/import` and
-  surfaces the API's 400 error inline next to the YAML body
-  on validation failure. Export button fetches `GET
-  /:flavor/export` and triggers a Blob-based download.
-- **Templates picker.** Calls `GET /templates`. Three
-  shipped templates (D138) render as cards with name,
-  description, recommended_for. The `strict-with-common-
-  allows` card surfaces the URL-maintenance warning
-  prominently. Apply triggers a confirmation dialog ("This
-  replaces your current policy. Continue?") before posting
-  to `/apply_template`.
+  the offending field after the operator's first submit
+  attempt (not on dialog open with empty fields).
+- **Resolve preview panel** (collapsible card). Two inputs
+  (server URL, server name) + Resolve button. Renders the
+  API's `MCPPolicyResolveResult` plus decision_path, scope,
+  fingerprint. Educational — operators verify their policy's
+  effective behavior before they save.
 - **Audit trail.** Calls `GET /:flavor/audit-log`. Paginated
   table with filters by event_type, actor, date range. Each
   row expands to reveal the full payload JSON.
+
+#### Viewer-mode treatment (D147)
+
+When `GET /v1/whoami` returns `role: "viewer"`, the dashboard
+gates mutation affordances component-by-component:
+
+- **Mode toggle:** disabled with tooltip ("Read-only — admin
+  token required to change mode"). Mode is read-only state the
+  viewer needs to SEE; disabled-with-tooltip preserves the
+  context.
+- **Add Entry button, row-level edit/delete actions, template
+  apply:** hidden entirely. Action-only affordances; a disabled
+  button is noise to a viewer.
+- **"Admin token required" inline error wall:** removed. Reads
+  are now open per D147; the wall has no remaining trigger.
+
+#### MCP server policy decision rendering (SessionDrawer)
+
+The `MCPServersPanel` in `SessionDrawer.tsx` lists each declared
+MCP server with the policy decision rendered as inline coloured
+text next to the server name, NOT a pill (the pill design was
+attempted twice in step 6.7 and failed the 1-second-glance bar):
+
+```
+[server-name] · ALLOW
+[server-name] · WARN
+[server-name] · BLOCK
+[server-name] · BLOCK (default)
+```
+
+The decision text uses the existing chroma family
+(allow=green, warn=amber, block=red); the mode-default modifier
+renders the same hue at reduced opacity + italic, with the
+"(default)" qualifier reading as a plain English clarification
+that the decision came from the mode default rather than an
+explicit policy entry. Decision derived by calling `GET /resolve`
+for each server in parallel via `Promise.all`. Skeleton text
+shimmer during load.
+
+This treatment removes the background-fill / text-contrast bug
+class the pill suffered, naturally legibly at small sizes, and
+applies theme tokens cleanly without the Tooltip
+collision-padding complication the pill needed.
 
 #### Tooltips
 
 Non-obvious fields carry shadcn `<Tooltip>` content lifted
 verbatim from this document. Specifically: identity model
-canonical form rules (sub-section "Identity model"), mode
+canonical form rules (sub-section "Identity model") and mode
 semantics (sub-section "Two-scope policy model" + "Per-server
-resolution"), and soft-launch behavior (sub-section
-"Soft-launch transition"). Verbatim then trimmed only when the
-sentence is too long to fit a tooltip — never paraphrased.
+resolution"). Verbatim then trimmed only when the sentence is
+too long to fit a tooltip — never paraphrased.
 
 #### Adjacent surfaces (extensions to existing screens)
 
@@ -3514,34 +3409,30 @@ sentence is too long to fit a tooltip — never paraphrased.
   axis. No new theme tokens (Rule 15); chromas reuse existing
   CSS variables already declared in `themes.css`.
 - **Investigate event-type filter.** The existing Investigate
-  page's event-type chip picker gains four chips for the new
-  event types. No new dimension on the analytics axis (Rule
-  25 lock); the new types are filterable but not group-by-
-  able. Locked deliberately: an analytics breakdown by user-
-  remembered events is interesting but not core to v1.
-- **Session drawer MCP servers panel.** The existing
-  `MCPServersPanel` in `SessionDrawer.tsx` lists each
-  declared MCP server. Extended to render a per-row policy
-  decision pill: allow (neutral) / warn (amber) / block
-  (red) / unknown (low-contrast neutral with a tooltip
-  explaining "no policy entry — using mode default").
-  Decision derived by calling `GET /resolve` for each server
-  in parallel via `Promise.all`. Loading state shows
-  skeleton pills.
+  page's event-type chip picker carries dedicated chips for
+  the four MCP-policy event types under their own collapsible
+  "MCP POLICY" facet group. No new dimension on the analytics
+  axis (Rule 25 lock); the types are filterable but not group-
+  by-able.
 
 ### D-number cross-references
 
 D127 (identity canonical form), D128 (storage schema), D129 (fetch +
 cache contract), D130 (sensor block contract), D131 (event types),
-D132 (plugin remembered decisions), D133 (soft-launch default), D134
-(mode lives on global only), D135 (precedence), D136 (helm migration
-source-of-truth refactor), D137 (dry-run replay binds via
-`sessions.context.mcp_servers`, not a dedicated event field),
-D138 (three locked templates), D139 (plugin yes-and-remember:
-local cache + emit event, no policy mutation). Underlying:
-D117 (MCP `ClientSession` patch surface), D119 (lean MCP wire
-payload), D125 (Provider enum — no member added; rides existing
-`Provider.MCP`).
+D132 (plugin remembered decisions), D133 (soft-launch default —
+*superseded by D145*), D134 (mode lives on global only), D135
+(precedence), D136 (helm migration source-of-truth refactor), D138
+(three locked templates), D139 (plugin yes-and-remember: local
+cache + emit event, no policy mutation), D140 (live SessionDrawer
+MCP-server population via `mcp_server_attached`), D141 (empty global
+policy seeded by migration). Step 6.8 cleanup: D142 (drop version
+history — audit log is durable primitive), D143 (drop dry-run
+preview), D144 (drop YAML import/export from v0.6), D145 (drop
+soft-launch banner + override; supersedes D133), D146 (unified
+`/policies` page with sub-tabs), D147 (read-open / mutation-admin
+auth split + `/v1/whoami`). Underlying: D117 (MCP `ClientSession`
+patch surface), D119 (lean MCP wire payload), D125 (Provider enum —
+no member added; rides existing `Provider.MCP`).
 
 ---
 
@@ -3644,8 +3535,18 @@ per-endpoint request counts.
 
 `/v1/admin/*` endpoints share the same Bearer-token auth as user-facing
 endpoints. They are intended for operator interfaces (firewall / ingress
-restricted) rather than the dashboard. Token-based admin scoping is not
-implemented; any production token has full admin access.
+restricted) rather than the dashboard.
+
+Token-based admin scoping IS implemented: the validator returns
+`IsAdmin` per token (`tok_admin_dev` / env-configured production
+admin token returns true; `tok_dev` / standard production tokens
+return false). The MCP Protection Policy endpoints use this split
+per D147 — read-open for GETs, mutation-admin for mutations, with a
+new `GET /v1/whoami` exposing the role to the dashboard. The
+`/v1/admin/*` endpoints continue to require admin scope. Other
+endpoint families (sessions, events, analytics, access-tokens) have
+not been audited for the same split as of v0.6; the admin/viewer
+distinction generalises cleanly when needed.
 
 `POST /v1/admin/reconcile-agents` recomputes `agents.total_sessions`,
 `total_tokens`, `first_seen_at`, and `last_seen_at` from the sessions

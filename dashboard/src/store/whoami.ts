@@ -1,7 +1,7 @@
 // D147: zustand slice tracking the authenticated bearer's role.
 // The dashboard calls fetchWhoami() once at App mount; the result
 // drives mutation-CTA gating in MCPPolicyHeader / MCPPolicyEntryTable
-// / MCPPolicyTemplatesPanel. Components consume the store directly
+// / MCPQuickStartTemplates. Components consume the store directly
 // — no hook abstraction; three call sites is too few to justify
 // indirection.
 

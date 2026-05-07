@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { Pencil, Plus, Search, Trash2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { MCPQuickStartTemplates } from "@/components/policy/MCPQuickStartTemplates";
 import { cn } from "@/lib/utils";
 import type { MCPPolicyEntry } from "@/lib/types";
 import { useWhoamiStore } from "@/store/whoami";
@@ -11,10 +12,17 @@ export interface MCPPolicyEntryTableProps {
   /** allowlist | blocklist — drives the empty-state copy. */
   mode: "allowlist" | "blocklist" | null;
   scopeKey: string;
+  /** "global" or the flavor name — passed through to the quick-start
+   *  templates element rendered inside the empty state (D146). */
+  flavor: string;
   loading: boolean;
   onAdd: () => void;
   onEdit: (entry: MCPPolicyEntry) => void;
   onDelete: (entry: MCPPolicyEntry) => Promise<void>;
+  /** Caller's reload callback. Threaded through to the quick-start
+   *  templates apply flow so the empty state refreshes with the
+   *  freshly applied entries (D146). */
+  onApplied: () => Promise<void>;
 }
 
 /**
@@ -32,10 +40,12 @@ export function MCPPolicyEntryTable({
   entries,
   mode,
   scopeKey,
+  flavor,
   loading,
   onAdd,
   onEdit,
   onDelete,
+  onApplied,
 }: MCPPolicyEntryTableProps) {
   const [search, setSearch] = useState("");
   const [sortKey, setSortKey] = useState<"server_name" | "server_url" | "kind">(
@@ -139,7 +149,14 @@ export function MCPPolicyEntryTable({
       {loading ? (
         <SkeletonRows />
       ) : filtered.length === 0 ? (
-        <EmptyState mode={mode} hasSearch={search.trim().length > 0} />
+        <EmptyState
+          mode={mode}
+          hasSearch={search.trim().length > 0}
+          flavor={flavor}
+          scopeKey={scopeKey}
+          entryCount={entries.length}
+          onApplied={onApplied}
+        />
       ) : (
         <table className="w-full text-sm" data-testid={`mcp-policy-entries-table-${scopeKey}`}>
           <thead>
@@ -335,9 +352,17 @@ function DecisionPill({ entry }: { entry: MCPPolicyEntry }) {
 function EmptyState({
   mode,
   hasSearch,
+  flavor,
+  scopeKey,
+  entryCount,
+  onApplied,
 }: {
   mode: "allowlist" | "blocklist" | null;
   hasSearch: boolean;
+  flavor: string;
+  scopeKey: string;
+  entryCount: number;
+  onApplied: () => Promise<void>;
 }) {
   if (hasSearch) {
     return (
@@ -365,6 +390,12 @@ function EmptyState({
       data-testid="mcp-policy-entries-empty"
     >
       {copy}
+      <MCPQuickStartTemplates
+        flavor={flavor}
+        scopeKey={scopeKey}
+        entryCount={entryCount}
+        onApplied={onApplied}
+      />
     </div>
   );
 }

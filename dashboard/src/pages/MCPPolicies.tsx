@@ -11,7 +11,6 @@ import { MCPPolicyEntryDialog } from "@/components/policy/MCPPolicyEntryDialog";
 import { MCPPolicyEntryTable } from "@/components/policy/MCPPolicyEntryTable";
 import { MCPPolicyHeader } from "@/components/policy/MCPPolicyHeader";
 import { MCPPolicyResolvePanel } from "@/components/policy/MCPPolicyResolvePanel";
-import { MCPPolicyTemplatesPanel } from "@/components/policy/MCPPolicyTemplatesPanel";
 import { Tabs, TabsContent } from "@/components/ui/tabs";
 import {
   createFlavorMCPPolicy,
@@ -268,6 +267,7 @@ function GlobalPanel({
         entries={policy.entries ?? []}
         mode={(policy.mode as Mode | null) ?? null}
         scopeKey="global"
+        flavor="global"
         loading={false}
         onAdd={() => onOpenAdd(dialogScope)}
         onEdit={(entry) => onOpenEdit(dialogScope, entry)}
@@ -275,15 +275,10 @@ function GlobalPanel({
           await updateGlobalMCPPolicy(removeEntry(policy, entry));
           await onChanged();
         }}
+        onApplied={onChanged}
       />
 
       <MCPPolicyResolvePanel flavor={null} scopeKey="global" />
-
-      <MCPPolicyTemplatesPanel
-        flavor="global"
-        scopeKey="global"
-        onApplied={onChanged}
-      />
 
       <MCPPolicyAuditPanel flavorOrGlobal="global" scopeKey="global" />
     </div>
@@ -363,10 +358,12 @@ function FlavorPanel({
           entries={[]}
           mode={globalMode}
           scopeKey={flavor}
+          flavor={flavor}
           loading={false}
           onAdd={() => onOpenAdd(dialogScope)}
           onEdit={() => undefined}
           onDelete={async () => undefined}
+          onApplied={reload}
         />
         <MCPPolicyResolvePanel flavor={flavor} scopeKey={flavor} />
       </div>
@@ -396,6 +393,7 @@ function FlavorPanel({
         entries={policy.entries ?? []}
         mode={globalMode}
         scopeKey={flavor}
+        flavor={flavor}
         loading={false}
         onAdd={() => onOpenAdd(dialogScope)}
         onEdit={(entry) => onOpenEdit(dialogScope, entry)}
@@ -403,15 +401,10 @@ function FlavorPanel({
           await updateFlavorMCPPolicy(flavor, removeEntry(policy, entry));
           await reload();
         }}
+        onApplied={reload}
       />
 
       <MCPPolicyResolvePanel flavor={flavor} scopeKey={flavor} />
-
-      <MCPPolicyTemplatesPanel
-        flavor={flavor}
-        scopeKey={flavor}
-        onApplied={reload}
-      />
 
       <MCPPolicyAuditPanel flavorOrGlobal={flavor} scopeKey={flavor} />
     </div>

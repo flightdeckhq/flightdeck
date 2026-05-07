@@ -42,15 +42,17 @@ describe("MCPPolicyEntryTable", () => {
         entries={[]}
         mode="allowlist"
         scopeKey="global"
+        flavor="global"
         loading={false}
         onAdd={noop}
         onEdit={noop}
         onDelete={noopAsync}
+        onApplied={noopAsync}
       />,
     );
-    expect(screen.getByTestId("mcp-policy-entries-empty").textContent).toBe(
-      "Add your first allow rule to start gating this scope.",
-    );
+    expect(
+      screen.getByTestId("mcp-policy-entries-empty").textContent,
+    ).toContain("Add your first allow rule to start gating this scope.");
   });
 
   it("renders the blocklist empty-state copy when mode is blocklist", () => {
@@ -59,15 +61,17 @@ describe("MCPPolicyEntryTable", () => {
         entries={[]}
         mode="blocklist"
         scopeKey="global"
+        flavor="global"
         loading={false}
         onAdd={noop}
         onEdit={noop}
         onDelete={noopAsync}
+        onApplied={noopAsync}
       />,
     );
-    expect(screen.getByTestId("mcp-policy-entries-empty").textContent).toBe(
-      "Add your first deny rule to block specific servers.",
-    );
+    expect(
+      screen.getByTestId("mcp-policy-entries-empty").textContent,
+    ).toContain("Add your first deny rule to block specific servers.");
   });
 
   it("colours the decision pill per (entry_kind, enforcement) combination", () => {
@@ -97,10 +101,12 @@ describe("MCPPolicyEntryTable", () => {
         entries={entries}
         mode="allowlist"
         scopeKey="global"
+        flavor="global"
         loading={false}
         onAdd={noop}
         onEdit={noop}
         onDelete={noopAsync}
+        onApplied={noopAsync}
       />,
     );
 
@@ -138,10 +144,12 @@ describe("MCPPolicyEntryTable", () => {
         entries={entries}
         mode="blocklist"
         scopeKey="global"
+        flavor="global"
         loading={false}
         onAdd={noop}
         onEdit={noop}
         onDelete={noopAsync}
+        onApplied={noopAsync}
       />,
     );
 
@@ -162,10 +170,12 @@ describe("MCPPolicyEntryTable", () => {
         entries={[]}
         mode="blocklist"
         scopeKey="global"
+        flavor="global"
         loading={false}
         onAdd={onAdd}
         onEdit={noop}
         onDelete={noopAsync}
+        onApplied={noopAsync}
       />,
     );
 
@@ -181,10 +191,12 @@ describe("MCPPolicyEntryTable", () => {
         entries={[e]}
         mode="allowlist"
         scopeKey="global"
+        flavor="global"
         loading={false}
         onAdd={noop}
         onEdit={onEdit}
         onDelete={noopAsync}
+        onApplied={noopAsync}
       />,
     );
 
@@ -194,6 +206,25 @@ describe("MCPPolicyEntryTable", () => {
     expect(onEdit).toHaveBeenCalledWith(
       expect.objectContaining({ id: "row-1", server_name: "edit-target" }),
     );
+  });
+
+  it("embeds the quick-start templates link in the empty state under admin role (D146)", () => {
+    render(
+      <MCPPolicyEntryTable
+        entries={[]}
+        mode="allowlist"
+        scopeKey="global"
+        flavor="global"
+        loading={false}
+        onAdd={noop}
+        onEdit={noop}
+        onDelete={noopAsync}
+        onApplied={noopAsync}
+      />,
+    );
+    expect(
+      screen.getByTestId("mcp-quickstart-templates-trigger-global"),
+    ).toBeTruthy();
   });
 
   it("hides Add Entry button + row Edit/Delete actions when role is viewer (D147)", () => {
@@ -208,10 +239,12 @@ describe("MCPPolicyEntryTable", () => {
         entries={[entry({ id: "row-1", server_name: "alpha" })]}
         mode="allowlist"
         scopeKey="global"
+        flavor="global"
         loading={false}
         onAdd={() => undefined}
         onEdit={() => undefined}
         onDelete={async () => undefined}
+        onApplied={async () => undefined}
       />,
     );
 

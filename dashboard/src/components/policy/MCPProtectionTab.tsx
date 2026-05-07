@@ -28,24 +28,23 @@ import type {
 } from "@/lib/types";
 
 /**
- * MCP Protection Policy management page (D128 / D131 / D135 / D139).
+ * MCP Protection Policy management surface (D128 / D131 / D135 /
+ * D139 / D146 / D147).
  *
- * Top-level surface at ``/mcp-policies``. A tabs shell with a Global
- * tab plus one tab per flavor that has runtime activity. Each tab
- * renders the per-scope toolbar (mode segmented control + BOU
- * switch), the searchable entry table with chroma-coded chips, and
- * an add / edit dialog with debounced (300ms) live resolve preview.
+ * MCP Protection sub-tab on the unified ``/policies`` page (D146).
+ * Internal scope picker plus one panel per scope (Global + flavors).
+ * Each panel renders the per-scope toolbar (mode segmented control
+ * + BOU switch), the searchable entry table with chroma-coded
+ * chips, and an add / edit dialog with debounced (300ms) live
+ * resolve preview.
  *
  * Mutations follow the D128 replace-semantics: a single
  * ``MCPPolicyMutation`` carries the full intended state and is
- * PUT'd atomically. The page builds the mutation from the current
- * policy + the operator's diff (toolbar change OR entry add / edit
- * / delete) and reloads on success.
- *
- * Resolve preview / version history / diff / dry-run / metrics /
- * YAML i/o / templates / audit trail land in commits 4-7 of step 6.
+ * PUT'd atomically. The component builds the mutation from the
+ * current policy + the operator's diff (toolbar change OR entry
+ * add / edit / delete) and reloads on success.
  */
-export function MCPPolicies() {
+export function MCPProtectionTab() {
   const [globalState, setGlobalState] = useState<PolicyState>({
     policy: null,
     loading: true,

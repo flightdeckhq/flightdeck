@@ -1,17 +1,21 @@
-// Step 6.7 (d): the scope picker on /mcp-policies replaces the
-// pre-fix Radix Select with a button + filter panel. Standard
-// pattern for a dropdown over ~20 items — at 67+ flavors the
-// alphabetical list became impossible to scan. These tests lock
-// the search behavior so a future refactor can't drop it.
+// Step 6.7 (d): the scope picker on the MCP Protection sub-tab
+// replaces the pre-fix Radix Select with a button + filter panel.
+// Standard pattern for a dropdown over ~20 items — at 67+ flavors
+// the alphabetical list became impossible to scan. These tests
+// lock the search behavior so a future refactor can't drop it.
+//
+// Component renamed in step 6.8 commit 6 from MCPPolicies (a
+// /mcp-policies page) to MCPProtectionTab (a sub-tab on /policies
+// per D146).
 
 import { describe, expect, it } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 
-import { MCPPolicies } from "@/pages/MCPPolicies";
+import { MCPProtectionTab } from "@/components/policy/MCPProtectionTab";
 
-// MCPPolicies fetches global + flavors on mount. We mock the API
-// surface so the component renders without hitting the network.
+// MCPProtectionTab fetches global + flavors on mount. We mock the
+// API surface so the component renders without hitting the network.
 import { vi } from "vitest";
 vi.mock("@/lib/api", async () => {
   const actual =
@@ -50,13 +54,13 @@ vi.mock("@/lib/api", async () => {
 
 function renderPage() {
   return render(
-    <MemoryRouter initialEntries={["/mcp-policies"]}>
-      <MCPPolicies />
+    <MemoryRouter initialEntries={["/policies?policy=mcp"]}>
+      <MCPProtectionTab />
     </MemoryRouter>,
   );
 }
 
-describe("MCP Policies scope picker — searchable combobox (step 6.7 d)", () => {
+describe("MCP Protection scope picker — searchable combobox (step 6.7 d)", () => {
   it("opens the panel when the trigger is clicked", async () => {
     renderPage();
     // Wait for the flavors to load and the trigger to render.

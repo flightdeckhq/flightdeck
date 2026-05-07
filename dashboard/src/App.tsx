@@ -9,8 +9,8 @@ import {
 import { Search, Settings as SettingsIcon, Sun, Moon } from "lucide-react";
 import { Fleet } from "@/pages/Fleet";
 import { Policies } from "@/pages/Policies";
-import { MCPPolicies } from "@/pages/MCPPolicies";
 import { Directives } from "@/pages/Directives";
+import { NotFound } from "@/pages/NotFound";
 import { Analytics } from "@/pages/Analytics";
 import { Investigate } from "@/pages/Investigate";
 import { Settings } from "@/pages/Settings";
@@ -43,7 +43,6 @@ function Nav({ onSearchClick }: { onSearchClick: () => void }) {
           { to: "/", label: "Fleet", end: true },
           { to: "/investigate", label: "Investigate" },
           { to: "/policies", label: "Policies" },
-          { to: "/mcp-policies", label: "MCP Policies" },
           { to: "/directives", label: "Directives" },
           { to: "/analytics", label: "Analytics" },
         ].map((link) => (
@@ -194,10 +193,10 @@ function CommandPaletteHost() {
           <Route path="/" element={<Fleet />} />
           <Route path="/investigate" element={<Investigate />} />
           <Route path="/policies" element={<Policies />} />
-          <Route path="/mcp-policies" element={<MCPPolicies />} />
           <Route path="/directives" element={<Directives />} />
           <Route path="/analytics" element={<Analytics />} />
           <Route path="/settings" element={<Settings />} />
+          <Route path="*" element={<NotFound />} />
         </Routes>
       </div>
       <CommandPalette

@@ -364,6 +364,26 @@ function ModeSegmented({
     },
   ];
 
+  // Standard radio-group keyboard semantics: arrows move FOCUS
+  // (not commit). Space/Enter activate the focused button via
+  // the existing onClick — no immediate-commit on arrow because
+  // "I just navigated and the policy changed" is a surprise.
+  function onKeyDown(
+    e: React.KeyboardEvent<HTMLButtonElement>,
+    currentIdx: number,
+  ) {
+    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+    e.preventDefault();
+    const nextIdx =
+      e.key === "ArrowRight"
+        ? (currentIdx + 1) % options.length
+        : (currentIdx - 1 + options.length) % options.length;
+    const nextEl = e.currentTarget.parentElement?.querySelector<HTMLButtonElement>(
+      `[data-testid="${testid}-${options[nextIdx].value}"]`,
+    );
+    nextEl?.focus();
+  }
+
   return (
     <div
       role="radiogroup"
@@ -375,29 +395,37 @@ function ModeSegmented({
       }}
       data-testid={testid}
     >
-      {options.map((opt) => (
-        <button
-          key={opt.value}
-          type="button"
-          role="radio"
-          aria-checked={value === opt.value}
-          aria-label={`${opt.label}: ${opt.helper}`}
-          title={opt.helper}
-          disabled={disabled}
-          onClick={() => onChange(opt.value)}
-          className={cn(
-            "rounded-sm px-3 py-1.5 text-sm transition-all",
-            "focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]",
-            "disabled:cursor-not-allowed disabled:opacity-60",
-            value === opt.value
-              ? "bg-[var(--surface)] text-[var(--text)] shadow-sm"
-              : "text-[var(--text-muted)] hover:text-[var(--text)]",
-          )}
-          data-testid={`${testid}-${opt.value}`}
-        >
-          {opt.label}
-        </button>
-      ))}
+      {options.map((opt, idx) => {
+        const active = value === opt.value;
+        return (
+          <button
+            key={opt.value}
+            type="button"
+            role="radio"
+            aria-checked={active}
+            aria-label={`${opt.label}: ${opt.helper}`}
+            title={opt.helper}
+            disabled={disabled}
+            onClick={() => onChange(opt.value)}
+            onKeyDown={(e) => onKeyDown(e, idx)}
+            className={cn(
+              "rounded-sm px-3 py-1.5 text-sm font-medium",
+              // Transition only on background-color + color so
+              // unrelated properties don't flicker on click.
+              "transition-[background-color,color] duration-150 ease-out",
+              "focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]",
+              "disabled:cursor-not-allowed disabled:opacity-60",
+              active
+                ? "bg-[var(--accent)] text-white shadow-sm"
+                : "bg-transparent text-[var(--text-muted)] hover:text-[var(--text)]",
+            )}
+            data-active={active}
+            data-testid={`${testid}-${opt.value}`}
+          >
+            {opt.label}
+          </button>
+        );
+      })}
     </div>
   );
 }

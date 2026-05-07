@@ -220,4 +220,53 @@ describe("MCPPolicyHeader", () => {
       screen.getByTestId("mcp-policy-bou-switch-disabled-global"),
     ).toBeTruthy();
   });
+
+  it("marks the active mode option with data-active='true' (D146 visual-fix lock)", () => {
+    render(
+      <MCPPolicyHeader
+        policy={policy({ mode: "allowlist" })}
+        scopeKey="global"
+        modeEditable
+        globalMode="allowlist"
+        onModeChange={async () => undefined}
+        onBlockOnUncertaintyChange={async () => undefined}
+      />,
+    );
+    const allow = screen.getByTestId(
+      "mcp-policy-mode-segmented-global-allowlist",
+    );
+    const block = screen.getByTestId(
+      "mcp-policy-mode-segmented-global-blocklist",
+    );
+    expect(allow.getAttribute("data-active")).toBe("true");
+    expect(block.getAttribute("data-active")).toBe("false");
+  });
+
+  it("ArrowRight on the active mode button moves focus to the next option (D146 keyboard nav)", () => {
+    render(
+      <MCPPolicyHeader
+        policy={policy({ mode: "allowlist" })}
+        scopeKey="global"
+        modeEditable
+        globalMode="allowlist"
+        onModeChange={async () => undefined}
+        onBlockOnUncertaintyChange={async () => undefined}
+      />,
+    );
+    const allow = screen.getByTestId(
+      "mcp-policy-mode-segmented-global-allowlist",
+    );
+    allow.focus();
+    expect(document.activeElement).toBe(allow);
+
+    fireEvent.keyDown(allow, { key: "ArrowRight" });
+    const block = screen.getByTestId(
+      "mcp-policy-mode-segmented-global-blocklist",
+    );
+    expect(document.activeElement).toBe(block);
+    // Arrow nav moves FOCUS only — not commit. data-active stays
+    // on the original until the user presses Space/Enter.
+    expect(allow.getAttribute("data-active")).toBe("true");
+    expect(block.getAttribute("data-active")).toBe("false");
+  });
 });

@@ -22,9 +22,9 @@ import { SubAgentsTab } from "./SubAgentsTab";
 import { EventRow } from "./EventRow";
 import { createDirective, fetchOlderEvents, fetchSession, fetchSessions, resolveMCPPolicy } from "@/lib/api";
 import {
-  MCPServerPolicyPill,
+  MCPServerDecisionText,
   type MCPServerDecision,
-} from "@/components/policy/MCPServerPolicyPill";
+} from "@/components/policy/MCPServerDecisionText";
 import { sessionSupportsDirectives } from "@/lib/directives";
 import { ClaudeCodeLogo } from "@/components/ui/claude-code-logo";
 import { CodingAgentBadge } from "@/components/ui/coding-agent-badge";
@@ -1200,7 +1200,17 @@ function MCPServersPanel({ context, flavor, expanded, onToggle }: MCPServersPane
     return () => {
       cancelled = true;
     };
-  }, [expanded, servers, flavor, decisions]);
+    // ``decisions`` is read inside the effect body to compute
+    // ``targets`` (skip already-fetched keys) but is intentionally
+    // omitted from the deps array. Including it would re-fire the
+    // effect every time setDecisions(loading) lands, triggering
+    // cleanup → cancelled=true on the in-flight Promise.all so the
+    // resolve responses never reach setDecisions(ok). Effect runs
+    // only when the underlying inputs (expanded / servers / flavor)
+    // change; the in-effect "skip already-fetched" filter handles
+    // partial-fetch state without needing reactive deps.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [expanded, servers, flavor]);
 
   if (servers.length === 0) return null;
 
@@ -1328,7 +1338,7 @@ function MCPServerRow({
       <DetailValue testId={`mcp-server-name-${id}`}>
         <span className="inline-flex items-center gap-2">
           {server.name ?? "unknown"}
-          <MCPServerPolicyPill decision={decision} testId={id} />
+          <MCPServerDecisionText decision={decision} testId={id} />
         </span>
       </DetailValue>
       <DetailLabel>transport</DetailLabel>

@@ -269,4 +269,62 @@ describe("MCPPolicyHeader", () => {
     expect(allow.getAttribute("data-active")).toBe("true");
     expect(block.getAttribute("data-active")).toBe("false");
   });
+
+  it("renders the shared InfoIcon next to the Policy mode heading on the editable Global tab (step 6.9)", () => {
+    render(
+      <MCPPolicyHeader
+        policy={policy({ mode: "allowlist" })}
+        scopeKey="global"
+        modeEditable
+        globalMode="allowlist"
+        onModeChange={async () => undefined}
+        onBlockOnUncertaintyChange={async () => undefined}
+      />,
+    );
+    const trigger = screen.getByTestId(
+      "mcp-policy-mode-tooltip-trigger-global",
+    );
+    // The shared primitive renders a real <button> (not a styled
+    // span). The aria-label drives both the screen-reader name and
+    // the derived test-id semantics.
+    expect(trigger.tagName).toBe("BUTTON");
+    expect(trigger.getAttribute("aria-label")).toBe("Policy mode help");
+  });
+
+  it("renders the shared InfoIcon next to the BOU heading under allowlist mode with the corrected polarity copy (step 6.9)", () => {
+    render(
+      <MCPPolicyHeader
+        policy={policy({ mode: "allowlist", block_on_uncertainty: false })}
+        scopeKey="global"
+        modeEditable
+        globalMode="allowlist"
+        onModeChange={async () => undefined}
+        onBlockOnUncertaintyChange={async () => undefined}
+      />,
+    );
+    const trigger = screen.getByTestId(
+      "mcp-policy-bou-tooltip-trigger-global",
+    );
+    expect(trigger.tagName).toBe("BUTTON");
+    expect(trigger.getAttribute("aria-label")).toBe(
+      "Block on uncertainty help",
+    );
+  });
+
+  it("BOU section (with its InfoIcon) stays hidden under blocklist mode — D135 invariant the spec text contradicted (step 6.9)", () => {
+    render(
+      <MCPPolicyHeader
+        policy={policy({ mode: "blocklist" })}
+        scopeKey="global"
+        modeEditable
+        globalMode="blocklist"
+        onModeChange={async () => undefined}
+        onBlockOnUncertaintyChange={async () => undefined}
+      />,
+    );
+    expect(screen.queryByTestId("mcp-policy-bou-section-global")).toBeNull();
+    expect(
+      screen.queryByTestId("mcp-policy-bou-tooltip-trigger-global"),
+    ).toBeNull();
+  });
 });

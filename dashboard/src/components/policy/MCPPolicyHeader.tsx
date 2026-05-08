@@ -1,5 +1,6 @@
 import { useState } from "react";
 
+import { InfoIcon } from "@/components/ui/info-icon";
 import { Switch } from "@/components/ui/switch";
 import {
   Tooltip,
@@ -115,28 +116,19 @@ export function MCPPolicyHeader({
             >
               Policy mode
             </h3>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <span
-                  className="cursor-help text-[11px] underline decoration-dotted"
-                  style={{ color: "var(--text-muted)" }}
-                  data-testid={`mcp-policy-mode-tooltip-trigger-${scopeKey}`}
-                >
-                  info
-                </span>
-              </TooltipTrigger>
-              <TooltipContent
-                className="max-w-sm text-xs leading-relaxed"
-                data-testid={`mcp-policy-mode-tooltip-${scopeKey}`}
-              >
-                For an (URL, name) evaluated against (global, flavor): if the
-                per-flavor policy has a matching entry, use that entry's
-                enforcement decision. Else if the global policy has a matching
-                entry, use that. Else apply the global mode default: allowlist
-                mode → block; blocklist mode → allow. Mode lives on the global
-                policy only (D134).
-              </TooltipContent>
-            </Tooltip>
+            <InfoIcon
+              ariaLabel="Policy mode help"
+              testId={`mcp-policy-mode-tooltip-trigger-${scopeKey}`}
+              content={
+                <>
+                  Resolution per (URL, name): the matching flavor entry wins;
+                  otherwise the matching global entry; otherwise the global
+                  mode default — Allow-list blocks, Block-list allows. Mode
+                  lives on the global policy only (D134); per-entry
+                  enforcement overrides on either scope (D135).
+                </>
+              }
+            />
             {modeEditable && savingMode ? (
               <span
                 className="text-[11px]"
@@ -243,31 +235,21 @@ export function MCPPolicyHeader({
               >
                 Block on uncertainty
               </h4>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <span
-                    className="cursor-help text-[11px] underline decoration-dotted"
-                    style={{ color: "var(--text-muted)" }}
-                    data-testid={`mcp-policy-bou-tooltip-trigger-${scopeKey}`}
-                  >
-                    info
-                  </span>
-                </TooltipTrigger>
-                <TooltipContent
-                  className="max-w-sm text-xs leading-relaxed"
-                  data-testid={`mcp-policy-bou-tooltip-${scopeKey}`}
-                >
-                  Per-policy boolean toggle, default false, only meaningful in
-                  allowlist mode. When true, the resolution algorithm's
-                  fall-through case becomes "block + emit policy_mcp_block"
-                  instead of the standard allowlist-mode block. The semantic
-                  difference is auditing: block_on_uncertainty=true means "I
-                  want a block decision recorded against this URL the first
-                  time it's seen so I can promote it to a deliberate allow."
-                  Under blocklist mode the toggle is ignored because the mode
-                  default is already permissive.
-                </TooltipContent>
-              </Tooltip>
+              <InfoIcon
+                ariaLabel="Block on uncertainty help"
+                testId={`mcp-policy-bou-tooltip-trigger-${scopeKey}`}
+                content={
+                  <>
+                    Block on Uncertainty. Allow-list mode only. When ON,
+                    blocks against servers not in the allow list emit a{" "}
+                    <code>policy_mcp_block</code> audit event instead of
+                    silently blocking. Use this to capture and review
+                    first-time encounters with new servers. Hidden under
+                    Block-list mode (the mode is permissive by default, so
+                    there's nothing for this toggle to qualify).
+                  </>
+                }
+              />
             </div>
 
             <div className="mt-2 flex items-center gap-3">

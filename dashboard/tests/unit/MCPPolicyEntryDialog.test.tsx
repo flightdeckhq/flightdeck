@@ -135,6 +135,66 @@ describe("MCPPolicyEntryDialog", () => {
     });
   });
 
+  it("renders the spec placeholders and help text on the URL + Name fields (step 6.9)", () => {
+    render(
+      <MCPPolicyEntryDialog
+        open
+        flavor={null}
+        onClose={() => undefined}
+        onSave={async () => undefined}
+      />,
+    );
+
+    const urlInput = screen.getByTestId(
+      "mcp-policy-entry-url",
+    ) as HTMLInputElement;
+    expect(urlInput.placeholder).toBe(
+      "https://mcp.example.com/sse OR stdio:///path/to/server-binary",
+    );
+
+    const nameInput = screen.getByTestId(
+      "mcp-policy-entry-name",
+    ) as HTMLInputElement;
+    expect(nameInput.placeholder).toBe("filesystem");
+
+    // Help text is the prose immediately under each input. Match
+    // load-bearing phrases — full strings are too brittle across
+    // copy-tightening passes.
+    expect(
+      screen.getByText(
+        /URL the agent uses to reach the MCP server/i,
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/Human-readable identifier declared by the MCP server/i),
+    ).toBeInTheDocument();
+  });
+
+  it("renders an InfoIcon on every field (URL / Name / Decision / Enforcement) per step 6.9 standardization", () => {
+    render(
+      <MCPPolicyEntryDialog
+        open
+        flavor={null}
+        onClose={() => undefined}
+        onSave={async () => undefined}
+      />,
+    );
+
+    const triggerIds = [
+      "mcp-policy-entry-url-tooltip-trigger",
+      "mcp-policy-entry-name-tooltip-trigger",
+      "mcp-policy-entry-kind-tooltip-trigger",
+      "mcp-policy-entry-enforcement-tooltip-trigger",
+    ];
+    for (const id of triggerIds) {
+      const trigger = screen.getByTestId(id);
+      // The shared InfoIcon primitive renders a <button> trigger
+      // (not a styled span) so keyboard users can land on it.
+      expect(trigger.tagName).toBe("BUTTON");
+      expect(trigger.getAttribute("aria-label")).toBeTruthy();
+    }
+  });
+
   it("seeds form fields from ``initial`` when editing an existing entry", () => {
     render(
       <MCPPolicyEntryDialog

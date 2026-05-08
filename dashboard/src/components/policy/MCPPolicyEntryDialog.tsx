@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
+import { InfoIcon } from "@/components/ui/info-icon";
 import {
   Select,
   SelectContent,
@@ -9,12 +10,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { resolveMCPPolicy } from "@/lib/api";
 import type {
@@ -179,38 +175,39 @@ export function MCPPolicyEntryDialog({
               >
                 Server URL
               </label>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <span
-                    className="cursor-help text-[10px] underline decoration-dotted"
-                    style={{ color: "var(--text-muted)" }}
-                    data-testid="mcp-policy-entry-url-tooltip-trigger"
-                  >
-                    canonical form
-                  </span>
-                </TooltipTrigger>
-                <TooltipContent
-                  className="max-w-sm text-xs leading-relaxed"
-                  data-testid="mcp-policy-entry-url-tooltip"
-                >
-                  HTTP canonical form: lowercase scheme + host. Strip default
-                  ports (:80 for http, :443 for https). Strip a trailing
-                  slash only at the root; deeper paths preserve their
-                  trailing slash. Drop user-info, fragment, and query
-                  entirely. Stdio canonical form: prefix with stdio://,
-                  concatenate command + args with single-space separators
-                  after collapsing internal whitespace, resolve env-var
-                  references at fingerprint time. Hash recipe:
-                  sha256(canonical_url + 0x00 + name).
-                </TooltipContent>
-              </Tooltip>
+              <InfoIcon
+                ariaLabel="Server URL canonicalization help"
+                testId="mcp-policy-entry-url-tooltip-trigger"
+                content={
+                  <>
+                    Stored as a canonical form so semantically-identical
+                    URLs hash to the same fingerprint (D127). HTTP /
+                    WebSocket: lowercase scheme + host, drop default
+                    ports (:80 / :443), strip user-info / fragment /
+                    query, drop the root trailing slash only.
+                    {" "}
+                    <code className="rounded bg-[var(--background-elevated)] px-1 py-0.5 font-mono text-[10px]">
+                      HTTPS://Example.com:443/sse?x=1
+                    </code>
+                    {" "}→{" "}
+                    <code className="rounded bg-[var(--background-elevated)] px-1 py-0.5 font-mono text-[10px]">
+                      https://example.com/sse
+                    </code>
+                    . Stdio: <code className="rounded bg-[var(--background-elevated)] px-1 py-0.5 font-mono text-[10px]">stdio://</code>
+                    {" "}prefix + command + args joined on single
+                    spaces (internal whitespace collapses; env-var
+                    references resolve at fingerprint time). Hash recipe:
+                    sha256(canonical_url + 0x00 + name).
+                  </>
+                }
+              />
             </div>
             <input
               id="mcp-policy-entry-url"
               type="text"
               value={serverUrl}
               onChange={(e) => setServerUrl(e.target.value)}
-              placeholder="https://maps.example.com or stdio:///opt/bin/srv"
+              placeholder="https://mcp.example.com/sse OR stdio:///path/to/server-binary"
               autoComplete="off"
               className={inputClass}
               style={{
@@ -224,30 +221,52 @@ export function MCPPolicyEntryDialog({
               className="mt-1 text-[11px]"
               style={{ color: "var(--text-muted)" }}
             >
-              HTTP / HTTPS / SSE / WebSocket URLs are canonicalised
-              (lowercase scheme + host, default port stripped, trailing
-              root slash dropped). Stdio launches use the
-              <code className="mx-0.5 rounded bg-[var(--background-elevated)] px-1 py-0.5 font-mono text-[10px]">
+              The URL the agent uses to reach the MCP server. HTTP /
+              WebSocket: full URL with scheme and host. Stdio: the{" "}
+              <code className="rounded bg-[var(--background-elevated)] px-1 py-0.5 font-mono text-[10px]">
                 stdio://
               </code>
-              prefix.
+              {" "}prefix + binary path and args (mirrors the
+              {" "}
+              <code className="rounded bg-[var(--background-elevated)] px-1 py-0.5 font-mono text-[10px]">
+                .mcp.json
+              </code>
+              {" "}declaration).
             </p>
           </div>
 
           <div>
-            <label
-              htmlFor="mcp-policy-entry-name"
-              className="mb-1 block text-xs font-medium"
-              style={{ color: "var(--text)" }}
-            >
-              Server name
-            </label>
+            <div className="mb-1 flex items-center gap-2">
+              <label
+                htmlFor="mcp-policy-entry-name"
+                className="block text-xs font-medium"
+                style={{ color: "var(--text)" }}
+              >
+                Server name
+              </label>
+              <InfoIcon
+                ariaLabel="Server name help"
+                testId="mcp-policy-entry-name-tooltip-trigger"
+                content={
+                  <>
+                    The name + URL together compute the fingerprint —{" "}
+                    <code className="rounded bg-[var(--background-elevated)] px-1 py-0.5 font-mono text-[10px]">
+                      sha256(canonical_url + 0x00 + name)
+                    </code>
+                    {" "}— so a rename here produces a new fingerprint
+                    even if the URL is unchanged. Both must match the
+                    values the agent's MCP client declares for an entry
+                    to bind at runtime.
+                  </>
+                }
+              />
+            </div>
             <input
               id="mcp-policy-entry-name"
               type="text"
               value={serverName}
               onChange={(e) => setServerName(e.target.value)}
-              placeholder="maps"
+              placeholder="filesystem"
               autoComplete="off"
               className={inputClass}
               style={{
@@ -261,23 +280,38 @@ export function MCPPolicyEntryDialog({
               className="mt-1 text-[11px]"
               style={{ color: "var(--text-muted)" }}
             >
-              Human-readable identifier shipped by the agent's MCP
-              client. The fingerprint is{" "}
-              <code className="rounded bg-[var(--background-elevated)] px-1 py-0.5 font-mono text-[10px]">
-                sha256(canonical_url + 0x00 + name)
-              </code>
-              ; both fields participate.
+              Human-readable identifier declared by the MCP server. Used
+              for display + part of the fingerprint hash.
             </p>
           </div>
 
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label
-                className="mb-1 block text-xs font-medium"
-                style={{ color: "var(--text)" }}
-              >
-                Decision
-              </label>
+              <div className="mb-1 flex items-center gap-2">
+                <label
+                  className="block text-xs font-medium"
+                  style={{ color: "var(--text)" }}
+                >
+                  Decision
+                </label>
+                <InfoIcon
+                  ariaLabel="Decision help"
+                  testId="mcp-policy-entry-kind-tooltip-trigger"
+                  content={
+                    <>
+                      <strong>Allow:</strong> requests to this server
+                      proceed with the configured enforcement (typically
+                      no-op or warn).{" "}
+                      <strong>Deny:</strong> requests are blocked and
+                      emit a{" "}
+                      <code className="rounded bg-[var(--background-elevated)] px-1 py-0.5 font-mono text-[10px]">
+                        policy_mcp_block
+                      </code>
+                      {" "}event.
+                    </>
+                  }
+                />
+              </div>
               <Select
                 value={entryKind}
                 onValueChange={(v) => setEntryKind(v as "allow" | "deny")}
@@ -295,12 +329,41 @@ export function MCPPolicyEntryDialog({
               </Select>
             </div>
             <div>
-              <label
-                className="mb-1 block text-xs font-medium"
-                style={{ color: "var(--text)" }}
-              >
-                Enforcement
-              </label>
+              <div className="mb-1 flex items-center gap-2">
+                <label
+                  className="block text-xs font-medium"
+                  style={{ color: "var(--text)" }}
+                >
+                  Enforcement
+                </label>
+                <InfoIcon
+                  ariaLabel="Enforcement help"
+                  testId="mcp-policy-entry-enforcement-tooltip-trigger"
+                  content={
+                    <>
+                      <strong>Default for this kind:</strong> use the
+                      policy's default for allow / deny entries.{" "}
+                      <strong>Warn:</strong> emit a{" "}
+                      <code className="rounded bg-[var(--background-elevated)] px-1 py-0.5 font-mono text-[10px]">
+                        policy_mcp_warn
+                      </code>
+                      {" "}event and proceed.{" "}
+                      <strong>Block:</strong> emit a{" "}
+                      <code className="rounded bg-[var(--background-elevated)] px-1 py-0.5 font-mono text-[10px]">
+                        policy_mcp_block
+                      </code>
+                      {" "}event and raise{" "}
+                      <code className="rounded bg-[var(--background-elevated)] px-1 py-0.5 font-mono text-[10px]">
+                        MCPPolicyBlocked
+                      </code>
+                      .{" "}
+                      <strong>Interactive:</strong> Claude Code plugin
+                      only — prompts the user inline; the sensor never
+                      sees it on the per-call hot path.
+                    </>
+                  }
+                />
+              </div>
               <Select
                 value={enforcement}
                 onValueChange={(v) => setEnforcement(v as EnforcementValue)}
@@ -318,13 +381,6 @@ export function MCPPolicyEntryDialog({
                   <SelectItem value="interactive">Interactive</SelectItem>
                 </SelectContent>
               </Select>
-              <p
-                className="mt-1 text-[11px]"
-                style={{ color: "var(--text-muted)" }}
-              >
-                Interactive is Claude Code plugin only — the sensor
-                never sees it on the per-call hot path.
-              </p>
             </div>
           </div>
 

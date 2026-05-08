@@ -2471,6 +2471,40 @@ parity via `plugin/hooks/scripts/mcp_policy.mjs::
 buildPolicyDecisionBlock`. Ingestion validates required fields
 at the wire boundary per Rule 36.
 
+### MCP Protection Policy enforcement on all server-access paths (D151)
+
+Phase 7 Step 3 extends MCP Protection Policy enforcement from
+`call_tool` to all six server-access paths the patched
+`ClientSession` exposes:
+
+- `call_tool` (existing, unchanged)
+- `list_tools` (D151 NEW)
+- `read_resource` (D151 NEW)
+- `get_prompt` (D151 NEW)
+- `list_resources` (D151 NEW)
+- `list_prompts` (D151 NEW)
+
+When a server matches a block decision, the sensor raises
+`MCPPolicyBlocked` from every path. An agent blocked from a
+server cannot bypass via list_*/read_resource/get_prompt — the
+operator's "this server is blocked" intent now means ALL
+access blocked, not just tool execution.
+
+The `originating_call_context` enum (D149) on every
+`policy_mcp_warn` / `policy_mcp_block` event tells the operator
+which call site fired the decision. `tool_name` is method-
+specific: populated for `call_tool` (tool name),
+`read_resource` (resource URI), `get_prompt` (prompt name);
+omitted for `list_*` paths.
+
+Discovery family events (`mcp_tool_list`, `mcp_resource_list`,
+`mcp_prompt_list`) carry an `item_names` field — the array of
+identifiers the server returned, capped at 100 with
+`truncated:true` overflow flag. Operationally key for the
+drift-detection workflow ("did this server's tool inventory
+change last week"). Empty arrays are valid (server with no tools
+landed).
+
 ### `originating_event_id` chain (D149)
 
 Sensor mints a UUID per emission via `Session._build_payload`

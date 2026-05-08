@@ -12,6 +12,18 @@ event-UUID minting + idempotent worker INSERT per D149.
 Dashboard rendering of the new fields is deferred to Step 6 per
 the locked batch plan; Step 2 ships schema acceptance only.
 
+**Step 3 (Phase 7) shipped 2026-05-08:** MCP Protection Policy
+enforcement extends from `call_tool` to all six server-access
+paths (D151) — `list_tools` / `read_resource` / `get_prompt` /
+`list_resources` / `list_prompts` now raise `MCPPolicyBlocked`
+when the policy resolves to block. Discovery family
+(`mcp_tool_list` / `mcp_resource_list` / `mcp_prompt_list`)
+gains `item_names` (string[], capped at 100 with
+`truncated:true` overflow flag). D150 (event_content
+`tool_input` / `tool_output` schema migration) deferred to
+Step 3.b — see DECISIONS.md D151 deferral note. Dashboard
+rendering deferred to Step 6.
+
 **Scope locks (from scope-out turn).** Q1 every event type covered
 including "audit complete, no enrichment needed". Q2 policy/state
 metadata always included regardless of `capture_prompts`; flag

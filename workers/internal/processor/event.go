@@ -114,6 +114,16 @@ func BuildEventExtra(e consumer.EventPayload) ([]byte, error) {
 	if e.OriginatingCallContext != "" {
 		extra["originating_call_context"] = e.OriginatingCallContext
 	}
+	// Phase 7 Step 3 (D151): MCP discovery item_names. Always
+	// project (possibly empty []) on the three list event types
+	// so the dashboard's drift-detection workflow can compare
+	// inventories week-over-week without a separate query.
+	if e.ItemNames != nil {
+		extra["item_names"] = e.ItemNames
+	}
+	if e.Truncated {
+		extra["truncated"] = true
+	}
 	// Phase 5 MCP fields. Project unconditionally when the sensor sent
 	// them — only MCP_* events carry these on the wire. The dashboard's
 	// MCPEventDetails component reads them directly from events.payload.

@@ -244,6 +244,13 @@ type EventPayload struct {
 	PolicyDecision          json.RawMessage `json:"policy_decision,omitempty"`
 	OriginatingEventID      string          `json:"originating_event_id,omitempty"`
 	OriginatingCallContext  string          `json:"originating_call_context,omitempty"`
+
+	// Phase 7 Step 3 (D151): MCP discovery family carries the list
+	// of identifiers the server returned. Sensor caps at 100 +
+	// stamps Truncated when over the cap. Operationally key for
+	// drift detection ("did this server's tool inventory change").
+	ItemNames []string `json:"item_names,omitempty"`
+	Truncated bool     `json:"truncated,omitempty"`
 }
 
 // SubagentMessageBody is the framework-supplied body of a single

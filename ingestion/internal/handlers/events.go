@@ -521,9 +521,15 @@ func writeError(w http.ResponseWriter, code int, msg string) {
 // memory — pre-v0.6 has no users to protect; sensor + plugin +
 // ingestion + workers ship together.
 func validateMCPPolicyDecisionPayload(payload map[string]any, eventType string) string {
+	// Phase 7 Step 3 (D151): enforcement extends to all six MCP
+	// server-access paths. ``tool_name`` is method-specific (only
+	// call_tool / read_resource / get_prompt populate it; the
+	// list_* methods have no per-item identifier). Validation
+	// drops it from the required-field set; the sensor stamps
+	// it when applicable.
 	for _, field := range []string{
 		"server_url", "server_name", "fingerprint",
-		"tool_name", "policy_id", "decision_path",
+		"policy_id", "decision_path",
 	} {
 		v, ok := payload[field].(string)
 		if !ok || v == "" {

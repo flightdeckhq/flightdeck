@@ -282,12 +282,15 @@ async def test_no_active_session_calls_orig_directly(
 
 
 # ---------------------------------------------------------------------
-# List operations -- count only, no item names
+# List operations -- count + item_names (Phase 7 Step 3)
 # ---------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_list_tools_emits_count_not_names(install_session: Session) -> None:
+async def test_list_tools_emits_count_and_item_names(install_session: Session) -> None:
+    """Phase 7 Step 3: discovery family carries item_names so the
+    drift-detection workflow can answer "did this server's tool
+    inventory change last week" without a separate query."""
     async def fake_orig(self: Any, *args: Any, **kwargs: Any) -> Any:
         return SimpleNamespace(
             tools=[
@@ -308,11 +311,8 @@ async def test_list_tools_emits_count_not_names(install_session: Session) -> Non
     payload = _last_enqueue(install_session)
     assert payload["event_type"] == "mcp_tool_list"
     assert payload["count"] == 3
-    # Item names must NOT be in the payload (every individual call
-    # emits its own MCP_TOOL_CALL with the name).
-    flat = str(payload)
-    assert "echo" not in flat
-    assert "multiply" not in flat
+    assert payload["item_names"] == ["echo", "add", "multiply"]
+    assert "truncated" not in payload
 
 
 @pytest.mark.asyncio

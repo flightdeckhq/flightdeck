@@ -7487,3 +7487,136 @@ pass empty string. Worker types:
 `workers/internal/consumer/nats.go::EventPayload.ID`. Dashboard
 type: `EventPayloadFields.originating_event_id` (schema
 acceptance; rendering deferred to Step 6).
+
+
+---
+
+## D151 -- MCP Protection Policy enforcement on all server-access paths
+
+**Date:** 2026-05-08
+**Phase:** Phase 7 Step 3 (operator-actionable events)
+
+**Context.** Pre-Step-3, MCP Protection Policy fired only on
+`ClientSession.call_tool`. The other 5 patched MCP methods
+(`list_tools`, `read_resource`, `get_prompt`, `list_resources`,
+`list_prompts`) were observability-only — events emitted with
+latency/server/transport but no policy decision. An agent
+blocked from a server's tools could still:
+
+- Read the server's resources (data exfiltration vector).
+- Fetch the server's prompts (policy-violating content
+  injection vector).
+- Enumerate the server's tools/resources/prompts (information
+  disclosure of the server's capabilities the operator chose to
+  hide).
+
+The operator's "this server is blocked" intent did NOT match
+the deployed enforcement contract. The policy was leaky.
+
+**Decision.** Extend pre-call enforcement to all six MCP
+server-access paths. When a flavor or global policy entry says
+deny+block (or mode-default fall-through resolves to block), the
+sensor raises `MCPPolicyBlocked` from any of:
+
+- `call_tool` (existing, unchanged)
+- `list_tools` (NEW)
+- `read_resource` (NEW)
+- `get_prompt` (NEW)
+- `list_resources` (NEW)
+- `list_prompts` (NEW)
+
+The `originating_call_context` field on every emitted
+`policy_mcp_warn` / `policy_mcp_block` event tells the operator
+which call site fired the decision (D149's 7-value enum minus
+`session_boot`).
+
+**Why all six paths, not just call_tool + read_resource.**
+List operations expose the server's tool/resource/prompt
+inventory. Even without invoking a tool, an agent enumerating
+a server's tool list reveals the server's capabilities to the
+agent's downstream control flow (LLM picks the next call from
+the discovered list). For a deny entry to be operator-
+actionable, the agent must not see the server at all.
+
+**Why MCPPolicyBlocked on every path.** The exception is the
+enforcement layer the agent's framework surfaces as a
+runtime failure. Frameworks that handle list_* errors
+gracefully (CrewAI, LangChain) propagate the failure as a
+"server unavailable" signal, which is the right operator
+semantic — "this server is unavailable to you" rather than
+silent observability.
+
+**Hard cutover** (per the no-compat-tax memory). Pre-v0.6 has
+no users to protect from the behavior change. The agent
+behavior changes immediately on next sensor build: blocked
+servers are blocked everywhere, not just at call_tool.
+
+**Wire-shape change for ingestion validation** (Rule 36).
+`tool_name` was previously required on `policy_mcp_warn` /
+`policy_mcp_block` payloads. Step 3 makes it optional — only
+`call_tool` / `read_resource` / `get_prompt` populate it (with
+the tool name / resource URI / prompt name respectively).
+`list_*` paths leave it absent. The ingestion validator
+(`validateMCPPolicyDecisionPayload`) drops `tool_name` from the
+required-field set.
+
+**Discovery family `item_names` enrichment.** Phase 7 Step 3
+also adds `item_names` to the three list events. Operationally
+key for drift detection — `count` alone doesn't answer "did
+this server's tool inventory change last week". Capped at 100
+with `truncated:true` overflow flag. Always present on
+successful list emissions (possibly empty array).
+
+**Live-stack verification.** Drove a deny entry against the
+in-tree reference MCP server, attempted each of the 6 paths,
+asserted `MCPPolicyBlocked` raised on every path. DB query:
+`SELECT payload->>'originating_call_context', count(*) FROM
+events WHERE event_type='policy_mcp_block'` returned 6 distinct
+context values, all event rows persisted with the shared
+`policy_decision` block (D148) populated.
+
+**Rejected alternatives.**
+
+- *Observability-only on read/get/list paths.* Rejected: the
+  policy-as-leaky-fence problem the audit surfaced. Operators
+  declaring "this server is blocked" expect ALL access denied;
+  shipping a partial-enforcement contract recreates the gap.
+- *Enforce only on read_resource (data leak vector).* Rejected:
+  list_*/get_prompt are equally operator-actionable in a
+  policy-violation scenario.
+- *Make enforcement opt-in via per-policy flag.* Rejected:
+  pre-v0.6 has no deployed policies to grandfather; the
+  always-on contract is simpler.
+
+**Related decisions.** D131 (the policy_mcp_warn / policy_mcp_block
+events whose enforcement scope this expands). D135 (the
+resolution algorithm whose decisions now apply to all six call
+sites). D148 (the shared policy_decision block populated on
+every emission). D149 (the originating_event_id chain + the
+7-value originating_call_context enum). The Phase 7 audit
+(`docs/phase-7-event-audit.md`).
+
+**Implementation note (Step 3).** Sensor:
+`flightdeck_sensor.interceptor.mcp` —
+`_enforce_mcp_policy` (renamed from `_enforce_call_tool_policy`,
+adds `originating_call_context` parameter); `_make_async_wrapper`
+calls it for every method in `_METHOD_TO_CALL_CONTEXT`.
+Backwards-compat alias `_enforce_call_tool_policy` preserved
+for downstream callers. Discovery emitters
+(`_emit_tool_list` / `_emit_resource_list` / `_emit_prompt_list`)
+populate `item_names` via `_collect_item_names` helper.
+Ingestion: `validateMCPPolicyDecisionPayload` drops `tool_name`
+from required-field set. Worker: `EventPayload` adds `ItemNames`
++ `Truncated` fields; `BuildEventExtra` projects them.
+Dashboard: schema acceptance only — Step 6 lands the renderers.
+
+**D150 deferral note.** Phase 7 Step 3's plan also called for
+D150 (event_content `tool_input` / `tool_output` column
+extension to migrate MCP tool args/results from
+`events.payload` to `event_content`). Deferred to a follow-up
+commit per the conversation-length budget; the existing
+inline-vs-overflow path for MCP capture (`_gate_mcp_field` +
+`_build_overflow_event_content` in `interceptor/mcp.py`) is
+functional and behavioral parity is preserved. Step 3.b will
+land the schema migration + sensor capture migration as a
+plumbing-only commit.

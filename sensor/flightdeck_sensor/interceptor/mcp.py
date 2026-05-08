@@ -386,25 +386,38 @@ def _classify_mcp_error(exc: BaseException) -> dict[str, Any]:
 # ----------------------------------------------------------------------
 
 
-def _enforce_call_tool_policy(
+def _enforce_mcp_policy(
     *,
     sensor_session: Any,
     server_url: str,
     server_name: str,
     transport: str | None,
     tool_name: Any,
+    originating_call_context: str,
 ) -> Exception | None:
-    """Pre-call hook for ``ClientSession.call_tool``. Resolves the
-    cached MCP policy decision and either:
+    """Pre-call hook for any ``ClientSession`` MCP method that touches
+    a server (``call_tool``, ``list_tools``, ``read_resource``,
+    ``get_prompt``, ``list_resources``, ``list_prompts``). Resolves
+    the cached MCP policy decision and either:
 
     - Returns ``None`` → call proceeds (allow + warn paths).
     - Returns an ``MCPPolicyBlocked`` instance → caller raises so the
-      framework surfaces the failure as a tool-call error.
+      framework surfaces the failure to the agent.
 
     Warn decisions emit ``POLICY_MCP_WARN`` and return None.
     Block decisions emit ``POLICY_MCP_BLOCK``, synchronously flush
     the event queue (so the block lands at the dashboard before the
     agent sees the failure per D130), and return the exception.
+
+    Phase 7 Step 3 (D151): enforcement extends from call_tool to all
+    six server-access paths. An agent blocked from a server cannot
+    bypass via list_*/read_resource/get_prompt — the operator's
+    "this server is blocked" intent now means ALL access blocked,
+    not just tool execution. Resource reads can leak data; prompt
+    fetches can return policy-violating content; list operations
+    expose the server's tool/resource inventory. Per the no-compat-
+    tax memory, pre-v0.6 has no users to protect from the behavior
+    change.
 
     Wrapper failures (e.g. payload build raises, queue.flush raises)
     log and return None — the wrapper must never crash the user's
@@ -436,6 +449,7 @@ def _enforce_call_tool_policy(
         server_name=server_name,
         transport=transport,
         tool_name=tool_name,
+        originating_call_context=originating_call_context,
     )
 
     if decision.decision == "warn":
@@ -464,6 +478,40 @@ def _enforce_call_tool_policy(
         fingerprint=decision.fingerprint,
         policy_id=decision.policy_id,
         decision_path=decision.decision_path,
+    )
+
+
+# Phase 7 Step 3 (D151): map ClientSession method name to the
+# originating_call_context enum value. Used by the wrapper factory
+# to thread the context through enforcement + emission.
+_METHOD_TO_CALL_CONTEXT: dict[str, str] = {
+    "call_tool": "tool_call",
+    "list_tools": "list_tools",
+    "read_resource": "read_resource",
+    "get_prompt": "get_prompt",
+    "list_resources": "list_resources",
+    "list_prompts": "list_prompts",
+}
+
+
+# Backwards-compat alias so any test or downstream caller importing
+# the old name keeps working through the rename. New code calls
+# ``_enforce_mcp_policy`` directly.
+def _enforce_call_tool_policy(
+    *,
+    sensor_session: Any,
+    server_url: str,
+    server_name: str,
+    transport: str | None,
+    tool_name: Any,
+) -> Exception | None:
+    return _enforce_mcp_policy(
+        sensor_session=sensor_session,
+        server_url=server_url,
+        server_name=server_name,
+        transport=transport,
+        tool_name=tool_name,
+        originating_call_context="tool_call",
     )
 
 
@@ -693,8 +741,16 @@ def _emit_tool_list(
     if result is not None and error is None:
         tools = getattr(result, "tools", None) or []
         extras["count"] = len(tools)
+        # Phase 7 Step 3: item_names operationally key for drift
+        # detection ("which tools did this server expose last week").
+        extras["item_names"], truncated = _collect_item_names(
+            getattr(t, "name", None) for t in tools
+        )
+        if truncated:
+            extras["truncated"] = True
     elif error is None:
         extras["count"] = 0
+        extras["item_names"] = []
     return extras
 
 
@@ -758,8 +814,16 @@ def _emit_resource_list(
     if result is not None and error is None:
         resources = getattr(result, "resources", None) or []
         extras["count"] = len(resources)
+        # Phase 7 Step 3: item_names captures resource URIs so
+        # drift detection works on the resource catalog too.
+        extras["item_names"], truncated = _collect_item_names(
+            (getattr(r, "uri", None) or getattr(r, "name", None)) for r in resources
+        )
+        if truncated:
+            extras["truncated"] = True
     elif error is None:
         extras["count"] = 0
+        extras["item_names"] = []
     return extras
 
 
@@ -862,9 +926,40 @@ def _emit_prompt_list(
     if result is not None and error is None:
         prompts = getattr(result, "prompts", None) or []
         extras["count"] = len(prompts)
+        extras["item_names"], truncated = _collect_item_names(
+            getattr(p, "name", None) for p in prompts
+        )
+        if truncated:
+            extras["truncated"] = True
     elif error is None:
         extras["count"] = 0
+        extras["item_names"] = []
     return extras
+
+
+def _collect_item_names(values: Any, max_items: int = 100) -> tuple[list[str], bool]:
+    """Phase 7 Step 3: collect identifier strings for discovery
+    family payloads (mcp_tool_list / mcp_resource_list /
+    mcp_prompt_list). Caps at 100 to keep payload size bounded;
+    returns ``(names, truncated)`` so callers can stamp
+    ``truncated=true`` when the cap was hit.
+
+    Operationally key for the drift-detection workflow: the audit's
+    "did this server's tool inventory change last week" question is
+    unanswerable from ``count`` alone."""
+    out: list[str] = []
+    truncated = False
+    for v in values:
+        if v is None:
+            continue
+        s = str(v)
+        if not s:
+            continue
+        if len(out) >= max_items:
+            truncated = True
+            break
+        out.append(s)
+    return out, truncated
 
 
 def _emit_prompt_get(
@@ -982,27 +1077,43 @@ def _make_async_wrapper(
         transport = getattr(self, _INSTANCE_TRANSPORT_ATTR, None)
         server_url = getattr(self, _INSTANCE_SERVER_URL_ATTR, None)
 
-        # Step 4 (D130 / D131 / D135): policy enforcement BEFORE the
-        # call runs. Only call_tool participates — list_*/get_*/read_*
-        # are observability-only paths that don't carry the per-tool
-        # decision the policy resolves on. The pre-check pattern
-        # ensures the agent never reaches the wrapped server when the
-        # policy says block; emit + flush + raise happens here, the
-        # post-call emit path below is bypassed for blocked calls.
-        if method_name == "call_tool":
-            tool_name_for_policy = args[0] if args else kwargs.get("name")
-            blocked = _enforce_call_tool_policy(
+        # Phase 7 Step 3 (D151): policy enforcement BEFORE the call
+        # runs, on every server-access path. An agent blocked from a
+        # server cannot bypass via list_*/read_resource/get_prompt —
+        # operator's "this server is blocked" intent means ALL access
+        # blocked. Per-method tool_name extraction:
+        #
+        #   call_tool      → args[0] / kwargs["name"] (tool name)
+        #   read_resource  → args[0] / kwargs["uri"]  (resource URI)
+        #   get_prompt     → args[0] / kwargs["name"] (prompt name)
+        #   list_*         → no item identifier; tool_name=None
+        #
+        # The pre-check pattern ensures the agent never reaches the
+        # wrapped server when the policy says block; emit + flush +
+        # raise happens here, the post-call emit path below is
+        # bypassed for blocked calls.
+        call_context = _METHOD_TO_CALL_CONTEXT.get(method_name)
+        if call_context is not None:
+            tool_name_for_policy: Any = None
+            if method_name == "call_tool":
+                tool_name_for_policy = args[0] if args else kwargs.get("name")
+            elif method_name == "read_resource":
+                tool_name_for_policy = args[0] if args else kwargs.get("uri")
+            elif method_name == "get_prompt":
+                tool_name_for_policy = args[0] if args else kwargs.get("name")
+            blocked = _enforce_mcp_policy(
                 sensor_session=sensor_session,
                 server_url=server_url or "",
                 server_name=server_name or "",
                 transport=transport,
                 tool_name=tool_name_for_policy,
+                originating_call_context=call_context,
             )
             if blocked is not None:
-                # _enforce_call_tool_policy already emitted the
+                # _enforce_mcp_policy already emitted the
                 # POLICY_MCP_BLOCK event and flushed the queue; raise
                 # the typed exception so the framework surfaces the
-                # tool-call failure to the agent.
+                # failure to the agent.
                 raise blocked
 
         t0 = time.monotonic()

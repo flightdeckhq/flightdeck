@@ -1,24 +1,44 @@
-// Shared "info" tooltip primitive (D146 step 6.9). Renders the
-// lucide ``Info`` icon at 14px in muted text colour, wrapped by a
-// Radix Tooltip carrying ``content``. Replaces ad-hoc info-link
-// spans (text-styled "info" with a dotted underline) that grew
-// organically across the policy surface — those landed in three
-// shapes (text "info", "?" button, abbr) and were impossible to
-// theme consistently.
+// Shared "info" tooltip primitive (D146 step 6.9 / 6.10).
+//
+// Step 6.10 fixes two interaction defects the 6.9 implementation
+// shipped:
+//
+//   - "Tooltip auto-opens on dialog mount." Radix Tooltip's default
+//     trigger fires on focus, and Radix Dialog's focus-trap moves
+//     focus to the first focusable inside DialogContent on open. The
+//     URL field's InfoIcon button rendered before the URL <input>,
+//     so the dialog auto-focused it → tooltip auto-opened. The
+//     dialog-side fix (onOpenAutoFocus preventDefault + manual
+//     ref-focus on the URL input) lives in MCPPolicyEntryDialog.
+//
+//   - "Click doesn't reopen after dismissal." Radix Tooltip's
+//     uncontrolled state has a pointerDown handler that closes the
+//     tooltip on trigger click — so the click cycle is
+//     pointerDown→close, pointerUp→focus-already-on-button→nothing.
+//     Subsequent clicks land on an already-focused button → no
+//     state change → tooltip stays closed. The fix here: explicit
+//     controlled ``open`` state + ``onClick`` that toggles it. Hover
+//     and Escape keep working via Radix's onOpenChange callback;
+//     click-toggle layers on top.
 //
 // API kept small on purpose: ``content`` is the tooltip body
 // (ReactNode so callers can drop in formatted copy), ``ariaLabel``
 // is the screen-reader label for the icon trigger. Callers don't
 // supply test IDs — the primitive derives a stable one from
 // ``ariaLabel`` so a sweep across info sites can grep them.
+//
+// Consumers must wrap their tree in a ``<TooltipProvider>``. Step
+// 6.9 nested a provider here too; step 6.10 strips it because every
+// current consumer (MCPPolicyHeader, MCPPolicyEntryDialog) already
+// wraps, and the redundant nesting was harmless but obscured
+// ownership.
 
 import { Info } from "lucide-react";
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 
 import {
   Tooltip,
   TooltipContent,
-  TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
@@ -52,33 +72,33 @@ export function InfoIcon({
   testId,
   className,
 }: InfoIconProps) {
+  const [open, setOpen] = useState(false);
   const resolvedTestId = testId ?? `info-icon-${slugify(ariaLabel)}`;
   return (
-    <TooltipProvider>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <button
-            type="button"
-            aria-label={ariaLabel}
-            // Tabbable so keyboard users can land on it and Radix
-            // surfaces the tooltip on focus. ``cursor-help`` mirrors
-            // the previous text-link affordance.
-            className={cn(
-              "inline-flex h-3.5 w-3.5 cursor-help items-center justify-center align-middle text-[var(--text-muted)] transition-colors hover:text-[var(--text)] focus:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)]",
-              className,
-            )}
-            data-testid={resolvedTestId}
-          >
-            <Info className="h-3.5 w-3.5" aria-hidden="true" />
-          </button>
-        </TooltipTrigger>
-        <TooltipContent
-          className="max-w-sm text-xs leading-relaxed"
-          data-testid={`${resolvedTestId}-content`}
+    <Tooltip open={open} onOpenChange={setOpen}>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          aria-label={ariaLabel}
+          aria-expanded={open}
+          // Click toggles explicitly — overrides Radix's default
+          // pointerDown-close so a second click reopens.
+          onClick={() => setOpen((v) => !v)}
+          className={cn(
+            "inline-flex h-3.5 w-3.5 cursor-help items-center justify-center align-middle text-[var(--text-muted)] transition-colors hover:text-[var(--text)] focus:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)]",
+            className,
+          )}
+          data-testid={resolvedTestId}
         >
-          {content}
-        </TooltipContent>
-      </Tooltip>
-    </TooltipProvider>
+          <Info className="h-3.5 w-3.5" aria-hidden="true" />
+        </button>
+      </TooltipTrigger>
+      <TooltipContent
+        className="max-w-sm text-xs leading-relaxed"
+        data-testid={`${resolvedTestId}-content`}
+      >
+        {content}
+      </TooltipContent>
+    </Tooltip>
   );
 }

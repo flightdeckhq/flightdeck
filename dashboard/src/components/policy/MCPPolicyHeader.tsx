@@ -121,11 +121,11 @@ export function MCPPolicyHeader({
               testId={`mcp-policy-mode-tooltip-trigger-${scopeKey}`}
               content={
                 <>
-                  Resolution per (URL, name): the matching flavor entry wins;
-                  otherwise the matching global entry; otherwise the global
-                  mode default — Allow-list blocks, Block-list allows. Mode
-                  lives on the global policy only (D134); per-entry
-                  enforcement overrides on either scope (D135).
+                  <strong>Allow-list:</strong> every server is blocked
+                  unless explicitly in the entry list.{" "}
+                  <strong>Block-list:</strong> every server is allowed
+                  unless explicitly in the entry list. See your entries
+                  below to see which servers match.
                 </>
               }
             />
@@ -240,13 +240,15 @@ export function MCPPolicyHeader({
                 testId={`mcp-policy-bou-tooltip-trigger-${scopeKey}`}
                 content={
                   <>
-                    Block on Uncertainty. Allow-list mode only. When ON,
-                    blocks against servers not in the allow list emit a{" "}
-                    <code>policy_mcp_block</code> audit event instead of
-                    silently blocking. Use this to capture and review
-                    first-time encounters with new servers. Hidden under
-                    Block-list mode (the mode is permissive by default, so
-                    there's nothing for this toggle to qualify).
+                    Allow-list mode only. When ON, blocks against
+                    servers not in your allow list emit a{" "}
+                    <code className="rounded bg-[var(--background-elevated)] px-1 py-0.5 font-mono text-[10px]">
+                      policy_mcp_block
+                    </code>{" "}
+                    audit event so you can review first-time encounters
+                    with new servers. Hidden under Block-list mode (the
+                    mode is permissive by default, so this toggle has
+                    nothing to qualify).
                   </>
                 }
               />

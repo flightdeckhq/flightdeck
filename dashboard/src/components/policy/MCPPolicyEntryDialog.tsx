@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
@@ -68,6 +68,14 @@ export function MCPPolicyEntryDialog({
   // list the instant the dialog opens reads as "the form is broken"
   // before the user has typed anything.
   const [submitAttempted, setSubmitAttempted] = useState(false);
+
+  // Step 6.10: focus-on-mount target for ``onOpenAutoFocus``.
+  // Radix Dialog's default focus-trap targets the first focusable
+  // inside DialogContent. The URL field's neighbouring InfoIcon
+  // button used to win that race, which auto-opened its tooltip on
+  // dialog mount. Pointing focus at the URL <input> keeps the
+  // dialog opening with the cursor where typing should land.
+  const urlInputRef = useRef<HTMLInputElement | null>(null);
 
   // Reset every time the dialog opens with a new ``initial``.
   useEffect(() => {
@@ -159,7 +167,18 @@ export function MCPPolicyEntryDialog({
         if (!next) onClose();
       }}
     >
-      <DialogContent className="w-full max-w-lg">
+      <DialogContent
+        className="w-full max-w-lg"
+        onOpenAutoFocus={(e) => {
+          // Step 6.10 fix: prevent the focus-trap from landing on
+          // the URL field's InfoIcon button (which would auto-open
+          // its tooltip via Radix Tooltip's focus trigger). Manual
+          // ref-focus the URL input instead. requestAnimationFrame
+          // gives the input time to mount before we focus it.
+          e.preventDefault();
+          requestAnimationFrame(() => urlInputRef.current?.focus());
+        }}
+      >
         <TooltipProvider>
           <DialogTitle data-testid="mcp-policy-entry-dialog-title">
             {initial ? "Edit entry" : "Add entry"}
@@ -176,34 +195,39 @@ export function MCPPolicyEntryDialog({
                 Server URL
               </label>
               <InfoIcon
-                ariaLabel="Server URL canonicalization help"
+                ariaLabel="Server URL help"
                 testId="mcp-policy-entry-url-tooltip-trigger"
                 content={
                   <>
-                    Stored as a canonical form so semantically-identical
-                    URLs hash to the same fingerprint (D127). HTTP /
-                    WebSocket: lowercase scheme + host, drop default
-                    ports (:80 / :443), strip user-info / fragment /
-                    query, drop the root trailing slash only.
-                    {" "}
+                    The URL the agent uses to reach the MCP server.
+                    Examples:
+                    <ul className="mt-1 list-disc pl-4">
+                      <li>
+                        <code className="rounded bg-[var(--background-elevated)] px-1 py-0.5 font-mono text-[10px]">
+                          https://mcp.example.com/sse
+                        </code>{" "}
+                        (HTTP-based)
+                      </li>
+                      <li>
+                        <code className="rounded bg-[var(--background-elevated)] px-1 py-0.5 font-mono text-[10px]">
+                          stdio:///usr/local/bin/mcp-server
+                        </code>{" "}
+                        (local binary)
+                      </li>
+                    </ul>
+                    For stdio: prefix with{" "}
                     <code className="rounded bg-[var(--background-elevated)] px-1 py-0.5 font-mono text-[10px]">
-                      HTTPS://Example.com:443/sse?x=1
-                    </code>
-                    {" "}→{" "}
-                    <code className="rounded bg-[var(--background-elevated)] px-1 py-0.5 font-mono text-[10px]">
-                      https://example.com/sse
-                    </code>
-                    . Stdio: <code className="rounded bg-[var(--background-elevated)] px-1 py-0.5 font-mono text-[10px]">stdio://</code>
-                    {" "}prefix + command + args joined on single
-                    spaces (internal whitespace collapses; env-var
-                    references resolve at fingerprint time). Hash recipe:
-                    sha256(canonical_url + 0x00 + name).
+                      stdio://
+                    </code>{" "}
+                    and include the binary path. The system normalizes
+                    the URL before storing it.
                   </>
                 }
               />
             </div>
             <input
               id="mcp-policy-entry-url"
+              ref={urlInputRef}
               type="text"
               value={serverUrl}
               onChange={(e) => setServerUrl(e.target.value)}
@@ -249,14 +273,13 @@ export function MCPPolicyEntryDialog({
                 testId="mcp-policy-entry-name-tooltip-trigger"
                 content={
                   <>
-                    The name + URL together compute the fingerprint —{" "}
+                    A short identifier the operator + agent share. Use
+                    the same name your{" "}
                     <code className="rounded bg-[var(--background-elevated)] px-1 py-0.5 font-mono text-[10px]">
-                      sha256(canonical_url + 0x00 + name)
-                    </code>
-                    {" "}— so a rename here produces a new fingerprint
-                    even if the URL is unchanged. Both must match the
-                    values the agent's MCP client declares for an entry
-                    to bind at runtime.
+                      .mcp.json
+                    </code>{" "}
+                    declares (e.g. filesystem, github, slack). Name and
+                    URL together identify the server.
                   </>
                 }
               />
@@ -299,15 +322,10 @@ export function MCPPolicyEntryDialog({
                   testId="mcp-policy-entry-kind-tooltip-trigger"
                   content={
                     <>
-                      <strong>Allow:</strong> requests to this server
-                      proceed with the configured enforcement (typically
-                      no-op or warn).{" "}
-                      <strong>Deny:</strong> requests are blocked and
-                      emit a{" "}
-                      <code className="rounded bg-[var(--background-elevated)] px-1 py-0.5 font-mono text-[10px]">
-                        policy_mcp_block
-                      </code>
-                      {" "}event.
+                      <strong>Allow:</strong> this server is permitted
+                      by the policy.{" "}
+                      <strong>Deny:</strong> this server is blocked by
+                      the policy.
                     </>
                   }
                 />
@@ -341,25 +359,25 @@ export function MCPPolicyEntryDialog({
                   testId="mcp-policy-entry-enforcement-tooltip-trigger"
                   content={
                     <>
-                      <strong>Default for this kind:</strong> use the
-                      policy's default for allow / deny entries.{" "}
-                      <strong>Warn:</strong> emit a{" "}
-                      <code className="rounded bg-[var(--background-elevated)] px-1 py-0.5 font-mono text-[10px]">
-                        policy_mcp_warn
-                      </code>
-                      {" "}event and proceed.{" "}
-                      <strong>Block:</strong> emit a{" "}
-                      <code className="rounded bg-[var(--background-elevated)] px-1 py-0.5 font-mono text-[10px]">
-                        policy_mcp_block
-                      </code>
-                      {" "}event and raise{" "}
-                      <code className="rounded bg-[var(--background-elevated)] px-1 py-0.5 font-mono text-[10px]">
-                        MCPPolicyBlocked
-                      </code>
-                      .{" "}
-                      <strong>Interactive:</strong> Claude Code plugin
-                      only — prompts the user inline; the sensor never
-                      sees it on the per-call hot path.
+                      How the policy decision is delivered to the agent.
+                      <ul className="mt-1 list-disc pl-4">
+                        <li>
+                          <strong>Default:</strong> use the policy's
+                          default for this Allow / Deny kind
+                        </li>
+                        <li>
+                          <strong>Warn:</strong> emit an audit event
+                          but proceed
+                        </li>
+                        <li>
+                          <strong>Block:</strong> emit an audit event
+                          and stop the call
+                        </li>
+                        <li>
+                          <strong>Interactive:</strong> prompt the user
+                          (Claude Code plugin only)
+                        </li>
+                      </ul>
                     </>
                   }
                 />

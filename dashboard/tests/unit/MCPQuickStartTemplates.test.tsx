@@ -66,7 +66,21 @@ afterEach(() => {
 });
 
 describe("MCPQuickStartTemplates", () => {
-  it("renders the link when admin + empty + not-yet-applied", () => {
+  it("renders the link when admin + empty + not-yet-applied on a flavor scope", () => {
+    render(
+      <MCPQuickStartTemplates
+        flavor="research-agent"
+        scopeKey="research-agent"
+        entryCount={0}
+        onApplied={async () => undefined}
+      />,
+    );
+    expect(
+      screen.getByTestId("mcp-quickstart-templates-trigger-research-agent"),
+    ).toBeTruthy();
+  });
+
+  it("hides the link on the global scope — apply_template returns 400 by design (D138 + D134)", () => {
     render(
       <MCPQuickStartTemplates
         flavor="global"
@@ -76,8 +90,8 @@ describe("MCPQuickStartTemplates", () => {
       />,
     );
     expect(
-      screen.getByTestId("mcp-quickstart-templates-trigger-global"),
-    ).toBeTruthy();
+      screen.queryByTestId("mcp-quickstart-templates-trigger-global"),
+    ).toBeNull();
   });
 
   it("hides the link when entries populate", () => {
@@ -157,8 +171,8 @@ describe("MCPQuickStartTemplates", () => {
     ]);
     render(
       <MCPQuickStartTemplates
-        flavor="global"
-        scopeKey="global"
+        flavor="research-agent"
+        scopeKey="research-agent"
         entryCount={0}
         onApplied={async () => undefined}
       />,
@@ -166,7 +180,7 @@ describe("MCPQuickStartTemplates", () => {
     expect(listMock).not.toHaveBeenCalled();
 
     fireEvent.click(
-      screen.getByTestId("mcp-quickstart-templates-trigger-global"),
+      screen.getByTestId("mcp-quickstart-templates-trigger-research-agent"),
     );
     await waitFor(() => {
       expect(
@@ -184,14 +198,14 @@ describe("MCPQuickStartTemplates", () => {
     ]);
     render(
       <MCPQuickStartTemplates
-        flavor="global"
-        scopeKey="global"
+        flavor="research-agent"
+        scopeKey="research-agent"
         entryCount={0}
         onApplied={async () => undefined}
       />,
     );
     fireEvent.click(
-      screen.getByTestId("mcp-quickstart-templates-trigger-global"),
+      screen.getByTestId("mcp-quickstart-templates-trigger-research-agent"),
     );
     await waitFor(() => {
       expect(

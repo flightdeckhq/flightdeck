@@ -92,6 +92,13 @@ export function MCPQuickStartTemplates({
   if (role !== "admin") return null;
   if (entryCount > 0) return null;
   if (wasApplied) return null;
+  // Defense in depth against a future caller passing flavor="global"
+  // — POST /v1/mcp-policies/global/apply_template returns 400 by
+  // design (D138 + D134; templates apply to flavor policies only).
+  // Caller-side gating in MCPPolicyEntryTable's EmptyState is the
+  // primary suppression; this guard prevents regressions if the
+  // wiring drifts.
+  if (flavor === "global") return null;
 
   async function handleApply(template: MCPPolicyTemplate) {
     setApplyingName(template.name);

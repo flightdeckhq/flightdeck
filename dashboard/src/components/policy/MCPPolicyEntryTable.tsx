@@ -15,6 +15,13 @@ export interface MCPPolicyEntryTableProps {
   /** "global" or the flavor name — passed through to the quick-start
    *  templates element rendered inside the empty state (D146). */
   flavor: string;
+  /** Discriminates the global policy from a flavor policy. The
+   *  quick-start templates element is hidden on the global scope
+   *  because POST /v1/mcp-policies/global/apply_template returns
+   *  400 by design (D138 + D134 — templates apply to flavor
+   *  policies only). Without this gate the empty state on the
+   *  Global tab rendered an Apply button that the API rejected. */
+  scope: "global" | "flavor";
   loading: boolean;
   onAdd: () => void;
   onEdit: (entry: MCPPolicyEntry) => void;
@@ -41,6 +48,7 @@ export function MCPPolicyEntryTable({
   mode,
   scopeKey,
   flavor,
+  scope,
   loading,
   onAdd,
   onEdit,
@@ -153,6 +161,7 @@ export function MCPPolicyEntryTable({
           mode={mode}
           hasSearch={search.trim().length > 0}
           flavor={flavor}
+          scope={scope}
           scopeKey={scopeKey}
           entryCount={entries.length}
           onApplied={onApplied}
@@ -353,6 +362,7 @@ function EmptyState({
   mode,
   hasSearch,
   flavor,
+  scope,
   scopeKey,
   entryCount,
   onApplied,
@@ -360,6 +370,7 @@ function EmptyState({
   mode: "allowlist" | "blocklist" | null;
   hasSearch: boolean;
   flavor: string;
+  scope: "global" | "flavor";
   scopeKey: string;
   entryCount: number;
   onApplied: () => Promise<void>;
@@ -390,12 +401,14 @@ function EmptyState({
       data-testid="mcp-policy-entries-empty"
     >
       {copy}
-      <MCPQuickStartTemplates
-        flavor={flavor}
-        scopeKey={scopeKey}
-        entryCount={entryCount}
-        onApplied={onApplied}
-      />
+      {scope === "flavor" ? (
+        <MCPQuickStartTemplates
+          flavor={flavor}
+          scopeKey={scopeKey}
+          entryCount={entryCount}
+          onApplied={onApplied}
+        />
+      ) : null}
     </div>
   );
 }

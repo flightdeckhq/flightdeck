@@ -43,6 +43,7 @@ describe("MCPPolicyEntryTable", () => {
         mode="allowlist"
         scopeKey="global"
         flavor="global"
+        scope="flavor"
         loading={false}
         onAdd={noop}
         onEdit={noop}
@@ -62,6 +63,7 @@ describe("MCPPolicyEntryTable", () => {
         mode="blocklist"
         scopeKey="global"
         flavor="global"
+        scope="flavor"
         loading={false}
         onAdd={noop}
         onEdit={noop}
@@ -102,6 +104,7 @@ describe("MCPPolicyEntryTable", () => {
         mode="allowlist"
         scopeKey="global"
         flavor="global"
+        scope="flavor"
         loading={false}
         onAdd={noop}
         onEdit={noop}
@@ -145,6 +148,7 @@ describe("MCPPolicyEntryTable", () => {
         mode="blocklist"
         scopeKey="global"
         flavor="global"
+        scope="flavor"
         loading={false}
         onAdd={noop}
         onEdit={noop}
@@ -171,6 +175,7 @@ describe("MCPPolicyEntryTable", () => {
         mode="blocklist"
         scopeKey="global"
         flavor="global"
+        scope="flavor"
         loading={false}
         onAdd={onAdd}
         onEdit={noop}
@@ -192,6 +197,7 @@ describe("MCPPolicyEntryTable", () => {
         mode="allowlist"
         scopeKey="global"
         flavor="global"
+        scope="flavor"
         loading={false}
         onAdd={noop}
         onEdit={onEdit}
@@ -208,13 +214,14 @@ describe("MCPPolicyEntryTable", () => {
     );
   });
 
-  it("embeds the quick-start templates link in the empty state under admin role (D146)", () => {
+  it("embeds the quick-start templates link in the empty state under admin role on a flavor scope (D146)", () => {
     render(
       <MCPPolicyEntryTable
         entries={[]}
         mode="allowlist"
-        scopeKey="global"
-        flavor="global"
+        scopeKey="research-agent"
+        flavor="research-agent"
+        scope="flavor"
         loading={false}
         onAdd={noop}
         onEdit={noop}
@@ -223,8 +230,33 @@ describe("MCPPolicyEntryTable", () => {
       />,
     );
     expect(
-      screen.getByTestId("mcp-quickstart-templates-trigger-global"),
+      screen.getByTestId("mcp-quickstart-templates-trigger-research-agent"),
     ).toBeTruthy();
+  });
+
+  it("hides the quick-start templates link on the global scope — apply_template returns 400 by design (D138 + D134)", () => {
+    render(
+      <MCPPolicyEntryTable
+        entries={[]}
+        mode="blocklist"
+        scopeKey="global"
+        flavor="global"
+        scope="global"
+        loading={false}
+        onAdd={noop}
+        onEdit={noop}
+        onDelete={noopAsync}
+        onApplied={noopAsync}
+      />,
+    );
+    // Empty state still renders its mode-aware copy; only the
+    // quick-start CTA is suppressed.
+    expect(
+      screen.getByTestId("mcp-policy-entries-empty").textContent,
+    ).toContain("Add your first deny rule to block specific servers.");
+    expect(
+      screen.queryByTestId("mcp-quickstart-templates-trigger-global"),
+    ).toBeNull();
   });
 
   it("hides Add Entry button + row Edit/Delete actions when role is viewer (D147)", () => {
@@ -240,6 +272,7 @@ describe("MCPPolicyEntryTable", () => {
         mode="allowlist"
         scopeKey="global"
         flavor="global"
+        scope="flavor"
         loading={false}
         onAdd={() => undefined}
         onEdit={() => undefined}

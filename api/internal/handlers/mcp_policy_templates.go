@@ -124,7 +124,15 @@ func ApplyMCPPolicyTemplateHandler(s store.Querier) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		flavor := flavorFromPath(r)
 		if flavor == "" || isReservedFlavorSegment(flavor) || flavor == "global" {
-			writeError(w, http.StatusBadRequest, "flavor is required (global cannot have templates applied)")
+			// D138 + D134: shipped templates carry per-entry
+			// enforcement and (permissive-dev) mode; mode is
+			// global-only and yamlToMutation rejects it on
+			// flavor scope. Templates therefore apply to flavor
+			// policies only — the global default is configured
+			// directly via PUT /v1/mcp-policies/global. The
+			// rejection message is the durable contract surfaced
+			// to any caller (dashboard, CLI, future clients).
+			writeError(w, http.StatusBadRequest, "templates apply to flavor policies only")
 			return
 		}
 		var body applyTemplateRequest

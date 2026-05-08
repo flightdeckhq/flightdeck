@@ -267,6 +267,7 @@ function GlobalPanel({
         mode={(policy.mode as Mode | null) ?? null}
         scopeKey="global"
         flavor="global"
+        scope="global"
         loading={false}
         onAdd={() => onOpenAdd(dialogScope)}
         onEdit={(entry) => onOpenEdit(dialogScope, entry)}
@@ -358,6 +359,7 @@ function FlavorPanel({
           mode={globalMode}
           scopeKey={flavor}
           flavor={flavor}
+          scope="flavor"
           loading={false}
           onAdd={() => onOpenAdd(dialogScope)}
           onEdit={() => undefined}
@@ -393,6 +395,7 @@ function FlavorPanel({
         mode={globalMode}
         scopeKey={flavor}
         flavor={flavor}
+        scope="flavor"
         loading={false}
         onAdd={() => onOpenAdd(dialogScope)}
         onEdit={(entry) => onOpenEdit(dialogScope, entry)}

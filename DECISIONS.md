@@ -7261,3 +7261,229 @@ in ``api/internal/server/server.go`` and is audited in commit 4
 of step 6.8 cleanup before the middleware change.
 
 
+
+
+---
+
+## D148 -- Shared `policy_decision` payload block on enforcement events
+
+**Date:** 2026-05-08
+**Phase:** Phase 7 Step 2 (operator-actionable events)
+
+**Context.** The Phase 7 audit (`docs/phase-7-event-audit.md`)
+surfaced that the five policy enforcement event types
+(`policy_warn`, `policy_degrade`, `policy_block`, `policy_mcp_warn`,
+`policy_mcp_block`) carried sufficient threshold context for
+operators to see *what* fired but never *which policy row*
+produced the decision. Token-budget events lacked `policy_id` +
+matched scope entirely; MCP events surfaced a flat
+`policy_id` / `scope` / `decision_path` triple but never the
+`matched_entry_id` so an operator couldn't link a `policy_mcp_warn`
+to the specific policy entry they'd written.
+
+The audit's "policy / behaviour tuning" workflow ("what was
+almost-allowed I want to formally allow") was unsupported. The
+"forensic review" workflow ("which policy row produced this
+decision last week") required joining historical policy state by
+hand.
+
+**Decision.** Define one canonical payload block reused across
+all five policy event types. The shape lives in
+`flightdeck_sensor.core.types.PolicyDecisionSummary` (Python
+sensor) with byte-for-byte parity in `plugin/hooks/scripts/
+mcp_policy.mjs::buildPolicyDecisionBlock` (Node plugin) and
+appears on the wire as `payload.policy_decision = {...}`. The
+block is **always included** regardless of `capture_prompts` —
+operator-actionable state metadata, not content (Phase 7 Q2).
+
+Canonical shape:
+
+| Field | Required | Token-budget | MCP |
+|---|---|---|---|
+| `policy_id` | ✓ | "local" / API UUID | API UUID |
+| `scope` | ✓ | "org" / "flavor:<v>" / "session:<v>" / "local_failsafe" | "global" / "flavor:<v>" / "local_failsafe" / "fail_open" |
+| `decision` | ✓ | "warn" / "degrade" / "block" | "allow" / "warn" / "block" |
+| `reason` | ✓ | sensor-built single-line operator-readable string | sensor-built single-line operator-readable string |
+| `decision_path` | only MCP | — | "flavor_entry" / "global_entry" / "mode_default" |
+| `matched_entry_id` | only MCP entry path | — | UUID of matched MCP policy entry |
+| `matched_entry_label` | only MCP entry path | — | matched entry's `server_name` |
+
+The four required fields land on every event; the three MCP-only
+fields are dropped by the as_payload_dict serializer when null
+so token-budget events ship a compact 4-key block.
+
+**Reason string format** (locked in Step 2 plan readback):
+"<what happened> + <by what mechanism> + <relevant context>".
+Single line, no newlines. Examples:
+
+- `policy_warn`: `"Token usage 8000/10000 (80%) crossed warn threshold (80%, server policy)"`
+- `policy_mcp_block` flavor entry: `"Server filesystem blocked by flavor entry, enforcement=block"`
+- `policy_mcp_block` mode default + BOU: `"Server unknown blocked by allow-list mode default; no matching allow entry (block_on_uncertainty=true)"`
+
+Sensor builds the string; dashboard renders verbatim. This keeps
+the operator-readable explanation in one place; copy tweaks land
+sensor-side without a dashboard release.
+
+**Why a shared block instead of per-type fields.** Five event
+types × seven candidate enrichment fields = 35 type/field
+combinations the dashboard would otherwise have to render
+distinctly. A shared block lets a single renderer cover all five
+in Step 6, and lets operators reading the timeline see
+identically-shaped enrichment regardless of which policy fired.
+Mirrors the same "single shape across the family" pattern D131
+locked for the per-event MCP fields.
+
+**Why optional MCP-only fields stay nullable.** Token-budget
+events have no concept of a matched entry (their decision is
+threshold-based, not entry-based). Forcing the field to render
+as null on the wire would create operator-confusing artifacts
+("matched_entry_id: null on a policy_warn — what entry was that?").
+Dropping the field via as_payload_dict serialization keeps the
+shape self-describing.
+
+**Hard cutover** (per the no-compat-tax memory). Pre-v0.6 has
+no users to protect; sensor + plugin + ingestion + workers
+ship together in this Step 2 commit. Ingestion validation
+rejects the five policy event types with a 400 if the
+`policy_decision` block is missing. Dev DB rebuild on next
+`make dev-reset`.
+
+**Rejected alternatives.**
+
+- *Per-type fields named `policy_warn_id`, `policy_block_entry_id`,
+  etc.* Rejected: the shape is identical across event types except
+  for which fields apply; carrying the differences in field-name
+  spaghetti would add noise to renderers and make schema migrations
+  type-by-type instead of family-by-family.
+- *Defer matched_entry_id to a join at render time.* Rejected: the
+  dashboard would need a sub-query per drawer click; cross-session
+  lookups are O(log n) per click; brittle if the matched entry was
+  later deleted (event row would lose its referent).
+- *Merge `policy_decision` into the legacy top-level fields
+  immediately.* Deferred to Step 6: the existing dashboard
+  renderers consume the legacy `policy_id` / `scope` /
+  `decision_path` flat fields directly; consolidating in Step 2
+  would require a paired dashboard refresh that's larger than
+  Step 2's scope. Step 6 batch performs the consolidation.
+
+**Related decisions.** D131 (the existing MCP-event payload table
+this block extends). D135 (the resolution algorithm whose
+decisions this block surfaces). D149 (the `originating_event_id`
+chain this block ships alongside). Phase 7 audit
+(`docs/phase-7-event-audit.md`) for the audit-derived workflow
+gap analysis.
+
+**Implementation note (Step 2).** Sensor:
+`flightdeck_sensor.core.types.PolicyDecisionSummary` +
+`as_payload_dict()`. Plugin: `plugin/hooks/scripts/mcp_policy.mjs::
+buildPolicyDecisionBlock(decision)`. Ingestion validator:
+`ingestion/internal/handlers/events.go::
+validatePolicyDecisionBlock` (D148 hard-cutover). Worker
+projection: pass-through (jsonb absorbs the block). Dashboard
+type: `EventPayloadFields.policy_decision: PolicyDecisionBlock`
+(schema acceptance; rendering deferred to Step 6).
+
+---
+
+## D149 -- Sensor-minted event UUIDs + `originating_event_id` chain
+
+**Date:** 2026-05-08
+**Phase:** Phase 7 Step 2 (operator-actionable events)
+
+**Context.** The Phase 7 audit's "incident triage" workflow
+("what was this agent doing right before the failure") needs
+cross-event correlation: a `tool_call` row should link to the
+`post_call` whose response invoked it; a `policy_mcp_block`
+should link to the `post_call` whose response triggered the
+agent's MCP request; a `llm_error` should link to the call
+attempt that errored.
+
+The original Step 2 plan called for a `originating_event_id`
+field carrying the UUID of the originator event. Step 2 code-
+write surfaced an architectural blocker: `events.id` is
+DB-generated via `gen_random_uuid()` on INSERT, so the sensor
+never sees the UUID — by the time the worker assigns it, the
+session has moved on. Pre-v0.6, no plumbing existed for the
+sensor to know event ids client-side.
+
+**Decision.** Move event-UUID minting from the worker to the
+sensor. The sensor calls `uuid.uuid4()` per emission inside
+`Session._build_payload`, ships the UUID in `payload.id`, and
+the worker's `InsertEvent` uses it via `COALESCE(NULLIF($1, '')::
+uuid, gen_random_uuid())` — sensor-supplied id wins; legacy
+callers without `payload.id` fall back to the DB-side default
+seamlessly. The composite primary key `(id, occurred_at)` plus
+`ON CONFLICT (id, occurred_at) DO NOTHING` gives idempotent
+retry semantics: a sensor flush retried after a transient
+ingestion failure lands cleanly even if the first attempt's
+commit raced.
+
+With sensor-side ids in hand, `Session` tracks
+`_current_call_event_id` — set to the most-recent `post_call`
+emission's id, cleared at session end. `_build_payload` stamps
+`payload.originating_event_id` automatically on every "downstream
+of an LLM call" event type:
+
+- `tool_call` (LLM-side function invocation parsed from the
+  response)
+- `llm_error`
+- `policy_warn` / `policy_degrade` / `policy_block`
+- `policy_mcp_warn` / `policy_mcp_block`
+- `mcp_tool_list` / `mcp_tool_call` / `mcp_resource_list` /
+  `mcp_resource_read` / `mcp_prompt_list` / `mcp_prompt_get`
+
+Originator types (`pre_call`, `post_call`, `embeddings`) and
+call-window-independent types (`session_start`, `session_end`,
+`mcp_server_attached`, `mcp_server_name_changed`,
+`directive_result`) skip the chain stamp.
+
+**Idempotent retry semantics.**
+
+- Same `(id, occurred_at)` from a retry: ON CONFLICT DO NOTHING
+  suppresses; worker returns the canonical row's id so downstream
+  NOTIFY + content writes still reference the existing row.
+- Different `occurred_at` with same `id` (sensor retry path
+  shifts the timestamp): would produce two rows. The sensor's
+  existing retry path preserves `occurred_at` from the
+  original enqueue (timestamp captured at emission, not at
+  flush), so this case shouldn't occur in practice.
+- No `id` (legacy caller): `gen_random_uuid()` default kicks
+  in; backwards-compatible.
+
+**Plugin parity.** The Claude Code plugin's emissions need to
+ship a `payload.id` too so the worker's COALESCE picks it up.
+Plugin-side: emit `crypto.randomUUID()` per event (Node 19+;
+falls back to `crypto.randomBytes` shim if missing).
+
+**Rejected alternatives.**
+
+- *Temporal pointer instead of UUID: `originating_event_pointer
+  = {session_id, occurred_at, event_type}`.* Rejected: brittle
+  if two events of the same type land within 1ms; cross-session
+  pointer lookups are O(log n) per click; doesn't survive event
+  type renames.
+- *Keep DB-generated IDs and have the worker compute the chain
+  by post-processing.* Rejected: requires the worker to either
+  buffer events per session or do a per-event lookup of "the
+  last post_call in this session." Stateful + slow; trivial
+  on the sensor side.
+- *Defer the chain to a later phase.* Rejected per Rule 51
+  (no-defer): the audit's incident-triage workflow is the
+  primary value of Phase 7, and the chain is the foundation.
+
+**Related decisions.** D094 (session attachment — the new ON
+CONFLICT semantics live alongside but are orthogonal). D131
+(the events whose payloads this chain decorates). D148 (the
+`policy_decision` block this chain ships alongside on policy
+events). Phase 7 audit (`docs/phase-7-event-audit.md`).
+
+**Implementation note (Step 2).** Sensor:
+`flightdeck_sensor.core.session.Session._build_payload` mints +
+threads; `set_current_call_event_id` /
+`get_current_call_event_id` helpers. Worker:
+`workers/internal/writer/postgres.go::InsertEvent` accepts
+sensor-supplied id via the new first parameter; legacy callers
+pass empty string. Worker types:
+`workers/internal/consumer/nats.go::EventPayload.ID`. Dashboard
+type: `EventPayloadFields.originating_event_id` (schema
+acceptance; rendering deferred to Step 6).

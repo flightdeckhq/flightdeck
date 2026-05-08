@@ -96,6 +96,24 @@ func BuildEventExtra(e consumer.EventPayload) ([]byte, error) {
 	if e.IntendedModel != "" {
 		extra["intended_model"] = e.IntendedModel
 	}
+	// Phase 7 Step 2 (D148/D149): operator-actionable enrichment.
+	// Project policy_decision (shared block on the 5 policy event
+	// types) + originating_event_id (chain) + originating_call_context
+	// (MCP-policy events) through to events.payload unchanged. Always
+	// included when present; capture_prompts does not gate state
+	// metadata per Phase 7 Q2.
+	if len(e.PolicyDecision) > 0 {
+		var v interface{}
+		if err := json.Unmarshal(e.PolicyDecision, &v); err == nil {
+			extra["policy_decision"] = v
+		}
+	}
+	if e.OriginatingEventID != "" {
+		extra["originating_event_id"] = e.OriginatingEventID
+	}
+	if e.OriginatingCallContext != "" {
+		extra["originating_call_context"] = e.OriginatingCallContext
+	}
 	// Phase 5 MCP fields. Project unconditionally when the sensor sent
 	// them — only MCP_* events carry these on the wire. The dashboard's
 	// MCPEventDetails component reads them directly from events.payload.
@@ -408,8 +426,11 @@ func (p *Processor) Process(ctx context.Context, e consumer.EventPayload) error 
 		// Non-fatal: log and proceed without payload metadata.
 		slog.Warn("build event extra error", "err", extraErr, "event_type", e.EventType)
 	}
+	// Phase 7 Step 2 (D149): pass the sensor-minted event id (from
+	// payload.id) into InsertEvent. Empty string → DB-side
+	// gen_random_uuid() fallback via COALESCE.
 	eventID, err := p.w.InsertEvent(
-		ctx, e.SessionID, e.Flavor, e.EventType, e.Model,
+		ctx, e.ID, e.SessionID, e.Flavor, e.EventType, e.Model,
 		e.TokensInput, e.TokensOutput, e.TokensTotal,
 		e.TokensCacheRead, e.TokensCacheCreation,
 		e.LatencyMs, e.ToolName, e.HasContent, ts, extra,

@@ -15,6 +15,7 @@ import signal
 import socket
 import threading
 import urllib.request
+import uuid
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
@@ -151,6 +152,17 @@ class Session:
         # same multi-thread reasons as _tokens_used / _model.
         self._mcp_servers: list[MCPServerFingerprint] = []
 
+        # Phase 7 Step 2 (D149): originating_event_id chain. Tracks the
+        # UUID of the most-recent ``pre_call`` emission so downstream
+        # events fired during the same LLM call (tool_call, llm_error,
+        # mcp_*, policy_mcp_*, policy_warn/degrade/block) can stamp
+        # ``payload.originating_event_id`` and the dashboard can chain
+        # them visually. Cleared on ``post_call`` enqueue (the call
+        # window closes there). ``None`` outside an active call window;
+        # session_start / session_end / mcp_server_attached do NOT set
+        # it because they don't belong to any LLM call.
+        self._current_call_event_id: str | None = None
+
         # Lazy import to avoid circular dependency at module level.
         from flightdeck_sensor.transport.client import EventQueue as LocalEventQueue
 
@@ -239,6 +251,26 @@ class Session:
         """Record the model used in the most recent call."""
         with self._lock:
             self._model = model
+
+    # ------------------------------------------------------------------
+    # Originating-event-id chain (D149)
+    # ------------------------------------------------------------------
+
+    def set_current_call_event_id(self, event_id: str | None) -> None:
+        """Stash the most-recent pre_call emission's UUID so downstream
+        events fired during the same call window can reference it via
+        ``originating_event_id``. Called by the interceptor's _pre_call
+        right after _build_payload mints the id; cleared on _post_call
+        emission (the call window closes there)."""
+        with self._lock:
+            self._current_call_event_id = event_id
+
+    def get_current_call_event_id(self) -> str | None:
+        """Read the current call's originating event id, or None when
+        outside a call window. Called by downstream emissions to thread
+        ``payload.originating_event_id`` through."""
+        with self._lock:
+            return self._current_call_event_id
 
     def record_framework(self, framework: str) -> None:
         """Record the framework if detected."""
@@ -700,6 +732,19 @@ class Session:
                     policy_fields["degrade_to"] = parsed.degrade_to
                 if parsed.block_at_pct is not None:
                     policy_fields["block_at_pct"] = parsed.block_at_pct
+                # Phase 7 Step 2 (D148): API now surfaces id + scope on
+                # the effective-policy response (always has — the
+                # ``store.Policy`` JSON tags include them; the sensor
+                # schema previously stripped them on parse). Pass through
+                # so policy_warn / policy_degrade / policy_block emissions
+                # can populate the shared policy_decision block.
+                if parsed.id is not None:
+                    policy_fields["policy_id"] = parsed.id
+                if parsed.scope is not None:
+                    matched_scope = parsed.scope
+                    if parsed.scope_value:
+                        matched_scope = f"{parsed.scope}:{parsed.scope_value}"
+                    policy_fields["matched_policy_scope"] = matched_scope
                 if policy_fields:
                     self.policy.update(policy_fields)
         except Exception:
@@ -951,11 +996,21 @@ class Session:
 
         is_mcp = event_type.value.startswith("mcp_")
 
+        # Phase 7 Step 2 (D149): mint a sensor-side UUID per event so
+        # the originating_event_id chain works without round-tripping
+        # the worker. Worker's InsertEvent uses this id directly when
+        # present, falling back to gen_random_uuid() only for legacy
+        # callers. Idempotency: if a sensor retries the same payload
+        # after a network blip, the worker's INSERT ... ON CONFLICT
+        # (id, occurred_at) DO NOTHING suppresses the duplicate.
+        event_id = str(uuid.uuid4())
+
         # Common identity + session-level state. Every event (LLM-shaped
         # or MCP-shaped) carries these — they describe WHO the event
         # belongs to and the session's running token state, both of
         # which are meaningful regardless of payload semantics.
         payload: dict[str, Any] = {
+            "id": event_id,
             "session_id": self.config.session_id,
             "flavor": self.config.agent_flavor,
             "agent_type": self.config.agent_type,
@@ -972,6 +1027,38 @@ class Session:
             "token_limit_session": self._token_limit,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
+
+        # Phase 7 Step 2 (D149): originating_event_id chain. Stamp the
+        # current call window's originator event id (post_call, or
+        # pre_call when post_call hasn't fired yet) onto every
+        # downstream emission so the dashboard can render the call →
+        # sub-event ancestry. Suppressed for:
+        #   - the originators themselves (PRE_CALL, POST_CALL, EMBEDDINGS
+        #     — embeddings is its own originator, not chained off an LLM
+        #     call);
+        #   - call-window-independent events (SESSION_*, MCP_SERVER_*,
+        #     DIRECTIVE_RESULT) that don't belong to any LLM call.
+        # The set is the "downstream of an LLM call" types per the
+        # Phase 7 audit § originating_event_id chain.
+        chained_event_types = {
+            EventType.TOOL_CALL,
+            EventType.LLM_ERROR,
+            EventType.POLICY_WARN,
+            EventType.POLICY_DEGRADE,
+            EventType.POLICY_BLOCK,
+            EventType.MCP_TOOL_LIST,
+            EventType.MCP_TOOL_CALL,
+            EventType.MCP_RESOURCE_LIST,
+            EventType.MCP_RESOURCE_READ,
+            EventType.MCP_PROMPT_LIST,
+            EventType.MCP_PROMPT_GET,
+            EventType.POLICY_MCP_WARN,
+            EventType.POLICY_MCP_BLOCK,
+        }
+        if event_type in chained_event_types:
+            origin_id = self.get_current_call_event_id()
+            if origin_id is not None:
+                payload["originating_event_id"] = origin_id
 
         if not is_mcp:
             # LLM-shaped baseline. Fields are nullable for non-LLM event
@@ -1064,14 +1151,34 @@ class Session:
             # is always ``"server"`` because DEGRADE never originates from
             # a local init(limit=...) threshold (D035 — local fires WARN
             # only).
+            #
+            # Phase 7 Step 2 (D148): shared policy_decision block.
+            # Built inline here (not via PolicyDecisionSummary import) to
+            # keep this module dependency-light; the dict shape mirrors
+            # PolicyDecisionSummary.as_payload_dict() byte-for-byte.
+            from flightdeck_sensor.core.types import PolicyDecisionSummary
+            degrade_pct = self.policy.degrade_at_pct
+            denom = token_limit if token_limit and token_limit > 0 else 1
+            degrade_decision = PolicyDecisionSummary(
+                policy_id=self.policy.policy_id or "",
+                scope=self.policy.matched_policy_scope or "",
+                decision="degrade",
+                reason=(
+                    f"Token usage {tokens_used}/{token_limit} "
+                    f"({(tokens_used * 100) // denom}%) "
+                    f"crossed degrade threshold ({degrade_pct}%, server policy); "
+                    f"model swapped {current_model} → {degrade_to}"
+                ),
+            )
             policy_event = self._build_payload(
                 EventType.POLICY_DEGRADE,
                 source="server",
-                threshold_pct=self.policy.degrade_at_pct,
+                threshold_pct=degrade_pct,
                 tokens_used=tokens_used,
                 token_limit=token_limit,
                 from_model=current_model,
                 to_model=degrade_to,
+                policy_decision=degrade_decision.as_payload_dict(),
             )
             self.event_queue.enqueue(policy_event)
             # DIRECTIVE_RESULT (acknowledged): the plumbing-level

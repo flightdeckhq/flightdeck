@@ -468,6 +468,11 @@ def test_enforce_warn_emits_event_returns_none() -> None:
     )
     assert blocked is None
     fake.event_queue.enqueue.assert_called_once()
+    # Phase 7 Step 2 (D148/D149): policy_decision shared block +
+    # originating_call_context (defaults to "tool_call") added to the
+    # extras. Legacy top-level fields (policy_id, scope, decision_path)
+    # remain on the wire for backwards compatibility with the
+    # dashboard renderers; Step 6 will consolidate.
     fake._build_payload.assert_called_with(
         EventType.POLICY_MCP_WARN,
         server_url="https://x.example.com",
@@ -477,6 +482,14 @@ def test_enforce_warn_emits_event_returns_none() -> None:
         policy_id="p",
         scope="flavor:x",
         decision_path="flavor_entry",
+        policy_decision={
+            "policy_id": "p",
+            "scope": "flavor:x",
+            "decision": "warn",
+            "reason": "Server x warned by flavor entry, enforcement=warn",
+            "decision_path": "flavor_entry",
+        },
+        originating_call_context="tool_call",
         transport="http",
     )
 

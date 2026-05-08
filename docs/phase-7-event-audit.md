@@ -4,6 +4,14 @@
 this commit; subsequent enrichment commits land against the
 findings here.
 
+**Step 2 (Phase 7) shipped 2026-05-08:** Five policy event types
+(`policy_warn`, `policy_degrade`, `policy_block`, `policy_mcp_warn`,
+`policy_mcp_block`) gained the shared `policy_decision` payload
+block (D148) + `originating_event_id` chain (D149). Sensor-side
+event-UUID minting + idempotent worker INSERT per D149.
+Dashboard rendering of the new fields is deferred to Step 6 per
+the locked batch plan; Step 2 ships schema acceptance only.
+
 **Scope locks (from scope-out turn).** Q1 every event type covered
 including "audit complete, no enrichment needed". Q2 policy/state
 metadata always included regardless of `capture_prompts`; flag
@@ -56,7 +64,7 @@ HEAD `10278252`.
 | `policy_mcp_warn` | `policy_mcp_warn` | ✅ |
 | `policy_mcp_block` | `policy_mcp_block` | ✅ |
 | `directive_received / directive_applied` | `directive_result` | **One type, two states.** No separate "received" event; `directive_result.directive_status` encodes `acknowledged` / `success` / `error` / `timeout`. Recommend the audit treats this as a single section. |
-| `context_switch` | — | **Does not exist.** Not in `EventType`, no emission site, no DB rows. Ask: drop from inventory, or new type to design? |
+| `context_switch` | — | **Dropped from inventory** (supervisor lock 2026-05-08). Speculative entry from the original scope-out; doesn't exist in code. Design-from-scratch is not in v0.6 scope. |
 | Plugin: `mcp_policy_user_remembered` | `mcp_policy_user_remembered` | ✅ (plugin-only) |
 | Plugin: `subagent_start / subagent_end` | — | **Not separate types.** D126 uses `session_start` + `session_end` with `parent_session_id` + `agent_role` extras for the child sub-agent; root and sub use the same event-type schema. |
 

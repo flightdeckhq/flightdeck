@@ -250,7 +250,45 @@ export interface Session {
  * `event.payload` to render directive status without a separate
  * /v1/events/:id/content fetch.
  */
+/**
+ * Phase 7 Step 2 (D148): shared policy_decision payload block.
+ * Populated on every policy enforcement event (policy_warn,
+ * policy_degrade, policy_block, policy_mcp_warn, policy_mcp_block)
+ * regardless of capture_prompts — operator-actionable state metadata,
+ * not content. MCP-only fields are optional; token-budget events
+ * leave them undefined.
+ */
+export interface PolicyDecisionBlock {
+  policy_id: string;
+  scope: string;
+  decision: string;
+  reason: string;
+  decision_path?: "flavor_entry" | "global_entry" | "mode_default";
+  matched_entry_id?: string;
+  matched_entry_label?: string;
+}
+
+/**
+ * Phase 7 Step 2 (D149): originating_call_context enum. Set on MCP-
+ * policy events to identify the agent operation that tripped the
+ * policy decision.
+ */
+export type OriginatingCallContext =
+  | "tool_call"
+  | "list_tools"
+  | "read_resource"
+  | "get_prompt"
+  | "list_resources"
+  | "list_prompts"
+  | "session_boot";
+
 export interface EventPayloadFields {
+  // Phase 7 Step 2 (D148/D149): operator-actionable enrichment.
+  // Schema acceptance only in this commit; renderers land in Step 6.
+  policy_decision?: PolicyDecisionBlock;
+  originating_event_id?: string;
+  originating_call_context?: OriginatingCallContext;
+
   directive_name?: string;
   directive_action?: string;
   directive_status?: string;

@@ -12,6 +12,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  buildPolicyDecisionBlock,
+  buildPolicyReason,
   classifyServer,
   clearSessionPolicyCache,
   evaluateServer,
@@ -477,5 +479,82 @@ describe("D135 ordering invariants", () => {
       evaluateServer(policies, "https://other", "o").decision,
       "allow",
     );
+  });
+});
+
+// ----- Phase 7 Step 2 (D148) — shared policy_decision block ------
+
+describe("buildPolicyDecisionBlock (D148 plugin parity)", () => {
+  it("produces 4-key block on token-budget-style decision (no entry, no path)", () => {
+    const block = buildPolicyDecisionBlock({
+      policyId: "p",
+      scope: "org",
+      decision: "warn",
+    });
+    assert.deepEqual(Object.keys(block).sort(), [
+      "decision",
+      "policy_id",
+      "reason",
+      "scope",
+    ]);
+  });
+
+  it("produces 7-key block on flavor_entry MCP decision", () => {
+    const block = buildPolicyDecisionBlock({
+      policyId: "p-uuid",
+      scope: "flavor:research-agent",
+      decision: "block",
+      decisionPath: "flavor_entry",
+      matchedEntryId: "entry-uuid",
+      matchedEntryLabel: "filesystem",
+    });
+    assert.deepEqual(Object.keys(block).sort(), [
+      "decision",
+      "decision_path",
+      "matched_entry_id",
+      "matched_entry_label",
+      "policy_id",
+      "reason",
+      "scope",
+    ]);
+    assert.equal(block.matched_entry_id, "entry-uuid");
+    assert.equal(block.matched_entry_label, "filesystem");
+  });
+
+  it("omits matched_entry_* on mode_default", () => {
+    const block = buildPolicyDecisionBlock({
+      policyId: "p",
+      scope: "global",
+      decision: "block",
+      decisionPath: "mode_default",
+    });
+    assert.equal(block.decision_path, "mode_default");
+    assert.ok(!("matched_entry_id" in block));
+    assert.ok(!("matched_entry_label" in block));
+  });
+
+  it("buildPolicyReason produces single-line operator-readable text", () => {
+    const reasons = [
+      buildPolicyReason({
+        decision: "block",
+        decisionPath: "flavor_entry",
+        matchedEntryLabel: "filesystem",
+      }),
+      buildPolicyReason({
+        decision: "warn",
+        decisionPath: "global_entry",
+        matchedEntryLabel: "github",
+      }),
+      buildPolicyReason({
+        decision: "block",
+        decisionPath: "mode_default",
+        scope: "global",
+      }),
+    ];
+    for (const r of reasons) {
+      assert.ok(typeof r === "string", "must be string");
+      assert.ok(!r.includes("\n"), `no newlines: ${r}`);
+      assert.ok(r.length > 0, "non-empty");
+    }
   });
 });

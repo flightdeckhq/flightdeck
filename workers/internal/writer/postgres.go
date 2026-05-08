@@ -326,6 +326,7 @@ func (w *Writer) AppendMCPServerToContext(
 // events that have no extra metadata; the payload column stays NULL.
 func (w *Writer) InsertEvent(
 	ctx context.Context,
+	sensorEventID string,
 	sessionID, flavor, eventType, model string,
 	tokensInput, tokensOutput, tokensTotal *int,
 	tokensCacheRead, tokensCacheCreation *int64,
@@ -345,13 +346,29 @@ func (w *Writer) InsertEvent(
 	if tokensCacheCreation != nil {
 		cacheCreation = *tokensCacheCreation
 	}
+	// Phase 7 Step 2 (D149): sensor mints the event UUID and ships
+	// it in payload.id (string form). NULLIF + COALESCE: empty
+	// string → NULL → DB-side gen_random_uuid() default kicks in
+	// (legacy callers without sensor-supplied id keep working). ON
+	// CONFLICT (id, occurred_at) DO NOTHING gives idempotent retry
+	// semantics — a sensor flush retried after a transient
+	// ingestion failure lands cleanly even if the first attempt's
+	// commit raced.
 	var eventID string
 	err := w.pool.QueryRow(ctx, `
-		INSERT INTO events (session_id, flavor, event_type, model, tokens_input, tokens_output, tokens_total, tokens_cache_read, tokens_cache_creation, latency_ms, tool_name, has_content, occurred_at, payload)
-		VALUES ($1::uuid, $2, $3, NULLIF($4, ''), $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+		INSERT INTO events (id, session_id, flavor, event_type, model, tokens_input, tokens_output, tokens_total, tokens_cache_read, tokens_cache_creation, latency_ms, tool_name, has_content, occurred_at, payload)
+		VALUES (COALESCE(NULLIF($1, '')::uuid, gen_random_uuid()), $2::uuid, $3, $4, NULLIF($5, ''), $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+		ON CONFLICT (id, occurred_at) DO NOTHING
 		RETURNING id::text
-	`, sessionID, flavor, eventType, model, tokensInput, tokensOutput, tokensTotal, cacheRead, cacheCreation, latencyMs, toolName, hasContent, occurredAt, payload).Scan(&eventID)
+	`, sensorEventID, sessionID, flavor, eventType, model, tokensInput, tokensOutput, tokensTotal, cacheRead, cacheCreation, latencyMs, toolName, hasContent, occurredAt, payload).Scan(&eventID)
 	if err != nil {
+		// pgx returns ErrNoRows when ON CONFLICT DO NOTHING suppresses
+		// the insert (no row to RETURN). Surface the sensor-supplied
+		// id back to the caller so downstream NOTIFY + content writes
+		// reference the canonical row that already exists.
+		if errors.Is(err, pgx.ErrNoRows) && sensorEventID != "" {
+			return sensorEventID, nil
+		}
 		return "", fmt.Errorf("insert event: %w", err)
 	}
 	return eventID, nil

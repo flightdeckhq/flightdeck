@@ -474,11 +474,40 @@ def _build_policy_event_extras(
     server_name: str,
     transport: str | None,
     tool_name: Any,
+    originating_call_context: str = "tool_call",
 ) -> dict[str, Any]:
     """Construct the payload-extras dict for POLICY_MCP_WARN /
     POLICY_MCP_BLOCK events. The event_type is selected by the
     caller; everything below is type-agnostic.
+
+    Phase 7 Step 2 (D148): adds the shared ``policy_decision`` block
+    so operators see the same shape across token-budget and MCP
+    policy events. The legacy top-level fields (``policy_id``,
+    ``scope``, ``decision_path``, ``fingerprint``,
+    ``block_on_uncertainty``) stay on the wire for backwards
+    compatibility with the existing dashboard renderers and the
+    ARCHITECTURE.md § MCP-policy event-payload table — Step 6 will
+    consolidate them into the shared block exclusively once the
+    dashboard renderer migrates.
+
+    Phase 7 Step 2 (D149): adds ``originating_call_context`` —
+    locked to the 7-value enum in ``core.types.OriginatingCallContext``.
+    Defaults to ``"tool_call"`` because the call site that triggers
+    a policy decision today is always a tool invocation; future
+    call sites (list_tools, read_resource etc.) override.
     """
+    from flightdeck_sensor.core.types import PolicyDecisionSummary
+
+    summary = PolicyDecisionSummary(
+        policy_id=decision.policy_id or "",
+        scope=decision.scope or "",
+        decision=decision.decision,
+        reason=_build_mcp_policy_reason(decision, server_name),
+        decision_path=decision.decision_path,
+        matched_entry_id=getattr(decision, "matched_entry_id", None) or None,
+        matched_entry_label=getattr(decision, "matched_entry_label", None) or None,
+    )
+
     extras: dict[str, Any] = {
         "server_url": server_url,
         "server_name": server_name,
@@ -487,12 +516,36 @@ def _build_policy_event_extras(
         "policy_id": decision.policy_id,
         "scope": decision.scope,
         "decision_path": decision.decision_path,
+        "policy_decision": summary.as_payload_dict(),
+        "originating_call_context": originating_call_context,
     }
     if transport is not None:
         extras["transport"] = transport
     if decision.decision == "block":
         extras["block_on_uncertainty"] = decision.block_on_uncertainty
     return extras
+
+
+def _build_mcp_policy_reason(decision: Any, server_name: str) -> str:
+    """Operator-readable single-line reason per the locked Step 2
+    pattern: "<what happened> + <by what mechanism> + <relevant
+    context>". No newlines, no jargon."""
+    label = server_name or "<unnamed server>"
+    path = decision.decision_path
+    verb = "blocked" if decision.decision == "block" else "warned"
+    if path == "flavor_entry":
+        return f"Server {label} {verb} by flavor entry, enforcement={decision.decision}"
+    if path == "global_entry":
+        return f"Server {label} {verb} by global entry, enforcement={decision.decision}"
+    # mode_default
+    if decision.decision == "block" and decision.block_on_uncertainty:
+        return (
+            f"Server {label} {verb} by allow-list mode default; "
+            f"no matching allow entry (block_on_uncertainty=true)"
+        )
+    if decision.decision == "block":
+        return f"Server {label} {verb} by allow-list mode default; no matching allow entry"
+    return f"Server {label} {verb} by mode default ({decision.scope})"
 
 
 def _emit_mcp_server_attached(

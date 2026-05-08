@@ -2433,6 +2433,67 @@ Plus `provider`, `http_status`, `provider_error_code`, `request_id`,
 `error_type=stream_error` with `partial_chunks` and `partial_tokens_*`
 so token accounting reflects work done before the failure.
 
+### Shared `policy_decision` payload block (D148)
+
+Every policy enforcement event (`policy_warn`, `policy_degrade`,
+`policy_block`, `policy_mcp_warn`, `policy_mcp_block`) carries a
+`payload.policy_decision = {...}` block with operator-actionable
+state metadata. Always included regardless of `capture_prompts`.
+
+Required fields on every policy event:
+
+- `policy_id` — UUID of the policy row (or `"local"` for sensor-
+  side init(limit=...) thresholds).
+- `scope` — `"org"` / `"flavor:<v>"` / `"session:<v>"` /
+  `"global"` / `"local_failsafe"` / `"fail_open"`.
+- `decision` — `"warn"` / `"degrade"` / `"block"` / `"allow"` /
+  `"deny"`.
+- `reason` — sensor-built operator-readable single-line string
+  built per pattern `"<what happened> + <by what mechanism> +
+  <relevant context>"`.
+
+MCP-policy events additionally populate:
+
+- `decision_path` — `"flavor_entry"` / `"global_entry"` /
+  `"mode_default"` (matches D135).
+- `matched_entry_id` — UUID of the matched MCP policy entry
+  (omitted on mode-default fall-through).
+- `matched_entry_label` — the entry's `server_name` (display
+  formatting belongs to the dashboard).
+
+Token-budget events leave the three MCP-only fields undefined,
+so their `policy_decision` block ships 4 keys; MCP entry-path
+events ship 7 keys.
+
+Sensor builds the block via
+`flightdeck_sensor.core.types.PolicyDecisionSummary`; plugin
+parity via `plugin/hooks/scripts/mcp_policy.mjs::
+buildPolicyDecisionBlock`. Ingestion validates required fields
+at the wire boundary per Rule 36.
+
+### `originating_event_id` chain (D149)
+
+Sensor mints a UUID per emission via `Session._build_payload`
+(`payload.id`). Worker's `InsertEvent` uses it via
+`COALESCE(NULLIF($1, '')::uuid, gen_random_uuid())`. Idempotent
+retry semantics via `ON CONFLICT (id, occurred_at) DO NOTHING`.
+
+`Session._current_call_event_id` tracks the most-recent
+`post_call` emission's id. Every "downstream of an LLM call"
+event type stamps `payload.originating_event_id`:
+
+- `tool_call`, `llm_error`
+- `policy_warn` / `policy_degrade` / `policy_block`
+- `policy_mcp_warn` / `policy_mcp_block`
+- All six `mcp_*` event types
+
+Originator types (`pre_call`, `post_call`, `embeddings`) and
+call-window-independent types (`session_start`, `session_end`,
+`mcp_server_attached`, `mcp_server_name_changed`,
+`directive_result`) skip the chain stamp.
+
+Plugin parity: `crypto.randomUUID()` per emission.
+
 ### `policy_warn`
 
 Emitted when token-budget enforcement crosses the warn threshold.

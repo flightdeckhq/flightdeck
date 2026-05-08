@@ -374,6 +374,15 @@ func EventsHandler(
 		// malformed payload that the dashboard then has to defend
 		// against.
 		switch eventType {
+		case "policy_warn", "policy_degrade", "policy_block":
+			// Phase 7 Step 2 (D148): hard cutover — the shared
+			// policy_decision block is required on every token-budget
+			// policy event. Sensor + plugin + ingestion + workers ship
+			// together per the no-compat-tax memory.
+			if msg := validateTokenBudgetPolicyPayload(payload, eventType); msg != "" {
+				writeError(w, http.StatusBadRequest, msg)
+				return
+			}
 		case "policy_mcp_warn", "policy_mcp_block":
 			if msg := validateMCPPolicyDecisionPayload(payload, eventType); msg != "" {
 				writeError(w, http.StatusBadRequest, msg)
@@ -506,6 +515,11 @@ func writeError(w http.ResponseWriter, code int, msg string) {
 // for policy_mcp_warn and policy_mcp_block events at the API
 // boundary (D131 / Rule 36). Returns an empty string when the
 // payload is valid; returns a user-facing error message otherwise.
+//
+// Phase 7 Step 2 (D148): adds the shared ``policy_decision`` block
+// to the required-field set. Hard cutover per the no-compat-tax
+// memory — pre-v0.6 has no users to protect; sensor + plugin +
+// ingestion + workers ship together.
 func validateMCPPolicyDecisionPayload(payload map[string]any, eventType string) string {
 	for _, field := range []string{
 		"server_url", "server_name", "fingerprint",
@@ -524,7 +538,45 @@ func validateMCPPolicyDecisionPayload(payload map[string]any, eventType string) 
 			"decision_path must be one of: flavor_entry, global_entry, mode_default (got %q)", dp,
 		)
 	}
+	if msg := validatePolicyDecisionBlock(payload, eventType); msg != "" {
+		return msg
+	}
 	return ""
+}
+
+// validatePolicyDecisionBlock enforces the shared policy_decision
+// payload block (D148). Required on the 5 policy event types
+// (policy_warn, policy_degrade, policy_block, policy_mcp_warn,
+// policy_mcp_block). Phase 7 Step 2 hard cutover.
+func validatePolicyDecisionBlock(payload map[string]any, eventType string) string {
+	raw, ok := payload["policy_decision"]
+	if !ok {
+		return fmt.Sprintf("policy_decision block is required for %s (D148)", eventType)
+	}
+	block, ok := raw.(map[string]any)
+	if !ok {
+		return fmt.Sprintf("policy_decision must be an object on %s (D148)", eventType)
+	}
+	for _, field := range []string{"policy_id", "scope", "decision", "reason"} {
+		v, ok := block[field].(string)
+		if !ok || v == "" {
+			return fmt.Sprintf(
+				"policy_decision.%s is required for %s (D148)", field, eventType,
+			)
+		}
+	}
+	return ""
+}
+
+// validateTokenBudgetPolicyPayload enforces the policy_decision
+// shared block on token-budget enforcement events (policy_warn,
+// policy_degrade, policy_block). Phase 7 Step 2 (D148) hard
+// cutover. The legacy fields (source / threshold_pct /
+// tokens_used / token_limit) remain on the wire for backwards
+// compatibility with the existing dashboard renderers; Step 6
+// will consolidate.
+func validateTokenBudgetPolicyPayload(payload map[string]any, eventType string) string {
+	return validatePolicyDecisionBlock(payload, eventType)
 }
 
 // validateMCPPolicyUserRememberedPayload enforces the required-

@@ -20,10 +20,21 @@ _DEFAULT_BLOCK_AT_PCT = 100
 
 @dataclass
 class PolicyResult:
-    """Result of a policy check, including which source triggered it."""
+    """Result of a policy check, including which source triggered it.
+
+    Phase 7 Step 2 (D148): carries ``policy_id`` and
+    ``matched_policy_scope`` so the sensor's _pre_call emission can
+    populate the shared ``policy_decision`` block. Local-source
+    results use ``policy_id="local"`` + ``matched_policy_scope=
+    "local_failsafe"`` because the local threshold has no API-side
+    policy row; server-source results carry the policy_id + scope
+    from the API's effective-policy response.
+    """
 
     decision: PolicyDecision
     source: str | None = None  # "local" or "server", None for ALLOW
+    policy_id: str | None = None
+    matched_policy_scope: str | None = None
 
 
 class PolicyCache:
@@ -54,6 +65,14 @@ class PolicyCache:
         # Local thresholds (WARN-only, see D035)
         self.local_limit = local_limit
         self.local_warn_at = local_warn_at
+
+        # Phase 7 Step 2 (D148): API-side policy identity captured at
+        # preflight + on every policy_update directive. Sensor-side
+        # _pre_call emissions stamp these onto the shared
+        # policy_decision block. None when no server-side policy is
+        # in effect (deployment without a configured policy row).
+        self.policy_id: str | None = None
+        self.matched_policy_scope: str | None = None
 
         self._server_warned = False
         self._local_warned = False
@@ -87,28 +106,57 @@ class PolicyCache:
             # explicitly to swap; thresholds are not consulted because
             # they may be unset (e.g. preflight policy fetch failed).
             if self._forced_degrade and self.degrade_to:
-                return PolicyResult(PolicyDecision.DEGRADE, source="server")
+                return PolicyResult(
+                    PolicyDecision.DEGRADE,
+                    source="server",
+                    policy_id=self.policy_id,
+                    matched_policy_scope=self.matched_policy_scope,
+                )
 
             # Server-side evaluation (can BLOCK/DEGRADE/WARN)
             if self.token_limit is not None and self.token_limit > 0:
                 pct = (projected * 100) // self.token_limit
 
                 if pct >= self.block_at_pct:
-                    return PolicyResult(PolicyDecision.BLOCK, source="server")
+                    return PolicyResult(
+                        PolicyDecision.BLOCK,
+                        source="server",
+                        policy_id=self.policy_id,
+                        matched_policy_scope=self.matched_policy_scope,
+                    )
 
                 if pct >= self.degrade_at_pct:
-                    return PolicyResult(PolicyDecision.DEGRADE, source="server")
+                    return PolicyResult(
+                        PolicyDecision.DEGRADE,
+                        source="server",
+                        policy_id=self.policy_id,
+                        matched_policy_scope=self.matched_policy_scope,
+                    )
 
                 if pct >= self.warn_at_pct and not self._server_warned:
                     self._server_warned = True
-                    return PolicyResult(PolicyDecision.WARN, source="server")
+                    return PolicyResult(
+                        PolicyDecision.WARN,
+                        source="server",
+                        policy_id=self.policy_id,
+                        matched_policy_scope=self.matched_policy_scope,
+                    )
 
-            # Local evaluation (WARN-only per D035)
+            # Local evaluation (WARN-only per D035). policy_id =
+            # "local" + scope = "local_failsafe" so the shared
+            # policy_decision block stays self-describing on the
+            # wire (operators see source=local + scope=local_failsafe
+            # and know this didn't come from the control plane).
             if self.local_limit is not None and self.local_limit > 0:
                 threshold = int(self.local_limit * self.local_warn_at)
                 if projected >= threshold and not self._local_warned:
                     self._local_warned = True
-                    return PolicyResult(PolicyDecision.WARN, source="local")
+                    return PolicyResult(
+                        PolicyDecision.WARN,
+                        source="local",
+                        policy_id="local",
+                        matched_policy_scope="local_failsafe",
+                    )
 
             return PolicyResult(PolicyDecision.ALLOW)
 
@@ -125,13 +173,24 @@ class PolicyCache:
             self._forced_degrade = True
 
     def update(self, policy_dict: dict[str, Any]) -> None:
-        """Atomically replace server-side fields from a directive payload."""
+        """Atomically replace server-side fields from a directive payload.
+
+        Phase 7 Step 2 (D148): captures ``policy_id`` and the resolved
+        ``matched_policy_scope`` (built from ``scope`` + optional
+        ``scope_value``) when present in the dict. Both are passed
+        through verbatim by the preflight policy fetch and by
+        ``policy_update`` directives.
+        """
         with self._lock:
             self.token_limit = policy_dict.get("token_limit", self.token_limit)
             self.warn_at_pct = policy_dict.get("warn_at_pct", self.warn_at_pct)
             self.degrade_at_pct = policy_dict.get("degrade_at_pct", self.degrade_at_pct)
             self.block_at_pct = policy_dict.get("block_at_pct", self.block_at_pct)
             self.degrade_to = policy_dict.get("degrade_to", self.degrade_to)
+            if "policy_id" in policy_dict:
+                self.policy_id = policy_dict["policy_id"]
+            if "matched_policy_scope" in policy_dict:
+                self.matched_policy_scope = policy_dict["matched_policy_scope"]
             self._server_warned = False
             # Clear the forced-degrade flag so a fresh policy update can
             # un-stick the state if the server retracts the degrade.

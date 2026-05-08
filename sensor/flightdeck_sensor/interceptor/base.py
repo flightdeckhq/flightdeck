@@ -19,7 +19,23 @@ from typing import TYPE_CHECKING, Any
 
 from flightdeck_sensor.core.errors import classify_exception
 from flightdeck_sensor.core.exceptions import BudgetExceededError, DirectiveError
-from flightdeck_sensor.core.types import EventType, PolicyDecision, TokenUsage
+from flightdeck_sensor.core.types import (
+    EventType,
+    PolicyDecision,
+    PolicyDecisionSummary,
+    TokenUsage,
+)
+
+
+def _safe_pct(used: int, limit: int | None) -> int:
+    """Helper for the ``policy_decision.reason`` string. Avoids
+    division-by-zero when limit is unset (PolicyCache returns ALLOW
+    in that case so we shouldn't reach the WARN/BLOCK path with a
+    None limit, but defensive-zero keeps the reason readable in
+    edge cases like a directive_update racing the threshold check)."""
+    if not limit or limit <= 0:
+        return 0
+    return (used * 100) // limit
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -674,13 +690,28 @@ def _pre_call(
         # captures the model the blocked call was going to use so the
         # operator can answer "which call hit the limit?".
         intended_model = provider.get_model(kwargs)
+        # Phase 7 Step 2 (D148): shared policy_decision block. Reason
+        # follows the locked pattern: <what happened> + <by what
+        # mechanism> + <relevant context>.
+        block_pct = session.policy.block_at_pct
+        block_decision = PolicyDecisionSummary(
+            policy_id=result.policy_id or "",
+            scope=result.matched_policy_scope or "",
+            decision="block",
+            reason=(
+                f"Token usage {session.tokens_used}/{session.policy.token_limit} "
+                f"({_safe_pct(session.tokens_used, session.policy.token_limit)}%) "
+                f"crossed block threshold ({block_pct}%, server policy)"
+            ),
+        )
         block_payload = session._build_payload(
             EventType.POLICY_BLOCK,
             source="server",
-            threshold_pct=session.policy.block_at_pct,
+            threshold_pct=block_pct,
             tokens_used=session.tokens_used,
             token_limit=session.policy.token_limit,
             intended_model=intended_model,
+            policy_decision=block_decision.as_payload_dict(),
         )
         session.event_queue.enqueue(block_payload)
         # Synchronous flush: the BudgetExceededError below tears the
@@ -726,12 +757,26 @@ def _pre_call(
         else:
             warn_threshold_pct = session.policy.warn_at_pct
             warn_token_limit = session.policy.token_limit
+        # Phase 7 Step 2 (D148): shared policy_decision block.
+        local_warn = warn_source == "local"
+        warn_decision = PolicyDecisionSummary(
+            policy_id=result.policy_id or ("local" if local_warn else ""),
+            scope=result.matched_policy_scope
+            or ("local_failsafe" if local_warn else ""),
+            decision="warn",
+            reason=(
+                f"Token usage {session.tokens_used}/{warn_token_limit} "
+                f"({_safe_pct(session.tokens_used, warn_token_limit)}%) "
+                f"crossed warn threshold ({warn_threshold_pct}%, {warn_source} policy)"
+            ),
+        )
         warn_payload = session._build_payload(
             EventType.POLICY_WARN,
             source=warn_source,
             threshold_pct=warn_threshold_pct,
             tokens_used=session.tokens_used,
             token_limit=warn_token_limit,
+            policy_decision=warn_decision.as_payload_dict(),
         )
         session.event_queue.enqueue(warn_payload)
         _log.warning(
@@ -852,6 +897,15 @@ def _post_call(
         payload["content"] = content_dict
     if streaming is not None:
         payload["streaming"] = streaming
+    # Phase 7 Step 2 (D149): the post_call event is the canonical
+    # originator for the call window. Tool_call events emitted from
+    # response parsing below + any MCP traffic the agent does between
+    # this post_call and the next pre_call will reference this id via
+    # _build_payload's chain stamp. Embeddings calls don't open a
+    # window — they're standalone — so we only set the chain id on
+    # POST_CALL emissions.
+    if event_type == EventType.POST_CALL:
+        session.set_current_call_event_id(payload["id"])
     session.event_queue.enqueue(payload)
 
     # Emit one tool_call event per tool invocation in the response.

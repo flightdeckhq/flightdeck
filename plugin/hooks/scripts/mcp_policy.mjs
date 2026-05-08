@@ -237,7 +237,62 @@ function decisionFromEntry(entry, decisionPath, policyDoc, fingerprint) {
     policyId: policyDoc?.id || "",
     scope,
     fingerprint,
+    // Phase 7 Step 2 (D148): matched_entry surface for the shared
+    // policy_decision block. Plugin-side parity with the sensor's
+    // MCPPolicyDecision shape so emissions across both surfaces
+    // produce byte-identical wire payloads.
+    matchedEntryId: entry.id || "",
+    matchedEntryLabel: entry.server_name || "",
   };
+}
+
+/**
+ * Build the shared policy_decision block (D148) for plugin-side
+ * policy_mcp_warn / policy_mcp_block emissions. Mirrors the sensor's
+ * PolicyDecisionSummary.as_payload_dict shape byte-for-byte.
+ *
+ * @param {object} decision - evaluateServer() return value
+ * @returns {object} the policy_decision block
+ */
+export function buildPolicyDecisionBlock(decision) {
+  const out = {
+    policy_id: decision.policyId || "",
+    scope: decision.scope || "",
+    decision: decision.decision,
+    reason: buildPolicyReason(decision),
+  };
+  if (decision.decisionPath) {
+    out.decision_path = decision.decisionPath;
+  }
+  if (decision.matchedEntryId) {
+    out.matched_entry_id = decision.matchedEntryId;
+  }
+  if (decision.matchedEntryLabel) {
+    out.matched_entry_label = decision.matchedEntryLabel;
+  }
+  return out;
+}
+
+/**
+ * Operator-readable single-line reason per the locked Step 2
+ * pattern: "<what happened> + <by what mechanism> + <relevant
+ * context>". Plugin parity with the sensor's
+ * _build_mcp_policy_reason. No newlines, no jargon.
+ */
+export function buildPolicyReason(decision) {
+  const label = decision.matchedEntryLabel || "<server>";
+  const verb = decision.decision === "block" ? "blocked" : "warned";
+  if (decision.decisionPath === "flavor_entry") {
+    return `Server ${label} ${verb} by flavor entry, enforcement=${decision.decision}`;
+  }
+  if (decision.decisionPath === "global_entry") {
+    return `Server ${label} ${verb} by global entry, enforcement=${decision.decision}`;
+  }
+  // mode_default
+  if (decision.decision === "block") {
+    return `Server ${label} ${verb} by allow-list mode default; no matching allow entry`;
+  }
+  return `Server ${label} ${verb} by mode default (${decision.scope})`;
 }
 
 // ----- Per-session policy cache I/O -------------------------------

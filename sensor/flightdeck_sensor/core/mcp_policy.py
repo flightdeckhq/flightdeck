@@ -63,6 +63,12 @@ class MCPPolicyDecision:
     ``GET /v1/mcp-policies/resolve`` endpoint, so the sensor and the
     plugin can produce byte-identical event payloads from the same
     policy state.
+
+    Phase 7 Step 2 (D148): adds ``matched_entry_id`` and
+    ``matched_entry_label`` to feed the shared ``policy_decision``
+    payload block. Both are ``None`` on the mode-default fall-through
+    path where no entry matched; populated when the decision came
+    from a flavor or global entry hit.
     """
 
     decision: Decision
@@ -76,6 +82,8 @@ class MCPPolicyDecision:
     # ``block_on_uncertainty`` field on POLICY_MCP_BLOCK payloads
     # per D131.
     block_on_uncertainty: bool = False
+    matched_entry_id: str | None = None
+    matched_entry_label: str | None = None  # entry's server_name
 
 
 @dataclass
@@ -83,8 +91,14 @@ class _PolicyEntry:
     """In-memory representation of one entry in either the global or
     flavor policy. Fields mirror the API's MCPPolicyEntry shape;
     canonical URL + fingerprint are precomputed at cache populate
-    time so per-call lookup is O(1)."""
+    time so per-call lookup is O(1).
 
+    Phase 7 Step 2 (D148): captures the API's per-entry ``id`` (UUID)
+    so MCP-policy emissions can populate ``matched_entry_id`` on the
+    shared ``policy_decision`` block.
+    """
+
+    entry_id: str  # the entry row's UUID (from the API response)
     fingerprint: str
     server_url_canonical: str
     server_name: str
@@ -234,6 +248,7 @@ class MCPPolicyCache:
             if not fp:
                 continue
             entries[fp] = _PolicyEntry(
+                entry_id=str(raw_entry.get("id", "")),
                 fingerprint=fp,
                 server_url_canonical=str(raw_entry.get("server_url", "")),
                 server_name=str(raw_entry.get("server_name", "")),
@@ -385,4 +400,6 @@ def _decision_from_entry(
         scope=entry.scope,
         fingerprint=fingerprint,
         block_on_uncertainty=False,
+        matched_entry_id=entry.entry_id or None,
+        matched_entry_label=entry.server_name or None,
     )

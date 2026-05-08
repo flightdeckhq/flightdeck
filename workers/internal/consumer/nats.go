@@ -29,6 +29,12 @@ const (
 // processor projects these fields into the events.payload JSONB
 // column via processor.BuildEventExtra().
 type EventPayload struct {
+	// Phase 7 Step 2 (D149): sensor mints the event UUID and sends
+	// it in ``id``. Worker passes through to InsertEvent, which uses
+	// it via COALESCE($1::uuid, gen_random_uuid()) so legacy callers
+	// without the field stay compatible. ON CONFLICT (id,
+	// occurred_at) DO NOTHING handles sensor retries idempotently.
+	ID              string          `json:"id,omitempty"`
 	SessionID       string          `json:"session_id"`
 	Flavor          string          `json:"flavor"`
 	AgentType       string          `json:"agent_type"`
@@ -229,6 +235,15 @@ type EventPayload struct {
 	Capabilities    json.RawMessage `json:"capabilities,omitempty"`
 	Instructions    string          `json:"instructions,omitempty"`
 	AttachedAt      string          `json:"attached_at,omitempty"`
+
+	// Phase 7 Step 2 (D148/D149) — operator-actionable enrichment.
+	// PolicyDecision projects through the worker into events.payload
+	// unchanged; OriginatingEventID + OriginatingCallContext travel
+	// alongside on chained event types. Both are state metadata,
+	// always included regardless of capture_prompts.
+	PolicyDecision          json.RawMessage `json:"policy_decision,omitempty"`
+	OriginatingEventID      string          `json:"originating_event_id,omitempty"`
+	OriginatingCallContext  string          `json:"originating_call_context,omitempty"`
 }
 
 // SubagentMessageBody is the framework-supplied body of a single

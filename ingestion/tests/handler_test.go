@@ -638,6 +638,10 @@ func TestEventsHandler_NonSessionStart_DoesNotAttach(t *testing.T) {
 // policy_mcp_warn / policy_mcp_block tests; callers mutate the
 // returned map to drop fields and verify the rejection path.
 func makeMCPPolicyDecisionPayload(eventType string) map[string]any {
+	decision := "warn"
+	if eventType == "policy_mcp_block" {
+		decision = "block"
+	}
 	return map[string]any{
 		"session_id":    "22222222-2222-4222-8222-222222222222",
 		"agent_id":      "11111111-1111-4111-8111-111111111111",
@@ -651,6 +655,14 @@ func makeMCPPolicyDecisionPayload(eventType string) map[string]any {
 		"policy_id":     "p1",
 		"scope":         "flavor:production",
 		"decision_path": "flavor_entry",
+		// Phase 7 Step 2 (D148): shared policy_decision block.
+		"policy_decision": map[string]any{
+			"policy_id":     "p1",
+			"scope":         "flavor:production",
+			"decision":      decision,
+			"reason":        "Server maps " + decision + "ed by flavor entry",
+			"decision_path": "flavor_entry",
+		},
 	}
 }
 
@@ -717,6 +729,74 @@ func TestEventsHandler_PolicyMCPWarn_BadDecisionPathReturns400(t *testing.T) {
 	}
 	if !strings.Contains(body, "decision_path") {
 		t.Errorf("error body should mention decision_path, got %s", body)
+	}
+}
+
+// ----- Phase 7 Step 2 (D148) policy_decision block validation -----
+
+func TestEventsHandler_PolicyMCPWarn_MissingPolicyDecisionBlock_Returns400(t *testing.T) {
+	payload := makeMCPPolicyDecisionPayload("policy_mcp_warn")
+	delete(payload, "policy_decision")
+	code, body := runEventValidationTest(t, payload)
+	if code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d body=%s", code, body)
+	}
+	if !strings.Contains(body, "policy_decision") || !strings.Contains(body, "D148") {
+		t.Errorf("expected policy_decision/D148 in error body, got %s", body)
+	}
+}
+
+func TestEventsHandler_PolicyMCPBlock_PolicyDecisionMissingReason_Returns400(t *testing.T) {
+	payload := makeMCPPolicyDecisionPayload("policy_mcp_block")
+	block := payload["policy_decision"].(map[string]any)
+	delete(block, "reason")
+	code, body := runEventValidationTest(t, payload)
+	if code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d body=%s", code, body)
+	}
+	if !strings.Contains(body, "policy_decision.reason") {
+		t.Errorf("expected policy_decision.reason in error body, got %s", body)
+	}
+}
+
+func TestEventsHandler_PolicyWarn_AcceptsTokenBudgetPolicyDecision(t *testing.T) {
+	payload := map[string]any{
+		"session_id":    "22222222-2222-4222-8222-222222222222",
+		"agent_id":      "11111111-1111-4111-8111-111111111111",
+		"agent_type":    "coding",
+		"client_type":   "claude_code",
+		"event_type":    "policy_warn",
+		"source":        "server",
+		"threshold_pct": 80,
+		"tokens_used":   8000,
+		"token_limit":   10000,
+		"policy_decision": map[string]any{
+			"policy_id": "policy-uuid",
+			"scope":     "org",
+			"decision":  "warn",
+			"reason":    "Token usage 8000/10000 (80%) crossed warn threshold",
+		},
+	}
+	code, body := runEventValidationTest(t, payload)
+	if code != http.StatusOK {
+		t.Errorf("expected 200, got %d body=%s", code, body)
+	}
+}
+
+func TestEventsHandler_PolicyBlock_MissingPolicyDecision_Returns400(t *testing.T) {
+	payload := map[string]any{
+		"session_id":  "22222222-2222-4222-8222-222222222222",
+		"agent_id":    "11111111-1111-4111-8111-111111111111",
+		"agent_type":  "coding",
+		"client_type": "claude_code",
+		"event_type":  "policy_block",
+	}
+	code, body := runEventValidationTest(t, payload)
+	if code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d body=%s", code, body)
+	}
+	if !strings.Contains(body, "policy_decision") || !strings.Contains(body, "D148") {
+		t.Errorf("expected D148 mention in error body, got %s", body)
 	}
 }
 

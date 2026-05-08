@@ -8,6 +8,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 
+const fetchPoliciesMock = vi.fn();
+
 vi.mock("@/lib/api", async () => {
   const actual = await vi.importActual<Record<string, unknown>>("@/lib/api");
   const stubGlobal = {
@@ -22,7 +24,7 @@ vi.mock("@/lib/api", async () => {
   };
   return {
     ...actual,
-    fetchPolicies: vi.fn().mockResolvedValue([]),
+    fetchPolicies: (...args: unknown[]) => fetchPoliciesMock(...args),
     fetchGlobalMCPPolicy: vi.fn().mockResolvedValue(stubGlobal),
     fetchFlavors: vi.fn().mockResolvedValue([]),
     fetchFlavorMCPPolicy: vi.fn().mockResolvedValue(null),
@@ -33,6 +35,7 @@ import { Policies } from "@/pages/Policies";
 
 beforeEach(() => {
   vi.clearAllMocks();
+  fetchPoliciesMock.mockResolvedValue([]);
 });
 
 afterEach(() => {
@@ -100,3 +103,55 @@ describe("Policies (unified Token Budget + MCP Protection sub-tabs, D146)", () =
 // always re-render the data-state attribute synchronously enough
 // for a deterministic assertion. The two passing cases above lock
 // the URL → render contract; live navigation closes the loop.
+
+describe("TokenBudgetTab Create Policy CTA visibility", () => {
+  it("hides the header Create button when no policies exist (empty state owns the CTA)", async () => {
+    fetchPoliciesMock.mockResolvedValue([]);
+    render(
+      <MemoryRouter initialEntries={["/policies"]}>
+        <Policies />
+      </MemoryRouter>,
+    );
+    await waitFor(() => {
+      expect(
+        screen.getByTestId("policy-table-empty-create"),
+      ).toBeInTheDocument();
+    });
+    expect(
+      screen.queryByTestId("policies-token-budget-create-header"),
+    ).not.toBeInTheDocument();
+    // Sanity: only one "Create Policy" button in the entire page.
+    expect(screen.getAllByRole("button", { name: "Create Policy" })).toHaveLength(1);
+  });
+
+  it("shows only the header Create button when policies exist (no empty state)", async () => {
+    fetchPoliciesMock.mockResolvedValue([
+      {
+        id: "p1",
+        scope: "org",
+        scope_value: "",
+        token_limit: 1000,
+        warn_at_pct: 80,
+        degrade_at_pct: null,
+        degrade_to: null,
+        block_at_pct: 100,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      },
+    ]);
+    render(
+      <MemoryRouter initialEntries={["/policies"]}>
+        <Policies />
+      </MemoryRouter>,
+    );
+    await waitFor(() => {
+      expect(
+        screen.getByTestId("policies-token-budget-create-header"),
+      ).toBeInTheDocument();
+    });
+    expect(
+      screen.queryByTestId("policy-table-empty-create"),
+    ).not.toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Create Policy" })).toHaveLength(1);
+  });
+});

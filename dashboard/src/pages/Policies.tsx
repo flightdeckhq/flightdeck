@@ -151,13 +151,27 @@ function TokenBudgetTab() {
     }
   }
 
+  // Hide the top-right Create button when the table is empty — the
+  // PolicyTable empty state surfaces its own CTA via ``onCreate``,
+  // and rendering both produces a duplicate "Create Policy" button.
+  // Loading also suppresses the top-right so the layout stays
+  // stable while ``fetchPolicies`` resolves.
+  const showHeaderCreate = !loading && policies.length > 0;
+
   return (
     <div className="p-6" data-testid="policies-tab-token-budget-content">
       <div className="mb-6 flex items-center justify-between">
         <h1 className="text-xl font-semibold text-text">
           Token Usage Enforcement Policies
         </h1>
-        <Button onClick={openCreate}>Create Policy</Button>
+        {showHeaderCreate ? (
+          <Button
+            onClick={openCreate}
+            data-testid="policies-token-budget-create-header"
+          >
+            Create Policy
+          </Button>
+        ) : null}
       </div>
 
       {error && (

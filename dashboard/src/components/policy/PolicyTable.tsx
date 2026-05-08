@@ -78,7 +78,12 @@ export function PolicyTable({ policies, onEdit, onDelete, onCreate, loading }: P
           Create a policy to start enforcing token budgets across your agent fleet.
         </p>
         {onCreate && (
-          <Button onClick={onCreate}>Create Policy</Button>
+          <Button
+            onClick={onCreate}
+            data-testid="policy-table-empty-create"
+          >
+            Create Policy
+          </Button>
         )}
       </div>
     );

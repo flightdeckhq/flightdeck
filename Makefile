@@ -1,4 +1,4 @@
-.PHONY: help build test test-plugin test-integration test-sensor-e2e test-e2e test-e2e-ui seed-e2e lint dev dev-reset down logs release migrate-local-up migrate-local-status playground-anthropic playground-openai playground-langchain playground-langgraph playground-llamaindex playground-crewai playground-litellm playground-mcp playground-claude-code playground-bifrost playground-policies playground-subagents-crewai playground-subagents-langgraph playground-mcp-policy-warn playground-mcp-policy-block playground-mcp-policy-block-on-uncertainty playground-mcp-policy-blocklist playground-mcp-policy-crewai playground-mcp-policy-langgraph playground-mcp-policy-langchain playground-mcp-policy-llamaindex playground-all
+.PHONY: help build test test-plugin test-integration test-sensor-e2e test-e2e test-e2e-ui seed-e2e lint dev dev-reset down logs release migrate-local-up migrate-local-status playground-anthropic playground-openai playground-langchain playground-langgraph playground-llamaindex playground-crewai playground-litellm playground-mcp playground-claude-code playground-bifrost playground-policies playground-subagents-crewai playground-subagents-langgraph playground-mcp-policy-warn playground-mcp-policy-block playground-mcp-policy-block-on-uncertainty playground-mcp-policy-blocklist playground-mcp-policy-crewai playground-mcp-policy-langgraph playground-mcp-policy-langchain playground-mcp-policy-llamaindex playground-mcp-policy-template-apply playground-all
 
 # ---------------------------------------------------------------------------
 # Python interpreter resolution.
@@ -128,6 +128,9 @@ playground-mcp-policy-langchain: ## Rule 40d MCP policy: LangChain explicit (war
 
 playground-mcp-policy-llamaindex: ## Rule 40d MCP policy: LlamaIndex explicit (warn + block + allow) via llama-index-tools-mcp. Requires ANTHROPIC_API_KEY.
 	$(PYTHON) playground/25_mcp_policy_llamaindex.py
+
+playground-mcp-policy-template-apply: ## Rule 40d MCP policy: D138 apply_template across the three shipped templates. Mutates global mode for one scenario; restores at end. No API key required.
+	$(PYTHON) playground/26_mcp_policy_template_apply.py
 
 playground-policies: ## Rule 40d playground: policy WARN / DEGRADE / BLOCK / forced-DEGRADE demos via real Anthropic.
 	$(PYTHON) playground/policy_demo_warn.py

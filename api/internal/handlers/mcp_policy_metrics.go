@@ -7,6 +7,7 @@
 package handlers
 
 import (
+	"errors"
 	"log/slog"
 	"net/http"
 
@@ -40,10 +41,13 @@ func GetMCPPolicyMetricsHandler(s store.Querier) http.HandlerFunc {
 		}
 		metrics, err := s.GetMCPPolicyMetrics(r.Context(), scope, scopeValue, period)
 		if err != nil {
-			// The store's periodToHours validator returns an error
-			// for unknown values; treat that as a 400 rather than
-			// 500 since the only failure shape is invalid input.
-			if err.Error() == `invalid period "`+period+`"` {
+			// store.ErrMCPPolicyInvalidPeriod is the typed sentinel
+			// for unknown period values; treat as 400 with the
+			// vocabulary list. Pattern mirrors the store's
+			// ErrMCPPolicyNotFound / ErrMCPPolicyAlreadyExists
+			// sentinels rather than the prior brittle err.Error()
+			// string-compare.
+			if errors.Is(err, store.ErrMCPPolicyInvalidPeriod) {
 				writeError(w, http.StatusBadRequest, "period must be one of: 24h, 7d, 30d")
 				return
 			}

@@ -7634,8 +7634,9 @@ enforcement extension) but the implementation deferred to a
 follow-up commit per conversation-budget pressure. Step 3.b
 closes the loop. The deferral was a Rule 51 procedural miss —
 the supervisor's lock said "ship together"; this entry exists
-because the work landed in two SHAs (`fdf6a8df` for D151;
-`Step 3.b SHA` for D150) instead of one.
+because the work landed in three SHAs (`fdf6a8df` for D151;
+`71b08eb8` for D150 step 3.b sensor + worker; `378a614b` for D150
+plugin parity) instead of one.
 
 Pre-D150, MCP tool capture (`mcp_tool_call` arguments + result;
 `mcp_prompt_get` arguments + rendered messages) and LLM-side
@@ -8126,3 +8127,109 @@ every pre_call / post_call payload, `retry_attempt=1 / terminal=true`
 on the invalid-model llm_error, and `originating_event_id` chain
 intact. Provider metadata + output_dimensions exercise on
 playground/02_direct_openai.py with embeddings calls.
+
+
+---
+
+## D154 -- Operator-actionable enrichment dashboard surface
+
+**Date:** 2026-05-09. **Status:** Adopted.
+
+**Context.** D152 / D153 enriched session_end / session_start /
+LLM-family event payloads with operator-actionable fields
+(`close_reason`, `policy_actions_summary`, `last_event_id`,
+`estimated_via`, `provider_metadata`, `output_dimensions`,
+`retry_attempt` / `terminal`, `policy_decision_pre` /
+`policy_decision_post`, `policy_entries_orphaned`, `sensor_version`,
+`interceptor_versions`, `policy_snapshot`, `originating_event_id`,
+`originating_call_context`, plus the `mcp_server_name_changed` event
+type). The fields landed on the wire and in Postgres. The dashboard
+needed a corresponding read surface so operators can filter the
+session list by these dimensions and see the enrichment chips on
+event rows in the Investigate drawer without trawling raw payloads.
+
+**Decision.** Five new sidebar facets on the Investigate page —
+CLOSE REASON, POLICY EVENT TYPES, ERROR TYPES, MCP SERVER NAMES,
+ESTIMATED VIA — backed by per-session aggregate columns
+(`close_reasons[]`, `policy_event_types[]`, `error_types[]`,
+`mcp_server_names[]`, `estimated_via_values[]`,
+`has_terminal_error`, `matched_entry_ids[]`,
+`originating_call_contexts[]`) computed via correlated subqueries
+on the `GET /v1/sessions` endpoint and a server-side filter
+expansion accepting:
+
+- `close_reason` (multi-value, `?close_reason=normal_exit&close_reason=directive_shutdown`)
+- `estimated_via` (multi-value, enum-validated)
+- `terminal` (boolean shortcut for `has_terminal_error`)
+- `matched_entry_id` (multi-value UUID)
+- `originating_call_context` (multi-value, enum-validated)
+
+`EnrichmentSummary` (dashboard) renders the per-event chips with
+provider-specific shapes (`PromptViewer` keeps the Anthropic vs
+OpenAI distinction per Rule 20; `EmbeddingsContentViewer` for
+embedding output dimensions; `MCPServerDecisionText` for inline
+per-server policy decision next to the name in the SessionDrawer
+MCP SERVERS panel). Two enum filters (`close_reason`,
+`estimated_via`) reject out-of-vocabulary values at the API
+boundary with 400 (silent-400 sweep — the API never silently
+ignores a malformed filter).
+
+**Rejected alternatives.**
+
+- *Compute facet aggregates client-side from the events stream.*
+  Rejected: would require streaming every event for every visible
+  session into the dashboard, which is the data-volume problem
+  the per-session aggregates exist to solve.
+- *One endpoint per facet (`/v1/sessions/by-close-reason`,
+  etc.).* Rejected: composing AND across multiple facets would
+  require client-side intersection of separate result sets, and
+  every new facet would need its own endpoint and dashboard
+  fetcher. The single `GET /v1/sessions` filter expansion keeps
+  the contract uniform.
+- *Mask malformed enum filters as 200 with empty results.*
+  Rejected explicitly during the silent-400 sweep — operator
+  copy-paste of a wrong-cased enum value should fail loudly with
+  a 400 listing the accepted vocabulary, not silently return zero
+  sessions and leave the operator wondering whether the filter
+  matched anything.
+
+**Related decisions.** D148 / D149 (`policy_decision` block + sensor
+UUIDs / `originating_event_id` chain that the per-event chips
+render). D150 (`event_content` `tool_input` / `tool_output`
+columns the SessionDrawer surfaces under the per-event content
+tab). D152 (the close_reason vocabulary D154 surfaces). D153 (the
+LLM-family enrichment D154 chips render). D146 (the MCP Protection
+Policy dashboard surface D154 sits alongside on Investigate
+session rows).
+
+**Implementation note (Step 6).**
+
+- API (`api/internal/store/sessions.go`): correlated subqueries on
+  the `GET /v1/sessions` query for the per-session aggregate
+  columns (`close_reasons`, `policy_event_types`, `error_types`,
+  `mcp_server_names`, `estimated_via_values`, `has_terminal_error`,
+  `matched_entry_ids`, `originating_call_contexts`).
+- API (`api/internal/handlers/sessions.go`): query-param parsing
+  for the new filters; enum validators reject out-of-vocabulary
+  values with 400.
+- Dashboard (`src/components/investigate/`): five new sidebar facet
+  panels with multi-select chips and click-to-filter behaviour;
+  facet counts derived from the visible session set.
+- Dashboard (`src/components/events/EnrichmentSummary.tsx`): per-
+  event-type chip rendering for every D152/D153 enrichment field;
+  links to the originating event when `originating_event_id` is
+  present (intra-session jump in the events list).
+- Dashboard (`src/components/session/SessionDrawer.tsx`): MCP
+  SERVERS panel with per-server decision text (`MCPServerDecisionText`
+  inline next to the name) and live re-fetch on
+  `mcp_server_attached` / `mcp_server_name_changed` WebSocket events.
+
+**Live-stack verification.** T42 E2E
+(`dashboard/tests/e2e/T42-investigate-payload-facets-server-side.spec.ts`)
+covers the 5 enrichment facets server-side (TERMINAL,
+estimated_via, close_reason, matched_entry_id,
+originating_call_context) with URL/API/pagination/clear assertions
+under both neon-dark and clean-light themes. Vitest unit suite
+(`dashboard/src/components/events/__tests__/EnrichmentSummary.test.tsx`)
+covers every chip type (12 cases including the orphan_timeout
+literal added by the lifecycle correctness work).

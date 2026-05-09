@@ -405,12 +405,17 @@ def _decision_from_entry(
         decision: Decision = "allow"
     else:
         # deny entry — enforcement field upgrades bare deny to warn /
-        # block. Default for deny without enforcement: block.
-        decision = (
-            entry.enforcement  # type: ignore[assignment]
-            if entry.enforcement in ("warn", "block")
-            else "block"
-        )
+        # block. Default for deny without enforcement: block. Explicit
+        # equality on each Literal value lets mypy narrow without a
+        # type-ignore directive — matches the trust-boundary pattern
+        # from the base.py:1167 cast → isinstance fix in the prior
+        # reviewer round.
+        if entry.enforcement == "warn":
+            decision = "warn"
+        elif entry.enforcement == "block":
+            decision = "block"
+        else:
+            decision = "block"
     return MCPPolicyDecision(
         decision=decision,
         decision_path=decision_path,

@@ -92,9 +92,18 @@ def _policy_decision_event(
     *,
     decision_path: str = "flavor_entry",
     block_on_uncertainty: bool = False,
+    originating_event_id: str | None = None,
+    originating_call_context: str | None = None,
 ) -> dict:
     """Build a synthesized policy_mcp_warn / policy_mcp_block payload
-    matching the sensor's wire shape."""
+    matching the sensor's wire shape.
+
+    ``originating_event_id`` / ``originating_call_context`` are D149
+    chain fields the sensor stamps when the event fires inside an
+    LLM call window. Tests that exercise the chain pass them; the
+    rest leave the defaults None so existing payload shapes stay
+    unchanged.
+    """
     payload = _baseline_session_start(session_id, flavor)
     payload["event_type"] = event_type
     policy_id = str(uuid.uuid4())
@@ -125,6 +134,10 @@ def _policy_decision_event(
     )
     if event_type == "policy_mcp_block":
         payload["block_on_uncertainty"] = block_on_uncertainty
+    if originating_event_id is not None:
+        payload["originating_event_id"] = originating_event_id
+    if originating_call_context is not None:
+        payload["originating_call_context"] = originating_call_context
     return payload
 
 
@@ -199,6 +212,54 @@ def test_mcp_server_name_changed_lands_with_payload() -> None:
     assert payload.get("server_url_canonical") == "https://maps.example.com/sse"
     assert payload.get("name_old") == "maps"
     assert payload.get("name_new") == "maps-v2"
+
+
+def test_originating_event_id_chain_persists_end_to_end() -> None:
+    """D149 — sensor-minted UUIDs + ``originating_event_id`` chain.
+
+    The sensor mints the UUID for an LLM-call event at emission time
+    and stamps `originating_event_id` on follow-on events emitted
+    inside the same call window. The chain must round-trip through
+    ingestion → NATS → worker → events.payload jsonb so the dashboard
+    can render the intra-session jump affordance from any chained
+    event back to its origin.
+
+    Sensor unit tests cover the minting / chain-management logic;
+    this test guards the storage roundtrip the worker is responsible
+    for. Pre-D149 the sensor never minted UUIDs and the field didn't
+    exist; pre-Phase-7-Step-2 the worker dropped passthrough fields
+    not in EventPayload's typed shape.
+    """
+    sid = str(uuid.uuid4())
+    flavor = f"test-d149-chain-{uuid.uuid4().hex[:6]}"
+    origin_event_id = str(uuid.uuid4())
+    call_context = "tool_call"
+
+    assert _post_event(_baseline_session_start(sid, flavor)) == 200
+    assert (
+        _post_event(
+            _policy_decision_event(
+                sid,
+                flavor,
+                "policy_mcp_warn",
+                originating_event_id=origin_event_id,
+                originating_call_context=call_context,
+            )
+        )
+        == 200
+    )
+
+    event = _wait_for_event(sid, "policy_mcp_warn", timeout=10.0)
+    assert event is not None, "policy_mcp_warn did not land within 10s"
+    payload = event.get("payload") or {}
+    assert payload.get("originating_event_id") == origin_event_id, (
+        f"originating_event_id did not roundtrip; "
+        f"want {origin_event_id}, got {payload.get('originating_event_id')!r}"
+    )
+    assert payload.get("originating_call_context") == call_context, (
+        f"originating_call_context did not roundtrip; "
+        f"want {call_context!r}, got {payload.get('originating_call_context')!r}"
+    )
 
 
 # ----- D131 — ingestion validation rejects malformed payloads ------

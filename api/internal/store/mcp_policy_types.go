@@ -15,14 +15,14 @@ import (
 // is populated only by the detail-fetch path (GetGlobalMCPPolicy /
 // GetMCPPolicy); the listing path leaves it nil.
 type MCPPolicy struct {
-	ID                 string             `json:"id"`
-	Scope              string             `json:"scope"`                 // "global" | "flavor"
-	ScopeValue         *string            `json:"scope_value,omitempty"` // NULL for global
-	Mode               *string            `json:"mode,omitempty"`        // global only — D134
-	BlockOnUncertainty bool               `json:"block_on_uncertainty"`
-	CreatedAt          time.Time          `json:"created_at"`
-	UpdatedAt          time.Time          `json:"updated_at"`
-	Entries            []MCPPolicyEntry   `json:"entries,omitempty"`
+	ID                 string           `json:"id"`
+	Scope              string           `json:"scope"`                 // "global" | "flavor"
+	ScopeValue         *string          `json:"scope_value,omitempty"` // NULL for global
+	Mode               *string          `json:"mode,omitempty"`        // global only — D134
+	BlockOnUncertainty bool             `json:"block_on_uncertainty"`
+	CreatedAt          time.Time        `json:"created_at"`
+	UpdatedAt          time.Time        `json:"updated_at"`
+	Entries            []MCPPolicyEntry `json:"entries,omitempty"`
 }
 
 // MCPPolicyEntry is one allow / deny entry on a policy. server_url

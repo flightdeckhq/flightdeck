@@ -156,15 +156,14 @@ func TestApplyTemplateHandlerRejectsUnknownTemplate(t *testing.T) {
 }
 
 func TestMetricsHandlerRejectsInvalidPeriod(t *testing.T) {
-	// The store's periodToHours validator returns an `invalid period
-	// "<v>"` error for unknown values. The handler converts that
-	// specific shape to a 400 with an actionable message instead of
-	// passing through as a 500. Cover both the status code and the
-	// vocabulary list in the body so a future enum extension forces
-	// the message to update too.
+	// The store's periodToHours validator wraps store.ErrMCPPolicyInvalidPeriod
+	// for unknown values. The handler converts that sentinel to a 400
+	// with an actionable message instead of passing through as a 500.
+	// Cover both the status code and the vocabulary list in the body
+	// so a future enum extension forces the message to update too.
 	q := &metricsTemplatesStubQuerier{
 		getMetrics: func(_ context.Context, _, _, period string) (*store.MCPPolicyMetrics, error) {
-			return nil, fmt.Errorf(`invalid period "%s"`, period)
+			return nil, fmt.Errorf("%w: %q", store.ErrMCPPolicyInvalidPeriod, period)
 		},
 	}
 	req := httptest.NewRequest(http.MethodGet,

@@ -28,7 +28,7 @@ import (
 // a defensive noop for install paths where api may run before the
 // migrator (e.g. future operator-managed Helm charts). Race-safe
 // under read-committed because the unique index
-// (scope, COALESCE(scope_value, '')) rejects a concurrent second
+// (scope, COALESCE(scope_value, ”)) rejects a concurrent second
 // insert; the unique-violation is treated as "already created" and
 // the caller continues.
 func (s *Store) EnsureGlobalMCPPolicy(ctx context.Context) error {
@@ -65,8 +65,8 @@ func (s *Store) GetMCPPolicy(ctx context.Context, flavor string) (*MCPPolicy, er
 
 func (s *Store) fetchPolicyByScope(ctx context.Context, scope, scopeValue string) (*MCPPolicy, error) {
 	var (
-		policy      MCPPolicy
-		scopeVal    *string
+		policy       MCPPolicy
+		scopeVal     *string
 		modeNullable *string
 	)
 	const policySQL = `
@@ -758,7 +758,6 @@ func insertEntries(ctx context.Context, tx pgx.Tx, policyID string, entries []MC
 	return persisted, nil
 }
 
-
 func insertAuditLog(ctx context.Context, tx pgx.Tx, policyID, eventType string, actor *string, mut MCPPolicyMutation, extras map[string]any) error {
 	payload := map[string]any{
 		"block_on_uncertainty": mut.BlockOnUncertainty,
@@ -793,7 +792,7 @@ func periodToHours(period string) (int, error) {
 	case "30d":
 		return 24 * 30, nil
 	default:
-		return 0, fmt.Errorf("invalid period %q", period)
+		return 0, fmt.Errorf("%w: %q", ErrMCPPolicyInvalidPeriod, period)
 	}
 }
 
@@ -805,3 +804,10 @@ var ErrMCPPolicyNotFound = errors.New("mcp policy not found")
 // ErrMCPPolicyAlreadyExists is returned on POST :flavor when a
 // policy for that flavor already exists. Handler returns 409.
 var ErrMCPPolicyAlreadyExists = errors.New("mcp policy already exists for this flavor")
+
+// ErrMCPPolicyInvalidPeriod is returned by periodToHours for unknown
+// period values. Handlers convert to 400 with an actionable message
+// listing the accepted vocabulary. Wrap with fmt.Errorf("%w: %q", ...)
+// so callers can recover the offending period via errors.Unwrap +
+// the formatted error text while the sentinel survives errors.Is.
+var ErrMCPPolicyInvalidPeriod = errors.New("mcp policy: invalid period")

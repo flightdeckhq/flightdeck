@@ -418,14 +418,14 @@ func (sp *SessionProcessor) HandlePostCall(ctx context.Context, e consumer.Event
 // counter increment + nil return so the consumer ACKs cleanly (there is
 // nothing to recover from redelivery).
 // HandleMCPServerAttached UPSERTs an MCP server fingerprint into
-// ``sessions.context.mcp_servers`` (D140 step 6.6 A2). Routed
+// “sessions.context.mcp_servers“ (D140 step 6.6 A2). Routed
 // from Process() alongside HandlePostCall (which advances
 // last_seen_at) so the per-server dict lands and the dashboard
 // SessionDrawer panel reflects it within ~2-3 s of attach via
 // the existing fleet WebSocket re-fetch path.
 //
-// Maps the wire payload's ``server_name``/``server_url_canonical``
-// to the existing context dict's ``name``/``server_url`` keys so
+// Maps the wire payload's “server_name“/“server_url_canonical“
+// to the existing context dict's “name“/“server_url“ keys so
 // the stored shape stays exactly what session_start writes
 // (no schema bump). Idempotent at the SQL layer via
 // AppendMCPServerToContext's (name, server_url) tuple dedup.

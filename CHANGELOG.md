@@ -2,13 +2,17 @@
 
 All notable changes to Flightdeck are documented here.
 
-## Unreleased — MCP Protection Policy
+## Unreleased — MCP Protection Policy + operator-actionable enrichment
 
 Per-flavor enforcement of which MCP servers an agent is allowed to
-talk to. Rides on the existing `ClientSession` patch surface (D117)
-and the standard event pipeline. v0.6 enforces policy decisions as
-configured (block raises, warn passes through). See
-**D127–D132, D134–D147**.
+talk to (D127–D132, D134–D147), plus operator-actionable enrichment
+for every event family (D148–D154) and lifecycle correctness fixes
+(plugin SessionEnd cache invalidation; worker `orphan_timeout`
+reaper completing the close_reason vocabulary). Rides on the
+existing `ClientSession` patch surface (D117) and the standard
+event pipeline. v0.6 enforces policy decisions as configured
+(block raises, warn passes through). See
+**D127–D132, D134–D154**.
 
 ### Added
 
@@ -556,6 +560,82 @@ configured (block raises, warn passes through). See
   Protection sub-tabs). Hard 404 on ``/mcp-policies``.
 - **D147** Read-open / mutation-admin auth split for MCP policy
   endpoints. New ``GET /v1/whoami``.
+
+### Added (Phase 7 — operator-actionable enrichment)
+
+- **D148 — shared `policy_decision` block.** Every policy event
+  (warn / degrade / block / mcp_warn / mcp_block /
+  mcp_server_attached / mcp_server_name_changed) now carries a
+  uniform `policy_decision` summary
+  (`{policy_id, scope, decision, reason}`) so operators read one
+  shape across the policy event family.
+- **D149 — sensor-minted UUIDs + `originating_event_id` chain.**
+  Sensor mints the event UUID at emission time and stamps
+  `originating_event_id` on follow-on events emitted within the
+  same call window. The dashboard renders an intra-session jump
+  affordance from any chained event back to its origin.
+- **D150 — `event_content` `tool_input` / `tool_output` columns.**
+  MCP tool capture (`mcp_tool_call`, `mcp_prompt_get`) and
+  LLM-side `tool_call` events now route arguments + results
+  through dedicated columns instead of the LLM-prompt-style
+  repurposing of `messages` / `response`. Migration 000021 adds
+  the columns; sensor + plugin route to them when
+  `capture_prompts=True`.
+- **D151 — MCP enforcement on all server-access paths.** The
+  policy enforcement that originally gated `call_tool` is now
+  generalized across all six MCP paths
+  (`call_tool`, `list_tools`, `read_resource`, `list_resources`,
+  `get_prompt`, `list_prompts`) so a deny entry blocks every
+  surface, not just the tool-call hot path. `mcp_tool_call`
+  events carry an `originating_call_context` field naming
+  the path.
+- **D152 — session lifecycle operator-actionable enrichment.**
+  `session_start` adds `sensor_version` + `interceptor_versions`
+  + `policy_snapshot`. `session_end` adds the `close_reason`
+  enum (`normal_exit` / `directive_shutdown` / `policy_block` /
+  `orphan_timeout` / `sigkill_detected` / `unknown`),
+  `policy_actions_summary`, and `last_event_id`. New
+  `mcp_server_name_changed` event type detects display-name
+  drift on a stable URL.
+- **D153 — LLM family operator-actionable enrichment.**
+  `pre_call` / `post_call` carry `estimated_via` (which estimator
+  produced the token count), `policy_decision_pre` (what the
+  policy would have done before the call), `provider_metadata`
+  (per-provider attributes the operator wants in the timeline).
+  `embeddings` carries `output_dimensions`. `llm_error` carries
+  `retry_attempt` + `terminal` so retry chains read at a glance.
+- **D154 — dashboard surface for operator-actionable enrichment.**
+  Five new sidebar facets on Investigate (CLOSE REASON, POLICY
+  EVENT TYPES, ERROR TYPES, MCP SERVER NAMES, ESTIMATED VIA)
+  backed by per-session aggregate columns and a
+  `GET /v1/sessions` filter expansion. `EnrichmentSummary`
+  renders per-event chips for every D152/D153 field. SessionDrawer
+  MCP SERVERS panel renders per-server policy decisions inline.
+- **Plugin SessionEnd cache invalidation.** Plugin's `SessionEnd`
+  hook now invalidates the on-disk session-id cache so the
+  next interaction mints a fresh `session_id` rather than
+  reusing the closed one (which the worker's closed-skip path
+  silently dropped). Sub-agents from a still-live parent now
+  nest correctly under the live parent in the Investigate
+  swimlane instead of rendering as top-level orphans.
+- **Worker `orphan_timeout` reaper.** Reconciler now closes
+  `lost` sessions that have been silent past
+  `FLIGHTDECK_ORPHAN_TIMEOUT_HOURS` (default 24h), stamping
+  `close_reason=orphan_timeout` via a synthetic `session_end`
+  event so the dashboard's CloseReason facet surfaces the
+  reconciler's verdict alongside happy-path shutdowns.
+
+### Decisions (Phase 7 enrichment)
+
+- **D148** Shared `policy_decision` block on every policy event.
+- **D149** Sensor-minted UUIDs + `originating_event_id` chain.
+- **D150** `event_content` `tool_input` / `tool_output` columns;
+  migration 000021.
+- **D151** MCP policy enforcement on all six server-access paths.
+- **D152** Session lifecycle operator-actionable enrichment +
+  `close_reason` vocabulary + `mcp_server_name_changed` event.
+- **D153** LLM family operator-actionable enrichment.
+- **D154** Dashboard surface for operator-actionable enrichment.
 
 ### Fixed
 

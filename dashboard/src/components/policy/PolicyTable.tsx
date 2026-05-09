@@ -18,9 +18,17 @@ export interface PolicyTableProps {
   loading: boolean;
 }
 
+// Theme-aware scope chrome. Pre-Phase-7, `flavor` used a hardcoded
+// `bg-[rgba(168,85,247,0.2)] text-[#a855f7]` purple that broke
+// Rule 14 — the same RGBA renders the same in both neon-dark and
+// clean-light, defeating the theme palette. Using --accent (the
+// theme's primary purple in dark, equivalent indigo in light)
+// keeps the chip readable in both themes; org / flavor visually
+// share the accent because both indicate scope-of-application
+// (the prior color split was cosmetic, not semantic).
 const scopeColors: Record<string, string> = {
   org: "bg-primary/20 text-primary",
-  flavor: "bg-[rgba(168,85,247,0.2)] text-[#a855f7]",
+  flavor: "bg-accent/20 text-accent",
   session: "bg-success/20 text-success",
 };
 

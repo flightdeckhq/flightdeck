@@ -142,6 +142,15 @@ _INSTANCE_SERVER_URL_ATTR = "_flightdeck_mcp_server_url"
 _MCP_INLINE_THRESHOLD_BYTES = 8 * 1024
 _MCP_HARD_CAP_BYTES = 2 * 1024 * 1024
 
+# Synchronous flush window when emitting a POLICY_MCP_BLOCK event.
+# D130 guarantees the block event lands before the agent sees the
+# tear-down exception, but BudgetExceededError-style raises can race
+# the queue drain thread. 5 s is the longest pause we'll tolerate
+# adding to the LLM hot path on a block — bigger than the typical
+# control-plane round-trip (sub-second) by a wide margin, smaller
+# than the operator's "is this hung?" perception threshold.
+_MCP_BLOCK_FLUSH_TIMEOUT_SECS = 5.0
+
 
 # ----------------------------------------------------------------------
 # Sensor session lookup
@@ -522,7 +531,7 @@ def _enforce_mcp_policy(
         event_type = EventType.POLICY_MCP_BLOCK
         payload = sensor_session._build_payload(event_type, **payload_extras)
         sensor_session.event_queue.enqueue(payload)
-        sensor_session.event_queue.flush(timeout=5.0)
+        sensor_session.event_queue.flush(timeout=_MCP_BLOCK_FLUSH_TIMEOUT_SECS)
     except Exception:
         _log.exception("flightdeck_sensor: failed to emit/flush policy_mcp_block event")
 

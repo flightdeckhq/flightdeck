@@ -3,14 +3,24 @@ name: CI
 on:
   pull_request:
     branches: [main]
-  # Run on every branch push, not just main. Pre-PR feedback prevents
-  # invisible drift like the MCP Policy handler coverage that sat at
-  # 52% on feat/mcp-protection-policy until PR #33 surfaced it; the
-  # gate exists for a reason and only catches drift if it fires.
-  # Duplicate runs on PR-target branches are deduped by GitHub via the
-  # workflow run identity.
+  # Run on feature-branch pushes, not only main. Pre-PR feedback
+  # prevents invisible drift like the MCP Policy handler coverage that
+  # sat at 52% on feat/mcp-protection-policy until PR #33 surfaced it;
+  # the gate exists for a reason and only catches drift if it fires.
+  # Scoped to feat/** so unrelated branches (e.g. ad-hoc spikes,
+  # stash-only branches) don't burn CI minutes. Duplicate runs on
+  # PR-target branches are deduped by GitHub via the workflow run
+  # identity.
   push:
-    branches: ['**']
+    branches: [main, 'feat/**']
+
+# Cap blast radius from rapid-fire pushes on the same branch: cancel
+# any in-flight run when a newer commit lands. Two pushes in quick
+# succession should not boot two parallel Compose stacks (integration
+# + e2e jobs each spin up a full dev stack).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   sensor:
@@ -82,7 +92,11 @@ jobs:
           go-version: "1.26.2"
 
       - name: Install golangci-lint v2
-        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+        # Pinned to an explicit release tag (vs. @latest) so a
+        # compromised or breaking-change release of golangci-lint
+        # can't execute on every CI run with full runner access.
+        # Bump deliberately; never silently track upstream HEAD.
+        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.11.4
 
       - name: Lint ingestion
         working-directory: ingestion
@@ -99,7 +113,7 @@ jobs:
       - name: Test ingestion
         working-directory: ingestion
         run: |
-          go test ./... -v \
+          go test ./... -v -race \
             -coverprofile=coverage.out \
             -covermode=atomic \
             -coverpkg=./internal/handlers/...
@@ -137,7 +151,7 @@ jobs:
       - name: Test workers
         working-directory: workers
         run: |
-          go test ./... -v \
+          go test ./... -v -race \
             -coverprofile=coverage.out \
             -covermode=atomic \
             -coverpkg=./internal/...
@@ -169,12 +183,12 @@ jobs:
         run: |
           # Run every test package, not just ./tests/, so handler-package
           # tests in api/internal/handlers/ (mcp_policy_test.go,
-          # mcp_policy_apply_template_test.go,
+          # mcp_policy_apply_template_test.go, mcp_policy_audit_log_test.go,
           # mcp_policy_metrics_templates_test.go, whoami_test.go) execute
           # and contribute to handler coverage. Restricting to ./tests/
           # left those files compiled-but-unrun, dragging the gate from
           # 67% to 52% on feat/mcp-protection-policy until PR #33.
-          go test ./... -v \
+          go test ./... -v -race \
             -coverprofile=coverage.out \
             -covermode=atomic \
             -coverpkg=./internal/handlers/...

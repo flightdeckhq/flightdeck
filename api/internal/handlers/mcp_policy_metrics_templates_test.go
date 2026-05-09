@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -151,5 +152,97 @@ func TestApplyTemplateHandlerRejectsUnknownTemplate(t *testing.T) {
 	ApplyMCPPolicyTemplateHandler(q)(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", rec.Code)
+	}
+}
+
+func TestMetricsHandlerRejectsInvalidPeriod(t *testing.T) {
+	// The store's periodToHours validator returns an `invalid period
+	// "<v>"` error for unknown values. The handler converts that
+	// specific shape to a 400 with an actionable message instead of
+	// passing through as a 500. Cover both the status code and the
+	// vocabulary list in the body so a future enum extension forces
+	// the message to update too.
+	q := &metricsTemplatesStubQuerier{
+		getMetrics: func(_ context.Context, _, _, period string) (*store.MCPPolicyMetrics, error) {
+			return nil, fmt.Errorf(`invalid period "%s"`, period)
+		},
+	}
+	req := httptest.NewRequest(http.MethodGet,
+		"/v1/mcp-policies/production/metrics?period=1y", nil)
+	req.SetPathValue("flavor", "production")
+	rec := httptest.NewRecorder()
+	GetMCPPolicyMetricsHandler(q)(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "24h, 7d, 30d") {
+		t.Errorf("body should enumerate the accepted periods; got %s", rec.Body.String())
+	}
+}
+
+func TestYamlToMutationRejectsModeOnFlavor(t *testing.T) {
+	// D134 lock: mode is global-only. A shipped template would never
+	// produce this shape (templates are flavor-scoped and omit mode),
+	// but the guard is the API-boundary defence and gets exercised
+	// directly here to confirm the rejection message stays stable.
+	doc := policyYAML{
+		Scope:              "flavor",
+		Mode:               "blocklist",
+		BlockOnUncertainty: false,
+	}
+	_, msg := yamlToMutation(doc, "flavor")
+	if msg == "" {
+		t.Fatal("yamlToMutation should reject mode-on-flavor; got empty error")
+	}
+	if !strings.Contains(msg, "mode is global-only") {
+		t.Errorf("rejection message should cite the D134 contract; got %q", msg)
+	}
+}
+
+func TestYamlToMutationAllowsModeOnGlobal(t *testing.T) {
+	// Counterpart to the rejection test: mode IS valid at global
+	// scope. Confirms the guard is scoped correctly and not a blanket
+	// rejection.
+	doc := policyYAML{
+		Scope: "global",
+		Mode:  "allowlist",
+	}
+	mut, msg := yamlToMutation(doc, "global")
+	if msg != "" {
+		t.Errorf("yamlToMutation should accept mode at global scope; got %q", msg)
+	}
+	if mut.Mode == nil || *mut.Mode != "allowlist" {
+		t.Errorf("mode = %v, want allowlist", mut.Mode)
+	}
+}
+
+func TestYamlToMutationCarriesEntriesAndEnforcement(t *testing.T) {
+	// The shipped templates' entry round-trip is exercised end-to-end
+	// by TestApplyTemplateHandlerHappyPath, but that test never
+	// inspects the per-entry shape. Direct unit coverage here so a
+	// regression in the trim / Enforcement ptr handling is caught at
+	// the unit level.
+	doc := policyYAML{
+		Scope: "flavor",
+		Entries: []entryYAML{
+			{ServerURL: "  https://maps.example.com  ", ServerName: "maps", EntryKind: "allow"},
+			{ServerURL: "https://writes.example.com", ServerName: "writes", EntryKind: "deny", Enforcement: "block"},
+		},
+	}
+	mut, msg := yamlToMutation(doc, "flavor")
+	if msg != "" {
+		t.Fatalf("yamlToMutation should accept this doc; got %q", msg)
+	}
+	if len(mut.Entries) != 2 {
+		t.Fatalf("entries = %d, want 2", len(mut.Entries))
+	}
+	if mut.Entries[0].ServerURL != "https://maps.example.com" {
+		t.Errorf("entry[0].ServerURL not trimmed: %q", mut.Entries[0].ServerURL)
+	}
+	if mut.Entries[0].Enforcement != nil {
+		t.Errorf("entry[0].Enforcement = %v, want nil (not set in YAML)", mut.Entries[0].Enforcement)
+	}
+	if mut.Entries[1].Enforcement == nil || *mut.Entries[1].Enforcement != "block" {
+		t.Errorf("entry[1].Enforcement = %v, want block", mut.Entries[1].Enforcement)
 	}
 }

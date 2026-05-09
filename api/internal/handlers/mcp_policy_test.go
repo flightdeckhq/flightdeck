@@ -390,3 +390,78 @@ func TestResolveMCPPolicyHandlerStoreError(t *testing.T) {
 		t.Errorf("status = %d, want 500", rec.Code)
 	}
 }
+
+func TestUpdateGlobalMCPPolicyHandlerSuccess(t *testing.T) {
+	mode := "blocklist"
+	q := &stubQuerier{
+		updateScope: func(_ context.Context, scope, scopeValue string, mut store.MCPPolicyMutation, _ []store.MCPPolicyEntry, _ *string, _ map[string]any) (*store.MCPPolicy, error) {
+			if scope != "global" || scopeValue != "" {
+				t.Errorf("scope/value = %q/%q, want global/\"\"", scope, scopeValue)
+			}
+			if mut.Mode == nil || *mut.Mode != "blocklist" {
+				t.Errorf("mode = %v, want blocklist", mut.Mode)
+			}
+			return &store.MCPPolicy{ID: "g", Scope: "global", Mode: &mode}, nil
+		},
+	}
+	body := store.MCPPolicyMutation{Mode: &mode}
+	buf, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPut, "/v1/mcp-policies/global", bytes.NewReader(buf))
+	rec := httptest.NewRecorder()
+	UpdateGlobalMCPPolicyHandler(q)(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var resp store.MCPPolicy
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Scope != "global" {
+		t.Errorf("response scope = %q, want global", resp.Scope)
+	}
+}
+
+func TestUpdateGlobalMCPPolicyHandlerNotFound(t *testing.T) {
+	mode := "allowlist"
+	q := &stubQuerier{
+		updateScope: func(_ context.Context, _, _ string, _ store.MCPPolicyMutation, _ []store.MCPPolicyEntry, _ *string, _ map[string]any) (*store.MCPPolicy, error) {
+			return nil, store.ErrMCPPolicyNotFound
+		},
+	}
+	body := store.MCPPolicyMutation{Mode: &mode}
+	buf, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPut, "/v1/mcp-policies/global", bytes.NewReader(buf))
+	rec := httptest.NewRecorder()
+	UpdateGlobalMCPPolicyHandler(q)(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", rec.Code)
+	}
+}
+
+func TestUpdateGlobalMCPPolicyHandlerStoreError(t *testing.T) {
+	mode := "blocklist"
+	q := &stubQuerier{
+		updateScope: func(_ context.Context, _, _ string, _ store.MCPPolicyMutation, _ []store.MCPPolicyEntry, _ *string, _ map[string]any) (*store.MCPPolicy, error) {
+			return nil, errors.New("connection refused")
+		},
+	}
+	body := store.MCPPolicyMutation{Mode: &mode}
+	buf, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPut, "/v1/mcp-policies/global", bytes.NewReader(buf))
+	rec := httptest.NewRecorder()
+	UpdateGlobalMCPPolicyHandler(q)(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", rec.Code)
+	}
+}
+
+func TestUpdateGlobalMCPPolicyHandlerInvalidJSON(t *testing.T) {
+	q := &stubQuerier{} // updateScope never reached
+	req := httptest.NewRequest(http.MethodPut, "/v1/mcp-policies/global",
+		strings.NewReader("not json"))
+	rec := httptest.NewRecorder()
+	UpdateGlobalMCPPolicyHandler(q)(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", rec.Code)
+	}
+}

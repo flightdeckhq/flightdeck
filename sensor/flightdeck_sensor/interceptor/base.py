@@ -15,7 +15,7 @@ import contextlib
 import copy
 import logging
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from flightdeck_sensor.core.errors import classify_exception
 from flightdeck_sensor.core.exceptions import BudgetExceededError, DirectiveError
@@ -828,16 +828,19 @@ def _pre_call(
         # threshold. Local and server can both fire once each per
         # session (PolicyCache tracks separately).
         warn_source = result.source or "server"
-        # warn_threshold_pct was already bound (as int) by the
-        # pre_call_decision branch above; rebinding without a fresh
-        # annotation keeps mypy --strict's no-redef rule happy. The
-        # server branch tolerates None (warn_at_pct is Optional) so
-        # the inferred type is int | None across both branches.
+        # Both branches must produce an int. ``warn_at_pct`` is Optional
+        # on PolicyResult; the ``or 0`` guard mirrors the pre_call_decision
+        # branch (line ~722) and prevents ``None`` from leaking into the
+        # event payload's ``threshold_pct`` field or the operator-visible
+        # f-string reason ("crossed warn threshold (None%, server policy)"
+        # would be silently misleading). With both branches typed int the
+        # mypy --strict no-redef error against the prior binding clears
+        # without an annotation.
         if warn_source == "local":
             warn_threshold_pct = int(session.policy.local_warn_at * 100)
             warn_token_limit = session.policy.local_limit
         else:
-            warn_threshold_pct = session.policy.warn_at_pct
+            warn_threshold_pct = session.policy.warn_at_pct or 0
             warn_token_limit = session.policy.token_limit
         # Phase 7 Step 2 (D148): shared policy_decision block.
         local_warn = warn_source == "local"
@@ -1153,15 +1156,18 @@ def _emit_error(
         # event correlation that adds latency to the hot path; the
         # classifier-driven heuristic is correct for the vast
         # majority of real retry chains.
-        # error_payload.get(...) returns Any | None; coerce to str so
-        # session.record_retry_attempt's str-typed parameter is satisfied
-        # under mypy --strict. The runtime fallback was already string-
-        # typed; this just makes the static type match.
-        provider_name: str = (
-            error_payload.get("provider") or getattr(provider, "name", "") or ""
+        # error_payload.get(...) returns Any | None; the `or
+        # getattr(provider, "name", "")` fallback already produces a
+        # str at runtime. cast(str, ...) tells mypy the result is str
+        # without manufacturing a third "" fallback that would conflate
+        # missing-key, present-but-None, and present-but-empty cases.
+        provider_name = cast(
+            "str", error_payload.get("provider") or getattr(provider, "name", "")
         )
-        request_id_raw = error_payload.get("request_id")
-        request_id = str(request_id_raw) if request_id_raw is not None else None
+        # Same shape for request_id: cast preserves the str | None
+        # contract record_retry_attempt expects, without a runtime
+        # str() round-trip that would mask a malformed value type.
+        request_id = cast("str | None", error_payload.get("request_id"))
         retry_attempt = session.record_retry_attempt(provider_name, request_id)
         terminal = not bool(error_payload.get("is_retryable", False))
 

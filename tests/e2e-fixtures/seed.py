@@ -741,6 +741,13 @@ def _post_session_events(
                         "retry_after": retry_after,
                         "is_retryable": retryable,
                     },
+                    # Operator-actionable retry-chain context. terminal
+                    # mirrors !is_retryable so non-retryable taxonomy
+                    # entries (authentication, context_overflow) drive
+                    # the TERMINAL facet without needing a separate
+                    # extras tag.
+                    retry_attempt=1,
+                    terminal=not retryable,
                     **identity,
                     **common,
                 )

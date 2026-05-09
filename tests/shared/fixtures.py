@@ -328,6 +328,27 @@ def make_event(
     # via **extra.
     if event_type == "session_start" and "sensor_version" not in payload:
         payload["sensor_version"] = "integration-test/0.0.0"
+    # Ingestion requires a structured policy_decision block on every
+    # policy enforcement event. Stamp a sentinel here so integration
+    # tests that don't construct one explicitly don't 400 at the
+    # wire boundary. Tests that specifically exercise policy_decision
+    # validation override via **extra.
+    _POLICY_EVENT_TYPES = {
+        "policy_warn", "policy_degrade", "policy_block",
+        "policy_mcp_warn", "policy_mcp_block",
+    }
+    if event_type in _POLICY_EVENT_TYPES and "policy_decision" not in payload:
+        decision = (
+            "warn" if "warn" in event_type
+            else "degrade" if "degrade" in event_type
+            else "block"
+        )
+        payload["policy_decision"] = {
+            "policy_id": payload.get("policy_id") or "integration-test-policy",
+            "scope": payload.get("scope") or f"flavor:{flavor}",
+            "decision": decision,
+            "reason": f"integration test sentinel for {event_type}",
+        }
     _session_tracker[session_id] = flavor
     return payload
 

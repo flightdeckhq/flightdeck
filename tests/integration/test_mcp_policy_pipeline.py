@@ -76,6 +76,7 @@ def _baseline_session_start(session_id: str, flavor: str) -> dict:
         "host": "test-host",
         "framework": None,
         "model": None,
+        "sensor_version": "integration-test/0.0.0",
         "timestamp": _now_iso(),
     }
 
@@ -89,15 +90,29 @@ def _policy_decision_event(
     matching the sensor's wire shape."""
     payload = _baseline_session_start(session_id, flavor)
     payload["event_type"] = event_type
+    policy_id = str(uuid.uuid4())
     payload.update({
         "server_url": "https://maps.example.com/sse",
         "server_name": "maps",
         "fingerprint": "abc123def4567890",
         "tool_name": "search",
-        "policy_id": str(uuid.uuid4()),
+        "policy_id": policy_id,
         "scope": f"flavor:{flavor}",
         "decision_path": decision_path,
         "transport": "http",
+        # Shared policy_decision block required by ingestion on every
+        # policy event (the validator ensures the dashboard's row
+        # renderer always finds the structured fields it reads).
+        "policy_decision": {
+            "policy_id": policy_id,
+            "scope": f"flavor:{flavor}",
+            "decision": "block" if event_type == "policy_mcp_block" else "warn",
+            "reason": (
+                "Server maps blocked by flavor entry, enforcement="
+                + ("block" if event_type == "policy_mcp_block" else "warn")
+            ),
+            "decision_path": decision_path,
+        },
     })
     if event_type == "policy_mcp_block":
         payload["block_on_uncertainty"] = block_on_uncertainty

@@ -31,6 +31,7 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import {
@@ -242,6 +243,42 @@ export function getSessionId(hookEvent = {}) {
     }
   } catch {
     return fallback();
+  }
+}
+
+// On SessionEnd we invalidate both on-disk cache files so the next
+// hook fire mints a fresh sessionId AND re-emits its own
+// session_start. Without this, subsequent /clear / re-`claude -p`
+// invocations reuse the closed session_id and the worker drops their
+// events under state=closed (per the worker's closed-skip path). The
+// session-${markerKey}.txt cache is keyed by sha256(hookEvent.
+// session_id); the started-${sessionId}.txt dedup marker is keyed by
+// the resolved sessionId (see getSessionId + ensureSessionStarted).
+// Best-effort by design — ENOENT is fine, other errors log and
+// continue so the SessionEnd emission isn't blocked.
+export function clearSessionCacheFiles(hookEvent = {}, sessionId = "") {
+  const dir = join(tmpdir(), "flightdeck-plugin");
+  let markerKey;
+  if (hookEvent && typeof hookEvent.session_id === "string" && hookEvent.session_id) {
+    markerKey = createHash("sha256")
+      .update(hookEvent.session_id)
+      .digest("hex")
+      .slice(0, 16);
+  } else {
+    markerKey = createHash("sha256").update(process.cwd()).digest("hex").slice(0, 16);
+  }
+  const targets = [`session-${markerKey}.txt`];
+  if (sessionId) targets.push(`started-${sessionId}.txt`);
+  for (const name of targets) {
+    try {
+      unlinkSync(join(dir, name));
+    } catch (err) {
+      if (!err || err.code !== "ENOENT") {
+        process.stderr.write(
+          `[flightdeck] WARN: clearSessionCacheFiles unlink ${name}: ${err.message}\n`,
+        );
+      }
+    }
   }
 }
 
@@ -2116,8 +2153,25 @@ async function main() {
       is_subagent_call: false,
       latency_ms: null,
       timestamp: new Date().toISOString(),
+      // Plugin-driven SessionEnd is always a normal exit from the
+      // operator's perspective (the user typed /exit, /clear, or the
+      // `claude -p` command completed cleanly). The worker reaper
+      // fills "orphan_timeout" on lost sessions; "sigkill_detected"
+      // is reserved for future signal-handling. Stamping explicitly
+      // here keeps the dashboard's Close Reason facet populated for
+      // every clean exit instead of falling through to the worker's
+      // unknown-default path.
+      close_reason: "normal_exit",
     };
     await postEvent(cfg.server, cfg.token, sessionId, payload);
+    // Invalidate the on-disk session caches so the next hook fire
+    // (post-/clear, re-`claude -p`, or any subsequent invocation
+    // that reuses the same Claude Code session_id) mints a fresh
+    // sessionId and emits its own session_start. Without this the
+    // worker's closed-skip path drops events under the just-ended
+    // session and the dashboard shows the row as closed/stale even
+    // while events keep landing.
+    clearSessionCacheFiles(hookEvent, sessionId);
     return;
   }
 

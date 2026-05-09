@@ -422,6 +422,26 @@ func EventsHandler(
 				writeError(w, http.StatusBadRequest, msg)
 				return
 			}
+		case "pre_call":
+			if msg := validatePreCallPayload(payload); msg != "" {
+				writeError(w, http.StatusBadRequest, msg)
+				return
+			}
+		case "post_call":
+			if msg := validatePostCallPayload(payload); msg != "" {
+				writeError(w, http.StatusBadRequest, msg)
+				return
+			}
+		case "embeddings":
+			if msg := validateEmbeddingsPayload(payload); msg != "" {
+				writeError(w, http.StatusBadRequest, msg)
+				return
+			}
+		case "llm_error":
+			if msg := validateLLMErrorPayload(payload); msg != "" {
+				writeError(w, http.StatusBadRequest, msg)
+				return
+			}
 		}
 
 		// On session_start, attach the resolved token id/name so the
@@ -709,6 +729,128 @@ func validateMCPServerNameChangedPayload(payload map[string]any) string {
 			return fmt.Sprintf(
 				"%s is required for mcp_server_name_changed", field,
 			)
+		}
+	}
+	return ""
+}
+
+// validatePreCallPayload enforces the pre_call enrichment contract.
+// The sensor's pre_call emission always carries estimated_via; the
+// plugin's pre_call doesn't run token estimation and omits the field.
+// Validator accepts both shapes; when present, the value must be one
+// of the enum members. policy_decision_pre, when present, follows
+// the shared block shape.
+func validatePreCallPayload(payload map[string]any) string {
+	if raw, present := payload["estimated_via"]; present {
+		via, ok := raw.(string)
+		if !ok {
+			return "estimated_via must be a string on pre_call"
+		}
+		switch via {
+		case "tiktoken", "heuristic", "none":
+		default:
+			return fmt.Sprintf(
+				"estimated_via must be one of: tiktoken, heuristic, none (got %q)", via,
+			)
+		}
+	}
+	if raw, present := payload["policy_decision_pre"]; present {
+		block, ok := raw.(map[string]any)
+		if !ok {
+			return "policy_decision_pre must be an object on pre_call"
+		}
+		for _, field := range []string{"policy_id", "scope", "decision", "reason"} {
+			v, ok := block[field].(string)
+			if !ok || v == "" {
+				return fmt.Sprintf(
+					"policy_decision_pre.%s is required when policy_decision_pre is present", field,
+				)
+			}
+		}
+	}
+	return ""
+}
+
+// validatePostCallPayload enforces the post_call enrichment contract
+// when the new fields are present. estimated_via, when set, must be
+// one of the enum values; policy_decision_post follows the shared
+// block shape; provider_metadata, when set, must be an object.
+func validatePostCallPayload(payload map[string]any) string {
+	if raw, present := payload["estimated_via"]; present {
+		via, ok := raw.(string)
+		if !ok {
+			return "estimated_via must be a string on post_call"
+		}
+		switch via {
+		case "tiktoken", "heuristic", "none":
+		default:
+			return fmt.Sprintf(
+				"estimated_via must be one of: tiktoken, heuristic, none (got %q)", via,
+			)
+		}
+	}
+	if raw, present := payload["provider_metadata"]; present {
+		if _, ok := raw.(map[string]any); !ok {
+			return "provider_metadata must be an object on post_call"
+		}
+	}
+	if raw, present := payload["policy_decision_post"]; present {
+		block, ok := raw.(map[string]any)
+		if !ok {
+			return "policy_decision_post must be an object on post_call"
+		}
+		for _, field := range []string{"policy_id", "scope", "decision", "reason"} {
+			v, ok := block[field].(string)
+			if !ok || v == "" {
+				return fmt.Sprintf(
+					"policy_decision_post.%s is required when policy_decision_post is present", field,
+				)
+			}
+		}
+	}
+	return ""
+}
+
+// validateEmbeddingsPayload reuses the post_call validators for the
+// shared fields and adds output_dimensions shape check when present.
+func validateEmbeddingsPayload(payload map[string]any) string {
+	if msg := validatePostCallPayload(payload); msg != "" {
+		return msg
+	}
+	if raw, present := payload["output_dimensions"]; present {
+		dims, ok := raw.(map[string]any)
+		if !ok {
+			return "output_dimensions must be an object on embeddings"
+		}
+		for _, field := range []string{"count", "dimension"} {
+			val, ok := dims[field]
+			if !ok {
+				return fmt.Sprintf(
+					"output_dimensions.%s is required when output_dimensions is present", field,
+				)
+			}
+			if num, ok := val.(float64); !ok || num <= 0 {
+				return fmt.Sprintf(
+					"output_dimensions.%s must be a positive number", field,
+				)
+			}
+		}
+	}
+	return ""
+}
+
+// validateLLMErrorPayload enforces llm_error enrichment when the new
+// fields are present. retry_attempt + terminal are sensor-emitted;
+// plugin-side llm_errors omit them today.
+func validateLLMErrorPayload(payload map[string]any) string {
+	if raw, present := payload["retry_attempt"]; present {
+		if num, ok := raw.(float64); !ok || num < 1 {
+			return "retry_attempt must be a positive integer on llm_error"
+		}
+	}
+	if raw, present := payload["terminal"]; present {
+		if _, ok := raw.(bool); !ok {
+			return "terminal must be a boolean on llm_error"
 		}
 	}
 	return ""

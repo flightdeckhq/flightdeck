@@ -62,7 +62,7 @@ def test_policy_warn_carries_shared_decision_block() -> None:
     s = _make_session(token_limit=10000)
     s._tokens_used = 8000  # 80% — crosses warn threshold
     provider = MagicMock()
-    provider.estimate_tokens = MagicMock(return_value=0)
+    provider.estimate_tokens = MagicMock(return_value=(0, "tiktoken"))
     provider.get_model = MagicMock(return_value="claude-opus-4-7")
     _pre_call(s, provider, kwargs={"model": "claude-opus-4-7"}, estimated=0)
 
@@ -85,7 +85,7 @@ def test_policy_block_carries_shared_decision_block() -> None:
     s = _make_session(token_limit=10000)
     s._tokens_used = 10500  # 105% — over block threshold
     provider = MagicMock()
-    provider.estimate_tokens = MagicMock(return_value=0)
+    provider.estimate_tokens = MagicMock(return_value=(0, "tiktoken"))
     provider.get_model = MagicMock(return_value="claude-opus-4-7")
     with pytest.raises(BudgetExceededError):
         _pre_call(s, provider, kwargs={"model": "claude-opus-4-7"}, estimated=0)
@@ -112,7 +112,7 @@ def test_policy_warn_local_source_uses_local_failsafe_scope() -> None:
     s.policy.local_warn_at = 0.5
     s._tokens_used = 600  # crosses local warn (50% of 1000 = 500)
     provider = MagicMock()
-    provider.estimate_tokens = MagicMock(return_value=0)
+    provider.estimate_tokens = MagicMock(return_value=(0, "tiktoken"))
     provider.get_model = MagicMock(return_value="claude-opus-4-7")
     _pre_call(s, provider, kwargs={"model": "claude-opus-4-7"}, estimated=0)
 
@@ -132,7 +132,7 @@ def test_originating_event_id_not_set_on_policy_warn() -> None:
     s = _make_session(token_limit=10000)
     s._tokens_used = 8000
     provider = MagicMock()
-    provider.estimate_tokens = MagicMock(return_value=0)
+    provider.estimate_tokens = MagicMock(return_value=(0, "tiktoken"))
     provider.get_model = MagicMock(return_value="claude-opus-4-7")
     _pre_call(s, provider, kwargs={"model": "claude-opus-4-7"}, estimated=0)
 
@@ -151,7 +151,7 @@ def test_originating_event_id_set_after_post_call_propagates_to_subsequent_warn(
     s.set_current_call_event_id("originator-uuid")
     s._tokens_used = 8000
     provider = MagicMock()
-    provider.estimate_tokens = MagicMock(return_value=0)
+    provider.estimate_tokens = MagicMock(return_value=(0, "tiktoken"))
     provider.get_model = MagicMock(return_value="claude-opus-4-7")
     _pre_call(s, provider, kwargs={"model": "claude-opus-4-7"}, estimated=0)
 

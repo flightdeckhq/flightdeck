@@ -45,14 +45,12 @@ class LitellmProvider:
     def __init__(self, capture_prompts: bool = False) -> None:
         self._capture_prompts = capture_prompts
 
-    def estimate_tokens(self, request_kwargs: dict[str, Any]) -> int:
-        """Estimate input tokens using ``litellm.token_counter`` if
-        available, else a char/4 heuristic.
+    def estimate_tokens(self, request_kwargs: dict[str, Any]) -> tuple[int, str]:
+        """Estimate input tokens; returns ``(count, source)``.
 
-        litellm.token_counter is model-aware and routes to the right
-        tokenizer for every provider it knows about (Anthropic's
-        claude-*, OpenAI's gpt-*, Google gemini-*, etc.), which is
-        exactly the multi-provider surface we need.
+        litellm.token_counter is model-aware across every provider it
+        supports. Source is ``"tiktoken"`` for that path, ``"heuristic"``
+        for the char/4 fallback, or ``"none"`` when extraction fails.
         """
         try:
             import litellm as _litellm
@@ -60,7 +58,7 @@ class LitellmProvider:
             messages = request_kwargs.get("messages", [])
             model = request_kwargs.get("model", "")
             count: int = _litellm.token_counter(model=model, messages=messages)
-            return count
+            return count, "tiktoken"
         except Exception:
             _log.debug(
                 "litellm.token_counter failed, falling back to char heuristic",
@@ -71,9 +69,48 @@ class LitellmProvider:
             messages = request_kwargs.get("messages", [])
             tools = request_kwargs.get("tools", [])
             text = str(messages) + str(tools)
-            return len(text) // _CHARS_PER_TOKEN_ESTIMATE
+            return len(text) // _CHARS_PER_TOKEN_ESTIMATE, "heuristic"
         except Exception:
-            return 0
+            return 0, "none"
+
+    def extract_response_metadata(self, response: Any) -> dict[str, Any] | None:
+        """litellm normalises away most provider-specific headers; expose
+        what is reachable on the ModelResponse object."""
+        try:
+            request_id = getattr(response, "id", None) or getattr(
+                response, "_request_id", None,
+            )
+            model = getattr(response, "model", None)
+            out: dict[str, Any] = {}
+            if request_id:
+                out["request_id"] = str(request_id)
+            if model:
+                out["model_info"] = str(model)
+            return out or None
+        except Exception:
+            return None
+
+    def extract_output_dimensions(self, response: Any) -> dict[str, int] | None:
+        """For litellm.embedding() responses: return ``{count, dimension}``.
+
+        Shape mirrors OpenAI: ``response.data[i].embedding``.
+        """
+        try:
+            data = getattr(response, "data", None) or (
+                response.get("data") if isinstance(response, dict) else None
+            )
+            if not data:
+                return None
+            count = len(data)
+            first = data[0]
+            embedding = getattr(first, "embedding", None) or (
+                first.get("embedding") if isinstance(first, dict) else None
+            )
+            if not embedding:
+                return None
+            return {"count": count, "dimension": len(embedding)}
+        except Exception:
+            return None
 
     def extract_usage(self, response: Any) -> TokenUsage:
         """Extract token counts from a litellm ``ModelResponse``.
@@ -126,6 +163,23 @@ class LitellmProvider:
             model = request_kwargs.get("model", "")
 
             if event_type == EventType.EMBEDDINGS:
+                vectors: list[list[float]] | None = None
+                try:
+                    data = getattr(response, "data", None) or (
+                        response.get("data") if isinstance(response, dict) else None
+                    )
+                    if data:
+                        vectors = []
+                        for entry in data:
+                            emb = getattr(entry, "embedding", None) or (
+                                entry.get("embedding")
+                                if isinstance(entry, dict)
+                                else None
+                            )
+                            if emb is not None:
+                                vectors.append(list(emb))
+                except Exception:
+                    vectors = None
                 return PromptContent(
                     system=None,
                     messages=[],
@@ -137,6 +191,7 @@ class LitellmProvider:
                     event_id="",
                     captured_at=now_iso,
                     input=request_kwargs.get("input"),
+                    embedding_output=vectors,
                 )
 
             resp_dict: dict[str, Any] = {}

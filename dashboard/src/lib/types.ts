@@ -321,6 +321,20 @@ export interface PolicyEntriesOrphaned {
   affected_policies: string[];
 }
 
+export interface ProviderMetadata {
+  ratelimit_remaining_tokens?: number;
+  ratelimit_remaining_requests?: number;
+  ratelimit_limit_tokens?: number;
+  processing_ms?: number;
+  request_id?: string;
+  model_info?: string;
+}
+
+export interface OutputDimensions {
+  count: number;
+  dimension: number;
+}
+
 export interface EventPayloadFields {
   // Phase 7 Step 2 (D148/D149): operator-actionable enrichment.
   // Schema acceptance only in this commit; renderers land in Step 6.
@@ -347,6 +361,15 @@ export interface EventPayloadFields {
   last_event_id?: string;
   policy_decision_at_attach?: PolicyDecisionBlock;
   policy_entries_orphaned?: PolicyEntriesOrphaned;
+
+  // LLM family operator-actionable enrichment.
+  estimated_via?: "tiktoken" | "heuristic" | "none";
+  provider_metadata?: ProviderMetadata;
+  policy_decision_pre?: PolicyDecisionBlock;
+  policy_decision_post?: PolicyDecisionBlock;
+  output_dimensions?: OutputDimensions;
+  retry_attempt?: number;
+  terminal?: boolean;
 
   directive_name?: string;
   directive_action?: string;

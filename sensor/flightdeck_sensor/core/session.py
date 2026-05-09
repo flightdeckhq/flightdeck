@@ -260,6 +260,16 @@ class Session:
         # it because they don't belong to any LLM call.
         self._current_call_event_id: str | None = None
 
+        # Per-(provider, request_id) retry counter for llm_error
+        # enrichment. Bounded LRU at 256 entries; eviction-on-overflow
+        # keeps memory bounded for long-lived sessions making millions
+        # of calls. The field's value is "did the retry chain finally
+        # give up" — a short-window question — so older entries don't
+        # matter.
+        from collections import OrderedDict as _OrderedDict
+
+        self._retry_counters: _OrderedDict[tuple[str, str], int] = _OrderedDict()
+
         # Lazy import to avoid circular dependency at module level.
         from flightdeck_sensor.transport.client import EventQueue as LocalEventQueue
 
@@ -374,6 +384,29 @@ class Session:
         ``payload.originating_event_id`` through."""
         with self._lock:
             return self._current_call_event_id
+
+    def record_retry_attempt(self, provider: str, request_id: str | None) -> int:
+        """Increment + return the retry counter for an llm_error.
+
+        Keyed by ``(provider, request_id)`` — the SDK's request_id is
+        unique per logical request and preserved across retries by
+        every major SDK we wrap. Returns 1 on the first emission for
+        a key, 2 on the second, and so on. When ``request_id`` is
+        ``None`` (provider didn't surface one) the counter is keyed
+        by ``(provider, "")`` and effectively counts unattributed
+        errors per-provider.
+
+        Bounded LRU at 256 entries; eviction-on-overflow keeps the
+        dict small in long-running sessions.
+        """
+        key = (provider or "", request_id or "")
+        with self._lock:
+            current = self._retry_counters.get(key, 0) + 1
+            self._retry_counters[key] = current
+            self._retry_counters.move_to_end(key)
+            while len(self._retry_counters) > 256:
+                self._retry_counters.popitem(last=False)
+            return current
 
     def record_framework(self, framework: str) -> None:
         """Record the framework if detected."""

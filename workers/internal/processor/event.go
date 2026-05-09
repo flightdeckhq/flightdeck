@@ -153,6 +153,35 @@ func BuildEventExtra(e consumer.EventPayload) ([]byte, error) {
 	if len(e.PolicyEntriesOrphaned) > 0 {
 		extra["policy_entries_orphaned"] = e.PolicyEntriesOrphaned
 	}
+	// LLM family enrichment passthrough (pre_call / post_call /
+	// embeddings / llm_error).
+	if e.EstimatedVia != "" {
+		extra["estimated_via"] = e.EstimatedVia
+	}
+	if len(e.ProviderMetadata) > 0 {
+		extra["provider_metadata"] = e.ProviderMetadata
+	}
+	if len(e.PolicyDecisionPre) > 0 {
+		var v interface{}
+		if err := json.Unmarshal(e.PolicyDecisionPre, &v); err == nil {
+			extra["policy_decision_pre"] = v
+		}
+	}
+	if len(e.PolicyDecisionPost) > 0 {
+		var v interface{}
+		if err := json.Unmarshal(e.PolicyDecisionPost, &v); err == nil {
+			extra["policy_decision_post"] = v
+		}
+	}
+	if len(e.OutputDimensions) > 0 {
+		extra["output_dimensions"] = e.OutputDimensions
+	}
+	if e.RetryAttempt != nil {
+		extra["retry_attempt"] = *e.RetryAttempt
+	}
+	if e.Terminal != nil {
+		extra["terminal"] = *e.Terminal
+	}
 	// Phase 5 MCP fields. Project unconditionally when the sensor sent
 	// them — only MCP_* events carry these on the wire. The dashboard's
 	// MCPEventDetails component reads them directly from events.payload.

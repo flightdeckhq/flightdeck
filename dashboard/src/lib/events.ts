@@ -253,10 +253,60 @@ export function getEventDetail(event: AgentEvent): string {
       }
       if (event.tokens_total != null) parts.push(`${event.tokens_total.toLocaleString()} tok`);
       if (event.latency_ms != null) parts.push(`${event.latency_ms}ms`);
+      // estimated_via chip: only surface when the estimator fell back
+      // off tiktoken — operationally interesting for post-call delta
+      // attribution. tiktoken paths stay quiet so the row isn't
+      // cluttered.
+      const via = event.payload?.estimated_via;
+      if (via && via !== "tiktoken") parts.push(`est:${via}`);
+      // policy_decision_post chip: surface when the cumulative usage
+      // crossed a threshold this call.
+      const pdp = event.payload?.policy_decision_post;
+      if (pdp) parts.push(`policy:${pdp.decision}`);
+      // Rate-limit pressure chip: <10% remaining tokens.
+      const pm = event.payload?.provider_metadata;
+      if (
+        pm?.ratelimit_remaining_tokens != null &&
+        pm?.ratelimit_limit_tokens != null &&
+        pm.ratelimit_remaining_tokens / pm.ratelimit_limit_tokens < 0.1
+      ) {
+        parts.push(`rate-limit ${pm.ratelimit_remaining_tokens.toLocaleString()} left`);
+      }
       return parts.join(" · ");
     }
-    case "pre_call":
-      return event.model ?? "unknown";
+    case "pre_call": {
+      const parts = [event.model ?? "unknown"];
+      const via = event.payload?.estimated_via;
+      if (via && via !== "tiktoken") parts.push(`est:${via}`);
+      const pdp = event.payload?.policy_decision_pre;
+      if (pdp) parts.push(`policy:${pdp.decision}`);
+      return parts.join(" · ");
+    }
+    case "embeddings": {
+      const parts = [event.model ?? "unknown"];
+      const dims = event.payload?.output_dimensions;
+      if (dims) parts.push(`${dims.dimension}-d × ${dims.count} vec`);
+      if (event.tokens_input != null) parts.push(`${event.tokens_input.toLocaleString()} tok in`);
+      if (event.latency_ms != null) parts.push(`${event.latency_ms}ms`);
+      const via = event.payload?.estimated_via;
+      if (via && via !== "tiktoken") parts.push(`est:${via}`);
+      return parts.join(" · ");
+    }
+    case "llm_error": {
+      const err = event.payload?.error;
+      const parts: string[] = [];
+      if (err && typeof err !== "string") {
+        parts.push(err.error_type);
+        if (err.provider_error_code) parts.push(err.provider_error_code);
+        else if (err.provider) parts.push(err.provider);
+      } else {
+        parts.push("llm error");
+      }
+      const attempt = event.payload?.retry_attempt;
+      if (attempt != null && attempt > 1) parts.push(`attempt ${attempt}`);
+      if (event.payload?.terminal) parts.push("terminal");
+      return parts.join(" · ");
+    }
     case "tool_call":
       return event.tool_name ?? "unknown tool";
     case "policy_warn": {
@@ -316,34 +366,6 @@ export function getEventDetail(event: AgentEvent): string {
       if (name) return name;
       if (status) return status;
       return "directive result";
-    }
-    case "embeddings": {
-      // Phase 4 polish: embeddings calls have only an input-token
-      // dimension (no completion tokens) so the row reads as
-      // "<model> · <N> tok in" -- distinct from post_call's
-      // "tokens_total" framing.
-      const parts = [event.model ?? "unknown"];
-      if (event.tokens_input != null) {
-        parts.push(`${event.tokens_input.toLocaleString()} tok in`);
-      }
-      if (event.latency_ms != null) parts.push(`${event.latency_ms}ms`);
-      return parts.join(" · ");
-    }
-    case "llm_error": {
-      // Phase 4 polish: surface the taxonomy classification +
-      // provider_error_code (or provider name as fallback) so an
-      // operator scanning the timeline sees what kind of error it
-      // was without expanding. Narrows ``payload.error`` against
-      // the directive_result string overload before reading any
-      // structured fields.
-      const err = event.payload?.error;
-      if (err && typeof err !== "string") {
-        const parts: string[] = [err.error_type];
-        if (err.provider_error_code) parts.push(err.provider_error_code);
-        else if (err.provider) parts.push(err.provider);
-        return parts.join(" · ");
-      }
-      return "llm error";
     }
     case "mcp_tool_call": {
       // Phase 5: ``<server> · <tool> · <duration>``. The server is

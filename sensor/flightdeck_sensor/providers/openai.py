@@ -56,27 +56,94 @@ class OpenAIProvider:
     def __init__(self, capture_prompts: bool = False) -> None:
         self._capture_prompts = capture_prompts
 
-    def estimate_tokens(self, request_kwargs: dict[str, Any]) -> int:
-        """Estimate input tokens using tiktoken if available, else char//4.
+    def estimate_tokens(self, request_kwargs: dict[str, Any]) -> tuple[int, str]:
+        """Estimate input tokens; returns ``(count, source)``.
 
-        tiktoken gives accurate counts for OpenAI models.  The character
-        heuristic is a conservative fallback.
+        Source is ``"tiktoken"`` for the tokeniser path, ``"heuristic"``
+        for the char/4 fallback, or ``"none"`` when extraction fails.
         """
         try:
             messages = request_kwargs.get("messages", [])
             model = request_kwargs.get("model", "")
 
-            # Try tiktoken first
             count = _try_tiktoken_count(messages, model)
             if count is not None:
-                return count
+                return count, "tiktoken"
 
-            # Fallback: character-based heuristic
             tools = request_kwargs.get("tools", [])
             text = str(messages) + str(tools)
-            return len(text) // _CHARS_PER_TOKEN_ESTIMATE
+            return len(text) // _CHARS_PER_TOKEN_ESTIMATE, "heuristic"
         except Exception:
-            return 0
+            return 0, "none"
+
+    def extract_response_metadata(self, response: Any) -> dict[str, Any] | None:
+        """Pull rate-limit headers + processing-ms from raw-response paths.
+
+        OpenAI surfaces these on ``response.headers`` for raw-response
+        wrappers (``with_raw_response``); the parsed-response path may
+        not. Best-effort: returns ``None`` when nothing useful is
+        reachable.
+        """
+        try:
+            obj = response
+            with contextlib.suppress(Exception):
+                if hasattr(obj, "parse") and callable(obj.parse):
+                    obj = obj.parse()
+            headers: Any = None
+            for attr in ("headers", "_headers", "response_headers"):
+                headers = getattr(response, attr, None) or getattr(obj, attr, None)
+                if headers:
+                    break
+            if not headers:
+                return None
+            getter = getattr(headers, "get", None)
+            if not callable(getter):
+                return None
+            mapping = {
+                "x-ratelimit-remaining-tokens": "ratelimit_remaining_tokens",
+                "x-ratelimit-remaining-requests": "ratelimit_remaining_requests",
+                "x-ratelimit-limit-tokens": "ratelimit_limit_tokens",
+                "openai-processing-ms": "processing_ms",
+                "x-request-id": "request_id",
+            }
+            out: dict[str, Any] = {}
+            for src, dst in mapping.items():
+                val = getter(src)
+                if val is None:
+                    continue
+                if dst.endswith(("_tokens", "_requests", "_ms")):
+                    try:
+                        out[dst] = int(val)
+                    except (ValueError, TypeError):
+                        out[dst] = val
+                else:
+                    out[dst] = val
+            return out or None
+        except Exception:
+            return None
+
+    def extract_output_dimensions(self, response: Any) -> dict[str, int] | None:
+        """For embeddings.create() responses: return ``{count, dimension}``."""
+        try:
+            obj = response
+            with contextlib.suppress(Exception):
+                if hasattr(obj, "parse") and callable(obj.parse):
+                    obj = obj.parse()
+            data = getattr(obj, "data", None) or (
+                obj.get("data") if isinstance(obj, dict) else None
+            )
+            if not data:
+                return None
+            count = len(data)
+            first = data[0]
+            embedding = getattr(first, "embedding", None) or (
+                first.get("embedding") if isinstance(first, dict) else None
+            )
+            if not embedding:
+                return None
+            return {"count": count, "dimension": len(embedding)}
+        except Exception:
+            return None
 
     def extract_usage(self, response: Any) -> TokenUsage:
         """Extract actual token counts from an OpenAI response.
@@ -171,13 +238,34 @@ class OpenAIProvider:
             model = request_kwargs.get("model", "")
 
             if event_type == EventType.EMBEDDINGS:
-                # Embedding response is an opaque vector array; per
-                # the Phase 4 polish V-pass decision, response stays
-                # an empty dict because vectors aren't useful in a
-                # "what did the model see" content panel and would
-                # bloat event_content rows. Token accounting lives
-                # on the event row's ``tokens_input`` field; no
-                # duplication needed.
+                # Capture both the input string/list and the raw
+                # vectors. ``capture_prompts`` is the single gate;
+                # operators get parity between "what did the model
+                # see" (input) and "what did it return" (vectors).
+                # The events.payload.output_dimensions field carries
+                # the {count, dimension} summary so the dashboard can
+                # render the shape chip without fetching this body.
+                vectors: list[list[float]] | None = None
+                try:
+                    obj = response
+                    with contextlib.suppress(Exception):
+                        if hasattr(obj, "parse") and callable(obj.parse):
+                            obj = obj.parse()
+                    data = getattr(obj, "data", None) or (
+                        obj.get("data") if isinstance(obj, dict) else None
+                    )
+                    if data:
+                        vectors = []
+                        for entry in data:
+                            emb = getattr(entry, "embedding", None) or (
+                                entry.get("embedding")
+                                if isinstance(entry, dict)
+                                else None
+                            )
+                            if emb is not None:
+                                vectors.append(list(emb))
+                except Exception:
+                    vectors = None
                 return PromptContent(
                     system=None,
                     messages=[],
@@ -189,6 +277,7 @@ class OpenAIProvider:
                     event_id="",
                     captured_at=now_iso,
                     input=request_kwargs.get("input"),
+                    embedding_output=vectors,
                 )
 
             resp_dict: dict[str, Any] = {}

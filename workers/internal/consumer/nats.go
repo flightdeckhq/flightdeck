@@ -284,6 +284,26 @@ type EventPayload struct {
 	LastEventID            string                 `json:"last_event_id,omitempty"`
 	PolicyDecisionAtAttach json.RawMessage        `json:"policy_decision_at_attach,omitempty"`
 	PolicyEntriesOrphaned  map[string]interface{} `json:"policy_entries_orphaned,omitempty"`
+
+	// LLM family operator-actionable enrichment.
+	//   * EstimatedVia: tiktoken / heuristic / none — pre_call,
+	//     post_call, embeddings.
+	//   * ProviderMetadata: rate-limit headers + request id +
+	//     processing-ms — post_call, embeddings.
+	//   * PolicyDecisionPre: shared block on pre_call when the
+	//     pre-call check decision is non-allow.
+	//   * PolicyDecisionPost: shared block on post_call /
+	//     embeddings when the cumulative usage crossed a threshold
+	//     the pre-call check didn't catch.
+	//   * OutputDimensions: {count, dimension} on embeddings.
+	//   * RetryAttempt + Terminal: llm_error retry-chain context.
+	EstimatedVia       string                 `json:"estimated_via,omitempty"`
+	ProviderMetadata   map[string]interface{} `json:"provider_metadata,omitempty"`
+	PolicyDecisionPre  json.RawMessage        `json:"policy_decision_pre,omitempty"`
+	PolicyDecisionPost json.RawMessage        `json:"policy_decision_post,omitempty"`
+	OutputDimensions   map[string]int         `json:"output_dimensions,omitempty"`
+	RetryAttempt       *int                   `json:"retry_attempt,omitempty"`
+	Terminal           *bool                  `json:"terminal,omitempty"`
 }
 
 // SubagentMessageBody is the framework-supplied body of a single

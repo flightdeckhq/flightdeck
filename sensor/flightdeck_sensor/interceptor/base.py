@@ -69,8 +69,8 @@ def call(
     4. On provider exception, emit a structured LLM_ERROR event via the
        Phase 4 taxonomy and re-raise.
     """
-    estimated = provider.estimate_tokens(kwargs)
-    call_kwargs = _pre_call(session, provider, kwargs, estimated)
+    estimated, estimated_via = provider.estimate_tokens(kwargs)
+    call_kwargs = _pre_call(session, provider, kwargs, estimated, estimated_via)
 
     t0 = time.monotonic()
     try:
@@ -94,6 +94,7 @@ def call(
         latency_ms,
         call_kwargs,
         event_type=event_type,
+        estimated_via=estimated_via,
     )
     return response
 
@@ -112,8 +113,8 @@ async def call_async(
     event_type: EventType = EventType.POST_CALL,
 ) -> Any:
     """Asynchronous call intercept -- same logic as :func:`call`, awaited."""
-    estimated = provider.estimate_tokens(kwargs)
-    call_kwargs = _pre_call(session, provider, kwargs, estimated)
+    estimated, estimated_via = provider.estimate_tokens(kwargs)
+    call_kwargs = _pre_call(session, provider, kwargs, estimated, estimated_via)
 
     t0 = time.monotonic()
     try:
@@ -134,6 +135,7 @@ async def call_async(
         latency_ms,
         call_kwargs,
         event_type=event_type,
+        estimated_via=estimated_via,
     )
     return response
 
@@ -154,9 +156,11 @@ def call_stream(
     Pre-call policy check runs *before* the context manager is returned.
     Token reconciliation runs on ``__exit__`` (including early exit).
     """
-    estimated = provider.estimate_tokens(kwargs)
-    call_kwargs = _pre_call(session, provider, kwargs, estimated)
-    return GuardedStream(real_fn, call_kwargs, session, provider, estimated)
+    estimated, estimated_via = provider.estimate_tokens(kwargs)
+    call_kwargs = _pre_call(session, provider, kwargs, estimated, estimated_via)
+    return GuardedStream(
+        real_fn, call_kwargs, session, provider, estimated, estimated_via,
+    )
 
 
 def call_stream_async(
@@ -173,9 +177,11 @@ def call_stream_async(
     still runs synchronously before the context is returned so BLOCK is
     honoured before the first network byte.
     """
-    estimated = provider.estimate_tokens(kwargs)
-    call_kwargs = _pre_call(session, provider, kwargs, estimated)
-    return GuardedAsyncStream(real_fn, call_kwargs, session, provider, estimated)
+    estimated, estimated_via = provider.estimate_tokens(kwargs)
+    call_kwargs = _pre_call(session, provider, kwargs, estimated, estimated_via)
+    return GuardedAsyncStream(
+        real_fn, call_kwargs, session, provider, estimated, estimated_via,
+    )
 
 
 class GuardedStream:
@@ -223,12 +229,14 @@ class GuardedStream:
         session: Session,
         provider: Provider,
         estimated: int,
+        estimated_via: str = "none",
     ) -> None:
         self._real_fn = real_fn
         self._kwargs = kwargs
         self._session = session
         self._provider = provider
         self._estimated = estimated
+        self._estimated_via = estimated_via
         self._stream: Any = None
         self._ctx: Any = None
         self._t0: float = 0.0
@@ -333,6 +341,7 @@ class GuardedStream:
                 latency_ms,
                 self._kwargs,
                 streaming=streaming,
+                estimated_via=self._estimated_via,
             )
         except Exception:
             _log.warning(
@@ -482,12 +491,14 @@ class GuardedAsyncStream:
         session: Session,
         provider: Provider,
         estimated: int,
+        estimated_via: str = "none",
     ) -> None:
         self._real_fn = real_fn
         self._kwargs = kwargs
         self._session = session
         self._provider = provider
         self._estimated = estimated
+        self._estimated_via = estimated_via
         self._stream: Any = None
         self._ctx: Any = None
         self._t0: float = 0.0
@@ -587,6 +598,7 @@ class GuardedAsyncStream:
                 latency_ms,
                 self._kwargs,
                 streaming=streaming,
+                estimated_via=self._estimated_via,
             )
         except Exception:
             _log.warning(
@@ -654,6 +666,7 @@ def _pre_call(
     provider: Provider,
     kwargs: dict[str, Any],
     estimated: int,
+    estimated_via: str = "none",
 ) -> dict[str, Any]:
     """Run policy check and return (possibly modified) kwargs.
 
@@ -683,6 +696,71 @@ def _pre_call(
 
     result = session.policy.check(session.tokens_used, estimated)
     decision = result.decision
+
+    # Build the pre_call decision summary so it can ride on the
+    # pre_call event. Omitted on the allow case (the vast majority).
+    pre_call_decision: PolicyDecisionSummary | None = None
+    if decision == PolicyDecision.BLOCK:
+        block_pct = session.policy.block_at_pct
+        pre_call_decision = PolicyDecisionSummary(
+            policy_id=result.policy_id or "",
+            scope=result.matched_policy_scope or "",
+            decision="block",
+            reason=(
+                f"Pre-call check: {session.tokens_used + estimated}/"
+                f"{session.policy.token_limit} would cross block "
+                f"threshold ({block_pct}%, server policy)"
+            ),
+        )
+    elif decision == PolicyDecision.WARN:
+        warn_source = result.source or "server"
+        local_warn = warn_source == "local"
+        if local_warn:
+            warn_threshold_pct = int(session.policy.local_warn_at * 100)
+            warn_token_limit = session.policy.local_limit
+        else:
+            warn_threshold_pct = session.policy.warn_at_pct or 0
+            warn_token_limit = session.policy.token_limit
+        pre_call_decision = PolicyDecisionSummary(
+            policy_id=result.policy_id or ("local" if local_warn else ""),
+            scope=result.matched_policy_scope
+            or ("local_failsafe" if local_warn else ""),
+            decision="warn",
+            reason=(
+                f"Pre-call check: {session.tokens_used + estimated}/"
+                f"{warn_token_limit} would cross warn threshold "
+                f"({warn_threshold_pct}%, {warn_source} policy)"
+            ),
+        )
+    elif decision == PolicyDecision.DEGRADE:
+        pre_call_decision = PolicyDecisionSummary(
+            policy_id=result.policy_id or "",
+            scope=result.matched_policy_scope or "",
+            decision="degrade",
+            reason=(
+                f"Pre-call check: degrade-to-{session.policy.degrade_to} "
+                f"applied (per active directive)"
+            ),
+        )
+
+    # Emit a pre_call event carrying the agent's intent + estimator
+    # attribution + decision summary. Always emitted (including before
+    # BLOCK) so the agent's intent is recorded even when the call is
+    # rejected — matches the plugin's pre_call posture.
+    pre_call_extras: dict[str, Any] = {
+        "tokens_input": estimated,
+        "estimated_via": estimated_via,
+    }
+    try:
+        pre_model = provider.get_model(kwargs)
+    except Exception:
+        pre_model = ""
+    if pre_model:
+        pre_call_extras["model"] = pre_model
+    if pre_call_decision is not None:
+        pre_call_extras["policy_decision_pre"] = pre_call_decision.as_payload_dict()
+    pre_call_payload = session._build_payload(EventType.PRE_CALL, **pre_call_extras)
+    session.event_queue.enqueue(pre_call_payload)
 
     if decision == PolicyDecision.BLOCK:
         # POLICY_BLOCK: source hardcoded ``"server"`` per D035 — local
@@ -799,6 +877,7 @@ def _post_call(
     *,
     event_type: EventType = EventType.POST_CALL,
     streaming: dict[str, Any] | None = None,
+    estimated_via: str = "none",
 ) -> None:
     """Extract actual usage, reconcile with estimate, post event.
 
@@ -859,10 +938,15 @@ def _post_call(
                 "session_id": pc.session_id,
                 "event_id": pc.event_id,
                 "captured_at": pc.captured_at,
-                # Phase 4 polish: ``input`` is populated only on
-                # embeddings events; chat events leave it None and
-                # the field drops via the dashboard's optional read.
+                # ``input`` is populated only on embeddings events;
+                # chat events leave it None and the field drops via
+                # the dashboard's optional read.
                 "input": pc.input,
+                # ``embedding_output`` carries the raw vectors from
+                # embeddings.create() responses when capture_prompts
+                # is on. None on chat events. Worker projects to
+                # event_content.embedding_output.
+                "embedding_output": pc.embedding_output,
             }
 
     # Atomically increment the session token counter and capture the
@@ -897,13 +981,61 @@ def _post_call(
         payload["content"] = content_dict
     if streaming is not None:
         payload["streaming"] = streaming
-    # Phase 7 Step 2 (D149): the post_call event is the canonical
-    # originator for the call window. Tool_call events emitted from
-    # response parsing below + any MCP traffic the agent does between
-    # this post_call and the next pre_call will reference this id via
-    # _build_payload's chain stamp. Embeddings calls don't open a
-    # window — they're standalone — so we only set the chain id on
-    # POST_CALL emissions.
+
+    # provider_metadata: rate-limit headers, request id, processing
+    # time. Always-included when the provider exposes any of them so
+    # the dashboard's rate-limit-pressure chip renders without a
+    # separate header export.
+    try:
+        prov_meta = provider.extract_response_metadata(response)
+    except Exception:
+        prov_meta = None
+    if prov_meta:
+        payload["provider_metadata"] = prov_meta
+
+    # estimated_via attribution lets a large post-call delta be
+    # attributed to estimator quality (heuristic fallback).
+    if estimated_via:
+        payload["estimated_via"] = estimated_via
+
+    # policy_decision_post: fires when this call's cumulative usage
+    # crossed a threshold the pre-call check didn't catch. Inline
+    # declaration on post_call / embeddings so the dashboard's row
+    # renderer doesn't have to join sibling policy_warn /
+    # policy_block events. Omitted when no crossing.
+    try:
+        post_result = session.policy.check(session_total, 0)
+        if post_result.decision in (PolicyDecision.WARN, PolicyDecision.BLOCK):
+            decision_str = (
+                "warn" if post_result.decision == PolicyDecision.WARN else "block"
+            )
+            post_source = post_result.source or "server"
+            local = post_source == "local"
+            post_decision = PolicyDecisionSummary(
+                policy_id=post_result.policy_id or ("local" if local else ""),
+                scope=post_result.matched_policy_scope
+                or ("local_failsafe" if local else ""),
+                decision=decision_str,
+                reason=(
+                    f"Post-call cumulative usage crossed {decision_str} "
+                    f"threshold ({post_source} policy) on this call's tokens"
+                ),
+            )
+            payload["policy_decision_post"] = post_decision.as_payload_dict()
+    except Exception:
+        _log.debug("policy_decision_post evaluation failed", exc_info=True)
+
+    # output_dimensions on embeddings: small + observable summary so
+    # the dashboard renders the shape chip without fetching
+    # event_content.
+    if event_type == EventType.EMBEDDINGS:
+        try:
+            dims = provider.extract_output_dimensions(response)
+        except Exception:
+            dims = None
+        if dims:
+            payload["output_dimensions"] = dims
+
     if event_type == EventType.POST_CALL:
         session.set_current_call_event_id(payload["id"])
     session.event_queue.enqueue(payload)
@@ -1009,12 +1141,27 @@ def _emit_error(
         if partial is not None:
             error_payload.update(partial)
 
+        # Per-(provider, request_id) retry counter — bounded LRU on
+        # Session — answers "did the retry chain finally give up".
+        # terminal is best-effort: an error is terminal when the
+        # classifier marks it non-retryable. The alternative
+        # (lookback to confirm caller actually retried) needs cross-
+        # event correlation that adds latency to the hot path; the
+        # classifier-driven heuristic is correct for the vast
+        # majority of real retry chains.
+        provider_name = error_payload.get("provider") or getattr(provider, "name", "")
+        request_id = error_payload.get("request_id")
+        retry_attempt = session.record_retry_attempt(provider_name, request_id)
+        terminal = not bool(error_payload.get("is_retryable", False))
+
         payload = session._build_payload(
             EventType.LLM_ERROR,
             model=model,
             latency_ms=latency_ms,
         )
         payload["error"] = error_payload
+        payload["retry_attempt"] = retry_attempt
+        payload["terminal"] = terminal
         session.event_queue.enqueue(payload)
     except Exception:
         _log.warning("Failed to emit llm_error event", exc_info=True)

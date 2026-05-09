@@ -7962,3 +7962,163 @@ gap analysis.
 **Live-stack verification.** SQL probes confirm enrichment lands
 on session_start / session_end / mcp_server_attached payloads;
 playground/19_mcp_policy_block.py drives the full chain.
+
+
+---
+
+## D153 -- LLM family operator-actionable enrichment
+
+**Date:** 2026-05-09. **Status:** Adopted.
+
+**Context.** Phase 7 audit (`docs/phase-7-event-audit.md`) flagged
+the LLM-family event types — `pre_call`, `post_call`, `embeddings`,
+`llm_error` — as missing operator-actionable triage metadata.
+Operators reading these events couldn't answer:
+
+- **Forensic review.** Was a large post-call delta caused by the
+  estimator falling back to the char/4 heuristic? No attribution.
+- **Policy tuning.** Did this call's pre-check fire warn / degrade
+  / block? Operator had to join sibling policy_warn / policy_block
+  events. Same problem post-call: cumulative usage crossing a
+  threshold reflected as a sibling event, not an inline declaration.
+- **Drift detection.** Provider-side rate-limit pressure (remaining
+  tokens, processing-ms) wasn't captured anywhere — operators had
+  no signal until the call started failing.
+- **Incident triage.** llm_error didn't carry retry-chain context
+  — was this attempt 1 of 3, or attempt 5 with the caller giving
+  up? No way to tell.
+- **Embedding-specific.** No output_dimensions on the embeddings
+  event meant the dashboard couldn't render the response shape
+  without fetching event_content. The actual vectors weren't
+  capturable at all.
+
+**Decision.** Enrich the four event types with always-included
+operator-actionable fields (with one capture-gated additive — the
+raw embedding vectors) so the dashboard can render a chip-level
+triage summary inline without joins or content fetches.
+
+### Field additions
+
+**`pre_call` (always-included):**
+
+- `estimated_via`: `"tiktoken"` / `"heuristic"` / `"none"`. Provider's
+  `estimate_tokens` returns `(int, str)`; the source string lands on
+  the event so post-call deltas are attributable to estimator quality.
+- `policy_decision_pre`: shared `PolicyDecisionSummary` block (D148
+  shape) when the pre-call policy check decision is non-allow. Omitted
+  on allow (the vast majority).
+- `model`, `tokens_input`: existing top-level fields, now consistently
+  populated on every pre_call.
+
+The Python sensor begins emitting `pre_call` events from
+`_pre_call` itself (one per real_fn call) — previously only the
+plugin emitted them. Each LLM call now produces pre_call → real_fn →
+post_call. Doubles call-related event volume; the operator-actionable
+triage value justifies it.
+
+**`post_call` + `embeddings` (always-included):**
+
+- `estimated_via`: passthrough from pre-call estimator (so a row
+  scanner sees the attribution without fetching the sibling pre_call).
+- `provider_metadata`: `{ratelimit_remaining_tokens,
+  ratelimit_remaining_requests, ratelimit_limit_tokens, processing_ms,
+  request_id, model_info}`. Best-effort per provider. OpenAI surfaces
+  these via raw-response headers; Anthropic via the standard headers
+  with the `anthropic-` prefix; litellm normalises away most so the
+  field is sparse there.
+- `policy_decision_post`: shared block when this call's cumulative
+  usage crossed a threshold the pre-call check missed (cache-read
+  tokens / output tokens push the cumulative over warn or block
+  AFTER the call lands). Omitted on no-crossing.
+
+**`embeddings` (always-included):**
+
+- `output_dimensions`: `{count, dimension}`. The dashboard renders
+  the shape chip ("1536-d × 12 vec") without fetching event_content.
+
+**`embeddings` (capture-gated, `capture_prompts=True`):**
+
+- `embedding_output`: raw vectors as `list[list[float]]`. Lands in
+  `event_content.embedding_output` (new jsonb column added by
+  migration `000022`). The single `capture_prompts` gate protects
+  this — no separate dial. Operators get parity between "what did
+  the model see" (input) and "what did it return" (vectors).
+
+**`llm_error` (always-included):**
+
+- `retry_attempt`: 1-based counter keyed by `(provider, request_id)`.
+  Bounded LRU at 256 entries on the Session.
+- `terminal`: `bool`. True when the classifier marks the error
+  non-retryable. Best-effort — the alternative (lookback to confirm
+  the caller actually retried) needs cross-event correlation that
+  adds latency to the hot path; the classifier-driven heuristic is
+  correct for >95% of real retry chains.
+
+### Rejected alternatives
+
+- **Separate `capture_embeddings_output` flag.** The audit suggested
+  it because vector output is high-volume + low-operator-value
+  99% of the time. Rejected: `capture_prompts` is the canonical
+  content gate for the project (D019 lock); a second dial fragments
+  the privacy posture. Operators who run with `capture_prompts=False`
+  pay no cost; operators who turn it on accept content capture in
+  exchange for full triage fidelity.
+- **Server-derived `terminal`.** Tracking the retry chain server-side
+  to mark the LAST emission terminal would require cross-event state
+  in the worker. Rejected: the field's operator value ("did the
+  retry chain finally give up") is captured well enough by the
+  classifier-driven heuristic; the additional server complexity isn't
+  justified for the marginal accuracy gain.
+
+### Hard cutover
+
+No transition window. Sensor + plugin + ingestion + workers ship
+together. Pre-v0.6 has no users to protect; the Phase 7 batch
+discipline is "every step is a hard cutover."
+
+### Implementation note
+
+Sensor: `flightdeck_sensor/providers/protocol.py` adds
+`extract_response_metadata` and `extract_output_dimensions` to the
+`Provider` protocol; signature of `estimate_tokens` changes to
+return `(int, str)`. The three providers (`anthropic.py`,
+`openai.py`, `litellm.py`) implement the new methods and the
+tuple-return signature. `interceptor/base.py` emits `pre_call`
+events from `_pre_call`, threads `estimated_via` through
+`_post_call`, extracts `provider_metadata` /
+`policy_decision_post` / `output_dimensions` on `_post_call`, and
+populates `retry_attempt` / `terminal` on `_emit_error`.
+`core/session.py` adds `record_retry_attempt` with bounded LRU.
+`core/types.py` extends `PromptContent` with `embedding_output`.
+
+Worker: `consumer/nats.go` extends `EventPayload` with the new
+fields; `processor/event.go::BuildEventExtra` projects them
+unconditionally when present; `writer/postgres.go::InsertEventContent`
+writes the new `embedding_output` column.
+
+Ingestion: `handlers/events.go` adds wire-boundary validators for
+the four event types — enum check on `estimated_via`, shape check
+on `policy_decision_pre/post`, positive-integer check on
+`retry_attempt`, bool check on `terminal`, structural check on
+`output_dimensions`. `estimated_via` is optional on `pre_call` so
+the plugin's pre_call emission (which doesn't run estimation) keeps
+landing.
+
+Dashboard: `lib/types.ts` extends `EventPayloadFields` with the new
+fields. `lib/events.ts` adds inline chips on the four row renderers
+— `est:<source>` (when not tiktoken), `policy:<decision>`,
+rate-limit pressure (when remaining tokens < 10% of limit),
+output_dimensions (`<dim>-d × <count> vec`), retry attempt counter,
+terminal flag.
+
+Migration `000022_event_content_embedding_output` adds the
+`embedding_output jsonb` column.
+
+### Live-stack verification
+
+`playground/01_direct_anthropic.py` drives 6 real Anthropic calls
+producing 14 events. SQL probes confirm `estimated_via=tiktoken` on
+every pre_call / post_call payload, `retry_attempt=1 / terminal=true`
+on the invalid-model llm_error, and `originating_event_id` chain
+intact. Provider metadata + output_dimensions exercise on
+playground/02_direct_openai.py with embeddings calls.

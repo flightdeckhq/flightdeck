@@ -1550,6 +1550,7 @@ CREATE TABLE event_content (
     "input" JSONB, -- embeddings input (string or list of strings)
     tool_input  JSONB,                 -- tool args / prompt arguments
     tool_output JSONB,                 -- tool results / rendered prompts
+    embedding_output JSONB,            -- embeddings vectors (capture_prompts gate)
     captured_at TIMESTAMPTZ NOT NULL DEFAULT NOW
 );
 
@@ -1571,6 +1572,7 @@ never carries content inline.
 | `input` | NULL | embeddings input | NULL | NULL | NULL | NULL |
 | `tool_input` | NULL | NULL | tool args | prompt args | tool input | NULL |
 | `tool_output` | NULL | NULL | tool result | rendered messages | tool output (post-hoc) | NULL |
+| `embedding_output` | NULL | output vectors | NULL | NULL | NULL | NULL |
 
 `tool_input` / `tool_output` are dedicated columns for
 tool-style request/response capture. Operators querying
@@ -2416,16 +2418,39 @@ Operator-actionable enrichment:
 
 ### `pre_call`
 
-Optional pre-call event emitted before the LLM request goes out. Carries
-the estimated token count for budget-tracking observability. Many
-sensor configurations omit this and rely on `post_call` only.
+Pre-call event emitted before the LLM request goes out. The Python
+sensor emits one per real_fn call from `_pre_call`; the Claude Code
+plugin emits one per `UserPromptSubmit` hook fire. Carries:
+
+- `model`, `tokens_input`: the model the caller asked for and the
+  pre-call estimate.
+- `estimated_via`: `"tiktoken"` / `"heuristic"` / `"none"` —
+  attributes the estimate's source. Sensor populates unconditionally;
+  the plugin path doesn't run estimation and omits the field.
+- `policy_decision_pre`: shared `policy_decision` block when the
+  pre-call policy check decision is non-allow (warn / degrade /
+  block). Omitted on allow.
 
 ### `post_call`
 
 The primary LLM-call event. Carries `tokens_input`, `tokens_output`,
 `tokens_total`, `tokens_cache_read`, `tokens_cache_creation`,
-`latency_ms`, `model`, and `framework`. When `stream=true` on the
-underlying request, the payload also carries:
+`latency_ms`, `model`, and `framework`. Operator-actionable
+enrichment additionally carries:
+
+- `estimated_via`: passthrough from the pre-call estimator so a row
+  scanner sees the attribution without fetching the sibling pre_call.
+- `provider_metadata`: `{ratelimit_remaining_tokens,
+  ratelimit_remaining_requests, ratelimit_limit_tokens,
+  processing_ms, request_id, model_info}`. Best-effort per provider
+  (raw-response paths surface more headers; parsed-response paths
+  may surface none). Field names are normalised across providers.
+- `policy_decision_post`: shared `policy_decision` block when this
+  call's cumulative usage crossed a threshold the pre-call check
+  didn't catch (cache-read tokens / output tokens push the cumulative
+  over warn or block AFTER the call lands). Omitted on no-crossing.
+
+When `stream=true` on the underlying request, the payload also carries:
 
 ```json
 "streaming": {
@@ -2456,10 +2481,22 @@ Emitted by `client.embeddings.create` (OpenAI), `litellm.embedding` /
 transitively. Anthropic has no native embeddings API; routing through
 litellm → Voyage is the supported path.
 
-Token accounting carries input tokens only (`tokens_output=0`). When
-`capture_prompts=true`, `payload.content.input` carries the request's
-`input` parameter (string or list of strings) which round-trips into
-`event_content.input`.
+Token accounting carries input tokens only (`tokens_output=0`).
+The `estimated_via` / `provider_metadata` / `policy_decision_post`
+fields described under `post_call` apply here too. Embeddings adds:
+
+- `output_dimensions`: `{count, dimension}` — small + observable
+  summary so the dashboard renders the shape chip
+  (`<dim>-d × <count> vec`) without fetching `event_content`.
+
+When `capture_prompts=true`:
+
+- `payload.content.input` carries the request's `input` parameter
+  (string or list of strings) — round-trips into `event_content.input`.
+- `payload.content.embedding_output` carries the raw vectors as
+  `list[list[float]]` — round-trips into
+  `event_content.embedding_output`. The single `capture_prompts` gate
+  protects this; there is no separate dial.
 
 ### `llm_error`
 
@@ -2486,6 +2523,16 @@ Plus `provider`, `http_status`, `provider_error_code`, `request_id`,
 `retry_after`, `is_retryable`. Mid-stream aborts emit
 `error_type=stream_error` with `partial_chunks` and `partial_tokens_*`
 so token accounting reflects work done before the failure.
+
+Operator-actionable retry-chain context:
+
+- `retry_attempt`: 1-based counter keyed by `(provider, request_id)`
+  on the Session's bounded LRU. Increments on every emission for
+  the same key.
+- `terminal`: bool. `True` when the classifier marks the error
+  non-retryable (best-effort signal for "did the retry chain
+  finally give up"). `False` for transient classes the caller is
+  expected to retry.
 
 ### Shared `policy_decision` payload block
 

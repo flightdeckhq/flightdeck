@@ -393,15 +393,16 @@ func (w *Writer) InsertEvent(
 func (w *Writer) InsertEventContent(ctx context.Context, eventID, sessionID string, content json.RawMessage) error {
 	// Parse the content JSON to extract fields
 	var c struct {
-		Provider     string          `json:"provider"`
-		Model        string          `json:"model"`
-		SystemPrompt *string         `json:"system"`
-		Messages     json.RawMessage `json:"messages"`
-		Tools        json.RawMessage `json:"tools"`
-		Response     json.RawMessage `json:"response"`
-		Input        json.RawMessage `json:"input"`
-		ToolInput    json.RawMessage `json:"tool_input"`
-		ToolOutput   json.RawMessage `json:"tool_output"`
+		Provider        string          `json:"provider"`
+		Model           string          `json:"model"`
+		SystemPrompt    *string         `json:"system"`
+		Messages        json.RawMessage `json:"messages"`
+		Tools           json.RawMessage `json:"tools"`
+		Response        json.RawMessage `json:"response"`
+		Input           json.RawMessage `json:"input"`
+		ToolInput       json.RawMessage `json:"tool_input"`
+		ToolOutput      json.RawMessage `json:"tool_output"`
+		EmbeddingOutput json.RawMessage `json:"embedding_output"`
 	}
 	if err := json.Unmarshal(content, &c); err != nil {
 		return fmt.Errorf("parse event content: %w", err)
@@ -414,10 +415,10 @@ func (w *Writer) InsertEventContent(ctx context.Context, eventID, sessionID stri
 		c.Messages = json.RawMessage("[]")
 	}
 	_, err := w.pool.Exec(ctx, `
-		INSERT INTO event_content (event_id, session_id, provider, model, system_prompt, messages, tools, response, input, tool_input, tool_output)
-		VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		INSERT INTO event_content (event_id, session_id, provider, model, system_prompt, messages, tools, response, input, tool_input, tool_output, embedding_output)
+		VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 		ON CONFLICT (event_id) DO NOTHING
-	`, eventID, sessionID, c.Provider, c.Model, c.SystemPrompt, c.Messages, c.Tools, c.Response, c.Input, c.ToolInput, c.ToolOutput)
+	`, eventID, sessionID, c.Provider, c.Model, c.SystemPrompt, c.Messages, c.Tools, c.Response, c.Input, c.ToolInput, c.ToolOutput, c.EmbeddingOutput)
 	if err != nil {
 		return fmt.Errorf("insert event content: %w", err)
 	}

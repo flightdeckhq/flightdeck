@@ -8,7 +8,6 @@ non-session_start event. Requires `make dev` to be running.
 from __future__ import annotations
 
 import subprocess
-import time
 import uuid
 
 from .conftest import (
@@ -279,15 +278,16 @@ def test_reconciler_lost_threshold_is_30_min() -> None:
 
 
 def test_orphan_timeout_reaper_closes_lost_session() -> None:
-    """Lost sessions silent past FLIGHTDECK_ORPHAN_TIMEOUT_HOURS get
-    reaped: state flips to closed, ended_at is stamped, and a synthetic
+    """Lost sessions silent past the configured orphan timeout
+    (env ``FLIGHTDECK_ORPHAN_TIMEOUT_HOURS``, default 24h) get reaped:
+    state flips to closed, ended_at is stamped, and a synthetic
     session_end event with payload.close_reason='orphan_timeout' lands
     so the dashboard's CloseReason facet surfaces the reconciler's
     verdict alongside happy-path shutdowns.
 
-    Default timeout is 24h. Backdates last_seen_at by 25 hours and
-    forces state='lost' so the next reconciler tick (every 60s) reaps
-    in a single pass, then asserts the row update + the synthetic event.
+    Backdates last_seen_at by 25 hours (past the default 24h timeout)
+    and forces state='lost' so the next reconciler tick reaps in a
+    single pass, then asserts the row update + the synthetic event.
     """
     sid = str(uuid.uuid4())
     flavor = f"test-orphan-reap-{uuid.uuid4().hex[:6]}"
@@ -316,18 +316,21 @@ def test_orphan_timeout_reaper_closes_lost_session() -> None:
         f"WHERE session_id = '{sid}'::uuid AND event_type = 'session_end'"
     )
     reasons = [line.strip() for line in raw.splitlines() if line.strip()]
-    assert "orphan_timeout" in reasons, (
-        f"reaper should emit synthetic session_end with "
+    # Tighter than `in`: the synthetic session_end should be the only
+    # session_end on this row. A second one would indicate the reaper
+    # double-fired or a duplicate path raced the reconciler.
+    assert reasons == ["orphan_timeout"], (
+        f"reaper should emit exactly one synthetic session_end with "
         f"close_reason='orphan_timeout' on {sid}; saw {reasons!r}"
     )
 
 
 def test_orphan_timeout_reaper_does_not_close_recent_lost_session() -> None:
     """A session in state='lost' but with last_seen_at *inside* the
-    timeout window must NOT be reaped. Guards against the reaper firing
-    on every lost row regardless of age (which would defeat the
-    purpose of the threshold and prematurely close legitimately-paused
-    sessions).
+    ``FLIGHTDECK_ORPHAN_TIMEOUT_HOURS`` window (default 24h) must NOT
+    be reaped. Guards against the reaper firing on every lost row
+    regardless of age (which would defeat the purpose of the threshold
+    and prematurely close legitimately-paused sessions).
     """
     sid = str(uuid.uuid4())
     flavor = f"test-orphan-noreap-{uuid.uuid4().hex[:6]}"
@@ -344,9 +347,30 @@ def test_orphan_timeout_reaper_does_not_close_recent_lost_session() -> None:
         f"WHERE session_id = '{sid}'::uuid"
     )
 
-    # Wait long enough for at least one reconciler tick (60s) plus
-    # padding. If the reaper is going to wrongly fire, it fires here.
-    time.sleep(75)
+    # Negative wait: poll for the wrong-firing condition (state flipped
+    # to 'closed') with a 75s budget — long enough for at least one
+    # reconciler tick (every 60s). If the reaper is going to wrongly
+    # fire, it fires inside this window. Using wait_until rather than
+    # bare time.sleep keeps the polling cadence visible and aligns
+    # with the conftest convention (see tests/shared/fixtures.py).
+    def _reaper_wrongly_fired() -> bool:
+        return _read_session_row(sid)["state"] == "closed"
+
+    try:
+        wait_until(
+            _reaper_wrongly_fired,
+            timeout=75,
+            interval=5,
+            msg="reaper should NOT fire inside the timeout window",
+        )
+    except TimeoutError:
+        # Expected: the reaper correctly stayed its hand.
+        pass
+    else:
+        raise AssertionError(
+            f"reaper wrongly closed recent lost session {sid} inside "
+            f"the FLIGHTDECK_ORPHAN_TIMEOUT_HOURS window"
+        )
 
     row = _read_session_row(sid)
     assert row["state"] == "lost", (
@@ -359,9 +383,12 @@ def test_orphan_timeout_reaper_does_not_close_recent_lost_session() -> None:
         "AND event_type = 'session_end' "
         "AND payload->>'close_reason' = 'orphan_timeout'"
     )
-    assert raw == "0", (
+    # psql -tA strips alignment but cast through int() so a future
+    # whitespace change in psql output doesn't masquerade as a "0
+    # rows" pass.
+    assert int(raw.strip()) == 0, (
         f"reaper wrongly emitted orphan_timeout session_end for {sid}; "
-        f"expected 0 rows, got {raw}"
+        f"expected 0 rows, got {raw!r}"
     )
 
 

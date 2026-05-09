@@ -2474,8 +2474,9 @@ Operator-actionable enrichment:
   `session_end` event with `payload.close_reason="orphan_timeout"`
   and bumps `sessions_closed_total{reason="orphan_timeout"}` so the
   facet aggregate and `/metrics` endpoint reflect the verdict.
-  `sigkill_detected` is reserved for a future dedicated reaper.
-  `unknown` is the catch-all when no path resolves.
+  `sigkill_detected` is part of the locked enum but no path
+  populates it today. `unknown` is the catch-all when no path
+  resolves.
 - `policy_actions_summary` (worker-computed): tally of every
   policy enforcement event for the session, per the events table
   GROUP BY query. Shape: `{policy_warn: N, policy_degrade: N,
@@ -3783,6 +3784,12 @@ Ingestion API and Workers expose Prometheus exposition at `/metrics`:
 
 - `dropped_events_total{reason}` — orphan session_end, validation
   failure, NATS publish failure, etc.
+- `sessions_closed_total{reason}` — non-event close paths the
+  worker performs directly (today: `orphan_timeout` via the
+  reaper). The dashboard's close-reason facet still reads from
+  `events.payload->>'close_reason'`; this counter is the time-
+  series shape for the same verdict so SREs can chart non-clean-
+  shutdown rate without aggregating per-event payloads.
 - `events_received_total{event_type}`
 - `events_processed_total{event_type, status}`
 - `event_processing_duration_seconds` (histogram, per event_type)

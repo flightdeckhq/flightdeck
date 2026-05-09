@@ -546,9 +546,7 @@ func (sp *SessionProcessor) StartReconciler(
 				continue
 			}
 			if reaped > 0 {
-				for i := 0; i < reaped; i++ {
-					metrics.IncrSessionClosed(metrics.CloseReasonOrphanTimeout)
-				}
+				metrics.IncrSessionClosedN(metrics.CloseReasonOrphanTimeout, uint64(reaped))
 				slog.Info("reaped orphaned sessions",
 					"count", reaped,
 					"close_reason", string(metrics.CloseReasonOrphanTimeout),

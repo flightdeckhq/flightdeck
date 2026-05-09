@@ -147,3 +147,54 @@ func TestConcurrentIncrDroppedDoesNotRace(t *testing.T) {
 		t.Errorf("race detected or counter lost updates: got %d, want %d", got, want)
 	}
 }
+
+func TestIncrSessionClosedN_BatchAddSemantics(t *testing.T) {
+	Reset()
+
+	// n=0 must be a no-op (no map allocation, no counter creation).
+	IncrSessionClosedN(CloseReasonOrphanTimeout, 0)
+	if got := SnapshotClosed()[CloseReasonOrphanTimeout]; got != 0 {
+		t.Errorf("n=0: want 0, got %d", got)
+	}
+
+	// Single batch adds n.
+	IncrSessionClosedN(CloseReasonOrphanTimeout, 5)
+	if got := SnapshotClosed()[CloseReasonOrphanTimeout]; got != 5 {
+		t.Errorf("after batch=5: want 5, got %d", got)
+	}
+
+	// Mixed with single Incr — both feed the same counter.
+	IncrSessionClosed(CloseReasonOrphanTimeout)
+	IncrSessionClosedN(CloseReasonOrphanTimeout, 3)
+	if got := SnapshotClosed()[CloseReasonOrphanTimeout]; got != 9 {
+		t.Errorf("after 5 + 1 + 3: want 9, got %d", got)
+	}
+}
+
+func TestConcurrentIncrSessionClosedDoesNotRace(t *testing.T) {
+	// Mirrors TestConcurrentIncrDroppedDoesNotRace for the
+	// closedSessions sharded map. Without this the race detector
+	// never exercises the closedMu upgrade path; a future refactor
+	// could break the double-checked locking in ensureCloseCounter
+	// without any test flagging it.
+	Reset()
+	const workers = 8
+	const iterations = 1000
+	done := make(chan struct{}, workers)
+	for i := 0; i < workers; i++ {
+		go func() {
+			for j := 0; j < iterations; j++ {
+				IncrSessionClosed(CloseReasonOrphanTimeout)
+			}
+			done <- struct{}{}
+		}()
+	}
+	for i := 0; i < workers; i++ {
+		<-done
+	}
+	got := SnapshotClosed()[CloseReasonOrphanTimeout]
+	want := uint64(workers * iterations)
+	if got != want {
+		t.Errorf("race detected or counter lost updates: got %d, want %d", got, want)
+	}
+}

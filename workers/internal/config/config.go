@@ -22,6 +22,11 @@ type Config struct {
 	// net for crashes / missed lifecycle hooks. Default 24 hours
 	// gives plenty of headroom for legitimate long pauses while still
 	// reaping dead rows within an operational day.
+	//
+	// Env: FLIGHTDECK_ORPHAN_TIMEOUT_HOURS. Must be > 0 — a zero or
+	// negative value would close every `lost` row on the next tick
+	// regardless of age, defeating the safety-net intent. Load()
+	// panics if the configured value is non-positive.
 	OrphanTimeoutHours int
 }
 
@@ -35,6 +40,14 @@ func Load() Config {
 		ShutdownTimeoutSecs: envIntOrDefault("SHUTDOWN_TIMEOUT_SECS", 30),
 		MigrationsDir:       envOrDefault("FLIGHTDECK_MIGRATIONS_DIR", "/migrations"),
 		OrphanTimeoutHours:  envIntOrDefault("FLIGHTDECK_ORPHAN_TIMEOUT_HOURS", 24),
+	}
+	if cfg.OrphanTimeoutHours <= 0 {
+		panic(fmt.Sprintf(
+			"FLIGHTDECK_ORPHAN_TIMEOUT_HOURS must be > 0, got %d -- "+
+				"a non-positive value would close every `lost` session on "+
+				"the next reconciler tick regardless of age",
+			cfg.OrphanTimeoutHours,
+		))
 	}
 	return cfg
 }

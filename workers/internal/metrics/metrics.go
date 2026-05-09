@@ -130,6 +130,18 @@ func IncrSessionClosed(reason CloseReason) {
 	ensureCloseCounter(reason).Add(1)
 }
 
+// IncrSessionClosedN bumps the counter by `n`. The reaper closes a
+// batch in one SQL pass and reports the count; one atomic Add on a
+// single counter beats N atomic Add(1)s in a loop and makes the
+// "one bump per session reaped" intent explicit at the call site.
+// n=0 is a no-op so callers don't need to guard.
+func IncrSessionClosedN(reason CloseReason, n uint64) {
+	if n == 0 {
+		return
+	}
+	ensureCloseCounter(reason).Add(n)
+}
+
 // Snapshot returns a stable copy of the dropped-events counters,
 // sorted by reason for deterministic output. Used by tests and the
 // /metrics handler.

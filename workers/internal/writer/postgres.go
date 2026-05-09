@@ -827,7 +827,6 @@ func (w *Writer) ReapOrphanedLostSessions(
 	ctx context.Context,
 	threshold time.Duration,
 ) (int, error) {
-	hours := threshold.Hours()
 	var reaped int
 	err := w.pool.QueryRow(ctx, `
 		WITH expired AS (
@@ -854,7 +853,7 @@ func (w *Writer) ReapOrphanedLostSessions(
 		SELECT COUNT(*)::int FROM closed
 	`, threshold.Seconds()).Scan(&reaped)
 	if err != nil {
-		return 0, fmt.Errorf("reap orphaned lost sessions (threshold=%.2fh): %w", hours, err)
+		return 0, fmt.Errorf("reap orphaned lost sessions (threshold=%s): %w", threshold, err)
 	}
 	return reaped, nil
 }

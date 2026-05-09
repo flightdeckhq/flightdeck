@@ -109,6 +109,22 @@ describe("EnrichmentSummary", () => {
     expect(screen.getByText(/last event abcdef12/)).toBeInTheDocument();
   });
 
+  it("renders close_reason orphan_timeout on reaper-emitted session_end", () => {
+    // The worker's orphan_timeout reaper inserts a synthetic session_end
+    // event with close_reason="orphan_timeout"; this asserts the chip
+    // renders the literal verbatim instead of falling back to a generic
+    // label or hiding the value.
+    render(
+      <EnrichmentSummary
+        event={makeEvent({
+          close_reason: "orphan_timeout",
+        })}
+      />,
+    );
+    expect(screen.getByText("Close reason")).toBeInTheDocument();
+    expect(screen.getByText("orphan_timeout")).toBeInTheDocument();
+  });
+
   it("renders policy_actions_summary on session_end", () => {
     render(
       <EnrichmentSummary

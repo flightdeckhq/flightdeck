@@ -7840,9 +7840,13 @@ around session-lifecycle observability:
   `policy_block` / `orphan_timeout` / `sigkill_detected` /
   `unknown`. Sensor populates the first three (atexit fires
   normally / shutdown directive flag was set / BudgetExceededError
-  tore down the process). Worker fills `orphan_timeout` /
-  `sigkill_detected` on the post-mortem path via session-table
-  update. `unknown` is the catch-all.
+  tore down the process). Worker fills `orphan_timeout` on the
+  post-mortem path via a synthetic `session_end` event emitted
+  by the reconciler's reaper (close_reason lives on
+  `events.payload`, not on the sessions row, so the existing
+  close-reasons facet aggregate picks it up without a schema
+  change). `sigkill_detected` is reserved in the enum but
+  unwritten today. `unknown` is the catch-all.
 - `policy_actions_summary` (worker-computed at session_end insert
   time per Q2 lock): tally of every policy enforcement event for
   the session via the events table GROUP BY query. Shape:

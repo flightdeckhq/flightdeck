@@ -1549,6 +1549,8 @@ CREATE TABLE event_content (
     tools       JSONB,
     response    JSONB NOT NULL,
     "input"     JSONB,                 -- embeddings input (string or list of strings)
+    tool_input  JSONB,                 -- D150: tool args / prompt arguments
+    tool_output JSONB,                 -- D150: tool results / rendered prompts
     captured_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -1558,6 +1560,29 @@ CREATE INDEX event_content_session_id_idx ON event_content (session_id);
 `event_content` is fetched on demand via `GET /v1/events/:id/content`,
 which returns 404 when capture was off for that session. The events table
 never carries content inline (Rule 19).
+
+**Per-column semantics by event family:**
+
+| Column | LLM `pre_call`/`post_call` | `embeddings` | `mcp_tool_call` (D150) | `mcp_prompt_get` (D150) | LLM `tool_call` (D150) | `mcp_resource_read` |
+|---|---|---|---|---|---|---|
+| `messages` | chat history | `[]` | `[]` | `[]` | `[]` | `[]` |
+| `system` | Anthropic system | NULL | NULL | NULL | NULL | NULL |
+| `tools` | tool schema | NULL | NULL | NULL | NULL | NULL |
+| `response` | model response | `{}` | `{}` | `{}` | `{}` | resource body (overflow) |
+| `input` | NULL | embeddings input | NULL | NULL | NULL | NULL |
+| `tool_input` | NULL | NULL | tool args | prompt args | tool input | NULL |
+| `tool_output` | NULL | NULL | tool result | rendered messages | tool output (post-hoc) | NULL |
+
+`tool_input` / `tool_output` are the D150 (Phase 7 Step 3.b)
+dedicated columns for tool-style request/response capture.
+Pre-D150, MCP tool args + results were repurposed onto
+`input`/`response` via the `_build_overflow_event_content`
+helper, which spelled tool args like an LLM prompt for storage
+convenience. D150 stops the column-name semantics gymnastics:
+operators querying `event_content.tool_input` get tool args
+directly. `mcp_resource_read` body overflow stays on the
+legacy `response` column path because resource bodies are
+blobs, not request/response shapes (Q1 lock).
 
 ### `token_policies`
 

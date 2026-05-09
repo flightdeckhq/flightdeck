@@ -920,12 +920,45 @@ def _post_call(
         invocations = []
     for inv in invocations:
         try:
+            # Phase 7 Step 3.b (D150): LLM-side tool_call routes
+            # tool_input via event_content's dedicated tool_input
+            # column when capture is on. Pre-Step-3.b path stamped
+            # tool_input directly on the events row's payload; the
+            # new path keeps events.payload lean and matches the
+            # MCP tool_call capture posture (single content store
+            # with dedicated columns).
             tool_payload = session._build_payload(
                 EventType.TOOL_CALL,
                 model=resp_model,
                 tool_name=inv.name,
-                tool_input=inv.tool_input,
             )
+            if session.config.capture_prompts and inv.tool_input is not None:
+                # Build the event_content envelope. tool_output
+                # populates retroactively when the next assistant
+                # turn shows the result; this emit only knows the
+                # input. Worker writes tool_input on insert; a
+                # follow-up event (or an in-flight pass over the
+                # response) populates tool_output via a separate
+                # event_content path (out of Step 3.b scope —
+                # captured on the row only when the response shape
+                # carries it inline).
+                from flightdeck_sensor.interceptor.mcp import (
+                    _build_tool_capture_content,
+                )
+                capture_content = _build_tool_capture_content(
+                    tool_input=inv.tool_input,
+                    tool_output=None,
+                    server_name=resp_model or "",
+                    session_id=session.config.session_id,
+                )
+                if capture_content is not None:
+                    # Override the provider field — this is an LLM
+                    # tool call, not an MCP one. Worker doesn't
+                    # branch on provider; the field is informational
+                    # for operators querying event_content directly.
+                    capture_content["provider"] = "llm"
+                    tool_payload["has_content"] = True
+                    tool_payload["content"] = capture_content
             session.event_queue.enqueue(tool_payload)
         except Exception:
             _log.debug("failed to enqueue tool_call event", exc_info=True)

@@ -7620,3 +7620,178 @@ inline-vs-overflow path for MCP capture (`_gate_mcp_field` +
 functional and behavioral parity is preserved. Step 3.b will
 land the schema migration + sensor capture migration as a
 plumbing-only commit.
+
+
+---
+
+## D150 -- `event_content` `tool_input` / `tool_output` column extension + tool capture migration
+
+**Date:** 2026-05-09
+**Phase:** Phase 7 Step 3.b (operator-actionable events)
+
+**Context.** Phase 7 Step 3 surfaced D150 alongside D151 (the
+enforcement extension) but the implementation deferred to a
+follow-up commit per conversation-budget pressure. Step 3.b
+closes the loop. The deferral was a Rule 51 procedural miss —
+the supervisor's lock said "ship together"; this entry exists
+because the work landed in two SHAs (`fdf6a8df` for D151;
+`Step 3.b SHA` for D150) instead of one.
+
+Pre-D150, MCP tool capture (`mcp_tool_call` arguments + result;
+`mcp_prompt_get` arguments + rendered messages) and LLM-side
+tool capture (`tool_call` tool_input) lived in `events.payload`
+inline when small (≤8 KiB) and overflowed to `event_content`
+via `_build_overflow_event_content` when large. The overflow
+helper repurposed the LLM-prompt columns: tool args landed on
+`event_content.input`, tool results on `event_content.response`.
+Operators querying `event_content` directly had to know the
+overload semantics to find tool data — `input` meant either
+"embeddings input" (Phase 4 D-PHASE4) OR "MCP tool arguments"
+(D131 lean-payload override) depending on `event_type`.
+
+**Decision.** Add dedicated `tool_input` + `tool_output` jsonb
+columns to `event_content` (migration 000021). Tool capture
+for `mcp_tool_call` / `mcp_prompt_get` / LLM-side `tool_call`
+routes to these columns regardless of size. The pre-D150
+inline-vs-overflow split is removed for these event types —
+all captured tool args + results live in `event_content`,
+fetched on demand via `GET /v1/events/:id/content`. Matches
+the LLM-prompt capture posture (Phase 4 D-PHASE1): `events.
+payload` carries metadata only; content lives in
+`event_content`.
+
+**Operator-facing improvement.** `SELECT tool_input,
+tool_output FROM event_content WHERE event_id = ...` returns
+the tool-capture data directly without the `input`/`response`
+column overload. Dashboard's content viewer can branch on
+event_type to render the tool capture under a "Tool input /
+Tool output" affordance distinct from the "Prompt / Response"
+affordance the LLM-prompt path uses.
+
+**Sensor wire envelope change.**
+
+Pre-D150 (overflow path):
+```json
+{
+  "provider": "mcp",
+  "model": "<server_name>",
+  "input": {...arguments overflow...},
+  "response": {...result overflow...},
+  "system": null,
+  "messages": []
+}
+```
+
+Post-D150:
+```json
+{
+  "provider": "mcp",
+  "model": "<server_name>",
+  "tool_input": {...full arguments...},
+  "tool_output": {...full result...},
+  "input": null,
+  "response": {},
+  "system": null,
+  "messages": []
+}
+```
+
+`response: {}` ships explicitly because the column is `NOT NULL`
+in the pre-D150 schema and a follow-up migration to relax that
+constraint is out of Step 3.b scope. The empty-dict default is
+operationally meaningless for tool-capture rows; consumers
+read `tool_output` instead.
+
+**Hard cutover** (per pre-v0.6 no-compat-tax). Sensor + plugin +
+worker ship together. Worker's `InsertEventContent` parses
+both legacy (`input` / `response`) AND new (`tool_input` /
+`tool_output`) keys; sensor stops emitting the legacy keys for
+tool-capture rows. Dev DB rebuild on `make dev-reset` applies
+migration 000021. Operators run `make dev-reset` once after
+pulling.
+
+**`mcp_resource_read` body capture stays on legacy path**
+(Q1 lock). Resource bodies are blobs (file contents, image
+data, large blobs the agent reads from a server's resource
+catalog) — not request/response shapes. The dedicated
+`tool_input` / `tool_output` columns are reserved for the
+request/response semantic; resource bodies continue to ride
+`event_content.response` via the existing
+`_build_overflow_event_content` helper. If a future D-numbered
+decision adds dedicated `resource_content` columns, that's a
+separate concern.
+
+**`_build_overflow_event_content` retention** (Q2 lock). The
+helper stays for `mcp_resource_read` body overflow per Q1.
+The two helpers coexist:
+- `_build_tool_capture_content` — D150, dedicated columns,
+  always-via-event_content.
+- `_build_overflow_event_content` — pre-D150 size-threshold
+  overflow path for resource_read bodies only.
+
+**Plugin parity.** Claude Code plugin's `mcp_tool_call`
+emission migrates to the new wire envelope using the existing
+`captureToolInputs` flag (no flag rename in this commit per
+Q4). Plugin posts the same `tool_input` / `tool_output` keys;
+worker's InsertEventContent consumes both surfaces uniformly.
+
+**Rejected alternatives.**
+
+- *Reuse `input` / `response` columns with column-name
+  overload documented.* Rejected: the operator-facing
+  semantics gymnastics is exactly the gap this decision
+  closes. Documenting "input means tool args when event_type
+  is mcp_tool_call" is worse than two new columns.
+- *Single `tool_payload` jsonb column carrying both args +
+  result.* Rejected: dashboard query path benefits from
+  separate columns (filter "show me every tool call where
+  tool_input.path contains '/etc/'"); the GIN index path
+  works better on dedicated columns.
+- *Migrate resource_read bodies too into a third
+  `resource_content` column.* Rejected per Q1 — separate
+  D-numbered decision if it becomes useful.
+
+**Related decisions.** D131 (the lean MCP payload contract
+this decision honours by moving content out of payload).
+D135 (the resolution algorithm whose decisions are recorded
+alongside the captured args via the policy_decision block from
+D148). D148 / D149 (the Step 2 enrichment that extends the
+operator-actionable surface; D150 closes the capture-storage
+parity loop). Phase 4 D-PHASE1 (the LLM-prompt capture
+posture this decision parallels). Phase 7 audit
+(`docs/phase-7-event-audit.md`) for the audit-derived workflow
+gap analysis.
+
+**Implementation note (Step 3.b).**
+
+- Schema: migration 000021_event_content_tool_capture.up.sql
+  + matching down. ALTER TABLE adds two nullable jsonb
+  columns; safe to apply against any environment that has
+  the pre-Step-3.b schema state.
+- Sensor: new `_build_tool_capture_content` helper in
+  `interceptor/mcp.py`; `_emit_tool_call` + `_emit_prompt_get`
+  + `interceptor/base.py` LLM-side tool_call all route through
+  it. The pre-D150 `_gate_mcp_field` size-threshold gating is
+  removed for these event types (still used for resource_read
+  body overflow).
+- Worker: `InsertEventContent` parses `tool_input` +
+  `tool_output` keys from the content envelope and writes them
+  into the dedicated columns alongside the existing field set.
+- Plugin: matches sensor wire envelope using existing
+  `captureToolInputs` flag.
+- Dashboard: schema acceptance only — Step 6 lands the
+  renderers that branch on `tool_input` / `tool_output` vs the
+  legacy `messages` / `response` for LLM prompts.
+
+**Live-stack verification.** Drove `playground/13_mcp.py` after
+applying migration 000021 on a fresh dev DB. SQL probe:
+```
+SELECT ec.tool_input, ec.tool_output
+FROM event_content ec JOIN events e ON e.id = ec.event_id
+WHERE e.event_type='mcp_tool_call' ORDER BY e.occurred_at DESC LIMIT 1;
+```
+Returned populated jsonb for both columns (`{"text": "playground"}`
+and `{"meta": null, "content": [...], "isError": false, ...}`).
+Parallel SQL on `events.payload` confirmed `arguments` /
+`result` no longer present inline; `has_content=true` flag set
+on the row. Same shape verified for `mcp_prompt_get`.

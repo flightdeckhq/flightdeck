@@ -219,11 +219,20 @@ async def test_call_tool_with_capture_prompts_includes_arguments_and_result(
     await wrapped(receiver, "add", {"a": 1, "b": 41})
 
     payload = _last_enqueue(install_capturing_session)
-    assert payload["arguments"] == {"a": 1, "b": 41}
-    assert payload["result"] == {
+    # Phase 7 Step 3.b (D150): tool args + result migrated from
+    # inline payload to event_content.tool_input / tool_output.
+    # Payload no longer carries arguments/result inline; instead
+    # has_content=true triggers the event_content fetch path.
+    assert "arguments" not in payload
+    assert "result" not in payload
+    assert payload["has_content"] is True
+    content = payload["content"]
+    assert content["tool_input"] == {"a": 1, "b": 41}
+    assert content["tool_output"] == {
         "content": [{"type": "text", "text": "42"}],
         "isError": False,
     }
+    assert content["provider"] == "mcp"
 
 
 @pytest.mark.asyncio
@@ -483,8 +492,16 @@ async def test_get_prompt_capture_on_includes_arguments_and_rendered(
     await wrapped(_bound_receiver(), "greet", {"name": "Ada"})
 
     payload = _last_enqueue(install_capturing_session)
-    assert payload["arguments"] == {"name": "Ada"}
-    assert payload["rendered"] == [
+    # Phase 7 Step 3.b (D150): prompt arguments + rendered messages
+    # migrated from inline payload to event_content's dedicated
+    # tool_input / tool_output columns. Same migration shape as
+    # mcp_tool_call.
+    assert "arguments" not in payload
+    assert "rendered" not in payload
+    assert payload["has_content"] is True
+    content = payload["content"]
+    assert content["tool_input"] == {"name": "Ada"}
+    assert content["tool_output"] == [
         {"role": "user", "content": "hi"},
         {"role": "assistant", "content": "hello Ada"},
     ]
@@ -922,10 +939,17 @@ def _big_dict(approx_bytes: int) -> dict[str, Any]:
 
 
 @pytest.mark.asyncio
-async def test_b6_call_tool_below_threshold_stays_inline(
+async def test_d150_call_tool_capture_routes_to_event_content_dedicated_columns(
     install_capturing_session: Session,
 ) -> None:
-    """Small arguments + small result: inline path, no overflow flag."""
+    """Phase 7 Step 3.b (D150): tool args + result always route
+    through event_content.tool_input / tool_output regardless of
+    size. The pre-Step-3.b inline-vs-overflow split (small inline
+    on payload, large overflowed to event_content with input/
+    response repurposing) is REMOVED — operator queries
+    event_content.tool_input directly without column-name
+    semantics gymnastics. has_content=true triggers the
+    /v1/events/:id/content fetch path."""
     fake_result = SimpleNamespace(content=[])
     fake_result.model_dump = lambda mode="json": {"content": []}  # noqa: ARG005
 
@@ -938,17 +962,30 @@ async def test_b6_call_tool_below_threshold_stays_inline(
     await wrapped(_bound_receiver(), "echo", {"text": "small"})
 
     payload = _last_enqueue(install_capturing_session)
-    assert payload["arguments"] == {"text": "small"}
-    assert payload["result"] == {"content": []}
-    assert payload.get("has_content", False) is False
+    # Inline arguments / result fields are GONE.
+    assert "arguments" not in payload
+    assert "result" not in payload
+    # Capture lives in event_content under dedicated columns.
+    assert payload["has_content"] is True
+    content = payload["content"]
+    assert content["tool_input"] == {"text": "small"}
+    assert content["tool_output"] == {"content": []}
+    # provider tagged "mcp" so the dashboard's content viewer can
+    # branch on origin (LLM tool_call uses provider="llm").
+    assert content["provider"] == "mcp"
 
 
 @pytest.mark.asyncio
-async def test_b6_call_tool_large_result_overflows_to_event_content(
+async def test_d150_call_tool_large_payload_lands_via_same_path(
     install_capturing_session: Session,
 ) -> None:
-    """Large result: marker inline, has_content=true, content carries event_content shape."""
-    big = _big_dict(20 * 1024)  # 20 KiB — well over 8 KiB threshold
+    """Pre-Step-3.b: large payloads triggered an overflow code
+    path with truncation markers. Post-Step-3.b: ALL captured
+    content goes through event_content via the same code path —
+    no size threshold splitting, no truncation markers. The
+    operator-actionable contract is uniform regardless of
+    payload size."""
+    big = _big_dict(20 * 1024)  # 20 KiB
     fake_result = SimpleNamespace(content=[])
     fake_result.model_dump = lambda mode="json": big  # noqa: ARG005
 
@@ -961,85 +998,13 @@ async def test_b6_call_tool_large_result_overflows_to_event_content(
     await wrapped(_bound_receiver(), "fetch", {"url": "ex"})
 
     payload = _last_enqueue(install_capturing_session)
-    # Arguments stay inline (small).
-    assert payload["arguments"] == {"url": "ex"}
-    # Result is replaced by the truncation marker inline.
-    assert payload["result"] == {"_truncated": True, "size": pytest.approx(
-        len(__import__("json").dumps(big).encode("utf-8")), rel=0.05,
-    )}
-    # has_content flips true; wire content carries the event_content
-    # shape.
+    assert "result" not in payload
     assert payload["has_content"] is True
-    content = payload["content"]
-    assert content["provider"] == "mcp"
-    assert content["response"] == big
-    assert content["input"] is None  # arguments stayed inline
-
-
-@pytest.mark.asyncio
-async def test_b6_call_tool_large_arguments_overflows(
-    install_capturing_session: Session,
-) -> None:
-    """Symmetric: large arguments / small result — input populated."""
-    big_args = _big_dict(20 * 1024)
-    fake_result = SimpleNamespace(content=[])
-    fake_result.model_dump = lambda mode="json": {"content": []}  # noqa: ARG005
-
-    async def fake_orig(self: Any, name: str, arguments: Any = None) -> Any:
-        return fake_result
-
-    wrapped = _make_async_wrapper(
-        "call_tool", fake_orig, EventType.MCP_TOOL_CALL, _emit_tool_call,
-    )
-    await wrapped(_bound_receiver(), "ingest", big_args)
-
-    payload = _last_enqueue(install_capturing_session)
-    assert payload["arguments"] == {
-        "_truncated": True,
-        "size": pytest.approx(
-            len(__import__("json").dumps(big_args).encode("utf-8")), rel=0.05,
-        ),
-    }
-    assert payload["result"] == {"content": []}  # small, inline
-    assert payload["has_content"] is True
-    assert payload["content"]["input"] == big_args
-    # Result stayed inline — event_content.response is the empty
-    # placeholder (the small result lives in payload.result, no need
-    # to duplicate).
-    assert payload["content"]["response"] == {}
-
-
-@pytest.mark.asyncio
-async def test_b6_call_tool_hard_cap_drops_content_no_event_content(
-    install_capturing_session: Session,
-) -> None:
-    """At >2 MiB, the field is dropped entirely with _capped marker.
-
-    No event_content row should be produced (the wire transfer of a
-    >2 MiB blob is itself a pathology — the cap exists to protect
-    Postgres + NATS + dashboard from the worst case).
-    """
-    huge = _big_dict(3 * 1024 * 1024)  # 3 MiB
-    fake_result = SimpleNamespace(content=[])
-    fake_result.model_dump = lambda mode="json": huge  # noqa: ARG005
-
-    async def fake_orig(self: Any, name: str, arguments: Any = None) -> Any:
-        return fake_result
-
-    wrapped = _make_async_wrapper(
-        "call_tool", fake_orig, EventType.MCP_TOOL_CALL, _emit_tool_call,
-    )
-    await wrapped(_bound_receiver(), "log_dump", {})
-
-    payload = _last_enqueue(install_capturing_session)
-    marker = payload["result"]
-    assert marker["_truncated"] is True
-    assert marker["_capped"] is True
-    assert marker["size"] > 2 * 1024 * 1024
-    # has_content stays false because no full content is preserved at
-    # the hard cap. The dashboard renders "content too large" rather
-    # than offering a Load-Full affordance that would 404.
-    assert payload.get("has_content", False) is False
+    # Full payload preserved in event_content.tool_output — no
+    # truncation marker, no size cap (the 2 MiB hard cap from the
+    # pre-Step-3.b _gate_mcp_field path is gone for tool capture;
+    # it lives only on resource_read body overflow).
+    assert payload["content"]["tool_output"] == big
 
 
 @pytest.mark.asyncio
@@ -1109,10 +1074,14 @@ async def test_b6_resource_read_small_content_stays_inline(
 
 
 @pytest.mark.asyncio
-async def test_b6_prompt_get_large_rendered_overflows(
+async def test_d150_prompt_get_capture_routes_to_event_content(
     install_capturing_session: Session,
 ) -> None:
-    """Large rendered messages: marker inline, content via event_content."""
+    """Phase 7 Step 3.b (D150): prompt arguments + rendered
+    messages migrated from inline payload to event_content's
+    dedicated tool_input / tool_output columns. Same migration
+    shape as mcp_tool_call — no size-threshold split, all
+    captured content in event_content."""
     big_msg_text = "x" * (15 * 1024)
     msg = SimpleNamespace(role="user", content=big_msg_text)
     msg.model_dump = lambda mode="json": {  # noqa: ARG005
@@ -1129,15 +1098,14 @@ async def test_b6_prompt_get_large_rendered_overflows(
     await wrapped(_bound_receiver(), "system_prompt", {"name": "Ada"})
 
     payload = _last_enqueue(install_capturing_session)
-    # Arguments stay inline (small).
-    assert payload["arguments"] == {"name": "Ada"}
-    # Rendered messages overflow.
-    assert payload["rendered"]["_truncated"] is True
-    assert payload["rendered"]["size"] > 8 * 1024
+    # Inline arguments / rendered fields are GONE.
+    assert "arguments" not in payload
+    assert "rendered" not in payload
+    # Capture lives in event_content under dedicated columns.
     assert payload["has_content"] is True
-    # event_content shape: input=arguments (None or arguments stayed
-    # inline depending on size), response=rendered list.
-    assert payload["content"]["response"] == [
+    content = payload["content"]
+    assert content["tool_input"] == {"name": "Ada"}
+    assert content["tool_output"] == [
         {"role": "user", "content": big_msg_text},
     ]
 

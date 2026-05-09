@@ -19,10 +19,25 @@ paths (D151) — `list_tools` / `read_resource` / `get_prompt` /
 when the policy resolves to block. Discovery family
 (`mcp_tool_list` / `mcp_resource_list` / `mcp_prompt_list`)
 gains `item_names` (string[], capped at 100 with
-`truncated:true` overflow flag). D150 (event_content
-`tool_input` / `tool_output` schema migration) deferred to
-Step 3.b — see DECISIONS.md D151 deferral note. Dashboard
-rendering deferred to Step 6.
+`truncated:true` overflow flag). Dashboard rendering deferred
+to Step 6.
+
+**Step 3.b (Phase 7) shipped 2026-05-09:** D150 closes the
+deferred capture-storage parity loop. `event_content` gains
+dedicated `tool_input` + `tool_output` jsonb columns
+(migration 000021). MCP tool capture (`mcp_tool_call`
+arguments + result; `mcp_prompt_get` arguments + rendered
+messages) and LLM-side `tool_call` migrate from inline
+`events.payload` to the dedicated `event_content` columns.
+The pre-D150 inline-vs-overflow split is removed for these
+event types — capture always lives in `event_content`,
+fetched on demand via `GET /v1/events/:id/content`. The
+column-name semantics gymnastics (`input` overloaded across
+embeddings + tool args) is gone. `mcp_resource_read` body
+capture stays on the legacy `_build_overflow_event_content`
+path (Q1 lock — resource bodies are blobs, not
+request/response shapes). Dashboard rendering deferred to
+Step 6.
 
 **Scope locks (from scope-out turn).** Q1 every event type covered
 including "audit complete, no enrichment needed". Q2 policy/state

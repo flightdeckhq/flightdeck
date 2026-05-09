@@ -383,6 +383,13 @@ func (w *Writer) InsertEvent(
 // The dashboard branches on event_type to render the appropriate
 // viewer (PromptViewer for chat, EmbeddingsContentViewer for
 // embeddings). See migration 000016_event_content_input.up.sql.
+//
+// D150 (Phase 7 Step 3.b): adds ``ToolInput`` + ``ToolOutput``
+// keys for the tool-capture migration. mcp_tool_call /
+// mcp_prompt_get / LLM-side tool_call route arguments + results
+// through these dedicated columns instead of the LLM-prompt-style
+// repurposing of Messages/Response that the pre-Step-3.b overflow
+// path used. See migration 000021_event_content_tool_capture.
 func (w *Writer) InsertEventContent(ctx context.Context, eventID, sessionID string, content json.RawMessage) error {
 	// Parse the content JSON to extract fields
 	var c struct {
@@ -393,6 +400,8 @@ func (w *Writer) InsertEventContent(ctx context.Context, eventID, sessionID stri
 		Tools        json.RawMessage `json:"tools"`
 		Response     json.RawMessage `json:"response"`
 		Input        json.RawMessage `json:"input"`
+		ToolInput    json.RawMessage `json:"tool_input"`
+		ToolOutput   json.RawMessage `json:"tool_output"`
 	}
 	if err := json.Unmarshal(content, &c); err != nil {
 		return fmt.Errorf("parse event content: %w", err)
@@ -405,10 +414,10 @@ func (w *Writer) InsertEventContent(ctx context.Context, eventID, sessionID stri
 		c.Messages = json.RawMessage("[]")
 	}
 	_, err := w.pool.Exec(ctx, `
-		INSERT INTO event_content (event_id, session_id, provider, model, system_prompt, messages, tools, response, input)
-		VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9)
+		INSERT INTO event_content (event_id, session_id, provider, model, system_prompt, messages, tools, response, input, tool_input, tool_output)
+		VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 		ON CONFLICT (event_id) DO NOTHING
-	`, eventID, sessionID, c.Provider, c.Model, c.SystemPrompt, c.Messages, c.Tools, c.Response, c.Input)
+	`, eventID, sessionID, c.Provider, c.Model, c.SystemPrompt, c.Messages, c.Tools, c.Response, c.Input, c.ToolInput, c.ToolOutput)
 	if err != nil {
 		return fmt.Errorf("insert event content: %w", err)
 	}

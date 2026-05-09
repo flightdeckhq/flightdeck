@@ -291,10 +291,14 @@ def _build_overflow_event_content(
     * ``system`` / ``messages`` / ``tools`` -- LLM-only, always null /
       empty for MCP
 
-    The shape matches what the worker's ``InsertEventContent`` already
-    parses (workers/internal/writer/postgres.go), so no worker change
-    is needed -- the existing has_content=true path runs and persists
-    the row.
+    Phase 7 Step 3.b (D150) note: this helper now serves
+    ``mcp_resource_read`` body overflow only — the ``mcp_tool_call``
+    + ``mcp_prompt_get`` paths migrated to
+    ``_build_tool_capture_content`` with dedicated
+    ``tool_input`` / ``tool_output`` columns. Resource bodies are
+    blobs, not request/response shapes; the LLM-prompt-style
+    repurposing of ``input`` / ``response`` columns stays
+    appropriate for the blob case (Q1 lock).
     """
     if arguments_overflow is None and response_overflow is None:
         return None
@@ -304,6 +308,56 @@ def _build_overflow_event_content(
         "tools": None,
         "response": response_overflow if response_overflow is not None else {},
         "input": arguments_overflow,
+        "provider": "mcp",
+        "model": server_name or "",
+        "session_id": session_id,
+        "event_id": "",
+        "captured_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _build_tool_capture_content(
+    *,
+    tool_input: Any,
+    tool_output: Any,
+    server_name: str | None,
+    session_id: str,
+) -> dict[str, Any] | None:
+    """Phase 7 Step 3.b (D150) — build the event_content envelope
+    for tool capture using the dedicated ``tool_input`` /
+    ``tool_output`` columns added by migration 000021.
+
+    Used by ``mcp_tool_call`` + ``mcp_prompt_get`` (and by the
+    LLM-side ``tool_call`` path in interceptor/base.py). Sensor +
+    plugin produce the same wire shape; worker's
+    ``InsertEventContent`` parses both keys and writes them into
+    the dedicated columns.
+
+    Returns ``None`` when neither field is populated (capture off
+    or call errored before producing args/output) — caller skips
+    setting ``has_content`` / ``content``.
+
+    The repurposing-into-LLM-prompt-columns hack the pre-Step-3.b
+    overflow path used (``input`` carrying tool args, ``response``
+    carrying tool result spelled like an LLM prompt) is removed.
+    Operators querying ``event_content.tool_input`` get tool args
+    directly without the column-name semantics gymnastics.
+    """
+    if tool_input is None and tool_output is None:
+        return None
+    return {
+        "system": None,
+        "messages": [],
+        "tools": None,
+        # ``response`` is NOT NULL in event_content (Phase 4 schema
+        # constraint pre-dating D150); send the empty-dict default
+        # so the INSERT satisfies the column constraint. The
+        # operationally-meaningful tool capture lives in
+        # tool_input / tool_output below.
+        "response": {},
+        "input": None,
+        "tool_input": tool_input,
+        "tool_output": tool_output,
         "provider": "mcp",
         "model": server_name or "",
         "session_id": session_id,
@@ -774,26 +828,24 @@ def _emit_tool_call(
     if capture_prompts:
         arguments = args[1] if len(args) > 1 else kwargs.get("arguments")
         result_dict = _model_to_dict(result) if (result is not None and error is None) else None
-        # B-6 — gate each capture-on field independently. arguments
-        # below 8 KiB stay inline alongside a small result; arguments
-        # above 8 KiB get a marker inline and the full value goes to
-        # event_content. Same for result. has_content fires when any
-        # field overflowed.
-        args_inline, args_overflow, args_marker = _gate_mcp_field(arguments)
-        result_inline, result_overflow, result_marker = _gate_mcp_field(result_dict)
-        if args_inline is not None or args_marker is not None:
-            extras["arguments"] = args_inline
-        if result_inline is not None or result_marker is not None:
-            extras["result"] = result_inline
-        overflow_content = _build_overflow_event_content(
-            arguments_overflow=args_overflow,
-            response_overflow=result_overflow,
+        # Phase 7 Step 3.b (D150): tool args + result route through
+        # event_content's dedicated tool_input / tool_output columns.
+        # Pre-Step-3.b path: inline-vs-overflow split via
+        # _gate_mcp_field; small payloads landed on
+        # extras["arguments"] / extras["result"], large payloads
+        # routed to event_content with input/response repurposing.
+        # New path: ALL captured args/result go to event_content
+        # regardless of size. events.payload stays lean (Phase 5 D2).
+        # Operator queries event_content.tool_input directly.
+        capture_content = _build_tool_capture_content(
+            tool_input=arguments,
+            tool_output=result_dict,
             server_name=server_name,
             session_id=session_id,
         )
-        if overflow_content is not None:
+        if capture_content is not None:
             extras["has_content"] = True
-            extras["content"] = overflow_content
+            extras["content"] = capture_content
     return extras
 
 
@@ -984,26 +1036,22 @@ def _emit_prompt_get(
         if result is not None and error is None:
             messages = getattr(result, "messages", None) or []
             rendered = [_model_to_dict(m) for m in messages]
-        # B-6 — gate arguments and rendered independently. Multi-message
-        # rendered prompts with embedded context routinely cross 10 KiB
-        # in real templates.
-        args_inline, args_overflow, args_marker = _gate_mcp_field(arguments)
-        rendered_inline, rendered_overflow, rendered_marker = _gate_mcp_field(
-            rendered,
-        )
-        if args_inline is not None or args_marker is not None:
-            extras["arguments"] = args_inline
-        if rendered_inline is not None or rendered_marker is not None:
-            extras["rendered"] = rendered_inline
-        overflow_content = _build_overflow_event_content(
-            arguments_overflow=args_overflow,
-            response_overflow=rendered_overflow,
+        # Phase 7 Step 3.b (D150): prompt arguments + rendered
+        # messages route through event_content's dedicated
+        # tool_input / tool_output columns. Same migration shape as
+        # mcp_tool_call: pre-Step-3.b path inlined small payloads
+        # via _gate_mcp_field; new path always uses event_content so
+        # the worker writes one row with both fields populated and
+        # the operator queries event_content.tool_input directly.
+        capture_content = _build_tool_capture_content(
+            tool_input=arguments,
+            tool_output=rendered,
             server_name=server_name,
             session_id=session_id,
         )
-        if overflow_content is not None:
+        if capture_content is not None:
             extras["has_content"] = True
-            extras["content"] = overflow_content
+            extras["content"] = capture_content
     return extras
 
 

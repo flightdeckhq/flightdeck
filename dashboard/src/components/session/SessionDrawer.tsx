@@ -1337,9 +1337,17 @@ function MCPServerRow({
       }}
     >
       <DetailLabel>name</DetailLabel>
-      <DetailValue testId={`mcp-server-name-${id}`}>
+      <DetailValue>
         <span className="inline-flex items-center gap-2">
-          {server.name ?? "unknown"}
+          {/* The testid scopes to the name span only so test
+              assertions like toHaveText(server.name) match the
+              name verbatim — wrapping the whole DetailValue
+              concatenated the inline decision text (e.g. "no URL"
+              from MCPServerDecisionText) into a single string
+              that broke T25's exact-text assertion. */}
+          <span data-testid={`mcp-server-name-${id}`}>
+            {server.name ?? "unknown"}
+          </span>
           <MCPServerDecisionText decision={decision} testId={id} />
         </span>
       </DetailValue>

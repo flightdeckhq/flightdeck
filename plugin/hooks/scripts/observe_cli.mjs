@@ -831,11 +831,61 @@ async function emitMCPToolCallEvent({
     duration_ms,
     timestamp: new Date().toISOString(),
   };
-  if (argumentsCapture != null) payload.arguments = argumentsCapture;
-  if (resultCapture != null) payload.result = resultCapture;
+
+  // Phase 7 Step 3.b (D150): tool args + result migrate from inline
+  // payload to event_content's dedicated tool_input / tool_output
+  // columns. Plugin parity with the sensor's
+  // _build_tool_capture_content envelope — wire shape is
+  // byte-identical so the worker's InsertEventContent consumes
+  // both surfaces uniformly. captureToolInputs flag stays
+  // unchanged; the storage destination changes, the gating
+  // doesn't.
+  if (argumentsCapture != null || resultCapture != null) {
+    payload.has_content = true;
+    payload.content = buildToolCaptureContent({
+      toolInput: argumentsCapture,
+      toolOutput: resultCapture,
+      serverName: mcpParse.server_name || "",
+      sessionId,
+    });
+  }
   if (errorPayload != null) payload.error = errorPayload;
 
   await postEvent(cfg.server, cfg.token, sessionId, payload);
+}
+
+/**
+ * Phase 7 Step 3.b (D150) — build the event_content envelope for
+ * tool capture using the dedicated ``tool_input`` / ``tool_output``
+ * columns added by migration 000021. Mirrors the sensor's
+ * ``_build_tool_capture_content`` wire shape byte-for-byte so the
+ * worker's ``InsertEventContent`` consumes both surfaces uniformly.
+ *
+ * ``response: {}`` ships explicitly because event_content.response
+ * is NOT NULL in the pre-D150 schema — see the sensor helper for
+ * the same constraint workaround. The operationally-meaningful
+ * tool capture lives in tool_input / tool_output.
+ */
+export function buildToolCaptureContent({
+  toolInput,
+  toolOutput,
+  serverName,
+  sessionId,
+}) {
+  return {
+    system: null,
+    messages: [],
+    tools: null,
+    response: {},
+    input: null,
+    tool_input: toolInput == null ? null : toolInput,
+    tool_output: toolOutput == null ? null : toolOutput,
+    provider: "mcp",
+    model: serverName || "",
+    session_id: sessionId,
+    event_id: "",
+    captured_at: new Date().toISOString(),
+  };
 }
 
 // ---------------------------------------------------------------------

@@ -1624,14 +1624,27 @@ describe("observe_cli end-to-end (new fields)", () => {
     assert.ok(mcpEvent, "expected mcp_tool_call event");
     assert.equal(mcpEvent.server_name, "filesystem");
     assert.equal(mcpEvent.tool_name, "read_file");
+    // Phase 7 Step 3.b (D150): tool args + result migrate from
+    // inline payload to event_content's dedicated tool_input /
+    // tool_output columns. Plugin emits has_content=true + the
+    // event_content envelope (byte-identical to sensor's
+    // _build_tool_capture_content output).
+    assert.equal(mcpEvent.has_content, true);
+    assert.equal(mcpEvent.arguments, undefined);
+    assert.equal(mcpEvent.result, undefined);
+    assert.equal(mcpEvent.content.provider, "mcp");
     // Whitelist sanitiser BYPASSED for MCP per D4 — anything_else
-    // survives.
-    assert.deepEqual(mcpEvent.arguments, {
+    // survives in tool_input.
+    assert.deepEqual(mcpEvent.content.tool_input, {
       path: "/etc/hosts",
       anything_else: "kept-by-mcp-bypass",
     });
-    // capturePrompts=true → result captured.
-    assert.ok(mcpEvent.result, "result must be present with capturePrompts=true");
+    // capturePrompts=true → result captured into tool_output.
+    assert.ok(mcpEvent.content.tool_output, "tool_output must be present with capturePrompts=true");
+    // event_content.response is NOT NULL in the pre-D150 schema —
+    // envelope ships {} so the worker INSERT satisfies the
+    // constraint. tool_output is the operationally-meaningful field.
+    assert.deepEqual(mcpEvent.content.response, {});
   });
 
   it("Phase 5 — PostToolUseFailure on MCP tool emits mcp_tool_call with error", async () => {
@@ -1660,6 +1673,56 @@ describe("observe_cli end-to-end (new fields)", () => {
     assert.ok(mcpEvent.error, "error must be populated on failure path");
     assert.equal(mcpEvent.error.error_class, "PluginToolError");
     assert.match(mcpEvent.error.message, /Unauthorized/);
+    // Phase 7 Step 3.b (D150): even on the failure path with
+    // CAPTURE_TOOL_INPUTS default-on, the tool_input migrates to
+    // event_content. The error sub-object stays inline on payload
+    // (operator-readable failure context) — only args + result
+    // migrate.
+    assert.equal(mcpEvent.has_content, true);
+    assert.deepEqual(mcpEvent.content.tool_input, { repo: "x/y" });
+    // No tool_output on failure path (no tool_response in the
+    // hookEvent).
+    assert.equal(mcpEvent.content.tool_output, null);
+  });
+
+  // Phase 7 Step 3.b (D150) regression guards: capture-off paths
+  // must NOT produce an event_content envelope. Without these,
+  // a future regression that emits an empty has_content=true
+  // would pass the worker's NOT NULL response constraint check
+  // but ship operationally meaningless rows.
+
+  it("D150: mcp_tool_call with capture flags off skips the event_content envelope", async () => {
+    clearAllPluginMarkers();
+    const before = capture.bodies().length;
+    const result = await runScript(
+      JSON.stringify({
+        hook_event_name: "PostToolUse",
+        session_id: "sess-mcp-no-cap",
+        tool_name: "mcp__filesystem__read_file",
+        tool_input: { path: "/etc/hosts" },
+        tool_response: { content: [{ type: "text", text: "..." }] },
+      }),
+      {
+        FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
+        FLIGHTDECK_TOKEN: "tok_test",
+        CLAUDE_SESSION_ID: "sess-mcp-no-cap",
+        FLIGHTDECK_CAPTURE_PROMPTS: "false",
+        FLIGHTDECK_CAPTURE_TOOL_INPUTS: "false",
+      },
+    );
+    assert.equal(result.code, 0);
+    const posted = capture.bodies().slice(before);
+    const mcpEvent = posted.find((b) => b.event_type === "mcp_tool_call");
+    assert.ok(mcpEvent, "expected mcp_tool_call event");
+    // Both capture flags off → no content envelope. has_content
+    // is falsy and the event_content envelope is absent (some
+    // upstream code paths default content to null on the wire;
+    // the operator-meaningful assertion is "no captured payload"
+    // not "field key absent").
+    assert.ok(!mcpEvent.has_content);
+    assert.ok(mcpEvent.content == null);
+    assert.equal(mcpEvent.arguments, undefined);
+    assert.equal(mcpEvent.result, undefined);
   });
 
   it("PostToolUse tool_call still emits when transcript is missing", async () => {

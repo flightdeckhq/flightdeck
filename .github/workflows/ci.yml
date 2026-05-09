@@ -3,8 +3,14 @@ name: CI
 on:
   pull_request:
     branches: [main]
+  # Run on every branch push, not just main. Pre-PR feedback prevents
+  # invisible drift like the MCP Policy handler coverage that sat at
+  # 52% on feat/mcp-protection-policy until PR #33 surfaced it; the
+  # gate exists for a reason and only catches drift if it fires.
+  # Duplicate runs on PR-target branches are deduped by GitHub via the
+  # workflow run identity.
   push:
-    branches: [main]
+    branches: ['**']
 
 jobs:
   sensor:
@@ -93,7 +99,7 @@ jobs:
       - name: Test ingestion
         working-directory: ingestion
         run: |
-          go test ./tests/... -v \
+          go test ./... -v \
             -coverprofile=coverage.out \
             -covermode=atomic \
             -coverpkg=./internal/handlers/...
@@ -131,7 +137,7 @@ jobs:
       - name: Test workers
         working-directory: workers
         run: |
-          go test ./tests/... -v \
+          go test ./... -v \
             -coverprofile=coverage.out \
             -covermode=atomic \
             -coverpkg=./internal/...
@@ -161,7 +167,14 @@ jobs:
       - name: Test api
         working-directory: api
         run: |
-          go test ./tests/... -v \
+          # Run every test package, not just ./tests/, so handler-package
+          # tests in api/internal/handlers/ (mcp_policy_test.go,
+          # mcp_policy_apply_template_test.go,
+          # mcp_policy_metrics_templates_test.go, whoami_test.go) execute
+          # and contribute to handler coverage. Restricting to ./tests/
+          # left those files compiled-but-unrun, dragging the gate from
+          # 67% to 52% on feat/mcp-protection-policy until PR #33.
+          go test ./... -v \
             -coverprofile=coverage.out \
             -covermode=atomic \
             -coverpkg=./internal/handlers/...

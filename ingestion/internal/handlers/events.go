@@ -403,6 +403,25 @@ func EventsHandler(
 				writeError(w, http.StatusBadRequest, msg)
 				return
 			}
+		case "session_start":
+			// Phase 7 Step 4 (D152): require sensor_version on every
+			// session_start so the dashboard's "did this run under
+			// the buggy build" triage workflow always has the field
+			// to read. Hard cutover per pre-v0.6 no-compat-tax.
+			if msg := validateSessionStartPayload(payload); msg != "" {
+				writeError(w, http.StatusBadRequest, msg)
+				return
+			}
+		case "session_end":
+			// Phase 7 Step 4 (D152): close_reason is optional from
+			// the sensor (worker fills the orphan-detector +
+			// sigkill paths). When present, validate against the
+			// enum so a malformed value can't poison dashboard
+			// renderers downstream.
+			if msg := validateSessionEndPayload(payload); msg != "" {
+				writeError(w, http.StatusBadRequest, msg)
+				return
+			}
 		}
 
 		// On session_start, attach the resolved token id/name so the
@@ -583,6 +602,48 @@ func validatePolicyDecisionBlock(payload map[string]any, eventType string) strin
 // will consolidate.
 func validateTokenBudgetPolicyPayload(payload map[string]any, eventType string) string {
 	return validatePolicyDecisionBlock(payload, eventType)
+}
+
+// validateSessionStartPayload enforces D152 sensor_version
+// presence on session_start events. interceptor_versions +
+// policy_snapshot are optional — empty when no frameworks are
+// installed / no policy is configured.
+func validateSessionStartPayload(payload map[string]any) string {
+	v, ok := payload["sensor_version"].(string)
+	if !ok {
+		return "sensor_version is required for session_start (D152)"
+	}
+	// Empty string is permitted — the sensor's importlib.metadata
+	// read can return "" on editable installs in some pip
+	// versions, and rejecting that would block legitimate dev
+	// sessions. The field's PRESENCE is the contract; non-empty
+	// is operationally helpful but not load-bearing.
+	_ = v
+	return ""
+}
+
+// validateSessionEndPayload enforces the D152 close_reason enum
+// when the field is present. Sensor-knowable values plus the
+// worker-filled values; missing field is fine (worker fills on
+// the orphan-detector / sigkill path).
+func validateSessionEndPayload(payload map[string]any) string {
+	raw, present := payload["close_reason"]
+	if !present {
+		return ""
+	}
+	v, ok := raw.(string)
+	if !ok {
+		return "close_reason must be a string on session_end (D152)"
+	}
+	switch v {
+	case "normal_exit", "directive_shutdown", "policy_block",
+		"orphan_timeout", "sigkill_detected", "unknown":
+		return ""
+	}
+	return fmt.Sprintf(
+		"close_reason must be one of: normal_exit, directive_shutdown, "+
+			"policy_block, orphan_timeout, sigkill_detected, unknown (got %q)", v,
+	)
 }
 
 // validateMCPPolicyUserRememberedPayload enforces the required-

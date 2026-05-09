@@ -338,6 +338,24 @@ class MCPPolicyCache:
     # Introspection
     # ------------------------------------------------------------------
 
+    def snapshot_identity(self) -> dict[str, Any]:
+        """Phase 7 Step 4 (D152): identity-only snapshot of the cached
+        policy state for the session_start payload's policy_snapshot
+        block. Returns empty dict when the cache hasn't populated
+        (preflight failed) — caller's session_start emission omits
+        the mcp section in that case."""
+        with self._lock:
+            if not self._populated:
+                return {}
+            out: dict[str, Any] = {}
+            if self._global is not None and self._global.policy_id:
+                out["global_policy_id"] = self._global.policy_id
+            if self._flavor is not None and self._flavor.policy_id:
+                out["flavor_policy_id"] = self._flavor.policy_id
+                if self._flavor.scope_value:
+                    out["flavor"] = self._flavor.scope_value
+            return out
+
     def known_servers(self) -> list[tuple[str, str]]:
         """Return ``[(canonical_url, server_name)]`` for every entry
         across both policies. Used by the initialize-time name-drift

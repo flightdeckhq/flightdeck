@@ -691,8 +691,41 @@ def _emit_mcp_server_attached(
             "instructions": fingerprint.instructions,
             "attached_at": attached_at,
         }
+        # Phase 7 Step 4 (D152): policy_decision_at_attach. Reuses
+        # the cached MCPPolicyCache.evaluate() so operators see what
+        # the policy would have said about this server at attach
+        # time without joining time-windowed policy state. Same
+        # PolicyDecisionSummary shape as policy_mcp_warn /
+        # policy_mcp_block (D148).
+        try:
+            from flightdeck_sensor.core.types import PolicyDecisionSummary
+
+            decision = sensor_session.mcp_policy.evaluate(
+                server_url=fingerprint.server_url or "",
+                server_name=fingerprint.name,
+            )
+            summary = PolicyDecisionSummary(
+                policy_id=decision.policy_id or "",
+                scope=decision.scope or "",
+                decision=decision.decision,
+                reason=_build_mcp_policy_reason(decision, fingerprint.name),
+                decision_path=decision.decision_path,
+                matched_entry_id=getattr(decision, "matched_entry_id", None) or None,
+                matched_entry_label=getattr(decision, "matched_entry_label", None) or None,
+            )
+            extras["policy_decision_at_attach"] = summary.as_payload_dict()
+        except Exception:
+            # Cache miss / evaluator bug: skip the enrichment rather
+            # than crash the attach emission. The dashboard renders
+            # the row without policy chrome.
+            _log.debug(
+                "flightdeck_sensor: failed to evaluate policy at attach; "
+                "emitting mcp_server_attached without policy_decision_at_attach",
+                exc_info=True,
+            )
         payload = sensor_session._build_payload(
-            EventType.MCP_SERVER_ATTACHED, **extras,
+            EventType.MCP_SERVER_ATTACHED,
+            **extras,
         )
         sensor_session.event_queue.enqueue(payload)
     except Exception:

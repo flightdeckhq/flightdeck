@@ -459,7 +459,7 @@ func TestEventsHandler_SessionStart_NewSession_AttachedFalse(t *testing.T) {
 		attacher,
 		nil,
 	)
-	body := `{"session_id":"22222222-2222-4222-8222-222222222222","event_type":"session_start","flavor":"test","agent_id":"11111111-1111-4111-8111-111111111111","agent_type":"coding","client_type":"claude_code"}`
+	body := `{"session_id":"22222222-2222-4222-8222-222222222222","event_type":"session_start","flavor":"test","agent_id":"11111111-1111-4111-8111-111111111111","agent_type":"coding","client_type":"claude_code","sensor_version":"0.6.0"}`
 	req := httptest.NewRequest("POST", "/v1/events", bytes.NewBufferString(body))
 	req.Header.Set("Authorization", "Bearer valid-token")
 	w := httptest.NewRecorder()
@@ -489,7 +489,7 @@ func TestEventsHandler_SessionStart_ExistingSession_AttachedTrue(t *testing.T) {
 		attacher,
 		nil,
 	)
-	body := `{"session_id":"22222222-2222-4222-8222-222222222222","event_type":"session_start","flavor":"test","agent_id":"11111111-1111-4111-8111-111111111111","agent_type":"coding","client_type":"claude_code"}`
+	body := `{"session_id":"22222222-2222-4222-8222-222222222222","event_type":"session_start","flavor":"test","agent_id":"11111111-1111-4111-8111-111111111111","agent_type":"coding","client_type":"claude_code","sensor_version":"0.6.0"}`
 	req := httptest.NewRequest("POST", "/v1/events", bytes.NewBufferString(body))
 	req.Header.Set("Authorization", "Bearer valid-token")
 	w := httptest.NewRecorder()
@@ -517,7 +517,7 @@ func TestEventsHandler_SessionStart_InjectsTokenIDAndName(t *testing.T) {
 		&mockSessAttacher{attached: false},
 		nil,
 	)
-	body := `{"session_id":"22222222-2222-4222-8222-222222222222","event_type":"session_start","flavor":"test","agent_id":"11111111-1111-4111-8111-111111111111","agent_type":"coding","client_type":"claude_code"}`
+	body := `{"session_id":"22222222-2222-4222-8222-222222222222","event_type":"session_start","flavor":"test","agent_id":"11111111-1111-4111-8111-111111111111","agent_type":"coding","client_type":"claude_code","sensor_version":"0.6.0"}`
 	req := httptest.NewRequest("POST", "/v1/events", bytes.NewBufferString(body))
 	req.Header.Set("Authorization", "Bearer ftd_whatever")
 	w := httptest.NewRecorder()
@@ -1019,5 +1019,82 @@ func TestEventsHandler_MCPPolicyUserRemembered_MissingFlavorReturns400(t *testin
 	code, _ := runEventValidationTest(t, payload)
 	if code != http.StatusBadRequest {
 		t.Errorf("expected 400, got %d", code)
+	}
+}
+
+// ----- Phase 7 Step 4 (D152) session lifecycle validators ---------
+
+func TestEventsHandler_SessionStart_MissingSensorVersion_Returns400(t *testing.T) {
+	payload := map[string]any{
+		"session_id":  "22222222-2222-4222-8222-222222222222",
+		"agent_id":    "11111111-1111-4111-8111-111111111111",
+		"agent_type":  "coding",
+		"client_type": "claude_code",
+		"event_type":  "session_start",
+		"flavor":      "test",
+	}
+	code, body := runEventValidationTest(t, payload)
+	if code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d body=%s", code, body)
+	}
+	if !strings.Contains(body, "sensor_version") || !strings.Contains(body, "D152") {
+		t.Errorf("expected sensor_version/D152 in error body, got %s", body)
+	}
+}
+
+func TestEventsHandler_SessionEnd_BadCloseReason_Returns400(t *testing.T) {
+	payload := map[string]any{
+		"session_id":   "22222222-2222-4222-8222-222222222222",
+		"agent_id":     "11111111-1111-4111-8111-111111111111",
+		"agent_type":   "coding",
+		"client_type":  "claude_code",
+		"event_type":   "session_end",
+		"flavor":       "test",
+		"close_reason": "garbage",
+	}
+	code, body := runEventValidationTest(t, payload)
+	if code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d body=%s", code, body)
+	}
+	if !strings.Contains(body, "close_reason") {
+		t.Errorf("expected close_reason in error body, got %s", body)
+	}
+}
+
+func TestEventsHandler_SessionEnd_AcceptsAllValidCloseReasons(t *testing.T) {
+	for _, reason := range []string{
+		"normal_exit", "directive_shutdown", "policy_block",
+		"orphan_timeout", "sigkill_detected", "unknown",
+	} {
+		payload := map[string]any{
+			"session_id":   "22222222-2222-4222-8222-222222222222",
+			"agent_id":     "11111111-1111-4111-8111-111111111111",
+			"agent_type":   "coding",
+			"client_type":  "claude_code",
+			"event_type":   "session_end",
+			"flavor":       "test",
+			"close_reason": reason,
+		}
+		code, _ := runEventValidationTest(t, payload)
+		if code != http.StatusOK {
+			t.Errorf("close_reason=%s expected 200, got %d", reason, code)
+		}
+	}
+}
+
+func TestEventsHandler_SessionEnd_OmitsCloseReason_OK(t *testing.T) {
+	// Worker fills close_reason on the orphan-detector / sigkill
+	// path; sensor-emitted session_end legitimately lacks it.
+	payload := map[string]any{
+		"session_id":  "22222222-2222-4222-8222-222222222222",
+		"agent_id":    "11111111-1111-4111-8111-111111111111",
+		"agent_type":  "coding",
+		"client_type": "claude_code",
+		"event_type":  "session_end",
+		"flavor":      "test",
+	}
+	code, _ := runEventValidationTest(t, payload)
+	if code != http.StatusOK {
+		t.Errorf("expected 200, got %d", code)
 	}
 }

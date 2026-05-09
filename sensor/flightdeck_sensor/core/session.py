@@ -42,6 +42,103 @@ if TYPE_CHECKING:
 
 _log = logging.getLogger("flightdeck_sensor.core.session")
 
+
+# Phase 7 Step 4 (D152): operator-actionable session_start enrichment.
+# These helpers populate sensor_version + interceptor_versions +
+# policy_snapshot so the dashboard's triage workflow can answer
+# "did this run under the buggy build" / "what policy was in effect
+# at session start" without joining time-windowed log state by hand.
+#
+# All three helpers are best-effort: a missing dep / unreadable
+# version metadata returns the safest empty result rather than
+# breaking the session_start emission. Per Rule 28 (sensor fail-open).
+
+# Frameworks the sensor knows about — version captured via
+# importlib.metadata when installed in the agent's process.
+_INTERCEPTOR_DEPS: tuple[str, ...] = (
+    "anthropic",
+    "openai",
+    "litellm",
+    "langchain",
+    "langgraph",
+    "llama-index-core",
+    "crewai",
+    "mcp",
+)
+
+
+def _sensor_version() -> str:
+    """flightdeck_sensor's __version__ (from package metadata).
+    Returns empty string when the metadata can't be read (rare —
+    editable installs in some pip versions)."""
+    try:
+        from importlib.metadata import version
+
+        return version("flightdeck-sensor")
+    except Exception:
+        try:
+            import flightdeck_sensor as _fs
+
+            return getattr(_fs, "__version__", "")
+        except Exception:
+            return ""
+
+
+def _collect_interceptor_versions() -> dict[str, str]:
+    """Return ``{dep_name: version}`` for every framework the sensor
+    has interceptors for that's installed in the current process.
+    Uninstalled deps are silently omitted (the agent didn't import
+    them, so the version is not operationally meaningful)."""
+    out: dict[str, str] = {}
+    try:
+        from importlib.metadata import PackageNotFoundError, version
+    except Exception:
+        return out
+    for dep in _INTERCEPTOR_DEPS:
+        try:
+            out[dep] = version(dep)
+        except PackageNotFoundError:
+            continue
+        except Exception:
+            continue
+    return out
+
+
+def _build_policy_snapshot(
+    token_policy: Any,
+    mcp_policy: Any,
+) -> dict[str, Any]:
+    """Snapshot the policy state in effect at session_start.
+
+    Token-budget side: ``policy_id`` + ``scope`` already captured
+    in PolicyCache by Step 2 (D148); pass through.
+
+    MCP side: ``MCPPolicyCache`` exposes ``snapshot_identity()``
+    when populated; returns ``{global_policy_id, flavor_policy_id,
+    populated_at}``. Empty cache (preflight failed) returns ``{}``
+    and the snapshot omits the mcp section.
+    """
+    snap: dict[str, Any] = {}
+    try:
+        if token_policy is not None and getattr(token_policy, "policy_id", None):
+            snap["token_budget"] = {
+                "policy_id": token_policy.policy_id,
+                "scope": getattr(token_policy, "matched_policy_scope", None) or "",
+            }
+    except Exception:
+        pass
+    try:
+        if mcp_policy is not None:
+            ident = getattr(mcp_policy, "snapshot_identity", None)
+            if callable(ident):
+                mcp_snap = ident()
+                if mcp_snap:
+                    snap["mcp"] = mcp_snap
+    except Exception:
+        pass
+    return snap
+
+
 _PREFLIGHT_TIMEOUT_SECS = 1
 # Custom directive handler timeout (M-4). SIGALRM-based wall-clock
 # bound on user-supplied handlers so a hung handler cannot block the
@@ -187,11 +284,17 @@ class Session:
     # ------------------------------------------------------------------
 
     def start(self) -> None:
-        """Fire SESSION_START, register handlers, fetch policy, and sync directives."""
-        self._post_event(EventType.SESSION_START)
-        self._register_handlers()
+        """Preflight policy, fire SESSION_START, register handlers, and sync directives.
+
+        Policy preflights run before SESSION_START emission so the
+        session_start payload's policy_snapshot reflects the actual
+        in-effect policy state. Otherwise the snapshot is empty for
+        every fresh session — the cache hasn't populated yet.
+        """
         self._preflight_policy()
         self._preflight_mcp_policy()
+        self._post_event(EventType.SESSION_START)
+        self._register_handlers()
 
         from flightdeck_sensor import _directive_registry
 
@@ -1106,9 +1209,53 @@ class Session:
                     ctx["mcp_servers"] = [fp.to_dict() for fp in self._mcp_servers]
             if ctx:
                 payload["context"] = ctx
+            # Phase 7 Step 4 (D152): operator-actionable triage
+            # enrichment. sensor_version + interceptor_versions answer
+            # "did this session run under the buggy build" without
+            # requiring a separate log dive. policy_snapshot answers
+            # "what budget/MCP rules were in effect at session start"
+            # without joining time-windowed policy state.
+            payload["sensor_version"] = _sensor_version()
+            iv = _collect_interceptor_versions()
+            if iv:
+                payload["interceptor_versions"] = iv
+            ps = _build_policy_snapshot(self.policy, self.mcp_policy)
+            if ps:
+                payload["policy_snapshot"] = ps
+
+        # Phase 7 Step 4 (D152): session_end carries close_reason for
+        # the sensor-knowable paths. Worker fills the rest (orphan
+        # timeout / sigkill detection) on the session-table-update
+        # path because those decisions live worker-side.
+        if event_type == EventType.SESSION_END:
+            reason = self._sensor_close_reason()
+            if reason is not None:
+                payload["close_reason"] = reason
 
         payload.update(extra)
         return payload
+
+    def _sensor_close_reason(self) -> str | None:
+        """Return what the sensor knows about why this session ended.
+
+        Phase 7 Step 4 (D152). Sensor-knowable values:
+          * ``directive_shutdown`` — _apply_directive(SHUTDOWN) set
+            _shutdown_requested before end() fired.
+          * ``normal_exit`` — end() fired with no shutdown flag and
+            no policy-block wind-down (the common path: caller invoked
+            teardown / atexit).
+
+        Worker fills the orphan-detector and SIGKILL paths because
+        those decisions live worker-side. policy_block as a
+        close_reason fires when BudgetExceededError tore down the
+        process before end(); the sensor's atexit handler then runs
+        end() with _shutdown_requested still false but the worker's
+        post-mortem can attribute it.
+        """
+        with self._lock:
+            if self._shutdown_requested:
+                return "directive_shutdown"
+        return "normal_exit"
 
     # ------------------------------------------------------------------
     # Directives
@@ -1157,6 +1304,7 @@ class Session:
             # keep this module dependency-light; the dict shape mirrors
             # PolicyDecisionSummary.as_payload_dict() byte-for-byte.
             from flightdeck_sensor.core.types import PolicyDecisionSummary
+
             degrade_pct = self.policy.degrade_at_pct
             denom = token_limit if token_limit and token_limit > 0 else 1
             degrade_decision = PolicyDecisionSummary(

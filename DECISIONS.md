@@ -7795,3 +7795,170 @@ and `{"meta": null, "content": [...], "isError": false, ...}`).
 Parallel SQL on `events.payload` confirmed `arguments` /
 `result` no longer present inline; `has_content=true` flag set
 on the row. Same shape verified for `mcp_prompt_get`.
+
+
+---
+
+## D152 -- Session lifecycle + MCP server attach/name-change operator-actionable enrichment
+
+**Date:** 2026-05-09
+**Phase:** Phase 7 Step 4 (operator-actionable events)
+
+**Context.** The Phase 7 audit's "incident triage" + "policy /
+behaviour tuning" + "drift detection" + "compliance / audit
+export" workflows all surfaced the same gap on session lifecycle
+events: `session_start` carried no version metadata, `session_end`
+carried no close-reason taxonomy or policy-actions tally, and
+`mcp_server_attached` / `mcp_server_name_changed` carried no
+policy-evaluation context. Operators answering "did this run
+under the buggy build?" or "how many policy events did this
+session fire?" or "did the server's renamed identity break my
+allow entries?" had to either join time-windowed log state by
+hand or run separate queries against the events table.
+
+**Decision.** Four event-type enrichments shipped together as a
+single D-number because the audit's gap analysis is unified
+around session-lifecycle observability:
+
+**`session_start` adds:**
+- `sensor_version` (required at the wire boundary per Rule 36).
+  The `flightdeck-sensor` package version captured via
+  `importlib.metadata`. Empty string permitted (editable installs
+  in some pip versions); the field's PRESENCE is the contract.
+- `interceptor_versions` (optional): `{dep_name: version}` for
+  every framework the sensor has interceptors for that's
+  installed in the agent's process. Uninstalled deps silently
+  omitted — the agent didn't import them, so their version is
+  not operationally meaningful.
+- `policy_snapshot` (optional): identity-only snapshot of the
+  policy state. Token-budget side `{policy_id, scope}`; MCP side
+  `{global_policy_id, flavor_policy_id, flavor}`. Omitted when
+  no policy is configured / preflight failed.
+
+**`session_end` adds:**
+- `close_reason` enum: `normal_exit` / `directive_shutdown` /
+  `policy_block` / `orphan_timeout` / `sigkill_detected` /
+  `unknown`. Sensor populates the first three (atexit fires
+  normally / shutdown directive flag was set / BudgetExceededError
+  tore down the process). Worker fills `orphan_timeout` /
+  `sigkill_detected` on the post-mortem path via session-table
+  update. `unknown` is the catch-all.
+- `policy_actions_summary` (worker-computed at session_end insert
+  time per Q2 lock): tally of every policy enforcement event for
+  the session via the events table GROUP BY query. Shape:
+  `{policy_warn: N, policy_degrade: N, policy_block: N,
+  policy_mcp_warn: N, policy_mcp_block: N}` — fields with zero
+  count omitted.
+- `last_event_id` (worker-computed): the immediately-prior event's
+  UUID for the dashboard's incident-triage time-skip affordance.
+
+**`mcp_server_attached` adds:**
+- `policy_decision_at_attach`: the shared `policy_decision` block
+  (D148) evaluated against the attached server at attach time.
+  Reuses the cached `MCPPolicyCache.evaluate()` so the operator
+  sees what the policy would say about this server without
+  joining time-windowed policy state. Mode-default path populates
+  with `decision_path="mode_default"` and no `matched_entry_id`.
+
+**`mcp_server_name_changed` adds:**
+- `policy_entries_orphaned` (worker-computed): query
+  `mcp_policy_entries` for rows whose fingerprint matched the OLD
+  server name. Shape: `{count, sample_entry_ids[<=5],
+  affected_policies[]}`. Operator-actionable: the row tells you
+  how many policy entries silently stopped binding when the
+  server's `serverInfo.name` drifted.
+
+Plus the **dashboard renderer for `mcp_server_name_changed`** —
+pre-Step-4 the events.ts switch had no case for this type so rows
+rendered as untyped fallback. Inline renderer outputs "name
+drift: \<old\> → \<new\> (N entries orphaned)"; drawer view
+surfaces the orphaned-entries count + affected-policies list.
+
+**`close_reason` split (Q1 lock).** Sensor populates what it
+knows on the session_end payload it emits; worker fills the rest
+on the post-mortem paths (orphan-detector / sigkill-detector)
+where the decision LIVES worker-side. Splitting like this keeps
+the sensor honest (it never claims to know what it doesn't) and
+lets the worker patch in `orphan_timeout` retroactively when the
+sensor never emitted a session_end at all.
+
+**`policy_actions_summary` worker-computed (Q2 lock).** Sensor
+doesn't have an efficient view of per-event-type counts —
+querying its own outbound EventQueue would require state the
+sensor doesn't keep, and per-event in-memory counters add
+multi-thread complexity for a single use case. Worker has the
+events table; the GROUP BY query is O(rows-for-session) which is
+bounded by realistic session lengths.
+
+**Hard cutover** (per pre-v0.6 no-compat-tax).
+- `sensor_version` required at ingestion validation; sensor +
+  ingestion + worker ship together.
+- `close_reason` enum validation when present; missing field is
+  fine (worker fills).
+- Existing tests updated in-commit to add `sensor_version`.
+- Dashboard test fixtures regenerate on next `make dev-reset` /
+  seed.
+
+**Rejected alternatives.**
+
+- *Track sensor_version + interceptor_versions in a separate
+  `agents` table column.* Rejected: the per-session "what build
+  did this run under" is the operator-actionable shape; storing
+  it on agents would lose per-session resolution when an agent
+  was upgraded mid-fleet.
+- *Compute close_reason entirely worker-side via post-mortem
+  inference.* Rejected: the sensor's atexit handler knows
+  `directive_shutdown` and `normal_exit` directly; relying on
+  worker inference would lose that signal precision and force
+  the worker to encode every directive flow.
+- *Compute policy_actions_summary from analytics endpoint at
+  render time.* Rejected: dashboard would need a sub-query per
+  drawer click; pre-computing on session_end is one query at
+  ingestion time and frees the dashboard from joining state.
+- *Carry policy_entries_orphaned client-side via the sensor.*
+  Rejected: the sensor's MCPPolicyCache only carries entries
+  matching the CURRENT fingerprint set; computing orphans
+  against the old fingerprint requires worker-side query
+  against `mcp_policy_entries` (single-source-of-truth).
+
+**Related decisions.** D131 (the `mcp_server_name_changed` event
+this enrichment hangs on). D135 (the resolution algorithm
+`policy_decision_at_attach` records). D140 (the
+`mcp_server_attached` event D152 enriches). D148 / D149 (the
+shared `policy_decision` block + `originating_event_id` chain
+that `policy_decision_at_attach` reuses). Phase 7 audit
+(`docs/phase-7-event-audit.md`) for the audit-derived workflow
+gap analysis.
+
+**Implementation note (Step 4).**
+
+- Sensor (`core/session.py`): `_sensor_version()`,
+  `_collect_interceptor_versions()`,
+  `_build_policy_snapshot()` module helpers. `_build_payload`
+  stamps the new fields on SESSION_START / SESSION_END.
+  `_sensor_close_reason()` resolves the sensor-knowable values.
+- Sensor (`core/mcp_policy.py`): `MCPPolicyCache.snapshot_identity()`
+  returns the identity-only block.
+- Sensor (`interceptor/mcp.py`): `_emit_mcp_server_attached`
+  populates `policy_decision_at_attach` via
+  `mcp_policy.evaluate()` + `PolicyDecisionSummary`.
+- Worker (`processor/event.go`): `Processor.enrichSessionEnd` runs
+  the GROUP BY + last_event_id queries between BuildEventExtra
+  and InsertEvent. `Processor.enrichServerNameChanged` runs the
+  `mcp_policy_entries` query for the orphan count.
+- Worker (`consumer/nats.go`): `EventPayload` adds the new
+  passthrough fields.
+- Ingestion (`internal/handlers/events.go`):
+  `validateSessionStartPayload` requires `sensor_version`;
+  `validateSessionEndPayload` enforces the `close_reason` enum
+  when present.
+- Dashboard (`src/lib/types.ts`): `EventPayloadFields` extends
+  with the new fields; `CloseReason` literal type;
+  `PolicyActionsSummary` + `PolicyEntriesOrphaned` interfaces.
+- Dashboard (`src/lib/events.ts`): inline renderer for
+  `mcp_server_name_changed` (the pre-Step-4 missing case);
+  drawer detail rows for the same.
+
+**Live-stack verification.** SQL probes confirm enrichment lands
+on session_start / session_end / mcp_server_attached payloads;
+playground/19_mcp_policy_block.py drives the full chain.

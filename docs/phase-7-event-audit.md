@@ -39,6 +39,28 @@ path (Q1 lock — resource bodies are blobs, not
 request/response shapes). Dashboard rendering deferred to
 Step 6.
 
+**Step 4 (Phase 7) shipped 2026-05-09:** D152 lands session
+lifecycle + MCP server attach/name-change enrichment.
+`session_start` carries `sensor_version` (required) +
+`interceptor_versions` + `policy_snapshot` for triage. The
+operator's "did this run under the buggy build" question is
+answerable from a single payload field. `session_end` carries
+`close_reason` enum (sensor populates `normal_exit` /
+`directive_shutdown` / `policy_block`; worker fills
+`orphan_timeout` / `sigkill_detected` on the post-mortem
+path), `policy_actions_summary` (worker-computed via events
+table GROUP BY), and `last_event_id` (worker-computed for
+the time-skip affordance). `mcp_server_attached` carries
+`policy_decision_at_attach` — the shared D148
+`policy_decision` block evaluated at attach time so operators
+see what the policy says about the attached server without
+joining time-windowed policy state. `mcp_server_name_changed`
+carries `policy_entries_orphaned` (worker-computed via
+`mcp_policy_entries` query) AND gains a dedicated
+`events.ts` renderer (the pre-Step-4 missing case — rows used
+to render as untyped fallback). Dashboard rendering otherwise
+deferred to Step 6.
+
 **Scope locks (from scope-out turn).** Q1 every event type covered
 including "audit complete, no enrichment needed". Q2 policy/state
 metadata always included regardless of `capture_prompts`; flag

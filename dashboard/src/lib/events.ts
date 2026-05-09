@@ -282,8 +282,33 @@ export function getEventDetail(event: AgentEvent): string {
     }
     case "session_start":
       return "session started";
-    case "session_end":
+    case "session_end": {
+      // Phase 7 Step 4 (D152): close_reason chip — operator sees
+      // why the session ended without opening the drawer.
+      const reason = event.payload?.close_reason;
+      if (reason && reason !== "normal_exit") {
+        return `session ended · ${reason}`;
+      }
       return "session ended";
+    }
+    case "mcp_server_name_changed": {
+      // Phase 7 Step 4 (D152) — pre-Step-4 events.ts had no case
+      // for this type so rows rendered as untyped fallback. The
+      // drift-detection workflow needs to see the rename + the
+      // orphaned-entries count inline so the operator can act on
+      // it without opening the drawer.
+      const p = event.payload as Record<string, unknown> | undefined;
+      const oldName = (p?.name_old as string | undefined) ?? "?";
+      const newName = (p?.name_new as string | undefined) ?? "?";
+      const orphaned = p?.policy_entries_orphaned as
+        | { count?: number }
+        | undefined;
+      const orphanCount = orphaned?.count ?? 0;
+      const base = `name drift: ${oldName} → ${newName}`;
+      return orphanCount > 0
+        ? `${base} (${orphanCount} entries orphaned)`
+        : base;
+    }
     case "directive_result": {
       const name = event.payload?.directive_name;
       const status = event.payload?.directive_status;
@@ -453,6 +478,35 @@ export function getSummaryRows(event: AgentEvent): [string, string][] {
       return [["Event", "session started"]];
     case "session_end":
       return [["Event", "session ended"]];
+    case "mcp_server_name_changed": {
+      // Phase 7 Step 4 (D152) — drawer view for the name-drift
+      // event. Worker enriches policy_entries_orphaned when any
+      // mcp_policy_entries row matched the OLD fingerprint;
+      // operator-actionable signal that policy entries silently
+      // stopped binding to this server.
+      const p = event.payload as Record<string, unknown> | undefined;
+      const rows: [string, string][] = [];
+      const oldName = p?.name_old as string | undefined;
+      const newName = p?.name_new as string | undefined;
+      if (oldName) rows.push(["Old name", oldName]);
+      if (newName) rows.push(["New name", newName]);
+      const orphaned = p?.policy_entries_orphaned as
+        | { count?: number; affected_policies?: string[] }
+        | undefined;
+      if (orphaned?.count != null) {
+        rows.push(["Entries orphaned", String(orphaned.count)]);
+      }
+      if (orphaned?.affected_policies?.length) {
+        rows.push([
+          "Affected policies",
+          orphaned.affected_policies.join(", "),
+        ]);
+      }
+      if (rows.length === 0) {
+        return [["Event", "MCP server name changed"]];
+      }
+      return rows;
+    }
     case "directive_result": {
       const rows: [string, string][] = [];
       if (event.payload?.directive_name) {

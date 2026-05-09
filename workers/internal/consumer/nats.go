@@ -251,6 +251,39 @@ type EventPayload struct {
 	// drift detection ("did this server's tool inventory change").
 	ItemNames []string `json:"item_names,omitempty"`
 	Truncated bool     `json:"truncated,omitempty"`
+
+	// Phase 7 Step 4 (D152): session lifecycle + MCP server attach
+	// operator-actionable enrichment. All fields are state metadata
+	// (always-included regardless of capture_prompts per Phase 7 Q2).
+	//
+	// session_start:
+	//   * SensorVersion / InterceptorVersions — answers "did this
+	//     run under the buggy build" without a separate log dive.
+	//   * PolicySnapshot — answers "what policy was in effect at
+	//     session start" without joining time-windowed state.
+	// session_end:
+	//   * CloseReason — sensor populates "normal_exit" /
+	//     "directive_shutdown"; worker fills "orphan_timeout" /
+	//     "sigkill_detected" / "policy_block" via session-table
+	//     update on the post-mortem path.
+	//   * PolicyActionsSummary — worker computes at session_end
+	//     insert time via the events table GROUP BY query (Q2 lock).
+	//   * LastEventID — worker resolves at session_end insert time
+	//     via the events table.
+	// mcp_server_attached:
+	//   * PolicyDecisionAtAttach — sensor evaluates at attach time;
+	//     worker passes through.
+	// mcp_server_name_changed:
+	//   * PolicyEntriesOrphaned — worker computes by querying
+	//     mcp_policy_entries against the OLD fingerprint.
+	SensorVersion          string                 `json:"sensor_version,omitempty"`
+	InterceptorVersions    map[string]string      `json:"interceptor_versions,omitempty"`
+	PolicySnapshot         map[string]interface{} `json:"policy_snapshot,omitempty"`
+	CloseReason            string                 `json:"close_reason,omitempty"`
+	PolicyActionsSummary   map[string]int         `json:"policy_actions_summary,omitempty"`
+	LastEventID            string                 `json:"last_event_id,omitempty"`
+	PolicyDecisionAtAttach json.RawMessage        `json:"policy_decision_at_attach,omitempty"`
+	PolicyEntriesOrphaned  map[string]interface{} `json:"policy_entries_orphaned,omitempty"`
 }
 
 // SubagentMessageBody is the framework-supplied body of a single

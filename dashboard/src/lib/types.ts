@@ -282,12 +282,71 @@ export type OriginatingCallContext =
   | "list_prompts"
   | "session_boot";
 
+/**
+ * Phase 7 Step 4 (D152): close_reason taxonomy on session_end.
+ * Sensor-knowable: normal_exit / directive_shutdown / policy_block.
+ * Worker-filled (orphan-detector / sigkill-detector / post-mortem):
+ * orphan_timeout / sigkill_detected / unknown.
+ */
+export type CloseReason =
+  | "normal_exit"
+  | "directive_shutdown"
+  | "policy_block"
+  | "orphan_timeout"
+  | "sigkill_detected"
+  | "unknown";
+
+/**
+ * Phase 7 Step 4 (D152): policy_actions_summary on session_end —
+ * worker-computed tally of every policy enforcement event for the
+ * session. Operationally key for the audit's "did the operator's
+ * policy fire as expected" tuning workflow.
+ */
+export interface PolicyActionsSummary {
+  policy_warn?: number;
+  policy_degrade?: number;
+  policy_block?: number;
+  policy_mcp_warn?: number;
+  policy_mcp_block?: number;
+}
+
+/**
+ * Phase 7 Step 4 (D152): policy_entries_orphaned on
+ * mcp_server_name_changed. Worker-computed from mcp_policy_entries
+ * matching the OLD fingerprint.
+ */
+export interface PolicyEntriesOrphaned {
+  count: number;
+  sample_entry_ids: string[];
+  affected_policies: string[];
+}
+
 export interface EventPayloadFields {
   // Phase 7 Step 2 (D148/D149): operator-actionable enrichment.
   // Schema acceptance only in this commit; renderers land in Step 6.
   policy_decision?: PolicyDecisionBlock;
   originating_event_id?: string;
   originating_call_context?: OriginatingCallContext;
+
+  // Phase 7 Step 4 (D152): session lifecycle + MCP server attach
+  // enrichment. Schema acceptance only; rendering deferred to Step 6
+  // EXCEPT mcp_server_name_changed which gains an inline renderer
+  // here because it had no events.ts switch case before.
+  sensor_version?: string;
+  interceptor_versions?: Record<string, string>;
+  policy_snapshot?: {
+    token_budget?: { policy_id: string; scope: string };
+    mcp?: {
+      global_policy_id?: string;
+      flavor_policy_id?: string;
+      flavor?: string;
+    };
+  };
+  close_reason?: CloseReason;
+  policy_actions_summary?: PolicyActionsSummary;
+  last_event_id?: string;
+  policy_decision_at_attach?: PolicyDecisionBlock;
+  policy_entries_orphaned?: PolicyEntriesOrphaned;
 
   directive_name?: string;
   directive_action?: string;

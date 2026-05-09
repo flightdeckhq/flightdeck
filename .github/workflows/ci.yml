@@ -19,7 +19,10 @@ on:
 # succession should not boot two parallel Compose stacks (integration
 # + e2e jobs each spin up a full dev stack).
 concurrency:
-  group: ci-${{ github.ref }}
+  # Namespace by workflow name so a future workflow that picks the
+  # same ref-keyed group doesn't accidentally cancel CI runs. Low-cost
+  # future-proofing (the repo currently has just CI + release).
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -92,11 +95,13 @@ jobs:
           go-version: "1.26.2"
 
       - name: Install golangci-lint v2
-        # Pinned to an explicit release tag (vs. @latest) so a
-        # compromised or breaking-change release of golangci-lint
-        # can't execute on every CI run with full runner access.
-        # Bump deliberately; never silently track upstream HEAD.
-        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.11.4
+        # Pinned to an immutable commit SHA (not a tag like @v2.11.4)
+        # because tags can be re-pointed by anyone with push access to
+        # the upstream repo without changing the version string. SHA
+        # is the only anchor that survives an upstream tag rewrite.
+        # Bump deliberately; keep the tag name in the comment for
+        # human readability. Current pin: v2.11.4 (8f3b0c7e).
+        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@8f3b0c7ed018e57905fbd873c697e0b1ede605a5
 
       - name: Lint ingestion
         working-directory: ingestion

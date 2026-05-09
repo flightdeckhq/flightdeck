@@ -1164,10 +1164,16 @@ def _emit_error(
         provider_name = cast(
             "str", error_payload.get("provider") or getattr(provider, "name", "")
         )
-        # Same shape for request_id: cast preserves the str | None
-        # contract record_retry_attempt expects, without a runtime
-        # str() round-trip that would mask a malformed value type.
-        request_id = cast("str | None", error_payload.get("request_id"))
+        # Trust-boundary check: error_payload is sensor-internal but
+        # composed from provider-supplied error attributes (request_id
+        # is whatever the SDK exposed). isinstance enforces the
+        # str | None contract record_retry_attempt expects, instead of
+        # papering over a malformed value type with cast(). A non-str
+        # request_id falls through to None — record_retry_attempt then
+        # treats the call as a fresh attempt rather than crashing on a
+        # type mismatch.
+        request_id_raw = error_payload.get("request_id")
+        request_id = request_id_raw if isinstance(request_id_raw, str) else None
         retry_attempt = session.record_retry_attempt(provider_name, request_id)
         terminal = not bool(error_payload.get("is_retryable", False))
 

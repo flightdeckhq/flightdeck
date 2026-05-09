@@ -1370,6 +1370,15 @@ export function Investigate() {
         is_sub_agent: state.isSubAgent || undefined,
         has_sub_agents: state.hasSubAgents || undefined,
         parent_session_id: state.parentSessionId || undefined,
+        close_reason: state.closeReasons.length > 0 ? state.closeReasons : undefined,
+        estimated_via: state.estimatedVias.length > 0 ? state.estimatedVias : undefined,
+        terminal: state.terminalOnly || undefined,
+        matched_entry_id:
+          state.matchedEntryIds.length > 0 ? state.matchedEntryIds : undefined,
+        originating_call_context:
+          state.originatingCallContexts.length > 0
+            ? state.originatingCallContexts
+            : undefined,
         // D126 UX revision 2026-05-03 — default scope hides pure
         // children. The "Is sub-agent" facet override (state.isSubAgent
         // = true) flips to children-only via the existing
@@ -1935,52 +1944,6 @@ export function Investigate() {
     [urlState, sessions, fleetAgents, updateUrl, resolvedAgentName],
   );
 
-  // Operator-actionable enrichment facet client-side filter. The
-  // server returns the result set narrowed by the existing facets;
-  // this pass narrows further using the per-session aggregates the
-  // API returns (close_reasons[], estimated_via_values[], etc.).
-  // Server-side WHERE-clause wiring for these is a follow-up; the
-  // client filter delivers the operator UX today and degrades
-  // cleanly once the server filter ships (the client filter
-  // becomes a no-op because the server pre-filters).
-  const displayedSessions = useMemo(() => {
-    let out = sessions;
-    if (urlState.closeReasons.length > 0) {
-      const want = new Set(urlState.closeReasons);
-      out = out.filter((s) =>
-        (s.close_reasons ?? []).some((cr) => want.has(cr)),
-      );
-    }
-    if (urlState.estimatedVias.length > 0) {
-      const want = new Set(urlState.estimatedVias);
-      out = out.filter((s) =>
-        (s.estimated_via_values ?? []).some((v) => want.has(v)),
-      );
-    }
-    if (urlState.terminalOnly) {
-      out = out.filter((s) => s.has_terminal_error === true);
-    }
-    if (urlState.matchedEntryIds.length > 0) {
-      const want = new Set(urlState.matchedEntryIds);
-      out = out.filter((s) =>
-        (s.matched_entry_ids ?? []).some((id) => want.has(id)),
-      );
-    }
-    if (urlState.originatingCallContexts.length > 0) {
-      const want = new Set(urlState.originatingCallContexts);
-      out = out.filter((s) =>
-        (s.originating_call_contexts ?? []).some((c) => want.has(c)),
-      );
-    }
-    return out;
-  }, [
-    sessions,
-    urlState.closeReasons,
-    urlState.estimatedVias,
-    urlState.terminalOnly,
-    urlState.matchedEntryIds,
-    urlState.originatingCallContexts,
-  ]);
 
   const clearAllFilters = useCallback(() => {
     updateUrl(CLEAR_ALL_FILTERS_PATCH);
@@ -2498,8 +2461,8 @@ export function Investigate() {
                 </tr>
               </thead>
               <tbody>
-                {loading && displayedSessions.length === 0 && <SkeletonRows />}
-                {displayedSessions.flatMap((s) => {
+                {loading && sessions.length === 0 && <SkeletonRows />}
+                {sessions.flatMap((s) => {
                   const isParent = (s.child_count ?? 0) > 0;
                   const isExpanded = expandedParents.has(s.session_id);
                   const childRows: SessionListItem[] = isExpanded

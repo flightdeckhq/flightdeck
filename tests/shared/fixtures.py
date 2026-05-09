@@ -321,6 +321,13 @@ def make_event(
     payload.update(extra)
     if event_type == "session_start" and "context" not in payload:
         payload["context"] = dict(DEFAULT_TEST_CONTEXT)
+    # Ingestion requires a non-empty sensor_version on every
+    # session_start event. Stamp a sentinel here so integration
+    # tests don't fail with HTTP 400 on the bookend; tests that
+    # specifically exercise sensor-version validation can override
+    # via **extra.
+    if event_type == "session_start" and "sensor_version" not in payload:
+        payload["sensor_version"] = "integration-test/0.0.0"
     _session_tracker[session_id] = flavor
     return payload
 

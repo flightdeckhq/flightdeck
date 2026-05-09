@@ -90,6 +90,28 @@ var validPolicyEventTypes = map[string]bool{
 	"mcp_policy_user_remembered": true,
 }
 
+// validCloseReasons mirrors the close_reason enum the sensor +
+// worker emit on session_end events. Out-of-band values 400 with
+// the allowed list rather than silently matching nothing — the
+// dimension is closed, so a typo is operator-actionable.
+var validCloseReasons = map[string]bool{
+	"normal_exit":        true,
+	"directive_shutdown": true,
+	"policy_block":       true,
+	"orphan_timeout":     true,
+	"sigkill_detected":   true,
+	"unknown":            true,
+}
+
+// validEstimatedVias mirrors the estimated_via enum the sensor
+// emits on pre_call / post_call / embeddings events. Same closed-
+// vocabulary posture as validCloseReasons / validPolicyEventTypes.
+var validEstimatedVias = map[string]bool{
+	"tiktoken":  true,
+	"heuristic": true,
+	"none":      true,
+}
+
 // SessionsListHandler handles GET /v1/sessions.
 //
 // @Summary      List sessions with filters, search, and pagination
@@ -121,6 +143,11 @@ var validPolicyEventTypes = map[string]bool{
 // @Param        has_sub_agents query bool false "D126: when true, restrict to parent sessions only (those referenced as a parent_session_id by at least one other session). Backs the Investigate TOPOLOGY facet 'Has sub-agents' checkbox."
 // @Param        is_sub_agent query bool false "D126: when true, restrict to child sessions only (parent_session_id IS NOT NULL). Backs the Investigate TOPOLOGY facet 'Is sub-agent' checkbox."
 // @Param        include_pure_children query bool false "D126 UX revision 2026-05-03: when false, exclude pure children (rows whose parent_session_id is set AND that themselves have no descendants), leaving parents-with-children + lone sessions. Default scope of the Investigate page. Omit or set true to preserve the legacy 'all sessions' behaviour."
+// @Param        close_reason             query  string  false  "Filter to sessions whose session_end carries one of the listed close_reason values (repeatable/comma; OR within, AND across dimensions). Allowed: normal_exit, directive_shutdown, policy_block, orphan_timeout, sigkill_detected, unknown."
+// @Param        estimated_via            query  string  false  "Filter to sessions that emitted at least one pre_call/post_call/embeddings event with the given estimated_via (repeatable/comma; OR within, AND across dimensions). Allowed: tiktoken, heuristic, none."
+// @Param        terminal                 query  bool    false  "When true, restrict to sessions that have at least one llm_error event with terminal=true (operator-actionable retry-chain-gave-up signal). Composes with every other filter via AND."
+// @Param        matched_entry_id         query  string  false  "Filter to sessions that emitted at least one policy_mcp_warn / policy_mcp_block event whose policy_decision.matched_entry_id matches one of the listed UUIDs (repeatable/comma; OR within, AND across dimensions)."
+// @Param        originating_call_context query  string  false  "Filter to sessions that emitted at least one event with originating_call_context matching one of the listed values (repeatable/comma; OR within, AND across dimensions). Vocabulary: call_tool, read_resource, list_tools, get_prompt, list_resources, list_prompts."
 // @Param        sort       query  string  false  "Sort field: started_at, last_seen_at, duration, tokens_used, flavor, model, hostname, state (default: started_at). state sort uses severity ordinal active→idle→stale→lost→closed."
 // @Param        order      query  string  false  "Sort order: asc, desc (default: desc)"
 // @Param        limit      query  int     false  "Max results (default 25, max 100)"
@@ -395,6 +422,65 @@ func SessionsListHandler(s store.Querier) http.HandlerFunc {
 			includePureChildren = &b
 		}
 
+		// Operator-actionable enrichment facet filters (Step 6 follow-
+		// up). close_reason / estimated_via are closed enums and 400 on
+		// out-of-band values; matched_entry_id /
+		// originating_call_context are free-form (typos silently match
+		// nothing). terminal is a bool toggle.
+		var closeReasons []string
+		for _, raw := range q["close_reason"] {
+			for _, v := range strings.Split(raw, ",") {
+				v = strings.TrimSpace(v)
+				if v == "" {
+					continue
+				}
+				if !validCloseReasons[v] {
+					writeError(w, http.StatusBadRequest,
+						"invalid close_reason: "+v+
+							". Allowed: normal_exit, directive_shutdown, "+
+							"policy_block, orphan_timeout, "+
+							"sigkill_detected, unknown")
+					return
+				}
+				closeReasons = append(closeReasons, v)
+			}
+		}
+		var estimatedVias []string
+		for _, raw := range q["estimated_via"] {
+			for _, v := range strings.Split(raw, ",") {
+				v = strings.TrimSpace(v)
+				if v == "" {
+					continue
+				}
+				if !validEstimatedVias[v] {
+					writeError(w, http.StatusBadRequest,
+						"invalid estimated_via: "+v+
+							". Allowed: tiktoken, heuristic, none")
+					return
+				}
+				estimatedVias = append(estimatedVias, v)
+			}
+		}
+		terminalOnly := parseBoolQuery(q.Get("terminal"))
+		var matchedEntryIDs []string
+		for _, raw := range q["matched_entry_id"] {
+			for _, v := range strings.Split(raw, ",") {
+				v = strings.TrimSpace(v)
+				if v != "" {
+					matchedEntryIDs = append(matchedEntryIDs, v)
+				}
+			}
+		}
+		var originatingCallContexts []string
+		for _, raw := range q["originating_call_context"] {
+			for _, v := range strings.Split(raw, ",") {
+				v = strings.TrimSpace(v)
+				if v != "" {
+					originatingCallContexts = append(originatingCallContexts, v)
+				}
+			}
+		}
+
 		params := store.SessionsParams{
 			From:    from,
 			To:      to,
@@ -417,6 +503,11 @@ func SessionsListHandler(s store.Querier) http.HandlerFunc {
 			HasSubAgents:        hasSubAgents,
 			IsSubAgent:          isSubAgent,
 			IncludePureChildren: includePureChildren,
+			CloseReasons:            closeReasons,
+			EstimatedVias:           estimatedVias,
+			TerminalOnly:            terminalOnly,
+			MatchedEntryIDs:         matchedEntryIDs,
+			OriginatingCallContexts: originatingCallContexts,
 			ContextFilters:   contextFilters,
 			Model:            q.Get("model"),
 			Sort:             sort,

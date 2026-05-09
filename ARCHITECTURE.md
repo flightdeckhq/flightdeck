@@ -2067,8 +2067,18 @@ ORIGINATING CALL (originating_call_contexts[] — the MCP method
 that triggered downstream activity). Each per-session aggregate is
 returned by the API's session list endpoint alongside the existing
 error_types[] / policy_event_types[] / mcp_server_names[] arrays.
-Clicking a value adds it to the URL filter state and narrows the
-visible result set.
+
+Filtering composes server-side. Each value in the URL state
+(`?close_reason=normal_exit&close_reason=directive_shutdown`,
+`?terminal=true`, etc.) maps to an EXISTS subquery against the
+events table scoped to the right event_type set. Multi-value
+entries OR within a dimension; values across dimensions AND. The
+two enum filters (close_reason, estimated_via) reject out-of-band
+values with HTTP 400 and the allowed-set message; the three free-
+form filters (matched_entry_id, originating_call_context,
+plus close_reason's free-form siblings on other endpoints) accept
+any string and silently match nothing on typos. Footer count and
+pagination total reflect the filtered total.
 
 ### Session drawer
 

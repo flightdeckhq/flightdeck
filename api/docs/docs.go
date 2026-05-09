@@ -2125,6 +2125,36 @@ const docTemplate = `{
                     },
                     {
                         "type": "string",
+                        "description": "Filter to sessions whose session_end carries one of the listed close_reason values (repeatable/comma; OR within, AND across dimensions). Allowed: normal_exit, directive_shutdown, policy_block, orphan_timeout, sigkill_detected, unknown.",
+                        "name": "close_reason",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter to sessions that emitted at least one pre_call/post_call/embeddings event with the given estimated_via (repeatable/comma; OR within, AND across dimensions). Allowed: tiktoken, heuristic, none.",
+                        "name": "estimated_via",
+                        "in": "query"
+                    },
+                    {
+                        "type": "boolean",
+                        "description": "When true, restrict to sessions that have at least one llm_error event with terminal=true (operator-actionable retry-chain-gave-up signal). Composes with every other filter via AND.",
+                        "name": "terminal",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter to sessions that emitted at least one policy_mcp_warn / policy_mcp_block event whose policy_decision.matched_entry_id matches one of the listed UUIDs (repeatable/comma; OR within, AND across dimensions).",
+                        "name": "matched_entry_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter to sessions that emitted at least one event with originating_call_context matching one of the listed values (repeatable/comma; OR within, AND across dimensions). Vocabulary: call_tool, read_resource, list_tools, get_prompt, list_resources, list_prompts.",
+                        "name": "originating_call_context",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
                         "description": "Sort field: started_at, last_seen_at, duration, tokens_used, flavor, model, hostname, state (default: started_at). state sort uses severity ordinal active→idle→stale→lost→closed.",
                         "name": "sort",
                         "in": "query"
@@ -3402,6 +3432,13 @@ const docTemplate = `{
                 "client_type": {
                     "type": "string"
                 },
+                "close_reasons": {
+                    "description": "Per-session aggregates for the operator-actionable enrichment\nfacets. Each field is a distinct-value array (or boolean) over\nthe session's events. Same correlated-subquery pattern as\nErrorTypes / PolicyEventTypes so the dashboard renders the\nnew sidebar facets without a per-session follow-up fetch.\n\n  * CloseReasons: distinct close_reason values across the\n    session's session_end events.\n  * EstimatedViaValues: distinct estimated_via values across\n    pre_call / post_call / embeddings events.\n  * HasTerminalError: true when at least one llm_error event\n    in the session carries terminal=true.\n  * MatchedEntryIDs: distinct policy_decision.matched_entry_id\n    values across MCP-policy events.\n  * OriginatingCallContexts: distinct\n    payload-\u003e\u003e'originating_call_context' values across the\n    session's events (the MCP method that triggered downstream\n    activity — call_tool / read_resource / etc.).",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
                 "context": {
                     "type": "object",
                     "additionalProperties": true
@@ -3419,8 +3456,17 @@ const docTemplate = `{
                         "type": "string"
                     }
                 },
+                "estimated_via_values": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
                 "flavor": {
                     "type": "string"
+                },
+                "has_terminal_error": {
+                    "type": "boolean"
                 },
                 "host": {
                     "type": "string"
@@ -3428,6 +3474,12 @@ const docTemplate = `{
                 "last_seen_at": {
                     "description": "LastSeenAt is the most-recent activity timestamp on the session.\nFor active/idle/stale/lost: max(events.occurred_at), projected\nthrough the worker's last_seen_at column. For closed: aligned\nwith ended_at. Drives the Investigate \"Last Seen\" column\n(S-TBL-1) and is sortable via ?sort=last_seen_at.",
                     "type": "string"
+                },
+                "matched_entry_ids": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
                 },
                 "mcp_error_types": {
                     "description": "MCPErrorTypes (Phase 5) lists every distinct\n` + "`" + `` + "`" + `payload-\u003e'error'-\u003e\u003e'error_type'` + "`" + `` + "`" + ` observed across the\nsession's MCP events (any event_type starting with ` + "`" + `` + "`" + `mcp_` + "`" + `` + "`" + `\nwhose payload carries an ` + "`" + `` + "`" + `error` + "`" + `` + "`" + ` object). Always present on\nthe wire (empty array when no MCP event in the session\nfailed). Mirrors the ErrorTypes correlated-subquery pattern,\nscoped to MCP rather than llm_error rows so the Investigate\nsession-row red MCP indicator can render without a per-session\nfollow-up fetch.",
@@ -3445,6 +3497,12 @@ const docTemplate = `{
                 },
                 "model": {
                     "type": "string"
+                },
+                "originating_call_contexts": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
                 },
                 "parent_session_id": {
                     "description": "D126 sub-agent observability columns. Both nullable, both\npopulated only on sub-agent sessions (Claude Code Task\nsubagent, CrewAI agent execution, LangGraph agent-bearing\nnode). The dashboard's swimlane relationship pill,\nSessionDrawer Sub-agents tab, Investigate ROLE / PARENT\ncolumns and TOPOLOGY / ROLE facets read these directly.",

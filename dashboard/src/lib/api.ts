@@ -414,6 +414,17 @@ export interface SessionsParams {
   has_sub_agents?: boolean;
   is_sub_agent?: boolean;
   /**
+   * Operator-actionable enrichment facet filters. Each repeatable
+   * array filter narrows to sessions that emitted at least one
+   * matching event. ``terminal`` is a bool toggle. Composes with
+   * every other filter via AND.
+   */
+  close_reason?: string[];
+  estimated_via?: string[];
+  terminal?: boolean;
+  matched_entry_id?: string[];
+  originating_call_context?: string[];
+  /**
    * D126 UX revision 2026-05-03 — when explicitly false, excludes
    * pure children (sessions whose ``parent_session_id`` is set
    * AND that themselves have no descendants), leaving
@@ -484,6 +495,20 @@ export async function fetchSessions(params: SessionsParams, signal?: AbortSignal
   }
   if (params.has_sub_agents) sp.set("has_sub_agents", "true");
   if (params.is_sub_agent) sp.set("is_sub_agent", "true");
+  if (params.close_reason) {
+    for (const v of params.close_reason) sp.append("close_reason", v);
+  }
+  if (params.estimated_via) {
+    for (const v of params.estimated_via) sp.append("estimated_via", v);
+  }
+  if (params.terminal) sp.set("terminal", "true");
+  if (params.matched_entry_id) {
+    for (const v of params.matched_entry_id) sp.append("matched_entry_id", v);
+  }
+  if (params.originating_call_context) {
+    for (const v of params.originating_call_context)
+      sp.append("originating_call_context", v);
+  }
   if (params.include_pure_children !== undefined) {
     sp.set(
       "include_pure_children",

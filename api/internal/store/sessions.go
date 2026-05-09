@@ -95,6 +95,33 @@ type SessionsParams struct {
 	// instead. Pointer-to-bool so omit / explicit-true / explicit-
 	// false are three distinct states on the wire.
 	IncludePureChildren *bool
+	// Operator-actionable enrichment facet filters. Each maps to an
+	// EXISTS subquery over the events table keyed on a payload field
+	// or specific event_type set. Multi-value entries OR within the
+	// dimension; AND composes across dimensions.
+	//
+	//   * CloseReasons: session_end events whose payload.close_reason
+	//     matches any listed value. Closed enum (normal_exit /
+	//     directive_shutdown / policy_block / orphan_timeout /
+	//     sigkill_detected / unknown).
+	//   * EstimatedVias: pre_call/post_call/embeddings events whose
+	//     payload.estimated_via matches any listed value. Closed enum
+	//     (tiktoken / heuristic / none).
+	//   * TerminalOnly: when true, restrict to sessions with at least
+	//     one llm_error event whose payload.terminal == "true". Single
+	//     bool toggle.
+	//   * MatchedEntryIDs: policy_mcp_warn / policy_mcp_block events
+	//     whose payload.policy_decision.matched_entry_id matches any
+	//     listed value. Free-form (UUIDs).
+	//   * OriginatingCallContexts: events whose
+	//     payload.originating_call_context matches any listed value.
+	//     Vocabulary is the MCP method name (call_tool, read_resource,
+	//     list_tools, ...) but free-form so plugin-side variations land.
+	CloseReasons            []string
+	EstimatedVias           []string
+	TerminalOnly            bool
+	MatchedEntryIDs         []string
+	OriginatingCallContexts []string
 	// ContextFilters carries the generic scalar-key filters on
 	// sessions.context JSONB (user, os, arch, hostname, process_name,
 	// node_version, python_version, git_branch, git_commit, git_repo,
@@ -550,6 +577,89 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 			"(s.parent_session_id IS NULL OR "+
 				"EXISTS (SELECT 1 FROM sessions child "+
 				"WHERE child.parent_session_id = s.session_id))")
+	}
+
+	// Operator-actionable enrichment facet filters. Each is an
+	// EXISTS subquery over events scoped to the right event_type
+	// set. Multi-value OR within; AND composes across.
+	//
+	// Cost shape: ListSessions now runs ~10 EXISTS subqueries
+	// against events per call (error_type + policy_event_type +
+	// the five new ones, plus the aggregate columns in the SELECT
+	// list). All hit events_session_id_idx so the join key is hot.
+	// If the slow-query log surfaces this in production, a partial
+	// composite index on (session_id, event_type) WHERE event_type
+	// IN ('session_end','llm_error','pre_call','post_call',
+	// 'embeddings','policy_mcp_warn','policy_mcp_block') is the
+	// cheapest hedge.
+	if len(params.CloseReasons) > 0 {
+		placeholders := make([]string, len(params.CloseReasons))
+		for i, cr := range params.CloseReasons {
+			placeholders[i] = fmt.Sprintf("$%d", argIdx)
+			args = append(args, cr)
+			argIdx++
+		}
+		conditions = append(conditions, fmt.Sprintf(
+			"EXISTS (SELECT 1 FROM events e "+
+				"WHERE e.session_id = s.session_id "+
+				"AND e.event_type = 'session_end' "+
+				"AND e.payload->>'close_reason' IN (%s))",
+			strings.Join(placeholders, ", "),
+		))
+	}
+	if len(params.EstimatedVias) > 0 {
+		placeholders := make([]string, len(params.EstimatedVias))
+		for i, ev := range params.EstimatedVias {
+			placeholders[i] = fmt.Sprintf("$%d", argIdx)
+			args = append(args, ev)
+			argIdx++
+		}
+		conditions = append(conditions, fmt.Sprintf(
+			"EXISTS (SELECT 1 FROM events e "+
+				"WHERE e.session_id = s.session_id "+
+				"AND e.event_type IN ('pre_call', 'post_call', 'embeddings') "+
+				"AND e.payload->>'estimated_via' IN (%s))",
+			strings.Join(placeholders, ", "),
+		))
+	}
+	if params.TerminalOnly {
+		// Plain string compare on payload.terminal — no ::boolean cast,
+		// so a malformed or missing terminal field on a non-llm_error
+		// row never throws inside the subquery.
+		conditions = append(conditions,
+			"EXISTS (SELECT 1 FROM events e "+
+				"WHERE e.session_id = s.session_id "+
+				"AND e.event_type = 'llm_error' "+
+				"AND e.payload->>'terminal' = 'true')")
+	}
+	if len(params.MatchedEntryIDs) > 0 {
+		placeholders := make([]string, len(params.MatchedEntryIDs))
+		for i, mid := range params.MatchedEntryIDs {
+			placeholders[i] = fmt.Sprintf("$%d", argIdx)
+			args = append(args, mid)
+			argIdx++
+		}
+		conditions = append(conditions, fmt.Sprintf(
+			"EXISTS (SELECT 1 FROM events e "+
+				"WHERE e.session_id = s.session_id "+
+				"AND e.event_type IN ('policy_mcp_warn', 'policy_mcp_block') "+
+				"AND e.payload->'policy_decision'->>'matched_entry_id' IN (%s))",
+			strings.Join(placeholders, ", "),
+		))
+	}
+	if len(params.OriginatingCallContexts) > 0 {
+		placeholders := make([]string, len(params.OriginatingCallContexts))
+		for i, oc := range params.OriginatingCallContexts {
+			placeholders[i] = fmt.Sprintf("$%d", argIdx)
+			args = append(args, oc)
+			argIdx++
+		}
+		conditions = append(conditions, fmt.Sprintf(
+			"EXISTS (SELECT 1 FROM events e "+
+				"WHERE e.session_id = s.session_id "+
+				"AND e.payload->>'originating_call_context' IN (%s))",
+			strings.Join(placeholders, ", "),
+		))
 	}
 
 	// MCP-server filter (Phase 5). Multi-value OR-within: a session

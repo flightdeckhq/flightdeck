@@ -810,6 +810,29 @@ definitions:
         type: integer
       client_type:
         type: string
+      close_reasons:
+        description: |-
+          Per-session aggregates for the operator-actionable enrichment
+          facets. Each field is a distinct-value array (or boolean) over
+          the session's events. Same correlated-subquery pattern as
+          ErrorTypes / PolicyEventTypes so the dashboard renders the
+          new sidebar facets without a per-session follow-up fetch.
+
+            * CloseReasons: distinct close_reason values across the
+              session's session_end events.
+            * EstimatedViaValues: distinct estimated_via values across
+              pre_call / post_call / embeddings events.
+            * HasTerminalError: true when at least one llm_error event
+              in the session carries terminal=true.
+            * MatchedEntryIDs: distinct policy_decision.matched_entry_id
+              values across MCP-policy events.
+            * OriginatingCallContexts: distinct
+              payload->>'originating_call_context' values across the
+              session's events (the MCP method that triggered downstream
+              activity — call_tool / read_resource / etc.).
+        items:
+          type: string
+        type: array
       context:
         additionalProperties: true
         type: object
@@ -831,8 +854,14 @@ definitions:
         items:
           type: string
         type: array
+      estimated_via_values:
+        items:
+          type: string
+        type: array
       flavor:
         type: string
+      has_terminal_error:
+        type: boolean
       host:
         type: string
       last_seen_at:
@@ -843,6 +872,10 @@ definitions:
           with ended_at. Drives the Investigate "Last Seen" column
           (S-TBL-1) and is sortable via ?sort=last_seen_at.
         type: string
+      matched_entry_ids:
+        items:
+          type: string
+        type: array
       mcp_error_types:
         description: |-
           MCPErrorTypes (Phase 5) lists every distinct
@@ -873,6 +906,10 @@ definitions:
         type: array
       model:
         type: string
+      originating_call_contexts:
+        items:
+          type: string
+        type: array
       parent_session_id:
         description: |-
           D126 sub-agent observability columns. Both nullable, both
@@ -2453,6 +2490,38 @@ paths:
         in: query
         name: include_pure_children
         type: boolean
+      - description: 'Filter to sessions whose session_end carries one of the listed
+          close_reason values (repeatable/comma; OR within, AND across dimensions).
+          Allowed: normal_exit, directive_shutdown, policy_block, orphan_timeout,
+          sigkill_detected, unknown.'
+        in: query
+        name: close_reason
+        type: string
+      - description: 'Filter to sessions that emitted at least one pre_call/post_call/embeddings
+          event with the given estimated_via (repeatable/comma; OR within, AND across
+          dimensions). Allowed: tiktoken, heuristic, none.'
+        in: query
+        name: estimated_via
+        type: string
+      - description: When true, restrict to sessions that have at least one llm_error
+          event with terminal=true (operator-actionable retry-chain-gave-up signal).
+          Composes with every other filter via AND.
+        in: query
+        name: terminal
+        type: boolean
+      - description: Filter to sessions that emitted at least one policy_mcp_warn
+          / policy_mcp_block event whose policy_decision.matched_entry_id matches
+          one of the listed UUIDs (repeatable/comma; OR within, AND across dimensions).
+        in: query
+        name: matched_entry_id
+        type: string
+      - description: 'Filter to sessions that emitted at least one event with originating_call_context
+          matching one of the listed values (repeatable/comma; OR within, AND across
+          dimensions). Vocabulary: call_tool, read_resource, list_tools, get_prompt,
+          list_resources, list_prompts.'
+        in: query
+        name: originating_call_context
+        type: string
       - description: 'Sort field: started_at, last_seen_at, duration, tokens_used,
           flavor, model, hostname, state (default: started_at). state sort uses severity
           ordinal active→idle→stale→lost→closed.'

@@ -2402,6 +2402,136 @@ func TestSessionsListHandler_InvalidClientType(t *testing.T) {
 	}
 }
 
+// ----- Operator-actionable enrichment facet filters (Step 6 follow-up) -----
+
+func TestSessionsListHandler_CloseReasonFilter_MultiValue(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.SessionsListHandler(store.WrapStore(s))
+	req := httptest.NewRequest(
+		"GET",
+		"/v1/sessions?close_reason=normal_exit,directive_shutdown&close_reason=policy_block",
+		nil,
+	)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	p := s.lastSessionsParams
+	if p == nil {
+		t.Fatal("GetSessions not called")
+	}
+	assertStringSliceEqual(t, "close_reason", p.CloseReasons,
+		[]string{"normal_exit", "directive_shutdown", "policy_block"})
+}
+
+func TestSessionsListHandler_CloseReasonFilter_OutOfBand_Returns400(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.SessionsListHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/sessions?close_reason=bogus", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for invalid close_reason, got %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "normal_exit") {
+		t.Errorf("error should list allowed values; got %s", w.Body.String())
+	}
+}
+
+func TestSessionsListHandler_EstimatedViaFilter_MultiValue(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.SessionsListHandler(store.WrapStore(s))
+	req := httptest.NewRequest(
+		"GET", "/v1/sessions?estimated_via=tiktoken,heuristic", nil,
+	)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	p := s.lastSessionsParams
+	if p == nil {
+		t.Fatal("GetSessions not called")
+	}
+	assertStringSliceEqual(t, "estimated_via", p.EstimatedVias,
+		[]string{"tiktoken", "heuristic"})
+}
+
+func TestSessionsListHandler_EstimatedViaFilter_OutOfBand_Returns400(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.SessionsListHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/sessions?estimated_via=fancy", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for invalid estimated_via, got %d", w.Code)
+	}
+}
+
+func TestSessionsListHandler_TerminalToggle(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.SessionsListHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/sessions?terminal=true", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	p := s.lastSessionsParams
+	if p == nil {
+		t.Fatal("GetSessions not called")
+	}
+	if !p.TerminalOnly {
+		t.Errorf("expected TerminalOnly=true, got %v", p.TerminalOnly)
+	}
+}
+
+func TestSessionsListHandler_MatchedEntryIDFilter_MultiValue(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.SessionsListHandler(store.WrapStore(s))
+	req := httptest.NewRequest(
+		"GET",
+		"/v1/sessions?matched_entry_id=11111111-0000-0000-0000-000000000000,22222222-0000-0000-0000-000000000000",
+		nil,
+	)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	p := s.lastSessionsParams
+	if p == nil {
+		t.Fatal("GetSessions not called")
+	}
+	assertStringSliceEqual(t, "matched_entry_id", p.MatchedEntryIDs,
+		[]string{
+			"11111111-0000-0000-0000-000000000000",
+			"22222222-0000-0000-0000-000000000000",
+		})
+}
+
+func TestSessionsListHandler_OriginatingCallContextFilter_MultiValue(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.SessionsListHandler(store.WrapStore(s))
+	req := httptest.NewRequest(
+		"GET",
+		"/v1/sessions?originating_call_context=call_tool,read_resource",
+		nil,
+	)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	p := s.lastSessionsParams
+	if p == nil {
+		t.Fatal("GetSessions not called")
+	}
+	assertStringSliceEqual(t, "originating_call_context", p.OriginatingCallContexts,
+		[]string{"call_tool", "read_resource"})
+}
+
 func TestSessionsListHandler_AcceptsNewSortColumns(t *testing.T) {
 	// last_seen_at, model, hostname join the original {started_at,
 	// duration, tokens_used, flavor} allow-list. Any of them must

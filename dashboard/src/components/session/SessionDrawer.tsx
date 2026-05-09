@@ -19,8 +19,10 @@ import {
 import { TokenUsageBar } from "./TokenUsageBar";
 import { PromptViewer } from "./PromptViewer";
 import { SubAgentsTab } from "./SubAgentsTab";
+import { EnrichmentSummary } from "@/components/events/EnrichmentSummary";
+import { SurroundingEventsList } from "@/components/events/SurroundingEventsList";
 import { EventRow } from "./EventRow";
-import { createDirective, fetchOlderEvents, fetchSession, fetchSessions, resolveMCPPolicy } from "@/lib/api";
+import { createDirective, fetchBulkEvents, fetchOlderEvents, fetchSession, fetchSessions, resolveMCPPolicy } from "@/lib/api";
 import {
   MCPServerDecisionText,
   type MCPServerDecision,
@@ -1828,10 +1830,16 @@ function EventsLimitPills({
 
 /* ---- Event detail view (Mode 2) ---- */
 
-type DetailTab = "details" | "prompts";
+type DetailTab = "details" | "prompts" | "neighbors";
 
-function EventDetailView({ event, session, onBack }: { event: AgentEvent; session: SessionType | null; onBack: () => void }) {
+function EventDetailView({ event: initialEvent, session, onBack }: { event: AgentEvent; session: SessionType | null; onBack: () => void }) {
   const [activeTab, setActiveTab] = useState<DetailTab>("details");
+  // Local swap so the originating-jump and surrounding-events click
+  // can navigate within the detail view without bouncing back to the
+  // session timeline.
+  const [swapped, setSwapped] = useState<AgentEvent | null>(null);
+  useEffect(() => { setSwapped(null); }, [initialEvent.id]);
+  const event = swapped ?? initialEvent;
   const badge = getBadge(event.event_type);
   const summaryRows = getSummaryRows(event);
   const payload = {
@@ -1839,6 +1847,20 @@ function EventDetailView({ event, session, onBack }: { event: AgentEvent; sessio
     tokens_input: event.tokens_input, tokens_output: event.tokens_output,
     tokens_total: event.tokens_total, latency_ms: event.latency_ms,
     tool_name: event.tool_name, has_content: event.has_content, occurred_at: event.occurred_at,
+  };
+
+  const handleJumpToOriginator = async (originatingEventId: string) => {
+    try {
+      const resp = await fetchBulkEvents({
+        from: "1970-01-01T00:00:00Z",
+        session_id: event.session_id,
+        limit: 200,
+      });
+      const found = resp.events.find((e) => e.id === originatingEventId);
+      if (found) setSwapped(found);
+    } catch {
+      /* fail-open */
+    }
   };
 
   return (
@@ -1856,18 +1878,19 @@ function EventDetailView({ event, session, onBack }: { event: AgentEvent; sessio
         <span className="font-mono text-xs" style={{ color: "var(--text-muted)" }}>{truncateSessionId(session?.session_id ?? event.session_id)}</span>
       </div>
       <div className="flex h-9 shrink-0 items-end gap-4 px-4" style={{ borderBottom: "1px solid var(--border)" }}>
-        {(["details", "prompts"] as const).map((tab) => (
+        {(["details", "prompts", "neighbors"] as const).map((tab) => (
           <button key={tab} className="pb-2 text-xs font-medium capitalize transition-colors"
             style={activeTab === tab ? { color: "var(--text)", borderBottom: "2px solid var(--accent)" } : { color: "var(--text-muted)" }}
-            onClick={() => setActiveTab(tab)}>
-            {tab === "details" ? "Details" : "Prompts"}
+            onClick={() => setActiveTab(tab)}
+            data-testid={`detail-tab-${tab}`}>
+            {tab}
           </button>
         ))}
       </div>
       <div className="flex-1 overflow-y-auto">
         {activeTab === "details" && (
-          <div className="p-3" style={{ background: "var(--bg)" }}>
-            <div className="mb-3 grid gap-x-3 gap-y-1" style={{ gridTemplateColumns: "140px 1fr" }}>
+          <div className="p-3 space-y-3" style={{ background: "var(--bg)" }}>
+            <div className="grid gap-x-3 gap-y-1" style={{ gridTemplateColumns: "140px 1fr" }}>
               {summaryRows.map(([key, val]) => (
                 <div key={key} className="contents">
                   <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>{key}</span>
@@ -1875,7 +1898,8 @@ function EventDetailView({ event, session, onBack }: { event: AgentEvent; sessio
                 </div>
               ))}
             </div>
-            <div className="mb-3" style={{ borderTop: "1px solid var(--border-subtle)" }} />
+            <EnrichmentSummary event={event} onJumpToOriginator={handleJumpToOriginator} />
+            <div style={{ borderTop: "1px solid var(--border-subtle)" }} />
             <SyntaxJson data={payload} />
           </div>
         )}
@@ -1883,6 +1907,11 @@ function EventDetailView({ event, session, onBack }: { event: AgentEvent; sessio
           event.has_content
             ? <PromptViewer eventId={event.id} />
             : <div className="px-4 py-6 text-[13px]" style={{ color: "var(--text-muted)" }}>Prompt capture is not enabled for this deployment.</div>
+        )}
+        {activeTab === "neighbors" && (
+          <div className="p-3" style={{ background: "var(--bg)" }}>
+            <SurroundingEventsList event={event} onSelect={setSwapped} />
+          </div>
         )}
       </div>
     </div>

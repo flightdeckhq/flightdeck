@@ -2058,6 +2058,18 @@ The ERROR TYPE facet is rendered last (after state / agent / flavor /
 agent_type / model / framework / scalar context groups). Hidden when no
 visible session has any `llm_error` events.
 
+Operator-actionable enrichment facets surface at the bottom of the
+sidebar: CLOSE REASON (close_reasons[] aggregate from session_end
+events), ESTIMATED VIA (estimated_via_values[] from pre/post_call /
+embeddings), TERMINAL (boolean toggle from has_terminal_error),
+MATCHED ENTRY (matched_entry_ids[] from MCP-policy events), and
+ORIGINATING CALL (originating_call_contexts[] — the MCP method
+that triggered downstream activity). Each per-session aggregate is
+returned by the API's session list endpoint alongside the existing
+error_types[] / policy_event_types[] / mcp_server_names[] arrays.
+Clicking a value adds it to the URL filter state and narrows the
+visible result set.
+
 ### Session drawer
 
 `dashboard/src/components/session/SessionDrawer.tsx` — slide-in right
@@ -2112,10 +2124,24 @@ Investigate →" deep-link.
 
 `dashboard/src/components/fleet/EventDetailDrawer.tsx` — standalone
 right-slide drawer (520px) for a single event opened from the live
-feed (independent of `SessionDrawer`). Tabs: Details, Prompts. The
-Details tab shows a metadata grid plus the JSON payload via the shared
-`<SyntaxJson>` component. The Prompts tab loads `PromptViewer` /
-`EmbeddingsContentViewer` if `event.has_content`.
+feed (independent of `SessionDrawer`). Tabs: Details, Prompts,
+Neighbors. The Details tab shows a metadata grid, the shared
+`<EnrichmentSummary>` block (operator-actionable enrichment fields:
+policy_decision_*, provider_metadata, output_dimensions,
+retry_attempt + terminal, close_reason, policy_actions_summary,
+policy_entries_orphaned, sensor_version + interceptor_versions,
+policy_snapshot, originating-event jump link), and the JSON
+payload via the shared `<SyntaxJson>` component. The Prompts tab
+loads `PromptViewer` / `EmbeddingsContentViewer` if
+`event.has_content`. The Neighbors tab renders
+`<SurroundingEventsList>` — ±5 events from the same session,
+clickable to swap the drawer's displayed event.
+
+The same `<EnrichmentSummary>` and `<SurroundingEventsList>`
+components are also embedded in the in-page `EventDetailView` that
+the SessionDrawer's Timeline tab opens via the per-row "Open full
+detail" affordance, so the two surfaces (slide-in drawer + in-page
+replacement view) render byte-identical enrichment fidelity.
 
 ### Live feed
 

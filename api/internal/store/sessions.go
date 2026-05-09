@@ -271,6 +271,30 @@ type SessionListItem struct {
 	// follow-up fetch.
 	MCPErrorTypes []string `json:"mcp_error_types"`
 
+	// Per-session aggregates for the operator-actionable enrichment
+	// facets. Each field is a distinct-value array (or boolean) over
+	// the session's events. Same correlated-subquery pattern as
+	// ErrorTypes / PolicyEventTypes so the dashboard renders the
+	// new sidebar facets without a per-session follow-up fetch.
+	//
+	//   * CloseReasons: distinct close_reason values across the
+	//     session's session_end events.
+	//   * EstimatedViaValues: distinct estimated_via values across
+	//     pre_call / post_call / embeddings events.
+	//   * HasTerminalError: true when at least one llm_error event
+	//     in the session carries terminal=true.
+	//   * MatchedEntryIDs: distinct policy_decision.matched_entry_id
+	//     values across MCP-policy events.
+	//   * OriginatingCallContexts: distinct
+	//     payload->>'originating_call_context' values across the
+	//     session's events (the MCP method that triggered downstream
+	//     activity — call_tool / read_resource / etc.).
+	CloseReasons            []string `json:"close_reasons"`
+	EstimatedViaValues      []string `json:"estimated_via_values"`
+	HasTerminalError        bool     `json:"has_terminal_error"`
+	MatchedEntryIDs         []string `json:"matched_entry_ids"`
+	OriginatingCallContexts []string `json:"originating_call_contexts"`
+
 	// D126 sub-agent observability columns. Both nullable, both
 	// populated only on sub-agent sessions (Claude Code Task
 	// subagent, CrewAI agent execution, LangGraph agent-bearing
@@ -720,6 +744,51 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 				),
 				ARRAY[]::text[]
 			) AS mcp_error_types,
+			COALESCE(
+				ARRAY(
+					SELECT DISTINCT e.payload->>'close_reason'
+					FROM events e
+					WHERE e.session_id = s.session_id
+					AND e.event_type = 'session_end'
+					AND e.payload->>'close_reason' IS NOT NULL
+				),
+				ARRAY[]::text[]
+			) AS close_reasons,
+			COALESCE(
+				ARRAY(
+					SELECT DISTINCT e.payload->>'estimated_via'
+					FROM events e
+					WHERE e.session_id = s.session_id
+					AND e.event_type IN ('pre_call', 'post_call', 'embeddings')
+					AND e.payload->>'estimated_via' IS NOT NULL
+				),
+				ARRAY[]::text[]
+			) AS estimated_via_values,
+			EXISTS(
+				SELECT 1 FROM events e
+				WHERE e.session_id = s.session_id
+				AND e.event_type = 'llm_error'
+				AND (e.payload->>'terminal')::boolean = true
+			) AS has_terminal_error,
+			COALESCE(
+				ARRAY(
+					SELECT DISTINCT e.payload->'policy_decision'->>'matched_entry_id'
+					FROM events e
+					WHERE e.session_id = s.session_id
+					AND e.event_type IN ('policy_mcp_warn', 'policy_mcp_block')
+					AND e.payload->'policy_decision'->>'matched_entry_id' IS NOT NULL
+				),
+				ARRAY[]::text[]
+			) AS matched_entry_ids,
+			COALESCE(
+				ARRAY(
+					SELECT DISTINCT e.payload->>'originating_call_context'
+					FROM events e
+					WHERE e.session_id = s.session_id
+					AND e.payload->>'originating_call_context' IS NOT NULL
+				),
+				ARRAY[]::text[]
+			) AS originating_call_contexts,
 			s.parent_session_id::text,
 			s.agent_role,
 			(SELECT COUNT(*) FROM sessions c WHERE c.parent_session_id = s.session_id) AS child_count
@@ -764,6 +833,11 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 			&item.PolicyEventTypes,
 			&item.MCPServerNames,
 			&item.MCPErrorTypes,
+			&item.CloseReasons,
+			&item.EstimatedViaValues,
+			&item.HasTerminalError,
+			&item.MatchedEntryIDs,
+			&item.OriginatingCallContexts,
 			&item.ParentSessionID,
 			&item.AgentRole,
 			&item.ChildCount,
@@ -781,6 +855,18 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 		}
 		if item.MCPErrorTypes == nil {
 			item.MCPErrorTypes = []string{}
+		}
+		if item.CloseReasons == nil {
+			item.CloseReasons = []string{}
+		}
+		if item.EstimatedViaValues == nil {
+			item.EstimatedViaValues = []string{}
+		}
+		if item.MatchedEntryIDs == nil {
+			item.MatchedEntryIDs = []string{}
+		}
+		if item.OriginatingCallContexts == nil {
+			item.OriginatingCallContexts = []string{}
 		}
 		if len(contextRaw) > 0 {
 			var v map[string]interface{}

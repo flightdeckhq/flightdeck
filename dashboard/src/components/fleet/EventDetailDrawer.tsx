@@ -1,46 +1,87 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { X } from "lucide-react";
 import { PromptViewer } from "@/components/session/PromptViewer";
 import { MCPEventDetails, isMCPEvent } from "@/components/session/MCPEventDetails";
 import { SyntaxJson } from "@/components/ui/syntax-json";
+import { EnrichmentSummary } from "@/components/events/EnrichmentSummary";
+import { SurroundingEventsList } from "@/components/events/SurroundingEventsList";
+import { fetchBulkEvents } from "@/lib/api";
 import { getBadge, getSummaryRows, truncateSessionId } from "@/lib/events";
 import { getProvider } from "@/lib/models";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import type { AgentEvent } from "@/lib/types";
 
-type Tab = "details" | "prompts";
+type Tab = "details" | "prompts" | "neighbors";
 
 interface EventDetailDrawerProps {
   event: AgentEvent | null;
   onClose: () => void;
+  /** Optional: when provided, the drawer can replace its own event
+   * via the originating-jump or surrounding-events click-swap. */
+  onSwapEvent?: (event: AgentEvent) => void;
 }
 
-export function EventDetailDrawer({ event, onClose }: EventDetailDrawerProps) {
+export function EventDetailDrawer({ event, onClose, onSwapEvent }: EventDetailDrawerProps) {
   const [activeTab, setActiveTab] = useState<Tab>("details");
+  // Local override: when the drawer's host doesn't provide
+  // onSwapEvent, the originating-jump and surrounding-events
+  // selection still work by storing the swapped event in local
+  // state and rendering that instead of the prop.
+  const [swappedEvent, setSwappedEvent] = useState<AgentEvent | null>(null);
 
-  if (!event) return null;
+  useEffect(() => {
+    // Reset the local swap when the host changes the prop event so
+    // a new external selection always wins over a stale internal swap.
+    setSwappedEvent(null);
+  }, [event?.id]);
 
-  const badge = getBadge(event.event_type);
-  const summaryRows = getSummaryRows(event);
+  const displayed = swappedEvent ?? event;
+  if (!displayed) return null;
+
+  const swapTo = (next: AgentEvent) => {
+    if (onSwapEvent) onSwapEvent(next);
+    else setSwappedEvent(next);
+  };
+
+  const handleJumpToOriginator = async (originatingEventId: string) => {
+    // Use the same /v1/events endpoint to look up the originator —
+    // session-scoped because chained events all share a session_id.
+    try {
+      const resp = await fetchBulkEvents({
+        from: "1970-01-01T00:00:00Z",
+        session_id: displayed.session_id,
+        limit: 200,
+      });
+      const found = resp.events.find((e) => e.id === originatingEventId);
+      if (found) swapTo(found);
+    } catch {
+      /* fail-open — drawer keeps the current event displayed */
+    }
+  };
+
+  // The drawer renders against `displayed` from here on so a swap
+  // updates every section without remounting the whole drawer.
+  const badge = getBadge(displayed.event_type);
+  const summaryRows = getSummaryRows(displayed);
 
   const payload = {
-    id: event.id,
-    event_type: event.event_type,
-    model: event.model,
-    tokens_input: event.tokens_input,
-    tokens_output: event.tokens_output,
-    tokens_total: event.tokens_total,
-    latency_ms: event.latency_ms,
-    tool_name: event.tool_name,
-    has_content: event.has_content,
-    occurred_at: event.occurred_at,
+    id: displayed.id,
+    event_type: displayed.event_type,
+    model: displayed.model,
+    tokens_input: displayed.tokens_input,
+    tokens_output: displayed.tokens_output,
+    tokens_total: displayed.tokens_total,
+    latency_ms: displayed.latency_ms,
+    tool_name: displayed.tool_name,
+    has_content: displayed.has_content,
+    occurred_at: displayed.occurred_at,
   };
 
   return (
     <AnimatePresence>
       <motion.div
-        className="fixed right-0 top-0 z-50 flex h-full w-[520px] flex-col"
+        className="fixed right-0 top-0 z-[60] flex h-full w-[520px] flex-col"
         style={{
           background: "var(--surface)",
           borderLeft: "1px solid var(--border)",
@@ -71,11 +112,11 @@ export function EventDetailDrawer({ event, onClose }: EventDetailDrawerProps) {
 
           {/* Flavor + session ID */}
           <span className="font-mono text-xs" style={{ color: "var(--text-secondary)" }}>
-            {event.flavor}
+            {displayed.flavor}
           </span>
           <span style={{ color: "var(--text-muted)" }}>·</span>
           <span className="font-mono text-xs" style={{ color: "var(--text-muted)" }}>
-            {truncateSessionId(event.session_id)}
+            {truncateSessionId(displayed.session_id)}
           </span>
 
           {/* Close */}
@@ -98,24 +139,24 @@ export function EventDetailDrawer({ event, onClose }: EventDetailDrawerProps) {
           }}
           data-testid="detail-metadata"
         >
-          <span>{new Date(event.occurred_at).toLocaleString()}</span>
-          {event.latency_ms != null && event.latency_ms > 0 && (
+          <span>{new Date(displayed.occurred_at).toLocaleString()}</span>
+          {displayed.latency_ms != null && displayed.latency_ms > 0 && (
             <>
               <span className="mx-1.5" style={{ color: "var(--text-muted)" }}>·</span>
-              <span>{event.latency_ms}ms</span>
+              <span>{displayed.latency_ms}ms</span>
             </>
           )}
-          {event.model && (
+          {displayed.model && (
             <>
               <span className="mx-1.5" style={{ color: "var(--text-muted)" }}>·</span>
-              <ProviderLogo provider={getProvider(event.model)} size={12} />
-              <span className="ml-1">{event.model}</span>
+              <ProviderLogo provider={getProvider(displayed.model)} size={12} />
+              <span className="ml-1">{displayed.model}</span>
             </>
           )}
-          {event.tokens_total != null && (
+          {displayed.tokens_total != null && (
             <>
               <span className="mx-1.5" style={{ color: "var(--text-muted)" }}>·</span>
-              <span>{event.tokens_total.toLocaleString()} tok</span>
+              <span>{displayed.tokens_total.toLocaleString()} tok</span>
             </>
           )}
         </div>
@@ -125,7 +166,7 @@ export function EventDetailDrawer({ event, onClose }: EventDetailDrawerProps) {
           className="flex h-9 shrink-0 items-end gap-4 px-4"
           style={{ borderBottom: "1px solid var(--border)" }}
         >
-          {(["details", "prompts"] as const).map((tab) => (
+          {(["details", "prompts", "neighbors"] as const).map((tab) => (
             <button
               key={tab}
               className="pb-2 text-xs font-medium capitalize transition-colors"
@@ -135,8 +176,9 @@ export function EventDetailDrawer({ event, onClose }: EventDetailDrawerProps) {
                   : { color: "var(--text-muted)" }
               }
               onClick={() => setActiveTab(tab)}
+              data-testid={`detail-tab-${tab}`}
             >
-              {tab === "details" ? "Details" : "Prompts"}
+              {tab}
             </button>
           ))}
         </div>
@@ -144,10 +186,10 @@ export function EventDetailDrawer({ event, onClose }: EventDetailDrawerProps) {
         {/* Tab content */}
         <div className="flex-1 overflow-y-auto">
           {activeTab === "details" && (
-            <div className="p-3" style={{ background: "var(--bg)" }}>
+            <div className="p-3 space-y-3" style={{ background: "var(--bg)" }}>
               {/* Summary grid */}
               <div
-                className="mb-3 grid gap-x-3 gap-y-1"
+                className="grid gap-x-3 gap-y-1"
                 style={{ gridTemplateColumns: "140px 1fr" }}
               >
                 {summaryRows.map(([key, val]) => (
@@ -162,11 +204,16 @@ export function EventDetailDrawer({ event, onClose }: EventDetailDrawerProps) {
                 ))}
               </div>
 
-              {isMCPEvent(event.event_type) && (
-                <MCPEventDetails event={event} />
+              <EnrichmentSummary
+                event={displayed}
+                onJumpToOriginator={handleJumpToOriginator}
+              />
+
+              {isMCPEvent(displayed.event_type) && (
+                <MCPEventDetails event={displayed} />
               )}
 
-              <div className="mb-3" style={{ borderTop: "1px solid var(--border-subtle)" }} />
+              <div style={{ borderTop: "1px solid var(--border-subtle)" }} />
 
               <SyntaxJson data={payload} />
             </div>
@@ -174,8 +221,8 @@ export function EventDetailDrawer({ event, onClose }: EventDetailDrawerProps) {
 
           {activeTab === "prompts" && (
             <>
-              {event.has_content ? (
-                <PromptViewer eventId={event.id} />
+              {displayed.has_content ? (
+                <PromptViewer eventId={displayed.id} />
               ) : (
                 <div
                   className="px-4 py-6 text-[13px]"
@@ -185,6 +232,12 @@ export function EventDetailDrawer({ event, onClose }: EventDetailDrawerProps) {
                 </div>
               )}
             </>
+          )}
+
+          {activeTab === "neighbors" && (
+            <div className="p-3" style={{ background: "var(--bg)" }}>
+              <SurroundingEventsList event={displayed} onSelect={swapTo} />
+            </div>
           )}
         </div>
       </motion.div>

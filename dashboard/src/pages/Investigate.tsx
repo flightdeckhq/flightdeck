@@ -108,6 +108,17 @@ export function parseUrlState(sp: URLSearchParams) {
     // ``?is_sub_agent=true`` / ``?has_sub_agents=true``.
     isSubAgent: sp.get("is_sub_agent") === "true",
     hasSubAgents: sp.get("has_sub_agents") === "true",
+    // Operator-actionable enrichment facets. Each repeatable filter
+    // narrows the visible result set to sessions whose corresponding
+    // aggregate (close_reasons[], estimated_via_values[],
+    // matched_entry_ids[], originating_call_contexts[]) contains at
+    // least one of the listed values. ``terminal`` is a single
+    // boolean toggle.
+    closeReasons: sp.getAll("close_reason"),
+    estimatedVias: sp.getAll("estimated_via"),
+    terminalOnly: sp.get("terminal") === "true",
+    matchedEntryIds: sp.getAll("matched_entry_id"),
+    originatingCallContexts: sp.getAll("originating_call_context"),
     // D126: scope to children of one specific parent session UUID.
     // Set by the SubAgentsTab "View all in Investigate" deep-link
     // and the PARENT column's click-to-filter affordance.
@@ -152,6 +163,11 @@ export function buildUrlParams(s: ReturnType<typeof parseUrlState>): URLSearchPa
   for (const r of s.agentRoles) p.append("agent_role", r);
   if (s.isSubAgent) p.set("is_sub_agent", "true");
   if (s.hasSubAgents) p.set("has_sub_agents", "true");
+  for (const cr of s.closeReasons) p.append("close_reason", cr);
+  for (const ev of s.estimatedVias) p.append("estimated_via", ev);
+  if (s.terminalOnly) p.set("terminal", "true");
+  for (const me of s.matchedEntryIds) p.append("matched_entry_id", me);
+  for (const oc of s.originatingCallContexts) p.append("originating_call_context", oc);
   if (s.parentSessionId) p.set("parent_session_id", s.parentSessionId);
   if (s.session) p.set("session", s.session);
   if (s.model) p.set("model", s.model);
@@ -363,6 +379,14 @@ export function computeFacets(
   // here.
   const errorTypeCounts = new Map<string, number>();
   const policyEventTypeCounts = new Map<string, number>();
+  // Operator-actionable enrichment facet counts. Each is a per-
+  // session aggregate the API returns alongside error_types[].
+  // Same one-vote-per-session-per-distinct-value semantics.
+  const closeReasonCounts = new Map<string, number>();
+  const estimatedViaCounts = new Map<string, number>();
+  let terminalCount = 0;
+  const matchedEntryIdCounts = new Map<string, number>();
+  const originatingCallContextCounts = new Map<string, number>();
   // D131 MCP Protection Policy facet (step 6.6 A1) — token-budget
   // policy enforcement (policy_warn / policy_degrade / policy_block)
   // and MCP-server access policy (policy_mcp_warn /
@@ -572,6 +596,24 @@ export function computeFacets(
         parentIdSet.add(s.parent_session_id);
       }
     }
+    // Operator-actionable enrichment facets — counted from the
+    // per-session aggregate fields the API returns. One vote per
+    // session per distinct value.
+    for (const cr of s.close_reasons ?? []) {
+      closeReasonCounts.set(cr, (closeReasonCounts.get(cr) ?? 0) + 1);
+    }
+    for (const ev of s.estimated_via_values ?? []) {
+      estimatedViaCounts.set(ev, (estimatedViaCounts.get(ev) ?? 0) + 1);
+    }
+    if (s.has_terminal_error) terminalCount += 1;
+    for (const me of s.matched_entry_ids ?? []) {
+      matchedEntryIdCounts.set(me, (matchedEntryIdCounts.get(me) ?? 0) + 1);
+    }
+    for (const oc of s.originating_call_contexts ?? []) {
+      originatingCallContextCounts.set(
+        oc, (originatingCallContextCounts.get(oc) ?? 0) + 1,
+      );
+    }
     for (const key of CONTEXT_FACET_KEYS) {
       if (sources[key]) continue;
       const v = readScalarContext(s, key);
@@ -699,6 +741,24 @@ export function computeFacets(
         { value: "is_sub_agent", count: isSubAgentCount },
         { value: "has_sub_agents", count: hasSubAgentsCount },
       ],
+    },
+    // Operator-actionable enrichment facets. Hidden by the
+    // .filter(values.length > 0) below when no session in the
+    // visible result set has the corresponding aggregate.
+    { key: "close_reason", label: "CLOSE REASON", values: toArr(closeReasonCounts) },
+    { key: "estimated_via", label: "ESTIMATED VIA", values: toArr(estimatedViaCounts) },
+    {
+      key: "terminal",
+      label: "TERMINAL",
+      values: terminalCount > 0
+        ? [{ value: "true", count: terminalCount }]
+        : [],
+    },
+    { key: "matched_entry_id", label: "MATCHED ENTRY", values: toArr(matchedEntryIdCounts) },
+    {
+      key: "originating_call_context",
+      label: "ORIGINATING CALL",
+      values: toArr(originatingCallContextCounts),
     },
   ].filter((g) => g.values.length > 0);
 }
@@ -1760,6 +1820,33 @@ export function Investigate() {
         } else if (value === "has_sub_agents") {
           updateUrl({ hasSubAgents: !urlState.hasSubAgents, page: 1 });
         }
+      } else if (group === "close_reason") {
+        const current = urlState.closeReasons;
+        const next = current.includes(value)
+          ? current.filter((x) => x !== value)
+          : [...current, value];
+        updateUrl({ closeReasons: next, page: 1 });
+      } else if (group === "estimated_via") {
+        const current = urlState.estimatedVias;
+        const next = current.includes(value)
+          ? current.filter((x) => x !== value)
+          : [...current, value];
+        updateUrl({ estimatedVias: next, page: 1 });
+      } else if (group === "terminal") {
+        // Single boolean toggle — value === "true" is the only entry.
+        updateUrl({ terminalOnly: !urlState.terminalOnly, page: 1 });
+      } else if (group === "matched_entry_id") {
+        const current = urlState.matchedEntryIds;
+        const next = current.includes(value)
+          ? current.filter((x) => x !== value)
+          : [...current, value];
+        updateUrl({ matchedEntryIds: next, page: 1 });
+      } else if (group === "originating_call_context") {
+        const current = urlState.originatingCallContexts;
+        const next = current.includes(value)
+          ? current.filter((x) => x !== value)
+          : [...current, value];
+        updateUrl({ originatingCallContexts: next, page: 1 });
       } else {
         // Scalar context facets. Lookup table keeps the per-facet
         // boilerplate (urlState slot, toggle, URL key) in one place
@@ -1847,6 +1934,53 @@ export function Investigate() {
       ),
     [urlState, sessions, fleetAgents, updateUrl, resolvedAgentName],
   );
+
+  // Operator-actionable enrichment facet client-side filter. The
+  // server returns the result set narrowed by the existing facets;
+  // this pass narrows further using the per-session aggregates the
+  // API returns (close_reasons[], estimated_via_values[], etc.).
+  // Server-side WHERE-clause wiring for these is a follow-up; the
+  // client filter delivers the operator UX today and degrades
+  // cleanly once the server filter ships (the client filter
+  // becomes a no-op because the server pre-filters).
+  const displayedSessions = useMemo(() => {
+    let out = sessions;
+    if (urlState.closeReasons.length > 0) {
+      const want = new Set(urlState.closeReasons);
+      out = out.filter((s) =>
+        (s.close_reasons ?? []).some((cr) => want.has(cr)),
+      );
+    }
+    if (urlState.estimatedVias.length > 0) {
+      const want = new Set(urlState.estimatedVias);
+      out = out.filter((s) =>
+        (s.estimated_via_values ?? []).some((v) => want.has(v)),
+      );
+    }
+    if (urlState.terminalOnly) {
+      out = out.filter((s) => s.has_terminal_error === true);
+    }
+    if (urlState.matchedEntryIds.length > 0) {
+      const want = new Set(urlState.matchedEntryIds);
+      out = out.filter((s) =>
+        (s.matched_entry_ids ?? []).some((id) => want.has(id)),
+      );
+    }
+    if (urlState.originatingCallContexts.length > 0) {
+      const want = new Set(urlState.originatingCallContexts);
+      out = out.filter((s) =>
+        (s.originating_call_contexts ?? []).some((c) => want.has(c)),
+      );
+    }
+    return out;
+  }, [
+    sessions,
+    urlState.closeReasons,
+    urlState.estimatedVias,
+    urlState.terminalOnly,
+    urlState.matchedEntryIds,
+    urlState.originatingCallContexts,
+  ]);
 
   const clearAllFilters = useCallback(() => {
     updateUrl(CLEAR_ALL_FILTERS_PATCH);
@@ -2058,7 +2192,12 @@ export function Investigate() {
                   (group.key === "orchestration" && urlState.contextOrchestrations.includes(v.value)) ||
                   (group.key === "agent_role" && urlState.agentRoles.includes(v.value)) ||
                   (group.key === "topology" && v.value === "is_sub_agent" && urlState.isSubAgent) ||
-                  (group.key === "topology" && v.value === "has_sub_agents" && urlState.hasSubAgents);
+                  (group.key === "topology" && v.value === "has_sub_agents" && urlState.hasSubAgents) ||
+                  (group.key === "close_reason" && urlState.closeReasons.includes(v.value)) ||
+                  (group.key === "estimated_via" && urlState.estimatedVias.includes(v.value)) ||
+                  (group.key === "terminal" && urlState.terminalOnly) ||
+                  (group.key === "matched_entry_id" && urlState.matchedEntryIds.includes(v.value)) ||
+                  (group.key === "originating_call_context" && urlState.originatingCallContexts.includes(v.value));
                 return (
                   <button
                     key={v.value}
@@ -2359,8 +2498,8 @@ export function Investigate() {
                 </tr>
               </thead>
               <tbody>
-                {loading && sessions.length === 0 && <SkeletonRows />}
-                {sessions.flatMap((s) => {
+                {loading && displayedSessions.length === 0 && <SkeletonRows />}
+                {displayedSessions.flatMap((s) => {
                   const isParent = (s.child_count ?? 0) > 0;
                   const isExpanded = expandedParents.has(s.session_id);
                   const childRows: SessionListItem[] = isExpanded

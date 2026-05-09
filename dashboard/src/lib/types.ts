@@ -875,6 +875,22 @@ export interface SessionListItem {
    * on the detail endpoint via ``Session.context.mcp_servers``.
    */
   mcp_server_names?: string[];
+  /** Distinct close_reason values across the session's session_end
+   * events. Empty array when the session has no session_end yet. */
+  close_reasons?: string[];
+  /** Distinct estimated_via values from pre_call / post_call /
+   * embeddings events. Empty array when the session has no LLM calls. */
+  estimated_via_values?: string[];
+  /** True when the session contains at least one llm_error event
+   * with terminal=true. */
+  has_terminal_error?: boolean;
+  /** Distinct matched_entry_id values from MCP-policy events. Used
+   * by the MATCHED ENTRY facet for filtering by specific policy entry. */
+  matched_entry_ids?: string[];
+  /** Distinct originating_call_context values across the session's
+   * events (the MCP method that triggered chained activity:
+   * call_tool / read_resource / list_tools / etc.). */
+  originating_call_contexts?: string[];
   /**
    * Phase 5: every distinct ``payload.error.error_type`` observed across
    * the session's MCP events (any event_type starting with ``mcp_`` whose

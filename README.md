@@ -305,6 +305,7 @@ Call `patch()` before any framework or user code constructs a client. Instances 
 | `AGENT_FLAVOR` / `FLIGHTDECK_AGENT_NAME` | Persistent agent label. Default: `{user}@{hostname}`.    |
 | `AGENT_TYPE` / `FLIGHTDECK_AGENT_TYPE`   | `coding` or `production` (D114/D115). Default: `production`. Any other value raises `ConfigurationError`. |
 | `FLIGHTDECK_HOSTNAME`           | Override `socket.gethostname()` (useful for k8s pod grouping).  |
+| `FLIGHTDECK_ORPHAN_TIMEOUT_HOURS` | Worker-side: silence window before the reconciler closes a `lost` session as `orphan_timeout`. Default: `24`. Must be `> 0`; `Load()` panics otherwise. |
 
 ### Unavailability policy
 

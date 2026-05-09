@@ -555,6 +555,7 @@ func (w *Writer) ReviveOrCreateSession(
 	sessionID, flavor, agentType, host, framework, model string,
 	identity AgentIdentity,
 	occurredAt time.Time,
+	parentSessionID, agentRole string,
 ) (created bool, err error) {
 	var state string
 	sErr := w.pool.QueryRow(ctx,
@@ -605,16 +606,19 @@ func (w *Writer) ReviveOrCreateSession(
 		INSERT INTO sessions (
 			session_id, flavor, agent_type, host, framework, model, state,
 			started_at, last_seen_at, context,
-			agent_id, client_type, agent_name
+			agent_id, client_type, agent_name,
+			parent_session_id, agent_role
 		)
 		VALUES (
 			$1::uuid, $2, $3, NULLIF($4, ''), NULLIF($5, ''), NULLIF($6, ''),
 			'active', $7, $7, NULL,
-			$8::uuid, $9, $10
+			$8::uuid, $9, $10,
+			NULLIF($11, '')::uuid, NULLIF($12, '')
 		)
 		ON CONFLICT (session_id) DO NOTHING
 	`, sessionID, flavor, agentType, host, framework, model, occurredAt,
-		identity.AgentID, identity.ClientType, identity.AgentName)
+		identity.AgentID, identity.ClientType, identity.AgentName,
+		parentSessionID, agentRole)
 	if iErr != nil {
 		return false, fmt.Errorf("revive-or-create %s: insert: %w", sessionID, iErr)
 	}
@@ -632,6 +636,42 @@ func (w *Writer) ReviveOrCreateSession(
 		return true, nil
 	}
 	return false, nil
+}
+
+// BackfillSubAgentLinkage upgrades a session row's
+// parent_session_id + agent_role from NULL to the supplied values
+// when an event payload carries them but the row was lazy-created
+// (or upserted) before the parent linkage was visible. Idempotent —
+// only writes when both columns are currently NULL on the row, so
+// re-running on a session that already has linkage is a no-op.
+//
+// Why this exists: subagent sessions whose framework / plugin
+// surface fails to fire a session_start (or whose session_start
+// emission fails) get lazy-created from their first non-session_start
+// event. The lazy-create path now also writes parent_session_id /
+// agent_role when present, but sessions that were created before
+// THIS code shipped — or sessions where the subagent's first event
+// landed before the linkage info became available on the wire —
+// would otherwise stay orphaned forever. Calling this from the
+// per-event path covers both cases.
+func (w *Writer) BackfillSubAgentLinkage(
+	ctx context.Context,
+	sessionID, parentSessionID, agentRole string,
+) error {
+	if parentSessionID == "" && agentRole == "" {
+		return nil
+	}
+	_, err := w.pool.Exec(ctx, `
+		UPDATE sessions
+		SET parent_session_id = COALESCE(parent_session_id, NULLIF($2, '')::uuid),
+		    agent_role        = COALESCE(agent_role, NULLIF($3, ''))
+		WHERE session_id = $1::uuid
+		  AND (parent_session_id IS NULL OR agent_role IS NULL)
+	`, sessionID, parentSessionID, agentRole)
+	if err != nil {
+		return fmt.Errorf("backfill sub-agent linkage %s: %w", sessionID, err)
+	}
+	return nil
 }
 
 // SessionExists reports whether a session row with the given session_id

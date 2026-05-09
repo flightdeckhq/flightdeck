@@ -711,7 +711,7 @@ class Session:
         ``incoming_message``, ``outgoing_message``, ``state``,
         ``error``) are added by the caller after this returns.
         """
-        return {
+        out = {
             "session_id": child_session_id,
             "parent_session_id": self.config.session_id,
             "agent_role": agent_role,
@@ -748,6 +748,24 @@ class Session:
             "has_content": False,
             "content": None,
         }
+        # Match the parent session_start contract: ingestion requires
+        # sensor_version on every session_start event. The sub-agent
+        # session_start path inherits the same wire requirement; emitting
+        # the parent session's sensor_version is correct since the child
+        # session is observed by the same sensor build.
+        if event_type == EventType.SESSION_START:
+            out["sensor_version"] = _sensor_version()
+            # Inherit the parent's runtime context (os, hostname, user,
+            # git_branch, frameworks, etc.) so the dashboard's swimlane
+            # renders the same os/hostname pills on the sub-agent row
+            # as the parent. Sub-agents share their parent's deployment
+            # context — they run in the same process, on the same host,
+            # under the same user. The context dict is computed once on
+            # the parent's session_start emission and cached on the
+            # Session.
+            if self._context:
+                out["context"] = self._context
+        return out
 
     def post_call_event(
         self,

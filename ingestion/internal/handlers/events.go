@@ -631,7 +631,7 @@ func validateTokenBudgetPolicyPayload(payload map[string]any, eventType string) 
 func validateSessionStartPayload(payload map[string]any) string {
 	v, ok := payload["sensor_version"].(string)
 	if !ok {
-		return "sensor_version is required for session_start (D152)"
+		return "sensor_version is required for session_start"
 	}
 	// Empty string is permitted — the sensor's importlib.metadata
 	// read can return "" on editable installs in some pip
@@ -653,7 +653,7 @@ func validateSessionEndPayload(payload map[string]any) string {
 	}
 	v, ok := raw.(string)
 	if !ok {
-		return "close_reason must be a string on session_end (D152)"
+		return "close_reason must be a string on session_end"
 	}
 	switch v {
 	case "normal_exit", "directive_shutdown", "policy_block",

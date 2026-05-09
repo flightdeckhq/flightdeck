@@ -60,6 +60,24 @@ import { uuid5 } from "./uuid5.mjs";
 
 const TIMEOUT_MS = 2000;
 
+// Plugin version stamped on every session_start (parity with the
+// Python sensor's wire contract). Read from the package metadata at
+// module load; falls back to a sentinel string when the file is
+// unreachable (rare — the plugin is always installed alongside its
+// package.json). Used as the ``sensor_version`` field value on
+// session_start events; ingestion's validator requires the field's
+// presence as a string but does not constrain its content.
+const PLUGIN_VERSION = (() => {
+  try {
+    const __dirname = dirname(fileURLToPath(import.meta.url));
+    const pkgPath = join(__dirname, "..", "..", "package.json");
+    const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
+    return `flightdeck-plugin/${pkg.version || "0.0.0"}`;
+  } catch {
+    return "flightdeck-plugin/unknown";
+  }
+})();
+
 // ---------------------------------------------------------------------
 // Env var resolution + defaults (D100 zero-config flow).
 // ---------------------------------------------------------------------
@@ -1243,6 +1261,13 @@ async function emitSubagentEvent({
     has_content: false,
     content: null,
   };
+  // Match the parent session_start contract: ingestion requires
+  // sensor_version on every session_start. Sub-agent session_start
+  // emits the same field so the wire contract holds; session_end
+  // doesn't need it but having the field doesn't break anything.
+  if (hookName === "SubagentStart") {
+    payload.sensor_version = PLUGIN_VERSION;
+  }
 
   // D126 § 6 — sub-agent message routing. Body size decides
   // whether the message lives inline on payload (≤ 8 KiB) or rides
@@ -1470,6 +1495,13 @@ async function ensureSessionStarted(server, token, sessionId, basePayload, extra
     is_subagent_call: false,
     latency_ms: null,
     timestamp: new Date().toISOString(),
+    // Ingestion requires a non-empty sensor_version on every
+    // session_start (plugin parity with the Python sensor's wire
+    // contract). Plugin reports its own version since the Python
+    // sensor version is not available here; the field's purpose is
+    // "what build emitted this session" and the plugin's own version
+    // satisfies that.
+    sensor_version: PLUGIN_VERSION,
   };
   const startContext = safeCollectContext({
     claudeCodeVersion: extras.claudeCodeVersion,

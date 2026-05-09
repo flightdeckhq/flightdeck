@@ -81,6 +81,7 @@ func (sp *SessionProcessor) handleSessionGuard(ctx context.Context, e consumer.E
 			ctx, e.SessionID, e.Flavor, e.AgentType,
 			e.Host, e.Framework, e.Model,
 			identityFromEvent(e), occurredAt,
+			e.ParentSessionID, e.AgentRole,
 		)
 		if cErr != nil {
 			// Lazy-create failed. Log and fail open -- InsertEvent
@@ -110,6 +111,22 @@ func (sp *SessionProcessor) handleSessionGuard(ctx context.Context, e consumer.E
 		// no-op silently, and a transient DB blip should not trigger
 		// extra write pressure.
 		return false
+	}
+	// Row exists. If the event payload carries sub-agent linkage
+	// and the row's parent_session_id / agent_role columns are still
+	// NULL (lazy-create that ran before linkage was visible, or a
+	// session whose framework / plugin failed to emit session_start
+	// but keeps emitting interior events), backfill idempotently.
+	// No-op when the row already has linkage.
+	if e.ParentSessionID != "" || e.AgentRole != "" {
+		if bErr := sp.w.BackfillSubAgentLinkage(
+			ctx, e.SessionID, e.ParentSessionID, e.AgentRole,
+		); bErr != nil {
+			slog.Warn("sub-agent linkage backfill failed",
+				"session_id", e.SessionID,
+				"err", bErr,
+			)
+		}
 	}
 	switch state {
 	case "closed":

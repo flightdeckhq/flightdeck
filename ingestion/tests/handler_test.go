@@ -1037,8 +1037,8 @@ func TestEventsHandler_SessionStart_MissingSensorVersion_Returns400(t *testing.T
 	if code != http.StatusBadRequest {
 		t.Errorf("expected 400, got %d body=%s", code, body)
 	}
-	if !strings.Contains(body, "sensor_version") || !strings.Contains(body, "D152") {
-		t.Errorf("expected sensor_version/D152 in error body, got %s", body)
+	if !strings.Contains(body, "sensor_version") {
+		t.Errorf("expected sensor_version in error body, got %s", body)
 	}
 }
 

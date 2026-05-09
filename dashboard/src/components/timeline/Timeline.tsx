@@ -755,19 +755,33 @@ export function Timeline({
             its own purpose if it flickered between spacer and real
             content. */}
         {(() => {
-          // Track the previous flavor's bucket so a thin horizontal
+          // Track the previous ROOT flavor's bucket so a thin horizontal
           // divider can be injected at LIVE->RECENT and RECENT->IDLE
-          // transitions (no label, just a visual gap). Bucket-for
-          // reads last_seen_at against ``rawEndMs`` so it picks up
-          // the rAF / pause / catch-up time source Fleet drives.
+          // transitions between parent-child clusters (no label, just a
+          // visual gap). Bucket-for reads last_seen_at against
+          // ``rawEndMs`` so it picks up the rAF / pause / catch-up
+          // time source Fleet drives.
+          //
+          // Children (topology="child") are SKIPPED for divider
+          // calculation: a parent and its sub-agents share one visual
+          // group regardless of each row's individual bucket. Without
+          // this skip the loop would inject a divider between a LIVE
+          // parent and its RECENT-bucket child (closed sub-agent),
+          // splitting the cluster mid-group. The divider key is also
+          // pinned to the flavor it precedes so duplicate
+          // (prev->next) bucket transitions across the list don't
+          // collide on a shared `bucket-live-to-recent` key — that
+          // collision was the root of the "dividers accumulate"
+          // visual artifact reported on PR #33.
           let prevBucket: "live" | "recent" | "idle" | null = null;
           const rendered: React.ReactNode[] = [];
           for (const f of filteredFlavors) {
+            const isChild = topologyByFlavor.get(f.flavor) === "child";
             const b = bucketFor(f.last_seen_at, rawEndMs);
-            if (prevBucket !== null && b !== prevBucket) {
+            if (!isChild && prevBucket !== null && b !== prevBucket) {
               rendered.push(
                 <div
-                  key={`bucket-${prevBucket}-to-${b}`}
+                  key={`bucket-divider-before-${f.flavor}`}
                   data-testid={`bucket-divider-${prevBucket}-${b}`}
                   style={{
                     height: 1,
@@ -820,7 +834,14 @@ export function Timeline({
                 }}
               />,
             );
-            prevBucket = b;
+            // Only update prevBucket on root rows. Children inherit
+            // their parent's cluster scope; advancing prevBucket on
+            // a child would compare the next root row against the
+            // child's bucket, producing a spurious divider between
+            // the cluster end and the next root.
+            if (!isChild) {
+              prevBucket = b;
+            }
           }
           return rendered;
         })()}

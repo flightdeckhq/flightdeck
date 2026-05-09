@@ -828,7 +828,11 @@ def _pre_call(
         # threshold. Local and server can both fire once each per
         # session (PolicyCache tracks separately).
         warn_source = result.source or "server"
-        warn_threshold_pct: int | None
+        # warn_threshold_pct was already bound (as int) by the
+        # pre_call_decision branch above; rebinding without a fresh
+        # annotation keeps mypy --strict's no-redef rule happy. The
+        # server branch tolerates None (warn_at_pct is Optional) so
+        # the inferred type is int | None across both branches.
         if warn_source == "local":
             warn_threshold_pct = int(session.policy.local_warn_at * 100)
             warn_token_limit = session.policy.local_limit
@@ -1149,8 +1153,15 @@ def _emit_error(
         # event correlation that adds latency to the hot path; the
         # classifier-driven heuristic is correct for the vast
         # majority of real retry chains.
-        provider_name = error_payload.get("provider") or getattr(provider, "name", "")
-        request_id = error_payload.get("request_id")
+        # error_payload.get(...) returns Any | None; coerce to str so
+        # session.record_retry_attempt's str-typed parameter is satisfied
+        # under mypy --strict. The runtime fallback was already string-
+        # typed; this just makes the static type match.
+        provider_name: str = (
+            error_payload.get("provider") or getattr(provider, "name", "") or ""
+        )
+        request_id_raw = error_payload.get("request_id")
+        request_id = str(request_id_raw) if request_id_raw is not None else None
         retry_attempt = session.record_retry_attempt(provider_name, request_id)
         terminal = not bool(error_payload.get("is_retryable", False))
 

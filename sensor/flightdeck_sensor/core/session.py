@@ -711,7 +711,7 @@ class Session:
         ``incoming_message``, ``outgoing_message``, ``state``,
         ``error``) are added by the caller after this returns.
         """
-        out = {
+        out: dict[str, Any] = {
             "session_id": child_session_id,
             "parent_session_id": self.config.session_id,
             "agent_role": agent_role,

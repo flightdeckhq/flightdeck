@@ -59,6 +59,34 @@ DEFAULT_TEST_CONTEXT: dict[str, Any] = {
     "frameworks": ["integration-suite/1.0"],
 }
 
+# Sentinel value stamped on session_start.sensor_version when the test
+# fixture didn't construct one explicitly. Ingestion requires the field
+# but doesn't constrain its content; the sentinel just keeps the wire
+# contract satisfied. Tests that exercise sensor_version validation
+# pass an explicit value via **extra.
+INTEGRATION_TEST_SENSOR_VERSION = "integration-test/0.0.0"
+
+# Sentinel policy_id used by the make_event auto-stamp path for the 5
+# policy event types when the caller didn't supply policy_decision.
+# Same posture as INTEGRATION_TEST_SENSOR_VERSION — keeps the wire
+# contract satisfied for tests that don't care about the field's
+# content.
+INTEGRATION_TEST_POLICY_ID = "integration-test-policy"
+
+# Closed set of event types that require the structured
+# policy_decision block on the wire. Module-level frozenset (not
+# rebuilt per make_event call). Tests that exercise the validator
+# pass an explicit policy_decision via **extra.
+_POLICY_EVENT_TYPES: frozenset[str] = frozenset(
+    {
+        "policy_warn",
+        "policy_degrade",
+        "policy_block",
+        "policy_mcp_warn",
+        "policy_mcp_block",
+    }
+)
+
 # Session IDs created in the current test, mapped to their flavor, so the
 # cleanup fixture can POST session_end. Reset before each test by the
 # autouse fixture in conftest.py. Exposed as module-level state so the
@@ -95,8 +123,7 @@ def wait_for_services(timeout: float = MAX_WAIT_SECS) -> None:
 
     unhealthy = [name for name, ok in healthy.items() if not ok]
     raise TimeoutError(
-        f"Services not healthy after {timeout}s: {', '.join(unhealthy)}. "
-        f"Run 'make dev' first."
+        f"Services not healthy after {timeout}s: {', '.join(unhealthy)}. Run 'make dev' first."
     )
 
 
@@ -190,9 +217,7 @@ def get_session(session_id: str) -> dict[str, Any]:
         return json.loads(resp.read())  # type: ignore[no-any-return]
 
 
-def wait_for_session_in_fleet(
-    session_id: str, timeout: float = 5.0
-) -> dict[str, Any] | None:
+def wait_for_session_in_fleet(session_id: str, timeout: float = 5.0) -> dict[str, Any] | None:
     """Poll GET /v1/sessions/:id until the worker persists the row or timeout.
 
     Under D115 the fleet endpoint no longer nests sessions under agents,
@@ -327,24 +352,18 @@ def make_event(
     # specifically exercise sensor-version validation can override
     # via **extra.
     if event_type == "session_start" and "sensor_version" not in payload:
-        payload["sensor_version"] = "integration-test/0.0.0"
+        payload["sensor_version"] = INTEGRATION_TEST_SENSOR_VERSION
     # Ingestion requires a structured policy_decision block on every
     # policy enforcement event. Stamp a sentinel here so integration
     # tests that don't construct one explicitly don't 400 at the
     # wire boundary. Tests that specifically exercise policy_decision
     # validation override via **extra.
-    _POLICY_EVENT_TYPES = {
-        "policy_warn", "policy_degrade", "policy_block",
-        "policy_mcp_warn", "policy_mcp_block",
-    }
     if event_type in _POLICY_EVENT_TYPES and "policy_decision" not in payload:
         decision = (
-            "warn" if "warn" in event_type
-            else "degrade" if "degrade" in event_type
-            else "block"
+            "warn" if "warn" in event_type else "degrade" if "degrade" in event_type else "block"
         )
         payload["policy_decision"] = {
-            "policy_id": payload.get("policy_id") or "integration-test-policy",
+            "policy_id": payload.get("policy_id") or INTEGRATION_TEST_POLICY_ID,
             "scope": payload.get("scope") or f"flavor:{flavor}",
             "decision": decision,
             "reason": f"integration test sentinel for {event_type}",
@@ -539,11 +558,7 @@ def directive_has_delivered_at(directive_id: str) -> bool:
     """Check if a directive has been marked delivered via direct DB query."""
     import subprocess
 
-    sql = (
-        f"SELECT delivered_at IS NOT NULL "
-        f"FROM directives "
-        f"WHERE id = '{directive_id}'::uuid"
-    )
+    sql = f"SELECT delivered_at IS NOT NULL FROM directives WHERE id = '{directive_id}'::uuid"
     result = subprocess.run(
         [
             "docker",
@@ -830,6 +845,4 @@ def _psql_exec(sql: str) -> None:
         check=False,
     )
     if result.returncode != 0:
-        raise RuntimeError(
-            f"psql exec failed (exit {result.returncode}): {result.stderr.strip()}"
-        )
+        raise RuntimeError(f"psql exec failed (exit {result.returncode}): {result.stderr.strip()}")

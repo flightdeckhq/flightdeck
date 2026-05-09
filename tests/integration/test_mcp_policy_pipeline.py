@@ -22,6 +22,7 @@ import uuid
 
 import requests
 
+from ..shared.fixtures import INTEGRATION_TEST_SENSOR_VERSION
 from .conftest import API_URL, INGESTION_URL, TOKEN, auth_headers
 
 
@@ -36,7 +37,9 @@ def _post_event(payload: dict) -> int:
     }
     r = requests.post(
         f"{INGESTION_URL}/v1/events",
-        headers=headers, json=payload, timeout=5,
+        headers=headers,
+        json=payload,
+        timeout=5,
     )
     return r.status_code
 
@@ -48,14 +51,15 @@ def _wait_for_event(session_id: str, event_type: str, timeout: float = 5.0) -> d
     while time.monotonic() < deadline:
         r = requests.get(
             f"{API_URL}/v1/sessions/{session_id}",
-            headers=auth_headers(), timeout=3,
+            headers=auth_headers(),
+            timeout=3,
         )
         if r.status_code == 200:
             # API serialises events: null on a freshly-created session
             # whose events haven't drained yet — guard against the
             # null vs missing distinction so the helper polls instead
             # of crashing on TypeError.
-            for event in (r.json().get("events") or []):
+            for event in r.json().get("events") or []:
                 if event.get("event_type") == event_type:
                     return event
         time.sleep(0.2)
@@ -76,13 +80,16 @@ def _baseline_session_start(session_id: str, flavor: str) -> dict:
         "host": "test-host",
         "framework": None,
         "model": None,
-        "sensor_version": "integration-test/0.0.0",
+        "sensor_version": INTEGRATION_TEST_SENSOR_VERSION,
         "timestamp": _now_iso(),
     }
 
 
 def _policy_decision_event(
-    session_id: str, flavor: str, event_type: str, *,
+    session_id: str,
+    flavor: str,
+    event_type: str,
+    *,
     decision_path: str = "flavor_entry",
     block_on_uncertainty: bool = False,
 ) -> dict:
@@ -91,29 +98,31 @@ def _policy_decision_event(
     payload = _baseline_session_start(session_id, flavor)
     payload["event_type"] = event_type
     policy_id = str(uuid.uuid4())
-    payload.update({
-        "server_url": "https://maps.example.com/sse",
-        "server_name": "maps",
-        "fingerprint": "abc123def4567890",
-        "tool_name": "search",
-        "policy_id": policy_id,
-        "scope": f"flavor:{flavor}",
-        "decision_path": decision_path,
-        "transport": "http",
-        # Shared policy_decision block required by ingestion on every
-        # policy event (the validator ensures the dashboard's row
-        # renderer always finds the structured fields it reads).
-        "policy_decision": {
+    payload.update(
+        {
+            "server_url": "https://maps.example.com/sse",
+            "server_name": "maps",
+            "fingerprint": "abc123def4567890",
+            "tool_name": "search",
             "policy_id": policy_id,
             "scope": f"flavor:{flavor}",
-            "decision": "block" if event_type == "policy_mcp_block" else "warn",
-            "reason": (
-                "Server maps blocked by flavor entry, enforcement="
-                + ("block" if event_type == "policy_mcp_block" else "warn")
-            ),
             "decision_path": decision_path,
-        },
-    })
+            "transport": "http",
+            # Shared policy_decision block required by ingestion on every
+            # policy event (the validator ensures the dashboard's row
+            # renderer always finds the structured fields it reads).
+            "policy_decision": {
+                "policy_id": policy_id,
+                "scope": f"flavor:{flavor}",
+                "decision": "block" if event_type == "policy_mcp_block" else "warn",
+                "reason": (
+                    "Server maps blocked by flavor entry, enforcement="
+                    + ("block" if event_type == "policy_mcp_block" else "warn")
+                ),
+                "decision_path": decision_path,
+            },
+        }
+    )
     if event_type == "policy_mcp_block":
         payload["block_on_uncertainty"] = block_on_uncertainty
     return payload
@@ -122,13 +131,15 @@ def _policy_decision_event(
 def _name_changed_event(session_id: str, flavor: str) -> dict:
     payload = _baseline_session_start(session_id, flavor)
     payload["event_type"] = "mcp_server_name_changed"
-    payload.update({
-        "server_url_canonical": "https://maps.example.com/sse",
-        "fingerprint_old": "old0123456789abcd",
-        "fingerprint_new": "new0123456789abcd",
-        "name_old": "maps",
-        "name_new": "maps-v2",
-    })
+    payload.update(
+        {
+            "server_url_canonical": "https://maps.example.com/sse",
+            "fingerprint_old": "old0123456789abcd",
+            "fingerprint_new": "new0123456789abcd",
+            "name_old": "maps",
+            "name_new": "maps-v2",
+        }
+    )
     return payload
 
 
@@ -156,10 +167,17 @@ def test_policy_mcp_block_lands_with_payload() -> None:
     flavor = f"test-mcp-pipeline-{uuid.uuid4().hex[:6]}"
 
     assert _post_event(_baseline_session_start(sid, flavor)) == 200
-    assert _post_event(_policy_decision_event(
-        sid, flavor, "policy_mcp_block",
-        block_on_uncertainty=True,
-    )) == 200
+    assert (
+        _post_event(
+            _policy_decision_event(
+                sid,
+                flavor,
+                "policy_mcp_block",
+                block_on_uncertainty=True,
+            )
+        )
+        == 200
+    )
 
     event = _wait_for_event(sid, "policy_mcp_block", timeout=10.0)
     assert event is not None, "policy_mcp_block did not land within 10s"
@@ -216,12 +234,14 @@ def test_mcp_server_name_changed_missing_name_old_rejected() -> None:
 def _user_remembered_event(session_id: str, flavor: str) -> dict:
     payload = _baseline_session_start(session_id, flavor)
     payload["event_type"] = "mcp_policy_user_remembered"
-    payload.update({
-        "fingerprint": "abc1234567890abc",
-        "server_url_canonical": "stdio://npx -y @scope/server-x",
-        "server_name": "x",
-        "decided_at": "2026-05-06T12:00:00Z",
-    })
+    payload.update(
+        {
+            "fingerprint": "abc1234567890abc",
+            "server_url_canonical": "stdio://npx -y @scope/server-x",
+            "server_name": "x",
+            "decided_at": "2026-05-06T12:00:00Z",
+        }
+    )
     return payload
 
 
@@ -263,17 +283,19 @@ def _attached_event(
     sensor's wire shape (D140)."""
     payload = _baseline_session_start(session_id, flavor)
     payload["event_type"] = "mcp_server_attached"
-    payload.update({
-        "fingerprint": fingerprint,
-        "server_url_canonical": server_url_canonical,
-        "server_name": name,
-        "transport": "sse",
-        "protocol_version": "2025-11-25",
-        "version": "1.0.0",
-        "capabilities": {"tools": {"listChanged": True}},
-        "instructions": "Test server.",
-        "attached_at": "2026-05-06T15:00:00+00:00",
-    })
+    payload.update(
+        {
+            "fingerprint": fingerprint,
+            "server_url_canonical": server_url_canonical,
+            "server_name": name,
+            "transport": "sse",
+            "protocol_version": "2025-11-25",
+            "version": "1.0.0",
+            "capabilities": {"tools": {"listChanged": True}},
+            "instructions": "Test server.",
+            "attached_at": "2026-05-06T15:00:00+00:00",
+        }
+    )
     return payload
 
 
@@ -292,7 +314,8 @@ def _wait_for_context_mcp_server(
     while time.monotonic() < deadline:
         r = requests.get(
             f"{API_URL}/v1/sessions/{session_id}",
-            headers=auth_headers(), timeout=3,
+            headers=auth_headers(),
+            timeout=3,
         )
         if r.status_code == 200:
             session = r.json().get("session") or {}
@@ -320,7 +343,8 @@ def test_mcp_server_attached_populates_session_context() -> None:
     while time.monotonic() < deadline:
         r = requests.get(
             f"{API_URL}/v1/sessions/{sid}",
-            headers=auth_headers(), timeout=3,
+            headers=auth_headers(),
+            timeout=3,
         )
         if r.status_code == 200:
             break
@@ -330,9 +354,7 @@ def test_mcp_server_attached_populates_session_context() -> None:
     assert _post_event(_attached_event(sid, flavor)) == 200
 
     server = _wait_for_context_mcp_server(sid, "maps", timeout=10.0)
-    assert server is not None, (
-        "mcp_server_attached did not populate context.mcp_servers within 10s"
-    )
+    assert server is not None, "mcp_server_attached did not populate context.mcp_servers within 10s"
     assert server["name"] == "maps"
     assert server["server_url"] == "https://maps.example.com/sse"
     assert server["transport"] == "sse"
@@ -362,7 +384,8 @@ def test_mcp_server_attached_idempotent_replay() -> None:
 
     r = requests.get(
         f"{API_URL}/v1/sessions/{sid}",
-        headers=auth_headers(), timeout=3,
+        headers=auth_headers(),
+        timeout=3,
     )
     assert r.status_code == 200
     session_obj = r.json().get("session") or {}
@@ -381,16 +404,30 @@ def test_mcp_server_attached_distinct_tuples_both_land() -> None:
     flavor = f"test-mcp-attach-{uuid.uuid4().hex[:6]}"
 
     assert _post_event(_baseline_session_start(sid, flavor)) == 200
-    assert _post_event(_attached_event(
-        sid, flavor, name="maps",
-        server_url_canonical="https://maps.example.com/sse",
-        fingerprint="aaaaaaaaaaaaaaaa",
-    )) == 200
-    assert _post_event(_attached_event(
-        sid, flavor, name="search",
-        server_url_canonical="https://search.example.com/sse",
-        fingerprint="bbbbbbbbbbbbbbbb",
-    )) == 200
+    assert (
+        _post_event(
+            _attached_event(
+                sid,
+                flavor,
+                name="maps",
+                server_url_canonical="https://maps.example.com/sse",
+                fingerprint="aaaaaaaaaaaaaaaa",
+            )
+        )
+        == 200
+    )
+    assert (
+        _post_event(
+            _attached_event(
+                sid,
+                flavor,
+                name="search",
+                server_url_canonical="https://search.example.com/sse",
+                fingerprint="bbbbbbbbbbbbbbbb",
+            )
+        )
+        == 200
+    )
 
     # Both should land.
     assert _wait_for_context_mcp_server(sid, "maps", timeout=10.0) is not None
@@ -398,7 +435,8 @@ def test_mcp_server_attached_distinct_tuples_both_land() -> None:
 
     r = requests.get(
         f"{API_URL}/v1/sessions/{sid}",
-        headers=auth_headers(), timeout=3,
+        headers=auth_headers(),
+        timeout=3,
     )
     assert r.status_code == 200
     session_obj = r.json().get("session") or {}
@@ -451,9 +489,7 @@ def test_listing_aggregates_all_four_mcp_policy_event_types() -> None:
         "mcp_server_name_changed",
         "mcp_policy_user_remembered",
     ):
-        assert _wait_for_event(sid, et, timeout=10.0) is not None, (
-            f"{et} did not land within 10s"
-        )
+        assert _wait_for_event(sid, et, timeout=10.0) is not None, f"{et} did not land within 10s"
 
     # The list endpoint's policy_event_types[] aggregation must
     # include all four MCP-policy types alongside any token-budget
@@ -471,12 +507,14 @@ def test_listing_aggregates_all_four_mcp_policy_event_types() -> None:
         time.sleep(0.2)
 
     assert row is not None, f"session {sid} did not appear in listing"
-    assert seen == sorted([
-        "mcp_policy_user_remembered",
-        "mcp_server_name_changed",
-        "policy_mcp_block",
-        "policy_mcp_warn",
-    ]), f"policy_event_types missing MCP-policy entries; got {seen!r}"
+    assert seen == sorted(
+        [
+            "mcp_policy_user_remembered",
+            "mcp_server_name_changed",
+            "policy_mcp_block",
+            "policy_mcp_warn",
+        ]
+    ), f"policy_event_types missing MCP-policy entries; got {seen!r}"
 
 
 def test_filter_accepts_mcp_policy_event_types_in_vocab() -> None:
@@ -503,6 +541,5 @@ def test_filter_accepts_mcp_policy_event_types_in_vocab() -> None:
             timeout=5,
         )
         assert r.status_code == 200, (
-            f"{event_type}: expected 200, got {r.status_code} "
-            f"({r.text[:200]})"
+            f"{event_type}: expected 200, got {r.status_code} ({r.text[:200]})"
         )

@@ -1,6 +1,11 @@
 import { test, expect } from "@playwright/test";
 import { CODING_AGENT, waitForInvestigateReady } from "./_fixtures";
 
+// 7-day default window the Investigate page uses when the user hasn't
+// narrowed the time range explicitly. Hoisted out of the test body so
+// the magic-number trio (7, 24, 60, 60, 1000) doesn't repeat inline.
+const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+
 // T42 — operator-actionable enrichment facets filter server-side.
 // Step 6 originally wired these as client-side filters that
 // narrowed the visible page only; the API request stripped the
@@ -23,7 +28,7 @@ test.describe("T42 — operator-actionable facets filter server-side", () => {
     page,
   }) => {
     const params = new URLSearchParams({
-      from: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
+      from: new Date(Date.now() - SEVEN_DAYS_MS).toISOString(),
       to: new Date().toISOString(),
       flavor: CODING_AGENT.flavor,
     });
@@ -37,22 +42,28 @@ test.describe("T42 — operator-actionable facets filter server-side", () => {
       "TERMINAL facet must render when a visible session has terminal errors",
     ).toBeVisible();
 
-    // The TERMINAL facet has a single value entry "true". Locate it
-    // by hovering scope to the section header's parent + the value
-    // pill text. The facet rows render via the shared sidebar
-    // facet-pill markup; the value text is "true".
-    const terminalPill = page.getByRole("button", { name: /^true/ }).first();
+    // Scope the pill lookup to the sidebar facet container so an
+    // unrelated button on the page whose accessible name happens to
+    // start with "true" can never satisfy the locator (DOM-order
+    // ambiguity). The TERMINAL facet has a single value entry "true".
+    const terminalPill = facet
+      .getByRole("button", { name: /^true/ })
+      .first();
 
-    // Capture the API call fired after the click — the request must
-    // carry &terminal=true. Filter to the v1/sessions endpoint so
-    // unrelated requests (whoami, agents) don't satisfy the wait.
-    const requestPromise = page.waitForRequest(
-      (req) =>
-        req.url().includes("/v1/sessions?")
-        && req.url().includes("terminal=true"),
-    );
-    await terminalPill.click();
-    const filteredRequest = await requestPromise;
+    // Capture the request fired BY the click, not any pre-click
+    // request that happens to lack terminal=true. Promise.all
+    // registers the wait synchronously with the click action, so
+    // a stale unfiltered request that was already in-flight cannot
+    // satisfy the wait — only the click-triggered request matches
+    // both the URL predicate AND the registration order.
+    const [filteredRequest] = await Promise.all([
+      page.waitForRequest(
+        (req) =>
+          req.url().includes("/v1/sessions?")
+          && req.url().includes("terminal=true"),
+      ),
+      terminalPill.click(),
+    ]);
 
     // (a) URL state captured.
     await expect(page).toHaveURL(/terminal=true/);
@@ -75,11 +86,12 @@ test.describe("T42 — operator-actionable facets filter server-side", () => {
     expect(rangeText, "pagination range text must be present").toBeTruthy();
 
     const match = rangeText!.match(/Showing\s+(\d+)-(\d+)\s+of\s+(\d+)/);
-    expect(
-      match,
-      `pagination range text "${rangeText}" must match "Showing N-M of T"`,
-    ).not.toBeNull();
-    const [, startStr, endStr, totalStr] = match!;
+    if (!match) {
+      throw new Error(
+        `pagination range text "${rangeText}" must match "Showing N-M of T"`,
+      );
+    }
+    const [, startStr, endStr, totalStr] = match;
     const visibleCount = Number(endStr) - Number(startStr) + 1;
     const total = Number(totalStr);
 
@@ -99,21 +111,32 @@ test.describe("T42 — operator-actionable facets filter server-side", () => {
       total,
       "pagination total must reflect the filtered result, not the unfiltered set",
     ).toBeGreaterThan(0);
+    // SAFETY: Pagination.tsx clamps endStr = Math.min(offset+limit,
+    // total), so endStr <= total always holds. The condition below
+    // therefore reduces to "endStr === total" — the single-page case
+    // where the entire filtered result fits without a "next" page.
     if (total <= Number(endStr)) {
       // Single-page result — next button must be disabled.
       const next = page.locator('[data-testid="pagination-next"]');
       await expect(next).toBeDisabled();
     }
 
-    // Re-click the active facet to clear it. URL drops the param;
-    // the next request must NOT carry terminal=true.
-    const reclickRequest = page.waitForRequest(
-      (req) =>
-        req.url().includes("/v1/sessions?")
-        && !req.url().includes("terminal=true"),
-    );
-    await terminalPill.click();
-    await reclickRequest;
+    // Re-click the active facet to clear it. Same Promise.all idiom
+    // so a stale unfiltered request in-flight before the click can't
+    // satisfy the negative predicate — only the click-triggered
+    // de-filter request matches.
+    await Promise.all([
+      page.waitForRequest(
+        (req) =>
+          req.url().includes("/v1/sessions?")
+          && !req.url().includes("terminal=true"),
+      ),
+      terminalPill.click(),
+    ]);
+    // Settle the de-filtered table before asserting URL state so a
+    // fast runner can't race the URL update against the in-flight
+    // refetch render.
+    await waitForInvestigateReady(page);
     await expect(page).not.toHaveURL(/terminal=true/);
   });
 });

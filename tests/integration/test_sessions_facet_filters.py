@@ -35,14 +35,17 @@ def _fetch_sessions(**filters: Any) -> dict[str, Any]:
         doseq=True,
     )
     req = urllib.request.Request(
-        f"{API_URL}/v1/sessions?{qs}", headers=auth_headers(),
+        f"{API_URL}/v1/sessions?{qs}",
+        headers=auth_headers(),
     )
     with urllib.request.urlopen(req, timeout=5) as resp:
         return json.loads(resp.read())
 
 
 def _poll_for_session(
-    expect_sid: str, deadline_secs: float = 5.0, **filters: Any,
+    expect_sid: str,
+    deadline_secs: float = 5.0,
+    **filters: Any,
 ) -> dict[str, Any]:
     """Poll _fetch_sessions until expect_sid appears or the deadline
     expires. Required because the seed → ingestion → NATS → worker →
@@ -71,7 +74,9 @@ def _seed_close_reason(session_id: str, flavor: str, close_reason: str) -> None:
     time.sleep(0.2)
     post_event(
         make_event(
-            session_id, flavor, "session_end",
+            session_id,
+            flavor,
+            "session_end",
             close_reason=close_reason,
         ),
     )
@@ -86,12 +91,12 @@ def test_close_reason_filter_narrows_to_matching_session() -> None:
     _seed_close_reason(skip_sid, flavor, "normal_exit")
 
     resp = _poll_for_session(
-        match_sid, flavor=flavor, close_reason="directive_shutdown",
+        match_sid,
+        flavor=flavor,
+        close_reason="directive_shutdown",
     )
     sids = {s["session_id"] for s in resp["sessions"]}
-    assert match_sid in sids, (
-        f"directive_shutdown session missing from filtered result: {sids}"
-    )
+    assert match_sid in sids, f"directive_shutdown session missing from filtered result: {sids}"
     assert skip_sid not in sids, (
         f"normal_exit session leaked into directive_shutdown result: {sids}"
     )
@@ -125,7 +130,9 @@ def test_terminal_filter_narrows_to_terminal_sessions() -> None:
     _seed_session(match_sid, flavor)
     post_event(
         make_event(
-            match_sid, flavor, "llm_error",
+            match_sid,
+            flavor,
+            "llm_error",
             error={"error_type": "authentication", "is_retryable": False},
             retry_attempt=1,
             terminal=True,
@@ -134,7 +141,9 @@ def test_terminal_filter_narrows_to_terminal_sessions() -> None:
     _seed_session(skip_sid, flavor)
     post_event(
         make_event(
-            skip_sid, flavor, "llm_error",
+            skip_sid,
+            flavor,
+            "llm_error",
             error={"error_type": "rate_limit", "is_retryable": True},
             retry_attempt=1,
             terminal=False,
@@ -157,7 +166,9 @@ def test_matched_entry_id_filter_narrows_to_matching_session() -> None:
     _seed_session(match_sid, flavor)
     post_event(
         make_event(
-            match_sid, flavor, "policy_mcp_block",
+            match_sid,
+            flavor,
+            "policy_mcp_block",
             server_url="stdio:///fake/server",
             server_name="fake-server",
             fingerprint="aaaaaaaaaaaaaaaa",
@@ -177,7 +188,9 @@ def test_matched_entry_id_filter_narrows_to_matching_session() -> None:
     _seed_session(skip_sid, flavor)
     post_event(
         make_event(
-            skip_sid, flavor, "policy_mcp_block",
+            skip_sid,
+            flavor,
+            "policy_mcp_block",
             server_url="stdio:///fake/other",
             server_name="other-server",
             fingerprint="bbbbbbbbbbbbbbbb",
@@ -209,23 +222,32 @@ def test_originating_call_context_filter_narrows() -> None:
     _seed_session(match_sid, flavor)
     post_event(
         make_event(
-            match_sid, flavor, "mcp_tool_call",
-            server_name="fake", transport="stdio",
+            match_sid,
+            flavor,
+            "mcp_tool_call",
+            server_name="fake",
+            transport="stdio",
             originating_call_context="call_tool",
         ),
     )
     _seed_session(skip_sid, flavor)
     post_event(
         make_event(
-            skip_sid, flavor, "mcp_resource_read",
-            server_name="fake", transport="stdio",
+            skip_sid,
+            flavor,
+            "mcp_resource_read",
+            server_name="fake",
+            transport="stdio",
             originating_call_context="read_resource",
-            resource_uri="fake://x", content_bytes=10,
+            resource_uri="fake://x",
+            content_bytes=10,
         ),
     )
 
     resp = _poll_for_session(
-        match_sid, flavor=flavor, originating_call_context="call_tool",
+        match_sid,
+        flavor=flavor,
+        originating_call_context="call_tool",
     )
     sids = {s["session_id"] for s in resp["sessions"]}
     assert match_sid in sids
@@ -249,9 +271,12 @@ def test_three_filter_and_composition() -> None:
     )
     post_event(
         make_event(
-            match_sid, flavor, "llm_error",
+            match_sid,
+            flavor,
+            "llm_error",
             error={"error_type": "authentication", "is_retryable": False},
-            retry_attempt=1, terminal=True,
+            retry_attempt=1,
+            terminal=True,
         ),
     )
     post_event(
@@ -266,9 +291,12 @@ def test_three_filter_and_composition() -> None:
     )
     post_event(
         make_event(
-            miss_a, flavor, "llm_error",
+            miss_a,
+            flavor,
+            "llm_error",
             error={"error_type": "rate_limit", "is_retryable": True},
-            retry_attempt=1, terminal=False,
+            retry_attempt=1,
+            terminal=False,
         ),
     )
     post_event(
@@ -283,9 +311,12 @@ def test_three_filter_and_composition() -> None:
     )
     post_event(
         make_event(
-            miss_b, flavor, "llm_error",
+            miss_b,
+            flavor,
+            "llm_error",
             error={"error_type": "authentication", "is_retryable": False},
-            retry_attempt=1, terminal=True,
+            retry_attempt=1,
+            terminal=True,
         ),
     )
     post_event(
@@ -300,9 +331,12 @@ def test_three_filter_and_composition() -> None:
     )
     post_event(
         make_event(
-            miss_c, flavor, "llm_error",
+            miss_c,
+            flavor,
+            "llm_error",
             error={"error_type": "authentication", "is_retryable": False},
-            retry_attempt=1, terminal=True,
+            retry_attempt=1,
+            terminal=True,
         ),
     )
     post_event(
@@ -317,11 +351,7 @@ def test_three_filter_and_composition() -> None:
         estimated_via="tiktoken",
     )
     sids = {s["session_id"] for s in resp["sessions"]}
-    assert match_sid in sids, (
-        f"all-match session missing under three-filter AND: {sids}"
-    )
+    assert match_sid in sids, f"all-match session missing under three-filter AND: {sids}"
     assert miss_a not in sids, "session missing terminal=true leaked"
     assert miss_b not in sids, "session with estimated_via=heuristic leaked"
-    assert miss_c not in sids, (
-        "session with close_reason=directive_shutdown leaked"
-    )
+    assert miss_c not in sids, "session with close_reason=directive_shutdown leaked"

@@ -8,6 +8,7 @@ non-session_start event. Requires `make dev` to be running.
 from __future__ import annotations
 
 import subprocess
+import time
 import uuid
 
 from .conftest import (
@@ -275,6 +276,93 @@ def test_reconciler_lost_threshold_is_30_min() -> None:
     # transitions fire in the same ReconcileStaleSessions call).
     detail = wait_for_state(sid, "lost", timeout=90)
     assert detail["session"]["state"] == "lost"
+
+
+def test_orphan_timeout_reaper_closes_lost_session() -> None:
+    """Lost sessions silent past FLIGHTDECK_ORPHAN_TIMEOUT_HOURS get
+    reaped: state flips to closed, ended_at is stamped, and a synthetic
+    session_end event with payload.close_reason='orphan_timeout' lands
+    so the dashboard's CloseReason facet surfaces the reconciler's
+    verdict alongside happy-path shutdowns.
+
+    Default timeout is 24h. Backdates last_seen_at by 25 hours and
+    forces state='lost' so the next reconciler tick (every 60s) reaps
+    in a single pass, then asserts the row update + the synthetic event.
+    """
+    sid = str(uuid.uuid4())
+    flavor = f"test-orphan-reap-{uuid.uuid4().hex[:6]}"
+
+    post_event(make_event(sid, flavor, "session_start"))
+    wait_for_session_in_fleet(sid, timeout=5.0)
+
+    # Skip the organic stale → lost progression: backdate and force.
+    # The reaper only cares that state='lost' and last_seen_at is past
+    # the threshold; getting there via 31-minute waits would balloon
+    # the test runtime without exercising the reaper code path.
+    _exec_sql(
+        "UPDATE sessions SET state = 'lost', "
+        "last_seen_at = NOW() - INTERVAL '25 hours' "
+        f"WHERE session_id = '{sid}'::uuid"
+    )
+
+    detail = wait_for_state(sid, "closed", timeout=90)
+    assert detail["session"]["state"] == "closed"
+    assert detail["session"]["ended_at"] is not None, (
+        f"reaper should stamp ended_at on {sid}; got null"
+    )
+
+    raw = _exec_sql(
+        "SELECT payload->>'close_reason' FROM events "
+        f"WHERE session_id = '{sid}'::uuid AND event_type = 'session_end'"
+    )
+    reasons = [line.strip() for line in raw.splitlines() if line.strip()]
+    assert "orphan_timeout" in reasons, (
+        f"reaper should emit synthetic session_end with "
+        f"close_reason='orphan_timeout' on {sid}; saw {reasons!r}"
+    )
+
+
+def test_orphan_timeout_reaper_does_not_close_recent_lost_session() -> None:
+    """A session in state='lost' but with last_seen_at *inside* the
+    timeout window must NOT be reaped. Guards against the reaper firing
+    on every lost row regardless of age (which would defeat the
+    purpose of the threshold and prematurely close legitimately-paused
+    sessions).
+    """
+    sid = str(uuid.uuid4())
+    flavor = f"test-orphan-noreap-{uuid.uuid4().hex[:6]}"
+
+    post_event(make_event(sid, flavor, "session_start"))
+    wait_for_session_in_fleet(sid, timeout=5.0)
+
+    # last_seen_at is 1 hour ago — past the 30-min lost threshold so
+    # state='lost' is plausible, but well inside the default 24h orphan
+    # window so the reaper must skip it.
+    _exec_sql(
+        "UPDATE sessions SET state = 'lost', "
+        "last_seen_at = NOW() - INTERVAL '1 hour' "
+        f"WHERE session_id = '{sid}'::uuid"
+    )
+
+    # Wait long enough for at least one reconciler tick (60s) plus
+    # padding. If the reaper is going to wrongly fire, it fires here.
+    time.sleep(75)
+
+    row = _read_session_row(sid)
+    assert row["state"] == "lost", (
+        f"reaper wrongly closed recent lost session {sid}: state={row['state']!r}"
+    )
+
+    raw = _exec_sql(
+        "SELECT COUNT(*) FROM events "
+        f"WHERE session_id = '{sid}'::uuid "
+        "AND event_type = 'session_end' "
+        "AND payload->>'close_reason' = 'orphan_timeout'"
+    )
+    assert raw == "0", (
+        f"reaper wrongly emitted orphan_timeout session_end for {sid}; "
+        f"expected 0 rows, got {raw}"
+    )
 
 
 # ---------------------------------------------------------------------------

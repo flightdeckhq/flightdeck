@@ -15,6 +15,14 @@ type Config struct {
 	WorkerPoolSize      int
 	ShutdownTimeoutSecs int
 	MigrationsDir       string
+	// OrphanTimeoutHours is the silence window before the reconciler
+	// transitions a `lost` session to `closed` with
+	// close_reason="orphan_timeout". The plugin's SessionEnd /
+	// sensor's shutdown is the happy path; the reaper is the safety
+	// net for crashes / missed lifecycle hooks. Default 24 hours
+	// gives plenty of headroom for legitimate long pauses while still
+	// reaping dead rows within an operational day.
+	OrphanTimeoutHours int
 }
 
 // Load reads configuration from environment variables.
@@ -26,6 +34,7 @@ func Load() Config {
 		WorkerPoolSize:      envIntOrDefault("FLIGHTDECK_WORKER_POOL_SIZE", 10),
 		ShutdownTimeoutSecs: envIntOrDefault("SHUTDOWN_TIMEOUT_SECS", 30),
 		MigrationsDir:       envOrDefault("FLIGHTDECK_MIGRATIONS_DIR", "/migrations"),
+		OrphanTimeoutHours:  envIntOrDefault("FLIGHTDECK_ORPHAN_TIMEOUT_HOURS", 24),
 	}
 	return cfg
 }

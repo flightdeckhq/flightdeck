@@ -518,8 +518,17 @@ func (sp *SessionProcessor) HandleSessionEnd(ctx context.Context, e consumer.Eve
 	return sp.w.CloseSession(ctx, e.SessionID)
 }
 
-// StartReconciler runs a background loop every 60s to mark stale/lost sessions.
-func (sp *SessionProcessor) StartReconciler(ctx context.Context) {
+// StartReconciler runs a background loop every 60s to mark stale/lost
+// sessions and to reap orphaned `lost` rows after `orphanTimeout`.
+// The reaper closes sessions whose owning sensor / plugin never sent
+// session_end (process crash, kill -9, missed lifecycle hook) and
+// stamps close_reason="orphan_timeout" via a synthetic session_end so
+// the dashboard's close-reason facet surfaces the reconciler's verdict
+// alongside happy-path shutdowns.
+func (sp *SessionProcessor) StartReconciler(
+	ctx context.Context,
+	orphanTimeout time.Duration,
+) {
 	ticker := time.NewTicker(reconcilerInterval)
 	defer ticker.Stop()
 
@@ -530,6 +539,21 @@ func (sp *SessionProcessor) StartReconciler(ctx context.Context) {
 		case <-ticker.C:
 			if err := sp.w.ReconcileStaleSessions(ctx); err != nil {
 				slog.Error("reconciler error", "err", err)
+			}
+			reaped, err := sp.w.ReapOrphanedLostSessions(ctx, orphanTimeout)
+			if err != nil {
+				slog.Error("orphan reaper error", "err", err)
+				continue
+			}
+			if reaped > 0 {
+				for i := 0; i < reaped; i++ {
+					metrics.IncrSessionClosed(metrics.CloseReasonOrphanTimeout)
+				}
+				slog.Info("reaped orphaned sessions",
+					"count", reaped,
+					"close_reason", string(metrics.CloseReasonOrphanTimeout),
+					"timeout", orphanTimeout.String(),
+				)
 			}
 		}
 	}

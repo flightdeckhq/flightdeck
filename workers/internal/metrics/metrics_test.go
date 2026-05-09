@@ -81,6 +81,47 @@ func TestHandlerEmitsSortedTextFormat(t *testing.T) {
 	}
 }
 
+func TestIncrSessionClosedCountsAndExposesViaHandler(t *testing.T) {
+	Reset()
+
+	if snap := SnapshotClosed(); len(snap) != 0 {
+		t.Fatalf("SnapshotClosed on fresh registry should be empty, got %v", snap)
+	}
+
+	IncrSessionClosed(CloseReasonOrphanTimeout)
+	IncrSessionClosed(CloseReasonOrphanTimeout)
+	IncrSessionClosed(CloseReasonOrphanTimeout)
+
+	if got := SnapshotClosed()[CloseReasonOrphanTimeout]; got != 3 {
+		t.Errorf("orphan_timeout: want 3, got %d", got)
+	}
+
+	// Reset clears closed counters as well as dropped counters.
+	IncrDropped(ReasonOrphanSessionEnd)
+	Reset()
+	if got := SnapshotClosed()[CloseReasonOrphanTimeout]; got != 0 {
+		t.Errorf("Reset did not clear closed counters: orphan_timeout=%d", got)
+	}
+	if got := Snapshot()[ReasonOrphanSessionEnd]; got != 0 {
+		t.Errorf("Reset did not clear dropped counters: orphan_session_end=%d", got)
+	}
+
+	// Re-incr post-Reset and verify the /metrics handler emits the
+	// sessions_closed_total line in the trivial text format.
+	IncrSessionClosed(CloseReasonOrphanTimeout)
+	req := httptest.NewRequest("GET", "/metrics", nil)
+	w := httptest.NewRecorder()
+	Handler().ServeHTTP(w, req)
+
+	if w.Code != 200 {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `sessions_closed_total{reason="orphan_timeout"} 1`) {
+		t.Errorf("expected sessions_closed_total line, got: %s", body)
+	}
+}
+
 func TestConcurrentIncrDroppedDoesNotRace(t *testing.T) {
 	// Each goroutine increments the same reason; final count must
 	// equal iterations * workers (no lost updates under the

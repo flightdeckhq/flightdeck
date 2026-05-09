@@ -781,29 +781,80 @@ func (w *Writer) CloseSession(ctx context.Context, sessionID string) error {
 	return nil
 }
 
-// ReconcileStaleSessions sets stale after 2 min silence, lost after 10 min.
+// ReconcileStaleSessions sets stale after `staleThreshold` silence,
+// lost after `lostThreshold`. lost → closed is a separate, configurable
+// transition handled by ReapOrphanedLostSessions so operators can tune
+// the orphan-timeout window without recompiling the worker.
 func (w *Writer) ReconcileStaleSessions(ctx context.Context) error {
-	// Mark stale: active sessions with no signal for > 2 minutes
+	// Mark stale: active sessions with no signal for > staleThreshold
 	_, err := w.pool.Exec(ctx, `
 		UPDATE sessions
 		SET state = 'stale'
 		WHERE state IN ('active', 'idle')
-		  AND last_seen_at < NOW() - INTERVAL '` + staleThreshold + `'
+		  AND last_seen_at < NOW() - INTERVAL '`+staleThreshold+`'
 	`)
 	if err != nil {
 		return fmt.Errorf("mark stale: %w", err)
 	}
 
-	// Mark lost: stale sessions with no close for > 10 minutes
+	// Mark lost: stale sessions with no signal for > lostThreshold
 	_, err = w.pool.Exec(ctx, `
 		UPDATE sessions
 		SET state = 'lost'
 		WHERE state = 'stale'
-		  AND last_seen_at < NOW() - INTERVAL '` + lostThreshold + `'
+		  AND last_seen_at < NOW() - INTERVAL '`+lostThreshold+`'
 	`)
 	if err != nil {
 		return fmt.Errorf("mark lost: %w", err)
 	}
 
 	return nil
+}
+
+// ReapOrphanedLostSessions closes lost sessions that have been silent
+// longer than `threshold`, stamping close_reason="orphan_timeout" via
+// a synthetic session_end event so the dashboard's close-reason facet
+// reflects the reconciler's verdict alongside happy-path shutdowns.
+//
+// The CTE acquires row-level locks with FOR UPDATE SKIP LOCKED so two
+// reconciler instances racing on the same tick reap disjoint subsets
+// rather than fighting for the same row. The synthetic event uses
+// gen_random_uuid()/NOW() defaults; downstream consumers (close-reason
+// facet, session detail fetch) treat it identically to a plugin- or
+// sensor-emitted session_end. Returns the number of sessions reaped
+// so the caller can bump metrics.IncrSessionClosed.
+func (w *Writer) ReapOrphanedLostSessions(
+	ctx context.Context,
+	threshold time.Duration,
+) (int, error) {
+	hours := threshold.Hours()
+	var reaped int
+	err := w.pool.QueryRow(ctx, `
+		WITH expired AS (
+			SELECT session_id, flavor
+			FROM sessions
+			WHERE state = 'lost'
+			  AND last_seen_at < NOW() - make_interval(secs => $1)
+			FOR UPDATE SKIP LOCKED
+		),
+		closed AS (
+			UPDATE sessions s
+			SET state = 'closed', ended_at = NOW()
+			FROM expired e
+			WHERE s.session_id = e.session_id
+			RETURNING s.session_id
+		),
+		inserted AS (
+			INSERT INTO events (session_id, flavor, event_type, payload)
+			SELECT e.session_id, e.flavor, 'session_end',
+			       jsonb_build_object('close_reason', 'orphan_timeout')
+			FROM expired e
+			RETURNING id
+		)
+		SELECT COUNT(*)::int FROM closed
+	`, threshold.Seconds()).Scan(&reaped)
+	if err != nil {
+		return 0, fmt.Errorf("reap orphaned lost sessions (threshold=%.2fh): %w", hours, err)
+	}
+	return reaped, nil
 }

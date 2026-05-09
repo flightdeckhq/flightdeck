@@ -1276,6 +1276,19 @@ windows. The reconciler in `workers/internal/processor/session.go`
 sweeps
 every 60 s and applies both transitions in a single pass.
 
+**Orphan-timeout reaper.** The same reconciler tick also closes `lost`
+sessions that have been silent past `FLIGHTDECK_ORPHAN_TIMEOUT_HOURS`
+(default 24 h). Reaping flips the row to `state=closed`, stamps
+`ended_at = NOW()`, emits a synthetic `session_end` event with
+`payload.close_reason = "orphan_timeout"` so the dashboard's
+close-reason facet surfaces the reconciler's verdict alongside
+happy-path shutdowns, and bumps
+`sessions_closed_total{reason="orphan_timeout"}` on the worker's
+`/metrics` endpoint. The reaper exists because plugin / sensor
+crashes, `kill -9`, and missed lifecycle hooks would otherwise leave
+`lost` rows pinned forever; without the timeout the Fleet view
+accumulates dead rows that look indistinguishable from a long pause.
+
 **Terminal-state handling.** `closed` is terminal and final. `session_end`
 at any non-closed state transitions directly to `closed`;
 `handleSessionGuard` skips any subsequent event for a closed session with
@@ -2455,9 +2468,14 @@ Operator-actionable enrichment:
   `policy_block` / `orphan_timeout` / `sigkill_detected` / `unknown`.
   Sensor populates the first three (atexit fires normally;
   shutdown directive flag was set; BudgetExceededError tore down
-  the process). Worker fills `orphan_timeout` /
-  `sigkill_detected` on the post-mortem path via the session-table
-  update. `unknown` is the catch-all when no path resolves.
+  the process). Worker fills `orphan_timeout` on the post-mortem
+  path: when the reconciler's reaper closes a `lost` session past
+  `FLIGHTDECK_ORPHAN_TIMEOUT_HOURS`, it emits a synthetic
+  `session_end` event with `payload.close_reason="orphan_timeout"`
+  and bumps `sessions_closed_total{reason="orphan_timeout"}` so the
+  facet aggregate and `/metrics` endpoint reflect the verdict.
+  `sigkill_detected` is reserved for a future dedicated reaper.
+  `unknown` is the catch-all when no path resolves.
 - `policy_actions_summary` (worker-computed): tally of every
   policy enforcement event for the session, per the events table
   GROUP BY query. Shape: `{policy_warn: N, policy_degrade: N,

@@ -547,9 +547,11 @@ func (p *Processor) Process(ctx context.Context, e consumer.EventPayload) error 
 	return nil
 }
 
-// StartReconciler delegates to the session processor's background reconciler.
-func (p *Processor) StartReconciler(ctx context.Context) {
-	p.session.StartReconciler(ctx)
+// StartReconciler delegates to the session processor's background
+// reconciler. orphanTimeout controls the lost → closed transition (see
+// SessionProcessor.StartReconciler).
+func (p *Processor) StartReconciler(ctx context.Context, orphanTimeout time.Duration) {
+	p.session.StartReconciler(ctx, orphanTimeout)
 }
 
 // Phase 7 Step 4 (D152): worker-side enrichment for session_end +

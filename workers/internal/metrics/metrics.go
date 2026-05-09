@@ -46,11 +46,23 @@ import (
 type DropReason string
 
 const (
-	ReasonUnmarshalError     DropReason = "unmarshal_error"
-	ReasonOrphanSessionEnd   DropReason = "orphan_session_end"
-	ReasonClosedSessionSkip  DropReason = "closed_session_skip"
-	ReasonFKViolation        DropReason = "fk_violation"
+	ReasonUnmarshalError      DropReason = "unmarshal_error"
+	ReasonOrphanSessionEnd    DropReason = "orphan_session_end"
+	ReasonClosedSessionSkip   DropReason = "closed_session_skip"
+	ReasonFKViolation         DropReason = "fk_violation"
 	ReasonMaxRetriesExhausted DropReason = "max_retries_exhausted"
+)
+
+// CloseReason mirrors the close_reason values stamped on session_end
+// event payloads. Kept in lockstep with the enum documented in
+// ARCHITECTURE.md (sessions § close_reason). Worker-side close paths
+// — notably the orphan_timeout reaper — bump
+// sessions_closed_total{reason=...} so operators can chart the
+// non-clean-shutdown rate without trawling per-event payloads.
+type CloseReason string
+
+const (
+	CloseReasonOrphanTimeout CloseReason = "orphan_timeout"
 )
 
 // droppedEvents is a sharded counter keyed on reason. A global
@@ -59,6 +71,9 @@ const (
 var (
 	droppedMu     sync.RWMutex
 	droppedEvents = map[DropReason]*atomic.Uint64{}
+
+	closedMu       sync.RWMutex
+	closedSessions = map[CloseReason]*atomic.Uint64{}
 )
 
 // ensureCounter returns a live counter for the given reason, creating
@@ -80,12 +95,39 @@ func ensureCounter(reason DropReason) *atomic.Uint64 {
 	return c
 }
 
+// ensureCloseCounter mirrors ensureCounter for the closed-sessions
+// counter family.
+func ensureCloseCounter(reason CloseReason) *atomic.Uint64 {
+	closedMu.RLock()
+	c, ok := closedSessions[reason]
+	closedMu.RUnlock()
+	if ok {
+		return c
+	}
+	closedMu.Lock()
+	defer closedMu.Unlock()
+	if c, ok := closedSessions[reason]; ok {
+		return c
+	}
+	c = &atomic.Uint64{}
+	closedSessions[reason] = c
+	return c
+}
+
 // IncrDropped bumps the counter for the given drop reason. Call sites
 // should use the exported DropReason constants above rather than raw
 // strings so a new reason surfaces as a compile-time add rather than
 // silent drift.
 func IncrDropped(reason DropReason) {
 	ensureCounter(reason).Add(1)
+}
+
+// IncrSessionClosed bumps the closed-session counter for the given
+// reason. Used by worker-side close paths (notably the orphan_timeout
+// reaper) so operators can chart non-clean-shutdown rate without
+// trawling per-event payloads.
+func IncrSessionClosed(reason CloseReason) {
+	ensureCloseCounter(reason).Add(1)
 }
 
 // Snapshot returns a stable copy of the dropped-events counters,
@@ -101,6 +143,17 @@ func Snapshot() map[DropReason]uint64 {
 	return out
 }
 
+// SnapshotClosed returns a stable copy of the closed-sessions counters.
+func SnapshotClosed() map[CloseReason]uint64 {
+	closedMu.RLock()
+	defer closedMu.RUnlock()
+	out := make(map[CloseReason]uint64, len(closedSessions))
+	for reason, c := range closedSessions {
+		out[reason] = c.Load()
+	}
+	return out
+}
+
 // Reset clears every counter. Test-only; production code never calls
 // this because monotonic counters must not go backwards in a running
 // worker.
@@ -108,6 +161,10 @@ func Reset() {
 	droppedMu.Lock()
 	defer droppedMu.Unlock()
 	droppedEvents = map[DropReason]*atomic.Uint64{}
+
+	closedMu.Lock()
+	defer closedMu.Unlock()
+	closedSessions = map[CloseReason]*atomic.Uint64{}
 }
 
 // Handler serves the /metrics endpoint. Trivial text format, one line
@@ -131,6 +188,19 @@ func Handler() http.Handler {
 			// will drop the tail silently. Discard the return value.
 			_, _ = fmt.Fprintf(w, "dropped_events_total{reason=%q} %d\n",
 				string(reason), snap[reason])
+		}
+
+		closedSnap := SnapshotClosed()
+		closeReasons := make([]CloseReason, 0, len(closedSnap))
+		for reason := range closedSnap {
+			closeReasons = append(closeReasons, reason)
+		}
+		sort.Slice(closeReasons, func(i, j int) bool {
+			return string(closeReasons[i]) < string(closeReasons[j])
+		})
+		for _, reason := range closeReasons {
+			_, _ = fmt.Fprintf(w, "sessions_closed_total{reason=%q} %d\n",
+				string(reason), closedSnap[reason])
 		}
 	})
 }

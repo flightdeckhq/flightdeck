@@ -1715,7 +1715,7 @@ authoritative parameter-level reference.
 | Method | Path | Purpose |
 |---|---|---|
 | `GET` | `/v1/fleet` | Fleet summary: agents with state rollup, total sessions, total tokens, context_facets |
-| `GET` | `/v1/sessions` | Paginated session listing; filters: `agent_id`, `flavor`, `framework`, `state`, `error_type`, `from`, `to`, `q`, `parent_session_id`, `is_sub_agent`, `has_sub_agents`, `agent_role[]`, `include_pure_children`; returns `error_types[]` and `child_count` per session |
+| `GET` | `/v1/sessions` | Paginated session listing; filters: `agent_id`, `flavor`, `framework`, `state`, `error_type`, `policy_event_type`, `mcp_server`, `from`, `to`, `q`, `parent_session_id`, `is_sub_agent`, `has_sub_agents`, `agent_role[]`, `include_pure_children`, `close_reason`, `estimated_via`, `terminal`, `matched_entry_id`, `originating_call_context`; returns per-session aggregates (`error_types[]`, `policy_event_types[]`, `mcp_server_names[]`, `close_reasons[]`, `estimated_via_values[]`, `has_terminal_error`, `matched_entry_ids[]`, `originating_call_contexts[]`) and `child_count` |
 | `GET` | `/v1/sessions/:id` | Session detail: metadata + chronological events + attachments array |
 | `GET` | `/v1/agents/:id` | Single agent's identity record (backs Investigate AGENT facet identity-cache resolver) |
 | `GET` | `/v1/events` | Bulk events query: `from` (required), `to`, `flavor`, `event_type`, `session_id`, `limit` (max 2000), `offset` |
@@ -2073,12 +2073,27 @@ Filtering composes server-side. Each value in the URL state
 `?terminal=true`, etc.) maps to an EXISTS subquery against the
 events table scoped to the right event_type set. Multi-value
 entries OR within a dimension; values across dimensions AND. The
-two enum filters (close_reason, estimated_via) reject out-of-band
-values with HTTP 400 and the allowed-set message; the three free-
-form filters (matched_entry_id, originating_call_context,
-plus close_reason's free-form siblings on other endpoints) accept
-any string and silently match nothing on typos. Footer count and
+two enum filters (`close_reason`, `estimated_via`) reject out-of-
+band values with HTTP 400 and the allowed-set message; the three
+free-form filters (`matched_entry_id`, `originating_call_context`,
+and the per-value entries inside the array filters) accept any
+string and silently match nothing on typos. Footer count and
 pagination total reflect the filtered total.
+
+`ListSessions` runs roughly ten correlated EXISTS subqueries
+against the `events` table per call (`error_type`, `policy_event_
+type`, plus the five enrichment-facet filters above, plus the
+five SELECT-list aggregates that surface `error_types[]` /
+`policy_event_types[]` / `close_reasons[]` / `estimated_via_
+values[]` / `originating_call_contexts[]` to the dashboard). Every
+subquery joins on `events.session_id` and hits
+`events_session_id_idx`, so the join key stays hot at the data
+volumes the partial index covers. The cheapest hedge if the
+slow-query log surfaces this in production is a partial composite
+index on `(session_id, event_type)` filtered to the seven event
+types the subqueries reference (`session_end`, `llm_error`,
+`pre_call`, `post_call`, `embeddings`, `policy_mcp_warn`,
+`policy_mcp_block`).
 
 ### Session drawer
 

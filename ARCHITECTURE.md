@@ -2846,12 +2846,11 @@ LlamaIndex via `llama-index-tools-mcp`, CrewAI via `mcpadapt`,
 plus the raw mcp SDK) routes through one patch surface and emits
 the same six event types.
 
-The Claude Code plugin emits **only** `MCP_TOOL_CALL` (in PR #29
-— `mcp__<server>__<tool>` is the only MCP namespace visible from
-the hook surface; resource reads, prompt fetches, and list
-operations are below the hook layer). Both surfaces share the same
-wire schema for tool calls so the dashboard renders identically
-across origin.
+The Claude Code plugin emits **only** `MCP_TOOL_CALL` —
+`mcp__<server>__<tool>` is the only MCP namespace visible from the
+hook surface; resource reads, prompt fetches, and list operations
+are below the hook layer. Both surfaces share the same wire schema
+for tool calls so the dashboard renders identically across origin.
 
 **Lean payload**. MCP events drop the LLM-baseline fields
 (`tokens_input`, `tokens_output`, `tokens_total`, `tokens_cache_*`,
@@ -3923,7 +3922,7 @@ strict triplet only ships when the actual dashboard nginx config is
 in play. So the smoke builds the multi-stage image directly, no
 compose involved.
 
-Two assertions, each verifying the four-header pack
+Two assertions, each verifying the three-header pack
 (`Cache-Control: no-store, no-cache, must-revalidate` +
 `Pragma: no-cache` + `Expires: 0`):
 

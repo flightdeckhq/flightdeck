@@ -278,6 +278,13 @@ jobs:
   dashboard-image-smoke:
     name: Dashboard image — runtime-config Cache-Control
     runs-on: ubuntu-latest
+    # Read-only token: this job builds an image locally and runs curl
+    # against localhost — no repo writes, no registry pushes, no PR
+    # comments. Explicit declaration prevents a future GitHub default
+    # change or a copy of this workflow into a different repo from
+    # silently expanding the token's scope.
+    permissions:
+      contents: read
     # Independent of the other jobs — no needs:, no gates. The smoke
     # builds the production dashboard image (multi-stage Node build →
     # nginx-alpine), runs it standalone, and asserts that
@@ -293,8 +300,6 @@ jobs:
     # cache`` header — the strict triplet only ships when the actual
     # dashboard nginx config is in play. So the smoke must build the
     # multi-stage image directly, no compose involved.
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
     steps:
       - uses: actions/checkout@v4
 
@@ -314,9 +319,13 @@ jobs:
         # Bounded retry loop. nginx-alpine usually answers within
         # 1-2 s of container start; 30 attempts × 1 s gives a generous
         # ceiling without slow-failing the job on a stuck container.
+        # Status check is pinned to 200 (not just "any 2xx via curl
+        # -f") so a transient redirect during startup can't satisfy
+        # the readiness gate before the assertion steps run.
         run: |
           for i in $(seq 1 30); do
-            if curl -fsS -o /dev/null http://localhost:13000/runtime-config.json; then
+            status=$(curl -o /dev/null -w '%{http_code}' -s http://localhost:13000/runtime-config.json || echo "000")
+            if [ "$status" = "200" ]; then
               echo "ready after ${i}s"
               exit 0
             fi
@@ -334,6 +343,16 @@ jobs:
         # miss; ``set -e`` (the default for `run:` blocks) propagates
         # the failure. The full header dump is printed first so a
         # failed assertion's log makes the actual response obvious.
+        #
+        # Negative assertions guard against a future ``expires off``
+        # → ``expires 1h`` slip that would silently inject a
+        # ``Cache-Control: max-age=…`` directive alongside the
+        # required ones, OR a non-zero ``Expires:`` that would
+        # contradict the no-store discipline. Either is a regression
+        # the substring assertions above would otherwise miss.
+        # Header values are kept in lock-step with
+        # ``dashboard/nginx.conf`` — that file carries a pointer
+        # comment to this job so future editors see the contract.
         run: |
           set -e
           headers=$(curl -sI http://localhost:13000/runtime-config.json)
@@ -342,21 +361,45 @@ jobs:
           echo "$headers" | grep -qi 'Cache-Control: no-store, no-cache, must-revalidate'
           echo "$headers" | grep -qi 'Pragma: no-cache'
           echo "$headers" | grep -qi 'Expires: 0'
+          if echo "$headers" | grep -qi 'max-age'; then
+            echo "FAIL: Cache-Control must not include max-age"
+            exit 1
+          fi
+          if echo "$headers" | grep -qiE 'Expires: [^0]'; then
+            echo "FAIL: Expires must be exactly 0"
+            exit 1
+          fi
 
       - name: Assert headers on 405 (POST /runtime-config.json)
         # Verifies the ``always`` parameter on every add_header
         # directive — without it, error responses would ship without
         # the discipline and a 404 / 405 from a misconfigured prod
-        # mount could be cached by an intermediary.
+        # mount could be cached by an intermediary. Status check uses
+        # ``curl -w '%{http_code}'`` rather than grepping the status
+        # line so the assertion isn't coupled to ``HTTP/1.1`` (a
+        # future image upgrade enabling HTTP/2 plain-text would
+        # silently break a status-line grep).
         run: |
           set -e
+          status=$(curl -o /dev/null -w '%{http_code}' -s -X POST http://localhost:13000/runtime-config.json)
           headers=$(curl -sI -X POST http://localhost:13000/runtime-config.json)
           echo "--- headers ---"
           echo "$headers"
-          echo "$headers" | grep -q '^HTTP/1.1 405'
+          if [ "$status" != "405" ]; then
+            echo "FAIL: expected 405, got $status"
+            exit 1
+          fi
           echo "$headers" | grep -qi 'Cache-Control: no-store, no-cache, must-revalidate'
           echo "$headers" | grep -qi 'Pragma: no-cache'
           echo "$headers" | grep -qi 'Expires: 0'
+          if echo "$headers" | grep -qi 'max-age'; then
+            echo "FAIL: Cache-Control must not include max-age on error responses"
+            exit 1
+          fi
+          if echo "$headers" | grep -qiE 'Expires: [^0]'; then
+            echo "FAIL: Expires must be exactly 0 on error responses"
+            exit 1
+          fi
 
       - name: Dump container logs on failure
         if: failure()

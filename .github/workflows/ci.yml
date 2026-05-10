@@ -254,6 +254,116 @@ jobs:
       - name: Unit tests
         run: npm run test
 
+      # ---- Production image smoke ---------------------------------
+      #
+      # Build the multi-stage dashboard image (Node build → nginx-
+      # alpine), run it standalone, and assert that
+      # /runtime-config.json carries the strict cache-discipline
+      # header pack on both 200 and 4xx responses. Permanent
+      # regression protection on dashboard/nginx.conf — a future edit
+      # that weakens the headers fails this step and blocks the PR.
+      #
+      # Why this lives here, not in integration / e2e: those jobs use
+      # the docker-compose.dev.yml override which swaps the dashboard
+      # image for ``vite dev`` running in a node:20-alpine container.
+      # vite serves the file but emits its own default
+      # ``Cache-Control: no-cache`` header — the strict triplet only
+      # ships when the actual dashboard nginx config is in play. So
+      # the smoke must build the multi-stage image directly.
+
+      - name: Build dashboard production image
+        # docker is preinstalled on ubuntu-latest runners.
+        # working-directory: dashboard inherits from defaults above,
+        # so the context is `.` (the dashboard directory).
+        run: docker build -t flightdeck-dashboard-smoke .
+
+      - name: Run dashboard image
+        run: |
+          docker run -d --name dashboard-smoke \
+            -p 13000:3000 \
+            flightdeck-dashboard-smoke
+
+      - name: Wait for nginx ready
+        # Bounded retry loop. Status check is pinned to 200 (not just
+        # "any 2xx via curl -f") so a transient redirect during
+        # startup can't satisfy the readiness gate before the
+        # assertion steps run.
+        run: |
+          for i in $(seq 1 30); do
+            code=$(curl -o /dev/null -w '%{http_code}' -s http://localhost:13000/runtime-config.json || echo "000")
+            if [ "$code" = "200" ]; then
+              echo "ready after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "FAIL: nginx did not become ready within 30 s"
+          docker logs dashboard-smoke || true
+          exit 1
+
+      - name: Assert headers on 200 (GET /runtime-config.json)
+        # Triplet + Pragma + Expires must all appear on the success
+        # path. Negative assertions guard against ``expires off`` →
+        # ``expires 1h`` slippage (would inject a conflicting
+        # ``Cache-Control: max-age=…`` directive alongside the
+        # required ones, OR a non-zero ``Expires:``). Either is a
+        # regression the substring assertions would otherwise miss.
+        # Header values are kept in lock-step with
+        # ``dashboard/nginx.conf`` — that file carries a pointer
+        # comment to this step so future editors see the contract.
+        run: |
+          set -e
+          headers=$(curl -sI http://localhost:13000/runtime-config.json)
+          echo "--- headers ---"
+          echo "$headers"
+          echo "$headers" | grep -qi 'Cache-Control: no-store, no-cache, must-revalidate'
+          echo "$headers" | grep -qi 'Pragma: no-cache'
+          echo "$headers" | grep -qi 'Expires: 0'
+          if echo "$headers" | grep -qi 'max-age'; then
+            echo "FAIL: Cache-Control must not include max-age"
+            exit 1
+          fi
+          if echo "$headers" | grep -qiE 'Expires: [^0]'; then
+            echo "FAIL: Expires must be exactly 0"
+            exit 1
+          fi
+
+      - name: Assert headers on 405 (POST /runtime-config.json)
+        # Verifies the ``always`` parameter on every add_header
+        # directive. Status check uses ``curl -w '%{http_code}'``
+        # rather than grepping the status line so the assertion isn't
+        # coupled to ``HTTP/1.1`` (a future image upgrade enabling
+        # HTTP/2 plain-text would silently break a status-line grep).
+        run: |
+          set -e
+          code=$(curl -o /dev/null -w '%{http_code}' -s -X POST http://localhost:13000/runtime-config.json)
+          headers=$(curl -sI -X POST http://localhost:13000/runtime-config.json)
+          echo "--- headers ---"
+          echo "$headers"
+          if [ "$code" != "405" ]; then
+            echo "FAIL: expected 405, got $code"
+            exit 1
+          fi
+          echo "$headers" | grep -qi 'Cache-Control: no-store, no-cache, must-revalidate'
+          echo "$headers" | grep -qi 'Pragma: no-cache'
+          echo "$headers" | grep -qi 'Expires: 0'
+          if echo "$headers" | grep -qi 'max-age'; then
+            echo "FAIL: Cache-Control must not include max-age on error responses"
+            exit 1
+          fi
+          if echo "$headers" | grep -qiE 'Expires: [^0]'; then
+            echo "FAIL: Expires must be exactly 0 on error responses"
+            exit 1
+          fi
+
+      - name: Dump dashboard image logs on failure
+        if: failure()
+        run: docker logs dashboard-smoke || true
+
+      - name: Tear down dashboard image
+        if: always()
+        run: docker rm -f dashboard-smoke || true
+
   plugin:
     name: Plugin (Claude Code, node --test)
     runs-on: ubuntu-latest

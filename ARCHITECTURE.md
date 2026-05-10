@@ -2846,12 +2846,11 @@ LlamaIndex via `llama-index-tools-mcp`, CrewAI via `mcpadapt`,
 plus the raw mcp SDK) routes through one patch surface and emits
 the same six event types.
 
-The Claude Code plugin emits **only** `MCP_TOOL_CALL` (in PR #29
-— `mcp__<server>__<tool>` is the only MCP namespace visible from
-the hook surface; resource reads, prompt fetches, and list
-operations are below the hook layer). Both surfaces share the same
-wire schema for tool calls so the dashboard renders identically
-across origin.
+The Claude Code plugin emits **only** `MCP_TOOL_CALL` —
+`mcp__<server>__<tool>` is the only MCP namespace visible from the
+hook surface; resource reads, prompt fetches, and list operations
+are below the hook layer. Both surfaces share the same wire schema
+for tool calls so the dashboard renders identically across origin.
 
 **Lean payload**. MCP events drop the LLM-baseline fields
 (`tokens_input`, `tokens_output`, `tokens_total`, `tokens_cache_*`,
@@ -3905,6 +3904,33 @@ Postgres) via `make test-integration`:
   framework filter, `error_types[]` listing
 - `test_sensor_e2e.py` — end-to-end sensor lifecycle including
   acknowledgement events and singleton behaviour
+
+### Production-image smoke
+
+The Dashboard CI job's final steps build the dashboard production
+image (multi-stage Node build → nginx-alpine), run it standalone, and
+assert that `/runtime-config.json` carries the strict cache-discipline
+header pack on both 200 and 4xx responses. Permanent regression
+protection on `dashboard/nginx.conf` — a future edit that weakens the
+headers fails the Dashboard job and blocks the PR.
+
+Why a separate image build (rather than reusing the integration / e2e
+job stacks): those jobs use the `docker-compose.dev.yml` override
+which swaps the dashboard image for `vite dev` running in a
+node:20-alpine container. vite serves the file but emits its own
+default `Cache-Control: no-cache` header — the strict triplet only
+ships when the actual dashboard nginx config is in play. So the smoke
+builds the multi-stage image directly, no compose involved.
+
+Two assertions, each verifying the three-header pack
+(`Cache-Control: no-store, no-cache, must-revalidate` +
+`Pragma: no-cache` + `Expires: 0`):
+
+- `GET /runtime-config.json` → 200 with the full pack.
+- `POST /runtime-config.json` → 405 with the full pack — verifies
+  the `always` parameter on every `add_header` directive (without it,
+  error responses would ship without the discipline and a 404 / 405
+  from a misconfigured prod mount could be cached by an intermediary).
 
 ### Manual playground demos
 

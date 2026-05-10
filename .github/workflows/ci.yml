@@ -275,6 +275,97 @@ jobs:
       - name: Plugin unit tests
         run: make test-plugin
 
+  dashboard-image-smoke:
+    name: Dashboard image — runtime-config Cache-Control
+    runs-on: ubuntu-latest
+    # Independent of the other jobs — no needs:, no gates. The smoke
+    # builds the production dashboard image (multi-stage Node build →
+    # nginx-alpine), runs it standalone, and asserts that
+    # /runtime-config.json carries the strict cache-discipline header
+    # pack on both 200 and 4xx responses. Permanent regression
+    # protection on dashboard/nginx.conf — a future edit that weakens
+    # the headers fails this job.
+    #
+    # Why a separate image build: the integration / e2e jobs use the
+    # docker-compose.dev.yml override, which swaps the dashboard image
+    # for ``vite dev`` running in a node:20-alpine container. vite
+    # serves the file but emits its own default ``Cache-Control: no-
+    # cache`` header — the strict triplet only ships when the actual
+    # dashboard nginx config is in play. So the smoke must build the
+    # multi-stage image directly, no compose involved.
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build dashboard production image
+        # Same Dockerfile the prod helm/compose stack uses. No registry
+        # push; the image lives only in the runner's local daemon for
+        # the duration of this job.
+        run: docker build -t flightdeck-dashboard-smoke dashboard/
+
+      - name: Run dashboard image
+        run: |
+          docker run -d --name dashboard-smoke \
+            -p 13000:3000 \
+            flightdeck-dashboard-smoke
+
+      - name: Wait for nginx ready
+        # Bounded retry loop. nginx-alpine usually answers within
+        # 1-2 s of container start; 30 attempts × 1 s gives a generous
+        # ceiling without slow-failing the job on a stuck container.
+        run: |
+          for i in $(seq 1 30); do
+            if curl -fsS -o /dev/null http://localhost:13000/runtime-config.json; then
+              echo "ready after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "FAIL: nginx did not become ready within 30 s"
+          docker logs dashboard-smoke || true
+          exit 1
+
+      - name: Assert headers on 200 (GET /runtime-config.json)
+        # Triplet + Pragma + Expires must all appear on the success
+        # path. ``curl -I`` emits one header per line; grep -i matches
+        # case-insensitively because nginx normalises header names but
+        # other proxies might not. Each grep -q exits non-zero on
+        # miss; ``set -e`` (the default for `run:` blocks) propagates
+        # the failure. The full header dump is printed first so a
+        # failed assertion's log makes the actual response obvious.
+        run: |
+          set -e
+          headers=$(curl -sI http://localhost:13000/runtime-config.json)
+          echo "--- headers ---"
+          echo "$headers"
+          echo "$headers" | grep -qi 'Cache-Control: no-store, no-cache, must-revalidate'
+          echo "$headers" | grep -qi 'Pragma: no-cache'
+          echo "$headers" | grep -qi 'Expires: 0'
+
+      - name: Assert headers on 405 (POST /runtime-config.json)
+        # Verifies the ``always`` parameter on every add_header
+        # directive — without it, error responses would ship without
+        # the discipline and a 404 / 405 from a misconfigured prod
+        # mount could be cached by an intermediary.
+        run: |
+          set -e
+          headers=$(curl -sI -X POST http://localhost:13000/runtime-config.json)
+          echo "--- headers ---"
+          echo "$headers"
+          echo "$headers" | grep -q '^HTTP/1.1 405'
+          echo "$headers" | grep -qi 'Cache-Control: no-store, no-cache, must-revalidate'
+          echo "$headers" | grep -qi 'Pragma: no-cache'
+          echo "$headers" | grep -qi 'Expires: 0'
+
+      - name: Dump container logs on failure
+        if: failure()
+        run: docker logs dashboard-smoke || true
+
+      - name: Tear down
+        if: always()
+        run: docker rm -f dashboard-smoke || true
+
   integration:
     name: Integration + sensor e2e
     runs-on: ubuntu-latest

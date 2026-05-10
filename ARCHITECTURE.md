@@ -3906,6 +3906,33 @@ Postgres) via `make test-integration`:
 - `test_sensor_e2e.py` — end-to-end sensor lifecycle including
   acknowledgement events and singleton behaviour
 
+### Production-image smoke
+
+The `dashboard-image-smoke` CI job builds the dashboard production
+image (multi-stage Node build → nginx-alpine), runs it standalone,
+and asserts that `/runtime-config.json` carries the strict
+cache-discipline header pack on both 200 and 4xx responses. Permanent
+regression protection on `dashboard/nginx.conf` — a future edit that
+weakens the headers fails this job and blocks the PR.
+
+Why a separate image build: the integration / e2e jobs use the
+`docker-compose.dev.yml` override which swaps the dashboard image for
+`vite dev` running in a node:20-alpine container. vite serves the
+file but emits its own default `Cache-Control: no-cache` header — the
+strict triplet only ships when the actual dashboard nginx config is
+in play. So the smoke builds the multi-stage image directly, no
+compose involved.
+
+Two assertions, each verifying the four-header pack
+(`Cache-Control: no-store, no-cache, must-revalidate` +
+`Pragma: no-cache` + `Expires: 0`):
+
+- `GET /runtime-config.json` → 200 with the full pack.
+- `POST /runtime-config.json` → 405 with the full pack — verifies
+  the `always` parameter on every `add_header` directive (without it,
+  error responses would ship without the discipline and a 404 / 405
+  from a misconfigured prod mount could be cached by an intermediary).
+
 ### Manual playground demos
 
 `playground/` runs real-API regression demos per supported framework.

@@ -1872,10 +1872,30 @@ Bootstrap order (`dashboard/src/lib/runtime-config.ts`):
    an actionable error message inline on `#root` rather than an
    empty page.
 
-The dashboard image's `nginx.conf` adds
-`Cache-Control: no-store, no-cache, must-revalidate` on
-`/runtime-config.json` so no intermediate proxy holds a stale token
-after rotation.
+The dashboard image's `nginx.conf` emits the strict cache-discipline
+header pack on `/runtime-config.json` so no intermediate proxy holds
+a stale token after rotation:
+
+- `Cache-Control: no-store, no-cache, must-revalidate` — HTTP/1.1
+  caches discard the response after delivery and refuse to serve any
+  stale entry.
+- `Pragma: no-cache` — HTTP/1.0 intermediaries that ignore
+  Cache-Control fall back to this header.
+- `Expires: 0` — HTTP/1.0 caches that respect Expires see the
+  response as already-stale.
+
+The headers carry the `always` parameter so a 4xx / 5xx response
+(e.g. a misconfigured prod mount returning 404) still ships the same
+discipline rather than leaving a cacheable error in flight. `expires
+off` disables nginx's automatic Cache-Control / Expires emission so
+the response carries our explicit values only — no duplicate headers.
+
+Dev-vs-prod nuance: in dev, vite serves `dashboard/public/` directly
+and emits its own default `Cache-Control: no-cache` header. The
+strict triplet is a production-only discipline served by the
+dashboard image's nginx. The dev stack uses `tok_dev` regardless, so
+the looser dev header is acceptable; production deployers always run
+the multi-stage image where the strict triplet applies.
 
 ### Real-time push: NOTIFY → Hub → WebSocket
 

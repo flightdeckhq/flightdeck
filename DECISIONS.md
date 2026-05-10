@@ -8435,9 +8435,14 @@ Infrastructure:
   deployers replace the file via volume mount over
   `/usr/share/nginx/html/runtime-config.json`.
 - `dashboard/nginx.conf` adds `location = /runtime-config.json`
-  with `Cache-Control: no-store, no-cache, must-revalidate`.
-  Without this an intermediate proxy could serve a stale token
-  after rotation.
+  with the strict cache-discipline header pack:
+  `Cache-Control: no-store, no-cache, must-revalidate` +
+  `Pragma: no-cache` (HTTP/1.0 fallback) + `Expires: 0`
+  (HTTP/1.0 caches that respect Expires) — all with the `always`
+  parameter so error responses carry the same discipline. `expires
+  off` disables nginx's automatic header emission so only the
+  explicit values ship. Without this an intermediate proxy could
+  serve a stale token after rotation.
 - `.gitignore` covers the typical host-side mount paths
   (`runtime-config.prod.json`, `docker/dashboard/runtime-config.json`,
   `docker/runtime-config.json`) so a deployer's production token

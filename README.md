@@ -538,7 +538,7 @@ To configure a production token:
    ```json
    { "access_token": "ftd_..." }
    ```
-3. Reload nginx (or restart the dashboard pod). Operators rotate tokens by editing the file again; the runtime fetch carries `Cache-Control: no-store, no-cache, must-revalidate` so no intermediate cache holds a stale token.
+3. Reload nginx (or restart the dashboard pod). Operators rotate tokens by editing the file again; the production nginx config emits the strict cache-discipline header pack — `Cache-Control: no-store, no-cache, must-revalidate` plus `Pragma: no-cache` and `Expires: 0` for HTTP/1.0 intermediaries — with the `always` parameter so error responses carry the same discipline. No intermediate cache holds a stale token.
 
 Operators who need to test a token without touching the file (e.g. on a fresh laptop) can paste the bearer into the browser's `localStorage.flightdeck-access-token` (DevTools → Application → Local Storage) and reload; the localStorage value overrides the runtime-config fetch on subsequent loads. The `.gitignore` covers common host-side mount paths (`runtime-config.prod.json`, `docker/dashboard/runtime-config.json`, `docker/runtime-config.json`) so a deployer's production token never accidentally lands in source control.
 

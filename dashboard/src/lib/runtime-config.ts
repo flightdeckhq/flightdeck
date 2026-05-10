@@ -61,10 +61,15 @@ export function getAccessTokenSync(): string | null {
  * malformed JSON, missing access_token field). Caller is expected to
  * surface the message to the operator — silent failure leaves every
  * subsequent API call to fail with a less actionable 401.
+ *
+ * On rejection the in-flight promise is cleared so a follow-up call
+ * (e.g. user retry, transient network blip recovery) can re-attempt
+ * the fetch instead of replaying the cached failure for the lifetime
+ * of the tab.
  */
 export function ensureAccessToken(): Promise<string> {
   if (bootstrapPromise) return bootstrapPromise;
-  bootstrapPromise = (async () => {
+  const pending = (async () => {
     const stored = getAccessTokenSync();
     if (stored) return stored;
     const config = await fetchRuntimeConfig();
@@ -80,7 +85,11 @@ export function ensureAccessToken(): Promise<string> {
     }
     return config.access_token;
   })();
-  return bootstrapPromise;
+  pending.catch(() => {
+    if (bootstrapPromise === pending) bootstrapPromise = null;
+  });
+  bootstrapPromise = pending;
+  return pending;
 }
 
 /** Reset the bootstrap cache. Tests only — production code never
@@ -90,13 +99,23 @@ export function _resetBootstrapForTest(): void {
   bootstrapPromise = null;
 }
 
+// Bootstrap fetch deadline. Tighter than the API REQUEST_TIMEOUT_MS
+// (30 s) because /runtime-config.json is served from the same origin
+// as the SPA — a stalled request here means nginx isn't ready and the
+// operator needs to see the actionable error fast, not after half a
+// minute of blank page.
+const BOOTSTRAP_TIMEOUT_MS = 10_000;
+
 async function fetchRuntimeConfig(): Promise<RuntimeConfig> {
   const helpHint =
     `Set localStorage.${ACCESS_TOKEN_STORAGE_KEY} manually, or ` +
     `configure ${RUNTIME_CONFIG_URL} on the server.`;
   let resp: Response;
   try {
-    resp = await fetch(RUNTIME_CONFIG_URL, { cache: "no-store" });
+    resp = await fetch(RUNTIME_CONFIG_URL, {
+      cache: "no-store",
+      signal: AbortSignal.timeout(BOOTSTRAP_TIMEOUT_MS),
+    });
   } catch (err) {
     const cause = err instanceof Error ? err.message : String(err);
     throw new Error(

@@ -29,7 +29,7 @@ import (
 )
 
 const (
-	cacheTTL = 60 * time.Second
+	cacheTTL     = 60 * time.Second
 	cacheMaxSize = 1000
 	// devTokenRaw is the development-only sentinel bearer token.
 	// It is ONLY accepted when ENVIRONMENT=dev (or the legacy
@@ -39,8 +39,8 @@ const (
 	// Validate() below for the env-gate. CI and local docker-compose
 	// intentionally inherit the dev mode so existing tests pass
 	// without secret material.
-	devTokenRaw     = "tok_dev"
-	devTokenReject  = "tok_dev is only valid in development mode. Create a production token in the Settings page."
+	devTokenRaw      = "tok_dev"
+	devTokenReject   = "tok_dev is only valid in development mode. Create a production token in the Settings page."
 	productionPrefix = "ftd_"
 	prefixLen        = 8
 )

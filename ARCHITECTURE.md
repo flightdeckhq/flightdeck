@@ -3815,10 +3815,14 @@ bearer token has full access. Production deployments protect these
 routes at the network boundary (firewall / ingress) rather than via
 token scopes.
 
-`POST /v1/admin/reconcile-agents` recomputes `agents.total_sessions`,
-`total_tokens`, `first_seen_at`, and `last_seen_at` from the sessions
-table on demand. Orphan-row cleanup (agent rows with no current
-sessions) is out of scope.
+`POST /v1/admin/reconcile-agents` is a two-phase operator endpoint.
+Phase 1 recomputes the `agents.total_sessions`, `total_tokens`,
+`first_seen_at`, and `last_seen_at` columns from the sessions table on
+demand. Phase 2 deletes orphan rows whose post-reconcile
+`total_sessions = 0` AND `last_seen_at < NOW() - orphan_threshold_secs`
+(default 30 days). Pass `orphan_threshold_secs=0` to skip the delete
+step (counters-only mode). See `docs/reconcile-agents-endpoint.md` for
+the full contract.
 
 ### Makefile structure
 

@@ -7161,6 +7161,7 @@ page is the v0.6 state).
 
 **Date:** 2026-05-07
 **Phase:** MCP Protection Policy (step 6.8 cleanup)
+**Status:** Superseded by D156 — single-tier auth collapses the role split. The mechanism failed its own bootstrap UX and the role distinction is friction without enforcement value pre-v0.6.
 
 **Context.** Step 6 commit 1 designated all MCP policy endpoints
 as either "read-only (any authenticated bearer token)" or "admin-
@@ -8360,6 +8361,9 @@ in Chrome instead of flipping to stale.
 
 
 ## D156 -- Single-tier auth + runtime token configuration (reverses D147)
+
+**Date:** 2026-05-10
+**Status:** Adopted
 
 **Context.** Pre-v0.6 Flightdeck is single-operator self-hosted.
 The admin/viewer role split D147 introduced (`auth.AdminRequired`

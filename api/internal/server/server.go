@@ -133,8 +133,8 @@ func newServer(addr string, s store.Querier, hub *ws.Hub, validator *auth.Valida
 	mux.Handle("PATCH /v1/access-tokens/{id}", gate(handlers.AccessTokenRenameHandler(s)))
 
 	// Operational endpoints. Single-tier auth: every authenticated
-	// bearer token gets full access (D156). Production deployers
-	// guard the dashboard origin at the network boundary.
+	// bearer token gets full access. Production deployers guard the
+	// dashboard origin at the network boundary.
 	mux.Handle("POST /v1/admin/reconcile-agents",
 		gate(handlers.AdminReconcileAgentsHandler(s)))
 

@@ -22,10 +22,9 @@ import type {
   MCPPolicyResolveResult,
   MCPPolicyTemplate,
 } from "./types";
+import { getAccessTokenSync } from "./runtime-config";
 
 const BASE = import.meta.env.VITE_API_BASE_URL || "/api";
-
-import { getAccessTokenSync } from "./runtime-config";
 
 // All authenticated request paths read the active access token from
 // localStorage via getAccessTokenSync(). main.tsx awaits

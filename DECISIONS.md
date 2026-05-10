@@ -8357,3 +8357,191 @@ child traffic flips it back to active before the reconciler tick
 fires). Plus playgrounds 14 / 16 / 17 + a live Claude Code Task
 spawn against a stale parent confirming swimlane stays "active"
 in Chrome instead of flipping to stale.
+
+
+## D156 -- Single-tier auth + runtime token configuration (reverses D147)
+
+**Context.** Pre-v0.6 Flightdeck is single-operator self-hosted.
+The admin/viewer role split D147 introduced (`auth.AdminRequired`
+middleware, `tok_admin_dev` dev shortcut,
+`FLIGHTDECK_ADMIN_ACCESS_TOKEN` env-var path, `IsAdmin` field on
+`ValidationResult`, `GET /v1/whoami` for the dashboard) was
+defensive design for a multi-operator scenario that doesn't exist
+today. Worse, it failed its own bootstrap: a fresh dashboard load
+on a Mac browser shows "read-only mode," the operator can't
+create a token because the create endpoint is itself admin-gated
+(needs admin scope to call), and the workaround is to paste a
+token into DevTools localStorage — a UX gap the UI made no
+attempt to surface as a real fix path.
+
+Separately, the dashboard's bearer token was baked into the SPA
+bundle at build time as a hardcoded `ACCESS_TOKEN = "tok_dev"`
+constant in `lib/api.ts`. Token rotation required a rebuild. The
+token sat in a Docker image layer. Deployers couldn't share an
+image across deployments with different tokens.
+
+**Decision.** Collapse to single-tier auth and move dashboard
+token configuration to runtime. Both changes ship together because
+they're the same thesis: self-hosted single-operator means simple
+auth, configurable at deploy time, no role-tier overhead, no
+rebuild for token rotation.
+
+API changes:
+
+- Drop `auth.AdminRequired` middleware and the `adminGate` composer
+  in `api/internal/server/server.go`. Every previously admin-gated
+  route flips to the regular `gate` (bearer-only).
+- Drop `ValidationResult.IsAdmin` field, the
+  `FLIGHTDECK_ADMIN_ACCESS_TOKEN` env-var resolve path, and the
+  `tok_admin_dev` dev shortcut from `api/internal/auth/token.go`.
+- Drop `handlers.WhoamiHandler` + `WhoamiResponse` + the
+  `GET /v1/whoami` route. Sole consumer was the dashboard's
+  `useWhoamiStore`.
+- The six previously admin-gated routes
+  (`POST /v1/admin/reconcile-agents`, `POST /v1/mcp-policies/{flavor}`,
+  `PUT /v1/mcp-policies/global`, `PUT /v1/mcp-policies/{flavor}`,
+  `DELETE /v1/mcp-policies/{flavor}`,
+  `POST /v1/mcp-policies/{flavor}/apply_template`) keep bearer-token
+  validation via `gate(...)` — confirmed by grep + curl matrix
+  during the C1 commit.
+
+Dashboard changes:
+
+- Drop `useWhoamiStore`, the App-mount `fetchWhoami` call, and the
+  three role-aware components' role checks (`MCPPolicyHeader`,
+  `MCPPolicyEntryTable`, `MCPQuickStartTemplates`). Mode toggle, BOU
+  switch, Add/Edit/Delete buttons, and quick-start templates render
+  unconditionally for every authenticated session.
+- Drop the read-only banner ("Read-only — admin token required to
+  change mode"), the disabled-with-tooltip wrappers, and the
+  `adminTokenError` helper from `lib/api.ts`.
+- Replace the build-time `ACCESS_TOKEN = "tok_dev"` constant with
+  a runtime fetch via the new `lib/runtime-config.ts` bootstrap.
+  `main.tsx` awaits `ensureAccessToken()` before mounting React;
+  every downstream caller uses the sync `getAccessTokenSync()` helper
+  reading from localStorage.
+
+Infrastructure:
+
+- `dashboard/public/runtime-config.json` ships with the dev token
+  (`tok_dev`) and a `_comment` field warning operators not to commit
+  production tokens. Vite copies `public/*` to `dist/*` at build
+  so the same path works in dev (vite serves `public/`) and prod
+  (dashboard nginx serves `/usr/share/nginx/html/`). Production
+  deployers replace the file via volume mount over
+  `/usr/share/nginx/html/runtime-config.json`.
+- `dashboard/nginx.conf` adds `location = /runtime-config.json`
+  with `Cache-Control: no-store, no-cache, must-revalidate`.
+  Without this an intermediate proxy could serve a stale token
+  after rotation.
+- `.gitignore` covers the typical host-side mount paths
+  (`runtime-config.prod.json`, `docker/dashboard/runtime-config.json`,
+  `docker/runtime-config.json`) so a deployer's production token
+  never accidentally lands in source control.
+
+**Consequences.**
+
+- **Same trust boundary.** Anyone with network access to the
+  dashboard origin can fetch `/runtime-config.json` and obtain
+  the bearer token. By design for self-hosted single-operator.
+  Production deployments still lock the dashboard origin behind
+  ingress / firewall.
+- **Improved operations.** Token no longer in the Docker image
+  layer; rotation without rebuild; single image across deployments
+  with different tokens.
+- **Schema unchanged.** Admin status was never a column on
+  `access_tokens` — it was computed at validation time from the env
+  var or the dev shortcut. No migration needed.
+
+**Breaking changes.** `FLIGHTDECK_ADMIN_ACCESS_TOKEN` env var no
+longer recognized. `tok_admin_dev` no longer accepted.
+`GET /v1/whoami` removed. Build-time `ACCESS_TOKEN` constant
+removed from `dashboard/src/lib/api.ts`. Pre-v0.6 single-operator
+constraint means none of these are user-facing breaks today;
+external consumers (none in-tree) that depended on the role tier
+or the env var lose those paths.
+
+**Rejected alternatives.**
+
+1. *Keep the role tier; add a Settings UI to paste an admin token.*
+   Solves the bootstrap UX but leaves the role mechanism in place
+   for a multi-operator scenario that doesn't exist. More code than
+   the simpler single-tier collapse.
+2. *Drop the role tier but keep the build-time `ACCESS_TOKEN`.*
+   Solves the role friction but leaves token rotation as a rebuild.
+   Both pieces fit the same intent (simplify for single-operator);
+   shipping them together avoids the half-done state where reads
+   work without DevTools but production deployers still rebuild
+   for token rotation.
+3. *Add a real auth system (login / sessions / users).* Out of
+   scope for v0.6. Post-v0.6 multi-tenant work will reintroduce a
+   tier model designed for that use case rather than retaining the
+   current half-built one.
+
+**Related decisions.** D095 (access-token model — unchanged; only
+the validator's admin computation is removed). D096 (access-token
+naming). D147 (the read-open / mutation-admin split this entry
+reverses). D156 itself replaces nothing; it's the post-Phase-7
+correction for a v0.6 cleanup PR.
+
+**Implementation note.**
+
+- API (`api/internal/auth/token.go`): drop `IsAdmin` field,
+  `AdminRequired` middleware, `adminTokenEnvVar`, `devAdminTokenRaw`.
+  Keep `ValidationResultFromContext` / `ContextWithValidationResult`
+  / the context-key plumbing — the MCP policy audit-log writer uses
+  it for `actor` attribution (independent of admin scope).
+- API (`api/internal/server/server.go`): drop `adminGate` helper
+  and the `GET /v1/whoami` route. Six routes flip from `adminGate`
+  to `gate`.
+- API (`api/internal/handlers/whoami.go` + `whoami_test.go`):
+  delete files entirely.
+- Sensor (no changes — the sensor never used admin scope).
+- Dashboard (`dashboard/src/store/whoami.ts`): delete file. Drop
+  `useWhoamiStore` consumers in `App.tsx`,
+  `components/policy/MCPPolicyHeader.tsx`,
+  `components/policy/MCPPolicyEntryTable.tsx`,
+  `components/policy/MCPQuickStartTemplates.tsx`.
+- Dashboard (`dashboard/src/lib/runtime-config.ts`): new bootstrap
+  module. `ensureAccessToken()` is idempotent + promise-cached;
+  `getAccessTokenSync()` reads localStorage; throws actionable
+  errors on every misconfiguration path.
+- Dashboard (`dashboard/src/main.tsx`): await
+  `ensureAccessToken()` before `ReactDOM.createRoot`. Bootstrap
+  failure renders the error message inline (`data-bootstrap-error`
+  attribute on `#root`).
+- Infra (`dashboard/public/runtime-config.json`,
+  `dashboard/nginx.conf`, `.gitignore`): new file + Cache-Control
+  directive + .gitignore cover.
+- Tests: delete `api/internal/handlers/whoami_test.go`,
+  `dashboard/tests/unit/whoami.test.ts`. Drop the admin scope
+  section from `api/internal/auth/token_test.go`. Drop viewer-mode
+  test cases from MCPPolicyHeader / MCPPolicyEntryTable /
+  MCPQuickStartTemplates Vitest specs. Replace 403-race-guard test
+  in MCPQuickStartTemplates with generic apply-failure case.
+  T11 (admin-reconcile E2E) drops the per-spec admin-token
+  override; T41 (MCP policy operator workflow E2E) drops the
+  admin-token setup. New `dashboard/tests/unit/runtime-config.test.ts`
+  covers the five bootstrap paths + the in-flight promise cache.
+  Integration: drop `ADMIN_TOKEN` + `admin_auth_headers` from
+  `tests/shared/fixtures.py`; drop the 403 expectation from
+  `test_admin_reconcile.py`.
+- Playground: 8 demos (`playground/18_*.py` through
+  `playground/26_*.py`) swap `Bearer tok_admin_dev` →
+  `Bearer tok_dev`.
+
+**Live-stack verification.**
+
+- `POST /v1/admin/reconcile-agents` with `tok_dev` → 200 (was 403
+  pre-change).
+- `PUT /v1/mcp-policies/global` with `tok_dev` → 200 (was 403
+  pre-change).
+- `GET /v1/whoami` → 404 (route removed).
+- `GET /runtime-config.json` reachable at port 3000 (vite) and
+  port 4000 (outer reverse proxy).
+- 21/21 affected integration tests pass.
+- 904/904 Vitest unit tests pass.
+- 195/4/2 Playwright pass / skip / did-not-run, both themes,
+  zero regressions.
+- golangci-lint + ruff + tsc + eslint clean across api / ingestion
+  / workers / sensor / dashboard.

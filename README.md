@@ -527,6 +527,21 @@ export FLIGHTDECK_TOKEN="ftd_..."
 
 The agent appears in the fleet view within seconds of its first LLM call.
 
+#### Configuring the dashboard's bearer token
+
+The dashboard fetches its bearer token at runtime from `/runtime-config.json` rather than baking it into the bundle. Rotation is a single-file replace + `nginx -s reload` -- no rebuild, no fresh image. The shipped default file points at `tok_dev` for dev convenience.
+
+To configure a production token:
+
+1. Mint a token via Settings → Access tokens → Create (or `POST /v1/access-tokens` against an existing one).
+2. Replace the contents of `/usr/share/nginx/html/runtime-config.json` inside the dashboard container -- typically a host-side file you bind-mount over the bundled default. The expected shape:
+   ```json
+   { "access_token": "ftd_..." }
+   ```
+3. Reload nginx (or restart the dashboard pod). Operators rotate tokens by editing the file again; the runtime fetch carries `Cache-Control: no-store, no-cache, must-revalidate` so no intermediate cache holds a stale token.
+
+Operators who need to test a token without touching the file (e.g. on a fresh laptop) can paste the bearer into the browser's `localStorage.flightdeck-access-token` (DevTools → Application → Local Storage) and reload; the localStorage value overrides the runtime-config fetch on subsequent loads. The `.gitignore` covers common host-side mount paths (`runtime-config.prod.json`, `docker/dashboard/runtime-config.json`, `docker/runtime-config.json`) so a deployer's production token never accidentally lands in source control.
+
 ### Kubernetes (Helm)
 
 A chart lives at `helm/`. One-command install against an existing cluster with an external managed Postgres:

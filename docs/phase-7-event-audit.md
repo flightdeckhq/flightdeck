@@ -70,7 +70,7 @@ Q5 facets for low-cardinality enrichments; free-text content
 search out of scope. Q6 audit-first.
 
 **Doc location.** `docs/phase-7-event-audit.md` — sibling of the
-existing `docs/admin-endpoints.md`. METHODOLOGY allows the
+existing `docs/reconcile-agents-endpoint.md`. METHODOLOGY allows the
 "workspace folder where the design doc lives" but no Phase 7
 folder exists yet, and `docs/` is the established convention for
 non-component-scoped design docs.

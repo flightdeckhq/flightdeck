@@ -560,6 +560,8 @@ event pipeline. v0.6 enforces policy decisions as configured
   Protection sub-tabs). Hard 404 on ``/mcp-policies``.
 - **D147** Read-open / mutation-admin auth split for MCP policy
   endpoints. New ``GET /v1/whoami``.
+  **(Superseded by D156 in post-Phase-7 cleanup — single-tier auth.
+  See breaking-change note below.)**
 
 ### Added (Phase 7 — operator-actionable enrichment)
 
@@ -636,6 +638,55 @@ event pipeline. v0.6 enforces policy decisions as configured
   `close_reason` vocabulary + `mcp_server_name_changed` event.
 - **D153** LLM family operator-actionable enrichment.
 - **D154** Dashboard surface for operator-actionable enrichment.
+
+### Removed (post-Phase-7 — single-tier auth + runtime token config)
+
+- **Admin/viewer role distinction (D156 reverses D147).** The API's
+  `auth.AdminRequired` middleware, `ValidationResult.IsAdmin` field,
+  `adminGate` composer, `tok_admin_dev` dev shortcut, and
+  `FLIGHTDECK_ADMIN_ACCESS_TOKEN` env var are gone. Every
+  authenticated bearer token now has full access to every endpoint
+  — both reads and mutations on MCP policies, plus
+  `POST /v1/admin/reconcile-agents`. The dashboard's read-only
+  banner, `useWhoamiStore`, `GET /v1/whoami` endpoint, and the
+  `adminTokenError` helper are removed alongside.
+- **Build-time token bake.** The hardcoded `ACCESS_TOKEN = "tok_dev"`
+  constant in `dashboard/src/lib/api.ts` is gone. The dashboard now
+  fetches its bearer token at runtime from `/runtime-config.json`
+  via the new `lib/runtime-config.ts` bootstrap, with localStorage
+  override (`flightdeck-access-token` key) for operator self-serve.
+  `dashboard/public/runtime-config.json` ships with `tok_dev` for
+  the dev stack; production deployers volume-mount their own file
+  over `/usr/share/nginx/html/runtime-config.json`.
+
+### Decisions (post-Phase-7)
+
+- **D156** Single-tier auth + runtime token configuration.
+  Reverses D147's read-open / mutation-admin split. Pre-v0.6 single-
+  operator self-hosted deployments don't need a role tier — the
+  mechanism failed its own bootstrap (fresh dashboard load → "read-
+  only mode" → can't create a token without admin scope). Same
+  PR adds runtime-config-driven token bootstrap so token rotation
+  no longer requires a rebuild.
+
+### Breaking changes (post-Phase-7)
+
+- **`FLIGHTDECK_ADMIN_ACCESS_TOKEN` env var is no longer recognized.**
+  Production deployers using it for emergency admin access lose that
+  path. Use a regular bearer token configured via
+  `/runtime-config.json` instead.
+- **`tok_admin_dev` dev shortcut is gone.** Use `tok_dev` (the
+  regular dev token) — every endpoint now accepts it, including the
+  previously admin-gated MCP policy mutations and
+  `/v1/admin/reconcile-agents`.
+- **`GET /v1/whoami` endpoint removed.** Sole consumer was the
+  dashboard's `useWhoamiStore` which is also removed. If a future
+  identity probe is needed, it lands with a different shape designed
+  for that need rather than retaining a vestigial endpoint.
+- **Build-time `ACCESS_TOKEN` constant removed from
+  `dashboard/src/lib/api.ts`.** Anything importing it (none in-tree
+  pre-merge) needs to switch to `getAccessTokenSync()` from
+  `lib/runtime-config.ts` instead.
 
 ### Fixed
 

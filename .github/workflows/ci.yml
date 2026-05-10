@@ -266,19 +266,29 @@ jobs:
       # ---- Production image smoke ---------------------------------
       #
       # Build the multi-stage dashboard image (Node build → nginx-
-      # alpine), run it standalone, and assert that
-      # /runtime-config.json carries the strict cache-discipline
-      # header pack on both 200 and 4xx responses. Permanent
-      # regression protection on dashboard/nginx.conf — a future edit
-      # that weakens the headers fails this step and blocks the PR.
+      # alpine), run it standalone, and assert three contracts on
+      # the resulting container:
+      #
+      #   1. /runtime-config.json strict cache-discipline pack
+      #      (Cache-Control: no-store, no-cache, must-revalidate +
+      #      Pragma: no-cache + Expires: 0) on 200 and 405.
+      #   2. /assets/<hashed-bundle> exactly-one Cache-Control of
+      #      "public, max-age=31536000, immutable" + no Expires on
+      #      200 and 405.
+      #   3. Container master process runs as a non-root UID.
+      #
+      # Permanent regression protection on dashboard/nginx.conf AND
+      # dashboard/Dockerfile — a future edit that weakens any of the
+      # three contracts fails this step and blocks the PR.
       #
       # Why this lives here, not in integration / e2e: those jobs use
       # the docker-compose.dev.yml override which swaps the dashboard
       # image for ``vite dev`` running in a node:20-alpine container.
-      # vite serves the file but emits its own default
-      # ``Cache-Control: no-cache`` header — the strict triplet only
-      # ships when the actual dashboard nginx config is in play. So
-      # the smoke must build the multi-stage image directly.
+      # vite serves /runtime-config.json with its own default
+      # ``Cache-Control: no-cache`` and emits no headers at all on
+      # /assets/* — the production discipline only ships from the
+      # actual multi-stage image. So the smoke must build that image
+      # directly, no compose involved.
 
       - name: Build dashboard production image
         # docker is preinstalled on ubuntu-latest runners.
@@ -416,7 +426,8 @@ jobs:
         # Verifies the ``always`` parameter on /assets/ — the cache
         # discipline must hold on error responses too, otherwise a
         # 404 or 405 from a missing asset could be cached forever
-        # under one rule and never under another.
+        # under one rule and never under another. Same Expires-
+        # absence check as the 200 path so the contract is uniform.
         run: |
           set -e
           asset='${{ steps.asset.outputs.asset }}'
@@ -434,6 +445,10 @@ jobs:
             exit 1
           fi
           echo "$headers" | grep -qi '^Cache-Control: public, max-age=31536000, immutable'
+          if echo "$headers" | grep -qi '^Expires:'; then
+            echo "FAIL: /assets/ must not ship an Expires header on 405"
+            exit 1
+          fi
 
       - name: Assert dashboard image runs as non-root
         # USER nginx in the Dockerfile drops the master process from

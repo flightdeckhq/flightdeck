@@ -5,9 +5,17 @@ on:
     tags:
       - "v*.*.*"
 
+# Workflow-level least privilege: read-only by default. The two jobs
+# that need wider scope override at the job level — publish-sensor
+# (id-token: write for OIDC trusted PyPI publish), github-release
+# (contents: write to create the release). publish-docker uses
+# Docker Hub credentials from secrets and pushes images out to a
+# third-party registry; it never needs the GITHUB_TOKEN's write
+# scope, so leaving it on the workflow default closes the
+# supply-chain gap a future compromised action in that job's step
+# sequence would otherwise widen.
 permissions:
-  contents: write
-  id-token: write
+  contents: read
 
 jobs:
   publish-sensor:

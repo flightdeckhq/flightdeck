@@ -3909,28 +3909,42 @@ Postgres) via `make test-integration`:
 
 The Dashboard CI job's final steps build the dashboard production
 image (multi-stage Node build → nginx-alpine), run it standalone, and
-assert that `/runtime-config.json` carries the strict cache-discipline
-header pack on both 200 and 4xx responses. Permanent regression
-protection on `dashboard/nginx.conf` — a future edit that weakens the
-headers fails the Dashboard job and blocks the PR.
+assert three contracts on the resulting container. Permanent
+regression protection on `dashboard/nginx.conf` + `dashboard/Dockerfile`
+— a future edit that weakens any of the assertions below fails the
+Dashboard job and blocks the PR.
 
 Why a separate image build (rather than reusing the integration / e2e
 job stacks): those jobs use the `docker-compose.dev.yml` override
 which swaps the dashboard image for `vite dev` running in a
 node:20-alpine container. vite serves the file but emits its own
-default `Cache-Control: no-cache` header — the strict triplet only
+default `Cache-Control: no-cache` header on `/runtime-config.json` and
+no headers at all on `/assets/` — the production discipline only
 ships when the actual dashboard nginx config is in play. So the smoke
 builds the multi-stage image directly, no compose involved.
 
-Two assertions, each verifying the three-header pack
-(`Cache-Control: no-store, no-cache, must-revalidate` +
-`Pragma: no-cache` + `Expires: 0`):
+**Assertion 1 — `/runtime-config.json` strict cache discipline.**
+Three-header pack (`Cache-Control: no-store, no-cache, must-revalidate`
++ `Pragma: no-cache` + `Expires: 0`) on both 200 (GET) and 405 (POST).
+The 405 path verifies the `always` parameter on every `add_header`
+directive — without it, error responses would ship without the
+discipline and a 404 / 405 from a misconfigured prod mount could be
+cached by an intermediary.
 
-- `GET /runtime-config.json` → 200 with the full pack.
-- `POST /runtime-config.json` → 405 with the full pack — verifies
-  the `always` parameter on every `add_header` directive (without it,
-  error responses would ship without the discipline and a 404 / 405
-  from a misconfigured prod mount could be cached by an intermediary).
+**Assertion 2 — `/assets/` immutable cache contract.** Hashed bundles
+emitted by Vite carry a content hash in the filename, so the URL
+itself changes whenever the content does. The contract is exactly one
+`Cache-Control: public, max-age=31536000, immutable` header (no
+duplicates from the expires module, no separate `Expires:` header).
+The smoke resolves a representative hashed asset via `docker exec ls
+/usr/share/nginx/html/assets/`, hits both 200 (GET) and 405 (POST),
+counts the `Cache-Control:` header lines (must be exactly 1), and
+asserts the canonical value.
+
+**Assertion 3 — non-root container.** `docker exec ... id -u` must
+return a non-zero UID. The Dockerfile's `USER nginx` directive drops
+the master process to UID 101; a regression that removed the directive
+or accidentally re-elevated would surface here.
 
 ### Manual playground demos
 

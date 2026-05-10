@@ -3,16 +3,14 @@ name: CI
 on:
   pull_request:
     branches: [main]
-  # Run on feature-branch pushes, not only main. Pre-PR feedback
-  # prevents invisible drift like the MCP Policy handler coverage that
-  # sat at 52% on feat/mcp-protection-policy until PR #33 surfaced it;
-  # the gate exists for a reason and only catches drift if it fires.
-  # Scoped to feat/** so unrelated branches (e.g. ad-hoc spikes,
-  # stash-only branches) don't burn CI minutes. Duplicate runs on
-  # PR-target branches are deduped by GitHub via the workflow run
-  # identity.
+  # Push trigger is main-only. PR sync is itself a push event, so any
+  # `feat/**` (or wildcard) addition here would fire CI twice on every
+  # PR commit — once via this push trigger, once via pull_request:
+  # synchronize. The pull_request trigger above already gives every
+  # feature-branch PR commit pre-merge CI feedback; main-only push
+  # then handles the post-merge run on the default branch.
   push:
-    branches: [main, 'feat/**']
+    branches: [main]
 
 # Cap blast radius from rapid-fire pushes on the same branch: cancel
 # any in-flight run when a newer commit lands. Two pushes in quick

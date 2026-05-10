@@ -320,7 +320,8 @@ function PrettyResponse({ response, provider }: { response: unknown; provider: s
     // OpenAI
     const choices = resp.choices as Array<Record<string, unknown>> | undefined;
     if (Array.isArray(choices) && choices.length > 0) {
-      const msg = choices[0].message as Record<string, unknown> | undefined;
+      const firstChoice = choices[0];
+      const msg = firstChoice?.message as Record<string, unknown> | undefined;
       if (msg?.content) {
         textBlocks = [String(msg.content)];
       }

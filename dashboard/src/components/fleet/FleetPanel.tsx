@@ -624,7 +624,7 @@ function ContextFacetSection({
       </div>
       <div className="pb-3">
         {filterableKeys.map((key) => {
-          const values = facets[key];
+          const values = facets[key] ?? [];
           const selected = filters[key] ?? [];
           return (
             <div key={key} data-testid={`context-facet-${key}`}>

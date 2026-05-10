@@ -771,16 +771,28 @@ export function computeFacets(
 // State badge pill
 // ---------------------------------------------------------------------------
 
-const STATE_BADGE_STYLES: Record<string, { bg: string; color: string; border?: string }> = {
+type StateBadgeStyle = { bg: string; color: string; border?: string };
+
+// Closed-state badge serves double duty as the safe-default when an
+// unrecognised state string slips in; declared standalone so the
+// `??` fallback at the StateBadge call site doesn't return
+// `undefined` under noUncheckedIndexedAccess.
+const CLOSED_STATE_BADGE_STYLE: StateBadgeStyle = {
+  bg: "transparent",
+  color: "var(--text-muted)",
+  border: "1px solid var(--border)",
+};
+
+const STATE_BADGE_STYLES: Record<string, StateBadgeStyle> = {
   active: { bg: "color-mix(in srgb, var(--status-active) 15%, transparent)", color: "var(--status-active)" },
   idle: { bg: "color-mix(in srgb, var(--status-idle) 15%, transparent)", color: "var(--status-idle)" },
   stale: { bg: "color-mix(in srgb, var(--status-stale) 15%, transparent)", color: "var(--status-stale)" },
   lost: { bg: "color-mix(in srgb, var(--status-lost) 15%, transparent)", color: "var(--status-lost)" },
-  closed: { bg: "transparent", color: "var(--text-muted)", border: "1px solid var(--border)" },
+  closed: CLOSED_STATE_BADGE_STYLE,
 };
 
 function StateBadge({ state }: { state: string }) {
-  const s = STATE_BADGE_STYLES[state] ?? STATE_BADGE_STYLES.closed;
+  const s = STATE_BADGE_STYLES[state] ?? CLOSED_STATE_BADGE_STYLE;
   return (
     <span
       className="inline-flex items-center"
@@ -1156,6 +1168,7 @@ export function collectFacetSources(
   const sources: FacetSources = {};
   for (let i = 0; i < settled.length; i += 1) {
     const s = settled[i];
+    if (!s) continue;
     if (s.status === "fulfilled") {
       const [k, sess] = s.value;
       if (sess) (sources as Record<string, SessionListItem[]>)[k] = sess;

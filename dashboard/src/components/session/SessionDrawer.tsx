@@ -56,7 +56,19 @@ export const DEFAULT_EVENTS_LIMIT: (typeof EVENTS_LIMIT_OPTIONS)[number] = 100;
 
 /* ---- State badge colors ---- */
 
-const stateBadgeStyles: Record<string, { bg: string; color: string; border: string }> = {
+type StateBadge = { bg: string; color: string; border: string };
+
+// Closed-state badge serves double duty as the safe-default when an
+// unrecognised state string slips in (the lookup misses and we fall
+// through to this object). Declared standalone so the fallback at
+// `stateBadge` doesn't return `undefined` under noUncheckedIndexedAccess.
+const CLOSED_STATE_BADGE: StateBadge = {
+  bg: "color-mix(in srgb, var(--status-closed) 15%, transparent)",
+  color: "var(--status-closed)",
+  border: "color-mix(in srgb, var(--status-closed) 30%, transparent)",
+};
+
+const stateBadgeStyles: Record<string, StateBadge> = {
   active: {
     bg: "color-mix(in srgb, var(--status-active) 15%, transparent)",
     color: "var(--status-active)",
@@ -72,11 +84,7 @@ const stateBadgeStyles: Record<string, { bg: string; color: string; border: stri
     color: "var(--status-stale)",
     border: "color-mix(in srgb, var(--status-stale) 30%, transparent)",
   },
-  closed: {
-    bg: "color-mix(in srgb, var(--status-closed) 15%, transparent)",
-    color: "var(--status-closed)",
-    border: "color-mix(in srgb, var(--status-closed) 30%, transparent)",
-  },
+  closed: CLOSED_STATE_BADGE,
   lost: {
     bg: "color-mix(in srgb, var(--status-lost) 15%, transparent)",
     color: "var(--status-lost)",
@@ -458,8 +466,12 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
     const cached = eventsCache.get(sessionId) ?? [];
     if (cached.length === 0) return;
     // Cache is ASC, so index 0 is the oldest event currently visible
-    // -- that's the keyset cursor for the next page.
+    // -- that's the keyset cursor for the next page. The length>0
+    // guard above means cached[0] is always defined; the explicit
+    // continue keeps noUncheckedIndexedAccess happy without a
+    // non-null assertion.
     const oldest = cached[0];
+    if (!oldest) return;
     setLoadingOlder(true);
     try {
       const resp = await fetchOlderEvents(
@@ -547,7 +559,7 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
     setFocusedPromptEventId(eventId);
   }
 
-  const stateBadge = stateBadgeStyles[session?.state ?? "closed"] ?? stateBadgeStyles.closed;
+  const stateBadge = stateBadgeStyles[session?.state ?? "closed"] ?? CLOSED_STATE_BADGE;
 
   return (
     <AnimatePresence>

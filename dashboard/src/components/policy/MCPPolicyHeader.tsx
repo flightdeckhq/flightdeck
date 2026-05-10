@@ -362,8 +362,10 @@ function ModeSegmented({
       e.key === "ArrowRight"
         ? (currentIdx + 1) % options.length
         : (currentIdx - 1 + options.length) % options.length;
+    const nextOption = options[nextIdx];
+    if (!nextOption) return;
     const nextEl = e.currentTarget.parentElement?.querySelector<HTMLButtonElement>(
-      `[data-testid="${testid}-${options[nextIdx].value}"]`,
+      `[data-testid="${testid}-${nextOption.value}"]`,
     );
     nextEl?.focus();
   }

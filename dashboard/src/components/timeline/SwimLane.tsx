@@ -707,12 +707,19 @@ export const SwimLane = memo(SwimLaneComponent, (prev, next) => {
   // time window. Gating on scaleEnd alone froze the swimlane after a
   // 1h→1m switch because scaleEnd barely moved, so the memo bailed out
   // and the new (tighter) domain never reached the clip/x-position memo.
-  const domainDeltaEnd = Math.abs(
-    next.scale.domain()[1].getTime() - prev.scale.domain()[1].getTime()
-  );
-  const domainDeltaStart = Math.abs(
-    next.scale.domain()[0].getTime() - prev.scale.domain()[0].getTime()
-  );
+  const nextDomain = next.scale.domain();
+  const prevDomain = prev.scale.domain();
+  // d3-scale's `.domain()` always returns [start, end] for a
+  // configured time scale; the explicit guard below satisfies
+  // noUncheckedIndexedAccess. Bailing to false (re-render) on the
+  // theoretically-impossible empty-domain case is safe.
+  const nextStart = nextDomain[0];
+  const nextEnd = nextDomain[1];
+  const prevStart = prevDomain[0];
+  const prevEnd = prevDomain[1];
+  if (!nextStart || !nextEnd || !prevStart || !prevEnd) return false;
+  const domainDeltaEnd = Math.abs(nextEnd.getTime() - prevEnd.getTime());
+  const domainDeltaStart = Math.abs(nextStart.getTime() - prevStart.getTime());
   if (domainDeltaEnd < 1000 && domainDeltaStart < 1000) return true;
   return false;
 });
@@ -857,12 +864,15 @@ export const AllSwimLane = memo(AllSwimLaneComponent, (prev, next) => {
   if (prev.hasVisibleEventsInWindow !== next.hasVisibleEventsInWindow) return false;
   // Both domain ends must be stable; see the SwimLane memo above for
   // why checking only scaleEnd froze the row after time-range changes.
-  const domainDeltaEnd = Math.abs(
-    next.scale.domain()[1].getTime() - prev.scale.domain()[1].getTime(),
-  );
-  const domainDeltaStart = Math.abs(
-    next.scale.domain()[0].getTime() - prev.scale.domain()[0].getTime(),
-  );
+  const nextDomain = next.scale.domain();
+  const prevDomain = prev.scale.domain();
+  const nextStart = nextDomain[0];
+  const nextEnd = nextDomain[1];
+  const prevStart = prevDomain[0];
+  const prevEnd = prevDomain[1];
+  if (!nextStart || !nextEnd || !prevStart || !prevEnd) return false;
+  const domainDeltaEnd = Math.abs(nextEnd.getTime() - prevEnd.getTime());
+  const domainDeltaStart = Math.abs(nextStart.getTime() - prevStart.getTime());
   if (domainDeltaEnd < 1000 && domainDeltaStart < 1000) return true;
   return false;
 });
@@ -935,6 +945,7 @@ function AggregatedSessionEvents({
   // SessionEventRow for the same pattern.
   const nodes = useMemo(() => {
     const [domainStart, domainEnd] = scale.domain();
+    if (!domainStart || !domainEnd) return [];
     const startMs = domainStart.getTime();
     const endMs = domainEnd.getTime();
     const attachments = attachmentsCache.get(session.session_id) ?? [];

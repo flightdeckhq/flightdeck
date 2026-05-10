@@ -7,10 +7,10 @@ non-session_start event. Requires `make dev` to be running.
 
 from __future__ import annotations
 
-import subprocess
 import uuid
 
 from .conftest import (
+    exec_sql,
     get_session,
     get_session_detail,
     make_event,
@@ -22,27 +22,6 @@ from .conftest import (
 )
 
 
-def _exec_sql(sql: str) -> str:
-    """Execute a SQL statement against the dev Postgres container.
-
-    Used by the revival tests to force a session into a specific state
-    without waiting for the background reconciler. Returns the trimmed
-    psql output.
-    """
-    result = subprocess.run(
-        [
-            "docker", "exec", "docker-postgres-1", "psql",
-            "-U", "flightdeck", "-d", "flightdeck",
-            "-t", "-A", "-c", sql,
-        ],
-        capture_output=True,
-        text=True,
-        timeout=10,
-        check=True,
-    )
-    return result.stdout.strip()
-
-
 def _force_state(session_id: str, state: str) -> None:
     """Force a session into a given state via direct UPDATE.
 
@@ -50,17 +29,19 @@ def _force_state(session_id: str, state: str) -> None:
     session through the lifecycle. Used only by tests that exercise the
     revival path.
     """
-    _exec_sql(
-        f"UPDATE sessions SET state = '{state}' "
-        f"WHERE session_id = '{session_id}'::uuid"
+    exec_sql(
+        "UPDATE sessions SET state = :'state' WHERE session_id = :'sid'::uuid",
+        state=state,
+        sid=session_id,
     )
 
 
 def _read_session_row(session_id: str) -> dict[str, str]:
     """Read state / last_seen_at / tokens_used straight from Postgres."""
-    raw = _exec_sql(
+    raw = exec_sql(
         "SELECT state, last_seen_at, tokens_used FROM sessions "
-        f"WHERE session_id = '{session_id}'::uuid"
+        "WHERE session_id = :'sid'::uuid",
+        sid=session_id,
     )
     parts = raw.split("|")
     if len(parts) != 3:
@@ -137,7 +118,18 @@ def test_session_transitions_to_closed() -> None:
 
 def test_lost_session_revives_on_post_call() -> None:
     """Session in state=lost receiving a post_call flips back to active,
-    advances last_seen_at, and increments tokens_used (D105)."""
+    advances last_seen_at, and increments tokens_used.
+
+    The revival flip and the token bump land in two separate
+    transactions inside the worker (handleSessionGuard's
+    ReviveIfRevivable, then HandlePostCall's UpdateTokensUsed). On
+    fast hardware they commit close enough together that polling for
+    state=active and then reading tokens_used in one shot works; on
+    slower CI runners the revive commit can land before the token
+    commit, leaving a brief window where state=active but tokens_used
+    is still pre-bump. Poll for the conjunction (state AND tokens) to
+    close the race rather than reading once after a state-only wait.
+    """
     sid = str(uuid.uuid4())
     flavor = f"test-revive-lost-{uuid.uuid4().hex[:6]}"
 
@@ -147,20 +139,31 @@ def test_lost_session_revives_on_post_call() -> None:
     _force_state(sid, "lost")
     before = _read_session_row(sid)
     assert before["state"] == "lost"
+    expected_tokens = int(before["tokens_used"]) + 500
 
     post_event(make_event(sid, flavor, "post_call", tokens_total=500))
 
-    # Revival is synchronous in the worker but the POST is async via
-    # NATS, so poll until the state flips back.
-    detail = wait_for_state(sid, "active", timeout=10)
-    assert detail["session"]["state"] == "active"
+    def _revived_with_tokens() -> bool:
+        row = _read_session_row(sid)
+        return row["state"] == "active" and int(row["tokens_used"]) == expected_tokens
+
+    wait_until(
+        _revived_with_tokens,
+        timeout=10,
+        interval=0.5,
+        msg=(
+            f"session {sid} should be revived to active with tokens_used="
+            f"{expected_tokens}"
+        ),
+    )
 
     after = _read_session_row(sid)
+    assert after["state"] == "active"
     assert after["last_seen_at"] != before["last_seen_at"], (
         f"last_seen_at should advance after revive; before={before['last_seen_at']} "
         f"after={after['last_seen_at']}"
     )
-    assert int(after["tokens_used"]) == int(before["tokens_used"]) + 500, (
+    assert int(after["tokens_used"]) == expected_tokens, (
         f"tokens_used should increment by 500 after revive; "
         f"before={before['tokens_used']} after={after['tokens_used']}"
     )
@@ -265,9 +268,10 @@ def test_reconciler_lost_threshold_is_30_min() -> None:
     post_event(make_event(sid, flavor, "session_start"))
     wait_for_session_in_fleet(sid, timeout=5.0)
 
-    _exec_sql(
+    exec_sql(
         "UPDATE sessions SET last_seen_at = NOW() - INTERVAL '31 minutes' "
-        f"WHERE session_id = '{sid}'::uuid"
+        "WHERE session_id = :'sid'::uuid",
+        sid=sid,
     )
 
     # Reconciler runs every 60s. Wait up to ~90s for the next tick to
@@ -299,10 +303,11 @@ def test_orphan_timeout_reaper_closes_lost_session() -> None:
     # The reaper only cares that state='lost' and last_seen_at is past
     # the threshold; getting there via 31-minute waits would balloon
     # the test runtime without exercising the reaper code path.
-    _exec_sql(
+    exec_sql(
         "UPDATE sessions SET state = 'lost', "
         "last_seen_at = NOW() - INTERVAL '25 hours' "
-        f"WHERE session_id = '{sid}'::uuid"
+        "WHERE session_id = :'sid'::uuid",
+        sid=sid,
     )
 
     detail = wait_for_state(sid, "closed", timeout=90)
@@ -311,9 +316,10 @@ def test_orphan_timeout_reaper_closes_lost_session() -> None:
         f"reaper should stamp ended_at on {sid}; got null"
     )
 
-    raw = _exec_sql(
+    raw = exec_sql(
         "SELECT payload->>'close_reason' FROM events "
-        f"WHERE session_id = '{sid}'::uuid AND event_type = 'session_end'"
+        "WHERE session_id = :'sid'::uuid AND event_type = 'session_end'",
+        sid=sid,
     )
     reasons = [line.strip() for line in raw.splitlines() if line.strip()]
     # Tighter than `in`: the synthetic session_end should be the only
@@ -341,10 +347,11 @@ def test_orphan_timeout_reaper_does_not_close_recent_lost_session() -> None:
     # last_seen_at is 1 hour ago — past the 30-min lost threshold so
     # state='lost' is plausible, but well inside the default 24h orphan
     # window so the reaper must skip it.
-    _exec_sql(
+    exec_sql(
         "UPDATE sessions SET state = 'lost', "
         "last_seen_at = NOW() - INTERVAL '1 hour' "
-        f"WHERE session_id = '{sid}'::uuid"
+        "WHERE session_id = :'sid'::uuid",
+        sid=sid,
     )
 
     # Negative wait: poll for the wrong-firing condition (state flipped
@@ -377,11 +384,12 @@ def test_orphan_timeout_reaper_does_not_close_recent_lost_session() -> None:
         f"reaper wrongly closed recent lost session {sid}: state={row['state']!r}"
     )
 
-    raw = _exec_sql(
+    raw = exec_sql(
         "SELECT COUNT(*) FROM events "
-        f"WHERE session_id = '{sid}'::uuid "
+        "WHERE session_id = :'sid'::uuid "
         "AND event_type = 'session_end' "
-        "AND payload->>'close_reason' = 'orphan_timeout'"
+        "AND payload->>'close_reason' = 'orphan_timeout'",
+        sid=sid,
     )
     # psql -tA strips alignment but cast through int() so a future
     # whitespace change in psql output doesn't masquerade as a "0
@@ -414,13 +422,14 @@ def _read_session_identity(session_id: str) -> dict[str, str]:
     values without juggling None. context is returned as the raw
     JSONB text ("{}" or "null" -- psql -A renders JSONB verbatim).
     """
-    raw = _exec_sql(
+    raw = exec_sql(
         "SELECT flavor, agent_type, "
         "COALESCE(context::text, 'NULL'), "
         "COALESCE(token_id::text, ''), "
         "COALESCE(token_name, '') "
         "FROM sessions "
-        f"WHERE session_id = '{session_id}'::uuid"
+        "WHERE session_id = :'sid'::uuid",
+        sid=session_id,
     )
     parts = raw.split("|")
     if len(parts) != 5:
@@ -662,10 +671,268 @@ def test_session_end_on_unknown_session_id_does_not_lazy_create() -> None:
     # wait_for -- there's nothing to wait for.
     import time as _time
     _time.sleep(1.0)  # brief pause for worker to (not) process
-    raw = _exec_sql(
-        f"SELECT COUNT(*) FROM sessions WHERE session_id = '{sid}'::uuid"
+    raw = exec_sql(
+        "SELECT COUNT(*) FROM sessions WHERE session_id = :'sid'::uuid",
+        sid=sid,
     )
     assert raw == "0", (
         f"session_end on unknown session_id should not lazy-create a row; "
         f"found {raw} row(s) for {sid}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Parent-bump propagation: child events advance the parent session's
+# last_seen_at and revive the parent from stale/lost back to active.
+# A session with active descendants is logically active. Without this
+# propagation a parent that handed off all real work to sub-agents
+# would age to stale → lost → orphan_timeout closure while children
+# clearly streamed events. Closed parents stay closed (terminal).
+# ---------------------------------------------------------------------------
+
+
+def _read_parent_last_seen(parent_session_id: str) -> str:
+    """Read just last_seen_at from a session row, as ISO timestamp text."""
+    return exec_sql(
+        "SELECT last_seen_at FROM sessions WHERE session_id = :'sid'::uuid",
+        sid=parent_session_id,
+    )
+
+
+def _seed_parent_with_child(
+    parent_flavor_prefix: str,
+    child_flavor_prefix: str,
+) -> tuple[str, str]:
+    """Seed a parent session and a child whose parent_session_id points
+    at the parent's session_id. Returns (parent_sid, child_sid).
+    """
+    parent_sid = str(uuid.uuid4())
+    child_sid = str(uuid.uuid4())
+    parent_flavor = f"{parent_flavor_prefix}-{uuid.uuid4().hex[:6]}"
+    child_flavor = f"{child_flavor_prefix}-{uuid.uuid4().hex[:6]}"
+
+    post_event(make_event(parent_sid, parent_flavor, "session_start"))
+    wait_for_session_in_fleet(parent_sid, timeout=5.0)
+
+    post_event(
+        make_event(
+            child_sid,
+            child_flavor,
+            "session_start",
+            parent_session_id=parent_sid,
+            agent_role="worker",
+        )
+    )
+    wait_for_session_in_fleet(child_sid, timeout=5.0)
+
+    return parent_sid, child_sid
+
+
+def test_child_event_bumps_active_parent_last_seen() -> None:
+    """Happy-path bump: parent is active; a child post_call advances
+    the parent's last_seen_at without changing state.
+    """
+    parent_sid, child_sid = _seed_parent_with_child(
+        "test-bump-active-parent", "test-bump-active-child"
+    )
+
+    # Capture parent's current last_seen_at (post-session_start), then
+    # backdate it 5 seconds so the child event's bump is observable as
+    # a strictly-later timestamp.
+    exec_sql(
+        "UPDATE sessions SET last_seen_at = NOW() - INTERVAL '5 seconds' "
+        "WHERE session_id = :'sid'::uuid",
+        sid=parent_sid,
+    )
+    pre_bump = _read_parent_last_seen(parent_sid)
+
+    post_event(
+        make_event(
+            child_sid,
+            f"test-bump-active-child-{uuid.uuid4().hex[:6]}",
+            "post_call",
+            parent_session_id=parent_sid,
+            tokens_total=42,
+        )
+    )
+
+    def _parent_advanced() -> bool:
+        return _read_parent_last_seen(parent_sid) > pre_bump
+
+    wait_until(
+        _parent_advanced,
+        timeout=10,
+        interval=0.5,
+        msg=f"parent {parent_sid} last_seen_at did not advance on child event",
+    )
+    # State stays active throughout — bump without revival.
+    assert _read_session_row(parent_sid)["state"] == "active"
+
+
+def test_child_event_revives_stale_parent() -> None:
+    """Parent forced to state='stale'; child event fires; parent
+    transitions back to active and last_seen_at advances.
+    """
+    parent_sid, child_sid = _seed_parent_with_child(
+        "test-revive-stale-parent", "test-revive-stale-child"
+    )
+    _force_state(parent_sid, "stale")
+    assert _read_session_row(parent_sid)["state"] == "stale"
+
+    post_event(
+        make_event(
+            child_sid,
+            f"test-revive-stale-child-{uuid.uuid4().hex[:6]}",
+            "post_call",
+            parent_session_id=parent_sid,
+            tokens_total=10,
+        )
+    )
+
+    wait_until(
+        lambda: _read_session_row(parent_sid)["state"] == "active",
+        timeout=10,
+        interval=0.5,
+        msg=f"parent {parent_sid} should have been revived stale → active",
+    )
+
+
+def test_child_event_revives_lost_parent() -> None:
+    """Parent forced to state='lost'; child event fires; parent
+    transitions back to active. Mirrors the stale revival test for the
+    second revivable state.
+    """
+    parent_sid, child_sid = _seed_parent_with_child(
+        "test-revive-lost-parent", "test-revive-lost-child"
+    )
+    _force_state(parent_sid, "lost")
+    assert _read_session_row(parent_sid)["state"] == "lost"
+
+    post_event(
+        make_event(
+            child_sid,
+            f"test-revive-lost-child-{uuid.uuid4().hex[:6]}",
+            "post_call",
+            parent_session_id=parent_sid,
+            tokens_total=10,
+        )
+    )
+
+    wait_until(
+        lambda: _read_session_row(parent_sid)["state"] == "active",
+        timeout=10,
+        interval=0.5,
+        msg=f"parent {parent_sid} should have been revived lost → active",
+    )
+
+
+def test_child_event_does_not_revive_closed_parent() -> None:
+    """Parent forced to state='closed' (terminal); child event fires;
+    parent stays closed. Reviving a closed session would contradict
+    the user's explicit end-of-session signal.
+    """
+    parent_sid, child_sid = _seed_parent_with_child(
+        "test-noop-closed-parent", "test-noop-closed-child"
+    )
+    _force_state(parent_sid, "closed")
+    pre_state_row = _read_session_row(parent_sid)
+    assert pre_state_row["state"] == "closed"
+
+    post_event(
+        make_event(
+            child_sid,
+            f"test-noop-closed-child-{uuid.uuid4().hex[:6]}",
+            "post_call",
+            parent_session_id=parent_sid,
+            tokens_total=10,
+        )
+    )
+
+    # Negative wait: poll for the wrong-flip condition (state changed
+    # away from 'closed') with a 15s budget. If the bump is going to
+    # incorrectly revive the closed parent, it does so inside this
+    # window. Using wait_until rather than bare time.sleep keeps the
+    # polling cadence visible.
+    def _parent_wrongly_revived() -> bool:
+        return _read_session_row(parent_sid)["state"] != "closed"
+
+    try:
+        wait_until(
+            _parent_wrongly_revived,
+            timeout=15,
+            interval=1,
+            msg=f"closed parent {parent_sid} must not revive on child event",
+        )
+    except TimeoutError:
+        # Expected: parent correctly stayed closed.
+        pass
+    else:
+        raise AssertionError(
+            f"closed parent {parent_sid} was incorrectly revived to "
+            f"{_read_session_row(parent_sid)['state']!r} by a child event"
+        )
+
+
+def test_orphan_reaper_does_not_fire_on_active_parent_with_child_traffic() -> None:
+    """Reaper interaction: a parent that's been backdated (would be
+    reaped) gets bumped back into a fresh window by child traffic,
+    so the next reconciler tick does NOT close the parent. Guards
+    against the parent-bump propagation accidentally landing in a
+    state where children stream but the reaper still wins the race.
+
+    Backdate parent past 24h orphan timeout AND force lost. Without
+    the bump the next reconciler tick reaps. With the bump, the child
+    event flips it back to active well before the tick fires.
+    """
+    parent_sid, child_sid = _seed_parent_with_child(
+        "test-reaper-noop-parent", "test-reaper-noop-child"
+    )
+    exec_sql(
+        "UPDATE sessions SET state = 'lost', "
+        "last_seen_at = NOW() - INTERVAL '25 hours' "
+        "WHERE session_id = :'sid'::uuid",
+        sid=parent_sid,
+    )
+
+    # Child event fires immediately — the bump should flip parent to
+    # active and update last_seen_at to NOW(), well before any
+    # reconciler tick can pick the row up as a reaper candidate.
+    post_event(
+        make_event(
+            child_sid,
+            f"test-reaper-noop-child-{uuid.uuid4().hex[:6]}",
+            "post_call",
+            parent_session_id=parent_sid,
+            tokens_total=10,
+        )
+    )
+
+    wait_until(
+        lambda: _read_session_row(parent_sid)["state"] == "active",
+        timeout=10,
+        interval=0.5,
+        msg=f"parent {parent_sid} should be revived to active before reaper fires",
+    )
+
+    # Wait through one full reconciler tick window (60s + 30s padding)
+    # to confirm the reaper does NOT subsequently close the parent.
+    # State must stay active and ended_at must remain null. If the
+    # bump's last_seen_at update raced and the reaper picked up a
+    # stale value, this assertion catches it.
+    def _parent_wrongly_closed() -> bool:
+        return _read_session_row(parent_sid)["state"] == "closed"
+
+    try:
+        wait_until(
+            _parent_wrongly_closed,
+            timeout=90,
+            interval=10,
+            msg=f"reaper must not close parent {parent_sid} that has live child traffic",
+        )
+    except TimeoutError:
+        # Expected: parent stayed active for the full reconciler window.
+        pass
+    else:
+        raise AssertionError(
+            f"reaper incorrectly closed parent {parent_sid} despite live child traffic"
+        )

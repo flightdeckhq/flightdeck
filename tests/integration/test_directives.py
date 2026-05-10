@@ -13,7 +13,6 @@ Requires `make dev` to be running.
 from __future__ import annotations
 
 import json
-import subprocess
 import urllib.error
 import urllib.request
 import uuid
@@ -24,6 +23,7 @@ import pytest
 from .conftest import (
     API_URL,
     TOKEN,
+    exec_sql,
     get_session,
     make_event,
     post_event,
@@ -149,19 +149,12 @@ def _post_directive_action(body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
 
 def _query_directives_for_session(session_id: str) -> list[dict[str, Any]]:
     """Query the directives table directly for a given session_id."""
-    sql = (
+    raw = exec_sql(
         "SELECT COALESCE(json_agg(row_to_json(d)), '[]'::json) "
         "FROM directives d "
-        f"WHERE d.session_id = '{session_id}'::uuid"
+        "WHERE d.session_id = :'sid'::uuid",
+        sid=session_id,
     )
-    result = subprocess.run(
-        [
-            "docker", "exec", "docker-postgres-1", "psql",
-            "-U", "flightdeck", "-d", "flightdeck", "-t", "-c", sql,
-        ],
-        capture_output=True, text=True, timeout=10,
-    )
-    raw = result.stdout.strip()
     if not raw or raw == "null":
         return []
     return json.loads(raw)  # type: ignore[no-any-return]
@@ -169,15 +162,9 @@ def _query_directives_for_session(session_id: str) -> list[dict[str, Any]]:
 
 def _delete_custom_directive_by_fingerprint(fingerprint: str) -> None:
     """Clean up a custom_directives row after a test."""
-    sql = (
-        f"DELETE FROM custom_directives WHERE fingerprint = '{fingerprint}'"
-    )
-    subprocess.run(
-        [
-            "docker", "exec", "docker-postgres-1", "psql",
-            "-U", "flightdeck", "-d", "flightdeck", "-c", sql,
-        ],
-        capture_output=True, text=True, timeout=10,
+    exec_sql(
+        "DELETE FROM custom_directives WHERE fingerprint = :'fp'",
+        fp=fingerprint,
     )
 
 
@@ -203,9 +190,21 @@ def _unique_fingerprint(prefix: str = "fp") -> str:
 
 
 def test_custom_directive_register_and_sync() -> None:
-    """sync → register → sync → list happy path."""
+    """sync → register → sync → list happy path.
+
+    The directive name is unique-per-run (UUID-suffixed) rather
+    than the bare ``test_action`` so concurrent / sibling tests in
+    this file (``test_custom_directive_trigger_session``,
+    ``test_custom_directive_flavor_fanout``) and stale rows from
+    aborted prior runs cannot collide on the same name. The list
+    endpoint returns every custom directive in the DB; the prior
+    bare-``test_action`` form let the dict-comprehension pick the
+    wrong row when sibling rows existed, violating qa.md's "no
+    order-dependent tests" rule.
+    """
     flavor = f"test-dir-sync-{uuid.uuid4().hex[:6]}"
     fp = _unique_fingerprint()
+    name = f"test_action_{uuid.uuid4().hex[:8]}"
 
     # Step 1: sync with a brand-new fingerprint
     code, body = _sync_directives(flavor, [fp])
@@ -217,7 +216,7 @@ def test_custom_directive_register_and_sync() -> None:
     try:
         # Step 2: register the full schema
         code, body = _register_directive(
-            flavor, fp, name="test_action", description="register test"
+            flavor, fp, name=name, description="register test"
         )
         assert code == 200, f"register returned {code}: {body}"
         assert body.get("registered") == 1, (
@@ -231,15 +230,18 @@ def test_custom_directive_register_and_sync() -> None:
             f"expected {fp} NOT in unknown_fingerprints after register, got {body}"
         )
 
-        # Step 4: GET /v1/directives/custom -- the directive is in the list
+        # Step 4: GET /v1/directives/custom -- the directive is in the list.
+        # Filter by our unique name rather than dict-keying on it: this
+        # way sibling test_action_* rows from other tests are inert
+        # to our assertion.
         code, body = _list_custom_directives()
         assert code == 200
-        names = {d["name"]: d for d in body.get("directives", [])}
-        assert "test_action" in names, (
-            f"expected test_action in directive list, got {list(names.keys())}"
+        matches = [d for d in body.get("directives", []) if d["name"] == name]
+        assert len(matches) == 1, (
+            f"expected exactly one {name!r} in directive list, got {matches!r}"
         )
-        assert names["test_action"]["flavor"] == flavor
-        assert names["test_action"]["fingerprint"] == fp
+        assert matches[0]["flavor"] == flavor
+        assert matches[0]["fingerprint"] == fp
     finally:
         _delete_custom_directive_by_fingerprint(fp)
 

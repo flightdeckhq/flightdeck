@@ -365,13 +365,14 @@ export function Fleet() {
     };
     rafId = requestAnimationFrame(step);
     return () => cancelAnimationFrame(rafId);
-    // Phase 4.5 M-29 justification: we want the rAF to (re)start
-    // only on the BOOLEAN transition virtualNow null↔non-null,
-    // not on every frame's value change. The expression
-    // ``virtualNow !== null`` evaluates to a boolean that React
-    // memoizes; eslint can't see through the expression so we
-    // disable it here rather than introduce an extra useState.
-  }, [virtualNow !== null]); // eslint-disable-line react-hooks/exhaustive-deps
+    // The rAF should (re)start only on the BOOLEAN transition
+    // ``virtualNow null↔non-null``, not on every frame's value
+    // change. The dep expression ``virtualNow !== null`` evaluates
+    // to a boolean React memoizes; eslint can't see through the
+    // expression so we disable it here rather than introduce a
+    // separate useState that mirrors the boolean.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [virtualNow !== null]);
 
   // Single source of truth for "what time is shown". Drives the
   // swimlane scale domain (via <Timeline>), the live feed cutoff,

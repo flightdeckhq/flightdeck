@@ -282,12 +282,6 @@ const docTemplate = `{
                             "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     },
-                    "403": {
-                        "description": "Token is valid but lacks admin scope",
-                        "schema": {
-                            "$ref": "#/definitions/handlers.ErrorResponse"
-                        }
-                    },
                     "409": {
                         "description": "Another reconcile is already in progress",
                         "schema": {
@@ -2289,38 +2283,6 @@ const docTemplate = `{
                     }
                 }
             }
-        },
-        "/v1/whoami": {
-            "get": {
-                "description": "Returns the role + token_id for the bearer token in the request. ` + "`" + `` + "`" + `admin` + "`" + `` + "`" + ` for IsAdmin tokens (env-configured admin or tok_admin_dev in dev), ` + "`" + `` + "`" + `viewer` + "`" + `` + "`" + ` for any other valid token. The dashboard reads this once at session start (D147) and gates mutation CTAs on role === \"admin\".",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "auth"
-                ],
-                "summary": "Identify the authenticated bearer",
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/handlers.WhoamiResponse"
-                        }
-                    },
-                    "401": {
-                        "description": "Unauthorized",
-                        "schema": {
-                            "$ref": "#/definitions/handlers.ErrorResponse"
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "$ref": "#/definitions/handlers.ErrorResponse"
-                        }
-                    }
-                }
-            }
         }
     },
     "definitions": {
@@ -2523,18 +2485,6 @@ const docTemplate = `{
                     "items": {
                         "type": "string"
                     }
-                }
-            }
-        },
-        "handlers.WhoamiResponse": {
-            "type": "object",
-            "properties": {
-                "role": {
-                    "description": "\"admin\" | \"viewer\"",
-                    "type": "string"
-                },
-                "token_id": {
-                    "type": "string"
                 }
             }
         },
@@ -2911,6 +2861,10 @@ const docTemplate = `{
                 "system_prompt": {
                     "type": "string"
                 },
+                "tool_input": {
+                    "description": "D150 (Phase 7 Step 3.b): tool_input + tool_output carry the\ncaptured arguments and result for mcp_tool_call / mcp_prompt_get\n/ LLM-side tool_call events. The dashboard branches on event_type\nto render the appropriate viewer; without these fields landing\nin the response the operator-paid-for capture is silently lost\nat the read boundary."
+                },
+                "tool_output": {},
                 "tools": {}
             }
         },

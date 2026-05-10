@@ -77,7 +77,9 @@ describe("SurroundingEventsList", () => {
       expect(screen.getAllByTestId(/surrounding-(row|anchor)/).length).toBe(2);
     });
     const rows = screen.getAllByTestId("surrounding-row");
-    fireEvent.click(rows[0]);
+    const firstRow = rows[0];
+    if (!firstRow) throw new Error("expected at least one surrounding-row");
+    fireEvent.click(firstRow);
     expect(onSelect).toHaveBeenCalledWith(
       expect.objectContaining({ id: "sibling" }),
     );

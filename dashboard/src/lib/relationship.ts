@@ -106,6 +106,19 @@ export function deriveRelationship(
  * attribute stamped on SwimLane (and AgentTable rows). Shared by
  * both surfaces so the navigation behaviour matches one-to-one
  * across views.
+ *
+ * Intentional `document.querySelector` bypass of React refs: this
+ * scroll target is shared across SwimLane (timeline view),
+ * AgentTable (table view), and every VirtualizedSwimLane wrapper
+ * that may or may not be materialised at any given time. A
+ * ref-based alternative would need a central agentId → ref
+ * registry populated by every row component on mount and torn
+ * down on unmount, plus a cache-eviction path when the virtualizer
+ * recycles rows. The querySelector form is read-only (no DOM
+ * mutation), CSS.escape-protected against injection via agent_id,
+ * and works identically across both views. TODO: revisit if a
+ * future refactor consolidates row mounting through a single
+ * virtualised list with a shared imperative-handle surface.
  */
 export function scrollToAgentRow(agentId: string): void {
   const target = document.querySelector(

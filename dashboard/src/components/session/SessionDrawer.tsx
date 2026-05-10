@@ -5,7 +5,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { TruncatedText } from "@/components/ui/TruncatedText";
 import { invalidateSessionCache, useSession } from "@/hooks/useSession";
 import { useFleetStore } from "@/store/fleet";
-import { SUCCESS_MESSAGE_DISPLAY_MS } from "@/lib/constants";
+import { SHUTDOWN_GRACE_PERIOD_MS, SUCCESS_MESSAGE_DISPLAY_MS } from "@/lib/constants";
 import { CLIENT_TYPE_LABEL, ClientType } from "@/lib/agent-identity";
 import { DirectiveCard } from "@/components/directives/DirectiveCard";
 import { Button } from "@/components/ui/button";
@@ -56,7 +56,19 @@ export const DEFAULT_EVENTS_LIMIT: (typeof EVENTS_LIMIT_OPTIONS)[number] = 100;
 
 /* ---- State badge colors ---- */
 
-const stateBadgeStyles: Record<string, { bg: string; color: string; border: string }> = {
+type StateBadge = { bg: string; color: string; border: string };
+
+// Closed-state badge serves double duty as the safe-default when an
+// unrecognised state string slips in (the lookup misses and we fall
+// through to this object). Declared standalone so the fallback at
+// `stateBadge` doesn't return `undefined` under noUncheckedIndexedAccess.
+const CLOSED_STATE_BADGE: StateBadge = {
+  bg: "color-mix(in srgb, var(--status-closed) 15%, transparent)",
+  color: "var(--status-closed)",
+  border: "color-mix(in srgb, var(--status-closed) 30%, transparent)",
+};
+
+const stateBadgeStyles: Record<string, StateBadge> = {
   active: {
     bg: "color-mix(in srgb, var(--status-active) 15%, transparent)",
     color: "var(--status-active)",
@@ -72,11 +84,7 @@ const stateBadgeStyles: Record<string, { bg: string; color: string; border: stri
     color: "var(--status-stale)",
     border: "color-mix(in srgb, var(--status-stale) 30%, transparent)",
   },
-  closed: {
-    bg: "color-mix(in srgb, var(--status-closed) 15%, transparent)",
-    color: "var(--status-closed)",
-    border: "color-mix(in srgb, var(--status-closed) 30%, transparent)",
-  },
+  closed: CLOSED_STATE_BADGE,
   lost: {
     bg: "color-mix(in srgb, var(--status-lost) 15%, transparent)",
     color: "var(--status-lost)",
@@ -402,13 +410,16 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
     : (directEventDetail ?? internalDetailEvent);
 
   // Get events: prefer eventsCache (live), fall back to REST data.
-  // Phase 4.5 M-29 justification: ``eventsCache`` is a Map ref read
-  // inside the memo body. We intentionally re-run the memo on every
-  // ``version`` / ``paginationVersion`` bump (which signal that the
-  // cache contents changed) rather than on the cache reference,
-  // because the Map is mutated in place. Including ``eventsCache``
-  // in deps would force re-run on every render via reference
-  // identity but never on actual content changes — backwards.
+  // ``eventsCache`` is a module-level Map read inside the memo body.
+  // The memo intentionally re-runs on every ``version`` /
+  // ``paginationVersion`` bump (which signal that the cache contents
+  // changed) rather than on the Map reference, because the Map is
+  // mutated in place — including ``eventsCache`` in deps would force
+  // re-run on every render via reference identity but never on
+  // actual content changes, which is backwards. The disable applies
+  // to the deps line because eslint flags ``version`` /
+  // ``paginationVersion`` as "unnecessary" — those bumps are exactly
+  // the reactive signals the memo needs to honour.
   const drawerEvents = useMemo(() => {
     if (sessionId) {
       const cached = eventsCache.get(sessionId);
@@ -455,8 +466,12 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
     const cached = eventsCache.get(sessionId) ?? [];
     if (cached.length === 0) return;
     // Cache is ASC, so index 0 is the oldest event currently visible
-    // -- that's the keyset cursor for the next page.
+    // -- that's the keyset cursor for the next page. The length>0
+    // guard above means cached[0] is always defined; the explicit
+    // continue keeps noUncheckedIndexedAccess happy without a
+    // non-null assertion.
     const oldest = cached[0];
+    if (!oldest) return;
     setLoadingOlder(true);
     try {
       const resp = await fetchOlderEvents(
@@ -514,7 +529,7 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
         action: "shutdown",
         session_id: session.session_id,
         reason: "manual_kill_switch",
-        grace_period_ms: 5000,
+        grace_period_ms: SHUTDOWN_GRACE_PERIOD_MS,
       });
       // Mark in the fleet store so every view (not just this drawer)
       // sees the pending shutdown until the session transitions to
@@ -544,7 +559,7 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
     setFocusedPromptEventId(eventId);
   }
 
-  const stateBadge = stateBadgeStyles[session?.state ?? "closed"] ?? stateBadgeStyles.closed;
+  const stateBadge = stateBadgeStyles[session?.state ?? "closed"] ?? CLOSED_STATE_BADGE;
 
   return (
     <AnimatePresence>
@@ -939,10 +954,16 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
                         // the URL state pick up. Pages that wire
                         // ``onSwitchSession`` skip this branch and
                         // get an in-place rebind without flicker.
+                        // Synchronous URL update — onClose() returns
+                        // synchronously so React has already committed
+                        // the close-drawer render by the time the
+                        // location assignment fires. The previous
+                        // setTimeout(0) wrapper was a banned pattern
+                        // (typescript guidelines: "no setTimeout(0)
+                        // to wait for the next tick") and added no
+                        // value vs the synchronous form.
                         onClose();
-                        window.setTimeout(() => {
-                          window.location.search = `session=${encodeURIComponent(id)}`;
-                        }, 0);
+                        window.location.search = `session=${encodeURIComponent(id)}`;
                       }
                     }}
                   />

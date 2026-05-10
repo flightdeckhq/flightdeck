@@ -3,22 +3,9 @@
 // matches /mcp-policies (and other unmatched paths) to the
 // NotFound element.
 
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-
-vi.mock("@/lib/api", async () => {
-  const actual = await vi.importActual<Record<string, unknown>>("@/lib/api");
-  return {
-    ...actual,
-    // Defensive — the standalone component doesn't fetch, but
-    // any accidental import of api fns shouldn't fire network.
-    fetchWhoami: vi.fn().mockResolvedValue({
-      role: "viewer",
-      token_id: "test-token",
-    }),
-  };
-});
 
 import { NotFound } from "@/pages/NotFound";
 

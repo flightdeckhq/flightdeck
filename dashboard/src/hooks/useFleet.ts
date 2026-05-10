@@ -1,17 +1,18 @@
-import { useEffect, useCallback } from "react";
+import { useEffect, useCallback, useMemo } from "react";
 import { useFleetStore } from "@/store/fleet";
 import { useWebSocket } from "./useWebSocket";
-import { WS_ACCESS_TOKEN_QUERY } from "@/lib/api";
+import { wsAccessTokenQuery } from "@/lib/api";
 import type { FleetUpdate, AgentEvent } from "@/lib/types";
 
-// D095/D096: browsers cannot attach an Authorization header to the
-// WebSocket upgrade handshake, so the server accepts the bearer
-// access token via ?token=. Part 1b hardcodes tok_dev; Part 2's
-// Settings page will replace WS_ACCESS_TOKEN_QUERY with a dynamic
-// value.
-const WS_URL =
+// Browsers cannot attach an Authorization header to the WebSocket
+// upgrade handshake, so the server accepts the bearer access token
+// via ?token=. The token resolves at hook-mount time (not module-
+// import time) so a localStorage override set by the operator is
+// picked up; the previous module-level const captured the default
+// at import and ignored every subsequent localStorage write.
+const WS_BASE_URL =
   (import.meta.env.VITE_API_BASE_URL ?? "").replace(/^http/, "ws") +
-  "/api/v1/stream?" + WS_ACCESS_TOKEN_QUERY;
+  "/api/v1/stream";
 
 /**
  * Load fleet state via REST, then keep it live via WebSocket.
@@ -54,7 +55,16 @@ export function useFleet(onEvent?: (event: AgentEvent) => void) {
     [applyUpdate, setLastEvent, onEvent]
   );
 
-  useWebSocket(WS_URL, handleMessage);
+  // useMemo so the URL string is stable across renders (the
+  // useWebSocket hook compares the URL by reference to decide
+  // whether to reconnect). Recomputed only when the underlying
+  // localStorage token changes between mounts — which is the
+  // intended invalidation path.
+  const wsUrl = useMemo(
+    () => `${WS_BASE_URL}?${wsAccessTokenQuery()}`,
+    [],
+  );
+  useWebSocket(wsUrl, handleMessage);
 
   return { flavors, loading, error };
 }

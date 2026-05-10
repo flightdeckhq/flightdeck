@@ -7,12 +7,12 @@ import {
   Zap, Wrench, AlertTriangle, XCircle, ArrowDown,
   Play, Square, Check, Circle, X, Database, AlertCircle,
   ListChecks, FileText, Folder, MessageSquare, List,
+  type LucideProps,
 } from "lucide-react";
 
 const eventTypeConfig: Record<
   string,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  { cssVar: string; label: string; Icon: React.ComponentType<any> }
+  { cssVar: string; label: string; Icon: React.ComponentType<LucideProps> }
 > = {
   pre_call: { cssVar: "var(--event-llm)", Icon: Zap, label: "LLM Call" },
   post_call: { cssVar: "var(--event-llm)", Icon: Zap, label: "LLM Response" },

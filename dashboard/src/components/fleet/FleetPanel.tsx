@@ -25,7 +25,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { SessionStateBar } from "./SessionStateBar";
 import { createDirective } from "@/lib/api";
-import { SUCCESS_MESSAGE_DISPLAY_MS } from "@/lib/constants";
+import { SHUTDOWN_GRACE_PERIOD_MS, SUCCESS_MESSAGE_DISPLAY_MS } from "@/lib/constants";
 import { flavorHasDirectiveCapableSession } from "@/lib/directives";
 import { ClaudeCodeLogo } from "@/components/ui/claude-code-logo";
 import { CodingAgentBadge } from "@/components/ui/coding-agent-badge";
@@ -624,7 +624,7 @@ function ContextFacetSection({
       </div>
       <div className="pb-3">
         {filterableKeys.map((key) => {
-          const values = facets[key];
+          const values = facets[key] ?? [];
           const selected = filters[key] ?? [];
           return (
             <div key={key} data-testid={`context-facet-${key}`}>
@@ -780,7 +780,7 @@ function FlavorItem({
         action: "shutdown_flavor",
         flavor: flavor.flavor,
         reason: "manual_fleet_kill",
-        grace_period_ms: 5000,
+        grace_period_ms: SHUTDOWN_GRACE_PERIOD_MS,
       });
       // Mark every active/idle session of this flavor as shutting
       // down so the SessionDrawer (or any other per-session view)

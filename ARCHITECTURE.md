@@ -1289,6 +1289,22 @@ crashes, `kill -9`, and missed lifecycle hooks would otherwise leave
 `lost` rows pinned forever; without the timeout the Fleet view
 accumulates dead rows that look indistinguishable from a long pause.
 
+**Parent-bump propagation.** Every non-`session_start` /
+non-`session_end` handler that has a non-empty `parent_session_id`
+on the incoming event also bumps the PARENT session's
+`last_seen_at` and revives it from `stale` / `lost` back to
+`active`. A session with active descendants is logically active;
+without this propagation a parent that delegated all real work to
+sub-agents (Claude Code Task subagents, CrewAI hand-off, LangGraph
+nodes) would age to `stale → lost → orphan_timeout` closure while
+its children clearly streamed events. Closed parents are
+untouched (terminal state). Revivals via this path bump
+`sessions_revived_total{trigger="child_event"}` on the worker's
+`/metrics` endpoint so operators can chart parent-via-child
+revivals separately from any future revival path. Scope is direct
+parent only — transitive ancestor revival is deferred until a
+framework that exercises depth>2 trees ships.
+
 **Terminal-state handling.** `closed` is terminal and final. `session_end`
 at any non-closed state transitions directly to `closed`;
 `handleSessionGuard` skips any subsequent event for a closed session with
@@ -1749,19 +1765,18 @@ authoritative parameter-level reference.
 | `DELETE` | `/v1/access-tokens/:id` | Revoke (dev-seed row protected: 403) |
 | `PATCH` | `/v1/access-tokens/:id` | Rename (dev-seed row protected: 403) |
 | `POST` | `/v1/admin/reconcile-agents` | Recompute `agents.total_sessions`/`total_tokens`/`first_seen_at`/`last_seen_at` from sessions ground truth |
-| `GET` | `/v1/mcp-policies/global` | Global MCP protection policy + entries; read-open |
-| `GET` | `/v1/mcp-policies/:flavor` | Flavor MCP protection policy + entries; read-open |
-| `GET` | `/v1/mcp-policies/resolve` | Sensor / plugin preflight resolve; query params `flavor`, `server_url`, `server_name`; read-open |
-| `POST` | `/v1/mcp-policies/:flavor` | Create a flavor MCP policy; admin-only |
-| `PUT` | `/v1/mcp-policies/global` | Replace global MCP policy state; admin-only |
-| `PUT` | `/v1/mcp-policies/:flavor` | Replace flavor MCP policy state; admin-only |
-| `DELETE` | `/v1/mcp-policies/:flavor` | Delete a flavor MCP policy (audit-log row preserved); admin-only |
-| `GET` | `/v1/mcp-policies/:flavor/audit-log` | Mutation audit log; read-open |
-| `GET` | `/v1/mcp-policies/global/audit-log` | Global mutation audit log; read-open |
-| `GET` | `/v1/mcp-policies/:flavor/metrics` | Aggregated `policy_mcp_warn` / `policy_mcp_block` events; `?period=24h\|7d\|30d`; read-open |
-| `GET` | `/v1/mcp-policies/templates` | List shipped templates; read-open |
-| `POST` | `/v1/mcp-policies/:flavor/apply_template` | Apply a named template to a flavor policy; admin-only |
-| `GET` | `/v1/whoami` | Returns `{role, token_id}` for the authenticated bearer; read-open |
+| `GET` | `/v1/mcp-policies/global` | Global MCP protection policy + entries |
+| `GET` | `/v1/mcp-policies/:flavor` | Flavor MCP protection policy + entries |
+| `GET` | `/v1/mcp-policies/resolve` | Sensor / plugin preflight resolve; query params `flavor`, `server_url`, `server_name` |
+| `POST` | `/v1/mcp-policies/:flavor` | Create a flavor MCP policy |
+| `PUT` | `/v1/mcp-policies/global` | Replace global MCP policy state |
+| `PUT` | `/v1/mcp-policies/:flavor` | Replace flavor MCP policy state |
+| `DELETE` | `/v1/mcp-policies/:flavor` | Delete a flavor MCP policy (audit-log row preserved) |
+| `GET` | `/v1/mcp-policies/:flavor/audit-log` | Mutation audit log |
+| `GET` | `/v1/mcp-policies/global/audit-log` | Global mutation audit log |
+| `GET` | `/v1/mcp-policies/:flavor/metrics` | Aggregated `policy_mcp_warn` / `policy_mcp_block` events; `?period=24h\|7d\|30d` |
+| `GET` | `/v1/mcp-policies/templates` | List shipped templates |
+| `POST` | `/v1/mcp-policies/:flavor/apply_template` | Apply a named template to a flavor policy |
 | `WS` | `/v1/stream` | Real-time WebSocket fleet updates |
 | `GET` | `/health` | Liveness check |
 | `GET` | `/metrics` | Prometheus exposition |
@@ -1825,10 +1840,62 @@ accepts the token via `?token=` because browsers cannot set
 The Ingestion API authenticates `POST /v1/events` and `POST /v1/heartbeat`
 with the same middleware against the same `access_tokens` row.
 
-`/v1/admin/*` endpoints are operator-grade. They use the same Bearer-token
-auth but are intended to be exposed only on internal interfaces (firewall
-/ ingress level). Token-based scoping (admin vs read-only) is not
-implemented; treat any production token as full-access.
+`/v1/admin/*` endpoints share the same Bearer-token auth. They are
+intended to be exposed only on internal interfaces (firewall / ingress
+level) — production deployments protect them at the network boundary
+rather than via token scopes. Single-tier auth: any valid bearer token
+has full access to every endpoint, including `/v1/admin/*` and the
+MCP protection policy mutations. See DECISIONS.md D156.
+
+#### Dashboard token configuration
+
+The dashboard's bearer token is fetched at runtime from
+`/runtime-config.json` rather than baked into the SPA bundle. The
+file lives at `dashboard/public/runtime-config.json` in source and
+ships with the dev token (`tok_dev`). Vite copies `public/*` to
+`dist/*` at build time so the same path resolves in dev (vite dev
+serves it directly) and prod (the dashboard image's nginx serves it
+from `/usr/share/nginx/html/`). Production deployers replace the
+file via volume mount over
+`/usr/share/nginx/html/runtime-config.json` — token rotation is a
+single-file edit + `nginx -s reload`, no rebuild.
+
+Bootstrap order (`dashboard/src/lib/runtime-config.ts`):
+
+1. `main.tsx` awaits `ensureAccessToken()` before mounting React.
+2. `ensureAccessToken()` reads `localStorage.flightdeck-access-token`.
+   If a token is set, that value wins (operator self-serve override).
+3. Otherwise, fetch `/runtime-config.json` (with `cache: no-store`),
+   validate the `{ access_token: string }` shape, write to
+   localStorage, return.
+4. Bootstrap failure (network error, non-2xx, malformed JSON) renders
+   an actionable error message inline on `#root` rather than an
+   empty page.
+
+The dashboard image's `nginx.conf` emits the strict cache-discipline
+header pack on `/runtime-config.json` so no intermediate proxy holds
+a stale token after rotation:
+
+- `Cache-Control: no-store, no-cache, must-revalidate` — HTTP/1.1
+  caches discard the response after delivery and refuse to serve any
+  stale entry.
+- `Pragma: no-cache` — HTTP/1.0 intermediaries that ignore
+  Cache-Control fall back to this header.
+- `Expires: 0` — HTTP/1.0 caches that respect Expires see the
+  response as already-stale.
+
+The headers carry the `always` parameter so a 4xx / 5xx response
+(e.g. a misconfigured prod mount returning 404) still ships the same
+discipline rather than leaving a cacheable error in flight. `expires
+off` disables nginx's automatic Cache-Control / Expires emission so
+the response carries our explicit values only — no duplicate headers.
+
+Dev-vs-prod nuance: in dev, vite serves `dashboard/public/` directly
+and emits its own default `Cache-Control: no-cache` header. The
+strict triplet is a production-only discipline served by the
+dashboard image's nginx. The dev stack uses `tok_dev` regardless, so
+the looser dev header is acceptable; production deployers always run
+the multi-stage image where the strict triplet applies.
 
 ### Real-time push: NOTIFY → Hub → WebSocket
 
@@ -3009,7 +3076,7 @@ empty data. Not 403. 404 — the resource does not exist.
 `degrade` / `warn` / `policy_update` are NOT user-creatable via
 `POST /v1/directives` — they are server-side directives written by the
 worker's policy evaluator when a session crosses a threshold, OR by the
-policy admin endpoints. The only way to trigger a `degrade` is to create
+policy mutation endpoints. The only way to trigger a `degrade` is to create
 a token policy and let the worker fire it on the next `post_call` event.
 
 There is no `block` `DirectiveAction` value. When the worker's policy
@@ -3324,31 +3391,8 @@ sees the deny first.
 **Control-plane API.** Endpoints live under `/v1/mcp-policies`
 (kebab-plural, matching the `/v1/access-tokens` convention).
 Authentication uses the standard Bearer-token middleware that
-covers the rest of the API. Endpoints split into two scopes:
-
-- **Read-open (any authenticated bearer token).** All GETs —
-  `/global`, `/:flavor`, `/resolve`, `/global/audit-log`,
-  `/:flavor/audit-log`, `/:flavor/metrics`, `/templates`. Plus
-  the new `/v1/whoami` endpoint that the dashboard uses to
-  determine role. Idempotent and cacheable. Used by sensors at
-  `init` and by the Claude Code plugin at `SessionStart`.
-- **Mutation-admin (admin-scope token required).** All
-  mutations — `POST /:flavor` (create), `PUT /global`, `PUT
-  /:flavor`, `DELETE /:flavor`, `POST /:flavor/apply_template`.
-  Wrapped by `adminGate` over the standard `gate`; returns
-  403 for `IsAdmin=false` tokens. The dashboard reads
-  `GET /v1/whoami` once at session start to determine whether
-  the operator can mutate; mutation CTAs hide for `viewer` role
-  tokens, while the mode toggle disables with a tooltip
-  explanation.
-
-The full enumeration of which routes are admin-gated lives in
-`api/internal/server/server.go`.
-
-#### Read-open (any authenticated bearer token, )
-
-All GET endpoints accept any valid bearer token regardless of admin
-scope. Idempotent and cacheable.
+covers the rest of the API. Single-tier auth: every authenticated
+bearer token has full access — both reads and mutations (D156).
 
 | Method | Path | Purpose |
 |---|---|---|
@@ -3359,17 +3403,9 @@ scope. Idempotent and cacheable.
 | `GET` | `/v1/mcp-policies/:flavor/audit-log` | Mutation history for the flavor policy, same query params |
 | `GET` | `/v1/mcp-policies/:flavor/metrics` | Aggregated `policy_mcp_warn` + `policy_mcp_block` events scoped to the flavor's policy. `?period=` accepts `24h` / `7d` / `30d`. Returns `granularity` ("hour" for 24h, "day" for 7d/30d) plus zero-filled `buckets` array alongside per-server aggregates |
 | `GET` | `/v1/mcp-policies/templates` | List shipped templates — name, description, recommended_for. Three templates ship: `strict-baseline`, `permissive-dev`, `strict-with-common-allows` |
-| `GET` | `/v1/whoami` | Returns `{"role": "admin"\|"viewer", "token_id": "<uuid>"}` for the authenticated bearer. The dashboard calls this once at session start and gates mutation CTAs on `role === "admin"` |
-
-#### Mutation (admin-grade, )
-
-Admin-scope token required (validator's `IsAdmin=true`); 403 otherwise.
-
-| Method | Path | Purpose |
-|---|---|---|
 | `POST` | `/v1/mcp-policies/:flavor` | Create a new flavor policy. The global is seeded on install and cannot be POST'd. 409 if the flavor policy already exists |
 | `PUT` | `/v1/mcp-policies/global` | Replace global policy state — mode, entries, `block_on_uncertainty`. Atomic transaction: SELECT FOR UPDATE → UPDATE policy → DELETE entries → INSERT new entries → INSERT audit-log entry |
-| `PUT` | `/v1/mcp-policies/:flavor` | Replace flavor policy state — entries, `block_on_uncertainty` (mode is global-only ). Same atomic transaction shape as the global PUT |
+| `PUT` | `/v1/mcp-policies/:flavor` | Replace flavor policy state — entries, `block_on_uncertainty` (mode is global-only). Same atomic transaction shape as the global PUT |
 | `DELETE` | `/v1/mcp-policies/:flavor` | Delete a flavor policy. Global cannot be deleted. The audit-log entry survives via `ON DELETE SET NULL` on `policy_id`; the deletion event is preserved |
 | `POST` | `/v1/mcp-policies/:flavor/apply_template` | Apply a named template (`{"template": "strict-baseline"}` body) to the flavor policy. Same atomic transaction as PUT; audit log payload carries `applied_template=<name>` |
 
@@ -3621,21 +3657,6 @@ deep-links and browser back/forward survive.
   table with filters by event_type, actor, date range. Each
   row expands to reveal the full payload JSON.
 
-#### Viewer-mode treatment
-
-When `GET /v1/whoami` returns `role: "viewer"`, the dashboard
-gates mutation affordances component-by-component:
-
-- **Mode toggle:** disabled with tooltip ("Read-only — admin
-  token required to change mode"). Mode is read-only state the
-  viewer needs to SEE; disabled-with-tooltip preserves the
-  context.
-- **Add Entry button, row-level edit/delete actions, template
-  apply:** hidden entirely. Action-only affordances; a disabled
-  button is noise to a viewer.
-- **"Admin token required" inline error wall:** removed. Reads
-  are now open; the wall has no remaining trigger.
-
 #### MCP server policy decision rendering (SessionDrawer)
 
 The `MCPServersPanel` in `SessionDrawer.tsx` lists each declared
@@ -3790,6 +3811,13 @@ Ingestion API and Workers expose Prometheus exposition at `/metrics`:
   `events.payload->>'close_reason'`; this counter is the time-
   series shape for the same verdict so SREs can chart non-clean-
   shutdown rate without aggregating per-event payloads.
+- `sessions_revived_total{trigger}` — worker-side revival paths
+  that flipped a session from `stale` / `lost` back to `active`.
+  Today's only trigger is `child_event` (parent-bump propagation:
+  any event for a child session whose `parent_session_id` is set
+  bumps the parent's `last_seen_at` and revives the parent if it
+  was stale/lost). Future revival paths (e.g. operator manual
+  revive) would land under their own trigger label.
 - `events_received_total{event_type}`
 - `events_processed_total{event_type, status}`
 - `event_processing_duration_seconds` (histogram, per event_type)
@@ -3799,27 +3827,22 @@ Ingestion API and Workers expose Prometheus exposition at `/metrics`:
 The Query API exposes the same shape: per-handler latency and
 per-endpoint request counts.
 
-### Admin scope
+### Operator endpoints
 
-`/v1/admin/*` endpoints share the same Bearer-token auth as user-facing
-endpoints. They are intended for operator interfaces (firewall / ingress
-restricted) rather than the dashboard.
+`/v1/admin/*` endpoints share the same Bearer-token auth as
+user-facing endpoints. Single-tier auth (D156): every authenticated
+bearer token has full access. Production deployments protect these
+routes at the network boundary (firewall / ingress) rather than via
+token scopes.
 
-Token-based admin scoping IS implemented: the validator returns
-`IsAdmin` per token (`tok_admin_dev` / env-configured production
-admin token returns true; `tok_dev` / standard production tokens
-return false). The MCP Protection Policy endpoints use this split
- read-open for GETs, mutation-admin for mutations, with a
-new `GET /v1/whoami` exposing the role to the dashboard. The
-`/v1/admin/*` endpoints continue to require admin scope. Other
-endpoint families (sessions, events, analytics, access-tokens) have
-not been audited for the same split as of v0.6; the admin/viewer
-distinction generalises cleanly when needed.
-
-`POST /v1/admin/reconcile-agents` recomputes `agents.total_sessions`,
-`total_tokens`, `first_seen_at`, and `last_seen_at` from the sessions
-table on demand. Orphan-row cleanup (agent rows with no current
-sessions) is out of scope.
+`POST /v1/admin/reconcile-agents` is a two-phase operator endpoint.
+Phase 1 recomputes the `agents.total_sessions`, `total_tokens`,
+`first_seen_at`, and `last_seen_at` columns from the sessions table on
+demand. Phase 2 deletes orphan rows whose post-reconcile
+`total_sessions = 0` AND `last_seen_at < NOW() - orphan_threshold_secs`
+(default 30 days). Pass `orphan_threshold_secs=0` to skip the delete
+step (counters-only mode). See `docs/reconcile-agents-endpoint.md` for
+the full contract.
 
 ### Makefile structure
 

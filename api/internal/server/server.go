@@ -132,27 +132,14 @@ func newServer(addr string, s store.Querier, hub *ws.Hub, validator *auth.Valida
 	mux.Handle("DELETE /v1/access-tokens/{id}", gate(handlers.AccessTokenDeleteHandler(s)))
 	mux.Handle("PATCH /v1/access-tokens/{id}", gate(handlers.AccessTokenRenameHandler(s)))
 
-	// Admin-only ops endpoints. The adminGate composes the 30s
-	// REST timeout with auth.AdminRequired, which wraps the
-	// standard bearer validation AND requires IsAdmin=true on the
-	// resolved token (auth/token.go). Non-admin tokens get 403,
-	// missing/invalid tokens get 401 — matches the 40c/50 contract
-	// the handler annotation promises.
-	adminGate := func(h http.Handler) http.Handler {
-		if validator != nil {
-			h = auth.AdminRequired(validator, h)
-		}
-		return withRESTTimeout(h)
-	}
+	// Operational endpoints. Single-tier auth: every authenticated
+	// bearer token gets full access. Production deployers guard the
+	// dashboard origin at the network boundary.
 	mux.Handle("POST /v1/admin/reconcile-agents",
-		adminGate(handlers.AdminReconcileAgentsHandler(s)))
+		gate(handlers.AdminReconcileAgentsHandler(s)))
 
-	// MCP Protection Policy (D128) — read-open / mutation-admin per
-	// D147. All GETs accept any authenticated bearer token; mutations
-	// require IsAdmin=true (adminGate). The dashboard reads
-	// /v1/whoami once at session start to determine which CTAs to
-	// surface for the operator. The resolve endpoint is GET-only by
-	// design (idempotent + safe + cacheable).
+	// MCP Protection Policy. All endpoints (read + mutation) require
+	// a valid bearer token; no separate admin scope.
 	mux.Handle("GET /v1/mcp-policies/global",
 		gate(handlers.GetGlobalMCPPolicyHandler(s)))
 	mux.Handle("GET /v1/mcp-policies/resolve",
@@ -165,22 +152,16 @@ func newServer(addr string, s store.Querier, hub *ws.Hub, validator *auth.Valida
 		gate(handlers.ListMCPPolicyAuditLogHandler(s)))
 	mux.Handle("GET /v1/mcp-policies/{flavor}/metrics",
 		gate(handlers.GetMCPPolicyMetricsHandler(s)))
-
-	// Mutations: admin-grade.
 	mux.Handle("POST /v1/mcp-policies/{flavor}",
-		adminGate(handlers.CreateMCPPolicyHandler(s)))
+		gate(handlers.CreateMCPPolicyHandler(s)))
 	mux.Handle("PUT /v1/mcp-policies/global",
-		adminGate(handlers.UpdateGlobalMCPPolicyHandler(s)))
+		gate(handlers.UpdateGlobalMCPPolicyHandler(s)))
 	mux.Handle("PUT /v1/mcp-policies/{flavor}",
-		adminGate(handlers.UpdateMCPPolicyHandler(s)))
+		gate(handlers.UpdateMCPPolicyHandler(s)))
 	mux.Handle("DELETE /v1/mcp-policies/{flavor}",
-		adminGate(handlers.DeleteMCPPolicyHandler(s)))
+		gate(handlers.DeleteMCPPolicyHandler(s)))
 	mux.Handle("POST /v1/mcp-policies/{flavor}/apply_template",
-		adminGate(handlers.ApplyMCPPolicyTemplateHandler(s)))
-
-	// Whoami — read-open. Returns the authenticated token's role +
-	// id so the dashboard can gate mutation CTAs (D147).
-	mux.Handle("GET /v1/whoami", gate(handlers.WhoamiHandler()))
+		gate(handlers.ApplyMCPPolicyTemplateHandler(s)))
 
 	mux.Handle("GET /health", withRESTTimeout(handlers.HealthHandler()))
 

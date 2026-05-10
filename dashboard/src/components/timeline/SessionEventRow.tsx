@@ -29,11 +29,22 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
  */
 const TOKEN_COUNT_MIN_WIDTH = 300;
 
-const stateBadgeColors: Record<string, { bg: string; color: string }> = {
+type StateBadgeColor = { bg: string; color: string };
+
+// Closed-state badge serves double duty as the safe-default when an
+// unrecognised state string slips in; declared standalone so the
+// `??` fallback at the call site doesn't return `undefined` under
+// noUncheckedIndexedAccess.
+const CLOSED_STATE_BADGE_COLOR: StateBadgeColor = {
+  bg: "rgba(100,100,100,0.15)",
+  color: "var(--text-muted)",
+};
+
+const stateBadgeColors: Record<string, StateBadgeColor> = {
   active: { bg: "rgba(34,197,94,0.15)", color: "var(--status-active)" },
   idle: { bg: "rgba(234,179,8,0.15)", color: "var(--status-idle)" },
   stale: { bg: "rgba(249,115,22,0.15)", color: "var(--status-stale)" },
-  closed: { bg: "rgba(100,100,100,0.15)", color: "var(--text-muted)" },
+  closed: CLOSED_STATE_BADGE_COLOR,
   lost: { bg: "rgba(239,68,68,0.15)", color: "var(--status-lost)" },
 };
 
@@ -76,7 +87,7 @@ function SessionEventRowComponent({
 }: SessionEventRowProps) {
   const isActive = session.state === "active";
   const { events, loading } = useSessionEvents(session.session_id, isActive, version);
-  const badge = stateBadgeColors[session.state] ?? stateBadgeColors.closed;
+  const badge = stateBadgeColors[session.state] ?? CLOSED_STATE_BADGE_COLOR;
   // D122 — Fleet swimlane dims MCP discovery events when the toggle
   // is off, mirroring how it dims event-type-filter mismatches.
   // Composed with isEventVisible(activeFilter) at the per-circle
@@ -132,6 +143,7 @@ function SessionEventRowComponent({
   // the map inside the memo picks up updates correctly.
   const eventNodes = useMemo(() => {
     const [domainStart, domainEnd] = scale.domain();
+    if (!domainStart || !domainEnd) return [];
     const startMs = domainStart.getTime();
     const endMs = domainEnd.getTime();
     const attachments = attachmentsCache.get(session.session_id) ?? [];
@@ -396,9 +408,10 @@ export const SessionEventRow = memo(SessionEventRowComponent, (prev, next) => {
   // every row immediately.
   if (prev.leftPanelWidth !== next.leftPanelWidth) return false;
   // Only re-render for scale changes > 1 second
-  const domainDelta = Math.abs(
-    next.scale.domain()[1].getTime() - prev.scale.domain()[1].getTime()
-  );
+  const nextEnd = next.scale.domain()[1];
+  const prevEnd = prev.scale.domain()[1];
+  if (!nextEnd || !prevEnd) return false;
+  const domainDelta = Math.abs(nextEnd.getTime() - prevEnd.getTime());
   if (domainDelta < 1000) return true;
   return false;
 });

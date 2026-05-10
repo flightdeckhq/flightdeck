@@ -5,7 +5,6 @@ import { Button } from "@/components/ui/button";
 import { MCPQuickStartTemplates } from "@/components/policy/MCPQuickStartTemplates";
 import { cn } from "@/lib/utils";
 import type { MCPPolicyEntry } from "@/lib/types";
-import { useWhoamiStore } from "@/store/whoami";
 
 export interface MCPPolicyEntryTableProps {
   entries: MCPPolicyEntry[];
@@ -61,12 +60,6 @@ export function MCPPolicyEntryTable({
   );
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
   const [deletingId, setDeletingId] = useState<string | null>(null);
-
-  // D147: hide mutation affordances entirely for non-admin tokens.
-  // Mode toggle uses disabled+tooltip (informational state); Add /
-  // Edit / Delete are action-only — a disabled button is noise.
-  const role = useWhoamiStore((s) => s.role);
-  const canMutate = role === "admin";
 
   const filtered = useMemo(() => {
     const needle = search.trim().toLowerCase();
@@ -141,17 +134,15 @@ export function MCPPolicyEntryTable({
             data-testid={`mcp-policy-entries-search-${scopeKey}`}
           />
         </div>
-        {canMutate ? (
-          <Button
-            size="sm"
-            onClick={onAdd}
-            className="gap-1.5"
-            data-testid={`mcp-policy-entries-add-${scopeKey}`}
-          >
-            <Plus className="h-3.5 w-3.5" />
-            Add entry
-          </Button>
-        ) : null}
+        <Button
+          size="sm"
+          onClick={onAdd}
+          className="gap-1.5"
+          data-testid={`mcp-policy-entries-add-${scopeKey}`}
+        >
+          <Plus className="h-3.5 w-3.5" />
+          Add entry
+        </Button>
       </header>
 
       {loading ? (
@@ -236,43 +227,41 @@ export function MCPPolicyEntryTable({
                   {entry.fingerprint.slice(0, 16)}
                 </td>
                 <td className="px-3 py-2 text-right">
-                  {canMutate ? (
-                    <div className="inline-flex gap-1">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => onEdit(entry)}
-                        aria-label={`Edit ${entry.server_name}`}
-                        data-testid={`mcp-policy-entry-edit-${entry.id}`}
-                      >
-                        <Pencil className="h-3.5 w-3.5" />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={async () => {
-                          if (
-                            !window.confirm(
-                              `Delete entry for ${entry.server_name}?`,
-                            )
-                          ) {
-                            return;
-                          }
-                          setDeletingId(entry.id);
-                          try {
-                            await onDelete(entry);
-                          } finally {
-                            setDeletingId(null);
-                          }
-                        }}
-                        disabled={deletingId === entry.id}
-                        aria-label={`Delete ${entry.server_name}`}
-                        data-testid={`mcp-policy-entry-delete-${entry.id}`}
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </Button>
-                    </div>
-                  ) : null}
+                  <div className="inline-flex gap-1">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => onEdit(entry)}
+                      aria-label={`Edit ${entry.server_name}`}
+                      data-testid={`mcp-policy-entry-edit-${entry.id}`}
+                    >
+                      <Pencil className="h-3.5 w-3.5" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={async () => {
+                        if (
+                          !window.confirm(
+                            `Delete entry for ${entry.server_name}?`,
+                          )
+                        ) {
+                          return;
+                        }
+                        setDeletingId(entry.id);
+                        try {
+                          await onDelete(entry);
+                        } finally {
+                          setDeletingId(null);
+                        }
+                      }}
+                      disabled={deletingId === entry.id}
+                      aria-label={`Delete ${entry.server_name}`}
+                      data-testid={`mcp-policy-entry-delete-${entry.id}`}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
                 </td>
               </tr>
             ))}

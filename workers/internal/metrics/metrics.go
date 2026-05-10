@@ -65,6 +65,19 @@ const (
 	CloseReasonOrphanTimeout CloseReason = "orphan_timeout"
 )
 
+// RevivalTrigger names a worker-side path that transitioned a session
+// from stale / lost back to active. The current trigger, child_event,
+// covers the parent-bump propagation: a child session's heartbeat /
+// post_call / tool_call / etc. propagates freshness to its parent's
+// row, and when the parent was stale/lost it's revived to active.
+// Operators chart the rate via sessions_revived_total{trigger=...}
+// on the worker's /metrics endpoint.
+type RevivalTrigger string
+
+const (
+	RevivalTriggerChildEvent RevivalTrigger = "child_event"
+)
+
 // droppedEvents is a sharded counter keyed on reason. A global
 // sync.RWMutex gates the map's lifetime; individual counters are
 // sync/atomic so IncrDropped is lock-free once the entry exists.
@@ -74,6 +87,9 @@ var (
 
 	closedMu       sync.RWMutex
 	closedSessions = map[CloseReason]*atomic.Uint64{}
+
+	revivedMu       sync.RWMutex
+	revivedSessions = map[RevivalTrigger]*atomic.Uint64{}
 )
 
 // ensureCounter returns a live counter for the given reason, creating
@@ -142,6 +158,34 @@ func IncrSessionClosedN(reason CloseReason, n uint64) {
 	ensureCloseCounter(reason).Add(n)
 }
 
+// ensureRevivedCounter mirrors ensureCounter / ensureCloseCounter for
+// the revived-sessions counter family.
+func ensureRevivedCounter(trigger RevivalTrigger) *atomic.Uint64 {
+	revivedMu.RLock()
+	c, ok := revivedSessions[trigger]
+	revivedMu.RUnlock()
+	if ok {
+		return c
+	}
+	revivedMu.Lock()
+	defer revivedMu.Unlock()
+	if c, ok := revivedSessions[trigger]; ok {
+		return c
+	}
+	c = &atomic.Uint64{}
+	revivedSessions[trigger] = c
+	return c
+}
+
+// IncrSessionRevived bumps the revived-session counter for the given
+// trigger. The child-event propagation path in
+// SessionProcessor.bumpParentIfPresent calls this with
+// RevivalTriggerChildEvent when a parent transitions stale/lost →
+// active because of a child event.
+func IncrSessionRevived(trigger RevivalTrigger) {
+	ensureRevivedCounter(trigger).Add(1)
+}
+
 // Snapshot returns a stable copy of the dropped-events counters,
 // sorted by reason for deterministic output. Used by tests and the
 // /metrics handler.
@@ -166,6 +210,17 @@ func SnapshotClosed() map[CloseReason]uint64 {
 	return out
 }
 
+// SnapshotRevived returns a stable copy of the revived-sessions counters.
+func SnapshotRevived() map[RevivalTrigger]uint64 {
+	revivedMu.RLock()
+	defer revivedMu.RUnlock()
+	out := make(map[RevivalTrigger]uint64, len(revivedSessions))
+	for trigger, c := range revivedSessions {
+		out[trigger] = c.Load()
+	}
+	return out
+}
+
 // Reset clears every counter. Test-only; production code never calls
 // this because monotonic counters must not go backwards in a running
 // worker.
@@ -177,6 +232,10 @@ func Reset() {
 	closedMu.Lock()
 	defer closedMu.Unlock()
 	closedSessions = map[CloseReason]*atomic.Uint64{}
+
+	revivedMu.Lock()
+	defer revivedMu.Unlock()
+	revivedSessions = map[RevivalTrigger]*atomic.Uint64{}
 }
 
 // Handler serves the /metrics endpoint. Trivial text format, one line
@@ -213,6 +272,19 @@ func Handler() http.Handler {
 		for _, reason := range closeReasons {
 			_, _ = fmt.Fprintf(w, "sessions_closed_total{reason=%q} %d\n",
 				string(reason), closedSnap[reason])
+		}
+
+		revivedSnap := SnapshotRevived()
+		triggers := make([]RevivalTrigger, 0, len(revivedSnap))
+		for trigger := range revivedSnap {
+			triggers = append(triggers, trigger)
+		}
+		sort.Slice(triggers, func(i, j int) bool {
+			return string(triggers[i]) < string(triggers[j])
+		})
+		for _, trigger := range triggers {
+			_, _ = fmt.Fprintf(w, "sessions_revived_total{trigger=%q} %d\n",
+				string(trigger), revivedSnap[trigger])
 		}
 	})
 }

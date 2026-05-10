@@ -518,6 +518,85 @@ func (w *Writer) ReviveIfRevivable(ctx context.Context, sessionID string) (bool,
 	return tag.RowsAffected() > 0, nil
 }
 
+// BumpParentLastSeen propagates a child event's freshness to the
+// parent session: bumps parent.last_seen_at on every call, and revives
+// `stale` / `lost` parents back to `active`. Closed parents are
+// untouched — `closed` is terminal; reviving would contradict the
+// explicit user end-of-session signal.
+//
+// A session with active descendants is logically active. Without this
+// propagation the worker only updates each session row from its OWN
+// events, so a parent session that handed off all real work to
+// sub-agents (Claude Code Task, CrewAI handoff, LangGraph node) aged
+// to `stale` after 2 minutes and `lost` after 30 minutes while its
+// children clearly streamed events. The orphan-timeout reaper would
+// then close the parent even though the children's traffic proved
+// the session was alive.
+//
+// Returns (revived bool, err) — `revived` is true when the call
+// transitioned the parent from stale/lost back to active. The caller
+// (SessionProcessor.bumpParentIfPresent) bumps
+// metrics.IncrSessionRevived(metrics.RevivalTriggerChildEvent) on
+// revived=true so operators can chart the rate of parent-via-child
+// revivals separately from any future revival path.
+//
+// Scope: direct parent only. Transitive ancestor revival is deferred
+// until a framework that exercises depth>2 trees ships (Claude Code
+// Task subagents, CrewAI hand-off, LangGraph nodes are all
+// parent-child today).
+func (w *Writer) BumpParentLastSeen(
+	ctx context.Context, parentSessionID string,
+) (revived bool, err error) {
+	if parentSessionID == "" {
+		return false, nil
+	}
+	// CASE in the SET clause: when the row was stale/lost, transition
+	// to active AND advance last_seen_at; otherwise just advance
+	// last_seen_at and leave state alone (active / idle untouched
+	// state-wise; closed excluded by the WHERE clause). The RETURNING
+	// signals revival so the caller can bump the metric without a
+	// second SELECT.
+	var prevState string
+	err = w.pool.QueryRow(ctx, `
+		WITH prev AS (
+			SELECT state FROM sessions
+			WHERE session_id = $1::uuid AND state <> 'closed'
+			FOR UPDATE
+		),
+		upd AS (
+			UPDATE sessions
+			SET state = CASE
+			        WHEN state IN ('stale', 'lost') THEN 'active'
+			        ELSE state
+			    END,
+			    last_seen_at = NOW()
+			WHERE session_id = $1::uuid AND state <> 'closed'
+			RETURNING 1
+		)
+		SELECT COALESCE((SELECT state FROM prev), '')
+	`, parentSessionID).Scan(&prevState)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// Parent row absent (race with FK enforcement / deletion
+			// path). Fail-open: child event still lands; reaper will
+			// pick up the orphan if the parent never materialises.
+			return false, nil
+		}
+		return false, fmt.Errorf("bump parent last_seen %s: %w", parentSessionID, err)
+	}
+	switch prevState {
+	case "stale", "lost":
+		return true, nil
+	case "":
+		// Closed (CTE filtered it out) or no row. Both correctly
+		// no-op; closed parents must stay closed.
+		return false, nil
+	default:
+		// active / idle — bumped, not revived.
+		return false, nil
+	}
+}
+
 // ReviveOrCreateSession is the D106 lazy-create path. Called by every
 // non-session_start handler before its normal side effects.
 //

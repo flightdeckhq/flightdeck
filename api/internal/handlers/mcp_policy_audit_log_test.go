@@ -2,11 +2,6 @@
 // both /v1/mcp-policies/{flavor}/audit-log and /v1/mcp-policies/global/audit-log;
 // scopeAndValueFromPath maps the literal "global" segment to scope="global"
 // with empty scope_value, everything else to scope="flavor".
-//
-// 403 path is structurally absent: the adminGate middleware that
-// produces it is wired in server.go and not invoked when handlers
-// are exercised directly via httptest. Auth-edge coverage lives in
-// auth/token_test.go.
 
 package handlers
 

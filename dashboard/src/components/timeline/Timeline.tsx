@@ -417,8 +417,11 @@ export function Timeline({
     }
     const specs: SubAgentConnectorSpec[] = [];
     const seen = new Set<string>();
-    const domainStart = scale.domain()[0].getTime();
-    const domainEnd = scale.domain()[1].getTime();
+    const domain = scale.domain();
+    const [domainStartDate, domainEndDate] = [domain[0], domain[1]];
+    if (!domainStartDate || !domainEndDate) return;
+    const domainStart = domainStartDate.getTime();
+    const domainEnd = domainEndDate.getTime();
     for (const childFlavor of filteredFlavors) {
       for (const childSession of childFlavor.sessions) {
         const parentId = childSession.parent_session_id;
@@ -435,6 +438,7 @@ export function Timeline({
         const childEvents = eventsCache.get(childSession.session_id);
         if (!parentEvents?.length || !childEvents?.length) continue;
         const childFirstEvent = childEvents[0];
+        if (!childFirstEvent) continue;
         const parentSpawnEvent = pickSpawnEvent(parentEvents, childFirstEvent);
         if (!parentSpawnEvent) continue;
         const parentTs = new Date(parentSpawnEvent.occurred_at).getTime();
@@ -553,7 +557,10 @@ export function Timeline({
             // SwimLane outermost wrapper for this lookup. Fallback
             // to hash anchor when querySelector misses (e.g. the
             // target agent isn't in the rendered viewport; the
-            // virtualizer hasn't materialized it).
+            // virtualizer hasn't materialized it). See
+            // lib/relationship.ts::scrollToAgentRow for the shared
+            // rationale on the intentional querySelector bypass of
+            // React refs.
             const target = document.querySelector(
               `[data-agent-id="${CSS.escape(agentId)}"]`,
             );

@@ -1,9 +1,8 @@
-// D146: tests for the MCP Protection Policy quick-start link.
-// Visibility gates: admin role + entryCount === 0 + not-yet-
-// applied. The popover lazy-loads templates on first open;
-// applying a template marks the scope, closes the popover, and
-// fires the parent's onApplied callback. 403 on apply (token
-// swap mid-flight) surfaces the adminTokenError copy inline.
+// Tests for the MCP Protection Policy quick-start link.
+// Visibility gates: entryCount === 0 + not-yet-applied. The popover
+// lazy-loads templates on first open; applying a template marks the
+// scope, closes the popover, and fires the parent's onApplied
+// callback.
 
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -18,13 +17,11 @@ vi.mock("@/lib/api", async () => {
 });
 
 import {
-  ApiError,
   applyMCPPolicyTemplate,
   listMCPPolicyTemplates,
 } from "@/lib/api";
 import { MCPQuickStartTemplates } from "@/components/policy/MCPQuickStartTemplates";
 import { useMCPQuickStartStore } from "@/store/quickStart";
-import { useWhoamiStore } from "@/store/whoami";
 
 const listMock = listMCPPolicyTemplates as unknown as Mock;
 const applyMock = applyMCPPolicyTemplate as unknown as Mock;
@@ -53,12 +50,6 @@ beforeEach(() => {
   listMock.mockReset();
   applyMock.mockReset();
   useMCPQuickStartStore.getState().reset();
-  useWhoamiStore.setState({
-    role: "admin",
-    tokenId: "test-token",
-    loading: false,
-    error: null,
-  });
 });
 
 afterEach(() => {
@@ -66,7 +57,7 @@ afterEach(() => {
 });
 
 describe("MCPQuickStartTemplates", () => {
-  it("renders the link when admin + empty + not-yet-applied on a flavor scope", () => {
+  it("renders the link when empty + not-yet-applied on a flavor scope", () => {
     render(
       <MCPQuickStartTemplates
         flavor="research-agent"
@@ -110,46 +101,6 @@ describe("MCPQuickStartTemplates", () => {
 
   it("hides the link after the operator marks the scope applied (per-scope flag)", () => {
     useMCPQuickStartStore.getState().markApplied("global");
-    render(
-      <MCPQuickStartTemplates
-        flavor="global"
-        scopeKey="global"
-        entryCount={0}
-        onApplied={async () => undefined}
-      />,
-    );
-    expect(
-      screen.queryByTestId("mcp-quickstart-templates-trigger-global"),
-    ).toBeNull();
-  });
-
-  it("hides the link for viewer role (D147)", () => {
-    useWhoamiStore.setState({
-      role: "viewer",
-      tokenId: "viewer-token",
-      loading: false,
-      error: null,
-    });
-    render(
-      <MCPQuickStartTemplates
-        flavor="global"
-        scopeKey="global"
-        entryCount={0}
-        onApplied={async () => undefined}
-      />,
-    );
-    expect(
-      screen.queryByTestId("mcp-quickstart-templates-trigger-global"),
-    ).toBeNull();
-  });
-
-  it("hides the link while whoami is in flight (loading flash guard)", () => {
-    useWhoamiStore.setState({
-      role: null,
-      tokenId: null,
-      loading: true,
-      error: null,
-    });
     render(
       <MCPQuickStartTemplates
         flavor="global"
@@ -262,9 +213,9 @@ describe("MCPQuickStartTemplates", () => {
     ).toBe(true);
   });
 
-  it("apply 403 race-guard surfaces adminTokenError copy inline", async () => {
+  it("apply failure surfaces inline error and does not mark the scope applied", async () => {
     listMock.mockResolvedValue([STRICT_TEMPLATE]);
-    applyMock.mockRejectedValue(new ApiError(403, "/v1/mcp-policies/prod/apply_template"));
+    applyMock.mockRejectedValue(new Error("Apply failed"));
 
     render(
       <MCPQuickStartTemplates
@@ -293,7 +244,7 @@ describe("MCPQuickStartTemplates", () => {
         screen.getByTestId(
           "mcp-quickstart-templates-apply-error-flavor:prod",
         ).textContent,
-      ).toContain("Admin token required");
+      ).toContain("Apply failed");
     });
     // Scope NOT marked applied on failure — the operator can retry.
     expect(

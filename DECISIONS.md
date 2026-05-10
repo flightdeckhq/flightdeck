@@ -7161,6 +7161,7 @@ page is the v0.6 state).
 
 **Date:** 2026-05-07
 **Phase:** MCP Protection Policy (step 6.8 cleanup)
+**Status:** Superseded by D156 — single-tier auth collapses the role split. The mechanism failed its own bootstrap UX and the role distinction is friction without enforcement value pre-v0.6.
 
 **Context.** Step 6 commit 1 designated all MCP policy endpoints
 as either "read-only (any authenticated bearer token)" or "admin-
@@ -8233,3 +8234,323 @@ under both neon-dark and clean-light themes. Vitest unit suite
 (`dashboard/src/components/events/__tests__/EnrichmentSummary.test.tsx`)
 covers every chip type (12 cases including the orphan_timeout
 literal added by the lifecycle correctness work).
+
+
+---
+
+## D155 -- Parent-bump propagation: child events advance and revive parent sessions
+
+**Date:** 2026-05-10. **Status:** Adopted.
+
+**Context.** The worker's session-row updates were keyed on each
+session's OWN events. A parent session that handed off all real
+work to sub-agents (Claude Code Task subagents, CrewAI hand-off,
+LangGraph nodes) emitted nothing while its children streamed
+post_call / tool_call / heartbeat events. The reconciler then
+flipped the parent to `stale` (2 min) and `lost` (30 min); the
+orphan-timeout reaper (D152) eventually closed it via
+`orphan_timeout` even though the children's traffic proved the
+session was alive. Operators saw the parent flagged stale/lost in
+the swimlane while sub-agents clearly ran. The mid-PR-#33 Chrome
+verify on the supervisor's omria@Omri-PC parent + 5 sub-agents
+fleet surfaced this with a "→ 5 children CODING · 1 active"
+header sitting above five closed children — the parent's "1
+active" was masking the underlying state-machine drift.
+
+**Decision.** Every non-`session_start` / non-`session_end`
+handler that has a non-empty `parent_session_id` on the incoming
+event also bumps the PARENT session's `last_seen_at` and revives
+it from `stale` / `lost` back to `active`. Closed parents are
+untouched (terminal state — reviving a closed session would
+contradict the user's explicit end signal). The propagation is
+direct-parent only; transitive ancestor revival is deferred.
+
+Implementation lives in
+`workers/internal/processor/session.go::bumpParentIfPresent`,
+called from `HandleHeartbeat` and `HandlePostCall` (which is the
+dispatch target for every non-start / non-end event including
+post_call, pre_call, tool_call, embeddings, llm_error,
+directive_result, all policy events, all MCP events, and
+mcp_server_attached). The SQL bump lives in
+`workers/internal/writer/postgres.go::BumpParentLastSeen`: a
+single `UPDATE sessions SET state = CASE WHEN state IN ('stale',
+'lost') THEN 'active' ELSE state END, last_seen_at = NOW() WHERE
+session_id = $1 AND state <> 'closed'` with a CTE returning the
+prior state so the caller can detect revival without a second
+SELECT.
+
+**Why not...**
+
+- *Recurse to all ancestors.* Rejected for v1: today's frameworks
+  (Claude Code Task, CrewAI, LangGraph) are all parent-child. No
+  framework that ships sub-sub-agents exists in the supported set.
+  When one does, extending the SQL to recurse via `WITH RECURSIVE`
+  is a one-function change.
+- *Combine ReviveIfRevivable + UpdateTokensUsed in one
+  transaction so the post-revive read sees both columns updated
+  atomically.* Out of scope for parent-bump (this is about
+  cross-session propagation, not single-session atomicity). The
+  related two-tx race in `test_lost_session_revives_on_post_call`
+  is fixed test-side via `wait_until` polling for the
+  conjunction.
+- *Bump on `session_start` too.* Rejected: sub-agent
+  `session_start` already participates via `UpsertSession`'s
+  parent linkage write; the parent doesn't need a freshness
+  bump from its child's start because the parent itself just
+  emitted `session_start` immediately before spawning the
+  child. The bump is for the long tail of post-spawn child
+  activity.
+- *Bump on `session_end` too.* Rejected: closing a child is
+  the END of that child's contribution; the parent doesn't gain
+  freshness from a child closing, only from a child producing
+  events.
+
+**Consequences.**
+
+- Every per-event handler that has `parent_session_id` pays one
+  extra SQL roundtrip (the bump). Negligible — typical LLM call
+  takes seconds; an extra UPDATE is microseconds.
+- The orphan-timeout reaper no longer fires on parents whose
+  children are streaming events. This is the correct behavior
+  but changes the operational profile: the rate of
+  `sessions_closed_total{reason="orphan_timeout"}` will drop on
+  fleets running heavy sub-agent workloads.
+- New metric `sessions_revived_total{trigger="child_event"}`
+  gives operators a chart of how often parent revivals happen,
+  separate from any future revival path.
+- Failed parent-bump is logged but never fails the child handler.
+  The child event still lands in the events table; the parent's
+  freshness is the optimistic side effect, not the load-bearing
+  operation. Same fail-open posture as `BackfillSubAgentLinkage`.
+
+**Related decisions.** D105 (revive stale/lost on any event for
+the OWN session — parent-bump is the cross-session generalisation
+of the same idea). D106 (lazy-create on unknown session_id —
+parent-bump's no-row branch is a no-op, mirroring the same
+"ingestion-side write happened first" assumption). D126 (sub-agent
+observability — the parent_session_id linkage that parent-bump
+follows). D152 (orphan-timeout reaper — parent-bump's primary
+real-world impact is preventing the reaper from incorrectly
+closing parents whose children are alive).
+
+**Implementation note.**
+
+- Worker (`workers/internal/writer/postgres.go`):
+  `BumpParentLastSeen(ctx, parentSessionID) (revived bool, err)`.
+- Worker (`workers/internal/processor/session.go`):
+  `bumpParentIfPresent(ctx, e)` helper called from
+  `HandleHeartbeat` and `HandlePostCall`. Skipped on
+  `HandleSessionStart` and `HandleSessionEnd` per the rationale
+  above.
+- Worker (`workers/internal/metrics/metrics.go`): `RevivalTrigger`
+  type, `RevivalTriggerChildEvent` constant, `IncrSessionRevived`
+  bumper, `sessions_revived_total{trigger=...}` line in the
+  `/metrics` handler output.
+- Architecture (`ARCHITECTURE.md`): "Parent-bump propagation"
+  paragraph in the sessions § Session state machine block;
+  `sessions_revived_total{trigger}` in the metrics inventory.
+
+**Live-stack verification.** Wire-contract matrix in
+`tests/integration/test_session_states.py`: bump on active parent,
+revive stale parent, revive lost parent, no-op on closed parent,
+and reaper-no-fire test (parent backdated past orphan timeout but
+child traffic flips it back to active before the reconciler tick
+fires). Plus playgrounds 14 / 16 / 17 + a live Claude Code Task
+spawn against a stale parent confirming swimlane stays "active"
+in Chrome instead of flipping to stale.
+
+
+## D156 -- Single-tier auth + runtime token configuration (reverses D147)
+
+**Date:** 2026-05-10
+**Status:** Adopted
+
+**Context.** Pre-v0.6 Flightdeck is single-operator self-hosted.
+The admin/viewer role split D147 introduced (`auth.AdminRequired`
+middleware, `tok_admin_dev` dev shortcut,
+`FLIGHTDECK_ADMIN_ACCESS_TOKEN` env-var path, `IsAdmin` field on
+`ValidationResult`, `GET /v1/whoami` for the dashboard) was
+defensive design for a multi-operator scenario that doesn't exist
+today. Worse, it failed its own bootstrap: a fresh dashboard load
+on a Mac browser shows "read-only mode," the operator can't
+create a token because the create endpoint is itself admin-gated
+(needs admin scope to call), and the workaround is to paste a
+token into DevTools localStorage — a UX gap the UI made no
+attempt to surface as a real fix path.
+
+Separately, the dashboard's bearer token was baked into the SPA
+bundle at build time as a hardcoded `ACCESS_TOKEN = "tok_dev"`
+constant in `lib/api.ts`. Token rotation required a rebuild. The
+token sat in a Docker image layer. Deployers couldn't share an
+image across deployments with different tokens.
+
+**Decision.** Collapse to single-tier auth and move dashboard
+token configuration to runtime. Both changes ship together because
+they're the same thesis: self-hosted single-operator means simple
+auth, configurable at deploy time, no role-tier overhead, no
+rebuild for token rotation.
+
+API changes:
+
+- Drop `auth.AdminRequired` middleware and the `adminGate` composer
+  in `api/internal/server/server.go`. Every previously admin-gated
+  route flips to the regular `gate` (bearer-only).
+- Drop `ValidationResult.IsAdmin` field, the
+  `FLIGHTDECK_ADMIN_ACCESS_TOKEN` env-var resolve path, and the
+  `tok_admin_dev` dev shortcut from `api/internal/auth/token.go`.
+- Drop `handlers.WhoamiHandler` + `WhoamiResponse` + the
+  `GET /v1/whoami` route. Sole consumer was the dashboard's
+  `useWhoamiStore`.
+- The six previously admin-gated routes
+  (`POST /v1/admin/reconcile-agents`, `POST /v1/mcp-policies/{flavor}`,
+  `PUT /v1/mcp-policies/global`, `PUT /v1/mcp-policies/{flavor}`,
+  `DELETE /v1/mcp-policies/{flavor}`,
+  `POST /v1/mcp-policies/{flavor}/apply_template`) keep bearer-token
+  validation via `gate(...)` — confirmed by grep + curl matrix
+  during the C1 commit.
+
+Dashboard changes:
+
+- Drop `useWhoamiStore`, the App-mount `fetchWhoami` call, and the
+  three role-aware components' role checks (`MCPPolicyHeader`,
+  `MCPPolicyEntryTable`, `MCPQuickStartTemplates`). Mode toggle, BOU
+  switch, Add/Edit/Delete buttons, and quick-start templates render
+  unconditionally for every authenticated session.
+- Drop the read-only banner ("Read-only — admin token required to
+  change mode"), the disabled-with-tooltip wrappers, and the
+  `adminTokenError` helper from `lib/api.ts`.
+- Replace the build-time `ACCESS_TOKEN = "tok_dev"` constant with
+  a runtime fetch via the new `lib/runtime-config.ts` bootstrap.
+  `main.tsx` awaits `ensureAccessToken()` before mounting React;
+  every downstream caller uses the sync `getAccessTokenSync()` helper
+  reading from localStorage.
+
+Infrastructure:
+
+- `dashboard/public/runtime-config.json` ships with the dev token
+  (`tok_dev`) and a `_comment` field warning operators not to commit
+  production tokens. Vite copies `public/*` to `dist/*` at build
+  so the same path works in dev (vite serves `public/`) and prod
+  (dashboard nginx serves `/usr/share/nginx/html/`). Production
+  deployers replace the file via volume mount over
+  `/usr/share/nginx/html/runtime-config.json`.
+- `dashboard/nginx.conf` adds `location = /runtime-config.json`
+  with the strict cache-discipline header pack:
+  `Cache-Control: no-store, no-cache, must-revalidate` +
+  `Pragma: no-cache` (HTTP/1.0 fallback) + `Expires: 0`
+  (HTTP/1.0 caches that respect Expires) — all with the `always`
+  parameter so error responses carry the same discipline. `expires
+  off` disables nginx's automatic header emission so only the
+  explicit values ship. Without this an intermediate proxy could
+  serve a stale token after rotation.
+- `.gitignore` covers the typical host-side mount paths
+  (`runtime-config.prod.json`, `docker/dashboard/runtime-config.json`,
+  `docker/runtime-config.json`) so a deployer's production token
+  never accidentally lands in source control.
+
+**Consequences.**
+
+- **Same trust boundary.** Anyone with network access to the
+  dashboard origin can fetch `/runtime-config.json` and obtain
+  the bearer token. By design for self-hosted single-operator.
+  Production deployments still lock the dashboard origin behind
+  ingress / firewall.
+- **Improved operations.** Token no longer in the Docker image
+  layer; rotation without rebuild; single image across deployments
+  with different tokens.
+- **Schema unchanged.** Admin status was never a column on
+  `access_tokens` — it was computed at validation time from the env
+  var or the dev shortcut. No migration needed.
+
+**Breaking changes.** `FLIGHTDECK_ADMIN_ACCESS_TOKEN` env var no
+longer recognized. `tok_admin_dev` no longer accepted.
+`GET /v1/whoami` removed. Build-time `ACCESS_TOKEN` constant
+removed from `dashboard/src/lib/api.ts`. Pre-v0.6 single-operator
+constraint means none of these are user-facing breaks today;
+external consumers (none in-tree) that depended on the role tier
+or the env var lose those paths.
+
+**Rejected alternatives.**
+
+1. *Keep the role tier; add a Settings UI to paste an admin token.*
+   Solves the bootstrap UX but leaves the role mechanism in place
+   for a multi-operator scenario that doesn't exist. More code than
+   the simpler single-tier collapse.
+2. *Drop the role tier but keep the build-time `ACCESS_TOKEN`.*
+   Solves the role friction but leaves token rotation as a rebuild.
+   Both pieces fit the same intent (simplify for single-operator);
+   shipping them together avoids the half-done state where reads
+   work without DevTools but production deployers still rebuild
+   for token rotation.
+3. *Add a real auth system (login / sessions / users).* Out of
+   scope for v0.6. Post-v0.6 multi-tenant work will reintroduce a
+   tier model designed for that use case rather than retaining the
+   current half-built one.
+
+**Related decisions.** D095 (access-token model — unchanged; only
+the validator's admin computation is removed). D096 (access-token
+naming). D147 (the read-open / mutation-admin split this entry
+reverses). D156 itself replaces nothing; it's the post-Phase-7
+correction for a v0.6 cleanup PR.
+
+**Implementation note.**
+
+- API (`api/internal/auth/token.go`): drop `IsAdmin` field,
+  `AdminRequired` middleware, `adminTokenEnvVar`, `devAdminTokenRaw`.
+  Keep `ValidationResultFromContext` / `ContextWithValidationResult`
+  / the context-key plumbing — the MCP policy audit-log writer uses
+  it for `actor` attribution (independent of admin scope).
+- API (`api/internal/server/server.go`): drop `adminGate` helper
+  and the `GET /v1/whoami` route. Six routes flip from `adminGate`
+  to `gate`.
+- API (`api/internal/handlers/whoami.go` + `whoami_test.go`):
+  delete files entirely.
+- Sensor (no changes — the sensor never used admin scope).
+- Dashboard (`dashboard/src/store/whoami.ts`): delete file. Drop
+  `useWhoamiStore` consumers in `App.tsx`,
+  `components/policy/MCPPolicyHeader.tsx`,
+  `components/policy/MCPPolicyEntryTable.tsx`,
+  `components/policy/MCPQuickStartTemplates.tsx`.
+- Dashboard (`dashboard/src/lib/runtime-config.ts`): new bootstrap
+  module. `ensureAccessToken()` is idempotent + promise-cached;
+  `getAccessTokenSync()` reads localStorage; throws actionable
+  errors on every misconfiguration path.
+- Dashboard (`dashboard/src/main.tsx`): await
+  `ensureAccessToken()` before `ReactDOM.createRoot`. Bootstrap
+  failure renders the error message inline (`data-bootstrap-error`
+  attribute on `#root`).
+- Infra (`dashboard/public/runtime-config.json`,
+  `dashboard/nginx.conf`, `.gitignore`): new file + Cache-Control
+  directive + .gitignore cover.
+- Tests: delete `api/internal/handlers/whoami_test.go`,
+  `dashboard/tests/unit/whoami.test.ts`. Drop the admin scope
+  section from `api/internal/auth/token_test.go`. Drop viewer-mode
+  test cases from MCPPolicyHeader / MCPPolicyEntryTable /
+  MCPQuickStartTemplates Vitest specs. Replace 403-race-guard test
+  in MCPQuickStartTemplates with generic apply-failure case.
+  T11 (admin-reconcile E2E) drops the per-spec admin-token
+  override; T41 (MCP policy operator workflow E2E) drops the
+  admin-token setup. New `dashboard/tests/unit/runtime-config.test.ts`
+  covers the five bootstrap paths + the in-flight promise cache.
+  Integration: drop `ADMIN_TOKEN` + `admin_auth_headers` from
+  `tests/shared/fixtures.py`; drop the 403 expectation from
+  `test_admin_reconcile.py`.
+- Playground: 8 demos (`playground/18_*.py` through
+  `playground/26_*.py`) swap `Bearer tok_admin_dev` →
+  `Bearer tok_dev`.
+
+**Live-stack verification.**
+
+- `POST /v1/admin/reconcile-agents` with `tok_dev` → 200 (was 403
+  pre-change).
+- `PUT /v1/mcp-policies/global` with `tok_dev` → 200 (was 403
+  pre-change).
+- `GET /v1/whoami` → 404 (route removed).
+- `GET /runtime-config.json` reachable at port 3000 (vite) and
+  port 4000 (outer reverse proxy).
+- 21/21 affected integration tests pass.
+- 904/904 Vitest unit tests pass.
+- 195/4/2 Playwright pass / skip / did-not-run, both themes,
+  zero regressions.
+- golangci-lint + ruff + tsc + eslint clean across api / ingestion
+  / workers / sensor / dashboard.

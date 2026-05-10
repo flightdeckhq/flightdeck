@@ -1,34 +1,12 @@
-# Admin endpoints
+# `POST /v1/admin/reconcile-agents`
 
-Operator-only endpoints on the query API. Gated by
-`auth.AdminRequired` which requires a token that resolves to
-`IsAdmin=true`. Missing/invalid tokens receive 401; valid
-non-admin tokens (e.g. the regular `tok_dev` dev bearer) receive
-403. The admin token is an out-of-band secret, NOT a user token —
-do not store it in the dashboard, do not commit it to config
-files.
+Operator endpoint that makes the `agents` table correct in one call.
+Single-tier auth: any valid bearer token is accepted (D156).
+Production deployments protect this route at the network boundary
+(firewall / ingress) rather than via token scopes — `/v1/admin/*` is
+intended for operator interfaces, not the dashboard.
 
-## Admin token configuration
-
-**Dev mode** (local stack, `ENVIRONMENT=dev`): the hardcoded
-shortcut `tok_admin_dev` authenticates as admin. Mirrors the
-`tok_dev` convention for regular dev bearers. Zero configuration
-required.
-
-**Production** (`ENVIRONMENT!=dev`): set the environment variable
-`FLIGHTDECK_ADMIN_ACCESS_TOKEN` on the api container. Any bearer
-whose raw value matches this env var authenticates as admin
-(constant-time comparison). Unset → no admin access anywhere,
-which is the safe default.
-
-Admin is a SUPERSET of the regular bearer gate — an admin token
-also passes the plain `/v1/*` read endpoints. Operators need a
-single token, not two. Token rotation is a simple env-var update
-+ api restart.
-
-## POST /v1/admin/reconcile-agents
-
-Makes the `agents` table correct in one call. Two-phase operation:
+Two-phase operation:
 
 1. **Recompute counters.** Recomputes the denormalised rollup
    columns on every `agents` row from the `sessions` table ground
@@ -39,7 +17,7 @@ Makes the `agents` table correct in one call. Two-phase operation:
    `orphan_threshold_secs=0` to skip the delete step (counters-
    only mode).
 
-### When to call
+## When to call
 
 - After a data cleanup (manual `DELETE` against `sessions` or
   `agents` tables).
@@ -53,7 +31,7 @@ Makes the `agents` table correct in one call. Two-phase operation:
 - Not on a schedule. The endpoint is for targeted operator
   action; scheduling is explicitly out of scope for v1.
 
-### Phase 1 — counter reconciliation
+## Phase 1 — counter reconciliation
 
 Columns reconciled:
 
@@ -69,7 +47,7 @@ For an agent with zero actual sessions: `total_sessions` and
 preserved (overwriting those with NULL via MIN/MAX over an empty
 set would lose the original UpsertAgent timestamps).
 
-### Phase 2 — orphan deletion
+## Phase 2 — orphan deletion
 
 After phase 1, rows where `total_sessions = 0` AND `last_seen_at <
 NOW() - orphan_threshold` are physically deleted. The two-clause
@@ -87,13 +65,13 @@ to non-orphan between phases) doesn't abort the sweep. The DELETE
 restates the predicate so a row promoted between SELECT and DELETE
 is silently skipped.
 
-### Request
+## Request
 
 ```
 POST /v1/admin/reconcile-agents
 POST /v1/admin/reconcile-agents?orphan_threshold_secs=86400   # 1 day window
 POST /v1/admin/reconcile-agents?orphan_threshold_secs=0        # skip delete
-Authorization: Bearer <admin-token>
+Authorization: Bearer <token>
 ```
 
 No body.
@@ -102,7 +80,7 @@ No body.
 |--------------------------|---------------|--------------------------------------------------------|
 | `orphan_threshold_secs`  | `2592000` (30d) | `0` skips the delete step. Values 1..59 → 400.       |
 
-### Response
+## Response
 
 ```json
 {
@@ -135,7 +113,7 @@ No body.
 - `errors` — per-row failures from either phase. Empty on clean
   success.
 
-### Status codes
+## Status codes
 
 | Code | Meaning |
 |------|---------|
@@ -143,11 +121,10 @@ No body.
 | 207  | Operation completed with per-row errors (`errors` non-empty, otherwise identical shape) |
 | 400  | `orphan_threshold_secs` malformed or in the rejected `1..59` range |
 | 401  | Missing or invalid bearer token |
-| 403  | Token valid but lacks admin scope |
 | 409  | Another reconcile is already in progress (process-level mutex) |
 | 500  | Fatal database error (pool exhausted, list query failure) |
 
-### Concurrency
+## Concurrency
 
 The endpoint serialises concurrent calls within a single API
 replica via a `sync.Mutex.TryLock`. Multi-replica deployments
@@ -155,14 +132,14 @@ would require cross-process coordination; not solved pre-
 emptively because the single-replica case is the v1 deployment
 shape. A future revision can layer a Postgres advisory lock.
 
-### Performance
+## Performance
 
 O(n) in agent count. Each agent is two queries plus at most one
 UPDATE. On the dev stack (~50 agents) a full scan completes in
 30-50ms. At 10k agents expect ~5s — within a normal admin
 request window, no pagination needed for v1.
 
-### Concurrency with the worker
+## Concurrency with the worker
 
 Reconcile is NOT atomic against concurrent worker writes. The
 worker's `BumpAgentSessionCount` / `IncrementAgentTokens` execute
@@ -174,22 +151,22 @@ is rare enough that residual drift converges over subsequent
 calls. Invoke during quiet windows if strict-zero residual drift
 matters.
 
-### Example — dev stack
+## Example — dev stack
 
 ```bash
 # Default: reconcile counters + delete orphans older than 30d.
 curl -s -X POST \
-  -H 'Authorization: Bearer tok_admin_dev' \
+  -H 'Authorization: Bearer tok_dev' \
   http://localhost:4000/api/v1/admin/reconcile-agents | jq
 
 # Counters-only — leave orphan rows alone.
 curl -s -X POST \
-  -H 'Authorization: Bearer tok_admin_dev' \
+  -H 'Authorization: Bearer tok_dev' \
   'http://localhost:4000/api/v1/admin/reconcile-agents?orphan_threshold_secs=0' | jq
 
 # Aggressive cleanup of test-run drift: reap any orphan older than 1 hour.
 curl -s -X POST \
-  -H 'Authorization: Bearer tok_admin_dev' \
+  -H 'Authorization: Bearer tok_dev' \
   'http://localhost:4000/api/v1/admin/reconcile-agents?orphan_threshold_secs=3600' | jq
 ```
 

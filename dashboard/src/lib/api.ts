@@ -22,89 +22,64 @@ import type {
   MCPPolicyResolveResult,
   MCPPolicyTemplate,
 } from "./types";
+import { getAccessTokenSync } from "./runtime-config";
 
 const BASE = import.meta.env.VITE_API_BASE_URL || "/api";
 
-// D095/D096: every dashboard request is authenticated with an access
-// token. "Access token" is the D096 rename -- the product also tracks
-// LLM input/output token counts on sessions, so "token" alone is
-// ambiguous. Phase 5 Part 1b hardcodes tok_dev; the Settings page in
-// Phase 5 Part 2 will swap this for a user-selected access token
-// read from localStorage. The ENVIRONMENT=dev gate on the API service
-// means production deployments reject tok_dev at the middleware;
-// shipping this fallback in a prod build is a non-issue because the
-// server will 401 it anyway, but the Part 2 work still needs to
-// replace this before a dashboard bundle is shipped to end users.
-export const ACCESS_TOKEN = "tok_dev";
+// All authenticated request paths read the active access token from
+// localStorage via getAccessTokenSync(). main.tsx awaits
+// ensureAccessToken() before rendering App, so by the time any
+// component calls these helpers a token is guaranteed to be present.
+// If localStorage is somehow empty after bootstrap (e.g. cleared
+// mid-session) every request lands as "Bearer " and the API returns
+// 401 — surfaces visibly rather than failing silently.
 
-/** localStorage key that overrides the hardcoded ``ACCESS_TOKEN``
- *  when present. Pre-built for the Phase 5 Part 2 Settings page that
- *  will write to it via UI; in the meantime an operator who needs
- *  admin scope (e.g. for the MCP Protection Policy admin features)
- *  can paste an admin token via DevTools without a code change.
- *  Reading at request time keeps token rotation a localStorage
- *  change rather than a redeploy. */
-export const ACCESS_TOKEN_STORAGE_KEY = "flightdeck-access-token";
-
-function getActiveAccessToken(): string {
-  if (typeof window === "undefined") return ACCESS_TOKEN;
-  try {
-    const stored = window.localStorage.getItem(ACCESS_TOKEN_STORAGE_KEY);
-    if (stored && stored.length > 0) return stored;
-  } catch {
-    // localStorage may be unavailable (e.g. SSR / strict iframe). Fall
-    // back to the build-time token rather than failing requests.
-  }
-  return ACCESS_TOKEN;
-}
-
-// WS_ACCESS_TOKEN_QUERY is the query-string form used by the
-// WebSocket /v1/stream endpoint. Browsers cannot set Authorization
-// on a WebSocket upgrade, so the server accepts the access token via
-// ``?token=`` as an alternative. Reads the active token at call
-// time so a localStorage override is honoured for new connections.
+/** Sync read of the active bearer for the WebSocket query-string
+ *  variant (browsers cannot attach Authorization on the WS upgrade).
+ *  The value resolves at call time so an operator who pasted a
+ *  different token via DevTools and reloaded picks it up on the next
+ *  WebSocket reconnect. */
 export function wsAccessTokenQuery(): string {
-  return `token=${encodeURIComponent(getActiveAccessToken())}`;
+  return `token=${encodeURIComponent(getAccessTokenSync() ?? "")}`;
 }
-
-/** @deprecated import {@link wsAccessTokenQuery} and call it. The
- *  constant captures the build-time token and ignores the
- *  localStorage override. Kept for compatibility with call sites
- *  that haven't been migrated. */
-export const WS_ACCESS_TOKEN_QUERY = `token=${encodeURIComponent(ACCESS_TOKEN)}`;
 
 function authHeaders(init?: HeadersInit): Headers {
   const h = new Headers(init);
   if (!h.has("Authorization")) {
-    h.set("Authorization", `Bearer ${getActiveAccessToken()}`);
+    h.set("Authorization", `Bearer ${getAccessTokenSync() ?? ""}`);
   }
   return h;
 }
+
+// Default request timeout for every apiFetch call. 30 s matches
+// browser fetch convention and is generous enough for the dashboard's
+// largest-result paths (bulk events for a long session, full sessions
+// list); none of the call sites is SSE / streaming. Callers passing
+// their own AbortSignal still race the timeout — whichever fires
+// first wins.
+const REQUEST_TIMEOUT_MS = 30_000;
 
 // apiFetch is the single fetch wrapper used by every call site in
 // this module. Callers pass the same options they would to the
 // global fetch; the wrapper injects the Authorization header (D095)
 // and resolves the base URL. Keep all /api/* fetches routed through
 // here so token rotation is a one-line change.
+//
+// Timeout: every request is bounded by REQUEST_TIMEOUT_MS via
+// AbortSignal.timeout, raced with any caller-provided signal so a
+// dead API server can never hang a tab. AbortSignal.any combines
+// the two; without a caller signal the timeout signal is used
+// directly.
 export async function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
-  return fetch(`${BASE}${path}`, { ...init, headers: authHeaders(init.headers) });
-}
-
-/** Builds the "Admin token required to ${action}" error string with
- *  an inline how-to-fix hint pointing the operator at the
- *  ``flightdeck-access-token`` localStorage key. Kept as a single
- *  helper so the instruction stays consistent across every admin
- *  surface (audit, metrics, dry-run, templates, YAML import/export,
- *  version history). The Phase 5 Part 2 Settings page will replace
- *  the hint with a Set-Token UI, at which point this helper's
- *  second sentence collapses to a CTA. */
-export function adminTokenError(action: string): string {
-  return (
-    `Admin token required to ${action} ` +
-    `Set the ${ACCESS_TOKEN_STORAGE_KEY} localStorage key in this ` +
-    `browser to an admin-scoped token (DevTools → Application → ` +
-    `Local Storage), then reload.`
-  );
+  const timeoutSignal = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
+  const signal = init.signal
+    ? AbortSignal.any([init.signal, timeoutSignal])
+    : timeoutSignal;
+  return fetch(`${BASE}${path}`, {
+    ...init,
+    headers: authHeaders(init.headers),
+    signal,
+  });
 }
 
 /** Subclass of Error that carries the HTTP status code so call
@@ -324,7 +299,10 @@ export interface BulkEventsResponse {
   has_more: boolean;
 }
 
-export function fetchBulkEvents(params: BulkEventsParams): Promise<BulkEventsResponse> {
+export function fetchBulkEvents(
+  params: BulkEventsParams,
+  signal?: AbortSignal,
+): Promise<BulkEventsResponse> {
   const searchParams = new URLSearchParams();
   searchParams.set("from", params.from);
   if (params.to) searchParams.set("to", params.to);
@@ -333,7 +311,10 @@ export function fetchBulkEvents(params: BulkEventsParams): Promise<BulkEventsRes
   if (params.session_id) searchParams.set("session_id", params.session_id);
   if (params.limit) searchParams.set("limit", String(params.limit));
   if (params.offset) searchParams.set("offset", String(params.offset));
-  return fetchJson<BulkEventsResponse>(`/v1/events?${searchParams.toString()}`);
+  return fetchJson<BulkEventsResponse>(
+    `/v1/events?${searchParams.toString()}`,
+    { signal },
+  );
 }
 
 export interface SessionsParams {
@@ -533,9 +514,9 @@ export function fetchAnalytics(params: AnalyticsParams): Promise<AnalyticsRespon
 
 // ---- Access tokens (D095/D096) --------------------------------------
 //
-// All four endpoints run through apiFetch so the dev-time ACCESS_TOKEN
-// header is attached. Errors propagate as thrown Error so the Settings
-// page can render targeted inline messages per flow (create/rename/
+// All four endpoints run through apiFetch so the bearer token is
+// attached. Errors propagate as thrown Error so the Settings page
+// can render targeted inline messages per flow (create / rename /
 // delete) rather than one global toast.
 
 export function fetchAccessTokens(): Promise<AccessToken[]> {
@@ -573,19 +554,7 @@ export async function renameAccessToken(id: string, name: string): Promise<Acces
   return res.json() as Promise<AccessToken>;
 }
 
-// ----- Whoami (D147) -----
-
-/** Response shape for GET /v1/whoami. Read-open per D147. */
-export interface WhoamiResponse {
-  role: "admin" | "viewer";
-  token_id: string;
-}
-
-export function fetchWhoami(): Promise<WhoamiResponse> {
-  return fetchJson<WhoamiResponse>("/v1/whoami");
-}
-
-// ----- MCP Protection Policy (D128 / D131 / D135 / D138 / D139 / D147) -----
+// ----- MCP Protection Policy -----
 
 export function fetchGlobalMCPPolicy(): Promise<MCPPolicy> {
   return fetchJson<MCPPolicy>("/v1/mcp-policies/global");

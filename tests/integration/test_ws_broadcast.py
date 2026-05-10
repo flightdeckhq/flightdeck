@@ -11,37 +11,31 @@ from __future__ import annotations
 
 import asyncio
 import json
-import subprocess
 import time
 import uuid
 
 from websockets.asyncio.client import connect
 
-from .conftest import TOKEN, make_event, post_event
+from .conftest import TOKEN, exec_sql, make_event, post_event
 
 WS_URL = f"ws://localhost:4000/api/v1/stream?token={TOKEN}"
-
-
-def _exec_sql(sql: str) -> str:
-    result = subprocess.run(
-        [
-            "docker", "exec", "docker-postgres-1", "psql",
-            "-U", "flightdeck", "-d", "flightdeck",
-            "-t", "-A", "-c", sql,
-        ],
-        capture_output=True, text=True, timeout=10, check=True,
-    )
-    return result.stdout.strip()
 
 
 def _get_event_ids(session_id: str, event_types: tuple[str, ...]) -> list[str]:
     """Return the event ids for the given session in occurred_at order,
     filtered to the given event_types. Used to pin down the DB-assigned
-    UUIDs so the WebSocket assertions can compare by id."""
-    type_list = ",".join(f"'{t}'" for t in event_types)
-    raw = _exec_sql(
-        f"SELECT id FROM events WHERE session_id = '{session_id}'::uuid "
-        f"AND event_type IN ({type_list}) ORDER BY occurred_at ASC"
+    UUIDs so the WebSocket assertions can compare by id.
+
+    The event_types tuple is rendered as a comma-separated string and
+    expanded server-side via string_to_array so the bind-variable form
+    works for the IN-list case without inlining the list into the SQL.
+    """
+    raw = exec_sql(
+        "SELECT id FROM events WHERE session_id = :'sid'::uuid "
+        "AND event_type = ANY(string_to_array(:'types', ',')) "
+        "ORDER BY occurred_at ASC",
+        sid=session_id,
+        types=",".join(event_types),
     )
     return [line.strip() for line in raw.splitlines() if line.strip()]
 

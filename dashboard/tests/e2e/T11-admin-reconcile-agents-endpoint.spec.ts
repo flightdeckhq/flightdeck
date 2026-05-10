@@ -5,20 +5,15 @@ import { findAgentTableRow } from "./_fixtures";
 
 // T11 — the POST /v1/admin/reconcile-agents endpoint end-to-end.
 // Creates a drifted fixture directly via psql (same pattern the
-// Python ``create_drifted_agent`` helper uses), posts to the admin
-// endpoint with ``tok_admin_dev``, asserts the response reports a
-// correction, and verifies the Fleet table re-renders the ground-
-// truth value. Theme-agnostic per rule 40c.3.
+// Python ``create_drifted_agent`` helper uses), posts to the
+// reconcile endpoint with the regular bearer token, asserts the
+// response reports a correction, and verifies the Fleet table
+// re-renders the ground-truth value. Theme-agnostic per rule 40c.3.
 //
 // Why bypass the API for seeding: the whole point of the fixture is
 // drift — an event-driven setup would re-sync the counters the worker
 // maintains, defeating the regression we're checking. Direct psql
 // inserts match the Go unit tests and the Python integration tests.
-
-// ``tok_admin_dev`` is the dev-mode admin shortcut. In production the
-// endpoint is gated by ``FLIGHTDECK_ADMIN_ACCESS_TOKEN``; the dev
-// token mirrors that via api/internal/auth/token.go.
-const ADMIN_TOKEN = "tok_admin_dev";
 
 function psqlExec(sql: string): void {
   const result = spawnSync(
@@ -89,11 +84,8 @@ function deleteAgent(agentID: string): void {
 
 async function postReconcile(
   request: APIRequestContext,
-  token: string,
 ): Promise<{ status: number; body: Record<string, unknown> }> {
-  const res = await request.post("/api/v1/admin/reconcile-agents", {
-    headers: { Authorization: `Bearer ${token}` },
-  });
+  const res = await request.post("/api/v1/admin/reconcile-agents");
   return {
     status: res.status(),
     body: (await res.json().catch(() => ({}))) as Record<string, unknown>,
@@ -138,20 +130,9 @@ test.describe("T11 — POST /v1/admin/reconcile-agents corrects drift end-to-end
       // row's text content to avoid brittle column-index parsing.
       await expect(row).toContainText(String(driftedSessions));
 
-      // Verify auth scope gating first: the default Playwright
-      // Authorization header (tok_dev) must 403 on the admin route,
-      // even though it passes the normal gate. Regression guard for
-      // the V3 scope decision.
-      const devAttempt = await request.post(
-        "/api/v1/admin/reconcile-agents",
-        { headers: { Authorization: "Bearer tok_dev" } },
-      );
-      expect(devAttempt.status()).toBe(403);
-
-      // Admin call via explicit override header. Playwright's
-      // use.extraHTTPHeaders sets tok_dev by default; request.post's
-      // `headers` field overrides that specific key per-request.
-      const { status, body } = await postReconcile(request, ADMIN_TOKEN);
+      // Single-tier auth: the regular bearer token from the global
+      // extraHTTPHeaders config has full access (D156).
+      const { status, body } = await postReconcile(request);
       expect(status).toBe(200);
       const countersUpdated =
         (body.counters_updated as Record<string, number> | undefined) ?? {};

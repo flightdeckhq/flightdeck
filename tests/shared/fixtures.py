@@ -17,6 +17,7 @@ on the test runner.
 from __future__ import annotations
 
 import json
+import subprocess
 import time
 import urllib.error
 import urllib.request
@@ -459,6 +460,60 @@ def query_directives(session_id: str) -> list[dict[str, Any]]:
     return json.loads(raw)  # type: ignore[no-any-return]
 
 
+def exec_sql(sql: str, **bindings: Any) -> str:
+    """Execute a SQL statement against the dev Postgres container with
+    optional psql bind variables.
+
+    Reference bind values in the SQL via psql's substitution syntax:
+
+      * ``:'name'`` — value rendered as a single-quoted SQL literal,
+        suitable for strings and UUIDs (e.g. ``:'sid'::uuid``).
+      * ``:name`` — raw value, suitable for numerics.
+      * ``:"name"`` — value rendered as a double-quoted SQL identifier.
+
+    Pass bindings as keyword arguments; each becomes a ``-v name=value``
+    flag on the underlying ``psql`` invocation. This is the migration
+    target for the f-string SQL pattern that previously interpolated
+    Python values directly into the SQL text — the bind-variable form
+    keeps the SQL static + auditable and removes the interpolation
+    anti-pattern from test files.
+
+    Returns the trimmed psql ``-tA`` output. Raises CalledProcessError
+    on non-zero exit (which surfaces psql's stderr in the test failure
+    message).
+
+    Example::
+
+        exec_sql(
+            "UPDATE sessions SET state = :'state' "
+            "WHERE session_id = :'sid'::uuid",
+            state="lost",
+            sid=str(uuid.uuid4()),
+        )
+
+    Implementation note: psql substitutes ``:name`` / ``:'name'`` /
+    ``:"name"`` only for SQL it reads from stdin or ``-f file``, NOT
+    from ``-c command``. We therefore pipe the SQL via stdin (with
+    ``docker exec -i``) and pass the bindings as ``-v`` flags.
+    """
+    args = [
+        "docker", "exec", "-i", "docker-postgres-1", "psql",
+        "-U", "flightdeck", "-d", "flightdeck",
+        "-t", "-A",
+    ]
+    for name, value in bindings.items():
+        args.extend(["-v", f"{name}={value}"])
+    result = subprocess.run(
+        args,
+        input=sql,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=True,
+    )
+    return result.stdout.strip()
+
+
 def wait_until(
     condition_fn: Callable[[], bool],
     timeout: float = 10.0,
@@ -582,25 +637,9 @@ def directive_has_delivered_at(directive_id: str) -> bool:
 
 # ---------------------------------------------------------------------------
 # Admin reconcile helpers. Used by integration + E2E tests that
-# exercise POST /v1/admin/reconcile-agents. The endpoint is gated by
-# auth.AdminRequired, which requires ``IsAdmin=true`` on the resolved
-# token — ``tok_admin_dev`` is the dev-mode shortcut (api/internal/
-# auth/token.go). Production callers pass
-# ``FLIGHTDECK_ADMIN_ACCESS_TOKEN`` verbatim instead.
+# exercise POST /v1/admin/reconcile-agents. Single-tier auth: the
+# endpoint accepts any valid bearer token (D156).
 # ---------------------------------------------------------------------------
-
-ADMIN_TOKEN = "tok_admin_dev"
-
-
-def admin_auth_headers(json_body: bool = False) -> dict[str, str]:
-    """Headers for the admin endpoint. Parallel to ``auth_headers``
-    but carries the admin bearer so ``AdminRequired`` lets the call
-    through. Tests that explicitly verify the 403 path use
-    ``auth_headers`` (tok_dev, non-admin)."""
-    headers = {"Authorization": f"Bearer {ADMIN_TOKEN}"}
-    if json_body:
-        headers["Content-Type"] = "application/json"
-    return headers
 
 
 def post_admin_reconcile(
@@ -610,17 +649,16 @@ def post_admin_reconcile(
     """POST /v1/admin/reconcile-agents and return (status, body).
 
     Returns a tuple rather than raising on non-2xx because several
-    tests exercise 401/403/409 paths where a non-success status IS
-    the expected result. Body is parsed as JSON when the response
-    carries a JSON content-type; otherwise the raw decoded text is
-    returned under the ``"error"`` key so every caller sees a dict.
+    tests exercise 401/409 paths where a non-success status IS the
+    expected result. Body is parsed as JSON when the response carries
+    a JSON content-type; otherwise the raw decoded text is returned
+    under the ``"error"`` key so every caller sees a dict.
 
-    ``token`` defaults to ``ADMIN_TOKEN``. Pass ``TOKEN`` (the regular
-    dev bearer) to verify the 403 path, or an empty string to verify
-    the 401 path.
+    ``token`` defaults to ``TOKEN`` (the regular dev bearer); pass an
+    empty string to verify the 401 path.
     """
     if token is None:
-        token = ADMIN_TOKEN
+        token = TOKEN
     headers = {"Content-Type": "application/json"}
     if token:
         headers["Authorization"] = f"Bearer {token}"

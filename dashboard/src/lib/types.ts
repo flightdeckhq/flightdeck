@@ -717,13 +717,16 @@ export interface EventContent {
   provider: string;
   model: string;
   system_prompt: string | null;
-  // Provider-specific JSON structures -- intentionally untyped per rule 20
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  messages: any;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  tools: any;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  response: any;
+  // Provider-specific JSON structures (Anthropic vs OpenAI shapes
+  // preserved verbatim per the prompt-capture rule that bans
+  // normalization between provider terminologies). Typed as
+  // ``unknown`` rather than ``any`` so consumers must narrow before
+  // use — the structural shape varies by event_type / provider, and
+  // the dashboard's PromptViewer handles each branch explicitly via
+  // discriminator checks at render sites.
+  messages: unknown;
+  tools: unknown;
+  response: unknown;
   /**
    * Phase 4 polish: embedding-shaped content. Populated only on
    * ``event_type=embeddings`` events; absent on chat events. Carries
@@ -741,8 +744,7 @@ export interface EventContent {
   //     payload field overflowed the 8 KiB threshold.
   // Components branch on the parent event's event_type to render
   // appropriately.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  input?: string | string[] | Record<string, any> | null;
+  input?: string | string[] | Record<string, unknown> | null;
   captured_at: string;
 }
 

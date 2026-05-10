@@ -63,21 +63,27 @@ export function CommandPalette({
     [onSelectResult, onOpenChange],
   );
 
-  // Get item at flat index
+  // Get item at flat index. The bounds checks above each indexed
+  // access mean the slot is always populated; the explicit guard +
+  // ?? null fallback satisfies noUncheckedIndexedAccess without a
+  // non-null assertion.
   const getItemAtIndex = useCallback(
     (index: number): { type: "agent" | "session" | "event"; item: ResultItem } | null => {
       if (!results) return null;
       let offset = 0;
       if (index < offset + results.agents.length) {
-        return { type: "agent", item: results.agents[index - offset] };
+        const item = results.agents[index - offset];
+        return item ? { type: "agent", item } : null;
       }
       offset += results.agents.length;
       if (index < offset + results.sessions.length) {
-        return { type: "session", item: results.sessions[index - offset] };
+        const item = results.sessions[index - offset];
+        return item ? { type: "session", item } : null;
       }
       offset += results.sessions.length;
       if (index < offset + results.events.length) {
-        return { type: "event", item: results.events[index - offset] };
+        const item = results.events[index - offset];
+        return item ? { type: "event", item } : null;
       }
       return null;
     },

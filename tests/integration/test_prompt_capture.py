@@ -15,6 +15,7 @@ from .conftest import (
     get_session_event_count,
     API_URL,
     auth_headers,
+    exec_sql,
     make_event,
     post_event,
     session_exists_in_fleet,
@@ -39,29 +40,20 @@ def _get_event_content(event_id: str) -> dict | None:
 
 def _query_event_content_rows(event_id: str) -> int:
     """Query event_content table directly for row count."""
-    import subprocess
-    sql = f"SELECT COUNT(*) FROM event_content WHERE event_id = '{event_id}'::uuid"
-    result = subprocess.run(
-        ["docker", "exec", "docker-postgres-1", "psql", "-U", "flightdeck",
-         "-d", "flightdeck", "-t", "-c", sql],
-        capture_output=True, text=True, timeout=10,
+    raw = exec_sql(
+        "SELECT COUNT(*) FROM event_content WHERE event_id = :'eid'::uuid",
+        eid=event_id,
     )
-    return int(result.stdout.strip() or "0")
+    return int(raw or "0")
 
 
 def _get_event_ids(session_id: str) -> list[str]:
     """Get event IDs for a session."""
-    import subprocess
-    sql = (
-        f"SELECT COALESCE(json_agg(id::text), '[]'::json) FROM events "
-        f"WHERE session_id = '{session_id}'::uuid AND event_type = 'post_call'"
+    raw = exec_sql(
+        "SELECT COALESCE(json_agg(id::text), '[]'::json) FROM events "
+        "WHERE session_id = :'sid'::uuid AND event_type = 'post_call'",
+        sid=session_id,
     )
-    result = subprocess.run(
-        ["docker", "exec", "docker-postgres-1", "psql", "-U", "flightdeck",
-         "-d", "flightdeck", "-t", "-c", sql],
-        capture_output=True, text=True, timeout=10,
-    )
-    raw = result.stdout.strip()
     if not raw or raw == "null":
         return []
     return json.loads(raw)

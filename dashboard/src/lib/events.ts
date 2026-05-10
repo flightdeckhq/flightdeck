@@ -754,6 +754,9 @@ const CHART_COLORS = [
 ];
 
 export function flavorColor(flavor: string): string {
-  const hash = flavor.split("").reduce((a, c) => a + c.charCodeAt(0), 0) % 5;
-  return CHART_COLORS[hash];
+  const hash = flavor.split("").reduce((a, c) => a + c.charCodeAt(0), 0) % CHART_COLORS.length;
+  // hash is mod CHART_COLORS.length, so the index is always in
+  // bounds; the ?? fallback satisfies noUncheckedIndexedAccess
+  // without a non-null assertion.
+  return CHART_COLORS[hash] ?? CHART_COLORS[0] ?? "var(--chart-1)";
 }

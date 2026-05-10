@@ -29,54 +29,30 @@ import (
 )
 
 const (
-	cacheTTL = 60 * time.Second
+	cacheTTL     = 60 * time.Second
 	cacheMaxSize = 1000
 	// devTokenRaw is the development-only sentinel bearer token.
-	// Phase 4.5 L-1 contract: it is ONLY accepted when
-	// ENVIRONMENT=dev (or the legacy FLIGHTDECK_DEV=1). In every
-	// other environment, presenting "tok_dev" yields a 401 with
-	// devTokenReject. There is no path where this constant
-	// authenticates outside dev mode -- see Validate() below for
-	// the env-gate. CI and local docker-compose intentionally
-	// inherit the dev mode so existing tests pass without secret
-	// material.
-	devTokenRaw = "tok_dev"
-	// devAdminTokenRaw is the dev-only admin sentinel. Same env
-	// gate as devTokenRaw. In production, set
-	// FLIGHTDECK_ADMIN_ACCESS_TOKEN to a real secret instead;
-	// without it, no admin access exists anywhere in production
-	// -- the safe default for the rarely-used reconcile-agents
-	// endpoint.
-	devAdminTokenRaw    = "tok_admin_dev"
-	devTokenReject      = "tok_dev is only valid in development mode. Create a production token in the Settings page."
-	devAdminTokenReject = "tok_admin_dev is only valid in development mode. Configure FLIGHTDECK_ADMIN_ACCESS_TOKEN in production."
-	productionPrefix    = "ftd_"
-	prefixLen           = 8
-	// Environment variable name for the production admin token. When
-	// set, any bearer whose raw value matches this env var
-	// authenticates as an admin. Absent in production => no admin
-	// access anywhere, which is the safe default for a rarely-used
-	// ops capability (the reconcile-agents endpoint). Dev mode keeps
-	// the hardcoded ``tok_admin_dev`` shortcut so CI and local runs
-	// don't need the env var wired through every test harness.
-	adminTokenEnvVar = "FLIGHTDECK_ADMIN_ACCESS_TOKEN"
+	// It is ONLY accepted when ENVIRONMENT=dev (or the legacy
+	// FLIGHTDECK_DEV=1). In every other environment, presenting
+	// "tok_dev" yields a 401 with devTokenReject. There is no path
+	// where this constant authenticates outside dev mode -- see
+	// Validate() below for the env-gate. CI and local docker-compose
+	// intentionally inherit the dev mode so existing tests pass
+	// without secret material.
+	devTokenRaw      = "tok_dev"
+	devTokenReject   = "tok_dev is only valid in development mode. Create a production token in the Settings page."
+	productionPrefix = "ftd_"
+	prefixLen        = 8
 )
 
 // ValidationResult mirrors ingestion/internal/auth.ValidationResult.
-//
-// IsAdmin is the Phase 3-bis addition: ``AdminRequired`` middleware
-// gates endpoints that mutate fleet-wide state (reconcile-agents
-// today, more ops tooling in future) on this bit. Admin is a
-// SUPERSET of the standard bearer gate — an admin token also passes
-// the plain ``Middleware`` check, so a single operator token can
-// both read dashboards and run ops. Scope separation would add a
-// second token concept without much benefit at this scale.
+// Single-tier auth: every valid bearer token has equal access; there
+// is no admin/viewer distinction.
 type ValidationResult struct {
-	Valid   bool
-	ID      string
-	Name    string
-	Reason  string
-	IsAdmin bool
+	Valid  bool
+	ID     string
+	Name   string
+	Reason string
 }
 
 type cacheEntry struct {
@@ -188,20 +164,6 @@ func (v *Validator) Validate(ctx context.Context, rawToken string) (ValidationRe
 }
 
 func (v *Validator) resolve(ctx context.Context, rawToken string) (ValidationResult, error) {
-	// Production admin token from env. Highest priority so an admin
-	// in production authenticates even if a future token scheme
-	// happens to collide on some prefix. Constant-time compare
-	// avoids leaking the env-configured secret via timing.
-	if adminToken := v.env(adminTokenEnvVar); adminToken != "" &&
-		subtle.ConstantTimeCompare([]byte(rawToken), []byte(adminToken)) == 1 {
-		return ValidationResult{
-			Valid:   true,
-			ID:      "admin-env",
-			Name:    "Admin (env)",
-			IsAdmin: true,
-		}, nil
-	}
-
 	if rawToken == devTokenRaw {
 		if v.env("ENVIRONMENT") != "dev" {
 			return ValidationResult{Valid: false, Reason: devTokenReject}, nil
@@ -215,23 +177,6 @@ func (v *Validator) resolve(ctx context.Context, rawToken string) (ValidationRes
 		}
 		_ = v.touchLastUsed(ctx, id)
 		return ValidationResult{Valid: true, ID: id, Name: name}, nil
-	}
-
-	if rawToken == devAdminTokenRaw {
-		if v.env("ENVIRONMENT") != "dev" {
-			return ValidationResult{Valid: false, Reason: devAdminTokenReject}, nil
-		}
-		// Reuse the Development Token row for id/name so audit queries
-		// see a known id. IsAdmin=true is the only delta vs tok_dev.
-		var id, name string
-		err := v.db.QueryRow(ctx,
-			`SELECT id::text, name FROM access_tokens WHERE name = 'Development Token' LIMIT 1`,
-		).Scan(&id, &name)
-		if err != nil {
-			return ValidationResult{}, fmt.Errorf("lookup tok_admin_dev row: %w", err)
-		}
-		_ = v.touchLastUsed(ctx, id)
-		return ValidationResult{Valid: true, ID: id, Name: name, IsAdmin: true}, nil
 	}
 
 	if strings.HasPrefix(rawToken, productionPrefix) && len(rawToken) >= prefixLen {
@@ -296,11 +241,8 @@ func constantTimeEqual(a, b string) bool {
 
 // validationResultCtxKey is the request-context key under which a
 // successful Middleware run stashes the [ValidationResult] for
-// downstream handlers (notably [AdminRequired]) to read without
-// calling Validate again. Phase 4.5 M-2 closes a small TOCTOU
-// window where the cache could expire between the Middleware
-// validate and the AdminRequired re-validate, letting the second
-// call hit a different code path than the first.
+// downstream handlers (notably the MCP policy audit-log writer) to
+// read without calling Validate again.
 type validationResultCtxKey struct{}
 
 // ValidationResultFromContext returns the ValidationResult that
@@ -327,8 +269,8 @@ func ContextWithValidationResult(ctx context.Context, r ValidationResult) contex
 // the 401 body so operators see the actionable message.
 //
 // On success the resolved [ValidationResult] is stashed in the
-// request context so downstream wrappers (e.g. [AdminRequired])
-// can consult IsAdmin without a second Validate call.
+// request context so downstream handlers can read the authenticated
+// token id (e.g. for audit-log attribution).
 func Middleware(v *Validator, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		raw := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
@@ -352,43 +294,6 @@ func Middleware(v *Validator, next http.Handler) http.Handler {
 		ctx := context.WithValue(r.Context(), validationResultCtxKey{}, result)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
-}
-
-// AdminRequired wraps the standard ``Middleware`` gate and additionally
-// requires the authenticated token to carry ``IsAdmin=true``. Use this
-// for endpoints that mutate fleet-wide state (e.g. /v1/admin/
-// reconcile-agents). Admin is a superset of the regular bearer gate,
-// so an admin token hitting a plain ``Middleware``-wrapped route
-// passes there too — callers don't need a separate token per
-// sensitivity class.
-//
-// On a valid-but-non-admin token the handler returns 403 Forbidden
-// with an ``admin token required`` body, NOT 401 — the token IS valid,
-// it just lacks the needed scope.
-func AdminRequired(v *Validator, next http.Handler) http.Handler {
-	return Middleware(v, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Phase 4.5 M-2: read the validated result from the
-		// request context that Middleware just populated, instead
-		// of calling Validate again. The double-call previously
-		// opened a TOCTOU window if the auth cache expired between
-		// the two lookups (rare but possible under cache eviction
-		// pressure). Reading from context guarantees IsAdmin is
-		// evaluated against the same row Middleware already
-		// authenticated against.
-		result, ok := ValidationResultFromContext(r.Context())
-		if !ok {
-			// Should be unreachable: Middleware always stashes the
-			// result on the success path. Fail closed if invariant
-			// is violated.
-			writeJSONError(w, http.StatusInternalServerError, "auth context missing")
-			return
-		}
-		if !result.IsAdmin {
-			writeJSONError(w, http.StatusForbidden, "admin token required")
-			return
-		}
-		next.ServeHTTP(w, r)
-	}))
 }
 
 func writeJSONError(w http.ResponseWriter, code int, msg string) {

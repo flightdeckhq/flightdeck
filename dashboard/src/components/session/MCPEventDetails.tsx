@@ -188,8 +188,11 @@ interface MCPErrorShape {
   error_class?: string;
   message?: string;
   code?: number;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  data?: any;
+  // Provider-supplied error details — shape varies per error_type
+  // (FastMCP / mcp-py / sensor synthesised). Typed as `unknown` so
+  // consumers narrow before rendering; the ErrorBlock JSON.stringifies
+  // it directly which works for any value type.
+  data?: unknown;
 }
 
 function ErrorBlock({
@@ -344,10 +347,12 @@ function CaptureField({
   onLoadFull,
 }: {
   label: string;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  inline: any;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  externalValue?: any;
+  // Polymorphic JSON value from the MCP wire payload — string,
+  // number, dict, list, or null. Typed as `unknown` so consumers
+  // narrow at the rendering branch (CodeBlock JSON-stringifies it
+  // directly which works for any value type).
+  inline: unknown;
+  externalValue?: unknown;
   forceTruncated?: TruncationMarker | null;
   testId?: string;
   loading: boolean;
@@ -550,8 +555,9 @@ function CodeBlock({
   testId,
 }: {
   label: string;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  value: any;
+  // Polymorphic JSON value rendered inside a <pre>{JSON.stringify(...)}.
+  // `unknown` is the right type — JSON.stringify accepts any value.
+  value: unknown;
   testId?: string;
 }) {
   const [showFull, setShowFull] = useState(false);

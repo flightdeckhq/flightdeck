@@ -939,10 +939,16 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
                         // the URL state pick up. Pages that wire
                         // ``onSwitchSession`` skip this branch and
                         // get an in-place rebind without flicker.
+                        // Synchronous URL update — onClose() returns
+                        // synchronously so React has already committed
+                        // the close-drawer render by the time the
+                        // location assignment fires. The previous
+                        // setTimeout(0) wrapper was a banned pattern
+                        // (typescript guidelines: "no setTimeout(0)
+                        // to wait for the next tick") and added no
+                        // value vs the synchronous form.
                         onClose();
-                        window.setTimeout(() => {
-                          window.location.search = `session=${encodeURIComponent(id)}`;
-                        }, 0);
+                        window.location.search = `session=${encodeURIComponent(id)}`;
                       }
                     }}
                   />

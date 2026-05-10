@@ -324,7 +324,10 @@ export interface BulkEventsResponse {
   has_more: boolean;
 }
 
-export function fetchBulkEvents(params: BulkEventsParams): Promise<BulkEventsResponse> {
+export function fetchBulkEvents(
+  params: BulkEventsParams,
+  signal?: AbortSignal,
+): Promise<BulkEventsResponse> {
   const searchParams = new URLSearchParams();
   searchParams.set("from", params.from);
   if (params.to) searchParams.set("to", params.to);
@@ -333,7 +336,10 @@ export function fetchBulkEvents(params: BulkEventsParams): Promise<BulkEventsRes
   if (params.session_id) searchParams.set("session_id", params.session_id);
   if (params.limit) searchParams.set("limit", String(params.limit));
   if (params.offset) searchParams.set("offset", String(params.offset));
-  return fetchJson<BulkEventsResponse>(`/v1/events?${searchParams.toString()}`);
+  return fetchJson<BulkEventsResponse>(
+    `/v1/events?${searchParams.toString()}`,
+    { signal },
+  );
 }
 
 export interface SessionsParams {

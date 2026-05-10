@@ -10,41 +10,33 @@ interface PromptViewerProps {
   eventId: string | null;
 }
 
-/* ---- Role badge styles ---- */
+/* ---- Role badge styles ----
+ *
+ * Backgrounds resolve via `color-mix(in srgb, <theme token> 15%,
+ * transparent)` so the chip background re-tints with the active
+ * theme. The previous hardcoded `rgba(...)` literals rendered the
+ * same colour in neon-dark and clean-light, defeating the palette
+ * (Rule 14). Borders follow the same pattern at 30% mix. Text
+ * colour resolves directly to the matching token.
+ */
+
+function roleChip(token: string): { bg: string; color: string; border: string } {
+  return {
+    bg: `color-mix(in srgb, ${token} 15%, transparent)`,
+    color: token,
+    border: `1px solid color-mix(in srgb, ${token} 30%, transparent)`,
+  };
+}
 
 const roleBadgeStyles: Record<string, { bg: string; color: string; border: string }> = {
-  system: {
-    bg: "rgba(100,100,100,0.15)",
-    color: "var(--text-secondary)",
-    border: "1px solid rgba(100,100,100,0.3)",
-  },
-  user: {
-    bg: "rgba(99,102,241,0.15)",
-    color: "#6366f1",
-    border: "1px solid rgba(99,102,241,0.3)",
-  },
-  assistant: {
-    bg: "rgba(124,58,237,0.15)",
-    color: "var(--accent)",
-    border: "1px solid var(--accent-border)",
-  },
-  tool: {
-    bg: "rgba(6,182,212,0.15)",
-    color: "var(--event-tool)",
-    border: "1px solid rgba(6,182,212,0.3)",
-  },
-  tool_result: {
-    bg: "rgba(6,182,212,0.15)",
-    color: "var(--event-tool)",
-    border: "1px solid rgba(6,182,212,0.3)",
-  },
+  system: roleChip("var(--text-muted)"),
+  user: roleChip("var(--event-llm)"),
+  assistant: roleChip("var(--accent)"),
+  tool: roleChip("var(--event-tool)"),
+  tool_result: roleChip("var(--event-tool)"),
 };
 
-const defaultRoleBadge = {
-  bg: "rgba(100,100,100,0.15)",
-  color: "var(--text-secondary)",
-  border: "1px solid rgba(100,100,100,0.3)",
-};
+const defaultRoleBadge = roleChip("var(--text-muted)");
 
 /* ---- Section header ---- */
 
@@ -268,7 +260,13 @@ export function PromptViewer({ eventId }: PromptViewerProps) {
           {responseMode === "pretty" ? (
             <PrettyResponse response={content.response} provider={provider} />
           ) : (
-            <SyntaxJson data={typeof content.response === "object" ? content.response : { raw: content.response }} />
+            <SyntaxJson
+              data={
+                content.response !== null && typeof content.response === "object"
+                  ? (content.response as Record<string, unknown>)
+                  : { raw: content.response }
+              }
+            />
           )}
         </Section>
       )}

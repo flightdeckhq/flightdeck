@@ -65,10 +65,17 @@ export function useSession(
       return;
     }
 
+    // Cancellation guard: if sessionId / eventsLimit / revalidationKey
+    // changes (or the consumer unmounts) before fetchSession resolves,
+    // the cleanup flips `cancelled` so the .then() / .catch() / .finally()
+    // chain bails out without writing stale state into the next mount's
+    // useState slots. Same idiom as PromptViewer's local guard.
+    let cancelled = false;
     setLoading(true);
     setError(null);
     fetchSession(sessionId, eventsLimit)
       .then((detail) => {
+        if (cancelled) return;
         sessionCache.set(sessionId, detail);
         setData(detail);
         // Populate eventsCache so swimlane and drawer share the same data
@@ -85,8 +92,18 @@ export function useSession(
         // can tell "not fetched" from "fetched with no attachments".
         attachmentsCache.set(sessionId, detail.attachments ?? []);
       })
-      .catch((e: Error) => setError(e.message))
-      .finally(() => setLoading(false));
+      .catch((e: Error) => {
+        if (cancelled) return;
+        setError(e.message);
+      })
+      .finally(() => {
+        if (cancelled) return;
+        setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [sessionId, eventsLimit, revalidationKey]);
 
   return { data, loading, error };

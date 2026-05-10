@@ -1,4 +1,3 @@
-import { useMemo } from "react";
 import {
   BarChart,
   Bar,
@@ -12,10 +11,12 @@ import type { AnalyticsSeries } from "@/lib/types";
 import { getProvider } from "@/lib/models";
 import { ProviderIconSvg } from "@/components/ui/provider-icon-svg";
 
-function resolvePrimary(): string {
-  if (typeof document === "undefined") return "#7c3aed";
-  return getComputedStyle(document.documentElement).getPropertyValue("--chart-1").trim() || "#7c3aed";
-}
+// Primary bar fill as a CSS custom-property reference. Recharts
+// passes `fill` straight to the SVG element, and modern browsers
+// honour `var(--name)` in SVG presentation attributes — so the bar
+// re-paints on every theme toggle without re-resolving via
+// getComputedStyle.
+const PRIMARY_FILL = "var(--chart-1)";
 
 /** Y-axis width and icon geometry. Sized for the longest model string
  *  the sensor emits (``claude-sonnet-4-5-20250929``, 26 chars @
@@ -31,7 +32,6 @@ interface RankingChartProps {
 }
 
 export function RankingChart({ series }: RankingChartProps) {
-  const primaryColor = useMemo(resolvePrimary, []);
   const chartData = series
     .map((s) => ({ name: s.dimension, total: s.total }))
     .sort((a, b) => b.total - a.total);
@@ -111,7 +111,7 @@ export function RankingChart({ series }: RankingChartProps) {
         />
         <Bar
           dataKey="total"
-          fill={primaryColor}
+          fill={PRIMARY_FILL}
           radius={[0, 4, 4, 0]}
           barSize={28}
           maxBarSize={40}

@@ -13,23 +13,22 @@ import { getProvider } from "@/lib/models";
 import { PROVIDER_ICONS } from "@/components/ui/provider-icons";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 
-/** CSS variable names for the palette. Resolved at render time via
- *  getComputedStyle so recharts receives actual hex/rgb values for
- *  SVG fill and stroke attributes. */
-const SERIES_CSS_VARS = [
-  "--chart-1",
-  "--chart-2",
-  "--chart-3",
-  "--chart-4",
-  "--chart-5",
-  "--text-muted",
+// Series palette as CSS custom-property references. Recharts passes
+// `stroke` / `fill` directly to the SVG element, and modern browsers
+// honour `var(--name)` in SVG presentation attributes — so the chart
+// re-paints with the right palette on every theme toggle without the
+// component needing to re-resolve via getComputedStyle. The previous
+// `useMemo(resolveColors, [])` cached resolved hex values at first
+// render and never updated, which painted neon-dark hex on
+// clean-light backgrounds (and vice versa) after a theme flip.
+const SERIES_FILLS = [
+  "var(--chart-1)",
+  "var(--chart-2)",
+  "var(--chart-3)",
+  "var(--chart-4)",
+  "var(--chart-5)",
+  "var(--text-muted)",
 ];
-
-function resolveColors(): string[] {
-  if (typeof document === "undefined") return SERIES_CSS_VARS.map(() => "#888");
-  const style = getComputedStyle(document.documentElement);
-  return SERIES_CSS_VARS.map((v) => style.getPropertyValue(v).trim() || "#888");
-}
 
 interface TimeSeriesChartProps {
   series: AnalyticsSeries[];
@@ -135,8 +134,6 @@ function CustomTooltip({ active, payload, label }: CustomTooltipProps) {
 }
 
 export function TimeSeriesChart({ series }: TimeSeriesChartProps) {
-  const colors = useMemo(resolveColors, []);
-
   // Merge all series into a single date-keyed array. Every row contains
   // a key for every dimension — null where that dimension has no data on
   // that date. This gives recharts a continuous dataset so Area paths
@@ -196,8 +193,8 @@ export function TimeSeriesChart({ series }: TimeSeriesChartProps) {
             type="monotone"
             dataKey={s.dimension}
             connectNulls
-            stroke={colors[i % colors.length]}
-            fill={colors[i % colors.length]}
+            stroke={SERIES_FILLS[i % SERIES_FILLS.length]}
+            fill={SERIES_FILLS[i % SERIES_FILLS.length]}
             fillOpacity={0.3}
           />
         ))}

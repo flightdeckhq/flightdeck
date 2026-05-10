@@ -1,30 +1,30 @@
-import { useMemo } from "react";
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend } from "recharts";
 import type { AnalyticsSeries } from "@/lib/types";
 import { getProvider, providerLabel } from "@/lib/models";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 
-const COLOR_VARS = [
-  "--chart-1",
-  "--chart-2",
-  "--chart-3",
-  "--chart-4",
-  "--chart-5",
-  "--text-muted",
+// Chart colour palette as CSS custom-property references. Recharts
+// passes `fill` directly to the SVG element, and modern browsers
+// honour `var(--name)` in SVG presentation attributes — so the chart
+// re-paints with the right palette on every theme toggle without the
+// component needing to re-resolve via getComputedStyle. The previous
+// `useMemo(resolveColors, [])` cached resolved hex values at first
+// render and never updated, which painted neon-dark hex on
+// clean-light backgrounds (and vice versa) after a theme flip.
+const CELL_FILLS = [
+  "var(--chart-1)",
+  "var(--chart-2)",
+  "var(--chart-3)",
+  "var(--chart-4)",
+  "var(--chart-5)",
+  "var(--text-muted)",
 ];
-
-function resolveColors(): string[] {
-  if (typeof document === "undefined") return COLOR_VARS.map(() => "#888");
-  const style = getComputedStyle(document.documentElement);
-  return COLOR_VARS.map((v) => style.getPropertyValue(v).trim() || "#888");
-}
 
 interface DonutChartProps {
   series: AnalyticsSeries[];
 }
 
 export function DonutChart({ series }: DonutChartProps) {
-  const colors = useMemo(resolveColors, []);
   const chartData = series
     .map((s) => ({ name: s.dimension, value: s.total }))
     .filter((d) => d.value > 0);
@@ -49,8 +49,11 @@ export function DonutChart({ series }: DonutChartProps) {
           paddingAngle={2}
           dataKey="value"
         >
-          {chartData.map((_, i) => (
-            <Cell key={i} fill={colors[i % colors.length]} />
+          {chartData.map((entry, i) => (
+            <Cell
+              key={entry.name}
+              fill={CELL_FILLS[i % CELL_FILLS.length]}
+            />
           ))}
         </Pie>
         <Tooltip

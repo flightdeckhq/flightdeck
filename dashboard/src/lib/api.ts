@@ -38,12 +38,8 @@ const BASE = import.meta.env.VITE_API_BASE_URL || "/api";
 export const ACCESS_TOKEN = "tok_dev";
 
 /** localStorage key that overrides the hardcoded ``ACCESS_TOKEN``
- *  when present. Pre-built for the Phase 5 Part 2 Settings page that
- *  will write to it via UI; in the meantime an operator who needs
- *  admin scope (e.g. for the MCP Protection Policy admin features)
- *  can paste an admin token via DevTools without a code change.
- *  Reading at request time keeps token rotation a localStorage
- *  change rather than a redeploy. */
+ *  when present. Reading at request time keeps token rotation a
+ *  localStorage change rather than a redeploy. */
 export const ACCESS_TOKEN_STORAGE_KEY = "flightdeck-access-token";
 
 function getActiveAccessToken(): string {
@@ -110,23 +106,6 @@ export async function apiFetch(path: string, init: RequestInit = {}): Promise<Re
     headers: authHeaders(init.headers),
     signal,
   });
-}
-
-/** Builds the "Admin token required to ${action}" error string with
- *  an inline how-to-fix hint pointing the operator at the
- *  ``flightdeck-access-token`` localStorage key. Kept as a single
- *  helper so the instruction stays consistent across every admin
- *  surface (audit, metrics, dry-run, templates, YAML import/export,
- *  version history). The Phase 5 Part 2 Settings page will replace
- *  the hint with a Set-Token UI, at which point this helper's
- *  second sentence collapses to a CTA. */
-export function adminTokenError(action: string): string {
-  return (
-    `Admin token required to ${action} ` +
-    `Set the ${ACCESS_TOKEN_STORAGE_KEY} localStorage key in this ` +
-    `browser to an admin-scoped token (DevTools → Application → ` +
-    `Local Storage), then reload.`
-  );
 }
 
 /** Subclass of Error that carries the HTTP status code so call
@@ -601,19 +580,7 @@ export async function renameAccessToken(id: string, name: string): Promise<Acces
   return res.json() as Promise<AccessToken>;
 }
 
-// ----- Whoami (D147) -----
-
-/** Response shape for GET /v1/whoami. Read-open per D147. */
-export interface WhoamiResponse {
-  role: "admin" | "viewer";
-  token_id: string;
-}
-
-export function fetchWhoami(): Promise<WhoamiResponse> {
-  return fetchJson<WhoamiResponse>("/v1/whoami");
-}
-
-// ----- MCP Protection Policy (D128 / D131 / D135 / D138 / D139 / D147) -----
+// ----- MCP Protection Policy -----
 
 export function fetchGlobalMCPPolicy(): Promise<MCPPolicy> {
   return fetchJson<MCPPolicy>("/v1/mcp-policies/global");

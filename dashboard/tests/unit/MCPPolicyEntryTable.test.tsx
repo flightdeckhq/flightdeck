@@ -1,20 +1,8 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, within } from "@testing-library/react";
 
 import { MCPPolicyEntryTable } from "@/components/policy/MCPPolicyEntryTable";
 import type { MCPPolicyEntry } from "@/lib/types";
-import { useWhoamiStore } from "@/store/whoami";
-
-beforeEach(() => {
-  // D147: most tests assume admin role for the mutation buttons
-  // they exercise; viewer tests below override per-case.
-  useWhoamiStore.setState({
-    role: "admin",
-    tokenId: "test-token",
-    loading: false,
-    error: null,
-  });
-});
 
 function entry(
   override: Partial<MCPPolicyEntry> = {},
@@ -214,7 +202,7 @@ describe("MCPPolicyEntryTable", () => {
     );
   });
 
-  it("embeds the quick-start templates link in the empty state under admin role on a flavor scope (D146)", () => {
+  it("embeds the quick-start templates link in the empty state on a flavor scope (D146)", () => {
     render(
       <MCPPolicyEntryTable
         entries={[]}
@@ -259,34 +247,4 @@ describe("MCPPolicyEntryTable", () => {
     ).toBeNull();
   });
 
-  it("hides Add Entry button + row Edit/Delete actions when role is viewer (D147)", () => {
-    useWhoamiStore.setState({
-      role: "viewer",
-      tokenId: "viewer-token",
-      loading: false,
-      error: null,
-    });
-    render(
-      <MCPPolicyEntryTable
-        entries={[entry({ id: "row-1", server_name: "alpha" })]}
-        mode="allowlist"
-        scopeKey="global"
-        flavor="global"
-        scope="flavor"
-        loading={false}
-        onAdd={() => undefined}
-        onEdit={() => undefined}
-        onDelete={async () => undefined}
-        onApplied={async () => undefined}
-      />,
-    );
-
-    expect(screen.queryByTestId("mcp-policy-entries-add-global")).toBeNull();
-    expect(screen.queryByTestId("mcp-policy-entry-edit-row-1")).toBeNull();
-    expect(screen.queryByTestId("mcp-policy-entry-delete-row-1")).toBeNull();
-    // Row content still renders — D147 only hides action affordances.
-    expect(screen.getByTestId("mcp-policy-entry-row-1").textContent).toContain(
-      "alpha",
-    );
-  });
 });

@@ -1,25 +1,19 @@
-// D146: MCP Protection Policy quick-start link. Renders inside the
+// MCP Protection Policy quick-start link. Renders inside the
 // entries table's empty state when entryCount === 0 AND the
 // operator hasn't applied a template on this scope this session
-// (per-scope ephemeral flag in useMCPQuickStartStore) AND the
-// bearer token is admin (apply is admin-gated per D147; viewers
-// see no link). Replaces the standalone three-card grid that
-// previously sat above the entries table.
+// (per-scope ephemeral flag in useMCPQuickStartStore).
 
 import { useEffect, useRef, useState } from "react";
 import { AlertTriangle, BookOpen, ChevronDown } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
-  adminTokenError,
-  ApiError,
   applyMCPPolicyTemplate,
   listMCPPolicyTemplates,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import type { MCPPolicyTemplate } from "@/lib/types";
 import { useMCPQuickStartStore } from "@/store/quickStart";
-import { useWhoamiStore } from "@/store/whoami";
 
 const MAINTENANCE_WARNING_TEMPLATE = "strict-with-common-allows";
 
@@ -40,7 +34,6 @@ export function MCPQuickStartTemplates({
   entryCount,
   onApplied,
 }: MCPQuickStartTemplatesProps) {
-  const role = useWhoamiStore((s) => s.role);
   const wasApplied = useMCPQuickStartStore((s) => s.wasApplied(scopeKey));
   const markApplied = useMCPQuickStartStore((s) => s.markApplied);
 
@@ -86,18 +79,14 @@ export function MCPQuickStartTemplates({
       .finally(() => setLoading(false));
   }, [open, templates, loading]);
 
-  // Visibility gates. role === null → whoami in flight; treat as
-  // hidden to prevent the brief flash a viewer would otherwise see
-  // (D147).
-  if (role !== "admin") return null;
+  // Visibility gates.
   if (entryCount > 0) return null;
   if (wasApplied) return null;
   // Defense in depth against a future caller passing flavor="global"
   // — POST /v1/mcp-policies/global/apply_template returns 400 by
-  // design (D138 + D134; templates apply to flavor policies only).
-  // Caller-side gating in MCPPolicyEntryTable's EmptyState is the
-  // primary suppression; this guard prevents regressions if the
-  // wiring drifts.
+  // design (templates apply to flavor policies only). Caller-side
+  // gating in MCPPolicyEntryTable's EmptyState is the primary
+  // suppression; this guard prevents regressions if the wiring drifts.
   if (flavor === "global") return null;
 
   async function handleApply(template: MCPPolicyTemplate) {
@@ -109,14 +98,7 @@ export function MCPQuickStartTemplates({
       setOpen(false);
       await onApplied();
     } catch (err) {
-      // 403 race-guard: token swap mid-flight where an admin
-      // become a viewer between component-mount visibility check
-      // and the apply request landing. Surfaces actionable copy.
-      if (err instanceof ApiError && err.status === 403) {
-        setApplyError(adminTokenError("apply templates."));
-      } else {
-        setApplyError(err instanceof Error ? err.message : "Apply failed");
-      }
+      setApplyError(err instanceof Error ? err.message : "Apply failed");
     } finally {
       setApplyingName(null);
     }

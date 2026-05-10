@@ -2,13 +2,14 @@ import { test, expect, type Page } from "@playwright/test";
 
 import { CODING_AGENT } from "./_fixtures";
 
-// T41 — MCP Protection Policy operator-workflow contract (D146 step 6.9).
+// T41 — MCP Protection Policy operator-workflow contract.
 //
 // Locks the cumulative shape after the step 6.9 chain:
 //   - D138: quick-start link is suppressed on Global scope; the
 //     ``apply_template`` API rejects ``flavor=global`` by design.
-//   - D147 + step 6.9: mutation affordances render only for admin
-//     tokens; viewer tokens see the data but no Add / Edit buttons.
+//   - Mutation affordances (Add / Edit / Delete, mode toggle, BOU
+//     switch) render unconditionally — single-tier auth, every valid
+//     bearer token has full access (D156).
 //   - Step 6.9 InfoIcon migration: every label-side help affordance
 //     uses the shared ``<InfoIcon>`` primitive (button trigger with
 //     aria-label, not text-styled "info" links).
@@ -18,31 +19,6 @@ import { CODING_AGENT } from "./_fixtures";
 // All cases are read-only. The dev DB stays clean across runs.
 // Theme-agnostic per Rule 40c.3 — assertions read structural
 // attributes (data-testid, aria-label, placeholder), never colours.
-//
-// Auth: T41 is the first spec that needs admin role. The
-// playwright config sets a global ``extraHTTPHeaders.Authorization
-// = Bearer tok_dev`` and that *overrides* whatever the dashboard's
-// ``apiFetch`` would attach (BrowserContext-level headers win), so
-// localStorage alone is insufficient — every request, including
-// /v1/whoami, lands as ``tok_dev`` → role=viewer → admin gates
-// hide the mutation affordances we're trying to test. The fix is
-// per-spec ``test.use({ extraHTTPHeaders })`` at the describe
-// level which replaces the config default for this file. Setting
-// localStorage too keeps the dashboard's app-side
-// ``getActiveAccessToken()`` consistent so any direct
-// ``page.evaluate(fetch(...))`` debug paths also see admin.
-
-const ADMIN_TOKEN = "tok_admin_dev";
-const ACCESS_TOKEN_STORAGE_KEY = "flightdeck-access-token";
-
-async function setAdminToken(page: Page): Promise<void> {
-  await page.addInitScript(
-    ([key, token]) => {
-      window.localStorage.setItem(key, token);
-    },
-    [ACCESS_TOKEN_STORAGE_KEY, ADMIN_TOKEN],
-  );
-}
 
 async function navigateToMCPPolicy(page: Page): Promise<void> {
   await page.goto("/policies?policy=mcp");
@@ -73,20 +49,10 @@ async function switchToFlavorTab(page: Page, flavor: string): Promise<void> {
     .waitFor({ state: "visible", timeout: 10_000 });
 }
 
-// Override the config's ``Bearer tok_dev`` for this spec only —
-// every test in T41 needs the admin token to reach the role-gated
-// affordances under test.
-test.use({
-  extraHTTPHeaders: {
-    Authorization: `Bearer ${ADMIN_TOKEN}`,
-  },
-});
-
-test.describe("T41 — MCP Protection Policy operator workflow (step 6.9)", () => {
-  test("Global tab: mode + BOU controls render for admin; quick-start link is suppressed (D138 regression guard)", async ({
+test.describe("T41 — MCP Protection Policy operator workflow", () => {
+  test("Global tab: mode + BOU controls render; quick-start link is suppressed (D138 regression guard)", async ({
     page,
   }) => {
-    await setAdminToken(page);
     await navigateToMCPPolicy(page);
 
     // Default tab is Global; the panel testid confirms.
@@ -94,7 +60,7 @@ test.describe("T41 — MCP Protection Policy operator workflow (step 6.9)", () =
       page.locator('[data-testid="mcp-policies-panel-global"]'),
     ).toBeVisible();
 
-    // Mode segmented control + InfoIcon trigger render for admin.
+    // Mode segmented control + InfoIcon trigger render.
     await expect(
       page.locator('[data-testid="mcp-policy-mode-segmented-global"]'),
     ).toBeVisible();
@@ -114,10 +80,9 @@ test.describe("T41 — MCP Protection Policy operator workflow (step 6.9)", () =
     ).toHaveCount(0);
   });
 
-  test("Flavor tab: quick-start link renders for admin on 0-entry flavor; popover lists 3 templates incl. maintenance chip", async ({
+  test("Flavor tab: quick-start link renders on 0-entry flavor; popover lists 3 templates incl. maintenance chip", async ({
     page,
   }) => {
-    await setAdminToken(page);
     await navigateToMCPPolicy(page);
     await switchToFlavorTab(page, CODING_AGENT.flavor);
 
@@ -169,14 +134,11 @@ test.describe("T41 — MCP Protection Policy operator workflow (step 6.9)", () =
   test("Add entry dialog: spec placeholders + InfoIcons on every field (step 6.9 dialog rewrite)", async ({
     page,
   }) => {
-    await setAdminToken(page);
     await navigateToMCPPolicy(page);
     await switchToFlavorTab(page, CODING_AGENT.flavor);
 
     // Open the Add entry dialog. The button's testid is keyed on
-    // the scopeKey (flavor name on flavor panels). Admin gating
-    // means the button only renders for tok_admin_dev; viewer
-    // tokens skip this case at the locator stage.
+    // the scopeKey (flavor name on flavor panels).
     await page
       .locator(`[data-testid="mcp-policy-entries-add-${CODING_AGENT.flavor}"]`)
       .click();

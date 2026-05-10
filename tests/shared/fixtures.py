@@ -17,6 +17,7 @@ on the test runner.
 from __future__ import annotations
 
 import json
+import subprocess
 import time
 import urllib.error
 import urllib.request
@@ -457,6 +458,60 @@ def query_directives(session_id: str) -> list[dict[str, Any]]:
     if not raw or raw == "null":
         return []
     return json.loads(raw)  # type: ignore[no-any-return]
+
+
+def exec_sql(sql: str, **bindings: Any) -> str:
+    """Execute a SQL statement against the dev Postgres container with
+    optional psql bind variables.
+
+    Reference bind values in the SQL via psql's substitution syntax:
+
+      * ``:'name'`` — value rendered as a single-quoted SQL literal,
+        suitable for strings and UUIDs (e.g. ``:'sid'::uuid``).
+      * ``:name`` — raw value, suitable for numerics.
+      * ``:"name"`` — value rendered as a double-quoted SQL identifier.
+
+    Pass bindings as keyword arguments; each becomes a ``-v name=value``
+    flag on the underlying ``psql`` invocation. This is the migration
+    target for the f-string SQL pattern that previously interpolated
+    Python values directly into the SQL text — the bind-variable form
+    keeps the SQL static + auditable and removes the interpolation
+    anti-pattern from test files.
+
+    Returns the trimmed psql ``-tA`` output. Raises CalledProcessError
+    on non-zero exit (which surfaces psql's stderr in the test failure
+    message).
+
+    Example::
+
+        exec_sql(
+            "UPDATE sessions SET state = :'state' "
+            "WHERE session_id = :'sid'::uuid",
+            state="lost",
+            sid=str(uuid.uuid4()),
+        )
+
+    Implementation note: psql substitutes ``:name`` / ``:'name'`` /
+    ``:"name"`` only for SQL it reads from stdin or ``-f file``, NOT
+    from ``-c command``. We therefore pipe the SQL via stdin (with
+    ``docker exec -i``) and pass the bindings as ``-v`` flags.
+    """
+    args = [
+        "docker", "exec", "-i", "docker-postgres-1", "psql",
+        "-U", "flightdeck", "-d", "flightdeck",
+        "-t", "-A",
+    ]
+    for name, value in bindings.items():
+        args.extend(["-v", f"{name}={value}"])
+    result = subprocess.run(
+        args,
+        input=sql,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=True,
+    )
+    return result.stdout.strip()
 
 
 def wait_until(

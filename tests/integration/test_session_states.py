@@ -7,10 +7,10 @@ non-session_start event. Requires `make dev` to be running.
 
 from __future__ import annotations
 
-import subprocess
 import uuid
 
 from .conftest import (
+    exec_sql,
     get_session,
     get_session_detail,
     make_event,
@@ -22,27 +22,6 @@ from .conftest import (
 )
 
 
-def _exec_sql(sql: str) -> str:
-    """Execute a SQL statement against the dev Postgres container.
-
-    Used by the revival tests to force a session into a specific state
-    without waiting for the background reconciler. Returns the trimmed
-    psql output.
-    """
-    result = subprocess.run(
-        [
-            "docker", "exec", "docker-postgres-1", "psql",
-            "-U", "flightdeck", "-d", "flightdeck",
-            "-t", "-A", "-c", sql,
-        ],
-        capture_output=True,
-        text=True,
-        timeout=10,
-        check=True,
-    )
-    return result.stdout.strip()
-
-
 def _force_state(session_id: str, state: str) -> None:
     """Force a session into a given state via direct UPDATE.
 
@@ -50,17 +29,19 @@ def _force_state(session_id: str, state: str) -> None:
     session through the lifecycle. Used only by tests that exercise the
     revival path.
     """
-    _exec_sql(
-        f"UPDATE sessions SET state = '{state}' "
-        f"WHERE session_id = '{session_id}'::uuid"
+    exec_sql(
+        "UPDATE sessions SET state = :'state' WHERE session_id = :'sid'::uuid",
+        state=state,
+        sid=session_id,
     )
 
 
 def _read_session_row(session_id: str) -> dict[str, str]:
     """Read state / last_seen_at / tokens_used straight from Postgres."""
-    raw = _exec_sql(
+    raw = exec_sql(
         "SELECT state, last_seen_at, tokens_used FROM sessions "
-        f"WHERE session_id = '{session_id}'::uuid"
+        "WHERE session_id = :'sid'::uuid",
+        sid=session_id,
     )
     parts = raw.split("|")
     if len(parts) != 3:
@@ -287,9 +268,10 @@ def test_reconciler_lost_threshold_is_30_min() -> None:
     post_event(make_event(sid, flavor, "session_start"))
     wait_for_session_in_fleet(sid, timeout=5.0)
 
-    _exec_sql(
+    exec_sql(
         "UPDATE sessions SET last_seen_at = NOW() - INTERVAL '31 minutes' "
-        f"WHERE session_id = '{sid}'::uuid"
+        "WHERE session_id = :'sid'::uuid",
+        sid=sid,
     )
 
     # Reconciler runs every 60s. Wait up to ~90s for the next tick to
@@ -321,10 +303,11 @@ def test_orphan_timeout_reaper_closes_lost_session() -> None:
     # The reaper only cares that state='lost' and last_seen_at is past
     # the threshold; getting there via 31-minute waits would balloon
     # the test runtime without exercising the reaper code path.
-    _exec_sql(
+    exec_sql(
         "UPDATE sessions SET state = 'lost', "
         "last_seen_at = NOW() - INTERVAL '25 hours' "
-        f"WHERE session_id = '{sid}'::uuid"
+        "WHERE session_id = :'sid'::uuid",
+        sid=sid,
     )
 
     detail = wait_for_state(sid, "closed", timeout=90)
@@ -333,9 +316,10 @@ def test_orphan_timeout_reaper_closes_lost_session() -> None:
         f"reaper should stamp ended_at on {sid}; got null"
     )
 
-    raw = _exec_sql(
+    raw = exec_sql(
         "SELECT payload->>'close_reason' FROM events "
-        f"WHERE session_id = '{sid}'::uuid AND event_type = 'session_end'"
+        "WHERE session_id = :'sid'::uuid AND event_type = 'session_end'",
+        sid=sid,
     )
     reasons = [line.strip() for line in raw.splitlines() if line.strip()]
     # Tighter than `in`: the synthetic session_end should be the only
@@ -363,10 +347,11 @@ def test_orphan_timeout_reaper_does_not_close_recent_lost_session() -> None:
     # last_seen_at is 1 hour ago — past the 30-min lost threshold so
     # state='lost' is plausible, but well inside the default 24h orphan
     # window so the reaper must skip it.
-    _exec_sql(
+    exec_sql(
         "UPDATE sessions SET state = 'lost', "
         "last_seen_at = NOW() - INTERVAL '1 hour' "
-        f"WHERE session_id = '{sid}'::uuid"
+        "WHERE session_id = :'sid'::uuid",
+        sid=sid,
     )
 
     # Negative wait: poll for the wrong-firing condition (state flipped
@@ -399,11 +384,12 @@ def test_orphan_timeout_reaper_does_not_close_recent_lost_session() -> None:
         f"reaper wrongly closed recent lost session {sid}: state={row['state']!r}"
     )
 
-    raw = _exec_sql(
+    raw = exec_sql(
         "SELECT COUNT(*) FROM events "
-        f"WHERE session_id = '{sid}'::uuid "
+        "WHERE session_id = :'sid'::uuid "
         "AND event_type = 'session_end' "
-        "AND payload->>'close_reason' = 'orphan_timeout'"
+        "AND payload->>'close_reason' = 'orphan_timeout'",
+        sid=sid,
     )
     # psql -tA strips alignment but cast through int() so a future
     # whitespace change in psql output doesn't masquerade as a "0
@@ -436,13 +422,14 @@ def _read_session_identity(session_id: str) -> dict[str, str]:
     values without juggling None. context is returned as the raw
     JSONB text ("{}" or "null" -- psql -A renders JSONB verbatim).
     """
-    raw = _exec_sql(
+    raw = exec_sql(
         "SELECT flavor, agent_type, "
         "COALESCE(context::text, 'NULL'), "
         "COALESCE(token_id::text, ''), "
         "COALESCE(token_name, '') "
         "FROM sessions "
-        f"WHERE session_id = '{session_id}'::uuid"
+        "WHERE session_id = :'sid'::uuid",
+        sid=session_id,
     )
     parts = raw.split("|")
     if len(parts) != 5:
@@ -684,8 +671,9 @@ def test_session_end_on_unknown_session_id_does_not_lazy_create() -> None:
     # wait_for -- there's nothing to wait for.
     import time as _time
     _time.sleep(1.0)  # brief pause for worker to (not) process
-    raw = _exec_sql(
-        f"SELECT COUNT(*) FROM sessions WHERE session_id = '{sid}'::uuid"
+    raw = exec_sql(
+        "SELECT COUNT(*) FROM sessions WHERE session_id = :'sid'::uuid",
+        sid=sid,
     )
     assert raw == "0", (
         f"session_end on unknown session_id should not lazy-create a row; "
@@ -705,9 +693,9 @@ def test_session_end_on_unknown_session_id_does_not_lazy_create() -> None:
 
 def _read_parent_last_seen(parent_session_id: str) -> str:
     """Read just last_seen_at from a session row, as ISO timestamp text."""
-    return _exec_sql(
-        "SELECT last_seen_at FROM sessions "
-        f"WHERE session_id = '{parent_session_id}'::uuid"
+    return exec_sql(
+        "SELECT last_seen_at FROM sessions WHERE session_id = :'sid'::uuid",
+        sid=parent_session_id,
     )
 
 
@@ -751,9 +739,10 @@ def test_child_event_bumps_active_parent_last_seen() -> None:
     # Capture parent's current last_seen_at (post-session_start), then
     # backdate it 5 seconds so the child event's bump is observable as
     # a strictly-later timestamp.
-    _exec_sql(
+    exec_sql(
         "UPDATE sessions SET last_seen_at = NOW() - INTERVAL '5 seconds' "
-        f"WHERE session_id = '{parent_sid}'::uuid"
+        "WHERE session_id = :'sid'::uuid",
+        sid=parent_sid,
     )
     pre_bump = _read_parent_last_seen(parent_sid)
 
@@ -898,10 +887,11 @@ def test_orphan_reaper_does_not_fire_on_active_parent_with_child_traffic() -> No
     parent_sid, child_sid = _seed_parent_with_child(
         "test-reaper-noop-parent", "test-reaper-noop-child"
     )
-    _exec_sql(
+    exec_sql(
         "UPDATE sessions SET state = 'lost', "
         "last_seen_at = NOW() - INTERVAL '25 hours' "
-        f"WHERE session_id = '{parent_sid}'::uuid"
+        "WHERE session_id = :'sid'::uuid",
+        sid=parent_sid,
     )
 
     # Child event fires immediately — the bump should flip parent to

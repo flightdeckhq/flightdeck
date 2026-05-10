@@ -52,6 +52,7 @@ from .conftest import (
     API_URL,
     INGESTION_URL,
     TOKEN,
+    exec_sql,
     wait_until,
 )
 
@@ -97,22 +98,12 @@ OPENAI_RESPONSE: dict[str, Any] = {
 # ----------------------------------------------------------------------
 
 
-def _psql(sql: str) -> str:
-    """Run a SELECT through `docker exec psql` and return the raw stdout."""
-    result = subprocess.run(
-        [
-            "docker", "exec", "docker-postgres-1", "psql",
-            "-U", "flightdeck", "-d", "flightdeck",
-            "-t", "-A", "-c", sql,
-        ],
-        capture_output=True, text=True, timeout=10,
-    )
-    return result.stdout.strip()
-
-
-def _psql_json(sql: str) -> Any:
-    """Run a SELECT that returns json_agg(...) and parse the result."""
-    raw = _psql(sql)
+def _psql_json(sql: str, **bindings: Any) -> Any:
+    """Run a SELECT that returns json_agg(...) and parse the result.
+    Forwards bindings to exec_sql; reference them as :'name' in the
+    SQL.
+    """
+    raw = exec_sql(sql, **bindings)
     if not raw or raw == "null":
         return []
     return json.loads(raw)
@@ -121,15 +112,16 @@ def _psql_json(sql: str) -> Any:
 def _query_events_for_flavor(flavor: str) -> list[dict[str, Any]]:
     """Return all events for the given flavor in chronological order."""
     return _psql_json(
-        f"SELECT COALESCE(json_agg(row_to_json(e) ORDER BY e.occurred_at), "
-        f"'[]'::json) FROM events e WHERE flavor = '{flavor}'"
+        "SELECT COALESCE(json_agg(row_to_json(e) ORDER BY e.occurred_at), "
+        "'[]'::json) FROM events e WHERE flavor = :'flavor'",
+        flavor=flavor,
     )
 
 
 def _query_session_for_flavor(flavor: str) -> dict[str, Any] | None:
     """Return the (single) PARENT session row for a given flavor as a dict.
 
-    D126 sub-agent emission produces child sessions that inherit the
+    Sub-agent emission produces child sessions that inherit the
     parent's flavor (a CrewAI Crew or LangGraph StateGraph spawns
     child rows with the same flavor as their bootstrap). Without
     the ``parent_session_id IS NULL`` filter this helper would
@@ -140,9 +132,10 @@ def _query_session_for_flavor(flavor: str) -> dict[str, Any] | None:
     keeps every existing context-asserting caller correct.
     """
     rows = _psql_json(
-        f"SELECT COALESCE(json_agg(row_to_json(s)), '[]'::json) "
-        f"FROM sessions s WHERE flavor = '{flavor}' "
-        f"AND parent_session_id IS NULL"
+        "SELECT COALESCE(json_agg(row_to_json(s)), '[]'::json) "
+        "FROM sessions s WHERE flavor = :'flavor' "
+        "AND parent_session_id IS NULL",
+        flavor=flavor,
     )
     return rows[0] if rows else None
 
@@ -150,40 +143,47 @@ def _query_session_for_flavor(flavor: str) -> dict[str, Any] | None:
 def _query_directives_for_session(session_id: str) -> list[dict[str, Any]]:
     """Return all directive rows for a session_id."""
     return _psql_json(
-        f"SELECT COALESCE(json_agg(row_to_json(d)), '[]'::json) "
-        f"FROM directives d WHERE d.session_id = '{session_id}'::uuid"
+        "SELECT COALESCE(json_agg(row_to_json(d)), '[]'::json) "
+        "FROM directives d WHERE d.session_id = :'sid'::uuid",
+        sid=session_id,
     )
 
 
 def _query_event_content_for_session(session_id: str) -> list[dict[str, Any]]:
     """Return all event_content rows for a session_id."""
     return _psql_json(
-        f"SELECT COALESCE(json_agg(row_to_json(c)), '[]'::json) "
-        f"FROM event_content c WHERE c.session_id = '{session_id}'::uuid"
+        "SELECT COALESCE(json_agg(row_to_json(c)), '[]'::json) "
+        "FROM event_content c WHERE c.session_id = :'sid'::uuid",
+        sid=session_id,
     )
+
+
+# Cleanup statements share a single :'flavor' binding via exec_sql.
+# Each is idempotent and ordered to satisfy FK constraints (children
+# before parents).
+_FLAVOR_CLEANUP_SQL = (
+    "DELETE FROM event_content WHERE session_id IN "
+    "(SELECT session_id FROM sessions WHERE flavor = :'flavor')",
+    "DELETE FROM events WHERE flavor = :'flavor'",
+    "DELETE FROM directives WHERE flavor = :'flavor' OR session_id IN "
+    "(SELECT session_id FROM sessions WHERE flavor = :'flavor')",
+    "DELETE FROM token_policies WHERE scope = 'flavor' AND scope_value = :'flavor'",
+    "DELETE FROM sessions WHERE flavor = :'flavor'",
+    "DELETE FROM agents WHERE flavor = :'flavor'",
+    "DELETE FROM custom_directives WHERE flavor = :'flavor'",
+)
 
 
 def _delete_flavor_data(flavor: str) -> None:
     """Best-effort cleanup of all DB rows for a flavor (idempotent)."""
-    statements = [
-        f"DELETE FROM event_content WHERE session_id IN "
-        f"(SELECT session_id FROM sessions WHERE flavor = '{flavor}')",
-        f"DELETE FROM events WHERE flavor = '{flavor}'",
-        f"DELETE FROM directives WHERE flavor = '{flavor}' OR session_id IN "
-        f"(SELECT session_id FROM sessions WHERE flavor = '{flavor}')",
-        f"DELETE FROM token_policies WHERE scope = 'flavor' AND scope_value = '{flavor}'",
-        f"DELETE FROM sessions WHERE flavor = '{flavor}'",
-        f"DELETE FROM agents WHERE flavor = '{flavor}'",
-        f"DELETE FROM custom_directives WHERE flavor = '{flavor}'",
-    ]
-    for sql in statements:
-        subprocess.run(
-            [
-                "docker", "exec", "docker-postgres-1", "psql",
-                "-U", "flightdeck", "-d", "flightdeck", "-c", sql,
-            ],
-            capture_output=True, text=True, timeout=10,
-        )
+    for sql in _FLAVOR_CLEANUP_SQL:
+        try:
+            exec_sql(sql, flavor=flavor)
+        except subprocess.CalledProcessError:
+            # Best-effort: tolerate failures (e.g. row doesn't exist,
+            # FK reference still in flight). Matches the prior
+            # capture_output=True pattern that swallowed stderr.
+            pass
 
 
 def _wait_for_event_type(
@@ -1100,10 +1100,11 @@ def test_sensor_custom_directive_unknown_fingerprint(
     assert code == 422, f"expected 422, got {code} (body={body})"
 
     # Zero directive rows for this fingerprint.
-    rows = _psql(
-        f"SELECT COUNT(*) FROM directives "
-        f"WHERE payload IS NOT NULL "
-        f"AND payload->>'fingerprint' = '{fake_fp}'"
+    rows = exec_sql(
+        "SELECT COUNT(*) FROM directives "
+        "WHERE payload IS NOT NULL "
+        "AND payload->>'fingerprint' = :'fp'",
+        fp=fake_fp,
     )
     assert rows == "0", f"expected 0 rows, got {rows}"
 

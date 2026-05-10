@@ -13,7 +13,6 @@ Requires `make dev` to be running.
 from __future__ import annotations
 
 import json
-import subprocess
 import urllib.error
 import urllib.request
 import uuid
@@ -24,6 +23,7 @@ import pytest
 from .conftest import (
     API_URL,
     TOKEN,
+    exec_sql,
     get_session,
     make_event,
     post_event,
@@ -149,19 +149,12 @@ def _post_directive_action(body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
 
 def _query_directives_for_session(session_id: str) -> list[dict[str, Any]]:
     """Query the directives table directly for a given session_id."""
-    sql = (
+    raw = exec_sql(
         "SELECT COALESCE(json_agg(row_to_json(d)), '[]'::json) "
         "FROM directives d "
-        f"WHERE d.session_id = '{session_id}'::uuid"
+        "WHERE d.session_id = :'sid'::uuid",
+        sid=session_id,
     )
-    result = subprocess.run(
-        [
-            "docker", "exec", "docker-postgres-1", "psql",
-            "-U", "flightdeck", "-d", "flightdeck", "-t", "-c", sql,
-        ],
-        capture_output=True, text=True, timeout=10,
-    )
-    raw = result.stdout.strip()
     if not raw or raw == "null":
         return []
     return json.loads(raw)  # type: ignore[no-any-return]
@@ -169,15 +162,9 @@ def _query_directives_for_session(session_id: str) -> list[dict[str, Any]]:
 
 def _delete_custom_directive_by_fingerprint(fingerprint: str) -> None:
     """Clean up a custom_directives row after a test."""
-    sql = (
-        f"DELETE FROM custom_directives WHERE fingerprint = '{fingerprint}'"
-    )
-    subprocess.run(
-        [
-            "docker", "exec", "docker-postgres-1", "psql",
-            "-U", "flightdeck", "-d", "flightdeck", "-c", sql,
-        ],
-        capture_output=True, text=True, timeout=10,
+    exec_sql(
+        "DELETE FROM custom_directives WHERE fingerprint = :'fp'",
+        fp=fingerprint,
     )
 
 

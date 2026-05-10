@@ -207,3 +207,14 @@ export const SWIM_FADE_WIDTH_PX = 32;
  * with behavior:"smooth" so the visual lands cleanly.
  */
 export const SWIM_KEYBOARD_SCROLL_FRACTION = 0.5;
+
+/**
+ * Grace period the operator stop-agent action gives the sensor's
+ * shutdown directive to flush in-flight events before the agent
+ * process exits. Mirrored at every UI call site that POSTs the stop
+ * request (fleet-wide stop button in FleetPanel, per-session stop
+ * button in SessionDrawer) so a single tweak adjusts the dashboard's
+ * stated grace window in lockstep. Server-side enforcement happens
+ * via the directive's `grace_period_ms` field.
+ */
+export const SHUTDOWN_GRACE_PERIOD_MS = 5000;

@@ -177,7 +177,11 @@ export function PromptViewer({ eventId }: PromptViewerProps) {
               const msgContent = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content, null, 2);
 
               return (
-                <div key={i}>
+                // Key is event-id-scoped so React doesn't re-use a longer
+                // event's DOM nodes when switching to a shorter event's
+                // messages list. Bare index would let React reuse the
+                // wrong message position on event-id transitions.
+                <div key={`${eventId}-msg-${i}`}>
                   <RoleBadge role={role} />
                   <div className="mt-1.5 rounded-md p-2.5" style={{ background: "var(--bg-elevated)", fontSize: 13, lineHeight: 1.6, color: "var(--text)", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
                     {msgContent}
@@ -209,7 +213,7 @@ export function PromptViewer({ eventId }: PromptViewerProps) {
               const props = (schema?.properties as Record<string, Record<string, unknown>>) ?? null;
 
               return (
-                <div key={i} className="rounded-md p-2.5" style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)" }}>
+                <div key={`${eventId}-tool-${i}`} className="rounded-md p-2.5" style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)" }}>
                   <div className="font-mono text-[13px] font-semibold" style={{ color: "var(--event-tool)" }}>{name}</div>
                   {input != null && Object.keys(input).length > 0 && (
                     <div className="mt-2" data-testid="tool-use-input">

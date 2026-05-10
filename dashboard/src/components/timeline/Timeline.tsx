@@ -553,7 +553,10 @@ export function Timeline({
             // SwimLane outermost wrapper for this lookup. Fallback
             // to hash anchor when querySelector misses (e.g. the
             // target agent isn't in the rendered viewport; the
-            // virtualizer hasn't materialized it).
+            // virtualizer hasn't materialized it). See
+            // lib/relationship.ts::scrollToAgentRow for the shared
+            // rationale on the intentional querySelector bypass of
+            // React refs.
             const target = document.querySelector(
               `[data-agent-id="${CSS.escape(agentId)}"]`,
             );

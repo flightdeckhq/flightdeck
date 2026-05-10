@@ -27,16 +27,19 @@ export function useSessionEvents(sessionId: string, _isActive = false, version =
   const [, setTick] = useState(0);
 
   // Read from cache — re-reads when version changes.
-  // Phase 4.5 M-29 justification: ``eventsCache`` is a module-level
-  // Map; its identity never changes, but its contents are mutated
-  // in place. ``version`` bumps signal content changes (incremented
-  // by the WebSocket ingestion path). Adding eventsCache to deps
-  // would do nothing useful (stable identity) and adding
-  // ``eventsCache.get(sessionId)`` would re-read on every render.
+  // ``eventsCache`` and ``fetchedSessions`` are module-level
+  // singletons. ``eventsCache`` is mutated in place (its reference
+  // identity never changes), so adding it to deps would do nothing
+  // useful — content changes ride the explicit ``version`` bump
+  // that the WebSocket ingestion path increments. Adding
+  // ``eventsCache.get(sessionId)`` would re-read on every render
+  // (object identity from .get may change call-to-call). The
+  // disable applies to the deps line because eslint flags
+  // ``version`` as "unnecessary" — that bump IS the reactive
+  // signal the memo needs to honour.
   const events = useMemo(
     () => eventsCache.get(sessionId) ?? [],
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [sessionId, version]
+    [sessionId, version], // eslint-disable-line react-hooks/exhaustive-deps
   );
 
   // Fetch exactly once per session if not in cache

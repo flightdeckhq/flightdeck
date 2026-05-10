@@ -81,13 +81,35 @@ function authHeaders(init?: HeadersInit): Headers {
   return h;
 }
 
+// Default request timeout for every apiFetch call. 30 s matches
+// browser fetch convention and is generous enough for the dashboard's
+// largest-result paths (bulk events for a long session, full sessions
+// list); none of the call sites is SSE / streaming. Callers passing
+// their own AbortSignal still race the timeout — whichever fires
+// first wins.
+const REQUEST_TIMEOUT_MS = 30_000;
+
 // apiFetch is the single fetch wrapper used by every call site in
 // this module. Callers pass the same options they would to the
 // global fetch; the wrapper injects the Authorization header (D095)
 // and resolves the base URL. Keep all /api/* fetches routed through
 // here so token rotation is a one-line change.
+//
+// Timeout: every request is bounded by REQUEST_TIMEOUT_MS via
+// AbortSignal.timeout, raced with any caller-provided signal so a
+// dead API server can never hang a tab. AbortSignal.any combines
+// the two; without a caller signal the timeout signal is used
+// directly.
 export async function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
-  return fetch(`${BASE}${path}`, { ...init, headers: authHeaders(init.headers) });
+  const timeoutSignal = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
+  const signal = init.signal
+    ? AbortSignal.any([init.signal, timeoutSignal])
+    : timeoutSignal;
+  return fetch(`${BASE}${path}`, {
+    ...init,
+    headers: authHeaders(init.headers),
+    signal,
+  });
 }
 
 /** Builds the "Admin token required to ${action}" error string with

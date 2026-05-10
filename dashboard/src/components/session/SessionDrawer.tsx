@@ -5,7 +5,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { TruncatedText } from "@/components/ui/TruncatedText";
 import { invalidateSessionCache, useSession } from "@/hooks/useSession";
 import { useFleetStore } from "@/store/fleet";
-import { SUCCESS_MESSAGE_DISPLAY_MS } from "@/lib/constants";
+import { SHUTDOWN_GRACE_PERIOD_MS, SUCCESS_MESSAGE_DISPLAY_MS } from "@/lib/constants";
 import { CLIENT_TYPE_LABEL, ClientType } from "@/lib/agent-identity";
 import { DirectiveCard } from "@/components/directives/DirectiveCard";
 import { Button } from "@/components/ui/button";
@@ -402,13 +402,16 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
     : (directEventDetail ?? internalDetailEvent);
 
   // Get events: prefer eventsCache (live), fall back to REST data.
-  // Phase 4.5 M-29 justification: ``eventsCache`` is a Map ref read
-  // inside the memo body. We intentionally re-run the memo on every
-  // ``version`` / ``paginationVersion`` bump (which signal that the
-  // cache contents changed) rather than on the cache reference,
-  // because the Map is mutated in place. Including ``eventsCache``
-  // in deps would force re-run on every render via reference
-  // identity but never on actual content changes — backwards.
+  // ``eventsCache`` is a module-level Map read inside the memo body.
+  // The memo intentionally re-runs on every ``version`` /
+  // ``paginationVersion`` bump (which signal that the cache contents
+  // changed) rather than on the Map reference, because the Map is
+  // mutated in place — including ``eventsCache`` in deps would force
+  // re-run on every render via reference identity but never on
+  // actual content changes, which is backwards. The disable applies
+  // to the deps line because eslint flags ``version`` /
+  // ``paginationVersion`` as "unnecessary" — those bumps are exactly
+  // the reactive signals the memo needs to honour.
   const drawerEvents = useMemo(() => {
     if (sessionId) {
       const cached = eventsCache.get(sessionId);
@@ -514,7 +517,7 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
         action: "shutdown",
         session_id: session.session_id,
         reason: "manual_kill_switch",
-        grace_period_ms: 5000,
+        grace_period_ms: SHUTDOWN_GRACE_PERIOD_MS,
       });
       // Mark in the fleet store so every view (not just this drawer)
       // sees the pending shutdown until the session transitions to

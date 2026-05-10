@@ -355,7 +355,47 @@ func (sp *SessionProcessor) HandleHeartbeat(ctx context.Context, e consumer.Even
 	if sp.handleSessionGuard(ctx, e) {
 		return nil
 	}
-	return sp.w.UpdateLastSeen(ctx, e.SessionID)
+	if err := sp.w.UpdateLastSeen(ctx, e.SessionID); err != nil {
+		return err
+	}
+	sp.bumpParentIfPresent(ctx, e)
+	return nil
+}
+
+// bumpParentIfPresent propagates a child event's freshness to its
+// parent session. No-op when the event has no parent or when the
+// parent is closed (BumpParentLastSeen filters terminal rows). On
+// stale/lost → active revival, bumps
+// metrics.IncrSessionRevived(metrics.RevivalTriggerChildEvent) so
+// operators can chart the rate of parent-via-child revivals
+// separately from any other revival path.
+//
+// Best-effort: a failed parent-bump is logged but never fails the
+// child handler. The child event still lands in events; the parent's
+// freshness is the optimistic side effect, not the load-bearing
+// operation.
+func (sp *SessionProcessor) bumpParentIfPresent(ctx context.Context, e consumer.EventPayload) {
+	if e.ParentSessionID == "" {
+		return
+	}
+	revived, err := sp.w.BumpParentLastSeen(ctx, e.ParentSessionID)
+	if err != nil {
+		slog.Warn("bump parent last_seen failed",
+			"child_session_id", e.SessionID,
+			"parent_session_id", e.ParentSessionID,
+			"event_type", e.EventType,
+			"err", err,
+		)
+		return
+	}
+	if revived {
+		metrics.IncrSessionRevived(metrics.RevivalTriggerChildEvent)
+		slog.Info("revived parent on child event",
+			"child_session_id", e.SessionID,
+			"parent_session_id", e.ParentSessionID,
+			"event_type", e.EventType,
+		)
+	}
 }
 
 // HandlePostCall updates token usage, last_seen_at, and the session's
@@ -400,6 +440,7 @@ func (sp *SessionProcessor) HandlePostCall(ctx context.Context, e consumer.Event
 			return fmt.Errorf("post call: %w", err)
 		}
 	}
+	sp.bumpParentIfPresent(ctx, e)
 	return nil
 }
 

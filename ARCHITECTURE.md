@@ -1289,6 +1289,22 @@ crashes, `kill -9`, and missed lifecycle hooks would otherwise leave
 `lost` rows pinned forever; without the timeout the Fleet view
 accumulates dead rows that look indistinguishable from a long pause.
 
+**Parent-bump propagation.** Every non-`session_start` /
+non-`session_end` handler that has a non-empty `parent_session_id`
+on the incoming event also bumps the PARENT session's
+`last_seen_at` and revives it from `stale` / `lost` back to
+`active`. A session with active descendants is logically active;
+without this propagation a parent that delegated all real work to
+sub-agents (Claude Code Task subagents, CrewAI hand-off, LangGraph
+nodes) would age to `stale → lost → orphan_timeout` closure while
+its children clearly streamed events. Closed parents are
+untouched (terminal state). Revivals via this path bump
+`sessions_revived_total{trigger="child_event"}` on the worker's
+`/metrics` endpoint so operators can chart parent-via-child
+revivals separately from any future revival path. Scope is direct
+parent only — transitive ancestor revival is deferred until a
+framework that exercises depth>2 trees ships.
+
 **Terminal-state handling.** `closed` is terminal and final. `session_end`
 at any non-closed state transitions directly to `closed`;
 `handleSessionGuard` skips any subsequent event for a closed session with
@@ -3790,6 +3806,13 @@ Ingestion API and Workers expose Prometheus exposition at `/metrics`:
   `events.payload->>'close_reason'`; this counter is the time-
   series shape for the same verdict so SREs can chart non-clean-
   shutdown rate without aggregating per-event payloads.
+- `sessions_revived_total{trigger}` — worker-side revival paths
+  that flipped a session from `stale` / `lost` back to `active`.
+  Today's only trigger is `child_event` (parent-bump propagation:
+  any event for a child session whose `parent_session_id` is set
+  bumps the parent's `last_seen_at` and revives the parent if it
+  was stale/lost). Future revival paths (e.g. operator manual
+  revive) would land under their own trigger label.
 - `events_received_total{event_type}`
 - `events_processed_total{event_type, status}`
 - `event_processing_duration_seconds` (histogram, per event_type)

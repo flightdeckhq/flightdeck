@@ -8233,3 +8233,127 @@ under both neon-dark and clean-light themes. Vitest unit suite
 (`dashboard/src/components/events/__tests__/EnrichmentSummary.test.tsx`)
 covers every chip type (12 cases including the orphan_timeout
 literal added by the lifecycle correctness work).
+
+
+---
+
+## D155 -- Parent-bump propagation: child events advance and revive parent sessions
+
+**Date:** 2026-05-10. **Status:** Adopted.
+
+**Context.** The worker's session-row updates were keyed on each
+session's OWN events. A parent session that handed off all real
+work to sub-agents (Claude Code Task subagents, CrewAI hand-off,
+LangGraph nodes) emitted nothing while its children streamed
+post_call / tool_call / heartbeat events. The reconciler then
+flipped the parent to `stale` (2 min) and `lost` (30 min); the
+orphan-timeout reaper (D152) eventually closed it via
+`orphan_timeout` even though the children's traffic proved the
+session was alive. Operators saw the parent flagged stale/lost in
+the swimlane while sub-agents clearly ran. The mid-PR-#33 Chrome
+verify on the supervisor's omria@Omri-PC parent + 5 sub-agents
+fleet surfaced this with a "→ 5 children CODING · 1 active"
+header sitting above five closed children — the parent's "1
+active" was masking the underlying state-machine drift.
+
+**Decision.** Every non-`session_start` / non-`session_end`
+handler that has a non-empty `parent_session_id` on the incoming
+event also bumps the PARENT session's `last_seen_at` and revives
+it from `stale` / `lost` back to `active`. Closed parents are
+untouched (terminal state — reviving a closed session would
+contradict the user's explicit end signal). The propagation is
+direct-parent only; transitive ancestor revival is deferred.
+
+Implementation lives in
+`workers/internal/processor/session.go::bumpParentIfPresent`,
+called from `HandleHeartbeat` and `HandlePostCall` (which is the
+dispatch target for every non-start / non-end event including
+post_call, pre_call, tool_call, embeddings, llm_error,
+directive_result, all policy events, all MCP events, and
+mcp_server_attached). The SQL bump lives in
+`workers/internal/writer/postgres.go::BumpParentLastSeen`: a
+single `UPDATE sessions SET state = CASE WHEN state IN ('stale',
+'lost') THEN 'active' ELSE state END, last_seen_at = NOW() WHERE
+session_id = $1 AND state <> 'closed'` with a CTE returning the
+prior state so the caller can detect revival without a second
+SELECT.
+
+**Why not...**
+
+- *Recurse to all ancestors.* Rejected for v1: today's frameworks
+  (Claude Code Task, CrewAI, LangGraph) are all parent-child. No
+  framework that ships sub-sub-agents exists in the supported set.
+  When one does, extending the SQL to recurse via `WITH RECURSIVE`
+  is a one-function change.
+- *Combine ReviveIfRevivable + UpdateTokensUsed in one
+  transaction so the post-revive read sees both columns updated
+  atomically.* Out of scope for parent-bump (this is about
+  cross-session propagation, not single-session atomicity). The
+  related two-tx race in `test_lost_session_revives_on_post_call`
+  is fixed test-side via `wait_until` polling for the
+  conjunction.
+- *Bump on `session_start` too.* Rejected: sub-agent
+  `session_start` already participates via `UpsertSession`'s
+  parent linkage write; the parent doesn't need a freshness
+  bump from its child's start because the parent itself just
+  emitted `session_start` immediately before spawning the
+  child. The bump is for the long tail of post-spawn child
+  activity.
+- *Bump on `session_end` too.* Rejected: closing a child is
+  the END of that child's contribution; the parent doesn't gain
+  freshness from a child closing, only from a child producing
+  events.
+
+**Consequences.**
+
+- Every per-event handler that has `parent_session_id` pays one
+  extra SQL roundtrip (the bump). Negligible — typical LLM call
+  takes seconds; an extra UPDATE is microseconds.
+- The orphan-timeout reaper no longer fires on parents whose
+  children are streaming events. This is the correct behavior
+  but changes the operational profile: the rate of
+  `sessions_closed_total{reason="orphan_timeout"}` will drop on
+  fleets running heavy sub-agent workloads.
+- New metric `sessions_revived_total{trigger="child_event"}`
+  gives operators a chart of how often parent revivals happen,
+  separate from any future revival path.
+- Failed parent-bump is logged but never fails the child handler.
+  The child event still lands in the events table; the parent's
+  freshness is the optimistic side effect, not the load-bearing
+  operation. Same fail-open posture as `BackfillSubAgentLinkage`.
+
+**Related decisions.** D105 (revive stale/lost on any event for
+the OWN session — parent-bump is the cross-session generalisation
+of the same idea). D106 (lazy-create on unknown session_id —
+parent-bump's no-row branch is a no-op, mirroring the same
+"ingestion-side write happened first" assumption). D126 (sub-agent
+observability — the parent_session_id linkage that parent-bump
+follows). D152 (orphan-timeout reaper — parent-bump's primary
+real-world impact is preventing the reaper from incorrectly
+closing parents whose children are alive).
+
+**Implementation note.**
+
+- Worker (`workers/internal/writer/postgres.go`):
+  `BumpParentLastSeen(ctx, parentSessionID) (revived bool, err)`.
+- Worker (`workers/internal/processor/session.go`):
+  `bumpParentIfPresent(ctx, e)` helper called from
+  `HandleHeartbeat` and `HandlePostCall`. Skipped on
+  `HandleSessionStart` and `HandleSessionEnd` per the rationale
+  above.
+- Worker (`workers/internal/metrics/metrics.go`): `RevivalTrigger`
+  type, `RevivalTriggerChildEvent` constant, `IncrSessionRevived`
+  bumper, `sessions_revived_total{trigger=...}` line in the
+  `/metrics` handler output.
+- Architecture (`ARCHITECTURE.md`): "Parent-bump propagation"
+  paragraph in the sessions § Session state machine block;
+  `sessions_revived_total{trigger}` in the metrics inventory.
+
+**Live-stack verification.** Wire-contract matrix in
+`tests/integration/test_session_states.py`: bump on active parent,
+revive stale parent, revive lost parent, no-op on closed parent,
+and reaper-no-fire test (parent backdated past orphan timeout but
+child traffic flips it back to active before the reconciler tick
+fires). Plus playgrounds 14 / 16 / 17 + a live Claude Code Task
+spawn against a stale parent confirming swimlane stays "active"
+in Chrome instead of flipping to stale.

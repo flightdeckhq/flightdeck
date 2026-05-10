@@ -40,8 +40,11 @@ func (m *mockWriter) UpsertSession(_ context.Context, sessionID, _, _, _, _, _, 
 	return nil
 }
 
-func (m *mockWriter) InsertEvent(_ context.Context, sessionID, _, _, _ string, _, _, _ *int, _, _ *int64, _ *int, _ *string, _ bool, _ time.Time, _ []byte) (string, error) {
+func (m *mockWriter) InsertEvent(_ context.Context, sensorEventID, sessionID, _, _, _ string, _, _, _ *int, _, _ *int64, _ *int, _ *string, _ bool, _ time.Time, _ []byte) (string, error) {
 	m.eventsInserted = append(m.eventsInserted, sessionID)
+	if sensorEventID != "" {
+		return sensorEventID, nil
+	}
 	return "evt-" + sessionID, nil
 }
 
@@ -169,6 +172,40 @@ func TestProcess_RoutesPostCall(t *testing.T) {
 func TestProcess_RoutesHeartbeat(t *testing.T) {
 	e := makeEvent("heartbeat")
 	if e.EventType != "heartbeat" {
+		t.Error("event type mismatch")
+	}
+}
+
+// --- D131: MCP Protection Policy event-type routing ---
+//
+// Step 4 extends the worker's event.go switch with three new event
+// types: policy_mcp_warn / policy_mcp_block ride the existing
+// HandlePostCall path alongside policy_warn / policy_block;
+// mcp_server_name_changed rides the existing mcp_* family path.
+//
+// End-to-end persistence is exercised in
+// tests/integration/test_mcp_policy_pipeline.py against the live
+// Postgres. The unit-level shape-checks below mirror the existing
+// TestProcess_Routes* pattern: construct the event, verify the
+// EventType field round-trips.
+
+func TestProcess_RoutesPolicyMCPWarn(t *testing.T) {
+	e := makeEvent("policy_mcp_warn")
+	if e.EventType != "policy_mcp_warn" {
+		t.Error("event type mismatch")
+	}
+}
+
+func TestProcess_RoutesPolicyMCPBlock(t *testing.T) {
+	e := makeEvent("policy_mcp_block")
+	if e.EventType != "policy_mcp_block" {
+		t.Error("event type mismatch")
+	}
+}
+
+func TestProcess_RoutesMCPServerNameChanged(t *testing.T) {
+	e := makeEvent("mcp_server_name_changed")
+	if e.EventType != "mcp_server_name_changed" {
 		t.Error("event type mismatch")
 	}
 }
@@ -489,7 +526,7 @@ func TestProcessDirectiveResultEvent(t *testing.T) {
 	}
 	// Verify the mock writer handles directive_result (routes to InsertEvent, not policy)
 	w := newMockWriter()
-	_, err := w.InsertEvent(context.Background(), e.SessionID, e.Flavor, e.EventType, "", nil, nil, nil, nil, nil, nil, nil, false, time.Now(), nil)
+	_, err := w.InsertEvent(context.Background(), "", e.SessionID, e.Flavor, e.EventType, "", nil, nil, nil, nil, nil, nil, nil, false, time.Now(), nil)
 	if err != nil {
 		t.Fatalf("InsertEvent failed: %v", err)
 	}
@@ -584,5 +621,12 @@ func TestBuildEventExtraEmptyDirectiveResult(t *testing.T) {
 	}
 	if extra != nil {
 		t.Errorf("expected nil payload for empty directive_result, got %s", string(extra))
+	}
+}
+
+func TestProcess_RoutesMCPPolicyUserRemembered(t *testing.T) {
+	e := makeEvent("mcp_policy_user_remembered")
+	if e.EventType != "mcp_policy_user_remembered" {
+		t.Error("event type mismatch")
 	}
 }

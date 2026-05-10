@@ -19,8 +19,14 @@ import {
 import { TokenUsageBar } from "./TokenUsageBar";
 import { PromptViewer } from "./PromptViewer";
 import { SubAgentsTab } from "./SubAgentsTab";
+import { EnrichmentSummary } from "@/components/events/EnrichmentSummary";
+import { SurroundingEventsList } from "@/components/events/SurroundingEventsList";
 import { EventRow } from "./EventRow";
-import { createDirective, fetchOlderEvents, fetchSession, fetchSessions } from "@/lib/api";
+import { createDirective, fetchBulkEvents, fetchOlderEvents, fetchSession, fetchSessions, resolveMCPPolicy } from "@/lib/api";
+import {
+  MCPServerDecisionText,
+  type MCPServerDecision,
+} from "@/components/policy/MCPServerDecisionText";
 import { sessionSupportsDirectives } from "@/lib/directives";
 import { ClaudeCodeLogo } from "@/components/ui/claude-code-logo";
 import { CodingAgentBadge } from "@/components/ui/coding-agent-badge";
@@ -253,7 +259,26 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
   // updates cannot clobber each other's bumps.
   const [paginationVersion, setPaginationVersion] = useState(0);
 
-  const { data, loading } = useSession(sessionId, eventsLimit);
+  // D140 step 6.6 A2 — re-fetch on mcp_server_attached events for
+  // the open session so the MCP SERVERS panel populates live.
+  // Subscribes to the fleet store's lastEvent (broadcast by every
+  // WebSocket-delivered event); bumps revalidationKey when the
+  // event matches our session_id + the new event type. The
+  // revalidationKey threads into useSession as a useEffect dep so
+  // the next render fetches fresh data from the API.
+  const lastEvent = useFleetStore((s) => s.lastEvent);
+  const [revalidationKey, setRevalidationKey] = useState(0);
+  useEffect(() => {
+    if (!sessionId || !lastEvent) return;
+    if (
+      lastEvent.session_id === sessionId &&
+      lastEvent.event_type === "mcp_server_attached"
+    ) {
+      setRevalidationKey((k) => k + 1);
+    }
+  }, [lastEvent, sessionId]);
+
+  const { data, loading } = useSession(sessionId, eventsLimit, revalidationKey);
   const customDirectives = useFleetStore((s) => s.customDirectives);
   const shuttingDown = useFleetStore((s) => s.shuttingDown);
   const markShuttingDown = useFleetStore((s) => s.markShuttingDown);
@@ -795,6 +820,7 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
                   (version, protocol, capabilities, instructions). */}
               <MCPServersPanel
                 context={data.session.context}
+                flavor={data.session.flavor ?? null}
                 expanded={mcpServersExpanded}
                 onToggle={() => setMcpServersExpanded((v) => !v)}
               />
@@ -1054,8 +1080,17 @@ function RuntimePanel({ context, expanded, onToggle }: RuntimePanelProps) {
 
 interface MCPServersPanelProps {
   context: Record<string, unknown> | undefined;
+  /** Session flavor — used to resolve the per-server policy
+   *  decision pill against the right scope. Null when the
+   *  session lacks a flavor (rare; the resolve falls back to
+   *  the global policy). */
+  flavor: string | null;
   expanded: boolean;
   onToggle: () => void;
+}
+
+function serverDecisionKey(s: MCPServerEntry, idx: number): string {
+  return `${s.name ?? `unknown-${idx}`}|${s.server_url ?? ""}`;
 }
 
 interface MCPServerEntry {
@@ -1065,6 +1100,10 @@ interface MCPServerEntry {
   version?: string | null;
   capabilities?: Record<string, unknown>;
   instructions?: string | null;
+  /** D127 — server URL captured at initialize time. Empty string
+   *  when the transport didn't expose a URL marker. Required for
+   *  the MCP Protection Policy resolve pill (D131). */
+  server_url?: string;
 }
 
 /**
@@ -1085,13 +1124,95 @@ interface MCPServerEntry {
  * negotiation; we do not coerce so a future spec change is visible
  * to operators verbatim.
  */
-function MCPServersPanel({ context, expanded, onToggle }: MCPServersPanelProps) {
+function MCPServersPanel({ context, flavor, expanded, onToggle }: MCPServersPanelProps) {
   const servers = useMemo<MCPServerEntry[]>(() => {
     if (!context) return [];
     const raw = (context as { mcp_servers?: unknown }).mcp_servers;
     if (!Array.isArray(raw)) return [];
     return raw.filter((s): s is MCPServerEntry => typeof s === "object" && s !== null);
   }, [context]);
+
+  // Per-server policy decision (D131). Lazy-loaded on first
+  // expand so a session that never opens the panel doesn't fire
+  // resolve calls. Stored keyed by ``${name}|${url}`` so two
+  // servers with the same display name but different URLs each
+  // resolve independently.
+  const [decisions, setDecisions] = useState<Record<string, MCPServerDecision>>(
+    {},
+  );
+
+  useEffect(() => {
+    if (!expanded) return;
+    if (servers.length === 0) return;
+
+    const targets = servers
+      .map((s, idx) => ({
+        idx,
+        name: s.name ?? "",
+        url: s.server_url ?? "",
+        key: serverDecisionKey(s, idx),
+      }))
+      .filter((t) => decisions[t.key] === undefined);
+
+    if (targets.length === 0) return;
+
+    let cancelled = false;
+    setDecisions((prev) => {
+      const next = { ...prev };
+      for (const t of targets) {
+        next[t.key] = { kind: "loading" };
+      }
+      return next;
+    });
+
+    Promise.all(
+      targets.map(async (t) => {
+        if (!t.url || !t.name) {
+          return [t.key, { kind: "missing" } as MCPServerDecision] as const;
+        }
+        try {
+          const result = await resolveMCPPolicy({
+            flavor: flavor ?? undefined,
+            server_url: t.url,
+            server_name: t.name,
+          });
+          return [t.key, { kind: "ok", result } as MCPServerDecision] as const;
+        } catch (err) {
+          return [
+            t.key,
+            {
+              kind: "error",
+              message:
+                err instanceof Error ? err.message : "resolve failed",
+            } as MCPServerDecision,
+          ] as const;
+        }
+      }),
+    ).then((entries) => {
+      if (cancelled) return;
+      setDecisions((prev) => {
+        const next = { ...prev };
+        for (const [key, decision] of entries) {
+          next[key] = decision;
+        }
+        return next;
+      });
+    });
+
+    return () => {
+      cancelled = true;
+    };
+    // ``decisions`` is read inside the effect body to compute
+    // ``targets`` (skip already-fetched keys) but is intentionally
+    // omitted from the deps array. Including it would re-fire the
+    // effect every time setDecisions(loading) lands, triggering
+    // cleanup → cancelled=true on the in-flight Promise.all so the
+    // resolve responses never reach setDecisions(ok). Effect runs
+    // only when the underlying inputs (expanded / servers / flavor)
+    // change; the in-effect "skip already-fetched" filter handles
+    // partial-fetch state without needing reactive deps.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [expanded, servers, flavor]);
 
   if (servers.length === 0) return null;
 
@@ -1171,6 +1292,7 @@ function MCPServersPanel({ context, expanded, onToggle }: MCPServersPanelProps) 
               key={`${server.name ?? "unknown"}-${idx}`}
               server={server}
               index={idx}
+              decision={decisions[serverDecisionKey(server, idx)]}
             />
           ))}
         </div>
@@ -1189,9 +1311,11 @@ function formatServerSummary(s: MCPServerEntry): string {
 function MCPServerRow({
   server,
   index,
+  decision,
 }: {
   server: MCPServerEntry;
   index: number;
+  decision: MCPServerDecision | undefined;
 }) {
   const id = server.name ?? `unknown-${index}`;
   const protocol =
@@ -1213,8 +1337,19 @@ function MCPServerRow({
       }}
     >
       <DetailLabel>name</DetailLabel>
-      <DetailValue testId={`mcp-server-name-${id}`}>
-        {server.name ?? "unknown"}
+      <DetailValue>
+        <span className="inline-flex items-center gap-2">
+          {/* The testid scopes to the name span only so test
+              assertions like toHaveText(server.name) match the
+              name verbatim — wrapping the whole DetailValue
+              concatenated the inline decision text (e.g. "no URL"
+              from MCPServerDecisionText) into a single string
+              that broke T25's exact-text assertion. */}
+          <span data-testid={`mcp-server-name-${id}`}>
+            {server.name ?? "unknown"}
+          </span>
+          <MCPServerDecisionText decision={decision} testId={id} />
+        </span>
       </DetailValue>
       <DetailLabel>transport</DetailLabel>
       <DetailValue testId={`mcp-server-transport-${id}`}>
@@ -1277,6 +1412,7 @@ function DetailValue({
     </div>
   );
 }
+
 
 /* ---- Metadata bar (labelled grid) ---- */
 
@@ -1702,10 +1838,16 @@ function EventsLimitPills({
 
 /* ---- Event detail view (Mode 2) ---- */
 
-type DetailTab = "details" | "prompts";
+type DetailTab = "details" | "prompts" | "neighbors";
 
-function EventDetailView({ event, session, onBack }: { event: AgentEvent; session: SessionType | null; onBack: () => void }) {
+function EventDetailView({ event: initialEvent, session, onBack }: { event: AgentEvent; session: SessionType | null; onBack: () => void }) {
   const [activeTab, setActiveTab] = useState<DetailTab>("details");
+  // Local swap so the originating-jump and surrounding-events click
+  // can navigate within the detail view without bouncing back to the
+  // session timeline.
+  const [swapped, setSwapped] = useState<AgentEvent | null>(null);
+  useEffect(() => { setSwapped(null); }, [initialEvent.id]);
+  const event = swapped ?? initialEvent;
   const badge = getBadge(event.event_type);
   const summaryRows = getSummaryRows(event);
   const payload = {
@@ -1713,6 +1855,20 @@ function EventDetailView({ event, session, onBack }: { event: AgentEvent; sessio
     tokens_input: event.tokens_input, tokens_output: event.tokens_output,
     tokens_total: event.tokens_total, latency_ms: event.latency_ms,
     tool_name: event.tool_name, has_content: event.has_content, occurred_at: event.occurred_at,
+  };
+
+  const handleJumpToOriginator = async (originatingEventId: string) => {
+    try {
+      const resp = await fetchBulkEvents({
+        from: "1970-01-01T00:00:00Z",
+        session_id: event.session_id,
+        limit: 200,
+      });
+      const found = resp.events.find((e) => e.id === originatingEventId);
+      if (found) setSwapped(found);
+    } catch {
+      /* fail-open */
+    }
   };
 
   return (
@@ -1730,18 +1886,19 @@ function EventDetailView({ event, session, onBack }: { event: AgentEvent; sessio
         <span className="font-mono text-xs" style={{ color: "var(--text-muted)" }}>{truncateSessionId(session?.session_id ?? event.session_id)}</span>
       </div>
       <div className="flex h-9 shrink-0 items-end gap-4 px-4" style={{ borderBottom: "1px solid var(--border)" }}>
-        {(["details", "prompts"] as const).map((tab) => (
+        {(["details", "prompts", "neighbors"] as const).map((tab) => (
           <button key={tab} className="pb-2 text-xs font-medium capitalize transition-colors"
             style={activeTab === tab ? { color: "var(--text)", borderBottom: "2px solid var(--accent)" } : { color: "var(--text-muted)" }}
-            onClick={() => setActiveTab(tab)}>
-            {tab === "details" ? "Details" : "Prompts"}
+            onClick={() => setActiveTab(tab)}
+            data-testid={`detail-tab-${tab}`}>
+            {tab}
           </button>
         ))}
       </div>
       <div className="flex-1 overflow-y-auto">
         {activeTab === "details" && (
-          <div className="p-3" style={{ background: "var(--bg)" }}>
-            <div className="mb-3 grid gap-x-3 gap-y-1" style={{ gridTemplateColumns: "140px 1fr" }}>
+          <div className="p-3 space-y-3" style={{ background: "var(--bg)" }}>
+            <div className="grid gap-x-3 gap-y-1" style={{ gridTemplateColumns: "140px 1fr" }}>
               {summaryRows.map(([key, val]) => (
                 <div key={key} className="contents">
                   <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>{key}</span>
@@ -1749,7 +1906,8 @@ function EventDetailView({ event, session, onBack }: { event: AgentEvent; sessio
                 </div>
               ))}
             </div>
-            <div className="mb-3" style={{ borderTop: "1px solid var(--border-subtle)" }} />
+            <EnrichmentSummary event={event} onJumpToOriginator={handleJumpToOriginator} />
+            <div style={{ borderTop: "1px solid var(--border-subtle)" }} />
             <SyntaxJson data={payload} />
           </div>
         )}
@@ -1757,6 +1915,11 @@ function EventDetailView({ event, session, onBack }: { event: AgentEvent; sessio
           event.has_content
             ? <PromptViewer eventId={event.id} />
             : <div className="px-4 py-6 text-[13px]" style={{ color: "var(--text-muted)" }}>Prompt capture is not enabled for this deployment.</div>
+        )}
+        {activeTab === "neighbors" && (
+          <div className="p-3" style={{ background: "var(--bg)" }}>
+            <SurroundingEventsList event={event} onSelect={setSwapped} />
+          </div>
         )}
       </div>
     </div>

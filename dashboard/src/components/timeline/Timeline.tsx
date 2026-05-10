@@ -480,6 +480,118 @@ export function Timeline({
     connectorNonce,
   ]);
 
+  // Bucket-divider rows interleaved with VirtualizedSwimLane rows.
+  // Walks ``filteredFlavors`` once, tracking the previous ROOT
+  // flavor's bucket so a thin horizontal divider is injected at
+  // LIVE→RECENT and RECENT→IDLE transitions between parent-child
+  // clusters (no label, just a visual gap). Bucket-for reads
+  // ``last_seen_at`` against ``rawEndMs`` so it picks up the rAF
+  // pause / catch-up time source Fleet drives.
+  //
+  // Children (topology="child") are SKIPPED for divider calculation
+  // and don't advance ``prevBucket``: a parent and its sub-agents
+  // share one visual group regardless of each row's individual
+  // bucket. Without this skip the loop would inject a divider
+  // between a LIVE parent and its RECENT-bucket child (closed
+  // sub-agent), splitting the cluster mid-group. The divider key
+  // is also pinned to the flavor it precedes so duplicate
+  // (prev → next) bucket transitions across the list don't collide
+  // on a shared `bucket-live-to-recent` key — that collision was
+  // the root of the "dividers accumulate" visual artifact reported
+  // on PR #33.
+  //
+  // Declared above the conditional `flavors.length === 0` early
+  // return so the hook order stays stable on every render
+  // (rules-of-hooks). The empty-fleet branch never references
+  // ``swimlaneRows`` so the wasted memo is purely cosmetic.
+  const swimlaneRows = useMemo(() => {
+    let prevBucket: "live" | "recent" | "idle" | null = null;
+    const rendered: React.ReactNode[] = [];
+    for (const f of filteredFlavors) {
+      const isChild = topologyByFlavor.get(f.flavor) === "child";
+      const b = bucketFor(f.last_seen_at, rawEndMs);
+      if (!isChild && prevBucket !== null && b !== prevBucket) {
+        rendered.push(
+          <div
+            key={`bucket-divider-before-${f.flavor}`}
+            data-testid={`bucket-divider-${prevBucket}-${b}`}
+            aria-hidden="true"
+            style={{
+              height: 1,
+              background: "var(--border)",
+              margin: "4px 0",
+            }}
+          />,
+        );
+      }
+      rendered.push(
+        <VirtualizedSwimLane
+          key={f.flavor}
+          flavor={f.flavor}
+          agentName={f.agent_name}
+          clientType={f.client_type}
+          agentType={f.agent_type}
+          sessions={f.sessions}
+          expandedSessions={expandedSessions?.get(f.flavor)}
+          totalSessionsLifetime={f.session_count}
+          scale={scale}
+          onSessionClick={onNodeClick}
+          expanded={expandedFlavors.has(f.flavor)}
+          onToggleExpand={() => onExpandFlavor(f.flavor)}
+          timelineWidth={timelineWidth}
+          leftPanelWidth={leftPanelWidth}
+          activeFilter={activeFilter}
+          sessionVersions={sessionVersions}
+          matchingSessionIds={matchingSessionIds}
+          topology={topologyByFlavor.get(f.flavor) ?? "root"}
+          onScrollToAgent={(agentId) => {
+            // D126 § 7.fix.A — clicking the relationship pill jumps
+            // to another agent's swimlane row. We already stamp
+            // ``data-testid="swimlane-agent-row-<name>"`` on every
+            // collapsed header, but the robust selector for client-
+            // side scroll uses the agent_id itself; tag added on the
+            // SwimLane outermost wrapper for this lookup. Fallback
+            // to hash anchor when querySelector misses (e.g. the
+            // target agent isn't in the rendered viewport; the
+            // virtualizer hasn't materialized it).
+            const target = document.querySelector(
+              `[data-agent-id="${CSS.escape(agentId)}"]`,
+            );
+            if (target && "scrollIntoView" in target) {
+              (target as HTMLElement).scrollIntoView({
+                behavior: "smooth",
+                block: "center",
+              });
+            }
+          }}
+        />,
+      );
+      // Only update prevBucket on root rows. Children inherit their
+      // parent's cluster scope; advancing prevBucket on a child
+      // would compare the next root row against the child's bucket,
+      // producing a spurious divider between the cluster end and
+      // the next root.
+      if (!isChild) {
+        prevBucket = b;
+      }
+    }
+    return rendered;
+  }, [
+    filteredFlavors,
+    topologyByFlavor,
+    rawEndMs,
+    expandedSessions,
+    expandedFlavors,
+    onExpandFlavor,
+    onNodeClick,
+    scale,
+    timelineWidth,
+    leftPanelWidth,
+    activeFilter,
+    sessionVersions,
+    matchingSessionIds,
+  ]);
+
   if (flavors.length === 0) {
     return (
       <div className="flex h-64 items-center justify-center text-text-muted">
@@ -754,76 +866,7 @@ export function Timeline({
             virtualized -- it's always the top row and would defeat
             its own purpose if it flickered between spacer and real
             content. */}
-        {(() => {
-          // Track the previous flavor's bucket so a thin horizontal
-          // divider can be injected at LIVE->RECENT and RECENT->IDLE
-          // transitions (no label, just a visual gap). Bucket-for
-          // reads last_seen_at against ``rawEndMs`` so it picks up
-          // the rAF / pause / catch-up time source Fleet drives.
-          let prevBucket: "live" | "recent" | "idle" | null = null;
-          const rendered: React.ReactNode[] = [];
-          for (const f of filteredFlavors) {
-            const b = bucketFor(f.last_seen_at, rawEndMs);
-            if (prevBucket !== null && b !== prevBucket) {
-              rendered.push(
-                <div
-                  key={`bucket-${prevBucket}-to-${b}`}
-                  data-testid={`bucket-divider-${prevBucket}-${b}`}
-                  style={{
-                    height: 1,
-                    background: "var(--border)",
-                    margin: "4px 0",
-                  }}
-                />,
-              );
-            }
-            rendered.push(
-              <VirtualizedSwimLane
-                key={f.flavor}
-                flavor={f.flavor}
-                agentName={f.agent_name}
-                clientType={f.client_type}
-                agentType={f.agent_type}
-                sessions={f.sessions}
-                expandedSessions={expandedSessions?.get(f.flavor)}
-                totalSessionsLifetime={f.session_count}
-                scale={scale}
-                onSessionClick={onNodeClick}
-                expanded={expandedFlavors.has(f.flavor)}
-                onToggleExpand={() => onExpandFlavor(f.flavor)}
-                timelineWidth={timelineWidth}
-                leftPanelWidth={leftPanelWidth}
-                activeFilter={activeFilter}
-                sessionVersions={sessionVersions}
-                matchingSessionIds={matchingSessionIds}
-                topology={topologyByFlavor.get(f.flavor) ?? "root"}
-                onScrollToAgent={(agentId) => {
-                  // D126 § 7.fix.A — clicking the relationship pill
-                  // jumps to another agent's swimlane row. We
-                  // already stamp ``data-testid="swimlane-agent-row-
-                  // <name>"`` on every collapsed header, but the
-                  // robust selector for client-side scroll uses the
-                  // agent_id itself; tag added on the SwimLane
-                  // outermost wrapper for this lookup. Fallback to
-                  // hash anchor when querySelector misses (e.g. the
-                  // target agent isn't in the rendered viewport;
-                  // the virtualizer hasn't materialized it).
-                  const target = document.querySelector(
-                    `[data-agent-id="${CSS.escape(agentId)}"]`,
-                  );
-                  if (target && "scrollIntoView" in target) {
-                    (target as HTMLElement).scrollIntoView({
-                      behavior: "smooth",
-                      block: "center",
-                    });
-                  }
-                }}
-              />,
-            );
-            prevBucket = b;
-          }
-          return rendered;
-        })()}
+        {swimlaneRows}
       </div>
     </div>
   );

@@ -1,0 +1,15 @@
+# permissive-dev — dev-flavor starting posture.
+#
+# block_on_uncertainty=false on top of the global blocklist mode
+# (the deployment default per D133) means: every server is allowed
+# unless the operator adds an explicit deny entry. Same shape as the
+# default global, but explicit on a flavor — useful when an operator
+# wants the dashboard to render the policy clearly even though it's
+# functionally equivalent to "no flavor policy at all."
+#
+# Use case: dev flavor where unknown servers should pass without
+# friction so engineers can iterate on new MCP integrations.
+
+scope: flavor
+block_on_uncertainty: false
+entries: []

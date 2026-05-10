@@ -171,12 +171,19 @@ def _assert_six_event_types_with_payload_contract(session_id: str) -> None:
     payload = tc.get("payload") or {}
     server_ok = payload.get("server_name") == "flightdeck-mcp-reference"
     transport_ok = payload.get("transport") == "stdio"
-    args_ok = (payload.get("arguments") or {}).get("text") == "hello mcp"
+    # Phase 7 Step 3.b (D150): tool args migrated from inline
+    # payload.arguments to event_content.tool_input. has_content=true
+    # signals operators to fetch via /v1/events/:id/content. Demo
+    # asserts the migration: payload no longer carries arguments;
+    # has_content flips true.
+    has_content_ok = tc.get("has_content") is True
+    no_inline_args = "arguments" not in payload
     print_result("mcp_tool_call.tool_name=echo", True, 0)
     print_result("mcp_tool_call.server_name", server_ok, 0)
     print_result("mcp_tool_call.transport=stdio", transport_ok, 0)
-    print_result("mcp_tool_call.arguments round-trip", args_ok, 0)
-    if not (server_ok and transport_ok and args_ok):
+    print_result("mcp_tool_call.has_content=True (D150)", has_content_ok, 0)
+    print_result("mcp_tool_call no inline arguments (D150)", no_inline_args, 0)
+    if not (server_ok and transport_ok and has_content_ok and no_inline_args):
         raise AssertionError(f"mcp_tool_call payload mismatch: {tc!r}")
 
     # mcp_resource_read: resource_uri + content_bytes > 0.
@@ -190,14 +197,21 @@ def _assert_six_event_types_with_payload_contract(session_id: str) -> None:
     if not (uri_ok and bytes_ok):
         raise AssertionError(f"mcp_resource_read payload mismatch: {rr!r}")
 
-    # mcp_prompt_get: prompt_name + arguments round-trip.
+    # mcp_prompt_get: prompt_name + capture migrated to event_content.
     pg = by_type["mcp_prompt_get"][-1]
     pg_payload = pg.get("payload") or {}
     name_ok = pg_payload.get("prompt_name") == "greet"
-    pg_args_ok = (pg_payload.get("arguments") or {}).get("name") == "playground"
+    # Phase 7 Step 3.b (D150): prompt arguments + rendered messages
+    # migrated from inline payload to event_content. Same migration
+    # shape as mcp_tool_call.
+    pg_has_content_ok = pg.get("has_content") is True
+    pg_no_inline_args = "arguments" not in pg_payload
+    pg_no_inline_rendered = "rendered" not in pg_payload
     print_result("mcp_prompt_get.prompt_name=greet", name_ok, 0)
-    print_result("mcp_prompt_get.arguments round-trip", pg_args_ok, 0)
-    if not (name_ok and pg_args_ok):
+    print_result("mcp_prompt_get.has_content=True (D150)", pg_has_content_ok, 0)
+    print_result("mcp_prompt_get no inline arguments (D150)", pg_no_inline_args, 0)
+    print_result("mcp_prompt_get no inline rendered (D150)", pg_no_inline_rendered, 0)
+    if not (name_ok and pg_has_content_ok and pg_no_inline_args and pg_no_inline_rendered):
         raise AssertionError(f"mcp_prompt_get payload mismatch: {pg!r}")
 
     # Per-event server_name + transport consistency on EVERY MCP event.

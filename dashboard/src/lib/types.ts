@@ -28,7 +28,21 @@ export type EventType =
   | "mcp_resource_list"
   | "mcp_resource_read"
   | "mcp_prompt_list"
-  | "mcp_prompt_get";
+  | "mcp_prompt_get"
+  // MCP Protection Policy event types (D131). Two enforcement
+  // (warn / block, amber / red chroma) and two FYI (server name
+  // drift + plugin user-remembered, purple/info chroma). Filterable
+  // on Investigate via ``policy_event_type`` query param; not
+  // group-by-able on analytics (Rule 25 lock).
+  | "policy_mcp_warn"
+  | "policy_mcp_block"
+  | "mcp_server_name_changed"
+  | "mcp_policy_user_remembered"
+  // D140 step 6.6 A2 — emitted by the sensor on
+  // ClientSession.initialize so the dashboard's SessionDrawer
+  // re-fetches sessions.context.mcp_servers and the MCP SERVERS
+  // panel populates live for in-flight sessions.
+  | "mcp_server_attached";
 
 /** 14-entry structured LLM API error taxonomy. Mirrors
  *  ``sensor/flightdeck_sensor/core/errors.py::ErrorType``. */
@@ -236,7 +250,127 @@ export interface Session {
  * `event.payload` to render directive status without a separate
  * /v1/events/:id/content fetch.
  */
+/**
+ * Phase 7 Step 2 (D148): shared policy_decision payload block.
+ * Populated on every policy enforcement event (policy_warn,
+ * policy_degrade, policy_block, policy_mcp_warn, policy_mcp_block)
+ * regardless of capture_prompts — operator-actionable state metadata,
+ * not content. MCP-only fields are optional; token-budget events
+ * leave them undefined.
+ */
+export interface PolicyDecisionBlock {
+  policy_id: string;
+  scope: string;
+  decision: string;
+  reason: string;
+  decision_path?: "flavor_entry" | "global_entry" | "mode_default";
+  matched_entry_id?: string;
+  matched_entry_label?: string;
+}
+
+/**
+ * Phase 7 Step 2 (D149): originating_call_context enum. Set on MCP-
+ * policy events to identify the agent operation that tripped the
+ * policy decision.
+ */
+export type OriginatingCallContext =
+  | "tool_call"
+  | "list_tools"
+  | "read_resource"
+  | "get_prompt"
+  | "list_resources"
+  | "list_prompts"
+  | "session_boot";
+
+/**
+ * Phase 7 Step 4 (D152): close_reason taxonomy on session_end.
+ * Sensor-knowable: normal_exit / directive_shutdown / policy_block.
+ * Worker-filled (orphan-detector / sigkill-detector / post-mortem):
+ * orphan_timeout / sigkill_detected / unknown.
+ */
+export type CloseReason =
+  | "normal_exit"
+  | "directive_shutdown"
+  | "policy_block"
+  | "orphan_timeout"
+  | "sigkill_detected"
+  | "unknown";
+
+/**
+ * Phase 7 Step 4 (D152): policy_actions_summary on session_end —
+ * worker-computed tally of every policy enforcement event for the
+ * session. Operationally key for the audit's "did the operator's
+ * policy fire as expected" tuning workflow.
+ */
+export interface PolicyActionsSummary {
+  policy_warn?: number;
+  policy_degrade?: number;
+  policy_block?: number;
+  policy_mcp_warn?: number;
+  policy_mcp_block?: number;
+}
+
+/**
+ * Phase 7 Step 4 (D152): policy_entries_orphaned on
+ * mcp_server_name_changed. Worker-computed from mcp_policy_entries
+ * matching the OLD fingerprint.
+ */
+export interface PolicyEntriesOrphaned {
+  count: number;
+  sample_entry_ids: string[];
+  affected_policies: string[];
+}
+
+export interface ProviderMetadata {
+  ratelimit_remaining_tokens?: number;
+  ratelimit_remaining_requests?: number;
+  ratelimit_limit_tokens?: number;
+  processing_ms?: number;
+  request_id?: string;
+  model_info?: string;
+}
+
+export interface OutputDimensions {
+  count: number;
+  dimension: number;
+}
+
 export interface EventPayloadFields {
+  // Phase 7 Step 2 (D148/D149): operator-actionable enrichment.
+  // Schema acceptance only in this commit; renderers land in Step 6.
+  policy_decision?: PolicyDecisionBlock;
+  originating_event_id?: string;
+  originating_call_context?: OriginatingCallContext;
+
+  // Phase 7 Step 4 (D152): session lifecycle + MCP server attach
+  // enrichment. Schema acceptance only; rendering deferred to Step 6
+  // EXCEPT mcp_server_name_changed which gains an inline renderer
+  // here because it had no events.ts switch case before.
+  sensor_version?: string;
+  interceptor_versions?: Record<string, string>;
+  policy_snapshot?: {
+    token_budget?: { policy_id: string; scope: string };
+    mcp?: {
+      global_policy_id?: string;
+      flavor_policy_id?: string;
+      flavor?: string;
+    };
+  };
+  close_reason?: CloseReason;
+  policy_actions_summary?: PolicyActionsSummary;
+  last_event_id?: string;
+  policy_decision_at_attach?: PolicyDecisionBlock;
+  policy_entries_orphaned?: PolicyEntriesOrphaned;
+
+  // LLM family operator-actionable enrichment.
+  estimated_via?: "tiktoken" | "heuristic" | "none";
+  provider_metadata?: ProviderMetadata;
+  policy_decision_pre?: PolicyDecisionBlock;
+  policy_decision_post?: PolicyDecisionBlock;
+  output_dimensions?: OutputDimensions;
+  retry_attempt?: number;
+  terminal?: boolean;
+
   directive_name?: string;
   directive_action?: string;
   directive_status?: string;
@@ -741,6 +875,22 @@ export interface SessionListItem {
    * on the detail endpoint via ``Session.context.mcp_servers``.
    */
   mcp_server_names?: string[];
+  /** Distinct close_reason values across the session's session_end
+   * events. Empty array when the session has no session_end yet. */
+  close_reasons?: string[];
+  /** Distinct estimated_via values from pre_call / post_call /
+   * embeddings events. Empty array when the session has no LLM calls. */
+  estimated_via_values?: string[];
+  /** True when the session contains at least one llm_error event
+   * with terminal=true. */
+  has_terminal_error?: boolean;
+  /** Distinct matched_entry_id values from MCP-policy events. Used
+   * by the MATCHED ENTRY facet for filtering by specific policy entry. */
+  matched_entry_ids?: string[];
+  /** Distinct originating_call_context values across the session's
+   * events (the MCP method that triggered chained activity:
+   * call_tool / read_resource / list_tools / etc.). */
+  originating_call_contexts?: string[];
   /**
    * Phase 5: every distinct ``payload.error.error_type`` observed across
    * the session's MCP events (any event_type starting with ``mcp_`` whose
@@ -801,4 +951,103 @@ export interface CreatedAccessToken {
   prefix: string;
   token: string;
   created_at: string;
+}
+
+// ----- MCP Protection Policy (D128 / D131 / D139) -----
+
+/** D128 — one row in mcp_policy_entries. */
+export interface MCPPolicyEntry {
+  id: string;
+  policy_id: string;
+  server_url: string;
+  server_name: string;
+  fingerprint: string;
+  entry_kind: "allow" | "deny";
+  enforcement?: "warn" | "block" | "interactive" | null;
+  created_at: string;
+}
+
+/** D128 — one mcp_policies row + entries. */
+export interface MCPPolicy {
+  id: string;
+  scope: "global" | "flavor";
+  scope_value?: string | null;
+  mode?: "allowlist" | "blocklist" | null;
+  block_on_uncertainty: boolean;
+  created_at: string;
+  updated_at: string;
+  entries?: MCPPolicyEntry[];
+}
+
+export interface MCPPolicyMutationEntry {
+  server_url: string;
+  server_name: string;
+  entry_kind: "allow" | "deny";
+  enforcement?: "warn" | "block" | "interactive" | null;
+}
+
+/** D128 — request body for POST/PUT mutations. */
+export interface MCPPolicyMutation {
+  mode?: "allowlist" | "blocklist" | null;
+  block_on_uncertainty: boolean;
+  entries: MCPPolicyMutationEntry[];
+}
+
+/** D135 — resolve endpoint result. */
+export interface MCPPolicyResolveResult {
+  decision: "allow" | "warn" | "block";
+  decision_path: "flavor_entry" | "global_entry" | "mode_default";
+  policy_id: string;
+  scope: string;
+  fingerprint: string;
+}
+
+/** D128 — audit log row. */
+export interface MCPPolicyAuditLog {
+  id: string;
+  policy_id?: string | null;
+  event_type: string;
+  actor?: string | null;
+  payload: Record<string, unknown>;
+  occurred_at: string;
+}
+
+/** D131 — one (fingerprint, server_name, count) tuple inside an
+ *  aggregate or a time bucket. Step 6.5 renamed this from the
+ *  generic ``MCPPolicyMetricsBucket`` to free the bucket name for
+ *  the new time-bucket type. */
+export interface MCPPolicyServerCountBucket {
+  fingerprint: string;
+  server_name: string;
+  count: number;
+}
+
+/** Step 6.5 — one slot in the metrics time-series. Timestamp is
+ *  the bucket-start instant (zero-filled via SQL generate_series
+ *  so empty buckets ship through with empty Blocks / Warns
+ *  arrays). The dashboard sparkline pivots per-server and sums
+ *  block + warn counts per bucket — the per-server aggregate
+ *  table beneath the sparklines splits the warn vs block
+ *  ratio. */
+export interface MCPPolicyMetricsBucket {
+  timestamp: string;
+  blocks: MCPPolicyServerCountBucket[];
+  warns: MCPPolicyServerCountBucket[];
+}
+
+export interface MCPPolicyMetrics {
+  period: string;
+  /** "hour" for period=24h, "day" for period=7d|30d (D131 step 6.5). */
+  granularity: string;
+  buckets: MCPPolicyMetricsBucket[];
+  blocks_per_server: MCPPolicyServerCountBucket[];
+  warns_per_server: MCPPolicyServerCountBucket[];
+}
+
+/** D138 — template metadata returned by GET /templates. */
+export interface MCPPolicyTemplate {
+  name: string;
+  description: string;
+  recommended_for: string;
+  yaml_body: string;
 }

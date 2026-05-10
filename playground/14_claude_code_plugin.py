@@ -168,11 +168,18 @@ def _demo_success() -> None:
     payload = event.get("payload") or {}
     server_ok = payload.get("server_name") == "filesystem"
     tool_ok = event.get("tool_name") == "read_file"
-    args_ok = (payload.get("arguments") or {}).get("path") == "/etc/hosts"
+    # Phase 7 Step 3.b (D150): tool args migrated from inline
+    # payload.arguments to event_content.tool_input. The plugin
+    # path mirrors the sensor: has_content=true signals operators
+    # to fetch via /v1/events/:id/content; payload no longer
+    # carries arguments inline.
+    has_content_ok = event.get("has_content") is True
+    no_inline_args = "arguments" not in payload
     print_result("plugin mcp_tool_call.server_name=filesystem", server_ok, 0)
     print_result("plugin mcp_tool_call.tool_name=read_file", tool_ok, 0)
-    print_result("plugin mcp_tool_call.arguments round-trip", args_ok, 0)
-    if not (server_ok and tool_ok and args_ok):
+    print_result("plugin mcp_tool_call.has_content=True (D150)", has_content_ok, 0)
+    print_result("plugin mcp_tool_call no inline arguments (D150)", no_inline_args, 0)
+    if not (server_ok and tool_ok and has_content_ok and no_inline_args):
         raise AssertionError(f"plugin mcp_tool_call payload mismatch: {event!r}")
 
 

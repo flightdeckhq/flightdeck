@@ -83,6 +83,19 @@ type Querier interface {
 	// for a missing row so the handler can distinguish 404 from a
 	// real DB error.
 	GetAgentByID(ctx context.Context, agentID string) (*AgentSummary, error)
+
+	// MCP Protection Policy methods (D128). Implemented in
+	// mcp_policy_store.go; the SQL all lives in that file per
+	// Rule 35.
+	EnsureGlobalMCPPolicy(ctx context.Context) error
+	GetGlobalMCPPolicy(ctx context.Context) (*MCPPolicy, error)
+	GetMCPPolicy(ctx context.Context, flavor string) (*MCPPolicy, error)
+	CreateMCPPolicy(ctx context.Context, flavor string, mut MCPPolicyMutation, resolvedEntries []MCPPolicyEntry, actorTokenID *string) (*MCPPolicy, error)
+	UpdateMCPPolicy(ctx context.Context, scope, scopeValue string, mut MCPPolicyMutation, resolvedEntries []MCPPolicyEntry, actorTokenID *string, auditPayloadExtras map[string]any) (*MCPPolicy, error)
+	DeleteMCPPolicy(ctx context.Context, flavor string, actorTokenID *string) error
+	ResolveMCPPolicy(ctx context.Context, flavor, fingerprint string) (*MCPPolicyResolveResult, error)
+	ListMCPPolicyAuditLog(ctx context.Context, scope, scopeValue, eventType string, from, to *time.Time, limit, offset int) ([]MCPPolicyAuditLog, error)
+	GetMCPPolicyMetrics(ctx context.Context, scope, scopeValue, period string) (*MCPPolicyMetrics, error)
 }
 
 // WrapStore returns a Querier from any compatible implementation.
@@ -850,22 +863,33 @@ type EventContent struct {
 	Tools        any       `json:"tools"`
 	Response     any       `json:"response"`
 	Input        any       `json:"input,omitempty"`
-	CapturedAt   time.Time `json:"captured_at"`
+	// D150 (Phase 7 Step 3.b): tool_input + tool_output carry the
+	// captured arguments and result for mcp_tool_call / mcp_prompt_get
+	// / LLM-side tool_call events. The dashboard branches on event_type
+	// to render the appropriate viewer; without these fields landing
+	// in the response the operator-paid-for capture is silently lost
+	// at the read boundary.
+	ToolInput  any       `json:"tool_input,omitempty"`
+	ToolOutput any       `json:"tool_output,omitempty"`
+	CapturedAt time.Time `json:"captured_at"`
 }
 
 // GetEventContent returns the prompt content for an event.
 // Returns nil, nil when the event has no captured content.
 func (s *Store) GetEventContent(ctx context.Context, eventID string) (*EventContent, error) {
 	var ec EventContent
-	var messagesRaw, toolsRaw, responseRaw, inputRaw []byte
+	var messagesRaw, toolsRaw, responseRaw, inputRaw, toolInputRaw, toolOutputRaw []byte
 	err := s.pool.QueryRow(ctx, `
 		SELECT event_id::text, session_id::text, provider, model, system_prompt,
-		       messages, tools, response, input, captured_at
+		       messages, tools, response, input, tool_input, tool_output,
+		       captured_at
 		FROM event_content
 		WHERE event_id = $1::uuid
 	`, eventID).Scan(
 		&ec.EventID, &ec.SessionID, &ec.Provider, &ec.Model, &ec.SystemPrompt,
-		&messagesRaw, &toolsRaw, &responseRaw, &inputRaw, &ec.CapturedAt,
+		&messagesRaw, &toolsRaw, &responseRaw, &inputRaw,
+		&toolInputRaw, &toolOutputRaw,
+		&ec.CapturedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
@@ -897,6 +921,18 @@ func (s *Store) GetEventContent(ctx context.Context, eventID string) (*EventCont
 		var v any
 		if jsonErr := json.Unmarshal(inputRaw, &v); jsonErr == nil {
 			ec.Input = v
+		}
+	}
+	if toolInputRaw != nil {
+		var v any
+		if jsonErr := json.Unmarshal(toolInputRaw, &v); jsonErr == nil {
+			ec.ToolInput = v
+		}
+	}
+	if toolOutputRaw != nil {
+		var v any
+		if jsonErr := json.Unmarshal(toolOutputRaw, &v); jsonErr == nil {
+			ec.ToolOutput = v
 		}
 	}
 

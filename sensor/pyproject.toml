@@ -77,6 +77,13 @@ dev = [
     # config — sensor patching is unaffected by the version pin.
     "langchain-anthropic>=0.1,<1",
     "langchain-openai>=0.1,<1",
+    # langchain umbrella package — provides ``langchain.agents.
+    # AgentExecutor`` + ``create_tool_calling_agent`` used by the
+    # explicit-LangChain MCP-policy playground demo (24). Same
+    # <1 upper bound as the langchain-* siblings; LangChain 1.0
+    # restructured the agents API and would need a sweep before
+    # we bump.
+    "langchain>=0.3,<1",
     "llama-index-llms-anthropic>=0.1",
     "llama-index-llms-openai>=0.1",
     # MCP adapters per framework. langgraph's ToolNode + langchain

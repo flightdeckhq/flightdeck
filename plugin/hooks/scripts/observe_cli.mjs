@@ -31,6 +31,7 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import {
@@ -44,9 +45,39 @@ import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { deriveAgentId, NAMESPACE_FLIGHTDECK } from "./agent_id.mjs";
+import { canonicalizeUrl as _mcpCanonicalizeUrl } from "./mcp_identity.mjs";
+import {
+  classifyServer,
+  clearSessionPolicyCache,
+  fetchPolicies,
+  readSessionPolicyCache,
+  writeSessionPolicyCache,
+} from "./mcp_policy.mjs";
+import {
+  lookupRemembered,
+  writeRememberedDecision,
+} from "./remembered_decisions.mjs";
 import { uuid5 } from "./uuid5.mjs";
 
 const TIMEOUT_MS = 2000;
+
+// Plugin version stamped on every session_start (parity with the
+// Python sensor's wire contract). Read from the package metadata at
+// module load; falls back to a sentinel string when the file is
+// unreachable (rare — the plugin is always installed alongside its
+// package.json). Used as the ``sensor_version`` field value on
+// session_start events; ingestion's validator requires the field's
+// presence as a string but does not constrain its content.
+const PLUGIN_VERSION = (() => {
+  try {
+    const __dirname = dirname(fileURLToPath(import.meta.url));
+    const pkgPath = join(__dirname, "..", "..", "package.json");
+    const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
+    return `flightdeck-plugin/${pkg.version || "0.0.0"}`;
+  } catch {
+    return "flightdeck-plugin/unknown";
+  }
+})();
 
 // ---------------------------------------------------------------------
 // Env var resolution + defaults (D100 zero-config flow).
@@ -212,6 +243,42 @@ export function getSessionId(hookEvent = {}) {
     }
   } catch {
     return fallback();
+  }
+}
+
+// On SessionEnd we invalidate both on-disk cache files so the next
+// hook fire mints a fresh sessionId AND re-emits its own
+// session_start. Without this, subsequent /clear / re-`claude -p`
+// invocations reuse the closed session_id and the worker drops their
+// events under state=closed (per the worker's closed-skip path). The
+// session-${markerKey}.txt cache is keyed by sha256(hookEvent.
+// session_id); the started-${sessionId}.txt dedup marker is keyed by
+// the resolved sessionId (see getSessionId + ensureSessionStarted).
+// Best-effort by design — ENOENT is fine, other errors log and
+// continue so the SessionEnd emission isn't blocked.
+export function clearSessionCacheFiles(hookEvent = {}, sessionId = "") {
+  const dir = join(tmpdir(), "flightdeck-plugin");
+  let markerKey;
+  if (hookEvent && typeof hookEvent.session_id === "string" && hookEvent.session_id) {
+    markerKey = createHash("sha256")
+      .update(hookEvent.session_id)
+      .digest("hex")
+      .slice(0, 16);
+  } else {
+    markerKey = createHash("sha256").update(process.cwd()).digest("hex").slice(0, 16);
+  }
+  const targets = [`session-${markerKey}.txt`];
+  if (sessionId) targets.push(`started-${sessionId}.txt`);
+  for (const name of targets) {
+    try {
+      unlinkSync(join(dir, name));
+    } catch (err) {
+      if (!err || err.code !== "ENOENT") {
+        process.stderr.write(
+          `[flightdeck] WARN: clearSessionCacheFiles unlink ${name}: ${err.message}\n`,
+        );
+      }
+    }
   }
 }
 
@@ -819,11 +886,61 @@ async function emitMCPToolCallEvent({
     duration_ms,
     timestamp: new Date().toISOString(),
   };
-  if (argumentsCapture != null) payload.arguments = argumentsCapture;
-  if (resultCapture != null) payload.result = resultCapture;
+
+  // Phase 7 Step 3.b (D150): tool args + result migrate from inline
+  // payload to event_content's dedicated tool_input / tool_output
+  // columns. Plugin parity with the sensor's
+  // _build_tool_capture_content envelope — wire shape is
+  // byte-identical so the worker's InsertEventContent consumes
+  // both surfaces uniformly. captureToolInputs flag stays
+  // unchanged; the storage destination changes, the gating
+  // doesn't.
+  if (argumentsCapture != null || resultCapture != null) {
+    payload.has_content = true;
+    payload.content = buildToolCaptureContent({
+      toolInput: argumentsCapture,
+      toolOutput: resultCapture,
+      serverName: mcpParse.server_name || "",
+      sessionId,
+    });
+  }
   if (errorPayload != null) payload.error = errorPayload;
 
   await postEvent(cfg.server, cfg.token, sessionId, payload);
+}
+
+/**
+ * Phase 7 Step 3.b (D150) — build the event_content envelope for
+ * tool capture using the dedicated ``tool_input`` / ``tool_output``
+ * columns added by migration 000021. Mirrors the sensor's
+ * ``_build_tool_capture_content`` wire shape byte-for-byte so the
+ * worker's ``InsertEventContent`` consumes both surfaces uniformly.
+ *
+ * ``response: {}`` ships explicitly because event_content.response
+ * is NOT NULL in the pre-D150 schema — see the sensor helper for
+ * the same constraint workaround. The operationally-meaningful
+ * tool capture lives in tool_input / tool_output.
+ */
+export function buildToolCaptureContent({
+  toolInput,
+  toolOutput,
+  serverName,
+  sessionId,
+}) {
+  return {
+    system: null,
+    messages: [],
+    tools: null,
+    response: {},
+    input: null,
+    tool_input: toolInput == null ? null : toolInput,
+    tool_output: toolOutput == null ? null : toolOutput,
+    provider: "mcp",
+    model: serverName || "",
+    session_id: sessionId,
+    event_id: "",
+    captured_at: new Date().toISOString(),
+  };
 }
 
 // ---------------------------------------------------------------------
@@ -1181,6 +1298,13 @@ async function emitSubagentEvent({
     has_content: false,
     content: null,
   };
+  // Match the parent session_start contract: ingestion requires
+  // sensor_version on every session_start. Sub-agent session_start
+  // emits the same field so the wire contract holds; session_end
+  // doesn't need it but having the field doesn't break anything.
+  if (hookName === "SubagentStart") {
+    payload.sensor_version = PLUGIN_VERSION;
+  }
 
   // D126 § 6 — sub-agent message routing. Body size decides
   // whether the message lives inline on payload (≤ 8 KiB) or rides
@@ -1408,6 +1532,13 @@ async function ensureSessionStarted(server, token, sessionId, basePayload, extra
     is_subagent_call: false,
     latency_ms: null,
     timestamp: new Date().toISOString(),
+    // Ingestion requires a non-empty sensor_version on every
+    // session_start (plugin parity with the Python sensor's wire
+    // contract). Plugin reports its own version since the Python
+    // sensor version is not available here; the field's purpose is
+    // "what build emitted this session" and the plugin's own version
+    // satisfies that.
+    sensor_version: PLUGIN_VERSION,
   };
   const startContext = safeCollectContext({
     claudeCodeVersion: extras.claudeCodeVersion,
@@ -1523,6 +1654,231 @@ async function flushPostCallTurns({
 }
 
 // ---------------------------------------------------------------------
+// MCP Protection Policy hook dispatchers (D139).
+//
+// Three entry points exposed for the main() dispatch loop:
+//
+//   * dispatchMcpPolicySessionStart — fetches policies, caches per-
+//     session, emits policy_mcp_warn / policy_mcp_block for each
+//     declared MCP server's non-allow decision.
+//   * dispatchMcpPolicyPreToolUse — reads the per-session cache +
+//     remembered-decisions file fresh, writes a Claude Code hook
+//     decision (allow/deny/ask) on stdout. Returns true when a
+//     decision was emitted.
+//   * dispatchMcpPolicyPostToolUse — when an mcp__<server>__<tool>
+//     succeeded AND the server was unknown-allowlist on this session
+//     AND no remembered decision exists yet: writes the
+//     remembered-decisions file AND emits the
+//     mcp_policy_user_remembered event (reactive yes-and-remember).
+//
+// Server-name resolution: the plugin reads .mcp.json fingerprints
+// at hook time. Each fingerprint carries {name, endpoint} where
+// endpoint is the URL (http/sse) or command-and-args (stdio). The
+// canonicalizeUrl helper from mcp_identity.mjs runs the same
+// canonicalization the sensor + API use, so the fingerprint
+// derived here matches the policy's stored fingerprint byte-for-
+// byte.
+// ---------------------------------------------------------------------
+
+export async function dispatchMcpPolicySessionStart({
+  cfg,
+  hookEvent,
+  sessionId,
+  basePayload,
+}) {
+  const cwd = hookEvent.cwd || process.cwd();
+  const fingerprints = loadMcpServerFingerprints(cwd);
+  if (fingerprints.length === 0) {
+    // No MCP servers declared in .mcp.json — nothing to enforce.
+    // Don't fetch the policy; saves two HTTP calls per
+    // session_start for the common case of non-MCP projects.
+    return;
+  }
+  const flavor = process.env.AGENT_FLAVOR || null;
+  // The plugin's ``cfg.server`` is the ingestion-side base
+  // (default http://localhost:4000); the API endpoints live under
+  // ``/api``. process.env.FLIGHTDECK_API_URL overrides for prod
+  // deployments where the API is on a separate hostname.
+  const apiUrl =
+    process.env.FLIGHTDECK_API_URL
+    || `${cfg.server.replace(/\/ingest$/, "")}/api`;
+  const policies = await fetchPolicies(apiUrl, cfg.token, flavor);
+  writeSessionPolicyCache(sessionId, policies);
+
+  // Emit policy_mcp_warn / policy_mcp_block for non-allow
+  // decisions per declared server. Allow decisions stay silent —
+  // the dashboard event stream would drown in noise otherwise.
+  for (const fp of fingerprints) {
+    if (!fp.endpoint) continue;
+    const { classification, decision } = classifyServer(
+      policies, fp.endpoint, fp.name,
+    );
+    if (classification === "allow") continue;
+    const eventType =
+      classification === "block" ? "policy_mcp_block" : "policy_mcp_warn";
+    const payload = {
+      ...basePayload,
+      event_type: eventType,
+      tool_name: null,
+      tool_input: null,
+      is_subagent_call: false,
+      latency_ms: null,
+      timestamp: new Date().toISOString(),
+      server_url: fp.endpoint,
+      server_name: fp.name,
+      fingerprint: decision.fingerprint,
+      policy_id: decision.policyId,
+      scope: decision.scope,
+      decision_path: decision.decisionPath,
+    };
+    if (eventType === "policy_mcp_block") {
+      payload.block_on_uncertainty = false;
+    }
+    await postEvent(cfg.server, cfg.token, sessionId, payload);
+  }
+}
+
+export function dispatchMcpPolicyPreToolUse(cfg, hookEvent) {
+  const toolName =
+    hookEvent.tool_name
+    || hookEvent.tool_use?.name
+    || hookEvent.tool
+    || null;
+  const parsed = parseMcpToolName(toolName);
+  if (!parsed) {
+    // Not an MCP tool call — the plugin's PreToolUse has nothing
+    // to say. Returning false lets main() fall through and exit
+    // normally (no decision written; Claude Code's default
+    // approval flow applies).
+    return false;
+  }
+  const sessionId = getSessionId(hookEvent);
+  const policies = readSessionPolicyCache(sessionId);
+  if (!policies) {
+    // SessionStart didn't run successfully or the cache was
+    // cleaned up. Fail-open: no decision, let Claude Code proceed
+    // normally.
+    return false;
+  }
+
+  // Look up the server's endpoint from .mcp.json so we can
+  // canonicalize + fingerprint the same way the policy stored.
+  const fingerprints = loadMcpServerFingerprints(
+    hookEvent.cwd || process.cwd(),
+  );
+  const fp = fingerprints.find((f) => f.name === parsed.server_name);
+  if (!fp || !fp.endpoint) {
+    // Unknown server name — can't fingerprint, can't enforce.
+    // Fail-open per Rule 28.
+    return false;
+  }
+
+  // D139 fresh-read: consult the remembered-decisions file on
+  // every PreToolUse so concurrent sessions see each other's
+  // approvals in real time.
+  const decision = classifyServer(policies, fp.endpoint, fp.name);
+  if (decision.classification === "ask") {
+    const remembered = lookupRemembered(
+      cfg.token, decision.decision.fingerprint,
+    );
+    if (remembered) {
+      // Previously approved — proceed silently.
+      process.stdout.write(JSON.stringify({ decision: "allow" }) + "\n");
+      return true;
+    }
+    // No remembered approval — defer to Claude Code's built-in
+    // ask flow. The user gets a yes/no prompt; if they say yes,
+    // PostToolUse below catches the de-facto approval.
+    process.stdout.write(JSON.stringify({ decision: "ask" }) + "\n");
+    return true;
+  }
+  if (decision.classification === "block") {
+    const reason =
+      `MCP policy blocked tool call to ${fp.name} `
+      + `(${decision.decision.scope}, ${decision.decision.decisionPath})`;
+    process.stdout.write(
+      JSON.stringify({ decision: "deny", reason }) + "\n",
+    );
+    return true;
+  }
+  // allow / warn → no explicit decision; default flow applies.
+  return false;
+}
+
+export async function dispatchMcpPolicyPostToolUse({
+  cfg,
+  hookEvent,
+  sessionId,
+  basePayload,
+  toolName,
+}) {
+  const parsed = parseMcpToolName(toolName);
+  if (!parsed || !parsed.parsed || !parsed.server_name) {
+    return;
+  }
+  const policies = readSessionPolicyCache(sessionId);
+  if (!policies) return;
+  const fingerprints = loadMcpServerFingerprints(
+    hookEvent.cwd || process.cwd(),
+  );
+  const fp = fingerprints.find((f) => f.name === parsed.server_name);
+  if (!fp || !fp.endpoint) return;
+
+  const decision = classifyServer(policies, fp.endpoint, fp.name);
+  if (decision.classification !== "ask") {
+    // Either explicitly allowed/denied/warned by policy. No
+    // de-facto-approval write — the policy already has an
+    // opinion on this server.
+    return;
+  }
+  // Unknown-allowlist + tool call succeeded = de-facto approval.
+  const fingerprint = decision.decision.fingerprint;
+  if (lookupRemembered(cfg.token, fingerprint)) {
+    // Already remembered — idempotent.
+    return;
+  }
+  const decidedAt = new Date().toISOString();
+  // canonicalizeUrl is consumed inside classifyServer to compute
+  // the fingerprint; the canonical URL itself isn't on the
+  // decision record so we recompute from fp.endpoint here. Both
+  // the remembered-decisions row AND the event payload below use
+  // the same value to stay in lockstep with the policy entry.
+  const canonicalUrl = canonicalizeForRemembered(fp.endpoint);
+  writeRememberedDecision(cfg.token, {
+    fingerprint,
+    serverUrlCanonical: canonicalUrl,
+    serverName: fp.name,
+    decidedAt,
+  });
+  // Emit the operator-visibility event.
+  const payload = {
+    ...basePayload,
+    event_type: "mcp_policy_user_remembered",
+    tool_name: null,
+    tool_input: null,
+    is_subagent_call: false,
+    latency_ms: null,
+    timestamp: decidedAt,
+    server_url_canonical: canonicalUrl,
+    server_name: fp.name,
+    fingerprint,
+    flavor: basePayload.flavor,
+    decided_at: decidedAt,
+  };
+  await postEvent(cfg.server, cfg.token, sessionId, payload);
+}
+
+// Local alias: canonicalizeUrl from mcp_identity.mjs (imported at
+// the top of this file). Used by the PostToolUse de-facto-approval
+// path to compute the canonical URL form for both the remembered-
+// decisions file row AND the mcp_policy_user_remembered event
+// payload. Two call sites, one canonicalization — keeps them in
+// lockstep.
+function canonicalizeForRemembered(rawEndpoint) {
+  return _mcpCanonicalizeUrl(rawEndpoint);
+}
+
+// ---------------------------------------------------------------------
 // Main entry point.
 // ---------------------------------------------------------------------
 
@@ -1557,7 +1913,41 @@ async function main() {
   // not parent events. Routed to a dedicated dispatch below.
   const isSubagentHook =
     hookName === "SubagentStart" || hookName === "SubagentStop";
-  if (!eventType && hookName !== "PostToolUseFailure" && !isSubagentHook) {
+  // D139: PreToolUse fires for the MCP Protection Policy gate.
+  // It has no entry in EVENT_MAP because PreToolUse itself doesn't
+  // emit a wire event — it returns a hook decision (allow / deny /
+  // ask) on stdout. The branch lives in dispatchMcpPolicyPreToolUse
+  // below; let the hook through the early-return guard so it
+  // reaches the dispatch site.
+  const isMcpPolicyHook = hookName === "PreToolUse";
+  if (
+    !eventType
+    && hookName !== "PostToolUseFailure"
+    && !isSubagentHook
+    && !isMcpPolicyHook
+  ) {
+    return;
+  }
+
+  // D139 — PreToolUse MCP Protection Policy gate. Runs before the
+  // rest of the dispatch because it returns a Claude Code hook
+  // decision on stdout; the hook's job here is to gate the call,
+  // NOT to emit a wire event. (warn/block events emit at
+  // SessionStart for fleet visibility; user-remembered events emit
+  // from PostToolUse below.) Reads the per-session policy cache +
+  // the remembered-decisions file fresh on every invocation so
+  // concurrent Claude Code sessions on the same machine see each
+  // other's approvals in real time.
+  if (hookName === "PreToolUse") {
+    const decided = dispatchMcpPolicyPreToolUse(cfg, hookEvent);
+    if (decided) {
+      // Decision written to stdout; nothing else to do for this
+      // hook invocation.
+      return;
+    }
+    // Non-MCP tool call (or no policy in scope). Fall through to
+    // the early-return below — PreToolUse has no entry in
+    // EVENT_MAP so the standard branch is a no-op.
     return;
   }
 
@@ -1727,6 +2117,16 @@ async function main() {
       model,
       claudeCodeVersion: turn?.claudeCodeVersion || hookEvent.version || null,
     });
+    // D139 — fetch + cache the MCP Protection Policy and emit
+    // policy_mcp_warn / policy_mcp_block events for any non-allow
+    // decisions per declared MCP server. Best-effort; failures
+    // fail-open per Rule 28.
+    await dispatchMcpPolicySessionStart({
+      cfg,
+      hookEvent,
+      sessionId,
+      basePayload,
+    });
     return;
   }
 
@@ -1753,8 +2153,25 @@ async function main() {
       is_subagent_call: false,
       latency_ms: null,
       timestamp: new Date().toISOString(),
+      // Plugin-driven SessionEnd is always a normal exit from the
+      // operator's perspective (the user typed /exit, /clear, or the
+      // `claude -p` command completed cleanly). The worker reaper
+      // fills "orphan_timeout" on lost sessions; "sigkill_detected"
+      // is reserved for future signal-handling. Stamping explicitly
+      // here keeps the dashboard's Close Reason facet populated for
+      // every clean exit instead of falling through to the worker's
+      // unknown-default path.
+      close_reason: "normal_exit",
     };
     await postEvent(cfg.server, cfg.token, sessionId, payload);
+    // Invalidate the on-disk session caches so the next hook fire
+    // (post-/clear, re-`claude -p`, or any subsequent invocation
+    // that reuses the same Claude Code session_id) mints a fresh
+    // sessionId and emits its own session_start. Without this the
+    // worker's closed-skip path drops events under the just-ended
+    // session and the dashboard shows the row as closed/stale even
+    // while events keep landing.
+    clearSessionCacheFiles(hookEvent, sessionId);
     return;
   }
 
@@ -1783,6 +2200,10 @@ async function main() {
       turns: getTurns(),
       capturePrompts: cfg.capturePrompts,
     });
+    // D139 — clean up the per-session MCP policy marker file so
+    // $TMPDIR/flightdeck-plugin/mcp-policy-*.json doesn't grow
+    // unbounded.
+    clearSessionPolicyCache(outerSessionId);
     return;
   }
 
@@ -1864,6 +2285,30 @@ async function main() {
     } catch (err) {
       process.stderr.write(
         `flightdeck: post_call flush on PostToolUse failed: ${err?.message || err}\n`,
+      );
+    }
+    // D139 — reactive de-facto-approval write. When an
+    // mcp__<server>__<tool> call succeeded AND the server was
+    // unknown-allowlist on this session AND no remembered
+    // decision exists yet for the active token: write the
+    // remembered file AND emit mcp_policy_user_remembered.
+    // Wrapped to never crash the standard PostToolUse path.
+    try {
+      const toolNameForPolicy =
+        hookEvent.tool_name
+        || hookEvent.tool_use?.name
+        || hookEvent.tool
+        || null;
+      await dispatchMcpPolicyPostToolUse({
+        cfg,
+        hookEvent,
+        sessionId: outerSessionId,
+        basePayload,
+        toolName: toolNameForPolicy,
+      });
+    } catch (err) {
+      process.stderr.write(
+        `flightdeck: mcp policy PostToolUse failed: ${err?.message || err}\n`,
       );
     }
   }

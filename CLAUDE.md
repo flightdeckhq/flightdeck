@@ -358,6 +358,50 @@
      -- which is exactly the regression shape KI22 had until a
      manual light-theme pass caught it.
 
+40c.4. **Live-load Chrome verification after every dashboard
+     step.** When a step touches dashboard chrome (a page route,
+     a panel, a route-level component, or any UI surface end
+     users navigate to), the step does not close until the dev
+     stack has been built with branch HEAD AND the affected
+     surfaces have been opened in a real Chrome window AND the
+     happy-path interaction has been performed manually. Mock-
+     based unit tests, Vitest passing, and TypeScript clean are
+     all necessary but insufficient — they verify the contract
+     between component and props, not the contract between
+     component and the live API / WebSocket / theme stylesheet
+     / fleet store under real network conditions.
+
+     The verification log for the step must list:
+     - Which routes were opened (e.g. ``/mcp-policies``,
+       ``/investigate``, ``/fleet``).
+     - Which interactions were exercised (e.g. open dialog →
+       fill required fields → submit; trigger 403 path; open
+       SessionDrawer on a session emitting target events).
+     - Which themes were checked (rule 14 requires both).
+     - The dev-stack build SHA (so the verification is pinned to
+       branch HEAD, not a stale prod-image layer per Rule 40b).
+
+     Inherits from Rule 40a (live-stack verification). Where 40a
+     is "exercise new runtime code paths against the live stack
+     before claiming they work" and 40b is "rebuild the stack
+     with branch HEAD before pre-commit testing", 40c.4 is the
+     specialisation for dashboard chrome: a live Chrome session
+     is the only thing that surfaces theme-token gaps, fleet-WS
+     re-fetch wiring, focus traps inside Radix portals, and the
+     "Mock said handler fires, real stack says backend 500"
+     class of bug.
+
+     Why: every step in the MCP Protection Policy work surfaced
+     at least one polish gap that mocks missed and Chrome caught
+     — empty MCP SERVERS panel on a live session (D140), tab
+     overflow on small viewports, hardcoded amber-500 in the
+     soft-launch banner, "Admin token required" without an
+     actionable hint. Two-hat Chrome verification (operator
+     pretends to be a fresh user, then a hostile auditor) is the
+     only methodology that reliably surfaces these without
+     shipping them. Step 6.6 codifies the pattern after step 6
+     proved its value the hard way.
+
 40d. **Framework coverage discipline.** Any phase that adds
      framework support OR changes framework-emission behaviour
      MUST include BOTH:

@@ -37,6 +37,7 @@ export const FEED_HEIGHT_STORAGE_KEY = "flightdeck-feed-height";
 /** LocalStorage key for persisting theme preference. */
 export const THEME_STORAGE_KEY = "flightdeck-theme";
 
+
 /**
  * Width constants for the resizable left panel (flavor labels +
  * session rows) in the Timeline component. The panel state lives in

@@ -2,9 +2,22 @@
 Workers run golang-migrate on startup against FLIGHTDECK_MIGRATIONS_DIR
 (default /migrations). In docker-compose this directory is bind-mounted
 from docker/postgres/migrations. In Helm the SQL files are packaged as a
-ConfigMap and mounted into every workers pod. Files are loaded via Files.Glob
-so adding a new migration requires only a `helm upgrade` -- no template
-edit.
+ConfigMap and mounted into every workers pod.
+
+The ConfigMap is built from the helm/migrations/ directory via
+.Files.Glob. helm/migrations/ is a build artifact (gitignored; see
+DECISIONS.md D136), populated by `make -C helm sync-migrations` which
+copies from docker/postgres/migrations/ (the canonical source). The
+Makefile wires sync-migrations as a prerequisite of `lint` / `template`
+/ `install` / `upgrade`, so any of those targets refreshes the chart
+automatically. Direct `helm` commands invoked outside the Makefile
+require running `make -C helm sync-migrations` manually first; the
+chart will otherwise render an empty ConfigMap on a freshly-cloned
+tree.
+
+Adding a new migration: drop the .up.sql / .down.sql pair into
+docker/postgres/migrations/, then run any chart-render target. No
+template edit required.
 */ -}}
 apiVersion: v1
 kind: ConfigMap

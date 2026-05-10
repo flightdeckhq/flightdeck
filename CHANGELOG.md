@@ -2,6 +2,658 @@
 
 All notable changes to Flightdeck are documented here.
 
+## Unreleased — MCP Protection Policy + operator-actionable enrichment
+
+Per-flavor enforcement of which MCP servers an agent is allowed to
+talk to (D127–D132, D134–D147), plus operator-actionable enrichment
+for every event family (D148–D154) and lifecycle correctness fixes
+(plugin SessionEnd cache invalidation; worker `orphan_timeout`
+reaper completing the close_reason vocabulary). Rides on the
+existing `ClientSession` patch surface (D117) and the standard
+event pipeline. v0.6 enforces policy decisions as configured
+(block raises, warn passes through). See
+**D127–D132, D134–D154**.
+
+### Added
+
+- **Identity model.** Server identity is `(URL, name)`. URL is the
+  security key; name is display + tamper-evidence. HTTP and stdio
+  canonical forms locked. Fingerprint = sha256(canonical_url +
+  0x00 + name); first 16 hex chars displayed (D127).
+- **Two-scope policy model.** One global policy + zero or more
+  per-flavor policies. Global carries the mode (allowlist or
+  blocklist); per-flavor carries allow / deny entry deltas.
+  Auto-created empty blocklist global on install — fully
+  permissive by default (D134).
+- **Per-server resolution.** Most-specific scope wins: flavor
+  entry → global entry → global-mode default. Three-step
+  deterministic algorithm (D135).
+- **Storage schema (binding contract for migrations 000018 + 000019 + 000020).**
+  Three live tables: `mcp_policies` (live state, with empty-
+  blocklist global row seeded at install), `mcp_policy_entries`
+  (live entries), `mcp_policy_audit_log` (operator-initiated
+  mutations only — actor + diff). Schema documented in
+  ARCHITECTURE.md "MCP Protection Policy" → "Storage schema"
+  with binding-contract note (D128, D141, D142).
+- **Fetch + cache contract.** Sensor fetches at `init()` and
+  caches on Session for the session's lifetime; new policy
+  applies at the next `session_start`. Plugin fetches at
+  `SessionStart` with one-hour disk cache at
+  `~/.claude/flightdeck/mcp_policy_cache.json`. Dashboard hits
+  REST directly. Fail-open per Rule 28 on control-plane outage
+  (D129).
+- **Sensor block contract.** New typed exception
+  `flightdeck.MCPPolicyBlocked`. Block path emits
+  `policy_mcp_block`, flushes the event queue synchronously, then
+  raises so frameworks surface the failure as a tool-call error
+  (D130).
+- **Three new event types.** `policy_mcp_warn`,
+  `policy_mcp_block`, `mcp_server_name_changed`. The
+  name-changed event is sensor-emitted observation only (NOT an
+  audit-log row; the audit log records operator mutations only).
+  Auto-routes through the existing `events.>` NATS catch-all
+  (D131).
+- **Plugin remembered decisions.** Local file at
+  `~/.claude/flightdeck/remembered_mcp_decisions.json`, per-token,
+  populated by Claude Code's `PermissionRequest`
+  yes-and-remember. Lazy-syncs to control plane on a best-effort
+  basis (D132).
+- **Control-plane API surface.** Endpoints under
+  `/v1/mcp-policies` for read / resolve / mutate / audit /
+  metrics / templates / apply_template. Read-open / mutation-
+  admin auth split per D147. Contract documented in
+  ARCHITECTURE.md.
+- **`helm/Makefile sync-migrations` is now a chart-render
+  prerequisite.** `lint`, `template`, `install`, and `upgrade`
+  targets all depend on it, so chart commands always render
+  against an in-sync set of migrations. Target now `mkdir -p
+  migrations/` ahead of the copy so a freshly-cloned tree (where
+  the gitignored directory is absent) works on first invocation
+  (D136).
+
+### Changed
+
+- **Migration source-of-truth refactor (D136).**
+  `helm/migrations/` is no longer tracked in git; the directory
+  is now a build artifact populated by `helm/Makefile
+  sync-migrations` from `docker/postgres/migrations/` (the
+  canonical source). Closes the "Helm migration parity backfill"
+  Roadmap bullet inline. The 28 previously-committed
+  `helm/migrations/*.sql` files are removed in the same commit
+  that adds the `.gitignore` entry, the Makefile prerequisite
+  wiring, and the migrations-configmap.yaml header documentation
+  update.
+
+### Deprecated
+
+(none — reserved for the section)
+
+### Decisions
+
+- **D127** MCP server identity canonical form — URL is security
+  key, name is display + tamper-evidence; HTTP / stdio canonical
+  rules; sha256 hash with 0x00 separator.
+- **D128** Two-scope policy storage schema — four tables
+  (`mcp_policies` + entries + versions + audit log); binding
+  contract for migration 000018.
+- **D129** Fetch + cache contract per surface — sensor at
+  `init()`, plugin at `SessionStart` with disk TTL, dashboard
+  direct REST. Mid-session updates apply at next session start.
+- **D130** Sensor block contract — typed
+  `flightdeck.MCPPolicyBlocked` exception with synchronous flush
+  before raise.
+- **D131** Three new event types
+  (`policy_mcp_warn` / `policy_mcp_block` /
+  `mcp_server_name_changed`); name-changed is a sensor-emitted
+  EventType only, not an audit-log row.
+- **D132** Plugin remembered-decisions local file with lazy
+  control-plane sync.
+- **D133** v0.6 soft-launch warn-only default with
+  `FLIGHTDECK_MCP_POLICY_DEFAULT` escape hatch.
+  **(Superseded by D145 in step 6.8 cleanup — soft-launch
+  override removed; v0.6 enforces as configured.)**
+- **D134** Mode lives on the global policy only; per-flavor
+  carries allow / deny entry deltas. Storage CHECK enforces.
+- **D135** Per-server precedence: most-specific scope wins
+  (flavor → global → global-mode default).
+- **D136** Migration source-of-truth refactor —
+  `docker/postgres/migrations/` is canonical and tracked in git;
+  `helm/migrations/` is a build artifact (gitignored) populated by
+  `helm/Makefile sync-migrations` wired as a prerequisite of every
+  chart-render target.
+- **D138** Three locked policy templates ship with the API
+  (`strict-baseline`, `permissive-dev`,
+  `strict-with-common-allows`); the third carries a URL-
+  maintenance warning surfaced both in the YAML file header and
+  in the `description` field returned by
+  `GET /v1/mcp-policies/templates`.
+
+### Added (control-plane API)
+
+- **Control-plane endpoints under `/v1/mcp-policies/...`**
+  (kebab-plural, matching the `access-tokens` convention). Read +
+  resolve (3): `GET /global`, `GET /:flavor`, `GET /resolve`.
+  Write (4): `POST /:flavor`, `PUT /global`, `PUT /:flavor`,
+  `DELETE /:flavor`. Audit (2): `GET /:flavor/audit-log`,
+  `GET /global/audit-log`. Metrics + templates (3): `GET
+  /:flavor/metrics`, `GET /templates`, `POST /:flavor/apply_template`.
+  Plus `GET /v1/whoami` for dashboard role detection (D147).
+- **Read-open vs mutation-admin scope split per D147.** All GETs
+  accept any valid bearer token; mutations require the validator's
+  `IsAdmin=true` (production admin token or `tok_admin_dev` in
+  dev). The dashboard reads `/v1/whoami` once at session start and
+  gates mutation CTAs accordingly.
+- **Install-time seed of the empty-blocklist global policy.**
+  Migration `000019_mcp_protection_policy_seed_global` writes the
+  empty global row at install time per D141, closing the cold-
+  boot race where api beat workers to a fresh postgres and 500'd
+  every `GET /global` until manual restart. The
+  `store.EnsureGlobalMCPPolicy` boot hook stays as a defensive
+  idempotent retry for install paths that may run api before the
+  migrator.
+- **Go-side identity helper at `api/internal/mcp_identity/`**
+  mirrors the Python and Node primitives. All three implementations
+  (Python, JS, Go) load the same `tests/fixtures/mcp_identity_vectors.json`
+  and produce byte-identical fingerprints.
+- **Three policy templates** (D138) embedded via `embed.FS` from
+  `api/internal/handlers/mcp_policy_templates/*.yaml`. Templates
+  surface via `GET /v1/mcp-policies/templates` and apply via
+  `POST :flavor/apply_template` (idempotent PUT-replace, bumps
+  version, audit-log entry carries `applied_template=<name>`).
+
+### Added (sensor enforcement)
+
+- **Sensor-side enforcement at `ClientSession.call_tool`** (D130).
+  The MCP interceptor's existing call-tool wrapper consults the
+  per-session policy cache; emits `POLICY_MCP_WARN` and proceeds
+  on warn decisions, emits `POLICY_MCP_BLOCK` + flushes the queue
+  + raises typed `flightdeck.MCPPolicyBlocked` on block decisions.
+  Frameworks surface the block as a tool-call failure in the agent
+  reasoning loop. Initialize-time wrapper additionally emits
+  `MCP_SERVER_NAME_CHANGED` when a known canonical URL appears
+  under a new declared name (D131).
+- **Three new EventType enum members** — `POLICY_MCP_WARN`,
+  `POLICY_MCP_BLOCK`, `MCP_SERVER_NAME_CHANGED`. NATS subjects auto-
+  routed via the existing `events.>` catch-all; the worker switch
+  extends to persist them through the standard pipeline (D131).
+- **`MCPPolicyCache`** at `sensor/flightdeck_sensor/core/mcp_policy.py`
+  — fetches the global + flavor policies at session preflight (two
+  HTTP calls alongside the existing token-policy fetch), caches the
+  D135 resolution algorithm's inputs in memory for the session's
+  lifetime. Refresh on `policy_update` directive applies at the next
+  `session_start` so in-flight sessions keep their policy regime
+  (D129).
+- **`init(mcp_block_on_uncertainty=True)` kwarg** — operator failsafe
+  for the cache-miss + control-plane-unreachable path. When the
+  policy fetch fails AND this kwarg is true, MCP tool calls block
+  with `decision_path="mode_default"` so a paranoid deployment
+  doesn't fall open silently. Default is `False`; operators opt in
+  per agent.
+### Added (ingestion + worker)
+
+- **Ingestion payload validation** for the three new event types
+  (Rule 36). Missing `fingerprint` / `server_url` / `decision_path`
+  / `policy_id` on warn / block events rejects with 400 at the API
+  boundary; missing `fingerprint_old` / `fingerprint_new` /
+  `name_old` / `name_new` on the name-changed event rejects with
+  400.
+- **Worker persistence** — the existing `event.go` switch extends
+  to route `policy_mcp_warn` / `policy_mcp_block` (alongside the
+  pre-existing `policy_warn` / `policy_block`) and
+  `mcp_server_name_changed` (alongside the pre-existing `mcp_*`
+  family). InsertEvent inserts the event_type + full payload as
+  before; no schema or insert-path change.
+
+### Added (playground demos)
+
+- **Six new Rule 40d playground demos** at `playground/18_*` through
+  `playground/23_*` (numbers 16/17 are already taken by the D126
+  sub-agent demos):
+  - `18_mcp_policy_warn.py` — flavor deny+warn entry; POLICY_MCP_WARN
+    lands; tool call proceeds.
+  - `19_mcp_policy_block.py` — flavor deny+block entry;
+    POLICY_MCP_BLOCK lands; MCPPolicyBlocked raised.
+  - `20_mcp_policy_block_on_uncertainty.py` — invalid api_url +
+    `mcp_block_on_uncertainty=True`; block fires from the local
+    failsafe with `decision_path=mode_default`,
+    `scope=local_failsafe`.
+  - `21_mcp_policy_blocklist.py` — global blocklist + global deny
+    entry; block fires via `decision_path=global_entry`. Mutates
+    the global policy; restores at end.
+  - `22_mcp_policy_crewai.py` — CrewAI transitive coverage via
+    `mcpadapt`. Self-skips without `ANTHROPIC_API_KEY` +
+    `OPENAI_API_KEY`.
+  - `23_mcp_policy_langgraph.py` — LangGraph transitive coverage
+    via `langchain-mcp-adapters`. Self-skips without
+    `ANTHROPIC_API_KEY`.
+- **New Make targets:** `playground-mcp-policy-warn`,
+  `playground-mcp-policy-block`,
+  `playground-mcp-policy-block-on-uncertainty`,
+  `playground-mcp-policy-blocklist`,
+  `playground-mcp-policy-crewai`,
+  `playground-mcp-policy-langgraph`. Each follows Rule 40a.A
+  (meaningful flavor + agent_type) and 40a.B (capture_prompts=True).
+
+### Added (plugin enforcement)
+
+- **Plugin SessionStart MCP policy fetch + cache (D139).** The
+  Claude Code plugin's `observe_cli.mjs` dispatcher branches on
+  `SessionStart` to read `.mcp.json`, fingerprint each declared
+  server via the step-2 identity primitive, and batch-fetch
+  global + flavor policies in parallel via
+  `GET /v1/mcp-policies/global` + `GET /v1/mcp-policies/{flavor}`.
+  Decisions cache to `$TMPDIR/flightdeck-plugin/mcp-policy-<session_id>.json`
+  for the session's lifetime. Non-`allow` decisions emit
+  `policy_mcp_warn` / `policy_mcp_block` events at session boot
+  for fleet visibility. Fail-open per Rule 28.
+- **Plugin PreToolUse per-call gate.** `mcp__<server>__<tool>`
+  calls hit the cached policy + the remembered-decisions file
+  (read fresh per invocation so concurrent Claude Code sessions
+  see each other's approvals in real time). The hook returns
+  `{decision: "deny", reason: "..."}` for block, `{decision:
+  "ask"}` for unknown-allowlist + interactive (Claude Code's
+  built-in yes/no prompt), and proceeds normally for allow /
+  warn / remembered-allow.
+- **Plugin PostToolUse reactive de-facto-approval write (D139).**
+  When an `mcp__<server>__<tool>` call succeeds AND the server
+  was unknown-allowlist on this session AND no remembered
+  decision exists yet for the active token: the plugin writes
+  `~/.claude/flightdeck/remembered_mcp_decisions-<tokenPrefix>.json`
+  AND emits `mcp_policy_user_remembered` event. The reactive
+  flow is the closest functional equivalent given Claude Code's
+  built-in `ask` returns yes/no only with no built-in "remember"
+  affordance — documented in D139's body.
+- **New event type `mcp_policy_user_remembered`** — emitted by
+  the plugin (not the sensor) directly via the standard
+  ingestion HTTP POST path. Ingestion validates required fields
+  at the API boundary; workers project the payload onto
+  `events.payload` via the existing BuildEventExtra path.
+- **Two new plugin helper modules:**
+  `plugin/hooks/scripts/mcp_policy.mjs` (fetch + evaluate +
+  per-session cache) and
+  `plugin/hooks/scripts/remembered_decisions.mjs` (per-token
+  local cache with atomic temp-file + rename writes). Both ship
+  zero npm dependencies — only `node:crypto`, `node:fs`,
+  `node:path`, the `URL` global, and `process.env`. Imports the
+  step-2 `mcp_identity.mjs` primitive for the cross-language
+  fingerprint contract.
+- **`Stop` hook cleanup** of the per-session policy marker file
+  so `$TMPDIR/flightdeck-plugin/mcp-policy-*.json` doesn't grow
+  unbounded.
+
+### Decisions
+
+- **D139** Plugin yes-and-remember semantics: local cache + emit
+  `mcp_policy_user_remembered` event. No policy mutation. Reactive
+  PreToolUse-`ask` + PostToolUse-de-facto-approval flow given
+  Claude Code's `ask` is yes/no only.
+
+### Added (dashboard surfaces)
+
+- **MCP Protection sub-tab on the unified `/policies` page**
+  (D146). Token Budget is the other sub-tab; Token Budget is the
+  default on visit. `?policy=mcp` deep-links to MCP Protection.
+  Within the sub-tab: shadcn `<Select>` scope picker (Global +
+  per-flavor) with URL-synced active scope. Mode toggle editable
+  on Global only (D134); BOU toggle editable per-scope.
+- **Entry table** with search / sort / multi-select / status
+  pills. Skeleton-row loaders, teaching empty-state copy
+  ("Add your first allow rule to start gating this flavor").
+  Empty-state quick-start link: when `entries.length === 0` AND
+  no template applied this session, "Quick start: apply a
+  template →" opens a dropdown of the three templates with
+  one-line descriptions; apply hides the link for the rest of
+  the session.
+- **Add / edit dialog** with debounced (300ms) live fingerprint
+  preview via `GET /v1/mcp-policies/resolve`. Three identity
+  implementations remain locked (Python / Node mjs / Go); the
+  dashboard reuses the server-side canonicalisation rather than
+  introducing a fourth TypeScript port (Step 6 plan amendment 2).
+- **Resolve preview panel** (collapsible). Renders decision +
+  decision_path + scope + fingerprint.
+- **Audit trail panel.** Paginated table with event_type / actor
+  / date filters; expandable per-row payload JSON.
+- **Tooltips lifted verbatim** from ARCHITECTURE.md sub-sections
+  (identity model, mode semantics).
+- **Adjacent surfaces extensions:**
+  - Fleet sidebar `PolicyEvents` panel renders the four new
+    MCP-policy event types with a chroma hierarchy that
+    separates enforcement from FYI: amber (warn), red (block),
+    purple/info (name_changed, user_remembered). No themes.css
+    edit; reuses existing CSS variables (Step 6 plan
+    amendment 1).
+  - Investigate event-type chip picker carries dedicated chips
+    for the four MCP-policy event types under their own
+    collapsible "MCP POLICY" facet group. No new analytics
+    dimension (Rule 25 lock).
+  - SessionDrawer `MCPServersPanel` rows render the policy
+    decision as inline coloured text next to the server name
+    (`[server-name] · ALLOW` / `WARN` / `BLOCK` /
+    `BLOCK (default)`) using the existing chroma family. The
+    pill design tried twice in step 6.7 is dropped — inline
+    text passes the 1-second-glance bar where the pill
+    didn't.
+- **New shadcn/ui Tabs primitive** at `components/ui/tabs.tsx`
+  wrapping the `@radix-ui/react-tabs` dependency. Reused for
+  the unified `/policies` page sub-tabs (D146).
+
+### Changed (step 6.5)
+
+- **Metrics endpoint time-series.** `GET /v1/mcp-policies/:flavor/metrics`
+  now returns `granularity` ("hour" for `period=24h`, "day" for
+  `period=7d` / `30d`) and a zero-filled `buckets` array
+  alongside the existing per-server aggregates. The dashboard
+  metrics panel switches from a stacked horizontal bar to a
+  Recharts `LineChart` — one line per server, summed
+  block + warn per bucket — with the per-server warn / block
+  split rendered as a small table beneath the sparklines.
+  Zero-fill via SQL `generate_series` so empty buckets ship
+  through with empty `Blocks` / `Warns` arrays — sparse data
+  on a security dashboard would render 3 days of nothing
+  followed by a spike as a gradual ramp, which misleads.
+  Pre-step-6.5 callers that read `blocks_per_server` /
+  `warns_per_server` continue working unchanged.
+
+### Added (step 6.5 playground demos)
+
+- **`24_mcp_policy_langchain.py`** — explicit-LangChain MCP
+  policy demo via `langchain-mcp-adapters`. Three back-to-back
+  scenarios (warn + block + allow) with policy events asserted
+  per scenario. Fills the Rule 40d coverage gap LangGraph
+  (demo 23) covers transitively but not for the explicit
+  LangChain `AgentExecutor` + `create_tool_calling_agent`
+  invocation pattern.
+- **`25_mcp_policy_llamaindex.py`** — LlamaIndex MCP policy
+  demo via `llama-index-tools-mcp` (a different adapter
+  package than `langchain-mcp-adapters` — independent drift
+  surface). Same warn / block / allow shape. Carries an
+  inline note about lazy-importing `BasicMCPClient` /
+  `McpToolSpec` after `flightdeck_sensor.patch()` runs;
+  llama-index's module-import time captures `stdio_client`
+  before the patch otherwise.
+- **`langchain>=0.3,<1`** added to sensor dev extras (was
+  missing the umbrella package — only the
+  `langchain-anthropic` / `langchain-openai` /
+  `langchain-mcp-adapters` siblings were listed).
+- **New `flightdeck_sensor.compat.crewai_mcp` module** with
+  `crewai_mcp_schema_fixup()` helper. Strips
+  JSON-Schema-2020-12-invalid keys from CrewAI tools'
+  `args_schema` serialisation (empty `anyOf`, null `enum` /
+  `items`, empty `properties` paired with empty `anyOf`) and
+  infers a missing `type` from the property's default value
+  when the empty `anyOf` was the previous type carrier. Mutates
+  each tool's `args_schema` Pydantic class so every downstream
+  consumer (CrewAI's `generate_model_description`, the LLM
+  provider's tool-conversion path, raw `model_json_schema()`
+  calls) sees the cleaned schema. Idempotent. Workaround for an
+  upstream mcpadapt schema-generation bug; see README "Known
+  framework constraints" for the operator-facing explanation
+  and the Roadmap for the removal checkbox.
+
+### Added (step 6.6 — live MCP server population + UI polish)
+
+- **`mcp_server_attached` event type (D140).** Sensor emits
+  whenever an MCP server is initialised after `session_start`,
+  carrying the full fingerprint (URL canonical, name, transport,
+  protocol version, version, capabilities, instructions,
+  attached_at). Worker projects into `sessions.context.mcp_servers`
+  via idempotent UPSERT-with-dedup keyed on `(name, server_url)`
+  — no `context.mcp_servers` schema change. Closes the gap where
+  the SessionDrawer's MCP SERVERS panel rendered empty for live
+  in-flight sessions whose MCP servers attached after
+  `session_start` (the common case for `mcpadapt`-style agents).
+  Fail-open per Rule 27.
+- **Live SessionDrawer re-fetch via fleet WebSocket.**
+  `useFleetStore` gains a `lastEvent` field; SessionDrawer bumps
+  a `revalidationKey` when an `mcp_server_attached` event arrives
+  on the matching session, and `useSession` re-fetches the
+  session detail. MCP SERVERS panel populates within 2-3s of an
+  attach.
+- **Dedicated MCP POLICY facet on Investigate.** The four
+  MCP-policy event types (`policy_mcp_warn`, `policy_mcp_block`,
+  `mcp_server_name_changed`, `mcp_policy_user_remembered`) split
+  out of the generic POLICY facet into their own collapsible
+  filter group so operators can isolate MCP-policy traffic
+  without filtering it out of every other policy view.
+- **Rule 40c.4 in CLAUDE.md.** Codifies the live-load Chrome
+  verification pattern as a hard rule for every dashboard step.
+  Mocks-passing is necessary but insufficient; surfaces must be
+  opened in real Chrome against branch HEAD with the
+  build SHA logged in the verification report.
+
+### Changed (step 6.6 — MCP Policies UX polish)
+
+- **Tab overflow.** ``Tabs`` replaced by a shadcn ``Select``
+  scope picker with an "Editing scope" label and a
+  ``N flavor(s) + Global`` / ``Global only — no flavor activity
+  yet`` context note. Scales linearly with flavor count rather
+  than horizontal-scrolling at 6+ flavors.
+- **Mode toggle prominence.** ``MCPPolicyHeader`` rebuilt as two
+  stacked sections — "Policy mode" header + segmented control
+  + Allow-list / Block-list descriptive copy, plus a separate
+  "Block on uncertainty" sub-section that's hidden entirely
+  under blocklist mode (D134 only-meaningful-in-allowlist;
+  hide-rather-than-grey precedent: Salesforce / Atlassian /
+  Linear). Server-side BOU value persists across mode flips.
+- **Form validation timing.** Entry dialog defers the red
+  "URL is required" list until the operator's first submit
+  attempt — opening the dialog with empty fields no longer reads
+  as "the form is broken before I've typed anything".
+- **Admin-token error CTAs (9 sites).** Every "Admin token
+  required" error funnels through a single
+  ``adminTokenError(action)`` helper in ``lib/api.ts`` that
+  appends actionable localStorage instructions:
+  "Set the flightdeck-access-token localStorage key in this
+  browser to an admin-scoped token (DevTools → Application →
+  Local Storage), then reload."
+- **Audit pager hide-on-empty.** Pager skips render on the
+  first-page empty state — no more "0–0 on this page" with
+  greyed-out Prev/Next next to an empty card.
+- **Audit empty-state hint.** "No audit log entries yet." gets
+  a second muted line: "Adding an entry, changing the mode, or
+  importing YAML creates an entry here."
+- **Active scope styling.** Scope-picker SelectTrigger gets an
+  accent left-border + font-semibold so the scope being edited
+  reads as the page's primary context, not just a dropdown
+  control.
+
+### Removed (step 6.8 cleanup)
+
+- **Version history feature (D142).** Per-PUT snapshot table
+  ``mcp_policy_versions`` and the version-bump column on
+  ``mcp_policies`` retire (migration 000020). Three control-plane
+  endpoints removed: ``GET /:flavor/versions``,
+  ``GET /:flavor/versions/:version_id``, ``GET /:flavor/diff``.
+  Dashboard removes the version-list panel and diff viewer. The
+  audit log carries the modification trail; reintroduction is on
+  the README Roadmap.
+- **Dry-run preview feature (D143).** ``POST /:flavor/dry_run``
+  endpoint, store method, and the dashboard Recharts stacked-bar
+  preview retire. The replay-via-``sessions.context.mcp_servers``
+  binding strategy (D137) had structural unresolvable-count
+  limits that didn't justify the implementation surface for v0.6.
+  Operators iterate via add-entry → observe live events.
+  Reintroduction on the Roadmap.
+- **YAML import / export (D144).** Two endpoints removed:
+  ``POST /:flavor/import``, ``GET /:flavor/export``. Dashboard
+  textarea editor removed. The templates endpoints
+  (``/templates``, ``/apply_template``) stay — those are server-
+  owned YAML and have small surface area. Reintroduction on the
+  Roadmap.
+- **Soft-launch banner + override behavior (D145, supersedes
+  D133).** Sensor ``apply_soft_launch`` removed; ``policy_mcp_block``
+  decisions emit ``policy_mcp_block`` and raise ``MCPPolicyBlocked``
+  per D130. ``FLIGHTDECK_MCP_POLICY_DEFAULT`` env var removed.
+  ``would_have_blocked`` payload field removed everywhere it
+  threaded (event-payload type, ingestion validation, dashboard
+  renderers, swagger, tests). Dashboard ``MCPSoftLaunchBanner``
+  + ``SOFT_LAUNCH_ACTIVE`` constant removed. Pre-v0.6 has no
+  users to protect against blast-radius; v0.6 enforces as
+  configured.
+- **Metrics panel from MCP Policies management surface.** The
+  ``GET /:flavor/metrics`` endpoint and store method STAY (read-
+  open per D147; analytics or future surfaces may consume); only
+  the dashboard panel on the policy management screen is removed.
+- **Templates as primary picker.** The 3-card grid on the policy
+  management page is removed. The ``/templates`` and
+  ``/apply_template`` endpoints stay. Templates surface as a
+  single "Quick start: apply a template →" link in the empty
+  state when ``entries.length === 0`` AND no template applied
+  this session.
+- **`/mcp-policies` route (D146).** Hard 404; no redirect. Pre-
+  v0.6 has no users with bookmarks to break.
+
+### Changed (step 6.8 cleanup)
+
+- **Unified `/policies` page (D146).** Token Budget and MCP
+  Protection live as sub-tabs under one route. Default tab Token
+  Budget; ``?policy=mcp`` deep-links MCP Protection. The shadcn
+  ``<Tabs>`` primitive added in step 6/6.5 powers the sub-tabs.
+- **Read-open / mutation-admin auth split (D147).** All MCP
+  policy GETs accept any authenticated bearer token; mutations
+  require the validator's ``IsAdmin=true``. The previously
+  aspirational "read-only vs admin-grade" designation becomes
+  real — a new ``adminGate()`` middleware wraps mutations and
+  returns 403 for ``IsAdmin=false`` tokens.
+- **Mode toggle visual treatment.** Active option carries a
+  solid background fill (var(--primary)) with white text and a
+  subtle shadow; inactive options are transparent background +
+  muted text. 150ms ease-out transition on background-color and
+  color, no layout reflow on click. Keyboard arrow keys move
+  active state. Replaces the prior text-color-only segmented-
+  control.
+- **MCP server policy decision rendering (SessionDrawer).** The
+  pill drops in favour of inline coloured text next to the
+  server name: ``[server-name] · ALLOW`` / ``WARN`` / ``BLOCK``
+  / ``BLOCK (default)``. Same chroma family as before; mode-
+  default rendered with reduced opacity + italic. The pill
+  design failed the 1-second-glance bar in two iterations.
+- **Audit transaction simplification.** Mutation transactions
+  drop the version-bump and snapshot-write steps (D142).
+  Five-step transaction: SELECT FOR UPDATE → UPDATE policy →
+  DELETE entries → INSERT new entries → INSERT audit-log entry.
+
+### Added (step 6.8 cleanup)
+
+- **`GET /v1/whoami`** (D147). Returns ``{role: "admin"|"viewer",
+  token_id}`` for the authenticated bearer. The dashboard calls
+  this once at session start (App.tsx / auth context bootstrap),
+  stores the role, and components that render mutation buttons
+  gate on ``role === "admin"``. Read-open scope.
+- **Viewer-mode dashboard treatment.** Mode toggle: disabled +
+  tooltip ("Read-only — admin token required to change mode").
+  Add Entry / row edit/delete / template apply: hidden entirely.
+  The previous "Admin token required" inline error wall is gone
+  because reads are open now.
+
+### Decisions (step 6.8 cleanup)
+
+- **D142** Drop MCP policy version history; audit log is the
+  durable primitive. Migration 000020 drops the
+  ``mcp_policy_versions`` table and the ``version`` column.
+- **D143** Drop dry-run preview from v0.6.
+- **D144** Drop YAML import/export from v0.6; UI is the canonical
+  edit path. Templates endpoints stay.
+- **D145** Drop soft-launch banner + override behavior.
+  Supersedes D133.
+- **D146** Unified ``/policies`` page (Token Budget + MCP
+  Protection sub-tabs). Hard 404 on ``/mcp-policies``.
+- **D147** Read-open / mutation-admin auth split for MCP policy
+  endpoints. New ``GET /v1/whoami``.
+
+### Added (Phase 7 — operator-actionable enrichment)
+
+- **D148 — shared `policy_decision` block.** Every policy event
+  (warn / degrade / block / mcp_warn / mcp_block /
+  mcp_server_attached / mcp_server_name_changed) now carries a
+  uniform `policy_decision` summary
+  (`{policy_id, scope, decision, reason}`) so operators read one
+  shape across the policy event family.
+- **D149 — sensor-minted UUIDs + `originating_event_id` chain.**
+  Sensor mints the event UUID at emission time and stamps
+  `originating_event_id` on follow-on events emitted within the
+  same call window. The dashboard renders an intra-session jump
+  affordance from any chained event back to its origin.
+- **D150 — `event_content` `tool_input` / `tool_output` columns.**
+  MCP tool capture (`mcp_tool_call`, `mcp_prompt_get`) and
+  LLM-side `tool_call` events now route arguments + results
+  through dedicated columns instead of the LLM-prompt-style
+  repurposing of `messages` / `response`. Migration 000021 adds
+  the columns; sensor + plugin route to them when
+  `capture_prompts=True`.
+- **D151 — MCP enforcement on all server-access paths.** The
+  policy enforcement that originally gated `call_tool` is now
+  generalized across all six MCP paths
+  (`call_tool`, `list_tools`, `read_resource`, `list_resources`,
+  `get_prompt`, `list_prompts`) so a deny entry blocks every
+  surface, not just the tool-call hot path. `mcp_tool_call`
+  events carry an `originating_call_context` field naming
+  the path.
+- **D152 — session lifecycle operator-actionable enrichment.**
+  `session_start` adds `sensor_version` + `interceptor_versions`
+  + `policy_snapshot`. `session_end` adds the `close_reason`
+  enum (`normal_exit` / `directive_shutdown` / `policy_block` /
+  `orphan_timeout` / `sigkill_detected` / `unknown`),
+  `policy_actions_summary`, and `last_event_id`. New
+  `mcp_server_name_changed` event type detects display-name
+  drift on a stable URL.
+- **D153 — LLM family operator-actionable enrichment.**
+  `pre_call` / `post_call` carry `estimated_via` (which estimator
+  produced the token count), `policy_decision_pre` (what the
+  policy would have done before the call), `provider_metadata`
+  (per-provider attributes the operator wants in the timeline).
+  `embeddings` carries `output_dimensions`. `llm_error` carries
+  `retry_attempt` + `terminal` so retry chains read at a glance.
+- **D154 — dashboard surface for operator-actionable enrichment.**
+  Five new sidebar facets on Investigate (CLOSE REASON, POLICY
+  EVENT TYPES, ERROR TYPES, MCP SERVER NAMES, ESTIMATED VIA)
+  backed by per-session aggregate columns and a
+  `GET /v1/sessions` filter expansion. `EnrichmentSummary`
+  renders per-event chips for every D152/D153 field. SessionDrawer
+  MCP SERVERS panel renders per-server policy decisions inline.
+- **Plugin SessionEnd cache invalidation.** Plugin's `SessionEnd`
+  hook now invalidates the on-disk session-id cache so the
+  next interaction mints a fresh `session_id` rather than
+  reusing the closed one (which the worker's closed-skip path
+  silently dropped). Sub-agents from a still-live parent now
+  nest correctly under the live parent in the Investigate
+  swimlane instead of rendering as top-level orphans.
+- **Worker `orphan_timeout` reaper.** Reconciler now closes
+  `lost` sessions that have been silent past
+  `FLIGHTDECK_ORPHAN_TIMEOUT_HOURS` (default 24h), stamping
+  `close_reason=orphan_timeout` via a synthetic `session_end`
+  event so the dashboard's CloseReason facet surfaces the
+  reconciler's verdict alongside happy-path shutdowns.
+
+### Decisions (Phase 7 enrichment)
+
+- **D148** Shared `policy_decision` block on every policy event.
+- **D149** Sensor-minted UUIDs + `originating_event_id` chain.
+- **D150** `event_content` `tool_input` / `tool_output` columns;
+  migration 000021.
+- **D151** MCP policy enforcement on all six server-access paths.
+- **D152** Session lifecycle operator-actionable enrichment +
+  `close_reason` vocabulary + `mcp_server_name_changed` event.
+- **D153** LLM family operator-actionable enrichment.
+- **D154** Dashboard surface for operator-actionable enrichment.
+
+### Fixed
+
+- **Cold-boot 500 on `GET /v1/mcp-policies/global` after
+  `make dev-reset`.** The empty-blocklist global policy row is
+  now seeded by migration `000019_mcp_protection_policy_seed_global`
+  per **D141**, not by the `EnsureGlobalMCPPolicy` boot hook. On a
+  fresh stack postgres → workers + api came up in parallel, api's
+  boot hook raced workers' migrator to a postgres without
+  `mcp_policies`, the call failed silently with
+  `relation "mcp_policies" does not exist`, and every subsequent
+  `GET /v1/mcp-policies/global` returned 500 with
+  `global policy missing; restart API to auto-create` until manual
+  api restart. The migrator now owns the row; the boot hook stays
+  as a defensive idempotent retry for install paths that may run
+  api before the migrator (e.g. future operator-managed Helm
+  charts).
+
 ## Unreleased — Sub-agent observability
 
 First-class events, identity, and dashboard surfaces for sub-agent

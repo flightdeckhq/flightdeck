@@ -31,13 +31,12 @@ class AnthropicProvider:
     def __init__(self, capture_prompts: bool = False) -> None:
         self._capture_prompts = capture_prompts
 
-    def estimate_tokens(self, request_kwargs: dict[str, Any]) -> int:
-        """Estimate input tokens before the call.
+    def estimate_tokens(self, request_kwargs: dict[str, Any]) -> tuple[int, str]:
+        """Estimate input tokens; returns ``(count, source)``.
 
-        Attempts the Anthropic SDK ``count_tokens`` method first for
-        accurate counts.  Falls back to ``len(str(...)) // 4`` when the
-        SDK is not installed or ``count_tokens`` fails for any reason.
-        Never raises.
+        Source is ``"tiktoken"`` for the SDK ``count_tokens`` path,
+        ``"heuristic"`` for the char/4 fallback, or ``"none"`` when
+        extraction fails.
         """
         try:
             import anthropic as _anthropic
@@ -50,20 +49,63 @@ class AnthropicProvider:
                 system=request_kwargs.get("system", ""),
                 tools=request_kwargs.get("tools", []),
             ).input_tokens
-            return count
+            return count, "tiktoken"
         except Exception:
             _log.debug("SDK count_tokens failed, using char heuristic", exc_info=True)
 
-        # Fallback: character-based heuristic
         try:
             messages = request_kwargs.get("messages", [])
             system = request_kwargs.get("system", "")
             tools = request_kwargs.get("tools", [])
             text = str(messages) + str(system) + str(tools)
-            return len(text) // _CHARS_PER_TOKEN_ESTIMATE
+            return len(text) // _CHARS_PER_TOKEN_ESTIMATE, "heuristic"
         except Exception:
             _log.debug("char estimation failed", exc_info=True)
-            return 0
+            return 0, "none"
+
+    def extract_response_metadata(self, response: Any) -> dict[str, Any] | None:
+        """Pull rate-limit headers + request id from anthropic responses."""
+        try:
+            obj = response
+            with contextlib.suppress(Exception):
+                if hasattr(obj, "parse") and callable(obj.parse):
+                    obj = obj.parse()
+            headers: Any = None
+            for attr in ("headers", "_headers", "response_headers"):
+                headers = getattr(response, attr, None) or getattr(obj, attr, None)
+                if headers:
+                    break
+            if not headers:
+                return None
+            getter = getattr(headers, "get", None)
+            if not callable(getter):
+                return None
+            mapping = {
+                "anthropic-ratelimit-tokens-remaining": "ratelimit_remaining_tokens",
+                "anthropic-ratelimit-requests-remaining": "ratelimit_remaining_requests",
+                "anthropic-ratelimit-tokens-limit": "ratelimit_limit_tokens",
+                "request-id": "request_id",
+                "x-request-id": "request_id",
+            }
+            out: dict[str, Any] = {}
+            for src, dst in mapping.items():
+                val = getter(src)
+                if val is None:
+                    continue
+                if dst.endswith(("_tokens", "_requests")):
+                    try:
+                        out[dst] = int(val)
+                    except (ValueError, TypeError):
+                        out[dst] = val
+                else:
+                    out[dst] = val
+            return out or None
+        except Exception:
+            return None
+
+    def extract_output_dimensions(self, response: Any) -> dict[str, int] | None:
+        """Anthropic has no native embeddings API; return None."""
+        return None
 
     def extract_usage(self, response: Any) -> TokenUsage:
         """Extract actual token counts from an Anthropic response.

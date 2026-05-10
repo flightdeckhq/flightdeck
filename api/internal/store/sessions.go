@@ -39,7 +39,9 @@ type SessionsParams struct {
 	ErrorTypes []string
 	// PolicyEventTypes filters sessions to those that emitted at
 	// least one event of the listed policy enforcement types
-	// (``policy_warn`` | ``policy_degrade`` | ``policy_block``).
+	// (``policy_warn`` | ``policy_degrade`` | ``policy_block`` |
+	// ``policy_mcp_warn`` | ``policy_mcp_block`` |
+	// ``mcp_server_name_changed`` | ``mcp_policy_user_remembered``).
 	// Multi-value OR within. EXISTS subquery on the events table
 	// keyed on ``event_type``; the policy event_type IS the filter
 	// dimension (unlike error_types which lives in payload JSONB).
@@ -93,6 +95,33 @@ type SessionsParams struct {
 	// instead. Pointer-to-bool so omit / explicit-true / explicit-
 	// false are three distinct states on the wire.
 	IncludePureChildren *bool
+	// Operator-actionable enrichment facet filters. Each maps to an
+	// EXISTS subquery over the events table keyed on a payload field
+	// or specific event_type set. Multi-value entries OR within the
+	// dimension; AND composes across dimensions.
+	//
+	//   * CloseReasons: session_end events whose payload.close_reason
+	//     matches any listed value. Closed enum (normal_exit /
+	//     directive_shutdown / policy_block / orphan_timeout /
+	//     sigkill_detected / unknown).
+	//   * EstimatedVias: pre_call/post_call/embeddings events whose
+	//     payload.estimated_via matches any listed value. Closed enum
+	//     (tiktoken / heuristic / none).
+	//   * TerminalOnly: when true, restrict to sessions with at least
+	//     one llm_error event whose payload.terminal == "true". Single
+	//     bool toggle.
+	//   * MatchedEntryIDs: policy_mcp_warn / policy_mcp_block events
+	//     whose payload.policy_decision.matched_entry_id matches any
+	//     listed value. Free-form (UUIDs).
+	//   * OriginatingCallContexts: events whose
+	//     payload.originating_call_context matches any listed value.
+	//     Vocabulary is the MCP method name (call_tool, read_resource,
+	//     list_tools, ...) but free-form so plugin-side variations land.
+	CloseReasons            []string
+	EstimatedVias           []string
+	TerminalOnly            bool
+	MatchedEntryIDs         []string
+	OriginatingCallContexts []string
 	// ContextFilters carries the generic scalar-key filters on
 	// sessions.context JSONB (user, os, arch, hostname, process_name,
 	// node_version, python_version, git_branch, git_commit, git_repo,
@@ -235,13 +264,18 @@ type SessionListItem struct {
 	// follow-up fetch.
 	ErrorTypes []string `json:"error_types"`
 	// PolicyEventTypes lists every distinct policy enforcement
-	// ``event_type`` observed in the session: any subset of
-	// ``policy_warn`` / ``policy_degrade`` / ``policy_block``.
-	// Always present on the wire (empty array when the session
-	// carries no policy events). Same surfacing pattern as
+	// ``event_type`` observed in the session. Includes both the
+	// token-budget axis (``policy_warn`` / ``policy_degrade`` /
+	// ``policy_block``) and the MCP Protection Policy axis
+	// (``policy_mcp_warn`` / ``policy_mcp_block`` /
+	// ``mcp_server_name_changed`` / ``mcp_policy_user_remembered``,
+	// per D131). Always present on the wire (empty array when the
+	// session carries no policy events). Same surfacing pattern as
 	// ErrorTypes — correlated subquery on the listing query so the
-	// dashboard renders the POLICY facet and severity-ranked
-	// session-row indicator without a per-session follow-up fetch.
+	// dashboard renders the POLICY + MCP POLICY facets and
+	// severity-ranked session-row indicator without a per-session
+	// follow-up fetch. The dashboard splits the unified array into
+	// two sidebar facets via the EVENT_TYPE_GROUPS classification.
 	PolicyEventTypes []string `json:"policy_event_types"`
 	// MCPServerNames (Phase 5) lists every distinct MCP server name
 	// the session connected to, derived at query time from
@@ -263,6 +297,30 @@ type SessionListItem struct {
 	// session-row red MCP indicator can render without a per-session
 	// follow-up fetch.
 	MCPErrorTypes []string `json:"mcp_error_types"`
+
+	// Per-session aggregates for the operator-actionable enrichment
+	// facets. Each field is a distinct-value array (or boolean) over
+	// the session's events. Same correlated-subquery pattern as
+	// ErrorTypes / PolicyEventTypes so the dashboard renders the
+	// new sidebar facets without a per-session follow-up fetch.
+	//
+	//   * CloseReasons: distinct close_reason values across the
+	//     session's session_end events.
+	//   * EstimatedViaValues: distinct estimated_via values across
+	//     pre_call / post_call / embeddings events.
+	//   * HasTerminalError: true when at least one llm_error event
+	//     in the session carries terminal=true.
+	//   * MatchedEntryIDs: distinct policy_decision.matched_entry_id
+	//     values across MCP-policy events.
+	//   * OriginatingCallContexts: distinct
+	//     payload->>'originating_call_context' values across the
+	//     session's events (the MCP method that triggered downstream
+	//     activity — call_tool / read_resource / etc.).
+	CloseReasons            []string `json:"close_reasons"`
+	EstimatedViaValues      []string `json:"estimated_via_values"`
+	HasTerminalError        bool     `json:"has_terminal_error"`
+	MatchedEntryIDs         []string `json:"matched_entry_ids"`
+	OriginatingCallContexts []string `json:"originating_call_contexts"`
 
 	// D126 sub-agent observability columns. Both nullable, both
 	// populated only on sub-agent sessions (Claude Code Task
@@ -521,6 +579,89 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 				"WHERE child.parent_session_id = s.session_id))")
 	}
 
+	// Operator-actionable enrichment facet filters. Each is an
+	// EXISTS subquery over events scoped to the right event_type
+	// set. Multi-value OR within; AND composes across.
+	//
+	// Cost shape: ListSessions now runs ~10 EXISTS subqueries
+	// against events per call (error_type + policy_event_type +
+	// the five new ones, plus the aggregate columns in the SELECT
+	// list). All hit events_session_id_idx so the join key is hot.
+	// If the slow-query log surfaces this in production, a partial
+	// composite index on (session_id, event_type) WHERE event_type
+	// IN ('session_end','llm_error','pre_call','post_call',
+	// 'embeddings','policy_mcp_warn','policy_mcp_block') is the
+	// cheapest hedge.
+	if len(params.CloseReasons) > 0 {
+		placeholders := make([]string, len(params.CloseReasons))
+		for i, cr := range params.CloseReasons {
+			placeholders[i] = fmt.Sprintf("$%d", argIdx)
+			args = append(args, cr)
+			argIdx++
+		}
+		conditions = append(conditions, fmt.Sprintf(
+			"EXISTS (SELECT 1 FROM events e "+
+				"WHERE e.session_id = s.session_id "+
+				"AND e.event_type = 'session_end' "+
+				"AND e.payload->>'close_reason' IN (%s))",
+			strings.Join(placeholders, ", "),
+		))
+	}
+	if len(params.EstimatedVias) > 0 {
+		placeholders := make([]string, len(params.EstimatedVias))
+		for i, ev := range params.EstimatedVias {
+			placeholders[i] = fmt.Sprintf("$%d", argIdx)
+			args = append(args, ev)
+			argIdx++
+		}
+		conditions = append(conditions, fmt.Sprintf(
+			"EXISTS (SELECT 1 FROM events e "+
+				"WHERE e.session_id = s.session_id "+
+				"AND e.event_type IN ('pre_call', 'post_call', 'embeddings') "+
+				"AND e.payload->>'estimated_via' IN (%s))",
+			strings.Join(placeholders, ", "),
+		))
+	}
+	if params.TerminalOnly {
+		// Plain string compare on payload.terminal — no ::boolean cast,
+		// so a malformed or missing terminal field on a non-llm_error
+		// row never throws inside the subquery.
+		conditions = append(conditions,
+			"EXISTS (SELECT 1 FROM events e "+
+				"WHERE e.session_id = s.session_id "+
+				"AND e.event_type = 'llm_error' "+
+				"AND e.payload->>'terminal' = 'true')")
+	}
+	if len(params.MatchedEntryIDs) > 0 {
+		placeholders := make([]string, len(params.MatchedEntryIDs))
+		for i, mid := range params.MatchedEntryIDs {
+			placeholders[i] = fmt.Sprintf("$%d", argIdx)
+			args = append(args, mid)
+			argIdx++
+		}
+		conditions = append(conditions, fmt.Sprintf(
+			"EXISTS (SELECT 1 FROM events e "+
+				"WHERE e.session_id = s.session_id "+
+				"AND e.event_type IN ('policy_mcp_warn', 'policy_mcp_block') "+
+				"AND e.payload->'policy_decision'->>'matched_entry_id' IN (%s))",
+			strings.Join(placeholders, ", "),
+		))
+	}
+	if len(params.OriginatingCallContexts) > 0 {
+		placeholders := make([]string, len(params.OriginatingCallContexts))
+		for i, oc := range params.OriginatingCallContexts {
+			placeholders[i] = fmt.Sprintf("$%d", argIdx)
+			args = append(args, oc)
+			argIdx++
+		}
+		conditions = append(conditions, fmt.Sprintf(
+			"EXISTS (SELECT 1 FROM events e "+
+				"WHERE e.session_id = s.session_id "+
+				"AND e.payload->>'originating_call_context' IN (%s))",
+			strings.Join(placeholders, ", "),
+		))
+	}
+
 	// MCP-server filter (Phase 5). Multi-value OR-within: a session
 	// passes when its context.mcp_servers list contains at least one
 	// entry whose ``name`` matches a supplied value. The aggregation
@@ -684,7 +825,11 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 					SELECT DISTINCT e.event_type
 					FROM events e
 					WHERE e.session_id = s.session_id
-					AND e.event_type IN ('policy_warn', 'policy_degrade', 'policy_block')
+					AND e.event_type IN (
+					'policy_warn', 'policy_degrade', 'policy_block',
+					'policy_mcp_warn', 'policy_mcp_block',
+					'mcp_server_name_changed', 'mcp_policy_user_remembered'
+				)
 				),
 				ARRAY[]::text[]
 			) AS policy_event_types,
@@ -709,6 +854,51 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 				),
 				ARRAY[]::text[]
 			) AS mcp_error_types,
+			COALESCE(
+				ARRAY(
+					SELECT DISTINCT e.payload->>'close_reason'
+					FROM events e
+					WHERE e.session_id = s.session_id
+					AND e.event_type = 'session_end'
+					AND e.payload->>'close_reason' IS NOT NULL
+				),
+				ARRAY[]::text[]
+			) AS close_reasons,
+			COALESCE(
+				ARRAY(
+					SELECT DISTINCT e.payload->>'estimated_via'
+					FROM events e
+					WHERE e.session_id = s.session_id
+					AND e.event_type IN ('pre_call', 'post_call', 'embeddings')
+					AND e.payload->>'estimated_via' IS NOT NULL
+				),
+				ARRAY[]::text[]
+			) AS estimated_via_values,
+			EXISTS(
+				SELECT 1 FROM events e
+				WHERE e.session_id = s.session_id
+				AND e.event_type = 'llm_error'
+				AND (e.payload->>'terminal')::boolean = true
+			) AS has_terminal_error,
+			COALESCE(
+				ARRAY(
+					SELECT DISTINCT e.payload->'policy_decision'->>'matched_entry_id'
+					FROM events e
+					WHERE e.session_id = s.session_id
+					AND e.event_type IN ('policy_mcp_warn', 'policy_mcp_block')
+					AND e.payload->'policy_decision'->>'matched_entry_id' IS NOT NULL
+				),
+				ARRAY[]::text[]
+			) AS matched_entry_ids,
+			COALESCE(
+				ARRAY(
+					SELECT DISTINCT e.payload->>'originating_call_context'
+					FROM events e
+					WHERE e.session_id = s.session_id
+					AND e.payload->>'originating_call_context' IS NOT NULL
+				),
+				ARRAY[]::text[]
+			) AS originating_call_contexts,
 			s.parent_session_id::text,
 			s.agent_role,
 			(SELECT COUNT(*) FROM sessions c WHERE c.parent_session_id = s.session_id) AS child_count
@@ -753,6 +943,11 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 			&item.PolicyEventTypes,
 			&item.MCPServerNames,
 			&item.MCPErrorTypes,
+			&item.CloseReasons,
+			&item.EstimatedViaValues,
+			&item.HasTerminalError,
+			&item.MatchedEntryIDs,
+			&item.OriginatingCallContexts,
 			&item.ParentSessionID,
 			&item.AgentRole,
 			&item.ChildCount,
@@ -770,6 +965,18 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 		}
 		if item.MCPErrorTypes == nil {
 			item.MCPErrorTypes = []string{}
+		}
+		if item.CloseReasons == nil {
+			item.CloseReasons = []string{}
+		}
+		if item.EstimatedViaValues == nil {
+			item.EstimatedViaValues = []string{}
+		}
+		if item.MatchedEntryIDs == nil {
+			item.MatchedEntryIDs = []string{}
+		}
+		if item.OriginatingCallContexts == nil {
+			item.OriginatingCallContexts = []string{}
 		}
 		if len(contextRaw) > 0 {
 			var v map[string]interface{}

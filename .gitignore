@@ -18,6 +18,15 @@ tmp/
 node_modules/
 .vite/
 
+# Helm
+# helm/migrations/ is a build artifact populated by helm/Makefile
+# sync-migrations from docker/postgres/migrations/ (the canonical
+# source). Do not edit in place; edit the source under
+# docker/postgres/migrations/ and re-run any chart-render target
+# (lint / template / install / upgrade) which gates on
+# sync-migrations. See DECISIONS.md D136.
+helm/migrations/
+
 # IDE
 .idea/
 .vscode/

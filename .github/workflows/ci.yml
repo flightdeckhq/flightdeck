@@ -3,8 +3,25 @@ name: CI
 on:
   pull_request:
     branches: [main]
+  # Push trigger is main-only. PR sync is itself a push event, so any
+  # `feat/**` (or wildcard) addition here would fire CI twice on every
+  # PR commit — once via this push trigger, once via pull_request:
+  # synchronize. The pull_request trigger above already gives every
+  # feature-branch PR commit pre-merge CI feedback; main-only push
+  # then handles the post-merge run on the default branch.
   push:
     branches: [main]
+
+# Cap blast radius from rapid-fire pushes on the same branch: cancel
+# any in-flight run when a newer commit lands. Two pushes in quick
+# succession should not boot two parallel Compose stacks (integration
+# + e2e jobs each spin up a full dev stack).
+concurrency:
+  # Namespace by workflow name so a future workflow that picks the
+  # same ref-keyed group doesn't accidentally cancel CI runs. Low-cost
+  # future-proofing (the repo currently has just CI + release).
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   sensor:
@@ -76,7 +93,13 @@ jobs:
           go-version: "1.26.2"
 
       - name: Install golangci-lint v2
-        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+        # Pinned to an immutable commit SHA (not a tag like @v2.11.4)
+        # because tags can be re-pointed by anyone with push access to
+        # the upstream repo without changing the version string. SHA
+        # is the only anchor that survives an upstream tag rewrite.
+        # Bump deliberately; keep the tag name in the comment for
+        # human readability. Current pin: v2.11.4 (8f3b0c7e).
+        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@8f3b0c7ed018e57905fbd873c697e0b1ede605a5
 
       - name: Lint ingestion
         working-directory: ingestion
@@ -93,7 +116,7 @@ jobs:
       - name: Test ingestion
         working-directory: ingestion
         run: |
-          go test ./tests/... -v \
+          go test ./... -v -race \
             -coverprofile=coverage.out \
             -covermode=atomic \
             -coverpkg=./internal/handlers/...
@@ -131,7 +154,7 @@ jobs:
       - name: Test workers
         working-directory: workers
         run: |
-          go test ./tests/... -v \
+          go test ./... -v -race \
             -coverprofile=coverage.out \
             -covermode=atomic \
             -coverpkg=./internal/...
@@ -161,7 +184,14 @@ jobs:
       - name: Test api
         working-directory: api
         run: |
-          go test ./tests/... -v \
+          # Run every test package, not just ./tests/, so handler-package
+          # tests in api/internal/handlers/ (mcp_policy_test.go,
+          # mcp_policy_apply_template_test.go, mcp_policy_audit_log_test.go,
+          # mcp_policy_metrics_templates_test.go, whoami_test.go) execute
+          # and contribute to handler coverage. Restricting to ./tests/
+          # left those files compiled-but-unrun, dragging the gate from
+          # 67% to 52% on feat/mcp-protection-policy until PR #33.
+          go test ./... -v -race \
             -coverprofile=coverage.out \
             -covermode=atomic \
             -coverpkg=./internal/handlers/...
@@ -224,10 +254,31 @@ jobs:
       - name: Unit tests
         run: npm run test
 
+  plugin:
+    name: Plugin (Claude Code, node --test)
+    runs-on: ubuntu-latest
+    # KI24: opt this job's JavaScript actions into Node 24.
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+    steps:
+      - uses: actions/checkout@v4
+
+      # The plugin is zero-dep (`agent_id.mjs` / `uuid5.mjs` /
+      # `mcp_identity.mjs` use only Node built-ins — node:crypto,
+      # node:test, the URL global, process.env). No npm install
+      # step needed; the make target invokes `node --test` directly
+      # against tests/*.test.mjs.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Plugin unit tests
+        run: make test-plugin
+
   integration:
     name: Integration + sensor e2e
     runs-on: ubuntu-latest
-    needs: [sensor, go, dashboard]
+    needs: [sensor, go, dashboard, plugin]
     # KI24: opt this job's JavaScript actions into Node 24.
     #
     # PYTHON: the Makefile defaults $(PYTHON) to
@@ -291,7 +342,7 @@ jobs:
   e2e:
     name: E2E (Playwright)
     runs-on: ubuntu-latest
-    needs: [sensor, go, dashboard]
+    needs: [sensor, go, dashboard, plugin]
     # Rule 40c (Phase 3): browser end-to-end tests run parallel to
     # the integration job so neither blocks the other. The E2E job
     # boots its own stack — required because seeding the canonical

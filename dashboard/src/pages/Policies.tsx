@@ -1,17 +1,96 @@
-import { useState, useEffect, useCallback } from "react";
-import type { Policy, PolicyRequest } from "@/lib/types";
-import {
-  fetchPolicies,
-  createPolicy,
-  updatePolicy,
-  deletePolicy,
-} from "@/lib/api";
-import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
+// Unified Policies page (D146). Token Budget and MCP Protection
+// live as sub-tabs under one route. Token Budget is the default
+// (preserves pre-D146 behavior where /policies has always meant
+// the token-budget surface). ``?policy=mcp`` deep-links the MCP
+// Protection sub-tab; the param is dropped on Token Budget so the
+// default URL stays clean.
+//
+// Tab state is stored in the URL query param via React Router's
+// useSearchParams so deep-linking + browser back/forward + copy-
+// paste survive natively. Component-level state would lose the
+// URL contract.
+//
+// The MCP Protection sub-tab content lives in
+// ``components/policy/MCPProtectionTab.tsx`` (renamed from the
+// retired pages/MCPPolicies.tsx); Token Budget content stays
+// inline as a private function below since it's small.
+
+import { useCallback, useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
+
+import { MCPProtectionTab } from "@/components/policy/MCPProtectionTab";
 import { PolicyEditor } from "@/components/policy/PolicyEditor";
 import { PolicyTable } from "@/components/policy/PolicyTable";
+import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  createPolicy,
+  deletePolicy,
+  fetchPolicies,
+  updatePolicy,
+} from "@/lib/api";
+import type { Policy, PolicyRequest } from "@/lib/types";
+
+const POLICY_TAB_PARAM = "policy";
+const TOKEN_BUDGET_VALUE = "token-budget";
+const MCP_PROTECTION_VALUE = "mcp";
 
 export function Policies() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const active =
+    searchParams.get(POLICY_TAB_PARAM) === MCP_PROTECTION_VALUE
+      ? MCP_PROTECTION_VALUE
+      : TOKEN_BUDGET_VALUE;
+
+  function handleTabChange(next: string) {
+    if (next === MCP_PROTECTION_VALUE) {
+      setSearchParams({ [POLICY_TAB_PARAM]: MCP_PROTECTION_VALUE });
+    } else {
+      // Drop the param entirely on Token Budget — the default URL
+      // shape stays clean (D146 / Q3 of step 6.8 plan readback).
+      setSearchParams({});
+    }
+  }
+
+  return (
+    <div className="h-full overflow-auto">
+      <Tabs
+        value={active}
+        onValueChange={handleTabChange}
+        className="w-full"
+      >
+        <div
+          className="border-b px-6 py-3"
+          style={{ borderColor: "var(--border)" }}
+        >
+          <TabsList>
+            <TabsTrigger
+              value={TOKEN_BUDGET_VALUE}
+              data-testid="policies-tab-token-budget"
+            >
+              Token Budget
+            </TabsTrigger>
+            <TabsTrigger
+              value={MCP_PROTECTION_VALUE}
+              data-testid="policies-tab-mcp-protection"
+            >
+              MCP Protection
+            </TabsTrigger>
+          </TabsList>
+        </div>
+        <TabsContent value={TOKEN_BUDGET_VALUE}>
+          <TokenBudgetTab />
+        </TabsContent>
+        <TabsContent value={MCP_PROTECTION_VALUE}>
+          <MCPProtectionTab />
+        </TabsContent>
+      </Tabs>
+    </div>
+  );
+}
+
+function TokenBudgetTab() {
   const [policies, setPolicies] = useState<Policy[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -56,7 +135,9 @@ export function Policies() {
       setEditorOpen(false);
       await load();
     } catch {
-      setError(editingPolicy ? "Failed to update policy" : "Failed to create policy");
+      setError(
+        editingPolicy ? "Failed to update policy" : "Failed to create policy",
+      );
     }
   }
 
@@ -70,11 +151,27 @@ export function Policies() {
     }
   }
 
+  // Hide the top-right Create button when the table is empty — the
+  // PolicyTable empty state surfaces its own CTA via ``onCreate``,
+  // and rendering both produces a duplicate "Create Policy" button.
+  // Loading also suppresses the top-right so the layout stays
+  // stable while ``fetchPolicies`` resolves.
+  const showHeaderCreate = !loading && policies.length > 0;
+
   return (
-    <div className="h-full overflow-auto p-6">
+    <div className="p-6" data-testid="policies-tab-token-budget-content">
       <div className="mb-6 flex items-center justify-between">
-        <h1 className="text-xl font-semibold text-text">Token Usage Enforcement Policies</h1>
-        <Button onClick={openCreate}>Create Policy</Button>
+        <h1 className="text-xl font-semibold text-text">
+          Token Usage Enforcement Policies
+        </h1>
+        {showHeaderCreate ? (
+          <Button
+            onClick={openCreate}
+            data-testid="policies-token-budget-create-header"
+          >
+            Create Policy
+          </Button>
+        ) : null}
       </div>
 
       {error && (

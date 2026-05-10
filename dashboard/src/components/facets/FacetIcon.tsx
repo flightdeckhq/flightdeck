@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { OSIcon } from "@/components/ui/OSIcon";
 import { ProviderLogo } from "@/components/ui/provider-logo";
+import { eventBadgeConfig } from "@/lib/events";
 import { getProvider } from "@/lib/models";
 import { cn } from "@/lib/utils";
 
@@ -58,6 +59,25 @@ export function FacetIcon({
           STATE_COLORS[value] ?? "bg-text-muted",
         )}
         style={{ width: 5, height: 5 }}
+      />
+    );
+  }
+  // Step 6.7 A1: chroma dot for the POLICY and MCP POLICY facet
+  // chips. Pulls the per-event-type colour from eventBadgeConfig
+  // so the sidebar matches the timeline's badge chroma at a
+  // glance — operators scanning facets can read "this chip
+  // filters for warns" from the dot alone, without parsing the
+  // label. Falls back silently to no-icon when the event type
+  // isn't in the badge config (defensive — every type listed in
+  // EVENT_TYPE_GROUPS has a config entry today).
+  if (groupKey === "policy_event_type" || groupKey === "mcp_policy_event_type") {
+    const cfg = eventBadgeConfig[value];
+    if (!cfg) return null;
+    return (
+      <span
+        className="inline-block shrink-0 rounded-full"
+        style={{ width: 6, height: 6, background: cfg.cssVar }}
+        aria-hidden="true"
       />
     );
   }

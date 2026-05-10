@@ -130,6 +130,30 @@ definitions:
           type: string
         type: array
     type: object
+  handlers.WhoamiResponse:
+    properties:
+      role:
+        description: '"admin" | "viewer"'
+        type: string
+      token_id:
+        type: string
+    type: object
+  handlers.applyTemplateRequest:
+    properties:
+      template:
+        type: string
+    type: object
+  handlers.templateMeta:
+    properties:
+      description:
+        type: string
+      name:
+        type: string
+      recommended_for:
+        type: string
+      yaml_body:
+        type: string
+    type: object
   store.AccessTokenRow:
     properties:
       created_at:
@@ -402,6 +426,137 @@ definitions:
       total:
         type: integer
     type: object
+  store.MCPPolicy:
+    properties:
+      block_on_uncertainty:
+        type: boolean
+      created_at:
+        type: string
+      entries:
+        items:
+          $ref: '#/definitions/store.MCPPolicyEntry'
+        type: array
+      id:
+        type: string
+      mode:
+        description: global only — D134
+        type: string
+      scope:
+        description: '"global" | "flavor"'
+        type: string
+      scope_value:
+        description: NULL for global
+        type: string
+      updated_at:
+        type: string
+    type: object
+  store.MCPPolicyAuditLog:
+    properties:
+      actor:
+        type: string
+      event_type:
+        type: string
+      id:
+        type: string
+      occurred_at:
+        type: string
+      payload:
+        type: object
+      policy_id:
+        description: NULL after policy deletion
+        type: string
+    type: object
+  store.MCPPolicyEntry:
+    properties:
+      created_at:
+        type: string
+      enforcement:
+        type: string
+      entry_kind:
+        description: '"allow" | "deny"'
+        type: string
+      fingerprint:
+        type: string
+      id:
+        type: string
+      policy_id:
+        type: string
+      server_name:
+        type: string
+      server_url:
+        type: string
+    type: object
+  store.MCPPolicyEntryMutation:
+    properties:
+      enforcement:
+        type: string
+      entry_kind:
+        type: string
+      server_name:
+        type: string
+      server_url:
+        type: string
+    type: object
+  store.MCPPolicyMetrics:
+    properties:
+      blocks_per_server:
+        items:
+          $ref: '#/definitions/store.ServerCountBucket'
+        type: array
+      buckets:
+        items:
+          $ref: '#/definitions/store.MCPPolicyMetricsBucket'
+        type: array
+      granularity:
+        description: '"hour" | "day"'
+        type: string
+      period:
+        type: string
+      warns_per_server:
+        items:
+          $ref: '#/definitions/store.ServerCountBucket'
+        type: array
+    type: object
+  store.MCPPolicyMetricsBucket:
+    properties:
+      blocks:
+        items:
+          $ref: '#/definitions/store.ServerCountBucket'
+        type: array
+      timestamp:
+        type: string
+      warns:
+        items:
+          $ref: '#/definitions/store.ServerCountBucket'
+        type: array
+    type: object
+  store.MCPPolicyMutation:
+    properties:
+      block_on_uncertainty:
+        type: boolean
+      entries:
+        items:
+          $ref: '#/definitions/store.MCPPolicyEntryMutation'
+        type: array
+      mode:
+        type: string
+    type: object
+  store.MCPPolicyResolveResult:
+    properties:
+      decision:
+        description: '"allow" | "warn" | "block"'
+        type: string
+      decision_path:
+        description: '"flavor_entry" | "global_entry" | "mode_default"'
+        type: string
+      fingerprint:
+        type: string
+      policy_id:
+        type: string
+      scope:
+        description: '"global" | "flavor:<value>"'
+        type: string
+    type: object
   store.Policy:
     properties:
       block_at_pct:
@@ -520,6 +675,15 @@ definitions:
         items:
           $ref: '#/definitions/store.SearchResultSession'
         type: array
+    type: object
+  store.ServerCountBucket:
+    properties:
+      count:
+        type: integer
+      fingerprint:
+        type: string
+      server_name:
+        type: string
     type: object
   store.Session:
     properties:
@@ -646,6 +810,29 @@ definitions:
         type: integer
       client_type:
         type: string
+      close_reasons:
+        description: |-
+          Per-session aggregates for the operator-actionable enrichment
+          facets. Each field is a distinct-value array (or boolean) over
+          the session's events. Same correlated-subquery pattern as
+          ErrorTypes / PolicyEventTypes so the dashboard renders the
+          new sidebar facets without a per-session follow-up fetch.
+
+            * CloseReasons: distinct close_reason values across the
+              session's session_end events.
+            * EstimatedViaValues: distinct estimated_via values across
+              pre_call / post_call / embeddings events.
+            * HasTerminalError: true when at least one llm_error event
+              in the session carries terminal=true.
+            * MatchedEntryIDs: distinct policy_decision.matched_entry_id
+              values across MCP-policy events.
+            * OriginatingCallContexts: distinct
+              payload->>'originating_call_context' values across the
+              session's events (the MCP method that triggered downstream
+              activity — call_tool / read_resource / etc.).
+        items:
+          type: string
+        type: array
       context:
         additionalProperties: true
         type: object
@@ -667,8 +854,14 @@ definitions:
         items:
           type: string
         type: array
+      estimated_via_values:
+        items:
+          type: string
+        type: array
       flavor:
         type: string
+      has_terminal_error:
+        type: boolean
       host:
         type: string
       last_seen_at:
@@ -679,6 +872,10 @@ definitions:
           with ended_at. Drives the Investigate "Last Seen" column
           (S-TBL-1) and is sortable via ?sort=last_seen_at.
         type: string
+      matched_entry_ids:
+        items:
+          type: string
+        type: array
       mcp_error_types:
         description: |-
           MCPErrorTypes (Phase 5) lists every distinct
@@ -709,6 +906,10 @@ definitions:
         type: array
       model:
         type: string
+      originating_call_contexts:
+        items:
+          type: string
+        type: array
       parent_session_id:
         description: |-
           D126 sub-agent observability columns. Both nullable, both
@@ -721,13 +922,18 @@ definitions:
       policy_event_types:
         description: |-
           PolicyEventTypes lists every distinct policy enforcement
-          ``event_type`` observed in the session: any subset of
-          ``policy_warn`` / ``policy_degrade`` / ``policy_block``.
-          Always present on the wire (empty array when the session
-          carries no policy events). Same surfacing pattern as
+          ``event_type`` observed in the session. Includes both the
+          token-budget axis (``policy_warn`` / ``policy_degrade`` /
+          ``policy_block``) and the MCP Protection Policy axis
+          (``policy_mcp_warn`` / ``policy_mcp_block`` /
+          ``mcp_server_name_changed`` / ``mcp_policy_user_remembered``,
+          per D131). Always present on the wire (empty array when the
+          session carries no policy events). Same surfacing pattern as
           ErrorTypes — correlated subquery on the listing query so the
-          dashboard renders the POLICY facet and severity-ranked
-          session-row indicator without a per-session follow-up fetch.
+          dashboard renders the POLICY + MCP POLICY facets and
+          severity-ranked session-row indicator without a per-session
+          follow-up fetch. The dashboard splits the unified array into
+          two sidebar facets via the EVENT_TYPE_GROUPS classification.
         items:
           type: string
         type: array
@@ -1499,6 +1705,490 @@ paths:
       summary: Get fleet state (agent-level, D115)
       tags:
       - fleet
+  /v1/mcp-policies/{flavor}:
+    delete:
+      description: Deletes a flavor policy. The global cannot be deleted. Audit-log
+        row preserved via ON DELETE SET NULL on policy_id.
+      parameters:
+      - description: Agent flavor
+        in: path
+        name: flavor
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No Content
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      summary: Delete flavor MCP protection policy
+      tags:
+      - mcp-policy
+    get:
+      description: Returns the flavor's policy + entries. 404 when no flavor policy
+        exists.
+      parameters:
+      - description: Agent flavor
+        in: path
+        name: flavor
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/store.MCPPolicy'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      summary: Get flavor MCP protection policy
+      tags:
+      - mcp-policy
+    post:
+      consumes:
+      - application/json
+      description: Creates a new flavor policy. Returns 409 if a flavor policy already
+        exists. The global policy cannot be POST'd; use PUT /global to modify it.
+      parameters:
+      - description: Agent flavor
+        in: path
+        name: flavor
+        required: true
+        type: string
+      - description: Policy state
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/store.MCPPolicyMutation'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/store.MCPPolicy'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      summary: Create flavor MCP protection policy
+      tags:
+      - mcp-policy
+    put:
+      consumes:
+      - application/json
+      description: Replaces flavor policy state — entries, block_on_uncertainty. Mode
+        is global-only (D134) and rejected here. Same atomic version + audit semantics
+        as the global PUT.
+      parameters:
+      - description: Agent flavor
+        in: path
+        name: flavor
+        required: true
+        type: string
+      - description: New policy state
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/store.MCPPolicyMutation'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/store.MCPPolicy'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      summary: Update flavor MCP protection policy
+      tags:
+      - mcp-policy
+  /v1/mcp-policies/{flavor}/apply_template:
+    post:
+      consumes:
+      - application/json
+      description: Replaces the flavor policy state with the template's content. Same
+        atomic version + audit semantics as PUT; audit-log entry carries payload.applied_template=<name>.
+      parameters:
+      - description: Agent flavor
+        in: path
+        name: flavor
+        required: true
+        type: string
+      - description: Template name
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.applyTemplateRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/store.MCPPolicy'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      summary: Apply a named template to a flavor MCP policy
+      tags:
+      - mcp-policy
+  /v1/mcp-policies/{flavor}/audit-log:
+    get:
+      description: Returns operator-initiated mutation history in DESC time order,
+        paginated. event_type query filters to one mutation kind. Sensor-observed
+        system state (decision events, name drift) lives in the events pipeline (D131),
+        NOT here.
+      parameters:
+      - description: Agent flavor
+        in: path
+        name: flavor
+        required: true
+        type: string
+      - description: Start time (RFC 3339)
+        in: query
+        name: from
+        type: string
+      - description: End time (RFC 3339)
+        in: query
+        name: to
+        type: string
+      - description: Filter by event type
+        in: query
+        name: event_type
+        type: string
+      - description: Max rows; 1..200; default 50
+        in: query
+        name: limit
+        type: integer
+      - description: Pagination offset; default 0
+        in: query
+        name: offset
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/store.MCPPolicyAuditLog'
+            type: array
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      summary: List flavor MCP policy audit log
+      tags:
+      - mcp-policy
+  /v1/mcp-policies/{flavor}/metrics:
+    get:
+      description: Aggregates policy_mcp_warn and policy_mcp_block events emitted
+        by the sensor / plugin enforcement path. Returns empty buckets until step
+        4 ships those event types. period accepts 24h / 7d / 30d.
+      parameters:
+      - description: Agent flavor or 'global'
+        in: path
+        name: flavor
+        required: true
+        type: string
+      - description: Aggregation window (24h / 7d / 30d); default 24h
+        in: query
+        name: period
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/store.MCPPolicyMetrics'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      summary: Get MCP policy enforcement metrics
+      tags:
+      - mcp-policy
+  /v1/mcp-policies/global:
+    get:
+      description: Returns the singleton global policy + entries. Auto-created at
+        API boot per D133, so this endpoint always returns 200.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/store.MCPPolicy'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      summary: Get global MCP protection policy
+      tags:
+      - mcp-policy
+    put:
+      consumes:
+      - application/json
+      description: Replaces global policy state — mode, entries, block_on_uncertainty.
+        Bumps version, writes a snapshot, writes an audit-log entry. Single-shot transaction
+        (D128).
+      parameters:
+      - description: New policy state
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/store.MCPPolicyMutation'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/store.MCPPolicy'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      summary: Update global MCP protection policy
+      tags:
+      - mcp-policy
+  /v1/mcp-policies/global/audit-log:
+    get:
+      description: Returns operator-initiated mutation history for the global MCP
+        policy in DESC time order, paginated. Same response shape as the flavor variant.
+      parameters:
+      - description: Start time (RFC 3339)
+        in: query
+        name: from
+        type: string
+      - description: End time (RFC 3339)
+        in: query
+        name: to
+        type: string
+      - description: Filter by event type
+        in: query
+        name: event_type
+        type: string
+      - description: Max rows; 1..200; default 50
+        in: query
+        name: limit
+        type: integer
+      - description: Pagination offset; default 0
+        in: query
+        name: offset
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/store.MCPPolicyAuditLog'
+            type: array
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      summary: List global MCP policy audit log
+      tags:
+      - mcp-policy
+  /v1/mcp-policies/resolve:
+    get:
+      description: Sensor / plugin preflight. Returns the per-D135 decision (allow
+        / warn / block) for a (flavor, server_url, server_name) tuple, plus the decision_path
+        that produced it (flavor_entry / global_entry / mode_default). The server
+        canonicalizes the URL using the same algorithm as the Python and JS identity
+        primitives.
+      parameters:
+      - description: Agent flavor; omit to resolve against global only
+        in: query
+        name: flavor
+        type: string
+      - description: Raw MCP server URL or stdio command
+        in: query
+        name: server_url
+        required: true
+        type: string
+      - description: Server display name
+        in: query
+        name: server_name
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/store.MCPPolicyResolveResult'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      summary: Resolve MCP policy decision
+      tags:
+      - mcp-policy
+  /v1/mcp-policies/templates:
+    get:
+      description: Returns the three locked templates (D138) with metadata + YAML
+        body. Read-only scope; any valid bearer token. The strict-with-common-allows
+        template carries a maintenance warning in its description.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/handlers.templateMeta'
+            type: array
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      summary: List shipped MCP policy templates
+      tags:
+      - mcp-policy
   /v1/policies:
     get:
       description: Returns all token policies
@@ -1760,7 +2450,8 @@ paths:
         type: string
       - description: 'Filter to sessions that emitted at least one policy enforcement
           event of the listed types (repeatable/comma). Vocabulary: policy_warn, policy_degrade,
-          policy_block.'
+          policy_block, policy_mcp_warn, policy_mcp_block, mcp_server_name_changed,
+          mcp_policy_user_remembered.'
         in: query
         name: policy_event_type
         type: string
@@ -1799,6 +2490,38 @@ paths:
         in: query
         name: include_pure_children
         type: boolean
+      - description: 'Filter to sessions whose session_end carries one of the listed
+          close_reason values (repeatable/comma; OR within, AND across dimensions).
+          Allowed: normal_exit, directive_shutdown, policy_block, orphan_timeout,
+          sigkill_detected, unknown.'
+        in: query
+        name: close_reason
+        type: string
+      - description: 'Filter to sessions that emitted at least one pre_call/post_call/embeddings
+          event with the given estimated_via (repeatable/comma; OR within, AND across
+          dimensions). Allowed: tiktoken, heuristic, none.'
+        in: query
+        name: estimated_via
+        type: string
+      - description: When true, restrict to sessions that have at least one llm_error
+          event with terminal=true (operator-actionable retry-chain-gave-up signal).
+          Composes with every other filter via AND.
+        in: query
+        name: terminal
+        type: boolean
+      - description: Filter to sessions that emitted at least one policy_mcp_warn
+          / policy_mcp_block event whose policy_decision.matched_entry_id matches
+          one of the listed UUIDs (repeatable/comma; OR within, AND across dimensions).
+        in: query
+        name: matched_entry_id
+        type: string
+      - description: 'Filter to sessions that emitted at least one event with originating_call_context
+          matching one of the listed values (repeatable/comma; OR within, AND across
+          dimensions). Vocabulary: call_tool, read_resource, list_tools, get_prompt,
+          list_resources, list_prompts.'
+        in: query
+        name: originating_call_context
+        type: string
       - description: 'Sort field: started_at, last_seen_at, duration, tokens_used,
           flavor, model, hostname, state (default: started_at). state sort uses severity
           ordinal active→idle→stale→lost→closed.'
@@ -1899,4 +2622,28 @@ paths:
       summary: Real-time fleet stream
       tags:
       - stream
+  /v1/whoami:
+    get:
+      description: Returns the role + token_id for the bearer token in the request.
+        ``admin`` for IsAdmin tokens (env-configured admin or tok_admin_dev in dev),
+        ``viewer`` for any other valid token. The dashboard reads this once at session
+        start (D147) and gates mutation CTAs on role === "admin".
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/handlers.WhoamiResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      summary: Identify the authenticated bearer
+      tags:
+      - auth
 swagger: "2.0"

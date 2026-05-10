@@ -28,7 +28,15 @@ import { ProviderLogo } from "@/components/ui/provider-logo";
 import { ClaudeCodeLogo } from "@/components/ui/claude-code-logo";
 import { CodingAgentBadge } from "@/components/ui/coding-agent-badge";
 import { getProvider, isClaudeCodeSession } from "@/lib/models";
-import { truncateSessionId } from "@/lib/events";
+import { truncateSessionId, EVENT_TYPE_GROUPS } from "@/lib/events";
+
+// D131 MCP Protection Policy facet (step 6.6 A1). Sourced from
+// EVENT_TYPE_GROUPS so the canonical vocabulary lives in one place
+// — adding a fifth MCP-policy event type means one edit in events.ts
+// and the facet picks it up automatically.
+const MCP_POLICY_EVENT_TYPES = new Set<string>(
+  EVENT_TYPE_GROUPS["MCP Policy"] ?? [],
+);
 import { formatSessionTimestamp } from "@/lib/time";
 import { INVESTIGATE_DEFAULT_LOOKBACK_MS } from "@/lib/constants";
 import {
@@ -100,6 +108,17 @@ export function parseUrlState(sp: URLSearchParams) {
     // ``?is_sub_agent=true`` / ``?has_sub_agents=true``.
     isSubAgent: sp.get("is_sub_agent") === "true",
     hasSubAgents: sp.get("has_sub_agents") === "true",
+    // Operator-actionable enrichment facets. Each repeatable filter
+    // narrows the visible result set to sessions whose corresponding
+    // aggregate (close_reasons[], estimated_via_values[],
+    // matched_entry_ids[], originating_call_contexts[]) contains at
+    // least one of the listed values. ``terminal`` is a single
+    // boolean toggle.
+    closeReasons: sp.getAll("close_reason"),
+    estimatedVias: sp.getAll("estimated_via"),
+    terminalOnly: sp.get("terminal") === "true",
+    matchedEntryIds: sp.getAll("matched_entry_id"),
+    originatingCallContexts: sp.getAll("originating_call_context"),
     // D126: scope to children of one specific parent session UUID.
     // Set by the SubAgentsTab "View all in Investigate" deep-link
     // and the PARENT column's click-to-filter affordance.
@@ -144,6 +163,11 @@ export function buildUrlParams(s: ReturnType<typeof parseUrlState>): URLSearchPa
   for (const r of s.agentRoles) p.append("agent_role", r);
   if (s.isSubAgent) p.set("is_sub_agent", "true");
   if (s.hasSubAgents) p.set("has_sub_agents", "true");
+  for (const cr of s.closeReasons) p.append("close_reason", cr);
+  for (const ev of s.estimatedVias) p.append("estimated_via", ev);
+  if (s.terminalOnly) p.set("terminal", "true");
+  for (const me of s.matchedEntryIds) p.append("matched_entry_id", me);
+  for (const oc of s.originatingCallContexts) p.append("originating_call_context", oc);
   if (s.parentSessionId) p.set("parent_session_id", s.parentSessionId);
   if (s.session) p.set("session", s.session);
   if (s.model) p.set("model", s.model);
@@ -355,6 +379,24 @@ export function computeFacets(
   // here.
   const errorTypeCounts = new Map<string, number>();
   const policyEventTypeCounts = new Map<string, number>();
+  // Operator-actionable enrichment facet counts. Each is a per-
+  // session aggregate the API returns alongside error_types[].
+  // Same one-vote-per-session-per-distinct-value semantics.
+  const closeReasonCounts = new Map<string, number>();
+  const estimatedViaCounts = new Map<string, number>();
+  let terminalCount = 0;
+  const matchedEntryIdCounts = new Map<string, number>();
+  const originatingCallContextCounts = new Map<string, number>();
+  // D131 MCP Protection Policy facet (step 6.6 A1) — token-budget
+  // policy enforcement (policy_warn / policy_degrade / policy_block)
+  // and MCP-server access policy (policy_mcp_warn /
+  // policy_mcp_block / mcp_server_name_changed /
+  // mcp_policy_user_remembered) are distinct concepts. Operators
+  // filtering for "show me MCP enforcement events" shouldn't have
+  // to mix with token-budget chips. Both share the same
+  // ?policy_event_type= URL key (server takes the union vocabulary)
+  // — only the sidebar visual grouping is split.
+  const mcpPolicyEventTypeCounts = new Map<string, number>();
   // Phase 5 MCP SERVER facet: per-session mcp_server_names[] aggregates
   // across the visible result set. Same one-vote-per-session-per-name
   // semantics as error_type / policy_event_type.
@@ -464,7 +506,14 @@ export function computeFacets(
   if (sources.policy_event_type) {
     for (const s of sources.policy_event_type) {
       for (const pt of s.policy_event_types ?? []) {
-        policyEventTypeCounts.set(pt, (policyEventTypeCounts.get(pt) ?? 0) + 1);
+        if (MCP_POLICY_EVENT_TYPES.has(pt)) {
+          mcpPolicyEventTypeCounts.set(
+            pt,
+            (mcpPolicyEventTypeCounts.get(pt) ?? 0) + 1,
+          );
+        } else {
+          policyEventTypeCounts.set(pt, (policyEventTypeCounts.get(pt) ?? 0) + 1);
+        }
       }
     }
   }
@@ -524,7 +573,14 @@ export function computeFacets(
     }
     if (!sources.policy_event_type) {
       for (const pt of s.policy_event_types ?? []) {
-        policyEventTypeCounts.set(pt, (policyEventTypeCounts.get(pt) ?? 0) + 1);
+        if (MCP_POLICY_EVENT_TYPES.has(pt)) {
+          mcpPolicyEventTypeCounts.set(
+            pt,
+            (mcpPolicyEventTypeCounts.get(pt) ?? 0) + 1,
+          );
+        } else {
+          policyEventTypeCounts.set(pt, (policyEventTypeCounts.get(pt) ?? 0) + 1);
+        }
       }
     }
     if (!sources.mcp_server) {
@@ -539,6 +595,24 @@ export function computeFacets(
         isSubAgentCount += 1;
         parentIdSet.add(s.parent_session_id);
       }
+    }
+    // Operator-actionable enrichment facets — counted from the
+    // per-session aggregate fields the API returns. One vote per
+    // session per distinct value.
+    for (const cr of s.close_reasons ?? []) {
+      closeReasonCounts.set(cr, (closeReasonCounts.get(cr) ?? 0) + 1);
+    }
+    for (const ev of s.estimated_via_values ?? []) {
+      estimatedViaCounts.set(ev, (estimatedViaCounts.get(ev) ?? 0) + 1);
+    }
+    if (s.has_terminal_error) terminalCount += 1;
+    for (const me of s.matched_entry_ids ?? []) {
+      matchedEntryIdCounts.set(me, (matchedEntryIdCounts.get(me) ?? 0) + 1);
+    }
+    for (const oc of s.originating_call_contexts ?? []) {
+      originatingCallContextCounts.set(
+        oc, (originatingCallContextCounts.get(oc) ?? 0) + 1,
+      );
     }
     for (const key of CONTEXT_FACET_KEYS) {
       if (sources[key]) continue;
@@ -629,6 +703,15 @@ export function computeFacets(
     // visible result set has any. Hidden by the .filter() below
     // otherwise.
     { key: "policy_event_type", label: "POLICY", values: toArr(policyEventTypeCounts) },
+    // D131 MCP Protection Policy facet (step 6.6 A1) — distinct from
+    // the token-budget POLICY facet above. Hidden by the .filter()
+    // below when no session in the visible result set carries an
+    // MCP-policy event type.
+    {
+      key: "mcp_policy_event_type",
+      label: "MCP POLICY",
+      values: toArr(mcpPolicyEventTypeCounts),
+    },
     // D126 ROLE facet — multi-select over distinct agent_role
     // strings present in the visible result set. Sessions without
     // a role are excluded so the facet only surfaces when at least
@@ -658,6 +741,24 @@ export function computeFacets(
         { value: "is_sub_agent", count: isSubAgentCount },
         { value: "has_sub_agents", count: hasSubAgentsCount },
       ],
+    },
+    // Operator-actionable enrichment facets. Hidden by the
+    // .filter(values.length > 0) below when no session in the
+    // visible result set has the corresponding aggregate.
+    { key: "close_reason", label: "CLOSE REASON", values: toArr(closeReasonCounts) },
+    { key: "estimated_via", label: "ESTIMATED VIA", values: toArr(estimatedViaCounts) },
+    {
+      key: "terminal",
+      label: "TERMINAL",
+      values: terminalCount > 0
+        ? [{ value: "true", count: terminalCount }]
+        : [],
+    },
+    { key: "matched_entry_id", label: "MATCHED ENTRY", values: toArr(matchedEntryIdCounts) },
+    {
+      key: "originating_call_context",
+      label: "ORIGINATING CALL",
+      values: toArr(originatingCallContextCounts),
     },
   ].filter((g) => g.values.length > 0);
 }
@@ -1269,6 +1370,15 @@ export function Investigate() {
         is_sub_agent: state.isSubAgent || undefined,
         has_sub_agents: state.hasSubAgents || undefined,
         parent_session_id: state.parentSessionId || undefined,
+        close_reason: state.closeReasons.length > 0 ? state.closeReasons : undefined,
+        estimated_via: state.estimatedVias.length > 0 ? state.estimatedVias : undefined,
+        terminal: state.terminalOnly || undefined,
+        matched_entry_id:
+          state.matchedEntryIds.length > 0 ? state.matchedEntryIds : undefined,
+        originating_call_context:
+          state.originatingCallContexts.length > 0
+            ? state.originatingCallContexts
+            : undefined,
         // D126 UX revision 2026-05-03 — default scope hides pure
         // children. The "Is sub-agent" facet override (state.isSubAgent
         // = true) flips to children-only via the existing
@@ -1660,7 +1770,13 @@ export function Investigate() {
           ? current.filter((a) => a !== value)
           : [...current, value];
         updateUrl({ agentTypes: next, page: 1 });
-      } else if (group === "policy_event_type") {
+      } else if (
+        group === "policy_event_type" ||
+        group === "mcp_policy_event_type"
+      ) {
+        // Both groups write to the same ``policy_event_type`` URL
+        // param — server takes the union vocabulary; the split is
+        // visual only (step 6.6 A1).
         const current = urlState.policyEventTypes;
         const next = current.includes(value)
           ? current.filter((p) => p !== value)
@@ -1713,6 +1829,33 @@ export function Investigate() {
         } else if (value === "has_sub_agents") {
           updateUrl({ hasSubAgents: !urlState.hasSubAgents, page: 1 });
         }
+      } else if (group === "close_reason") {
+        const current = urlState.closeReasons;
+        const next = current.includes(value)
+          ? current.filter((x) => x !== value)
+          : [...current, value];
+        updateUrl({ closeReasons: next, page: 1 });
+      } else if (group === "estimated_via") {
+        const current = urlState.estimatedVias;
+        const next = current.includes(value)
+          ? current.filter((x) => x !== value)
+          : [...current, value];
+        updateUrl({ estimatedVias: next, page: 1 });
+      } else if (group === "terminal") {
+        // Single boolean toggle — value === "true" is the only entry.
+        updateUrl({ terminalOnly: !urlState.terminalOnly, page: 1 });
+      } else if (group === "matched_entry_id") {
+        const current = urlState.matchedEntryIds;
+        const next = current.includes(value)
+          ? current.filter((x) => x !== value)
+          : [...current, value];
+        updateUrl({ matchedEntryIds: next, page: 1 });
+      } else if (group === "originating_call_context") {
+        const current = urlState.originatingCallContexts;
+        const next = current.includes(value)
+          ? current.filter((x) => x !== value)
+          : [...current, value];
+        updateUrl({ originatingCallContexts: next, page: 1 });
       } else {
         // Scalar context facets. Lookup table keeps the per-facet
         // boilerplate (urlState slot, toggle, URL key) in one place
@@ -1800,6 +1943,7 @@ export function Investigate() {
       ),
     [urlState, sessions, fleetAgents, updateUrl, resolvedAgentName],
   );
+
 
   const clearAllFilters = useCallback(() => {
     updateUrl(CLEAR_ALL_FILTERS_PATCH);
@@ -1968,6 +2112,8 @@ export function Investigate() {
                   ? "investigate-error-type-facet"
                   : group.key === "policy_event_type"
                   ? "investigate-policy-facet"
+                  : group.key === "mcp_policy_event_type"
+                  ? "investigate-mcp-policy-facet"
                   : group.key === "mcp_server"
                   ? "investigate-mcp-server-facet"
                   : undefined
@@ -1995,6 +2141,7 @@ export function Investigate() {
                   (group.key === "agent_id" && urlState.agentId === v.value) ||
                   (group.key === "error_type" && urlState.errorTypes.includes(v.value)) ||
                   (group.key === "policy_event_type" && urlState.policyEventTypes.includes(v.value)) ||
+                  (group.key === "mcp_policy_event_type" && urlState.policyEventTypes.includes(v.value)) ||
                   (group.key === "mcp_server" && urlState.mcpServers.includes(v.value)) ||
                   (group.key === "os" && urlState.contextOS.includes(v.value)) ||
                   (group.key === "arch" && urlState.contextArch.includes(v.value)) ||
@@ -2008,7 +2155,12 @@ export function Investigate() {
                   (group.key === "orchestration" && urlState.contextOrchestrations.includes(v.value)) ||
                   (group.key === "agent_role" && urlState.agentRoles.includes(v.value)) ||
                   (group.key === "topology" && v.value === "is_sub_agent" && urlState.isSubAgent) ||
-                  (group.key === "topology" && v.value === "has_sub_agents" && urlState.hasSubAgents);
+                  (group.key === "topology" && v.value === "has_sub_agents" && urlState.hasSubAgents) ||
+                  (group.key === "close_reason" && urlState.closeReasons.includes(v.value)) ||
+                  (group.key === "estimated_via" && urlState.estimatedVias.includes(v.value)) ||
+                  (group.key === "terminal" && urlState.terminalOnly) ||
+                  (group.key === "matched_entry_id" && urlState.matchedEntryIds.includes(v.value)) ||
+                  (group.key === "originating_call_context" && urlState.originatingCallContexts.includes(v.value));
                 return (
                   <button
                     key={v.value}
@@ -2017,6 +2169,8 @@ export function Investigate() {
                         ? `investigate-error-type-pill-${v.value}`
                         : group.key === "policy_event_type"
                         ? `investigate-policy-pill-${v.value}`
+                        : group.key === "mcp_policy_event_type"
+                        ? `investigate-mcp-policy-pill-${v.value}`
                         : group.key === "mcp_server"
                         ? `investigate-mcp-server-pill-${v.value}`
                         : undefined

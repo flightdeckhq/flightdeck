@@ -56,7 +56,7 @@ describe("EventDetailDrawer", () => {
 
   it("prompts tab shows disabled state when no content", () => {
     render(<EventDetailDrawer event={postCallEvent} onClose={() => {}} />);
-    fireEvent.click(screen.getByText("Prompts"));
+    fireEvent.click(screen.getByTestId("detail-tab-prompts"));
     expect(
       screen.getByText("Prompt capture is not enabled for this deployment.")
     ).toBeInTheDocument();
@@ -64,7 +64,7 @@ describe("EventDetailDrawer", () => {
 
   it("prompts tab fetches content when has_content", async () => {
     render(<EventDetailDrawer event={contentEvent} onClose={() => {}} />);
-    fireEvent.click(screen.getByText("Prompts"));
+    fireEvent.click(screen.getByTestId("detail-tab-prompts"));
     await waitFor(() => {
       expect(fetchEventContent).toHaveBeenCalledWith("e2");
     });

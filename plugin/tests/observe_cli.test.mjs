@@ -2,7 +2,7 @@ import { describe, it, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -14,6 +14,7 @@ import {
   _subagentCorrelator,
   _subagentRole,
   _subagentTranscriptPath,
+  clearSessionCacheFiles,
   collectContext,
   computeLatencyMs,
   getSessionId,
@@ -117,9 +118,11 @@ function startCaptureServer() {
  */
 function startFailingServer(status) {
   return new Promise((resolve) => {
-    let requestCount = 0;
+    let postCount = 0;
+    let totalCount = 0;
     const server = createServer((req, res) => {
-      requestCount++;
+      totalCount++;
+      if (req.method === "POST") postCount++;
       // Drain the body so the client sees a clean response.
       req.on("data", () => {});
       req.on("end", () => {
@@ -129,7 +132,17 @@ function startFailingServer(status) {
     });
     server.listen(0, "127.0.0.1", () => {
       const port = server.address().port;
-      resolve({ server, port, requestCount: () => requestCount });
+      // requestCount() counts POSTs only — the contract these tests
+      // assert is about the ingestion POST path, not unrelated GETs
+      // from D139 SessionStart MCP-policy fetch (which hit the same
+      // host:port in test fixtures because FLIGHTDECK_SERVER points
+      // at the failing server).
+      resolve({
+        server,
+        port,
+        requestCount: () => postCount,
+        totalRequestCount: () => totalCount,
+      });
     });
   });
 }
@@ -332,7 +345,7 @@ describe("observe_cli.mjs", () => {
     rmSync(dirname(transcriptPath), { recursive: true, force: true });
   });
 
-  it("maps SessionEnd to session_end", async () => {
+  it("maps SessionEnd to session_end with close_reason=normal_exit", async () => {
     const input = JSON.stringify({
       hook_event_name: "SessionEnd",
       session_id: "sess-end-1",
@@ -346,6 +359,58 @@ describe("observe_cli.mjs", () => {
     assert.equal(result.code, 0);
     const body = capture.bodies().at(-1);
     assert.equal(body.event_type, "session_end");
+    // Plugin-driven SessionEnd is always a normal exit. The dashboard's
+    // CLOSE REASON facet reads this; without an explicit value it would
+    // fall through to the worker's unknown-default.
+    assert.equal(body.close_reason, "normal_exit");
+  });
+
+  it("SessionEnd invalidates the session cache so the next hook mints a fresh session_id", async () => {
+    // First Claude Code interaction: SessionStart → SessionEnd. The
+    // SessionEnd handler unlinks both cache files (session-${markerKey}
+    // + started-${sessionId}) so the second cycle starts clean.
+    const before = capture.bodies().length;
+    const claudeSessionId = "sess-recycle-claude-id";
+    const env = {
+      FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
+      FLIGHTDECK_TOKEN: "tok_test",
+    };
+    // Cycle 1: SessionStart + SessionEnd.
+    await runScript(
+      JSON.stringify({
+        hook_event_name: "SessionStart",
+        session_id: claudeSessionId,
+      }),
+      env,
+    );
+    await runScript(
+      JSON.stringify({
+        hook_event_name: "SessionEnd",
+        session_id: claudeSessionId,
+      }),
+      env,
+    );
+    // Cycle 2: same Claude Code session_id (sim /clear / re-`claude
+    // -p`). Without cache invalidation the second cycle would reuse
+    // the cycle-1 sessionId; with the fix it mints a fresh one.
+    await runScript(
+      JSON.stringify({
+        hook_event_name: "SessionStart",
+        session_id: claudeSessionId,
+      }),
+      env,
+    );
+
+    const newBodies = capture.bodies().slice(before);
+    const sessionStarts = newBodies.filter((b) => b.event_type === "session_start");
+    assert.ok(sessionStarts.length >= 2, `expected ≥2 session_start, got ${sessionStarts.length}`);
+    const cycle1 = sessionStarts[0].session_id;
+    const cycle2 = sessionStarts[sessionStarts.length - 1].session_id;
+    assert.notEqual(
+      cycle1, cycle2,
+      "cycle 2 must mint a different session_id from cycle 1 — the on-disk cache " +
+        "must have been invalidated by the cycle-1 SessionEnd",
+    );
   });
 
   it("defaults FLIGHTDECK_SERVER/TOKEN when unset (zero-config path, D100)", async () => {
@@ -757,6 +822,73 @@ describe("observe_cli helpers", () => {
       const second = getSessionId(hookEvent);
       assert.notEqual(first, second);
       assert.match(second, V4_UUID_RE);
+    });
+  });
+
+  describe("clearSessionCacheFiles", () => {
+    beforeEach(() => {
+      delete process.env.CLAUDE_SESSION_ID;
+      delete process.env.ANTHROPIC_CLAUDE_SESSION_ID;
+      clearSessionMarkers();
+    });
+
+    function _files(hookSessionId, sessionId) {
+      const dir = join(tmpdir(), "flightdeck-plugin");
+      const markerKey = createHash("sha256")
+        .update(hookSessionId)
+        .digest("hex")
+        .slice(0, 16);
+      return [
+        join(dir, `session-${markerKey}.txt`),
+        join(dir, `started-${sessionId}.txt`),
+      ];
+    }
+
+    it("unlinks both session and started markers when both exist", () => {
+      const hookSessionId = "invocation-CLR-1";
+      const sessionId = getSessionId({ session_id: hookSessionId });
+      const dir = join(tmpdir(), "flightdeck-plugin");
+      // Seed the started marker (getSessionId only writes the
+      // session-* one; ensureSessionStarted writes started-*).
+      writeFileSync(join(dir, `started-${sessionId}.txt`), "seeded");
+      const [sessionFile, startedFile] = _files(hookSessionId, sessionId);
+      // Sanity: both exist before invalidation.
+      assert.doesNotThrow(() => readFileSync(sessionFile, "utf8"));
+      assert.doesNotThrow(() => readFileSync(startedFile, "utf8"));
+
+      clearSessionCacheFiles({ session_id: hookSessionId }, sessionId);
+
+      // Both gone.
+      assert.throws(() => readFileSync(sessionFile, "utf8"), /ENOENT/);
+      assert.throws(() => readFileSync(startedFile, "utf8"), /ENOENT/);
+    });
+
+    it("tolerates ENOENT when the markers don't exist (best-effort)", () => {
+      // No prior getSessionId call → no session-* file. No
+      // ensureSessionStarted call → no started-* file. Helper must
+      // not throw.
+      assert.doesNotThrow(() =>
+        clearSessionCacheFiles({ session_id: "invocation-CLR-NOENT" }, "no-such-session"),
+      );
+    });
+
+    it("falls back to cwd-keyed markerKey when hookEvent.session_id is absent", () => {
+      // Mirrors getSessionId's fallback path. Helper should still
+      // unlink the cwd-keyed session-* file rather than crash on the
+      // missing field.
+      const sessionId = getSessionId({});
+      const cwdMarkerKey = createHash("sha256")
+        .update(process.cwd())
+        .digest("hex")
+        .slice(0, 16);
+      const sessionFile = join(
+        tmpdir(),
+        "flightdeck-plugin",
+        `session-${cwdMarkerKey}.txt`,
+      );
+      assert.doesNotThrow(() => readFileSync(sessionFile, "utf8"));
+      clearSessionCacheFiles({}, sessionId);
+      assert.throws(() => readFileSync(sessionFile, "utf8"), /ENOENT/);
     });
   });
 
@@ -1612,14 +1744,27 @@ describe("observe_cli end-to-end (new fields)", () => {
     assert.ok(mcpEvent, "expected mcp_tool_call event");
     assert.equal(mcpEvent.server_name, "filesystem");
     assert.equal(mcpEvent.tool_name, "read_file");
+    // Phase 7 Step 3.b (D150): tool args + result migrate from
+    // inline payload to event_content's dedicated tool_input /
+    // tool_output columns. Plugin emits has_content=true + the
+    // event_content envelope (byte-identical to sensor's
+    // _build_tool_capture_content output).
+    assert.equal(mcpEvent.has_content, true);
+    assert.equal(mcpEvent.arguments, undefined);
+    assert.equal(mcpEvent.result, undefined);
+    assert.equal(mcpEvent.content.provider, "mcp");
     // Whitelist sanitiser BYPASSED for MCP per D4 — anything_else
-    // survives.
-    assert.deepEqual(mcpEvent.arguments, {
+    // survives in tool_input.
+    assert.deepEqual(mcpEvent.content.tool_input, {
       path: "/etc/hosts",
       anything_else: "kept-by-mcp-bypass",
     });
-    // capturePrompts=true → result captured.
-    assert.ok(mcpEvent.result, "result must be present with capturePrompts=true");
+    // capturePrompts=true → result captured into tool_output.
+    assert.ok(mcpEvent.content.tool_output, "tool_output must be present with capturePrompts=true");
+    // event_content.response is NOT NULL in the pre-D150 schema —
+    // envelope ships {} so the worker INSERT satisfies the
+    // constraint. tool_output is the operationally-meaningful field.
+    assert.deepEqual(mcpEvent.content.response, {});
   });
 
   it("Phase 5 — PostToolUseFailure on MCP tool emits mcp_tool_call with error", async () => {
@@ -1648,6 +1793,56 @@ describe("observe_cli end-to-end (new fields)", () => {
     assert.ok(mcpEvent.error, "error must be populated on failure path");
     assert.equal(mcpEvent.error.error_class, "PluginToolError");
     assert.match(mcpEvent.error.message, /Unauthorized/);
+    // Phase 7 Step 3.b (D150): even on the failure path with
+    // CAPTURE_TOOL_INPUTS default-on, the tool_input migrates to
+    // event_content. The error sub-object stays inline on payload
+    // (operator-readable failure context) — only args + result
+    // migrate.
+    assert.equal(mcpEvent.has_content, true);
+    assert.deepEqual(mcpEvent.content.tool_input, { repo: "x/y" });
+    // No tool_output on failure path (no tool_response in the
+    // hookEvent).
+    assert.equal(mcpEvent.content.tool_output, null);
+  });
+
+  // Phase 7 Step 3.b (D150) regression guards: capture-off paths
+  // must NOT produce an event_content envelope. Without these,
+  // a future regression that emits an empty has_content=true
+  // would pass the worker's NOT NULL response constraint check
+  // but ship operationally meaningless rows.
+
+  it("D150: mcp_tool_call with capture flags off skips the event_content envelope", async () => {
+    clearAllPluginMarkers();
+    const before = capture.bodies().length;
+    const result = await runScript(
+      JSON.stringify({
+        hook_event_name: "PostToolUse",
+        session_id: "sess-mcp-no-cap",
+        tool_name: "mcp__filesystem__read_file",
+        tool_input: { path: "/etc/hosts" },
+        tool_response: { content: [{ type: "text", text: "..." }] },
+      }),
+      {
+        FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
+        FLIGHTDECK_TOKEN: "tok_test",
+        CLAUDE_SESSION_ID: "sess-mcp-no-cap",
+        FLIGHTDECK_CAPTURE_PROMPTS: "false",
+        FLIGHTDECK_CAPTURE_TOOL_INPUTS: "false",
+      },
+    );
+    assert.equal(result.code, 0);
+    const posted = capture.bodies().slice(before);
+    const mcpEvent = posted.find((b) => b.event_type === "mcp_tool_call");
+    assert.ok(mcpEvent, "expected mcp_tool_call event");
+    // Both capture flags off → no content envelope. has_content
+    // is falsy and the event_content envelope is absent (some
+    // upstream code paths default content to null on the wire;
+    // the operator-meaningful assertion is "no captured payload"
+    // not "field key absent").
+    assert.ok(!mcpEvent.has_content);
+    assert.ok(mcpEvent.content == null);
+    assert.equal(mcpEvent.arguments, undefined);
+    assert.equal(mcpEvent.result, undefined);
   });
 
   it("PostToolUse tool_call still emits when transcript is missing", async () => {

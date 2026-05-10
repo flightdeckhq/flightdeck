@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type {
+  AgentEvent,
   AgentSummary,
   CustomDirective,
   FlavorSummary,
@@ -160,6 +161,23 @@ interface FleetState {
    * ``loadingOlder`` state for the per-event pagination.
    */
   expandedSessionsLoadingMore: Map<string, boolean>;
+  /**
+   * Last event received via the fleet WebSocket. Updated on every
+   * event-bearing ``FleetUpdate``. Subscribers (e.g.
+   * SessionDrawer's D140 mcp_server_attached re-fetch trigger)
+   * select this field and useEffect off it. The same instance
+   * is shared across all subscribers — a subscriber that wants
+   * to filter on event_type / session_id does so in its own
+   * useEffect.
+   */
+  lastEvent: AgentEvent | null;
+  /**
+   * D140 step 6.6 dispatch — called from useFleet's WS handler
+   * for every event-bearing message regardless of whether the
+   * envelope carries a session diff. Replaces ``lastEvent`` so
+   * SessionDrawer subscribers fire their re-fetch effect.
+   */
+  setLastEvent: (event: AgentEvent | null) => void;
   applyUpdate: (update: FleetUpdate) => void;
   selectSession: (id: string | null) => void;
   markShuttingDown: (sessionId: string) => void;
@@ -274,6 +292,7 @@ export const useFleetStore = create<FleetState>((set, get) => ({
   selectedSessionId: null,
   agentTypeFilter: "all",
   flavorFilter: null,
+  lastEvent: null,
   enteredBucketAt: new Map<string, number>(),
   expandedSessions: new Map<string, Session[]>(),
   expandedSessionsHasMore: new Map<string, boolean>(),
@@ -535,6 +554,9 @@ export const useFleetStore = create<FleetState>((set, get) => ({
   },
 
   selectSession: (id) => set({ selectedSessionId: id }),
+
+  setLastEvent: (event) => set({ lastEvent: event }),
+
 
   markShuttingDown: (sessionId) => {
     const next = new Set(get().shuttingDown);

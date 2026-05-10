@@ -367,6 +367,83 @@ func EventsHandler(
 			}
 		}
 
+		// D131 — MCP Protection Policy event payload validation.
+		// Reject the three new event types at the wire boundary
+		// (Rule 36) when their required fields are missing rather
+		// than letting the worker's pgx insert succeed with a
+		// malformed payload that the dashboard then has to defend
+		// against.
+		switch eventType {
+		case "policy_warn", "policy_degrade", "policy_block":
+			// Phase 7 Step 2 (D148): hard cutover — the shared
+			// policy_decision block is required on every token-budget
+			// policy event. Sensor + plugin + ingestion + workers ship
+			// together per the no-compat-tax memory.
+			if msg := validateTokenBudgetPolicyPayload(payload, eventType); msg != "" {
+				writeError(w, http.StatusBadRequest, msg)
+				return
+			}
+		case "policy_mcp_warn", "policy_mcp_block":
+			if msg := validateMCPPolicyDecisionPayload(payload, eventType); msg != "" {
+				writeError(w, http.StatusBadRequest, msg)
+				return
+			}
+		case "mcp_server_name_changed":
+			if msg := validateMCPServerNameChangedPayload(payload); msg != "" {
+				writeError(w, http.StatusBadRequest, msg)
+				return
+			}
+		case "mcp_policy_user_remembered":
+			if msg := validateMCPPolicyUserRememberedPayload(payload); msg != "" {
+				writeError(w, http.StatusBadRequest, msg)
+				return
+			}
+		case "mcp_server_attached":
+			if msg := validateMCPServerAttachedPayload(payload); msg != "" {
+				writeError(w, http.StatusBadRequest, msg)
+				return
+			}
+		case "session_start":
+			// Phase 7 Step 4 (D152): require sensor_version on every
+			// session_start so the dashboard's "did this run under
+			// the buggy build" triage workflow always has the field
+			// to read. Hard cutover per pre-v0.6 no-compat-tax.
+			if msg := validateSessionStartPayload(payload); msg != "" {
+				writeError(w, http.StatusBadRequest, msg)
+				return
+			}
+		case "session_end":
+			// Phase 7 Step 4 (D152): close_reason is optional from
+			// the sensor (worker fills the orphan-detector +
+			// sigkill paths). When present, validate against the
+			// enum so a malformed value can't poison dashboard
+			// renderers downstream.
+			if msg := validateSessionEndPayload(payload); msg != "" {
+				writeError(w, http.StatusBadRequest, msg)
+				return
+			}
+		case "pre_call":
+			if msg := validatePreCallPayload(payload); msg != "" {
+				writeError(w, http.StatusBadRequest, msg)
+				return
+			}
+		case "post_call":
+			if msg := validatePostCallPayload(payload); msg != "" {
+				writeError(w, http.StatusBadRequest, msg)
+				return
+			}
+		case "embeddings":
+			if msg := validateEmbeddingsPayload(payload); msg != "" {
+				writeError(w, http.StatusBadRequest, msg)
+				return
+			}
+		case "llm_error":
+			if msg := validateLLMErrorPayload(payload); msg != "" {
+				writeError(w, http.StatusBadRequest, msg)
+				return
+			}
+		}
+
 		// On session_start, attach the resolved token id/name so the
 		// worker's UpsertSession can persist them onto the new session
 		// row (D095). Subsequent events carry no token fields -- a
@@ -471,4 +548,310 @@ func writeError(w http.ResponseWriter, code int, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
+}
+
+// validateMCPPolicyDecisionPayload enforces the required-field set
+// for policy_mcp_warn and policy_mcp_block events at the API
+// boundary (D131 / Rule 36). Returns an empty string when the
+// payload is valid; returns a user-facing error message otherwise.
+//
+// Phase 7 Step 2 (D148): adds the shared ``policy_decision`` block
+// to the required-field set. Hard cutover per the no-compat-tax
+// memory — pre-v0.6 has no users to protect; sensor + plugin +
+// ingestion + workers ship together.
+func validateMCPPolicyDecisionPayload(payload map[string]any, eventType string) string {
+	// Phase 7 Step 3 (D151): enforcement extends to all six MCP
+	// server-access paths. ``tool_name`` is method-specific (only
+	// call_tool / read_resource / get_prompt populate it; the
+	// list_* methods have no per-item identifier). Validation
+	// drops it from the required-field set; the sensor stamps
+	// it when applicable.
+	for _, field := range []string{
+		"server_url", "server_name", "fingerprint",
+		"policy_id", "decision_path",
+	} {
+		v, ok := payload[field].(string)
+		if !ok || v == "" {
+			return fmt.Sprintf("%s is required for %s", field, eventType)
+		}
+	}
+	dp := payload["decision_path"].(string)
+	switch dp {
+	case "flavor_entry", "global_entry", "mode_default":
+	default:
+		return fmt.Sprintf(
+			"decision_path must be one of: flavor_entry, global_entry, mode_default (got %q)", dp,
+		)
+	}
+	if msg := validatePolicyDecisionBlock(payload, eventType); msg != "" {
+		return msg
+	}
+	return ""
+}
+
+// validatePolicyDecisionBlock enforces the shared policy_decision
+// payload block (D148). Required on the 5 policy event types
+// (policy_warn, policy_degrade, policy_block, policy_mcp_warn,
+// policy_mcp_block). Phase 7 Step 2 hard cutover.
+func validatePolicyDecisionBlock(payload map[string]any, eventType string) string {
+	raw, ok := payload["policy_decision"]
+	if !ok {
+		return fmt.Sprintf("policy_decision block is required for %s (D148)", eventType)
+	}
+	block, ok := raw.(map[string]any)
+	if !ok {
+		return fmt.Sprintf("policy_decision must be an object on %s (D148)", eventType)
+	}
+	for _, field := range []string{"policy_id", "scope", "decision", "reason"} {
+		v, ok := block[field].(string)
+		if !ok || v == "" {
+			return fmt.Sprintf(
+				"policy_decision.%s is required for %s (D148)", field, eventType,
+			)
+		}
+	}
+	return ""
+}
+
+// validateTokenBudgetPolicyPayload enforces the policy_decision
+// shared block on token-budget enforcement events (policy_warn,
+// policy_degrade, policy_block). Phase 7 Step 2 (D148) hard
+// cutover. The legacy fields (source / threshold_pct /
+// tokens_used / token_limit) remain on the wire for backwards
+// compatibility with the existing dashboard renderers; Step 6
+// will consolidate.
+func validateTokenBudgetPolicyPayload(payload map[string]any, eventType string) string {
+	return validatePolicyDecisionBlock(payload, eventType)
+}
+
+// validateSessionStartPayload enforces D152 sensor_version
+// presence on session_start events. interceptor_versions +
+// policy_snapshot are optional — empty when no frameworks are
+// installed / no policy is configured.
+func validateSessionStartPayload(payload map[string]any) string {
+	v, ok := payload["sensor_version"].(string)
+	if !ok {
+		return "sensor_version is required for session_start"
+	}
+	// Empty string is permitted — the sensor's importlib.metadata
+	// read can return "" on editable installs in some pip
+	// versions, and rejecting that would block legitimate dev
+	// sessions. The field's PRESENCE is the contract; non-empty
+	// is operationally helpful but not load-bearing.
+	_ = v
+	return ""
+}
+
+// validateSessionEndPayload enforces the D152 close_reason enum
+// when the field is present. Sensor-knowable values plus the
+// worker-filled values; missing field is fine (worker fills on
+// the orphan-detector / sigkill path).
+func validateSessionEndPayload(payload map[string]any) string {
+	raw, present := payload["close_reason"]
+	if !present {
+		return ""
+	}
+	v, ok := raw.(string)
+	if !ok {
+		return "close_reason must be a string on session_end"
+	}
+	switch v {
+	case "normal_exit", "directive_shutdown", "policy_block",
+		"orphan_timeout", "sigkill_detected", "unknown":
+		return ""
+	}
+	return fmt.Sprintf(
+		"close_reason must be one of: normal_exit, directive_shutdown, "+
+			"policy_block, orphan_timeout, sigkill_detected, unknown (got %q)", v,
+	)
+}
+
+// validateMCPPolicyUserRememberedPayload enforces the required-
+// field set for mcp_policy_user_remembered events emitted by the
+// Claude Code plugin's PostToolUse de-facto-approval path (D139).
+// Required fields cover both the operator-visibility surface
+// (fingerprint, server_url_canonical, server_name, flavor) AND
+// the audit timestamp (decided_at).
+func validateMCPPolicyUserRememberedPayload(payload map[string]any) string {
+	for _, field := range []string{
+		"fingerprint", "server_url_canonical", "server_name",
+		"flavor", "decided_at",
+	} {
+		v, ok := payload[field].(string)
+		if !ok || v == "" {
+			return fmt.Sprintf(
+				"%s is required for mcp_policy_user_remembered", field,
+			)
+		}
+	}
+	return ""
+}
+
+// validateMCPServerAttachedPayload enforces the required-field
+// set for mcp_server_attached events (D140 step 6.6 A2). The
+// event is sensor-emitted at ClientSession.initialize time; the
+// worker UPSERTs sessions.context.mcp_servers from this payload
+// so the dashboard's SessionDrawer panel populates live.
+//
+// Required non-empty fields: fingerprint (16-hex per D127),
+// server_name, attached_at. server_url_canonical is required as
+// a string but allowed empty — the sensor legitimately emits
+// "" when the transport didn't expose a URL marker (rare; stdio
+// without a stashed URL). The worker's tuple-dedup by
+// (name, server_url) then collapses such servers by name alone,
+// which is the right behavior when URL identity is unavailable.
+func validateMCPServerAttachedPayload(payload map[string]any) string {
+	for _, field := range []string{"fingerprint", "server_name", "attached_at"} {
+		v, ok := payload[field].(string)
+		if !ok || v == "" {
+			return fmt.Sprintf(
+				"%s is required for mcp_server_attached", field,
+			)
+		}
+	}
+	if _, ok := payload["server_url_canonical"].(string); !ok {
+		return "server_url_canonical is required for mcp_server_attached"
+	}
+	return ""
+}
+
+// validateMCPServerNameChangedPayload enforces the required-field
+// set for mcp_server_name_changed events. The event is sensor-
+// emitted observation only (D131); validation here protects
+// against malformed payloads from third-party emitters.
+func validateMCPServerNameChangedPayload(payload map[string]any) string {
+	for _, field := range []string{
+		"server_url_canonical", "fingerprint_old", "fingerprint_new",
+		"name_old", "name_new",
+	} {
+		v, ok := payload[field].(string)
+		if !ok || v == "" {
+			return fmt.Sprintf(
+				"%s is required for mcp_server_name_changed", field,
+			)
+		}
+	}
+	return ""
+}
+
+// validatePreCallPayload enforces the pre_call enrichment contract.
+// The sensor's pre_call emission always carries estimated_via; the
+// plugin's pre_call doesn't run token estimation and omits the field.
+// Validator accepts both shapes; when present, the value must be one
+// of the enum members. policy_decision_pre, when present, follows
+// the shared block shape.
+func validatePreCallPayload(payload map[string]any) string {
+	if raw, present := payload["estimated_via"]; present {
+		via, ok := raw.(string)
+		if !ok {
+			return "estimated_via must be a string on pre_call"
+		}
+		switch via {
+		case "tiktoken", "heuristic", "none":
+		default:
+			return fmt.Sprintf(
+				"estimated_via must be one of: tiktoken, heuristic, none (got %q)", via,
+			)
+		}
+	}
+	if raw, present := payload["policy_decision_pre"]; present {
+		block, ok := raw.(map[string]any)
+		if !ok {
+			return "policy_decision_pre must be an object on pre_call"
+		}
+		for _, field := range []string{"policy_id", "scope", "decision", "reason"} {
+			v, ok := block[field].(string)
+			if !ok || v == "" {
+				return fmt.Sprintf(
+					"policy_decision_pre.%s is required when policy_decision_pre is present", field,
+				)
+			}
+		}
+	}
+	return ""
+}
+
+// validatePostCallPayload enforces the post_call enrichment contract
+// when the new fields are present. estimated_via, when set, must be
+// one of the enum values; policy_decision_post follows the shared
+// block shape; provider_metadata, when set, must be an object.
+func validatePostCallPayload(payload map[string]any) string {
+	if raw, present := payload["estimated_via"]; present {
+		via, ok := raw.(string)
+		if !ok {
+			return "estimated_via must be a string on post_call"
+		}
+		switch via {
+		case "tiktoken", "heuristic", "none":
+		default:
+			return fmt.Sprintf(
+				"estimated_via must be one of: tiktoken, heuristic, none (got %q)", via,
+			)
+		}
+	}
+	if raw, present := payload["provider_metadata"]; present {
+		if _, ok := raw.(map[string]any); !ok {
+			return "provider_metadata must be an object on post_call"
+		}
+	}
+	if raw, present := payload["policy_decision_post"]; present {
+		block, ok := raw.(map[string]any)
+		if !ok {
+			return "policy_decision_post must be an object on post_call"
+		}
+		for _, field := range []string{"policy_id", "scope", "decision", "reason"} {
+			v, ok := block[field].(string)
+			if !ok || v == "" {
+				return fmt.Sprintf(
+					"policy_decision_post.%s is required when policy_decision_post is present", field,
+				)
+			}
+		}
+	}
+	return ""
+}
+
+// validateEmbeddingsPayload reuses the post_call validators for the
+// shared fields and adds output_dimensions shape check when present.
+func validateEmbeddingsPayload(payload map[string]any) string {
+	if msg := validatePostCallPayload(payload); msg != "" {
+		return msg
+	}
+	if raw, present := payload["output_dimensions"]; present {
+		dims, ok := raw.(map[string]any)
+		if !ok {
+			return "output_dimensions must be an object on embeddings"
+		}
+		for _, field := range []string{"count", "dimension"} {
+			val, ok := dims[field]
+			if !ok {
+				return fmt.Sprintf(
+					"output_dimensions.%s is required when output_dimensions is present", field,
+				)
+			}
+			if num, ok := val.(float64); !ok || num <= 0 {
+				return fmt.Sprintf(
+					"output_dimensions.%s must be a positive number", field,
+				)
+			}
+		}
+	}
+	return ""
+}
+
+// validateLLMErrorPayload enforces llm_error enrichment when the new
+// fields are present. retry_attempt + terminal are sensor-emitted;
+// plugin-side llm_errors omit them today.
+func validateLLMErrorPayload(payload map[string]any) string {
+	if raw, present := payload["retry_attempt"]; present {
+		if num, ok := raw.(float64); !ok || num < 1 {
+			return "retry_attempt must be a positive integer on llm_error"
+		}
+	}
+	if raw, present := payload["terminal"]; present {
+		if _, ok := raw.(bool); !ok {
+			return "terminal must be a boolean on llm_error"
+		}
+	}
+	return ""
 }

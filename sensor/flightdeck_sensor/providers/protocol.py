@@ -16,8 +16,35 @@ class Provider(Protocol):
     may raise exceptions -- failures return zero/empty defaults.
     """
 
-    def estimate_tokens(self, request_kwargs: dict[str, Any]) -> int:
-        """Estimate input token count before the call. Never raises."""
+    def estimate_tokens(self, request_kwargs: dict[str, Any]) -> tuple[int, str]:
+        """Estimate input token count before the call. Never raises.
+
+        Returns ``(tokens, source)`` where source is one of
+        ``"tiktoken"`` (exact tokeniser-based count), ``"heuristic"``
+        (character-length fallback), or ``"none"`` (extraction
+        failed; ``(0, "none")``). The source string lands on the
+        pre_call event's ``estimated_via`` field so a large post-call
+        delta can be attributed to estimator quality.
+        """
+        ...
+
+    def extract_response_metadata(self, response: Any) -> dict[str, Any] | None:
+        """Provider-specific response metadata (rate-limit headers,
+        request id, processing-ms). Returns ``None`` when nothing
+        useful is reachable. Never raises.
+
+        Field names are normalised across providers (snake_case, no
+        provider prefix) so the dashboard renders a single chip
+        shape regardless of origin.
+        """
+        ...
+
+    def extract_output_dimensions(self, response: Any) -> dict[str, int] | None:
+        """For embeddings responses, return ``{"count": N, "dimension": D}``.
+
+        Returns ``None`` for non-embeddings responses or when the
+        shape cannot be parsed. Never raises.
+        """
         ...
 
     def extract_usage(self, response: Any) -> TokenUsage:
@@ -103,3 +130,4 @@ class PromptContent:
     event_id: str
     captured_at: str
     input: str | list[str] | None = None
+    embedding_output: list[list[float]] | None = None

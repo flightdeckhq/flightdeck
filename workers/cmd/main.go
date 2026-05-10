@@ -56,8 +56,11 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Start background reconciler for stale/lost sessions
-	go proc.StartReconciler(ctx)
+	// Start background reconciler for stale/lost/orphaned sessions.
+	// orphanTimeout is sourced from FLIGHTDECK_ORPHAN_TIMEOUT_HOURS
+	// (default 24h) — see config.OrphanTimeoutHours for the rationale.
+	orphanTimeout := time.Duration(cfg.OrphanTimeoutHours) * time.Hour
+	go proc.StartReconciler(ctx, orphanTimeout)
 
 	// Start NATS consumer pool
 	cons := consumer.New(nc, cfg.WorkerPoolSize, proc)

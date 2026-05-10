@@ -81,6 +81,47 @@ func TestHandlerEmitsSortedTextFormat(t *testing.T) {
 	}
 }
 
+func TestIncrSessionClosedCountsAndExposesViaHandler(t *testing.T) {
+	Reset()
+
+	if snap := SnapshotClosed(); len(snap) != 0 {
+		t.Fatalf("SnapshotClosed on fresh registry should be empty, got %v", snap)
+	}
+
+	IncrSessionClosed(CloseReasonOrphanTimeout)
+	IncrSessionClosed(CloseReasonOrphanTimeout)
+	IncrSessionClosed(CloseReasonOrphanTimeout)
+
+	if got := SnapshotClosed()[CloseReasonOrphanTimeout]; got != 3 {
+		t.Errorf("orphan_timeout: want 3, got %d", got)
+	}
+
+	// Reset clears closed counters as well as dropped counters.
+	IncrDropped(ReasonOrphanSessionEnd)
+	Reset()
+	if got := SnapshotClosed()[CloseReasonOrphanTimeout]; got != 0 {
+		t.Errorf("Reset did not clear closed counters: orphan_timeout=%d", got)
+	}
+	if got := Snapshot()[ReasonOrphanSessionEnd]; got != 0 {
+		t.Errorf("Reset did not clear dropped counters: orphan_session_end=%d", got)
+	}
+
+	// Re-incr post-Reset and verify the /metrics handler emits the
+	// sessions_closed_total line in the trivial text format.
+	IncrSessionClosed(CloseReasonOrphanTimeout)
+	req := httptest.NewRequest("GET", "/metrics", nil)
+	w := httptest.NewRecorder()
+	Handler().ServeHTTP(w, req)
+
+	if w.Code != 200 {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `sessions_closed_total{reason="orphan_timeout"} 1`) {
+		t.Errorf("expected sessions_closed_total line, got: %s", body)
+	}
+}
+
 func TestConcurrentIncrDroppedDoesNotRace(t *testing.T) {
 	// Each goroutine increments the same reason; final count must
 	// equal iterations * workers (no lost updates under the
@@ -101,6 +142,57 @@ func TestConcurrentIncrDroppedDoesNotRace(t *testing.T) {
 		<-done
 	}
 	got := Snapshot()[ReasonOrphanSessionEnd]
+	want := uint64(workers * iterations)
+	if got != want {
+		t.Errorf("race detected or counter lost updates: got %d, want %d", got, want)
+	}
+}
+
+func TestIncrSessionClosedN_BatchAddSemantics(t *testing.T) {
+	Reset()
+
+	// n=0 must be a no-op (no map allocation, no counter creation).
+	IncrSessionClosedN(CloseReasonOrphanTimeout, 0)
+	if got := SnapshotClosed()[CloseReasonOrphanTimeout]; got != 0 {
+		t.Errorf("n=0: want 0, got %d", got)
+	}
+
+	// Single batch adds n.
+	IncrSessionClosedN(CloseReasonOrphanTimeout, 5)
+	if got := SnapshotClosed()[CloseReasonOrphanTimeout]; got != 5 {
+		t.Errorf("after batch=5: want 5, got %d", got)
+	}
+
+	// Mixed with single Incr — both feed the same counter.
+	IncrSessionClosed(CloseReasonOrphanTimeout)
+	IncrSessionClosedN(CloseReasonOrphanTimeout, 3)
+	if got := SnapshotClosed()[CloseReasonOrphanTimeout]; got != 9 {
+		t.Errorf("after 5 + 1 + 3: want 9, got %d", got)
+	}
+}
+
+func TestConcurrentIncrSessionClosedDoesNotRace(t *testing.T) {
+	// Mirrors TestConcurrentIncrDroppedDoesNotRace for the
+	// closedSessions sharded map. Without this the race detector
+	// never exercises the closedMu upgrade path; a future refactor
+	// could break the double-checked locking in ensureCloseCounter
+	// without any test flagging it.
+	Reset()
+	const workers = 8
+	const iterations = 1000
+	done := make(chan struct{}, workers)
+	for i := 0; i < workers; i++ {
+		go func() {
+			for j := 0; j < iterations; j++ {
+				IncrSessionClosed(CloseReasonOrphanTimeout)
+			}
+			done <- struct{}{}
+		}()
+	}
+	for i := 0; i < workers; i++ {
+		<-done
+	}
+	got := SnapshotClosed()[CloseReasonOrphanTimeout]
 	want := uint64(workers * iterations)
 	if got != want {
 		t.Errorf("race detected or counter lost updates: got %d, want %d", got, want)

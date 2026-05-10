@@ -99,11 +99,23 @@ _PATCHED_SENTINEL = "_flightdeck_patched"
 # the read stream they yield; the patched ClientSession.__init__ copies
 # it onto the session instance for fast lookup at call time.
 _TRANSPORT_MARKER = "_flightdeck_transport"
+# Step 4 (D131): per-stream URL marker. Transport-context wrappers
+# stamp the canonical-form server URL onto the read+write streams;
+# the patched ClientSession.__init__ copies it onto the session
+# instance for per-call policy enforcement to read.
+_STREAM_URL_MARKER = "_flightdeck_server_url"
 
 # Per-instance attributes set by patched initialize / __init__ so the
 # call-time wrappers can attribute events without recomputing.
 _INSTANCE_TRANSPORT_ATTR = "_flightdeck_mcp_transport"
 _INSTANCE_SERVER_NAME_ATTR = "_flightdeck_mcp_server_name"
+# Step 4 (D131): the canonical server URL is needed at call_tool time
+# for policy-fingerprint computation. We capture it on the
+# ClientSession instance at __init__ / initialize time and read it at
+# the call_tool wrapper. Empty string when the SDK doesn't surface a
+# URL on the underlying transport (rare; the MCP SDK passes the URL
+# into transport context managers which mark the read stream).
+_INSTANCE_SERVER_URL_ATTR = "_flightdeck_mcp_server_url"
 
 # Phase 5 (B-6) — content-overflow thresholds.
 #
@@ -129,6 +141,15 @@ _INSTANCE_SERVER_NAME_ATTR = "_flightdeck_mcp_server_name"
 # constants understands the threshold at a glance without arithmetic.
 _MCP_INLINE_THRESHOLD_BYTES = 8 * 1024
 _MCP_HARD_CAP_BYTES = 2 * 1024 * 1024
+
+# Synchronous flush window when emitting a POLICY_MCP_BLOCK event.
+# D130 guarantees the block event lands before the agent sees the
+# tear-down exception, but BudgetExceededError-style raises can race
+# the queue drain thread. 5 s is the longest pause we'll tolerate
+# adding to the LLM hot path on a block — bigger than the typical
+# control-plane round-trip (sub-second) by a wide margin, smaller
+# than the operator's "is this hung?" perception threshold.
+_MCP_BLOCK_FLUSH_TIMEOUT_SECS = 5.0
 
 
 # ----------------------------------------------------------------------
@@ -279,10 +300,14 @@ def _build_overflow_event_content(
     * ``system`` / ``messages`` / ``tools`` -- LLM-only, always null /
       empty for MCP
 
-    The shape matches what the worker's ``InsertEventContent`` already
-    parses (workers/internal/writer/postgres.go), so no worker change
-    is needed -- the existing has_content=true path runs and persists
-    the row.
+    Phase 7 Step 3.b (D150) note: this helper now serves
+    ``mcp_resource_read`` body overflow only — the ``mcp_tool_call``
+    + ``mcp_prompt_get`` paths migrated to
+    ``_build_tool_capture_content`` with dedicated
+    ``tool_input`` / ``tool_output`` columns. Resource bodies are
+    blobs, not request/response shapes; the LLM-prompt-style
+    repurposing of ``input`` / ``response`` columns stays
+    appropriate for the blob case (Q1 lock).
     """
     if arguments_overflow is None and response_overflow is None:
         return None
@@ -292,6 +317,56 @@ def _build_overflow_event_content(
         "tools": None,
         "response": response_overflow if response_overflow is not None else {},
         "input": arguments_overflow,
+        "provider": "mcp",
+        "model": server_name or "",
+        "session_id": session_id,
+        "event_id": "",
+        "captured_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _build_tool_capture_content(
+    *,
+    tool_input: Any,
+    tool_output: Any,
+    server_name: str | None,
+    session_id: str,
+) -> dict[str, Any] | None:
+    """Phase 7 Step 3.b (D150) — build the event_content envelope
+    for tool capture using the dedicated ``tool_input`` /
+    ``tool_output`` columns added by migration 000021.
+
+    Used by ``mcp_tool_call`` + ``mcp_prompt_get`` (and by the
+    LLM-side ``tool_call`` path in interceptor/base.py). Sensor +
+    plugin produce the same wire shape; worker's
+    ``InsertEventContent`` parses both keys and writes them into
+    the dedicated columns.
+
+    Returns ``None`` when neither field is populated (capture off
+    or call errored before producing args/output) — caller skips
+    setting ``has_content`` / ``content``.
+
+    The repurposing-into-LLM-prompt-columns hack the pre-Step-3.b
+    overflow path used (``input`` carrying tool args, ``response``
+    carrying tool result spelled like an LLM prompt) is removed.
+    Operators querying ``event_content.tool_input`` get tool args
+    directly without the column-name semantics gymnastics.
+    """
+    if tool_input is None and tool_output is None:
+        return None
+    return {
+        "system": None,
+        "messages": [],
+        "tools": None,
+        # ``response`` is NOT NULL in event_content (Phase 4 schema
+        # constraint pre-dating D150); send the empty-dict default
+        # so the INSERT satisfies the column constraint. The
+        # operationally-meaningful tool capture lives in
+        # tool_input / tool_output below.
+        "response": {},
+        "input": None,
+        "tool_input": tool_input,
+        "tool_output": tool_output,
         "provider": "mcp",
         "model": server_name or "",
         "session_id": session_id,
@@ -369,6 +444,361 @@ def _classify_mcp_error(exc: BaseException) -> dict[str, Any]:
 # ----------------------------------------------------------------------
 
 
+# ----------------------------------------------------------------------
+# MCP Protection Policy enforcement (D130 / D131 / D133)
+# ----------------------------------------------------------------------
+
+
+def _enforce_mcp_policy(
+    *,
+    sensor_session: Any,
+    server_url: str,
+    server_name: str,
+    transport: str | None,
+    tool_name: Any,
+    originating_call_context: str,
+) -> Exception | None:
+    """Pre-call hook for any ``ClientSession`` MCP method that touches
+    a server (``call_tool``, ``list_tools``, ``read_resource``,
+    ``get_prompt``, ``list_resources``, ``list_prompts``). Resolves
+    the cached MCP policy decision and either:
+
+    - Returns ``None`` → call proceeds (allow + warn paths).
+    - Returns an ``MCPPolicyBlocked`` instance → caller raises so the
+      framework surfaces the failure to the agent.
+
+    Warn decisions emit ``POLICY_MCP_WARN`` and return None.
+    Block decisions emit ``POLICY_MCP_BLOCK``, synchronously flush
+    the event queue (so the block lands at the dashboard before the
+    agent sees the failure per D130), and return the exception.
+
+    Phase 7 Step 3 (D151): enforcement extends from call_tool to all
+    six server-access paths. An agent blocked from a server cannot
+    bypass via list_*/read_resource/get_prompt — the operator's
+    "this server is blocked" intent now means ALL access blocked,
+    not just tool execution. Resource reads can leak data; prompt
+    fetches can return policy-violating content; list operations
+    expose the server's tool/resource inventory. Per the no-compat-
+    tax memory, pre-v0.6 has no users to protect from the behavior
+    change.
+
+    Wrapper failures (e.g. payload build raises, queue.flush raises)
+    log and return None — the wrapper must never crash the user's
+    MCP call. Fail-open per Rule 28.
+    """
+    from flightdeck_sensor.core.exceptions import MCPPolicyBlocked
+
+    # An empty server_url means we couldn't capture the canonical URL
+    # at initialize time (rare; transport without URL marker). The
+    # policy lookup in this case falls through to the cache's mode-
+    # default branch, which evaluates against the current cache state
+    # and the local-failsafe toggle. We pass empty string explicitly
+    # rather than skipping so the failsafe still triggers.
+    try:
+        decision = sensor_session.mcp_policy.evaluate(
+            server_url=server_url,
+            server_name=server_name,
+        )
+    except Exception:
+        _log.exception("flightdeck_sensor: MCP policy evaluation failed; allowing call")
+        return None
+
+    if decision.decision == "allow":
+        return None
+
+    payload_extras = _build_policy_event_extras(
+        decision=decision,
+        server_url=server_url,
+        server_name=server_name,
+        transport=transport,
+        tool_name=tool_name,
+        originating_call_context=originating_call_context,
+    )
+
+    if decision.decision == "warn":
+        try:
+            event_type = EventType.POLICY_MCP_WARN
+            payload = sensor_session._build_payload(event_type, **payload_extras)
+            sensor_session.event_queue.enqueue(payload)
+        except Exception:
+            _log.exception("flightdeck_sensor: failed to emit policy_mcp_warn event")
+        return None
+
+    # block: emit + flush + return the typed exception for the
+    # caller to raise. The synchronous flush gives D130's "block
+    # event lands before the agent sees the failure" guarantee.
+    try:
+        event_type = EventType.POLICY_MCP_BLOCK
+        payload = sensor_session._build_payload(event_type, **payload_extras)
+        sensor_session.event_queue.enqueue(payload)
+        sensor_session.event_queue.flush(timeout=_MCP_BLOCK_FLUSH_TIMEOUT_SECS)
+    except Exception:
+        _log.exception("flightdeck_sensor: failed to emit/flush policy_mcp_block event")
+
+    return MCPPolicyBlocked(
+        server_url=server_url,
+        server_name=server_name,
+        fingerprint=decision.fingerprint,
+        policy_id=decision.policy_id,
+        decision_path=decision.decision_path,
+    )
+
+
+# Phase 7 Step 3 (D151): map ClientSession method name to the
+# originating_call_context enum value. Used by the wrapper factory
+# to thread the context through enforcement + emission.
+_METHOD_TO_CALL_CONTEXT: dict[str, str] = {
+    "call_tool": "tool_call",
+    "list_tools": "list_tools",
+    "read_resource": "read_resource",
+    "get_prompt": "get_prompt",
+    "list_resources": "list_resources",
+    "list_prompts": "list_prompts",
+}
+
+
+# Backwards-compat alias so any test or downstream caller importing
+# the old name keeps working through the rename. New code calls
+# ``_enforce_mcp_policy`` directly.
+def _enforce_call_tool_policy(
+    *,
+    sensor_session: Any,
+    server_url: str,
+    server_name: str,
+    transport: str | None,
+    tool_name: Any,
+) -> Exception | None:
+    return _enforce_mcp_policy(
+        sensor_session=sensor_session,
+        server_url=server_url,
+        server_name=server_name,
+        transport=transport,
+        tool_name=tool_name,
+        originating_call_context="tool_call",
+    )
+
+
+def _build_policy_event_extras(
+    *,
+    decision: Any,
+    server_url: str,
+    server_name: str,
+    transport: str | None,
+    tool_name: Any,
+    originating_call_context: str = "tool_call",
+) -> dict[str, Any]:
+    """Construct the payload-extras dict for POLICY_MCP_WARN /
+    POLICY_MCP_BLOCK events. The event_type is selected by the
+    caller; everything below is type-agnostic.
+
+    Phase 7 Step 2 (D148): adds the shared ``policy_decision`` block
+    so operators see the same shape across token-budget and MCP
+    policy events. The legacy top-level fields (``policy_id``,
+    ``scope``, ``decision_path``, ``fingerprint``,
+    ``block_on_uncertainty``) stay on the wire for backwards
+    compatibility with the existing dashboard renderers and the
+    ARCHITECTURE.md § MCP-policy event-payload table — Step 6 will
+    consolidate them into the shared block exclusively once the
+    dashboard renderer migrates.
+
+    Phase 7 Step 2 (D149): adds ``originating_call_context`` —
+    locked to the 7-value enum in ``core.types.OriginatingCallContext``.
+    Defaults to ``"tool_call"`` because the call site that triggers
+    a policy decision today is always a tool invocation; future
+    call sites (list_tools, read_resource etc.) override.
+    """
+    from flightdeck_sensor.core.types import PolicyDecisionSummary
+
+    summary = PolicyDecisionSummary(
+        policy_id=decision.policy_id or "",
+        scope=decision.scope or "",
+        decision=decision.decision,
+        reason=_build_mcp_policy_reason(decision, server_name),
+        decision_path=decision.decision_path,
+        matched_entry_id=getattr(decision, "matched_entry_id", None) or None,
+        matched_entry_label=getattr(decision, "matched_entry_label", None) or None,
+    )
+
+    extras: dict[str, Any] = {
+        "server_url": server_url,
+        "server_name": server_name,
+        "fingerprint": decision.fingerprint,
+        "tool_name": tool_name,
+        "policy_id": decision.policy_id,
+        "scope": decision.scope,
+        "decision_path": decision.decision_path,
+        "policy_decision": summary.as_payload_dict(),
+        "originating_call_context": originating_call_context,
+    }
+    if transport is not None:
+        extras["transport"] = transport
+    if decision.decision == "block":
+        extras["block_on_uncertainty"] = decision.block_on_uncertainty
+    return extras
+
+
+def _build_mcp_policy_reason(decision: Any, server_name: str) -> str:
+    """Operator-readable single-line reason per the locked Step 2
+    pattern: "<what happened> + <by what mechanism> + <relevant
+    context>". No newlines, no jargon."""
+    label = server_name or "<unnamed server>"
+    path = decision.decision_path
+    verb = "blocked" if decision.decision == "block" else "warned"
+    if path == "flavor_entry":
+        return f"Server {label} {verb} by flavor entry, enforcement={decision.decision}"
+    if path == "global_entry":
+        return f"Server {label} {verb} by global entry, enforcement={decision.decision}"
+    # mode_default
+    if decision.decision == "block" and decision.block_on_uncertainty:
+        return (
+            f"Server {label} {verb} by allow-list mode default; "
+            f"no matching allow entry (block_on_uncertainty=true)"
+        )
+    if decision.decision == "block":
+        return f"Server {label} {verb} by allow-list mode default; no matching allow entry"
+    return f"Server {label} {verb} by mode default ({decision.scope})"
+
+
+def _emit_mcp_server_attached(
+    *,
+    sensor_session: Any,
+    fingerprint: MCPServerFingerprint,
+) -> None:
+    """Emit ``MCP_SERVER_ATTACHED`` (D140) when a new MCP server is
+    recorded mid-session.
+
+    The worker UPSERTs ``sessions.context.mcp_servers`` from this
+    event so the dashboard's SessionDrawer panel populates within
+    ~2-3s of attach for in-flight sessions. Without this event the
+    panel only ever populated for sessions whose MCP client
+    initialised BEFORE ``init_sensor`` queued the session_start
+    payload — a narrow window most playground demos and many
+    real-world flows miss.
+
+    Wrapped in try/except per Rule 27 (the sensor never breaks the
+    agent's hot path on a metadata-emit failure).
+    """
+    from datetime import datetime, timezone
+
+    from flightdeck_sensor.interceptor.mcp_identity import (
+        canonicalize_url,
+        fingerprint_short,
+    )
+
+    try:
+        canonical_url = canonicalize_url(fingerprint.server_url or "")
+        fp_hex = fingerprint_short(canonical_url, fingerprint.name)
+        attached_at = datetime.now(timezone.utc).isoformat()
+        extras: dict[str, Any] = {
+            "fingerprint": fp_hex,
+            "server_url_canonical": canonical_url,
+            "server_name": fingerprint.name,
+            "transport": fingerprint.transport,
+            "protocol_version": fingerprint.protocol_version,
+            "version": fingerprint.version,
+            "capabilities": fingerprint.capabilities,
+            "instructions": fingerprint.instructions,
+            "attached_at": attached_at,
+        }
+        # Phase 7 Step 4 (D152): policy_decision_at_attach. Reuses
+        # the cached MCPPolicyCache.evaluate() so operators see what
+        # the policy would have said about this server at attach
+        # time without joining time-windowed policy state. Same
+        # PolicyDecisionSummary shape as policy_mcp_warn /
+        # policy_mcp_block (D148).
+        try:
+            from flightdeck_sensor.core.types import PolicyDecisionSummary
+
+            decision = sensor_session.mcp_policy.evaluate(
+                server_url=fingerprint.server_url or "",
+                server_name=fingerprint.name,
+            )
+            summary = PolicyDecisionSummary(
+                policy_id=decision.policy_id or "",
+                scope=decision.scope or "",
+                decision=decision.decision,
+                reason=_build_mcp_policy_reason(decision, fingerprint.name),
+                decision_path=decision.decision_path,
+                matched_entry_id=getattr(decision, "matched_entry_id", None) or None,
+                matched_entry_label=getattr(decision, "matched_entry_label", None) or None,
+            )
+            extras["policy_decision_at_attach"] = summary.as_payload_dict()
+        except Exception:
+            # Cache miss / evaluator bug: skip the enrichment rather
+            # than crash the attach emission. The dashboard renders
+            # the row without policy chrome.
+            _log.debug(
+                "flightdeck_sensor: failed to evaluate policy at attach; "
+                "emitting mcp_server_attached without policy_decision_at_attach",
+                exc_info=True,
+            )
+        payload = sensor_session._build_payload(
+            EventType.MCP_SERVER_ATTACHED,
+            **extras,
+        )
+        sensor_session.event_queue.enqueue(payload)
+    except Exception:
+        _log.exception(
+            "flightdeck_sensor: failed to emit mcp_server_attached event",
+        )
+
+
+def _emit_name_drift_if_any(
+    *,
+    sensor_session: Any,
+    client_session: Any,
+    declared_name: str,
+    transport: str | None,
+) -> None:
+    """Emit ``MCP_SERVER_NAME_CHANGED`` when the agent declares a
+    server whose canonical URL is already known to the policy under
+    a different name (D131).
+
+    Detection runs at ``ClientSession.initialize`` time because
+    that's when the (server_url, server_name) pair is first
+    available in the same place. Cross-checking against the policy
+    cache is one extra in-memory lookup; the event emit is
+    swallowed-on-error so a wrapper bug never crashes the agent's
+    init path.
+    """
+    server_url = getattr(client_session, _INSTANCE_SERVER_URL_ATTR, None)
+    if not server_url:
+        return
+    try:
+        policy_name = sensor_session.mcp_policy.lookup_known_name(server_url)
+    except Exception:
+        _log.exception("flightdeck_sensor: name-drift lookup failed")
+        return
+    if policy_name is None or policy_name == declared_name:
+        return
+
+    # Drift detected. Emit the observation event; the policy
+    # decision still resolves on URL (D127), so this is purely a
+    # signal to the operator.
+    from flightdeck_sensor.interceptor.mcp_identity import (
+        canonicalize_url,
+        fingerprint_short,
+    )
+
+    canonical = canonicalize_url(server_url)
+    fp_old = fingerprint_short(canonical, policy_name)
+    fp_new = fingerprint_short(canonical, declared_name)
+    extras: dict[str, Any] = {
+        "server_url_canonical": canonical,
+        "fingerprint_old": fp_old,
+        "fingerprint_new": fp_new,
+        "name_old": policy_name,
+        "name_new": declared_name,
+    }
+    if transport is not None:
+        extras["transport"] = transport
+    try:
+        payload = sensor_session._build_payload(EventType.MCP_SERVER_NAME_CHANGED, **extras)
+        sensor_session.event_queue.enqueue(payload)
+    except Exception:
+        _log.exception("flightdeck_sensor: failed to emit mcp_server_name_changed event")
+
+
 def _common_extras(
     server_name: str | None,
     transport: str | None,
@@ -407,8 +837,16 @@ def _emit_tool_list(
     if result is not None and error is None:
         tools = getattr(result, "tools", None) or []
         extras["count"] = len(tools)
+        # Phase 7 Step 3: item_names operationally key for drift
+        # detection ("which tools did this server expose last week").
+        extras["item_names"], truncated = _collect_item_names(
+            getattr(t, "name", None) for t in tools
+        )
+        if truncated:
+            extras["truncated"] = True
     elif error is None:
         extras["count"] = 0
+        extras["item_names"] = []
     return extras
 
 
@@ -431,29 +869,25 @@ def _emit_tool_call(
     extras["tool_name"] = tool_name
     if capture_prompts:
         arguments = args[1] if len(args) > 1 else kwargs.get("arguments")
-        result_dict = (
-            _model_to_dict(result) if (result is not None and error is None) else None
-        )
-        # B-6 — gate each capture-on field independently. arguments
-        # below 8 KiB stay inline alongside a small result; arguments
-        # above 8 KiB get a marker inline and the full value goes to
-        # event_content. Same for result. has_content fires when any
-        # field overflowed.
-        args_inline, args_overflow, args_marker = _gate_mcp_field(arguments)
-        result_inline, result_overflow, result_marker = _gate_mcp_field(result_dict)
-        if args_inline is not None or args_marker is not None:
-            extras["arguments"] = args_inline
-        if result_inline is not None or result_marker is not None:
-            extras["result"] = result_inline
-        overflow_content = _build_overflow_event_content(
-            arguments_overflow=args_overflow,
-            response_overflow=result_overflow,
+        result_dict = _model_to_dict(result) if (result is not None and error is None) else None
+        # Phase 7 Step 3.b (D150): tool args + result route through
+        # event_content's dedicated tool_input / tool_output columns.
+        # Pre-Step-3.b path: inline-vs-overflow split via
+        # _gate_mcp_field; small payloads landed on
+        # extras["arguments"] / extras["result"], large payloads
+        # routed to event_content with input/response repurposing.
+        # New path: ALL captured args/result go to event_content
+        # regardless of size. events.payload stays lean (Phase 5 D2).
+        # Operator queries event_content.tool_input directly.
+        capture_content = _build_tool_capture_content(
+            tool_input=arguments,
+            tool_output=result_dict,
             server_name=server_name,
             session_id=session_id,
         )
-        if overflow_content is not None:
+        if capture_content is not None:
             extras["has_content"] = True
-            extras["content"] = overflow_content
+            extras["content"] = capture_content
     return extras
 
 
@@ -474,8 +908,16 @@ def _emit_resource_list(
     if result is not None and error is None:
         resources = getattr(result, "resources", None) or []
         extras["count"] = len(resources)
+        # Phase 7 Step 3: item_names captures resource URIs so
+        # drift detection works on the resource catalog too.
+        extras["item_names"], truncated = _collect_item_names(
+            (getattr(r, "uri", None) or getattr(r, "name", None)) for r in resources
+        )
+        if truncated:
+            extras["truncated"] = True
     elif error is None:
         extras["count"] = 0
+        extras["item_names"] = []
     return extras
 
 
@@ -578,9 +1020,40 @@ def _emit_prompt_list(
     if result is not None and error is None:
         prompts = getattr(result, "prompts", None) or []
         extras["count"] = len(prompts)
+        extras["item_names"], truncated = _collect_item_names(
+            getattr(p, "name", None) for p in prompts
+        )
+        if truncated:
+            extras["truncated"] = True
     elif error is None:
         extras["count"] = 0
+        extras["item_names"] = []
     return extras
+
+
+def _collect_item_names(values: Any, max_items: int = 100) -> tuple[list[str], bool]:
+    """Phase 7 Step 3: collect identifier strings for discovery
+    family payloads (mcp_tool_list / mcp_resource_list /
+    mcp_prompt_list). Caps at 100 to keep payload size bounded;
+    returns ``(names, truncated)`` so callers can stamp
+    ``truncated=true`` when the cap was hit.
+
+    Operationally key for the drift-detection workflow: the audit's
+    "did this server's tool inventory change last week" question is
+    unanswerable from ``count`` alone."""
+    out: list[str] = []
+    truncated = False
+    for v in values:
+        if v is None:
+            continue
+        s = str(v)
+        if not s:
+            continue
+        if len(out) >= max_items:
+            truncated = True
+            break
+        out.append(s)
+    return out, truncated
 
 
 def _emit_prompt_get(
@@ -605,26 +1078,22 @@ def _emit_prompt_get(
         if result is not None and error is None:
             messages = getattr(result, "messages", None) or []
             rendered = [_model_to_dict(m) for m in messages]
-        # B-6 — gate arguments and rendered independently. Multi-message
-        # rendered prompts with embedded context routinely cross 10 KiB
-        # in real templates.
-        args_inline, args_overflow, args_marker = _gate_mcp_field(arguments)
-        rendered_inline, rendered_overflow, rendered_marker = _gate_mcp_field(
-            rendered,
-        )
-        if args_inline is not None or args_marker is not None:
-            extras["arguments"] = args_inline
-        if rendered_inline is not None or rendered_marker is not None:
-            extras["rendered"] = rendered_inline
-        overflow_content = _build_overflow_event_content(
-            arguments_overflow=args_overflow,
-            response_overflow=rendered_overflow,
+        # Phase 7 Step 3.b (D150): prompt arguments + rendered
+        # messages route through event_content's dedicated
+        # tool_input / tool_output columns. Same migration shape as
+        # mcp_tool_call: pre-Step-3.b path inlined small payloads
+        # via _gate_mcp_field; new path always uses event_content so
+        # the worker writes one row with both fields populated and
+        # the operator queries event_content.tool_input directly.
+        capture_content = _build_tool_capture_content(
+            tool_input=arguments,
+            tool_output=rendered,
             server_name=server_name,
             session_id=session_id,
         )
-        if overflow_content is not None:
+        if capture_content is not None:
             extras["has_content"] = True
-            extras["content"] = overflow_content
+            extras["content"] = capture_content
     return extras
 
 
@@ -696,6 +1165,46 @@ def _make_async_wrapper(
 
         server_name = getattr(self, _INSTANCE_SERVER_NAME_ATTR, None)
         transport = getattr(self, _INSTANCE_TRANSPORT_ATTR, None)
+        server_url = getattr(self, _INSTANCE_SERVER_URL_ATTR, None)
+
+        # Phase 7 Step 3 (D151): policy enforcement BEFORE the call
+        # runs, on every server-access path. An agent blocked from a
+        # server cannot bypass via list_*/read_resource/get_prompt —
+        # operator's "this server is blocked" intent means ALL access
+        # blocked. Per-method tool_name extraction:
+        #
+        #   call_tool      → args[0] / kwargs["name"] (tool name)
+        #   read_resource  → args[0] / kwargs["uri"]  (resource URI)
+        #   get_prompt     → args[0] / kwargs["name"] (prompt name)
+        #   list_*         → no item identifier; tool_name=None
+        #
+        # The pre-check pattern ensures the agent never reaches the
+        # wrapped server when the policy says block; emit + flush +
+        # raise happens here, the post-call emit path below is
+        # bypassed for blocked calls.
+        call_context = _METHOD_TO_CALL_CONTEXT.get(method_name)
+        if call_context is not None:
+            tool_name_for_policy: Any = None
+            if method_name == "call_tool":
+                tool_name_for_policy = args[0] if args else kwargs.get("name")
+            elif method_name == "read_resource":
+                tool_name_for_policy = args[0] if args else kwargs.get("uri")
+            elif method_name == "get_prompt":
+                tool_name_for_policy = args[0] if args else kwargs.get("name")
+            blocked = _enforce_mcp_policy(
+                sensor_session=sensor_session,
+                server_url=server_url or "",
+                server_name=server_name or "",
+                transport=transport,
+                tool_name=tool_name_for_policy,
+                originating_call_context=call_context,
+            )
+            if blocked is not None:
+                # _enforce_mcp_policy already emitted the
+                # POLICY_MCP_BLOCK event and flushed the queue; raise
+                # the typed exception so the framework surfaces the
+                # failure to the agent.
+                raise blocked
 
         t0 = time.monotonic()
         result: Any = None
@@ -779,6 +1288,12 @@ def _make_initialize_wrapper(orig_initialize: Any) -> Any:
             capabilities = _capabilities_dict(getattr(result, "capabilities", None))
             instructions = getattr(result, "instructions", None)
             transport = getattr(self, _INSTANCE_TRANSPORT_ATTR, None)
+            # MCP Protection Policy identity model (D127): URL is the
+            # primary security key. Capture into the fingerprint so
+            # the dashboard SessionDrawer pill can resolve each server
+            # against the active policy. Empty string when the
+            # transport didn't expose a URL marker (rare).
+            server_url = getattr(self, _INSTANCE_SERVER_URL_ATTR, "") or ""
 
             if name:
                 # Stash on the ClientSession instance for fast lookup
@@ -793,10 +1308,29 @@ def _make_initialize_wrapper(orig_initialize: Any) -> Any:
                     version=version,
                     capabilities=capabilities,
                     instructions=instructions,
+                    server_url=server_url,
                 )
                 sensor_session = _current_session()
                 if sensor_session is not None:
-                    sensor_session.record_mcp_server(fingerprint)
+                    is_new = sensor_session.record_mcp_server(fingerprint)
+                    if is_new:
+                        # D140 step 6.6 A2 — emit only on the first
+                        # record per (name, transport) so a framework
+                        # reconnecting to the same server doesn't
+                        # re-broadcast. Worker dedups again by
+                        # (name, server_url) but suppressing the
+                        # duplicate at the source keeps the wire
+                        # quiet and the audit trail honest.
+                        _emit_mcp_server_attached(
+                            sensor_session=sensor_session,
+                            fingerprint=fingerprint,
+                        )
+                    _emit_name_drift_if_any(
+                        sensor_session=sensor_session,
+                        client_session=self,
+                        declared_name=name,
+                        transport=transport,
+                    )
         return result
 
     _patched_initialize.__name__ = "initialize"
@@ -838,6 +1372,12 @@ def _make_init_wrapper(orig_init: Any) -> Any:
             if transport is not None:
                 with contextlib.suppress(Exception):
                     setattr(self, _INSTANCE_TRANSPORT_ATTR, transport)
+            # Step 4 (D131): copy the server URL marker so per-call
+            # policy enforcement can fingerprint without re-parsing.
+            server_url = getattr(read_stream, _STREAM_URL_MARKER, None)
+            if server_url is not None:
+                with contextlib.suppress(Exception):
+                    setattr(self, _INSTANCE_SERVER_URL_ATTR, server_url)
 
     _patched_init.__name__ = "__init__"
     _patched_init.__qualname__ = "ClientSession.__init__"
@@ -864,6 +1404,12 @@ def _wrap_transport_client(orig_factory: Any, transport_label: str) -> Any:
 
     @asynccontextmanager
     async def _wrapped(*args: Any, **kwargs: Any) -> Any:
+        # Step 4 (D131): capture the server URL from the transport
+        # factory's args before yielding control. The patched
+        # ClientSession.__init__ copies this marker onto the session
+        # instance so per-call policy enforcement can fingerprint
+        # without re-parsing.
+        server_url_marker = _extract_server_url(transport_label, args, kwargs)
         async with orig_factory(*args, **kwargs) as result:
             try:
                 if isinstance(result, tuple) and len(result) >= 2:
@@ -872,6 +1418,11 @@ def _wrap_transport_client(orig_factory: Any, transport_label: str) -> Any:
                         setattr(read, _TRANSPORT_MARKER, transport_label)
                     with contextlib.suppress(Exception):
                         setattr(write, _TRANSPORT_MARKER, transport_label)
+                    if server_url_marker:
+                        with contextlib.suppress(Exception):
+                            setattr(read, _STREAM_URL_MARKER, server_url_marker)
+                        with contextlib.suppress(Exception):
+                            setattr(write, _STREAM_URL_MARKER, server_url_marker)
             except Exception:  # pragma: no cover - defensive
                 _log.debug(
                     "flightdeck_sensor: failed to mark %s streams",
@@ -883,6 +1434,56 @@ def _wrap_transport_client(orig_factory: Any, transport_label: str) -> Any:
     _wrapped.__name__ = getattr(orig_factory, "__name__", "transport_client")
     _wrapped.__doc__ = getattr(orig_factory, "__doc__", None)
     return _wrapped
+
+
+def _extract_server_url(
+    transport_label: str,
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+) -> str:
+    """Recover the server URL from a transport factory's call args.
+
+    HTTP / SSE / WebSocket: the URL is positional arg 0 or
+    ``kwargs.get("url")``. Returned verbatim — canonicalisation
+    happens at policy-evaluation time.
+
+    Stdio: arg 0 is a ``StdioServerParameters`` (dataclass with
+    ``command`` + ``args`` + ``env`` fields). We construct a
+    bare ``<command> <space-separated-args>`` string; the
+    canonicalize_url helper prepends ``stdio://`` and applies the
+    D127 whitespace + env-var rules.
+
+    Returns empty string when the URL can't be determined (rare;
+    SDK signature drift). Empty string is acceptable downstream —
+    policy evaluation falls through to mode-default.
+    """
+    if transport_label in ("http", "sse", "websocket"):
+        if args:
+            first = args[0]
+            if isinstance(first, str):
+                return first
+        url_kw = kwargs.get("url")
+        if isinstance(url_kw, str):
+            return url_kw
+        return ""
+
+    if transport_label == "stdio":
+        # StdioServerParameters lives in mcp.client.stdio. Avoid
+        # importing it (would force a hard dependency on the mcp
+        # SDK at the wrapper level); duck-type via getattr instead.
+        params = args[0] if args else kwargs.get("server")
+        if params is None:
+            return ""
+        command = getattr(params, "command", None)
+        params_args = getattr(params, "args", None) or []
+        if not command:
+            return ""
+        parts = [str(command)]
+        for a in params_args:
+            parts.append(str(a))
+        return " ".join(parts)
+
+    return ""
 
 
 # Transport modules to patch. Tuples of (module path, attribute name,

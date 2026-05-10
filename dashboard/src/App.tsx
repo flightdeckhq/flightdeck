@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useEffect, useState, useCallback } from "react";
 import {
   BrowserRouter,
   Routes,
@@ -10,6 +10,7 @@ import { Search, Settings as SettingsIcon, Sun, Moon } from "lucide-react";
 import { Fleet } from "@/pages/Fleet";
 import { Policies } from "@/pages/Policies";
 import { Directives } from "@/pages/Directives";
+import { NotFound } from "@/pages/NotFound";
 import { Analytics } from "@/pages/Analytics";
 import { Investigate } from "@/pages/Investigate";
 import { Settings } from "@/pages/Settings";
@@ -20,6 +21,7 @@ import type {
   SearchResultSession,
 } from "@/lib/types";
 import { useTheme } from "@/hooks/useTheme";
+import { useWhoamiStore } from "@/store/whoami";
 
 function Nav({ onSearchClick }: { onSearchClick: () => void }) {
   const { theme, toggleTheme } = useTheme();
@@ -160,6 +162,15 @@ function CommandPaletteHost() {
   const [searchOpen, setSearchOpen] = useState(false);
   const navigate = useNavigate();
 
+  // D147: fetch the bearer's role once at App mount. The store
+  // gates mutation CTAs in MCPPolicyHeader / EntryTable /
+  // TemplatesPanel on the result. Mutation buttons render
+  // disabled-with-"Loading…" tooltip while in flight to prevent
+  // the brief enabled flash a viewer would otherwise see.
+  useEffect(() => {
+    void useWhoamiStore.getState().fetchWhoami();
+  }, []);
+
   const handleSearchClick = useCallback(() => {
     setSearchOpen(true);
   }, []);
@@ -185,6 +196,7 @@ function CommandPaletteHost() {
           <Route path="/directives" element={<Directives />} />
           <Route path="/analytics" element={<Analytics />} />
           <Route path="/settings" element={<Settings />} />
+          <Route path="*" element={<NotFound />} />
         </Routes>
       </div>
       <CommandPalette

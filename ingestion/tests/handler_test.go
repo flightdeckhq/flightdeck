@@ -459,7 +459,7 @@ func TestEventsHandler_SessionStart_NewSession_AttachedFalse(t *testing.T) {
 		attacher,
 		nil,
 	)
-	body := `{"session_id":"22222222-2222-4222-8222-222222222222","event_type":"session_start","flavor":"test","agent_id":"11111111-1111-4111-8111-111111111111","agent_type":"coding","client_type":"claude_code"}`
+	body := `{"session_id":"22222222-2222-4222-8222-222222222222","event_type":"session_start","flavor":"test","agent_id":"11111111-1111-4111-8111-111111111111","agent_type":"coding","client_type":"claude_code","sensor_version":"0.6.0"}`
 	req := httptest.NewRequest("POST", "/v1/events", bytes.NewBufferString(body))
 	req.Header.Set("Authorization", "Bearer valid-token")
 	w := httptest.NewRecorder()
@@ -489,7 +489,7 @@ func TestEventsHandler_SessionStart_ExistingSession_AttachedTrue(t *testing.T) {
 		attacher,
 		nil,
 	)
-	body := `{"session_id":"22222222-2222-4222-8222-222222222222","event_type":"session_start","flavor":"test","agent_id":"11111111-1111-4111-8111-111111111111","agent_type":"coding","client_type":"claude_code"}`
+	body := `{"session_id":"22222222-2222-4222-8222-222222222222","event_type":"session_start","flavor":"test","agent_id":"11111111-1111-4111-8111-111111111111","agent_type":"coding","client_type":"claude_code","sensor_version":"0.6.0"}`
 	req := httptest.NewRequest("POST", "/v1/events", bytes.NewBufferString(body))
 	req.Header.Set("Authorization", "Bearer valid-token")
 	w := httptest.NewRecorder()
@@ -517,7 +517,7 @@ func TestEventsHandler_SessionStart_InjectsTokenIDAndName(t *testing.T) {
 		&mockSessAttacher{attached: false},
 		nil,
 	)
-	body := `{"session_id":"22222222-2222-4222-8222-222222222222","event_type":"session_start","flavor":"test","agent_id":"11111111-1111-4111-8111-111111111111","agent_type":"coding","client_type":"claude_code"}`
+	body := `{"session_id":"22222222-2222-4222-8222-222222222222","event_type":"session_start","flavor":"test","agent_id":"11111111-1111-4111-8111-111111111111","agent_type":"coding","client_type":"claude_code","sensor_version":"0.6.0"}`
 	req := httptest.NewRequest("POST", "/v1/events", bytes.NewBufferString(body))
 	req.Header.Set("Authorization", "Bearer ftd_whatever")
 	w := httptest.NewRecorder()
@@ -629,5 +629,472 @@ func TestEventsHandler_NonSessionStart_DoesNotAttach(t *testing.T) {
 	}
 	if len(attacher.called) != 0 {
 		t.Errorf("attacher must not be called for non-session_start events, got %v", attacher.called)
+	}
+}
+
+// ----- D131 MCP Protection Policy event-type validation ----------
+
+// makeMCPPolicyDecisionPayload builds a baseline payload for
+// policy_mcp_warn / policy_mcp_block tests; callers mutate the
+// returned map to drop fields and verify the rejection path.
+func makeMCPPolicyDecisionPayload(eventType string) map[string]any {
+	decision := "warn"
+	if eventType == "policy_mcp_block" {
+		decision = "block"
+	}
+	return map[string]any{
+		"session_id":    "22222222-2222-4222-8222-222222222222",
+		"agent_id":      "11111111-1111-4111-8111-111111111111",
+		"agent_type":    "coding",
+		"client_type":   "claude_code",
+		"event_type":    eventType,
+		"server_url":    "https://maps.example.com/sse",
+		"server_name":   "maps",
+		"fingerprint":   "abc123def456ab78",
+		"tool_name":     "search",
+		"policy_id":     "p1",
+		"scope":         "flavor:production",
+		"decision_path": "flavor_entry",
+		// Phase 7 Step 2 (D148): shared policy_decision block.
+		"policy_decision": map[string]any{
+			"policy_id":     "p1",
+			"scope":         "flavor:production",
+			"decision":      decision,
+			"reason":        "Server maps " + decision + "ed by flavor entry",
+			"decision_path": "flavor_entry",
+		},
+	}
+}
+
+func runEventValidationTest(t *testing.T, payload map[string]any) (int, string) {
+	t.Helper()
+	handler := handlers.EventsHandler(
+		&mockValidator{valid: true, id: "tok-id", name: "tok-name"},
+		&mockPublisher{},
+		&mockDirStore{},
+		nil,
+		nil,
+	)
+	body, _ := json.Marshal(payload)
+	req := httptest.NewRequest("POST", "/v1/events", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer t")
+	w := httptest.NewRecorder()
+	handler(w, req)
+	return w.Code, w.Body.String()
+}
+
+func TestEventsHandler_PolicyMCPWarn_AcceptsValidPayload(t *testing.T) {
+	payload := makeMCPPolicyDecisionPayload("policy_mcp_warn")
+	code, body := runEventValidationTest(t, payload)
+	if code != http.StatusOK {
+		t.Errorf("expected 200, got %d body=%s", code, body)
+	}
+}
+
+func TestEventsHandler_PolicyMCPBlock_AcceptsValidPayload(t *testing.T) {
+	payload := makeMCPPolicyDecisionPayload("policy_mcp_block")
+	code, body := runEventValidationTest(t, payload)
+	if code != http.StatusOK {
+		t.Errorf("expected 200, got %d body=%s", code, body)
+	}
+}
+
+func TestEventsHandler_PolicyMCPWarn_MissingFingerprintReturns400(t *testing.T) {
+	payload := makeMCPPolicyDecisionPayload("policy_mcp_warn")
+	delete(payload, "fingerprint")
+	code, body := runEventValidationTest(t, payload)
+	if code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d body=%s", code, body)
+	}
+	if !strings.Contains(body, "fingerprint") {
+		t.Errorf("error body should mention fingerprint, got %s", body)
+	}
+}
+
+func TestEventsHandler_PolicyMCPBlock_MissingPolicyIDReturns400(t *testing.T) {
+	payload := makeMCPPolicyDecisionPayload("policy_mcp_block")
+	delete(payload, "policy_id")
+	code, body := runEventValidationTest(t, payload)
+	if code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d body=%s", code, body)
+	}
+}
+
+func TestEventsHandler_PolicyMCPWarn_BadDecisionPathReturns400(t *testing.T) {
+	payload := makeMCPPolicyDecisionPayload("policy_mcp_warn")
+	payload["decision_path"] = "garbage"
+	code, body := runEventValidationTest(t, payload)
+	if code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d body=%s", code, body)
+	}
+	if !strings.Contains(body, "decision_path") {
+		t.Errorf("error body should mention decision_path, got %s", body)
+	}
+}
+
+// ----- Phase 7 Step 2 (D148) policy_decision block validation -----
+
+func TestEventsHandler_PolicyMCPWarn_MissingPolicyDecisionBlock_Returns400(t *testing.T) {
+	payload := makeMCPPolicyDecisionPayload("policy_mcp_warn")
+	delete(payload, "policy_decision")
+	code, body := runEventValidationTest(t, payload)
+	if code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d body=%s", code, body)
+	}
+	if !strings.Contains(body, "policy_decision") || !strings.Contains(body, "D148") {
+		t.Errorf("expected policy_decision/D148 in error body, got %s", body)
+	}
+}
+
+func TestEventsHandler_PolicyMCPBlock_PolicyDecisionMissingReason_Returns400(t *testing.T) {
+	payload := makeMCPPolicyDecisionPayload("policy_mcp_block")
+	block := payload["policy_decision"].(map[string]any)
+	delete(block, "reason")
+	code, body := runEventValidationTest(t, payload)
+	if code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d body=%s", code, body)
+	}
+	if !strings.Contains(body, "policy_decision.reason") {
+		t.Errorf("expected policy_decision.reason in error body, got %s", body)
+	}
+}
+
+func TestEventsHandler_PolicyWarn_AcceptsTokenBudgetPolicyDecision(t *testing.T) {
+	payload := map[string]any{
+		"session_id":    "22222222-2222-4222-8222-222222222222",
+		"agent_id":      "11111111-1111-4111-8111-111111111111",
+		"agent_type":    "coding",
+		"client_type":   "claude_code",
+		"event_type":    "policy_warn",
+		"source":        "server",
+		"threshold_pct": 80,
+		"tokens_used":   8000,
+		"token_limit":   10000,
+		"policy_decision": map[string]any{
+			"policy_id": "policy-uuid",
+			"scope":     "org",
+			"decision":  "warn",
+			"reason":    "Token usage 8000/10000 (80%) crossed warn threshold",
+		},
+	}
+	code, body := runEventValidationTest(t, payload)
+	if code != http.StatusOK {
+		t.Errorf("expected 200, got %d body=%s", code, body)
+	}
+}
+
+func TestEventsHandler_PolicyBlock_MissingPolicyDecision_Returns400(t *testing.T) {
+	payload := map[string]any{
+		"session_id":  "22222222-2222-4222-8222-222222222222",
+		"agent_id":    "11111111-1111-4111-8111-111111111111",
+		"agent_type":  "coding",
+		"client_type": "claude_code",
+		"event_type":  "policy_block",
+	}
+	code, body := runEventValidationTest(t, payload)
+	if code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d body=%s", code, body)
+	}
+	if !strings.Contains(body, "policy_decision") || !strings.Contains(body, "D148") {
+		t.Errorf("expected D148 mention in error body, got %s", body)
+	}
+}
+
+func TestEventsHandler_MCPServerNameChanged_AcceptsValidPayload(t *testing.T) {
+	payload := map[string]any{
+		"session_id":           "22222222-2222-4222-8222-222222222222",
+		"agent_id":             "11111111-1111-4111-8111-111111111111",
+		"agent_type":           "coding",
+		"client_type":          "claude_code",
+		"event_type":           "mcp_server_name_changed",
+		"server_url_canonical": "https://maps.example.com/sse",
+		"fingerprint_old":      "old01234567890ab",
+		"fingerprint_new":      "new01234567890ab",
+		"name_old":             "maps",
+		"name_new":             "maps-v2",
+	}
+	code, body := runEventValidationTest(t, payload)
+	if code != http.StatusOK {
+		t.Errorf("expected 200, got %d body=%s", code, body)
+	}
+}
+
+func TestEventsHandler_MCPServerNameChanged_MissingFingerprintNewReturns400(t *testing.T) {
+	payload := map[string]any{
+		"session_id":           "22222222-2222-4222-8222-222222222222",
+		"agent_id":             "11111111-1111-4111-8111-111111111111",
+		"agent_type":           "coding",
+		"client_type":          "claude_code",
+		"event_type":           "mcp_server_name_changed",
+		"server_url_canonical": "https://maps.example.com/sse",
+		"fingerprint_old":      "old01234567890ab",
+		// fingerprint_new missing
+		"name_old": "maps",
+		"name_new": "maps-v2",
+	}
+	code, body := runEventValidationTest(t, payload)
+	if code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d body=%s", code, body)
+	}
+}
+
+func TestEventsHandler_MCPServerNameChanged_MissingNameOldReturns400(t *testing.T) {
+	payload := map[string]any{
+		"session_id":           "22222222-2222-4222-8222-222222222222",
+		"agent_id":             "11111111-1111-4111-8111-111111111111",
+		"agent_type":           "coding",
+		"client_type":          "claude_code",
+		"event_type":           "mcp_server_name_changed",
+		"server_url_canonical": "https://maps.example.com/sse",
+		"fingerprint_old":      "old01234567890ab",
+		"fingerprint_new":      "new01234567890ab",
+		// name_old missing
+		"name_new": "maps-v2",
+	}
+	code, body := runEventValidationTest(t, payload)
+	if code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d body=%s", code, body)
+	}
+}
+
+// D140 step 6.6 A2 — mcp_server_attached payload validation.
+// Required non-empty: fingerprint, server_name, attached_at.
+// server_url_canonical required as a string but allowed empty
+// (sensor emits "" for stdio without a stashed URL).
+
+func makeMCPServerAttachedPayload() map[string]any {
+	return map[string]any{
+		"session_id":           "33333333-3333-4333-8333-333333333333",
+		"agent_id":             "11111111-1111-4111-8111-111111111111",
+		"agent_type":           "coding",
+		"client_type":          "claude_code",
+		"event_type":           "mcp_server_attached",
+		"fingerprint":          "abcdef0123456789",
+		"server_url_canonical": "https://maps.example.com/sse",
+		"server_name":          "maps",
+		"transport":            "sse",
+		"protocol_version":     "2025-11-25",
+		"version":              "1.0.0",
+		"capabilities":         map[string]any{"tools": map[string]any{"listChanged": true}},
+		"instructions":         "Maps server.",
+		"attached_at":          "2026-05-06T10:30:00+00:00",
+	}
+}
+
+func TestEventsHandler_MCPServerAttached_AcceptsValidPayload(t *testing.T) {
+	payload := makeMCPServerAttachedPayload()
+	code, body := runEventValidationTest(t, payload)
+	if code != http.StatusOK {
+		t.Errorf("expected 200, got %d body=%s", code, body)
+	}
+}
+
+func TestEventsHandler_MCPServerAttached_MissingFingerprintReturns400(t *testing.T) {
+	payload := makeMCPServerAttachedPayload()
+	delete(payload, "fingerprint")
+	code, body := runEventValidationTest(t, payload)
+	if code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d body=%s", code, body)
+	}
+}
+
+func TestEventsHandler_MCPServerAttached_MissingServerNameReturns400(t *testing.T) {
+	payload := makeMCPServerAttachedPayload()
+	delete(payload, "server_name")
+	code, body := runEventValidationTest(t, payload)
+	if code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d body=%s", code, body)
+	}
+}
+
+func TestEventsHandler_MCPServerAttached_MissingAttachedAtReturns400(t *testing.T) {
+	payload := makeMCPServerAttachedPayload()
+	delete(payload, "attached_at")
+	code, body := runEventValidationTest(t, payload)
+	if code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d body=%s", code, body)
+	}
+}
+
+func TestEventsHandler_MCPServerAttached_AcceptsEmptyServerURLCanonical(t *testing.T) {
+	// Stdio without a stashed URL marker — sensor legitimately emits
+	// "" here. Worker dedup falls back to (name, "") tuple. Accept.
+	payload := makeMCPServerAttachedPayload()
+	payload["server_url_canonical"] = ""
+	code, body := runEventValidationTest(t, payload)
+	if code != http.StatusOK {
+		t.Errorf("expected 200, got %d body=%s", code, body)
+	}
+}
+
+func TestEventsHandler_MCPServerAttached_MissingServerURLCanonicalKeyReturns400(t *testing.T) {
+	// Empty string OK; key entirely absent is not — that's a malformed
+	// payload from a third-party emitter.
+	payload := makeMCPServerAttachedPayload()
+	delete(payload, "server_url_canonical")
+	code, body := runEventValidationTest(t, payload)
+	if code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d body=%s", code, body)
+	}
+}
+
+func TestEventsHandler_NonMCPEventType_BypassesMCPValidation(t *testing.T) {
+	// Sanity check — a regular post_call event without MCP fields
+	// continues to work; the new validation block is gated by
+	// event_type and must not affect other types.
+	payload := map[string]any{
+		"session_id":  "22222222-2222-4222-8222-222222222222",
+		"agent_id":    "11111111-1111-4111-8111-111111111111",
+		"agent_type":  "coding",
+		"client_type": "claude_code",
+		"event_type":  "post_call",
+	}
+	code, body := runEventValidationTest(t, payload)
+	if code != http.StatusOK {
+		t.Errorf("expected 200, got %d body=%s", code, body)
+	}
+}
+
+// ----- D139 mcp_policy_user_remembered validation -----------------
+
+func makeMCPPolicyUserRememberedPayload() map[string]any {
+	return map[string]any{
+		"session_id":           "33333333-3333-4333-8333-333333333333",
+		"agent_id":             "44444444-4444-4444-8444-444444444444",
+		"agent_type":           "coding",
+		"client_type":          "claude_code",
+		"event_type":           "mcp_policy_user_remembered",
+		"fingerprint":          "abc1234567890abc",
+		"server_url_canonical": "stdio://npx -y @scope/server-x",
+		"server_name":          "x",
+		"flavor":               "production",
+		"decided_at":           "2026-05-06T12:00:00Z",
+	}
+}
+
+func TestEventsHandler_MCPPolicyUserRemembered_AcceptsValidPayload(t *testing.T) {
+	payload := makeMCPPolicyUserRememberedPayload()
+	code, body := runEventValidationTest(t, payload)
+	if code != http.StatusOK {
+		t.Errorf("expected 200, got %d body=%s", code, body)
+	}
+}
+
+func TestEventsHandler_MCPPolicyUserRemembered_MissingFingerprintReturns400(t *testing.T) {
+	payload := makeMCPPolicyUserRememberedPayload()
+	delete(payload, "fingerprint")
+	code, body := runEventValidationTest(t, payload)
+	if code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d body=%s", code, body)
+	}
+	if !strings.Contains(body, "fingerprint") {
+		t.Errorf("body should mention fingerprint, got %s", body)
+	}
+}
+
+func TestEventsHandler_MCPPolicyUserRemembered_MissingServerURLCanonicalReturns400(t *testing.T) {
+	payload := makeMCPPolicyUserRememberedPayload()
+	delete(payload, "server_url_canonical")
+	code, _ := runEventValidationTest(t, payload)
+	if code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", code)
+	}
+}
+
+func TestEventsHandler_MCPPolicyUserRemembered_MissingDecidedAtReturns400(t *testing.T) {
+	payload := makeMCPPolicyUserRememberedPayload()
+	delete(payload, "decided_at")
+	code, body := runEventValidationTest(t, payload)
+	if code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", code)
+	}
+	if !strings.Contains(body, "decided_at") {
+		t.Errorf("body should mention decided_at, got %s", body)
+	}
+}
+
+func TestEventsHandler_MCPPolicyUserRemembered_MissingFlavorReturns400(t *testing.T) {
+	payload := makeMCPPolicyUserRememberedPayload()
+	delete(payload, "flavor")
+	code, _ := runEventValidationTest(t, payload)
+	if code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", code)
+	}
+}
+
+// ----- Phase 7 Step 4 (D152) session lifecycle validators ---------
+
+func TestEventsHandler_SessionStart_MissingSensorVersion_Returns400(t *testing.T) {
+	payload := map[string]any{
+		"session_id":  "22222222-2222-4222-8222-222222222222",
+		"agent_id":    "11111111-1111-4111-8111-111111111111",
+		"agent_type":  "coding",
+		"client_type": "claude_code",
+		"event_type":  "session_start",
+		"flavor":      "test",
+	}
+	code, body := runEventValidationTest(t, payload)
+	if code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d body=%s", code, body)
+	}
+	if !strings.Contains(body, "sensor_version") {
+		t.Errorf("expected sensor_version in error body, got %s", body)
+	}
+}
+
+func TestEventsHandler_SessionEnd_BadCloseReason_Returns400(t *testing.T) {
+	payload := map[string]any{
+		"session_id":   "22222222-2222-4222-8222-222222222222",
+		"agent_id":     "11111111-1111-4111-8111-111111111111",
+		"agent_type":   "coding",
+		"client_type":  "claude_code",
+		"event_type":   "session_end",
+		"flavor":       "test",
+		"close_reason": "garbage",
+	}
+	code, body := runEventValidationTest(t, payload)
+	if code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d body=%s", code, body)
+	}
+	if !strings.Contains(body, "close_reason") {
+		t.Errorf("expected close_reason in error body, got %s", body)
+	}
+}
+
+func TestEventsHandler_SessionEnd_AcceptsAllValidCloseReasons(t *testing.T) {
+	for _, reason := range []string{
+		"normal_exit", "directive_shutdown", "policy_block",
+		"orphan_timeout", "sigkill_detected", "unknown",
+	} {
+		payload := map[string]any{
+			"session_id":   "22222222-2222-4222-8222-222222222222",
+			"agent_id":     "11111111-1111-4111-8111-111111111111",
+			"agent_type":   "coding",
+			"client_type":  "claude_code",
+			"event_type":   "session_end",
+			"flavor":       "test",
+			"close_reason": reason,
+		}
+		code, _ := runEventValidationTest(t, payload)
+		if code != http.StatusOK {
+			t.Errorf("close_reason=%s expected 200, got %d", reason, code)
+		}
+	}
+}
+
+func TestEventsHandler_SessionEnd_OmitsCloseReason_OK(t *testing.T) {
+	// Worker fills close_reason on the orphan-detector / sigkill
+	// path; sensor-emitted session_end legitimately lacks it.
+	payload := map[string]any{
+		"session_id":  "22222222-2222-4222-8222-222222222222",
+		"agent_id":    "11111111-1111-4111-8111-111111111111",
+		"agent_type":  "coding",
+		"client_type": "claude_code",
+		"event_type":  "session_end",
+		"flavor":      "test",
+	}
+	code, _ := runEventValidationTest(t, payload)
+	if code != http.StatusOK {
+		t.Errorf("expected 200, got %d", code)
 	}
 }

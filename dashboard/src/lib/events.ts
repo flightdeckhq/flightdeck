@@ -132,6 +132,40 @@ export const eventBadgeConfig: Record<string, BadgeConfig> = {
     label: "MCP PROMPTS DISCOVERED",
     filled: false,
   },
+  // MCP Protection Policy events (D131). The chroma map is locked in
+  // step 6 of the Protection Policy plan and ARCHITECTURE.md →
+  // "Adjacent surfaces": amber/red carry the enforcement axis (warn
+  // and block — same chromas as policy_warn / policy_block) and
+  // purple-info carries the FYI axis (name drift and the plugin's
+  // user-remembered decision — same chroma as directive_result).
+  // Rule 15 lock: no new theme tokens, every CSS variable below is
+  // already declared in themes.css.
+  policy_mcp_warn: {
+    cssVar: "var(--event-warn)",
+    label: "MCP POLICY WARN",
+  },
+  policy_mcp_block: {
+    cssVar: "var(--event-block)",
+    label: "MCP POLICY BLOCK",
+  },
+  mcp_server_name_changed: {
+    cssVar: "var(--event-result)",
+    label: "MCP NAME CHANGED",
+  },
+  mcp_policy_user_remembered: {
+    cssVar: "var(--event-result)",
+    label: "MCP USER REMEMBERED",
+  },
+  // Step 6.7 (c): MCP server attached events ride the same FYI
+  // chroma family as name-changed and user-remembered (info-purple
+  // via --event-result) — they're informational, not enforcement,
+  // and operators reading the timeline want them to read as the
+  // same axis at a glance. Pre-fix the type fell through to the
+  // grey defaultBadge.
+  mcp_server_attached: {
+    cssVar: "var(--event-result)",
+    label: "MCP SERVER ATTACHED",
+  },
 };
 
 export const defaultBadge: BadgeConfig = { cssVar: "var(--event-lifecycle)", label: "EVENT" };
@@ -219,10 +253,60 @@ export function getEventDetail(event: AgentEvent): string {
       }
       if (event.tokens_total != null) parts.push(`${event.tokens_total.toLocaleString()} tok`);
       if (event.latency_ms != null) parts.push(`${event.latency_ms}ms`);
+      // estimated_via chip: only surface when the estimator fell back
+      // off tiktoken — operationally interesting for post-call delta
+      // attribution. tiktoken paths stay quiet so the row isn't
+      // cluttered.
+      const via = event.payload?.estimated_via;
+      if (via && via !== "tiktoken") parts.push(`est:${via}`);
+      // policy_decision_post chip: surface when the cumulative usage
+      // crossed a threshold this call.
+      const pdp = event.payload?.policy_decision_post;
+      if (pdp) parts.push(`policy:${pdp.decision}`);
+      // Rate-limit pressure chip: <10% remaining tokens.
+      const pm = event.payload?.provider_metadata;
+      if (
+        pm?.ratelimit_remaining_tokens != null &&
+        pm?.ratelimit_limit_tokens != null &&
+        pm.ratelimit_remaining_tokens / pm.ratelimit_limit_tokens < 0.1
+      ) {
+        parts.push(`rate-limit ${pm.ratelimit_remaining_tokens.toLocaleString()} left`);
+      }
       return parts.join(" · ");
     }
-    case "pre_call":
-      return event.model ?? "unknown";
+    case "pre_call": {
+      const parts = [event.model ?? "unknown"];
+      const via = event.payload?.estimated_via;
+      if (via && via !== "tiktoken") parts.push(`est:${via}`);
+      const pdp = event.payload?.policy_decision_pre;
+      if (pdp) parts.push(`policy:${pdp.decision}`);
+      return parts.join(" · ");
+    }
+    case "embeddings": {
+      const parts = [event.model ?? "unknown"];
+      const dims = event.payload?.output_dimensions;
+      if (dims) parts.push(`${dims.dimension}-d × ${dims.count} vec`);
+      if (event.tokens_input != null) parts.push(`${event.tokens_input.toLocaleString()} tok in`);
+      if (event.latency_ms != null) parts.push(`${event.latency_ms}ms`);
+      const via = event.payload?.estimated_via;
+      if (via && via !== "tiktoken") parts.push(`est:${via}`);
+      return parts.join(" · ");
+    }
+    case "llm_error": {
+      const err = event.payload?.error;
+      const parts: string[] = [];
+      if (err && typeof err !== "string") {
+        parts.push(err.error_type);
+        if (err.provider_error_code) parts.push(err.provider_error_code);
+        else if (err.provider) parts.push(err.provider);
+      } else {
+        parts.push("llm error");
+      }
+      const attempt = event.payload?.retry_attempt;
+      if (attempt != null && attempt > 1) parts.push(`attempt ${attempt}`);
+      if (event.payload?.terminal) parts.push("terminal");
+      return parts.join(" · ");
+    }
     case "tool_call":
       return event.tool_name ?? "unknown tool";
     case "policy_warn": {
@@ -248,8 +332,33 @@ export function getEventDetail(event: AgentEvent): string {
     }
     case "session_start":
       return "session started";
-    case "session_end":
+    case "session_end": {
+      // Phase 7 Step 4 (D152): close_reason chip — operator sees
+      // why the session ended without opening the drawer.
+      const reason = event.payload?.close_reason;
+      if (reason && reason !== "normal_exit") {
+        return `session ended · ${reason}`;
+      }
       return "session ended";
+    }
+    case "mcp_server_name_changed": {
+      // Phase 7 Step 4 (D152) — pre-Step-4 events.ts had no case
+      // for this type so rows rendered as untyped fallback. The
+      // drift-detection workflow needs to see the rename + the
+      // orphaned-entries count inline so the operator can act on
+      // it without opening the drawer.
+      const p = event.payload as Record<string, unknown> | undefined;
+      const oldName = (p?.name_old as string | undefined) ?? "?";
+      const newName = (p?.name_new as string | undefined) ?? "?";
+      const orphaned = p?.policy_entries_orphaned as
+        | { count?: number }
+        | undefined;
+      const orphanCount = orphaned?.count ?? 0;
+      const base = `name drift: ${oldName} → ${newName}`;
+      return orphanCount > 0
+        ? `${base} (${orphanCount} entries orphaned)`
+        : base;
+    }
     case "directive_result": {
       const name = event.payload?.directive_name;
       const status = event.payload?.directive_status;
@@ -257,34 +366,6 @@ export function getEventDetail(event: AgentEvent): string {
       if (name) return name;
       if (status) return status;
       return "directive result";
-    }
-    case "embeddings": {
-      // Phase 4 polish: embeddings calls have only an input-token
-      // dimension (no completion tokens) so the row reads as
-      // "<model> · <N> tok in" -- distinct from post_call's
-      // "tokens_total" framing.
-      const parts = [event.model ?? "unknown"];
-      if (event.tokens_input != null) {
-        parts.push(`${event.tokens_input.toLocaleString()} tok in`);
-      }
-      if (event.latency_ms != null) parts.push(`${event.latency_ms}ms`);
-      return parts.join(" · ");
-    }
-    case "llm_error": {
-      // Phase 4 polish: surface the taxonomy classification +
-      // provider_error_code (or provider name as fallback) so an
-      // operator scanning the timeline sees what kind of error it
-      // was without expanding. Narrows ``payload.error`` against
-      // the directive_result string overload before reading any
-      // structured fields.
-      const err = event.payload?.error;
-      if (err && typeof err !== "string") {
-        const parts: string[] = [err.error_type];
-        if (err.provider_error_code) parts.push(err.provider_error_code);
-        else if (err.provider) parts.push(err.provider);
-        return parts.join(" · ");
-      }
-      return "llm error";
     }
     case "mcp_tool_call": {
       // Phase 5: ``<server> · <tool> · <duration>``. The server is
@@ -419,6 +500,35 @@ export function getSummaryRows(event: AgentEvent): [string, string][] {
       return [["Event", "session started"]];
     case "session_end":
       return [["Event", "session ended"]];
+    case "mcp_server_name_changed": {
+      // Phase 7 Step 4 (D152) — drawer view for the name-drift
+      // event. Worker enriches policy_entries_orphaned when any
+      // mcp_policy_entries row matched the OLD fingerprint;
+      // operator-actionable signal that policy entries silently
+      // stopped binding to this server.
+      const p = event.payload as Record<string, unknown> | undefined;
+      const rows: [string, string][] = [];
+      const oldName = p?.name_old as string | undefined;
+      const newName = p?.name_new as string | undefined;
+      if (oldName) rows.push(["Old name", oldName]);
+      if (newName) rows.push(["New name", newName]);
+      const orphaned = p?.policy_entries_orphaned as
+        | { count?: number; affected_policies?: string[] }
+        | undefined;
+      if (orphaned?.count != null) {
+        rows.push(["Entries orphaned", String(orphaned.count)]);
+      }
+      if (orphaned?.affected_policies?.length) {
+        rows.push([
+          "Affected policies",
+          orphaned.affected_policies.join(", "),
+        ]);
+      }
+      if (rows.length === 0) {
+        return [["Event", "MCP server name changed"]];
+      }
+      return rows;
+    }
     case "directive_result": {
       const rows: [string, string][] = [];
       if (event.payload?.directive_name) {
@@ -542,6 +652,20 @@ export const EVENT_TYPE_GROUPS: Record<string, string[]> = {
   "Embeddings": ["embeddings"],
   "Errors": ["llm_error"],
   "Policy": ["policy_warn", "policy_block", "policy_degrade"],
+  // D131 MCP Protection Policy event types live in their own facet
+  // group so token-budget policy filtering and MCP-server access
+  // policy filtering stay distinct in the operator's mental model.
+  // Step 6.6 A1 split — they previously co-habited the "Policy"
+  // group, but mixing token-budget chips with MCP-server-access
+  // chips made "show me all sessions where MCP enforcement fired"
+  // require checking-and-unchecking sibling chips. Filterable but
+  // not group-by-able on analytics (Rule 25 lock).
+  "MCP Policy": [
+    "policy_mcp_warn",
+    "policy_mcp_block",
+    "mcp_server_name_changed",
+    "mcp_policy_user_remembered",
+  ],
   "Directives": ["directive", "directive_result"],
   "Session": ["session_start", "session_end"],
   // Phase 5 — MCP filter group spans all six MCP event types. The

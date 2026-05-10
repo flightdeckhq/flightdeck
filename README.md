@@ -117,7 +117,7 @@ When ``capture_prompts=True``, each child session carries the parent's input as 
 
 ### MCP (Model Context Protocol)
 
-Flightdeck observes MCP traffic as a first-class event surface alongside chat and embeddings. Six event types — `mcp_tool_list`, `mcp_tool_call`, `mcp_resource_list`, `mcp_resource_read`, `mcp_prompt_list`, `mcp_prompt_get` — emit per operation. The sensor patches `mcp.client.session.ClientSession` directly, so every framework that mediates MCP through the official SDK lights up automatically: LangChain via `langchain-mcp-adapters`, LangGraph via the same, LlamaIndex via `llama-index-tools-mcp`, CrewAI via `mcpadapt`, plus the raw `mcp` SDK. Each event carries `server_name` + `transport` for attribution; the session-level `MCPServerFingerprint` (name, transport, protocol_version, version, capabilities, instructions) lands in `context.mcp_servers` when MCP init runs before sensor init.
+Flightdeck observes MCP traffic as a first-class event surface alongside chat and embeddings. Six event types — `mcp_tool_list`, `mcp_tool_call`, `mcp_resource_list`, `mcp_resource_read`, `mcp_prompt_list`, `mcp_prompt_get` — emit per operation. The sensor patches `mcp.client.session.ClientSession` directly, so every framework that mediates MCP through the official SDK lights up automatically: LangChain via `langchain-mcp-adapters`, LangGraph via the same, LlamaIndex via `llama-index-tools-mcp`, CrewAI via `mcpadapt`, plus the raw `mcp` SDK. Each event carries `server_name` + `transport` for attribution; the session-level `MCPServerFingerprint` (name, transport, protocol_version, version, capabilities, instructions) lands in `context.mcp_servers` — at `session_start` for servers initialised before the first LLM call, or via `mcp_server_attached` events emitted continuously for late-attaching servers (D140). The dashboard's MCP SERVERS panel populates within a few seconds of each attach for in-flight sessions.
 
 The Claude Code plugin's MCP coverage is limited to tool calls. Resource reads, prompt fetches, and list operations are below the plugin hook layer and don't surface as events.
 
@@ -305,6 +305,7 @@ Call `patch()` before any framework or user code constructs a client. Instances 
 | `AGENT_FLAVOR` / `FLIGHTDECK_AGENT_NAME` | Persistent agent label. Default: `{user}@{hostname}`.    |
 | `AGENT_TYPE` / `FLIGHTDECK_AGENT_TYPE`   | `coding` or `production` (D114/D115). Default: `production`. Any other value raises `ConfigurationError`. |
 | `FLIGHTDECK_HOSTNAME`           | Override `socket.gethostname()` (useful for k8s pod grouping).  |
+| `FLIGHTDECK_ORPHAN_TIMEOUT_HOURS` | Worker-side: silence window before the reconciler closes a `lost` session as `orphan_timeout`. Default: `24`. Must be `> 0`; `Load()` panics otherwise. |
 
 ### Unavailability policy
 
@@ -324,6 +325,108 @@ The sensor reports over HTTP on a background thread. Control plane downtime is h
 | C. Multi-agent in one process   | Multiple `init()` calls, one per logical agent             | See Known limitations |
 
 Two background daemon threads run inside the sensor. `flightdeck-event-queue` drains events to the control plane; `flightdeck-directive-queue` processes directives received in event responses (kill, custom handlers, model swap, policy updates). The queues are decoupled so a slow directive handler cannot block event throughput.
+
+---
+
+## MCP Protection Policy
+
+Flightdeck can gate which MCP servers your agents are allowed to talk to. The policy lives in the control plane, applies per flavor, and is enforced inside the sensor and the Claude Code plugin without changing the wire path. See `ARCHITECTURE.md` "MCP Protection Policy" for the full design and `DECISIONS.md` D127-D135 for the rationale.
+
+### Why this exists
+
+MCP servers are external code your agents call. A misconfigured `.mcp.json`, a typo'd hostname, a colleague's experimental server, or a substituted binary all reach the agent the same way: as a server entry the agent dials at session start. The MCP Protection Policy is the fence around that. Operators define which servers a production flavor can reach; the sensor and the Claude Code plugin enforce that decision at every MCP call.
+
+### Two scopes: global + per-flavor
+
+The policy lives at two scopes:
+
+- **Global.** One per deployment. Carries the **mode** (allowlist or blocklist) and a list of entries.
+- **Per-flavor.** Zero or more. Each carries allow / deny entry deltas against whatever the global resolves to. Per-flavor policies do not carry their own mode (D134).
+
+On install Flightdeck auto-creates an empty global policy in `blocklist` mode with zero entries — fully permissive by default. No operator action is required for MCP traffic to keep flowing on a fresh deployment; locking down a flavor is opt-in.
+
+Per-server resolution proceeds in three steps (D135):
+
+1. If the per-flavor policy has an entry for the URL, use it.
+2. Else if the global policy has an entry for the URL, use it.
+3. Else apply the global mode default: allowlist → block; blocklist → allow.
+
+Most-specific scope wins; per-flavor entries are real overrides, not suggestions.
+
+### Mode comparison
+
+| Behaviour | `allowlist` | `blocklist` |
+|---|---|---|
+| Default for unlisted servers | Block | Allow |
+| Fits when… | You can enumerate every server agents may use | You can enumerate the servers agents must avoid |
+| Typical scope | Production flavor | Dev flavor |
+| `block_on_uncertainty` toggle | Meaningful — emits an audit-grade `policy_mcp_block` event with `block_on_uncertainty=true` so unknown servers surface for promotion | Ignored (mode default is already permissive) |
+
+The `block_on_uncertainty` per-flavor boolean (default off) only affects allowlist mode. With it on, unlisted-server traffic still blocks, but the block events carry an explicit "fell through to mode default" signal so operators can find them in the dashboard and promote them to deliberate allow / deny entries.
+
+### Worked fingerprint examples
+
+Server identity is the pair `(URL, name)`. The URL is the security key; the name is the display label and the tamper-evidence axis (D127). The fingerprint is `sha256(canonical_url + 0x00 + name)`; the first 16 hex characters are the display fingerprint.
+
+**HTTP example.** Declared as `https://Maps.Example.com:443/SSE/?token=abc#frag` with name `maps`.
+
+```
+canonical_url   = "https://maps.example.com/SSE/"
+                  (lowercase scheme + host, default :443 stripped,
+                   path case preserved, fragment + query dropped)
+fingerprint     = sha256("https://maps.example.com/SSE/" + 0x00 + "maps")
+display         = first 16 hex chars
+```
+
+**Stdio example.** Declared as `npx -y @modelcontextprotocol/server-filesystem $HOME/data` with name `fs`.
+
+```
+canonical_url   = "stdio://npx -y @modelcontextprotocol/server-filesystem /home/alice/data"
+                  (stdio:// prefix, single-space separators,
+                   $HOME resolved at fingerprint time, args case-sensitive)
+fingerprint     = sha256(canonical_url + 0x00 + "fs")
+display         = first 16 hex chars
+```
+
+A declaration whose URL matches a previously-seen URL under a different name produces a `mcp_server_name_changed` event so operators can investigate drift; the policy decision still resolves on URL.
+
+### Configuration walkthrough
+
+1. **Operator creates a flavor policy on the dashboard** under Settings → Policies → MCP Protection. The form lets you select a flavor (e.g., `production`), pick allow / deny entries against the global, and toggle `block_on_uncertainty`.
+2. **Sensor and plugin pick it up at the next session.** The Python sensor fetches the active policy at `init()` (synchronous, alongside the existing token-policy preflight). The Claude Code plugin fetches at every `SessionStart` with a one-hour disk cache.
+3. **Per-call enforcement.** The sensor evaluates each MCP `call_tool` against the cached policy. On `warn` it emits `policy_mcp_warn` and proceeds. On `block` it emits `policy_mcp_block`, flushes the event queue, and raises `flightdeck.MCPPolicyBlocked` — frameworks surface this as a tool-call failure to the agent's reasoning loop (D130).
+4. **Mid-session updates.** A `policy_update` directive received in a response envelope refreshes the sensor cache; the new policy applies at the **next** `session_start`. In-flight sessions deliberately keep the policy that was active at their start so a mid-session flip doesn't change behaviour for a call already in progress (D129).
+
+### Troubleshooting
+
+- **"MCP call works in dev but blocked in production."** The flavor policies differ. Check `Settings → Policies → MCP Protection → production` against `dev` — production typically runs allowlist mode, dev typically runs blocklist mode (the default). The `policy_mcp_block` event payload's `decision_path` field tells you which step in the resolution algorithm produced the block (`flavor_entry`, `global_entry`, or `mode_default`).
+- **"A server name changed silently."** Look for `mcp_server_name_changed` events in the dashboard. The URL hash is stable across renames; only the display label drifted. Investigate whether the rename is legitimate (a typo fix) or suspicious (an attacker substituting a server with a familiar URL but a different declared name). The policy decision still resolves on URL, so enforcement isn't bypassed by rename.
+- **"Decisions remembered locally don't match the dashboard."** Claude Code's `yes-and-remember` decisions live at `~/.claude/flightdeck/remembered_mcp_decisions.json` (D132). The plugin lazy-syncs to the control plane and re-fetches on the standard TTL, so a real `deny` on the server-side policy will eventually override a stale local `yes`. Force a resync immediately by deleting the file and starting a new Claude Code session.
+
+### Known framework constraints
+
+CrewAI agents using MCP via `mcpadapt` currently emit JSON Schemas that violate JSON Schema draft 2020-12 — empty `anyOf` arrays, null `enum` / `items` fields, and properties that lose their `type` annotation when the empty `anyOf` is the only type carrier. OpenAI and Anthropic both reject these schemas with cryptic errors:
+
+- OpenAI surfaces it as `"tools[0].function.parameters: None is not of type 'object', 'boolean'"` (strict-mode validation coalesces the malformed schema into `None`).
+- Anthropic returns `"tools.0.custom.input_schema: JSON schema is invalid. It must match JSON Schema draft 2020-12"`.
+
+**Workaround.** Flightdeck ships an opt-in compat helper that strips the invalid keys and infers a missing `type` from the property's default value before the schema reaches the LLM API. After constructing your CrewAI agent, call:
+
+```python
+import crewai
+from mcpadapt.core import MCPAdapt
+from mcpadapt.crewai_adapter import CrewAIAdapter
+from flightdeck_sensor.compat.crewai_mcp import crewai_mcp_schema_fixup
+
+with MCPAdapt(server_params, CrewAIAdapter()) as tools:
+    agent = crewai.Agent(role=..., goal=..., tools=tools)
+    crewai_mcp_schema_fixup(agent)
+    # agent now ready to invoke; LLM tool-call payload uses cleaned JSON Schema.
+```
+
+The fixup is idempotent and safe to call multiple times. It mutates each tool's `args_schema` Pydantic class so every downstream consumer (CrewAI's `generate_model_description`, the LLM provider's tool-conversion path, raw `model_json_schema()` calls) sees the cleaned schema.
+
+The helper will be removed in a future Flightdeck release once the underlying mcpadapt schema generation is fixed; tracked in the Roadmap below.
 
 ---
 
@@ -491,8 +594,13 @@ Open work tracked here. Prioritized when users tell us which matters most.
 - **Per-agent landing page.** A dedicated agent detail view (today's Investigate filter is the closest equivalent). Token / latency / error trends per agent over rolling windows.
 - **Continuous framework verification.** Scheduled live-API smoke runs across every supported framework, not just on PR. Catches SDK class-rename breakage (anthropic ``RateLimitError`` → ``QuotaError`` etc.) before users hit it.
 - **Production hardening.** NATS authentication, Helm chart polish, nginx rate limiting, dashboard auth, litellm streaming interception, native LangChain Voyage embeddings, dedicated LlamaIndex / CrewAI interceptors where transitive coverage falls short.
-- **Helm migration parity.** Backfill missing `000014` to `000016` in `helm/migrations/` and reconcile with `docker/postgres/migrations/`. The two paths drifted across phases — production deploys via Helm currently lack the agent_type normalization (`000014`), the agent_id-keyed agents table (`000015`), and the `event_content.input` column (`000016`) that docker-compose dev applies automatically.
 - **AutoGen framework support.** LLM-call interception via `autogen-core` / `autogen-agentchat` (the 0.4 rewrite) or `pyautogen` (0.2 legacy), plus sub-agent observability for it (`agent_role` from `participant.name`, child session per RoutedAgent dispatch / `generate_reply`). AutoGen ships two libraries that share a name with different APIs; both versions need their own interceptor.
+- **MCP policy version history.** Per-PUT snapshots + structured diff between versions (mode_changed, BOU_changed, entries_added/removed/changed). Useful for compliance use cases. v0.6 dropped this in favour of the audit log as the durable primitive (D142). Reintroduce if user demand surfaces.
+- **MCP policy dry-run preview.** Replay the last N hours of MCP traffic against a proposed policy before saving; per-server `would_allow` / `would_warn` / `would_block` counts. v0.6 dropped this in favour of "add entry → observe live events" iteration (D143). Reintroduce if user demand surfaces.
+- **MCP policy YAML import/export.** Round-trip flavor + global policy state to YAML for CLI-driven setup or backup. v0.6 dropped this in favour of UI-as-canonical-edit-path (D144). Reintroduce if user demand surfaces.
+- **Remove `flightdeck_sensor.compat.crewai_mcp_schema_fixup` helper.** The helper exists as a workaround for an upstream mcpadapt schema-generation bug emitting JSON-Schema-2020-12-invalid keys (empty `anyOf`, null `enum` / `items`, missing `type` after the empty `anyOf` is removed). Remove the helper + the README "Known framework constraints" subsection once mcpadapt emits valid schemas. Verify by running playground demo 22 without the fixup call; if it PASSES, the upstream is fixed and the helper can land for removal.
+- **Surface API 400 validation errors in the dashboard.** A manually-edited URL like `/investigate?close_reason=bogus` returns 400 from `/v1/sessions` with the allowed-set message, but the dashboard masks it with the generic "No sessions found / Try adjusting your filters" empty state. Operators who reach this via facet chip clicks never hit it (chips are constrained), but third-party API consumers see the correct 400 while the dashboard hides the same error. Render the structured 400 message inline above the table when the listing fetch returns a 4xx.
+- **Investigate sub-agent swimlane shows orphan when parent is outside the visible time window.** `dashboard/src/lib/relationship.ts::deriveRelationship` resolves the parent's agent_id by looking the `parent_session_id` up in the visible fleet store; when the parent session falls outside the current time range the lookup misses and the relationship pill silently falls back to "lone" — the sub-agent renders as a top-level swimlane row with no parent link. Fall back gracefully (e.g. surface "parent outside time window" pill with a deep-link to the wider window) or extend the lookup beyond the visible page.
 
 The roadmap is intentionally loose. User demand reorders priorities.
 

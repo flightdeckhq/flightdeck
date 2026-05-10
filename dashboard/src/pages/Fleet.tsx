@@ -457,7 +457,21 @@ export function Fleet() {
       .filter((fe) =>
         fe.event.event_type === "policy_warn"
         || fe.event.event_type === "policy_block"
-        || fe.event.event_type === "policy_degrade",
+        || fe.event.event_type === "policy_degrade"
+        // D131 MCP Protection Policy enforcement + FYI events. The
+        // chroma map ARCHITECTURE.md → "Adjacent surfaces" routes
+        // amber/red into the same enforcement axis as the existing
+        // policy_warn/policy_block, and the two purple FYI types
+        // (name drift + user-remembered) onto the FYI axis. The
+        // Fleet sidebar surfaces all four because the operator
+        // wants a single "what is the policy doing right now"
+        // pane — separating MCP from token-budget policy events
+        // would force a context-switch the architecture explicitly
+        // rejects.
+        || fe.event.event_type === "policy_mcp_warn"
+        || fe.event.event_type === "policy_mcp_block"
+        || fe.event.event_type === "mcp_server_name_changed"
+        || fe.event.event_type === "mcp_policy_user_remembered",
       )
       .slice(-20)
       .reverse()

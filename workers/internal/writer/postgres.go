@@ -208,7 +208,7 @@ func (w *Writer) UpsertSession(
 
 // UpgradeSessionContext fills in the sessions.context column on a row
 // whose context is either NULL (D106 lazy-create) or the empty JSON
-// object ``{}``. Once the column holds real data, the COALESCE branch
+// object “{}“. Once the column holds real data, the COALESCE branch
 // short-circuits to the stored value and the incoming payload is
 // ignored -- write-once semantics for real context are preserved across
 // every event type.
@@ -250,6 +250,72 @@ func (w *Writer) UpgradeSessionContext(ctx context.Context, sessionID string, co
 	return nil
 }
 
+// AppendMCPServerToContext UPSERTs a single MCP server fingerprint
+// dict into “sessions.context.mcp_servers“ (D140 step 6.6 A2).
+// Idempotent dedup by (name, server_url) tuple — re-emitted
+// “mcp_server_attached“ events from a framework reconnecting to
+// the same server become no-ops at the row level. Drives live
+// dashboard SessionDrawer panel population: the worker fires this
+// on every “mcp_server_attached“ event, the dashboard re-fetches
+// via WebSocket, the panel renders the new server within ~2-3 s.
+//
+// The dedup key intentionally uses the (name, server_url) tuple
+// rather than the wire fingerprint hex so the stored dict shape
+// stays exactly as “sessions.context.mcp_servers“ was on
+// session_start (no schema bump). Per D127 the (canonical_url,
+// name) pair uniquely determines the fingerprint hex, so tuple
+// dedup is information-equivalent to fingerprint dedup.
+//
+// The serverDict argument is a pre-marshaled JSON object whose
+// keys match the existing context dict shape: “{name, transport,
+// protocol_version, version, capabilities, instructions,
+// server_url}“. The processor maps the wire-event payload's
+// “server_name“/“server_url_canonical“ to “name“/
+// “server_url“ before calling.
+//
+// SQL strategy: read the array, JSON-test for an existing entry
+// matching (name, server_url), append only when no match. Single
+// statement via jsonb operators so the dedup + append happens
+// atomically without a SELECT-then-UPDATE race window.
+//
+// Returns nil on success, error on DB failure or JSON
+// marshalling. The caller (event processor) logs and continues —
+// a failed UPSERT must not block other events processing.
+func (w *Writer) AppendMCPServerToContext(
+	ctx context.Context,
+	sessionID string,
+	serverName string,
+	serverURL string,
+	serverDict []byte,
+) error {
+	if len(serverDict) == 0 {
+		return errors.New("AppendMCPServerToContext: serverDict is empty")
+	}
+	_, err := w.pool.Exec(ctx, `
+		UPDATE sessions
+		SET context = jsonb_set(
+			COALESCE(context, '{}'::jsonb),
+			'{mcp_servers}',
+			COALESCE(context->'mcp_servers', '[]'::jsonb) || $2::jsonb
+		)
+		WHERE session_id = $1::uuid
+		  AND NOT EXISTS (
+			SELECT 1
+			  FROM jsonb_array_elements(
+				COALESCE(context->'mcp_servers', '[]'::jsonb)
+			  ) AS s
+			 WHERE s->>'name' = $3
+			   AND COALESCE(s->>'server_url', '') = COALESCE($4, '')
+		  )
+	`, sessionID, serverDict, serverName, serverURL)
+	if err != nil {
+		return fmt.Errorf(
+			"append mcp server to context %s: %w", sessionID, err,
+		)
+	}
+	return nil
+}
+
 // InsertEvent inserts a new event record (metadata only) and returns the generated event ID.
 //
 // The optional payload argument is a JSON-encoded blob written into the
@@ -260,6 +326,7 @@ func (w *Writer) UpgradeSessionContext(ctx context.Context, sessionID string, co
 // events that have no extra metadata; the payload column stays NULL.
 func (w *Writer) InsertEvent(
 	ctx context.Context,
+	sensorEventID string,
 	sessionID, flavor, eventType, model string,
 	tokensInput, tokensOutput, tokensTotal *int,
 	tokensCacheRead, tokensCacheCreation *int64,
@@ -279,13 +346,29 @@ func (w *Writer) InsertEvent(
 	if tokensCacheCreation != nil {
 		cacheCreation = *tokensCacheCreation
 	}
+	// Phase 7 Step 2 (D149): sensor mints the event UUID and ships
+	// it in payload.id (string form). NULLIF + COALESCE: empty
+	// string → NULL → DB-side gen_random_uuid() default kicks in
+	// (legacy callers without sensor-supplied id keep working). ON
+	// CONFLICT (id, occurred_at) DO NOTHING gives idempotent retry
+	// semantics — a sensor flush retried after a transient
+	// ingestion failure lands cleanly even if the first attempt's
+	// commit raced.
 	var eventID string
 	err := w.pool.QueryRow(ctx, `
-		INSERT INTO events (session_id, flavor, event_type, model, tokens_input, tokens_output, tokens_total, tokens_cache_read, tokens_cache_creation, latency_ms, tool_name, has_content, occurred_at, payload)
-		VALUES ($1::uuid, $2, $3, NULLIF($4, ''), $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+		INSERT INTO events (id, session_id, flavor, event_type, model, tokens_input, tokens_output, tokens_total, tokens_cache_read, tokens_cache_creation, latency_ms, tool_name, has_content, occurred_at, payload)
+		VALUES (COALESCE(NULLIF($1, '')::uuid, gen_random_uuid()), $2::uuid, $3, $4, NULLIF($5, ''), $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+		ON CONFLICT (id, occurred_at) DO NOTHING
 		RETURNING id::text
-	`, sessionID, flavor, eventType, model, tokensInput, tokensOutput, tokensTotal, cacheRead, cacheCreation, latencyMs, toolName, hasContent, occurredAt, payload).Scan(&eventID)
+	`, sensorEventID, sessionID, flavor, eventType, model, tokensInput, tokensOutput, tokensTotal, cacheRead, cacheCreation, latencyMs, toolName, hasContent, occurredAt, payload).Scan(&eventID)
 	if err != nil {
+		// pgx returns ErrNoRows when ON CONFLICT DO NOTHING suppresses
+		// the insert (no row to RETURN). Surface the sensor-supplied
+		// id back to the caller so downstream NOTIFY + content writes
+		// reference the canonical row that already exists.
+		if errors.Is(err, pgx.ErrNoRows) && sensorEventID != "" {
+			return sensorEventID, nil
+		}
 		return "", fmt.Errorf("insert event: %w", err)
 	}
 	return eventID, nil
@@ -294,22 +377,32 @@ func (w *Writer) InsertEvent(
 // InsertEventContent inserts prompt capture content into event_content.
 // Called only when event.HasContent is true.
 //
-// Phase 4 polish: ``Input`` carries the embedding request's ``input``
-// parameter (string or list of strings) for ``event_type=embeddings``
+// Phase 4 polish: “Input“ carries the embedding request's “input“
+// parameter (string or list of strings) for “event_type=embeddings“
 // events. Chat events leave Input null and populate Messages instead.
 // The dashboard branches on event_type to render the appropriate
 // viewer (PromptViewer for chat, EmbeddingsContentViewer for
 // embeddings). See migration 000016_event_content_input.up.sql.
+//
+// D150 (Phase 7 Step 3.b): adds “ToolInput“ + “ToolOutput“
+// keys for the tool-capture migration. mcp_tool_call /
+// mcp_prompt_get / LLM-side tool_call route arguments + results
+// through these dedicated columns instead of the LLM-prompt-style
+// repurposing of Messages/Response that the pre-Step-3.b overflow
+// path used. See migration 000021_event_content_tool_capture.
 func (w *Writer) InsertEventContent(ctx context.Context, eventID, sessionID string, content json.RawMessage) error {
 	// Parse the content JSON to extract fields
 	var c struct {
-		Provider     string          `json:"provider"`
-		Model        string          `json:"model"`
-		SystemPrompt *string         `json:"system"`
-		Messages     json.RawMessage `json:"messages"`
-		Tools        json.RawMessage `json:"tools"`
-		Response     json.RawMessage `json:"response"`
-		Input        json.RawMessage `json:"input"`
+		Provider        string          `json:"provider"`
+		Model           string          `json:"model"`
+		SystemPrompt    *string         `json:"system"`
+		Messages        json.RawMessage `json:"messages"`
+		Tools           json.RawMessage `json:"tools"`
+		Response        json.RawMessage `json:"response"`
+		Input           json.RawMessage `json:"input"`
+		ToolInput       json.RawMessage `json:"tool_input"`
+		ToolOutput      json.RawMessage `json:"tool_output"`
+		EmbeddingOutput json.RawMessage `json:"embedding_output"`
 	}
 	if err := json.Unmarshal(content, &c); err != nil {
 		return fmt.Errorf("parse event content: %w", err)
@@ -322,10 +415,10 @@ func (w *Writer) InsertEventContent(ctx context.Context, eventID, sessionID stri
 		c.Messages = json.RawMessage("[]")
 	}
 	_, err := w.pool.Exec(ctx, `
-		INSERT INTO event_content (event_id, session_id, provider, model, system_prompt, messages, tools, response, input)
-		VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9)
+		INSERT INTO event_content (event_id, session_id, provider, model, system_prompt, messages, tools, response, input, tool_input, tool_output, embedding_output)
+		VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 		ON CONFLICT (event_id) DO NOTHING
-	`, eventID, sessionID, c.Provider, c.Model, c.SystemPrompt, c.Messages, c.Tools, c.Response, c.Input)
+	`, eventID, sessionID, c.Provider, c.Model, c.SystemPrompt, c.Messages, c.Tools, c.Response, c.Input, c.ToolInput, c.ToolOutput, c.EmbeddingOutput)
 	if err != nil {
 		return fmt.Errorf("insert event content: %w", err)
 	}
@@ -388,19 +481,19 @@ func (w *Writer) UpdateLastSeen(ctx context.Context, sessionID string) error {
 // contract (columns touched, state predicate) must be applied to
 // all four:
 //
-//  1. Ingestion: ``session.Store.Attach`` (D094) runs synchronously on
-//     ``session_start`` so the HTTP response can report ``attached=true``.
+//  1. Ingestion: “session.Store.Attach“ (D094) runs synchronously on
+//     “session_start“ so the HTTP response can report “attached=true“.
 //     Scope: closed, lost -> active; records a session_attachments row.
-//  2. Worker, ``UpsertSession`` ON CONFLICT branch (D094 worker side,
+//  2. Worker, “UpsertSession“ ON CONFLICT branch (D094 worker side,
 //     extended by D106). Scope: any prior state -> whatever the
-//     session_start event asks for (always ``active``), with identity-
-//     column refresh and D106 enrichment of the ``unknown`` sentinel
+//     session_start event asks for (always “active“), with identity-
+//     column refresh and D106 enrichment of the “unknown“ sentinel
 //     and NULL context/token columns that a lazy-create left behind.
-//  3. Worker, ``ReviveIfRevivable`` (this function, D105). Scope:
+//  3. Worker, “ReviveIfRevivable“ (this function, D105). Scope:
 //     stale, lost -> active. No identity refresh, no attachment row.
-//  4. Worker, ``ReviveOrCreateSession`` (D106). Scope: delegates to
+//  4. Worker, “ReviveOrCreateSession“ (D106). Scope: delegates to
 //     ReviveIfRevivable when the row exists, INSERTs a new row with
-//     best-effort identity + ``unknown`` sentinels when it does not.
+//     best-effort identity + “unknown“ sentinels when it does not.
 //     Called by every non-session_start handler so an event for an
 //     unknown session_id lazily manifests the row instead of
 //     FK-violating at InsertEvent.
@@ -462,6 +555,7 @@ func (w *Writer) ReviveOrCreateSession(
 	sessionID, flavor, agentType, host, framework, model string,
 	identity AgentIdentity,
 	occurredAt time.Time,
+	parentSessionID, agentRole string,
 ) (created bool, err error) {
 	var state string
 	sErr := w.pool.QueryRow(ctx,
@@ -512,16 +606,19 @@ func (w *Writer) ReviveOrCreateSession(
 		INSERT INTO sessions (
 			session_id, flavor, agent_type, host, framework, model, state,
 			started_at, last_seen_at, context,
-			agent_id, client_type, agent_name
+			agent_id, client_type, agent_name,
+			parent_session_id, agent_role
 		)
 		VALUES (
 			$1::uuid, $2, $3, NULLIF($4, ''), NULLIF($5, ''), NULLIF($6, ''),
 			'active', $7, $7, NULL,
-			$8::uuid, $9, $10
+			$8::uuid, $9, $10,
+			NULLIF($11, '')::uuid, NULLIF($12, '')
 		)
 		ON CONFLICT (session_id) DO NOTHING
 	`, sessionID, flavor, agentType, host, framework, model, occurredAt,
-		identity.AgentID, identity.ClientType, identity.AgentName)
+		identity.AgentID, identity.ClientType, identity.AgentName,
+		parentSessionID, agentRole)
 	if iErr != nil {
 		return false, fmt.Errorf("revive-or-create %s: insert: %w", sessionID, iErr)
 	}
@@ -539,6 +636,42 @@ func (w *Writer) ReviveOrCreateSession(
 		return true, nil
 	}
 	return false, nil
+}
+
+// BackfillSubAgentLinkage upgrades a session row's
+// parent_session_id + agent_role from NULL to the supplied values
+// when an event payload carries them but the row was lazy-created
+// (or upserted) before the parent linkage was visible. Idempotent —
+// only writes when both columns are currently NULL on the row, so
+// re-running on a session that already has linkage is a no-op.
+//
+// Why this exists: subagent sessions whose framework / plugin
+// surface fails to fire a session_start (or whose session_start
+// emission fails) get lazy-created from their first non-session_start
+// event. The lazy-create path now also writes parent_session_id /
+// agent_role when present, but sessions that were created before
+// THIS code shipped — or sessions where the subagent's first event
+// landed before the linkage info became available on the wire —
+// would otherwise stay orphaned forever. Calling this from the
+// per-event path covers both cases.
+func (w *Writer) BackfillSubAgentLinkage(
+	ctx context.Context,
+	sessionID, parentSessionID, agentRole string,
+) error {
+	if parentSessionID == "" && agentRole == "" {
+		return nil
+	}
+	_, err := w.pool.Exec(ctx, `
+		UPDATE sessions
+		SET parent_session_id = COALESCE(parent_session_id, NULLIF($2, '')::uuid),
+		    agent_role        = COALESCE(agent_role, NULLIF($3, ''))
+		WHERE session_id = $1::uuid
+		  AND (parent_session_id IS NULL OR agent_role IS NULL)
+	`, sessionID, parentSessionID, agentRole)
+	if err != nil {
+		return fmt.Errorf("backfill sub-agent linkage %s: %w", sessionID, err)
+	}
+	return nil
 }
 
 // SessionExists reports whether a session row with the given session_id
@@ -566,18 +699,18 @@ func (w *Writer) SessionExists(ctx context.Context, sessionID string) (bool, err
 
 // UpsertParentStub is the D126 § 3 forward-reference soft-link
 // extension to D106's lazy-create primitive. Triggered when a
-// sub-agent ``session_start`` arrives with a ``parent_session_id``
-// that doesn't yet exist in ``sessions`` — without a row at the
+// sub-agent “session_start“ arrives with a “parent_session_id“
+// that doesn't yet exist in “sessions“ — without a row at the
 // parent end, the child's INSERT fails the new
-// ``parent_session_id`` FK at schema-enforcement time. The stub
-// row carries the same ``"unknown"`` sentinels as
-// ``ReviveOrCreateSession`` plus a placeholder ``started_at``
+// “parent_session_id“ FK at schema-enforcement time. The stub
+// row carries the same “"unknown"“ sentinels as
+// “ReviveOrCreateSession“ plus a placeholder “started_at“
 // matching the child's so the timeline ordering is sensible while
 // the real parent's authoritative data hasn't arrived yet.
 //
-// When the real parent's ``session_start`` arrives later,
-// ``UpsertSession`` runs through its existing
-// write-once-but-upgrade-from-``"unknown"`` ON CONFLICT branch and
+// When the real parent's “session_start“ arrives later,
+// “UpsertSession“ runs through its existing
+// write-once-but-upgrade-from-“"unknown"“ ON CONFLICT branch and
 // fills in the stub's flavor / agent_type / agent_id /
 // client_type / agent_name from the EXCLUDED row. Identity fields
 // in the stub are NULL on insert; COALESCE in UpsertSession's
@@ -588,7 +721,7 @@ func (w *Writer) SessionExists(ctx context.Context, sessionID string) (bool, err
 // (started_at = child.started_at, no agents row required because
 // the real parent will UpsertAgent on its own arrival) through
 // the four-axis revive/create config surface that's the reason
-// the trio is uncoalesced. ``ON CONFLICT DO NOTHING`` covers the
+// the trio is uncoalesced. “ON CONFLICT DO NOTHING“ covers the
 // race where two children of the same yet-unseen parent arrive
 // concurrently and both try to create the stub.
 //
@@ -648,29 +781,79 @@ func (w *Writer) CloseSession(ctx context.Context, sessionID string) error {
 	return nil
 }
 
-// ReconcileStaleSessions sets stale after 2 min silence, lost after 10 min.
+// ReconcileStaleSessions sets stale after `staleThreshold` silence,
+// lost after `lostThreshold`. lost → closed is a separate, configurable
+// transition handled by ReapOrphanedLostSessions so operators can tune
+// the orphan-timeout window without recompiling the worker.
 func (w *Writer) ReconcileStaleSessions(ctx context.Context) error {
-	// Mark stale: active sessions with no signal for > 2 minutes
+	// Mark stale: active sessions with no signal for > staleThreshold
 	_, err := w.pool.Exec(ctx, `
 		UPDATE sessions
 		SET state = 'stale'
 		WHERE state IN ('active', 'idle')
-		  AND last_seen_at < NOW() - INTERVAL '` + staleThreshold + `'
+		  AND last_seen_at < NOW() - INTERVAL '`+staleThreshold+`'
 	`)
 	if err != nil {
 		return fmt.Errorf("mark stale: %w", err)
 	}
 
-	// Mark lost: stale sessions with no close for > 10 minutes
+	// Mark lost: stale sessions with no signal for > lostThreshold
 	_, err = w.pool.Exec(ctx, `
 		UPDATE sessions
 		SET state = 'lost'
 		WHERE state = 'stale'
-		  AND last_seen_at < NOW() - INTERVAL '` + lostThreshold + `'
+		  AND last_seen_at < NOW() - INTERVAL '`+lostThreshold+`'
 	`)
 	if err != nil {
 		return fmt.Errorf("mark lost: %w", err)
 	}
 
 	return nil
+}
+
+// ReapOrphanedLostSessions closes lost sessions that have been silent
+// longer than `threshold`, stamping close_reason="orphan_timeout" via
+// a synthetic session_end event so the dashboard's close-reason facet
+// reflects the reconciler's verdict alongside happy-path shutdowns.
+//
+// The CTE acquires row-level locks with FOR UPDATE SKIP LOCKED so two
+// reconciler instances racing on the same tick reap disjoint subsets
+// rather than fighting for the same row. The synthetic event uses
+// gen_random_uuid()/NOW() defaults; downstream consumers (close-reason
+// facet, session detail fetch) treat it identically to a plugin- or
+// sensor-emitted session_end. Returns the number of sessions reaped
+// so the caller can bump metrics.IncrSessionClosed.
+func (w *Writer) ReapOrphanedLostSessions(
+	ctx context.Context,
+	threshold time.Duration,
+) (int, error) {
+	var reaped int
+	err := w.pool.QueryRow(ctx, `
+		WITH expired AS (
+			SELECT session_id, flavor
+			FROM sessions
+			WHERE state = 'lost'
+			  AND last_seen_at < NOW() - make_interval(secs => $1)
+			FOR UPDATE SKIP LOCKED
+		),
+		closed AS (
+			UPDATE sessions s
+			SET state = 'closed', ended_at = NOW()
+			FROM expired e
+			WHERE s.session_id = e.session_id
+			RETURNING s.session_id
+		),
+		inserted AS (
+			INSERT INTO events (session_id, flavor, event_type, payload)
+			SELECT e.session_id, e.flavor, 'session_end',
+			       jsonb_build_object('close_reason', 'orphan_timeout')
+			FROM expired e
+			RETURNING id
+		)
+		SELECT COUNT(*)::int FROM closed
+	`, threshold.Seconds()).Scan(&reaped)
+	if err != nil {
+		return 0, fmt.Errorf("reap orphaned lost sessions (threshold=%s): %w", threshold, err)
+	}
+	return reaped, nil
 }

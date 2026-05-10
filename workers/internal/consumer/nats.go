@@ -29,6 +29,12 @@ const (
 // processor projects these fields into the events.payload JSONB
 // column via processor.BuildEventExtra().
 type EventPayload struct {
+	// Phase 7 Step 2 (D149): sensor mints the event UUID and sends
+	// it in ``id``. Worker passes through to InsertEvent, which uses
+	// it via COALESCE($1::uuid, gen_random_uuid()) so legacy callers
+	// without the field stay compatible. ON CONFLICT (id,
+	// occurred_at) DO NOTHING handles sensor retries idempotently.
+	ID              string          `json:"id,omitempty"`
 	SessionID       string          `json:"session_id"`
 	Flavor          string          `json:"flavor"`
 	AgentType       string          `json:"agent_type"`
@@ -186,6 +192,118 @@ type EventPayload struct {
 	IncomingMessage *SubagentMessage `json:"incoming_message,omitempty"`
 	OutgoingMessage *SubagentMessage `json:"outgoing_message,omitempty"`
 	State           string           `json:"state,omitempty"`
+
+	// D131 — MCP Protection Policy event fields. Populated on
+	// policy_mcp_warn / policy_mcp_block / mcp_server_name_changed
+	// events; otherwise omitted from the wire shape via omitempty.
+	//
+	//   * ServerURL / Fingerprint / PolicyID / Scope / DecisionPath —
+	//     warn + block decision events. ServerURL is the canonical
+	//     URL the wrapper computed at call_tool time; ServerName
+	//     reuses the existing field above.
+	//   * BlockOnUncertainty — block-only flag distinguishing the
+	//     explicit deny case from the uncertainty fall-through case.
+	//   * ServerURLCanonical / FingerprintOld / FingerprintNew /
+	//     NameOld / NameNew — mcp_server_name_changed event fields.
+	ServerURL          string `json:"server_url,omitempty"`
+	Fingerprint        string `json:"fingerprint,omitempty"`
+	PolicyID           string `json:"policy_id,omitempty"`
+	Scope              string `json:"scope,omitempty"`
+	DecisionPath       string `json:"decision_path,omitempty"`
+	BlockOnUncertainty *bool  `json:"block_on_uncertainty,omitempty"`
+	ServerURLCanonical string `json:"server_url_canonical,omitempty"`
+	FingerprintOld     string `json:"fingerprint_old,omitempty"`
+	FingerprintNew     string `json:"fingerprint_new,omitempty"`
+	NameOld            string `json:"name_old,omitempty"`
+	NameNew            string `json:"name_new,omitempty"`
+
+	// D139 — mcp_policy_user_remembered de-facto-approval event
+	// emitted by the Claude Code plugin's PostToolUse path. The
+	// other fields (Fingerprint, ServerURLCanonical, ServerName,
+	// Flavor) already exist above; this is the one new field.
+	DecidedAt string `json:"decided_at,omitempty"`
+
+	// D140 step 6.6 A2 — mcp_server_attached event extra fields.
+	// ServerName / Transport / Fingerprint / ServerURLCanonical
+	// already declared above; the worker also needs the full
+	// fingerprint to write into sessions.context.mcp_servers.
+	// ProtocolVersion is preserved as RawMessage because the MCP
+	// SDK ships it as either str ("2025-03-26") or int (recent
+	// drafts) — coercing here would lose source-type fidelity.
+	ProtocolVersion json.RawMessage `json:"protocol_version,omitempty"`
+	Version         string          `json:"version,omitempty"`
+	Capabilities    json.RawMessage `json:"capabilities,omitempty"`
+	Instructions    string          `json:"instructions,omitempty"`
+	AttachedAt      string          `json:"attached_at,omitempty"`
+
+	// Phase 7 Step 2 (D148/D149) — operator-actionable enrichment.
+	// PolicyDecision projects through the worker into events.payload
+	// unchanged; OriginatingEventID + OriginatingCallContext travel
+	// alongside on chained event types. Both are state metadata,
+	// always included regardless of capture_prompts.
+	PolicyDecision          json.RawMessage `json:"policy_decision,omitempty"`
+	OriginatingEventID      string          `json:"originating_event_id,omitempty"`
+	OriginatingCallContext  string          `json:"originating_call_context,omitempty"`
+
+	// Phase 7 Step 3 (D151): MCP discovery family carries the list
+	// of identifiers the server returned. Sensor caps at 100 +
+	// stamps Truncated when over the cap. Operationally key for
+	// drift detection ("did this server's tool inventory change").
+	ItemNames []string `json:"item_names,omitempty"`
+	Truncated bool     `json:"truncated,omitempty"`
+
+	// Phase 7 Step 4 (D152): session lifecycle + MCP server attach
+	// operator-actionable enrichment. All fields are state metadata
+	// (always-included regardless of capture_prompts per Phase 7 Q2).
+	//
+	// session_start:
+	//   * SensorVersion / InterceptorVersions — answers "did this
+	//     run under the buggy build" without a separate log dive.
+	//   * PolicySnapshot — answers "what policy was in effect at
+	//     session start" without joining time-windowed state.
+	// session_end:
+	//   * CloseReason — sensor populates "normal_exit" /
+	//     "directive_shutdown"; worker fills "orphan_timeout" /
+	//     "sigkill_detected" / "policy_block" via session-table
+	//     update on the post-mortem path.
+	//   * PolicyActionsSummary — worker computes at session_end
+	//     insert time via the events table GROUP BY query (Q2 lock).
+	//   * LastEventID — worker resolves at session_end insert time
+	//     via the events table.
+	// mcp_server_attached:
+	//   * PolicyDecisionAtAttach — sensor evaluates at attach time;
+	//     worker passes through.
+	// mcp_server_name_changed:
+	//   * PolicyEntriesOrphaned — worker computes by querying
+	//     mcp_policy_entries against the OLD fingerprint.
+	SensorVersion          string                 `json:"sensor_version,omitempty"`
+	InterceptorVersions    map[string]string      `json:"interceptor_versions,omitempty"`
+	PolicySnapshot         map[string]interface{} `json:"policy_snapshot,omitempty"`
+	CloseReason            string                 `json:"close_reason,omitempty"`
+	PolicyActionsSummary   map[string]int         `json:"policy_actions_summary,omitempty"`
+	LastEventID            string                 `json:"last_event_id,omitempty"`
+	PolicyDecisionAtAttach json.RawMessage        `json:"policy_decision_at_attach,omitempty"`
+	PolicyEntriesOrphaned  map[string]interface{} `json:"policy_entries_orphaned,omitempty"`
+
+	// LLM family operator-actionable enrichment.
+	//   * EstimatedVia: tiktoken / heuristic / none — pre_call,
+	//     post_call, embeddings.
+	//   * ProviderMetadata: rate-limit headers + request id +
+	//     processing-ms — post_call, embeddings.
+	//   * PolicyDecisionPre: shared block on pre_call when the
+	//     pre-call check decision is non-allow.
+	//   * PolicyDecisionPost: shared block on post_call /
+	//     embeddings when the cumulative usage crossed a threshold
+	//     the pre-call check didn't catch.
+	//   * OutputDimensions: {count, dimension} on embeddings.
+	//   * RetryAttempt + Terminal: llm_error retry-chain context.
+	EstimatedVia       string                 `json:"estimated_via,omitempty"`
+	ProviderMetadata   map[string]interface{} `json:"provider_metadata,omitempty"`
+	PolicyDecisionPre  json.RawMessage        `json:"policy_decision_pre,omitempty"`
+	PolicyDecisionPost json.RawMessage        `json:"policy_decision_post,omitempty"`
+	OutputDimensions   map[string]int         `json:"output_dimensions,omitempty"`
+	RetryAttempt       *int                   `json:"retry_attempt,omitempty"`
+	Terminal           *bool                  `json:"terminal,omitempty"`
 }
 
 // SubagentMessageBody is the framework-supplied body of a single

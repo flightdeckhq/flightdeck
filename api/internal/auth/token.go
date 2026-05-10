@@ -311,6 +311,15 @@ func ValidationResultFromContext(ctx context.Context) (ValidationResult, bool) {
 	return v, ok
 }
 
+// ContextWithValidationResult is a test-only mirror of [Middleware]'s
+// internal context write. Production code MUST go through Middleware;
+// callers that need to unit-test a handler in isolation use this to
+// inject a synthetic ValidationResult without spinning up the full
+// validator + bearer-token round-trip.
+func ContextWithValidationResult(ctx context.Context, r ValidationResult) context.Context {
+	return context.WithValue(ctx, validationResultCtxKey{}, r)
+}
+
 // Middleware returns an http.Handler that requires a valid Bearer
 // token. On missing or invalid tokens it writes a JSON 401 and never
 // calls next. When the validator surfaces a specific Reason (e.g.

@@ -26,8 +26,19 @@ export function invalidateSessionCache(sessionId: string): void {
  * ``eventsLimit`` is the D113 pagination cap the drawer passes through
  * as ``?events_limit=N``. Callers without pagination (Fleet-side
  * swimlane) omit the arg and get the full history.
+ *
+ * ``revalidationKey`` (D140 step 6.6) is an optional opaque value
+ * the caller bumps to force a fresh fetch — useful when an external
+ * signal (e.g., the fleet WebSocket's ``mcp_server_attached``
+ * event) tells the drawer that ``sessions.context`` has changed
+ * server-side. Bumping the key invalidates the cache for this
+ * session id and triggers a fetch on the next render.
  */
-export function useSession(sessionId: string | null, eventsLimit?: number) {
+export function useSession(
+  sessionId: string | null,
+  eventsLimit?: number,
+  revalidationKey?: number,
+) {
   const [data, setData] = useState<SessionDetail | null>(
     () => (sessionId ? sessionCache.get(sessionId) ?? null : null)
   );
@@ -38,6 +49,13 @@ export function useSession(sessionId: string | null, eventsLimit?: number) {
     if (!sessionId) {
       setData(null);
       return;
+    }
+
+    // D140 step 6.6 — when revalidationKey changes, drop cache so
+    // the fetch below runs with fresh data. revalidationKey === 0
+    // is the initial-mount sentinel; only > 0 forces invalidation.
+    if (revalidationKey && revalidationKey > 0) {
+      sessionCache.delete(sessionId);
     }
 
     // Use cached session metadata if available
@@ -69,7 +87,7 @@ export function useSession(sessionId: string | null, eventsLimit?: number) {
       })
       .catch((e: Error) => setError(e.message))
       .finally(() => setLoading(false));
-  }, [sessionId, eventsLimit]);
+  }, [sessionId, eventsLimit, revalidationKey]);
 
   return { data, loading, error };
 }

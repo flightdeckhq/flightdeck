@@ -15,6 +15,7 @@ import signal
 import socket
 import threading
 import urllib.request
+import uuid
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
@@ -40,6 +41,103 @@ if TYPE_CHECKING:
     from flightdeck_sensor.transport.client import ControlPlaneClient, EventQueue
 
 _log = logging.getLogger("flightdeck_sensor.core.session")
+
+
+# Phase 7 Step 4 (D152): operator-actionable session_start enrichment.
+# These helpers populate sensor_version + interceptor_versions +
+# policy_snapshot so the dashboard's triage workflow can answer
+# "did this run under the buggy build" / "what policy was in effect
+# at session start" without joining time-windowed log state by hand.
+#
+# All three helpers are best-effort: a missing dep / unreadable
+# version metadata returns the safest empty result rather than
+# breaking the session_start emission. Per Rule 28 (sensor fail-open).
+
+# Frameworks the sensor knows about — version captured via
+# importlib.metadata when installed in the agent's process.
+_INTERCEPTOR_DEPS: tuple[str, ...] = (
+    "anthropic",
+    "openai",
+    "litellm",
+    "langchain",
+    "langgraph",
+    "llama-index-core",
+    "crewai",
+    "mcp",
+)
+
+
+def _sensor_version() -> str:
+    """flightdeck_sensor's __version__ (from package metadata).
+    Returns empty string when the metadata can't be read (rare —
+    editable installs in some pip versions)."""
+    try:
+        from importlib.metadata import version
+
+        return version("flightdeck-sensor")
+    except Exception:
+        try:
+            import flightdeck_sensor as _fs
+
+            return getattr(_fs, "__version__", "")
+        except Exception:
+            return ""
+
+
+def _collect_interceptor_versions() -> dict[str, str]:
+    """Return ``{dep_name: version}`` for every framework the sensor
+    has interceptors for that's installed in the current process.
+    Uninstalled deps are silently omitted (the agent didn't import
+    them, so the version is not operationally meaningful)."""
+    out: dict[str, str] = {}
+    try:
+        from importlib.metadata import PackageNotFoundError, version
+    except Exception:
+        return out
+    for dep in _INTERCEPTOR_DEPS:
+        try:
+            out[dep] = version(dep)
+        except PackageNotFoundError:
+            continue
+        except Exception:
+            continue
+    return out
+
+
+def _build_policy_snapshot(
+    token_policy: Any,
+    mcp_policy: Any,
+) -> dict[str, Any]:
+    """Snapshot the policy state in effect at session_start.
+
+    Token-budget side: ``policy_id`` + ``scope`` already captured
+    in PolicyCache by Step 2 (D148); pass through.
+
+    MCP side: ``MCPPolicyCache`` exposes ``snapshot_identity()``
+    when populated; returns ``{global_policy_id, flavor_policy_id,
+    populated_at}``. Empty cache (preflight failed) returns ``{}``
+    and the snapshot omits the mcp section.
+    """
+    snap: dict[str, Any] = {}
+    try:
+        if token_policy is not None and getattr(token_policy, "policy_id", None):
+            snap["token_budget"] = {
+                "policy_id": token_policy.policy_id,
+                "scope": getattr(token_policy, "matched_policy_scope", None) or "",
+            }
+    except Exception:
+        pass
+    try:
+        if mcp_policy is not None:
+            ident = getattr(mcp_policy, "snapshot_identity", None)
+            if callable(ident):
+                mcp_snap = ident()
+                if mcp_snap:
+                    snap["mcp"] = mcp_snap
+    except Exception:
+        pass
+    return snap
+
 
 _PREFLIGHT_TIMEOUT_SECS = 1
 # Custom directive handler timeout (M-4). SIGALRM-based wall-clock
@@ -103,6 +201,17 @@ class Session:
             local_limit=config.limit,
             local_warn_at=config.warn_at,
         )
+        # MCP Protection Policy cache (D128 / D129). Populated at
+        # session preflight from GET /v1/mcp-policies/global +
+        # /:flavor; refreshed on policy_update directive arrival.
+        # Empty until populate runs; fail-open per Rule 28 unless
+        # the agent opted into the local failsafe via
+        # init(mcp_block_on_uncertainty=True).
+        from flightdeck_sensor.core.mcp_policy import MCPPolicyCache
+
+        self.mcp_policy = MCPPolicyCache(
+            mcp_block_on_uncertainty=config.mcp_block_on_uncertainty,
+        )
 
         self._state = SessionState.ACTIVE
         self._tokens_used = 0
@@ -140,6 +249,27 @@ class Session:
         # same multi-thread reasons as _tokens_used / _model.
         self._mcp_servers: list[MCPServerFingerprint] = []
 
+        # Phase 7 Step 2 (D149): originating_event_id chain. Tracks the
+        # UUID of the most-recent ``pre_call`` emission so downstream
+        # events fired during the same LLM call (tool_call, llm_error,
+        # mcp_*, policy_mcp_*, policy_warn/degrade/block) can stamp
+        # ``payload.originating_event_id`` and the dashboard can chain
+        # them visually. Cleared on ``post_call`` enqueue (the call
+        # window closes there). ``None`` outside an active call window;
+        # session_start / session_end / mcp_server_attached do NOT set
+        # it because they don't belong to any LLM call.
+        self._current_call_event_id: str | None = None
+
+        # Per-(provider, request_id) retry counter for llm_error
+        # enrichment. Bounded LRU at 256 entries; eviction-on-overflow
+        # keeps memory bounded for long-lived sessions making millions
+        # of calls. The field's value is "did the retry chain finally
+        # give up" — a short-window question — so older entries don't
+        # matter.
+        from collections import OrderedDict as _OrderedDict
+
+        self._retry_counters: _OrderedDict[tuple[str, str], int] = _OrderedDict()
+
         # Lazy import to avoid circular dependency at module level.
         from flightdeck_sensor.transport.client import EventQueue as LocalEventQueue
 
@@ -164,10 +294,17 @@ class Session:
     # ------------------------------------------------------------------
 
     def start(self) -> None:
-        """Fire SESSION_START, register handlers, fetch policy, and sync directives."""
+        """Preflight policy, fire SESSION_START, register handlers, and sync directives.
+
+        Policy preflights run before SESSION_START emission so the
+        session_start payload's policy_snapshot reflects the actual
+        in-effect policy state. Otherwise the snapshot is empty for
+        every fresh session — the cache hasn't populated yet.
+        """
+        self._preflight_policy()
+        self._preflight_mcp_policy()
         self._post_event(EventType.SESSION_START)
         self._register_handlers()
-        self._preflight_policy()
 
         from flightdeck_sensor import _directive_registry
 
@@ -228,12 +365,55 @@ class Session:
         with self._lock:
             self._model = model
 
+    # ------------------------------------------------------------------
+    # Originating-event-id chain (D149)
+    # ------------------------------------------------------------------
+
+    def set_current_call_event_id(self, event_id: str | None) -> None:
+        """Stash the most-recent pre_call emission's UUID so downstream
+        events fired during the same call window can reference it via
+        ``originating_event_id``. Called by the interceptor's _pre_call
+        right after _build_payload mints the id; cleared on _post_call
+        emission (the call window closes there)."""
+        with self._lock:
+            self._current_call_event_id = event_id
+
+    def get_current_call_event_id(self) -> str | None:
+        """Read the current call's originating event id, or None when
+        outside a call window. Called by downstream emissions to thread
+        ``payload.originating_event_id`` through."""
+        with self._lock:
+            return self._current_call_event_id
+
+    def record_retry_attempt(self, provider: str, request_id: str | None) -> int:
+        """Increment + return the retry counter for an llm_error.
+
+        Keyed by ``(provider, request_id)`` — the SDK's request_id is
+        unique per logical request and preserved across retries by
+        every major SDK we wrap. Returns 1 on the first emission for
+        a key, 2 on the second, and so on. When ``request_id`` is
+        ``None`` (provider didn't surface one) the counter is keyed
+        by ``(provider, "")`` and effectively counts unattributed
+        errors per-provider.
+
+        Bounded LRU at 256 entries; eviction-on-overflow keeps the
+        dict small in long-running sessions.
+        """
+        key = (provider or "", request_id or "")
+        with self._lock:
+            current = self._retry_counters.get(key, 0) + 1
+            self._retry_counters[key] = current
+            self._retry_counters.move_to_end(key)
+            while len(self._retry_counters) > 256:
+                self._retry_counters.popitem(last=False)
+            return current
+
     def record_framework(self, framework: str) -> None:
         """Record the framework if detected."""
         with self._lock:
             self._framework = framework
 
-    def record_mcp_server(self, fingerprint: MCPServerFingerprint) -> None:
+    def record_mcp_server(self, fingerprint: MCPServerFingerprint) -> bool:
         """Append an MCP server fingerprint captured at initialize time.
 
         Called by the MCP interceptor's patched ``ClientSession.initialize``
@@ -241,6 +421,13 @@ class Session:
         dashboard can render servers in the order the agent connected.
         Duplicates (same name + transport) are de-duplicated in case a
         framework reconstructs a session against the same server.
+
+        Returns ``True`` when the fingerprint is a new addition,
+        ``False`` when it was de-duplicated. The interceptor uses
+        the boolean to gate D140 ``mcp_server_attached`` emission —
+        a duplicate initialize must not re-broadcast the attach event
+        (idempotency at the source matches the worker's idempotency
+        at the sink).
         """
         with self._lock:
             for existing in self._mcp_servers:
@@ -248,8 +435,9 @@ class Session:
                     existing.name == fingerprint.name
                     and existing.transport == fingerprint.transport
                 ):
-                    return
+                    return False
             self._mcp_servers.append(fingerprint)
+            return True
 
     # ------------------------------------------------------------------
     # Sub-agent emission (D126)
@@ -363,7 +551,9 @@ class Session:
                 "sub-agent %s_message body exceeds %d-byte hard cap "
                 "(size=%d bytes); dropped per D126 § 6 — capture "
                 "the trailing tail elsewhere if needed",
-                direction, SUBAGENT_HARD_CAP_BYTES, size,
+                direction,
+                SUBAGENT_HARD_CAP_BYTES,
+                size,
             )
             return None, None
         if size <= SUBAGENT_INLINE_THRESHOLD_BYTES:
@@ -433,7 +623,8 @@ class Session:
             agent_role=agent_role,
         )
         stub_or_inline, content_envelope = self._route_subagent_message(
-            incoming_message, "incoming",
+            incoming_message,
+            "incoming",
         )
         if stub_or_inline is not None:
             payload["incoming_message"] = stub_or_inline
@@ -483,7 +674,8 @@ class Session:
         if error is not None:
             payload["error"] = error
         stub_or_inline, content_envelope = self._route_subagent_message(
-            outgoing_message, "outgoing",
+            outgoing_message,
+            "outgoing",
         )
         if stub_or_inline is not None:
             payload["outgoing_message"] = stub_or_inline
@@ -519,7 +711,7 @@ class Session:
         ``incoming_message``, ``outgoing_message``, ``state``,
         ``error``) are added by the caller after this returns.
         """
-        return {
+        out: dict[str, Any] = {
             "session_id": child_session_id,
             "parent_session_id": self.config.session_id,
             "agent_role": agent_role,
@@ -556,6 +748,24 @@ class Session:
             "has_content": False,
             "content": None,
         }
+        # Match the parent session_start contract: ingestion requires
+        # sensor_version on every session_start event. The sub-agent
+        # session_start path inherits the same wire requirement; emitting
+        # the parent session's sensor_version is correct since the child
+        # session is observed by the same sensor build.
+        if event_type == EventType.SESSION_START:
+            out["sensor_version"] = _sensor_version()
+            # Inherit the parent's runtime context (os, hostname, user,
+            # git_branch, frameworks, etc.) so the dashboard's swimlane
+            # renders the same os/hostname pills on the sub-agent row
+            # as the parent. Sub-agents share their parent's deployment
+            # context — they run in the same process, on the same host,
+            # under the same user. The context dict is computed once on
+            # the parent's session_start emission and cached on the
+            # Session.
+            if self._context:
+                out["context"] = self._context
+        return out
 
     def post_call_event(
         self,
@@ -676,10 +886,42 @@ class Session:
                     policy_fields["degrade_to"] = parsed.degrade_to
                 if parsed.block_at_pct is not None:
                     policy_fields["block_at_pct"] = parsed.block_at_pct
+                # Phase 7 Step 2 (D148): API now surfaces id + scope on
+                # the effective-policy response (always has — the
+                # ``store.Policy`` JSON tags include them; the sensor
+                # schema previously stripped them on parse). Pass through
+                # so policy_warn / policy_degrade / policy_block emissions
+                # can populate the shared policy_decision block.
+                if parsed.id is not None:
+                    policy_fields["policy_id"] = parsed.id
+                if parsed.scope is not None:
+                    matched_scope = parsed.scope
+                    if parsed.scope_value:
+                        matched_scope = f"{parsed.scope}:{parsed.scope_value}"
+                    policy_fields["matched_policy_scope"] = matched_scope
                 if policy_fields:
                     self.policy.update(policy_fields)
         except Exception:
             _log.debug("preflight policy fetch failed, proceeding with empty cache", exc_info=True)
+
+    def _preflight_mcp_policy(self) -> None:
+        """Populate the MCP Protection Policy cache from the control
+        plane at session start (D129). Fetches global + flavor policies
+        in two HTTP calls (sequential, ~1s each timeout). Failures
+        fail-open per Rule 28 — the cache stays empty and per-call
+        evaluation falls back on the local-failsafe toggle if set.
+        """
+        try:
+            self.mcp_policy.populate_from_control_plane(
+                api_url=self.config.api_url,
+                token=self.config.token,
+                flavor=self.config.agent_flavor,
+            )
+        except Exception:
+            _log.debug(
+                "preflight mcp policy fetch failed, proceeding with empty cache",
+                exc_info=True,
+            )
 
     # ------------------------------------------------------------------
     # Custom directives
@@ -908,11 +1150,21 @@ class Session:
 
         is_mcp = event_type.value.startswith("mcp_")
 
+        # Phase 7 Step 2 (D149): mint a sensor-side UUID per event so
+        # the originating_event_id chain works without round-tripping
+        # the worker. Worker's InsertEvent uses this id directly when
+        # present, falling back to gen_random_uuid() only for legacy
+        # callers. Idempotency: if a sensor retries the same payload
+        # after a network blip, the worker's INSERT ... ON CONFLICT
+        # (id, occurred_at) DO NOTHING suppresses the duplicate.
+        event_id = str(uuid.uuid4())
+
         # Common identity + session-level state. Every event (LLM-shaped
         # or MCP-shaped) carries these — they describe WHO the event
         # belongs to and the session's running token state, both of
         # which are meaningful regardless of payload semantics.
         payload: dict[str, Any] = {
+            "id": event_id,
             "session_id": self.config.session_id,
             "flavor": self.config.agent_flavor,
             "agent_type": self.config.agent_type,
@@ -929,6 +1181,38 @@ class Session:
             "token_limit_session": self._token_limit,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
+
+        # Phase 7 Step 2 (D149): originating_event_id chain. Stamp the
+        # current call window's originator event id (post_call, or
+        # pre_call when post_call hasn't fired yet) onto every
+        # downstream emission so the dashboard can render the call →
+        # sub-event ancestry. Suppressed for:
+        #   - the originators themselves (PRE_CALL, POST_CALL, EMBEDDINGS
+        #     — embeddings is its own originator, not chained off an LLM
+        #     call);
+        #   - call-window-independent events (SESSION_*, MCP_SERVER_*,
+        #     DIRECTIVE_RESULT) that don't belong to any LLM call.
+        # The set is the "downstream of an LLM call" types per the
+        # Phase 7 audit § originating_event_id chain.
+        chained_event_types = {
+            EventType.TOOL_CALL,
+            EventType.LLM_ERROR,
+            EventType.POLICY_WARN,
+            EventType.POLICY_DEGRADE,
+            EventType.POLICY_BLOCK,
+            EventType.MCP_TOOL_LIST,
+            EventType.MCP_TOOL_CALL,
+            EventType.MCP_RESOURCE_LIST,
+            EventType.MCP_RESOURCE_READ,
+            EventType.MCP_PROMPT_LIST,
+            EventType.MCP_PROMPT_GET,
+            EventType.POLICY_MCP_WARN,
+            EventType.POLICY_MCP_BLOCK,
+        }
+        if event_type in chained_event_types:
+            origin_id = self.get_current_call_event_id()
+            if origin_id is not None:
+                payload["originating_event_id"] = origin_id
 
         if not is_mcp:
             # LLM-shaped baseline. Fields are nullable for non-LLM event
@@ -976,9 +1260,53 @@ class Session:
                     ctx["mcp_servers"] = [fp.to_dict() for fp in self._mcp_servers]
             if ctx:
                 payload["context"] = ctx
+            # Phase 7 Step 4 (D152): operator-actionable triage
+            # enrichment. sensor_version + interceptor_versions answer
+            # "did this session run under the buggy build" without
+            # requiring a separate log dive. policy_snapshot answers
+            # "what budget/MCP rules were in effect at session start"
+            # without joining time-windowed policy state.
+            payload["sensor_version"] = _sensor_version()
+            iv = _collect_interceptor_versions()
+            if iv:
+                payload["interceptor_versions"] = iv
+            ps = _build_policy_snapshot(self.policy, self.mcp_policy)
+            if ps:
+                payload["policy_snapshot"] = ps
+
+        # Phase 7 Step 4 (D152): session_end carries close_reason for
+        # the sensor-knowable paths. Worker fills the rest (orphan
+        # timeout / sigkill detection) on the session-table-update
+        # path because those decisions live worker-side.
+        if event_type == EventType.SESSION_END:
+            reason = self._sensor_close_reason()
+            if reason is not None:
+                payload["close_reason"] = reason
 
         payload.update(extra)
         return payload
+
+    def _sensor_close_reason(self) -> str | None:
+        """Return what the sensor knows about why this session ended.
+
+        Phase 7 Step 4 (D152). Sensor-knowable values:
+          * ``directive_shutdown`` — _apply_directive(SHUTDOWN) set
+            _shutdown_requested before end() fired.
+          * ``normal_exit`` — end() fired with no shutdown flag and
+            no policy-block wind-down (the common path: caller invoked
+            teardown / atexit).
+
+        Worker fills the orphan-detector and SIGKILL paths because
+        those decisions live worker-side. policy_block as a
+        close_reason fires when BudgetExceededError tore down the
+        process before end(); the sensor's atexit handler then runs
+        end() with _shutdown_requested still false but the worker's
+        post-mortem can attribute it.
+        """
+        with self._lock:
+            if self._shutdown_requested:
+                return "directive_shutdown"
+        return "normal_exit"
 
     # ------------------------------------------------------------------
     # Directives
@@ -1021,14 +1349,35 @@ class Session:
             # is always ``"server"`` because DEGRADE never originates from
             # a local init(limit=...) threshold (D035 — local fires WARN
             # only).
+            #
+            # Phase 7 Step 2 (D148): shared policy_decision block.
+            # Built inline here (not via PolicyDecisionSummary import) to
+            # keep this module dependency-light; the dict shape mirrors
+            # PolicyDecisionSummary.as_payload_dict() byte-for-byte.
+            from flightdeck_sensor.core.types import PolicyDecisionSummary
+
+            degrade_pct = self.policy.degrade_at_pct
+            denom = token_limit if token_limit and token_limit > 0 else 1
+            degrade_decision = PolicyDecisionSummary(
+                policy_id=self.policy.policy_id or "",
+                scope=self.policy.matched_policy_scope or "",
+                decision="degrade",
+                reason=(
+                    f"Token usage {tokens_used}/{token_limit} "
+                    f"({(tokens_used * 100) // denom}%) "
+                    f"crossed degrade threshold ({degrade_pct}%, server policy); "
+                    f"model swapped {current_model} → {degrade_to}"
+                ),
+            )
             policy_event = self._build_payload(
                 EventType.POLICY_DEGRADE,
                 source="server",
-                threshold_pct=self.policy.degrade_at_pct,
+                threshold_pct=degrade_pct,
                 tokens_used=tokens_used,
                 token_limit=token_limit,
                 from_model=current_model,
                 to_model=degrade_to,
+                policy_decision=degrade_decision.as_payload_dict(),
             )
             self.event_queue.enqueue(policy_event)
             # DIRECTIVE_RESULT (acknowledged): the plumbing-level

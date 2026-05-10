@@ -147,6 +147,41 @@ func newServer(addr string, s store.Querier, hub *ws.Hub, validator *auth.Valida
 	mux.Handle("POST /v1/admin/reconcile-agents",
 		adminGate(handlers.AdminReconcileAgentsHandler(s)))
 
+	// MCP Protection Policy (D128) — read-open / mutation-admin per
+	// D147. All GETs accept any authenticated bearer token; mutations
+	// require IsAdmin=true (adminGate). The dashboard reads
+	// /v1/whoami once at session start to determine which CTAs to
+	// surface for the operator. The resolve endpoint is GET-only by
+	// design (idempotent + safe + cacheable).
+	mux.Handle("GET /v1/mcp-policies/global",
+		gate(handlers.GetGlobalMCPPolicyHandler(s)))
+	mux.Handle("GET /v1/mcp-policies/resolve",
+		gate(handlers.ResolveMCPPolicyHandler(s)))
+	mux.Handle("GET /v1/mcp-policies/templates",
+		gate(handlers.ListMCPPolicyTemplatesHandler()))
+	mux.Handle("GET /v1/mcp-policies/{flavor}",
+		gate(handlers.GetMCPPolicyHandler(s)))
+	mux.Handle("GET /v1/mcp-policies/{flavor}/audit-log",
+		gate(handlers.ListMCPPolicyAuditLogHandler(s)))
+	mux.Handle("GET /v1/mcp-policies/{flavor}/metrics",
+		gate(handlers.GetMCPPolicyMetricsHandler(s)))
+
+	// Mutations: admin-grade.
+	mux.Handle("POST /v1/mcp-policies/{flavor}",
+		adminGate(handlers.CreateMCPPolicyHandler(s)))
+	mux.Handle("PUT /v1/mcp-policies/global",
+		adminGate(handlers.UpdateGlobalMCPPolicyHandler(s)))
+	mux.Handle("PUT /v1/mcp-policies/{flavor}",
+		adminGate(handlers.UpdateMCPPolicyHandler(s)))
+	mux.Handle("DELETE /v1/mcp-policies/{flavor}",
+		adminGate(handlers.DeleteMCPPolicyHandler(s)))
+	mux.Handle("POST /v1/mcp-policies/{flavor}/apply_template",
+		adminGate(handlers.ApplyMCPPolicyTemplateHandler(s)))
+
+	// Whoami — read-open. Returns the authenticated token's role +
+	// id so the dashboard can gate mutation CTAs (D147).
+	mux.Handle("GET /v1/whoami", gate(handlers.WhoamiHandler()))
+
 	mux.Handle("GET /health", withRESTTimeout(handlers.HealthHandler()))
 
 	// Swagger UI. The swag/v2 v2.0.0-rc5 + http-swagger v2.0.2

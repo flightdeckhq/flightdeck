@@ -1,0 +1,29 @@
+# strict-with-common-allows — production starting posture with
+# pre-populated allows for well-known MCP servers.
+#
+# IMPORTANT: the pre-populated server URLs reflect well-known MCP
+# server endpoints as of the v0.6 release; verify against your
+# provider's current documentation before relying on them in
+# production. The maintenance commitment for these URLs is on the
+# operator who applies this template — Flightdeck does NOT track
+# upstream MCP server URL changes.
+#
+# allowlist mode + block_on_uncertainty=true with three pre-populated
+# allow entries gives a productive starting point for fleets that
+# call the most common public MCP servers.
+
+scope: flavor
+block_on_uncertainty: true
+entries:
+  - server_url: "stdio://npx -y @modelcontextprotocol/server-filesystem"
+    server_name: "filesystem"
+    entry_kind: allow
+    enforcement: block
+  - server_url: "https://api.githubcopilot.com/mcp/"
+    server_name: "github"
+    entry_kind: allow
+    enforcement: block
+  - server_url: "https://mcp.slack.com/v1"
+    server_name: "slack"
+    entry_kind: allow
+    enforcement: block

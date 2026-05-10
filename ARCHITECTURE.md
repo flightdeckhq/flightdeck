@@ -37,7 +37,7 @@ no single point of failure introduced into the agent's execution path.
 **IS:**
 
 - A sensor library that integrates into any Python AI agent with two lines
-  of code (`init()` + `patch()`).
+  of code (`init` + `patch`).
 - A central control plane (ingestion + workers + Postgres + API + dashboard)
   that aggregates every event into a fleet view.
 - A token budget enforcer: warn, degrade, block — applied at call time
@@ -55,10 +55,10 @@ no single point of failure introduced into the agent's execution path.
 
 - Not a proxy. Never intercepts LLM traffic on the network.
 - Not a content inspector by default. Prompt capture is opt-in
-  (`capture_prompts=False` is the default; D019).
+  (`capture_prompts=False` is the default).
 - Not an orchestrator. Never tells agents what to do.
 - Not a billing system. `estimated_cost` approximates from public list
-  prices (D099); actual invoices differ.
+  prices; actual invoices differ.
 - Not a notification platform. No Slack, email, or PagerDuty.
 - Not multi-tenant SaaS. Self-hosted only.
 - Not an LLM gateway. No model substitution, no caching, no retries
@@ -69,7 +69,7 @@ no single point of failure introduced into the agent's execution path.
 ## System Architecture
 
 ```
-┌─────────────────────┐          ┌──────────────────────────┐
+┌─────────────────────┐ ┌──────────────────────────┐
 │   Agent Process     │          │   React Dashboard :3000  │
 │                     │          │                          │
 │  flightdeck-sensor  │          │  Fleet, Investigate,     │
@@ -80,7 +80,7 @@ no single point of failure introduced into the agent's execution path.
          │ POST /ingest/v1/events         │ REST  /api/*
          │ GET  /api/v1/policy            │ WS    /api/v1/stream
          │                                │ GET   / (SPA static)
-         ▼                                ▼
+         ▼ ▼
 ┌──────────────────────────────────────────────────────────┐
 │                    nginx :4000                           │
 │                                                          │
@@ -90,8 +90,8 @@ no single point of failure introduced into the agent's execution path.
 │  /api/v1/stream  → api:8081   (WebSocket upgrade)        │
 └───────┬──────────────────────────────┬───────────────────┘
         │                              │
-        ▼                              ▼
-┌──────────────────────┐    ┌──────────────────────────────┐
+        ▼ ▼
+┌──────────────────────┐ ┌──────────────────────────────┐
 │ Ingestion API :8080  │    │     Query API :8081          │
 │                      │    │                              │
 │ POST /v1/events      │    │ GET /v1/fleet                │
@@ -146,7 +146,7 @@ no single point of failure introduced into the agent's execution path.
            │                           │
            │ SQL writes + NOTIFY       │
            │                           │
-           ▼                           ▼
+           ▼ ▼
 ┌──────────────────────────────────────────────────────────┐
 │                PostgreSQL :5432                          │
 │                                                          │
@@ -204,7 +204,7 @@ flightdeck/
 │   ├── Makefile
 │   ├── pyproject.toml
 │   ├── flightdeck_sensor/
-│   │   ├── __init__.py         # Public API: init(), wrap(), patch(), get_status(), teardown(), directive()
+│   │   ├── __init__.py         # Public API: init, wrap, patch, get_status, teardown, directive
 │   │   ├── py.typed            # PEP 561 marker
 │   │   ├── core/
 │   │   │   ├── types.py        # SessionState, EventType, DirectiveAction, SensorConfig, PromptContent
@@ -212,13 +212,13 @@ flightdeck/
 │   │   │   ├── policy.py       # PolicyCache: local token enforcement, threshold evaluation
 │   │   │   ├── context.py      # Pluggable runtime context collectors + framework classifiers
 │   │   │   ├── schemas.py      # Pydantic v2 control-plane envelope validation
-│   │   │   ├── agent_id.py     # D115 5-tuple → deterministic agent_id derivation
+│   │   │   ├── agent_id.py     # 5-tuple → deterministic agent_id derivation
 │   │   │   └── exceptions.py   # BudgetExceededError, DirectiveError, ConfigurationError
 │   │   ├── transport/
 │   │   │   ├── client.py       # ControlPlaneClient + EventQueue (drain + directive threads)
 │   │   │   └── retry.py        # Exponential backoff, unavailability policy enforcement
 │   │   ├── interceptor/
-│   │   │   ├── base.py         # call(), call_async(), call_stream(): provider-agnostic intercept
+│   │   │   ├── base.py         # call, call_async, call_stream: provider-agnostic intercept
 │   │   │   ├── anthropic.py    # SensorAnthropic + descriptor-based class-level patch
 │   │   │   ├── openai.py       # SensorOpenAI + chat / responses / embeddings descriptors
 │   │   │   └── litellm.py      # SensorLitellm: module-level completion / embedding patch
@@ -243,7 +243,7 @@ flightdeck/
 │   ├── Makefile                # build target runs swag init before go build
 │   ├── Dockerfile
 │   ├── cmd/main.go             # Entry, config, server startup, graceful shutdown
-│   ├── docs/                   # Generated by swaggo/swag (D050)
+│   ├── docs/                   # Generated by swaggo/swag
 │   ├── internal/
 │   │   ├── config/config.go    # Config struct: env-driven
 │   │   ├── server/server.go    # HTTP server, routes, recovery middleware, request logging
@@ -254,7 +254,7 @@ flightdeck/
 │   │   │   └── (Swagger UI route)
 │   │   ├── auth/token.go       # Bearer token validation against access_tokens
 │   │   ├── nats/publisher.go   # JetStream publisher (event_type → subject routing)
-│   │   ├── session/store.go    # Synchronous attach-on-session_start (D094 writer)
+│   │   ├── session/store.go    # Synchronous attach-on-session_start (writer)
 │   │   └── directive/store.go  # Pending directive lookup (atomic UPDATE...RETURNING)
 │   └── tests/handler_test.go
 │
@@ -301,7 +301,7 @@ flightdeck/
 │   │   ├── store/
 │   │   │   ├── postgres.go         # Fleet, session, event, agents queries via pgx
 │   │   │   ├── analytics.go        # GROUP BY queries across all dimensions
-│   │   │   ├── pricing.go          # Static pricing table for estimated_cost (D099)
+│   │   │   ├── pricing.go          # Static pricing table for estimated_cost
 │   │   │   ├── events.go           # Bulk events query
 │   │   │   ├── sessions.go         # Listing + filters (framework, error_type)
 │   │   │   ├── access_tokens.go
@@ -354,10 +354,14 @@ flightdeck/
 │   └── skills/flightdeck.md    # /flightdeck skill
 │
 ├── playground/                 # Working examples per supported framework
-│   ├── _helpers.py             # init_sensor() with required flavor + capture defaults
+│   ├── _helpers.py             # init_sensor with required flavor + capture defaults
 │   └── *.py                    # one script per framework / scenario
 │
 ├── helm/                       # Kubernetes Helm chart
+│   ├── Makefile                # lint / template / install / upgrade — each gates on sync-migrations
+│   ├── templates/              # ConfigMap consumes migrations/ via .Files.Glob at chart-render time
+│   └── migrations/             # Build artifact (gitignored); populated by `make sync-migrations`
+│                               # from docker/postgres/migrations/. Single source of truth lives there.
 ├── docker/                     # docker-compose.{yml,dev.yml,prod.yml}, nginx, postgres/migrations
 ├── tests/
 │   ├── integration/            # Full-pipeline pytest suite (real NATS + Postgres)
@@ -369,11 +373,11 @@ flightdeck/
 
 ## Sensor
 
-The sensor is a Python library that runs in-process inside the agent. `init()`
-resolves configuration; `patch()` installs class-level descriptors on the
+The sensor is a Python library that runs in-process inside the agent. `init`
+resolves configuration; `patch` installs class-level descriptors on the
 Anthropic and OpenAI client classes; every LLM call passes through the sensor
 synchronously. The event POST itself is offloaded onto a background queue
-drain thread (D037) so it does not sit in the hot path, but the LLM call
+drain thread so it does not sit in the hot path, but the LLM call
 waits for the sensor's response-envelope parsing before returning control to
 user code.
 
@@ -382,7 +386,7 @@ in the response envelope. Shutdown, warn, degrade, custom handlers, and
 token-budget enforcement all depend on this interception loop. The sensor
 reads the directive from the POST response and applies it before the next
 LLM call returns: the kill switch works because the sensor decides whether
-the next `client.messages.create()` call raises `BudgetExceededError` or
+the next `client.messages.create` call raises `BudgetExceededError` or
 proceeds.
 
 ### Design principles
@@ -396,7 +400,7 @@ Two background daemon threads run: `flightdeck-event-queue` drains events to
 the control plane, and `flightdeck-directive-queue` processes directives
 received in event responses (kill, custom handlers, model swap, policy
 updates). The queues are decoupled so a slow directive handler cannot block
-event throughput (D081).
+event throughput.
 
 Heartbeats, polling loops, and additional daemon threads do not belong in
 the sensor. Features that require independent background activity belong in
@@ -408,12 +412,12 @@ a sidecar container or system service.
 def init(
     server: str,
     token: str,
-    api_url: str | None = None,      # control-plane base URL (D088)
-    capture_prompts: bool = False,   # opt-in (D019)
+    api_url: str | None = None,      # control-plane base URL
+    capture_prompts: bool = False,   # opt-in
     quiet: bool = False,
-    limit: int | None = None,        # local WARN-only token threshold (D035)
+    limit: int | None = None,        # local WARN-only token threshold
     warn_at: float = 0.8,
-    session_id: str | None = None,   # optional session-id hint (D094)
+    session_id: str | None = None,   # optional session-id hint
 ) -> None:
     """
     Initialize the sensor.
@@ -432,12 +436,12 @@ def init(
     session with that ID already exists, the backend attaches this execution
     to the prior row.
 
-    Reads from environment (override init() params):
+    Reads from environment (override init params):
         FLIGHTDECK_API_URL            -- control-plane base URL
         FLIGHTDECK_SESSION_ID         -- session-id hint
         AGENT_FLAVOR / FLIGHTDECK_AGENT_NAME -- persistent agent label
-        AGENT_TYPE / FLIGHTDECK_AGENT_TYPE   -- "coding" or "production" (D114/D115)
-        FLIGHTDECK_HOSTNAME           -- override socket.gethostname()
+        AGENT_TYPE / FLIGHTDECK_AGENT_TYPE   -- "coding" or "production"
+        FLIGHTDECK_HOSTNAME           -- override socket.gethostname
         FLIGHTDECK_UNAVAILABLE_POLICY -- "continue" (default) or "halt"
         FLIGHTDECK_CAPTURE_PROMPTS    -- "true" to enable
 
@@ -452,7 +456,7 @@ def init(
     """
 
 def wrap(client: Any, quiet: bool = False) -> Any:
-    """Wrap a single Anthropic or OpenAI client. init() must be called first."""
+    """Wrap a single Anthropic or OpenAI client. init must be called first."""
 
 def patch(
     quiet: bool = False,
@@ -461,9 +465,9 @@ def patch(
     """Class-level monkey-patch of SDK constructors. Works with frameworks
     that build their own clients internally."""
 
-def unpatch() -> None: ...
-def get_status() -> StatusResponse: ...
-def teardown() -> None: ...
+def unpatch -> None:...
+def get_status -> StatusResponse:...
+def teardown -> None:...
 
 def directive(
     name: str,
@@ -471,14 +475,14 @@ def directive(
     parameters: list[Parameter] | None = None,
 ) -> Callable:
     """Decorator that registers a custom directive handler at module load
-    time. The function registers with the control plane on init() and is
+    time. The function registers with the control plane on init and is
     callable from the dashboard."""
 
 # `Parameter` is an alias of `DirectiveParameter` exposed in __all__.
 ```
 
 `AGENT_TYPE` accepts only `coding` or `production`. Any other value raises
-`ConfigurationError` at `init()` (D114). The Claude Code plugin emits
+`ConfigurationError` at `init`. The Claude Code plugin emits
 `coding`; production agents emit `production`.
 
 ### Provider Protocol
@@ -509,7 +513,7 @@ class Provider(Protocol):
         For EMBEDDINGS event_type: extracts request_kwargs["input"] (string
         or list of strings).
         Provider terminology is preserved exactly — no normalization between
-        Anthropic and OpenAI shapes (Rule 20).
+        Anthropic and OpenAI shapes.
         """
 
     def get_model(self, request_kwargs: dict) -> str:
@@ -542,12 +546,12 @@ class PromptContent:
 
 ### Class-level patching
 
-`patch()` works by replacing the `cached_property` descriptors for a fixed
+`patch` works by replacing the `cached_property` descriptors for a fixed
 set of resource slots on the SDK client classes with sensor descriptors.
 Any code path that accesses one of these resources is intercepted, including
 code paths inside agent frameworks that build their own SDK clients
 internally. The class-level patch handles captured references (`from
-anthropic import Anthropic` BEFORE `patch()`) because the descriptor mutates
+anthropic import Anthropic` BEFORE `patch`) because the descriptor mutates
 the actual class object in place.
 
 The patched resource slots are:
@@ -577,14 +581,14 @@ use the same code path. Per-resource idempotency sentinels:
 `_flightdeck_patched_embeddings`.
 
 Idempotency: a `_flightdeck_patched` sentinel on each patched class stores
-the original `cached_property`. Safe across multiple `patch()` / `unpatch()`
+the original `cached_property`. Safe across multiple `patch` / `unpatch`
 cycles.
 
 Pre-existing instance limitation: instances that accessed `.messages` /
-`.beta.messages` / `.chat` / `.responses` / `.embeddings` BEFORE `patch()`
+`.beta.messages` / `.chat` / `.responses` / `.embeddings` BEFORE `patch`
 have the raw resource cached in `instance.__dict__` and bypass the
 descriptor permanently. New instances and new accesses are wrapped
-correctly. Practical implication: call `init()` + `patch()` at the top of
+correctly. Practical implication: call `init` + `patch` at the top of
 the entrypoint, before any framework or user code constructs a client.
 
 ### Module-level patching: litellm
@@ -613,7 +617,7 @@ in the OpenAI resource table (or one `_patch_one_class` call for Anthropic).
 
 ### Framework support
 
-After `init()` + `patch()`, frameworks that build Anthropic or OpenAI
+After `init` + `patch`, frameworks that build Anthropic or OpenAI
 clients internally are intercepted without user-side wrapping.
 
 | Framework | Path covered |
@@ -621,7 +625,7 @@ clients internally are intercepted without user-side wrapping.
 | LangChain | `ChatAnthropic.invoke` (langchain-anthropic), `ChatOpenAI.invoke` (langchain-openai), `OpenAIEmbeddings.embed_*` (transitive) |
 | LangGraph | Transitive via LangChain — graphs routing through `ChatAnthropic` / `ChatOpenAI`, including `langgraph.prebuilt.create_react_agent` tool loops |
 | LlamaIndex | `llama-index-llms-anthropic.complete`, `llama-index-llms-openai.complete` |
-| CrewAI 1.14+ | `LLM(model=...).call()` via the native Anthropic and OpenAI provider classes. Model strings without a native-provider prefix (e.g. `openrouter/`, `deepseek/`) fall through to litellm |
+| CrewAI 1.14+ | `LLM(model=...).call` via the native Anthropic and OpenAI provider classes. Model strings without a native-provider prefix (e.g. `openrouter/`, `deepseek/`) fall through to litellm |
 | litellm | `litellm.completion` / `acompletion` chat path; `embedding` / `aembedding` |
 | Claude Code plugin | Observational hook-based path; emits the same event shape as the sensor |
 | bifrost | Multi-protocol gateway. Point the openai SDK at bifrost's `base_url` and the OpenAI interceptor fires; point the anthropic SDK at bifrost and the Anthropic interceptor fires. Both protocols are supported as deployment topologies |
@@ -629,7 +633,7 @@ clients internally are intercepted without user-side wrapping.
 ### Framework attribution
 
 Every event carries a bare-name `framework` field (`langchain`, `crewai`,
-`langgraph`, ...). The value is populated at sensor `init()` from
+`langgraph`,...). The value is populated at sensor `init` from
 `FrameworkCollector` via `Session.record_framework`, then propagated to
 every emitted event.
 
@@ -657,18 +661,18 @@ The sensor opens a child session for every framework-recognised
 sub-agent execution. Each child session carries
 `parent_session_id` pointing back to the outer session and
 `agent_role` set to the framework-supplied role label
-(see Identity model above). Three mechanisms are covered (D126):
+(see Identity model above). Three mechanisms are covered:
 
 | Mechanism | parent_session_id source | agent_role source | Interceptor |
 |---|---|---|---|
 | Claude Code Task subagent | hook payload `session_id` | hook payload `agent_type` (e.g. `"Explore"`) | `plugin/hooks/scripts/observe_cli.mjs` (`SubagentStart` / `SubagentStop`) |
-| CrewAI agent execution | parent crew's session | `Agent.role` attribute | `sensor/.../interceptor/crewai.py` (context manager around `Agent.execute()`) |
+| CrewAI agent execution | parent crew's session | `Agent.role` attribute | `sensor/.../interceptor/crewai.py` (context manager around `Agent.execute`) |
 | LangGraph node execution | parent runner's session | node name | `sensor/.../interceptor/langgraph.py` (agent-bearing nodes only — node body invokes a patched LLM client OR matches `langgraph_agent_node_pattern` regex) |
 
 Direct Anthropic / OpenAI SDK calls and litellm calls outside a
 multi-agent framework emit root sessions with
 `parent_session_id=null` and `agent_role=null`; the existing 5-tuple
-identity (D115) is unchanged for those paths.
+identity is unchanged for those paths.
 
 Sub-agent coverage tracks the LLM-interception coverage matrix above
 — a framework lands here only after Flightdeck observes its plain
@@ -677,16 +681,16 @@ plus sub-agent observability for both the 0.4 rewrite and the 0.2
 legacy package).
 
 Cross-agent message capture rides on the same
-`capture_prompts` gate as LLM prompt content (D019). Each
+`capture_prompts` gate as LLM prompt content. Each
 interceptor extracts the parent's input to the child at child
 context entry and stamps it on the child `session_start` payload as
 `incoming_message`; the child's response back lands on the child
 `session_end` payload as `outgoing_message`. Bodies route through
 the existing `event_content` table — small bodies inline, large
-bodies through the D119 overflow path (8 KiB inline / 2 MiB hard
+bodies through the overflow path (8 KiB inline / 2 MiB hard
 cap). `capture_prompts=false` produces neither field.
 
-Sub-agent emission failure (the framework's `Agent.execute()` or
+Sub-agent emission failure (the framework's `Agent.execute` or
 equivalent raises an exception inside the interceptor's context
 manager) emits child `session_end` with `state=error` plus a
 structured error block following the `llm_error` taxonomy. The
@@ -699,14 +703,14 @@ mirroring the existing `error_types` (`llm_error`) and
 ### Runtime context auto-collection
 
 `sensor/flightdeck_sensor/core/context.py` runs a pluggable collector chain
-on `init()` and attaches the resulting dict to the `session_start` event
-payload via `Session.set_context()`.
+on `init` and attaches the resulting dict to the `session_start` event
+payload via `Session.set_context`.
 
-`ContextCollector` Protocol: `applies() -> bool`, `collect() ->
-dict[str, Any]`. Both must never raise. `BaseCollector` wraps `_gather()`
-in a try/except; the top-level `collect()` orchestrator wraps each
+`ContextCollector` Protocol: `applies -> bool`, `collect ->
+dict[str, Any]`. Both must never raise. `BaseCollector` wraps `_gather`
+in a try/except; the top-level `collect` orchestrator wraps each
 collector call in a *second* try/except. Two layers of protection mean a
-single broken collector cannot crash the sensor or block `init()`.
+single broken collector cannot crash the sensor or block `init`.
 
 Three collector phases:
 
@@ -722,7 +726,7 @@ Three collector phases:
    for known AI frameworks (crewai, langchain, langgraph, llama_index,
    autogen, haystack, dspy, smolagents, pydantic_ai). Never imports
    anything new — if a framework was not loaded by the agent before
-   `init()` ran, the collector does not claim it is in use.
+   `init` ran, the collector does not claim it is in use.
 
 `GitCollector` shells out to `git` with a 500 ms `subprocess` timeout,
 strips embedded credentials from the remote URL via
@@ -742,14 +746,14 @@ dict[str, DirectiveRegistration]`. `_compute_fingerprint(name, description,
 parameters)` is the SHA-256 digest of the canonical JSON of the directive
 schema, base64-encoded; it changes when the handler signature changes.
 
-`Session.start()` calls `_sync_directives(registry)`: POST every registered
+`Session.start` calls `_sync_directives(registry)`: POST every registered
 fingerprint to `{api_url}/v1/directives/sync`. For each unknown fingerprint
 returned, POST the full schema to `{api_url}/v1/directives/register`.
 
 `Session._execute_custom_directive(directive)` validates payload via
 `DirectivePayloadSchema`, looks up the handler in `_directive_registry`,
 verifies fingerprint match, runs the handler with a 5-second timeout via
-`_run_handler_with_timeout()`, and enqueues a `directive_result` event with
+`_run_handler_with_timeout`, and enqueues a `directive_result` event with
 `directive_status` (`"success"` or `"error"`), `result`, and `error`.
 Never raises — always fails open.
 
@@ -763,26 +767,26 @@ indefinitely. It cannot affect event throughput because the drain thread is
 independent (the entire point of the two-queue pattern), so `post_call`
 events keep flowing to ingestion regardless of how slow the handler is.
 
-Acknowledgement events: in `_apply_directive()`, before acting on
+Acknowledgement events: in `_apply_directive`, before acting on
 `SHUTDOWN`, `SHUTDOWN_FLAVOR`, or `DEGRADE`, the sensor enqueues a
 `directive_result` event with `directive_status="acknowledged"` and an
 action-specific result dict (e.g. `from_model` / `to_model` for degrade,
 `reason` for shutdown). For shutdown variants the sensor calls
-`EventQueue.flush()` synchronously before raising the shutdown flag so the
+`EventQueue.flush` synchronously before raising the shutdown flag so the
 acknowledgement is not lost when the process exits. The synchronous flush
 is safe because `_apply_directive` runs on the dedicated directive handler
-thread, not the drain thread; `Queue.join()` on the event queue makes
+thread, not the drain thread; `Queue.join` on the event queue makes
 progress without self-deadlock.
 
 `EventQueue.flush(timeout=5.0)` synchronously drains pending events up to a
-deadline (event queue only). Used by `Session.end()` and the shutdown /
+deadline (event queue only). Used by `Session.end` and the shutdown /
 shutdown_flavor branches. The directive queue is intentionally NOT waited
-on: `flush()` is typically called from inside `_apply_directive` running on
-the directive handler thread, and `Queue.join()` on the directive queue
-would self-deadlock because the current item has not had `task_done()`
+on: `flush` is typically called from inside `_apply_directive` running on
+the directive handler thread, and `Queue.join` on the directive queue
+would self-deadlock because the current item has not had `task_done`
 called on it. The directive queue is internal control flow; the event
 queue is the externally observable state operators care about flushing
-before shutdown (D081).
+before shutdown.
 
 ### Token race / forced degrade
 
@@ -793,28 +797,28 @@ read the value after another thread's increment has bled into it.
 
 `_post_call` order of operations: (1) `record_usage` returns the
 post-increment total atomically, (2) `record_model`, (3)
-`_build_payload(..., tokens_used_session=session_total, ...)` with the
+`_build_payload(..., tokens_used_session=session_total,...)` with the
 captured value passed explicitly. This guarantees `tokens_used_session`
 reports the correct total under both single-threaded and concurrent use
-(D082).
+.
 
 `PolicyCache._forced_degrade` is a boolean flag that arms a forced DEGRADE
-decision in `check()`. Set by `set_degrade_model(model)` when the sensor
+decision in `check`. Set by `set_degrade_model(model)` when the sensor
 receives a DEGRADE directive from the server. Cleared by
 `update(policy_dict)` (called for `POLICY_UPDATE` directives) so a fresh
 policy can un-stick the forced state if the server retracts the degrade.
 
-`check()` short-circuits at the top of the locked block: if
+`check` short-circuits at the top of the locked block: if
 `_forced_degrade and degrade_to`, returns `PolicyResult(DEGRADE,
 source="server")` regardless of token thresholds. Required because the
 worker's policy evaluator may issue a DEGRADE directive based on its own
 cumulative count without populating the sensor's local `degrade_at_pct`
-cache (preflight policy fetch can fail silently). See D084.
+cache (preflight policy fetch can fail silently).
 
 ### Pydantic schemas
 
 `sensor/flightdeck_sensor/core/schemas.py` carries Pydantic v2 models for
-control plane envelopes. All use `model_validate()` and fail open on
+control plane envelopes. All use `model_validate` and fail open on
 `ValidationError`:
 
 - `DirectivePayloadSchema`: validates the `payload` field of a custom
@@ -834,10 +838,10 @@ Pydantic v2 is sensor-only; Go API handlers keep manual validation.
 ### Sensor singleton
 
 The `_session` and `_directive_registry` module-level globals make the
-sensor a process-wide singleton. The second `init()` call in any thread is
+sensor a process-wide singleton. The second `init` call in any thread is
 a no-op with a warning. Pattern B (one init per thread, isolated Sessions)
 and Pattern C (multiple agents in one process, each with its own Session)
-are not supported in the current model. See DECISIONS.md D086 / D091.
+are not supported in the current model.
 
 ---
 
@@ -857,11 +861,11 @@ response envelope has nowhere to go: the plugin already exited and Claude
 Code has moved on. The plugin payload sets
 `context.supports_directives = false` on `session_start` so the dashboard
 hides the Stop Agent button and the Fleet Stop All control skips these
-sessions. This is the observer-session class (D109).
+sessions. This is the observer-session class.
 
 ### Session identity
 
-`getSessionId()` resolves in this order (D113):
+`getSessionId` resolves in this order:
 
 1. `CLAUDE_SESSION_ID` / `ANTHROPIC_CLAUDE_SESSION_ID` env vars.
 2. RFC 4122 v5 UUID derived from `(user, hostname, repo remote, branch)`
@@ -880,12 +884,12 @@ distinct session.
 
 ### `session_start` with context
 
-`ensureSessionStarted()` uses a file-marker dedup so the `session_start`
+`ensureSessionStarted` uses a file-marker dedup so the `session_start`
 event is sent exactly once per session id (marker file is
 `$TMPDIR/flightdeck-plugin/started-${sessionId}.txt`). The payload carries
-the `collectContext()` dict.
+the `collectContext` dict.
 
-`collectContext()` is the Node.js parallel of the Python sensor's
+`collectContext` is the Node.js parallel of the Python sensor's
 `context.py`: pid, process_name, os (Windows / Darwin / Linux), arch,
 hostname, user, node_version, working_dir, git_commit / git_branch /
 git_repo (each in its own try/catch with a 500ms execSync timeout,
@@ -903,14 +907,14 @@ forwarded.
 
 `is_subagent_call: toolName === "Task"` is emitted on the wire so the
 dashboard can distinguish sub-agent spawns from regular tool calls.
-Consumed alongside `parent_session_id` (D126) by the dashboard's
+Consumed alongside `parent_session_id` by the dashboard's
 swimlane connectors and the SessionDrawer Sub-agents tab to render
 the parent's spawn event as the anchor for child rows.
 
 ### Subagent hooks
 
 Two hooks bracket every Claude Code Task subagent invocation
-(D126):
+:
 
 - `SubagentStart` — emitted when Claude Code spawns a Task subagent.
   The plugin emits a child `session_start` whose `parent_session_id`
@@ -922,62 +926,62 @@ Two hooks bracket every Claude Code Task subagent invocation
 - `SubagentStop` — emitted when the Task subagent returns. The
   plugin emits a child `session_end` and (when capture is on) the
   tool's response as `outgoing_message`. `SubagentStop` is the
-  canonical end-of-life signal for the child (D126).
+  canonical end-of-life signal for the child.
 
 `PostToolUseFailure` on a Task tool emits the parent's `tool_call`
 event with the structured error block; it does NOT emit a child
-`session_end` (D126 disambiguation). Subagent crashes that never
+`session_end` (disambiguation). Subagent crashes that never
 reach a clean `SubagentStop` fall through the worker's existing
-state-revival path (D105 / D106): the child session ages from
+state-revival path: the child session ages from
 `active` to `stale` to `lost`, and the next event for the
 `session_id` (or the reconciler) closes the loop.
 
 ### Per-turn flush
 
-`flushPostCallTurns` (D107) emits `post_call` events on every PostToolUse
+`flushPostCallTurns` emits `post_call` events on every PostToolUse
 hook with `markEmittedTurn` per-messageId disk-marker dedup so mid-turn LLM
 activity surfaces in real time instead of batching at Stop.
 
-`latency_ms` for `PostToolUse` events is `Date.now() - startTime`, where
+`latency_ms` for `PostToolUse` events is `Date.now - startTime`, where
 `startTime` is stamped at hook script invocation. This is hook PROCESSING
 time, not actual tool execution time — Claude Code does not expose tool
 start/end timestamps to hooks.
 
-`main()` returns naturally instead of calling `process.exit(0)`. Two
+`main` returns naturally instead of calling `process.exit(0)`. Two
 consecutive fetches in a single script invocation crash Node on Windows
 with `STATUS_STACK_BUFFER_OVERRUN` (`0xC0000409`) if `process.exit` fires
-while undici is mid-cleanup; letting `main()` return lets the connection
+while undici is mid-cleanup; letting `main` return lets the connection
 pool drain.
 
 Sessions carry `flavor=claude-code`, `agent_type=coding`, and
-`client_type=claude_code` (D115 identity).
+`client_type=claude_code` (identity).
 
 ---
 
 ## Identity model
 
-Every event payload carries a 5-tuple identity (D115). Sub-agent
+Every event payload carries a 5-tuple identity. Sub-agent
 sessions extend the derivation with a conditional 6th input,
-`agent_role` (D126).
+`agent_role`.
 
 | Field | Vocabulary | Source |
 |---|---|---|
 | `agent_id` | UUID | Deterministically derived from the other identity fields via `core/agent_id.py` |
-| `agent_type` | `coding` \| `production` | Sensor `init()` kwarg or `AGENT_TYPE` / `FLIGHTDECK_AGENT_TYPE` env (D114). Plugin always emits `coding` |
+| `agent_type` | `coding` \| `production` | Sensor `init` kwarg or `AGENT_TYPE` / `FLIGHTDECK_AGENT_TYPE` env. Plugin always emits `coding` |
 | `client_type` | `claude_code` \| `flightdeck_sensor` | Sensor literal or plugin literal |
 | `agent_name` | string | Sensor `AGENT_FLAVOR` / `FLIGHTDECK_AGENT_NAME` env. Default `{user}@{hostname}`. Plugin uses the user's chosen flavor |
-| `user` | string | Resolved from `getpass.getuser()` (sensor) or `process.env.USER` (plugin) |
-| `agent_role` (optional 6th, D126) | string \| null | Framework-driven on sub-agent sessions. CrewAI: `Agent.role`. LangGraph: node name. Claude Code Task: hook payload `agent_type`. Null on root sessions and direct-SDK sessions |
+| `user` | string | Resolved from `getpass.getuser` (sensor) or `process.env.USER` (plugin) |
+| `agent_role` (optional 6th) | string \| null | Framework-driven on sub-agent sessions. CrewAI: `Agent.role`. LangGraph: node name. Claude Code Task: hook payload `agent_type`. Null on root sessions and direct-SDK sessions |
 
 Plus `hostname` (separate field, not part of the agent_id derivation).
 
 Ingestion returns 400 if any of the core 5-tuple fields are missing or
-outside their vocabulary (D116). `agent_role` is optional; both
+outside their vocabulary. `agent_role` is optional; both
 absent on the wire and explicit-null are accepted.
 
 `agent_id` is stable across process restarts: same identity tuple →
-same UUID. When `agent_role` is null or empty (after `.strip()`), the
-derivation collapses to the D115 5-tuple — root and direct-SDK
+same UUID. When `agent_role` is null or empty (after `.strip`), the
+derivation collapses to the 5-tuple — root and direct-SDK
 sessions on a given host produce the same agent_id whether or not
 the platform supports sub-agent emission. When `agent_role` is set,
 it joins the input tuple, so a CrewAI Researcher and a CrewAI Writer
@@ -992,7 +996,7 @@ in identity.
 
 Sub-agent sessions (Claude Code Task subagents, CrewAI agent turns,
 LangGraph agent-bearing nodes) carry two paired columns on
-`sessions` (D126):
+`sessions`:
 
 - `parent_session_id uuid` — references `sessions(session_id)`, set to
   the outer session's id.
@@ -1001,7 +1005,7 @@ LangGraph agent-bearing nodes) carry two paired columns on
 Both columns are nullable. Both are populated only on sub-agent
 sessions; both are null on root sessions. The reverse (role set,
 parent unset) is a sensor bug — the sensor emits both together or
-neither (D126).
+neither.
 
 `GET /v1/sessions` listing rows carry a derived `child_count int`
 field — the count of sessions whose `parent_session_id` equals
@@ -1013,7 +1017,7 @@ renders without a per-row follow-up fetch. Hits the
 `sessions_parent_session_id_idx` partial index.
 
 `GET /v1/sessions` accepts an `include_pure_children` boolean
-filter (D126 UX revision). When omitted or `true` the listing
+filter (UX revision). When omitted or `true` the listing
 returns every session matching the other filters (existing
 behaviour). When `false` the listing excludes pure children
 (rows whose `parent_session_id IS NOT NULL` AND no other
@@ -1026,22 +1030,22 @@ children-only.
 
 The `parent_session_id` FK is enforced. Forward references (a child
 `session_start` arriving before its parent is in the DB) are handled
-by a parent-stub variant of the worker's lazy-create path that
-extends D106: when a child arrives with a `parent_session_id` that
+by a parent-stub variant of the worker's lazy-create path: when
+a child arrives with a `parent_session_id` that
 isn't in `sessions`, the worker INSERTs a stub row with
 `flavor="unknown"` / `agent_type="unknown"` / placeholder identity
 sentinels and a synthetic `started_at` matching the child's. The
 child INSERT then satisfies the FK. When the real parent's
 `session_start` arrives later, `UpsertSession ON CONFLICT` upgrades
 the stub's `"unknown"` sentinels to real values via the existing
-write-once-but-upgrade-from-`"unknown"` branch (D106). See D126 for
+write-once-but-upgrade-from-`"unknown"` branch. for
 the full pseudocode.
 
 ### Re-attachment
 
 When the sensor (or plugin) restarts and emits a `session_start` for a
 `session_id` that already exists in `sessions`, the ingestion API attaches
-the new execution to the prior row instead of creating a duplicate (D094).
+the new execution to the prior row instead of creating a duplicate.
 The response envelope sets `attached: true`. The session drawer renders a
 "New execution attached · {timestamp}" separator per recorded attachment.
 
@@ -1059,52 +1063,52 @@ the columns from the sessions table.
 
 ### `POST /v1/events`
 
-Every event payload carries the D115 identity 5-tuple, plus session-level
-fields. Sub-agent sessions (D126) additionally carry
+Every event payload carries the identity 5-tuple, plus session-level
+fields. Sub-agent sessions additionally carry
 `parent_session_id` and `agent_role`. The canonical shape:
 
 ```json
 {
-  "session_id":           "uuid",
-  "agent_id":             "uuid",
-  "agent_name":           "research-bot-1",
-  "agent_type":           "production",
-  "client_type":          "flightdeck_sensor",
-  "user":                 "alice",
-  "hostname":             "worker-node-3",
-  "flavor":               "research-agent",
-  "event_type":           "post_call",
-  "host":                 "worker-node-3",
-  "framework":            "crewai",
-  "model":                "claude-sonnet-4-6",
-  "tokens_input":         1240,
-  "tokens_output":        387,
-  "tokens_total":         1627,
-  "tokens_cache_read":    0,
+  "session_id": "uuid",
+  "agent_id": "uuid",
+  "agent_name": "research-bot-1",
+  "agent_type": "production",
+  "client_type": "flightdeck_sensor",
+  "user": "alice",
+  "hostname": "worker-node-3",
+  "flavor": "research-agent",
+  "event_type": "post_call",
+  "host": "worker-node-3",
+  "framework": "crewai",
+  "model": "claude-sonnet-4-6",
+  "tokens_input": 1240,
+  "tokens_output": 387,
+  "tokens_total": 1627,
+  "tokens_cache_read": 0,
   "tokens_cache_creation": 0,
-  "tokens_used_session":  42180,
-  "token_limit_session":  100000,
-  "latency_ms":           1840,
-  "tool_name":            null,
-  "tool_input":           null,
-  "tool_result":          null,
-  "has_content":          false,
-  "content":              null,
-  "parent_session_id":    null,
-  "agent_role":           null,
-  "timestamp":            "2026-04-07T10:00:00Z"
+  "tokens_used_session": 42180,
+  "token_limit_session": 100000,
+  "latency_ms": 1840,
+  "tool_name": null,
+  "tool_input": null,
+  "tool_result": null,
+  "has_content": false,
+  "content": null,
+  "parent_session_id": null,
+  "agent_role": null,
+  "timestamp": "2026-04-07T10:00:00Z"
 }
 ```
 
 Sub-agent `session_start` events set `parent_session_id` to the
 outer session's id and `agent_role` to the framework-supplied role.
-Cross-agent message capture (D126): when `capture_prompts=true`,
+Cross-agent message capture: when `capture_prompts=true`,
 the child `session_start` payload carries an `incoming_message`
 field with the parent's input to the child, and the child
 `session_end` payload carries an `outgoing_message` field with the
 child's response back. Bodies route through the existing
 `event_content` table (no schema change) — small bodies inline,
-bodies above 8 KiB use the D119 overflow path with a 2 MiB hard
+bodies above 8 KiB use the overflow path with a 2 MiB hard
 cap. When `capture_prompts=false` both fields are absent and
 `has_content=false`.
 
@@ -1122,20 +1126,20 @@ subsequent writes (set-once semantics).
 
 The ingestion handler rejects events with 400 when:
 
-- `agent_id` is missing or not a UUID (D116).
-- `agent_type` is outside `{coding, production}` (D114).
-- `client_type` is outside `{claude_code, flightdeck_sensor}` (D116).
-- `session_id` does not match the UUID regex (D10).
-- `occurred_at` is more than 48h in the past (`maxClockSkewPast`, D7) OR
-  more than 5m in the future (`maxClockSkewFuture`, D8). The 48h past
+- `agent_id` is missing or not a UUID.
+- `agent_type` is outside `{coding, production}`.
+- `client_type` is outside `{claude_code, flightdeck_sensor}`.
+- `session_id` does not match the UUID regex.
+- `occurred_at` is more than 48h in the past (`maxClockSkewPast`) OR
+  more than 5m in the future (`maxClockSkewFuture`). The 48h past
   bound accommodates retry-after-long-outage windows.
-- Any `tokens_*` field is negative (D15).
+- Any `tokens_*` field is negative.
 - `event_type=session_end` arrives for a `session_id` Flightdeck has never
-  seen (orphan session_end, D2). The handler logs a warning, increments
+  seen (orphan session_end). The handler logs a warning, increments
   `dropped_events_total{reason="orphan_session_end"}`, and ACKs the NATS
   message (nothing to recover).
 
-`dropped_events_total{reason}` is exposed via `/metrics` (D14).
+`dropped_events_total{reason}` is exposed via `/metrics`.
 
 ### Response envelope
 
@@ -1176,14 +1180,14 @@ identifier, each run shows up as a brand new session in the fleet view.
 The session-attachment flow gives the caller an optional hint that the
 control plane honours end-to-end:
 
-1. **Sensor — `init()` accepts `session_id`.** The caller passes a stable
+1. **Sensor — `init` accepts `session_id`.** The caller passes a stable
    ID via the kwarg OR exports `FLIGHTDECK_SESSION_ID`. The env var wins
    over the kwarg, same precedence as `FLIGHTDECK_SERVER` / `AGENT_FLAVOR`.
 2. **Ingestion — synchronous attachment check on `session_start`.** On
    arrival of a `session_start` event the ingestion API calls
    `session.Store.Attach(session_id)` against Postgres BEFORE publishing
    the NATS envelope. If the row exists in `{closed, lost}` the store
-   flips state to `active` and stamps `last_attached_at = NOW()`. If the
+   flips state to `active` and stamps `last_attached_at = NOW`. If the
    row exists in `{active, idle, stale}` the store only stamps
    `last_attached_at`. `started_at` and `ended_at` are never touched. If
    the row does not exist the store is a no-op and the worker creates it
@@ -1251,25 +1255,39 @@ processor switch update — the NATS subject lands automatically.
                 ┌───────────────────────────────┐
                 │                               ▼
    session_start│                            closed
-      ──▶  active ──▶ idle ──▶ stale ──▶ lost
+      ──▶ active ──▶ idle ──▶ stale ──▶ lost
                 ▲                 │         │
                 │                 │         │
                 └─────────────────┴─────────┘
-                  any event  (D105 revive)
+                  any event  (revive)
 
    any event for unknown session_id
                 │
                 ▼
-        lazy-create (active)   (D106)
+        lazy-create (active)
 
    closed + any event → skipped with warn log (handleSessionGuard)
 ```
 
 **Thresholds.** 2 min silence after the last signal triggers `active →
 stale`; 30 min total silence triggers `stale → lost`. The 30 min lost
-threshold accommodates interactive Claude Code user-think-time windows
-(D105). The reconciler in `workers/internal/processor/session.go` sweeps
+threshold accommodates interactive Claude Code user-think-time
+windows. The reconciler in `workers/internal/processor/session.go`
+sweeps
 every 60 s and applies both transitions in a single pass.
+
+**Orphan-timeout reaper.** The same reconciler tick also closes `lost`
+sessions that have been silent past `FLIGHTDECK_ORPHAN_TIMEOUT_HOURS`
+(default 24 h). Reaping flips the row to `state=closed`, stamps
+`ended_at = NOW()`, emits a synthetic `session_end` event with
+`payload.close_reason = "orphan_timeout"` so the dashboard's
+close-reason facet surfaces the reconciler's verdict alongside
+happy-path shutdowns, and bumps
+`sessions_closed_total{reason="orphan_timeout"}` on the worker's
+`/metrics` endpoint. The reaper exists because plugin / sensor
+crashes, `kill -9`, and missed lifecycle hooks would otherwise leave
+`lost` rows pinned forever; without the timeout the Fleet view
+accumulates dead rows that look indistinguishable from a long pause.
 
 **Terminal-state handling.** `closed` is terminal and final. `session_end`
 at any non-closed state transitions directly to `closed`;
@@ -1281,18 +1299,18 @@ a warn log. Revival on `stale` / `lost` is a correctness fix; reviving a
 
 `workers/internal/processor/session.go` exposes:
 
-- `HandleSessionStart()`: upsert agent, insert session with state=active.
-- `HandlePostCall()`: update tokens_used, advance last_seen_at, evaluate
+- `HandleSessionStart`: upsert agent, insert session with state=active.
+- `HandlePostCall`: update tokens_used, advance last_seen_at, evaluate
   policy thresholds, emit directive when crossed.
-- `HandleToolCall()`, `HandleEmbeddings()`, `HandleLlmError()`: write the
+- `HandleToolCall`, `HandleEmbeddings`, `HandleLlmError`: write the
   event, advance last_seen_at.
-- `HandleSessionEnd()`: set state=closed, set ended_at.
-- `HandleHeartbeat()`: advance last_seen_at.
+- `HandleSessionEnd`: set state=closed, set ended_at.
+- `HandleHeartbeat`: advance last_seen_at.
 
 Every non-`session_start` handler runs `handleSessionGuard` before its
 write: `closed` sessions are skipped with a warn log; `stale` and `lost`
 sessions are revived to `active` with `last_seen_at` advanced; unknown
-`session_id`s are lazy-created (D106) so the event lands instead of
+`session_id`s are lazy-created so the event lands instead of
 FK-violating at `InsertEvent`. The event's normal side effects then
 proceed.
 
@@ -1300,7 +1318,7 @@ SIGKILL bypasses all handlers. Affected sessions transition to stale
 after 2 minutes and lost after 30 minutes via the background reconciler;
 the next event from any re-attached process revives the session (or
 lazy-creates one if the re-attach ended up on a fresh `session_id`). This
-is untrappable by design (D039, D105, D106).
+is untrappable by design.
 
 ### Revive / create trio
 
@@ -1310,22 +1328,22 @@ a 4-axis config surface (writes_attachment, refreshes_identity,
 creates_if_missing, allowed_prior_states) which is harder to read than
 four focused functions:
 
-1. **`ingestion/internal/session/store.go::Attach`** (D094 only).
+1. **`ingestion/internal/session/store.go::Attach`** (only).
    Synchronous on `session_start` so the HTTP response can report
    `attached=true`. Closed/lost → active; writes one
    `session_attachments` row per arrival; clears `ended_at` on revive.
    The only writer of `session_attachments` rows; the only path that
    clears `ended_at` on revive.
-2. **`workers/internal/writer/postgres.go::UpsertSession`** (D094, D106).
+2. **`workers/internal/writer/postgres.go::UpsertSession`**.
    Called on every `session_start`. Refreshes identity columns from the
    event payload; COALESCE and CASE branches let a lazy-created row
    absorb the real session_start data when it arrives. Real values are
    write-once; only the `"unknown"` sentinel is upgradable.
-3. **`workers/internal/writer/postgres.go::ReviveIfRevivable`** (D105).
-   State flip only: `{stale, lost} → active` plus `last_seen_at = NOW()`.
+3. **`workers/internal/writer/postgres.go::ReviveIfRevivable`**.
+   State flip only: `{stale, lost} → active` plus `last_seen_at = NOW`.
    Called by `handleSessionGuard` before any non-`session_start` side
    effects run. No identity refresh, no attachment row.
-4. **`workers/internal/writer/postgres.go::ReviveOrCreateSession`** (D106).
+4. **`workers/internal/writer/postgres.go::ReviveOrCreateSession`**.
    Delegates to `ReviveIfRevivable` when the row exists; INSERTs a new
    row with best-effort identity + `"unknown"` / NULL sentinels when it
    does not.
@@ -1336,23 +1354,23 @@ must be applied to all four sites. The cross-reference comment on
 
 ### Three revival scenarios
 
-D094's attachment flow is one of three concrete applications of a single
+The attachment flow is one of three concrete applications of a single
 conceptual primitive — ensure the session row matches the incoming
 event's assumption. Three scenarios, three code paths:
 
-- **Attach-on-terminal** (D094). A `session_start` for a session already
+- **Attach-on-terminal**. A `session_start` for a session already
   in `{closed, lost}` revives to `active` and records an attachment row.
   Drives orchestrator-re-run attribution.
-- **Revive-on-any-event** (D105). Any non-`session_start` event for a
+- **Revive-on-any-event**. Any non-`session_start` event for a
   session in `{stale, lost}` revives to `active` and advances
   `last_seen_at`. Drives interactive Claude Code sessions that pause
   during user think-time without being treated as lost by the reconciler.
-- **Create-on-unknown** (D106). Any non-`session_start` event for a
+- **Create-on-unknown**. Any non-`session_start` event for a
   `session_id` Flightdeck has never seen creates the row lazily from the
   event payload with `state=active`, `started_at = event.occurred_at`,
   and `"unknown"` sentinels on fields the event doesn't carry (typically
   `flavor`, `agent_type`).
-- **Create-parent-stub** (D126, extends D106). A child `session_start`
+- **Create-parent-stub**. A child `session_start`
   whose `parent_session_id` does not yet exist in `sessions` triggers
   a parent-stub INSERT before the child is written, so the new
   `sessions.parent_session_id` FK is satisfied. The stub uses the
@@ -1360,7 +1378,7 @@ event's assumption. Three scenarios, three code paths:
   `started_at = child.started_at` as a placeholder. When the real
   parent's `session_start` arrives later, `UpsertSession ON CONFLICT`
   upgrades the stub's sentinels to real values via the existing
-  write-once-but-upgrade branch (D106). Same primitive as
+  write-once-but-upgrade branch. Same primitive as
   create-on-unknown, different trigger (FK satisfaction vs
   unknown-session-id event).
 
@@ -1390,13 +1408,13 @@ directives.
 event_type, event_id)` issues a Postgres NOTIFY on `flightdeck_fleet`
 after each event write. The wire payload is `{session_id, event_type,
 event_id}`. The hub fetches the exact event via PK lookup, eliminating
-the O(N) `GetSessionEvents + tail` race on paired writes (D108).
+the O(N) `GetSessionEvents + tail` race on paired writes.
 
 ---
 
 ## Database
 
-### `agents` (D115)
+### `agents`
 
 ```sql
 CREATE TABLE agents (
@@ -1406,15 +1424,15 @@ CREATE TABLE agents (
     agent_name      TEXT NOT NULL,
     user_name       TEXT NOT NULL,         -- wire field is "user"; column avoids the SQL reserved word
     hostname        TEXT,
-    first_seen_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    last_seen_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    first_seen_at   TIMESTAMPTZ NOT NULL DEFAULT NOW,
+    last_seen_at    TIMESTAMPTZ NOT NULL DEFAULT NOW,
     total_sessions  BIGINT NOT NULL DEFAULT 0,
     total_tokens    BIGINT NOT NULL DEFAULT 0
 );
 
-CREATE INDEX agents_agent_name_idx  ON agents (agent_name);
-CREATE INDEX agents_last_seen_idx   ON agents (last_seen_at DESC);
-CREATE INDEX agents_agent_type_idx  ON agents (agent_type);
+CREATE INDEX agents_agent_name_idx ON agents (agent_name);
+CREATE INDEX agents_last_seen_idx ON agents (last_seen_at DESC);
+CREATE INDEX agents_agent_type_idx ON agents (agent_type);
 CREATE INDEX agents_client_type_idx ON agents (client_type);
 ```
 
@@ -1448,19 +1466,17 @@ CREATE TABLE sessions (
     context              JSONB DEFAULT '{}'::jsonb,
     token_id             UUID REFERENCES access_tokens(id) ON DELETE SET NULL,
     token_name           TEXT,
-    parent_session_id    UUID REFERENCES sessions(session_id),  -- D126
-    agent_role           TEXT                                   -- D126
-);
+    parent_session_id    UUID REFERENCES sessions(session_id),      agent_role           TEXT                                   );
 
-CREATE INDEX sessions_agent_id_idx          ON sessions (agent_id);
-CREATE INDEX sessions_state_idx             ON sessions (state);
-CREATE INDEX sessions_last_seen_idx         ON sessions (last_seen_at DESC);
-CREATE INDEX sessions_flavor_idx            ON sessions (flavor);
-CREATE INDEX sessions_framework_idx         ON sessions (framework);
-CREATE INDEX sessions_started_at_idx        ON sessions (started_at DESC);
-CREATE INDEX sessions_context_gin           ON sessions USING GIN (context);
+CREATE INDEX sessions_agent_id_idx ON sessions (agent_id);
+CREATE INDEX sessions_state_idx ON sessions (state);
+CREATE INDEX sessions_last_seen_idx ON sessions (last_seen_at DESC);
+CREATE INDEX sessions_flavor_idx ON sessions (flavor);
+CREATE INDEX sessions_framework_idx ON sessions (framework);
+CREATE INDEX sessions_started_at_idx ON sessions (started_at DESC);
+CREATE INDEX sessions_context_gin ON sessions USING GIN (context);
 CREATE INDEX sessions_parent_session_id_idx ON sessions (parent_session_id)
-    WHERE parent_session_id IS NOT NULL;       -- D126 partial
+    WHERE parent_session_id IS NOT NULL;       -- partial
 ```
 
 `agent_name`, `agent_type`, and `client_type` are denormalized from
@@ -1471,26 +1487,26 @@ CREATE INDEX sessions_parent_session_id_idx ON sessions (parent_session_id)
 `context.frameworks[]` JSONB array carries versioned strings
 (`langchain/0.3.27`) for diagnostic detail.
 
-`parent_session_id` and `agent_role` are paired sub-agent columns
-(D126). Both nullable, both populated only on sub-agent sessions
+`parent_session_id` and `agent_role` are paired sub-agent columns.
+Both nullable, both populated only on sub-agent sessions
 (Claude Code Task, CrewAI agent turn, LangGraph agent-bearing
 node). The FK on `parent_session_id`
 references `sessions(session_id)` and is enforced at write time;
 forward references where the child's `session_start` arrives before
 the parent's are handled by the worker's parent-stub lazy-create
-path that extends D106 (see Three revival scenarios above and
-D126). The partial index excludes the null-majority root sessions
+path (see Three revival scenarios above). The partial index excludes
+the null-majority root sessions
 so the index stays small while supporting fast lookups for the
 `?has_sub_agents` / `?is_sub_agent` / `?parent_session_id` filters
 and the `agent_role` analytics dimension.
 
-### `session_attachments` (D094)
+### `session_attachments`
 
 ```sql
 CREATE TABLE session_attachments (
-    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid,
     session_id  UUID NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
-    attached_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    attached_at TIMESTAMPTZ NOT NULL DEFAULT NOW
 );
 
 CREATE INDEX session_attachments_session_id_idx ON session_attachments (session_id, attached_at DESC);
@@ -1505,7 +1521,7 @@ attached" separators.
 
 ```sql
 CREATE TABLE events (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid,
     session_id      UUID NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
     event_type      TEXT NOT NULL,
     framework       TEXT,                              -- bare name, denorm from sensor payload
@@ -1520,12 +1536,12 @@ CREATE TABLE events (
     has_content     BOOLEAN NOT NULL DEFAULT FALSE,
     payload         JSONB,                             -- type-specific extras (streaming, error, directive)
     occurred_at     TIMESTAMPTZ NOT NULL,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW
 );
 
-CREATE INDEX events_session_id_idx   ON events (session_id, occurred_at);
-CREATE INDEX events_event_type_idx   ON events (event_type);
-CREATE INDEX events_occurred_at_idx  ON events (occurred_at DESC);
+CREATE INDEX events_session_id_idx ON events (session_id, occurred_at);
+CREATE INDEX events_event_type_idx ON events (event_type);
+CREATE INDEX events_occurred_at_idx ON events (occurred_at DESC);
 ```
 
 `payload` JSONB carries event-type-specific extras: streaming sub-object on
@@ -1540,12 +1556,15 @@ CREATE TABLE event_content (
     session_id  UUID NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
     provider    TEXT NOT NULL,
     model       TEXT,
-    "system"    TEXT,                  -- Anthropic system prompt
+    "system" TEXT, -- Anthropic system prompt
     messages    JSONB NOT NULL DEFAULT '[]'::jsonb,
     tools       JSONB,
     response    JSONB NOT NULL,
-    "input"     JSONB,                 -- embeddings input (string or list of strings)
-    captured_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    "input" JSONB, -- embeddings input (string or list of strings)
+    tool_input  JSONB,                 -- tool args / prompt arguments
+    tool_output JSONB,                 -- tool results / rendered prompts
+    embedding_output JSONB,            -- embeddings vectors (capture_prompts gate)
+    captured_at TIMESTAMPTZ NOT NULL DEFAULT NOW
 );
 
 CREATE INDEX event_content_session_id_idx ON event_content (session_id);
@@ -1553,13 +1572,33 @@ CREATE INDEX event_content_session_id_idx ON event_content (session_id);
 
 `event_content` is fetched on demand via `GET /v1/events/:id/content`,
 which returns 404 when capture was off for that session. The events table
-never carries content inline (Rule 19).
+never carries content inline.
+
+**Per-column semantics by event family:**
+
+| Column | LLM `pre_call`/`post_call` | `embeddings` | `mcp_tool_call` | `mcp_prompt_get` | LLM `tool_call` | `mcp_resource_read` |
+|---|---|---|---|---|---|---|
+| `messages` | chat history | `[]` | `[]` | `[]` | `[]` | `[]` |
+| `system` | Anthropic system | NULL | NULL | NULL | NULL | NULL |
+| `tools` | tool schema | NULL | NULL | NULL | NULL | NULL |
+| `response` | model response | `{}` | `{}` | `{}` | `{}` | resource body (overflow) |
+| `input` | NULL | embeddings input | NULL | NULL | NULL | NULL |
+| `tool_input` | NULL | NULL | tool args | prompt args | tool input | NULL |
+| `tool_output` | NULL | NULL | tool result | rendered messages | tool output (post-hoc) | NULL |
+| `embedding_output` | NULL | output vectors | NULL | NULL | NULL | NULL |
+
+`tool_input` / `tool_output` are dedicated columns for
+tool-style request/response capture. Operators querying
+`event_content.tool_input` get tool args directly without
+column-name overload semantics. `mcp_resource_read` body
+overflow uses the `response` column path because resource
+bodies are blobs, not request/response shapes.
 
 ### `token_policies`
 
 ```sql
 CREATE TABLE token_policies (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid,
     scope           TEXT NOT NULL CHECK (scope IN ('org', 'flavor', 'session')),
     scope_value     TEXT,
     token_limit     BIGINT NOT NULL,
@@ -1567,7 +1606,7 @@ CREATE TABLE token_policies (
     degrade_at_pct  INT,
     degrade_to      TEXT,
     block_at_pct    INT,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW
 );
 
 CREATE UNIQUE INDEX token_policies_scope_idx ON token_policies (scope, scope_value);
@@ -1580,7 +1619,7 @@ Lookup precedence: session > flavor > org > no-limit. Workers join against
 
 ```sql
 CREATE TABLE directives (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid,
     session_id      UUID,                            -- NULL for flavor-wide
     flavor          TEXT,                            -- NULL for session-scoped
     action          TEXT NOT NULL,                   -- shutdown / shutdown_flavor / degrade / warn / custom / policy_update
@@ -1589,34 +1628,34 @@ CREATE TABLE directives (
     degrade_to      TEXT,
     payload         JSONB,                           -- custom directive parameters
     delivered_at    TIMESTAMPTZ,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW
 );
 
 CREATE INDEX directives_session_id_idx ON directives (session_id) WHERE delivered_at IS NULL;
-CREATE INDEX directives_flavor_idx     ON directives (flavor)     WHERE delivered_at IS NULL;
+CREATE INDEX directives_flavor_idx ON directives (flavor) WHERE delivered_at IS NULL;
 ```
 
 `LookupPending(sessionID)` does an atomic UPDATE...RETURNING that combines
 lookup and mark-delivered in a single operation: any pending directive
-for the session is returned and stamped `delivered_at = NOW()` so it is
+for the session is returned and stamped `delivered_at = NOW` so it is
 not re-delivered on subsequent POSTs.
 
 ### `custom_directives`
 
 ```sql
 CREATE TABLE custom_directives (
-    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id            UUID PRIMARY KEY DEFAULT gen_random_uuid,
     fingerprint   TEXT NOT NULL UNIQUE,
     name          TEXT NOT NULL,
     description   TEXT,
     flavor        TEXT NOT NULL,
     parameters    JSONB,
-    registered_at TIMESTAMPTZ DEFAULT NOW(),
-    last_seen_at  TIMESTAMPTZ DEFAULT NOW()
+    registered_at TIMESTAMPTZ DEFAULT NOW,
+    last_seen_at  TIMESTAMPTZ DEFAULT NOW
 );
 
 CREATE INDEX custom_directives_flavor_idx ON custom_directives (flavor);
-CREATE INDEX custom_directives_fp_idx     ON custom_directives (fingerprint);
+CREATE INDEX custom_directives_fp_idx ON custom_directives (fingerprint);
 ```
 
 The sensor registers handlers via `/v1/directives/sync` (which lookups by
@@ -1626,18 +1665,18 @@ fingerprint conflict). On register, the same transaction issues
 `pg_notify('flightdeck_fleet', 'directive_registered')` so the dashboard
 hub broadcasts a fleet update and the Directives page / FleetPanel
 sidebar refresh in real time when the sensor registers a brand new
-flavor's directives via `init()`.
+flavor's directives via `init`.
 
 ### `access_tokens`
 
 ```sql
 CREATE TABLE access_tokens (
-    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id           UUID PRIMARY KEY DEFAULT gen_random_uuid,
     name         TEXT NOT NULL,
     token_hash   TEXT NOT NULL UNIQUE,  -- hex(SHA256(salt || raw_token))
     salt         TEXT NOT NULL,         -- 16 random bytes as hex
     prefix       TEXT NOT NULL,         -- first 8 chars of raw_token
-    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW,
     last_used_at TIMESTAMPTZ
 );
 
@@ -1648,7 +1687,7 @@ Salted SHA-256 storage with per-token salt. The raw token is returned to
 the caller exactly once via `POST /v1/access-tokens`. The dev-seed
 `tok_dev` row is non-deletable and non-renameable via the API; it is
 disabled by unsetting `ENVIRONMENT=dev` in production deployments
-(D095, D096).
+.
 
 ### Migrations
 
@@ -1665,13 +1704,16 @@ always create a new numbered migration.
 | 000004 | `custom_directives` table |
 | 000005 | `directives.payload` JSONB column |
 | 000006 | `sessions.context` JSONB + GIN index |
-| 000010 | Salted `access_tokens` schema (D095) |
-| 000011 | `sessions.token_id` FK + `token_name` column (D095) |
-| 000012 | Rename `api_tokens` → `access_tokens` (D096) |
+| 000010 | Salted `access_tokens` schema |
+| 000011 | `sessions.token_id` FK + `token_name` column |
+| 000012 | Rename `api_tokens` → `access_tokens` |
 | 000014 | Normalize legacy `agent_type` values |
-| 000015 | Drop and recreate `agents` table with `agent_id` PK (D115) |
+| 000015 | Drop and recreate `agents` table with `agent_id` PK |
 | 000016 | `event_content.input` JSONB column for embeddings capture |
-| 000017 | `sessions.parent_session_id` FK + `sessions.agent_role` text + partial index (D126) |
+| 000017 | `sessions.parent_session_id` FK + `sessions.agent_role` text + partial index |
+| 000018 | `mcp_policies` + `mcp_policy_entries` + `mcp_policy_audit_log` tables + indexes. The `mcp_policy_versions` table this migration created was dropped by 000020 — see that row |
+| 000019 | Seed empty-blocklist global `mcp_policies` row |
+| 000020 | Drop `mcp_policy_versions` table + `mcp_policies.version` column |
 
 ---
 
@@ -1686,7 +1728,7 @@ authoritative parameter-level reference.
 | Method | Path | Purpose |
 |---|---|---|
 | `GET` | `/v1/fleet` | Fleet summary: agents with state rollup, total sessions, total tokens, context_facets |
-| `GET` | `/v1/sessions` | Paginated session listing; filters: `agent_id`, `flavor`, `framework`, `state`, `error_type`, `from`, `to`, `q`, `parent_session_id`, `is_sub_agent`, `has_sub_agents`, `agent_role[]`, `include_pure_children`; returns `error_types[]` and `child_count` per session |
+| `GET` | `/v1/sessions` | Paginated session listing; filters: `agent_id`, `flavor`, `framework`, `state`, `error_type`, `policy_event_type`, `mcp_server`, `from`, `to`, `q`, `parent_session_id`, `is_sub_agent`, `has_sub_agents`, `agent_role[]`, `include_pure_children`, `close_reason`, `estimated_via`, `terminal`, `matched_entry_id`, `originating_call_context`; returns per-session aggregates (`error_types[]`, `policy_event_types[]`, `mcp_server_names[]`, `close_reasons[]`, `estimated_via_values[]`, `has_terminal_error`, `matched_entry_ids[]`, `originating_call_contexts[]`) and `child_count` |
 | `GET` | `/v1/sessions/:id` | Session detail: metadata + chronological events + attachments array |
 | `GET` | `/v1/agents/:id` | Single agent's identity record (backs Investigate AGENT facet identity-cache resolver) |
 | `GET` | `/v1/events` | Bulk events query: `from` (required), `to`, `flavor`, `event_type`, `session_id`, `limit` (max 2000), `offset` |
@@ -1707,6 +1749,19 @@ authoritative parameter-level reference.
 | `DELETE` | `/v1/access-tokens/:id` | Revoke (dev-seed row protected: 403) |
 | `PATCH` | `/v1/access-tokens/:id` | Rename (dev-seed row protected: 403) |
 | `POST` | `/v1/admin/reconcile-agents` | Recompute `agents.total_sessions`/`total_tokens`/`first_seen_at`/`last_seen_at` from sessions ground truth |
+| `GET` | `/v1/mcp-policies/global` | Global MCP protection policy + entries; read-open |
+| `GET` | `/v1/mcp-policies/:flavor` | Flavor MCP protection policy + entries; read-open |
+| `GET` | `/v1/mcp-policies/resolve` | Sensor / plugin preflight resolve; query params `flavor`, `server_url`, `server_name`; read-open |
+| `POST` | `/v1/mcp-policies/:flavor` | Create a flavor MCP policy; admin-only |
+| `PUT` | `/v1/mcp-policies/global` | Replace global MCP policy state; admin-only |
+| `PUT` | `/v1/mcp-policies/:flavor` | Replace flavor MCP policy state; admin-only |
+| `DELETE` | `/v1/mcp-policies/:flavor` | Delete a flavor MCP policy (audit-log row preserved); admin-only |
+| `GET` | `/v1/mcp-policies/:flavor/audit-log` | Mutation audit log; read-open |
+| `GET` | `/v1/mcp-policies/global/audit-log` | Global mutation audit log; read-open |
+| `GET` | `/v1/mcp-policies/:flavor/metrics` | Aggregated `policy_mcp_warn` / `policy_mcp_block` events; `?period=24h\|7d\|30d`; read-open |
+| `GET` | `/v1/mcp-policies/templates` | List shipped templates; read-open |
+| `POST` | `/v1/mcp-policies/:flavor/apply_template` | Apply a named template to a flavor policy; admin-only |
+| `GET` | `/v1/whoami` | Returns `{role, token_id}` for the authenticated bearer; read-open |
 | `WS` | `/v1/stream` | Real-time WebSocket fleet updates |
 | `GET` | `/health` | Liveness check |
 | `GET` | `/metrics` | Prometheus exposition |
@@ -1716,7 +1771,7 @@ authoritative parameter-level reference.
 
 Every authenticated request carries a Bearer token. Tokens are opaque
 strings minted by the platform; they carry no claims and are validated by
-hash lookup against `access_tokens` (D095).
+hash lookup against `access_tokens`.
 
 #### Token format
 
@@ -1823,7 +1878,7 @@ renaming fields is not.
   `latency_p50`, `latency_p95`, `policy_events`, `estimated_cost`,
   `parent_token_sum`, `child_token_sum`, `child_count`,
   `parent_to_first_child_latency_ms`. The four sub-agent-aware
-  metrics (D126) operate over the parent / child relationship:
+  metrics operate over the parent / child relationship:
   `parent_token_sum` rolls up token usage across a parent session
   AND all its descendants via recursive CTE on `parent_session_id`;
   `child_token_sum` rolls up descendants only; `child_count` reports
@@ -1835,16 +1890,16 @@ renaming fields is not.
   second dimension is supplied it is the **secondary** axis (inner
   GROUP BY, returned as nested buckets so a chart can render
   per-primary stacked segments). Single-dim queries (no comma)
-  preserve the pre-D126 wire shape exactly; the per-series payload
+  preserve the single-axis wire shape exactly; the per-series payload
   contains a flat `data: [{date,value}]` array. Two-dim queries
   return per-series payloads of shape `data: [{date, breakdown:
   [{key, value}]}]` where `key` is the secondary-axis bucket value.
   Allowed dimension values (in either position): `flavor`, `model`,
   `framework`, `host`, `agent_type`, `team`, `provider`,
   `agent_role`, `parent_session_id`. `provider` is derived at query
-  time via SQL CASE over `model` (D098). `agent_role` (D126) groups
+  time via SQL CASE over `model`. `agent_role` groups
   by the framework-supplied role string; sessions with null
-  `agent_role` bucket as `(root)`. `parent_session_id` (D126)
+  `agent_role` bucket as `(root)`. `parent_session_id`
   groups by parent session UUID; sessions without a parent (root
   sessions and direct-SDK sessions) bucket as `(root)`. The two-dim
   shape is supported for any pair where both dimensions resolve to
@@ -1857,7 +1912,7 @@ renaming fields is not.
 - `filter_flavor`, `filter_model`, `filter_agent_type`, `filter_framework`,
   `filter_host` (optional).
 - `filter_parent_session_id`, `filter_is_sub_agent`,
-  `filter_has_sub_agents` (optional, D126). Filter analytics scope to
+  `filter_has_sub_agents` (optional). Filter analytics scope to
   the children of a specific parent session, to children only, or to
   parents only.
 
@@ -1882,19 +1937,19 @@ the same scope. The recursion is bounded by the actual tree depth
 the size of the parent's descendant set. The traversal is accurate
 but unindexed at the deep-recursion frontier, so analytics over
 large historical windows on parents with many descendants pay a
-seq-scan-like cost on the recursive step. See D126 for the
+seq-scan-like cost on the recursive step. for the
 known-performance-characteristic note.
 
 ### Cost estimation
 
-`estimated_cost` is a derived analytics metric (D099). The per-event
+`estimated_cost` is a derived analytics metric. The per-event
 formula:
 
 ```
 (tokens_input - tokens_cache_read - tokens_cache_creation) * input_price
-  + tokens_cache_read     * input_price * 0.10
+  + tokens_cache_read * input_price * 0.10
   + tokens_cache_creation * input_price * 1.25
-  + tokens_output         * output_price
+  + tokens_output * output_price
 ```
 
 Cache ratios follow Anthropic's published structure (90% discount on
@@ -1958,7 +2013,7 @@ failing the entire `GET /v1/fleet` response.
 ## Dashboard
 
 React + TypeScript + Vite + Zustand. shadcn/ui and custom components
-only — never MUI / Ant / Chakra (Rule 13).
+only — never MUI, Ant Design, or Chakra UI.
 
 ### Pages
 
@@ -1981,7 +2036,7 @@ and live feed.
 `pauseQueue: FeedEvent[]` state buffers WebSocket events when `isPaused`
 is true. New events are appended; if the queue length reaches
 `PAUSE_QUEUE_MAX_EVENTS` the oldest entry is dropped (FIFO). `pausedAt:
-Date | null` freezes the D3 time scale. "Resume" drains the queue;
+Date | null` freezes the time scale. "Resume" drains the queue;
 "Return to live" discards it and snaps back.
 
 `sortFlavorsByActivity(flavors)` sorts agents by activity priority so
@@ -2016,6 +2071,43 @@ The ERROR TYPE facet is rendered last (after state / agent / flavor /
 agent_type / model / framework / scalar context groups). Hidden when no
 visible session has any `llm_error` events.
 
+Operator-actionable enrichment facets surface at the bottom of the
+sidebar: CLOSE REASON (close_reasons[] aggregate from session_end
+events), ESTIMATED VIA (estimated_via_values[] from pre/post_call /
+embeddings), TERMINAL (boolean toggle from has_terminal_error),
+MATCHED ENTRY (matched_entry_ids[] from MCP-policy events), and
+ORIGINATING CALL (originating_call_contexts[] — the MCP method
+that triggered downstream activity). Each per-session aggregate is
+returned by the API's session list endpoint alongside the existing
+error_types[] / policy_event_types[] / mcp_server_names[] arrays.
+
+Filtering composes server-side. Each value in the URL state
+(`?close_reason=normal_exit&close_reason=directive_shutdown`,
+`?terminal=true`, etc.) maps to an EXISTS subquery against the
+events table scoped to the right event_type set. Multi-value
+entries OR within a dimension; values across dimensions AND. The
+two enum filters (`close_reason`, `estimated_via`) reject out-of-
+band values with HTTP 400 and the allowed-set message; the three
+free-form filters (`matched_entry_id`, `originating_call_context`,
+and the per-value entries inside the array filters) accept any
+string and silently match nothing on typos. Footer count and
+pagination total reflect the filtered total.
+
+`ListSessions` runs roughly ten correlated EXISTS subqueries
+against the `events` table per call (`error_type`, `policy_event_
+type`, plus the five enrichment-facet filters above, plus the
+five SELECT-list aggregates that surface `error_types[]` /
+`policy_event_types[]` / `close_reasons[]` / `estimated_via_
+values[]` / `originating_call_contexts[]` to the dashboard). Every
+subquery joins on `events.session_id` and hits
+`events_session_id_idx`, so the join key stays hot at the data
+volumes the partial index covers. The cheapest hedge if the
+slow-query log surfaces this in production is a partial composite
+index on `(session_id, event_type)` filtered to the seven event
+types the subqueries reference (`session_end`, `llm_error`,
+`pre_call`, `post_call`, `embeddings`, `policy_mcp_warn`,
+`policy_mcp_block`).
+
 ### Session drawer
 
 `dashboard/src/components/session/SessionDrawer.tsx` — slide-in right
@@ -2026,14 +2118,14 @@ panel (520px). Two modes:
   and Prompts tab for the focused event.
 
 The active detail event is derived from props every render:
-`activeDetailEvent = directDismissed ? internalDetailEvent :
+`activeDetailEvent = directDismissed ? internalDetailEvent:
 (directEventDetail ?? internalDetailEvent)`.
 
 `directEventDetail` is set by the parent when the user clicks an event
 circle in the swimlane. `internalDetailEvent` is set by clicking "Open
 full detail" inside the drawer. `onClearDirectEvent` is called by the
 Back button so the parent knows the prop-fed event was dismissed. Mode is
-rendered directly from `activeDetailEvent` truthiness (D069).
+rendered directly from `activeDetailEvent` truthiness.
 
 The drawer header carries session ID + state badge, metadata bar, and a
 collapsible RUNTIME panel (only renders when `session.context` is
@@ -2045,7 +2137,7 @@ store's `customDirectives` slice by the session's flavor).
 The Prompts tab loads `PromptViewer` for chat events with
 `event.has_content`, `EmbeddingsContentViewer` for embeddings events
 with content, otherwise the capture-disabled message. Provider
-terminology is preserved exactly (Rule 20) — Anthropic sessions display
+terminology is preserved exactly — Anthropic sessions display
 `system`, `messages`, `tools`, and `response` as separate fields; OpenAI
 sessions display `messages` (system role included), `tools`, and
 `response`.
@@ -2060,7 +2152,7 @@ request_id, retry_after as `<n>s`, is_retryable as a `Retryable` /
 stream-error variants.
 
 The expanded swimlane drawer covers full session history. `loadExpandedSessions`
-passes `from = new Date(0).toISOString()` so all-time sessions return.
+passes `from = new Date(0).toISOString` so all-time sessions return.
 Real pagination via `loadMoreExpandedSessions` with
 `EXPANDED_DRAWER_PAGE_SIZE = 25`. The footer carries an adaptive count
 preamble, "Show older sessions" load-more button, and "View in
@@ -2070,10 +2162,24 @@ Investigate →" deep-link.
 
 `dashboard/src/components/fleet/EventDetailDrawer.tsx` — standalone
 right-slide drawer (520px) for a single event opened from the live
-feed (independent of `SessionDrawer`). Tabs: Details, Prompts. The
-Details tab shows a metadata grid plus the JSON payload via the shared
-`<SyntaxJson>` component. The Prompts tab loads `PromptViewer` /
-`EmbeddingsContentViewer` if `event.has_content`.
+feed (independent of `SessionDrawer`). Tabs: Details, Prompts,
+Neighbors. The Details tab shows a metadata grid, the shared
+`<EnrichmentSummary>` block (operator-actionable enrichment fields:
+policy_decision_*, provider_metadata, output_dimensions,
+retry_attempt + terminal, close_reason, policy_actions_summary,
+policy_entries_orphaned, sensor_version + interceptor_versions,
+policy_snapshot, originating-event jump link), and the JSON
+payload via the shared `<SyntaxJson>` component. The Prompts tab
+loads `PromptViewer` / `EmbeddingsContentViewer` if
+`event.has_content`. The Neighbors tab renders
+`<SurroundingEventsList>` — ±5 events from the same session,
+clickable to swap the drawer's displayed event.
+
+The same `<EnrichmentSummary>` and `<SurroundingEventsList>`
+components are also embedded in the in-page `EventDetailView` that
+the SessionDrawer's Timeline tab opens via the per-row "Open full
+detail" affordance, so the two surfaces (slide-in drawer + in-page
+replacement view) render byte-identical enrichment fidelity.
 
 ### Live feed
 
@@ -2083,7 +2189,7 @@ capped at `FEED_MAX_EVENTS` from the back, then optionally filtered by
 
 Columns: Flavor, Session, Type, Detail, Time. Default sort is `time desc`.
 Clicking any non-time column header changes the sort and auto-pauses the
-feed via `onPause()`.
+feed via `onPause`.
 
 Display order is driven by `arrivedAt` (the FeedEvent field) so events
 always appear in the order the dashboard received them. The "Time"
@@ -2114,7 +2220,7 @@ the chronological list. Fleet groups the result by `session_id` to
 populate `eventsCache` and seeds `feedEvents` from the historical data
 so the live feed is not empty on page load. After the initial load, no
 per-session HTTP fetches happen — WebSocket events flow into the same
-caches (D066, D071).
+caches.
 
 ### Timeline
 
@@ -2140,13 +2246,13 @@ Fixed-width canvas: `TIMELINE_WIDTH_PX = 900`. The xScale maps the
 selected range domain to `[0, 900]` for every time range. Wider ranges
 produce denser circles, which is the correct trade-off: fixed pixel
 space, no horizontal scrollbar, label intervals adapt to the range
-(D076).
+.
 
 `TimeAxis.tsx` renders 6 evenly-spaced relative labels (e.g.
 `48s 36s 24s 12s now` for a 1-minute range) at fractions
 `[0.0, 0.2, 0.4, 0.6, 0.8, 1.0]`. The `formatRelativeLabel(ms)` helper
 picks the unit suffix: `s`, `m`, or `h`. No D3 tick generation — D3 is
-used for `d3-scale` and `d3-time` math only (Rule 16, D077).
+used for `d3-scale` and `d3-time` math only.
 
 A vertical grid line overlay on Timeline.tsx renders 6 thin vertical
 lines at the same fractions as the time-axis labels, dropping from the
@@ -2201,7 +2307,7 @@ buffer is empty.
 `applyUpdate(update: FleetUpdate)` snapshots whether the session's
 flavor is already in the store BEFORE mutating flavors. If
 `update.type === "session_start"` and the flavor is new, the store
-fires `fetchCustomDirectives()` and patches the result into the
+fires `fetchCustomDirectives` and patches the result into the
 `customDirectives` slice. The new `FlavorItem` picks up the resulting
 Directives icon button automatically because `FleetPanel` reads
 `customDirectives` via a `useFleetStore` selector. Best-effort —
@@ -2236,9 +2342,9 @@ Two themes shipped: neon dark and clean light. Defined entirely in
 hook toggles a class on the `html` element and persists to
 `localStorage[THEME_STORAGE_KEY]`.
 
-`globals.css` and `themes.css` are never casually edited (Rule 15).
-Tests run under both theme projects via Playwright's `projects` config
-(Rule 40c.3) and assertions are theme-agnostic.
+Both themes are first-class — every component renders correctly under
+each. Tests run under both theme projects via Playwright's `projects`
+config and assertions are theme-agnostic.
 
 ### Constants
 
@@ -2328,38 +2434,101 @@ event.
 
 ### `session_start`
 
-Carries the D115 identity 5-tuple plus `flavor`, `framework`, `model`,
+Carries the identity 5-tuple plus `flavor`, `framework`, `model`,
 `agent_type`, and an optional `context` dict (orchestration, git,
 frameworks, hostname, OS, Python version, k8s details). Set-once: the
 worker's `UpsertSession ON CONFLICT` deliberately omits `context` on
 subsequent writes.
 
+Operator-actionable enrichment:
+
+- `sensor_version` (required): the `flightdeck-sensor` package
+  version, captured via `importlib.metadata`. Answers "did this
+  session run under the buggy build" for triage.
+- `interceptor_versions` (optional): `{dep_name: version}` for
+  every framework the sensor has interceptors for that's installed
+  in the agent's process (anthropic, openai, litellm, langchain,
+  langgraph, llama-index-core, crewai, mcp). Uninstalled deps
+  silently omitted.
+- `policy_snapshot` (optional): identity-only snapshot of the
+  policy state in effect at session_start. Token-budget side
+  carries `{policy_id, scope}`; MCP side carries
+  `{global_policy_id, flavor_policy_id, flavor}`. Omitted when
+  no policy is configured / preflight failed.
+
 ### `session_end`
 
 Marks the session terminal with `state=closed`, stamps `ended_at`. Orphan
 `session_end` for a session_id Flightdeck has never seen is rejected at
-ingestion (D2).
+ingestion.
+
+Operator-actionable enrichment:
+
+- `close_reason` enum: `normal_exit` / `directive_shutdown` /
+  `policy_block` / `orphan_timeout` / `sigkill_detected` / `unknown`.
+  Sensor populates the first three (atexit fires normally;
+  shutdown directive flag was set; BudgetExceededError tore down
+  the process). Worker fills `orphan_timeout` on the post-mortem
+  path: when the reconciler's reaper closes a `lost` session past
+  `FLIGHTDECK_ORPHAN_TIMEOUT_HOURS`, it emits a synthetic
+  `session_end` event with `payload.close_reason="orphan_timeout"`
+  and bumps `sessions_closed_total{reason="orphan_timeout"}` so the
+  facet aggregate and `/metrics` endpoint reflect the verdict.
+  `sigkill_detected` is part of the locked enum but no path
+  populates it today. `unknown` is the catch-all when no path
+  resolves.
+- `policy_actions_summary` (worker-computed): tally of every
+  policy enforcement event for the session, per the events table
+  GROUP BY query. Shape: `{policy_warn: N, policy_degrade: N,
+  policy_block: N, policy_mcp_warn: N, policy_mcp_block: N}` —
+  fields with zero count are omitted.
+- `last_event_id` (worker-computed): the immediately-prior event's
+  UUID for the dashboard's incident-triage time-skip affordance
+  ("what fired right before close").
 
 ### `pre_call`
 
-Optional pre-call event emitted before the LLM request goes out. Carries
-the estimated token count for budget-tracking observability. Many
-sensor configurations omit this and rely on `post_call` only.
+Pre-call event emitted before the LLM request goes out. The Python
+sensor emits one per real_fn call from `_pre_call`; the Claude Code
+plugin emits one per `UserPromptSubmit` hook fire. Carries:
+
+- `model`, `tokens_input`: the model the caller asked for and the
+  pre-call estimate.
+- `estimated_via`: `"tiktoken"` / `"heuristic"` / `"none"` —
+  attributes the estimate's source. Sensor populates unconditionally;
+  the plugin path doesn't run estimation and omits the field.
+- `policy_decision_pre`: shared `policy_decision` block when the
+  pre-call policy check decision is non-allow (warn / degrade /
+  block). Omitted on allow.
 
 ### `post_call`
 
 The primary LLM-call event. Carries `tokens_input`, `tokens_output`,
 `tokens_total`, `tokens_cache_read`, `tokens_cache_creation`,
-`latency_ms`, `model`, and `framework`. When `stream=true` on the
-underlying request, the payload also carries:
+`latency_ms`, `model`, and `framework`. Operator-actionable
+enrichment additionally carries:
+
+- `estimated_via`: passthrough from the pre-call estimator so a row
+  scanner sees the attribution without fetching the sibling pre_call.
+- `provider_metadata`: `{ratelimit_remaining_tokens,
+  ratelimit_remaining_requests, ratelimit_limit_tokens,
+  processing_ms, request_id, model_info}`. Best-effort per provider
+  (raw-response paths surface more headers; parsed-response paths
+  may surface none). Field names are normalised across providers.
+- `policy_decision_post`: shared `policy_decision` block when this
+  call's cumulative usage crossed a threshold the pre-call check
+  didn't catch (cache-read tokens / output tokens push the cumulative
+  over warn or block AFTER the call lands). Omitted on no-crossing.
+
+When `stream=true` on the underlying request, the payload also carries:
 
 ```json
 "streaming": {
-  "ttft_ms":         142,
-  "chunk_count":     38,
-  "inter_chunk_ms":  {"p50": 12, "p95": 47, "max": 109},
-  "final_outcome":   "completed",
-  "abort_reason":    null
+  "ttft_ms": 142,
+  "chunk_count": 38,
+  "inter_chunk_ms": {"p50": 12, "p95": 47, "max": 109},
+  "final_outcome": "completed",
+  "abort_reason": null
 }
 ```
 
@@ -2382,10 +2551,22 @@ Emitted by `client.embeddings.create` (OpenAI), `litellm.embedding` /
 transitively. Anthropic has no native embeddings API; routing through
 litellm → Voyage is the supported path.
 
-Token accounting carries input tokens only (`tokens_output=0`). When
-`capture_prompts=true`, `payload.content.input` carries the request's
-`input` parameter (string or list of strings) which round-trips into
-`event_content.input`.
+Token accounting carries input tokens only (`tokens_output=0`).
+The `estimated_via` / `provider_metadata` / `policy_decision_post`
+fields described under `post_call` apply here too. Embeddings adds:
+
+- `output_dimensions`: `{count, dimension}` — small + observable
+  summary so the dashboard renders the shape chip
+  (`<dim>-d × <count> vec`) without fetching `event_content`.
+
+When `capture_prompts=true`:
+
+- `payload.content.input` carries the request's `input` parameter
+  (string or list of strings) — round-trips into `event_content.input`.
+- `payload.content.embedding_output` carries the raw vectors as
+  `list[list[float]]` — round-trips into
+  `event_content.embedding_output`. The single `capture_prompts` gate
+  protects this; there is no separate dial.
 
 ### `llm_error`
 
@@ -2413,6 +2594,110 @@ Plus `provider`, `http_status`, `provider_error_code`, `request_id`,
 `error_type=stream_error` with `partial_chunks` and `partial_tokens_*`
 so token accounting reflects work done before the failure.
 
+Operator-actionable retry-chain context:
+
+- `retry_attempt`: 1-based counter keyed by `(provider, request_id)`
+  on the Session's bounded LRU. Increments on every emission for
+  the same key.
+- `terminal`: bool. `True` when the classifier marks the error
+  non-retryable (best-effort signal for "did the retry chain
+  finally give up"). `False` for transient classes the caller is
+  expected to retry.
+
+### Shared `policy_decision` payload block
+
+Every policy enforcement event (`policy_warn`, `policy_degrade`,
+`policy_block`, `policy_mcp_warn`, `policy_mcp_block`) carries a
+`payload.policy_decision = {...}` block with operator-actionable
+state metadata. Always included regardless of `capture_prompts`.
+
+Required fields on every policy event:
+
+- `policy_id` — UUID of the policy row (or `"local"` for sensor-
+  side init(limit=...) thresholds).
+- `scope` — `"org"` / `"flavor:<v>"` / `"session:<v>"` /
+  `"global"` / `"local_failsafe"` / `"fail_open"`.
+- `decision` — `"warn"` / `"degrade"` / `"block"` / `"allow"` /
+  `"deny"`.
+- `reason` — sensor-built operator-readable single-line string
+  built per pattern `"<what happened> + <by what mechanism> +
+  <relevant context>"`.
+
+MCP-policy events additionally populate:
+
+- `decision_path` — `"flavor_entry"` / `"global_entry"` /
+  `"mode_default"`.
+- `matched_entry_id` — UUID of the matched MCP policy entry
+  (omitted on mode-default fall-through).
+- `matched_entry_label` — the entry's `server_name` (display
+  formatting belongs to the dashboard).
+
+Token-budget events leave the three MCP-only fields undefined,
+so their `policy_decision` block ships 4 keys; MCP entry-path
+events ship 7 keys.
+
+The block is built by
+`flightdeck_sensor.core.types.PolicyDecisionSummary` (sensor) and
+`plugin/hooks/scripts/mcp_policy.mjs::buildPolicyDecisionBlock`
+(plugin) so both surfaces produce byte-identical wire envelopes.
+Ingestion validates the required fields at the wire boundary; payloads
+missing them are rejected before NATS publish.
+
+### MCP Protection Policy enforcement on all server-access paths
+
+MCP Protection Policy enforces on all six server-access paths
+the patched `ClientSession` exposes:
+
+- `call_tool`
+- `list_tools`
+- `read_resource`
+- `get_prompt`
+- `list_resources`
+- `list_prompts`
+
+When a server matches a block decision, the sensor raises
+`MCPPolicyBlocked` from every path. An agent blocked from a
+server cannot bypass via list_*/read_resource/get_prompt — the
+operator's "this server is blocked" intent means ALL access
+blocked, not just tool execution.
+
+The `originating_call_context` enum on every `policy_mcp_warn` /
+`policy_mcp_block` event tells the operator which call site
+fired the decision. `tool_name` is method-specific: populated
+for `call_tool` (tool name), `read_resource` (resource URI),
+`get_prompt` (prompt name); omitted for `list_*` paths.
+
+Discovery family events (`mcp_tool_list`, `mcp_resource_list`,
+`mcp_prompt_list`) carry an `item_names` field — the array of
+identifiers the server returned, capped at 100 with
+`truncated:true` overflow flag. Operationally key for the
+drift-detection workflow ("did this server's tool inventory
+change last week"). Empty arrays are valid (server with no tools
+landed).
+
+### `originating_event_id` chain
+
+Sensor mints a UUID per emission via `Session._build_payload`
+(`payload.id`). Worker's `InsertEvent` uses it via
+`COALESCE(NULLIF($1, '')::uuid, gen_random_uuid)`. Idempotent
+retry semantics via `ON CONFLICT (id, occurred_at) DO NOTHING`.
+
+`Session._current_call_event_id` tracks the most-recent
+`post_call` emission's id. Every "downstream of an LLM call"
+event type stamps `payload.originating_event_id`:
+
+- `tool_call`, `llm_error`
+- `policy_warn` / `policy_degrade` / `policy_block`
+- `policy_mcp_warn` / `policy_mcp_block`
+- All six `mcp_*` event types
+
+Originator types (`pre_call`, `post_call`, `embeddings`) and
+call-window-independent types (`session_start`, `session_end`,
+`mcp_server_attached`, `mcp_server_name_changed`,
+`directive_result`) skip the chain stamp.
+
+Plugin parity: `crypto.randomUUID` per emission.
+
 ### `policy_warn`
 
 Emitted when token-budget enforcement crosses the warn threshold.
@@ -2420,7 +2705,7 @@ Two emission paths:
 
 - **Local** — sensor `init(limit=...)` threshold crossed. `_pre_call`
   emits with `source="local"`, the call proceeds. Local thresholds
-  fire WARN only — never BLOCK or DEGRADE (D035). Fires once per
+  fire WARN only — never BLOCK or DEGRADE. Fires once per
   session (fire-once tracking in PolicyCache).
 - **Server** — worker policy evaluator detects the threshold cross,
   writes a `warn` directive; the sensor receives it on the next
@@ -2435,7 +2720,7 @@ Payload fields: `source`, `threshold_pct`, `tokens_used`,
 
 Emitted ONCE on `_apply_directive(DEGRADE)` arrival — when the worker
 policy evaluator writes a `degrade` directive that the sensor
-receives. Decision event with `source="server"` (D035 — local never
+receives. Decision event with `source="server"` (local never
 fires DEGRADE). Per-call swaps after the directive arrives are visible
 via `post_call.model` only; subsequent `_pre_call` invocations on the
 armed session do NOT re-emit.
@@ -2450,11 +2735,12 @@ chronological order.
 ### `policy_block`
 
 Emitted by `_pre_call` when the local PolicyCache decision is BLOCK.
-Sensor calls `EventQueue.flush()` synchronously to ensure the event
+Sensor calls `EventQueue.flush` synchronously to ensure the event
 lands before the process exit, then raises `BudgetExceededError`. The
 caller's call never reaches the provider.
 
-Payload fields: `source` (always `"server"` — D035), `threshold_pct`
+Payload fields: `source` (always `"server"` — local thresholds never
+upgrade past WARN), `threshold_pct`
 (`policy.block_at_pct`), `tokens_used`, `token_limit`,
 `intended_model` (the model the blocked call was going to use; lets
 operators answer "which call hit the limit?").
@@ -2486,21 +2772,21 @@ Sensor's acknowledgement / execution response. Fields:
 ### MCP event types (`mcp_tool_list`, `mcp_tool_call`, `mcp_resource_list`, `mcp_resource_read`, `mcp_prompt_list`, `mcp_prompt_get`)
 
 First-class observability for Model Context Protocol (MCP) traffic. The
-sensor patches `mcp.client.session.ClientSession` directly (D116) so
+sensor patches `mcp.client.session.ClientSession` directly so
 every framework that mediates MCP through the official SDK
 (LangChain via `langchain-mcp-adapters`, LangGraph via the same,
 LlamaIndex via `llama-index-tools-mcp`, CrewAI via `mcpadapt`,
 plus the raw mcp SDK) routes through one patch surface and emits
 the same six event types.
 
-The Claude Code plugin emits **only** `MCP_TOOL_CALL` (D1 in PR #29
+The Claude Code plugin emits **only** `MCP_TOOL_CALL` (in PR #29
 — `mcp__<server>__<tool>` is the only MCP namespace visible from
 the hook surface; resource reads, prompt fetches, and list
 operations are below the hook layer). Both surfaces share the same
 wire schema for tool calls so the dashboard renders identically
 across origin.
 
-**Lean payload** (D2). MCP events drop the LLM-baseline fields
+**Lean payload**. MCP events drop the LLM-baseline fields
 (`tokens_input`, `tokens_output`, `tokens_total`, `tokens_cache_*`,
 `model`, `latency_ms`, `tool_input`, `tool_result`, `has_content`)
 and carry only MCP-specific fields:
@@ -2526,18 +2812,42 @@ and carry only MCP-specific fields:
 `timeout` / `api_error` / `other`) is populated on failure paths
 across every type.
 
-**Server fingerprint at session level**. `ClientSession.initialize()`
-is patched silently (no wire event) to capture the
-`InitializeResult` and stamp an `MCPServerFingerprint` onto the
-sensor session. When the sensor's session_start ships AFTER the
-initialize call, `context.mcp_servers` carries the full fingerprint
-list — name, transport, protocol_version (str | int, preserved
-verbatim per Override 5), version, capabilities, instructions —
-which the worker writes once into `sessions.context` (UpsertSession
-ON CONFLICT does not update context, see Override 2). For sessions
-where flightdeck init runs BEFORE MCP init, the per-event
-`server_name` + `transport` is the authoritative real-time
-attribution.
+**Server fingerprint at session level**. `ClientSession.initialize`
+is patched to capture the `InitializeResult` and stamp an
+`MCPServerFingerprint` onto the sensor session. When the sensor's
+session_start ships AFTER the initialize call, `context.mcp_servers`
+carries the full fingerprint list — name, transport, protocol_version
+(str | int, preserved verbatim per Override 5), version, capabilities,
+instructions — which the worker writes once into `sessions.context`.
+For servers initialised AFTER `session_start` (the common case for
+late-attaching MCP frameworks), the sensor emits a wire event
+`mcp_server_attached` carrying the same fingerprint plus an
+`attached_at` timestamp; the worker projects it into
+`sessions.context.mcp_servers` via an idempotent UPSERT-with-dedup
+keyed on `(name, server_url)`. The dashboard's SessionDrawer
+re-fetches the session detail when an `mcp_server_attached` event
+arrives on the matching session over the existing fleet WebSocket,
+so the MCP SERVERS panel populates within 2-3s of the attach for
+in-flight sessions. Emission is fire-and-forget — failure to emit
+never adds latency to or breaks the agent's hot path.
+
+`mcp_server_attached` carries `policy_decision_at_attach`, the
+shared `policy_decision` block evaluated against the attached
+server at attach time. Operator sees what the policy says about
+this server without joining time-windowed policy state. Mode-
+default fall-through path populates the block with
+`decision_path="mode_default"` and no `matched_entry_id`. Allow
+decisions populate the block; deny decisions populate it AND the
+enforcement path raises `MCPPolicyBlocked`.
+
+`mcp_server_name_changed` carries `policy_entries_orphaned`, a
+worker-computed block from a query against `mcp_policy_entries`
+for rows whose fingerprint matched the old server name. Shape:
+`{count, sample_entry_ids[<=5], affected_policies[]}`. Operator
+reading the row sees how many policy entries silently stopped
+binding when the server's `serverInfo.name` drifted. Dashboard
+renders inline as "name drift: \<old\> → \<new\> (N entries
+orphaned)".
 
 **Content overflow** (B-6). `MCP_RESOURCE_READ` payloads can carry
 large captured bodies. The wire envelope routes content one of two
@@ -2573,7 +2883,7 @@ lists every fingerprint from `context.mcp_servers`.
 ### Per-event `framework` field
 
 Every event carries a bare-name `framework` field (`langchain`,
-`crewai`, `langgraph`, ...) populated at sensor `init()` from
+`crewai`, `langgraph`,...) populated at sensor `init` from
 `FrameworkCollector` via `Session.record_framework`. Higher-level
 framework wins over SDK transport. The versioned form
 (`langchain/0.3.27`) lives in `context.frameworks[]` for diagnostic
@@ -2589,7 +2899,7 @@ framework.
 ## Content Capture
 
 Event payloads carry two classes of captured content, each gated by an
-independent knob (D019, D103). The two-knob split is deliberate: the
+independent knob. The two-knob split is deliberate: the
 privacy calculus and the safe handling differ per class, and a single
 knob would either strip too much or too little for the developer use case
 the plugin targets.
@@ -2633,10 +2943,11 @@ the dashboard shows the session, token counts, and metadata; only the
 bodies are absent. The Prompts tab renders "Prompt capture is not
 enabled for this deployment."
 
-Plugin default: ON (D103). A developer running `claude` locally is
+Plugin default: ON. A developer running `claude` locally is
 observing their own conversation; an empty Prompts tab would make the
-feature useless without improving privacy. Python sensor default: OFF
-(D019). The sensor runs inside production agents where content may carry
+feature useless without improving privacy. Python sensor default:
+OFF. The sensor runs inside production agents where content may
+carry
 PII, proprietary prompts, and customer context; opt-in is the correct
 posture.
 
@@ -2678,7 +2989,7 @@ embed"`), list (`["batch", "of", "strings"]`), and no-content
 ### `GET /v1/events/:id/content`
 
 Returns 404 when capture is disabled for that session. Not 200 with
-empty data. Not 403. 404 — the resource does not exist (Rule 37).
+empty data. Not 403. 404 — the resource does not exist.
 
 ---
 
@@ -2688,9 +2999,9 @@ empty data. Not 403. 404 — the resource does not exist (Rule 37).
 
 | Action | Source | Sensor behaviour |
 |---|---|---|
-| `shutdown` | Operator (`POST /v1/directives` with `session_id`) | Raises `DirectiveError` after `grace_period_ms`; triggers `session.teardown()` |
+| `shutdown` | Operator (`POST /v1/directives` with `session_id`) | Raises `DirectiveError` after `grace_period_ms`; triggers `session.teardown` |
 | `shutdown_flavor` | Operator (`POST /v1/directives` with `flavor`, fans out via `GetActiveSessionIDsByFlavor`) | Same as `shutdown` per session |
-| `degrade` | Worker policy evaluator | Sets `_forced_degrade` + `degrade_to`; subsequent `check()` returns `DEGRADE` |
+| `degrade` | Worker policy evaluator | Sets `_forced_degrade` + `degrade_to`; subsequent `check` returns `DEGRADE` |
 | `warn` | Worker policy evaluator | Fires `WARN` callback once per session at `warn_at_pct` (fire-once rule) |
 | `policy_update` | Operator | Calls `PolicyCache.update(policy_dict)`; clears `_forced_degrade` |
 | `custom` | Operator (with registered fingerprint) | Validates payload via `DirectivePayloadSchema`, looks up handler, runs with timeout, emits `directive_result` |
@@ -2722,7 +3033,7 @@ operation — directives are delivered exactly once.
 
 Before acting on `SHUTDOWN`, `SHUTDOWN_FLAVOR`, or `DEGRADE`, the sensor
 emits a `directive_result` event with `directive_status="acknowledged"`.
-For shutdown variants the sensor calls `EventQueue.flush()` synchronously
+For shutdown variants the sensor calls `EventQueue.flush` synchronously
 before raising the shutdown flag so the acknowledgement is not lost when
 the process exits. Custom handlers emit `directive_result` with
 `directive_status` of `success` or `error` after handler return.
@@ -2734,7 +3045,656 @@ Plugin payloads set `context.supports_directives=false` on
 sessions and gates the Fleet Stop All control on at least one
 directive-capable session in the flavor. `isClaudeCodeSession` fallback
 covers rows whose payload omitted the explicit `supports_directives`
-flag (D109).
+flag.
+
+---
+
+## MCP Protection Policy
+
+The MCP Protection Policy gates which Model Context Protocol servers an
+agent is allowed to talk to. It rides on the same `ClientSession` patch
+surface that powers MCP first-class observability — the policy
+machinery evaluates each `call_tool` against a fingerprinted server
+identity and emits warn / block decisions through the standard event
+pipeline. The policy is fetched once per session at sensor `init`
+(Python) or `SessionStart` (Claude Code plugin) and cached for the
+session's lifetime; mid-session policy updates apply at the next
+`session_start`.
+
+### Identity model
+
+Server identity is the pair `(URL, name)`. The URL is the security key
+— two servers with the same URL but different declared names are the
+same enforcement target. The name is the display label and the
+tamper-evidence axis: when an agent declares a server with a known URL
+under a new name, the sensor emits a `mcp_server_name_changed` event so
+operators can see drift, but the policy decision still resolves on the
+URL.
+
+**HTTP canonical form.** Lowercase scheme + host. Strip default ports
+(`:80` for `http`, `:443` for `https`). Strip a trailing slash only at
+the root (`https://example.com/` → `https://example.com`; deeper paths
+preserve their trailing slash because path semantics carry). Preserve
+path case beyond the root segment. Drop user-info, fragment, and query
+entirely.
+
+**Stdio canonical form.** Prefix with `stdio://`. Concatenate the
+literal command and its args with single-space separators after
+collapsing internal whitespace runs to one space. Resolve env-var
+references (`$VAR`, `${VAR}`) at fingerprint time using the agent's
+current environment. Args are case-sensitive (file paths and flags
+matter byte-for-byte).
+
+**Hash recipe.** `sha256(canonical_url + 0x00 + name)`, hex-encoded.
+The first 16 hex characters are the display fingerprint; the full hash
+is the storage key. The 0x00 separator prevents
+`("https://a.com", "bservice")` and `("https://a.combservice", "")`
+from colliding.
+
+### Two-scope policy model
+
+One **global** policy plus zero or more **per-flavor** policies. The
+global policy carries the **mode** (allowlist or blocklist) and a list
+of entries; per-flavor policies carry only allow / deny entry deltas
+against whatever the global resolves to. A flavor policy never carries
+its own mode.
+
+On install the platform auto-creates an empty global policy in
+`blocklist` mode with zero entries — fully permissive by default. No
+operator action is required for MCP traffic to keep flowing on a fresh
+deployment; locking down a flavor is opt-in.
+
+### Per-server resolution
+
+For an `(URL, name)` evaluated against `(global, flavor)`:
+
+1. If the per-flavor policy has an entry whose canonical URL matches,
+   use that entry's enforcement decision (allow / deny + warn / block /
+   interactive).
+2. Else if the global policy has an entry whose canonical URL matches,
+   use that.
+3. Else apply the global mode default: `allowlist` mode → block;
+   `blocklist` mode → allow.
+
+Worked example. Global is `allowlist` mode with entries
+`[https://maps.example.com, https://search.example.com]`. Flavor
+`production` overrides with a deny entry for `https://maps.example.com`
+and an allow entry for `https://wiki.internal/`.
+
+| Request | Step 1 (flavor) | Step 2 (global) | Step 3 (mode default) | Result |
+|---|---|---|---|---|
+| `https://maps.example.com` | flavor deny | — | — | block (flavor wins) |
+| `https://search.example.com` | no entry | global allow | — | allow |
+| `https://wiki.internal/` | flavor allow | — | — | allow |
+| `https://other.example.com` | no entry | no entry | allowlist → block | block |
+
+### Enforcement
+
+Per-entry decisions carry an enforcement value:
+
+- `warn` — emit `policy_mcp_warn`, let the call proceed.
+- `block` — emit `policy_mcp_block`, raise `flightdeck.MCPPolicyBlocked`
+  before the wire request leaves the agent.
+- `interactive` — Claude Code plugin only. The plugin's `SessionStart`
+  hook prompts the user via `PermissionRequest` for unknown servers in
+  `allowlist` mode. The sensor's per-call path never sees `interactive`
+  (the plugin resolves the prompt before the session starts; resolved
+  decisions become standard allow / deny entries on the policy or are
+  remembered locally — see Plugin remembered decisions below).
+
+`block_on_uncertainty` is a per-flavor boolean toggle, default false,
+only meaningful in `allowlist` mode. When true, the resolution
+algorithm's step 3 fallback becomes "block + emit `policy_mcp_block`"
+instead of the standard allowlist-mode block. The semantic difference
+is auditing: `block_on_uncertainty=true` means "I want a block decision
+recorded against this URL the first time it's seen so I can promote it
+to a deliberate allow." Under `blocklist` mode the toggle is ignored
+because the mode default is already permissive.
+
+### Storage schema
+
+> **Binding contract.** The schema below is the live state after
+> migrations 000018 (initial four tables), 000019 (seed
+> empty-blocklist global row), and 000020 (drop the
+> `mcp_policy_versions` table and the `version` column). Migrations
+> ship under `docker/postgres/migrations/` only; the Helm chart picks
+> them up via `helm/Makefile sync-migrations`. Any deviation
+> — column rename, type change, additional or removed constraint,
+> index difference — requires a new `DECISIONS.md` entry recording
+> the pivot BEFORE the migration is written.
+
+```sql
+CREATE TABLE mcp_policies (
+    id                    UUID PRIMARY KEY DEFAULT gen_random_uuid,
+    scope                 TEXT NOT NULL CHECK (scope IN ('global', 'flavor')),
+    scope_value           TEXT,                                 -- NULL for global, flavor name for flavor
+    mode                  TEXT CHECK (mode IN ('allowlist', 'blocklist')),  -- NULL on flavor rows
+    block_on_uncertainty  BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW,
+    updated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW,
+    CHECK ((scope = 'global' AND scope_value IS NULL AND mode IS NOT NULL)
+        OR (scope = 'flavor' AND scope_value IS NOT NULL AND mode IS NULL))
+);
+
+CREATE UNIQUE INDEX mcp_policies_scope_idx
+    ON mcp_policies (scope, COALESCE(scope_value, ''));
+
+CREATE TABLE mcp_policy_entries (
+    id                    UUID PRIMARY KEY DEFAULT gen_random_uuid,
+    policy_id             UUID NOT NULL REFERENCES mcp_policies(id) ON DELETE CASCADE,
+    server_url_canonical  TEXT NOT NULL,
+    server_name           TEXT NOT NULL,
+    fingerprint           TEXT NOT NULL,        -- 16-char hex (display); full sha256 not stored
+    entry_kind            TEXT NOT NULL CHECK (entry_kind IN ('allow', 'deny')),
+    enforcement           TEXT CHECK (enforcement IN ('warn', 'block', 'interactive')),
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW
+);
+
+CREATE UNIQUE INDEX mcp_policy_entries_policy_fp_idx
+    ON mcp_policy_entries (policy_id, fingerprint);
+CREATE INDEX mcp_policy_entries_url_idx
+    ON mcp_policy_entries (server_url_canonical);
+
+CREATE TABLE mcp_policy_audit_log (
+    id           UUID PRIMARY KEY DEFAULT gen_random_uuid,
+    policy_id    UUID REFERENCES mcp_policies(id) ON DELETE SET NULL,
+    event_type   TEXT NOT NULL CHECK (event_type IN (
+        'policy_created', 'policy_updated', 'policy_deleted',
+        'mode_changed', 'entry_added', 'entry_removed',
+        'block_on_uncertainty_changed'
+    )),
+    actor        UUID REFERENCES access_tokens(id) ON DELETE SET NULL,
+    payload      JSONB NOT NULL DEFAULT '{}'::jsonb,
+    occurred_at  TIMESTAMPTZ NOT NULL DEFAULT NOW
+);
+
+CREATE INDEX mcp_policy_audit_log_policy_idx
+    ON mcp_policy_audit_log (policy_id, occurred_at DESC);
+```
+
+Three live tables: `mcp_policies`, `mcp_policy_entries`,
+`mcp_policy_audit_log`. The `mcp_policy_versions` table that
+migration 000018 created was dropped by 000020 in step 6.8 cleanup
+ — the audit log is the durable modification trail; per-PUT
+snapshots and the diff endpoint are gone. The `version` column on
+`mcp_policies` was dropped by the same migration.
+
+The audit log table records **policy mutations only** — actor + diff
+of operator-initiated changes. Sensor-observed system state (name
+drift, decision events) ships through the standard event pipeline as
+typed event rows, not as audit log entries.
+
+Soft-delete is intentionally not implemented — a deleted flavor
+policy means the global takes over, and the deletion event is
+preserved in the audit log.
+
+### Fetch and cache lifecycle
+
+**Sensor (Python).** The control-plane client fetches the active
+policy at `init` synchronously, alongside the existing token policy
+preflight. Result is cached on the `Session` object for the session's
+lifetime. A `policy_update` directive received in a response envelope
+refreshes the cache in place; the new policy applies at the next
+`session_start` (in-flight sessions keep the policy that was active at
+their start). Fail-open: if the control plane is unreachable AND
+`FLIGHTDECK_UNAVAILABLE_POLICY=continue` AND `block_on_uncertainty`
+is not in force on a relevant flavor, the agent proceeds with no
+enforcement.
+
+**Plugin (Claude Code).** The `SessionStart` hook fetches the policy
+applicable to the active flavor. Cached on disk at
+`~/.claude/flightdeck/mcp_policy_cache.json`, keyed by token. TTL
+defaults to one hour; subsequent `SessionStart` invocations reuse the
+cache until the TTL expires, at which point the next start re-fetches.
+Cache miss + control plane unreachable produces the same fail-open
+behaviour as the sensor.
+
+**Dashboard.** Direct REST against the new policy endpoints (see
+Enforcement contracts below). No client-side cache beyond the standard
+React-Query window.
+
+### Enforcement contracts
+
+**Sensor.** The MCP interceptor's `call_tool` patch calls
+`PolicyCache.evaluate_mcp(server_url, server_name, tool_name)` before
+invoking the wrapped method. The result is one of `allow` / `warn` /
+`block`. On `warn` the sensor emits `policy_mcp_warn` and proceeds. On
+`block` the sensor emits `policy_mcp_block`, flushes the event queue
+synchronously (so the block lands at the dashboard before the agent
+sees the failure), and raises `flightdeck.MCPPolicyBlocked` — a typed
+exception that frameworks surface as a tool-call failure to the
+agent's reasoning loop. The exception carries `server_url`,
+`server_name`, `fingerprint`, `policy_id`, and `decision_path` so the
+agent (or its surrounding harness) can render an actionable failure
+message.
+
+**Plugin.** Enforcement is split across three Claude Code hooks.
+The plugin uses one dispatcher script
+(`plugin/hooks/scripts/observe_cli.mjs`) registered against
+multiple hook events; the script branches on `hook_event_name`.
+
+- **`SessionStart`** — reads `.mcp.json` (the existing
+  `loadMcpServerFingerprints(cwd)` helper handles
+  `~/.claude.json` overrides), fingerprints each declared server,
+  and batch-fetches global + flavor policies in parallel via
+  `Promise.all` against `GET /v1/mcp-policies/global` +
+  `GET /v1/mcp-policies/{flavor}`. Cached to a per-session marker
+  file at `$TMPDIR/flightdeck-plugin/mcp-policy-<session_id>.json`
+  so subsequent `PreToolUse` invocations don't repeat the HTTP
+  fetch on the agent hot path. SessionStart additionally emits
+  `policy_mcp_warn` / `policy_mcp_block` events for any
+  non-`allow` decision so operators see fleet-level enforcement
+  activity at session boot. Fail-open: any HTTP error produces an
+  empty cache and per-call evaluation falls through to mode-default.
+- **`PreToolUse`** — the per-call gate. When `tool_name` matches
+  the `mcp__<server>__<tool>` shape: parse the server segment,
+  resolve to a fingerprint, read the per-session policy cache AND
+  read the remembered-decisions file fresh (NOT cached at
+  `SessionStart` — concurrent Claude Code sessions on the same
+  machine see each other's remembered decisions in real time),
+  and emit a hook decision:
+  - **block** decision → return `{decision: "deny", reason:
+    "..."}`. Claude Code surfaces the failure to the agent reasoning
+    loop. Block in plugin context is the per-call deny rather than
+    a session-wide unreachability flag, mirroring the sensor's
+    architecture of "block at call_tool" rather than "block at
+    initialize".
+  - **unknown-allowlist + interactive** decision → return
+    `{decision: "ask"}`. Claude Code's built-in approval flow
+    prompts the user yes / no.
+  - **allow** / **warn** / **remembered allow** → return
+    normally; Claude Code proceeds.
+- **`PostToolUse`** — the de-facto-approval write path. When
+  an `mcp__<server>__<tool>` call succeeded AND the server was
+  unknown-allowlist on this session AND no remembered decision
+  exists yet for the active token: write the
+  remembered-decisions file AND emit
+  `mcp_policy_user_remembered` event. Reactive yes-and-remember
+ Claude Code's `ask` flow returns yes/no only with
+  no built-in "remember" affordance, so the plugin treats a
+  successful post-`ask` call as evidence of de-facto approval.
+- **`Stop`** — cleans up the per-session policy marker file.
+
+Operator-side deny entries always override remembered allows.
+A remembered "yes" the user gave on day 1 stops applying the
+moment the operator pushes a flavor deny entry for that server
+— the next `SessionStart` re-fetches the policy and `PreToolUse`
+sees the deny first.
+
+**Control-plane API.** Endpoints live under `/v1/mcp-policies`
+(kebab-plural, matching the `/v1/access-tokens` convention).
+Authentication uses the standard Bearer-token middleware that
+covers the rest of the API. Endpoints split into two scopes:
+
+- **Read-open (any authenticated bearer token).** All GETs —
+  `/global`, `/:flavor`, `/resolve`, `/global/audit-log`,
+  `/:flavor/audit-log`, `/:flavor/metrics`, `/templates`. Plus
+  the new `/v1/whoami` endpoint that the dashboard uses to
+  determine role. Idempotent and cacheable. Used by sensors at
+  `init` and by the Claude Code plugin at `SessionStart`.
+- **Mutation-admin (admin-scope token required).** All
+  mutations — `POST /:flavor` (create), `PUT /global`, `PUT
+  /:flavor`, `DELETE /:flavor`, `POST /:flavor/apply_template`.
+  Wrapped by `adminGate` over the standard `gate`; returns
+  403 for `IsAdmin=false` tokens. The dashboard reads
+  `GET /v1/whoami` once at session start to determine whether
+  the operator can mutate; mutation CTAs hide for `viewer` role
+  tokens, while the mode toggle disables with a tooltip
+  explanation.
+
+The full enumeration of which routes are admin-gated lives in
+`api/internal/server/server.go`.
+
+#### Read-open (any authenticated bearer token, )
+
+All GET endpoints accept any valid bearer token regardless of admin
+scope. Idempotent and cacheable.
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/v1/mcp-policies/global` | Fetch the global policy + entries. Always returns 200 (seeded by migration 000019; idempotently re-ensured at API boot) |
+| `GET` | `/v1/mcp-policies/:flavor` | Fetch the flavor policy + entries. 404 when no flavor policy exists |
+| `GET` | `/v1/mcp-policies/resolve` | Sensor / plugin preflight. Query params `flavor`, `server_url`, `server_name`; returns the resolved decision (`allow` / `warn` / `block`) and the `decision_path` that produced it (`flavor_entry` / `global_entry` / `mode_default`). GET-only — idempotent, safe, cacheable |
+| `GET` | `/v1/mcp-policies/global/audit-log` | Mutation history for the global policy. Query params `from` (ISO 8601), `to`, `event_type`, `limit`, `offset` |
+| `GET` | `/v1/mcp-policies/:flavor/audit-log` | Mutation history for the flavor policy, same query params |
+| `GET` | `/v1/mcp-policies/:flavor/metrics` | Aggregated `policy_mcp_warn` + `policy_mcp_block` events scoped to the flavor's policy. `?period=` accepts `24h` / `7d` / `30d`. Returns `granularity` ("hour" for 24h, "day" for 7d/30d) plus zero-filled `buckets` array alongside per-server aggregates |
+| `GET` | `/v1/mcp-policies/templates` | List shipped templates — name, description, recommended_for. Three templates ship: `strict-baseline`, `permissive-dev`, `strict-with-common-allows` |
+| `GET` | `/v1/whoami` | Returns `{"role": "admin"\|"viewer", "token_id": "<uuid>"}` for the authenticated bearer. The dashboard calls this once at session start and gates mutation CTAs on `role === "admin"` |
+
+#### Mutation (admin-grade, )
+
+Admin-scope token required (validator's `IsAdmin=true`); 403 otherwise.
+
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `/v1/mcp-policies/:flavor` | Create a new flavor policy. The global is seeded on install and cannot be POST'd. 409 if the flavor policy already exists |
+| `PUT` | `/v1/mcp-policies/global` | Replace global policy state — mode, entries, `block_on_uncertainty`. Atomic transaction: SELECT FOR UPDATE → UPDATE policy → DELETE entries → INSERT new entries → INSERT audit-log entry |
+| `PUT` | `/v1/mcp-policies/:flavor` | Replace flavor policy state — entries, `block_on_uncertainty` (mode is global-only ). Same atomic transaction shape as the global PUT |
+| `DELETE` | `/v1/mcp-policies/:flavor` | Delete a flavor policy. Global cannot be deleted. The audit-log entry survives via `ON DELETE SET NULL` on `policy_id`; the deletion event is preserved |
+| `POST` | `/v1/mcp-policies/:flavor/apply_template` | Apply a named template (`{"template": "strict-baseline"}` body) to the flavor policy. Same atomic transaction as PUT; audit log payload carries `applied_template=<name>` |
+
+#### Install-time seed and boot-time idempotent retry
+
+The empty-blocklist global policy row is seeded by migration
+`000019_mcp_protection_policy_seed_global.up.sql`. The
+seed SQL is an idempotent INSERT identical in shape to the boot
+hook below:
+
+```sql
+INSERT INTO mcp_policies (scope, scope_value, mode, block_on_uncertainty)
+SELECT 'global', NULL, 'blocklist', false
+WHERE NOT EXISTS (SELECT 1 FROM mcp_policies WHERE scope = 'global');
+```
+
+The migrator is the single writer for this row. By the time api
+can `SELECT` from `mcp_policies` the seed has already landed,
+which closes the cold-boot race where api raced workers to a
+fresh postgres and 500'd every `GET /v1/mcp-policies/global`
+until manual restart (context).
+
+`store.EnsureGlobalMCPPolicy(ctx)` still runs at API boot as a
+defensive idempotent retry — same SQL, same `WHERE NOT EXISTS`
+predicate, race-safe under read-committed because the unique
+index `(scope, COALESCE(scope_value, ''))` rejects a concurrent
+second insert; on `pgconn.PgError.Code = '23505'`
+(unique_violation) the caller treats it as "already created" and
+proceeds. this hook noops on every cold boot
+(migration owns the row); it remains for install paths that
+might run api before migrations (e.g. operator-managed Helm
+charts in the future). API startup logs `INFO ensure global mcp
+policy at boot complete` on success.
+
+#### Policy templates
+
+Three templates ship with the API, embedded via `embed.FS` from
+`api/internal/handlers/mcp_policy_templates/*.yaml`:
+
+- **`strict-baseline`** — allowlist mode, `block_on_uncertainty=true`,
+  zero entries. Operator adds explicit allows from there. Use case:
+  production flavor where the operator wants the "everything blocks
+  until I say so" posture.
+- **`permissive-dev`** — blocklist mode, `block_on_uncertainty=false`,
+  zero entries. Same shape as the default global, but explicit. Use
+  case: dev flavor where unknown servers should pass.
+- **`strict-with-common-allows`** — allowlist mode,
+  `block_on_uncertainty=true`, plus three pre-populated allow entries
+  for well-known MCP servers (filesystem npx package, github HTTPS
+  endpoint, slack HTTPS endpoint). Use case: the most common
+  production starting point.
+
+The third template carries a maintenance warning in its YAML
+header and in the `description` field surfaced via
+`GET /v1/mcp-policies/templates`: the pre-populated server URLs
+reflect well-known MCP server endpoints as of the v0.6 release;
+operators are expected to verify against their provider's current
+documentation before relying on them in production. The other two
+templates ship with no embedded URLs and carry no equivalent
+warning.
+
+`POST:flavor/apply_template` replaces the flavor policy state
+with the template's content, bumps version, and writes an
+audit-log entry with `payload.applied_template=<name>` so an
+operator can answer "did someone apply a template here?" later.
+
+### Plugin remembered decisions
+
+`~/.claude/flightdeck/remembered_mcp_decisions-<tokenPrefix>.json`
+is the local cache of de-facto approvals — servers the user said
+"yes" to via Claude Code's built-in `ask` flow on first call.
+The file path is per-token: `<tokenPrefix>` is the first 16 hex
+characters of `sha256(token)`, matching the access-token prefix
+indexing pattern used by the API. Two operators on the same
+machine using different bearer tokens see distinct files.
+
+File schema:
+
+```json
+{
+  "version": 1,
+  "decisions": [
+    {
+      "fingerprint": "ab12cd34ef567890",
+      "server_url_canonical": "stdio://npx -y @scope/server-x",
+      "server_name": "x",
+      "decided_at": "2026-05-06T10:00:00Z"
+    }
+  ]
+}
+```
+
+Atomic writes via temp-file + `fs.rename`. Reads tolerate
+missing or corrupted files by returning an empty list (rather
+than crashing the hook).
+
+`PreToolUse` reads this file fresh on every invocation rather
+than caching the contents at `SessionStart`. Concurrent Claude
+Code sessions on the same machine therefore see each other's
+remembered decisions in real time — a "yes" the user said in
+session A applies to session B's next call without restart.
+The performance cost is one stat + read per `PreToolUse` (~tens
+of microseconds against the local filesystem), well below the
+no-hot-path-latency threshold.
+
+Operator-side deny entries always override remembered allows
+(step 1 / 2 winning over the local merge). The remembered
+file is a private convenience for the user; the policy cache
+fetched at `SessionStart` is the authoritative source. When the
+operator pushes a flavor deny entry, the next `SessionStart`
+re-fetches the policy and the next `PreToolUse` returns deny
+regardless of what's in the remembered file.
+
+When the user approves an unknown-allowlist server, the plugin
+also emits `mcp_policy_user_remembered` to the standard event
+pipeline. This is operator-visibility, not policy
+mutation — the dashboard shows "alice approved server X on her
+dev machine" so a security team can decide whether to promote
+to a real flavor allow entry. The remembered file does NOT
+synchronise back to the control plane via PUT; the operator
+makes the policy change deliberately if they want fleet-wide
+effect.
+
+### Event taxonomy
+
+Four event types extend the sensor's `EventType` enum and the
+worker's `events.<type>` NATS subject routing. All ride the
+standard event pipeline; none are audit-log entries.
+
+- **`policy_mcp_warn`** — emitted when an evaluation resolves to
+  `warn`. Payload: `server_url`, `server_name`, `fingerprint`,
+  `tool_name`, `policy_id`, `scope` (`global` or `flavor:<value>`),
+  `decision_path` (one of `flavor_entry`, `global_entry`,
+  `mode_default`).
+- **`policy_mcp_block`** — emitted when an evaluation resolves to
+  `block`. Same payload as warn, plus `block_on_uncertainty`
+  (true/false — distinguishes the explicit-block-list case from the
+  uncertainty-fallback case).
+- **`mcp_server_name_changed`** — emitted by the sensor when an agent
+  declares a server whose canonical URL is already known under a
+  different name. Payload: `server_url_canonical`, `fingerprint_old`,
+  `fingerprint_new`, `name_old`, `name_new`, `observed_at`. The event
+  surfaces drift on the dashboard so operators can investigate; the
+  policy decision still resolves on URL.
+- **`mcp_server_attached`** — emitted by the sensor every time an
+  MCP server is initialised after `session_start`. Payload:
+  `fingerprint`, `server_url_canonical`, `server_name`, `transport`,
+  `protocol_version`, `version`, `capabilities`, `instructions`,
+  `attached_at`. The worker projects it into
+  `sessions.context.mcp_servers` via an idempotent UPSERT-with-dedup
+  on `(name, server_url)`; the dashboard's SessionDrawer re-fetches
+  the session detail when one arrives so the MCP SERVERS panel
+  populates live for in-flight sessions.
+
+### Audit
+
+Every successful mutation through `POST` / `PUT` / `DELETE
+/v1/mcp-policies` writes one row to `mcp_policy_audit_log` with the
+`actor` resolved from the request token, the `event_type` from the
+mutation kind, and a `payload` JSONB carrying the diff (added /
+removed entries, mode change, `block_on_uncertainty` flip).
+
+The audit log is the authoritative record of operator-initiated
+changes — it answers "who changed this and when." Observed system
+state (decision events, name drift) lives in the events pipeline and
+is queried via the standard event endpoints.
+
+The mutation transaction is single-shot: PUT does (1) `SELECT FOR
+UPDATE` of the current row + entries, (2) `UPDATE mcp_policies`
+with `updated_at = NOW`, (3) `DELETE mcp_policy_entries WHERE
+policy_id = ?` followed by `INSERT` of the new entries, (4) `INSERT
+mcp_policy_audit_log`, all in one `BEGIN... COMMIT` block. Failure
+of any step rolls the whole mutation back. `SELECT FOR UPDATE`
+prevents lost-update races between concurrent PUTs.
+
+Per-PUT version snapshotting and the diff endpoint were removed in
+No version-history table is maintained. The audit log carries the
+modification trail; an operator who needs point-in-time reconstruction
+reads the audit log payloads in chronological order and replays them
+by hand. The schema has no `mcp_policy_versions` table and no
+`version` column on `mcp_policies`.
+
+### Dashboard surfaces
+
+MCP Protection lives as a sub-tab under the unified `/policies`
+route. The other sub-tab is Token Budget (existing
+token-budget-policy management content, unchanged from the prior
+`/policies` page). Default tab on visit is Token Budget; the
+`?policy=mcp` query param deep-links to MCP Protection. The old
+`/mcp-policies` route is removed entirely (hard 404, no redirect;
+pre-v0.6 has no users to protect against broken bookmarks ).
+
+#### Layout (MCP Protection sub-tab)
+
+The sub-tab opens directly to a scope picker — a shadcn `<Select>`
+with the Global scope plus one entry per flavor policy the operator
+has access to. The mode toggle is editable on the Global scope only
+(enforced in UI; on flavor scopes the global mode is rendered
+read-only as context). The `block_on_uncertainty` toggle is editable
+on every scope.
+
+The active scope persists in the URL alongside the sub-tab
+(`?policy=mcp&scope=global` / `?policy=mcp&scope=flavor:prod`) so
+deep-links and browser back/forward survive.
+
+#### Per-scope panels
+
+- **Mode toggle** (segmented control, allowlist / blocklist).
+  Global scope only. Visually dominant — operators read mode
+  before per-entry enforcement, so the toggle sits above the
+  entry table at full width with a one-sentence explanation.
+  Active state is a solid background fill (var(--primary) or
+  similar accent), not text-color-only — the inactive option
+  is transparent background + muted text. Transition 150ms
+  ease-out on background-color and color, no layout reflow on
+  click. Keyboard arrow keys move active state between options.
+- **`block_on_uncertainty` toggle** (Switch component). Per-
+  flavor + global. Only meaningful in allowlist mode; hidden
+  entirely when the global mode is blocklist (the
+  toggle is a no-op there, hide-rather-than-grey precedent).
+  Server-side BOU value persists across mode flips.
+- **Entry table.** Search by URL / name, sort columns,
+  multi-select for bulk delete, status pill per row (allow /
+  deny + enforcement override). Click a row to open the edit
+  dialog. Skeleton rows during load (not bare spinner).
+  Empty state copy teaches the next action: "Add your first
+  allow rule to start gating this flavor" (allowlist mode) or
+  "Add your first deny rule to block specific servers"
+  (blocklist mode). When `entries.length === 0` AND no
+  template has been applied this session, a single "Quick
+  start: apply a template →" link appears alongside the
+  empty-state copy; clicking opens a dropdown of the three
+  shipped templates with one-line descriptions, applying
+  hides the link for the rest of the session.
+- **Add / edit dialog.** Form fields URL (raw), Name, kind
+  (allow/deny), enforcement (warn/block/interactive/none).
+  Live fingerprint preview via debounced (300ms) `GET
+  /v1/mcp-policies/resolve` so the operator sees the exact
+  fingerprint the server will store. Validation per the
+  storage schema CHECKs; errors render inline next to
+  the offending field after the operator's first submit
+  attempt (not on dialog open with empty fields).
+- **Resolve preview panel** (collapsible card). Two inputs
+  (server URL, server name) + Resolve button. Renders the
+  API's `MCPPolicyResolveResult` plus decision_path, scope,
+  fingerprint. Educational — operators verify their policy's
+  effective behavior before they save.
+- **Audit trail.** Calls `GET /:flavor/audit-log`. Paginated
+  table with filters by event_type, actor, date range. Each
+  row expands to reveal the full payload JSON.
+
+#### Viewer-mode treatment
+
+When `GET /v1/whoami` returns `role: "viewer"`, the dashboard
+gates mutation affordances component-by-component:
+
+- **Mode toggle:** disabled with tooltip ("Read-only — admin
+  token required to change mode"). Mode is read-only state the
+  viewer needs to SEE; disabled-with-tooltip preserves the
+  context.
+- **Add Entry button, row-level edit/delete actions, template
+  apply:** hidden entirely. Action-only affordances; a disabled
+  button is noise to a viewer.
+- **"Admin token required" inline error wall:** removed. Reads
+  are now open; the wall has no remaining trigger.
+
+#### MCP server policy decision rendering (SessionDrawer)
+
+The `MCPServersPanel` in `SessionDrawer.tsx` lists each declared
+MCP server with the policy decision rendered as inline coloured
+text next to the server name, NOT a pill (the pill design was
+attempted twice in step 6.7 and failed the 1-second-glance bar):
+
+```
+[server-name] · ALLOW
+[server-name] · WARN
+[server-name] · BLOCK
+[server-name] · BLOCK (default)
+```
+
+The decision text uses the existing chroma family
+(allow=green, warn=amber, block=red); the mode-default modifier
+renders the same hue at reduced opacity + italic, with the
+"(default)" qualifier reading as a plain English clarification
+that the decision came from the mode default rather than an
+explicit policy entry. Decision derived by calling `GET /resolve`
+for each server in parallel via `Promise.all`. Skeleton text
+shimmer during load.
+
+This treatment removes the background-fill / text-contrast bug
+class the pill suffered, naturally legibly at small sizes, and
+applies theme tokens cleanly without the Tooltip
+collision-padding complication the pill needed.
+
+#### Tooltips
+
+Non-obvious fields carry shadcn `<Tooltip>` content lifted
+verbatim from this document. Specifically: identity model
+canonical form rules (sub-section "Identity model") and mode
+semantics (sub-section "Two-scope policy model" + "Per-server
+resolution"). Verbatim then trimmed only when the sentence is
+too long to fit a tooltip — never paraphrased.
+
+#### Adjacent surfaces (extensions to existing screens)
+
+- **Fleet sidebar Policy Events panel.** The existing panel
+  in `FleetPanel.tsx` renders `policy_warn` / `policy_block` /
+  `policy_degrade` events. Extended to render the four new
+  MCP-policy event types with a chroma hierarchy that
+  separates enforcement events from informational ones:
+  - `policy_mcp_warn` → amber (matches `policy_warn`).
+  - `policy_mcp_block` → red (matches `policy_block`).
+  - `mcp_server_name_changed` → purple/info (matches
+    `directive_result`).
+  - `mcp_policy_user_remembered` → purple/info (FYI signal,
+    not enforcement; operator visibility only ).
+
+  Result: amber/red = "policy fired" axis, purple = "FYI"
+  axis. No new theme tokens are introduced; chromas reuse
+  existing CSS variables already declared in `themes.css`.
+- **Investigate event-type filter.** The existing Investigate
+  page's event-type chip picker carries dedicated chips for
+  the four MCP-policy event types under their own collapsible
+  "MCP POLICY" facet group. The analytics-dimension lock holds —
+  the types are filterable but not group-by-able.
 
 ---
 
@@ -2801,9 +3761,9 @@ Constraint #4).
 | `FLIGHTDECK_SESSION_ID` | Stable session UUID for orchestrator re-runs |
 | `FLIGHTDECK_CAPTURE_PROMPTS` | `true` to enable full payload capture |
 | `FLIGHTDECK_UNAVAILABLE_POLICY` | `continue` (default) or `halt` |
-| `FLIGHTDECK_HOSTNAME` | Override `socket.gethostname()` |
+| `FLIGHTDECK_HOSTNAME` | Override `socket.gethostname` |
 | `AGENT_FLAVOR` / `FLIGHTDECK_AGENT_NAME` | Persistent agent label; default `{user}@{hostname}` |
-| `AGENT_TYPE` / `FLIGHTDECK_AGENT_TYPE` | `coding` or `production` (D114). Any other value raises `ConfigurationError` |
+| `AGENT_TYPE` / `FLIGHTDECK_AGENT_TYPE` | `coding` or `production`. Any other value raises `ConfigurationError` |
 
 **Postgres:** standard Postgres environment plus the optional
 `POSTGRES_PASSWORD` / `POSTGRES_USER` / `POSTGRES_DB` for the bundled
@@ -2824,6 +3784,12 @@ Ingestion API and Workers expose Prometheus exposition at `/metrics`:
 
 - `dropped_events_total{reason}` — orphan session_end, validation
   failure, NATS publish failure, etc.
+- `sessions_closed_total{reason}` — non-event close paths the
+  worker performs directly (today: `orphan_timeout` via the
+  reaper). The dashboard's close-reason facet still reads from
+  `events.payload->>'close_reason'`; this counter is the time-
+  series shape for the same verdict so SREs can chart non-clean-
+  shutdown rate without aggregating per-event payloads.
 - `events_received_total{event_type}`
 - `events_processed_total{event_type, status}`
 - `event_processing_duration_seconds` (histogram, per event_type)
@@ -2837,8 +3803,18 @@ per-endpoint request counts.
 
 `/v1/admin/*` endpoints share the same Bearer-token auth as user-facing
 endpoints. They are intended for operator interfaces (firewall / ingress
-restricted) rather than the dashboard. Token-based admin scoping is not
-implemented; any production token has full admin access.
+restricted) rather than the dashboard.
+
+Token-based admin scoping IS implemented: the validator returns
+`IsAdmin` per token (`tok_admin_dev` / env-configured production
+admin token returns true; `tok_dev` / standard production tokens
+return false). The MCP Protection Policy endpoints use this split
+ read-open for GETs, mutation-admin for mutations, with a
+new `GET /v1/whoami` exposing the role to the dashboard. The
+`/v1/admin/*` endpoints continue to require admin scope. Other
+endpoint families (sessions, events, analytics, access-tokens) have
+not been audited for the same split as of v0.6; the admin/viewer
+distinction generalises cleanly when needed.
 
 `POST /v1/admin/reconcile-agents` recomputes `agents.total_sessions`,
 `total_tokens`, `first_seen_at`, and `last_seen_at` from the sessions
@@ -2855,7 +3831,7 @@ targets:
 | `make dev` | Boot the dev stack via docker-compose.dev.yml |
 | `make test` | Per-component unit tests (sensor, ingestion, workers, api, dashboard) |
 | `make test-integration` | Run pytest against the dev stack |
-| `make playground-<script>` | Live-API regression demo for `<script>` (Rule 40d) |
+| `make playground-<script>` | Live-API regression demo for `<script>` |
 | `make playground-all` | All playground demos, skip those without API keys |
 | `make lint` | Per-component lint (ruff, golangci-lint, ESLint, mypy) |
 | `make build` | Docker images for ingestion, workers, api, dashboard |
@@ -2865,8 +3841,7 @@ Each component (`sensor/`, `ingestion/`, `workers/`, `api/`,
 `dashboard/`, `docker/`, `helm/`, `plugin/`) has its own Makefile with
 `build`, `test`, `lint`, `clean` targets at minimum. `ingestion/Makefile`
 and `api/Makefile` run `swag init -g cmd/main.go -o docs` before
-`go build` so the Swagger UI matches the latest annotations (Rule 50,
-D050).
+`go build` so the Swagger UI matches the latest annotations.
 
 ---
 
@@ -2908,7 +3883,7 @@ Postgres) via `make test-integration`:
 - `test_sensor_e2e.py` — end-to-end sensor lifecycle including
   acknowledgement events and singleton behaviour
 
-### Manual playground demos (Rule 40d)
+### Manual playground demos
 
 `playground/` runs real-API regression demos per supported framework.
 Manual, NOT in CI — they cost money and need live API credentials.
@@ -2942,8 +3917,8 @@ exits 0 only when every script returned 0 (PASS) or 2 (SKIP).
 
 `dashboard/tests/e2e/` covers full user journeys against a seeded dev
 stack. Tests run under both `neon-dark` and `clean-light` theme
-projects via Playwright's `projects` config (Rule 40c.3). Tests do not
-hardcode theme-specific selectors or computed colour values.
+projects via Playwright's `projects` config. Tests do not hardcode
+theme-specific selectors or computed colour values.
 
 `_fixtures.ts` provides `bringSwimlaneRowIntoView(page, agentName)` and
 `bringTableRowIntoView` helpers for the virtualized swimlane and
@@ -2970,7 +3945,7 @@ leaves fixture-by-fixture lookup to the bring-into-view helpers.
 9. No raw SQL outside `api/internal/store/`.
 10. All database migrations have an up and a down.
 11. Prompt content is never stored or logged when `capture_prompts=false`.
-    This is a hard rule. No exceptions. See DECISIONS.md D019.
+    This is a hard rule. No exceptions.
 12. Every analytics chart must have a working group-by control.
 13. The global time range picker applies to all charts simultaneously.
 14. Provider terminology is preserved exactly. Anthropic uses `system` +

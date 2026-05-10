@@ -1,1 +1,0 @@
-ALTER TABLE directives ADD COLUMN IF NOT EXISTS payload JSONB;

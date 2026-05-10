@@ -1,4 +1,27 @@
-import type { FleetResponse, AgentSummary, SessionDetail, Policy, PolicyRequest, DirectiveRequest, Directive, AnalyticsParams, AnalyticsResponse, EventContent, SearchResults, CustomDirective, AgentEvent, SessionsResponse, AccessToken, CreatedAccessToken } from "./types";
+import type {
+  FleetResponse,
+  AgentSummary,
+  SessionDetail,
+  Policy,
+  PolicyRequest,
+  DirectiveRequest,
+  Directive,
+  AnalyticsParams,
+  AnalyticsResponse,
+  EventContent,
+  SearchResults,
+  CustomDirective,
+  AgentEvent,
+  SessionsResponse,
+  AccessToken,
+  CreatedAccessToken,
+  MCPPolicy,
+  MCPPolicyAuditLog,
+  MCPPolicyMetrics,
+  MCPPolicyMutation,
+  MCPPolicyResolveResult,
+  MCPPolicyTemplate,
+} from "./types";
 
 const BASE = import.meta.env.VITE_API_BASE_URL || "/api";
 
@@ -14,16 +37,46 @@ const BASE = import.meta.env.VITE_API_BASE_URL || "/api";
 // replace this before a dashboard bundle is shipped to end users.
 export const ACCESS_TOKEN = "tok_dev";
 
+/** localStorage key that overrides the hardcoded ``ACCESS_TOKEN``
+ *  when present. Pre-built for the Phase 5 Part 2 Settings page that
+ *  will write to it via UI; in the meantime an operator who needs
+ *  admin scope (e.g. for the MCP Protection Policy admin features)
+ *  can paste an admin token via DevTools without a code change.
+ *  Reading at request time keeps token rotation a localStorage
+ *  change rather than a redeploy. */
+export const ACCESS_TOKEN_STORAGE_KEY = "flightdeck-access-token";
+
+function getActiveAccessToken(): string {
+  if (typeof window === "undefined") return ACCESS_TOKEN;
+  try {
+    const stored = window.localStorage.getItem(ACCESS_TOKEN_STORAGE_KEY);
+    if (stored && stored.length > 0) return stored;
+  } catch {
+    // localStorage may be unavailable (e.g. SSR / strict iframe). Fall
+    // back to the build-time token rather than failing requests.
+  }
+  return ACCESS_TOKEN;
+}
+
 // WS_ACCESS_TOKEN_QUERY is the query-string form used by the
 // WebSocket /v1/stream endpoint. Browsers cannot set Authorization
 // on a WebSocket upgrade, so the server accepts the access token via
-// ``?token=`` as an alternative.
+// ``?token=`` as an alternative. Reads the active token at call
+// time so a localStorage override is honoured for new connections.
+export function wsAccessTokenQuery(): string {
+  return `token=${encodeURIComponent(getActiveAccessToken())}`;
+}
+
+/** @deprecated import {@link wsAccessTokenQuery} and call it. The
+ *  constant captures the build-time token and ignores the
+ *  localStorage override. Kept for compatibility with call sites
+ *  that haven't been migrated. */
 export const WS_ACCESS_TOKEN_QUERY = `token=${encodeURIComponent(ACCESS_TOKEN)}`;
 
 function authHeaders(init?: HeadersInit): Headers {
   const h = new Headers(init);
   if (!h.has("Authorization")) {
-    h.set("Authorization", `Bearer ${ACCESS_TOKEN}`);
+    h.set("Authorization", `Bearer ${getActiveAccessToken()}`);
   }
   return h;
 }
@@ -37,10 +90,43 @@ export async function apiFetch(path: string, init: RequestInit = {}): Promise<Re
   return fetch(`${BASE}${path}`, { ...init, headers: authHeaders(init.headers) });
 }
 
+/** Builds the "Admin token required to ${action}" error string with
+ *  an inline how-to-fix hint pointing the operator at the
+ *  ``flightdeck-access-token`` localStorage key. Kept as a single
+ *  helper so the instruction stays consistent across every admin
+ *  surface (audit, metrics, dry-run, templates, YAML import/export,
+ *  version history). The Phase 5 Part 2 Settings page will replace
+ *  the hint with a Set-Token UI, at which point this helper's
+ *  second sentence collapses to a CTA. */
+export function adminTokenError(action: string): string {
+  return (
+    `Admin token required to ${action} ` +
+    `Set the ${ACCESS_TOKEN_STORAGE_KEY} localStorage key in this ` +
+    `browser to an admin-scoped token (DevTools → Application → ` +
+    `Local Storage), then reload.`
+  );
+}
+
+/** Subclass of Error that carries the HTTP status code so call
+ *  sites can distinguish 401 / 403 / 404 / 5xx without parsing the
+ *  message. Surfaces in MCP Protection Policy admin views render
+ *  403 as actionable copy ("Admin token required") rather than a
+ *  generic "API 403" message. */
+export class ApiError extends Error {
+  constructor(
+    public readonly status: number,
+    public readonly path: string,
+    message?: string,
+  ) {
+    super(message ?? `API ${status}: ${path}`);
+    this.name = "ApiError";
+  }
+}
+
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await apiFetch(path, init);
   if (!res.ok) {
-    throw new Error(`API ${res.status}: ${path}`);
+    throw new ApiError(res.status, path);
   }
   return res.json() as Promise<T>;
 }
@@ -328,6 +414,17 @@ export interface SessionsParams {
   has_sub_agents?: boolean;
   is_sub_agent?: boolean;
   /**
+   * Operator-actionable enrichment facet filters. Each repeatable
+   * array filter narrows to sessions that emitted at least one
+   * matching event. ``terminal`` is a bool toggle. Composes with
+   * every other filter via AND.
+   */
+  close_reason?: string[];
+  estimated_via?: string[];
+  terminal?: boolean;
+  matched_entry_id?: string[];
+  originating_call_context?: string[];
+  /**
    * D126 UX revision 2026-05-03 — when explicitly false, excludes
    * pure children (sessions whose ``parent_session_id`` is set
    * AND that themselves have no descendants), leaving
@@ -398,6 +495,20 @@ export async function fetchSessions(params: SessionsParams, signal?: AbortSignal
   }
   if (params.has_sub_agents) sp.set("has_sub_agents", "true");
   if (params.is_sub_agent) sp.set("is_sub_agent", "true");
+  if (params.close_reason) {
+    for (const v of params.close_reason) sp.append("close_reason", v);
+  }
+  if (params.estimated_via) {
+    for (const v of params.estimated_via) sp.append("estimated_via", v);
+  }
+  if (params.terminal) sp.set("terminal", "true");
+  if (params.matched_entry_id) {
+    for (const v of params.matched_entry_id) sp.append("matched_entry_id", v);
+  }
+  if (params.originating_call_context) {
+    for (const v of params.originating_call_context)
+      sp.append("originating_call_context", v);
+  }
   if (params.include_pure_children !== undefined) {
     sp.set(
       "include_pure_children",
@@ -460,4 +571,144 @@ export async function renameAccessToken(id: string, name: string): Promise<Acces
     throw new Error(`API ${res.status}: PATCH /v1/access-tokens/${id}`);
   }
   return res.json() as Promise<AccessToken>;
+}
+
+// ----- Whoami (D147) -----
+
+/** Response shape for GET /v1/whoami. Read-open per D147. */
+export interface WhoamiResponse {
+  role: "admin" | "viewer";
+  token_id: string;
+}
+
+export function fetchWhoami(): Promise<WhoamiResponse> {
+  return fetchJson<WhoamiResponse>("/v1/whoami");
+}
+
+// ----- MCP Protection Policy (D128 / D131 / D135 / D138 / D139 / D147) -----
+
+export function fetchGlobalMCPPolicy(): Promise<MCPPolicy> {
+  return fetchJson<MCPPolicy>("/v1/mcp-policies/global");
+}
+
+export async function fetchFlavorMCPPolicy(
+  flavor: string,
+): Promise<MCPPolicy | null> {
+  const res = await apiFetch(`/v1/mcp-policies/${encodeURIComponent(flavor)}`);
+  if (res.status === 404) return null;
+  if (!res.ok) {
+    throw new Error(`fetchFlavorMCPPolicy ${res.status}`);
+  }
+  return res.json() as Promise<MCPPolicy>;
+}
+
+export function createFlavorMCPPolicy(
+  flavor: string,
+  body: MCPPolicyMutation,
+): Promise<MCPPolicy> {
+  return fetchJson<MCPPolicy>(
+    `/v1/mcp-policies/${encodeURIComponent(flavor)}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
+  );
+}
+
+export function updateGlobalMCPPolicy(
+  body: MCPPolicyMutation,
+): Promise<MCPPolicy> {
+  return fetchJson<MCPPolicy>("/v1/mcp-policies/global", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export function updateFlavorMCPPolicy(
+  flavor: string,
+  body: MCPPolicyMutation,
+): Promise<MCPPolicy> {
+  return fetchJson<MCPPolicy>(
+    `/v1/mcp-policies/${encodeURIComponent(flavor)}`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
+  );
+}
+
+export async function deleteFlavorMCPPolicy(flavor: string): Promise<void> {
+  const res = await apiFetch(`/v1/mcp-policies/${encodeURIComponent(flavor)}`, {
+    method: "DELETE",
+  });
+  if (!res.ok && res.status !== 404) {
+    throw new Error(`deleteFlavorMCPPolicy ${res.status}`);
+  }
+}
+
+export function resolveMCPPolicy(params: {
+  flavor?: string;
+  server_url: string;
+  server_name: string;
+}): Promise<MCPPolicyResolveResult> {
+  const qs = new URLSearchParams({
+    server_url: params.server_url,
+    server_name: params.server_name,
+  });
+  if (params.flavor) qs.set("flavor", params.flavor);
+  return fetchJson<MCPPolicyResolveResult>(
+    `/v1/mcp-policies/resolve?${qs.toString()}`,
+  );
+}
+
+export function listMCPPolicyAuditLog(
+  flavorOrGlobal: string,
+  params: {
+    event_type?: string;
+    from?: string;
+    to?: string;
+    limit?: number;
+    offset?: number;
+  } = {},
+): Promise<MCPPolicyAuditLog[]> {
+  const qs = new URLSearchParams();
+  if (params.event_type) qs.set("event_type", params.event_type);
+  if (params.from) qs.set("from", params.from);
+  if (params.to) qs.set("to", params.to);
+  if (params.limit) qs.set("limit", String(params.limit));
+  if (params.offset) qs.set("offset", String(params.offset));
+  const path =
+    `/v1/mcp-policies/${encodeURIComponent(flavorOrGlobal)}/audit-log`
+    + (qs.toString() ? `?${qs.toString()}` : "");
+  return fetchJson<MCPPolicyAuditLog[]>(path);
+}
+
+export function getMCPPolicyMetrics(
+  flavorOrGlobal: string,
+  period: "24h" | "7d" | "30d" = "24h",
+): Promise<MCPPolicyMetrics> {
+  return fetchJson<MCPPolicyMetrics>(
+    `/v1/mcp-policies/${encodeURIComponent(flavorOrGlobal)}/metrics?period=${period}`,
+  );
+}
+
+export function listMCPPolicyTemplates(): Promise<MCPPolicyTemplate[]> {
+  return fetchJson<MCPPolicyTemplate[]>("/v1/mcp-policies/templates");
+}
+
+export function applyMCPPolicyTemplate(
+  flavor: string,
+  templateName: string,
+): Promise<MCPPolicy> {
+  return fetchJson<MCPPolicy>(
+    `/v1/mcp-policies/${encodeURIComponent(flavor)}/apply_template`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ template: templateName }),
+    },
+  );
 }

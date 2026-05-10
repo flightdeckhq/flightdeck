@@ -23,6 +23,7 @@ from flightdeck_sensor.core.exceptions import (
     BudgetExceededError,
     ConfigurationError,
     DirectiveError,
+    MCPPolicyBlocked,
 )
 from flightdeck_sensor.core.session import Session
 from flightdeck_sensor.core.types import (
@@ -83,6 +84,7 @@ __all__ = [
     "BudgetExceededError",
     "ConfigurationError",
     "DirectiveError",
+    "MCPPolicyBlocked",
 ]
 
 _log = logging.getLogger("flightdeck_sensor")
@@ -230,6 +232,7 @@ def init(
     agent_type: str | None = None,
     agent_name: str | None = None,
     langgraph_agent_node_pattern: str | None = None,
+    mcp_block_on_uncertainty: bool = False,
 ) -> None:
     """Initialize the sensor and start the session.
 
@@ -430,6 +433,7 @@ def init(
             "quiet": quiet,
             "limit": limit,
             "warn_at": warn_at,
+            "mcp_block_on_uncertainty": mcp_block_on_uncertainty,
         }
         # Only pass session_id when the caller asked for a specific
         # value; otherwise let SensorConfig's default_factory generate
@@ -604,10 +608,7 @@ def patch(
         # form), so this is a no-op equality-wise but it gives every
         # downstream branch a clean ``str``-typed lookup target and
         # keeps the unknown-string-silently-ignored behavior intact.
-        targets = {
-            t.value if isinstance(t, Provider) else t
-            for t in providers
-        }
+        targets = {t.value if isinstance(t, Provider) else t for t in providers}
 
     with _patch_lock:
         if Provider.ANTHROPIC.value in targets:

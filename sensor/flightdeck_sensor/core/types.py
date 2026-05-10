@@ -5,7 +5,7 @@ from __future__ import annotations
 import enum
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 
 class SessionState(enum.Enum):
@@ -44,6 +44,21 @@ class EventType(enum.Enum):
     MCP_RESOURCE_READ = "mcp_resource_read"
     MCP_PROMPT_LIST = "mcp_prompt_list"
     MCP_PROMPT_GET = "mcp_prompt_get"
+    # MCP Protection Policy (D131). policy_mcp_warn / _block emit at
+    # call_tool time when the cached policy decides warn or block
+    # respectively; mcp_server_name_changed emits at initialize time
+    # when an agent declares a server whose canonical URL is already
+    # known under a different name.
+    POLICY_MCP_WARN = "policy_mcp_warn"
+    POLICY_MCP_BLOCK = "policy_mcp_block"
+    MCP_SERVER_NAME_CHANGED = "mcp_server_name_changed"
+    # D140 step 6.6 A2 — emitted by record_mcp_server inside
+    # ClientSession.initialize once per (name, server_url) tuple.
+    # Drives live SessionDrawer MCP SERVERS panel population: the
+    # worker UPSERTs the per-server fingerprint into
+    # sessions.context.mcp_servers so operators investigating
+    # in-flight sessions see attached servers within ~2-3 s.
+    MCP_SERVER_ATTACHED = "mcp_server_attached"
 
 
 class DirectiveAction(enum.Enum):
@@ -66,6 +81,90 @@ class PolicyDecision(enum.Enum):
     WARN = "warn"
     DEGRADE = "degrade"
     BLOCK = "block"
+
+
+# D149 — originating_call_context enum. Identifies the agent operation
+# that triggered an MCP-policy emission. Plugin populates ``tool_call``
+# (the only stage Claude Code's hook surface exposes); sensor populates
+# any of the seven values depending on which ClientSession method
+# tripped the policy cache. Recorded once in ARCHITECTURE.md so the
+# enum boundary is explicit for future contributors.
+OriginatingCallContext = Literal[
+    "tool_call",
+    "list_tools",
+    "read_resource",
+    "get_prompt",
+    "list_resources",
+    "list_prompts",
+    "session_boot",
+]
+
+
+@dataclass(frozen=True)
+class PolicyDecisionSummary:
+    """Shared payload-block schema for every policy enforcement event
+    (D148). Used by ``policy_warn``, ``policy_degrade``, ``policy_block``,
+    ``policy_mcp_warn``, and ``policy_mcp_block``.
+
+    Lands on the wire as ``payload["policy_decision"] = {...}``. Always
+    included regardless of ``capture_prompts`` per Phase 7 Q2 — this is
+    state metadata, not content.
+
+    The shape is canonical with optional MCP-specific fields. Token-
+    budget events leave ``decision_path`` / ``matched_entry_id`` /
+    ``matched_entry_label`` ``None``; MCP events populate all fields.
+    Operators read the same shape across event types so a single
+    dashboard renderer covers all five.
+
+    Field semantics:
+
+    - ``policy_id`` / ``scope`` — which policy row produced this
+      decision. Scope is one of ``"org"`` / ``"flavor:<name>"`` /
+      ``"session:<id>"`` / ``"global"`` / ``"local_failsafe"`` (the
+      last only for sensor-side fail-open under MCP-cache miss).
+    - ``decision`` — the action taken: ``"warn"`` / ``"degrade"`` /
+      ``"block"`` / ``"allow"`` / ``"deny"``. Distinct from the
+      event_type (which encodes warn-vs-block at the type level)
+      because operators reading the policy_decision block in
+      isolation need it self-describing.
+    - ``reason`` — operator-readable single-line summary built by
+      the sensor at emission time. Pattern locked in Step 2 plan
+      readback: "<what happened> + <by what mechanism> + <relevant
+      context>". No newlines.
+    - ``decision_path`` — MCP-only. Mirrors ``MCPPolicyDecision``.
+    - ``matched_entry_id`` / ``matched_entry_label`` — MCP-only.
+      Populated when the decision came from an entry hit (flavor
+      or global); ``None`` on the mode-default fall-through path
+      where no entry matched. The label is the entry's
+      ``server_name`` (display formatting belongs to the dashboard).
+    """
+
+    policy_id: str
+    scope: str
+    decision: str
+    reason: str
+    decision_path: str | None = None
+    matched_entry_id: str | None = None
+    matched_entry_label: str | None = None
+
+    def as_payload_dict(self) -> dict[str, Any]:
+        """Render to the wire shape. Drops ``None``-valued MCP-only
+        fields so token-budget events ship a compact 4-key block; MCP
+        events ship the full 7-key block. Stable across language
+        boundaries — the plugin-side JSON has the same shape."""
+        out: dict[str, Any] = {
+            "policy_id": self.policy_id,
+            "scope": self.scope,
+            "decision": self.decision,
+            "reason": self.reason,
+        }
+        if self.decision_path is not None:
+            out["decision_path"] = self.decision_path
+        if self.matched_entry_id is not None:
+            out["matched_entry_id"] = self.matched_entry_id
+        if self.matched_entry_label is not None:
+            out["matched_entry_label"] = self.matched_entry_label
+        return out
 
 
 @dataclass(frozen=True)
@@ -123,6 +222,13 @@ class SensorConfig:
     quiet: bool = False
     limit: int | None = None
     warn_at: float = 0.8
+    # MCP Protection Policy (D128 / D129). When True AND the
+    # control plane is unreachable at session preflight (so the MCP
+    # policy cache is empty), unmatched MCP server URLs in
+    # mode-default fall-through resolve to block instead of allow.
+    # The operator failsafe for the cache-miss case. Default False
+    # preserves Rule 28's fail-open posture.
+    mcp_block_on_uncertainty: bool = False
 
     def __post_init__(self) -> None:
         if not self.api_url:
@@ -247,6 +353,14 @@ class MCPServerFingerprint:
     version: str | None
     capabilities: dict[str, Any] = field(default_factory=dict)
     instructions: str | None = None
+    # Server URL captured at ``ClientSession.initialize()`` time. The
+    # MCP Protection Policy identity model (D127) treats URL as the
+    # primary security key — the fingerprint without URL can't be
+    # resolved against a policy. Empty string when the transport
+    # didn't expose a URL marker (rare; preserved verbatim, not
+    # coerced to None, so the dashboard can render "no URL captured"
+    # with intent rather than as a missing field).
+    server_url: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -256,4 +370,5 @@ class MCPServerFingerprint:
             "version": self.version,
             "capabilities": self.capabilities,
             "instructions": self.instructions,
+            "server_url": self.server_url,
         }

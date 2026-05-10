@@ -72,10 +72,44 @@ var validSessionClientTypes = map[string]bool{
 // values (sensor/flightdeck_sensor/core/types.py). A typo lands as
 // 400 with the allowed set so callers can self-correct rather than
 // silently receiving an empty result.
+//
+// D131 MCP Protection Policy adds four event types into the
+// "policy_event_type" filter family per ARCHITECTURE.md →
+// "Adjacent surfaces" so the existing Investigate facet can show
+// MCP-policy filtering chips alongside the token-budget policy
+// types. The chips render on the same facet column; chroma is
+// distinguished by the per-event eventBadgeConfig (amber/red for
+// enforcement, purple/info for FYI).
 var validPolicyEventTypes = map[string]bool{
-	"policy_warn":    true,
-	"policy_degrade": true,
-	"policy_block":   true,
+	"policy_warn":                true,
+	"policy_degrade":             true,
+	"policy_block":               true,
+	"policy_mcp_warn":            true,
+	"policy_mcp_block":           true,
+	"mcp_server_name_changed":    true,
+	"mcp_policy_user_remembered": true,
+}
+
+// validCloseReasons mirrors the close_reason enum the sensor +
+// worker emit on session_end events. Out-of-band values 400 with
+// the allowed list rather than silently matching nothing — the
+// dimension is closed, so a typo is operator-actionable.
+var validCloseReasons = map[string]bool{
+	"normal_exit":        true,
+	"directive_shutdown": true,
+	"policy_block":       true,
+	"orphan_timeout":     true,
+	"sigkill_detected":   true,
+	"unknown":            true,
+}
+
+// validEstimatedVias mirrors the estimated_via enum the sensor
+// emits on pre_call / post_call / embeddings events. Same closed-
+// vocabulary posture as validCloseReasons / validPolicyEventTypes.
+var validEstimatedVias = map[string]bool{
+	"tiktoken":  true,
+	"heuristic": true,
+	"none":      true,
 }
 
 // SessionsListHandler handles GET /v1/sessions.
@@ -102,13 +136,18 @@ var validPolicyEventTypes = map[string]bool{
 // @Param        git_repo   query  string  false  "Filter by context.git_repo (repeatable)"
 // @Param        orchestration query string false "Filter by context.orchestration (repeatable)"
 // @Param        error_type query  string  false  "Filter to sessions that emitted an llm_error event of one of the listed taxonomy values (repeatable/comma). 14-entry vocabulary: rate_limit, quota_exceeded, context_overflow, content_filter, invalid_request, authentication, permission, not_found, request_too_large, api_error, overloaded, timeout, stream_error, other."
-// @Param        policy_event_type query  string  false  "Filter to sessions that emitted at least one policy enforcement event of the listed types (repeatable/comma). Vocabulary: policy_warn, policy_degrade, policy_block."
+// @Param        policy_event_type query  string  false  "Filter to sessions that emitted at least one policy enforcement event of the listed types (repeatable/comma). Vocabulary: policy_warn, policy_degrade, policy_block, policy_mcp_warn, policy_mcp_block, mcp_server_name_changed, mcp_policy_user_remembered."
 // @Param        mcp_server query  string  false  "Filter to sessions that connected to an MCP server with the given name (repeatable/comma). Phase 5: backed by the JSONB array sessions.context.mcp_servers. Each row in the response carries mcp_server_names[] for facet rendering."
 // @Param        parent_session_id query string false "D126: filter to children of one specific parent session (UUID). Used by the SessionDrawer Sub-agents tab to fetch the per-parent child list."
 // @Param        agent_role query  string  false  "D126: filter by sub-agent role string (repeatable/comma). CrewAI Agent.role, LangGraph node name, Claude Code Task agent_type. Backs the Investigate ROLE facet."
 // @Param        has_sub_agents query bool false "D126: when true, restrict to parent sessions only (those referenced as a parent_session_id by at least one other session). Backs the Investigate TOPOLOGY facet 'Has sub-agents' checkbox."
 // @Param        is_sub_agent query bool false "D126: when true, restrict to child sessions only (parent_session_id IS NOT NULL). Backs the Investigate TOPOLOGY facet 'Is sub-agent' checkbox."
 // @Param        include_pure_children query bool false "D126 UX revision 2026-05-03: when false, exclude pure children (rows whose parent_session_id is set AND that themselves have no descendants), leaving parents-with-children + lone sessions. Default scope of the Investigate page. Omit or set true to preserve the legacy 'all sessions' behaviour."
+// @Param        close_reason             query  string  false  "Filter to sessions whose session_end carries one of the listed close_reason values (repeatable/comma; OR within, AND across dimensions). Allowed: normal_exit, directive_shutdown, policy_block, orphan_timeout, sigkill_detected, unknown."
+// @Param        estimated_via            query  string  false  "Filter to sessions that emitted at least one pre_call/post_call/embeddings event with the given estimated_via (repeatable/comma; OR within, AND across dimensions). Allowed: tiktoken, heuristic, none."
+// @Param        terminal                 query  bool    false  "When true, restrict to sessions that have at least one llm_error event with terminal=true (operator-actionable retry-chain-gave-up signal). Composes with every other filter via AND."
+// @Param        matched_entry_id         query  string  false  "Filter to sessions that emitted at least one policy_mcp_warn / policy_mcp_block event whose policy_decision.matched_entry_id matches one of the listed UUIDs (repeatable/comma; OR within, AND across dimensions)."
+// @Param        originating_call_context query  string  false  "Filter to sessions that emitted at least one event with originating_call_context matching one of the listed values (repeatable/comma; OR within, AND across dimensions). Vocabulary: call_tool, read_resource, list_tools, get_prompt, list_resources, list_prompts."
 // @Param        sort       query  string  false  "Sort field: started_at, last_seen_at, duration, tokens_used, flavor, model, hostname, state (default: started_at). state sort uses severity ordinal active→idle→stale→lost→closed."
 // @Param        order      query  string  false  "Sort order: asc, desc (default: desc)"
 // @Param        limit      query  int     false  "Max results (default 25, max 100)"
@@ -236,7 +275,10 @@ func SessionsListHandler(s store.Querier) http.HandlerFunc {
 				if !validPolicyEventTypes[v] {
 					writeError(w, http.StatusBadRequest,
 						"invalid policy_event_type: "+v+
-							". Allowed: policy_warn, policy_degrade, policy_block")
+							". Allowed: policy_warn, policy_degrade, "+
+							"policy_block, policy_mcp_warn, "+
+							"policy_mcp_block, mcp_server_name_changed, "+
+							"mcp_policy_user_remembered")
 					return
 				}
 				policyEventTypes = append(policyEventTypes, v)
@@ -380,6 +422,65 @@ func SessionsListHandler(s store.Querier) http.HandlerFunc {
 			includePureChildren = &b
 		}
 
+		// Operator-actionable enrichment facet filters (Step 6 follow-
+		// up). close_reason / estimated_via are closed enums and 400 on
+		// out-of-band values; matched_entry_id /
+		// originating_call_context are free-form (typos silently match
+		// nothing). terminal is a bool toggle.
+		var closeReasons []string
+		for _, raw := range q["close_reason"] {
+			for _, v := range strings.Split(raw, ",") {
+				v = strings.TrimSpace(v)
+				if v == "" {
+					continue
+				}
+				if !validCloseReasons[v] {
+					writeError(w, http.StatusBadRequest,
+						"invalid close_reason: "+v+
+							". Allowed: normal_exit, directive_shutdown, "+
+							"policy_block, orphan_timeout, "+
+							"sigkill_detected, unknown")
+					return
+				}
+				closeReasons = append(closeReasons, v)
+			}
+		}
+		var estimatedVias []string
+		for _, raw := range q["estimated_via"] {
+			for _, v := range strings.Split(raw, ",") {
+				v = strings.TrimSpace(v)
+				if v == "" {
+					continue
+				}
+				if !validEstimatedVias[v] {
+					writeError(w, http.StatusBadRequest,
+						"invalid estimated_via: "+v+
+							". Allowed: tiktoken, heuristic, none")
+					return
+				}
+				estimatedVias = append(estimatedVias, v)
+			}
+		}
+		terminalOnly := parseBoolQuery(q.Get("terminal"))
+		var matchedEntryIDs []string
+		for _, raw := range q["matched_entry_id"] {
+			for _, v := range strings.Split(raw, ",") {
+				v = strings.TrimSpace(v)
+				if v != "" {
+					matchedEntryIDs = append(matchedEntryIDs, v)
+				}
+			}
+		}
+		var originatingCallContexts []string
+		for _, raw := range q["originating_call_context"] {
+			for _, v := range strings.Split(raw, ",") {
+				v = strings.TrimSpace(v)
+				if v != "" {
+					originatingCallContexts = append(originatingCallContexts, v)
+				}
+			}
+		}
+
 		params := store.SessionsParams{
 			From:    from,
 			To:      to,
@@ -402,6 +503,11 @@ func SessionsListHandler(s store.Querier) http.HandlerFunc {
 			HasSubAgents:        hasSubAgents,
 			IsSubAgent:          isSubAgent,
 			IncludePureChildren: includePureChildren,
+			CloseReasons:            closeReasons,
+			EstimatedVias:           estimatedVias,
+			TerminalOnly:            terminalOnly,
+			MatchedEntryIDs:         matchedEntryIDs,
+			OriginatingCallContexts: originatingCallContexts,
 			ContextFilters:   contextFilters,
 			Model:            q.Get("model"),
 			Sort:             sort,

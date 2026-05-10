@@ -1,0 +1,4 @@
+{
+  "_comment": "Dev-stack default access token. Production deployers replace this file at deploy time by volume-mounting their own /usr/share/nginx/html/runtime-config.json. Do NOT commit production tokens to source control.",
+  "access_token": "tok_dev"
+}

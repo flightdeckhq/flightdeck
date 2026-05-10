@@ -41,6 +41,16 @@ Thumbs.db
 # Env
 .env
 
+# Production runtime config. Operators may mount their own
+# runtime-config.json over /usr/share/nginx/html/runtime-config.json
+# inside the dashboard container. The repo-shipped default at
+# dashboard/public/runtime-config.json is the dev token; ignore any
+# host-side override file so a deployer's production token never
+# accidentally lands in source control.
+runtime-config.prod.json
+docker/dashboard/runtime-config.json
+docker/runtime-config.json
+
 # Claude
 .claude/
 tests/smoke/.venv-py312/

@@ -25,54 +25,29 @@ import type {
 
 const BASE = import.meta.env.VITE_API_BASE_URL || "/api";
 
-// D095/D096: every dashboard request is authenticated with an access
-// token. "Access token" is the D096 rename -- the product also tracks
-// LLM input/output token counts on sessions, so "token" alone is
-// ambiguous. Phase 5 Part 1b hardcodes tok_dev; the Settings page in
-// Phase 5 Part 2 will swap this for a user-selected access token
-// read from localStorage. The ENVIRONMENT=dev gate on the API service
-// means production deployments reject tok_dev at the middleware;
-// shipping this fallback in a prod build is a non-issue because the
-// server will 401 it anyway, but the Part 2 work still needs to
-// replace this before a dashboard bundle is shipped to end users.
-export const ACCESS_TOKEN = "tok_dev";
+import { getAccessTokenSync } from "./runtime-config";
 
-/** localStorage key that overrides the hardcoded ``ACCESS_TOKEN``
- *  when present. Reading at request time keeps token rotation a
- *  localStorage change rather than a redeploy. */
-export const ACCESS_TOKEN_STORAGE_KEY = "flightdeck-access-token";
+// All authenticated request paths read the active access token from
+// localStorage via getAccessTokenSync(). main.tsx awaits
+// ensureAccessToken() before rendering App, so by the time any
+// component calls these helpers a token is guaranteed to be present.
+// If localStorage is somehow empty after bootstrap (e.g. cleared
+// mid-session) every request lands as "Bearer " and the API returns
+// 401 — surfaces visibly rather than failing silently.
 
-function getActiveAccessToken(): string {
-  if (typeof window === "undefined") return ACCESS_TOKEN;
-  try {
-    const stored = window.localStorage.getItem(ACCESS_TOKEN_STORAGE_KEY);
-    if (stored && stored.length > 0) return stored;
-  } catch {
-    // localStorage may be unavailable (e.g. SSR / strict iframe). Fall
-    // back to the build-time token rather than failing requests.
-  }
-  return ACCESS_TOKEN;
-}
-
-// WS_ACCESS_TOKEN_QUERY is the query-string form used by the
-// WebSocket /v1/stream endpoint. Browsers cannot set Authorization
-// on a WebSocket upgrade, so the server accepts the access token via
-// ``?token=`` as an alternative. Reads the active token at call
-// time so a localStorage override is honoured for new connections.
+/** Sync read of the active bearer for the WebSocket query-string
+ *  variant (browsers cannot attach Authorization on the WS upgrade).
+ *  The value resolves at call time so an operator who pasted a
+ *  different token via DevTools and reloaded picks it up on the next
+ *  WebSocket reconnect. */
 export function wsAccessTokenQuery(): string {
-  return `token=${encodeURIComponent(getActiveAccessToken())}`;
+  return `token=${encodeURIComponent(getAccessTokenSync() ?? "")}`;
 }
-
-/** @deprecated import {@link wsAccessTokenQuery} and call it. The
- *  constant captures the build-time token and ignores the
- *  localStorage override. Kept for compatibility with call sites
- *  that haven't been migrated. */
-export const WS_ACCESS_TOKEN_QUERY = `token=${encodeURIComponent(ACCESS_TOKEN)}`;
 
 function authHeaders(init?: HeadersInit): Headers {
   const h = new Headers(init);
   if (!h.has("Authorization")) {
-    h.set("Authorization", `Bearer ${getActiveAccessToken()}`);
+    h.set("Authorization", `Bearer ${getAccessTokenSync() ?? ""}`);
   }
   return h;
 }
@@ -540,9 +515,9 @@ export function fetchAnalytics(params: AnalyticsParams): Promise<AnalyticsRespon
 
 // ---- Access tokens (D095/D096) --------------------------------------
 //
-// All four endpoints run through apiFetch so the dev-time ACCESS_TOKEN
-// header is attached. Errors propagate as thrown Error so the Settings
-// page can render targeted inline messages per flow (create/rename/
+// All four endpoints run through apiFetch so the bearer token is
+// attached. Errors propagate as thrown Error so the Settings page
+// can render targeted inline messages per flow (create / rename /
 // delete) rather than one global toast.
 
 export function fetchAccessTokens(): Promise<AccessToken[]> {

@@ -16,13 +16,12 @@ import requests
 
 from .conftest import (
     API_URL,
-    admin_auth_headers,
     auth_headers,
 )
 
 
 def _admin_headers(json_body: bool = True) -> dict[str, str]:
-    return admin_auth_headers(json_body=json_body)
+    return auth_headers(json_body=json_body)
 
 
 def _read_headers(json_body: bool = False) -> dict[str, str]:

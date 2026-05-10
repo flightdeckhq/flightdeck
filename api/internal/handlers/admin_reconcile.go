@@ -26,8 +26,8 @@ var reconcileLock sync.Mutex
 // call. It (1) recomputes every agent's denormalised rollup counters
 // from sessions ground truth, then (2) deletes orphan rows whose
 // post-reconcile total_sessions is 0 AND whose last_seen_at is older
-// than ``orphan_threshold_secs`` (default 30 days). Admin-only —
-// gated via ``auth.AdminRequired`` in server.go.
+// than ``orphan_threshold_secs`` (default 30 days). Requires a valid
+// bearer token like every other endpoint.
 //
 // @Summary      Reconcile agent rollup counters AND reap stale orphan rows
 // @Description  One-shot operation that makes the agents table correct: recomputes total_sessions, total_tokens, first_seen_at, and last_seen_at against sessions ground truth (per-agent transaction; partial errors surface in the response errors array), then deletes orphan rows whose post-reconcile total_sessions = 0 AND last_seen_at < NOW() - orphan_threshold_secs. Pass orphan_threshold_secs=0 to skip the delete step (counters-only). Default threshold is 30 days. Values < 60 s rejected with 400 to prevent reaping freshly-upserted agents that the worker has not yet wired up to a session_start.
@@ -38,7 +38,6 @@ var reconcileLock sync.Mutex
 // @Failure      207  {object}  store.ReconcileResult  "Reconcile completed with per-agent errors (see errors array)"
 // @Failure      400  {object}  ErrorResponse          "orphan_threshold_secs malformed or absurdly small"
 // @Failure      401  {object}  ErrorResponse          "Missing or invalid bearer token"
-// @Failure      403  {object}  ErrorResponse          "Token is valid but lacks admin scope"
 // @Failure      409  {object}  ErrorResponse          "Another reconcile is already in progress"
 // @Failure      500  {object}  ErrorResponse          "Fatal database error (agent listing or pool exhaustion)"
 // @Router       /v1/admin/reconcile-agents [post]

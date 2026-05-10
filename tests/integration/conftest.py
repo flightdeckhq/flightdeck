@@ -23,7 +23,6 @@ import pytest
 
 from ..shared.fixtures import (
     # Constants
-    ADMIN_TOKEN,
     API_HEALTH,
     API_URL,
     DEFAULT_AGENT_TYPE,
@@ -37,7 +36,6 @@ from ..shared.fixtures import (
     POLL_INTERVAL,
     TOKEN,
     # Public helpers
-    admin_auth_headers,
     auth_headers,
     create_drifted_agent,
     create_policy,
@@ -71,7 +69,6 @@ from ..shared.fixtures import (
 # work in every integration test. Keeping this list explicit (rather
 # than wildcard) documents the public contract at a glance.
 __all__ = [
-    "ADMIN_TOKEN",
     "API_HEALTH",
     "API_URL",
     "DEFAULT_AGENT_TYPE",
@@ -84,7 +81,6 @@ __all__ = [
     "MAX_WAIT_SECS",
     "POLL_INTERVAL",
     "TOKEN",
-    "admin_auth_headers",
     "auth_headers",
     "create_drifted_agent",
     "create_policy",

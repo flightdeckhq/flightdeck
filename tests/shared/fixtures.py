@@ -637,25 +637,9 @@ def directive_has_delivered_at(directive_id: str) -> bool:
 
 # ---------------------------------------------------------------------------
 # Admin reconcile helpers. Used by integration + E2E tests that
-# exercise POST /v1/admin/reconcile-agents. The endpoint is gated by
-# auth.AdminRequired, which requires ``IsAdmin=true`` on the resolved
-# token — ``tok_admin_dev`` is the dev-mode shortcut (api/internal/
-# auth/token.go). Production callers pass
-# ``FLIGHTDECK_ADMIN_ACCESS_TOKEN`` verbatim instead.
+# exercise POST /v1/admin/reconcile-agents. Single-tier auth: the
+# endpoint accepts any valid bearer token (D156).
 # ---------------------------------------------------------------------------
-
-ADMIN_TOKEN = "tok_admin_dev"
-
-
-def admin_auth_headers(json_body: bool = False) -> dict[str, str]:
-    """Headers for the admin endpoint. Parallel to ``auth_headers``
-    but carries the admin bearer so ``AdminRequired`` lets the call
-    through. Tests that explicitly verify the 403 path use
-    ``auth_headers`` (tok_dev, non-admin)."""
-    headers = {"Authorization": f"Bearer {ADMIN_TOKEN}"}
-    if json_body:
-        headers["Content-Type"] = "application/json"
-    return headers
 
 
 def post_admin_reconcile(
@@ -665,17 +649,16 @@ def post_admin_reconcile(
     """POST /v1/admin/reconcile-agents and return (status, body).
 
     Returns a tuple rather than raising on non-2xx because several
-    tests exercise 401/403/409 paths where a non-success status IS
-    the expected result. Body is parsed as JSON when the response
-    carries a JSON content-type; otherwise the raw decoded text is
-    returned under the ``"error"`` key so every caller sees a dict.
+    tests exercise 401/409 paths where a non-success status IS the
+    expected result. Body is parsed as JSON when the response carries
+    a JSON content-type; otherwise the raw decoded text is returned
+    under the ``"error"`` key so every caller sees a dict.
 
-    ``token`` defaults to ``ADMIN_TOKEN``. Pass ``TOKEN`` (the regular
-    dev bearer) to verify the 403 path, or an empty string to verify
-    the 401 path.
+    ``token`` defaults to ``TOKEN`` (the regular dev bearer); pass an
+    empty string to verify the 401 path.
     """
     if token is None:
-        token = ADMIN_TOKEN
+        token = TOKEN
     headers = {"Content-Type": "application/json"}
     if token:
         headers["Authorization"] = f"Bearer {token}"

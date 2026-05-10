@@ -42,7 +42,7 @@ import flightdeck_sensor
 
 
 def _admin_headers(content_type: str | None = None) -> dict[str, str]:
-    headers = {"Authorization": "Bearer tok_admin_dev"}
+    headers = {"Authorization": "Bearer tok_dev"}
     if content_type:
         headers["Content-Type"] = content_type
     return headers

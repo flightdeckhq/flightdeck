@@ -21,8 +21,6 @@ import uuid
 import pytest
 
 from .conftest import (
-    ADMIN_TOKEN,
-    TOKEN,
     create_drifted_agent,
     delete_drifted_agent,
     get_agent_rollup,
@@ -42,7 +40,7 @@ def _unique(prefix: str) -> str:
 
 def test_reconcile_endpoint_shape() -> None:
     """200 with the canonical ReconcileResult JSON shape."""
-    status, body = post_admin_reconcile(token=ADMIN_TOKEN)
+    status, body = post_admin_reconcile()
     assert status == 200, f"expected 200, got {status} body={body}"
     for key in (
         "agents_scanned",
@@ -64,13 +62,6 @@ def test_reconcile_endpoint_requires_bearer_token() -> None:
     status, body = post_admin_reconcile(token="")
     assert status == 401
     assert "error" in body
-
-
-def test_reconcile_endpoint_requires_admin_scope_403() -> None:
-    """tok_dev is a valid bearer but NOT admin → 403, not 401."""
-    status, body = post_admin_reconcile(token=TOKEN)
-    assert status == 403, f"expected 403 for dev bearer, got {status} body={body}"
-    assert "admin" in body.get("error", "").lower()
 
 
 # ---------------------------------------------------------------------------

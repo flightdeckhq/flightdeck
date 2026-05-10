@@ -1,16 +1,8 @@
 // Handler integration tests for POST /v1/mcp-policies/{flavor}/apply_template
 // (D138). Complements the pre-existing happy-path + unknown-template
 // cases in mcp_policy_metrics_templates_test.go with the corner
-// paths that surfaced during step 6.9 — global rejection (durable
-// contract), missing-template body field, flavor-not-found, and
-// malformed JSON.
-//
-// 403 (non-admin) is structurally covered by
-// auth/token_test.go::TestAdminRequired_RejectsNonAdminWith403 plus
-// the route registration in server.go (apply_template is wired
-// through ``adminGate``); the handler itself is role-agnostic and a
-// duplicate handler-level 403 test would exercise the auth
-// middleware, not this handler.
+// paths — global rejection (durable contract), missing-template body
+// field, flavor-not-found, and malformed JSON.
 
 package handlers
 

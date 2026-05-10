@@ -12,6 +12,15 @@ on:
   push:
     branches: [main]
 
+# Workflow-level least privilege. Every job inherits ``contents: read``
+# only — enough to clone the repo via actions/checkout, nothing more.
+# No job in this workflow writes to the repo, creates issues / PRs /
+# releases, pushes images, or uses OIDC, so there is no need to grant
+# anything wider. A future job that needs more should override at the
+# job level rather than widening the workflow default.
+permissions:
+  contents: read
+
 # Cap blast radius from rapid-fire pushes on the same branch: cancel
 # any in-flight run when a newer commit lands. Two pushes in quick
 # succession should not boot two parallel Compose stacks (integration
@@ -353,6 +362,90 @@ jobs:
           fi
           if echo "$headers" | grep -qiE 'Expires: [^0]'; then
             echo "FAIL: Expires must be exactly 0 on error responses"
+            exit 1
+          fi
+
+      - name: Resolve a representative hashed asset
+        # Vite emits hashed filenames under /assets/ (e.g.
+        # index-<hash>.js). The smoke needs a real one to hit the
+        # asset-serving path operators see; ``docker exec ls`` gives
+        # the canonical list inside the image. Asserting against
+        # whatever happens to land first is fine because the cache
+        # contract is uniform across the directory — every file
+        # under /assets/ shares the same nginx location block.
+        id: asset
+        run: |
+          set -e
+          name=$(docker exec dashboard-smoke ls /usr/share/nginx/html/assets/ | head -1)
+          if [ -z "$name" ]; then
+            echo "FAIL: /usr/share/nginx/html/assets/ is empty in the built image"
+            exit 1
+          fi
+          echo "asset=$name" >> "$GITHUB_OUTPUT"
+          echo "Selected asset: $name"
+
+      - name: Assert single normalized Cache-Control on 200 (GET /assets/...)
+        # Hashed bundles are immutable by design — the file URL
+        # changes whenever the content changes. The contract is one
+        # ``Cache-Control: public, max-age=31536000, immutable``
+        # header, full stop. The defective pre-fix shape was two
+        # Cache-Control headers (``max-age=…`` from ``expires 1y``
+        # plus ``public, immutable`` from add_header) — the count
+        # assertion below catches any regression to that pattern.
+        # No ``Expires:`` header should ship — ``expires off``
+        # disables nginx's auto-emission so only our explicit
+        # add_header value lands.
+        run: |
+          set -e
+          asset='${{ steps.asset.outputs.asset }}'
+          headers=$(curl -sI "http://localhost:13000/assets/${asset}")
+          echo "--- headers ---"
+          echo "$headers"
+          cc_count=$(echo "$headers" | grep -ci '^Cache-Control:')
+          if [ "$cc_count" != "1" ]; then
+            echo "FAIL: expected exactly one Cache-Control header, got $cc_count"
+            exit 1
+          fi
+          echo "$headers" | grep -qi '^Cache-Control: public, max-age=31536000, immutable'
+          if echo "$headers" | grep -qi '^Expires:'; then
+            echo "FAIL: /assets/ must not ship an Expires header"
+            exit 1
+          fi
+
+      - name: Assert headers on 405 (POST /assets/...)
+        # Verifies the ``always`` parameter on /assets/ — the cache
+        # discipline must hold on error responses too, otherwise a
+        # 404 or 405 from a missing asset could be cached forever
+        # under one rule and never under another.
+        run: |
+          set -e
+          asset='${{ steps.asset.outputs.asset }}'
+          code=$(curl -o /dev/null -w '%{http_code}' -s -X POST "http://localhost:13000/assets/${asset}")
+          headers=$(curl -sI -X POST "http://localhost:13000/assets/${asset}")
+          echo "--- headers ---"
+          echo "$headers"
+          if [ "$code" != "405" ]; then
+            echo "FAIL: expected 405, got $code"
+            exit 1
+          fi
+          cc_count=$(echo "$headers" | grep -ci '^Cache-Control:')
+          if [ "$cc_count" != "1" ]; then
+            echo "FAIL: expected exactly one Cache-Control header on 405, got $cc_count"
+            exit 1
+          fi
+          echo "$headers" | grep -qi '^Cache-Control: public, max-age=31536000, immutable'
+
+      - name: Assert dashboard image runs as non-root
+        # USER nginx in the Dockerfile drops the master process from
+        # root (uid 0) to nginx (uid 101). Verifying via ``id`` is
+        # the simplest contract the assertion can carry — the
+        # specific UID isn't load-bearing, only that it's NOT 0.
+        run: |
+          set -e
+          uid=$(docker exec dashboard-smoke id -u)
+          echo "Container UID: $uid"
+          if [ "$uid" = "0" ]; then
+            echo "FAIL: dashboard image must not run as root"
             exit 1
           fi
 

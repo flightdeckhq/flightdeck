@@ -100,7 +100,8 @@ Flightdeck conventions (see `CLAUDE.md`):
   `@Router`) before the task is considered complete. Regenerate the
   `docs/` directory via `swag init` and commit it.
 - **Pre-push lint (rule 40e).** Run `golangci-lint run` from the
-  component root before pushing. On the dev box the binary lives at
-  `/home/omria/go/bin/golangci-lint` (not always on PATH). `go test
-  ./...` alone misses `unused` and other lints CI enforces.
+  component root before pushing. If `golangci-lint` is not on PATH,
+  check `$(go env GOPATH)/bin/golangci-lint` or install it via
+  `go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest`.
+  `go test ./...` alone misses `unused` and other lints CI enforces.
 

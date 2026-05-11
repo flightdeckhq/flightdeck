@@ -189,9 +189,10 @@ Flightdeck conventions (see `CLAUDE.md`):
   V-pass enumerates both before implementation starts.
 - **Pre-push lint (rule 40e).** Run the relevant linters before
   pushing: `ruff check .` + `ruff format --check .` for Python,
-  `golangci-lint run` for Go (binary at `/home/omria/go/bin/`),
-  `npm run lint` + `npm run typecheck` for the dashboard. `go test`
-  alone misses `unused` violations CI enforces.
+  `golangci-lint run` for Go (if not on PATH, check
+  `$(go env GOPATH)/bin/golangci-lint`), `npm run lint` +
+  `npm run typecheck` for the dashboard. `go test` alone misses
+  `unused` violations CI enforces.
 
 The polling helpers above are load-bearing reference for any new
 test author on this project. Keep them in scope when prescribing

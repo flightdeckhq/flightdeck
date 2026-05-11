@@ -15,7 +15,7 @@ On every invocation:
 5. Run the project's lint, type-check, and test commands. The defaults to attempt are:
    - `gofmt -l <changed files>` — any output is a critical finding.
    - `go vet ./...` on the affected package(s).
-   - `golangci-lint run` from the component root if a `.golangci.yml` is present (the binary may not be on PATH; on this project it lives at `/home/omria/go/bin/golangci-lint`).
+   - `golangci-lint run` from the component root if a `.golangci.yml` is present (install via `go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest` if not on PATH).
    - `go test -race ./...` on the affected package(s) when feasible. Race-detector findings are critical.
 
 Output exactly:

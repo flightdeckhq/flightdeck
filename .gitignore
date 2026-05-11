@@ -51,8 +51,10 @@ runtime-config.prod.json
 docker/dashboard/runtime-config.json
 docker/runtime-config.json
 
-# Claude
-.claude/
+# Claude — the .claude/ directory ships with the repo (review pipeline,
+# guidelines, audit-repo command, Stop hook). Personal permission
+# allowlists land in settings.local.json which stays gitignored.
+.claude/settings.local.json
 tests/smoke/.venv-py312/
 
 # Local scratch space + agent indices. Both are working scratchpads

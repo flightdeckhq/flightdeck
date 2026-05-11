@@ -15,26 +15,33 @@ On every invocation:
 5. Compare against the actual code state for the touched areas. Identify drift explicitly: doc-says vs code-does.
 6. Apply the relevant best-practice categories from the guidelines file: layering, distributed systems, observability, security, AI-specific.
 
-Output:
+Output exactly:
 
-## Architecture review summary
-- Docs reviewed: <list>
-- Code areas reviewed: <list>
+## Review summary
+- Files changed: <list>
+- Architecture docs reviewed: <list>
+- Lint: not-applicable
+- Type-check: not-applicable
+- Tests: not-applicable
+
+## Critical (must fix)
+- <file:line> — <issue> — <how to fix>
+
+## Warnings (should fix)
+- ...
+
+## Suggestions (nice to have)
+- ...
 
 ## Drift between docs and code
 For each item:
 - Doc says: <quote/paraphrase> at <file:line>
 - Code does: <description> at <file:line>
-- Recommendation: <update doc / change code / file an ADR>
-
-## Architectural concerns
-- Critical: <issues that should block release>
-- Warnings: <should fix soon>
-- Suggestions: <nice to have>
+- Recommendation: <update doc / change code / file an ADR or DECISIONS.md entry>
 
 ## Doc updates needed
 - <file> — <what to update>
 
 ## Verdict
-- CLEAN if no drift and no critical concerns.
+- CLEAN if no drift and no critical or warning concerns.
 - DIRTY otherwise.

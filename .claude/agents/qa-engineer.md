@@ -15,12 +15,24 @@ On every invocation:
 5. If a coverage tool is configured (`coverage`, `go test -cover`, `c8`, `nyc`, `vitest --coverage`), run it for the changed files only and parse the output.
 6. Apply the test design and pyramid guidelines. Flag flakiness sources, missing error-path tests, missing boundary tests.
 
-Output:
+Output exactly:
 
-## Coverage summary
-- Stack: <pytest/jest/etc>
-- Coverage on changed files: <%/not-measured>
-- Failing tests: <list>
+## Review summary
+- Files changed: <list>
+- Stack: <pytest / go test / vitest / jest / playwright / etc.>
+- Coverage on changed files: <% / not-measured>
+- Lint: not-applicable (covered by language reviewers)
+- Type-check: not-applicable (covered by language reviewers)
+- Tests: <pass/fail/not-found> (<command>)
+
+## Critical (must fix)
+- <file:line> — <issue, e.g. failing test, missing critical-path coverage> — <how to fix>
+
+## Warnings (should fix)
+- ...
+
+## Suggestions (nice to have)
+- ...
 
 ## Missing tests (prescriptive)
 For each:

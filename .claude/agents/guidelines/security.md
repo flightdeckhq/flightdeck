@@ -171,33 +171,44 @@ When the project has a capture toggle (e.g. a `capture_prompts` gate that contro
 - Penetration test before any v1 ship handling untrusted users.
 - Security-relevant unit tests (constant-time compare, salt presence, CSP header, cookie attributes, redaction).
 
-## How I report
-
-```
-## Security review summary
-- Files reviewed: <list>
-- Surface touched: <auth / crypto / web / data / supply chain / ai / etc>
-- Threat model relevance: <which categories from this guideline applied>
-
-## Critical (must fix)
-- <file:line> — <issue> — <category from guidelines> — <how to fix>
-
-## Warnings (should fix)
-- ...
-
-## Suggestions (defense in depth)
-- ...
-
-## Test gaps
-- <missing negative-path test, missing fuzz target, missing static rule>
-
-## Verdict
-- CLEAN if no critical and no warnings.
-- DIRTY otherwise.
-```
-
 ## Project-specific notes
 
-<!-- Add per-project rules here. Example: documented exception
-to a guideline, project-specific allowed crypto suites, project's
-secret-management vendor, capture-flag specifics. -->
+Flightdeck conventions (see `CLAUDE.md`):
+
+- **Capture posture (rules 18–21).** When `capture_prompts=False`, no
+  prompt content is stored or logged — only metadata (token counts,
+  model names, latency, tool names). Content lives in the
+  `event_content` table only; events never embed content fields.
+  `GET /v1/events/:id/content` returns **404** when capture is
+  disabled for that session — not 200 with empty data, not 403. The
+  Prompts tab in the session drawer shows an explicit disabled state
+  ("Prompt capture is not enabled for this deployment"), never an
+  empty tab or a perpetual spinner. A single bug that stores content
+  when capture is off is a critical finding — the gate is the
+  contract. Preserve provider terminology: never normalize
+  Anthropic's `system + messages` into OpenAI's `messages`-only shape
+  or vice versa.
+- **Swagger discipline (rule 50).** Every API endpoint has complete
+  swaggo annotations (`@Summary`, `@Description`, `@Tags`, `@Accept`,
+  `@Produce`, `@Param` for every parameter including query params,
+  `@Success`, `@Failure` for every error code, `@Router`). Regenerate
+  `docs/` via `swag init -g cmd/main.go -o docs` and commit it.
+  Undocumented endpoints are a critical finding at phase-close audit.
+- **MCP Protection Policy.** When reviewing MCP-related changes:
+  policy enforcement applies at all six MCP entry points (not just
+  `call_tool`), per `DECISIONS.md` D151. The shared `policy_decision`
+  block (D148) and originating-event-id chain (D149) flow on every
+  policy decision. Fingerprinting events surface server identity for
+  operators; do not log fingerprint inputs that could leak sensitive
+  config.
+- **Admin token surface.** Single-tier auth — the admin token gates
+  mutating endpoints. Never log the token, never accept it in URL
+  query parameters, never store it in browser-history-leaking spots.
+  Runtime token configuration is loaded from the runtime-config
+  endpoint; that endpoint is served with the
+  `Cache-Control: no-store, no-cache, must-revalidate` triplet — any
+  change that weakens this is a critical finding.
+- **Container hardening.** The production Dockerfile runs as
+  non-root (`USER` directive), the nginx base image is pinned by
+  SHA, and CI workflows declare least-privilege `permissions:`
+  blocks. Regressions here are critical.

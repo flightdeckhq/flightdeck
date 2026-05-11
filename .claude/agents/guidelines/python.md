@@ -67,4 +67,35 @@
 - Comments that restate the code instead of explaining why
 
 ## Project-specific notes
-<!-- Add per-project rules here. -->
+
+Flightdeck conventions (see `CLAUDE.md`):
+
+- **Sensor discipline (rules 27–32).** `flightdeck-sensor` is a library
+  wrapper, not an OS agent. Never introduce synchronous blocking calls on
+  the LLM hot path; all control-plane communication is fire-and-forget or
+  background. Never raise exceptions on connectivity failures when
+  `FLIGHTDECK_UNAVAILABLE_POLICY=continue` — fail open. Never add
+  background threads / polling loops / daemon threads beyond the existing
+  event-queue drain thread; if a feature requires background activity
+  independent of LLM calls, it does not belong in the sensor. Do not
+  rewrite the token-counting logic carried over from `tokencap`; extend
+  it. `capture_prompts` defaults to `False` — never flip the default. The
+  `init()` `limit` param fires WARN only; never upgrade a local limit to
+  BLOCK or DEGRADE regardless of server policy (see `DECISIONS.md` D035).
+- **Capture posture (rules 18–21).** When `capture_prompts=False`, event
+  payloads contain only token counts, model names, latency, and tool
+  names — no message content, no system prompts, no tool inputs / outputs,
+  no response text. Content lives in `event_content` only, never inline
+  in `events`. Preserve provider terminology — do not normalize
+  Anthropic's `system + messages` into OpenAI's `messages`-only shape (or
+  vice versa).
+- **Playground discipline (rules 40a.A / 40a.B).** Every playground script
+  declares a meaningful `agent_type` and `flavor` (never `"unknown"`,
+  never empty, never inherited defaults); `flavor` is a required keyword-
+  only parameter in `playground/_helpers.py::init_sensor`. Default
+  `capture_prompts=True` in the helper — playground is the highest-
+  fidelity smoke surface.
+- **Pre-push lint (rule 40e).** `ruff check .` and `ruff format --check .`
+  from the component root; `mypy --strict flightdeck_sensor/` for the
+  sensor. Don't trust `make lint` alone.
+

@@ -126,30 +126,42 @@ Anti-patterns:
 - A document with no clear owner. (Living docs need owners; orphaned docs become wrong.)
 - Generated docs committed without the source-of-truth that generated them.
 
-## How I report
-
-```
-## Documentation review summary
-- Files reviewed: <list>
-- Project docs structure: <pass / has gaps / disorganized>
-
-## Critical (must fix)
-- <file:line> — <issue> — <how to fix>
-
-## Warnings (should fix)
-- ...
-
-## Suggestions (nice to have)
-- ...
-
-## Doc updates needed (drift between code and docs)
-- <doc file>: says <X>, code does <Y>. Recommendation: <update doc / change code>.
-
-## Verdict
-- CLEAN if no critical and no warnings.
-- DIRTY otherwise.
-```
-
 ## Project-specific notes
 
-<!-- Add per-project rules here. -->
+Flightdeck conventions (see `CLAUDE.md`):
+
+- **Living document discipline (rules 41–45).** `ARCHITECTURE.md` is a
+  living document, not a contract carved in stone. When implementation
+  reveals a planned approach is wrong or superseded, update the doc to
+  reflect reality — a codebase that matches a stale `ARCHITECTURE.md`
+  is worse than no `ARCHITECTURE.md`. `ARCHITECTURE.md` describes the
+  system as it stands today; no phase tags, no "was added in Phase X",
+  no temporal qualifiers. That history lives in `CHANGELOG.md`,
+  `DECISIONS.md`, and PR/commit bodies. D-numbers (D094, D126, D148,
+  etc.) ARE acceptable in `ARCHITECTURE.md` — they point at durable
+  `DECISIONS.md` entries.
+- **DECISIONS.md as living log (rule 43).** Every pivot lands in
+  `DECISIONS.md` immediately: what was planned, what changed, why,
+  what was rejected. The order is always update `ARCHITECTURE.md` →
+  update `DECISIONS.md` → write the code → tests pass → report back.
+  Never merge code that contradicts the architecture docs.
+- **No deferral bucket (rule 49).** Issues land in one of three
+  states: fixed in the release they are filed in, declined with a
+  documented reason (typically in the commit body or `DECISIONS.md`),
+  or on the Roadmap in `README.md` as a user-prioritizable post-v0.4.0
+  bullet. The prior `KNOWN_ISSUES.md` / "Deferred to v0.4.0" bucket
+  was retired; do not reintroduce it. `TODO(KI...)` comments in code
+  are retired — use plain `TODO: <short description>` with a Roadmap
+  pointer when applicable.
+- **No-defer discipline (rule 51).** Methodology or scope gaps that
+  surface mid-phase and fit the phase's intent land in the current
+  PR — they do not get deferred. The Supervisor authorizes deferral
+  explicitly, or it doesn't happen.
+- **Audience layering.** `README.md` is for users (clone → run in
+  five minutes). `CONTRIBUTING.md` is for contributors (dev env,
+  test commands, PR conventions). `CLAUDE.md` is for AI assistants
+  and human reviewers operating in the repo — the 51 rules are the
+  operational source of truth. `ARCHITECTURE.md` is for engineers
+  building inside the system. `DECISIONS.md` is for future
+  maintainers asking "why is it done this way?". Don't blend
+  audiences in one file.

@@ -27,11 +27,13 @@ On every invocation:
 
 Output exactly:
 
-## Security review summary
-- Files reviewed: <list>
+## Review summary
+- Files changed: <list>
 - Surface touched: <auth / crypto / web / data / supply chain / ai / capture / other>
 - Threat model relevance: <which categories from the guidelines applied this turn>
-- Tooling: <gitleaks/bandit/gosec/govulncheck/npm-audit/pip-audit/semgrep — pass/fail/not-found>
+- Lint: <pass/fail/not-found> (<security-linter command, e.g. semgrep / bandit / gosec / gitleaks>)
+- Type-check: not-applicable (covered by language reviewers)
+- Tests: <pass/fail/not-found> (<security-relevant test command>)
 
 ## Critical (must fix)
 - <file:line> — <issue> — <category #N from guidelines> — <how to fix>

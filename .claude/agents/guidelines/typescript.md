@@ -119,4 +119,30 @@
 
 ## Project-specific notes
 
-<!-- Add per-project rules here. -->
+Flightdeck conventions (see `CLAUDE.md`):
+
+- **Component library (rule 13).** shadcn/ui and custom components only.
+  Never MUI, Ant Design, or Chakra UI. New UI primitives extend the
+  existing shadcn/ui set; don't introduce a second component library.
+- **Theme parity (rule 14).** Both `neon-dark` and `clean-light` themes
+  must work at all times. After any frontend change verify both themes
+  render correctly. Breaking one theme is an incomplete task. Never
+  casually edit `globals.css` or `themes.css` — those define both themes
+  and require explicit supervisor approval before editing (rule 15).
+- **D3 math-only (rule 16).** In the timeline component, D3 is used
+  exclusively for `d3-scale` and `d3-time` calculations. D3 must never
+  manipulate the DOM. React owns the rendered tree.
+- **No placeholder UI (rule 17).** Features that aren't ready don't
+  appear in the UI. No grey boxes, no "coming soon" panels, no disabled
+  stubs.
+- **E2E discipline (rules 40c / 40c.1–4).** UI-touching tasks add
+  Playwright tests at `dashboard/tests/e2e/`, named
+  `Tnn-<kebab-case-journey>.spec.ts`, one journey per file. Tests run
+  under both `neon-dark` and `clean-light` Playwright projects;
+  assertions are theme-agnostic (no hardcoded colours). No fixed
+  timeouts in tests — only polling (`expect.poll`, web-first
+  assertions, `waitForFunction`). After UI edits run `npm run
+  test:e2e` against a fresh dev stack before committing.
+- **Pre-push lint (rule 40e).** Run `npm run lint` and `npm run
+  typecheck` from `dashboard/` before pushing. CI enforces both.
+

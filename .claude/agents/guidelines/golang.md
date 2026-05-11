@@ -75,4 +75,32 @@ StatusClosed
 - Returning `nil, nil` ambiguity (use a sentinel or a custom result type)
 
 ## Project-specific notes
-<!-- Add per-project rules here. -->
+
+Flightdeck conventions (see `CLAUDE.md`):
+
+- **Schema + API discipline (rules 33–37).** The event payload schema is
+  the contract between sensor and ingestion API — never change it without
+  updating `ARCHITECTURE.md` first. All database schema changes go
+  through `golang-migrate`: create a new numbered pair under
+  `docker/postgres/migrations/` (`000NNN_description.up.sql` +
+  `000NNN_description.down.sql`, exact inverses). Never modify an applied
+  migration. Never add schema changes to `init.sql` (seed data only).
+  No raw SQL lives outside `api/internal/store/`. Every event payload is
+  validated at the ingestion API boundary before it reaches NATS.
+  `GET /v1/events/:id/content` returns **404** when capture is disabled
+  for that session — not 200 with empty data, not 403.
+- **Analytics enums (rules 25–26).** The `group_by` and `metric` enums on
+  `GET /v1/analytics` are locked lists. Adding a value requires updating
+  `ARCHITECTURE.md` first. `estimated_cost` reads
+  `api/internal/store/pricing.go` (`DECISIONS.md` D099); update the
+  pricing table when provider list prices change.
+- **Swagger discipline (rule 50).** Every new endpoint in `ingestion/` or
+  `api/` gets full swaggo annotations (`@Summary`, `@Description`,
+  `@Tags`, `@Accept`, `@Produce`, `@Param`, `@Success`, `@Failure`,
+  `@Router`) before the task is considered complete. Regenerate the
+  `docs/` directory via `swag init` and commit it.
+- **Pre-push lint (rule 40e).** Run `golangci-lint run` from the
+  component root before pushing. On the dev box the binary lives at
+  `/home/omria/go/bin/golangci-lint` (not always on PATH). `go test
+  ./...` alone misses `unused` and other lints CI enforces.
+

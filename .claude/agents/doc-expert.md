@@ -15,4 +15,27 @@ On every invocation:
 5. For README and CONTRIBUTING, mentally simulate a new developer arriving cold. Estimate time-to-orient and time-to-first-runnable-command. Flag anything that would slow them down.
 6. Verify command snippets in the docs. Where possible (read-only), check that file paths and config keys referenced actually exist in the repo.
 
-Output the structured review per the guidelines file, ending with CLEAN or DIRTY.
+Output exactly:
+
+## Review summary
+- Files changed: <list>
+- Project docs structure: <pass / has gaps / disorganized>
+- Lint: <pass/fail/not-found> (<markdownlint or link-checker command if configured>)
+- Type-check: not-applicable
+- Tests: not-applicable
+
+## Critical (must fix)
+- <file:line> — <issue> — <how to fix>
+
+## Warnings (should fix)
+- ...
+
+## Suggestions (nice to have)
+- ...
+
+## Doc updates needed (drift between code and docs)
+- <doc file>: says <X>, code does <Y>. Recommendation: <update doc / change code>.
+
+## Verdict
+- CLEAN if no critical and no warnings.
+- DIRTY otherwise.

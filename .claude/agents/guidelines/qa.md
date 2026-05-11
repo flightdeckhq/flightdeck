@@ -139,27 +139,61 @@ A test that passes on retry is a test that fails. Treat it as a bug, not as nois
 - Performance tests for critical paths: have a baseline and an alarm threshold, not just a number.
 - Contract tests at service boundaries (Pact or equivalent) when teams own different sides of an API.
 
-## How I report
-
-### Coverage summary
-Stack, coverage on changed files, failing tests.
-
-### Missing tests (prescriptive)
-For each:
-- Name (describing behavior)
-- Type (unit / integration / e2e)
-- File where it should live
-- Skeleton: signature, fixtures or factories needed, key assertions
-
-### UI verification plan for the supervisor
-For each user-visible change, a numbered atomic checklist for the main Claude session to execute via its browser tooling (Claude in Chrome, Playwright MCP, or equivalent):
-
-1. Navigate to <URL or route>
-2. Action: <click locator / type into locator / wait for network>
-3. Expected: <visible text / DOM state / response body / screenshot region>
-4. Negative case: <what should NOT happen, e.g. an error toast must not appear>
-
-Use accessibility-first locators where possible (role + name, label, testid). Atomic steps so a failure points to one cause.
-
 ## Project-specific notes
-<!-- Add per-project rules here. -->
+
+Flightdeck conventions (see `CLAUDE.md`):
+
+- **Test stack lock (rules 9–12).** Go components use the Go `testing`
+  package; flightdeck-sensor uses `pytest`. No real API calls in unit
+  tests — mock all external services. Integration tests live under
+  `pytest` and use real NATS and Postgres in Docker Compose; run with
+  `make test-integration`. Frontend unit tests use Vitest + React
+  Testing Library; every component that handles data or state has unit
+  tests. E2E tests use Playwright covering full user flows in both
+  `neon-dark` and `clean-light` themes.
+- **Live-stack verification (rule 40a).** Any new runtime code path is
+  exercised against the live dev stack before claiming it works.
+  Passing unit tests with mocks is insufficient evidence on its own.
+  A playground script or smoke test that pytest never executes — real
+  API calls, real dev stack, real event persistence — is the
+  verification standard. Applies to new sensor interceptors, new
+  playground scripts, new worker code paths (state transitions,
+  revive, session guards), new dashboard behaviour where the claim is
+  user-facing.
+- **Playground discipline (rules 40a.A / 40a.B).** Every playground
+  script declares a meaningful `agent_type` and `flavor` (never
+  `"unknown"`, never empty) and enables maximum capture
+  (`capture_prompts=True`) — `09_capture.py` is the one legitimate
+  override.
+- **Pre-commit live test (rule 40b).** Before committing code that
+  touches runtime behaviour, rebuild the affected container(s) so the
+  dev stack reflects branch HEAD, then run the component's full test
+  suite (unit + integration) locally. CI is not the first-line
+  detector. Use `make dev` or `docker compose -f docker-compose.yml -f
+  docker-compose.dev.yml up --build -d <service>` — a plain
+  `docker compose up --build` without the dev override rebuilds a
+  stale prod-image layer and will not reflect your edits.
+- **E2E discipline (rules 40c / 40c.1–4).** Every phase that adds or
+  changes user-visible UI behaviour adds Playwright tests at
+  `dashboard/tests/e2e/`, one journey per file, named
+  `Tnn-<kebab-case-journey>.spec.ts`. Flakes are fixed or deleted,
+  never merged as-is (CI retries=1, local=0). Run `npm run test:e2e`
+  locally against a fresh dev stack before committing. Tests run
+  under both theme projects; assertions stay theme-agnostic
+  (no hardcoded colours).
+- **Framework playground gate (rule 40d).** Any phase touching
+  `sensor/flightdeck_sensor/interceptor/*`, adding a new interceptor,
+  or changing event-emission shape includes both (1) real-provider
+  playground demos (manual, NOT in CI; self-skip with exit 2 when
+  API keys are missing) and (2) mock-free integration tests in CI.
+  V-pass enumerates both before implementation starts.
+- **Pre-push lint (rule 40e).** Run the relevant linters before
+  pushing: `ruff check .` + `ruff format --check .` for Python,
+  `golangci-lint run` for Go (binary at `/home/omria/go/bin/`),
+  `npm run lint` + `npm run typecheck` for the dashboard. `go test`
+  alone misses `unused` violations CI enforces.
+
+The polling helpers above are load-bearing reference for any new
+test author on this project. Keep them in scope when prescribing
+fixes for flaky tests — Flightdeck's CI history has more than one
+incident tied to `time.sleep` / `waitForTimeout` in tests.

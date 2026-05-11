@@ -89,6 +89,21 @@ This runs:
 4. Open a PR against `main` — CI runs automatically
 5. All CI checks must pass before merge
 
+## Review pipeline (`.claude/`)
+
+`.claude/` ships with this repo. The review agents, guidelines, the
+`/audit-repo` slash command, and a Stop hook auto-load when you open
+the repo with [Claude Code](https://claude.ai/code), so every
+contributor inherits the same review pipeline with no setup.
+
+To extend the pipeline, edit the relevant file in
+`.claude/agents/` (agent specs) or `.claude/agents/guidelines/`
+(language and topic rules). The Stop hook routes by file type to
+the right reviewer; see [`.claude/agents/README.md`](.claude/agents/README.md)
+for the routing table and the "how to extend" walkthrough. To opt
+out of the pipeline for an emergency fix, pass `--no-hooks` to
+Claude Code, or override at the user level in `~/.claude/`.
+
 ## Releasing
 
 Before tagging a release, run `make test-smoke` against a live stack with real

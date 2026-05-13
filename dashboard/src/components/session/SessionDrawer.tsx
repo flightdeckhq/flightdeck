@@ -613,7 +613,7 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
                   </span>
                 </>
               )}
-              {!session && <span className="text-[13px]" style={{ color: "var(--text)" }}>Session</span>}
+              {!session && <span className="text-[13px]" style={{ color: "var(--text)" }}>Run</span>}
             </div>
             <div className="flex items-center gap-2">
               {showButton && (
@@ -1895,7 +1895,7 @@ function EventDetailView({ event: initialEvent, session, onBack }: { event: Agen
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
       <div className="flex h-8 shrink-0 items-center px-3" style={{ background: "var(--bg-elevated)", borderBottom: "1px solid var(--border-subtle)" }}>
-        <button className="text-xs" style={{ color: "var(--accent)" }} onClick={onBack} data-testid="back-to-session">← Back to session</button>
+        <button className="text-xs" style={{ color: "var(--accent)" }} onClick={onBack} data-testid="back-to-session">← Back to run</button>
       </div>
       <div className="flex h-14 shrink-0 items-center gap-2 px-4" style={{ borderBottom: "1px solid var(--border)" }}>
         <span className="flex h-[18px] min-w-[88px] shrink-0 items-center justify-center whitespace-nowrap rounded px-2 font-mono text-[10px] font-semibold uppercase"

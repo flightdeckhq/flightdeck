@@ -299,7 +299,7 @@ const docTemplate = `{
         },
         "/v1/agents": {
             "get": {
-                "description": "Returns agents matching the supplied filters. Multi-value filters (state, agent_type, client_type, hostname, user, os, orchestration) accept comma-separated values and repeated query params; values within a dimension are OR, values across dimensions are AND. ` + "`" + `` + "`" + `search` + "`" + `` + "`" + ` is a case-insensitive substring match against ` + "`" + `` + "`" + `agent_name` + "`" + `` + "`" + ` and ` + "`" + `` + "`" + `hostname` + "`" + `` + "`" + `. ` + "`" + `` + "`" + `updated_since` + "`" + `` + "`" + ` filters on ` + "`" + `` + "`" + `last_seen_at \u003e= ts` + "`" + `` + "`" + `. State is computed via LATERAL subquery against the most-recent session. Each row also carries D126 sub-agent rollup fields (` + "`" + `` + "`" + `agent_role` + "`" + `` + "`" + ` — null for root agents, the framework-supplied role string when this agent represents a sub-agent identity; ` + "`" + `` + "`" + `topology` + "`" + `` + "`" + ` — one of ` + "`" + `` + "`" + `lone` + "`" + `` + "`" + ` / ` + "`" + `` + "`" + `parent` + "`" + `` + "`" + ` / ` + "`" + `` + "`" + `child` + "`" + `` + "`" + `, computed from whether this agent's sessions carry a parent_session_id and whether they are referenced as a parent by other agents). Pagination defaults to 25/page, max 100.",
+                "description": "Returns agents matching the supplied filters. Multi-value filters (state, agent_type, client_type, hostname, user, os, orchestration) accept comma-separated values and repeated query params; values within a dimension are OR, values across dimensions are AND. “search“ is a case-insensitive substring match against “agent_name“ and “hostname“. “updated_since“ filters on “last_seen_at \u003e= ts“. State is computed via LATERAL subquery against the most-recent session. Each row also carries D126 sub-agent rollup fields (“agent_role“ — null for root agents, the framework-supplied role string when this agent represents a sub-agent identity; “topology“ — one of “lone“ / “parent“ / “child“, computed from whether this agent's sessions carry a parent_session_id and whether they are referenced as a parent by other agents). Pagination defaults to 25/page, max 100.",
                 "produces": [
                     "application/json"
                 ],
@@ -468,6 +468,71 @@ const docTemplate = `{
                 }
             }
         },
+        "/v1/agents/{agent_id}/summary": {
+            "get": {
+                "description": "Returns totals (tokens, errors, sessions, cost_usd, latency_p50_ms, latency_p95_ms) and a per-bucket time series for one agent over the requested period. Powers the per-agent landing page. “period“ is one of “1h“, “24h“, “7d“, “30d“ (default “7d“). “bucket“ is one of “hour“, “day“, “week“; when omitted it is derived from period (1h/24h → hour, 7d/30d → day). Errors count events with “event_type = 'llm_error'“ only — policy events are enforcement decisions, not failures. Sessions is “COUNT(DISTINCT session_id)“ across events in the window. Latency percentiles use “event_type = 'post_call'“ rows only, matching the analytics endpoint convention.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "agents"
+                ],
+                "summary": "Get per-agent activity summary",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Agent UUID",
+                        "name": "agent_id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Time window: 1h, 24h, 7d (default), 30d",
+                        "name": "period",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Series bucket granularity: hour, day, week. Defaults derived from period.",
+                        "name": "bucket",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/store.AgentSummaryResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid UUID, period, or bucket",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Missing or invalid bearer token",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Agent not found",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Database error",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/v1/analytics": {
             "get": {
                 "description": "Flexible GROUP BY analytics endpoint. Returns time series data grouped by dimension.",
@@ -487,7 +552,7 @@ const docTemplate = `{
                     },
                     {
                         "type": "string",
-                        "description": "Dimension(s) (default: flavor). One or two dimensions, comma-separated (D126 § 6.4): ?group_by=dim1 keeps the pre-D126 single-axis shape; ?group_by=dim1,dim2 returns a two-key rollup where dim1 is the primary (outer) axis and dim2 is the secondary (inner) axis. Allowed values in either position: flavor, model, framework, host, agent_type, team, provider, agent_role, parent_session_id. agent_role (D126) groups by the framework-supplied sub-agent role string and parent_session_id (D126 § 6.4) groups by parent UUID; both bucket nulls as '(root)'. Two-dim payloads carry per-DataPoint ` + "`" + `` + "`" + `breakdown[]` + "`" + `` + "`" + ` segments (key+value); single-dim payloads keep the flat ` + "`" + `` + "`" + `value` + "`" + `` + "`" + ` shape exactly.",
+                        "description": "Dimension(s) (default: flavor). One or two dimensions, comma-separated (D126 § 6.4): ?group_by=dim1 keeps the pre-D126 single-axis shape; ?group_by=dim1,dim2 returns a two-key rollup where dim1 is the primary (outer) axis and dim2 is the secondary (inner) axis. Allowed values in either position: flavor, model, framework, host, agent_type, team, provider, agent_role, parent_session_id. agent_role (D126) groups by the framework-supplied sub-agent role string and parent_session_id (D126 § 6.4) groups by parent UUID; both bucket nulls as '(root)'. Two-dim payloads carry per-DataPoint “breakdown[]“ segments (key+value); single-dim payloads keep the flat “value“ shape exactly.",
                         "name": "group_by",
                         "in": "query"
                     },
@@ -537,6 +602,12 @@ const docTemplate = `{
                         "type": "string",
                         "description": "Filter to specific provider (anthropic, openai, google, xai, mistral, meta, other)",
                         "name": "filter_provider",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter analytics scope to a single agent (UUID). Joins sessions when the metric's base table is events. Powers the per-agent landing page.",
+                        "name": "filter_agent_id",
                         "in": "query"
                     },
                     {
@@ -2600,6 +2671,76 @@ const docTemplate = `{
                 },
                 "user": {
                     "type": "string"
+                }
+            }
+        },
+        "store.AgentSummaryResponse": {
+            "type": "object",
+            "properties": {
+                "agent_id": {
+                    "type": "string"
+                },
+                "bucket": {
+                    "type": "string"
+                },
+                "period": {
+                    "type": "string"
+                },
+                "series": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/store.AgentSummarySeriesPoint"
+                    }
+                },
+                "totals": {
+                    "$ref": "#/definitions/store.AgentSummaryTotals"
+                }
+            }
+        },
+        "store.AgentSummarySeriesPoint": {
+            "type": "object",
+            "properties": {
+                "cost_usd": {
+                    "type": "number"
+                },
+                "errors": {
+                    "type": "integer"
+                },
+                "latency_p95_ms": {
+                    "type": "integer"
+                },
+                "sessions": {
+                    "type": "integer"
+                },
+                "tokens": {
+                    "type": "integer"
+                },
+                "ts": {
+                    "description": "TS is the bucket's start, truncated to the requested\ngranularity (` + "`" + `` + "`" + `date_trunc(bucket, occurred_at)` + "`" + `` + "`" + `). Serialised\nas RFC 3339 / ISO 8601 by Go's default JSON encoder.",
+                    "type": "string"
+                }
+            }
+        },
+        "store.AgentSummaryTotals": {
+            "type": "object",
+            "properties": {
+                "cost_usd": {
+                    "type": "number"
+                },
+                "errors": {
+                    "type": "integer"
+                },
+                "latency_p50_ms": {
+                    "type": "integer"
+                },
+                "latency_p95_ms": {
+                    "type": "integer"
+                },
+                "sessions": {
+                    "type": "integer"
+                },
+                "tokens": {
+                    "type": "integer"
                 }
             }
         },

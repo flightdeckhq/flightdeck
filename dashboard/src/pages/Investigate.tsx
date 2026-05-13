@@ -2940,7 +2940,7 @@ export function Investigate() {
                 style={{ color: "var(--text-muted)" }}
               >
                 <LayoutGrid className="h-10 w-10 mb-3 opacity-30" />
-                <p className="text-sm font-medium">No sessions found</p>
+                <p className="text-sm font-medium">No runs found</p>
                 <p className="text-xs mt-1 opacity-70">
                   Try adjusting your filters or time range.
                 </p>

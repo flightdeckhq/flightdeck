@@ -7,10 +7,10 @@ Flightdeck ingests events from sensor-instrumented agents and the Claude Code pl
 ---
 
 <!-- Fleet view demo. Recording coming shortly. -->
-![Fleet view: every session on a shared timeline, events stream in as agents run.](docs/assets/fleet-demo.gif)
+![Fleet view: every run on a shared timeline, events stream in as agents run.](docs/assets/fleet-demo.gif)
 
-<!-- Session drawer demo. Recording coming shortly. -->
-![Session drawer: every LLM call, tool use, policy event, and directive in order.](docs/assets/session-demo.gif)
+<!-- Run drawer demo. Recording coming shortly. -->
+![Run drawer: every LLM call, tool use, policy event, and directive in order.](docs/assets/session-demo.gif)
 
 > Recordings above are placeholders. The UI they describe is shipping today.
 
@@ -103,21 +103,21 @@ Per-event ``framework`` field carries the bare name (``langchain``, ``crewai``, 
 
 ### Sub-agent observability
 
-Multi-agent frameworks render as a tree in the fleet view: a parent session for the orchestrator and a separate child session per sub-agent execution, linked by ``parent_session_id`` and labeled with ``agent_role`` (D126).
+Multi-agent frameworks render as a tree in the fleet view: a parent run for the orchestrator and a separate child run per sub-agent execution, linked by ``parent_session_id`` and labeled with ``agent_role`` (D126).
 
 | Mechanism | parent_session_id source | agent_role source |
 |---|---|---|
 | Claude Code Task subagent | hook payload ``session_id`` | hook payload ``agent_type`` (e.g. ``"Explore"``) |
-| CrewAI agent execution | parent crew's session | ``Agent.role`` attribute |
-| LangGraph agent-bearing node | parent runner's session | node name |
+| CrewAI agent execution | parent crew's run | ``Agent.role`` attribute |
+| LangGraph agent-bearing node | parent runner's run | node name |
 
-Direct Anthropic / OpenAI SDK and litellm calls outside a multi-agent framework emit root sessions with both fields null — the existing 5-tuple identity is unchanged. Sub-agent observability ships only for frameworks Flightdeck already supports for LLM-call interception (Frameworks table above); AutoGen support is on the Roadmap.
+Direct Anthropic / OpenAI SDK and litellm calls outside a multi-agent framework emit root runs with both fields null — the existing 5-tuple identity is unchanged. Sub-agent observability ships only for frameworks Flightdeck already supports for LLM-call interception (Frameworks table above); AutoGen support is on the Roadmap.
 
-When ``capture_prompts=True``, each child session carries the parent's input as ``incoming_message`` and the child's response back as ``outgoing_message`` — visible in the SessionDrawer's Sub-agents tab MESSAGES sub-section. The Fleet swimlane renders a ``→ N`` pill on parents and a ``← {parent_name}`` pill on children, plus Bezier connectors from each parent spawn event to its child's first event circle. Sub-agent emission failures surface as red row-level dots on Investigate, the Fleet AgentTable, and the swimlane left panel — same pattern as ``llm_error`` and ``mcp_error``.
+When ``capture_prompts=True``, each child run carries the parent's input as ``incoming_message`` and the child's response back as ``outgoing_message`` — visible in the SessionDrawer's Sub-agents tab MESSAGES sub-section. The Fleet swimlane renders a ``→ N`` pill on parents and a ``← {parent_name}`` pill on children, plus Bezier connectors from each parent spawn event to its child's first event circle. Sub-agent emission failures surface as red row-level dots on Events, the Fleet AgentTable, and the swimlane left panel — same pattern as ``llm_error`` and ``mcp_error``.
 
 ### MCP (Model Context Protocol)
 
-Flightdeck observes MCP traffic as a first-class event surface alongside chat and embeddings. Six event types — `mcp_tool_list`, `mcp_tool_call`, `mcp_resource_list`, `mcp_resource_read`, `mcp_prompt_list`, `mcp_prompt_get` — emit per operation. The sensor patches `mcp.client.session.ClientSession` directly, so every framework that mediates MCP through the official SDK lights up automatically: LangChain via `langchain-mcp-adapters`, LangGraph via the same, LlamaIndex via `llama-index-tools-mcp`, CrewAI via `mcpadapt`, plus the raw `mcp` SDK. Each event carries `server_name` + `transport` for attribution; the session-level `MCPServerFingerprint` (name, transport, protocol_version, version, capabilities, instructions) lands in `context.mcp_servers` — at `session_start` for servers initialised before the first LLM call, or via `mcp_server_attached` events emitted continuously for late-attaching servers (D140). The dashboard's MCP SERVERS panel populates within a few seconds of each attach for in-flight sessions.
+Flightdeck observes MCP traffic as a first-class event surface alongside chat and embeddings. Six event types — `mcp_tool_list`, `mcp_tool_call`, `mcp_resource_list`, `mcp_resource_read`, `mcp_prompt_list`, `mcp_prompt_get` — emit per operation. The sensor patches `mcp.client.session.ClientSession` directly, so every framework that mediates MCP through the official SDK lights up automatically: LangChain via `langchain-mcp-adapters`, LangGraph via the same, LlamaIndex via `llama-index-tools-mcp`, CrewAI via `mcpadapt`, plus the raw `mcp` SDK. Each event carries `server_name` + `transport` for attribution; the run-level `MCPServerFingerprint` (name, transport, protocol_version, version, capabilities, instructions) lands in `context.mcp_servers` — at `session_start` for servers initialised before the first LLM call, or via `mcp_server_attached` events emitted continuously for late-attaching servers (D140). The dashboard's MCP SERVERS panel populates within a few seconds of each attach for in-flight runs.
 
 The Claude Code plugin's MCP coverage is limited to tool calls. Resource reads, prompt fetches, and list operations are below the plugin hook layer and don't surface as events.
 
@@ -127,11 +127,11 @@ The Claude Code plugin's MCP coverage is limited to tool calls. Resource reads, 
 
 ### Live fleet timeline
 
-Every session on one shared time axis, one swim lane per agent and one sub-row per running session. LLM calls, embeddings, tool uses, policy events, structured errors, and directives are plotted on the timeline as events arrive. Pause and catch-up controls freeze the scroll without dropping events; the event-type filter bar isolates LLM Calls, Embeddings, Tools, Policy, Errors, Directives, or Session events. Provider logos render on LLM call nodes, OS and orchestration icons on session hostnames. Click any event to inspect it inline.
+Every run on one shared time axis, one swim lane per agent and one sub-row per running run. LLM calls, embeddings, tool uses, policy events, structured errors, and directives are plotted on the timeline as events arrive. Pause and catch-up controls freeze the scroll without dropping events; the event-type filter bar isolates LLM Calls, Embeddings, Tools, Policy, Errors, Directives, or Run events. Provider logos render on LLM call nodes, OS and orchestration icons on run hostnames. Click any event to inspect it inline.
 
-Expanding an agent row lists every session for that agent — including sessions older than the live time window — with a "View in Investigate →" link for the full history.
+Expanding an agent row lists every run for that agent — including runs older than the live time window — with a "View in Events →" link for the full history.
 
-### Full session inspection
+### Full run inspection
 
 Enable prompt capture to store every call's full payload: system prompt, messages, tool definitions, model response, and embedding inputs. Off by default.
 
@@ -139,25 +139,25 @@ Enable prompt capture to store every call's full payload: system prompt, message
 flightdeck_sensor.init(server="...", token="...", capture_prompts=True)
 ```
 
-Provider shape is preserved. Anthropic sessions display `system`, `messages`, `tools`, and `response` as separate fields. OpenAI sessions display `messages` (system role included), `tools`, and `response`. Embeddings show the request `input` (string or list of strings) in a dedicated viewer. No cross-provider normalization.
+Provider shape is preserved. Anthropic runs display `system`, `messages`, `tools`, and `response` as separate fields. OpenAI runs display `messages` (system role included), `tools`, and `response`. Embeddings show the request `input` (string or list of strings) in a dedicated viewer. No cross-provider normalization.
 
 ### Runtime context
 
 On `init()` the sensor captures hostname, OS, Python version, git commit / branch / repo, container orchestration (Kubernetes, Docker Compose, ECS, Cloud Run), and any in-process AI frameworks (LangChain, CrewAI, LlamaIndex, AutoGen, Haystack, DSPy, smolagents, pydantic_ai). Git remote URLs are credential-stripped before storage.
 
-The session drawer surfaces a collapsible **RUNTIME** panel. The sidebar **CONTEXT** facet panel filters the fleet by any context field (`os=Linux`, `k8s_namespace=research`, `git_branch=main`). Every probe is wrapped in defensive try/except: a broken collector never crashes the agent.
+The run drawer surfaces a collapsible **RUNTIME** panel. The sidebar **CONTEXT** facet panel filters the fleet by any context field (`os=Linux`, `k8s_namespace=research`, `git_branch=main`). Every probe is wrapped in defensive try/except: a broken collector never crashes the agent.
 
 ### Token enforcement
 
-Define policies centrally. Each agent pulls its policy on session start and enforces it locally with no code changes.
+Define policies centrally. Each agent pulls its policy on run start and enforces it locally with no code changes.
 
 - At 82% of budget: a warning event fires, the call proceeds.
 - At 91% of budget: the model is substituted for a cheaper model configured on the policy.
 - At 100% of budget: the call raises `BudgetExceededError`.
 
-Thresholds, actions, and model substitutions are configurable per policy. Policies attach to agent flavors and propagate to every session of that flavor.
+Thresholds, actions, and model substitutions are configurable per policy. Policies attach to agent flavors and propagate to every run of that flavor.
 
-Each enforcement decision lands as a structured event on the session timeline — `policy_warn`, `policy_degrade`, or `policy_block` — alongside the regular `post_call` events. The drawer renders type-specific badges and details (threshold, tokens used vs limit, model swap on degrade, intended-model on block); the Investigate POLICY facet groups sessions by the enforcement outcomes they hit; the session-row dot ranks block > degrade > warn at a glance. Operators see exactly when enforcement fired and why, not just the silence of a blocked call.
+Each enforcement decision lands as a structured event on the run timeline — `policy_warn`, `policy_degrade`, or `policy_block` — alongside the regular `post_call` events. The drawer renders type-specific badges and details (threshold, tokens used vs limit, model swap on degrade, intended-model on block); the Events POLICY facet groups runs by the enforcement outcomes they hit; the run-row dot ranks block > degrade > warn at a glance. Operators see exactly when enforcement fired and why, not just the silence of a blocked call.
 
 ### Kill switch
 
@@ -182,15 +182,15 @@ def clear_cache(context, cache_type="all"):
     return {"cleared": my_cache.clear(cache_type)}
 ```
 
-The function registers with the control plane on `init()` and is callable from the dashboard. Results are recorded as `directive_result` events on the session timeline.
+The function registers with the control plane on `init()` and is callable from the dashboard. Results are recorded as `directive_result` events on the run timeline.
 
 ### Analytics
 
-Token consumption, session counts, policy event volume, latency, and model distribution on a shared time range. Every chart has a group-by control spanning `flavor`, `model`, `framework`, `host`, `agent_type`, `team`, and `provider`. Every chart reads from the same endpoint (`GET /v1/analytics`), so the global time range applies to all of them at once.
+Token consumption, run counts, policy event volume, latency, and model distribution on a shared time range. Every chart has a group-by control spanning `flavor`, `model`, `framework`, `host`, `agent_type`, `team`, and `provider`. Every chart reads from the same endpoint (`GET /v1/analytics`), so the global time range applies to all of them at once.
 
 ### Estimated cost
 
-Flightdeck computes an estimated cost per session from public list prices. The per-event formula is:
+Flightdeck computes an estimated cost per run from public list prices. The per-event formula is:
 
 ```
 (tokens_input - tokens_cache_read - tokens_cache_creation) * input_price
@@ -207,19 +207,19 @@ These are estimates. Actual billing will differ. Not included: volume discounts,
 
 ### Search
 
-Cmd+K searches sessions, agents, and events.
+Cmd+K searches runs, agents, and events.
 
 ### Access tokens
 
-Mint opaque `ftd_` bearer tokens from the Settings page. Each token carries a name that persists on every session it opens, so you can trace which deployment's token produced which session. Plaintext is shown once at creation time and is not recoverable afterwards.
+Mint opaque `ftd_` bearer tokens from the Settings page. Each token carries a name that persists on every run it opens, so you can trace which deployment's token produced which run. Plaintext is shown once at creation time and is not recoverable afterwards.
 
-Revoking a token does not strip its historical attribution: previous sessions keep their `token_name` snapshot.
+Revoking a token does not strip its historical attribution: previous runs keep their `token_name` snapshot.
 
 `tok_dev` is accepted only when the service sees `ENVIRONMENT=dev` (the dev compose opts in). Production deployments leave that env var unset and the seed token becomes inert.
 
 ### Claude Code plugin
 
-Claude Code sessions appear in the fleet view alongside sensor-instrumented agents. The plugin is an observer; it has no code footprint in the Claude Code process beyond the hook scripts.
+Claude Code runs appear in the fleet view alongside sensor-instrumented agents. The plugin is an observer; it has no code footprint in the Claude Code process beyond the hook scripts.
 
 ```bash
 export FLIGHTDECK_SERVER="http://localhost:4000"
@@ -227,17 +227,17 @@ export FLIGHTDECK_TOKEN="tok_dev"
 claude --plugin-dir /path/to/flightdeck/plugin
 ```
 
-`--plugin-dir` loads the plugin for the session without a marketplace install. A marketplace-installable build is not published yet.
+`--plugin-dir` loads the plugin for the run without a marketplace install. A marketplace-installable build is not published yet.
 
-Sessions carry `flavor=claude-code`, `agent_type=coding`, and `client_type=claude_code` (D115 identity). Tool inputs and LLM call content are captured by default so the Prompts tab is populated without extra setup -- the developer is observing their own session, not production traffic. Set `FLIGHTDECK_CAPTURE_PROMPTS=false` or `FLIGHTDECK_CAPTURE_TOOL_INPUTS=false` to opt out. Raw file bodies written by `Write` / `Edit` are never forwarded; tool inputs go through a sanitised whitelist. See [plugin/README.md](plugin/README.md) for the full event list and privacy controls.
+Runs carry `flavor=claude-code`, `agent_type=coding`, and `client_type=claude_code` (D115 identity). Tool inputs and LLM call content are captured by default so the Prompts tab is populated without extra setup -- the developer is observing their own run, not production traffic. Set `FLIGHTDECK_CAPTURE_PROMPTS=false` or `FLIGHTDECK_CAPTURE_TOOL_INPUTS=false` to opt out. Raw file bodies written by `Write` / `Edit` are never forwarded; tool inputs go through a sanitised whitelist. See [plugin/README.md](plugin/README.md) for the full event list and privacy controls.
 
-The plugin is hook-based, so claude-code sessions cannot act on directives mid-call. The Stop Agent button is hidden for these sessions and the Fleet Stop All control skips them when counting directive-capable sessions. See DECISIONS.md D109.
+The plugin is hook-based, so claude-code runs cannot act on directives mid-call. The Stop Agent button is hidden for these runs and the Fleet Stop All control skips them when counting directive-capable runs. See DECISIONS.md D109.
 
 ---
 
 ## Identity
 
-Every session carries a persistent **flavor** and an ephemeral **session ID**. Set the flavor via environment variable at deploy time, typically from your orchestrator manifest:
+Every run carries a persistent **flavor** and an ephemeral **run ID**. Set the flavor via environment variable at deploy time, typically from your orchestrator manifest:
 
 ```yaml
 env:
@@ -254,9 +254,9 @@ env:
 
 Agents without `AGENT_FLAVOR` appear as `unknown`. That is how agents deployed outside your blessed config become visible.
 
-### Orchestrator session attachment
+### Orchestrator run attachment
 
-When a Temporal workflow or Airflow DAG re-runs, you usually want one continuous session rather than a new session per run. Pass a stable `session_id` at `init()` and the backend attaches each execution to the prior session.
+When a Temporal workflow or Airflow DAG re-runs, you usually want one continuous run rather than a new run per execution. Pass a stable `session_id` at `init()` and the backend attaches each execution to the prior run.
 
 ```python
 import uuid
@@ -299,19 +299,19 @@ Call `patch()` before any framework or user code constructs a client. Instances 
 | `FLIGHTDECK_SERVER`             | Ingestion base URL. Overrides the `server=` kwarg.              |
 | `FLIGHTDECK_TOKEN`              | Access token. Overrides the `token=` kwarg.                     |
 | `FLIGHTDECK_API_URL`            | Control-plane base URL. Derived from `FLIGHTDECK_SERVER` if unset. |
-| `FLIGHTDECK_SESSION_ID`         | Stable session UUID for orchestrator re-runs.                   |
+| `FLIGHTDECK_SESSION_ID`         | Stable run UUID for orchestrator re-runs.                       |
 | `FLIGHTDECK_CAPTURE_PROMPTS`    | `true` to enable full payload capture.                          |
 | `FLIGHTDECK_UNAVAILABLE_POLICY` | `continue` (default) or `halt` when the control plane is down.  |
 | `AGENT_FLAVOR` / `FLIGHTDECK_AGENT_NAME` | Persistent agent label. Default: `{user}@{hostname}`.    |
 | `AGENT_TYPE` / `FLIGHTDECK_AGENT_TYPE`   | `coding` or `production` (D114/D115). Default: `production`. Any other value raises `ConfigurationError`. |
 | `FLIGHTDECK_HOSTNAME`           | Override `socket.gethostname()` (useful for k8s pod grouping).  |
-| `FLIGHTDECK_ORPHAN_TIMEOUT_HOURS` | Worker-side: silence window before the reconciler closes a `lost` session as `orphan_timeout`. Default: `24`. Must be `> 0`; `Load()` panics otherwise. |
+| `FLIGHTDECK_ORPHAN_TIMEOUT_HOURS` | Worker-side: silence window before the reconciler closes a `lost` run as `orphan_timeout`. Default: `24`. Must be `> 0`; `Load()` panics otherwise. |
 
 ### Unavailability policy
 
 ```bash
 FLIGHTDECK_UNAVAILABLE_POLICY=continue  # run with cached policy (default)
-FLIGHTDECK_UNAVAILABLE_POLICY=halt      # block new sessions until CP responds
+FLIGHTDECK_UNAVAILABLE_POLICY=halt      # block new runs until CP responds
 ```
 
 The sensor reports over HTTP on a background thread. Control plane downtime is handled by the configured policy; it does not block agent code.
@@ -334,7 +334,7 @@ Flightdeck can gate which MCP servers your agents are allowed to talk to. The po
 
 ### Why this exists
 
-MCP servers are external code your agents call. A misconfigured `.mcp.json`, a typo'd hostname, a colleague's experimental server, or a substituted binary all reach the agent the same way: as a server entry the agent dials at session start. The MCP Protection Policy is the fence around that. Operators define which servers a production flavor can reach; the sensor and the Claude Code plugin enforce that decision at every MCP call.
+MCP servers are external code your agents call. A misconfigured `.mcp.json`, a typo'd hostname, a colleague's experimental server, or a substituted binary all reach the agent the same way: as a server entry the agent dials at run start. The MCP Protection Policy is the fence around that. Operators define which servers a production flavor can reach; the sensor and the Claude Code plugin enforce that decision at every MCP call.
 
 ### Two scopes: global + per-flavor
 
@@ -393,15 +393,15 @@ A declaration whose URL matches a previously-seen URL under a different name pro
 ### Configuration walkthrough
 
 1. **Operator creates a flavor policy on the dashboard** under Settings → Policies → MCP Protection. The form lets you select a flavor (e.g., `production`), pick allow / deny entries against the global, and toggle `block_on_uncertainty`.
-2. **Sensor and plugin pick it up at the next session.** The Python sensor fetches the active policy at `init()` (synchronous, alongside the existing token-policy preflight). The Claude Code plugin fetches at every `SessionStart` with a one-hour disk cache.
+2. **Sensor and plugin pick it up at the next run.** The Python sensor fetches the active policy at `init()` (synchronous, alongside the existing token-policy preflight). The Claude Code plugin fetches at every `SessionStart` with a one-hour disk cache.
 3. **Per-call enforcement.** The sensor evaluates each MCP `call_tool` against the cached policy. On `warn` it emits `policy_mcp_warn` and proceeds. On `block` it emits `policy_mcp_block`, flushes the event queue, and raises `flightdeck.MCPPolicyBlocked` — frameworks surface this as a tool-call failure to the agent's reasoning loop (D130).
-4. **Mid-session updates.** A `policy_update` directive received in a response envelope refreshes the sensor cache; the new policy applies at the **next** `session_start`. In-flight sessions deliberately keep the policy that was active at their start so a mid-session flip doesn't change behaviour for a call already in progress (D129).
+4. **Mid-run updates.** A `policy_update` directive received in a response envelope refreshes the sensor cache; the new policy applies at the **next** `session_start`. In-flight runs deliberately keep the policy that was active at their start so a mid-run flip doesn't change behaviour for a call already in progress (D129).
 
 ### Troubleshooting
 
 - **"MCP call works in dev but blocked in production."** The flavor policies differ. Check `Settings → Policies → MCP Protection → production` against `dev` — production typically runs allowlist mode, dev typically runs blocklist mode (the default). The `policy_mcp_block` event payload's `decision_path` field tells you which step in the resolution algorithm produced the block (`flavor_entry`, `global_entry`, or `mode_default`).
 - **"A server name changed silently."** Look for `mcp_server_name_changed` events in the dashboard. The URL hash is stable across renames; only the display label drifted. Investigate whether the rename is legitimate (a typo fix) or suspicious (an attacker substituting a server with a familiar URL but a different declared name). The policy decision still resolves on URL, so enforcement isn't bypassed by rename.
-- **"Decisions remembered locally don't match the dashboard."** Claude Code's `yes-and-remember` decisions live at `~/.claude/flightdeck/remembered_mcp_decisions.json` (D132). The plugin lazy-syncs to the control plane and re-fetches on the standard TTL, so a real `deny` on the server-side policy will eventually override a stale local `yes`. Force a resync immediately by deleting the file and starting a new Claude Code session.
+- **"Decisions remembered locally don't match the dashboard."** Claude Code's `yes-and-remember` decisions live at `~/.claude/flightdeck/remembered_mcp_decisions.json` (D132). The plugin lazy-syncs to the control plane and re-fetches on the standard TTL, so a real `deny` on the server-side policy will eventually override a stale local `yes`. Force a resync immediately by deleting the file and starting a new Claude Code run.
 
 ### Known framework constraints
 
@@ -433,7 +433,7 @@ The helper will be removed in a future Flightdeck release once the underlying mc
 ## Known limitations
 
 - **`patch()` must run before clients are constructed.** Instances that already accessed `.messages`, `.chat`, `.responses`, or `.embeddings` before `patch()` keep the raw resource cached in `__dict__`. In practice this is a non-issue when `init()` + `patch()` runs at the top of the entrypoint.
-- **One `init()` per process.** A second `init()` is a no-op with a warning. Multi-agent frameworks (CrewAI, LangGraph, etc.) work fine under a single `init()` and shared `AGENT_FLAVOR`. Per-thread Session isolation is not yet supported.
+- **One `init()` per process.** A second `init()` is a no-op with a warning. Multi-agent frameworks (CrewAI, LangGraph, etc.) work fine under a single `init()` and shared `AGENT_FLAVOR`. Per-thread Run isolation is not yet supported.
 - **Custom directive handler input validation is yours.** The `parameters` schema used to register a directive drives the dashboard form and the directive fingerprint. It is not enforced at execution time. Validate types inside your handler.
 - **litellm streaming events are not intercepted.** The sensor patches `litellm.completion` / `litellm.acompletion` for non-streaming calls and `litellm.embedding` / `litellm.aembedding` for embeddings. Streaming via `litellm.completion(stream=True)` falls through to the underlying provider's stream handling and bypasses the sensor's TTFT / chunk / abort accounting. Non-streaming chat calls and embeddings round-trip cleanly. Tracked on the Roadmap below.
 
@@ -606,16 +606,16 @@ Set expectations early so the boundaries are clear:
 
 Open work tracked here. Prioritized when users tell us which matters most.
 
-- **Per-agent landing page.** A dedicated agent detail view (today's Investigate filter is the closest equivalent). Token / latency / error trends per agent over rolling windows.
+- **Per-agent landing page.** A dedicated agent detail view (today's Events filter is the closest equivalent). Token / latency / error trends per agent over rolling windows.
 - **Continuous framework verification.** Scheduled live-API smoke runs across every supported framework, not just on PR. Catches SDK class-rename breakage (anthropic ``RateLimitError`` → ``QuotaError`` etc.) before users hit it.
 - **Production hardening.** NATS authentication, Helm chart polish, nginx rate limiting, dashboard auth, litellm streaming interception, native LangChain Voyage embeddings, dedicated LlamaIndex / CrewAI interceptors where transitive coverage falls short.
-- **AutoGen framework support.** LLM-call interception via `autogen-core` / `autogen-agentchat` (the 0.4 rewrite) or `pyautogen` (0.2 legacy), plus sub-agent observability for it (`agent_role` from `participant.name`, child session per RoutedAgent dispatch / `generate_reply`). AutoGen ships two libraries that share a name with different APIs; both versions need their own interceptor.
+- **AutoGen framework support.** LLM-call interception via `autogen-core` / `autogen-agentchat` (the 0.4 rewrite) or `pyautogen` (0.2 legacy), plus sub-agent observability for it (`agent_role` from `participant.name`, child run per RoutedAgent dispatch / `generate_reply`). AutoGen ships two libraries that share a name with different APIs; both versions need their own interceptor.
 - **MCP policy version history.** Per-PUT snapshots + structured diff between versions (mode_changed, BOU_changed, entries_added/removed/changed). Useful for compliance use cases. v0.6 dropped this in favour of the audit log as the durable primitive (D142). Reintroduce if user demand surfaces.
 - **MCP policy dry-run preview.** Replay the last N hours of MCP traffic against a proposed policy before saving; per-server `would_allow` / `would_warn` / `would_block` counts. v0.6 dropped this in favour of "add entry → observe live events" iteration (D143). Reintroduce if user demand surfaces.
 - **MCP policy YAML import/export.** Round-trip flavor + global policy state to YAML for CLI-driven setup or backup. v0.6 dropped this in favour of UI-as-canonical-edit-path (D144). Reintroduce if user demand surfaces.
 - **Remove `flightdeck_sensor.compat.crewai_mcp_schema_fixup` helper.** The helper exists as a workaround for an upstream mcpadapt schema-generation bug emitting JSON-Schema-2020-12-invalid keys (empty `anyOf`, null `enum` / `items`, missing `type` after the empty `anyOf` is removed). Remove the helper + the README "Known framework constraints" subsection once mcpadapt emits valid schemas. Verify by running playground demo 22 without the fixup call; if it PASSES, the upstream is fixed and the helper can land for removal.
-- **Surface API 400 validation errors in the dashboard.** A manually-edited URL like `/investigate?close_reason=bogus` returns 400 from `/v1/sessions` with the allowed-set message, but the dashboard masks it with the generic "No sessions found / Try adjusting your filters" empty state. Operators who reach this via facet chip clicks never hit it (chips are constrained), but third-party API consumers see the correct 400 while the dashboard hides the same error. Render the structured 400 message inline above the table when the listing fetch returns a 4xx.
-- **Investigate sub-agent swimlane shows orphan when parent is outside the visible time window.** `dashboard/src/lib/relationship.ts::deriveRelationship` resolves the parent's agent_id by looking the `parent_session_id` up in the visible fleet store; when the parent session falls outside the current time range the lookup misses and the relationship pill silently falls back to "lone" — the sub-agent renders as a top-level swimlane row with no parent link. Fall back gracefully (e.g. surface "parent outside time window" pill with a deep-link to the wider window) or extend the lookup beyond the visible page.
+- **Surface API 400 validation errors in the dashboard.** A manually-edited URL like `/events?close_reason=bogus` returns 400 from `/v1/sessions` with the allowed-set message, but the dashboard masks it with the generic "No runs found / Try adjusting your filters" empty state. Operators who reach this via facet chip clicks never hit it (chips are constrained), but third-party API consumers see the correct 400 while the dashboard hides the same error. Render the structured 400 message inline above the table when the listing fetch returns a 4xx.
+- **Events sub-agent swimlane shows orphan when parent is outside the visible time window.** `dashboard/src/lib/relationship.ts::deriveRelationship` resolves the parent's agent_id by looking the `parent_session_id` up in the visible fleet store; when the parent run falls outside the current time range the lookup misses and the relationship pill silently falls back to "lone" — the sub-agent renders as a top-level swimlane row with no parent link. Fall back gracefully (e.g. surface "parent outside time window" pill with a deep-link to the wider window) or extend the lookup beyond the visible page.
 
 The roadmap is intentionally loose. User demand reorders priorities.
 
@@ -631,4 +631,4 @@ Apache 2.0. See [LICENSE](LICENSE).
 
 ## Acknowledgements
 
-The fleet timeline UI was inspired by [agent-observe](https://github.com/simple10/agents-observe) by [@simple10](https://github.com/simple10), a great tool for observing individual Claude Code sessions. The sensor builds on the foundation of [tokencap](https://github.com/pykul/tokencap), an open source token budget enforcement library.
+The fleet timeline UI was inspired by [agent-observe](https://github.com/simple10/agents-observe) by [@simple10](https://github.com/simple10), a great tool for observing individual Claude Code runs. The sensor builds on the foundation of [tokencap](https://github.com/pykul/tokencap), an open source token budget enforcement library.

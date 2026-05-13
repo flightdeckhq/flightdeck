@@ -327,10 +327,13 @@ def test_init_non_uuid_session_id_falls_back_and_warns(
             flightdeck_sensor.teardown()
 
     # Exact wording: "Custom session_id '{value}' is not a valid UUID.
-    # A random session ID will be generated instead."
+    # A random run ID will be generated instead." The kwarg name
+    # ``session_id`` is preserved in the warning text (it names the
+    # caller-supplied parameter); the surrounding prose follows the
+    # run vocabulary.
     assert any(
         "Custom session_id 'my-temporal-workflow-id' is not a valid UUID" in r.message
-        and "random session ID will be generated" in r.message
+        and "random run ID will be generated" in r.message
         for r in caplog.records
     ), f"expected invalid-uuid warning, got: {[r.message for r in caplog.records]}"
 

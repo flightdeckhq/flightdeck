@@ -589,7 +589,7 @@ describe("SessionDrawer", () => {
     fireEvent.click(detailLink);
     // Should show back navigation
     expect(screen.getByTestId("back-to-session")).toBeInTheDocument();
-    expect(screen.getByText("← Back to session")).toBeInTheDocument();
+    expect(screen.getByText("← Back to run")).toBeInTheDocument();
   });
 
   it("back navigation returns to session event list", () => {

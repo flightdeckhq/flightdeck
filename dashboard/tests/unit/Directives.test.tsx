@@ -176,7 +176,7 @@ describe("Directives page", () => {
     });
 
     await waitFor(() => {
-      expect(screen.getByText(/Directive sent to all research-agent sessions/)).toBeInTheDocument();
+      expect(screen.getByText(/Directive sent to all research-agent runs/)).toBeInTheDocument();
     });
   });
 
@@ -188,7 +188,7 @@ describe("Directives page", () => {
     });
     fireEvent.click(screen.getByText("Trigger"));
     expect(screen.getByTestId("flavor-disclaimer")).toBeInTheDocument();
-    expect(screen.getByText(/Sessions running older code may skip/)).toBeInTheDocument();
+    expect(screen.getByText(/Runs on older sensor versions may skip/)).toBeInTheDocument();
   });
 
   it("shows session registration status with green dot for recent directives", async () => {

@@ -57,9 +57,9 @@ type mockStore struct {
 	lastAgentListParams *store.AgentListParams
 
 	// GetAgentByID plumbing — by-id lookup map + optional error.
-	agentsByID        map[string]*store.AgentSummary
-	agentByIDErr      error
-	lastAgentByIDArg  string
+	agentsByID       map[string]*store.AgentSummary
+	agentByIDErr     error
+	lastAgentByIDArg string
 
 	// Records the last GetSessions params so handler tests can
 	// assert the parse → store-params mapping. Nil unless set by a
@@ -447,10 +447,10 @@ func (m *mockStore) GetEvents(_ context.Context, params store.EventsParams) (*st
 	}
 	page := filtered[start:end]
 	return &store.EventsResponse{
-		Events:  page,
-		Total:   len(filtered),
-		Limit:   params.Limit,
-		Offset:  params.Offset,
+		Events: page,
+		Total:  len(filtered),
+		Limit:  params.Limit,
+		Offset: params.Offset,
 		// Mirror the production formula in store/events.go so the
 		// mock cannot drift from real semantics under future test
 		// changes. See the GetEvents godoc for the rationale.
@@ -551,7 +551,7 @@ func (m *mockStore) QueryAnalytics(_ context.Context, params store.AnalyticsPara
 }
 
 // ListAgents records the params it was called with and returns the
-// preconfigured result. Tests that don't set ``agentListResult``
+// preconfigured result. Tests that don't set “agentListResult“
 // get an empty response shape.
 func (m *mockStore) ListAgents(_ context.Context, params store.AgentListParams) (*store.AgentListResponse, error) {
 	m.lastAgentListParams = &params
@@ -569,8 +569,8 @@ func (m *mockStore) ListAgents(_ context.Context, params store.AgentListParams) 
 	}, nil
 }
 
-// GetAgentByID consults ``agentsByID`` and returns the match or
-// nil when the id is absent. Tests set ``agentByIDErr`` to simulate
+// GetAgentByID consults “agentsByID“ and returns the match or
+// nil when the id is absent. Tests set “agentByIDErr“ to simulate
 // a DB failure.
 func (m *mockStore) GetAgentByID(_ context.Context, agentID string) (*store.AgentSummary, error) {
 	m.lastAgentByIDArg = agentID
@@ -583,8 +583,24 @@ func (m *mockStore) GetAgentByID(_ context.Context, agentID string) (*store.Agen
 	return m.agentsByID[agentID], nil
 }
 
+// AgentSummary returns an empty summary so the broader handler
+// test suite continues to satisfy the Querier interface. The
+// per-agent summary endpoint has its own dedicated tests in
+// agent_summary_test.go; tests that need a specific payload
+// either swap a purpose-built stub or extend this method.
+func (m *mockStore) AgentSummary(
+	_ context.Context, params store.AgentSummaryParams,
+) (*store.AgentSummaryResponse, error) {
+	return &store.AgentSummaryResponse{
+		AgentID: params.AgentID,
+		Period:  params.Period,
+		Bucket:  params.Bucket,
+		Series:  []store.AgentSummarySeriesPoint{},
+	}, nil
+}
+
 // ReconcileAgents is a no-op mock: the admin-reconcile handler tests
-// set ``m.reconcileResult`` / ``m.reconcileErr`` per-test (see the
+// set “m.reconcileResult“ / “m.reconcileErr“ per-test (see the
 // reconcile handler tests below) and ignore the context. Tests that
 // don't exercise the reconcile path get a zero-agents response.
 func (m *mockStore) ReconcileAgents(
@@ -2151,7 +2167,7 @@ func TestGetEventsHasMoreFormula(t *testing.T) {
 	}
 }
 
-// D113 drawer pagination: ``before`` keyset cursor threads from the
+// D113 drawer pagination: “before“ keyset cursor threads from the
 // query string into EventsParams.Before as an RFC3339-parsed time.
 func TestGetEvents_Before_ThreadsToStore(t *testing.T) {
 	s := &mockStore{}

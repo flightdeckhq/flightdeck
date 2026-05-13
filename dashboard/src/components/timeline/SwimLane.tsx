@@ -50,7 +50,7 @@ interface SwimLaneProps {
    * the on-demand fetch returned fewer rows than the lifetime
    * count (capped per ``EXPANDED_DRAWER_SESSION_LIMIT`` plus
    * server cap). When unset (legacy callers) the footer falls
-   * back to the bare "View in Investigate →" wording.
+   * back to the bare "View in Events →" wording.
    */
   totalSessionsLifetime?: number;
   scale: ScaleTime<number, number>;
@@ -582,8 +582,8 @@ function SwimLaneComponent({
  *     events" pattern so users who have learned one drawer's
  *     pagination get the other for free. Disabled while the next
  *     page is in flight; label flips to ``Loading…``.
- *  2. ``View in Investigate →`` deep-link to
- *     ``/investigate?agent_id=<uuid>``. Always visible -- even when
+ *  2. ``View in Events →`` deep-link to
+ *     ``/events?agent_id=<uuid>``. Always visible -- even when
  *     the drawer shows every session, the user might want to filter
  *     by event type, sort, or drill into events, none of which the
  *     drawer supports. Pre-fix the drawer was a dead-end on agents
@@ -646,7 +646,7 @@ function ExpandedDrawerFooter({
     >
       {showCountPreamble && (
         <span data-testid="swimlane-expanded-count-preamble">
-          Showing {visibleCount} of {totalLifetime} sessions
+          Showing {visibleCount} of {totalLifetime} runs
         </span>
       )}
       {hasMore && (
@@ -670,13 +670,13 @@ function ExpandedDrawerFooter({
           {loadingMore
             ? "Loading…"
             : remaining != null && remaining > 0
-              ? `Show older sessions (${remaining} more)`
-              : "Show older sessions"}
+              ? `Show older runs (${remaining} more)`
+              : "Show older runs"}
         </button>
       )}
       <Link
         data-testid="swimlane-expanded-investigate-link"
-        to={`/investigate?agent_id=${encodeURIComponent(agentId)}`}
+        to={`/events?agent_id=${encodeURIComponent(agentId)}`}
         onClick={(e) => e.stopPropagation()}
         style={{
           marginLeft: "auto",
@@ -685,7 +685,7 @@ function ExpandedDrawerFooter({
           textDecoration: "none",
         }}
       >
-        View in Investigate →
+        View in Events →
       </Link>
     </div>
   );

@@ -327,7 +327,7 @@ export function AgentTable({
             >
               Topology
             </th>
-            {renderHeader("total_sessions", "Sessions", {
+            {renderHeader("total_sessions", "Runs", {
               width: "8%",
               textAlign: "right",
             })}
@@ -403,7 +403,7 @@ export function AgentTable({
                 sp.set("from", from);
                 sp.set("to", to);
                 sp.set("agent_id", a.agent_id);
-                navigate(`/investigate?${sp.toString()}`);
+                navigate(`/events?${sp.toString()}`);
               }}
               className="cursor-pointer transition-colors duration-150"
               style={{

@@ -40,7 +40,7 @@ function Nav({ onSearchClick }: { onSearchClick: () => void }) {
       <div className="ml-8 flex items-center gap-6">
         {[
           { to: "/", label: "Fleet", end: true },
-          { to: "/investigate", label: "Investigate" },
+          { to: "/events", label: "Events" },
           { to: "/policies", label: "Policies" },
           { to: "/directives", label: "Directives" },
           { to: "/analytics", label: "Analytics" },
@@ -116,15 +116,17 @@ function Nav({ onSearchClick }: { onSearchClick: () => void }) {
 
 /**
  * Routing helper for the global search modal. Agent clicks navigate
- * to Investigate with the flavor pre-filtered; session and event
- * clicks navigate to Investigate with the ``session`` URL param set,
- * which Investigate's drawer picks up via useEffect. Event clicks
- * target the parent session drawer (per-event deep-linking with
- * ``directEventDetail`` is a separate follow-up).
+ * to the Events page with the flavor pre-filtered; session and event
+ * clicks navigate to /events with the ``session`` URL param set,
+ * which the Investigate component's drawer picks up via useEffect.
+ * Event clicks target the parent session drawer (per-event deep-
+ * linking with ``directEventDetail`` is a separate follow-up).
  *
  * The URL param name for flavor is the singular ``flavor=`` -- the
  * Investigate parseUrlState reads via ``sp.getAll("flavor")``. The
- * new ``session=`` param is defined in the same file.
+ * ``session=`` query param name is the wire identifier the Events
+ * page's URL parser still keys on; the rendered prose calls it a
+ * "run" while the param keeps its historical name.
  */
 export function buildSearchResultHref(
   type: "agent" | "session" | "event",
@@ -137,17 +139,17 @@ export function buildSearchResultHref(
     // never matches any session.flavor. agent_id is now carried on
     // SearchResultAgent (D115) and the Investigate parseUrlState
     // already handles ``?agent_id=<uuid>``.
-    return `/investigate?agent_id=${encodeURIComponent(
+    return `/events?agent_id=${encodeURIComponent(
       (item as SearchResultAgent).agent_id,
     )}`;
   }
   if (type === "session") {
-    return `/investigate?session=${encodeURIComponent(
+    return `/events?session=${encodeURIComponent(
       (item as SearchResultSession).session_id,
     )}`;
   }
   // event -- route to the parent session's drawer.
-  return `/investigate?session=${encodeURIComponent(
+  return `/events?session=${encodeURIComponent(
     (item as SearchResultEvent).session_id,
   )}`;
 }
@@ -181,7 +183,7 @@ function CommandPaletteHost() {
       <div className="flex-1 overflow-hidden">
         <Routes>
           <Route path="/" element={<Fleet />} />
-          <Route path="/investigate" element={<Investigate />} />
+          <Route path="/events" element={<Investigate />} />
           <Route path="/policies" element={<Policies />} />
           <Route path="/directives" element={<Directives />} />
           <Route path="/analytics" element={<Analytics />} />

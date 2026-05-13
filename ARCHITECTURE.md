@@ -72,7 +72,7 @@ no single point of failure introduced into the agent's execution path.
 ┌─────────────────────┐ ┌──────────────────────────┐
 │   Agent Process     │          │   React Dashboard :3000  │
 │                     │          │                          │
-│  flightdeck-sensor  │          │  Fleet, Investigate,     │
+│  flightdeck-sensor  │          │  Fleet, Events,          │
 │  Session + Policy   │          │  Session drawer,         │
 │  Interceptor        │          │  Analytics, Search       │
 └────────┬────────────┘          └────────┬─────────────────┘
@@ -286,7 +286,7 @@ flightdeck/
 │   │   ├── handlers/
 │   │   │   ├── fleet.go            # GET /v1/fleet
 │   │   │   ├── sessions.go         # GET /v1/sessions, GET /v1/sessions/:id
-│   │   │   ├── agents.go           # GET /v1/agents/:id
+│   │   │   ├── agents.go           # GET /v1/agents, /v1/agents/:id, /v1/agents/:id/summary
 │   │   │   ├── content.go          # GET /v1/events/:id/content
 │   │   │   ├── search.go           # GET /v1/search
 │   │   │   ├── directives.go       # POST /v1/directives
@@ -323,7 +323,7 @@ flightdeck/
 │   ├── src/
 │   │   ├── main.tsx
 │   │   ├── App.tsx
-│   │   ├── pages/              # Fleet, Investigate, Session, Analytics, Policies, Directives, Settings
+│   │   ├── pages/              # Fleet, Events (Investigate.tsx), Session, Analytics, Policies, Directives, Settings
 │   │   ├── components/
 │   │   │   ├── timeline/       # Timeline, SwimLane, SessionEventRow, EventNode, TimeAxis
 │   │   │   ├── fleet/          # FleetPanel, SessionStateBar, PolicyEventList, LiveFeed,
@@ -695,7 +695,7 @@ equivalent raises an exception inside the interceptor's context
 manager) emits child `session_end` with `state=error` plus a
 structured error block following the `llm_error` taxonomy. The
 dashboard surfaces failures via the row-level red-dot pattern on
-the child session row in Investigate, the child agent row in
+the child session row on the Events page, the child agent row in
 Fleet AgentTable, and the child agent's swimlane left panel —
 mirroring the existing `error_types` (`llm_error`) and
 `mcp_error_types` indicators.
@@ -1022,7 +1022,7 @@ returns every session matching the other filters (existing
 behaviour). When `false` the listing excludes pure children
 (rows whose `parent_session_id IS NOT NULL` AND no other
 session references this row as parent), returning only
-parents-with-children + lone sessions. The Investigate page
+parents-with-children + lone sessions. The Events page
 sends `include_pure_children=false` as its default scope so
 deep sub-agent trees don't drown root activity in the table; the
 "Is sub-agent" facet flips to `is_sub_agent=true` to surface
@@ -1746,7 +1746,8 @@ authoritative parameter-level reference.
 | `GET` | `/v1/fleet` | Fleet summary: agents with state rollup, total sessions, total tokens, context_facets |
 | `GET` | `/v1/sessions` | Paginated session listing; filters: `agent_id`, `flavor`, `framework`, `state`, `error_type`, `policy_event_type`, `mcp_server`, `from`, `to`, `q`, `parent_session_id`, `is_sub_agent`, `has_sub_agents`, `agent_role[]`, `include_pure_children`, `close_reason`, `estimated_via`, `terminal`, `matched_entry_id`, `originating_call_context`; returns per-session aggregates (`error_types[]`, `policy_event_types[]`, `mcp_server_names[]`, `close_reasons[]`, `estimated_via_values[]`, `has_terminal_error`, `matched_entry_ids[]`, `originating_call_contexts[]`) and `child_count` |
 | `GET` | `/v1/sessions/:id` | Session detail: metadata + chronological events + attachments array |
-| `GET` | `/v1/agents/:id` | Single agent's identity record (backs Investigate AGENT facet identity-cache resolver) |
+| `GET` | `/v1/agents/:id` | Single agent's identity record (backs Events page AGENT facet identity-cache resolver) |
+| `GET` | `/v1/agents/:id/summary` | Per-agent activity summary (totals + per-bucket series) over a 1h/24h/7d/30d window. Powers the per-agent landing page (D157). |
 | `GET` | `/v1/events` | Bulk events query: `from` (required), `to`, `flavor`, `event_type`, `session_id`, `limit` (max 2000), `offset` |
 | `GET` | `/v1/events/:id/content` | Event prompt content; 404 when capture was off for the session |
 | `GET` | `/v1/policy` | Sensor preflight: returns the policy applicable to a flavor + session_id |
@@ -1978,6 +1979,10 @@ renaming fields is not.
 - `granularity`: `hour`, `day`, `week`.
 - `filter_flavor`, `filter_model`, `filter_agent_type`, `filter_framework`,
   `filter_host` (optional).
+- `filter_agent_id` (optional, UUID). Scopes the analytics window to
+  events from sessions owned by a single agent. Composes with the
+  other filters via AND. Joins `sessions` when the metric's base
+  table is events. Used by the per-agent landing page (D157).
 - `filter_parent_session_id`, `filter_is_sub_agent`,
   `filter_has_sub_agents` (optional). Filter analytics scope to
   the children of a specific parent session, to children only, or to
@@ -2006,6 +2011,46 @@ but unindexed at the deep-recursion frontier, so analytics over
 large historical windows on parents with many descendants pay a
 seq-scan-like cost on the recursive step. for the
 known-performance-characteristic note.
+
+### Per-agent activity summary
+
+`GET /v1/agents/{agent_id}/summary` returns one agent's activity
+totals plus a per-bucket time series, scoped to a window. Powers
+the per-agent landing page (D157). Query params:
+
+- `period` (optional): `1h`, `24h`, `7d` (default), `30d`.
+- `bucket` (optional): `hour`, `day`, `week`. Derived from
+  `period` when omitted (1h / 24h → `hour`; 7d / 30d → `day`).
+
+Returns:
+
+- `totals.tokens`: `SUM(events.tokens_total)` filtered to
+  `event_type='post_call'`.
+- `totals.errors`: `COUNT(*)` of events with
+  `event_type='llm_error'`. Policy events are enforcement
+  decisions, not errors, and are not counted here.
+- `totals.sessions`: `COUNT(DISTINCT session_id)` across events
+  in the window. Every run with any activity in the window
+  counts, regardless of when it started.
+- `totals.cost_usd`: cost aggregate using the static pricing
+  table. The expression is unfiltered at the aggregate level
+  because non-`post_call` events leave the token columns NULL
+  (so the per-row contribution is 0 / NULL and is dropped by
+  SUM) — the numeric result is identical to a FILTERed
+  aggregate.
+- `totals.latency_p50_ms` / `totals.latency_p95_ms`:
+  `PERCENTILE_CONT` over `events.latency_ms` filtered to
+  `event_type='post_call'`, matching the analytics endpoint
+  convention.
+- `series[]`: per-bucket rows with `ts` (`date_trunc(bucket,
+  occurred_at)`), `tokens`, `errors`, `sessions`, `cost_usd`,
+  `latency_p95_ms` (p50 omitted at series granularity —
+  totals carry it for context).
+
+Handler returns 400 on a malformed UUID, an unknown `period`,
+or an unknown `bucket`; 404 when no agent matches the id; 200
+with zero totals + empty series for an agent whose window
+contained no events.
 
 ### Cost estimation
 
@@ -2085,9 +2130,11 @@ only — never MUI, Ant Design, or Chakra UI.
 ### Pages
 
 - `/` (Fleet) — primary view. Sidebar + fleet header + timeline.
-- `/investigate` — session search and filtering surface. URL-driven
-  facets: `state`, `agent`, `flavor`, `agent_type`, `model`, `framework`,
-  `error_type`, scalar context fields.
+- `/events` — session search and filtering surface. URL-driven
+  facets: `state`, `agent`, `flavor`, `agent_type`, `model`,
+  `framework`, `error_type`, scalar context fields. Legacy
+  `/investigate` is served at the nginx edge with a permanent 301
+  to `/events` preserving the query string.
 - `/session/:id` — full session drilldown (drawer-based via deep-link).
 - `/analytics` — flexible breakdown charts.
 - `/policies` — token policy CRUD.
@@ -2118,10 +2165,11 @@ The fleet store filters out `total_sessions=0` orphan agents — they
 exist in the `agents` table from prior runs but have no live or recent
 sessions.
 
-### Investigate view
+### Events view
 
-`dashboard/src/pages/Investigate.tsx`. URL-driven facet sidebar +
-session table + session drawer (Mode 2 deep-link via `?session=<id>`).
+Component file `dashboard/src/pages/Investigate.tsx` mounted at the
+`/events` route. URL-driven facet sidebar + session table + session
+drawer (Mode 2 deep-link via `?session=<id>`).
 
 `buildActiveFilters` emits filter chips with onRemove. URL state
 round-trips via `parseUrlState` / `buildUrlParams`; `CLEAR_ALL_FILTERS_PATCH`
@@ -2222,8 +2270,8 @@ The expanded swimlane drawer covers full session history. `loadExpandedSessions`
 passes `from = new Date(0).toISOString` so all-time sessions return.
 Real pagination via `loadMoreExpandedSessions` with
 `EXPANDED_DRAWER_PAGE_SIZE = 25`. The footer carries an adaptive count
-preamble, "Show older sessions" load-more button, and "View in
-Investigate →" deep-link.
+preamble, "Show older runs" load-more button, and "View in
+Events →" deep-link.
 
 ### Event detail drawer
 
@@ -2399,7 +2447,7 @@ the FleetPanel never passes `sessionId`.
 `dashboard/src/pages/Settings.tsx` carries the access token CRUD UI.
 List, create, revoke, rename. Plaintext is shown once at creation and
 never recoverable afterwards. Token name badge renders on sessions in
-Fleet, Investigate, and the session drawer so operators can trace
+Fleet, Events, and the session drawer so operators can trace
 which access token opened each session.
 
 ### Theme system
@@ -3710,7 +3758,7 @@ too long to fit a tooltip — never paraphrased.
   Result: amber/red = "policy fired" axis, purple = "FYI"
   axis. No new theme tokens are introduced; chromas reuse
   existing CSS variables already declared in `themes.css`.
-- **Investigate event-type filter.** The existing Investigate
+- **Events page event-type filter.** The existing Events
   page's event-type chip picker carries dedicated chips for
   the four MCP-policy event types under their own collapsible
   "MCP POLICY" facet group. The analytics-dimension lock holds —

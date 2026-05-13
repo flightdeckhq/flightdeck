@@ -29,7 +29,7 @@ function CurrentUrl({ onUrl }: { onUrl: (url: string) => void }) {
   return null;
 }
 
-describe("AgentTable row click -> Investigate navigation", () => {
+describe("AgentTable row click -> Events navigation", () => {
   it("includes both agent_id AND from AND to query params (Bug 2a)", () => {
     // Regression guard: direct navigation with only ``agent_id=``
     // left Investigate to default its own from/to, which worked in
@@ -52,7 +52,7 @@ describe("AgentTable row click -> Investigate navigation", () => {
             element={<AgentTable agents={agents} loading={false} />}
           />
           <Route
-            path="/investigate"
+            path="/events"
             element={<CurrentUrl onUrl={onUrl} />}
           />
         </Routes>
@@ -63,7 +63,7 @@ describe("AgentTable row click -> Investigate navigation", () => {
       getByTestId("fleet-agent-row-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"),
     );
 
-    expect(capturedUrl.startsWith("/investigate?")).toBe(true);
+    expect(capturedUrl.startsWith("/events?")).toBe(true);
     const sp = new URLSearchParams(capturedUrl.split("?")[1] ?? "");
     expect(sp.get("agent_id")).toBe("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
     // Supervisor-specified "default time range (Last 7 days)".

@@ -74,14 +74,14 @@ describe("buildSearchResultHref", () => {
       "agent",
       agent("claude-code", "deadbeef-1234-5678-9abc-def012345678"),
     );
-    expect(href).toBe("/investigate?agent_id=deadbeef-1234-5678-9abc-def012345678");
+    expect(href).toBe("/events?agent_id=deadbeef-1234-5678-9abc-def012345678");
     const sp = new URL("http://x" + href).searchParams;
     expect(parseUrlState(sp).agentId).toBe("deadbeef-1234-5678-9abc-def012345678");
   });
 
   it("session click sets ?session=<id>", () => {
     const href = buildSearchResultHref("session", session("abc-123", "claude-code"));
-    expect(href).toBe("/investigate?session=abc-123");
+    expect(href).toBe("/events?session=abc-123");
     const sp = new URL("http://x" + href).searchParams;
     expect(parseUrlState(sp).session).toBe("abc-123");
   });
@@ -91,7 +91,7 @@ describe("buildSearchResultHref", () => {
     // For now, event results open the parent session at the timeline,
     // which is the "no dead UI" behaviour called out in the brief.
     const href = buildSearchResultHref("event", event("e1", "s1"));
-    expect(href).toBe("/investigate?session=s1");
+    expect(href).toBe("/events?session=s1");
   });
 
   it("URL-encodes special characters in the agent_id (F2)", () => {
@@ -99,7 +99,7 @@ describe("buildSearchResultHref", () => {
       "agent",
       agent("any-name", "id with/slash"),
     );
-    expect(href).toBe("/investigate?agent_id=id%20with%2Fslash");
+    expect(href).toBe("/events?agent_id=id%20with%2Fslash");
   });
 });
 

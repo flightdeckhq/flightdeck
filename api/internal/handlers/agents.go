@@ -4,22 +4,11 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/flightdeckhq/flightdeck/api/internal/store"
-)
-
-// uuidRE matches the standard 36-char RFC-4122 hyphenated form the
-// agents.agent_id column is populated with. The handler validates the
-// path param against this before reaching the store so a malformed
-// client-side value returns a clean 400 rather than a Postgres cast
-// error wrapped in a 500. The store's ``$1::uuid`` cast stays as a
-// belt-and-braces defence.
-var uuidRE = regexp.MustCompile(
-	`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`,
 )
 
 const (
@@ -28,8 +17,8 @@ const (
 )
 
 // validAgentTypes is the D114 vocabulary whitelist for the
-// ``agent_type`` filter. Matches the CHECK constraint on the agents
-// table (``000015_agent_identity_model.up.sql``). Unknown values
+// “agent_type“ filter. Matches the CHECK constraint on the agents
+// table (“000015_agent_identity_model.up.sql“). Unknown values
 // return 400 rather than quietly matching nothing, because the
 // alternative — silent "no results" — hides client bugs and blocks
 // operators from distinguishing "no data" from "I typed the wrong
@@ -41,8 +30,8 @@ var validAgentTypes = map[string]bool{
 
 // validClientTypes mirrors the agents.client_type CHECK constraint.
 var validClientTypes = map[string]bool{
-	"claude_code":        true,
-	"flightdeck_sensor":  true,
+	"claude_code":       true,
+	"flightdeck_sensor": true,
 }
 
 // validAgentStates is the rollup-state vocabulary. Mirrors the
@@ -57,7 +46,7 @@ var validAgentStates = map[string]bool{
 
 // validAgentSorts lists the handler-level allowed sort columns. The
 // store carries the authoritative mapping in
-// ``store.AllowedAgentSortColumns``; this set exists here so the
+// “store.AllowedAgentSortColumns“; this set exists here so the
 // handler can emit a helpful 400 with the allowed names instead of
 // delegating the error shape to the store.
 var validAgentSorts = map[string]bool{
@@ -74,7 +63,7 @@ var validAgentSorts = map[string]bool{
 // AgentsListHandler handles GET /v1/agents.
 //
 // @Summary      List agents with filters, search, sort, and pagination
-// @Description  Returns agents matching the supplied filters. Multi-value filters (state, agent_type, client_type, hostname, user, os, orchestration) accept comma-separated values and repeated query params; values within a dimension are OR, values across dimensions are AND. ``search`` is a case-insensitive substring match against ``agent_name`` and ``hostname``. ``updated_since`` filters on ``last_seen_at >= ts``. State is computed via LATERAL subquery against the most-recent session. Each row also carries D126 sub-agent rollup fields (``agent_role`` — null for root agents, the framework-supplied role string when this agent represents a sub-agent identity; ``topology`` — one of ``lone`` / ``parent`` / ``child``, computed from whether this agent's sessions carry a parent_session_id and whether they are referenced as a parent by other agents). Pagination defaults to 25/page, max 100.
+// @Description  Returns agents matching the supplied filters. Multi-value filters (state, agent_type, client_type, hostname, user, os, orchestration) accept comma-separated values and repeated query params; values within a dimension are OR, values across dimensions are AND. “search“ is a case-insensitive substring match against “agent_name“ and “hostname“. “updated_since“ filters on “last_seen_at >= ts“. State is computed via LATERAL subquery against the most-recent session. Each row also carries D126 sub-agent rollup fields (“agent_role“ — null for root agents, the framework-supplied role string when this agent represents a sub-agent identity; “topology“ — one of “lone“ / “parent“ / “child“, computed from whether this agent's sessions carry a parent_session_id and whether they are referenced as a parent by other agents). Pagination defaults to 25/page, max 100.
 // @Tags         agents
 // @Produce      json
 // @Param        agent_type      query     string  false  "Filter by agent_type (repeatable/comma: coding, production)"
@@ -233,10 +222,114 @@ func AgentsListHandler(s store.Querier) http.HandlerFunc {
 	}
 }
 
+// agentSummaryDefaultBucket maps each supported period to its
+// natural bucket. 1h and 24h chart per-hour; 7d and 30d chart
+// per-day. The caller can override with the “bucket“ query
+// param (hour/day/week) — that override is whitelisted in
+// validAgentSummaryBuckets.
+var agentSummaryDefaultBucket = map[string]string{
+	"1h":  "hour",
+	"24h": "hour",
+	"7d":  "day",
+	"30d": "day",
+}
+
+var validAgentSummaryPeriods = map[string]bool{
+	"1h": true, "24h": true, "7d": true, "30d": true,
+}
+
+var validAgentSummaryBuckets = map[string]bool{
+	"hour": true, "day": true, "week": true,
+}
+
+// AgentSummaryHandler handles GET /v1/agents/{agent_id}/summary.
+//
+// @Summary      Get per-agent activity summary
+// @Description  Returns totals (tokens, errors, sessions, cost_usd, latency_p50_ms, latency_p95_ms) and a per-bucket time series for one agent over the requested period. Powers the per-agent landing page. “period“ is one of “1h“, “24h“, “7d“, “30d“ (default “7d“). “bucket“ is one of “hour“, “day“, “week“; when omitted it is derived from period (1h/24h → hour, 7d/30d → day). Errors count events with “event_type = 'llm_error'“ only — policy events are enforcement decisions, not failures. Sessions is “COUNT(DISTINCT session_id)“ across events in the window. Latency percentiles use “event_type = 'post_call'“ rows only, matching the analytics endpoint convention.
+// @Tags         agents
+// @Produce      json
+// @Param        agent_id  path      string  true   "Agent UUID"
+// @Param        period    query     string  false  "Time window: 1h, 24h, 7d (default), 30d"
+// @Param        bucket    query     string  false  "Series bucket granularity: hour, day, week. Defaults derived from period."
+// @Success      200  {object}  store.AgentSummaryResponse
+// @Failure      400  {object}  ErrorResponse  "Invalid UUID, period, or bucket"
+// @Failure      401  {object}  ErrorResponse  "Missing or invalid bearer token"
+// @Failure      404  {object}  ErrorResponse  "Agent not found"
+// @Failure      500  {object}  ErrorResponse  "Database error"
+// @Router       /v1/agents/{agent_id}/summary [get]
+func AgentSummaryHandler(s store.Querier) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Path layout: /v1/agents/{agent_id}/summary. Strip the
+		// stable prefix + suffix; whatever is left between them
+		// is the candidate UUID. Reject malformed shapes (extra
+		// segments, missing /summary suffix) at the boundary.
+		path := strings.TrimPrefix(r.URL.Path, "/v1/agents/")
+		path = strings.TrimSuffix(path, "/summary")
+		path = strings.Trim(path, "/")
+		if path == "" || strings.Contains(path, "/") {
+			writeError(w, http.StatusBadRequest, "agent_id is required")
+			return
+		}
+		if !uuidRE.MatchString(path) {
+			writeError(w, http.StatusBadRequest, "agent_id must be a UUID")
+			return
+		}
+
+		q := r.URL.Query()
+		period := q.Get("period")
+		if period == "" {
+			period = "7d"
+		}
+		if !validAgentSummaryPeriods[period] {
+			writeError(w, http.StatusBadRequest,
+				"invalid period: must be one of 1h, 24h, 7d, 30d")
+			return
+		}
+
+		bucket := q.Get("bucket")
+		if bucket == "" {
+			bucket = agentSummaryDefaultBucket[period]
+		}
+		if !validAgentSummaryBuckets[bucket] {
+			writeError(w, http.StatusBadRequest,
+				"invalid bucket: must be one of hour, day, week")
+			return
+		}
+
+		// 404 path: confirm the agent exists before running the
+		// (more expensive) summary aggregate. Reusing GetAgentByID
+		// keeps the 404 contract identical to /v1/agents/{id}.
+		agent, err := s.GetAgentByID(r.Context(), path)
+		if err != nil {
+			slog.Error("agent summary lookup error", "id", path, "err", err)
+			writeError(w, http.StatusInternalServerError, "internal server error")
+			return
+		}
+		if agent == nil {
+			writeError(w, http.StatusNotFound, "agent not found")
+			return
+		}
+
+		resp, err := s.AgentSummary(r.Context(), store.AgentSummaryParams{
+			AgentID: path,
+			Period:  period,
+			Bucket:  bucket,
+		})
+		if err != nil {
+			slog.Error("agent summary query error", "id", path, "err", err)
+			writeError(w, http.StatusInternalServerError, "internal server error")
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}
+}
+
 // AgentByIDHandler handles GET /v1/agents/{agent_id}.
 //
 // Returns the same row shape as AgentsListHandler — including the
-// D126 rollup fields ``agent_role`` and ``topology``.
+// D126 rollup fields “agent_role“ and “topology“.
 //
 // @Summary      Get agent detail by id
 // @Description  Returns the full AgentSummary for a single agent including rollup counters and the LATERAL-computed rollup state. Powers the Investigate chip agent-name resolver so the UI no longer has to fall back to a UUID prefix when the filtered sessions list is empty.

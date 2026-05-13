@@ -18,8 +18,8 @@ import {
 // whose only sessions were >7 days old read "No sessions to
 // display for this agent." in the drawer -- a dead-end. Fix:
 // pass ``from = new Date(0).toISOString()`` so all-time sessions
-// return; render a "View in Investigate →" footer with adaptive
-// "Show older sessions" pagination button. This spec asserts the
+// return; render a "View in Events →" footer with adaptive
+// "Show older runs" pagination button. This spec asserts the
 // post-fix contract.
 //
 // What MUST NOT happen: the "No sessions to display" copy. That's
@@ -87,18 +87,20 @@ test.describe("T5b — Ancient agent's expanded drawer is not a dead-end", () =>
       "ancient-agent drawer must not render the 'No sessions to display' dead-end",
     ).toHaveCount(0);
 
-    // Footer present: "View in Investigate →" link is the
-    // dedicated full-history surface. Always rendered when at
-    // least one session is visible.
+    // Footer present: "View in Events →" link is the dedicated
+    // full-history surface. Always rendered when at least one
+    // session is visible.
     const footerLink = expandedBody.locator(
       '[data-testid="swimlane-expanded-investigate-link"]',
     );
     await expect(footerLink).toBeVisible();
     const href = await footerLink.getAttribute("href");
-    expect(href).toMatch(/\/investigate\?agent_id=/);
-    // Click navigates to the Investigate page filtered to this
-    // agent. URL gets the deep-link param.
+    expect(href).toMatch(/\/events\?agent_id=/);
+    // Click navigates to the Events page filtered to this agent.
+    // URL gets the deep-link param. The route is ``/events``; the
+    // nginx edge keeps a permanent 301 from the legacy
+    // ``/investigate`` path for old bookmarks.
     await footerLink.click();
-    await expect(page).toHaveURL(/\/investigate\?agent_id=/);
+    await expect(page).toHaveURL(/\/events\?agent_id=/);
   });
 });

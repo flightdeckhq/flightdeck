@@ -8554,3 +8554,64 @@ correction for a v0.6 cleanup PR.
   zero regressions.
 - golangci-lint + ruff + tsc + eslint clean across api / ingestion
   / workers / sensor / dashboard.
+
+## D157 -- Per-agent landing page + UI reshape (Phase 1 stub)
+
+**Status.** Phase 1 of five-phase delivery. Phases 2–5 layer the
+dashboard surface, deeper analytics scoping, the event-grain
+rework, and the full DECISIONS.md entry on top of these
+foundations. This entry will be extended with the full rationale
+(context, alternatives considered, consequences) when Phase 5
+closes.
+
+**Phase 1 scope (locked).**
+
+- Backend: `filter_agent_id` query param on `GET /v1/analytics`
+  (composes across the standard query path and the recursive
+  sub-agent path); new `GET /v1/agents/{agent_id}/summary`
+  endpoint returning totals (tokens, errors, sessions,
+  cost_usd, latency_p50_ms, latency_p95_ms) plus a per-bucket
+  series over a 1h / 24h / 7d / 30d window. Errors count
+  `event_type='llm_error'` only; latency percentiles use
+  `event_type='post_call'`, matching the analytics endpoint
+  convention. Sessions is `COUNT(DISTINCT session_id)` across
+  events in the window so an operator reads "sessions" as
+  "agents that were active here", not "sessions started here".
+- Vocabulary rename, user-visible only: Session → Run in
+  dashboard rendered strings, README prose, and sensor
+  docstring prose around the `session_id` kwarg. Wire-level
+  identifiers (DB columns, event_type literals, the
+  `session_id` kwarg name, URL query params, type
+  discriminants) are unchanged. Phase 4 renames the
+  `?session=` URL query param.
+- Route rename: `/investigate` → `/events` in the Vite router;
+  nginx edge (dev + prod) serves a permanent 301 from the
+  legacy path preserving the query string.
+
+**Phases 2–5 forward look (not locked, indicative).**
+
+- Phase 2: dashboard per-agent landing page surface that
+  consumes `/v1/agents/{id}/summary` + `filter_agent_id`.
+- Phase 3: analytics chart scoping refinements built on the
+  Phase 1 backend hooks.
+- Phase 4: Events page event-grain table rework; renames the
+  `?session=` URL query param as part of that rework.
+- Phase 5: closes this DECISIONS entry with the full rationale
+  + consequences narrative.
+
+**Live-stack verification (Phase 1).**
+
+- `GET /v1/agents/<uuid>/summary?period=7d` → 200 with the
+  documented shape; period override (1h / 24h / 7d / 30d) and
+  bucket override (hour / day / week) honoured.
+- `GET /v1/agents/<unknown-uuid>/summary` → 404.
+- `GET /v1/agents/not-a-uuid/summary` → 400.
+- `GET /v1/analytics?metric=tokens&filter_agent_id=<uuid>` →
+  scoped to one agent across both the standard and sub-agent
+  metric paths; malformed UUID → 400.
+- `GET /investigate` → 301 with `Location: /events` (query
+  string preserved verbatim).
+- Vitest 904/904, go test ./... clean, integration suite green
+  on the affected paths, Playwright E2E (incl. new T44
+  route-rename-301 spec) clean under both `neon-dark` and
+  `clean-light` projects.

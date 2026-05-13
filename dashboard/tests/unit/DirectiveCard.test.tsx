@@ -134,7 +134,7 @@ describe("DirectiveCard", () => {
     );
     expect(
       screen.getByTestId("directive-run-rotate-model").textContent,
-    ).toContain("this session");
+    ).toContain("this run");
 
     rerender(
       <DirectiveCard directive={rotateModel} flavor="research-agent" />,

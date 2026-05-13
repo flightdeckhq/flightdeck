@@ -84,6 +84,13 @@ type Querier interface {
 	// real DB error.
 	GetAgentByID(ctx context.Context, agentID string) (*AgentSummary, error)
 
+	// AgentSummary powers GET /v1/agents/{id}/summary. The handler
+	// is responsible for confirming the agent exists (via
+	// GetAgentByID) before calling this; AgentSummary itself
+	// returns zero-valued totals / empty series for an unknown
+	// agent rather than a sentinel.
+	AgentSummary(ctx context.Context, params AgentSummaryParams) (*AgentSummaryResponse, error)
+
 	// MCP Protection Policy methods (D128). Implemented in
 	// mcp_policy_store.go; the SQL all lives in that file per
 	// Rule 35.
@@ -113,9 +120,9 @@ func New(pool *pgxpool.Pool) *Store {
 
 // Session represents a session row for API responses.
 type Session struct {
-	SessionID  string     `json:"session_id"`
-	Flavor     string     `json:"flavor"`
-	AgentType  string     `json:"agent_type"`
+	SessionID string `json:"session_id"`
+	Flavor    string `json:"flavor"`
+	AgentType string `json:"agent_type"`
 	// D115 identity columns (nullable for sessions that predate the
 	// migration OR for lazy-created rows whose authoritative
 	// session_start never arrived; UpsertSession's COALESCE
@@ -215,18 +222,18 @@ type Event struct {
 
 // AgentSummary is one row in the v0.4.0 Phase 1 agent-level fleet
 // response. Each row represents a persistent fleet entity (an
-// ``agents`` row) with aggregated state computed across its sessions.
+// “agents“ row) with aggregated state computed across its sessions.
 type AgentSummary struct {
-	AgentID        string    `json:"agent_id"`
-	AgentName      string    `json:"agent_name"`
-	AgentType      string    `json:"agent_type"`
-	ClientType     string    `json:"client_type"`
-	UserName       string    `json:"user"`
-	Hostname       string    `json:"hostname"`
-	FirstSeenAt    time.Time `json:"first_seen_at"`
-	LastSeenAt     time.Time `json:"last_seen_at"`
-	TotalSessions  int       `json:"total_sessions"`
-	TotalTokens    int64     `json:"total_tokens"`
+	AgentID       string    `json:"agent_id"`
+	AgentName     string    `json:"agent_name"`
+	AgentType     string    `json:"agent_type"`
+	ClientType    string    `json:"client_type"`
+	UserName      string    `json:"user"`
+	Hostname      string    `json:"hostname"`
+	FirstSeenAt   time.Time `json:"first_seen_at"`
+	LastSeenAt    time.Time `json:"last_seen_at"`
+	TotalSessions int       `json:"total_sessions"`
+	TotalTokens   int64     `json:"total_tokens"`
 	// State rollup: "active" when any session under this agent is
 	// currently active; otherwise the most-recent session's state.
 	// Empty string when the agent has no sessions yet (freshly
@@ -368,17 +375,17 @@ func (s *Store) GetAgentFleet(
 // topology. Shared by GetAgentFleet, ListAgents, and GetAgentByID so
 // the three projections stay byte-identical on the new columns.
 //
-//   agent_role — read from any one session under this agent_id whose
-//                agent_role is non-null. By D126 identity derivation
-//                every session under one agent_id shares the same
-//                6-tuple including agent_role, so any-row LIMIT 1 is
-//                authoritative.
+//	agent_role — read from any one session under this agent_id whose
+//	             agent_role is non-null. By D126 identity derivation
+//	             every session under one agent_id shares the same
+//	             6-tuple including agent_role, so any-row LIMIT 1 is
+//	             authoritative.
 //
-//   topology   — "child" wins over "parent" when both apply because a
-//                sub-agent role's defining property is being spawned
-//                by a parent; secondary nesting is incidental. The
-//                EXISTS subqueries hit the partial index
-//                ``sessions_parent_session_id_idx`` directly.
+//	topology   — "child" wins over "parent" when both apply because a
+//	             sub-agent role's defining property is being spawned
+//	             by a parent; secondary nesting is incidental. The
+//	             EXISTS subqueries hit the partial index
+//	             ``sessions_parent_session_id_idx`` directly.
 const d126AgentRollupSQL = `
 	SELECT
 		(
@@ -525,8 +532,8 @@ func (s *Store) GetEffectivePolicy(ctx context.Context, flavor, sessionID string
 // GetSessionEvents returns events for a session in chronological (ASC)
 // order. When limit <= 0 the full history is returned (legacy behaviour
 // used by Fleet-side callers that still expect the whole timeline).
-// When limit > 0 the query runs ``ORDER BY occurred_at DESC LIMIT N``
-// so the composite ``events(session_id, occurred_at)`` index is used
+// When limit > 0 the query runs “ORDER BY occurred_at DESC LIMIT N“
+// so the composite “events(session_id, occurred_at)“ index is used
 // optimally for the newest-first slice; the slice is reversed in-place
 // before returning so the response shape the handler documents
 // (chronological ASC) holds regardless of whether a limit was applied.
@@ -846,23 +853,23 @@ func (s *Store) CreateDirective(ctx context.Context, d Directive) (*Directive, e
 
 // EventContent represents a row in the event_content table.
 //
-// Phase 4 polish: ``Input`` carries the embedding request's ``input``
-// parameter (string or list of strings) for ``event_type=embeddings``
+// Phase 4 polish: “Input“ carries the embedding request's “input“
+// parameter (string or list of strings) for “event_type=embeddings“
 // events. Chat events leave Input null and populate Messages instead.
 // The dashboard's drawer branches on event_type to render via the
 // appropriate viewer (PromptViewer for chat, EmbeddingsContentViewer
 // for embeddings). See migration
 // 000016_event_content_input.up.sql.
 type EventContent struct {
-	EventID      string    `json:"event_id"`
-	SessionID    string    `json:"session_id"`
-	Provider     string    `json:"provider"`
-	Model        string    `json:"model"`
-	SystemPrompt *string   `json:"system_prompt"`
-	Messages     any       `json:"messages"`
-	Tools        any       `json:"tools"`
-	Response     any       `json:"response"`
-	Input        any       `json:"input,omitempty"`
+	EventID      string  `json:"event_id"`
+	SessionID    string  `json:"session_id"`
+	Provider     string  `json:"provider"`
+	Model        string  `json:"model"`
+	SystemPrompt *string `json:"system_prompt"`
+	Messages     any     `json:"messages"`
+	Tools        any     `json:"tools"`
+	Response     any     `json:"response"`
+	Input        any     `json:"input,omitempty"`
 	// D150 (Phase 7 Step 3.b): tool_input + tool_output carry the
 	// captured arguments and result for mcp_tool_call / mcp_prompt_get
 	// / LLM-side tool_call events. The dashboard branches on event_type
@@ -1154,17 +1161,17 @@ func (s *Store) GetCustomDirectives(ctx context.Context, flavor string) ([]Custo
 // the fleet (what frameworks/OSes/git branches this deployment has
 // ever run) rather than a snapshot of live agents. See
 // DECISIONS.md D097. Previously the query restricted to
-// ``state IN ('active', 'idle', 'stale')`` which caused the whole
+// “state IN ('active', 'idle', 'stale')“ which caused the whole
 // panel to vanish the moment every session closed -- a surprising
 // UX that hid useful composition data from operators running
 // post-hoc investigations.
 //
-// Array-typed JSONB values (e.g. ``frameworks: ["langchain/0.1.12",
-// "crewai/0.42.0"]``) are unnested element-by-element so each
+// Array-typed JSONB values (e.g. “frameworks: ["langchain/0.1.12",
+// "crewai/0.42.0"]“) are unnested element-by-element so each
 // framework becomes its own facet entry. The previous implementation
-// used ``jsonb_each_text`` which stringifies arrays as a single
+// used “jsonb_each_text“ which stringifies arrays as a single
 // value -- the dashboard then showed
-// ``["langchain/0.1.12", "crewai/0.42.0"]`` as one bogus facet
+// “["langchain/0.1.12", "crewai/0.42.0"]“ as one bogus facet
 // instead of two distinct framework versions.
 //
 // Within each key, values are ordered by count descending so the

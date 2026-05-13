@@ -266,7 +266,7 @@ describe("FleetPanel", () => {
       screen.getByTestId("flavor-stop-all-button-research-agent"),
     );
     expect(
-      screen.getByText("Stop all sessions of research-agent?"),
+      screen.getByText("Stop all runs of research-agent?"),
     ).toBeInTheDocument();
     expect(screen.getByText(/2 active or idle agents/)).toBeInTheDocument();
   });

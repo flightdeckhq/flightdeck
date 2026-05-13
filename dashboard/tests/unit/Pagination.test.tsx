@@ -3,7 +3,7 @@ import { render, screen, fireEvent } from "@testing-library/react";
 import { Pagination } from "@/components/ui/Pagination";
 
 describe("Pagination", () => {
-  it("shows correct 'Showing X-Y of Z sessions' text", () => {
+  it("shows correct 'Showing X-Y of Z runs' text", () => {
     render(
       <Pagination
         total={847}
@@ -14,7 +14,7 @@ describe("Pagination", () => {
       />
     );
     expect(screen.getByTestId("pagination-range").textContent).toBe(
-      "Showing 26-50 of 847 sessions"
+      "Showing 26-50 of 847 runs"
     );
   });
 

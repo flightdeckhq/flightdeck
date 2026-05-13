@@ -133,7 +133,7 @@ describe("EnrichmentSummary", () => {
         })}
       />,
     );
-    expect(screen.getByText("Policy actions in this session")).toBeInTheDocument();
+    expect(screen.getByText("Policy actions in this run")).toBeInTheDocument();
     expect(screen.getByText("policy_warn")).toBeInTheDocument();
     expect(screen.getByText("2")).toBeInTheDocument();
     expect(screen.getByText("policy_mcp_block")).toBeInTheDocument();

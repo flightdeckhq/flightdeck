@@ -2,6 +2,45 @@
 
 All notable changes to Flightdeck are documented here.
 
+## Unreleased — Per-agent landing page + UI reshape
+
+Phase 1 backend foundations and chrome rename for the per-agent
+landing page (D157). Phases 2–5 layer the dashboard surface,
+deeper analytics scoping, the event-grain rework, and the
+DECISIONS.md entry on top of these foundations.
+
+### Added
+
+- **`/v1/analytics?filter_agent_id=<uuid>`.** Scopes any analytics
+  metric (including the four sub-agent-aware metrics) to events
+  from sessions owned by a single agent. UUID validated at the
+  handler boundary; composes with the other `filter_*` params via
+  AND.
+- **`GET /v1/agents/{id}/summary`.** Per-agent activity summary
+  over a 1h / 24h / 7d / 30d window. Returns totals (tokens,
+  errors, sessions, cost_usd, latency_p50_ms, latency_p95_ms)
+  and a per-bucket series. Errors count `event_type='llm_error'`
+  only; latency percentiles use `event_type='post_call'`,
+  matching the analytics endpoint convention. Default bucket
+  derived from period (1h/24h → hour, 7d/30d → day).
+
+### Changed
+
+- **Vocabulary rename (Session → Run) in dashboard chrome + docs.**
+  Operator-facing strings ("Total Sessions" → "Total Runs",
+  "Session States" → "Run States", "No sessions found" → "No
+  runs found", etc.) updated across the dashboard, README, and
+  sensor docstring prose. Wire-level identifiers (DB columns,
+  event_type literals, the `session_id` kwarg, URL query params,
+  type discriminants) are unchanged — Phase 4 reworks the
+  event-grain table and Phase 5 closes the documentation.
+- **Route rename `/investigate` → `/events`.** The Vite router
+  now mounts the existing Investigate page at `/events`; the
+  nginx edge (dev + prod) serves a permanent 301 from
+  `/investigate` preserving the query string. Internal links
+  and the `/v1/agents` row navigation updated. Page
+  functionality is unchanged in Phase 1.
+
 ## Unreleased — MCP Protection Policy + operator-actionable enrichment
 
 Per-flavor enforcement of which MCP servers an agent is allowed to

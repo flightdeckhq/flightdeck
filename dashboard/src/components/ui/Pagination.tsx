@@ -25,7 +25,7 @@ export function Pagination({
   limit,
   onPageChange,
   onLimitChange,
-  entityLabel = "sessions",
+  entityLabel = "runs",
 }: PaginationProps) {
   const { page, totalPages, rangeStart, rangeEnd } = useMemo(() => {
     const currentPage = Math.floor(offset / limit) + 1;

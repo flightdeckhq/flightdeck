@@ -13,15 +13,15 @@ The T1–T10 catalog lives one file per journey:
 | File | Journey |
 |------|---------|
 | `T01-fleet-page-renders-full-state.spec.ts` | Fleet mounts, 3 fixture agents visible, canonical-pair invariant guard (no SENSOR + coding anomaly row) |
-| `T02-fleet-table-view-toggle-and-navigate.spec.ts` | View toggle persists to `?view=table`; row click deep-links to `/investigate?agent_id=…&from=…&to=…` with ~7-day window |
+| `T02-fleet-table-view-toggle-and-navigate.spec.ts` | View toggle persists to `?view=table`; row click deep-links to `/events?agent_id=…&from=…&to=…` with ~7-day window |
 | `T03-investigate-facet-filtering-intersection.spec.ts` | Two facets compose via AND; × on a pill relaxes to the single filter; result stays non-empty |
 | `T04-investigate-session-drawer-deep-dive.spec.ts` | Drawer opens from row click; tabs (timeline/prompts/directives) work; close via X |
 | `T05-fleet-agent-expansion-shows-aged-session.spec.ts` | Expanded body surfaces ≥1 session (aged-closed, 28h old) that no swimlane time-range can show |
 | `T06-truncation-and-tooltip.spec.ts` | Narrow viewport: 70-char fixture name gets `title` attribute via `<TruncatedText/>` |
-| `T07-fleet-to-investigate-context.spec.ts` | Fleet CONTEXT filter does NOT leak into Investigate's URL on agent-row deep-link |
+| `T07-fleet-to-investigate-context.spec.ts` | Fleet CONTEXT filter does NOT leak into the Events page URL on agent-row deep-link |
 | `T08-cross-page-navigation-state.spec.ts` | Back/forward restore URLs verbatim; deep-link trio (agent_id+from+to) survives the round-trip |
 | `T09-swimlane-table-parity.spec.ts` | Swimlane and table views render identical agent sets |
-| `T10-wholedashboard-smoke.spec.ts` | Every top-level page mounts with no console errors (Fleet / Investigate / Analytics / Directives / Policies / Settings) |
+| `T10-wholedashboard-smoke.spec.ts` | Every top-level page mounts with no console errors (Fleet / Events / Analytics / Directives / Policies / Settings) |
 
 The additional `_fixtures.ts` helper exports shared fixture
 metadata (agent names, flavors, role timeline offsets) and locator
@@ -125,15 +125,14 @@ testid, follow the existing `<domain>-<component>-<role>`
 convention: `fleet-*`, `swimlane-*`, `session-*`, `context-*`,
 `investigate-*`.
 
-Phase 3 added 6 new testids (see `audit-phase-3.md` for the
-before/after counts):
+Structural testids the suite relies on:
 
 - `swimlane-agent-row-<agent_name>` (SwimLane row header)
 - `swimlane-expanded-body` + `data-expanded="true|false"`
 - `session-circle-<session_id>` (EventNode circles)
 - `session-row` + `data-session-id` (SessionEventRow)
 - `session-drawer` (SessionDrawer root)
-- `active-filter-pill` + `active-filter-remove` (Investigate chip)
+- `active-filter-pill` + `active-filter-remove` (Events page facet chip)
 
 ### Find-my-fixture, not assume-first-row
 

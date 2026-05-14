@@ -325,9 +325,10 @@ flightdeck/
 │   │   ├── App.tsx
 │   │   ├── pages/              # Fleet, Events (Investigate.tsx), Session, Analytics, Policies, Directives, Settings
 │   │   ├── components/
-│   │   │   ├── timeline/       # Timeline, SwimLane, SessionEventRow, EventNode, TimeAxis
-│   │   │   ├── fleet/          # FleetPanel, SessionStateBar, PolicyEventList, LiveFeed,
-│   │   │   │                   # EventDetailDrawer, EventFilterBar
+│   │   │   ├── timeline/       # Timeline, SwimLane, SessionEventRow, EventNode, TimeAxis,
+│   │   │   │                   # RunBracket, AgentStatusBadge, SubAgentConnector
+│   │   │   ├── fleet/          # FleetPanel, SessionStateBar, LiveFeed,
+│   │   │   │                   # EventDetailDrawer, EventFilterBar, TopologyCell
 │   │   │   ├── session/        # SessionDrawer, SessionTimeline, EventDetail, PromptViewer,
 │   │   │   │                   # EmbeddingsContentViewer, ErrorEventDetails, TokenUsageBar
 │   │   │   ├── analytics/      # KpiRow, DimensionChart, TimeSeries, Ranking, Donut, DimensionPicker
@@ -695,8 +696,8 @@ equivalent raises an exception inside the interceptor's context
 manager) emits child `session_end` with `state=error` plus a
 structured error block following the `llm_error` taxonomy. The
 dashboard surfaces failures via the row-level red-dot pattern on
-the child session row on the Events page, the child agent row in
-Fleet AgentTable, and the child agent's swimlane left panel —
+the child session row on the Events page and the child agent's
+swimlane row left panel on Fleet —
 mirroring the existing `error_types` (`llm_error`) and
 `mcp_error_types` indicators.
 
@@ -992,6 +993,28 @@ because `agent_name` defaults to `{user}@{hostname}`. Branch / repo
 distinctions land in `context.git_branch` / `context.git_repo`, not
 in identity.
 
+**Rollup ↔ projection symmetry.** The same UUID5 input tuple flows
+through two paths:
+
+- **Rollup path.** The worker's `UpsertAgent`
+  (`workers/internal/writer/postgres.go`) reads the agent identity
+  off the event payload (sensor- or plugin-stamped) and INSERTs
+  the `agents` row keyed on `agent_id`. The same agent_id appears
+  in every later `/v1/fleet` rollup response.
+- **Projection path.** The sessions table's `agent_id` column is
+  computed identically by the worker on every session_start (and
+  preserved on later events via UpsertSession's ON CONFLICT). The
+  `/v1/sessions` projection returns this column verbatim.
+
+Both paths consume the SAME 6-tuple input — no skip fields, no
+conditional inclusions, no field re-orderings. The dashboard's
+`buildFlavors` joins by exact string equality on `agent_id`; a
+drift between rollup and projection would orphan every sub-agent
+session (the agent appears in the fleet roster but its sessions
+array is empty, the swimlane row renders without event circles or
+connectors). The contract is pinned by
+`tests/integration/test_agent_id_parity.py`.
+
 ### Sub-agent sessions
 
 Sub-agent sessions (Claude Code Task subagents, CrewAI agent turns,
@@ -1027,6 +1050,17 @@ sends `include_pure_children=false` as its default scope so
 deep sub-agent trees don't drown root activity in the table; the
 "Is sub-agent" facet flips to `is_sub_agent=true` to surface
 children-only.
+
+`GET /v1/sessions` also accepts an `include_parents` boolean
+flag (default `false`). When `true`, the response is augmented
+with the parent session of every child session in the page, even
+when the parent falls outside the time-range filter or the
+`LIMIT` window. The Fleet swimlane sets this so a sub-agent
+whose parent fell off the 100-row page still resolves its
+topology via the front-end relationship walk; the Events page
+leaves it `false` so its pagination math stays exact.
+`total` continues to count only filtered rows; `sessions[]` may
+exceed `total` when extra parents land in the response.
 
 The `parent_session_id` FK is enforced. Forward references (a child
 `session_start` arriving before its parent is in the DB) are handled
@@ -1744,7 +1778,7 @@ authoritative parameter-level reference.
 | Method | Path | Purpose |
 |---|---|---|
 | `GET` | `/v1/fleet` | Fleet summary: agents with state rollup, total sessions, total tokens, context_facets |
-| `GET` | `/v1/sessions` | Paginated session listing; filters: `agent_id`, `flavor`, `framework`, `state`, `error_type`, `policy_event_type`, `mcp_server`, `from`, `to`, `q`, `parent_session_id`, `is_sub_agent`, `has_sub_agents`, `agent_role[]`, `include_pure_children`, `close_reason`, `estimated_via`, `terminal`, `matched_entry_id`, `originating_call_context`; returns per-session aggregates (`error_types[]`, `policy_event_types[]`, `mcp_server_names[]`, `close_reasons[]`, `estimated_via_values[]`, `has_terminal_error`, `matched_entry_ids[]`, `originating_call_contexts[]`) and `child_count` |
+| `GET` | `/v1/sessions` | Paginated session listing; filters: `agent_id`, `flavor`, `framework`, `state`, `error_type`, `policy_event_type`, `mcp_server`, `from`, `to`, `q`, `parent_session_id`, `is_sub_agent`, `has_sub_agents`, `agent_role[]`, `include_pure_children`, `include_parents`, `close_reason`, `estimated_via`, `terminal`, `matched_entry_id`, `originating_call_context`; returns per-session aggregates (`error_types[]`, `policy_event_types[]`, `mcp_server_names[]`, `close_reasons[]`, `estimated_via_values[]`, `has_terminal_error`, `matched_entry_ids[]`, `originating_call_contexts[]`) and `child_count` |
 | `GET` | `/v1/sessions/:id` | Session detail: metadata + chronological events + attachments array |
 | `GET` | `/v1/agents/:id` | Single agent's identity record (backs Events page AGENT facet identity-cache resolver) |
 | `GET` | `/v1/agents/:id/summary` | Per-agent activity summary (totals + per-bucket series) over a 1h/24h/7d/30d window. Powers the per-agent landing page (D157). |
@@ -2120,6 +2154,78 @@ with `{}` entries. `GetContextFacets` failure is best-effort — the
 fleet handler logs a warning and returns an empty map rather than
 failing the entire `GET /v1/fleet` response.
 
+### `AgentSummary.recent_sessions`
+
+Each `AgentSummary` row on the `/v1/fleet` response carries a
+`recent_sessions` field — a JSON array of up to
+`store.RecentSessionsPerAgent` sessions belonging to that agent,
+sorted by `started_at` descending. Populated by
+`store.GetRecentSessionsByAgentIDs` as a single batched query
+keyed off the page's `agent_id` slice; the per-agent rollup is
+computed via `ROW_NUMBER() OVER (PARTITION BY agent_id ORDER BY
+started_at DESC, session_id ASC)` so the ordering is deterministic
+when two sessions share a `started_at` timestamp.
+
+Each entry is a lean projection (`store.RecentSession`) carrying
+only the columns the dashboard's swimlane row consumes: identity
+fields (session_id, flavor, agent_type, agent_id, agent_name,
+client_type, host, model), lifecycle fields (state, started_at,
+ended_at, last_seen_at, tokens_used, token_limit), the
+`capture_enabled` flag, and the D126 sub-agent linkage columns
+(parent_session_id, agent_role). The heavy correlated-subquery
+columns of `SessionListItem` (error_types, policy_event_types,
+mcp_server_names, ...) are intentionally absent so the per-agent
+rollup stays cheap on fleet pages with 50+ agents.
+
+The rollup guarantees each visible agent row carries its
+`RecentSessionsPerAgent` most-recent sessions independently of
+the paginated `/v1/sessions` window: the swimlane row's data
+dependency on its agent's sessions is per-agent bounded, while
+the `/v1/sessions` 100-row page is global and cliff-shaped.
+`dashboard/src/store/fleet.ts::buildFlavors` merges the embedded
+slice with the paginated intersection so each agent's swimlane
+row always has at least its top-5 to render event circles from;
+the paginated slice fills in any younger siblings that did not
+make the per-agent top-N cut. Merge precedence: paginated wins
+on the same `session_id` because `SessionListItem` is the richer
+projection (it carries `context` and `token_name`; the embedded
+`RecentSession` omits both).
+
+The swimlane's default time range is `1m` (see
+`dashboard/src/pages/Fleet.tsx::timeRange` initial state). The
+SwimLane row's render path clips events to
+`[NOW - timeRange, NOW]`; the default lands on the
+live-monitor view ("what's happening RIGHT NOW") rather than a
+historical span. The `recent_sessions` rollup populates the row's
+session slice independently of the time range — operators widen
+via the picker (`5m / 15m / 30m / 1h`) when they need historical
+context, and `Return to live` snaps back to `1m`. A row whose
+sessions all fall outside the visible window renders without
+event circles even though the row materialises; widening the
+time range surfaces the circles without re-fetching.
+
+The wire shape uses `omitempty`; consumers treat the field as
+optional and apply the paginated-only path when it is absent.
+
+### Swimlane sub-agent connector overlay
+
+`dashboard/src/components/timeline/SubAgentConnector.tsx` renders
+the Bezier curves that link a parent agent's spawn-event circle
+to the child agent's first event inside the visible domain. The
+geometry rule the layout effect enforces: each child row's
+anchor is its **first event inside the visible time domain**, not
+its absolute first event. Events with timestamps outside the
+domain are never used as anchors regardless of `started_at`, so
+the overlay always aligns with the swimlane's visible state.
+
+The parent anchor is picked by `pickSpawnEvent`: the
+temporally-closest parent event preceding the child's first
+in-domain event. The chosen pair is kept only when both endpoints
+fall inside the domain; pairs spanning the boundary are skipped
+so the curve never anchors off-screen. D3 supplies the time
+scale; the SVG path is constructed in React (Rule 16 — D3 is
+math only, never DOM manipulation).
+
 ---
 
 ## Dashboard
@@ -2144,8 +2250,9 @@ only — never MUI, Ant Design, or Chakra UI.
 ### Fleet view
 
 `dashboard/src/pages/Fleet.tsx` composes the FleetPanel sidebar (240px),
-fleet header (time range, live indicator), timeline (swimlane view),
-and live feed.
+fleet header (time range, live indicator), the swimlane timeline, and
+live feed. The swimlane is the only main-area rendering; there is no
+view toggle.
 
 `pauseQueue: FeedEvent[]` state buffers WebSocket events when `isPaused`
 is true. New events are appended; if the queue length reaches
@@ -2266,13 +2373,6 @@ request_id, retry_after as `<n>s`, is_retryable as a `Retryable` /
 `Not retryable` pill, plus abort_reason and partial chunks/tokens on
 stream-error variants.
 
-The expanded swimlane drawer covers full session history. `loadExpandedSessions`
-passes `from = new Date(0).toISOString` so all-time sessions return.
-Real pagination via `loadMoreExpandedSessions` with
-`EXPANDED_DRAWER_PAGE_SIZE = 25`. The footer carries an adaptive count
-preamble, "Show older runs" load-more button, and "View in
-Events →" deep-link.
-
 ### Event detail drawer
 
 `dashboard/src/components/fleet/EventDetailDrawer.tsx` — standalone
@@ -2378,22 +2478,85 @@ area only (`left: leftPanelWidth, width: timelineWidth`).
 
 ### SwimLane
 
-`dashboard/src/components/timeline/SwimLane.tsx` — flavor row: collapsed
-(48px, aggregated events) + expanded (session sub-rows), chevron toggle.
+`dashboard/src/components/timeline/SwimLane.tsx` renders one row per
+agent. Every event from every one of the agent's runs streams onto
+that single timeline row; there are no session sub-rows. Sub-agent
+rows render indented beneath their parent via the `data-topology`
+attribute (`"root"` or `"child"`); the indent + background tint
+chrome lives in `globals.css` under the
+`[data-topology="child"]` selector. Bezier connectors from each
+parent spawn event to its child's first event are drawn by
+`SubAgentConnector.tsx`, anchored to the parent's single-row centre
+Y.
 
-`SessionEventRow.tsx` — session row (40px): pulsing dot, ID, state
-badge, tokens, events on time axis.
+The left panel of each row carries the agent label strip in this
+left-to-right order: optional `ClaudeCodeLogo` (when
+`client_type === "claude-code"`) → agent name → `ClientTypePill`
+(CC for plugin, SDK for sensor) → agent_type badge (coding /
+production) → provider icon → OS icon → orchestration icon →
+`RelationshipPill` (lone / ↳ parent / ⤴ N) → optional
+`SubAgentLostDot` (when the most recent sub-agent session per
+role is in `lost` state) → `AgentStatusBadge` at the right
+edge.
+The provider / OS / orchestration icons derive from the agent's
+most-recent session; the per-event provider logos on event circles
+carry the granular per-call attribution. Per-agent state is the
+max-priority state across the agent's runs (active > idle > stale
+> closed > lost) — the `STATE_ORDINAL` map in `SwimLane.tsx`
+defines the ranking used to roll multiple session states up into
+a single per-agent badge state.
 
-`EventNode.tsx` — event circles: 24px (session rows), 20px (flavor
-rows), lucide icons, CSS tooltip, hover scale.
+`AgentStatusBadge.tsx` renders the state colour dot + label and
+adds a CSS keyframe pulse animation on the dot only when state is
+`active`. Theme-agnostic — colours from `var(--status-*)`
+variables.
 
-`SwimLane`, `SessionEventRow`, and `EventNode` are wrapped in
-`React.memo` with custom comparators that explicitly include
-`activeFilter` and `leftPanelWidth`. Time-scale updates use
-`requestAnimationFrame` throttling so the swimlane redraws at most once
-per frame instead of once per WebSocket message. `EventNode` opacity is
-driven by React state (`isVisible && mounted`) so the fade-in transition
-is reproducible.
+`RunBracket.tsx` overlays per-run boundary glyphs on the row.
+The start glyph is a filled play-button triangle (▶) at the
+run's `started_at` X; the end glyph is a filled solid square
+(■) at the run's `ended_at` X, sized at roughly 1.3× the
+triangle's bbox area so the closure reads heavier than the
+start. Both are SVG primitives filled with `var(--accent)`;
+positioning math uses the shared `xScale` from `d3-scale` (D3
+math only, no DOM manipulation). Hover on either glyph
+surfaces a tooltip with `run_id` (8-char prefix), start time,
+end time (or `running` for an active / idle / stale / lost
+run), state, and total tokens. Click on either glyph opens
+the session drawer scoped to that run. Concurrent runs of the
+same agent (e.g. multi-pod K8s with collapsed
+`FLIGHTDECK_HOSTNAME`) render their glyph pairs on offset
+anchors: first run on the row's top edge, second run on the
+bottom edge. Three or more concurrent runs accept visual
+overlap; the hover tooltip disambiguates by `run_id`.
+
+Active / idle / stale / lost runs render the start triangle
+alone — no end square. Operators read absence of the end
+square as "still running"; the tooltip's end-time field reads
+`running`.
+
+`EventNode.tsx` — event circles: 20px, lucide icons, CSS tooltip,
+hover scale. `SubAgentConnector.tsx` draws Bezier paths between
+parent spawn events and child first events.
+
+`SwimLane` and `EventNode` are wrapped in `React.memo` with custom
+comparators that explicitly include `activeFilter` and
+`leftPanelWidth`. Time-scale updates use `requestAnimationFrame`
+throttling so the swimlane redraws at most once per frame instead
+of once per WebSocket message. `EventNode` opacity is driven by
+React state (`isVisible && mounted`) so the fade-in transition is
+reproducible.
+
+`VirtualizedSwimLane.tsx` wraps `SwimLane` with an
+IntersectionObserver-backed virtualizer so off-screen agent rows
+render as lightweight placeholders. Specs that locate a fixture
+agent must scroll the fixture into view before asserting on its
+`data-testid` (see `bringSwimlaneRowIntoView` in
+`tests/e2e/_fixtures.ts`).
+
+`SessionEventRow.tsx` renders a single session's per-session event
+strip inside the Events page session drawer. Used only by the
+drawer; the Fleet swimlane renders aggregated events directly on
+the agent row via `SwimLane`.
 
 ### Fleet panel sidebar
 
@@ -2485,7 +2648,6 @@ tunable magic numbers:
 | `TIMELINE_WIDTH_PX` | 900 | Fixed event-circles canvas width |
 | `TIMELINE_RANGE_MS` | `{1m: 60_000, 5m: 300_000, 15m: 900_000, 30m: 1_800_000, 1h: 3_600_000}` | Range labels → ms |
 | `THEME_STORAGE_KEY` | `flightdeck-theme` | Theme persistence key |
-| `EXPANDED_DRAWER_PAGE_SIZE` | 25 | Swimlane expanded-drawer pagination |
 
 ### Models registry
 
@@ -2523,8 +2685,7 @@ A shared `SimpleIconSvg` helper renders simple-icons paths at viewBox
 ### State management
 
 `dashboard/src/store/fleet.ts` is the Zustand store: fleet state,
-session map, WebSocket stream, customDirectives slice, expanded-drawer
-session pagination.
+session map, WebSocket stream, customDirectives slice.
 
 `dashboard/src/hooks/useWebSocket.ts` reconnects with exponential
 backoff: 1s → 2s → 4s, capped at 30s.
@@ -4031,15 +4192,14 @@ stack. Tests run under both `neon-dark` and `clean-light` theme
 projects via Playwright's `projects` config. Tests do not hardcode
 theme-specific selectors or computed colour values.
 
-`_fixtures.ts` provides `bringSwimlaneRowIntoView(page, agentName)` and
-`bringTableRowIntoView` helpers for the virtualized swimlane and
-paginated agent table — under realistic data volume the
+`_fixtures.ts` provides `bringSwimlaneRowIntoView(page, agentName)`
+for the virtualized swimlane — under realistic data volume the
 IntersectionObserver-backed virtualizer keeps off-screen rows as
-placeholders without their `data-testid`, so specs must scroll/paginate
-to find their fixture before asserting.
+placeholders without their `data-testid`, so specs must scroll to
+find their fixture before asserting.
 
-`waitForFleetReady` waits for any swimlane or table row to mount, then
-leaves fixture-by-fixture lookup to the bring-into-view helpers.
+`waitForFleetReady` waits for any swimlane row to mount, then
+leaves fixture-by-fixture lookup to `bringSwimlaneRowIntoView`.
 
 ---
 

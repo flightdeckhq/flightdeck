@@ -153,7 +153,18 @@ test.describe("T25 — MCP observability rendering", () => {
   }) => {
     await openMCPSession(page);
     const drawer = page.locator('[data-testid="session-drawer"]');
-    const row = drawer.locator('[data-event-type="mcp_tool_call"]').first();
+    // Scope to a SUCCESSFUL mcp_tool_call (no MCPErrorIndicator
+    // child). The seeded fixture emits both a success row (echo
+    // tool with phase5-fixture arguments) and a failure row (the
+    // MCPErrorIndicator anchor for T25-16). Without the negation,
+    // .first() may resolve to the failure row whose arguments
+    // payload differs and would fail the contains() assertion
+    // below.
+    const row = drawer
+      .locator(
+        '[data-event-type="mcp_tool_call"]:not(:has([data-testid^="mcp-error-indicator-"]))',
+      )
+      .first();
     await expect(row).toBeVisible();
     await row.click();
     // The expanded body renders MCPEventDetails. Click the accordion
@@ -496,8 +507,14 @@ test.describe("T25 — MCP observability rendering", () => {
     const indicators = drawer.locator(
       '[data-testid^="mcp-error-indicator-"]',
     );
-    // Exactly one indicator on the seeded fixture (one failed call).
-    await expect(indicators).toHaveCount(1);
+    // At least one indicator on the seeded fixture. The keep-alive
+    // watchdog re-emits the failed mcp_tool_call every 30 s so the
+    // drawer's default 100-event window always carries the anchor;
+    // each cycle adds one row, so an exact-count assertion would
+    // race the watchdog. The regression guard ("indicator never
+    // decorates a success row") below is the load-bearing
+    // assertion.
+    await expect(indicators.first()).toBeVisible({ timeout: 5000 });
     // aria-label format is the contract surfaced to screen readers
     // and the regression-guard for the message format change. The
     // seed posts message="Invalid SQL: 'banned' is not a recognized
@@ -513,7 +530,7 @@ test.describe("T25 — MCP observability rendering", () => {
     const decoratedRow = drawer.locator(
       '[data-event-type="mcp_tool_call"]:has([data-testid^="mcp-error-indicator-"])',
     );
-    await expect(decoratedRow).toHaveCount(1);
+    expect(await decoratedRow.count()).toBeGreaterThan(0);
     // Successful mcp_tool_call rows on the same session must NOT
     // carry the indicator. The seed emits at least one success row
     // alongside the failure; assert that any mcp_tool_call row

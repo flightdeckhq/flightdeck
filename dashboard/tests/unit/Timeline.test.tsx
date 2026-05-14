@@ -98,8 +98,6 @@ const mockFlavors: FlavorSummary[] = [
 const defaultProps = {
   flavors: mockFlavors,
   timeRange: "5m" as const,
-  expandedFlavors: new Set<string>(),
-  onExpandFlavor: vi.fn(),
   onNodeClick: vi.fn(),
 };
 
@@ -127,45 +125,12 @@ describe("Timeline", () => {
     expect(screen.getByText("coding-agent")).toBeInTheDocument();
   });
 
-  it("flavor row click calls onExpandFlavor", () => {
-    const onExpandFlavor = vi.fn();
-    renderWithRouter(<Timeline {...defaultProps} onExpandFlavor={onExpandFlavor} />);
-    // Click the flavor header row (contains flavor name)
-    fireEvent.click(screen.getByText("research-agent").closest("[class*='cursor-pointer']")!);
-    expect(onExpandFlavor).toHaveBeenCalledWith("research-agent");
-  });
-
-  it("expanded flavor shows session sub-rows", () => {
-    renderWithRouter(
-      <Timeline
-        {...defaultProps}
-        expandedFlavors={new Set(["research-agent"])}
-      />
-    );
-    // Session ID truncated to 8 chars should be visible
-    expect(screen.getByText("s1")).toBeInTheDocument();
-  });
-
-  // FIX 4 -- expandedFlavors is now a Set so multiple flavors can be
-  // open at the same time. The previous single-string state forced a
-  // second click to collapse the first flavor, which made comparing
-  // two flavor swimlanes side-by-side impossible.
-  it("renders both flavors expanded simultaneously when both are in expandedFlavors", () => {
-    renderWithRouter(
-      <Timeline
-        {...defaultProps}
-        expandedFlavors={new Set(["research-agent", "coding-agent"])}
-      />,
-    );
-    // Both flavor headers are present.
-    expect(screen.getByText("research-agent")).toBeInTheDocument();
-    expect(screen.getByText("coding-agent")).toBeInTheDocument();
-    // Both session sub-rows render at the same time -- this is the
-    // regression guard. Under the old single-string state, only one
-    // of these would be visible.
-    expect(screen.getByText("s1")).toBeInTheDocument();
-    expect(screen.getByText("s2")).toBeInTheDocument();
-  });
+  // The expand-row affordance was removed in the swimlane reshape
+  // (one row per agent, no session sub-rows). The journey moves to
+  // the agent drawer in a later phase. Tests that asserted the
+  // chevron-toggle behaviour and session-sub-row rendering have
+  // been dropped here; sub-agent indenting is exercised by the
+  // T46 E2E spec.
 
   // FIX 3 -- when a CONTEXT filter is active, flavors with zero
   // matching sessions must not render at all (not even the header).
@@ -221,9 +186,14 @@ describe("Timeline", () => {
     expect(screen.getByText("coding-agent")).toBeInTheDocument();
   });
 
-  it("shows active count in flavor row", () => {
+  it("renders an AgentStatusBadge per swimlane row", () => {
+    // The "X active" label-strip text was dropped in the reshape;
+    // per-agent state is now surfaced via AgentStatusBadge at the
+    // right edge of the label strip. At least one badge mounts
+    // per visible agent row.
     renderWithRouter(<Timeline {...defaultProps} />);
-    expect(screen.getByText("1 active")).toBeInTheDocument();
+    const badges = screen.getAllByTestId("swimlane-agent-status-badge");
+    expect(badges.length).toBeGreaterThanOrEqual(2);
   });
 
   // ---- Fixed timeline width ----

@@ -29,6 +29,14 @@ test.describe("T33 — Sub-agent Investigate facets", () => {
     // override which flips the listing to children-only. Land on
     // the page with the override already on so the facet has
     // sub-agents to compute roles from.
+    //
+    // Sidebar caps each facet's displayed values at the top 10
+    // by count (Investigate.tsx group.values.slice(0, 10)). On a
+    // freshly seeded canonical fixture set the sub-agent role
+    // count is exactly 10 (FreshSubagent / Worker / Coordinator
+    // / Critic / writer_node / research_node / Writer /
+    // Researcher / Explore / Reviewer), so every distinct seeded
+    // role IS in the visible top 10.
     await page.goto("/investigate?is_sub_agent=true");
     await waitForInvestigateReady(page);
     const sidebar = page.locator('[data-testid="investigate-sidebar"]');

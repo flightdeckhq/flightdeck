@@ -83,6 +83,20 @@ type SessionsParams struct {
 	// IsSubAgent (when true) restricts to child sessions — those
 	// whose own parent_session_id is non-null. Cheap WHERE clause.
 	IsSubAgent bool
+	// IncludeParents (when true) augments the returned page with
+	// the parent session of every child session in the page,
+	// even if a parent falls outside the time-range filter or
+	// the LIMIT window. Pure ordering-tweak knob: the primary
+	// page is still computed by the user-supplied Sort + Order +
+	// Limit + Offset; the parents ride along so a frontend that
+	// derives topology from in-window sessions never sees a
+	// "child whose parent fell off the page" gap. Fleet's
+	// swimlane sets this; Investigate leaves it false so its
+	// pagination math stays exact. Total remains the count of
+	// FILTERED rows so callers' pagination UI is unchanged --
+	// returned sessions[] may exceed Total when extra parents
+	// land in the response.
+	IncludeParents bool
 	// IncludePureChildren (D126 UX revision 2026-05-03). When nil
 	// the listing returns every session matching the other filters
 	// (existing behaviour preserved for any client that doesn't
@@ -130,17 +144,17 @@ type SessionsParams struct {
 	// any value. Keys outside AllowedContextFilterKeys are rejected by
 	// the handler so callers cannot inject arbitrary JSONB paths.
 	ContextFilters map[string][]string
-	Model   string
-	Sort    string // started_at, duration, tokens_used, flavor
-	Order   string // asc, desc
-	Limit   int
-	Offset  int
+	Model          string
+	Sort           string // started_at, duration, tokens_used, flavor
+	Order          string // asc, desc
+	Limit          int
+	Offset         int
 }
 
 // AllowedContextFilterKeys is the closed whitelist of scalar
-// ``sessions.context`` JSONB keys that can be used as filters on the
-// ``/v1/sessions`` endpoint. Restricting the set at both the handler
-// and store layer means ``context->>'<key>'`` interpolation in the
+// “sessions.context“ JSONB keys that can be used as filters on the
+// “/v1/sessions“ endpoint. Restricting the set at both the handler
+// and store layer means “context->>'<key>'“ interpolation in the
 // WHERE clause cannot be weaponised -- a caller cannot smuggle a
 // custom JSONB path through the query string. Keep this list in sync
 // with the facet whitelist on the dashboard (Investigate computeFacets)
@@ -169,7 +183,7 @@ var allowedContextFilterSet = func() map[string]bool {
 	return m
 }()
 
-// IsAllowedContextFilterKey reports whether ``key`` is part of the
+// IsAllowedContextFilterKey reports whether “key“ is part of the
 // scalar filter whitelist. Handler-layer callers use this to reject
 // unknown query-string names with a 400 before the param reaches
 // the store.
@@ -177,17 +191,17 @@ func IsAllowedContextFilterKey(key string) bool {
 	return allowedContextFilterSet[key]
 }
 
-// BuildContextFilterClause returns the ``s.context->>'<key>' IN ($n,
-// ...)`` WHERE fragment plus the extended arg list and next placeholder
-// index. Returns ``""`` (empty fragment, unchanged args, same idx) when
-// ``values`` is empty so callers can unconditionally invoke this
+// BuildContextFilterClause returns the “s.context->>'<key>' IN ($n,
+// ...)“ WHERE fragment plus the extended arg list and next placeholder
+// index. Returns “""“ (empty fragment, unchanged args, same idx) when
+// “values“ is empty so callers can unconditionally invoke this
 // without filter-counting.
 //
-// ``key`` MUST come from AllowedContextFilterKeys. M-11 fix: returns
+// “key“ MUST come from AllowedContextFilterKeys. M-11 fix: returns
 // an error rather than panicking — handlers validate the key before
 // calling, but a future bug that lets an unvalidated key reach this
 // function would otherwise crash the request goroutine. Returning an
-// error lets the caller surface a 500 instead. Empty ``values`` is a
+// error lets the caller surface a 500 instead. Empty “values“ is a
 // no-op return, not an error.
 func BuildContextFilterClause(
 	key string,
@@ -222,19 +236,19 @@ func BuildContextFilterClause(
 // os, hostname, orchestration, git_branch, frameworks without a
 // second round-trip.
 type SessionListItem struct {
-	SessionID      string                 `json:"session_id"`
-	Flavor         string                 `json:"flavor"`
-	AgentType      string                 `json:"agent_type"`
+	SessionID string `json:"session_id"`
+	Flavor    string `json:"flavor"`
+	AgentType string `json:"agent_type"`
 	// D115 identity (nullable for lazy-created rows awaiting an
 	// authoritative session_start).
-	AgentID        *string                `json:"agent_id,omitempty"`
-	AgentName      *string                `json:"agent_name,omitempty"`
-	ClientType     *string                `json:"client_type,omitempty"`
-	Host           *string                `json:"host"`
-	Model          *string                `json:"model"`
-	State          string                 `json:"state"`
-	StartedAt      time.Time              `json:"started_at"`
-	EndedAt        *time.Time             `json:"ended_at"`
+	AgentID    *string    `json:"agent_id,omitempty"`
+	AgentName  *string    `json:"agent_name,omitempty"`
+	ClientType *string    `json:"client_type,omitempty"`
+	Host       *string    `json:"host"`
+	Model      *string    `json:"model"`
+	State      string     `json:"state"`
+	StartedAt  time.Time  `json:"started_at"`
+	EndedAt    *time.Time `json:"ended_at"`
 	// LastSeenAt is the most-recent activity timestamp on the session.
 	// For active/idle/stale/lost: max(events.occurred_at), projected
 	// through the worker's last_seen_at column. For closed: aligned
@@ -352,9 +366,136 @@ type SessionsResponse struct {
 	HasMore  bool              `json:"has_more"`
 }
 
+// sessionListProjection is the SELECT clause used by every
+// session-listing query (the paginated page + the parent-include
+// follow-up). Kept as a single string so the two queries can't
+// drift apart in column order or COALESCE shape -- the scan loop
+// reads in fixed order, so the smallest typo in either copy would
+// silently corrupt the read.
+const sessionListProjection = `
+		SELECT
+			s.session_id::text,
+			s.flavor,
+			s.agent_type,
+			s.agent_id::text,
+			s.agent_name,
+			s.client_type,
+			s.host,
+			s.model,
+			s.state,
+			s.started_at,
+			s.ended_at,
+			s.last_seen_at,
+			EXTRACT(EPOCH FROM (COALESCE(s.ended_at, NOW()) - s.started_at)) AS duration_s,
+			s.tokens_used,
+			s.token_limit,
+			s.context,
+			EXISTS(
+				SELECT 1 FROM events e
+				WHERE e.session_id = s.session_id
+				AND e.has_content = true
+				LIMIT 1
+			) AS capture_enabled,
+			s.token_id::text,
+			s.token_name,
+			COALESCE(
+				ARRAY(
+					SELECT DISTINCT e.payload->'error'->>'error_type'
+					FROM events e
+					WHERE e.session_id = s.session_id
+					AND e.event_type = 'llm_error'
+					AND e.payload->'error'->>'error_type' IS NOT NULL
+				),
+				ARRAY[]::text[]
+			) AS error_types,
+			COALESCE(
+				ARRAY(
+					SELECT DISTINCT e.event_type
+					FROM events e
+					WHERE e.session_id = s.session_id
+					AND e.event_type IN (
+					'policy_warn', 'policy_degrade', 'policy_block',
+					'policy_mcp_warn', 'policy_mcp_block',
+					'mcp_server_name_changed', 'mcp_policy_user_remembered'
+				)
+				),
+				ARRAY[]::text[]
+			) AS policy_event_types,
+			COALESCE(
+				ARRAY(
+					SELECT DISTINCT srv->>'name'
+					FROM jsonb_array_elements(
+						COALESCE(s.context->'mcp_servers', '[]'::jsonb)
+					) AS srv
+					WHERE srv->>'name' IS NOT NULL
+				),
+				ARRAY[]::text[]
+			) AS mcp_server_names,
+			COALESCE(
+				ARRAY(
+					SELECT DISTINCT e.payload->'error'->>'error_type'
+					FROM events e
+					WHERE e.session_id = s.session_id
+					AND e.event_type LIKE 'mcp_%%'
+					AND e.payload->'error' IS NOT NULL
+					AND e.payload->'error'->>'error_type' IS NOT NULL
+				),
+				ARRAY[]::text[]
+			) AS mcp_error_types,
+			COALESCE(
+				ARRAY(
+					SELECT DISTINCT e.payload->>'close_reason'
+					FROM events e
+					WHERE e.session_id = s.session_id
+					AND e.event_type = 'session_end'
+					AND e.payload->>'close_reason' IS NOT NULL
+				),
+				ARRAY[]::text[]
+			) AS close_reasons,
+			COALESCE(
+				ARRAY(
+					SELECT DISTINCT e.payload->>'estimated_via'
+					FROM events e
+					WHERE e.session_id = s.session_id
+					AND e.event_type IN ('pre_call', 'post_call', 'embeddings')
+					AND e.payload->>'estimated_via' IS NOT NULL
+				),
+				ARRAY[]::text[]
+			) AS estimated_via_values,
+			EXISTS(
+				SELECT 1 FROM events e
+				WHERE e.session_id = s.session_id
+				AND e.event_type = 'llm_error'
+				AND (e.payload->>'terminal')::boolean = true
+			) AS has_terminal_error,
+			COALESCE(
+				ARRAY(
+					SELECT DISTINCT e.payload->'policy_decision'->>'matched_entry_id'
+					FROM events e
+					WHERE e.session_id = s.session_id
+					AND e.event_type IN ('policy_mcp_warn', 'policy_mcp_block')
+					AND e.payload->'policy_decision'->>'matched_entry_id' IS NOT NULL
+				),
+				ARRAY[]::text[]
+			) AS matched_entry_ids,
+			COALESCE(
+				ARRAY(
+					SELECT DISTINCT e.payload->>'originating_call_context'
+					FROM events e
+					WHERE e.session_id = s.session_id
+					AND e.payload->>'originating_call_context' IS NOT NULL
+				),
+				ARRAY[]::text[]
+			) AS originating_call_contexts,
+			s.parent_session_id::text,
+			s.agent_role,
+			(SELECT COUNT(*) FROM sessions c WHERE c.parent_session_id = s.session_id) AS child_count
+		FROM sessions s
+`
+
 // allowedSorts prevents SQL injection in the ORDER BY clause.
 // v0.4.0 phase 2: added last_seen_at, model, hostname. hostname falls
-// back to ``context->>'hostname'`` because the sessions.host column
+// back to “context->>'hostname'“ because the sessions.host column
 // is nullable for sessions that predate the sensor filling it in;
 // COALESCE keeps the sort stable either way.
 var allowedSorts = map[string]string{
@@ -784,129 +925,10 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 	}
 
 	// Fetch page
-	querySQL := fmt.Sprintf(`
-		SELECT
-			s.session_id::text,
-			s.flavor,
-			s.agent_type,
-			s.agent_id::text,
-			s.agent_name,
-			s.client_type,
-			s.host,
-			s.model,
-			s.state,
-			s.started_at,
-			s.ended_at,
-			s.last_seen_at,
-			EXTRACT(EPOCH FROM (COALESCE(s.ended_at, NOW()) - s.started_at)) AS duration_s,
-			s.tokens_used,
-			s.token_limit,
-			s.context,
-			EXISTS(
-				SELECT 1 FROM events e
-				WHERE e.session_id = s.session_id
-				AND e.has_content = true
-				LIMIT 1
-			) AS capture_enabled,
-			s.token_id::text,
-			s.token_name,
-			COALESCE(
-				ARRAY(
-					SELECT DISTINCT e.payload->'error'->>'error_type'
-					FROM events e
-					WHERE e.session_id = s.session_id
-					AND e.event_type = 'llm_error'
-					AND e.payload->'error'->>'error_type' IS NOT NULL
-				),
-				ARRAY[]::text[]
-			) AS error_types,
-			COALESCE(
-				ARRAY(
-					SELECT DISTINCT e.event_type
-					FROM events e
-					WHERE e.session_id = s.session_id
-					AND e.event_type IN (
-					'policy_warn', 'policy_degrade', 'policy_block',
-					'policy_mcp_warn', 'policy_mcp_block',
-					'mcp_server_name_changed', 'mcp_policy_user_remembered'
-				)
-				),
-				ARRAY[]::text[]
-			) AS policy_event_types,
-			COALESCE(
-				ARRAY(
-					SELECT DISTINCT srv->>'name'
-					FROM jsonb_array_elements(
-						COALESCE(s.context->'mcp_servers', '[]'::jsonb)
-					) AS srv
-					WHERE srv->>'name' IS NOT NULL
-				),
-				ARRAY[]::text[]
-			) AS mcp_server_names,
-			COALESCE(
-				ARRAY(
-					SELECT DISTINCT e.payload->'error'->>'error_type'
-					FROM events e
-					WHERE e.session_id = s.session_id
-					AND e.event_type LIKE 'mcp_%%'
-					AND e.payload->'error' IS NOT NULL
-					AND e.payload->'error'->>'error_type' IS NOT NULL
-				),
-				ARRAY[]::text[]
-			) AS mcp_error_types,
-			COALESCE(
-				ARRAY(
-					SELECT DISTINCT e.payload->>'close_reason'
-					FROM events e
-					WHERE e.session_id = s.session_id
-					AND e.event_type = 'session_end'
-					AND e.payload->>'close_reason' IS NOT NULL
-				),
-				ARRAY[]::text[]
-			) AS close_reasons,
-			COALESCE(
-				ARRAY(
-					SELECT DISTINCT e.payload->>'estimated_via'
-					FROM events e
-					WHERE e.session_id = s.session_id
-					AND e.event_type IN ('pre_call', 'post_call', 'embeddings')
-					AND e.payload->>'estimated_via' IS NOT NULL
-				),
-				ARRAY[]::text[]
-			) AS estimated_via_values,
-			EXISTS(
-				SELECT 1 FROM events e
-				WHERE e.session_id = s.session_id
-				AND e.event_type = 'llm_error'
-				AND (e.payload->>'terminal')::boolean = true
-			) AS has_terminal_error,
-			COALESCE(
-				ARRAY(
-					SELECT DISTINCT e.payload->'policy_decision'->>'matched_entry_id'
-					FROM events e
-					WHERE e.session_id = s.session_id
-					AND e.event_type IN ('policy_mcp_warn', 'policy_mcp_block')
-					AND e.payload->'policy_decision'->>'matched_entry_id' IS NOT NULL
-				),
-				ARRAY[]::text[]
-			) AS matched_entry_ids,
-			COALESCE(
-				ARRAY(
-					SELECT DISTINCT e.payload->>'originating_call_context'
-					FROM events e
-					WHERE e.session_id = s.session_id
-					AND e.payload->>'originating_call_context' IS NOT NULL
-				),
-				ARRAY[]::text[]
-			) AS originating_call_contexts,
-			s.parent_session_id::text,
-			s.agent_role,
-			(SELECT COUNT(*) FROM sessions c WHERE c.parent_session_id = s.session_id) AS child_count
-		FROM sessions s
-		%s
-		ORDER BY %s %s
-		LIMIT $%d OFFSET $%d
-	`, where, sortExpr, orderDir, argIdx, argIdx+1)
+	querySQL := fmt.Sprintf(
+		"%s %s\n\tORDER BY %s %s\n\tLIMIT $%d OFFSET $%d",
+		sessionListProjection, where, sortExpr, orderDir, argIdx, argIdx+1,
+	)
 	args = append(args, params.Limit, params.Offset)
 
 	rows, err := tx.Query(ctx, querySQL, args...)
@@ -994,6 +1016,126 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 	}
 	if sessions == nil {
 		sessions = []SessionListItem{}
+	}
+
+	// IncludeParents follow-up: when the caller asked for it (Fleet
+	// swimlane today), bring in the parent of every child session in
+	// the page so a topology resolver that walks the in-window set
+	// never sees a child whose parent fell off the LIMIT cliff. The
+	// parent rows ride along regardless of the time-range filter --
+	// a child can be brand-new while its parent has been around for
+	// hours, and the parent should still resolve.
+	if params.IncludeParents && len(sessions) > 0 {
+		present := make(map[string]struct{}, len(sessions))
+		for _, sess := range sessions {
+			present[sess.SessionID] = struct{}{}
+		}
+		missingParents := make([]string, 0, len(sessions))
+		seenParent := make(map[string]struct{})
+		for _, sess := range sessions {
+			if sess.ParentSessionID == nil {
+				continue
+			}
+			pid := *sess.ParentSessionID
+			if pid == "" {
+				continue
+			}
+			if _, ok := present[pid]; ok {
+				continue
+			}
+			if _, ok := seenParent[pid]; ok {
+				continue
+			}
+			seenParent[pid] = struct{}{}
+			missingParents = append(missingParents, pid)
+		}
+		if len(missingParents) > 0 {
+			parentSQL := fmt.Sprintf(
+				"%s WHERE s.session_id = ANY($1::uuid[])",
+				sessionListProjection,
+			)
+			parentRows, err := tx.Query(ctx, parentSQL, missingParents)
+			if err != nil {
+				return nil, fmt.Errorf("get parent sessions: %w", err)
+			}
+			defer parentRows.Close()
+			for parentRows.Next() {
+				var item SessionListItem
+				var contextRaw []byte
+				if err := parentRows.Scan(
+					&item.SessionID,
+					&item.Flavor,
+					&item.AgentType,
+					&item.AgentID,
+					&item.AgentName,
+					&item.ClientType,
+					&item.Host,
+					&item.Model,
+					&item.State,
+					&item.StartedAt,
+					&item.EndedAt,
+					&item.LastSeenAt,
+					&item.DurationS,
+					&item.TokensUsed,
+					&item.TokenLimit,
+					&contextRaw,
+					&item.CaptureEnabled,
+					&item.TokenID,
+					&item.TokenName,
+					&item.ErrorTypes,
+					&item.PolicyEventTypes,
+					&item.MCPServerNames,
+					&item.MCPErrorTypes,
+					&item.CloseReasons,
+					&item.EstimatedViaValues,
+					&item.HasTerminalError,
+					&item.MatchedEntryIDs,
+					&item.OriginatingCallContexts,
+					&item.ParentSessionID,
+					&item.AgentRole,
+					&item.ChildCount,
+				); err != nil {
+					return nil, fmt.Errorf("scan parent session: %w", err)
+				}
+				if item.ErrorTypes == nil {
+					item.ErrorTypes = []string{}
+				}
+				if item.PolicyEventTypes == nil {
+					item.PolicyEventTypes = []string{}
+				}
+				if item.MCPServerNames == nil {
+					item.MCPServerNames = []string{}
+				}
+				if item.MCPErrorTypes == nil {
+					item.MCPErrorTypes = []string{}
+				}
+				if item.CloseReasons == nil {
+					item.CloseReasons = []string{}
+				}
+				if item.EstimatedViaValues == nil {
+					item.EstimatedViaValues = []string{}
+				}
+				if item.MatchedEntryIDs == nil {
+					item.MatchedEntryIDs = []string{}
+				}
+				if item.OriginatingCallContexts == nil {
+					item.OriginatingCallContexts = []string{}
+				}
+				if len(contextRaw) > 0 {
+					var v map[string]interface{}
+					if jsonErr := json.Unmarshal(contextRaw, &v); jsonErr == nil {
+						item.Context = v
+					}
+				}
+				if item.Context == nil {
+					item.Context = map[string]interface{}{}
+				}
+				sessions = append(sessions, item)
+			}
+			if err := parentRows.Err(); err != nil {
+				return nil, fmt.Errorf("parent sessions scan: %w", err)
+			}
+		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {

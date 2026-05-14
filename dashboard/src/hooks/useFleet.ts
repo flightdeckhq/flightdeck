@@ -2,7 +2,15 @@ import { useEffect, useCallback, useMemo } from "react";
 import { useFleetStore } from "@/store/fleet";
 import { useWebSocket } from "./useWebSocket";
 import { wsAccessTokenQuery } from "@/lib/api";
+import { isKeepaliveWsDisabled } from "@/lib/runtime-config";
 import type { FleetUpdate, AgentEvent } from "@/lib/types";
+
+// Read the localStorage flag ONCE at module import. Playwright
+// writes the flag via its per-project storageState before the
+// first page navigation, so the value is stable for the lifetime
+// of the tab. Reading on every render would do a synchronous DOM
+// access (cheap but not free) for a value that never changes.
+const KEEPALIVE_WS_DISABLED = isKeepaliveWsDisabled();
 
 // Browsers cannot attach an Authorization header to the WebSocket
 // upgrade handshake, so the server accepts the bearer access token
@@ -60,8 +68,22 @@ export function useFleet(onEvent?: (event: AgentEvent) => void) {
   // whether to reconnect). Recomputed only when the underlying
   // localStorage token changes between mounts — which is the
   // intended invalidation path.
+  //
+  // Keep-alive WS disable flag: when E2E suites set the
+  // ``flightdeck-disable-keepalive-ws`` localStorage flag, the WS
+  // subscription is skipped entirely. The dashboard renders its
+  // initial state from the REST ``/v1/fleet`` + ``/v1/sessions``
+  // fetches and stays static for the rest of the page session.
+  // This prevents periodic fixture-refresh events from the test
+  // harness's keep-alive watchdog (Playwright globalSetup) from
+  // perturbing IntersectionObserver virtualization and sidebar
+  // pagination under parallel-worker load. Production never sets
+  // the flag.
   const wsUrl = useMemo(
-    () => `${WS_BASE_URL}?${wsAccessTokenQuery()}`,
+    () =>
+      KEEPALIVE_WS_DISABLED
+        ? null
+        : `${WS_BASE_URL}?${wsAccessTokenQuery()}`,
     [],
   );
   useWebSocket(wsUrl, handleMessage);

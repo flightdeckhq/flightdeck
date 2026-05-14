@@ -261,7 +261,49 @@ type AgentSummary struct {
 	//              parent_session_id by at least one other session,
 	//              and the agent itself is not a child.
 	Topology string `json:"topology"`
+	// RecentSessions carries the agent's most-recent sessions
+	// (newest first, by started_at). Populated by /v1/fleet so the
+	// swimlane row renders event circles regardless of whether the
+	// session falls inside the paginated /v1/sessions window. The
+	// per-agent cap is RecentSessionsPerAgent. Empty for agents with
+	// no sessions; ``omitempty`` keeps the wire shape lean when the
+	// helper is not run (e.g. on /v1/agents which keeps the leaner
+	// projection).
+	RecentSessions []RecentSession `json:"recent_sessions,omitempty"`
 }
+
+// RecentSession is the lean projection embedded in
+// “AgentSummary.RecentSessions“. Columns mirror what the dashboard
+// store's “listItemToSession“ consumes for the swimlane row; the
+// heavy correlated-subquery columns of “SessionListItem“
+// (error_types, policy_event_types, mcp_server_names, ...) are
+// intentionally absent so the per-agent LATERAL stays cheap on
+// fleet pages with many agents.
+type RecentSession struct {
+	SessionID       string     `json:"session_id"`
+	Flavor          string     `json:"flavor"`
+	AgentType       string     `json:"agent_type"`
+	AgentID         *string    `json:"agent_id,omitempty"`
+	AgentName       *string    `json:"agent_name,omitempty"`
+	ClientType      *string    `json:"client_type,omitempty"`
+	Host            *string    `json:"host"`
+	Model           *string    `json:"model"`
+	State           string     `json:"state"`
+	StartedAt       time.Time  `json:"started_at"`
+	EndedAt         *time.Time `json:"ended_at"`
+	LastSeenAt      time.Time  `json:"last_seen_at"`
+	TokensUsed      int        `json:"tokens_used"`
+	TokenLimit      *int64     `json:"token_limit"`
+	CaptureEnabled  bool       `json:"capture_enabled"`
+	ParentSessionID *string    `json:"parent_session_id,omitempty"`
+	AgentRole       *string    `json:"agent_role,omitempty"`
+}
+
+// RecentSessionsPerAgent caps the per-agent rollup on the
+// /v1/fleet response. Five rows is enough to cover the swimlane's
+// visible event-circle stack for a typical agent without ballooning
+// payload size on fleet pages with 50+ agents; tune by observation.
+const RecentSessionsPerAgent = 5
 
 // GetAgentFleet returns agents with rollup state, paginated. Accepts
 // optional agent_type filter (D114 vocabulary). Returns
@@ -367,7 +409,125 @@ func (s *Store) GetAgentFleet(
 		}
 		result = append(result, a)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("iterate agent fleet: %w", err)
+	}
+
+	// Attach the per-agent recent-sessions rollup so the swimlane
+	// can render event circles even when the session falls outside
+	// the paginated /v1/sessions window. One batched query keyed
+	// off the page's agent_ids; result is merged in O(n) below.
+	if len(result) > 0 {
+		ids := make([]string, len(result))
+		for i, a := range result {
+			ids[i] = a.AgentID
+		}
+		recent, err := s.GetRecentSessionsByAgentIDs(
+			ctx, ids, RecentSessionsPerAgent,
+		)
+		if err != nil {
+			return nil, 0, fmt.Errorf("attach recent sessions: %w", err)
+		}
+		for i := range result {
+			if rs, ok := recent[result[i].AgentID]; ok {
+				result[i].RecentSessions = rs
+			}
+		}
+	}
 	return result, totalCount, nil
+}
+
+// GetRecentSessionsByAgentIDs returns the most recent “perAgent“
+// sessions per supplied “agent_id“. Output is keyed by agent_id so
+// callers can attach the slice to each “AgentSummary“ in O(1).
+// Used by “GetAgentFleet“ to populate
+// “AgentSummary.RecentSessions“; the swimlane consumes this slice
+// directly so a sub-agent whose session was upserted hours ago (and
+// thus falls outside the 100-row /v1/sessions page) still renders
+// event circles when its row materialises.
+//
+// Window function: “ROW_NUMBER() OVER (PARTITION BY agent_id ORDER
+// BY started_at DESC, session_id ASC)“. The session_id tie-breaker
+// keeps the ordering deterministic when two sessions share a
+// “started_at“ timestamp — without it, two adjacent reads could
+// return different rows for the same agent (the planner is free to
+// swap rows with equal sort keys).
+//
+// Empty “agentIDs“ or non-positive “perAgent“ short-circuits to
+// an empty map without hitting Postgres.
+func (s *Store) GetRecentSessionsByAgentIDs(
+	ctx context.Context, agentIDs []string, perAgent int,
+) (map[string][]RecentSession, error) {
+	out := make(map[string][]RecentSession)
+	if len(agentIDs) == 0 || perAgent <= 0 {
+		return out, nil
+	}
+
+	query := `
+		SELECT
+			t.session_id, t.flavor, t.agent_type, t.agent_id,
+			t.agent_name, t.client_type, t.host, t.model, t.state,
+			t.started_at, t.ended_at, t.last_seen_at, t.tokens_used,
+			t.token_limit, t.capture_enabled,
+			t.parent_session_id, t.agent_role
+		FROM (
+			SELECT
+				s.session_id::text AS session_id,
+				s.flavor,
+				s.agent_type,
+				s.agent_id::text AS agent_id,
+				s.agent_name,
+				s.client_type,
+				s.host,
+				s.model,
+				s.state,
+				s.started_at,
+				s.ended_at,
+				s.last_seen_at,
+				s.tokens_used,
+				s.token_limit,
+				EXISTS(
+					SELECT 1 FROM events e
+					WHERE e.session_id = s.session_id
+					  AND e.has_content = true
+					LIMIT 1
+				) AS capture_enabled,
+				s.parent_session_id::text AS parent_session_id,
+				s.agent_role,
+				ROW_NUMBER() OVER (
+					PARTITION BY s.agent_id
+					ORDER BY s.started_at DESC, s.session_id ASC
+				) AS rn
+			FROM sessions s
+			WHERE s.agent_id = ANY($1::uuid[])
+		) t
+		WHERE t.rn <= $2
+		ORDER BY t.agent_id, t.started_at DESC, t.session_id ASC
+	`
+	rows, err := s.pool.Query(ctx, query, agentIDs, perAgent)
+	if err != nil {
+		return nil, fmt.Errorf("recent sessions by agent ids: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var r RecentSession
+		if err := rows.Scan(
+			&r.SessionID, &r.Flavor, &r.AgentType, &r.AgentID,
+			&r.AgentName, &r.ClientType, &r.Host, &r.Model, &r.State,
+			&r.StartedAt, &r.EndedAt, &r.LastSeenAt, &r.TokensUsed,
+			&r.TokenLimit, &r.CaptureEnabled,
+			&r.ParentSessionID, &r.AgentRole,
+		); err != nil {
+			return nil, fmt.Errorf("scan recent session: %w", err)
+		}
+		if r.AgentID != nil {
+			out[*r.AgentID] = append(out[*r.AgentID], r)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("recent sessions rows: %w", err)
+	}
+	return out, nil
 }
 
 // d126AgentRollupSQL is the LATERAL subquery that computes the D126

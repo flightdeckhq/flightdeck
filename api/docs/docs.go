@@ -2029,7 +2029,7 @@ const docTemplate = `{
         },
         "/v1/sessions": {
             "get": {
-                "description": "Returns sessions matching time range, state, flavor, client_type, agent_type, model, framework, agent_id, context-scalar (user/os/hostname/git_branch/orchestration/...), and search filters with pagination and sort support. Multi-value filters (state, flavor, client_type, framework, agent_type, context-scalar) accept repeated query params and comma-separated values; values within a dimension are OR, values across dimensions are AND. ` + "`" + `` + "`" + `q` + "`" + `` + "`" + ` is a case-insensitive substring search across agent_name, flavor, host, model, session_id, context.hostname, context.os, context.git_branch, context.python_version, and the frameworks array.",
+                "description": "Returns sessions matching time range, state, flavor, client_type, agent_type, model, framework, agent_id, context-scalar (user/os/hostname/git_branch/orchestration/...), and search filters with pagination and sort support. Multi-value filters (state, flavor, client_type, framework, agent_type, context-scalar) accept repeated query params and comma-separated values; values within a dimension are OR, values across dimensions are AND. “q“ is a case-insensitive substring search across agent_name, flavor, host, model, session_id, context.hostname, context.os, context.git_branch, context.python_version, and the frameworks array.",
                 "produces": [
                     "application/json"
                 ],
@@ -2180,6 +2180,12 @@ const docTemplate = `{
                         "type": "boolean",
                         "description": "D126: when true, restrict to child sessions only (parent_session_id IS NOT NULL). Backs the Investigate TOPOLOGY facet 'Is sub-agent' checkbox.",
                         "name": "is_sub_agent",
+                        "in": "query"
+                    },
+                    {
+                        "type": "boolean",
+                        "description": "When true, augment the page with the parent session of every child session in the result -- even when the parent falls outside the time-range filter or the LIMIT window. Default false preserves exact pagination semantics; the Fleet swimlane opts in so a child whose parent fell off the 100-row page still resolves its topology. Returned sessions[] may exceed Total when extra parents land in the response.",
+                        "name": "include_parents",
                         "in": "query"
                     },
                     {
@@ -2654,6 +2660,13 @@ const docTemplate = `{
                 },
                 "last_seen_at": {
                     "type": "string"
+                },
+                "recent_sessions": {
+                    "description": "RecentSessions carries the agent's most-recent sessions\n(newest first, by started_at). Populated by /v1/fleet so the\nswimlane row renders event circles regardless of whether the\nsession falls inside the paginated /v1/sessions window. The\nper-agent cap is RecentSessionsPerAgent. Empty for agents with\nno sessions; ` + "`" + `` + "`" + `omitempty` + "`" + `` + "`" + ` keeps the wire shape lean when the\nhelper is not run (e.g. on /v1/agents which keeps the leaner\nprojection).",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/store.RecentSession"
+                    }
                 },
                 "state": {
                     "description": "State rollup: \"active\" when any session under this agent is\ncurrently active; otherwise the most-recent session's state.\nEmpty string when the agent has no sessions yet (freshly\nupserted agent row awaiting its first session linkage).",
@@ -3259,6 +3272,62 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "warn_at_pct": {
+                    "type": "integer"
+                }
+            }
+        },
+        "store.RecentSession": {
+            "type": "object",
+            "properties": {
+                "agent_id": {
+                    "type": "string"
+                },
+                "agent_name": {
+                    "type": "string"
+                },
+                "agent_role": {
+                    "type": "string"
+                },
+                "agent_type": {
+                    "type": "string"
+                },
+                "capture_enabled": {
+                    "type": "boolean"
+                },
+                "client_type": {
+                    "type": "string"
+                },
+                "ended_at": {
+                    "type": "string"
+                },
+                "flavor": {
+                    "type": "string"
+                },
+                "host": {
+                    "type": "string"
+                },
+                "last_seen_at": {
+                    "type": "string"
+                },
+                "model": {
+                    "type": "string"
+                },
+                "parent_session_id": {
+                    "type": "string"
+                },
+                "session_id": {
+                    "type": "string"
+                },
+                "started_at": {
+                    "type": "string"
+                },
+                "state": {
+                    "type": "string"
+                },
+                "token_limit": {
+                    "type": "integer"
+                },
+                "tokens_used": {
                     "type": "integer"
                 }
             }

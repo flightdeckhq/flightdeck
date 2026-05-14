@@ -37,6 +37,20 @@ export const FEED_HEIGHT_STORAGE_KEY = "flightdeck-feed-height";
 /** LocalStorage key for persisting theme preference. */
 export const THEME_STORAGE_KEY = "flightdeck-theme";
 
+/**
+ * LocalStorage key for the E2E keep-alive WS disable flag. When
+ * set to "1" or "true", the dashboard's useFleet hook skips its
+ * WebSocket subscription so periodic fixture-refresh events from
+ * the Playwright keep-alive watchdog cannot perturb
+ * IntersectionObserver virtualisation or sidebar pagination.
+ * Production never sets this; the value is only written by
+ * Playwright's per-project storageState bootstrap. Lives here so
+ * playwright.config.ts (Node) and runtime-config.ts (browser)
+ * share one source of truth — a divergent string would silently
+ * break every test without a TypeScript error.
+ */
+export const DISABLE_KEEPALIVE_WS_STORAGE_KEY = "flightdeck-disable-keepalive-ws";
+
 
 /**
  * Width constants for the resizable left panel (flavor labels +

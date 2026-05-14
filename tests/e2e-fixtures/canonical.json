@@ -194,6 +194,36 @@
           "instructions": null
         }
       ]
+    },
+    "concurrent-run-a": {
+      "started_offset_sec": -300,
+      "ended_offset_sec": null,
+      "purpose": "T52 anchor — first of two concurrent runs under the same agent_id. Simulates a multi-pod K8s deployment with FLIGHTDECK_HOSTNAME collapsed across pods: both pods register the same agent identity and emit independent session_ids whose start/end intervals overlap. Drives the RunBracket offset (top anchor)."
+    },
+    "concurrent-run-b": {
+      "started_offset_sec": -200,
+      "ended_offset_sec": null,
+      "purpose": "T52 anchor — second of two concurrent runs under the same agent_id. Starts 100s after concurrent-run-a, both still active, so the brackets overlap on the timeline and stagger to opposite vertical anchors."
+    },
+    "fresh-closed-in-window": {
+      "started_offset_sec": -45,
+      "ended_offset_sec": -10,
+      "purpose": "RunBracket end-square anchor — closed run with BOTH started_at and ended_at inside the swimlane's default 1-minute window so the end-square glyph (■) has a position to render at. The other ``recent-closed`` role is older (started -10min), outside the 1-minute window; without this fixture no closed session's end-square ever materialises on the live page. seed.py forward-dates this row on every keep-alive cycle so it stays in window."
+    },
+    "fresh-subagent-in-window": {
+      "started_offset_sec": -40,
+      "ended_offset_sec": null,
+      "purpose": "SubAgentConnector in-window anchor — sub-agent session_start inside the swimlane's default 1-minute window so the connector overlay has a parent-child pair whose first events are both in the visible domain. The other sub-agent fixtures (claude-subagent, crewai-*, langgraph-*, depth2-*, subagent-*) all started >120s ago so their session_start events fall outside the 1-minute window and the connector geometry skips them. seed.py forward-dates this row on every keep-alive cycle so it stays in window.",
+      "agent_role": "FreshSubagent",
+      "parent_role": "connector-parent-fresh",
+      "parent_agent": "e2e-test-connector-parent",
+      "captured_input": "Connector anchor — fresh sub-agent emitting in-window events.",
+      "captured_output": "Sub-agent emitted three tool_call events; parent's spawn event circle anchored the connector."
+    },
+    "connector-parent-fresh": {
+      "started_offset_sec": -40,
+      "ended_offset_sec": null,
+      "purpose": "Dedicated parent session for the SubAgentConnector in-window anchor. seed.py keeps this session's started_at and a fresh tool_call event in window on every keep-alive cycle so the connector geometry pass finds an in-window event on the parent endpoint. Decoupled from e2e-test-coding-agent's fresh-active session (which T14/T15/T16/T18 consume) so the keep-alive's connector-anchor refresh doesn't perturb those tests' specific event-count / event-ordering assertions."
     }
   },
   "agents": [
@@ -213,7 +243,8 @@
         "aged-closed",
         "stale",
         "error-active",
-        "policy-active"
+        "policy-active",
+        "fresh-closed-in-window"
       ]
     },
     {
@@ -436,6 +467,52 @@
       "session_roles": [
         "depth-2-leaf"
       ]
+    },
+    {
+      "agent_name": "e2e-test-concurrent-runs",
+      "agent_type": "production",
+      "client_type": "flightdeck_sensor",
+      "user": "e2e-runner",
+      "hostname": "e2e-host-concurrent",
+      "flavor": "e2e-concurrent-runs",
+      "model": "gpt-4o-mini",
+      "framework": "langchain",
+      "host": "e2e-host-concurrent",
+      "session_roles": [
+        "concurrent-run-a",
+        "concurrent-run-b"
+      ],
+      "_comment": "T52 anchor — single agent_id with two overlapping active sessions (simulates multi-pod K8s with FLIGHTDECK_HOSTNAME collapsed across pods). The swimlane renders two start brackets on the agent's row at staggered top/bottom anchors per RunBracket's bracketAnchors() rule."
+    },
+    {
+      "agent_name": "e2e-test-connector-parent",
+      "agent_type": "coding",
+      "client_type": "claude_code",
+      "user": "e2e-runner",
+      "hostname": "e2e-host-coding",
+      "flavor": "e2e-connector-parent",
+      "model": "claude-sonnet-4-5",
+      "framework": "claude-code",
+      "host": "e2e-host-coding",
+      "session_roles": [
+        "connector-parent-fresh"
+      ],
+      "_comment": "Dedicated parent agent for the SubAgentConnector in-window anchor. Decoupled from e2e-test-coding-agent so the keep-alive's connector-anchor refresh emissions don't perturb T14/T15/T16/T18's specific event-ordering assertions on coding-agent's fresh-active session."
+    },
+    {
+      "agent_name": "e2e-test-fresh-subagent",
+      "agent_type": "coding",
+      "client_type": "claude_code",
+      "user": "e2e-runner",
+      "hostname": "e2e-host-coding",
+      "flavor": "e2e-fresh-subagent",
+      "model": "claude-sonnet-4-5",
+      "framework": "claude-code",
+      "host": "e2e-host-coding",
+      "session_roles": [
+        "fresh-subagent-in-window"
+      ],
+      "_comment": "SubAgentConnector in-window anchor — sub-agent paired with e2e-test-connector-parent's connector-parent-fresh session so the connector overlay has a parent-child pair with both endpoints inside the swimlane's default 1-minute domain. Keeps the connector overlay rendering at least one Bezier path on the live page without the operator widening the time window."
     }
   ]
 }

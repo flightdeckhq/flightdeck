@@ -567,6 +567,7 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
         <motion.div
           key={sessionId}
           data-testid="session-drawer"
+          data-session-id={sessionId}
           className="fixed right-0 top-0 z-40 flex h-full w-[520px] flex-col"
           style={{
             background: "var(--surface)",
@@ -674,6 +675,8 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
               )}
               <button
                 onClick={onClose}
+                aria-label="Close drawer"
+                data-testid="session-drawer-close"
                 className="flex h-7 w-7 items-center justify-center rounded transition-colors hover:bg-surface-hover"
               >
                 <X size={16} style={{ color: "var(--text-muted)" }} />

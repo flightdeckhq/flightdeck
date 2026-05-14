@@ -24,24 +24,21 @@ test.describe("T29 — CrewAI multi-agent rendering", () => {
     await page.goto("/");
     await waitForFleetReady(page);
 
-    // Both child rows mount with the relationship pill in child
-    // mode. The pill text identifies the parent agent by name.
-    // We wait for the wrapper's data-rel-mode attribute to settle
-    // before reading the inner pill — the SwimLane is virtualized
-    // (IntersectionObserver-driven), so on first mount the
-    // deriveRelationship pass races React's commit; the wrapper
-    // attribute stabilizes once the relationship pass settles.
+    // Both child rows mount with ``data-topology="child"`` on the
+    // row's outer div and the RelationshipPill renders inside the
+    // label strip. The pill text identifies the parent agent by
+    // name. We poll on data-topology so the deriveRelationship
+    // pass has time to settle (the SwimLane is virtualized via
+    // IntersectionObserver and the relationship walk runs after
+    // React's first commit).
     const researcher = await bringSwimlaneRowIntoView(
       page,
       "e2e-test-crewai-researcher",
     );
     await expect(researcher).toBeVisible();
-    const researcherWrapper = page.locator(
-      '[data-agent-id]:has([data-testid="swimlane-agent-row-e2e-test-crewai-researcher"])',
-    );
-    await expect(researcherWrapper).toHaveAttribute("data-rel-mode", "child");
+    await expect(researcher).toHaveAttribute("data-topology", "child");
     await expect(
-      researcherWrapper.locator('[data-testid="swimlane-relationship-pill"]'),
+      researcher.locator('[data-testid="swimlane-relationship-pill"]'),
     ).toContainText("e2e-test-crewai-parent");
 
     const writer = await bringSwimlaneRowIntoView(
@@ -49,23 +46,20 @@ test.describe("T29 — CrewAI multi-agent rendering", () => {
       "e2e-test-crewai-writer",
     );
     await expect(writer).toBeVisible();
-    const writerWrapper = page.locator(
-      '[data-agent-id]:has([data-testid="swimlane-agent-row-e2e-test-crewai-writer"])',
-    );
-    await expect(writerWrapper).toHaveAttribute("data-rel-mode", "child");
+    await expect(writer).toHaveAttribute("data-topology", "child");
 
     // Parent row's pill reads → 2 — exactly two distinct child
-    // agent_ids reference its session as parent_session_id.
+    // agent_ids reference its session as parent_session_id. The
+    // parent itself keeps ``data-topology="root"`` (only child
+    // rows take the indent + bg tint); the parent-vs-lone signal
+    // lives in the relationship pill text.
     const parent = await bringSwimlaneRowIntoView(
       page,
       "e2e-test-crewai-parent",
     );
     await expect(parent).toBeVisible();
-    const parentWrapper = page.locator(
-      '[data-agent-id]:has([data-testid="swimlane-agent-row-e2e-test-crewai-parent"])',
-    );
-    await expect(parentWrapper).toHaveAttribute("data-rel-mode", "parent");
-    const parentPill = parentWrapper.locator(
+    await expect(parent).toHaveAttribute("data-topology", "root");
+    const parentPill = parent.locator(
       '[data-testid="swimlane-relationship-pill"]',
     );
     await expect(parentPill).toContainText("→");

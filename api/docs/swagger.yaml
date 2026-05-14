@@ -199,6 +199,19 @@ definitions:
         type: string
       last_seen_at:
         type: string
+      recent_sessions:
+        description: |-
+          RecentSessions carries the agent's most-recent sessions
+          (newest first, by started_at). Populated by /v1/fleet so the
+          swimlane row renders event circles regardless of whether the
+          session falls inside the paginated /v1/sessions window. The
+          per-agent cap is RecentSessionsPerAgent. Empty for agents with
+          no sessions; ``omitempty`` keeps the wire shape lean when the
+          helper is not run (e.g. on /v1/agents which keeps the leaner
+          projection).
+        items:
+          $ref: '#/definitions/store.RecentSession'
+        type: array
       state:
         description: |-
           State rollup: "active" when any session under this agent is
@@ -628,6 +641,43 @@ definitions:
       updated_at:
         type: string
       warn_at_pct:
+        type: integer
+    type: object
+  store.RecentSession:
+    properties:
+      agent_id:
+        type: string
+      agent_name:
+        type: string
+      agent_role:
+        type: string
+      agent_type:
+        type: string
+      capture_enabled:
+        type: boolean
+      client_type:
+        type: string
+      ended_at:
+        type: string
+      flavor:
+        type: string
+      host:
+        type: string
+      last_seen_at:
+        type: string
+      model:
+        type: string
+      parent_session_id:
+        type: string
+      session_id:
+        type: string
+      started_at:
+        type: string
+      state:
+        type: string
+      token_limit:
+        type: integer
+      tokens_used:
         type: integer
     type: object
   store.ReconcileResult:
@@ -2467,7 +2517,7 @@ paths:
         and search filters with pagination and sort support. Multi-value filters (state,
         flavor, client_type, framework, agent_type, context-scalar) accept repeated
         query params and comma-separated values; values within a dimension are OR,
-        values across dimensions are AND. ``q`` is a case-insensitive substring search
+        values across dimensions are AND. “q“ is a case-insensitive substring search
         across agent_name, flavor, host, model, session_id, context.hostname, context.os,
         context.git_branch, context.python_version, and the frameworks array.
       parameters:
@@ -2585,6 +2635,15 @@ paths:
           IS NOT NULL). Backs the Investigate TOPOLOGY facet ''Is sub-agent'' checkbox.'
         in: query
         name: is_sub_agent
+        type: boolean
+      - description: When true, augment the page with the parent session of every
+          child session in the result -- even when the parent falls outside the time-range
+          filter or the LIMIT window. Default false preserves exact pagination semantics;
+          the Fleet swimlane opts in so a child whose parent fell off the 100-row
+          page still resolves its topology. Returned sessions[] may exceed Total when
+          extra parents land in the response.
+        in: query
+        name: include_parents
         type: boolean
       - description: 'D126 UX revision 2026-05-03: when false, exclude pure children
           (rows whose parent_session_id is set AND that themselves have no descendants),

@@ -550,6 +550,48 @@ export interface AgentSummary {
    */
   agent_role?: string | null;
   topology: AgentTopology;
+  /**
+   * Most-recent sessions for this agent (newest first by
+   * started_at). Populated by /v1/fleet so the swimlane row renders
+   * event circles even when the session falls outside the 100-row
+   * /v1/sessions page window — a sub-agent whose session was
+   * upserted hours ago no longer materialises an empty timeline
+   * just because it's not in the recent-page intersection. Each
+   * entry mirrors what ``buildFlavors``'s ``listItemToSession``
+   * projection consumes; heavier ``SessionListItem`` enrichment
+   * fields (error_types, policy_event_types, mcp_server_names,
+   * ...) are intentionally absent here. Optional on the wire and
+   * undefined for older deployments; consumers must treat the slice
+   * as a non-authoritative augment of the paginated sessions
+   * response, not a replacement.
+   */
+  recent_sessions?: RecentSession[];
+}
+
+/**
+ * Lean session projection embedded in
+ * ``AgentSummary.recent_sessions``. Shape is the subset of
+ * ``SessionListItem`` fields the swimlane row consumes; mirrors the
+ * Go ``store.RecentSession`` type.
+ */
+export interface RecentSession {
+  session_id: string;
+  flavor: string;
+  agent_type: AgentType;
+  agent_id?: string | null;
+  agent_name?: string | null;
+  client_type?: ClientType | null;
+  host?: string | null;
+  model?: string | null;
+  state: SessionState;
+  started_at: string;
+  ended_at?: string | null;
+  last_seen_at: string;
+  tokens_used: number;
+  token_limit?: number | null;
+  capture_enabled: boolean;
+  parent_session_id?: string | null;
+  agent_role?: string | null;
 }
 
 /** Top-level fleet response. */

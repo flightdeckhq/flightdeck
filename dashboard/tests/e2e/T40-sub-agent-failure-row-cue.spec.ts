@@ -57,23 +57,23 @@ test.describe("T40 — Sub-agent failure row cue (L8)", () => {
     expect(color.length).toBeGreaterThan(0);
   });
 
-  test("Fleet AgentTable row surfaces the same lost sub-agent cue via state column", async ({
+  test("Fleet swimlane row surfaces the same lost sub-agent cue via AgentStatusBadge", async ({
     page,
   }) => {
-    await page.goto("/?view=table");
-    await page.waitForSelector('[data-testid^="fleet-agent-row-"]');
-    // The AgentTable's State column renders the rollup state per
-    // row. For the sub-agent fixture the agent's only session is
-    // lost, so the rollup reports lost — visible via the state
-    // dot + label. The L8 SubAgentLostDot is rendered in the
-    // SwimLane lane (separate surface); the AgentTable's table-
-    // view surface carries the equivalent signal via the State
-    // column's "lost" enum. Pin both.
-    const rows = page.locator('[data-testid^="fleet-agent-row-"]');
-    const found = await rows
-      .filter({ hasText: "e2e-test-subagent-error" })
-      .first();
-    await expect(found).toBeVisible();
-    await expect(found).toContainText("lost");
+    await page.goto("/");
+    await page.waitForSelector('[data-testid^="swimlane-agent-row-"]');
+    // The swimlane row's AgentStatusBadge renders the per-agent
+    // rolled-up state. The L8 SubAgentLostDot stays inside the
+    // sub-agent's row label strip; the agent badge is the row-
+    // level signal that the sub-agent ended in ``lost`` state.
+    const rows = page.locator(
+      '[data-testid="swimlane-agent-row-e2e-test-subagent-error"]',
+    );
+    const found = rows.first();
+    await expect(found).toBeVisible({ timeout: 10000 });
+    const badge = found.locator(
+      '[data-testid="swimlane-agent-status-badge"]',
+    );
+    await expect(badge).toHaveAttribute("data-state", "lost");
   });
 });

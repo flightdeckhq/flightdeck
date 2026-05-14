@@ -8,25 +8,65 @@ fixture dataset with the pytest integration suite via
 
 ## What's covered
 
-The T1–T10 catalog lives one file per journey:
+The catalog lives one file per journey. Test numbers are stable
+identifiers; gaps (T02, T05, T07–T09, T11, T13, T31, T37) represent
+specs that were removed when the affordances they covered were
+removed (the `?view=table` toggle, the swimlane expand-row drawer,
+the swimlane↔table parity assertion). The current journeys:
 
 | File | Journey |
 |------|---------|
-| `T01-fleet-page-renders-full-state.spec.ts` | Fleet mounts, 3 fixture agents visible, canonical-pair invariant guard (no SENSOR + coding anomaly row) |
-| `T02-fleet-table-view-toggle-and-navigate.spec.ts` | View toggle persists to `?view=table`; row click deep-links to `/events?agent_id=…&from=…&to=…` with ~7-day window |
-| `T03-investigate-facet-filtering-intersection.spec.ts` | Two facets compose via AND; × on a pill relaxes to the single filter; result stays non-empty |
-| `T04-investigate-session-drawer-deep-dive.spec.ts` | Drawer opens from row click; tabs (timeline/prompts/directives) work; close via X |
-| `T05-fleet-agent-expansion-shows-aged-session.spec.ts` | Expanded body surfaces ≥1 session (aged-closed, 28h old) that no swimlane time-range can show |
-| `T06-truncation-and-tooltip.spec.ts` | Narrow viewport: 70-char fixture name gets `title` attribute via `<TruncatedText/>` |
-| `T07-fleet-to-investigate-context.spec.ts` | Fleet CONTEXT filter does NOT leak into the Events page URL on agent-row deep-link |
-| `T08-cross-page-navigation-state.spec.ts` | Back/forward restore URLs verbatim; deep-link trio (agent_id+from+to) survives the round-trip |
-| `T09-swimlane-table-parity.spec.ts` | Swimlane and table views render identical agent sets |
-| `T10-wholedashboard-smoke.spec.ts` | Every top-level page mounts with no console errors (Fleet / Events / Analytics / Directives / Policies / Settings) |
+| `T01-fleet-page-renders-full-state.spec.ts` | Fleet mounts, fixture agents visible, canonical-pair invariant guard |
+| `T03-investigate-facet-filtering-intersection.spec.ts` | Two facets compose via AND; × on a pill relaxes to the single filter |
+| `T04-investigate-session-drawer-deep-dive.spec.ts` | Drawer opens from row click; tabs work; close via X |
+| `T06-truncation-and-tooltip.spec.ts` | Narrow viewport: long fixture name gets `title` attribute via `<TruncatedText/>` |
+| `T10-wholedashboard-smoke.spec.ts` | Every top-level page mounts with no console errors |
+| `T12-agent-chip-resolves-name-from-agent-endpoint.spec.ts` | Agent chip renders human-readable name from `/v1/agents/{id}` |
+| `T14-embeddings-event-renders.spec.ts` | Embeddings event renders + drawer content tab works |
+| `T15-streaming-indicators.spec.ts` | In-flight streaming run shows streaming pill |
+| `T16-error-event-renders-and-filters.spec.ts` | llm_error events render; error_type facet filters |
+| `T17-policy-events-render-and-filter.spec.ts` | Policy events render; matched_entry_id facet filters |
+| `T18-investigate-last-seen-sortable.spec.ts` | Last-seen header is sortable ASC / DESC |
+| `T19-investigate-state-sortable.spec.ts` | State header sorts by lifecycle severity ordinal |
+| `T20-truncation-tooltips-on-narrow-viewport.spec.ts` | Truncation tooltips on multiple cells at narrow viewport |
+| `T21-fleet-no-coding-sensor-anomaly.spec.ts` | Canonical pair invariant: no coding + sensor anomaly row |
+| `T22-client-type-label-parity.spec.ts` | ClientTypePill text matches API client_type |
+| `T23-investigate-sidebar-resizable.spec.ts` | Investigate sidebar drag-resize persists across reload |
+| `T24-fleet-swimlane-horizontal-scroll.spec.ts` | Swimlane scrolls horizontally; sticky agent-name column |
+| `T25-mcp-observability.spec.ts` | MCP server names + events render across surfaces |
+| `T26-theme-matrix-canary.spec.ts` | Theme storage seeds neon-dark + clean-light identically |
+| `T27-fleet-sidebar-policy-events.spec.ts` | Sidebar policy events section + count |
+| `T28-claude-code-subagent-fleet-rendering.spec.ts` | Claude Code subagent renders as child topology |
+| `T29-crewai-multi-agent-rendering.spec.ts` | CrewAI multi-agent runs render with role attribution |
+| `T30-langgraph-multi-node-rendering.spec.ts` | LangGraph multi-node runs render with node attribution |
+| `T32-sub-agent-drawer-tab.spec.ts` | Sub-agent drawer tab shows parent / child relationship |
+| `T33-sub-agent-investigate-facets.spec.ts` | `is_sub_agent` facet filters Investigate scope |
+| `T34-sub-agent-time-flow-connectors.spec.ts` | Bezier connectors from parent spawn → child first event |
+| `T35-sub-agent-depth-2-rendering.spec.ts` | Two-level sub-agent hierarchy renders correctly |
+| `T36-relationship-pill-navigation.spec.ts` | Click relationship pill jumps to target agent's row |
+| `T38-cross-agent-message-rendering.spec.ts` | Cross-agent messages render on parent + child rows |
+| `T39-sub-agent-analytics-dimensions.spec.ts` | `agent_role`, `parent_session_id` analytics dimensions |
+| `T40-sub-agent-failure-row-cue.spec.ts` | Lost sub-agent surfaces red `i` cue on row + drawer |
+| `T41-mcp-policy-operator-workflow.spec.ts` | MCP policy create / edit / dry-run / enforce workflow |
+| `T42-investigate-payload-facets-server-side.spec.ts` | Payload facets compose server-side |
+| `T43-swimlane-bucket-divider-cluster-integrity.spec.ts` | Bucket divider gridlines stay aligned across clusters |
+| `T44-route-rename-301-redirect.spec.ts` | `/investigate` → `/events` 301 with query string preserved |
+| `T45-swimlane-one-row-per-agent.spec.ts` | SwimLane renders one row per agent (no session sub-rows) |
+| `T46-swimlane-subagent-indent.spec.ts` | Sub-agent rows render with `data-topology="child"` indent |
+| `T47-run-bracket-hover-tooltip.spec.ts` | Hovering a run bracket shows tooltip with run metadata |
+| `T48-run-bracket-click-opens-run-drawer.spec.ts` | Clicking a run bracket opens the drawer scoped to that run |
+| `T49-agent-label-strip-ordering.spec.ts` | Label strip left-to-right order matches the locked spec |
+| `T50-active-status-pulse.spec.ts` | AgentStatusBadge pulses only when state is `active` |
+| `T51-view-table-toggle-removed.spec.ts` | `?view=table` URL no longer renders an alternate view |
+| `T52-concurrent-runs-offset.spec.ts` | Two concurrent runs on the same agent anchor to opposite edges |
+| `T53-run-bracket-end-square-live.spec.ts` | RunBracket end-square glyph (■) mounts for a closed-in-window session — regression guard for the end-glyph render path |
+| `T54-child-row-bg-tint.spec.ts` | Child swimlane rows carry a visually distinct `background-color` from root rows — regression guard against an inline-style override beating the `[data-topology="child"]` CSS rule |
+| `T55-swimlane-sub-agent-session-circle-renders.spec.ts` | Sub-agent swimlane row renders event circles and the connector overlay anchors at least one Bezier path for an in-window parent-child pair — regression guard for the agent-row `last_seen_at` bump that keeps sub-agent rows materialised at default viewport |
 
-The additional `_fixtures.ts` helper exports shared fixture
-metadata (agent names, flavors, role timeline offsets) and locator
-helpers (`findSwimlaneRow`, `findAgentTableRow`, `findExpandedBody`,
-`waitForFleetReady`, `waitForInvestigateReady`).
+The `_fixtures.ts` helper exports shared fixture metadata (agent
+names, flavors, role timeline offsets) and locator helpers:
+`findSwimlaneRow`, `bringSwimlaneRowIntoView`, `waitForFleetReady`,
+`waitForInvestigateReady`, `investigateParamsFromUrl`.
 
 ## Running locally
 
@@ -127,12 +167,15 @@ convention: `fleet-*`, `swimlane-*`, `session-*`, `context-*`,
 
 Structural testids the suite relies on:
 
-- `swimlane-agent-row-<agent_name>` (SwimLane row header)
-- `swimlane-expanded-body` + `data-expanded="true|false"`
+- `swimlane-agent-row-<agent_name>` + `data-agent-id` + `data-topology` (SwimLane row root)
+- `swimlane-run-bracket-start-<sid_prefix>` + `swimlane-run-bracket-end-<sid_prefix>` (RunBracket)
+- `swimlane-agent-status-badge` + `data-state` (AgentStatusBadge)
+- `swimlane-sub-agent-lost-dot` (lost sub-agent cue inside the row strip)
 - `session-circle-<session_id>` (EventNode circles)
-- `session-row` + `data-session-id` (SessionEventRow)
+- `session-row` + `data-session-id` (SessionEventRow, inside the drawer)
 - `session-drawer` (SessionDrawer root)
 - `active-filter-pill` + `active-filter-remove` (Events page facet chip)
+- `virtualized-placeholder` (off-screen SwimLane placeholder)
 
 ### Find-my-fixture, not assume-first-row
 

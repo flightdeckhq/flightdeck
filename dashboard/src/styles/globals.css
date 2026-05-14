@@ -33,6 +33,16 @@
   flex-shrink: 0;
 }
 
+/* Swimlane AgentStatusBadge pulse — applied to the inner dot only
+ * when state is ``active``. Parametric over the dot's existing
+ * background (we don't override colour here; the badge already
+ * sets ``--status-active``). Distinct from .pulse-dot so the
+ * size + flex-shrink + animation can be tuned per consumer
+ * without leaking. */
+.swimlane-status-pulse {
+  animation: pulse-dot 2s ease-in-out infinite;
+}
+
 * {
   box-sizing: border-box;
   margin: 0;
@@ -105,6 +115,15 @@ body {
    swimlane child rows is a no-op cost (the swimlane left panel
    is already indented) and keeps the two surfaces visually
    consistent. */
+/* Root rows take the surface colour. Pairing the root rule with
+   the child rule below means both selectors carry the same
+   ``[data-topology="…"]`` specificity, so neither side fights
+   inline ``background: var(--surface)`` on the row container —
+   the inline style has been removed from SwimLane.tsx so these
+   CSS rules are now the sole source of truth for the row bg. */
+[data-topology="root"] {
+  background-color: var(--surface);
+}
 [data-topology="child"] {
   background-color: var(--swimlane-row-child-bg);
   box-shadow: inset 2px 0 0 var(--accent);

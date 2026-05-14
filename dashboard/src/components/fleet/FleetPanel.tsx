@@ -799,6 +799,7 @@ function FlavorItem({
 
   return (
     <div
+      data-testid={`fleet-sidebar-agent-${flavor.agent_name ?? flavor.flavor}`}
       className="flex items-center justify-between cursor-pointer py-[5px] px-3 text-[13px] transition-colors hover:bg-surface-hover"
       style={
         isActive

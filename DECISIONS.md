@@ -8555,14 +8555,13 @@ correction for a v0.6 cleanup PR.
 - golangci-lint + ruff + tsc + eslint clean across api / ingestion
   / workers / sensor / dashboard.
 
-## D157 -- Per-agent landing page + UI reshape (Phase 1 stub)
+## D157 -- Per-agent landing page + UI reshape (Phases 1 + 2)
 
-**Status.** Phase 1 of five-phase delivery. Phases 2–5 layer the
-dashboard surface, deeper analytics scoping, the event-grain
-rework, and the full DECISIONS.md entry on top of these
-foundations. This entry will be extended with the full rationale
-(context, alternatives considered, consequences) when Phase 5
-closes.
+**Status.** Open. Phases 1 + 2 are recorded below in full
+(context, decision, alternatives considered, consequences).
+Phases 3–5 are forecast roadmap items, not decisions yet: each
+phase appends its own block to this entry when it lands and the
+Status line is revised to reflect what has closed.
 
 **Phase 1 scope (locked).**
 
@@ -8588,16 +8587,209 @@ closes.
   nginx edge (dev + prod) serves a permanent 301 from the
   legacy path preserving the query string.
 
-**Phases 2–5 forward look (not locked, indicative).**
+**Phase 2 scope (locked).**
 
-- Phase 2: dashboard per-agent landing page surface that
-  consumes `/v1/agents/{id}/summary` + `filter_agent_id`.
-- Phase 3: analytics chart scoping refinements built on the
-  Phase 1 backend hooks.
-- Phase 4: Events page event-grain table rework; renames the
-  `?session=` URL query param as part of that rework.
-- Phase 5: closes this DECISIONS entry with the full rationale
-  + consequences narrative.
+- **Swimlane reshape — one row per agent.** SwimLane renders a
+  single timeline row per agent; events from every one of the
+  agent's runs stream on that single row. Session sub-rows are
+  removed. Sub-agent rows continue to render indented beneath
+  their parent via the `data-topology="child"` attribute and
+  `SubAgentConnector.tsx` Bezier paths from each parent spawn
+  event to its child's first event.
+- **Run boundary glyphs (option B mixed).** Each agent row
+  carries per-run glyphs at the start X and end X (computed
+  via the shared `d3-scale` xScale; D3 math only, no DOM
+  manipulation per Rule 16). Start is a filled play-button
+  triangle (▶); end is a filled solid square (■) sized at
+  roughly 1.3× the triangle's bbox area so the closure
+  reads as a heavier visual signal than the opening. The
+  asymmetry matters operationally: scanning a fleet of
+  swimlane rows, the heavier square anchors the eye on
+  "where did this run actually close" — start triangles
+  blend with the event-circle visual weight intentionally,
+  while a missing square communicates "still running" at
+  the same glance. Both glyphs fill from `var(--accent)`
+  so the colour flows through both themes via CSS
+  variables. Hover on either glyph surfaces a tooltip with
+  `run_id` (8-char prefix) + start + end (or `running` for
+  any open-ended run) + state + total tokens. Click on
+  either glyph opens the session drawer scoped to that
+  run. Concurrent runs of the same agent (e.g. multi-pod
+  K8s with collapsed `FLIGHTDECK_HOSTNAME`) render their
+  glyph pairs on offset anchors: first run on the row's
+  top edge, second run on the bottom. Three or more
+  concurrent runs accept visual overlap; the hover tooltip
+  disambiguates by `run_id`. Rejected alternatives:
+  option A symmetric brackets at both ends (clutter,
+  weaker closure cue); per-run sub-rows (Phase-1-era
+  shape; loses agent-level continuity); inline run-label
+  chips on the timeline (clutter under realistic event
+  density).
+- **Active-run absence-of-square.** When a run has no
+  `ended_at` (`state in ("active", "idle", "stale",
+  "lost")`), only the start triangle renders. The earlier
+  "dashed in-progress tick at the right edge of the
+  visible window" idea is dropped — operators read
+  absence of the end square as "still running." The
+  tooltip's end-time field continues to read `running`.
+- **Agent label strip left-to-right order.** Locked in:
+  optional `ClaudeCodeLogo` (when `client_type ===
+  "claude-code"`) → agent name → `ClientTypePill` (CC /
+  SDK) → agent_type badge → provider icon → OS icon →
+  orchestration icon → `RelationshipPill` (lone / ↳
+  parent / ⤴ N) → optional `SubAgentLostDot` (when the
+  MOST RECENT sub-agent session per role is in `lost`
+  state) → `AgentStatusBadge` at the rightmost edge. The provider
+  / OS / orchestration icons derive from the agent's
+  most-recent session; per-event provider logos on event
+  circles already carry the granular detail. Drop the `N
+  active sessions` text — state is per-agent now
+  (max-priority state across the agent's runs, ordinal
+  ranking defined by `STATE_ORDINAL` in `SwimLane.tsx`).
+  `SubAgentLostDot` fires only when the MOST RECENT
+  session for any of the agent's sub-agent roles is in
+  `lost` state; a historical lost run followed by a
+  healthy retry leaves the dot off.
+- **Status badge with pulse animation.** New
+  `AgentStatusBadge.tsx` component renders the state dot
+  + label and adds a CSS keyframe pulse animation on the
+  dot only when state is `active`. Theme-agnostic — uses
+  `var(--status-active)` etc.
+- **Expand-row affordance removed.** The chevron-toggled
+  expanded session-list drawer is gone (its "Show older
+  runs" pagination, the "View in Events →" deep-link, the
+  SESSIONS sub-header, and the `loadExpandedSessions` /
+  `loadMoreExpandedSessions` store actions). The full
+  per-agent history surface moves to the agent drawer in
+  Phase 4.
+- **`?view=table` toggle removed; AgentTable.tsx deleted.**
+  Fleet renders the swimlane unconditionally. The
+  `TopologyCell` primitive was extracted to its own file
+  (`dashboard/src/components/fleet/TopologyCell.tsx`)
+  before the container deletion so future agent-listing
+  surfaces can consume it.
+- **`GET /v1/sessions?include_parents=true`.** Fleet swimlane
+  load opts in. Augments the response with the parent session
+  of every child session in the page even when the parent
+  falls outside the time-range filter or the `LIMIT` window.
+  Chosen over (a) extending `AgentSummary` with backend
+  topology classification fields and (b) raising the
+  swimlane's session-fetch limit. Rationale: the swimlane
+  already does its relationship resolution client-side from
+  the in-memory roster; the missing-parent class of bug is a
+  result-set coverage problem, not a classification problem.
+  Augmenting the existing endpoint at the boundary keeps the
+  fix narrow and avoids changing the AgentSummary contract
+  Events also consumes. Raising the `LIMIT` moves the cliff
+  from N=20 to N=k for any fixed k — the relationship walk's
+  coverage requirement is unbounded in fleet size, while
+  `include_parents` is bounded by the page's child count.
+  **Contract guarantee:** `total` continues to count only
+  filtered rows; `sessions[]` may exceed `total` when extra
+  parents land in the response. Paginated callers that omit
+  the flag (the Events page list) are byte-identical to
+  pre-flag behaviour.
+- **Sub-agent row visibility on default viewport.** The keep-
+  alive watchdog (E2E seed.py) now also bumps the
+  `agents.last_seen_at` column whenever it forward-dates an
+  active-role session. Pre-fix, the worker's `UpsertAgent`
+  fired only on session_start; subsequent tool_call refreshes
+  skipped the agents row, leaving its `last_seen_at` frozen
+  at original seed time. The fleet endpoint's bucket sort
+  ranked the refreshed-but-not-bumped agent in a "stale"
+  bucket, the IntersectionObserver virtualized its row
+  off-screen, and the swimlane row never mounted — event
+  circles never rendered and the connector overlay reported
+  zero anchors. The agent-row pin closes that gap so the
+  fresh-subagent fixture surfaces at the top of the swimlane
+  and the connector renders against its in-window
+  parent-child pair. The rollup ↔ projection symmetry of
+  `agent_id` is also pinned by
+  `tests/integration/test_agent_id_parity.py` so a future
+  drift in the UUID5 derivation fails loudly at the API
+  boundary instead of silently breaking the live page.
+- **`AgentSummary.recent_sessions` rollup on `/v1/fleet`.** Each
+  agent row carries a per-agent slice of its most-recent
+  sessions (cap `store.RecentSessionsPerAgent = 5`, newest
+  first by `started_at`). Populated by
+  `store.GetRecentSessionsByAgentIDs` as a single batched
+  ROW_NUMBER query keyed off the page's `agent_id` slice; lean
+  projection (identity + lifecycle + sub-agent linkage; no
+  correlated-subquery enrichment). Chosen over (a) raising the
+  dashboard's `/v1/sessions` page limit beyond 100 and
+  (b) doing N+1 follow-up fetches per agent. Rationale: the
+  swimlane row's data dependency on its agent's sessions is
+  per-agent bounded, not page-bounded. The paginated
+  `/v1/sessions` window is correct for the Events page (cliff
+  by intent), but the swimlane needed a per-agent cap, not a
+  global one. Embedding the rollup on `/v1/fleet` keeps the
+  fix narrow, deterministic, and cheap (one extra query per
+  page); the dashboard's `buildFlavors` prefers the embedded
+  slice and falls back to the paginated intersection so the
+  shape is additive, not replacing.
+- **Sub-agent connector anchors on first in-domain event.**
+  `Timeline.tsx`'s connector pass previously read
+  `childEvents[0]` (the child's absolute first event) as the
+  spawn anchor. A child session whose `session_start` sat at
+  an old timestamp but whose keep-alive `tool_call` events
+  refreshed every 30s failed the in-domain check on the
+  anchor — the connector skipped the pair even though the
+  child had visible circles in the window. The pass now picks
+  the child's first event INSIDE the visible domain as the
+  anchor; the parent anchor is the temporally-closest
+  preceding event from the parent's stream. The pair is kept
+  only when both endpoints fall inside the domain. Matches
+  the swimlane's visible state and pins the geometry contract
+  the connector overlay enforces.
+- **Swimlane default time range stays at `1m`; closed
+  sub-agent rows materialise without circles in the default
+  view.** The SwimLane row's render path clips events to
+  `[NOW - timeRange, NOW]`. Pre-fix the row was missing
+  entirely because the paginated `/v1/sessions` page didn't
+  carry the session at all; the `recent_sessions` rollup
+  fixes that by guaranteeing the row materialises. The
+  per-row clip filter then renders circles only for the
+  events whose `occurred_at` falls inside the operator's
+  chosen window. Closed sub-agents whose last event is older
+  than 60 s legitimately render an empty row at the default
+  `1m`; widening the picker to `5m / 15m / 30m / 1h`
+  surfaces the circles without re-fetching. Chosen over (a)
+  defaulting to `1h` (the Fleet swimlane's primary purpose
+  is live monitoring; "what's running RIGHT NOW" beats "the
+  last hour of history" on first paint), (b) per-row scale
+  adaptation (compresses live activity into a tiny slice on
+  the right), and (c) window-scoping `recent_sessions`
+  server-side (rows would lose their materialisation,
+  re-introducing the original missing-row class). The
+  trade-off: a freshly-loaded swimlane shows live activity
+  only; sub-agents whose last run was 5 min ago appear as
+  empty rows until the operator widens the picker. The row
+  carrying the agent's name + topology + status badge
+  remains visible regardless, so the fleet roster is
+  faithful.
+- **Idempotent seed treats sessions missing `session_start` as
+  incomplete.** `tests/e2e-fixtures/seed.py::_session_is_complete`
+  previously gated only on event count and `phase4_extras`
+  coverage. After a dev DB wipe, a session whose keep-alive
+  extras survived but whose original `session_start` was
+  gone passed the check; the worker's lazy-create path
+  stamped `context = NULL`; the `mcp-active` fixture's MCP
+  SERVERS panel went blank. The check now also requires
+  `session_start` to be present in the events list; missing
+  it forces a full re-emit including the authoritative
+  `context.mcp_servers` fingerprint.
+
+**Phases 3–5 forward look (not locked, indicative).**
+
+- Phase 3: dedicated `/agents` page consuming
+  `/v1/agents/{id}/summary` + `filter_agent_id` and the
+  preserved `TopologyCell`.
+- Phase 4: agent drawer (replaces the deleted expand-row
+  affordance) + Events page event-grain table rework;
+  renames the `?session=` URL query param as part of that
+  rework.
+- Phase 5: closes this DECISIONS entry with the full
+  rationale + consequences narrative.
 
 **Live-stack verification (Phase 1).**
 

@@ -395,6 +395,16 @@ export interface SessionsParams {
   has_sub_agents?: boolean;
   is_sub_agent?: boolean;
   /**
+   * When true, augment the page with the parent session of every
+   * child session in the result -- even when the parent falls
+   * outside the time-range filter or the LIMIT window. Default
+   * false preserves exact pagination semantics; the Fleet swimlane
+   * opts in so a child whose parent fell off the 100-row page
+   * still resolves its topology. Returned ``sessions[]`` may
+   * exceed ``Total`` when extra parents land in the response.
+   */
+  include_parents?: boolean;
+  /**
    * Operator-actionable enrichment facet filters. Each repeatable
    * array filter narrows to sessions that emitted at least one
    * matching event. ``terminal`` is a bool toggle. Composes with
@@ -476,6 +486,7 @@ export async function fetchSessions(params: SessionsParams, signal?: AbortSignal
   }
   if (params.has_sub_agents) sp.set("has_sub_agents", "true");
   if (params.is_sub_agent) sp.set("is_sub_agent", "true");
+  if (params.include_parents) sp.set("include_parents", "true");
   if (params.close_reason) {
     for (const v of params.close_reason) sp.append("close_reason", v);
   }

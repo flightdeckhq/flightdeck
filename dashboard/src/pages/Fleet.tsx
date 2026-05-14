@@ -1,5 +1,4 @@
 import { useState, useCallback, useRef, useEffect, useMemo } from "react";
-import { useSearchParams } from "react-router-dom";
 import { useFleet } from "@/hooks/useFleet";
 import { useFleetStore } from "@/store/fleet";
 import { useHistoricalEvents } from "@/hooks/useHistoricalEvents";
@@ -8,12 +7,6 @@ import { EventFilterBar } from "@/components/fleet/EventFilterBar";
 import { LiveFeed } from "@/components/fleet/LiveFeed";
 import { EventDetailDrawer } from "@/components/fleet/EventDetailDrawer";
 import { Timeline } from "@/components/timeline/Timeline";
-import {
-  AgentTable,
-  isAgentTableSortColumn,
-  type AgentTableSortColumn,
-  type AgentTableSortDirection,
-} from "@/components/fleet/AgentTable";
 import { SessionDrawer } from "@/components/session/SessionDrawer";
 import type {
   AgentEvent,
@@ -32,21 +25,6 @@ import {
 import { useLeftPanelWidth } from "@/lib/leftPanelWidth";
 import { useSwimlaneScroll } from "@/lib/useSwimlaneScroll";
 import { eventsCache } from "@/hooks/useSessionEvents";
-
-/**
- * v0.4.0 Phase 1 (D115): Fleet view modes. ``swimlane`` is the
- * default live-activity view (one row per agent on the time axis);
- * ``table`` is the paginated agent-level alternative that matches
- * the Investigate page's session-table styling. URL-driven via the
- * ``view`` query param so refreshes and shared links preserve the
- * user's choice.
- */
-export type FleetView = "swimlane" | "table";
-const DEFAULT_VIEW: FleetView = "swimlane";
-
-function parseViewParam(raw: string | null): FleetView {
-  return raw === "table" ? "table" : DEFAULT_VIEW;
-}
 
 /**
  * Timeline view mode. The "bars" stacked-histogram variant was
@@ -153,69 +131,7 @@ export function Fleet() {
   } = useSwimlaneScroll();
   const leftPanelWidth = useLeftPanelWidth();
 
-  // View toggle (D115). Default swimlane; ``?view=table`` flips the
-  // main-area rendering to the paginated AgentTable. Persists in URL
-  // query so reloads and shared links keep the user's choice.
-  const [searchParams, setSearchParams] = useSearchParams();
-  const view: FleetView = parseViewParam(searchParams.get("view"));
-  const setView = useCallback(
-    (next: FleetView) => {
-      const sp = new URLSearchParams(searchParams);
-      if (next === DEFAULT_VIEW) {
-        sp.delete("view");
-      } else {
-        sp.set("view", next);
-      }
-      setSearchParams(sp, { replace: true });
-    },
-    [searchParams, setSearchParams],
-  );
-
-  // AgentTable sort state lives in the URL so reloads and shared
-  // links preserve the user's choice, and the Fleet <-> Investigate
-  // round-trip keeps the table ordering when a user hits "back".
-  // When neither param is present we keep the legacy bucket ordering
-  // (LIVE / RECENT / IDLE) which the table renders as divider rows.
-  const rawSort = searchParams.get("sort");
-  const rawOrder = searchParams.get("order");
-  const tableSort: AgentTableSortColumn | null = isAgentTableSortColumn(rawSort)
-    ? rawSort
-    : null;
-  const tableOrder: AgentTableSortDirection =
-    rawOrder === "asc" ? "asc" : "desc";
-  const handleAgentTableSort = useCallback(
-    (column: AgentTableSortColumn) => {
-      const sp = new URLSearchParams(searchParams);
-      const currentSort = sp.get("sort");
-      const currentOrder = sp.get("order");
-      if (currentSort === column) {
-        // Same column: toggle direction. desc is the default, so a
-        // second click flips to asc and a third click clears the
-        // explicit sort entirely (back to bucket ordering).
-        if (currentOrder === "asc") {
-          sp.delete("sort");
-          sp.delete("order");
-        } else {
-          sp.set("sort", column);
-          sp.set("order", "asc");
-        }
-      } else {
-        sp.set("sort", column);
-        sp.set("order", "desc");
-      }
-      setSearchParams(sp, { replace: true });
-    },
-    [searchParams, setSearchParams],
-  );
-
-  const agents = useFleetStore((s) => s.agents);
   const enteredBucketAt = useFleetStore((s) => s.enteredBucketAt);
-  const expandedSessions = useFleetStore((s) => s.expandedSessions);
-  const loadExpandedSessions = useFleetStore((s) => s.loadExpandedSessions);
-  const fleetTotal = useFleetStore((s) => s.total);
-  const fleetPage = useFleetStore((s) => s.page);
-  const fleetPerPage = useFleetStore((s) => s.perPage);
-  const storeLoad = useFleetStore((s) => s.load);
   const [feedEvents, setFeedEvents] = useState<FeedEvent[]>([]);
   const [pauseQueue, setPauseQueue] = useState<FeedEvent[]>([]);
   const [paused, setPaused] = useState(false);
@@ -324,6 +240,18 @@ export function Fleet() {
     return set;
   }, [flavors, contextFilters, sessionMatchesContext]);
 
+  // Default to ``1m`` so the page lands on the live-monitor
+  // view: the swimlane shows what the fleet is doing RIGHT
+  // NOW, not the last hour of history. Operators widen via
+  // the time picker (1m / 5m / 15m / 30m / 1h) when they want
+  // historical context. The ``recent_sessions`` rollup on
+  // /v1/fleet still surfaces each agent's most-recent
+  // sessions independently of this window so the merge in
+  // ``buildFlavors`` always has data to populate the row
+  // from; the SwimLane row's clip filter then renders only
+  // the events whose ``occurred_at`` falls inside the user's
+  // chosen window, and ``Return to live`` snaps back to this
+  // 1m default.
   const [timeRange, setTimeRange] = useState<TimeRange>("1m");
 
   // Wall-clock tick. Re-renders once per second so the token window
@@ -383,15 +311,6 @@ export function Fleet() {
     if (virtualNow !== null) return virtualNow;
     return now;
   }, [paused, pausedAt, virtualNow, now]);
-  // Set of currently-expanded flavor names. Multiple flavors can be
-  // open at once -- the chevron toggle adds or removes a name from
-  // the set rather than overwriting a single value. The previous
-  // single-string state forced clicking a second flavor to collapse
-  // the first, which made it impossible to compare two flavors
-  // side-by-side.
-  const [expandedFlavors, setExpandedFlavors] = useState<Set<string>>(
-    () => new Set(),
-  );
   const [selectedEvent, setSelectedEvent] = useState<AgentEvent | null>(null);
   const [directEventDetail, setDirectEventDetail] = useState<AgentEvent | null>(null);
   const [activeFilter, setActiveFilter] = useState<string | null>(null);
@@ -509,11 +428,6 @@ export function Fleet() {
     () => sortFlavorsByActivity(flavors, now, enteredBucketAt),
     [flavors, now, enteredBucketAt],
   );
-  const sortedAgents = useMemo(
-    () => sortAgentsByActivity(agents, now, enteredBucketAt),
-    [agents, now, enteredBucketAt],
-  );
-
   // Tokens scoped to the currently selected time range. Filters
   // feedEvents by occurred_at > now - timeRangeMs so events outside
   // the rolling window are excluded from the total. Depends on the
@@ -573,26 +487,6 @@ export function Fleet() {
 
   function handleFlavorClick(flavor: string) {
     setFlavorFilter(flavorFilter === flavor ? null : flavor);
-  }
-
-  function handleExpandFlavor(flavor: string) {
-    setExpandedFlavors((prev) => {
-      const next = new Set(prev);
-      if (next.has(flavor)) {
-        next.delete(flavor);
-      } else {
-        next.add(flavor);
-        // On expand (not collapse): fetch every session under this
-        // agent so the expanded SESSIONS list shows closed / old
-        // sessions that fall outside the 24-hour Fleet rollup
-        // window. Fresh fetch per expand; no cache. The call
-        // populates ``expandedSessions`` in the fleet store, which
-        // the swimlane renderer merges in for this flavor only so
-        // the main timeline above the expansion stays windowed.
-        void loadExpandedSessions(flavor);
-      }
-      return next;
-    });
   }
 
   function handlePause() {
@@ -816,58 +710,6 @@ export function Fleet() {
           onFilterChange={setActiveFilter}
         />
 
-        {/* D115 view toggle: swimlane (default) vs paginated agent
-            table. URL-driven. Typography + pill geometry mirror
-            EventFilterBar immediately above so the two strips read
-            as a continuous fleet-header unit. */}
-        <div
-          data-testid="fleet-view-toggle"
-          role="tablist"
-          aria-label="Fleet view mode"
-          className="flex h-9 shrink-0 items-center gap-1.5 px-3"
-          style={{
-            background: "var(--bg)",
-            borderBottom: "1px solid var(--border-subtle)",
-          }}
-        >
-          {(["swimlane", "table"] as const).map((mode) => {
-            const active = view === mode;
-            return (
-              <button
-                key={mode}
-                type="button"
-                role="tab"
-                aria-selected={active}
-                onClick={() => setView(mode)}
-                data-testid={`fleet-view-toggle-${mode}`}
-                style={{
-                  height: 22,
-                  padding: "0 10px",
-                  cursor: "pointer",
-                  borderRadius: 4,
-                  fontFamily: "var(--font-mono)",
-                  fontSize: 11,
-                  fontWeight: 500,
-                  letterSpacing: "0.02em",
-                  ...(active
-                    ? {
-                        background: "var(--bg-elevated)",
-                        color: "var(--text)",
-                        border: "1px solid var(--border-strong)",
-                      }
-                    : {
-                        background: "transparent",
-                        color: "var(--text-muted)",
-                        border: "1px solid var(--border-subtle)",
-                      }),
-                }}
-              >
-                {mode === "swimlane" ? "Swimlane" : "Table"}
-              </button>
-            );
-          })}
-        </div>
-
         {/* Context filter status bar. Only renders when a CONTEXT
             filter is active. Shows matched / total session counts
             and a one-click clear so the user always knows how many
@@ -916,14 +758,12 @@ export function Fleet() {
           </div>
         )}
 
-        {/* Main view area. Swimlane is the default live view; the
-            agent table is the paginated alternate selected via the
-            view toggle above. Both consume the same agent-grouped
-            data from the fleet store (store.load() fetches the
-            agents roster AND a recent-sessions window in one pass).
+        {/* Main view area. The swimlane is the only Fleet
+            rendering; the legacy ?view=table toggle was removed and
+            the per-agent table moves to the dedicated /agents page.
 
-            S-SWIM. The flex-1 div is the horizontal+vertical scroll
-            container -- overflowX:auto means narrow viewports
+            The flex-1 div is the horizontal+vertical scroll
+            container — overflowX:auto means narrow viewports
             (~1280-1440px MacBook screens) can reach the older end
             of the timeline, overflowY:auto preserves the existing
             page-scroll. The relative shell hosts two pointer-events-
@@ -931,9 +771,9 @@ export function Fleet() {
             actually has overflow in that direction; the left fade
             sits at left=leftPanelWidth so it lands on the boundary
             between the sticky agent-name column and the timeline,
-            doubling as both the S-SWIM-3 sticky-column shadow cue
-            and the S-SWIM-4 left-edge fade. tabIndex=0 + onKeyDown
-            covers S-SWIM-5 keyboard scroll. */}
+            doubling as both the sticky-column shadow cue and the
+            left-edge fade. tabIndex=0 + onKeyDown covers keyboard
+            scroll. */}
         <div className="relative flex-1 overflow-hidden">
           <div
             ref={swimScrollRef}
@@ -943,45 +783,23 @@ export function Fleet() {
             className="h-full"
             style={{ overflowY: "auto", overflowX: "auto", outline: "none" }}
           >
-            {view === "swimlane" ? (
-              <Timeline
-                flavors={sortedFlavors}
-                flavorFilter={flavorFilter}
-                timeRange={timeRange}
-                expandedFlavors={expandedFlavors}
-                onExpandFlavor={handleExpandFlavor}
-                expandedSessions={expandedSessions}
-                onNodeClick={(id, _eventId, event) => {
-                  selectSession(id);
-                  setDirectEventDetail(event ?? null);
-                }}
-                activeFilter={activeFilter}
-                paused={paused}
-                pausedAt={pausedAt}
-                effectiveNowMs={effectiveNowMs}
-                sessionVersions={sessionVersions}
-                matchingSessionIds={matchingSessionIds}
-              />
-            ) : (
-              <div className="p-4">
-                <AgentTable
-                  agents={sortedAgents}
-                  loading={loading}
-                  sort={tableSort}
-                  order={tableOrder}
-                  onSortChange={handleAgentTableSort}
-                />
-                <FleetTablePagination
-                  total={fleetTotal}
-                  page={fleetPage}
-                  perPage={fleetPerPage}
-                  loading={loading}
-                  onPage={(next) => void storeLoad({ page: next })}
-                />
-              </div>
-            )}
+            <Timeline
+              flavors={sortedFlavors}
+              flavorFilter={flavorFilter}
+              timeRange={timeRange}
+              onNodeClick={(id, _eventId, event) => {
+                selectSession(id);
+                setDirectEventDetail(event ?? null);
+              }}
+              activeFilter={activeFilter}
+              paused={paused}
+              pausedAt={pausedAt}
+              effectiveNowMs={effectiveNowMs}
+              sessionVersions={sessionVersions}
+              matchingSessionIds={matchingSessionIds}
+            />
           </div>
-          {swimCanScrollLeft && view === "swimlane" && (
+          {swimCanScrollLeft && (
             <div
               aria-hidden
               data-testid="swimlane-fade-left"
@@ -1067,55 +885,3 @@ export function Fleet() {
   );
 }
 
-/** Minimal pagination strip for the table view. Matches the
- *  ``Prev / Page X of Y / Next`` pattern used below the Investigate
- *  session table -- kept locally because it is the only Fleet
- *  consumer and the component surface is trivial. */
-function FleetTablePagination({
-  total,
-  page,
-  perPage,
-  loading,
-  onPage,
-}: {
-  total: number;
-  page: number;
-  perPage: number;
-  loading: boolean;
-  onPage: (next: number) => void;
-}) {
-  const pageCount = Math.max(1, Math.ceil(total / perPage));
-  return (
-    <div className="mt-4 flex items-center justify-between text-xs text-muted-foreground">
-      <span>
-        {total === 0
-          ? "0 agents"
-          : `Showing ${Math.min((page - 1) * perPage + 1, total)}–${Math.min(
-              page * perPage,
-              total,
-            )} of ${total}`}
-      </span>
-      <div className="flex items-center gap-2">
-        <button
-          type="button"
-          onClick={() => onPage(Math.max(1, page - 1))}
-          disabled={page <= 1 || loading}
-          className="px-2 py-1 rounded-sm border border-border disabled:opacity-40"
-        >
-          Prev
-        </button>
-        <span>
-          Page {page} / {pageCount}
-        </span>
-        <button
-          type="button"
-          onClick={() => onPage(Math.min(pageCount, page + 1))}
-          disabled={page >= pageCount || loading}
-          className="px-2 py-1 rounded-sm border border-border disabled:opacity-40"
-        >
-          Next
-        </button>
-      </div>
-    </div>
-  );
-}

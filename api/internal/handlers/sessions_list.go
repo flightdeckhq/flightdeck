@@ -16,9 +16,9 @@ const (
 )
 
 // parseBoolQuery interprets a single URL query parameter as boolean.
-// Truthy values: ``true``, ``1``, ``yes`` (case-insensitive). Every
+// Truthy values: “true“, “1“, “yes“ (case-insensitive). Every
 // other value (including empty string and unrecognised strings)
-// returns false. The lenient shape matches the ``?has_sub_agents=true``
+// returns false. The lenient shape matches the “?has_sub_agents=true“
 // dashboard URL the Investigate facets emit; the strict shape would
 // 400 on every facet-checkbox toggle which is the wrong UX.
 func parseBoolQuery(raw string) bool {
@@ -43,7 +43,7 @@ var validSessionStates = map[string]bool{
 // original {started_at, duration, tokens_used, flavor} set so the
 // Investigate table can sort on the columns users actually scan
 // first (recency, model, host). The mapping to SQL expressions lives
-// in ``store.allowedSorts``; this set mirrors the keys so the
+// in “store.allowedSorts“; this set mirrors the keys so the
 // handler can emit the 400 with the full allow-list.
 var validSessionSorts = map[string]bool{
 	"started_at":   true,
@@ -115,7 +115,7 @@ var validEstimatedVias = map[string]bool{
 // SessionsListHandler handles GET /v1/sessions.
 //
 // @Summary      List sessions with filters, search, and pagination
-// @Description  Returns sessions matching time range, state, flavor, client_type, agent_type, model, framework, agent_id, context-scalar (user/os/hostname/git_branch/orchestration/...), and search filters with pagination and sort support. Multi-value filters (state, flavor, client_type, framework, agent_type, context-scalar) accept repeated query params and comma-separated values; values within a dimension are OR, values across dimensions are AND. ``q`` is a case-insensitive substring search across agent_name, flavor, host, model, session_id, context.hostname, context.os, context.git_branch, context.python_version, and the frameworks array.
+// @Description  Returns sessions matching time range, state, flavor, client_type, agent_type, model, framework, agent_id, context-scalar (user/os/hostname/git_branch/orchestration/...), and search filters with pagination and sort support. Multi-value filters (state, flavor, client_type, framework, agent_type, context-scalar) accept repeated query params and comma-separated values; values within a dimension are OR, values across dimensions are AND. “q“ is a case-insensitive substring search across agent_name, flavor, host, model, session_id, context.hostname, context.os, context.git_branch, context.python_version, and the frameworks array.
 // @Tags         sessions
 // @Produce      json
 // @Param        q          query  string  false  "Full-text search across agent_name, flavor, host, model, session_id, context.hostname, context.os, context.git_branch, context.python_version, frameworks"
@@ -142,6 +142,7 @@ var validEstimatedVias = map[string]bool{
 // @Param        agent_role query  string  false  "D126: filter by sub-agent role string (repeatable/comma). CrewAI Agent.role, LangGraph node name, Claude Code Task agent_type. Backs the Investigate ROLE facet."
 // @Param        has_sub_agents query bool false "D126: when true, restrict to parent sessions only (those referenced as a parent_session_id by at least one other session). Backs the Investigate TOPOLOGY facet 'Has sub-agents' checkbox."
 // @Param        is_sub_agent query bool false "D126: when true, restrict to child sessions only (parent_session_id IS NOT NULL). Backs the Investigate TOPOLOGY facet 'Is sub-agent' checkbox."
+// @Param        include_parents query bool false "When true, augment the page with the parent session of every child session in the result -- even when the parent falls outside the time-range filter or the LIMIT window. Default false preserves exact pagination semantics; the Fleet swimlane opts in so a child whose parent fell off the 100-row page still resolves its topology. Returned sessions[] may exceed Total when extra parents land in the response."
 // @Param        include_pure_children query bool false "D126 UX revision 2026-05-03: when false, exclude pure children (rows whose parent_session_id is set AND that themselves have no descendants), leaving parents-with-children + lone sessions. Default scope of the Investigate page. Omit or set true to preserve the legacy 'all sessions' behaviour."
 // @Param        close_reason             query  string  false  "Filter to sessions whose session_end carries one of the listed close_reason values (repeatable/comma; OR within, AND across dimensions). Allowed: normal_exit, directive_shutdown, policy_block, orphan_timeout, sigkill_detected, unknown."
 // @Param        estimated_via            query  string  false  "Filter to sessions that emitted at least one pre_call/post_call/embeddings event with the given estimated_via (repeatable/comma; OR within, AND across dimensions). Allowed: tiktoken, heuristic, none."
@@ -408,6 +409,12 @@ func SessionsListHandler(s store.Querier) http.HandlerFunc {
 		}
 		hasSubAgents := parseBoolQuery(q.Get("has_sub_agents"))
 		isSubAgent := parseBoolQuery(q.Get("is_sub_agent"))
+		// include_parents=true augments the page with parents of any
+		// child sessions in the result so a frontend topology resolver
+		// never sees a child whose parent fell off the LIMIT cliff.
+		// Default false preserves existing pagination math; Fleet's
+		// swimlane store opts in.
+		includeParents := parseBoolQuery(q.Get("include_parents"))
 		// D126 UX revision 2026-05-03 — include_pure_children
 		// gates the new Investigate default scope. Tri-state on
 		// the wire: omit (nil) preserves existing API behaviour;
@@ -491,29 +498,30 @@ func SessionsListHandler(s store.Querier) http.HandlerFunc {
 			// Validated at the SQL layer via ``::uuid`` cast so a
 			// malformed value produces a query error rather than a
 			// silently-bypassed filter.
-			AgentID:          strings.TrimSpace(q.Get("agent_id")),
-			AgentTypes:       agentTypes,
-			ClientTypes:      clientTypes,
-			ErrorTypes:       errorTypes,
-			PolicyEventTypes: policyEventTypes,
-			Frameworks:       frameworks,
-			MCPServers:       mcpServers,
-			ParentSessionID:     parentSessionID,
-			AgentRoles:          agentRoles,
-			HasSubAgents:        hasSubAgents,
-			IsSubAgent:          isSubAgent,
-			IncludePureChildren: includePureChildren,
+			AgentID:                 strings.TrimSpace(q.Get("agent_id")),
+			AgentTypes:              agentTypes,
+			ClientTypes:             clientTypes,
+			ErrorTypes:              errorTypes,
+			PolicyEventTypes:        policyEventTypes,
+			Frameworks:              frameworks,
+			MCPServers:              mcpServers,
+			ParentSessionID:         parentSessionID,
+			AgentRoles:              agentRoles,
+			HasSubAgents:            hasSubAgents,
+			IsSubAgent:              isSubAgent,
+			IncludeParents:          includeParents,
+			IncludePureChildren:     includePureChildren,
 			CloseReasons:            closeReasons,
 			EstimatedVias:           estimatedVias,
 			TerminalOnly:            terminalOnly,
 			MatchedEntryIDs:         matchedEntryIDs,
 			OriginatingCallContexts: originatingCallContexts,
-			ContextFilters:   contextFilters,
-			Model:            q.Get("model"),
-			Sort:             sort,
-			Order:            order,
-			Limit:            limit,
-			Offset:           offset,
+			ContextFilters:          contextFilters,
+			Model:                   q.Get("model"),
+			Sort:                    sort,
+			Order:                   order,
+			Limit:                   limit,
+			Offset:                  offset,
 		}
 
 		result, err := s.GetSessions(r.Context(), params)

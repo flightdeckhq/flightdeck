@@ -2167,12 +2167,15 @@ started_at DESC, session_id ASC)` so the ordering is deterministic
 when two sessions share a `started_at` timestamp.
 
 Each entry is a lean projection (`store.RecentSession`) carrying
-only the columns the dashboard's swimlane row consumes: identity
-fields (session_id, flavor, agent_type, agent_id, agent_name,
-client_type, host, model), lifecycle fields (state, started_at,
-ended_at, last_seen_at, tokens_used, token_limit), the
-`capture_enabled` flag, and the D126 sub-agent linkage columns
-(parent_session_id, agent_role). The heavy correlated-subquery
+only the columns the dashboard's swimlane row and the `/agents`
+filter chips consume: identity fields (session_id, flavor,
+agent_type, agent_id, agent_name, client_type, host, model,
+framework), lifecycle fields (state, started_at, ended_at,
+last_seen_at, tokens_used, token_limit), the `capture_enabled`
+flag, and the D126 sub-agent linkage columns (parent_session_id,
+agent_role). `framework` is the bare-name `sessions.framework`
+attribution; it feeds the `/agents` page framework filter chips.
+The heavy correlated-subquery
 columns of `SessionListItem` (error_types, policy_event_types,
 mcp_server_names, ...) are intentionally absent so the per-agent
 rollup stays cheap on fleet pages with 50+ agents.
@@ -2236,6 +2239,10 @@ only — never MUI, Ant Design, or Chakra UI.
 ### Pages
 
 - `/` (Fleet) — primary view. Sidebar + fleet header + timeline.
+- `/agents` — one-row-per-agent table with KPI sparklines, filter
+  chips, sort, and a per-agent swimlane modal. Companion to
+  `/` (Fleet) for operators who want a list view and one-shot
+  per-agent investigation without leaving the page.
 - `/events` — session search and filtering surface. URL-driven
   facets: `state`, `agent`, `flavor`, `agent_type`, `model`,
   `framework`, `error_type`, scalar context fields. Legacy
@@ -2246,6 +2253,105 @@ only — never MUI, Ant Design, or Chakra UI.
 - `/policies` — token policy CRUD.
 - `/directives` — custom directive registry + trigger forms.
 - `/settings` — access token CRUD.
+
+### Agents table
+
+`dashboard/src/pages/Agents.tsx` hosts the `/agents` route. The
+page is a one-row-per-agent sortable table backed by the same
+`GET /v1/fleet` roster the swimlane uses. Each row carries
+per-agent KPI sparklines fetched from
+`GET /v1/agents/:id/summary?period=7d&bucket=day` (one fetch per
+visible row on first mount, cached module-level so a re-render
+or modal-open does not refetch).
+
+Columns, left to right:
+
+1. **Identity** — agent name (monospace), `ClientTypePill`
+   (CC / SDK), `agent_type` badge (coding / production),
+   provider / OS / orchestration icons derived from the agent's
+   most-recent session context.
+2. **Topology** — `TopologyCell` pill (lone / ↳ child /
+   ⤴ parent N), the same primitive the swimlane label strip
+   uses.
+3. **Tokens (7d)** — total + day-bucketed sparkline over the
+   trailing 7 days.
+4. **Latency p95 (7d)** — total + sparkline.
+5. **Errors (7d)** — total + sparkline.
+6. **Sessions (7d)** — count.
+7. **Cost USD (7d)** — total.
+8. **Last seen** — relative time with absolute-time tooltip.
+9. **Status** — `AgentStatusBadge` (pulse on active).
+
+Filter chips above the table compose AND across dimensions and
+OR within: `state` (active / idle / stale / lost / closed),
+`agent_type` (coding / production), `client_type` (CC / SDK),
+`framework`. The framework chip set is dynamic — built from the
+`framework` attribution carried on each visible agent's recent
+sessions (`recent_sessions[].framework`, the bare-name
+`sessions.framework` value). An agent matches a framework chip
+when any of its `RecentSessionsPerAgent`-capped recent sessions
+carries that framework; the chip group hides entirely when no
+visible agent has a framework attribution.
+
+Sortable column headers on every column except the sparkline
+tiles themselves (sparklines are visual; the sort key is the
+column's numeric total). Pagination defaults to page size 50.
+
+Per-row hover reveals two quick actions on the right edge —
+**Open mini-swimlane** (triggers the modal) and **Open in
+events** (deep-link to `/events?agent_id=…`). No "Open
+drawer" affordance is rendered while the agent drawer
+surface is absent (Rule 17 — no placeholder UI).
+
+Live update contract: the fleet store's `lastEvent` subscription
+patches the affected row's KPI cells and status badge in place;
+the table itself does not re-render. `useAgentSummary`'s
+module-level cache is keyed by the composite
+`(agent_id, period, bucket)` tuple so the table's `7d / day`
+view and any other surface (e.g. the per-agent swimlane
+modal) caching a different period coexist without colliding.
+The hook patches the matching agent's `totals` and most-recent
+series bucket from the WebSocket event and ticks a per-agent
+counter so only that row's memoised cells invalidate.
+
+`?focus=<agent_id>` URL param scrolls the targeted row into
+view and applies a subtle highlight for a few seconds. The
+agent_id is validated against the canonical UUID shape before
+DOM interpolation so a malformed bookmark or crafted URL
+silently no-ops instead of throwing. The Fleet swimlane's
+agent-name link is the primary producer of this param.
+
+### Per-agent swimlane modal
+
+`dashboard/src/components/agents/PerAgentSwimlaneModal.tsx`
+opens from the `/agents` row status badge as a shadcn Dialog at
+~80 vw × 80 vh. It scopes the existing `SwimLane` /
+`VirtualizedSwimLane` primitives to a single agent's flavor
+(plus its sub-agents when the **Show sub-agents** toggle is on).
+
+Modal layout:
+
+- **Header** — agent name, topology pill, status badge (with
+  pulse on active), KPI totals summary.
+- **Time-range picker** — `5m / 15m / 30m / 1h / 24h`,
+  defaults to `1h`. Affects the modal's swimlane events only,
+  not the `/agents` table sparklines (different operator
+  question — incident-debug window vs long-term trend scan).
+- **Show sub-agents toggle** — defaults ON for parents
+  (`topology === "parent"`), DISABLED + off for lone agents.
+  When ON, the modal renders the parent row plus every
+  sub-agent row with the existing `SubAgentConnector` overlay.
+- **Swimlane body** — the existing `SwimLane` primitive
+  filtered to the agent's flavor set.
+- **Event circle click** — sets the modal's local
+  `selectedEvent` state which mounts the existing
+  `EventDetailDrawer` inside the Dialog content. The drawer
+  is a `framer-motion` position-fixed overlay (not a nested
+  Radix Dialog), so it stacks above the modal without
+  Radix focus-trap or backdrop-click conflicts. Closing the
+  drawer clears `selectedEvent`; the modal stays open.
+- **Close** — returns to `/agents` at the same scroll
+  position; the URL gains no segments while the modal is open.
 
 ### Fleet view
 

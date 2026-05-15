@@ -8,6 +8,7 @@ import {
 } from "react-router-dom";
 import { Search, Settings as SettingsIcon, Sun, Moon } from "lucide-react";
 import { Fleet } from "@/pages/Fleet";
+import { Agents } from "@/pages/Agents";
 import { Policies } from "@/pages/Policies";
 import { Directives } from "@/pages/Directives";
 import { NotFound } from "@/pages/NotFound";
@@ -40,6 +41,7 @@ function Nav({ onSearchClick }: { onSearchClick: () => void }) {
       <div className="ml-8 flex items-center gap-6">
         {[
           { to: "/", label: "Fleet", end: true },
+          { to: "/agents", label: "Agents" },
           { to: "/events", label: "Events" },
           { to: "/policies", label: "Policies" },
           { to: "/directives", label: "Directives" },
@@ -183,6 +185,7 @@ function CommandPaletteHost() {
       <div className="flex-1 overflow-hidden">
         <Routes>
           <Route path="/" element={<Fleet />} />
+          <Route path="/agents" element={<Agents />} />
           <Route path="/events" element={<Investigate />} />
           <Route path="/policies" element={<Policies />} />
           <Route path="/directives" element={<Directives />} />

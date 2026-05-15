@@ -888,6 +888,82 @@ func TestGetAgentFleet_RecentSessionsAttached(t *testing.T) {
 	}
 }
 
+// TestGetRecentSessionsByAgentIDs_FrameworkProjected guards the
+// “RecentSession.Framework“ projection that backs the /agents
+// page framework filter chips. Seeds three sessions for one agent
+// — two with distinct bare-name frameworks, one with NULL framework
+// (direct-SDK) — and asserts the projection carries each verbatim.
+func TestGetRecentSessionsByAgentIDs_FrameworkProjected(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	agentID := seedAgentForList(t, s,
+		"test-recent-framework-"+randomUUID(t)[:8],
+		agentListOpts{
+			agentType:  "coding",
+			clientType: "flightdeck_sensor",
+			userName:   "test-framework",
+			hostname:   "test-framework-host",
+			lastSeen:   now,
+		})
+
+	// Newest-first: langchain, then crewai, then a NULL-framework
+	// direct-SDK session.
+	type seed struct {
+		sessionID string
+		framework *string
+	}
+	langchain, crewai := "langchain", "crewai"
+	seeds := []seed{
+		{randomUUID(t), &langchain},
+		{randomUUID(t), &crewai},
+		{randomUUID(t), nil},
+	}
+	for i, sd := range seeds {
+		startedAt := now.Add(time.Duration(-i) * time.Hour)
+		if _, err := s.pool.Exec(ctx, `
+			INSERT INTO sessions (
+				session_id, agent_id, flavor, state,
+				started_at, last_seen_at, tokens_used,
+				agent_type, client_type, framework
+			) VALUES (
+				$1::uuid, $2::uuid, $3, 'closed',
+				$4, $4, 100,
+				'coding', 'flightdeck_sensor', $5
+			)
+		`, sd.sessionID, agentID, "test-recent-framework",
+			startedAt, sd.framework); err != nil {
+			t.Fatalf("seed session %d: %v", i, err)
+		}
+	}
+
+	got, err := s.GetRecentSessionsByAgentIDs(
+		ctx, []string{agentID}, RecentSessionsPerAgent,
+	)
+	if err != nil {
+		t.Fatalf("GetRecentSessionsByAgentIDs: %v", err)
+	}
+	rows := got[agentID]
+	if len(rows) != len(seeds) {
+		t.Fatalf("recent sessions len=%d, want %d", len(rows), len(seeds))
+	}
+	// Rows come back newest-first, matching the seed order.
+	for i, sd := range seeds {
+		r := rows[i]
+		switch {
+		case sd.framework == nil && r.Framework != nil:
+			t.Errorf("row %d framework=%q, want nil", i, *r.Framework)
+		case sd.framework != nil && r.Framework == nil:
+			t.Errorf("row %d framework=nil, want %q", i, *sd.framework)
+		case sd.framework != nil && *r.Framework != *sd.framework:
+			t.Errorf("row %d framework=%q, want %q",
+				i, *r.Framework, *sd.framework)
+		}
+	}
+}
+
 // TestGetRecentSessionsByAgentIDs_Empty exercises the empty-input
 // short-circuit. Avoids needlessly round-tripping Postgres when the
 // caller hasn't filled the slice yet.

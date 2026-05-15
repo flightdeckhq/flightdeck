@@ -9,18 +9,50 @@ landing page (D157).
 
 ### Added
 
+- **`/agents` route — one-row-per-agent table.** SentinelOne-grade
+  list with KPI sparklines (Tokens / Latency p95 / Errors / Sessions
+  / Cost, all 7-day totals + day-bucketed sparklines over the
+  trailing 7 days, sourced from `GET /v1/agents/:id/summary`). Filter
+  chips compose AND across dimensions and OR within: `state`,
+  `agent_type`, `client_type`, `framework`. Sortable column headers (the
+  numeric column totals are the sort key; the sparkline tiles are
+  visual). Pagination defaults to page size 50. Per-row hover
+  surfaces **Open mini-swimlane** and **Open in events** quick
+  actions. `?focus=<agent_id>` URL param scrolls the targeted
+  row into view and applies a subtle highlight for a few seconds.
+  Per-agent KPI values are cached on first load and updated in
+  place from live activity, so the table never fully re-renders
+  when an event arrives.
+- **Per-agent swimlane modal.** Clicking the status badge on any
+  `/agents` row opens a large modal dialog containing
+  a single-agent swimlane scoped to that agent's flavor only.
+  Header carries agent name + topology pill + status badge + KPI
+  totals summary. Time-range picker (5m / 15m / 30m / 1h / 24h,
+  defaults to 1h) affects the modal's events only — the `/agents`
+  table sparklines remain fixed at 7d/day. **Show sub-agents**
+  toggle defaults ON for parents and is disabled + off for lone
+  agents; when ON, the modal renders the parent row plus every
+  sub-agent row with the connector overlay linking each parent to
+  its sub-agents. Clicking an event circle inside the modal opens
+  the event detail panel stacked above the modal without closing it.
+  Closing the modal preserves the `/agents` table's scroll position.
+- **Agents nav link.** Added between Fleet and Events in the top
+  nav.
+- **Fleet swimlane label → `/agents?focus=…`.** Clicking the agent
+  name in the swimlane's left strip navigates to the `/agents`
+  page with the row pre-scrolled and highlighted.
 - **`AgentSummary.recent_sessions` on `GET /v1/fleet`.** Each
   agent row carries a per-agent rollup of its most-recent sessions
-  (cap `store.RecentSessionsPerAgent = 5`, newest-first by
-  `started_at`, with `session_id` ASC as a deterministic
-  tie-breaker). Populated by a single batched
-  `GetRecentSessionsByAgentIDs` query keyed off the page's
-  `agent_id` slice; lean projection (identity + lifecycle + sub-
-  agent linkage; no correlated-subquery enrichment columns).
-  The dashboard's `buildFlavors` prefers the embedded slice over
-  the paginated `/v1/sessions` intersection so the swimlane row
-  renders event circles regardless of where its sessions fall in
-  the global 100-row sessions page window.
+  (capped at 5 per agent, newest-first by `started_at`, with
+  `session_id` ascending as a deterministic tie-breaker). Fetched
+  in a single batched query per fleet page; lean projection
+  (identity + lifecycle + `framework` attribution + sub-agent
+  linkage; no enrichment columns). The `framework` field
+  (bare-name `sessions.framework`) backs the `/agents` page
+  framework filter chips. The Fleet swimlane prefers this embedded
+  rollup over the paginated `/v1/sessions` intersection, so an
+  agent's row renders event circles regardless of where its
+  sessions fall in the global sessions page window.
 - **`/v1/analytics?filter_agent_id=<uuid>`.** Scopes any analytics
   metric (including the four sub-agent-aware metrics) to events
   from sessions owned by a single agent. UUID validated at the
@@ -47,10 +79,10 @@ landing page (D157).
   anchors (top edge / bottom edge); active / idle / stale
   / lost runs render only the start triangle — absence of
   the end square communicates "still running."
-- **`AgentStatusBadge`** at the right edge of each swimlane
-  row's label strip. Renders the per-agent rolled-up state
-  (max-priority across the agent's runs) with a CSS keyframe
-  pulse animation on the dot when state is `active`.
+- **Agent status badge on swimlane rows.** At the right edge of
+  each swimlane row's label strip, a badge renders the agent's
+  rolled-up state (the highest-priority state across the agent's
+  runs), with a pulsing dot when the state is `active`.
   Theme-agnostic.
 - **`GET /v1/sessions?include_parents=true`.** Opt-in flag that
   augments the response with the parent session of every child

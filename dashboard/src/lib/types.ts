@@ -583,6 +583,11 @@ export interface RecentSession {
   client_type?: ClientType | null;
   host?: string | null;
   model?: string | null;
+  /** Bare-name framework attribution (``sessions.framework`` —
+   *  e.g. ``langchain``, ``crewai``). Null for direct-SDK sessions
+   *  that ran without a framework. Backs the /agents page
+   *  framework filter chips. */
+  framework?: string | null;
   state: SessionState;
   started_at: string;
   ended_at?: string | null;
@@ -592,6 +597,44 @@ export interface RecentSession {
   capture_enabled: boolean;
   parent_session_id?: string | null;
   agent_role?: string | null;
+}
+
+/**
+ * Per-agent activity summary as returned by
+ * ``GET /v1/agents/:id/summary?period=&bucket=``. Mirrors the Go
+ * ``store.AgentSummaryResponse`` type. Drives the `/agents` table's
+ * KPI sparklines and the per-agent swimlane modal's header totals.
+ */
+export type AgentSummaryPeriod = "1h" | "24h" | "7d" | "30d";
+export type AgentSummaryBucket = "hour" | "day" | "week";
+
+export interface AgentSummaryTotals {
+  tokens: number;
+  errors: number;
+  sessions: number;
+  cost_usd: number;
+  latency_p50_ms: number;
+  latency_p95_ms: number;
+}
+
+export interface AgentSummarySeriesPoint {
+  /** Bucket start, RFC 3339 / ISO 8601 UTC. */
+  ts: string;
+  tokens: number;
+  errors: number;
+  sessions: number;
+  cost_usd: number;
+  latency_p95_ms: number;
+}
+
+export interface AgentSummaryResponse {
+  agent_id: string;
+  period: AgentSummaryPeriod;
+  bucket: AgentSummaryBucket;
+  totals: AgentSummaryTotals;
+  /** Always non-nil on the wire — empty array when the agent had
+   *  no activity in the window. */
+  series: AgentSummarySeriesPoint[];
 }
 
 /** Top-level fleet response. */

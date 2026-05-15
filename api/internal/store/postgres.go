@@ -280,14 +280,19 @@ type AgentSummary struct {
 // intentionally absent so the per-agent LATERAL stays cheap on
 // fleet pages with many agents.
 type RecentSession struct {
-	SessionID       string     `json:"session_id"`
-	Flavor          string     `json:"flavor"`
-	AgentType       string     `json:"agent_type"`
-	AgentID         *string    `json:"agent_id,omitempty"`
-	AgentName       *string    `json:"agent_name,omitempty"`
-	ClientType      *string    `json:"client_type,omitempty"`
-	Host            *string    `json:"host"`
-	Model           *string    `json:"model"`
+	SessionID  string  `json:"session_id"`
+	Flavor     string  `json:"flavor"`
+	AgentType  string  `json:"agent_type"`
+	AgentID    *string `json:"agent_id,omitempty"`
+	AgentName  *string `json:"agent_name,omitempty"`
+	ClientType *string `json:"client_type,omitempty"`
+	Host       *string `json:"host"`
+	Model      *string `json:"model"`
+	// Framework is the bare-name framework attribution
+	// (``sessions.framework`` — e.g. ``langchain``, ``crewai``),
+	// nil for direct-SDK sessions that ran without a framework.
+	// Backs the /agents page framework filter chips.
+	Framework       *string    `json:"framework"`
 	State           string     `json:"state"`
 	StartedAt       time.Time  `json:"started_at"`
 	EndedAt         *time.Time `json:"ended_at"`
@@ -466,7 +471,8 @@ func (s *Store) GetRecentSessionsByAgentIDs(
 	query := `
 		SELECT
 			t.session_id, t.flavor, t.agent_type, t.agent_id,
-			t.agent_name, t.client_type, t.host, t.model, t.state,
+			t.agent_name, t.client_type, t.host, t.model, t.framework,
+			t.state,
 			t.started_at, t.ended_at, t.last_seen_at, t.tokens_used,
 			t.token_limit, t.capture_enabled,
 			t.parent_session_id, t.agent_role
@@ -480,6 +486,7 @@ func (s *Store) GetRecentSessionsByAgentIDs(
 				s.client_type,
 				s.host,
 				s.model,
+				s.framework,
 				s.state,
 				s.started_at,
 				s.ended_at,
@@ -513,7 +520,8 @@ func (s *Store) GetRecentSessionsByAgentIDs(
 		var r RecentSession
 		if err := rows.Scan(
 			&r.SessionID, &r.Flavor, &r.AgentType, &r.AgentID,
-			&r.AgentName, &r.ClientType, &r.Host, &r.Model, &r.State,
+			&r.AgentName, &r.ClientType, &r.Host, &r.Model,
+			&r.Framework, &r.State,
 			&r.StartedAt, &r.EndedAt, &r.LastSeenAt, &r.TokensUsed,
 			&r.TokenLimit, &r.CaptureEnabled,
 			&r.ParentSessionID, &r.AgentRole,

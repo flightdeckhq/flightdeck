@@ -3303,6 +3303,10 @@ const docTemplate = `{
                 "flavor": {
                     "type": "string"
                 },
+                "framework": {
+                    "description": "Framework is the bare-name framework attribution\n(` + "`" + `` + "`" + `sessions.framework` + "`" + `` + "`" + ` — e.g. ` + "`" + `` + "`" + `langchain` + "`" + `` + "`" + `, ` + "`" + `` + "`" + `crewai` + "`" + `` + "`" + `),\nnil for direct-SDK sessions that ran without a framework.\nBacks the /agents page framework filter chips.",
+                    "type": "string"
+                },
                 "host": {
                     "type": "string"
                 },

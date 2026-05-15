@@ -8779,15 +8779,108 @@ Status line is revised to reflect what has closed.
   it forces a full re-emit including the authoritative
   `context.mcp_servers` fingerprint.
 
-**Phases 3–5 forward look (not locked, indicative).**
+**Phase 3 scope (locked).**
 
-- Phase 3: dedicated `/agents` page consuming
-  `/v1/agents/{id}/summary` + `filter_agent_id` and the
-  preserved `TopologyCell`.
+- **`/agents` route — one-row-per-agent table.** The
+  `/agents` page is a SentinelOne-grade list, not a detail
+  surface. Pivot from the earlier "per-agent detail page"
+  framing: a list-with-modal is the right shape because the
+  operator's first question is "which agent needs my
+  attention?", not "show me one agent's history." The
+  modal handles the follow-up "show me this specific
+  agent's recent activity" without a route change. Chosen
+  over (a) a `/agents/:id` detail route (one extra URL
+  hop per agent investigation, and operators rarely want
+  to bookmark a single agent), (b) inlining the per-agent
+  swimlane on the Fleet page (clutter), and (c) wiring
+  per-agent data into the existing Investigate facets
+  (Investigate is session-grained, not agent-grained).
+- **Columns locked.** Identity (name + client_type pill +
+  agent_type badge + provider/OS/orchestration icons),
+  `TopologyCell`, Tokens (7d), Latency p95 (7d), Errors
+  (7d), Sessions (7d), Cost USD (7d), Last seen, Status
+  badge. Sparkline tiles are visual; the sort key is the
+  numeric column total. Header click toggles direction.
+- **KPI fetch shape.** One `GET
+  /v1/agents/:id/summary?period=7d&bucket=day` per visible
+  row on first mount, cached module-level in
+  `agentSummaryCache`. Live updates patch the totals + the
+  current day's bucket in place from the fleet store's
+  `lastEvent` subscription; no re-fetch. Chosen over (a)
+  one bulk endpoint covering every agent (would require a
+  new backend route and changes the wire shape during a
+  dashboard-only phase), and (b) re-fetching on every
+  WebSocket event (would burn N requests per event under
+  high throughput).
+- **Per-agent swimlane modal.** Status-badge click on a
+  table row opens a shadcn Dialog (~80 vw × 80 vh)
+  containing the existing `SwimLane` primitive scoped to
+  the agent's flavor (and its sub-agents when the toggle is
+  ON). Time-range picker defaults to `1h` and affects the
+  modal's events only — the table sparklines remain 7d/day
+  because the operator's table question (long-term trend
+  scan) differs from the modal question (incident-debug
+  window). Event-circle click opens the existing
+  `EventDetailDrawer` — a `framer-motion` position-fixed
+  overlay — mounted inside the modal's Dialog content, so it
+  layers above the modal without nested-Radix focus-trap
+  conflicts. Chosen over (a) a dedicated
+  `/agents/:id/timeline` route (forces a navigation for
+  every investigation), (b) an inline-expansion row (the
+  swimlane needs more vertical space than a row provides),
+  and (c) routing through the existing Fleet page (loses
+  the agent-scoping context).
+- **Sub-agents toggle default.** ON for `topology="parent"`
+  agents (the parent → sub-agent relationship is the
+  primary reason an operator would open the modal on a
+  parent); DISABLED + off for `topology="lone"` (no
+  sub-agents to render).
+- **Fleet swimlane label → `/agents?focus=…`.** Interim
+  affordance for Phase 3; Phase 4 swaps the click target to
+  the agent drawer. `?focus=<agent_id>` scrolls the
+  targeted row into view and applies a subtle highlight for
+  a few seconds. Chosen over (a) doing nothing in Phase 3
+  (loses the cross-page navigation operators expect once
+  the `/agents` page exists) and (b) waiting for the drawer
+  in Phase 4 (the cross-page jump is useful independently
+  of the drawer).
+- **Quick-action "Open drawer" deferred.** Per Rule 17 (no
+  placeholder UI), the quick-action button is absent in
+  Phase 3 and appears in Phase 4 when the drawer lands. No
+  "coming soon" tooltip, no disabled stub.
+- **Framework filter chip — `RecentSession` enrichment
+  (Phase 3 scope amendment).** The locked column / filter
+  set above includes a `framework` filter tier, but the
+  Phase 1 `/v1/fleet` `AgentSummary` and its lean
+  `RecentSession` projection carried no framework
+  attribution: the chip set would have been permanently
+  empty (self-hidden) and the `frameworks` filter dimension
+  dead code. Resolved by amending the Phase 3 "all-dashboard,
+  no backend changes" scope — a Supervisor-approved
+  phase-plan change (Rule 44). `store.RecentSession` gains a
+  `framework` field projected from the existing bare-name
+  `sessions.framework` column; no migration is required
+  because that column has existed since the initial schema
+  (`000001_initial_schema`). The frontend's `agentFrameworks()`
+  derives an agent's framework set from
+  `recent_sessions[].framework`. Chosen over (a) shipping the
+  tier inert and documenting it as awaiting backend data —
+  rejected because dead code behind a self-hiding chip group
+  fails the no-half-finished-implementations bar, and (b)
+  removing the `framework` tier from Phase 3 entirely —
+  rejected as a silent reduction of a locked deliverable. The
+  facet is scoped to the trailing `RecentSessionsPerAgent`
+  (5) sessions per agent, consistent with the rest of the
+  page's recent-activity framing; an agent that last used a
+  framework more than five sessions ago surfaces only its
+  more-recent framework attributions.
+
+**Phases 4–5 forward look (not locked, indicative).**
+
 - Phase 4: agent drawer (replaces the deleted expand-row
-  affordance) + Events page event-grain table rework;
-  renames the `?session=` URL query param as part of that
-  rework.
+  affordance + the Phase 3 `?focus=` interim) + Events
+  page event-grain table rework; renames the `?session=`
+  URL query param as part of that rework.
 - Phase 5: closes this DECISIONS entry with the full
   rationale + consequences narrative.
 

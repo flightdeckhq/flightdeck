@@ -661,6 +661,13 @@ definitions:
         type: string
       flavor:
         type: string
+      framework:
+        description: |-
+          Framework is the bare-name framework attribution
+          (``sessions.framework`` — e.g. ``langchain``, ``crewai``),
+          nil for direct-SDK sessions that ran without a framework.
+          Backs the /agents page framework filter chips.
+        type: string
       host:
         type: string
       last_seen_at:

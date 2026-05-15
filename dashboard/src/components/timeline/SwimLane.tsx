@@ -1,4 +1,5 @@
 import { memo, useMemo } from "react";
+import { Link } from "react-router-dom";
 import type { ScaleTime } from "d3-scale";
 import type { Session, AgentEvent } from "@/lib/types";
 import { deriveRelationship } from "@/lib/relationship";
@@ -232,13 +233,30 @@ function SwimLaneComponent({
 				{(clientType === ClientType.ClaudeCode || flavor === "claude-code") && (
 					<ClaudeCodeLogo size={14} className="shrink-0" />
 				)}
-				{/* Agent name — primary label. Truncates via native
-				    ``title`` tooltip when the row is narrow. */}
-				<TruncatedText
-					className="text-[13px] font-medium"
-					style={{ color: "var(--text)", minWidth: 0 }}
-					text={agentName ?? flavor}
-				/>
+				{/* Agent name — primary label. The row's ``flavor``
+				    prop carries the agent_id (the swimlane keys rows
+				    by agent — see SwimLaneProps), so this emits the
+				    canonical agent_id UUID into ``/agents?focus=``;
+				    the ``/agents`` page matches that param against
+				    ``agent_id`` to scroll + highlight the row.
+				    Truncates via native ``title`` tooltip when the
+				    row is narrow. */}
+				<Link
+					to={`/agents?focus=${encodeURIComponent(flavor)}`}
+					data-testid="swimlane-agent-name-link"
+					className="flex min-w-0 items-center"
+					style={{
+						color: "var(--text)",
+						textDecoration: "none",
+						flex: "0 1 auto",
+					}}
+				>
+					<TruncatedText
+						className="text-[13px] font-medium"
+						style={{ color: "var(--text)", minWidth: 0 }}
+						text={agentName ?? flavor}
+					/>
+				</Link>
 				{clientType && (
 					<ClientTypePill
 						clientType={clientType}

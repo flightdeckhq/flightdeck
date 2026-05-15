@@ -119,6 +119,45 @@ def test_fleet_response_attaches_recent_sessions() -> None:
             )
 
 
+def test_recent_sessions_carry_framework_attribution() -> None:
+    """Every ``recent_sessions`` entry carries a ``framework`` key
+    (the field is emitted unconditionally — null for direct-SDK
+    sessions, a bare framework name otherwise). At least one of the
+    canonical seed frameworks must surface across the roster: the
+    field backs the /agents page framework filter chips, so an
+    all-null projection would silently leave that filter dead.
+    """
+    fleet = _list_fleet({"per_page": "200"})
+    agents = fleet.get("agents", [])
+    assert agents, "fleet roster must not be empty after seed"
+
+    observed: set[str] = set()
+    for a in agents:
+        rs = a.get("recent_sessions") or []
+        for s in rs:
+            assert "framework" in s, (
+                f"recent_sessions entry on agent {a.get('agent_id')} "
+                f"is missing the 'framework' key: {s!r}"
+            )
+            fw = s["framework"]
+            assert fw is None or isinstance(fw, str), (
+                f"framework must be null or a string, got "
+                f"{type(fw).__name__} on agent {a.get('agent_id')}"
+            )
+            if fw:
+                observed.add(fw)
+
+    # The canonical seed runs agents on langchain / crewai /
+    # langgraph / claude-code. A wholly empty set means the
+    # projection landed but carries only nulls — the framework
+    # filter would render no chips.
+    assert observed, (
+        "no recent_sessions entry across the entire fleet carried a "
+        "non-null framework — the RecentSession.framework projection "
+        "is not surfacing the seeded sessions.framework attribution"
+    )
+
+
 def test_fresh_subagent_has_session_in_rollup() -> None:
     """The ``e2e-test-fresh-subagent`` canonical fixture's session
     must surface in the agent's ``recent_sessions`` slice — this is

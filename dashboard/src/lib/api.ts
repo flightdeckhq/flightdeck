@@ -1,6 +1,9 @@
 import type {
   FleetResponse,
   AgentSummary,
+  AgentSummaryBucket,
+  AgentSummaryPeriod,
+  AgentSummaryResponse,
   SessionDetail,
   Policy,
   PolicyRequest,
@@ -125,6 +128,32 @@ export async function fetchAgentById(agentId: string): Promise<AgentSummary | nu
     throw new Error(`API ${res.status}: /v1/agents/${agentId}`);
   }
   return (await res.json()) as AgentSummary;
+}
+
+/**
+ * Fetch a single agent's rolling-window activity summary via
+ * ``GET /v1/agents/:id/summary?period=&bucket=``. Drives the
+ * `/agents` table's KPI sparklines (period=7d, bucket=day) and the
+ * per-agent swimlane modal's header totals.
+ *
+ * The endpoint is dependency-free of the fleet roster — passing an
+ * unknown agent_id returns 200 with zero totals + empty series
+ * rather than 404, matching the handler's documented behaviour
+ * (the handler itself is responsible for confirming the agent
+ * exists before calling the store layer). Callers therefore do
+ * not need a null-guard on this return.
+ */
+export function fetchAgentSummary(
+  agentId: string,
+  opts: { period: AgentSummaryPeriod; bucket: AgentSummaryBucket },
+): Promise<AgentSummaryResponse> {
+  const qs = new URLSearchParams({
+    period: opts.period,
+    bucket: opts.bucket,
+  });
+  return fetchJson<AgentSummaryResponse>(
+    `/v1/agents/${encodeURIComponent(agentId)}/summary?${qs.toString()}`,
+  );
 }
 
 /**

@@ -429,8 +429,17 @@ func (m *mockStore) GetEvents(_ context.Context, params store.EventsParams) (*st
 		if params.Flavor != "" && e.Flavor != params.Flavor {
 			continue
 		}
-		if params.EventType != "" && e.EventType != params.EventType {
-			continue
+		if len(params.EventTypes) > 0 {
+			matched := false
+			for _, et := range params.EventTypes {
+				if e.EventType == et {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				continue
+			}
 		}
 		filtered = append(filtered, e)
 	}
@@ -456,6 +465,10 @@ func (m *mockStore) GetEvents(_ context.Context, params store.EventsParams) (*st
 		// changes. See the GetEvents godoc for the rationale.
 		HasMore: params.Offset+params.Limit <= len(filtered),
 	}, nil
+}
+
+func (m *mockStore) GetEventFacets(_ context.Context, _ store.EventsParams) (*store.EventFacets, error) {
+	return &store.EventFacets{}, nil
 }
 
 func (m *mockStore) SyncDirectives(_ context.Context, flavor string, fingerprints []string) ([]string, error) {
@@ -2083,6 +2096,34 @@ func TestGetEventsLimitTooLarge(t *testing.T) {
 	}
 }
 
+func TestGetEventsOffsetTooLarge(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.EventsListHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET",
+		"/v1/events?from=2026-01-01T00:00:00Z&offset=999999999", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for offset above the cap, got %d", w.Code)
+	}
+}
+
+func TestGetEventsFilterCardinalityTooLarge(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.EventsListHandler(store.WrapStore(s))
+	var sb strings.Builder
+	sb.WriteString("/v1/events?from=2026-01-01T00:00:00Z")
+	for i := 0; i < 101; i++ {
+		fmt.Fprintf(&sb, "&model=m%d", i)
+	}
+	req := httptest.NewRequest("GET", sb.String(), nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for over-cap filter cardinality, got %d", w.Code)
+	}
+}
+
 func TestGetEventsFlavorFilter(t *testing.T) {
 	s := &mockStore{}
 	handler := handlers.EventsListHandler(store.WrapStore(s))
@@ -3062,90 +3103,6 @@ func assertStringSliceEqual(t *testing.T, label string, got, want []string) {
 		if got[i] != want[i] {
 			t.Errorf("%s[%d]: got %q want %q", label, i, got[i], want[i])
 		}
-	}
-}
-
-// --- AgentByIDHandler ---
-
-func TestAgentByIDHandler_200_OnHit(t *testing.T) {
-	id := "11111111-2222-3333-4444-555555555555"
-	s := &mockStore{agentsByID: map[string]*store.AgentSummary{
-		id: {
-			AgentID:   id,
-			AgentName: "alice",
-			AgentType: "coding",
-			UserName:  "u1",
-			Hostname:  "h1",
-			State:     "active",
-		},
-	}}
-	h := handlers.AgentByIDHandler(store.WrapStore(s))
-	req := httptest.NewRequest("GET", "/v1/agents/"+id, nil)
-	w := httptest.NewRecorder()
-	h(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
-	}
-	var got store.AgentSummary
-	if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if got.AgentID != id || got.AgentName != "alice" {
-		t.Errorf("body: %+v", got)
-	}
-	if s.lastAgentByIDArg != id {
-		t.Errorf("store arg: want %q, got %q", id, s.lastAgentByIDArg)
-	}
-}
-
-func TestAgentByIDHandler_404_OnMiss(t *testing.T) {
-	id := "11111111-2222-3333-4444-555555555555"
-	// agentsByID is nil / no match — store returns (nil, nil).
-	h := handlers.AgentByIDHandler(store.WrapStore(&mockStore{}))
-	req := httptest.NewRequest("GET", "/v1/agents/"+id, nil)
-	w := httptest.NewRecorder()
-	h(w, req)
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("expected 404, got %d body=%s", w.Code, w.Body.String())
-	}
-	if !strings.Contains(w.Body.String(), "agent not found") {
-		t.Errorf("body: %s", w.Body.String())
-	}
-}
-
-func TestAgentByIDHandler_400_OnInvalidUUID(t *testing.T) {
-	h := handlers.AgentByIDHandler(store.WrapStore(&mockStore{}))
-	req := httptest.NewRequest("GET", "/v1/agents/not-a-uuid", nil)
-	w := httptest.NewRecorder()
-	h(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("expected 400, got %d", w.Code)
-	}
-}
-
-func TestAgentByIDHandler_400_OnEmptyID(t *testing.T) {
-	h := handlers.AgentByIDHandler(store.WrapStore(&mockStore{}))
-	// Request the collection root via the by-id route; trailing slash
-	// with no id should 400 rather than fan out to the list handler
-	// (the mux differentiates /v1/agents vs /v1/agents/).
-	req := httptest.NewRequest("GET", "/v1/agents/", nil)
-	w := httptest.NewRecorder()
-	h(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("expected 400, got %d body=%s", w.Code, w.Body.String())
-	}
-}
-
-func TestAgentByIDHandler_500_OnStoreError(t *testing.T) {
-	id := "11111111-2222-3333-4444-555555555555"
-	s := &mockStore{agentByIDErr: fmt.Errorf("pool exhausted")}
-	h := handlers.AgentByIDHandler(store.WrapStore(s))
-	req := httptest.NewRequest("GET", "/v1/agents/"+id, nil)
-	w := httptest.NewRecorder()
-	h(w, req)
-	if w.Code != http.StatusInternalServerError {
-		t.Errorf("expected 500, got %d", w.Code)
 	}
 }
 

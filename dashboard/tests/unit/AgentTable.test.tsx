@@ -80,7 +80,7 @@ function renderTable(agents: AgentSummary[]) {
             agents.map((a) => [a.agent_id, mkSummary(a.agent_id, 100)]),
           )
         }
-        focusedAgentId={null}
+        onOpenDrawer={() => {}}
         onOpenSwimlaneModal={() => {}}
       />
     </MemoryRouter>,

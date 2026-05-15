@@ -5,10 +5,12 @@ import {
   Route,
   NavLink,
   useNavigate,
+  useSearchParams,
 } from "react-router-dom";
 import { Search, Settings as SettingsIcon, Sun, Moon } from "lucide-react";
 import { Fleet } from "@/pages/Fleet";
 import { Agents } from "@/pages/Agents";
+import { AgentDrawer } from "@/components/agents/AgentDrawer";
 import { Policies } from "@/pages/Policies";
 import { Directives } from "@/pages/Directives";
 import { NotFound } from "@/pages/NotFound";
@@ -117,18 +119,12 @@ function Nav({ onSearchClick }: { onSearchClick: () => void }) {
 }
 
 /**
- * Routing helper for the global search modal. Agent clicks navigate
- * to the Events page with the flavor pre-filtered; session and event
- * clicks navigate to /events with the ``session`` URL param set,
- * which the Investigate component's drawer picks up via useEffect.
- * Event clicks target the parent session drawer (per-event deep-
- * linking with ``directEventDetail`` is a separate follow-up).
- *
- * The URL param name for flavor is the singular ``flavor=`` -- the
- * Investigate parseUrlState reads via ``sp.getAll("flavor")``. The
- * ``session=`` query param name is the wire identifier the Events
- * page's URL parser still keys on; the rendered prose calls it a
- * "run" while the param keeps its historical name.
+ * Routing helper for the global search modal. An agent click routes
+ * to the Events page scoped to that agent (``?agent_id=``); a
+ * session or event click routes to ``/events?run=<session_id>``,
+ * which the Events page picks up to open the run drawer. The
+ * legacy ``?session=`` param is still redirected to ``?run=`` by
+ * the Events page, so older links keep resolving.
  */
 export function buildSearchResultHref(
   type: "agent" | "session" | "event",
@@ -146,14 +142,67 @@ export function buildSearchResultHref(
     )}`;
   }
   if (type === "session") {
-    return `/events?session=${encodeURIComponent(
+    return `/events?run=${encodeURIComponent(
       (item as SearchResultSession).session_id,
     )}`;
   }
-  // event -- route to the parent session's drawer.
-  return `/events?session=${encodeURIComponent(
+  // event -- route to the parent run's drawer.
+  return `/events?run=${encodeURIComponent(
     (item as SearchResultEvent).session_id,
   )}`;
+}
+
+// Strict RFC-4122 gate for the ``?agent_drawer=`` param. Every
+// agent_id is a uuid5 (the sensor's derive_agent_id), so the
+// canonical 8-4-4-4-12 shape rejects nothing legitimate while a
+// malformed bookmark or crafted URL silently no-ops (the drawer
+// stays closed) instead of opening on garbage.
+const AGENT_DRAWER_ID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * App-level host for the agent drawer. The drawer's open state is
+ * the `?agent_drawer=<agent_id>` URL param: a `/agents` row click
+ * or a Fleet swimlane agent-name click sets it, a deep link opens
+ * the drawer on load, and the browser back button closes it.
+ * Mounted once here (outside `<Routes>`) so it opens identically
+ * from `/agents` and the Fleet swimlane without per-page wiring.
+ */
+function AgentDrawerHost() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const raw = searchParams.get("agent_drawer");
+  const agentId = raw && AGENT_DRAWER_ID_RE.test(raw) ? raw : null;
+
+  // Close replaces the history entry so a closed drawer never sits
+  // in the back stack — the browser back button lands on whatever
+  // preceded the drawer opening, not on a re-opened drawer.
+  const close = useCallback(() => {
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        next.delete("agent_drawer");
+        return next;
+      },
+      { replace: true },
+    );
+  }, [setSearchParams]);
+
+  // Re-pointing the drawer at a linked agent pushes a history entry
+  // so back returns to the previous agent's drawer.
+  const selectAgent = useCallback(
+    (id: string) => {
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev);
+        next.set("agent_drawer", id);
+        return next;
+      });
+    },
+    [setSearchParams],
+  );
+
+  return (
+    <AgentDrawer agentId={agentId} onClose={close} onSelectAgent={selectAgent} />
+  );
 }
 
 /**
@@ -199,6 +248,7 @@ function CommandPaletteHost() {
         onOpenChange={setSearchOpen}
         onSelectResult={handleSelectResult}
       />
+      <AgentDrawerHost />
     </>
   );
 }

@@ -101,6 +101,84 @@ export function deriveRelationship(
   return { mode: "lone" };
 }
 
+/** One end of a sub-agent linkage — the identity tuple a pill renders. */
+export interface AgentLink {
+  agentId: string;
+  agentName: string;
+}
+
+/** Full sub-agent linkage for one agent: its parent (when it runs as
+ *  a sub-agent) and every distinct child agent it has spawned. */
+export interface AgentLinkage {
+  parent: AgentLink | null;
+  children: AgentLink[];
+}
+
+/**
+ * Derives an agent's full sub-agent linkage from the fleet store's
+ * session graph — the parent agent (if this agent's sessions carry a
+ * `parent_session_id` resolving to another agent) and every distinct
+ * child agent (other agents whose sessions point back at one of this
+ * agent's sessions).
+ *
+ * Unlike `deriveRelationship` — which the swimlane chrome uses and
+ * which collapses to a single `firstChildAgentId` + count — this
+ * returns the *complete* child list, because the agent drawer
+ * renders one clickable pill per child.
+ */
+export function deriveAgentLinkage(
+  agentId: string,
+  fleetFlavors: FlavorSummary[],
+): AgentLinkage {
+  const sessionToAgent = new Map<string, AgentLink>();
+  const ownSessionIds = new Set<string>();
+  for (const f of fleetFlavors) {
+    const agentName = f.agent_id && f.agent_name ? f.agent_name : f.flavor;
+    for (const s of f.sessions) {
+      sessionToAgent.set(s.session_id, { agentId: f.flavor, agentName });
+      if (f.flavor === agentId) ownSessionIds.add(s.session_id);
+    }
+  }
+
+  // Parent — the first of our sessions whose parent_session_id
+  // resolves to a different agent.
+  let parent: AgentLink | null = null;
+  const own = fleetFlavors.find((f) => f.flavor === agentId);
+  if (own) {
+    for (const s of own.sessions) {
+      if (!s.parent_session_id) continue;
+      const p = sessionToAgent.get(s.parent_session_id);
+      if (p && p.agentId !== agentId) {
+        parent = p;
+        break;
+      }
+    }
+  }
+
+  // Children — every distinct agent with a session pointing back at
+  // one of ours.
+  const children: AgentLink[] = [];
+  const seen = new Set<string>();
+  for (const f of fleetFlavors) {
+    if (f.flavor === agentId) continue;
+    for (const s of f.sessions) {
+      if (!s.parent_session_id) continue;
+      if (ownSessionIds.has(s.parent_session_id)) {
+        if (!seen.has(f.flavor)) {
+          seen.add(f.flavor);
+          children.push({
+            agentId: f.flavor,
+            agentName: f.agent_id && f.agent_name ? f.agent_name : f.flavor,
+          });
+        }
+        break;
+      }
+    }
+  }
+
+  return { parent, children };
+}
+
 /**
  * Scroll an agent's row into view via the ``data-agent-id``
  * attribute stamped on SwimLane (and AgentTable rows). Shared by

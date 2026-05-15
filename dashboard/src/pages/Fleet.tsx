@@ -880,6 +880,10 @@ export function Fleet() {
       <EventDetailDrawer
         event={selectedEvent}
         onClose={() => setSelectedEvent(null)}
+        onViewRun={(sessionId) => {
+          setSelectedEvent(null);
+          selectSession(sessionId);
+        }}
       />
     </div>
   );

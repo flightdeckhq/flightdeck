@@ -475,6 +475,34 @@ export interface FeedEvent {
   event: AgentEvent;
 }
 
+/** One (value, count) pair in an event-grain facet. */
+export interface EventFacetValue {
+  value: string;
+  count: number;
+}
+
+/**
+ * Per-dimension chip counts for the `/events` event-grain facet
+ * sidebar, from `GET /v1/events?...&facets=true`. Mirrors the Go
+ * `store.EventFacets`. Every dimension is present (empty array when
+ * it has no values). The dashboard derives the `policy_event_type`
+ * facet by classifying the `event_type` dimension — the server does
+ * not return it separately.
+ */
+export interface EventFacets {
+  event_type: EventFacetValue[];
+  model: EventFacetValue[];
+  framework: EventFacetValue[];
+  agent_id: EventFacetValue[];
+  error_type: EventFacetValue[];
+  close_reason: EventFacetValue[];
+  estimated_via: EventFacetValue[];
+  matched_entry_id: EventFacetValue[];
+  originating_call_context: EventFacetValue[];
+  mcp_server: EventFacetValue[];
+  terminal: EventFacetValue[];
+}
+
 /**
  * v0.4.0 Phase 1 (D115): the swimlane still renders ``FlavorSummary``
  * rows but each row now represents an **agent** rather than a flavor
@@ -1007,6 +1035,14 @@ export interface SessionListItem {
    * fetch — same shape as ``error_types`` / ``mcp_error_types``.
    */
   child_count?: number;
+  /**
+   * Number of recorded re-attachments to this session (rows in
+   * ``session_attachments`` — the initial creation is not an
+   * attachment, so a run that ran once reports 0). Surfaced via a
+   * correlated subquery on the listing query; the agent drawer
+   * Runs tab renders its "attached" pill when this is > 0.
+   */
+  attachment_count?: number;
 }
 
 /** Paginated response from GET /v1/sessions. */

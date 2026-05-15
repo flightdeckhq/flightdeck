@@ -1,10 +1,31 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import {
   formatCost,
+  formatDuration,
   formatLatencyMs,
   formatTokens,
   relativeTime,
 } from "@/lib/agents-format";
+
+describe("formatDuration", () => {
+  it("renders seconds below one minute", () => {
+    expect(formatDuration(0)).toBe("0s");
+    expect(formatDuration(42)).toBe("42s");
+    expect(formatDuration(59)).toBe("59s");
+  });
+
+  it("renders whole minutes below one hour", () => {
+    expect(formatDuration(60)).toBe("1m");
+    expect(formatDuration(7 * 60 + 30)).toBe("7m");
+    expect(formatDuration(3599)).toBe("59m");
+  });
+
+  it("renders hours with minutes at or above one hour", () => {
+    expect(formatDuration(3600)).toBe("1h");
+    expect(formatDuration(2 * 3600 + 13 * 60)).toBe("2h 13m");
+    expect(formatDuration(3 * 3600)).toBe("3h");
+  });
+});
 
 describe("formatTokens", () => {
   it("renders the bare integer below 1k", () => {

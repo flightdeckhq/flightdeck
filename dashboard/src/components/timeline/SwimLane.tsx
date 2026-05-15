@@ -235,14 +235,14 @@ function SwimLaneComponent({
 				)}
 				{/* Agent name — primary label. The row's ``flavor``
 				    prop carries the agent_id (the swimlane keys rows
-				    by agent — see SwimLaneProps), so this emits the
-				    canonical agent_id UUID into ``/agents?focus=``;
-				    the ``/agents`` page matches that param against
-				    ``agent_id`` to scroll + highlight the row.
-				    Truncates via native ``title`` tooltip when the
-				    row is narrow. */}
+				    by agent — see SwimLaneProps). Clicking it sets
+				    the ``?agent_drawer=`` URL param, which the
+				    app-level AgentDrawerHost reads to open this
+				    agent's drawer inline — no route change, the
+				    Fleet view stays mounted underneath. Truncates
+				    via native ``title`` tooltip when narrow. */}
 				<Link
-					to={`/agents?focus=${encodeURIComponent(flavor)}`}
+					to={{ search: `agent_drawer=${encodeURIComponent(flavor)}` }}
 					data-testid="swimlane-agent-name-link"
 					className="flex min-w-0 items-center"
 					style={{

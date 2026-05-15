@@ -103,14 +103,9 @@ func newServer(addr string, s store.Querier, hub *ws.Hub, validator *auth.Valida
 	// REST routes -- all require a valid bearer token (D095).
 	mux.Handle("GET /v1/fleet", gate(handlers.FleetHandler(s)))
 	mux.Handle("GET /v1/agents", gate(handlers.AgentsListHandler(s)))
-	// Per-agent activity summary (D157 Phase 1). Registered with
-	// the Go 1.22 pattern syntax so it wins precedence over the
-	// /v1/agents/ prefix-style catch-all below. Order in this
-	// list doesn't matter — ServeMux resolves on specificity,
-	// not registration order.
+	// Per-agent activity summary (D157 Phase 1).
 	mux.Handle("GET /v1/agents/{agent_id}/summary",
 		gate(handlers.AgentSummaryHandler(s)))
-	mux.Handle("GET /v1/agents/", gate(handlers.AgentByIDHandler(s)))
 	mux.Handle("GET /v1/sessions", gate(handlers.SessionsListHandler(s)))
 	mux.Handle("GET /v1/sessions/", gate(handlers.SessionsHandler(s)))
 	mux.Handle("GET /v1/events/", gate(handlers.ContentHandler(s)))

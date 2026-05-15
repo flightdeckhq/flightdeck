@@ -11,7 +11,7 @@ import { __resetAgentSummaryCacheForTests } from "@/hooks/useAgentSummary";
 // AbortController signal shape, so stub fetchAgentSummary
 // directly (same pattern as AgentTable.test.tsx). KPI-value
 // formatting is covered separately by agents-format.test.ts —
-// these tests exercise the row's own focus / wiring logic.
+// these tests exercise the row's own click-wiring logic.
 vi.mock("@/lib/api", async (orig) => {
   const actual = await orig<typeof import("@/lib/api")>();
   return {
@@ -61,7 +61,7 @@ function LocationProbe() {
 function renderRow(
   agent: AgentSummary,
   opts: {
-    focused?: boolean;
+    onOpenDrawer?: (a: AgentSummary) => void;
     onOpenSwimlaneModal?: (a: AgentSummary) => void;
   } = {},
 ) {
@@ -77,7 +77,7 @@ function renderRow(
               <tbody>
                 <AgentTableRow
                   agent={agent}
-                  focused={opts.focused ?? false}
+                  onOpenDrawer={opts.onOpenDrawer ?? (() => {})}
                   onOpenSwimlaneModal={opts.onOpenSwimlaneModal ?? (() => {})}
                 />
               </tbody>
@@ -100,38 +100,36 @@ describe("AgentTableRow", () => {
     ).toHaveTextContent("coding");
   });
 
-  it("stamps data-focused only when focused", () => {
-    const { unmount } = renderRow(mkAgent({ agent_id: "a-1" }), {
-      focused: true,
-    });
-    expect(screen.getByTestId("agent-row-a-1")).toHaveAttribute(
-      "data-focused",
-      "true",
-    );
-    unmount();
-
-    renderRow(mkAgent({ agent_id: "a-1" }), { focused: false });
-    expect(screen.getByTestId("agent-row-a-1")).not.toHaveAttribute(
-      "data-focused",
-    );
-  });
-
-  it("calls onOpenSwimlaneModal with the agent on status-badge click", () => {
-    const onOpen = vi.fn();
+  it("calls onOpenDrawer with the agent on a row click", () => {
+    const onOpenDrawer = vi.fn();
     const agent = mkAgent({ agent_id: "a-1" });
-    renderRow(agent, { onOpenSwimlaneModal: onOpen });
-    fireEvent.click(screen.getByTestId("agent-row-open-swimlane-modal-a-1"));
-    expect(onOpen).toHaveBeenCalledTimes(1);
-    expect(onOpen).toHaveBeenCalledWith(agent);
+    renderRow(agent, { onOpenDrawer });
+    fireEvent.click(screen.getByTestId("agent-row-a-1"));
+    expect(onOpenDrawer).toHaveBeenCalledTimes(1);
+    expect(onOpenDrawer).toHaveBeenCalledWith(agent);
   });
 
-  it("navigates to the agent-scoped Events view on the Events action", () => {
-    renderRow(mkAgent({ agent_id: "a-1" }));
+  it("opens the swimlane modal on status-badge click without opening the drawer", () => {
+    const onOpenDrawer = vi.fn();
+    const onOpenSwimlaneModal = vi.fn();
+    const agent = mkAgent({ agent_id: "a-1" });
+    renderRow(agent, { onOpenDrawer, onOpenSwimlaneModal });
+    fireEvent.click(screen.getByTestId("agent-row-open-swimlane-modal-a-1"));
+    expect(onOpenSwimlaneModal).toHaveBeenCalledTimes(1);
+    expect(onOpenSwimlaneModal).toHaveBeenCalledWith(agent);
+    // The badge click must not bubble to the row's drawer handler.
+    expect(onOpenDrawer).not.toHaveBeenCalled();
+  });
+
+  it("navigates to the Events view on the Events action without opening the drawer", () => {
+    const onOpenDrawer = vi.fn();
+    renderRow(mkAgent({ agent_id: "a-1" }), { onOpenDrawer });
     fireEvent.click(screen.getByTestId("agent-row-open-events-a-1"));
     expect(screen.getByTestId("events-page")).toBeInTheDocument();
     expect(screen.getByTestId("loc")).toHaveTextContent(
       "/events?agent_id=a-1",
     );
+    expect(onOpenDrawer).not.toHaveBeenCalled();
   });
 
   it("data-stamps topology and state for E2E / sort selectors", () => {

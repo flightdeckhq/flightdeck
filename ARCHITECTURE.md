@@ -1778,11 +1778,11 @@ authoritative parameter-level reference.
 | Method | Path | Purpose |
 |---|---|---|
 | `GET` | `/v1/fleet` | Fleet summary: agents with state rollup, total sessions, total tokens, context_facets |
-| `GET` | `/v1/sessions` | Paginated session listing; filters: `agent_id`, `flavor`, `framework`, `state`, `error_type`, `policy_event_type`, `mcp_server`, `from`, `to`, `q`, `parent_session_id`, `is_sub_agent`, `has_sub_agents`, `agent_role[]`, `include_pure_children`, `include_parents`, `close_reason`, `estimated_via`, `terminal`, `matched_entry_id`, `originating_call_context`; returns per-session aggregates (`error_types[]`, `policy_event_types[]`, `mcp_server_names[]`, `close_reasons[]`, `estimated_via_values[]`, `has_terminal_error`, `matched_entry_ids[]`, `originating_call_contexts[]`) and `child_count` |
+| `GET` | `/v1/sessions` | Paginated session listing; filters: `agent_id`, `flavor`, `framework`, `state`, `error_type`, `policy_event_type`, `mcp_server`, `from`, `to`, `q`, `parent_session_id`, `is_sub_agent`, `has_sub_agents`, `agent_role[]`, `include_pure_children`, `include_parents`, `close_reason`, `estimated_via`, `terminal`, `matched_entry_id`, `originating_call_context`; returns per-session aggregates (`error_types[]`, `policy_event_types[]`, `mcp_server_names[]`, `close_reasons[]`, `estimated_via_values[]`, `has_terminal_error`, `matched_entry_ids[]`, `originating_call_contexts[]`), `child_count`, and `attachment_count` (the number of re-attachments to the session, surfaced as the agent drawer Runs-tab attached pill) |
 | `GET` | `/v1/sessions/:id` | Session detail: metadata + chronological events + attachments array |
-| `GET` | `/v1/agents/:id` | Single agent's identity record (backs Events page AGENT facet identity-cache resolver) |
+| `GET` | `/v1/agents/:id` | Single agent's identity record (agent_id, name, agent_type, client_type, host) |
 | `GET` | `/v1/agents/:id/summary` | Per-agent activity summary (totals + per-bucket series) over a 1h/24h/7d/30d window. Powers the per-agent landing page (D157). |
-| `GET` | `/v1/events` | Bulk events query: `from` (required), `to`, `flavor`, `event_type`, `session_id`, `limit` (max 2000), `offset` |
+| `GET` | `/v1/events` | Bulk events query: `from` (required), `to`, `flavor`, `event_type`, `session_id`, `agent_id`, `model`, payload-JSONB facet filters (`error_type`, `close_reason`, `estimated_via`, `matched_entry_id`, `originating_call_context`, `mcp_server`, `terminal`), `framework` (`agent_id` + `framework` resolve via a `sessions` subquery), `before` (keyset cursor) + `order` (`asc`/`desc`) for newest-first drawer pagination, `facets=true` to return per-dimension chip counts over the filtered set instead of the event list, `limit` (default 500, max 2000), `offset` (max 100000) |
 | `GET` | `/v1/events/:id/content` | Event prompt content; 404 when capture was off for the session |
 | `GET` | `/v1/policy` | Sensor preflight: returns the policy applicable to a flavor + session_id |
 | `GET` | `/v1/policies` | List all token policies (org + flavor + session scopes) |
@@ -2243,11 +2243,14 @@ only — never MUI, Ant Design, or Chakra UI.
   chips, sort, and a per-agent swimlane modal. Companion to
   `/` (Fleet) for operators who want a list view and one-shot
   per-agent investigation without leaving the page.
-- `/events` — session search and filtering surface. URL-driven
-  facets: `state`, `agent`, `flavor`, `agent_type`, `model`,
-  `framework`, `error_type`, scalar context fields. Legacy
-  `/investigate` is served at the nginx edge with a permanent 301
-  to `/events` preserving the query string.
+- `/events` — event search and filtering surface. Rows are
+  individual events; URL-driven facets: `event_type`,
+  `policy_event_type`, `error_type`, `framework`, `model`,
+  `close_reason`, `estimated_via`, `matched_entry_id`,
+  `originating_call_context`, `mcp_server`, `agent_id`, and a
+  `terminal` toggle. Legacy `/investigate` is served at the nginx
+  edge with a permanent 301 to `/events` preserving the query
+  string.
 - `/session/:id` — full session drilldown (drawer-based via deep-link).
 - `/analytics` — flexible breakdown charts.
 - `/policies` — token policy CRUD.
@@ -2297,11 +2300,11 @@ Sortable column headers on every column except the sparkline
 tiles themselves (sparklines are visual; the sort key is the
 column's numeric total). Pagination defaults to page size 50.
 
-Per-row hover reveals two quick actions on the right edge —
-**Open mini-swimlane** (triggers the modal) and **Open in
-events** (deep-link to `/events?agent_id=…`). No "Open
-drawer" affordance is rendered while the agent drawer
-surface is absent (Rule 17 — no placeholder UI).
+Clicking anywhere on a row opens that agent's **agent drawer**
+(see below). Per-row hover additionally reveals two quick
+actions on the right edge — **Open mini-swimlane** (triggers
+the per-agent swimlane modal) and **Open in events** (deep-link
+to `/events?agent_id=…`).
 
 Live update contract: the fleet store's `lastEvent` subscription
 patches the affected row's KPI cells and status badge in place;
@@ -2314,12 +2317,12 @@ The hook patches the matching agent's `totals` and most-recent
 series bucket from the WebSocket event and ticks a per-agent
 counter so only that row's memoised cells invalidate.
 
-`?focus=<agent_id>` URL param scrolls the targeted row into
-view and applies a subtle highlight for a few seconds. The
-agent_id is validated against the canonical UUID shape before
-DOM interpolation so a malformed bookmark or crafted URL
-silently no-ops instead of throwing. The Fleet swimlane's
-agent-name link is the primary producer of this param.
+The agent drawer's open/closed state is URL-backed via the
+`?agent_drawer=<agent_id>` query param: a `/agents` row click
+sets it, a deep-linked or bookmarked value opens the drawer on
+load, and the browser back button closes it. The `agent_id` is
+validated against the canonical UUID shape before use so a
+malformed value silently no-ops instead of throwing.
 
 ### Per-agent swimlane modal
 
@@ -2353,6 +2356,63 @@ Modal layout:
 - **Close** — returns to `/agents` at the same scroll
   position; the URL gains no segments while the modal is open.
 
+### Agent drawer
+
+`dashboard/src/components/agents/AgentDrawer.tsx` — a right-rail
+slide-in panel (520px, the same width and `framer-motion` slide
+as `SessionDrawer`). It is mounted once at the app level and
+driven entirely by the `?agent_drawer=<agent_id>` URL param, so
+it opens identically from the `/agents` table (row click) and
+the Fleet swimlane (agent-name click) with no route change. A
+deep-linked `?agent_drawer=` opens it on load; the browser back
+button closes it.
+
+Header:
+
+- **Identity card** — agent name (monospace), `ClientTypePill`
+  (CC / SDK), `agent_type` badge, provider / OS / orchestration
+  icons.
+- **Status badge** — `AgentStatusBadge` with pulse-on-active.
+- **Topology pill** — the preserved `TopologyCell` primitive.
+- **Sub-agent linkage pills** — for a `parent` agent, one
+  clickable chip per child agent identity; for a `child` agent,
+  a single `← parent: {agent_name}` pill. Clicking a pill
+  re-points the drawer at the linked agent (rewrites
+  `?agent_drawer=`).
+- **Open in events →** — top-right deep-link to
+  `/events?agent_id=<id>`.
+
+Below the identity chrome sit three collapsible panels: the MCP
+servers the agent has connected to (union across loaded
+sessions), the latest run's runtime context (git / kubernetes /
+frameworks), and the most recent policy events.
+
+Two tabs:
+
+- **Events** (default) — a paginated, newest-first event list
+  for the agent, backed by `GET /v1/events?agent_id=<id>`. Each
+  row carries the event-type icon, timestamp, model / framework,
+  and a run badge (the 8-char `session_id` prefix). A row click
+  opens the `EventDetailDrawer`; a run-badge click opens the run
+  drawer.
+- **Runs** — a paginated, newest-first run (session) list backed
+  by `GET /v1/sessions?agent_id=<id>`, sortable, default
+  `started_at` descending. Columns: start time, duration, status
+  (with a `close_reason` badge), tokens used, a count of the
+  distinct error types observed in the run, and an `attached`
+  pill when `attachment_count > 0`. A row click opens the run
+  drawer (`SessionDrawer`) stacked over the agent drawer with a
+  `← Back to {agent_name}` breadcrumb that returns to the
+  drawer.
+
+The drawer reuses `TopologyCell`, `AgentStatusBadge`, and the
+`useAgentSummary` cache, so its identity chrome stays
+byte-identical to the `/agents` table and the swimlane label
+strip. It coexists with the per-agent swimlane modal: the modal
+(status-badge click) is a quick visual peek at one agent's
+swimlane; the drawer (row click) is the drill-down into the
+agent's events, runs, and sub-agent linkage.
+
 ### Fleet view
 
 `dashboard/src/pages/Fleet.tsx` composes the FleetPanel sidebar (240px),
@@ -2381,60 +2441,57 @@ sessions.
 ### Events view
 
 Component file `dashboard/src/pages/Investigate.tsx` mounted at the
-`/events` route. URL-driven facet sidebar + session table + session
-drawer (Mode 2 deep-link via `?session=<id>`).
+`/events` route — a URL-driven facet sidebar plus an event table.
+Rows are individual events. Each row carries the event timestamp,
+the agent flavor, a run badge (the 8-char `session_id` prefix),
+the event-type icon, model / framework, the humanized event
+detail string (`lib/events.ts::getEventDetail`), and a status
+chip. Default sort is newest-first; pagination defaults to page
+size 50.
 
-`buildActiveFilters` emits filter chips with onRemove. URL state
-round-trips via `parseUrlState` / `buildUrlParams`; `CLEAR_ALL_FILTERS_PATCH`
-zeroes all filters at once. The aux fetch in `doFetch` strips the active
-filter so the matching facet stays sticky when the filter is applied.
+A row click opens the `EventDetailDrawer`. The run-badge column
+opens the run drawer (`SessionDrawer`) scoped to that event's run.
 
-The AGENT facet is keyed on `agent_id` with `agent_name` display labels.
-Two agents with the same `agent_name` but different `client_type` (e.g.
-plugin and SDK both running as `omria@laptop`) are disambiguated by a
-small uppercase pill (`CC` for `claude_code`, `SDK` for
-`flightdeck_sensor`) appended next to the agent name in the facet row.
+URL state round-trips via `parseEventsUrlState` /
+`buildEventsUrlParams`. Filters apply by clicking facet pills in
+the sidebar — an active pill carries `data-active` and
+`aria-pressed`, and clicking it again clears that value. There is
+no separate active-filter chip bar; the sidebar's highlighted
+pills are the filter-state display.
 
-The ERROR TYPE facet is rendered last (after state / agent / flavor /
-agent_type / model / framework / scalar context groups). Hidden when no
-visible session has any `llm_error` events.
+The facet sidebar is event-grain. Its dimensions: AGENT (keyed on
+`agent_id`, `agent_name` display labels, with a `CC` / `SDK`
+client-type pill disambiguating same-named agents), `event_type`,
+`policy_event_type`, `error_type`, `framework`, `model`,
+`close_reason` (gated to `session_end` events), `estimated_via`,
+`matched_entry_id`, `originating_call_context`, `mcp_server` (the
+MCP event's `payload.server_name`), and a `terminal` toggle. Each
+chip's count comes from the `/v1/events` facet-count query
+(`facets=true`), computed over the active filter set.
+`policy_event_type` is not a server facet dimension — the
+dashboard classifies the `event_type` facet's policy-enforcement
+values into a separate POLICY group, and both groups write the
+single `event_type` filter. The server returns `terminal` as a
+counted `true`/`false` facet; the sidebar renders it as one
+toggle. At event grain each event carries exactly one value per
+dimension, so the per-session aggregate arrays (`error_types[]`,
+`close_reasons[]`, …) have no event-grain analogue.
 
-Operator-actionable enrichment facets surface at the bottom of the
-sidebar: CLOSE REASON (close_reasons[] aggregate from session_end
-events), ESTIMATED VIA (estimated_via_values[] from pre/post_call /
-embeddings), TERMINAL (boolean toggle from has_terminal_error),
-MATCHED ENTRY (matched_entry_ids[] from MCP-policy events), and
-ORIGINATING CALL (originating_call_contexts[] — the MCP method
-that triggered downstream activity). Each per-session aggregate is
-returned by the API's session list endpoint alongside the existing
-error_types[] / policy_event_types[] / mcp_server_names[] arrays.
+The drawer deep-link param is `?run=<session_id>`. The legacy
+`?session=` param is still accepted and transparently rewritten to
+`?run=` so existing bookmarks keep resolving.
 
-Filtering composes server-side. Each value in the URL state
-(`?close_reason=normal_exit&close_reason=directive_shutdown`,
-`?terminal=true`, etc.) maps to an EXISTS subquery against the
-events table scoped to the right event_type set. Multi-value
-entries OR within a dimension; values across dimensions AND. The
-two enum filters (`close_reason`, `estimated_via`) reject out-of-
-band values with HTTP 400 and the allowed-set message; the three
-free-form filters (`matched_entry_id`, `originating_call_context`,
-and the per-value entries inside the array filters) accept any
-string and silently match nothing on typos. Footer count and
-pagination total reflect the filtered total.
-
-`ListSessions` runs roughly ten correlated EXISTS subqueries
-against the `events` table per call (`error_type`, `policy_event_
-type`, plus the five enrichment-facet filters above, plus the
-five SELECT-list aggregates that surface `error_types[]` /
-`policy_event_types[]` / `close_reasons[]` / `estimated_via_
-values[]` / `originating_call_contexts[]` to the dashboard). Every
-subquery joins on `events.session_id` and hits
-`events_session_id_idx`, so the join key stays hot at the data
-volumes the partial index covers. The cheapest hedge if the
-slow-query log surfaces this in production is a partial composite
-index on `(session_id, event_type)` filtered to the seven event
-types the subqueries reference (`session_end`, `llm_error`,
-`pre_call`, `post_call`, `embeddings`, `policy_mcp_warn`,
-`policy_mcp_block`).
+Filtering composes server-side via `GET /v1/events`. `event_type`
+and `model` are plain `events` columns; `error_type`,
+`close_reason`, `estimated_via`, `matched_entry_id`,
+`originating_call_context`, `mcp_server`, and `terminal` extract
+from the `payload` JSONB; `framework` and `agent_id` resolve
+through a `sessions` subquery (the `events` table has no
+`agent_id` column and frameworks live on `sessions`). Multi-value
+entries OR within a dimension; dimensions AND. The migration
+`000023_events_facet_indexes` adds JSONB expression indexes for
+the payload-extraction predicates. Footer count and pagination
+total reflect the filtered total.
 
 ### Session drawer
 
@@ -2461,6 +2518,17 @@ non-empty; combines git / kubernetes / compose / frameworks fields).
 Tabs: Timeline, Prompts, Directives (conditional). The Directives tab
 only appears when `flavorDirectives.length > 0` (filtered from the fleet
 store's `customDirectives` slice by the session's flavor).
+
+Operator-facing prose calls a session a **run**; the drawer is the
+run drawer. It opens from five entry points: (1) an event circle on
+the Fleet swimlane, (2) a run-bracket glyph on the swimlane, (3) a
+row in the agent drawer's Runs tab, (4) the "View entire run →"
+link in the `EventDetailDrawer` metadata section, and (5) the
+run-badge column on the `/events` event table. When opened from
+the agent drawer (entry point 3) the optional `backLabel` /
+`onBack` props render a "← Back to {agent}" breadcrumb that
+returns to the agent drawer; the other four entry points omit
+them.
 
 The Prompts tab loads `PromptViewer` for chat events with
 `event.has_content`, `EmbeddingsContentViewer` for embeddings events
@@ -2536,8 +2604,9 @@ the 500-event cap.
 ### Bulk historical events hook
 
 `dashboard/src/hooks/useHistoricalEvents.ts` calls `fetchBulkEvents({
-from, limit: 500, offset })` (which hits `GET /v1/events`) and returns
-the chronological list. Fleet groups the result by `session_id` to
+from, limit: 500, offset })` (which hits `GET /v1/events`; the
+function also accepts `before` / `order` keyset params for
+newest-first drawer pagination) and returns the chronological list. Fleet groups the result by `session_id` to
 populate `eventsCache` and seeds `feedEvents` from the historical data
 so the live feed is not empty on page load. After the initial load, no
 per-session HTTP fetches happen — WebSocket events flow into the same

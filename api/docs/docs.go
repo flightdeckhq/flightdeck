@@ -415,59 +415,6 @@ const docTemplate = `{
                 }
             }
         },
-        "/v1/agents/{agent_id}": {
-            "get": {
-                "description": "Returns the full AgentSummary for a single agent including rollup counters and the LATERAL-computed rollup state. Powers the Investigate chip agent-name resolver so the UI no longer has to fall back to a UUID prefix when the filtered sessions list is empty.",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "agents"
-                ],
-                "summary": "Get agent detail by id",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Agent UUID",
-                        "name": "agent_id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/store.AgentSummary"
-                        }
-                    },
-                    "400": {
-                        "description": "Invalid UUID format",
-                        "schema": {
-                            "$ref": "#/definitions/handlers.ErrorResponse"
-                        }
-                    },
-                    "401": {
-                        "description": "Missing or invalid bearer token",
-                        "schema": {
-                            "$ref": "#/definitions/handlers.ErrorResponse"
-                        }
-                    },
-                    "404": {
-                        "description": "Agent not found",
-                        "schema": {
-                            "$ref": "#/definitions/handlers.ErrorResponse"
-                        }
-                    },
-                    "500": {
-                        "description": "Database error",
-                        "schema": {
-                            "$ref": "#/definitions/handlers.ErrorResponse"
-                        }
-                    }
-                }
-            }
-        },
         "/v1/agents/{agent_id}/summary": {
             "get": {
                 "description": "Returns totals (tokens, errors, sessions, cost_usd, latency_p50_ms, latency_p95_ms) and a per-bucket time series for one agent over the requested period. Powers the per-agent landing page. “period“ is one of “1h“, “24h“, “7d“, “30d“ (default “7d“). “bucket“ is one of “hour“, “day“, “week“; when omitted it is derived from period (1h/24h → hour, 7d/30d → day). Errors count events with “event_type = 'llm_error'“ only — policy events are enforcement decisions, not failures. Sessions is “COUNT(DISTINCT session_id)“ across events in the window. Latency percentiles use “event_type = 'post_call'“ rows only, matching the analytics endpoint convention.",
@@ -902,7 +849,7 @@ const docTemplate = `{
         },
         "/v1/events": {
             "get": {
-                "description": "Returns events matching time range, flavor, event type, and session filters with pagination. Supports optional ` + "`" + `` + "`" + `before` + "`" + `` + "`" + ` keyset cursor and ` + "`" + `` + "`" + `order` + "`" + `` + "`" + ` direction so the session drawer can paginate backwards in time when loading older events for long-running stable sessions.",
+                "description": "Returns events matching time range, flavor, event type, session, agent, model, framework, and event-payload facet filters with pagination. Multi-value filters OR within a dimension and AND across dimensions. Supports an optional “before“ keyset cursor and “order“ direction for newest-first drawer pagination. When “facets=true“ the response is an EventFacets object of per-dimension chip counts computed over the same filter set instead of the paginated event list.",
                 "produces": [
                     "application/json"
                 ],
@@ -931,8 +878,12 @@ const docTemplate = `{
                         "in": "query"
                     },
                     {
-                        "type": "string",
-                        "description": "Filter by event type",
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "collectionFormat": "csv",
+                        "description": "Filter by event type (repeatable; OR within)",
                         "name": "event_type",
                         "in": "query"
                     },
@@ -940,6 +891,104 @@ const docTemplate = `{
                         "type": "string",
                         "description": "Filter by session ID",
                         "name": "session_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter to every event across all of one agent's runs (UUID; resolved via a sessions subquery)",
+                        "name": "agent_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "collectionFormat": "csv",
+                        "description": "Filter by model (repeatable)",
+                        "name": "model",
+                        "in": "query"
+                    },
+                    {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "collectionFormat": "csv",
+                        "description": "Filter by framework — bare name or versioned context entry (repeatable; resolved via a sessions subquery)",
+                        "name": "framework",
+                        "in": "query"
+                    },
+                    {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "collectionFormat": "csv",
+                        "description": "Filter by payload error type (repeatable)",
+                        "name": "error_type",
+                        "in": "query"
+                    },
+                    {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "collectionFormat": "csv",
+                        "description": "Filter by session_end close reason (repeatable)",
+                        "name": "close_reason",
+                        "in": "query"
+                    },
+                    {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "collectionFormat": "csv",
+                        "description": "Filter by token-estimation method (repeatable)",
+                        "name": "estimated_via",
+                        "in": "query"
+                    },
+                    {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "collectionFormat": "csv",
+                        "description": "Filter by MCP-policy matched entry id (repeatable)",
+                        "name": "matched_entry_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "collectionFormat": "csv",
+                        "description": "Filter by originating call context (repeatable)",
+                        "name": "originating_call_context",
+                        "in": "query"
+                    },
+                    {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "collectionFormat": "csv",
+                        "description": "Filter by MCP server name from an MCP event's payload (repeatable)",
+                        "name": "mcp_server",
+                        "in": "query"
+                    },
+                    {
+                        "type": "boolean",
+                        "description": "Filter to events whose payload terminal flag matches",
+                        "name": "terminal",
+                        "in": "query"
+                    },
+                    {
+                        "type": "boolean",
+                        "description": "When true, return per-dimension facet counts instead of the event list",
+                        "name": "facets",
                         "in": "query"
                     },
                     {
@@ -962,7 +1011,7 @@ const docTemplate = `{
                     },
                     {
                         "type": "integer",
-                        "description": "Offset for pagination (default 0)",
+                        "description": "Offset for pagination (default 0, max 100000)",
                         "name": "offset",
                         "in": "query"
                     }
@@ -3589,6 +3638,10 @@ const docTemplate = `{
                 },
                 "agent_type": {
                     "type": "string"
+                },
+                "attachment_count": {
+                    "description": "AttachmentCount is the number of recorded re-attachments to\nthis session (rows in ` + "`" + `` + "`" + `session_attachments` + "`" + `` + "`" + ` — the initial\nsession creation is not an attachment, so a run that has only\never run once reports 0). Surfaced via a correlated subquery\non the listing query — same pattern as ChildCount — so the\nagent drawer Runs tab can render its \"attached\" pill from the\nlisting without a per-row detail fetch.",
+                    "type": "integer"
                 },
                 "capture_enabled": {
                     "type": "boolean"

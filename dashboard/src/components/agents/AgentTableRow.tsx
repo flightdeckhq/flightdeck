@@ -19,16 +19,9 @@ import { AgentSparkline } from "./AgentSparkline";
 
 interface AgentTableRowProps {
   agent: AgentSummary;
-  /** When set, the row applies a transient highlight + scrolls
-   *  into view (Fleet swimlane label-strip click navigates here
-   *  with the agent_id as the focus target). */
-  focused: boolean;
-  /** Optional ref the host page registers when this row is the
-   *  ``focusedAgentId`` match; used so the page can
-   *  ``scrollIntoView`` without ``document.querySelector``. */
-  rowRef?: React.MutableRefObject<HTMLTableRowElement | null>;
-  /** Row click target — clicking the status badge fires this to
-   *  let the host page open the per-agent swimlane modal. */
+  /** Row click — opens the agent drawer for this agent. */
+  onOpenDrawer: (agent: AgentSummary) => void;
+  /** Status-badge click — opens the per-agent swimlane modal. */
   onOpenSwimlaneModal: (agent: AgentSummary) => void;
 }
 
@@ -42,8 +35,7 @@ const SPARKLINE_HEIGHT = 22;
 
 function AgentTableRowImpl({
   agent,
-  focused,
-  rowRef,
+  onOpenDrawer,
   onOpenSwimlaneModal,
 }: AgentTableRowProps) {
   const navigate = useNavigate();
@@ -63,6 +55,10 @@ function AgentTableRowImpl({
   // they'd require a context-bearing fetch. Out of scope for the
   // initial table render; the modal carries the richer view.
 
+  const handleRowClick = useCallback(
+    () => onOpenDrawer(agent),
+    [agent, onOpenDrawer],
+  );
   const handleBadgeClick = useCallback(
     () => onOpenSwimlaneModal(agent),
     [agent, onOpenSwimlaneModal],
@@ -74,18 +70,14 @@ function AgentTableRowImpl({
 
   return (
     <tr
-      ref={rowRef}
       data-testid={`agent-row-${agent.agent_id}`}
       data-agent-id={agent.agent_id}
       data-agent-topology={agent.topology}
       data-agent-state={agent.state}
-      data-focused={focused ? "true" : undefined}
+      onClick={handleRowClick}
       style={{
         borderBottom: "1px solid var(--border-subtle)",
-        background: focused
-          ? "color-mix(in srgb, var(--accent) 6%, transparent)"
-          : undefined,
-        transition: "background 600ms ease-out",
+        cursor: "pointer",
       }}
     >
       {/* Identity */}
@@ -266,7 +258,10 @@ function AgentTableRowImpl({
         >
           <button
             type="button"
-            onClick={handleOpenInEvents}
+            onClick={(e) => {
+              e.stopPropagation();
+              handleOpenInEvents();
+            }}
             data-testid={`agent-row-open-events-${agent.agent_id}`}
             className="agent-row-quick-action"
             aria-label={`Open ${agent.agent_name} in Events`}
@@ -285,7 +280,10 @@ function AgentTableRowImpl({
           </button>
           <button
             type="button"
-            onClick={handleBadgeClick}
+            onClick={(e) => {
+              e.stopPropagation();
+              handleBadgeClick();
+            }}
             data-testid={`agent-row-open-swimlane-modal-${agent.agent_id}`}
             aria-label={`Open swimlane modal for ${agent.agent_name}`}
             style={{
@@ -307,16 +305,15 @@ function AgentTableRowImpl({
 }
 
 /**
- * The row memoises shallowly: identity props (`agent.agent_id`,
- * `focused`) and the `onOpenSwimlaneModal` callback drive the
- * re-render gate. Per-row KPI updates from the WS lastEvent
- * subscription tick the row's `useAgentSummary` memo internally
- * and do not affect the parent table's render path.
+ * The row memoises shallowly: the `agent` identity and the two
+ * callbacks drive the re-render gate. Per-row KPI updates from the
+ * WS lastEvent subscription tick the row's `useAgentSummary` memo
+ * internally and do not affect the parent table's render path.
  */
 export const AgentTableRow = memo(AgentTableRowImpl, (prev, next) => {
   return (
     prev.agent === next.agent &&
-    prev.focused === next.focused &&
+    prev.onOpenDrawer === next.onOpenDrawer &&
     prev.onOpenSwimlaneModal === next.onOpenSwimlaneModal
   );
 });

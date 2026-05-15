@@ -8,7 +8,7 @@ import type {
   SearchResultSession,
   SearchResults,
 } from "@/lib/types";
-import { parseUrlState } from "@/pages/Investigate";
+import { parseEventsUrlState } from "@/pages/Investigate";
 
 // Mock the search hook so the palette renders deterministic results
 // without hitting the network. A single test toggles the fixture via
@@ -76,22 +76,22 @@ describe("buildSearchResultHref", () => {
     );
     expect(href).toBe("/events?agent_id=deadbeef-1234-5678-9abc-def012345678");
     const sp = new URL("http://x" + href).searchParams;
-    expect(parseUrlState(sp).agentId).toBe("deadbeef-1234-5678-9abc-def012345678");
+    expect(parseEventsUrlState(sp).agentId).toBe(
+      "deadbeef-1234-5678-9abc-def012345678",
+    );
   });
 
-  it("session click sets ?session=<id>", () => {
+  it("session click sets ?run=<id>", () => {
     const href = buildSearchResultHref("session", session("abc-123", "claude-code"));
-    expect(href).toBe("/events?session=abc-123");
+    expect(href).toBe("/events?run=abc-123");
     const sp = new URL("http://x" + href).searchParams;
-    expect(parseUrlState(sp).session).toBe("abc-123");
+    expect(parseEventsUrlState(sp).run).toBe("abc-123");
   });
 
-  it("event click routes to the parent session's drawer", () => {
-    // Per-event deep-link (directEventDetail) is a separate follow-up.
-    // For now, event results open the parent session at the timeline,
-    // which is the "no dead UI" behaviour called out in the brief.
+  it("event click routes to the parent run's drawer", () => {
+    // Event results open the parent run's drawer via ?run=.
     const href = buildSearchResultHref("event", event("e1", "s1"));
-    expect(href).toBe("/events?session=s1");
+    expect(href).toBe("/events?run=s1");
   });
 
   it("URL-encodes special characters in the agent_id (F2)", () => {
@@ -209,16 +209,16 @@ describe("CommandPalette result click routing", () => {
 });
 
 // ---------------------------------------------------------------
-// Investigate ?session= URL round-trip
+// Events page ?run= URL round-trip
 // ---------------------------------------------------------------
 
-describe("Investigate parseUrlState `session` param", () => {
-  it("reads ?session= into state.session", () => {
-    const sp = new URLSearchParams("session=abc-123");
-    expect(parseUrlState(sp).session).toBe("abc-123");
+describe("Events page parseEventsUrlState `run` param", () => {
+  it("reads ?run= into state.run", () => {
+    const sp = new URLSearchParams("run=abc-123");
+    expect(parseEventsUrlState(sp).run).toBe("abc-123");
   });
 
   it("defaults to empty string when absent", () => {
-    expect(parseUrlState(new URLSearchParams()).session).toBe("");
+    expect(parseEventsUrlState(new URLSearchParams()).run).toBe("");
   });
 });

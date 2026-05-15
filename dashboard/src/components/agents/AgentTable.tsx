@@ -13,13 +13,8 @@ interface AgentTableProps {
   /** Per-agent summaries the parent has cached. Drives the sort
    *  key for KPI columns. */
   summariesByAgentId: Map<string, AgentSummaryResponse>;
-  /** When set, the matching row receives the focus highlight and
-   *  scrolls into view. */
-  focusedAgentId: string | null;
-  /** Ref the matching row registers itself on so the parent page
-   *  can ``scrollIntoView`` without touching the DOM through
-   *  ``document.querySelector``. */
-  focusedRowRef?: React.MutableRefObject<HTMLTableRowElement | null>;
+  /** Row click — host page opens the agent drawer. */
+  onOpenDrawer: (agent: AgentSummary) => void;
   /** Status-badge click on a row — host page mounts the
    *  per-agent swimlane modal. */
   onOpenSwimlaneModal: (agent: AgentSummary) => void;
@@ -51,8 +46,7 @@ const COLUMNS: ColumnSpec[] = [
 export function AgentTable({
   agents,
   summariesByAgentId,
-  focusedAgentId,
-  focusedRowRef,
+  onOpenDrawer,
   onOpenSwimlaneModal,
 }: AgentTableProps) {
   const [sort, setSort] = useState<SortState>({
@@ -152,8 +146,7 @@ export function AgentTable({
             <AgentTableRow
               key={a.agent_id}
               agent={a}
-              focused={focusedAgentId === a.agent_id}
-              rowRef={focusedAgentId === a.agent_id ? focusedRowRef : undefined}
+              onOpenDrawer={onOpenDrawer}
               onOpenSwimlaneModal={onOpenSwimlaneModal}
             />
           ))}

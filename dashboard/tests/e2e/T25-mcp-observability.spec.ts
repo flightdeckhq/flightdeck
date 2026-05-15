@@ -26,7 +26,7 @@ import { MCP_FIXTURE, SENSOR_AGENT, waitForInvestigateReady } from "./_fixtures"
 //   T25-7: expanded row exposes input/output/server/duration. Picks
 //     the mcp_tool_call row (capture-on so arguments + result are
 //     visible) as the canonical case.
-//   T25-8: MCP SERVER facet in Investigate sidebar; click filters
+//   T25-8: MCP SERVER facet in the /events sidebar; click filters
 //     and round-trips through the URL.
 //   T25-9: live-feed style filter pill "MCP" exists.
 //   T25-10: session-drawer header MCP SERVERS panel renders both
@@ -113,9 +113,9 @@ async function openMCPSession(page: Page): Promise<string> {
     from: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
     to: new Date().toISOString(),
     flavor: SENSOR_AGENT.flavor,
-    session: sid,
+    run: sid,
   });
-  await page.goto(`/investigate?${params.toString()}`);
+  await page.goto(`/events?${params.toString()}`);
   await waitForInvestigateReady(page);
   await expect(page.locator('[data-testid="session-drawer"]')).toBeVisible();
   return sid;
@@ -198,37 +198,30 @@ test.describe("T25 — MCP observability rendering", () => {
     expect(expanded).toMatch(/\d+ms/);
   });
 
-  // T25-8 — Investigate MCP SERVER facet appears + filter round-trip.
-  test("T25-8: MCP SERVER facet appears, click filters the table, URL round-trips", async ({
+  // T25-8 — event-grain MCP SERVER facet appears + filter round-trip.
+  // The /events facet sidebar is server-computed; the `mcp_server`
+  // dimension is sourced from MCP events' payload `server_name`.
+  test("T25-8: MCP SERVER facet appears on /events, click filters + URL round-trips", async ({
     page,
   }) => {
-    const params = new URLSearchParams({
-      from: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
-      to: new Date().toISOString(),
-      flavor: SENSOR_AGENT.flavor,
-    });
-    await page.goto(`/investigate?${params.toString()}`);
+    await page.goto("/events");
     await waitForInvestigateReady(page);
 
-    const facet = page.locator(
-      '[data-testid="investigate-mcp-server-facet"]',
-    );
+    const facet = page.locator('[data-testid="events-facet-mcp_server"]');
     await expect(
       facet,
-      "MCP SERVER facet must render when a visible session has mcp_server_names",
-    ).toBeVisible();
+      "MCP SERVER facet must render when events carry an MCP server_name",
+    ).toBeVisible({ timeout: 10_000 });
     await expect(facet).toContainText("MCP SERVER");
 
     const pillName = MCP_FIXTURE.servers[0].name;
     const pill = page.locator(
-      `[data-testid="investigate-mcp-server-pill-${pillName}"]`,
+      `[data-testid="events-facet-pill-mcp_server-${pillName}"]`,
     );
     await expect(pill).toBeVisible();
     await pill.click();
     await expect(page).toHaveURL(new RegExp(`mcp_server=${pillName}`));
-    // Active filter chip surfaces with the same name.
-    const activeFiltersText = (await page.textContent("body")) ?? "";
-    expect(activeFiltersText).toContain(`mcp_server:${pillName}`);
+    await expect(pill).toHaveAttribute("data-active", "true");
   });
 
   // T25-9 — Live feed-style MCP filter pill exists in EventFilterBar.
@@ -247,99 +240,25 @@ test.describe("T25 — MCP observability rendering", () => {
     await expect(mcpPill).toContainText("MCP");
   });
 
-  // T25-11 (B-1) — MCP SERVER facet renders on default Investigate URL
-  // (no flavor filter) when any visible session has mcp_server_names.
-  // Pre-B-1 the facet was hidden at the very bottom of an 18-facet
-  // sidebar; the seeded mcp-active session is enough to surface it.
-  test("T25-11: MCP SERVER facet renders on default Investigate URL", async ({
+  // T25-11 — MCP SERVER facet renders on the default /events URL
+  // (no filter) when MCP events are present in the window.
+  test("T25-11: MCP SERVER facet renders on the default /events URL", async ({
     page,
   }) => {
-    const params = new URLSearchParams({
-      from: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
-      to: new Date().toISOString(),
-    });
-    await page.goto(`/investigate?${params.toString()}`);
+    await page.goto("/events");
     await waitForInvestigateReady(page);
-    const facet = page.locator(
-      '[data-testid="investigate-mcp-server-facet"]',
-    );
     await expect(
-      facet,
-      "MCP SERVER facet must render on default Investigate URL when seeded mcp-active session is in the result set",
-    ).toBeVisible();
-    // B-1: facet sits between FRAMEWORK and the scalar-context block.
-    // Assert ordering by reading every facet's data-testid in DOM
-    // order and checking the MCP_SERVER index.
-    const allFacetSections = await page
-      .locator('[data-testid="investigate-sidebar"] > div')
-      .all();
-    let mcpIdx = -1;
-    let osIdx = -1;
-    for (let i = 0; i < allFacetSections.length; i++) {
-      const tid =
-        (await allFacetSections[i].getAttribute("data-testid")) ?? "";
-      const txt = (await allFacetSections[i].textContent()) ?? "";
-      if (tid === "investigate-mcp-server-facet") mcpIdx = i;
-      // The OS section has no testid; identify by its leading label
-      // text. We just need it to come after MCP SERVER.
-      if (txt.startsWith("OS") && osIdx === -1) osIdx = i;
-    }
-    expect(mcpIdx).toBeGreaterThan(-1);
-    expect(osIdx).toBeGreaterThan(-1);
-    expect(mcpIdx).toBeLessThan(osIdx);
+      page.locator('[data-testid="events-facet-mcp_server"]'),
+      "MCP SERVER facet must render on default /events when MCP events are present",
+    ).toBeVisible({ timeout: 10_000 });
   });
 
-  // T25-12 (B-2) — Row-level MCP indicator dot on session listings.
-  test("T25-12: session row carries MCP indicator dot when mcp_server_names is non-empty", async ({
-    page,
-  }) => {
-    const sid = await fetchMCPSessionId(page);
-    const params = new URLSearchParams({
-      from: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
-      to: new Date().toISOString(),
-      flavor: SENSOR_AGENT.flavor,
-    });
-    await page.goto(`/investigate?${params.toString()}`);
-    await waitForInvestigateReady(page);
-    const indicator = page.locator(
-      `[data-testid="session-row-mcp-indicator-${sid}"]`,
-    );
-    await expect(indicator).toBeVisible();
-    const aria = await indicator.getAttribute("aria-label");
-    expect(aria).toContain("fixture-stdio-server");
-    expect(aria).toContain("fixture-http-server");
-  });
-
-  // T25-17 — session-row red MCP error indicator. Phase 5 D-MCP-FAIL.
-  // Mirrors T25-12 (cyan MCP servers dot) but for sessions that
-  // emitted at least one mcp_* event with a structured payload.error.
-  // The canonical seed's ``mcp_tool_call_failed`` extras tag on the
-  // mcp-active session anchors this. Asserts the dot renders with
-  // the right testid + aria-label, and that the seeded error_type
-  // appears in the aria text.
-  test("T25-17: session row carries MCP error indicator when an mcp_* event has payload.error", async ({
-    page,
-  }) => {
-    const sid = await fetchMCPSessionId(page);
-    const params = new URLSearchParams({
-      from: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
-      to: new Date().toISOString(),
-      flavor: SENSOR_AGENT.flavor,
-    });
-    await page.goto(`/investigate?${params.toString()}`);
-    await waitForInvestigateReady(page);
-    const indicator = page.locator(
-      `[data-testid="session-row-mcp-error-indicator-${sid}"]`,
-    );
-    await expect(indicator).toBeVisible();
-    const aria = await indicator.getAttribute("aria-label");
-    expect(aria).toMatch(/^Session emitted MCP error events: /);
-    // The seeder posts ``error_type: "invalid_params"`` on the
-    // failed mcp_tool_call. Lock the value in so a future seeder
-    // change to the error taxonomy surfaces here as a test diff
-    // rather than silent drift.
-    expect(aria).toContain("invalid_params");
-  });
+  // (Phase 4 wave 2: the session-grain T25-12 / T25-17 session-row
+  // MCP indicator dots were retired with the session-grain
+  // /investigate table. At event grain an MCP event is its own row
+  // on /events — surfaced directly rather than via a per-session
+  // indicator — and the MCP SERVER facet (T25-8 / T25-11) plus the
+  // event-detail drawer carry the MCP observability.)
 
   // T25-13 (B-5b) — Fleet swimlane renders MCP events as HEXAGONS
   // (not circles with rings). The mcp-active fixture role is
@@ -360,9 +279,9 @@ test.describe("T25 — MCP observability rendering", () => {
       from: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
       to: new Date().toISOString(),
       flavor: SENSOR_AGENT.flavor,
-      session: sid,
+      run: sid,
     });
-    await page.goto(`/investigate?${params.toString()}`);
+    await page.goto(`/events?${params.toString()}`);
     await waitForInvestigateReady(page);
     const drawer = page.locator('[data-testid="session-drawer"]');
     // Find the resource-read row whose data-event-type is set AND
@@ -428,9 +347,9 @@ test.describe("T25 — MCP observability rendering", () => {
       from: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
       to: new Date().toISOString(),
       flavor: SENSOR_AGENT.flavor,
-      session: sid,
+      run: sid,
     });
-    await page.goto(`/investigate?${params.toString()}`);
+    await page.goto(`/events?${params.toString()}`);
     await waitForInvestigateReady(page);
     const drawer = page.locator('[data-testid="session-drawer"]');
     // Iterate every MCP event row's badge and confirm scrollWidth
@@ -600,7 +519,6 @@ test.describe("T25 — MCP observability rendering", () => {
     // session events (started ~240s ago) fall inside the visible
     // window. Default 1m is too narrow for the seeded data.
     await page.getByRole("button", { name: "5m" }).first().click();
-    await page.waitForTimeout(300);
     // Toggle exists and reads as off.
     const toggle = page.locator('[data-testid="filter-pill-show-discovery"]');
     await expect(toggle).toBeVisible();
@@ -612,8 +530,16 @@ test.describe("T25 — MCP observability rendering", () => {
     // mcp-active session: 3 discovery + 3 usage, plus 1 failed
     // mcp_tool_call from the mcp_tool_call_failed extras tag).
     await page.locator('[data-testid="filter-pill-MCP"]').click();
-    // Wait for the feed to reflect the filter.
-    await page.waitForTimeout(500);
+    // Wait for the MCP-filtered feed to load — an MCP usage badge
+    // proves the filter applied and the feed populated, so the
+    // discovery-absent assertions below are meaningful rather than
+    // trivially true against a not-yet-loaded feed.
+    await expect(
+      page
+        .locator('[data-testid="feed-badge"]')
+        .filter({ hasText: "MCP TOOL CALL" })
+        .first(),
+    ).toBeVisible({ timeout: 10_000 });
     // None of the discovery badge labels should be present.
     await expect(page.locator('[data-testid="feed-badge"]', { hasText: "MCP TOOLS DISCOVERED" })).toHaveCount(0);
     await expect(page.locator('[data-testid="feed-badge"]', { hasText: "MCP RESOURCES DISCOVERED" })).toHaveCount(0);
@@ -634,19 +560,25 @@ test.describe("T25 — MCP observability rendering", () => {
     // Widen to 5m so the seeded mcp-active events fall inside the
     // visible window (same reasoning as the default-hidden case).
     await page.getByRole("button", { name: "5m" }).first().click();
-    await page.waitForTimeout(300);
     const toggle = page.locator('[data-testid="filter-pill-show-discovery"]');
     await expect(toggle).toHaveAttribute("aria-checked", "true");
 
     await page.locator('[data-testid="filter-pill-MCP"]').click();
-    await page.waitForTimeout(500);
-    // At least one of each discovery type should be visible
-    // (the seed emits one of each on the mcp-active session).
-    const allBadges = page.locator('[data-testid="feed-badge"]');
-    const allBadgeTexts = await allBadges.allTextContents();
-    expect(allBadgeTexts).toContain("MCP TOOLS DISCOVERED");
-    expect(allBadgeTexts).toContain("MCP RESOURCES DISCOVERED");
-    expect(allBadgeTexts).toContain("MCP PROMPTS DISCOVERED");
+    // At least one of each discovery type should appear (the seed
+    // emits one of each on the mcp-active session). Web-first
+    // visibility waits absorb the feed-update latency.
+    for (const label of [
+      "MCP TOOLS DISCOVERED",
+      "MCP RESOURCES DISCOVERED",
+      "MCP PROMPTS DISCOVERED",
+    ]) {
+      await expect(
+        page
+          .locator('[data-testid="feed-badge"]')
+          .filter({ hasText: label })
+          .first(),
+      ).toBeVisible({ timeout: 10_000 });
+    }
   });
 
   test("T25-18: drawer event timeline shows discovery events regardless of Fleet toggle", async ({

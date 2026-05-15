@@ -355,6 +355,14 @@ type SessionListItem struct {
 	// the existing ``sessions_parent_session_id_idx`` partial
 	// index.
 	ChildCount int `json:"child_count"`
+	// AttachmentCount is the number of recorded re-attachments to
+	// this session (rows in ``session_attachments`` — the initial
+	// session creation is not an attachment, so a run that has only
+	// ever run once reports 0). Surfaced via a correlated subquery
+	// on the listing query — same pattern as ChildCount — so the
+	// agent drawer Runs tab can render its "attached" pill from the
+	// listing without a per-row detail fetch.
+	AttachmentCount int `json:"attachment_count"`
 }
 
 // SessionsResponse is the paginated response for GET /v1/sessions.
@@ -489,7 +497,8 @@ const sessionListProjection = `
 			) AS originating_call_contexts,
 			s.parent_session_id::text,
 			s.agent_role,
-			(SELECT COUNT(*) FROM sessions c WHERE c.parent_session_id = s.session_id) AS child_count
+			(SELECT COUNT(*) FROM sessions c WHERE c.parent_session_id = s.session_id) AS child_count,
+			(SELECT COUNT(*) FROM session_attachments sa WHERE sa.session_id = s.session_id) AS attachment_count
 		FROM sessions s
 `
 
@@ -973,6 +982,7 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 			&item.ParentSessionID,
 			&item.AgentRole,
 			&item.ChildCount,
+			&item.AttachmentCount,
 		); err != nil {
 			return nil, fmt.Errorf("scan session: %w", err)
 		}
@@ -1094,6 +1104,7 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 					&item.ParentSessionID,
 					&item.AgentRole,
 					&item.ChildCount,
+					&item.AttachmentCount,
 				); err != nil {
 					return nil, fmt.Errorf("scan parent session: %w", err)
 				}

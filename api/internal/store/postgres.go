@@ -60,6 +60,10 @@ type Querier interface {
 	CustomDirectiveExists(ctx context.Context, fingerprint, flavor string) (bool, error)
 	DeleteCustomDirectivesByNamePrefix(ctx context.Context, namePrefix string) (int64, error)
 	GetEvents(ctx context.Context, params EventsParams) (*EventsResponse, error)
+	// GetEventFacets returns per-dimension facet counts for the
+	// /events event-grain sidebar over the same filter set GetEvents
+	// applies. See store/events.go.
+	GetEventFacets(ctx context.Context, params EventsParams) (*EventFacets, error)
 	GetSessions(ctx context.Context, params SessionsParams) (*SessionsResponse, error)
 	QueryAnalytics(ctx context.Context, params AnalyticsParams) (*AnalyticsResponse, error)
 	Search(ctx context.Context, query string) (*SearchResults, error)
@@ -79,9 +83,10 @@ type Querier interface {
 	// ListAgents powers GET /v1/agents. See store/agents.go for the
 	// full filter/sort/search contract.
 	ListAgents(ctx context.Context, params AgentListParams) (*AgentListResponse, error)
-	// GetAgentByID powers GET /v1/agents/{id}. Returns (nil, nil)
-	// for a missing row so the handler can distinguish 404 from a
-	// real DB error.
+	// GetAgentByID is the existence check behind GET
+	// /v1/agents/{id}/summary (see AgentSummaryHandler). Returns
+	// (nil, nil) for a missing row so the caller can distinguish
+	// 404 from a real DB error.
 	GetAgentByID(ctx context.Context, agentID string) (*AgentSummary, error)
 
 	// AgentSummary powers GET /v1/agents/{id}/summary. The handler

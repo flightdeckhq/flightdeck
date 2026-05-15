@@ -243,9 +243,19 @@ interface SessionDrawerProps {
    * inline navigation works without a flicker.
    */
   onSwitchSession?: (sessionId: string, tab?: DrawerTab) => void;
+  /**
+   * When set, the drawer renders a breadcrumb header — "← Back to
+   * {backLabel}" — and clicking it (or the breadcrumb) invokes
+   * onBack. Used when the drawer is opened as the run drawer from
+   * the agent drawer's Runs tab so the operator can return to the
+   * agent. Both must be supplied together; omitted for the standard
+   * Fleet / Events drawer where there is nothing to go back to.
+   */
+  backLabel?: string;
+  onBack?: () => void;
 }
 
-export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDirectEvent, version = 0, initialTab, onSwitchSession }: SessionDrawerProps) {
+export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDirectEvent, version = 0, initialTab, onSwitchSession, backLabel, onBack }: SessionDrawerProps) {
   // Page-size pill state. Resets to DEFAULT_EVENTS_LIMIT on every
   // drawer open (no localStorage per Supervisor directive for v0.3.0)
   // so a user tuning down to 50 on one session doesn't silently carry
@@ -578,6 +588,27 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
           exit={{ x: 520 }}
           transition={{ type: "spring", damping: 25, stiffness: 200 }}
         >
+          {/* Breadcrumb — present only when the drawer is opened as
+              the run drawer from the agent drawer's Runs tab. */}
+          {backLabel && onBack && (
+            <button
+              type="button"
+              data-testid="session-drawer-back"
+              onClick={onBack}
+              className="flex shrink-0 items-center px-4 py-1.5 text-left"
+              style={{
+                border: "none",
+                borderBottom: "1px solid var(--border-subtle)",
+                background: "var(--bg-elevated)",
+                fontSize: 11,
+                fontFamily: "var(--font-mono)",
+                color: "var(--accent)",
+                cursor: "pointer",
+              }}
+            >
+              ← Back to {backLabel}
+            </button>
+          )}
           {/* Header — 56px */}
           <div
             className="flex h-14 shrink-0 items-center justify-between px-4"

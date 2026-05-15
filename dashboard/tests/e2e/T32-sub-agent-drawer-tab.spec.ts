@@ -12,9 +12,9 @@ async function openSessionDrawer(page: Page, sessionId: string): Promise<void> {
   const params = new URLSearchParams({
     from: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
     to: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
-    session: sessionId,
+    run: sessionId,
   });
-  await page.goto(`/investigate?${params.toString()}`);
+  await page.goto(`/events?${params.toString()}`);
   await waitForInvestigateReady(page);
   await expect(page.locator('[data-testid="session-drawer"]')).toBeVisible();
   // Sub-agents tab — gated on parent_session_id OR has-children.
@@ -101,9 +101,9 @@ test.describe("T32 — Sub-agents drawer tab", () => {
     await expect(
       drawer.locator('[data-testid="sub-agents-spawned-from-mini-timeline"]'),
     ).toBeVisible();
-    // URL session param unchanged — chevron did NOT navigate.
+    // URL run param unchanged — chevron did NOT navigate.
     expect(page.url()).toContain(
-      "session=31841e06-182e-5199-a44b-6e245aab5370",
+      "run=31841e06-182e-5199-a44b-6e245aab5370",
     );
 
     // ── Session-id link click rebinds drawer to the parent ─────
@@ -121,9 +121,9 @@ test.describe("T32 — Sub-agents drawer tab", () => {
     // the assertion (per feedback_animatepresence_settle_poll
     // memory).
     await expect.poll(() => page.url(), { timeout: 5_000 }).not.toContain(
-      "session=31841e06-182e-5199-a44b-6e245aab5370",
+      "run=31841e06-182e-5199-a44b-6e245aab5370",
     );
-    expect(page.url()).toMatch(/session=[0-9a-f-]{36}/);
+    expect(page.url()).toMatch(/run=[0-9a-f-]{36}/);
   });
 
   test("UX revision: inline mini-timeline renders the SAME event-badge testid the Timeline tab uses (Timeline-fidelity)", async ({
@@ -188,7 +188,7 @@ test.describe("T32 — Sub-agents drawer tab", () => {
     // Drawer URL still points at the parent (chevron did not
     // navigate).
     expect(page.url()).toContain(
-      "session=e69d1efb-bef3-509a-9bf5-576b23422206",
+      "run=e69d1efb-bef3-509a-9bf5-576b23422206",
     );
     // Summary metrics row is also visible inside the expanded body.
     await expect(

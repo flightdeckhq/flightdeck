@@ -8875,6 +8875,108 @@ Status line is revised to reflect what has closed.
   framework more than five sessions ago surfaces only its
   more-recent framework attributions.
 
+**Phase 4 scope (locked).**
+
+- **Agent drawer.** A right-rail slide-in panel
+  (`AgentDrawer.tsx`, 520px, mirroring `SessionDrawer`'s width
+  and `framer-motion` slide) — the per-agent drill-down
+  surface. Opened by a `/agents` row click (the row click is
+  now the primary affordance, replacing the Phase 3 hidden
+  "Open drawer" placeholder) and by the Fleet swimlane
+  agent-name click. Header (identity card, status badge,
+  topology pill, sub-agent linkage pills, "Open in events"
+  deep-link), three collapsible panels (MCP servers / latest-run
+  context / recent policy events), and two tabs — Events
+  (default) and Runs. Chosen over (a) a `/agents/:id` detail
+  route — operators rarely bookmark a single agent and the
+  drawer keeps the roster context; (b) reusing the per-agent
+  swimlane modal — the modal is a swimlane peek, the drawer is a
+  data drill-down; the two are complementary and both stay.
+- **Drawer state is URL-backed, app-level.** The drawer mounts
+  once in `App.tsx` outside `<Routes>` and reads
+  `?agent_drawer=<agent_id>`. Chosen over a Zustand slice or
+  React context so deep-links and the browser back button work
+  for free and the drawer opens identically from `/agents` and
+  the Fleet swimlane without per-page wiring.
+- **`?focus=` retired.** The Phase 3 `/agents?focus=<agent_id>`
+  scroll-and-highlight interim is removed; the Fleet swimlane
+  agent-name click now opens the agent drawer inline rather
+  than navigating. `?focus=` was always documented as a Phase 3
+  stopgap pending the drawer.
+- **Backend amendment (Rule 44, Supervisor-approved).** The
+  Phase 4 plan assumed "probably no backend changes," but the
+  event-grain `/events` rework and the agent drawer's Events
+  tab both require backend work that does not exist. Approved:
+  `GET /v1/events` gains an `agent_id` filter (resolved via a
+  `sessions` subquery — `events` has no `agent_id` column);
+  `GET /v1/events` gains payload-JSONB facet filters
+  (`error_type`, `close_reason`, `estimated_via`,
+  `matched_entry_id`, `originating_call_context`, `terminal`),
+  a `framework` filter via the `sessions` join, and a
+  facet-count query; a migration adds JSONB expression indexes.
+  `SessionListItem` gains an `attachment_count` correlated-
+  subquery column so the Runs-tab attached pill renders from
+  the listing without N+1 detail fetches. Rejected: shipping
+  the event-grain facet sidebar inert (dead UI), and per-row
+  detail fetches for re-attachment data (N+1).
+- **Mid-phase pause.** Phase 4 ships in two waves inside the
+  same PR and commit series: wave 1 is the agent drawer plus
+  the minimal backend it needs (the `/v1/events` `agent_id`
+  filter and the `SessionListItem.attachment_count` column);
+  wave 2 is the `/events` event-grain rework, the larger
+  `/v1/events` facet backend, and the run-drawer entry-point
+  wiring. A verification checkpoint sits between the waves.
+  This is a checkpoint, not a deferral — no work moves out of
+  Phase 4.
+- **`?session=` → `?run=` (wave 2).** The Events page URL param
+  renames to `?run=` as part of the event-grain rework, with a
+  back-compat redirect for existing `?session=` bookmarks. The
+  vocabulary rename was sequenced to Phase 4 by the Phase 1
+  scope lock.
+
+**Phase 4 wave 2 — event-grain Events page (locked).**
+
+- **`/events` inverts from sessions to events.** The page lists
+  one row per event, not per session. The session-grain table
+  computed its facet sidebar client-side from per-session
+  aggregate arrays (`error_types[]`, `close_reasons[]`, …); at
+  event grain each event carries exactly one value per
+  dimension, so those aggregates do not apply and are dropped.
+  Chosen over keeping a session-grain page with an event
+  sub-view — the operator's Events-page question is "what
+  happened", which is event-shaped; the agent drawer and the
+  swimlane already cover the session/run-shaped views.
+- **Facet counts come from the server.** A session-grain page
+  could compute facets client-side from the loaded rows; an
+  event-grain page cannot (event volume dwarfs the page size).
+  `GET /v1/events` gains a `facets=true` mode returning
+  per-dimension counts over the active filter set. Chosen over
+  the prior page's client-side aggregate counting (does not
+  scale to event volume) and over a separate `/v1/events/facets`
+  endpoint (the same filter parsing would be duplicated; one
+  endpoint with a mode flag keeps the contract single-sourced).
+- **Payload-JSONB facet filters + a dedicated index migration.**
+  `error_type` / `close_reason` / `estimated_via` /
+  `matched_entry_id` / `originating_call_context` / `terminal`
+  filter via `payload` JSONB extraction; `framework` and
+  `agent_id` resolve through a `sessions` subquery. Migration
+  `000023_events_facet_indexes` adds JSONB expression indexes so
+  the predicates do not sequential-scan `events`; the down file
+  is the exact inverse (drops the indexes).
+- **Session-grain E2E specs deleted, not deferred.** Eight
+  Phase 1–3 E2E specs exercised the session-grain `/investigate`
+  page this rework replaces — `T33` (sub-agent facets), `T03`
+  (facet intersection), `T04` (session drawer deep dive), `T16`
+  (error filtering), `T17` (policy filtering), `T18`/`T19`
+  (session sorting), `T42` (payload facets). With the page now
+  event-grain those exact journeys no longer exist, so the specs
+  are deleted as part of the wave-2 test sweep — in-scope because
+  the surface they covered is being changed here, not a deferral.
+  The event-grain page's own journeys — row grain, facet
+  filtering, the POLICY facet, run-drawer entry points, the
+  `?session=`→`?run=` migration — are covered by the new
+  `T73`–`T80` specs.
+
 **Phases 4–5 forward look (not locked, indicative).**
 
 - Phase 4: agent drawer (replaces the deleted expand-row

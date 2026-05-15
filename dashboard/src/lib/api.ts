@@ -1,6 +1,5 @@
 import type {
   FleetResponse,
-  AgentSummary,
   AgentSummaryBucket,
   AgentSummaryPeriod,
   AgentSummaryResponse,
@@ -12,6 +11,7 @@ import type {
   AnalyticsParams,
   AnalyticsResponse,
   EventContent,
+  EventFacets,
   SearchResults,
   CustomDirective,
   AgentEvent,
@@ -113,21 +113,6 @@ export function fetchFleet(page = 1, perPage = 50, agentType?: string): Promise<
   let url = `/v1/fleet?page=${page}&per_page=${perPage}`;
   if (agentType) url += `&agent_type=${agentType}`;
   return fetchJson<FleetResponse>(url);
-}
-
-/**
- * Fetch a single agent's identity via ``GET /v1/agents/{id}``.
- * Returns ``null`` when the server 404s (agent id not known) so
- * callers can handle "no such agent" without a try/catch. Any other
- * non-2xx status still throws via fetchJson.
- */
-export async function fetchAgentById(agentId: string): Promise<AgentSummary | null> {
-  const res = await apiFetch(`/v1/agents/${encodeURIComponent(agentId)}`);
-  if (res.status === 404) return null;
-  if (!res.ok) {
-    throw new Error(`API ${res.status}: /v1/agents/${agentId}`);
-  }
-  return (await res.json()) as AgentSummary;
 }
 
 /**
@@ -314,10 +299,27 @@ export interface BulkEventsParams {
   from: string;
   to?: string;
   flavor?: string;
+  /** Legacy single-value event-type filter (drawer pagination). */
   event_type?: string;
   session_id?: string;
+  /** Scope to every event across all of one agent's runs. The
+   *  server resolves it through a `sessions` subquery. */
+  agent_id?: string;
+  order?: "asc" | "desc";
   limit?: number;
   offset?: number;
+  /** Event-grain facet filters — multi-value, OR within a
+   *  dimension, AND across dimensions. */
+  event_types?: string[];
+  models?: string[];
+  frameworks?: string[];
+  error_types?: string[];
+  close_reasons?: string[];
+  estimated_via?: string[];
+  matched_entry_ids?: string[];
+  originating_call_contexts?: string[];
+  mcp_servers?: string[];
+  terminal?: boolean;
 }
 
 export interface BulkEventsResponse {
@@ -328,22 +330,57 @@ export interface BulkEventsResponse {
   has_more: boolean;
 }
 
+/** Builds the `/v1/events` query string shared by `fetchBulkEvents`
+ *  and `fetchEventFacets` so the two never drift on filter
+ *  serialization. */
+function buildEventsQuery(params: BulkEventsParams): URLSearchParams {
+  const sp = new URLSearchParams();
+  sp.set("from", params.from);
+  if (params.to) sp.set("to", params.to);
+  if (params.flavor) sp.set("flavor", params.flavor);
+  if (params.event_type) sp.append("event_type", params.event_type);
+  if (params.session_id) sp.set("session_id", params.session_id);
+  if (params.agent_id) sp.set("agent_id", params.agent_id);
+  if (params.order) sp.set("order", params.order);
+  if (params.limit !== undefined) sp.set("limit", String(params.limit));
+  if (params.offset !== undefined) sp.set("offset", String(params.offset));
+  for (const v of params.event_types ?? []) sp.append("event_type", v);
+  for (const v of params.models ?? []) sp.append("model", v);
+  for (const v of params.frameworks ?? []) sp.append("framework", v);
+  for (const v of params.error_types ?? []) sp.append("error_type", v);
+  for (const v of params.close_reasons ?? []) sp.append("close_reason", v);
+  for (const v of params.estimated_via ?? []) sp.append("estimated_via", v);
+  for (const v of params.matched_entry_ids ?? [])
+    sp.append("matched_entry_id", v);
+  for (const v of params.originating_call_contexts ?? [])
+    sp.append("originating_call_context", v);
+  for (const v of params.mcp_servers ?? []) sp.append("mcp_server", v);
+  if (params.terminal !== undefined) {
+    sp.set("terminal", String(params.terminal));
+  }
+  return sp;
+}
+
 export function fetchBulkEvents(
   params: BulkEventsParams,
   signal?: AbortSignal,
 ): Promise<BulkEventsResponse> {
-  const searchParams = new URLSearchParams();
-  searchParams.set("from", params.from);
-  if (params.to) searchParams.set("to", params.to);
-  if (params.flavor) searchParams.set("flavor", params.flavor);
-  if (params.event_type) searchParams.set("event_type", params.event_type);
-  if (params.session_id) searchParams.set("session_id", params.session_id);
-  if (params.limit) searchParams.set("limit", String(params.limit));
-  if (params.offset) searchParams.set("offset", String(params.offset));
   return fetchJson<BulkEventsResponse>(
-    `/v1/events?${searchParams.toString()}`,
+    `/v1/events?${buildEventsQuery(params).toString()}`,
     { signal },
   );
+}
+
+/** Fetches per-dimension facet chip counts for the `/events`
+ *  sidebar — `GET /v1/events?...&facets=true`. Same filter params
+ *  as `fetchBulkEvents`; pagination params are ignored server-side. */
+export function fetchEventFacets(
+  params: BulkEventsParams,
+  signal?: AbortSignal,
+): Promise<EventFacets> {
+  const sp = buildEventsQuery(params);
+  sp.set("facets", "true");
+  return fetchJson<EventFacets>(`/v1/events?${sp.toString()}`, { signal });
 }
 
 export interface SessionsParams {

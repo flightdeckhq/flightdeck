@@ -26,6 +26,15 @@ export function formatCost(n: number): string {
   return `$${n.toFixed(3)}`;
 }
 
+/** Compact run duration from a second count: `42s`, `7m`, `2h 13m`. */
+export function formatDuration(seconds: number): string {
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  return m > 0 ? `${h}h ${m}m` : `${h}h`;
+}
+
 /** Relative "time ago" string from an ISO timestamp, second/minute/
  *  hour/day buckets. */
 export function relativeTime(iso: string): string {

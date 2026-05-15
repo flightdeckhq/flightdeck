@@ -16,13 +16,12 @@ landing page (D157).
   chips compose AND across dimensions and OR within: `state`,
   `agent_type`, `client_type`, `framework`. Sortable column headers (the
   numeric column totals are the sort key; the sparkline tiles are
-  visual). Pagination defaults to page size 50. Per-row hover
-  surfaces **Open mini-swimlane** and **Open in events** quick
-  actions. `?focus=<agent_id>` URL param scrolls the targeted
-  row into view and applies a subtle highlight for a few seconds.
-  Per-agent KPI values are cached on first load and updated in
-  place from live activity, so the table never fully re-renders
-  when an event arrives.
+  visual). Pagination defaults to page size 50. A row click opens
+  the agent drawer; per-row hover also surfaces **Open
+  mini-swimlane** and **Open in events** quick actions. Per-agent
+  KPI values are cached on first load and updated in place from
+  live activity, so the table never fully re-renders when an
+  event arrives.
 - **Per-agent swimlane modal.** Clicking the status badge on any
   `/agents` row opens a large modal dialog containing
   a single-agent swimlane scoped to that agent's flavor only.
@@ -38,9 +37,6 @@ landing page (D157).
   Closing the modal preserves the `/agents` table's scroll position.
 - **Agents nav link.** Added between Fleet and Events in the top
   nav.
-- **Fleet swimlane label → `/agents?focus=…`.** Clicking the agent
-  name in the swimlane's left strip navigates to the `/agents`
-  page with the row pre-scrolled and highlighted.
 - **`AgentSummary.recent_sessions` on `GET /v1/fleet`.** Each
   agent row carries a per-agent rollup of its most-recent sessions
   (capped at 5 per agent, newest-first by `started_at`, with
@@ -94,6 +90,47 @@ landing page (D157).
   exact.
   `total` continues to count only filtered rows; `sessions[]`
   may exceed `total` when parents ride along.
+- **Agent drawer.** A right-rail slide-in panel for drilling
+  into one agent. Opens from a click on any `/agents` table row
+  and from the agent-name in the Fleet swimlane label strip.
+  Carries an identity header (name, client/agent-type, provider
+  / OS / orchestration icons, status badge, topology pill,
+  clickable sub-agent linkage pills), collapsible panels for the
+  agent's MCP servers / latest runtime context / recent policy
+  events, and two tabs: a paginated newest-first **Events** list
+  and a paginated sortable **Runs** list. A Runs row opens the
+  run drawer stacked over the agent drawer with a "Back to
+  {agent}" breadcrumb. The drawer is deep-linkable — its open
+  state rides the `?agent_drawer=` URL parameter, and the
+  browser back button closes it.
+- **`GET /v1/events` agent filter.** The bulk events query
+  accepts an `agent_id` parameter, returning every event across
+  all of that agent's runs. The `/v1/sessions` listing also
+  gains an `attachment_count` field (the number of times a run
+  was re-attached), surfaced as the agent drawer Runs-tab
+  attached pill.
+- **`/events` is now an event table.** The Events page lists
+  individual events, one per row — timestamp, agent, run badge,
+  event type, model / framework, a humanized detail string, and
+  a status chip — newest-first, 50 per page. A row opens the
+  event detail; the run-badge column opens the run drawer. The
+  facet sidebar filters at event grain: agent, event type, error
+  type, policy event, framework, model, close reason, estimated
+  via, matched entry, originating call, MCP server, and a
+  terminal toggle — each chip showing a live count.
+- **`GET /v1/events` facet filters + counts.** The bulk events
+  query gains filters for model, framework, and the event
+  payload fields (error type, close reason, estimated via,
+  matched entry, originating call context, MCP server,
+  terminal), plus a `facets` mode that returns per-dimension
+  chip counts over the active filter set.
+- **`?run=` Events-page URL parameter.** The Events page
+  drawer deep-link parameter is now `?run=<id>`; an old
+  `?session=` link is accepted and redirected to `?run=` so
+  existing bookmarks keep working.
+- **"View entire run →" in the event detail drawer.** The event
+  detail drawer's metadata section links to the full run drawer
+  for the event's run.
 
 ### Changed
 
@@ -137,7 +174,12 @@ landing page (D157).
   affordance, and the "View in Events →" deep-link are gone. The
   related fleet-store actions (`loadExpandedSessions`,
   `loadMoreExpandedSessions`) are removed. The full per-agent
-  history surface returns in the upcoming agent drawer.
+  history surface is provided by the agent drawer.
+- **`/agents?focus=` scroll-and-highlight.** The interim
+  cross-page jump (a `?focus=<agent_id>` URL param that scrolled
+  and highlighted a row on the `/agents` table) is retired. The
+  Fleet swimlane agent-name click now opens the agent drawer
+  directly.
 
 ### Fixed
 

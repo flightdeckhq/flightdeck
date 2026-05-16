@@ -4,8 +4,8 @@ All notable changes to Flightdeck are documented here.
 
 ## Unreleased — Per-agent landing page + UI reshape
 
-Backend foundations and Fleet view reshape for the per-agent
-landing page (D157).
+The per-agent landing page (`/agents` page + agent drawer), the
+Fleet swimlane reshape, and the event-grain Events page (D157).
 
 ### Added
 

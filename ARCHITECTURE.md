@@ -96,7 +96,7 @@ no single point of failure introduced into the agent's execution path.
 │                      │    │                              │
 │ POST /v1/events      │    │ GET /v1/fleet                │
 │ POST /v1/heartbeat   │    │ GET /v1/sessions(/:id)       │
-│ GET  /health         │    │ GET /v1/agents(/:id)         │
+│ GET  /health         │    │ GET /v1/agents(/:id/summary) │
 │ GET  /docs/          │    │ GET /v1/events               │
 │                      │    │ GET /v1/events/:id/content   │
 │ Auth: validates      │    │ GET /v1/policy               │
@@ -286,7 +286,7 @@ flightdeck/
 │   │   ├── handlers/
 │   │   │   ├── fleet.go            # GET /v1/fleet
 │   │   │   ├── sessions.go         # GET /v1/sessions, GET /v1/sessions/:id
-│   │   │   ├── agents.go           # GET /v1/agents, /v1/agents/:id, /v1/agents/:id/summary
+│   │   │   ├── agents.go           # GET /v1/agents, /v1/agents/:id/summary
 │   │   │   ├── content.go          # GET /v1/events/:id/content
 │   │   │   ├── search.go           # GET /v1/search
 │   │   │   ├── directives.go       # POST /v1/directives
@@ -1754,9 +1754,13 @@ always create a new numbered migration.
 | 000004 | `custom_directives` table |
 | 000005 | `directives.payload` JSONB column |
 | 000006 | `sessions.context` JSONB + GIN index |
+| 000007 | `custom_directives` unique key recast to `(fingerprint, flavor)` |
+| 000008 | `sessions.last_attached_at` column |
+| 000009 | `session_attachments` table |
 | 000010 | Salted `access_tokens` schema |
 | 000011 | `sessions.token_id` FK + `token_name` column |
 | 000012 | Rename `api_tokens` → `access_tokens` |
+| 000013 | `events.tokens_cache_read` + `tokens_cache_creation` columns |
 | 000014 | Normalize legacy `agent_type` values |
 | 000015 | Drop and recreate `agents` table with `agent_id` PK |
 | 000016 | `event_content.input` JSONB column for embeddings capture |
@@ -1764,6 +1768,9 @@ always create a new numbered migration.
 | 000018 | `mcp_policies` + `mcp_policy_entries` + `mcp_policy_audit_log` tables + indexes. The `mcp_policy_versions` table this migration created was dropped by 000020 — see that row |
 | 000019 | Seed empty-blocklist global `mcp_policies` row |
 | 000020 | Drop `mcp_policy_versions` table + `mcp_policies.version` column |
+| 000021 | `event_content.tool_input` + `tool_output` JSONB columns for tool / prompt capture |
+| 000022 | `event_content.embedding_output` JSONB column for embeddings vector capture |
+| 000023 | `events` partial expression indexes (`model` + payload-JSONB facet keys) for `/events` event-grain facet filtering and counts |
 
 ---
 
@@ -1780,7 +1787,7 @@ authoritative parameter-level reference.
 | `GET` | `/v1/fleet` | Fleet summary: agents with state rollup, total sessions, total tokens, context_facets |
 | `GET` | `/v1/sessions` | Paginated session listing; filters: `agent_id`, `flavor`, `framework`, `state`, `error_type`, `policy_event_type`, `mcp_server`, `from`, `to`, `q`, `parent_session_id`, `is_sub_agent`, `has_sub_agents`, `agent_role[]`, `include_pure_children`, `include_parents`, `close_reason`, `estimated_via`, `terminal`, `matched_entry_id`, `originating_call_context`; returns per-session aggregates (`error_types[]`, `policy_event_types[]`, `mcp_server_names[]`, `close_reasons[]`, `estimated_via_values[]`, `has_terminal_error`, `matched_entry_ids[]`, `originating_call_contexts[]`), `child_count`, and `attachment_count` (the number of re-attachments to the session, surfaced as the agent drawer Runs-tab attached pill) |
 | `GET` | `/v1/sessions/:id` | Session detail: metadata + chronological events + attachments array |
-| `GET` | `/v1/agents/:id` | Single agent's identity record (agent_id, name, agent_type, client_type, host) |
+| `GET` | `/v1/agents` | Paginated agent listing backing the `/agents` page; filters: `agent_type`, `client_type`, `state`, `hostname`, `user`, `os`, `orchestration` (multi-value — OR within a dimension, AND across), `search` (case-insensitive substring on `agent_name` + `hostname`), `updated_since`; `sort` + `order`; `limit` (default 25, max 100) + `offset`. Each row carries the sub-agent rollup fields `agent_role` and `topology` (`lone` / `parent` / `child`) |
 | `GET` | `/v1/agents/:id/summary` | Per-agent activity summary (totals + per-bucket series) over a 1h/24h/7d/30d window. Powers the per-agent landing page (D157). |
 | `GET` | `/v1/events` | Bulk events query: `from` (required), `to`, `flavor`, `event_type`, `session_id`, `agent_id`, `model`, payload-JSONB facet filters (`error_type`, `close_reason`, `estimated_via`, `matched_entry_id`, `originating_call_context`, `mcp_server`, `terminal`), `framework` (`agent_id` + `framework` resolve via a `sessions` subquery), `before` (keyset cursor) + `order` (`asc`/`desc`) for newest-first drawer pagination, `facets=true` to return per-dimension chip counts over the filtered set instead of the event list, `limit` (default 500, max 2000), `offset` (max 100000) |
 | `GET` | `/v1/events/:id/content` | Event prompt content; 404 when capture was off for the session |

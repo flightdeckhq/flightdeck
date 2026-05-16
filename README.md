@@ -553,9 +553,9 @@ helm install flightdeck helm/ \
   --set postgres.externalUrl="postgres://user:pass@rds.example.com:5432/flightdeck?sslmode=require"
 ```
 
-Without `postgres.externalUrl` the chart ships its own single-instance Postgres StatefulSet -- fine for small deployments, not HA and not backed up. NATS is always bundled in v0.3.0.
+Without `postgres.externalUrl` the chart ships its own single-instance Postgres StatefulSet -- fine for small deployments, not HA and not backed up. NATS is always bundled.
 
-The chart is `v0.3.0` (Chart.yaml) with `appVersion: 0.2.0` because `v0.3.0` container images are not yet published on Docker Hub. Bump `image.tag` in `values.yaml` once they are.
+The chart is `v0.3.0` (Chart.yaml `version`) with `appVersion: 0.3.1`; the default `image.tag` in `values.yaml` is `v0.3.1`. Override `image.tag` to deploy a different release tag.
 
 ### Helm values reference
 
@@ -565,7 +565,7 @@ The ~20 values an operator is most likely to override. See `helm/values.yaml` fo
 |---|---|---|
 | `image.registry` | `docker.io` | Container registry host for all Flightdeck images. |
 | `image.repository` | `flightdeckhq` | Namespace under the registry. |
-| `image.tag` | `v0.2.0` | Image tag applied to ingestion/workers/api/dashboard unless the per-component `image.tag` overrides it. |
+| `image.tag` | `v0.3.1` | Image tag applied to ingestion/workers/api/dashboard unless the per-component `image.tag` overrides it. |
 | `image.pullSecrets` | `[]` | `imagePullSecrets` for private registries. |
 | `ingestion.replicas` | `2` | Initial replica count. HPA overrides this at runtime when enabled. |
 | `ingestion.hpa.enabled` | `true` | Enable the HorizontalPodAutoscaler for ingestion. |
@@ -606,7 +606,6 @@ Set expectations early so the boundaries are clear:
 
 Open work tracked here. Prioritized when users tell us which matters most.
 
-- **Per-agent landing page.** A dedicated agent detail view (today's Events filter is the closest equivalent). Token / latency / error trends per agent over rolling windows.
 - **Continuous framework verification.** Scheduled live-API smoke runs across every supported framework, not just on PR. Catches SDK class-rename breakage (anthropic ``RateLimitError`` → ``QuotaError`` etc.) before users hit it.
 - **Production hardening.** NATS authentication, Helm chart polish, nginx rate limiting, dashboard auth, litellm streaming interception, native LangChain Voyage embeddings, dedicated LlamaIndex / CrewAI interceptors where transitive coverage falls short.
 - **AutoGen framework support.** LLM-call interception via `autogen-core` / `autogen-agentchat` (the 0.4 rewrite) or `pyautogen` (0.2 legacy), plus sub-agent observability for it (`agent_role` from `participant.name`, child run per RoutedAgent dispatch / `generate_reply`). AutoGen ships two libraries that share a name with different APIs; both versions need their own interceptor.
@@ -616,6 +615,7 @@ Open work tracked here. Prioritized when users tell us which matters most.
 - **Remove `flightdeck_sensor.compat.crewai_mcp_schema_fixup` helper.** The helper exists as a workaround for an upstream mcpadapt schema-generation bug emitting JSON-Schema-2020-12-invalid keys (empty `anyOf`, null `enum` / `items`, missing `type` after the empty `anyOf` is removed). Remove the helper + the README "Known framework constraints" subsection once mcpadapt emits valid schemas. Verify by running playground demo 22 without the fixup call; if it PASSES, the upstream is fixed and the helper can land for removal.
 - **Surface API 400 validation errors in the dashboard.** A manually-edited URL like `/events?close_reason=bogus` returns 400 from `/v1/sessions` with the allowed-set message, but the dashboard masks it with the generic "No runs found / Try adjusting your filters" empty state. Operators who reach this via facet chip clicks never hit it (chips are constrained), but third-party API consumers see the correct 400 while the dashboard hides the same error. Render the structured 400 message inline above the table when the listing fetch returns a 4xx.
 - **Events sub-agent swimlane shows orphan when parent is outside the visible time window.** `dashboard/src/lib/relationship.ts::deriveRelationship` resolves the parent's agent_id by looking the `parent_session_id` up in the visible fleet store; when the parent run falls outside the current time range the lookup misses and the relationship pill silently falls back to "lone" — the sub-agent renders as a top-level swimlane row with no parent link. Fall back gracefully (e.g. surface "parent outside time window" pill with a deep-link to the wider window) or extend the lookup beyond the visible page.
+- **Review-pipeline methodology refresh.** Two reviewer-process gaps surfaced during the per-agent landing-page work and warrant a dedicated methodology-refresh PR. The Stop-hook condition ordering lets condition #6 evaluate without proper isolation from the preceding conditions. The qa-engineer reviewer prompt does not flag a test marked `.skip` whose only justification is a Roadmap pointer — a pattern that should fail the Rule 40c.1 flaky-test check rather than pass review. The refresh hardens the Stop-hook condition isolation and the qa-engineer `.skip`-plus-Roadmap-pointer detection.
 
 The roadmap is intentionally loose. User demand reorders priorities.
 

@@ -306,10 +306,10 @@ describe("Timeline", () => {
   it("grid overlay is positioned only over the right panel at the default left panel width", () => {
     renderWithRouter(<Timeline {...defaultProps} timeRange="5m" />);
     const overlay = screen.getByTestId("timeline-grid-overlay");
-    // LEFT_PANEL_DEFAULT_WIDTH (320px) offset keeps the lines out of
+    // LEFT_PANEL_DEFAULT_WIDTH (380px) offset keeps the lines out of
     // the flavor labels column. The left panel is now resizable;
     // this test locks in the default without regression.
-    expect((overlay as HTMLElement).style.left).toBe("320px");
+    expect((overlay as HTMLElement).style.left).toBe("380px");
     expect((overlay as HTMLElement).style.width).toBe("900px");
   });
 
@@ -317,7 +317,7 @@ describe("Timeline", () => {
     localStorage.removeItem("flightdeck-left-panel-width");
     renderWithRouter(<Timeline {...defaultProps} />);
     const overlay = screen.getByTestId("timeline-grid-overlay");
-    expect((overlay as HTMLElement).style.left).toBe("320px");
+    expect((overlay as HTMLElement).style.left).toBe("380px");
   });
 
   it("reads the stored width from localStorage on mount", () => {

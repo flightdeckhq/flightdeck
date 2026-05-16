@@ -2308,10 +2308,10 @@ tiles themselves (sparklines are visual; the sort key is the
 column's numeric total). Pagination defaults to page size 50.
 
 Clicking anywhere on a row opens that agent's **agent drawer**
-(see below). Per-row hover additionally reveals two quick
-actions on the right edge — **Open mini-swimlane** (triggers
-the per-agent swimlane modal) and **Open in events** (deep-link
-to `/events?agent_id=…`).
+(see below). The row's status badge opens the per-agent
+swimlane modal; per-row hover additionally reveals an **Open in
+events** quick-action on the right edge (deep-link to
+`/events?agent_id=…`).
 
 Live update contract: the fleet store's `lastEvent` subscription
 patches the affected row's KPI cells and status badge in place;
@@ -2334,8 +2334,9 @@ malformed value silently no-ops instead of throwing.
 ### Per-agent swimlane modal
 
 `dashboard/src/components/agents/PerAgentSwimlaneModal.tsx`
-opens from the `/agents` row status badge as a shadcn Dialog at
-~80 vw × 80 vh. It scopes the existing `SwimLane` /
+opens as a shadcn Dialog at ~80 vw × 80 vh from two surfaces:
+the `/agents` row status badge and the agent drawer header's
+**Open in swimlane** button. It scopes the existing `SwimLane` /
 `VirtualizedSwimLane` primitives to a single agent's flavor
 (plus its sub-agents when the **Show sub-agents** toggle is on).
 
@@ -2343,10 +2344,12 @@ Modal layout:
 
 - **Header** — agent name, topology pill, status badge (with
   pulse on active), KPI totals summary.
-- **Time-range picker** — `5m / 15m / 30m / 1h / 24h`,
-  defaults to `1h`. Affects the modal's swimlane events only,
-  not the `/agents` table sparklines (different operator
-  question — incident-debug window vs long-term trend scan).
+- **Time-range picker** — the five Fleet ranges `1m / 5m /
+  15m / 30m / 1h`, defaulting to `1m`. Options and default are
+  the shared `TIME_RANGE_OPTIONS` / `DEFAULT_TIME_RANGE`
+  constants the Fleet view also reads, so the two pickers
+  cannot drift. Affects the modal's swimlane events only, not
+  the `/agents` table sparklines.
 - **Show sub-agents toggle** — defaults ON for parents
   (`topology === "parent"`), DISABLED + off for lone agents.
   When ON, the modal renders the parent row plus every
@@ -2360,8 +2363,9 @@ Modal layout:
   Radix Dialog), so it stacks above the modal without
   Radix focus-trap or backdrop-click conflicts. Closing the
   drawer clears `selectedEvent`; the modal stays open.
-- **Close** — returns to `/agents` at the same scroll
-  position; the URL gains no segments while the modal is open.
+- **Close** — returns to the launching surface at the same
+  scroll position; the URL gains no segments while the modal
+  is open.
 
 ### Agent drawer
 
@@ -2386,6 +2390,9 @@ Header:
   a single `← parent: {agent_name}` pill. Clicking a pill
   re-points the drawer at the linked agent (rewrites
   `?agent_drawer=`).
+- **Open in swimlane** — top-right header button that opens
+  the per-agent swimlane modal scoped to this agent, stacked
+  over the drawer.
 - **Open in events →** — top-right deep-link to
   `/events?agent_id=<id>`.
 
@@ -2626,7 +2633,7 @@ with expand-in-place, a shared time axis, and a resizable left panel.
 
 `leftPanelWidth: number` state initialises from
 `localStorage[LEFT_PANEL_WIDTH_KEY]` clamped to `[LEFT_PANEL_MIN_WIDTH,
-LEFT_PANEL_MAX_WIDTH]`. Default is `LEFT_PANEL_DEFAULT_WIDTH` (320).
+LEFT_PANEL_MAX_WIDTH]`. Default is `LEFT_PANEL_DEFAULT_WIDTH` (380).
 A 6px-wide drag handle is rendered absolutely on the right edge of the
 time-axis row's sticky left spacer; the time-axis row is `position:
 sticky; top: 0` against Fleet.tsx's outer scroller, so the handle stays
@@ -2824,7 +2831,7 @@ tunable magic numbers:
 | `FEED_COL_DEFAULTS` | `{flavor:120, session:80, type:96, detail:400, time:80}` | Default column widths |
 | `LEFT_PANEL_MIN_WIDTH` | 200 | Resizable swimlane left panel lower bound |
 | `LEFT_PANEL_MAX_WIDTH` | 500 | Upper bound |
-| `LEFT_PANEL_DEFAULT_WIDTH` | 320 | Initial width if no localStorage value |
+| `LEFT_PANEL_DEFAULT_WIDTH` | 380 | Initial width if no localStorage value |
 | `LEFT_PANEL_WIDTH_KEY` | `flightdeck-left-panel-width` | localStorage key |
 | `SESSION_ROW_HEIGHT` | 48 | Two-line session row height |
 | `TIMELINE_WIDTH_PX` | 900 | Fixed event-circles canvas width |

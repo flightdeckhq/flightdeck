@@ -18,9 +18,12 @@ import type {
 import { bucketFor, sortByActivityBucket } from "@/lib/fleet-ordering";
 import type { ContextFilters } from "@/types/context";
 import {
+  DEFAULT_TIME_RANGE,
   FEED_MAX_EVENTS,
   PAUSE_QUEUE_MAX_EVENTS,
   SWIM_FADE_WIDTH_PX,
+  TIME_RANGE_OPTIONS,
+  TIMELINE_RANGE_MS,
 } from "@/lib/constants";
 import { useLeftPanelWidth } from "@/lib/leftPanelWidth";
 import { useSwimlaneScroll } from "@/lib/useSwimlaneScroll";
@@ -35,17 +38,12 @@ import { eventsCache } from "@/hooks/useSessionEvents";
  * retyped to `"swimlane"` everywhere at once.
  */
 export type ViewMode = "swimlane";
-export type TimeRange = "1m" | "5m" | "15m" | "30m" | "1h";
+export type TimeRange = (typeof TIME_RANGE_OPTIONS)[number];
 
-const TIME_RANGES: TimeRange[] = ["1m", "5m", "15m", "30m", "1h"];
-
-const TIME_RANGE_MS: Record<TimeRange, number> = {
-  "1m": 60_000,
-  "5m": 5 * 60_000,
-  "15m": 15 * 60_000,
-  "30m": 30 * 60_000,
-  "1h": 60 * 60_000,
-};
+// Millisecond span per range. Reuses the single TIMELINE_RANGE_MS
+// map in lib/constants.ts (the Timeline component reads the same
+// one), narrowed to the TimeRange key set — one source, no drift.
+const TIME_RANGE_MS = TIMELINE_RANGE_MS as Record<TimeRange, number>;
 
 /**
  * Sort flavors (swimlane-shaped rows) into the three activity buckets
@@ -252,7 +250,7 @@ export function Fleet() {
   // the events whose ``occurred_at`` falls inside the user's
   // chosen window, and ``Return to live`` snaps back to this
   // 1m default.
-  const [timeRange, setTimeRange] = useState<TimeRange>("1m");
+  const [timeRange, setTimeRange] = useState<TimeRange>(DEFAULT_TIME_RANGE);
 
   // Wall-clock tick. Re-renders once per second so the token window
   // filter below (Bug 4) ages events out of the rolling window even
@@ -520,7 +518,7 @@ export function Fleet() {
     pausedRef.current = false;
     setPausedAt(null);
     setVirtualNow(null);
-    setTimeRange("1m");
+    setTimeRange(DEFAULT_TIME_RANGE);
   }
 
   // True while the virtual clock is still catching up to wall clock.
@@ -555,7 +553,7 @@ export function Fleet() {
         >
           {/* Time range */}
           <div className="flex gap-0.5">
-            {TIME_RANGES.map((range) => (
+            {TIME_RANGE_OPTIONS.map((range) => (
               <button
                 key={range}
                 className="rounded px-2.5 py-[3px] text-xs transition-colors"

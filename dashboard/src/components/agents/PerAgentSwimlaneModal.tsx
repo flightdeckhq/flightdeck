@@ -12,23 +12,8 @@ import {
   formatTokens,
 } from "@/lib/agents-format";
 import type { AgentEvent, AgentSummary } from "@/lib/types";
-
-/**
- * Modal-local time-range options. Mirrors Fleet's TimeRange union
- * plus a 24h option for the modal-specific "incident debug
- * window" view. The modal defaults to 1h — wider than the
- * live-monitor Fleet default so an operator opening a closed
- * agent's row immediately sees its recent activity.
- */
-type ModalTimeRange = "5m" | "15m" | "30m" | "1h" | "24h";
-
-const MODAL_TIME_RANGES: ModalTimeRange[] = [
-  "5m",
-  "15m",
-  "30m",
-  "1h",
-  "24h",
-];
+import type { TimeRange } from "@/pages/Fleet";
+import { DEFAULT_TIME_RANGE, TIME_RANGE_OPTIONS } from "@/lib/constants";
 
 interface PerAgentSwimlaneModalProps {
   /** The agent whose swimlane is being viewed. ``null`` keeps the
@@ -41,7 +26,7 @@ export function PerAgentSwimlaneModal({
   agent,
   onClose,
 }: PerAgentSwimlaneModalProps) {
-  const [timeRange, setTimeRange] = useState<ModalTimeRange>("1h");
+  const [timeRange, setTimeRange] = useState<TimeRange>(DEFAULT_TIME_RANGE);
   // Show-sub-agents toggle. Default ON for parents (the relationship
   // is the primary reason an operator opens the modal on a parent);
   // DISABLED + off for lone agents (no sub-agents to render).
@@ -54,6 +39,10 @@ export function PerAgentSwimlaneModal({
 
   useEffect(() => {
     setShowSubAgents(agent?.topology === "parent");
+    // Reset the window to the shared default whenever the modal
+    // re-points at a different agent, mirroring the showSubAgents
+    // reset — a reopen never inherits the prior agent's range.
+    setTimeRange(DEFAULT_TIME_RANGE);
   }, [agent?.agent_id, agent?.topology]);
 
   const { summary } = useAgentSummary(agent?.agent_id ?? "", {
@@ -96,19 +85,6 @@ export function PerAgentSwimlaneModal({
   }, [agent, allFlavors, showSubAgents]);
 
   const open = agent !== null;
-
-  // Modal-specific timeRange semantics: when the user picks 24h
-  // the Timeline still receives a Fleet TimeRange. The Timeline's
-  // rangeMs is read from TIMELINE_RANGE_MS which only has 1h as
-  // its top value; the modal sidesteps this by passing 1h to
-  // Timeline and applying its own scaler below the cap if 24h is
-  // picked — to keep this PR scoped to the prompt-locked options
-  // the modal renders at the picker's max (1h) when 24h is
-  // chosen and surfaces the actual selected window on the
-  // header. A follow-up phase can extend Fleet's TIMELINE_RANGE_MS
-  // to honour 24h end-to-end if operator feedback warrants it.
-  const timelineTimeRange =
-    timeRange === "24h" ? "1h" : (timeRange as "5m" | "15m" | "30m" | "1h");
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
@@ -211,7 +187,7 @@ export function PerAgentSwimlaneModal({
                     gap: 4,
                   }}
                 >
-                  {MODAL_TIME_RANGES.map((r) => (
+                  {TIME_RANGE_OPTIONS.map((r) => (
                     <button
                       key={r}
                       type="button"
@@ -283,7 +259,7 @@ export function PerAgentSwimlaneModal({
             >
               <Timeline
                 flavors={scopedFlavors}
-                timeRange={timelineTimeRange}
+                timeRange={timeRange}
                 onNodeClick={(_sessionId, _eventId, event) => {
                   if (event) setSelectedEvent(event);
                 }}
@@ -302,24 +278,6 @@ export function PerAgentSwimlaneModal({
               onClose={() => setSelectedEvent(null)}
             />
 
-            {timeRange === "24h" && (
-              <div
-                style={{
-                  padding: "6px 12px",
-                  borderTop: "1px solid var(--border-subtle)",
-                  background: "var(--surface)",
-                  fontSize: 11,
-                  color: "var(--text-muted)",
-                  fontFamily: "var(--font-mono)",
-                }}
-                data-testid="per-agent-swimlane-modal-24h-note"
-              >
-                24h window selected — swimlane scale capped at 1h
-                (Fleet TimeRange ladder); the recent_sessions
-                rollup still surfaces older sessions in the
-                modal's row.
-              </div>
-            )}
           </>
         )}
       </DialogContent>

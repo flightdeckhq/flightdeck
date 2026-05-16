@@ -57,9 +57,9 @@ test.describe("T65 — modal event-circle click opens stacked drawer", () => {
     ).toBeVisible();
 
     // Widen the modal's time-range to 1h so the seeded events
-    // are guaranteed in-domain (the modal defaults to 1h
-    // anyway; this is belt-and-suspenders for parallel-worker
-    // timing under heavy load).
+    // are guaranteed in-domain — the modal now defaults to 1m
+    // (the narrowest window), so widening here is required, not
+    // belt-and-suspenders.
     await page
       .locator('[data-testid="per-agent-swimlane-modal-time-1h"]')
       .click();

@@ -24,7 +24,7 @@ We support coding agents like Claude Code and production agents instrumented wit
 
 ## Quickstart
 
-Prerequisites: Docker Engine 28+ with Compose v2, and Python 3.10+ for the sensor.
+Prerequisites: Docker Engine 28+ with Compose v2. Python 3.10+ for the sensor path; Claude Code for the plugin path.
 
 Start the stack:
 
@@ -35,6 +35,8 @@ make dev
 ```
 
 Dashboard at http://localhost:4000. The dev stack seeds a test token `tok_dev` automatically.
+
+### Production agents
 
 Install the sensor and point your agent at it:
 
@@ -60,6 +62,20 @@ client.messages.create(model="claude-sonnet-4-6", ...)
 The agent shows up in the fleet view within seconds.
 
 To run the sensor from source instead of PyPI: `pip install -e sensor/` from the repo root.
+
+### Coding agents (Claude Code)
+
+Point Claude Code at the plugin shipped in this repo:
+
+```bash
+export FLIGHTDECK_SERVER="http://localhost:4000"
+export FLIGHTDECK_TOKEN="tok_dev"
+claude --plugin-dir /path/to/flightdeck/plugin
+```
+
+The Claude Code session shows up in the fleet view within seconds. Tool inputs and LLM call content are captured by default — unlike the Python sensor, which keeps `capture_prompts=False` until you opt in — so the Prompts tab is populated without extra setup.
+
+`--plugin-dir` is the path. Set `FLIGHTDECK_SERVER` and `FLIGHTDECK_TOKEN` in your shell so the plugin picks them up at every Claude Code session.
 
 ---
 

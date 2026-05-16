@@ -17,6 +17,7 @@ import { SessionDrawer } from "@/components/session/SessionDrawer";
 import { useAgentRuns } from "@/hooks/useAgentRuns";
 import { AgentDrawerEventsTab } from "./AgentDrawerEventsTab";
 import { AgentDrawerRunsTab } from "./AgentDrawerRunsTab";
+import { PerAgentSwimlaneModal } from "./PerAgentSwimlaneModal";
 import type { AgentEvent } from "@/lib/types";
 
 // Mirrors SessionDrawer's slide width. The agent drawer sits at
@@ -72,6 +73,7 @@ export function AgentDrawer({
   const [tab, setTab] = useState<DrawerTab>("events");
   const [selectedEvent, setSelectedEvent] = useState<AgentEvent | null>(null);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  const [swimlaneOpen, setSwimlaneOpen] = useState(false);
   const [openPanels, setOpenPanels] = useState({
     mcp: false,
     context: false,
@@ -84,6 +86,7 @@ export function AgentDrawer({
     setTab("events");
     setSelectedEvent(null);
     setSelectedRunId(null);
+    setSwimlaneOpen(false);
     setOpenPanels({ mcp: false, context: false, policy: false });
   }, [agentId]);
 
@@ -231,19 +234,44 @@ export function AgentDrawer({
                   agentId={agent.agent_id}
                   topology={agent.topology}
                 />
-                <Link
-                  to={`/events?agent_id=${encodeURIComponent(agent.agent_id)}`}
-                  data-testid="agent-drawer-open-in-events"
+                <div
                   style={{
                     marginLeft: "auto",
-                    fontSize: 11,
-                    fontFamily: "var(--font-mono)",
-                    color: "var(--accent)",
-                    textDecoration: "none",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 12,
                   }}
                 >
-                  Open in events →
-                </Link>
+                  <button
+                    type="button"
+                    data-testid="agent-drawer-open-swimlane"
+                    aria-label={`Open ${agent.agent_name} in swimlane`}
+                    onClick={() => setSwimlaneOpen(true)}
+                    style={{
+                      fontSize: 11,
+                      fontFamily: "var(--font-mono)",
+                      color: "var(--accent)",
+                      background: "transparent",
+                      border: "none",
+                      padding: 0,
+                      cursor: "pointer",
+                    }}
+                  >
+                    Open in swimlane
+                  </button>
+                  <Link
+                    to={`/events?agent_id=${encodeURIComponent(agent.agent_id)}`}
+                    data-testid="agent-drawer-open-in-events"
+                    style={{
+                      fontSize: 11,
+                      fontFamily: "var(--font-mono)",
+                      color: "var(--accent)",
+                      textDecoration: "none",
+                    }}
+                  >
+                    Open in events →
+                  </Link>
+                </div>
               </div>
 
               {/* Sub-agent linkage pills */}
@@ -383,6 +411,15 @@ export function AgentDrawer({
         onClose={() => setSelectedRunId(null)}
         backLabel={agent?.agent_name}
         onBack={() => setSelectedRunId(null)}
+      />
+
+      {/* Per-agent swimlane modal — opened from the header
+          "Open in swimlane" button, scoped to this agent. The modal
+          is a Radix Dialog that portals to <body>, so it stacks
+          above the agent drawer without z-index coordination. */}
+      <PerAgentSwimlaneModal
+        agent={swimlaneOpen ? agent : null}
+        onClose={() => setSwimlaneOpen(false)}
       />
     </>
   );

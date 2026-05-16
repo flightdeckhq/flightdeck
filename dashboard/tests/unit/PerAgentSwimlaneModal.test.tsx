@@ -76,16 +76,20 @@ describe("PerAgentSwimlaneModal", () => {
     );
   });
 
-  it("defaults the time range picker to 1h", () => {
+  it("defaults the time range picker to 1m", () => {
     render(
       <MemoryRouter>
         <PerAgentSwimlaneModal agent={mkAgent()} onClose={() => {}} />
       </MemoryRouter>,
     );
+    const btn1m = screen.getByTestId("per-agent-swimlane-modal-time-1m");
+    expect(btn1m).toHaveAttribute("data-active", "true");
     const btn1h = screen.getByTestId("per-agent-swimlane-modal-time-1h");
-    expect(btn1h).toHaveAttribute("data-active", "true");
-    const btn5m = screen.getByTestId("per-agent-swimlane-modal-time-5m");
-    expect(btn5m).not.toHaveAttribute("data-active");
+    expect(btn1h).not.toHaveAttribute("data-active");
+    // 24h was dropped — the modal mirrors Fleet's five options.
+    expect(
+      screen.queryByTestId("per-agent-swimlane-modal-time-24h"),
+    ).toBeNull();
   });
 
   it("defaults the show-sub-agents toggle ON for parent agents", () => {

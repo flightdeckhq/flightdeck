@@ -207,6 +207,16 @@ type ContextFacetValue struct {
 // directive_action, directive_status, result, error, duration_ms
 // for directive_result events. Empty for events with no extra
 // metadata.
+//
+// Framework, ClientType, and AgentType are session-level identity
+// attributes joined from `sessions` on session_id -- the events
+// table carries none of them. Framework and ClientType are nullable
+// on `sessions` (framework for events predating attribution and for
+// Claude Code plugin sessions; client_type carries a CHECK but no
+// NOT NULL constraint); AgentType is NOT NULL there. All three are
+// pointers so a NULL column -- or the all-NULL row a LEFT JOIN would
+// yield for the FK-precluded case of a missing session -- scans
+// cleanly.
 type Event struct {
 	ID                  string         `json:"id"`
 	SessionID           string         `json:"session_id"`
@@ -223,6 +233,9 @@ type Event struct {
 	HasContent          bool           `json:"has_content"`
 	Payload             map[string]any `json:"payload,omitempty"`
 	OccurredAt          time.Time      `json:"occurred_at"`
+	Framework           *string        `json:"framework,omitempty"`
+	ClientType          *string        `json:"client_type,omitempty"`
+	AgentType           *string        `json:"agent_type,omitempty"`
 }
 
 // AgentSummary is one row in the v0.4.0 Phase 1 agent-level fleet

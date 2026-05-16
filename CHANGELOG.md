@@ -49,6 +49,16 @@ Fleet swimlane reshape, and the event-grain Events page (D157).
   rollup over the paginated `/v1/sessions` intersection, so an
   agent's row renders event circles regardless of where its
   sessions fall in the global sessions page window.
+- **Events table identity enrichment.** Each row on the `/events`
+  page now reads at a glance for "who fired this" and "how it ran":
+  the AGENT cell shows the firing agent's `client_type` pill and
+  `agent_type` badge beside the agent name, and the MODEL cell
+  shows the provider logo and a `framework` pill beside the model
+  (for LLM events). Events that carry captured prompt content show
+  a prompt-capture indicator in the DETAIL cell. `GET /v1/events`
+  projects `framework` / `client_type` / `agent_type` onto every
+  returned event via a join to its session; no columns were added
+  to the table.
 - **`/v1/analytics?filter_agent_id=<uuid>`.** Scopes any analytics
   metric (including the four sub-agent-aware metrics) to events
   from sessions owned by a single agent. UUID validated at the

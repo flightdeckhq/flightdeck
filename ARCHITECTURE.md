@@ -1571,27 +1571,32 @@ attached" separators.
 
 ```sql
 CREATE TABLE events (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid,
-    session_id      UUID NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
-    event_type      TEXT NOT NULL,
-    framework       TEXT,                              -- bare name, denorm from sensor payload
-    model           TEXT,
-    tokens_input    BIGINT,
-    tokens_output   BIGINT,
-    tokens_total    BIGINT,
-    tokens_cache_read    BIGINT,
-    tokens_cache_creation BIGINT,
-    latency_ms      BIGINT,
-    tool_name       TEXT,
-    has_content     BOOLEAN NOT NULL DEFAULT FALSE,
-    payload         JSONB,                             -- type-specific extras (streaming, error, directive)
-    occurred_at     TIMESTAMPTZ NOT NULL,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW
+    id                    UUID DEFAULT gen_random_uuid,
+    session_id            UUID NOT NULL REFERENCES sessions(session_id),
+    flavor                TEXT NOT NULL,
+    event_type            TEXT NOT NULL,
+    model                 TEXT,
+    tokens_input          INTEGER,
+    tokens_output         INTEGER,
+    tokens_total          INTEGER,
+    latency_ms            INTEGER,
+    tool_name             TEXT,
+    has_content           BOOLEAN NOT NULL DEFAULT FALSE,
+    payload               JSONB,                       -- type-specific extras (streaming, error, directive)
+    occurred_at           TIMESTAMPTZ NOT NULL DEFAULT NOW,
+    source                TEXT,
+    tokens_cache_read     BIGINT NOT NULL DEFAULT 0,
+    tokens_cache_creation BIGINT NOT NULL DEFAULT 0,
+    PRIMARY KEY (id, occurred_at)
 );
 
-CREATE INDEX events_session_id_idx ON events (session_id, occurred_at);
-CREATE INDEX events_event_type_idx ON events (event_type);
-CREATE INDEX events_occurred_at_idx ON events (occurred_at DESC);
+CREATE INDEX events_session_idx ON events (session_id, occurred_at);
+CREATE INDEX events_flavor_idx  ON events (flavor, occurred_at);
+CREATE INDEX events_type_idx    ON events (event_type, occurred_at);
+-- Plus partial expression indexes backing the /events event-grain
+-- facet filters and counts: one on `model`, one per payload-JSONB
+-- facet key, each `WHERE (<expr>) IS NOT NULL` so the index stays
+-- small (only the minority of events carrying the field is indexed).
 ```
 
 `payload` JSONB carries event-type-specific extras: streaming sub-object on
@@ -2132,6 +2137,15 @@ could leave `total` stale relative to `events`, breaking pagination math
 (`offset + len(events) > total`). Repeatable read pins both reads to the
 same snapshot.
 
+Each returned event carries the session-level identity attributes
+`framework`, `client_type`, and `agent_type`, projected via a
+`LEFT JOIN` to `sessions` on `session_id` — the events table stores
+none of them. The filter + ORDER + pagination run inside a subquery
+so the join only touches the page's rows; the COUNT query runs on
+`events` alone and never includes the join, so it is unchanged.
+`framework` and `client_type` are nullable on `sessions`;
+`agent_type` is `NOT NULL` there.
+
 ### Server timeouts
 
 `withRESTTimeout` middleware wraps every REST handler in a
@@ -2405,10 +2419,9 @@ Two tabs:
 
 - **Events** (default) — a paginated, newest-first event list
   for the agent, backed by `GET /v1/events?agent_id=<id>`. Each
-  row carries the event-type icon, timestamp, model / framework,
-  and a run badge (the 8-char `session_id` prefix). A row click
-  opens the `EventDetailDrawer`; a run-badge click opens the run
-  drawer.
+  row carries the event-type icon, timestamp, model, and a run
+  badge (the 8-char `session_id` prefix). A row click opens the
+  `EventDetailDrawer`; a run-badge click opens the run drawer.
 - **Runs** — a paginated, newest-first run (session) list backed
   by `GET /v1/sessions?agent_id=<id>`, sortable, default
   `started_at` descending. Columns: start time, duration, status
@@ -2456,12 +2469,17 @@ sessions.
 
 Component file `dashboard/src/pages/Investigate.tsx` mounted at the
 `/events` route — a URL-driven facet sidebar plus an event table.
-Rows are individual events. Each row carries the event timestamp,
-the agent flavor, a run badge (the 8-char `session_id` prefix),
-the event-type icon, model / framework, the humanized event
-detail string (`lib/events.ts::getEventDetail`), and a status
-chip. Default sort is newest-first; pagination defaults to page
-size 50.
+Rows are individual events across seven columns: the event
+timestamp; the AGENT cell (agent flavor, the `ClientTypePill`,
+and the `agent_type` badge); a run badge (the 8-char `session_id`
+prefix); the event-type icon; the MODEL cell (provider logo,
+model, and a framework pill — rendered only for LLM events that
+carry a model); the humanized event detail string
+(`lib/events.ts::getEventDetail`) with a trailing prompt-capture
+indicator on events whose `has_content` is set; and a status
+chip. The `framework` / `client_type` / `agent_type` values are
+joined onto each event from its `sessions` row by `GET /v1/events`.
+Default sort is newest-first; pagination defaults to page size 50.
 
 A row click opens the `EventDetailDrawer`. The run-badge column
 opens the run drawer (`SessionDrawer`) scoped to that event's run.

@@ -467,3 +467,192 @@ func TestGetEvents_FrameworkFilter(t *testing.T) {
 		t.Error("framework=langchain did not return the seeded langchain event")
 	}
 }
+
+// TestGetEvents_SessionIdentityColumns verifies GetEvents projects the
+// session-level identity attributes (framework, client_type,
+// agent_type) onto each Event via the LEFT JOIN to `sessions`. It
+// covers a session with a framework set and one with a NULL framework
+// (a Claude Code session), asserting the latter scans back as a nil
+// pointer rather than an empty string.
+func TestGetEvents_SessionIdentityColumns(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	from := now.Add(-time.Hour)
+
+	// Session 1: sensor / production / langchain.
+	sensorID := randomUUID(t)
+	sensorFlavor := "test-events-identity-sensor-" + randomUUID(t)[:8]
+	agentSensor := randomUUID(t)
+	seedAgent(t, s, agentSensor, from, now.Add(-10*time.Minute), 1, 100)
+	if _, err := s.pool.Exec(ctx, `
+		INSERT INTO sessions (
+			session_id, agent_id, flavor, state, framework,
+			started_at, last_seen_at, tokens_used,
+			agent_type, client_type
+		) VALUES (
+			$1::uuid, $2::uuid, $3, 'closed', 'langchain',
+			$4, $4, 100, 'production', 'flightdeck_sensor'
+		)
+	`, sensorID, agentSensor, sensorFlavor, now.Add(-30*time.Minute)); err != nil {
+		t.Fatalf("seed sensor session: %v", err)
+	}
+
+	// Session 2: claude_code / coding with the framework column left
+	// unset so it defaults to NULL.
+	ccID := randomUUID(t)
+	ccFlavor := "test-events-identity-cc-" + randomUUID(t)[:8]
+	agentCC := randomUUID(t)
+	seedAgent(t, s, agentCC, from, now.Add(-10*time.Minute), 1, 100)
+	if _, err := s.pool.Exec(ctx, `
+		INSERT INTO sessions (
+			session_id, agent_id, flavor, state,
+			started_at, last_seen_at, tokens_used,
+			agent_type, client_type
+		) VALUES (
+			$1::uuid, $2::uuid, $3, 'closed',
+			$4, $4, 100, 'coding', 'claude_code'
+		)
+	`, ccID, agentCC, ccFlavor, now.Add(-30*time.Minute)); err != nil {
+		t.Fatalf("seed claude-code session: %v", err)
+	}
+
+	for _, sd := range []struct{ sessionID, flavor string }{
+		{sensorID, sensorFlavor},
+		{ccID, ccFlavor},
+	} {
+		if _, err := s.pool.Exec(ctx, `
+			INSERT INTO events (
+				id, session_id, flavor, event_type, occurred_at, has_content
+			) VALUES (
+				gen_random_uuid(), $1::uuid, $2, 'post_call', $3, false
+			)
+		`, sd.sessionID, sd.flavor, now.Add(-20*time.Minute)); err != nil {
+			t.Fatalf("seed event: %v", err)
+		}
+	}
+	t.Cleanup(func() {
+		_, _ = s.pool.Exec(ctx,
+			`DELETE FROM events WHERE session_id = ANY($1::uuid[])`,
+			[]string{sensorID, ccID})
+	})
+
+	// Sensor session: every identity column populated from the join.
+	respSensor, err := s.GetEvents(ctx, EventsParams{
+		From: from, To: now, SessionID: sensorID, Limit: 100,
+	})
+	if err != nil {
+		t.Fatalf("GetEvents(sensor): %v", err)
+	}
+	if len(respSensor.Events) != 1 {
+		t.Fatalf("sensor: len(events)=%d, want 1", len(respSensor.Events))
+	}
+	ev := respSensor.Events[0]
+	if ev.Framework == nil {
+		t.Error("sensor Framework = nil, want langchain")
+	} else if *ev.Framework != "langchain" {
+		t.Errorf("sensor Framework = %q, want langchain", *ev.Framework)
+	}
+	if ev.ClientType == nil {
+		t.Error("sensor ClientType = nil, want flightdeck_sensor")
+	} else if *ev.ClientType != "flightdeck_sensor" {
+		t.Errorf("sensor ClientType = %q, want flightdeck_sensor", *ev.ClientType)
+	}
+	if ev.AgentType == nil {
+		t.Error("sensor AgentType = nil, want production")
+	} else if *ev.AgentType != "production" {
+		t.Errorf("sensor AgentType = %q, want production", *ev.AgentType)
+	}
+
+	// Claude Code session: client/agent type populated, framework nil.
+	respCC, err := s.GetEvents(ctx, EventsParams{
+		From: from, To: now, SessionID: ccID, Limit: 100,
+	})
+	if err != nil {
+		t.Fatalf("GetEvents(claude-code): %v", err)
+	}
+	if len(respCC.Events) != 1 {
+		t.Fatalf("claude-code: len(events)=%d, want 1", len(respCC.Events))
+	}
+	ev = respCC.Events[0]
+	if ev.Framework != nil {
+		t.Errorf("claude-code Framework = %q, want nil", *ev.Framework)
+	}
+	if ev.ClientType == nil {
+		t.Error("claude-code ClientType = nil, want claude_code")
+	} else if *ev.ClientType != "claude_code" {
+		t.Errorf("claude-code ClientType = %q, want claude_code", *ev.ClientType)
+	}
+	if ev.AgentType == nil {
+		t.Error("claude-code AgentType = nil, want coding")
+	} else if *ev.AgentType != "coding" {
+		t.Errorf("claude-code AgentType = %q, want coding", *ev.AgentType)
+	}
+}
+
+// TestGetEvents_SessionIdentityColumns_NullClientType verifies the
+// LEFT JOIN scans a NULL `sessions.client_type` cleanly as a nil
+// pointer. `client_type` carries a CHECK but no NOT NULL constraint,
+// so a session row can legitimately omit it; the join must not error
+// or panic on the null column.
+func TestGetEvents_SessionIdentityColumns_NullClientType(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	from := now.Add(-time.Hour)
+
+	agentID := randomUUID(t)
+	sessionID := randomUUID(t)
+	flavor := "test-events-identity-null-ct-" + randomUUID(t)[:8]
+	seedAgent(t, s, agentID, from, now.Add(-10*time.Minute), 1, 100)
+
+	// Insert a session with no client_type column value (legal: the
+	// column has a CHECK but no NOT NULL constraint).
+	if _, err := s.pool.Exec(ctx, `
+		INSERT INTO sessions (
+			session_id, agent_id, flavor, state,
+			started_at, last_seen_at, tokens_used, agent_type
+		) VALUES (
+			$1::uuid, $2::uuid, $3, 'closed',
+			$4, $4, 100, 'coding'
+		)
+	`, sessionID, agentID, flavor, now.Add(-30*time.Minute)); err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+	if _, err := s.pool.Exec(ctx, `
+		INSERT INTO events (
+			id, session_id, flavor, event_type, occurred_at, has_content
+		) VALUES (
+			gen_random_uuid(), $1::uuid, $2, 'post_call', $3, false
+		)
+	`, sessionID, flavor, now.Add(-20*time.Minute)); err != nil {
+		t.Fatalf("seed event: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = s.pool.Exec(ctx,
+			`DELETE FROM events WHERE session_id = $1::uuid`, sessionID)
+	})
+
+	resp, err := s.GetEvents(ctx, EventsParams{
+		From: from, To: now, SessionID: sessionID, Limit: 100,
+	})
+	if err != nil {
+		t.Fatalf("GetEvents: %v", err)
+	}
+	if len(resp.Events) != 1 {
+		t.Fatalf("len(events)=%d, want 1", len(resp.Events))
+	}
+	ev := resp.Events[0]
+	if ev.ClientType != nil {
+		t.Errorf("ClientType = %q, want nil for a session with no client_type",
+			*ev.ClientType)
+	}
+	// agent_type was set, so it scans as a non-nil pointer.
+	if ev.AgentType == nil {
+		t.Error("AgentType = nil, want coding")
+	} else if *ev.AgentType != "coding" {
+		t.Errorf("AgentType = %q, want coding", *ev.AgentType)
+	}
+}

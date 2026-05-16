@@ -214,6 +214,10 @@ func buildEventsWhere(params EventsParams) (conditions []string, args []any) {
 // `Offset + len(events) < total` so the semantics do not depend on
 // len(events) equalling Limit at every page boundary. Inside the
 // repeatable-read snapshot Total is fixed, so the comparison is exact.
+//
+// Each returned Event carries the session-level identity attributes
+// (framework, client_type, agent_type) via a LEFT JOIN to `sessions`
+// on session_id -- the events table stores none of them.
 func (s *Store) GetEvents(ctx context.Context, params EventsParams) (*EventsResponse, error) {
 	conditions, args := buildEventsWhere(params)
 
@@ -242,18 +246,32 @@ func (s *Store) GetEvents(ctx context.Context, params EventsParams) (*EventsResp
 		return nil, fmt.Errorf("count events: %w", err)
 	}
 
-	// Fetch page
+	// Fetch page. The events filter + ORDER/LIMIT/OFFSET run inside a
+	// subquery so buildEventsWhere's unqualified column references
+	// (flavor, model, session_id, ...) stay unambiguous; the outer
+	// LEFT JOIN to `sessions` then projects the session-level identity
+	// columns (framework, client_type, agent_type) onto each event
+	// row. Pagination runs inside the subquery so only the page's rows
+	// are joined. The events.session_id FK guarantees a matching
+	// `sessions` row, so LEFT vs INNER is immaterial for real data --
+	// LEFT is the defensive choice. ORDER BY is repeated outside the
+	// subquery because a join does not preserve the inner ordering.
 	limitIdx := len(args) + 1
 	querySQL := fmt.Sprintf(`
-		SELECT id::text, session_id::text, flavor, event_type, model,
-		       tokens_input, tokens_output, tokens_total,
-		       tokens_cache_read, tokens_cache_creation,
-		       latency_ms, tool_name, has_content, payload, occurred_at
-		FROM events
-		%s
-		ORDER BY occurred_at %s
-		LIMIT $%d OFFSET $%d
-	`, where, orderDir, limitIdx, limitIdx+1)
+		SELECT e.id::text, e.session_id::text, e.flavor, e.event_type, e.model,
+		       e.tokens_input, e.tokens_output, e.tokens_total,
+		       e.tokens_cache_read, e.tokens_cache_creation,
+		       e.latency_ms, e.tool_name, e.has_content, e.payload, e.occurred_at,
+		       s.framework, s.client_type, s.agent_type
+		FROM (
+			SELECT * FROM events
+			%s
+			ORDER BY occurred_at %s
+			LIMIT $%d OFFSET $%d
+		) e
+		LEFT JOIN sessions s ON s.session_id = e.session_id
+		ORDER BY e.occurred_at %s
+	`, where, orderDir, limitIdx, limitIdx+1, orderDir)
 	args = append(args, params.Limit, params.Offset)
 
 	rows, err := tx.Query(ctx, querySQL, args...)
@@ -271,6 +289,7 @@ func (s *Store) GetEvents(ctx context.Context, params EventsParams) (*EventsResp
 			&e.TokensInput, &e.TokensOutput, &e.TokensTotal,
 			&e.TokensCacheRead, &e.TokensCacheCreation,
 			&e.LatencyMs, &e.ToolName, &e.HasContent, &payloadRaw, &e.OccurredAt,
+			&e.Framework, &e.ClientType, &e.AgentType,
 		); err != nil {
 			return nil, fmt.Errorf("scan event: %w", err)
 		}

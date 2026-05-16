@@ -465,6 +465,20 @@ export interface AgentEvent {
   latency_ms: number | null;
   tool_name: string | null;
   has_content: boolean;
+  /**
+   * Session-level identity attributes joined from the event's
+   * `sessions` row on the API side — the events table stores none of
+   * them. `framework` is the bare-name attribution and is null for
+   * events predating framework attribution and for Claude Code
+   * plugin sessions (the plugin observes the runtime, not a Python
+   * framework). `client_type` and `agent_type` are non-null for any
+   * event whose session row exists; typed as nullable wire strings
+   * and narrowed by the `isClientType` / `isAgentType` guards before
+   * rendering.
+   */
+  framework: string | null;
+  client_type: string | null;
+  agent_type: string | null;
   payload?: EventPayloadFields;
   occurred_at: string;
 }

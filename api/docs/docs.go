@@ -2990,10 +2990,19 @@ const docTemplate = `{
         "store.Event": {
             "type": "object",
             "properties": {
+                "agent_type": {
+                    "type": "string"
+                },
+                "client_type": {
+                    "type": "string"
+                },
                 "event_type": {
                     "type": "string"
                 },
                 "flavor": {
+                    "type": "string"
+                },
+                "framework": {
                     "type": "string"
                 },
                 "has_content": {

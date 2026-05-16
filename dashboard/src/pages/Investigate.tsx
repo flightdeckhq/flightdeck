@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useSearchParams } from "react-router-dom";
-import { RefreshCw } from "lucide-react";
+import { RefreshCw, MessageSquareText } from "lucide-react";
 import { fetchBulkEvents, fetchEventFacets } from "@/lib/api";
 import type { AgentEvent, EventFacets, EventFacetValue } from "@/lib/types";
 import { useFleetStore } from "@/store/fleet";
@@ -9,7 +9,11 @@ import { Pagination } from "@/components/ui/Pagination";
 import { SessionDrawer } from "@/components/session/SessionDrawer";
 import { EventDetailDrawer } from "@/components/fleet/EventDetailDrawer";
 import { ClientTypePill } from "@/components/facets/ClientTypePill";
-import { isClientType } from "@/lib/agent-identity";
+import { AgentTypeBadge } from "@/components/facets/AgentTypeBadge";
+import { FrameworkPill } from "@/components/facets/FrameworkPill";
+import { ProviderLogo } from "@/components/ui/provider-logo";
+import { getProvider } from "@/lib/models";
+import { isClientType, isAgentType } from "@/lib/agent-identity";
 import { TruncatedText } from "@/components/ui/TruncatedText";
 import { getBadge, getEventDetail, truncateSessionId } from "@/lib/events";
 import { relativeTime } from "@/lib/agents-format";
@@ -800,6 +804,7 @@ function EventRow({
 }) {
   const badge = getBadge(event.event_type);
   const status = eventStatus(event);
+  const detail = getEventDetail(event);
   return (
     <tr
       data-testid="events-row"
@@ -830,11 +835,37 @@ function EventRow({
       >
         {relativeTime(event.occurred_at)}
       </td>
-      <td style={{ padding: "7px 12px", maxWidth: 180 }}>
-        <TruncatedText
-          text={event.flavor}
-          style={{ fontFamily: "var(--font-mono)", fontSize: 12 }}
-        />
+      <td style={{ padding: "7px 12px", maxWidth: 280 }}>
+        {/* AGENT cell — "who fired this": agent name plus the
+            session-scoped identity chrome (client_type pill +
+            agent_type badge), matching the Fleet swimlane label
+            strip. Both apply to an event of any type. */}
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            minWidth: 0,
+          }}
+        >
+          <TruncatedText
+            text={event.flavor}
+            style={{ fontFamily: "var(--font-mono)", fontSize: 12 }}
+          />
+          {isClientType(event.client_type) && (
+            <ClientTypePill
+              clientType={event.client_type}
+              size="compact"
+              testId="events-row-client-pill"
+            />
+          )}
+          {isAgentType(event.agent_type) && (
+            <AgentTypeBadge
+              agentType={event.agent_type}
+              testId="events-row-agent-type"
+            />
+          )}
+        </div>
       </td>
       <td style={{ padding: "7px 12px" }}>
         <button
@@ -894,20 +925,75 @@ function EventRow({
           whiteSpace: "nowrap",
         }}
       >
-        {event.model ?? "—"}
+        {/* MODEL cell — "how it ran": provider logo + model + the
+            framework pill. The cluster only carries meaning for LLM
+            calls (pre/post_call, embeddings); non-LLM events carry no
+            model, so the cell stays a bare em-dash. */}
+        {event.model ? (
+          <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <span
+              data-testid="events-row-provider-logo"
+              style={{ display: "inline-flex" }}
+            >
+              <ProviderLogo
+                provider={getProvider(event.model)}
+                size={13}
+                title=""
+              />
+            </span>
+            <span>{event.model}</span>
+            <FrameworkPill
+              framework={event.framework}
+              testId="events-row-framework"
+            />
+          </span>
+        ) : (
+          "—"
+        )}
       </td>
       <td
         style={{
           padding: "7px 12px",
           color: "var(--text)",
           maxWidth: 0,
+          // overflow:hidden is what makes the maxWidth:0 clamp bite —
+          // without it the inner flex row can push the cell wider
+          // than its table-allotted width. The text span owns the
+          // ellipsis; this keeps the cell itself within bounds.
           overflow: "hidden",
-          textOverflow: "ellipsis",
-          whiteSpace: "nowrap",
         }}
-        title={getEventDetail(event)}
       >
-        {getEventDetail(event)}
+        {/* DETAIL cell — the humanized event summary, with a trailing
+            prompt-capture indicator. The indicator is a row-level
+            "content is available to drill into" affordance: it shows
+            for any has_content event regardless of type (LLM prompts,
+            MCP tool_input, …), so it lives here rather than in the
+            LLM-only MODEL cell. */}
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <span
+            style={{
+              flex: 1,
+              minWidth: 0,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+            title={detail}
+          >
+            {detail}
+          </span>
+          {event.has_content && (
+            <MessageSquareText
+              data-testid="events-row-capture-indicator"
+              size={13}
+              role="img"
+              aria-label="Prompt content captured"
+              style={{ color: "var(--text-muted)", flexShrink: 0 }}
+            >
+              <title>Prompt content captured</title>
+            </MessageSquareText>
+          )}
+        </div>
       </td>
       <td style={{ padding: "7px 12px", textAlign: "right" }}>
         {status && (

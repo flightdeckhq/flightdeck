@@ -17,6 +17,9 @@ function makeEvent(payload: Record<string, unknown> = {}): AgentEvent {
     latency_ms: null,
     tool_name: null,
     has_content: false,
+    framework: null,
+    client_type: null,
+    agent_type: null,
     occurred_at: "2026-05-09T07:00:00Z",
     payload,
   };

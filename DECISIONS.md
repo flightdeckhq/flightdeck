@@ -8790,3 +8790,73 @@ rebuilt at branch HEAD before its commit landed:
   chart-metadata change), a documentation cross-reference
   integrity pass, `git diff` review, and the doc-expert /
   architect / qa-engineer reviewer pipeline on the Phase 5 diff.
+
+## D158 -- Events table identity enrichment: /v1/events joins sessions for framework / client_type / agent_type
+
+**Date:** 2026-05-16
+**Status:** Adopted
+
+**Context.** The `/events` page lists individual events. An event row
+showed timestamp, agent flavor, run badge, event-type, model, detail,
+and a status chip — but nothing about the *kind* of agent that fired
+it. An operator scanning the table could not tell a Claude Code
+coding session apart from a production sensor agent, see the
+framework, or tell which events carry captured prompt content to
+drill into, without opening each row's drawer.
+
+**Decision.** `GET /v1/events` now projects three session-level
+identity attributes onto every returned event — `framework`,
+`client_type`, `agent_type` — via a `LEFT JOIN` to `sessions` on
+`session_id`. The `events` table stores none of them; they live only
+on `sessions`. The page SELECT wraps the existing filter + ORDER +
+LIMIT/OFFSET in a subquery so `buildEventsWhere`'s unqualified column
+references stay unambiguous and the join only touches the page's
+rows; the COUNT query is unchanged — it runs on `events` alone and
+never includes the join.
+
+The dashboard `EventRow` renders the new fields inline within the
+existing seven columns — no new columns:
+
+- **AGENT cell** gains the `ClientTypePill` and a new
+  `AgentTypeBadge`, matching the identity chrome of the Fleet
+  swimlane label strip and the `/agents` table. Both are
+  session-scoped, so they render for an event of any type.
+- **MODEL cell** gains a `ProviderLogo` and a new `FrameworkPill`.
+  This "how it ran" cluster carries meaning only for LLM calls, so
+  it renders only when the event has a `model`; non-LLM events
+  (tool calls, MCP, policy, errors) keep a bare em-dash.
+- **DETAIL cell** gains a trailing prompt-capture indicator on any
+  event whose `has_content` is set. It lives here, not in the MODEL
+  cell, because captured content is a row-level affordance that
+  spans event types (LLM prompts, MCP `tool_input`, …) while the
+  MODEL cell is empty for non-LLM events.
+
+**Rejected alternatives.**
+
+- *A per-event `events.framework` column.* `ARCHITECTURE.md`'s
+  `events` table DDL block wrongly listed a `framework TEXT` column
+  ("bare name, denorm from sensor payload"). No such column exists —
+  migration `000001` never created it, no later migration adds it,
+  and the worker's `INSERT INTO events` never writes it. The phantom
+  line was removed from `ARCHITECTURE.md`, and the rest of that DDL
+  block was reconciled against migrations `000001` / `000002` /
+  `000013` / `000023` in the same pass — it had further drift (a
+  phantom `created_at` column, a single-column primary key where the
+  real key is composite `(id, occurred_at)`, missing `flavor` and
+  `source` columns, `BIGINT` token types that are really `INTEGER`, a
+  phantom `ON DELETE CASCADE`, and stale index names). Adding a
+  `framework` column for real was rejected: framework is already
+  authoritative on `sessions`, the join is one-to-one and cheap, and
+  a denormalised copy would be one more write-path field to keep
+  consistent.
+- *Dedicated CLIENT / AGENT-TYPE / FRAMEWORK columns.* Rejected for
+  table width: seven columns would have become ten or eleven,
+  forcing horizontal scroll and a `colSpan` change across the
+  empty / loading / error rows. Inline cell enrichment keeps the
+  table compact and reuses the established Fleet / `/agents`
+  identity-chrome pattern.
+
+**Related decisions.** D157 (the per-agent landing page + Fleet /
+Events reshape this polishes). D114 / D115 (the `client_type` /
+`agent_type` identity vocabulary). D126 (the `framework` attribution
+on `sessions`).

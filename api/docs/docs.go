@@ -986,6 +986,12 @@ const docTemplate = `{
                         "in": "query"
                     },
                     {
+                        "type": "string",
+                        "description": "Free-text ILIKE search across event_type, model, session_id, and the session's agent_name and framework",
+                        "name": "q",
+                        "in": "query"
+                    },
+                    {
                         "type": "boolean",
                         "description": "When true, return per-dimension facet counts instead of the event list",
                         "name": "facets",

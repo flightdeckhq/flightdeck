@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, act } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { Investigate } from "@/pages/Investigate";
+import { fetchBulkEvents } from "@/lib/api";
 import { useFleetStore } from "@/store/fleet";
 import { ClientType } from "@/lib/agent-identity";
 import type {
@@ -153,6 +154,39 @@ describe("Investigate (event-grain /events page)", () => {
     ).toBeInTheDocument();
   });
 
+  // Polish Batch 2 Fix 1 — the facet sidebar gives every dimension
+  // a leading icon. The MODEL chip carries a FacetIcon-wrapped
+  // provider logo and the ERROR TYPE chip carries a lucide glyph,
+  // both under the events-facet-icon-<key>-<value> testid.
+  it("renders a FacetIcon on the MODEL and ERROR TYPE facet chips", async () => {
+    h.facets = {
+      ...h.facets,
+      model: [{ value: "claude-sonnet-4-5", count: 4 }],
+      error_type: [{ value: "rate_limit", count: 2 }],
+    };
+    await renderPage();
+    expect(
+      screen.getByTestId("events-facet-icon-model-claude-sonnet-4-5"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId("events-facet-icon-error_type-rate_limit"),
+    ).toBeInTheDocument();
+  });
+
+  // The FRAMEWORK chip renders a FrameworkPill (not a FacetIcon
+  // glyph) — Fix 1 routes the framework dimension to the pill so it
+  // matches the event row's MODEL-cell chrome.
+  it("renders a FrameworkPill on the FRAMEWORK facet chip", async () => {
+    h.facets = {
+      ...h.facets,
+      framework: [{ value: "langchain", count: 5 }],
+    };
+    await renderPage();
+    expect(
+      screen.getByTestId("events-facet-framework-pill-langchain"),
+    ).toBeInTheDocument();
+  });
+
   it("opens the event detail drawer on a row click", async () => {
     h.events = {
       events: [mkEvent("e1")],
@@ -261,6 +295,34 @@ describe("Investigate (event-grain /events page)", () => {
     ).not.toBeInTheDocument();
     // The row itself still renders — flavor + run badge are unaffected.
     expect(screen.getByTestId("events-row")).toBeInTheDocument();
+  });
+
+  it("debounces the search box and fetches events carrying the typed q", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      await renderPage();
+      vi.mocked(fetchBulkEvents).mockClear();
+
+      // Type a query string into the top-of-page search input.
+      const input = screen.getByTestId("events-search-input");
+      fireEvent.change(input, { target: { value: "checkout" } });
+
+      // Before the debounce window elapses, no q-bearing fetch yet.
+      expect(fetchBulkEvents).not.toHaveBeenCalled();
+
+      // Advance past the 300 ms debounce — the URL `q` state updates,
+      // which re-triggers doFetch.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(400);
+      });
+
+      // The most recent fetch carries the typed q in its params.
+      expect(fetchBulkEvents).toHaveBeenCalled();
+      const lastCall = vi.mocked(fetchBulkEvents).mock.calls.at(-1);
+      expect(lastCall?.[0]).toMatchObject({ q: "checkout" });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("renders the prompt-capture indicator on a non-LLM event with captured content", async () => {

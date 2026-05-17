@@ -53,10 +53,17 @@ type EventsParams struct {
 	// Frameworks matches the bare `sessions.framework` OR any entry
 	// of the legacy versioned `sessions.context->'frameworks'` array.
 	Frameworks []string
-	Before     time.Time
-	Order      string
-	Limit      int
-	Offset     int
+	// Query is a free-text ILIKE search powering the `/events` page
+	// top-of-page search bar. It matches the events table's
+	// `event_type`, `model`, and `session_id` (cast to text), plus
+	// the session-level `agent_name` / `framework` resolved through
+	// a `sessions` subquery (the events table carries neither).
+	// Empty means no free-text filter.
+	Query  string
+	Before time.Time
+	Order  string
+	Limit  int
+	Offset int
 }
 
 // EventsResponse is the paginated response for GET /v1/events.
@@ -193,6 +200,30 @@ func buildEventsWhere(params EventsParams) (conditions []string, args []any) {
 				"?| $%d::text[])", argIdx, argIdx))
 		args = append(args, params.Frameworks)
 		argIdx++
+	}
+	if params.Query != "" {
+		// Free-text search for the `/events` page search bar. Matches
+		// the events-table columns directly (event_type, model, and
+		// session_id cast to text) and resolves agent_name / framework
+		// — neither of which the events table carries — through a
+		// sessions subquery. One placeholder, referenced multiple
+		// times via %[1]s indexing (same shape as the Frameworks
+		// block above). There is no humanized "detail" column to
+		// search: the detail string is computed client-side.
+		pattern := sanitizeQuery(params.Query)
+		qPlaceholder := fmt.Sprintf("$%d", argIdx)
+		args = append(args, pattern)
+		argIdx++
+		conditions = append(conditions, fmt.Sprintf(`(
+			event_type ILIKE %[1]s
+			OR COALESCE(model, '') ILIKE %[1]s
+			OR session_id::text ILIKE %[1]s
+			OR session_id IN (
+				SELECT session_id FROM sessions
+				WHERE COALESCE(agent_name, '') ILIKE %[1]s
+				OR COALESCE(framework, '') ILIKE %[1]s
+			)
+		)`, qPlaceholder))
 	}
 	if !params.Before.IsZero() {
 		conditions = append(conditions,

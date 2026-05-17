@@ -427,6 +427,50 @@ export const useFleetStore = create<FleetState>((set, get) => ({
         });
       }
     }
+
+    // A sub-agent event makes the whole parent + sub-agent cluster
+    // operationally fresh. The backend already bumps the parent
+    // SESSION's last_seen_at (parent-bump propagation), but the WS
+    // envelope carries only the child's session — so the parent's
+    // swimlane row would otherwise stay frozen in its stale/idle
+    // bucket and the cluster would not bubble up. Resolve the parent
+    // agent from the child's parent_session_id and bump both its
+    // flavor last_seen_at (lifts the cluster out of the IDLE bucket,
+    // which bucketFor keys on last_seen_at) and its enteredBucketAt
+    // entry (floats it to the top within LIVE / RECENT). Best-effort:
+    // if the parent row is not loaded yet the bump is skipped and
+    // self-heals on the next load() (parents of in-window children
+    // ride along via the include_parents fetch flag).
+    const parentSessionId = update.session.parent_session_id;
+    if (parentSessionId) {
+      const state = get();
+      const parentFlavor = state.flavors.find((f) =>
+        f.sessions.some((s) => s.session_id === parentSessionId),
+      );
+      if (parentFlavor && parentFlavor.flavor !== agentKey) {
+        const now = Date.now();
+        const nowIso = new Date(now).toISOString();
+        const bumpedFlavors = state.flavors.map((f) =>
+          f.flavor === parentFlavor.flavor
+            ? { ...f, last_seen_at: nowIso }
+            : f,
+        );
+        const bumpedEntries = advanceBucketEntry(
+          state.enteredBucketAt,
+          parentFlavor.flavor,
+          parentFlavor.last_seen_at,
+          nowIso,
+          now,
+        );
+        set({
+          flavors: bumpedFlavors,
+          enteredBucketAt:
+            bumpedEntries === state.enteredBucketAt
+              ? state.enteredBucketAt
+              : bumpedEntries,
+        });
+      }
+    }
   },
 
   selectSession: (id) => set({ selectedSessionId: id }),

@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { Info } from "lucide-react";
 import type { AgentSummary, AgentSummaryResponse } from "@/lib/types";
 import {
   type AgentSortColumn,
@@ -6,6 +7,12 @@ import {
   sortAgents,
   toggleSort,
 } from "@/lib/agents-sort";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { AgentTableRow } from "./AgentTableRow";
 
 interface AgentTableProps {
@@ -74,6 +81,11 @@ export function AgentTable({
           fontSize: 13,
         }}
       >
+        {/* One TooltipProvider for the whole header row — Radix
+            renders no DOM node, so it does not break the table's
+            thead/tbody structure, and it is not recreated per-`<th>`
+            on every sort re-render. */}
+        <TooltipProvider>
         <thead>
           <tr
             style={{
@@ -128,6 +140,42 @@ export function AgentTable({
                   }}
                 >
                   {col.label}
+                  {col.column === "cost_usd_7d" && (
+                    // Info affordance for the estimated-cost
+                    // semantics. The trigger stops click /
+                    // keydown propagation so hovering or
+                    // focusing the icon never toggles the
+                    // column sort — the sort stays driven by
+                    // the rest of the `<th>`.
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <span
+                          data-testid="agent-table-cost-info"
+                          tabIndex={0}
+                          aria-label="About cost estimation"
+                          style={{
+                            display: "inline-flex",
+                            verticalAlign: "middle",
+                            marginLeft: 4,
+                            cursor: "help",
+                          }}
+                          onClick={(e) => e.stopPropagation()}
+                          onKeyDown={(e) => e.stopPropagation()}
+                        >
+                          <Info
+                            size={12}
+                            style={{ color: "var(--text-muted)" }}
+                            aria-hidden="true"
+                          />
+                        </span>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        Estimated from public list prices.
+                        Sensor-instrumented agents only; coding
+                        agents bill independently.
+                      </TooltipContent>
+                    </Tooltip>
+                  )}
                   {arrow && (
                     <span
                       style={{ marginLeft: 4, color: "var(--accent)" }}
@@ -141,6 +189,7 @@ export function AgentTable({
             })}
           </tr>
         </thead>
+        </TooltipProvider>
         <tbody>
           {slice.map((a) => (
             <AgentTableRow

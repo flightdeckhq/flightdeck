@@ -670,7 +670,7 @@ describe("SessionDrawer", () => {
 
   it("events shown newest first", () => {
     render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
-    const badges = screen.getAllByTestId("event-badge");
+    const badges = screen.getAllByTestId("event-type-pill");
     // baseEvents: e1=session_start (10:00), e2=post_call (10:01)
     // Reversed: first badge should be LLM CALL (newest), last should be START (oldest)
     expect(badges[0].textContent).toBe("LLM CALL");
@@ -706,9 +706,9 @@ describe("SessionDrawer", () => {
     render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
 
     // Expect at least one ATTACH badge and at least one START badge.
-    const attachBadges = screen.getAllByTestId("event-badge")
+    const attachBadges = screen.getAllByTestId("event-type-pill")
       .filter((el) => el.textContent === "ATTACH");
-    const startBadges = screen.getAllByTestId("event-badge")
+    const startBadges = screen.getAllByTestId("event-type-pill")
       .filter((el) => el.textContent === "START");
     expect(attachBadges.length).toBe(1);
     expect(startBadges.length).toBe(1);
@@ -747,7 +747,7 @@ describe("SessionDrawer", () => {
     mockAttachments = ["2026-04-07T10:02:01Z"];
     render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
 
-    const badge = screen.getAllByTestId("event-badge")
+    const badge = screen.getAllByTestId("event-type-pill")
       .find((el) => el.textContent === "ATTACH");
     expect(badge).toBeDefined();
     fireEvent.pointerEnter(badge!);
@@ -770,7 +770,7 @@ describe("SessionDrawer", () => {
     // START, never ATTACH.
     mockAttachments = [];
     render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
-    const badges = screen.getAllByTestId("event-badge");
+    const badges = screen.getAllByTestId("event-type-pill");
     expect(badges.some((b) => b.textContent === "ATTACH")).toBe(false);
     expect(badges.some((b) => b.textContent === "START")).toBe(true);
   });

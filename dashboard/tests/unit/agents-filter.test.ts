@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   type AgentFilterState,
   agentFrameworks,
+  agentMatchesSearch,
   deriveFrameworkOptions,
   EMPTY_FILTER,
   filterAgents,
@@ -220,5 +221,142 @@ describe("toggleFilterValue", () => {
     const input = new Set(["active"]);
     const output = toggleFilterValue(input, "idle");
     expect(output).not.toBe(input);
+  });
+});
+
+// Polish Batch 2 Fix 4 — the /agents page has a client-side
+// free-text search bar. `agentMatchesSearch` is the predicate:
+// case-insensitive substring across the agent name, agent_type,
+// client_type, the agent's frameworks, and the models on its
+// recent sessions. `filterAgents` ANDs the search against the chip
+// dimensions.
+describe("agentMatchesSearch (Fix 4)", () => {
+  it("matches every agent on an empty query", () => {
+    expect(agentMatchesSearch(mkAgent(), "")).toBe(true);
+  });
+
+  it("matches every agent on a whitespace-only query", () => {
+    expect(agentMatchesSearch(mkAgent(), "   ")).toBe(true);
+  });
+
+  it("narrows by agent_name (case-insensitive substring)", () => {
+    const agent = mkAgent({ agent_name: "Checkout-Bot" });
+    expect(agentMatchesSearch(agent, "checkout")).toBe(true);
+    expect(agentMatchesSearch(agent, "CHECKOUT")).toBe(true);
+    expect(agentMatchesSearch(agent, "out-bo")).toBe(true);
+    expect(agentMatchesSearch(agent, "research")).toBe(false);
+  });
+
+  it("narrows by agent_type", () => {
+    expect(
+      agentMatchesSearch(mkAgent({ agent_type: "production" }), "prod"),
+    ).toBe(true);
+    expect(
+      agentMatchesSearch(mkAgent({ agent_type: "coding" }), "prod"),
+    ).toBe(false);
+  });
+
+  it("narrows by client_type", () => {
+    // ClientType.ClaudeCode === "claude_code"
+    expect(
+      agentMatchesSearch(
+        mkAgent({ client_type: ClientType.ClaudeCode }),
+        "claude_code",
+      ),
+    ).toBe(true);
+    expect(
+      agentMatchesSearch(
+        mkAgent({ client_type: ClientType.FlightdeckSensor }),
+        "claude_code",
+      ),
+    ).toBe(false);
+  });
+
+  it("narrows by a framework on the agent's recent sessions", () => {
+    const agent = mkAgent({
+      recent_sessions: [
+        mkRecentSession({ framework: "langgraph" }),
+        mkRecentSession({ framework: "crewai" }),
+      ],
+    });
+    expect(agentMatchesSearch(agent, "langgraph")).toBe(true);
+    expect(agentMatchesSearch(agent, "crew")).toBe(true);
+    expect(agentMatchesSearch(agent, "autogen")).toBe(false);
+  });
+
+  it("narrows by a model on the agent's recent sessions", () => {
+    const agent = mkAgent({
+      recent_sessions: [mkRecentSession({ model: "claude-sonnet-4-5" })],
+    });
+    expect(agentMatchesSearch(agent, "sonnet")).toBe(true);
+    expect(agentMatchesSearch(agent, "gpt-4o")).toBe(false);
+  });
+
+  it("survives an agent with no recent sessions", () => {
+    const agent = mkAgent({ agent_name: "lone-agent" });
+    expect(agentMatchesSearch(agent, "lone")).toBe(true);
+    expect(agentMatchesSearch(agent, "sonnet")).toBe(false);
+  });
+});
+
+describe("filterAgents — free-text search dimension (Fix 4)", () => {
+  it("narrows the agent list by the search field", () => {
+    const filter: AgentFilterState = {
+      ...EMPTY_FILTER,
+      search: "checkout",
+    };
+    const result = filterAgents(
+      [
+        mkAgent({ agent_id: "a", agent_name: "checkout-bot" }),
+        mkAgent({ agent_id: "b", agent_name: "research-agent" }),
+      ],
+      filter,
+    );
+    expect(result.map((x) => x.agent_id)).toEqual(["a"]);
+  });
+
+  it("returns every agent when search is the empty string", () => {
+    expect(
+      filterAgents(
+        [mkAgent({ agent_id: "a" }), mkAgent({ agent_id: "b" })],
+        { ...EMPTY_FILTER, search: "" },
+      ),
+    ).toHaveLength(2);
+  });
+
+  it("ANDs the search with chip dimensions", () => {
+    const filter: AgentFilterState = {
+      ...EMPTY_FILTER,
+      states: new Set(["active"]),
+      search: "checkout",
+    };
+    const result = filterAgents(
+      [
+        // matches both — survives
+        mkAgent({
+          agent_id: "a",
+          agent_name: "checkout-bot",
+          state: "active",
+        }),
+        // matches search but wrong state
+        mkAgent({
+          agent_id: "b",
+          agent_name: "checkout-worker",
+          state: "closed",
+        }),
+        // matches state but not search
+        mkAgent({
+          agent_id: "c",
+          agent_name: "research-agent",
+          state: "active",
+        }),
+      ],
+      filter,
+    );
+    expect(result.map((x) => x.agent_id)).toEqual(["a"]);
+  });
+
+  it("EMPTY_FILTER.search defaults to an empty string", () => {
+    expect(EMPTY_FILTER.search).toBe("");
   });
 });

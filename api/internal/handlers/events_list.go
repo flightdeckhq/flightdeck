@@ -25,6 +25,13 @@ const (
 	// post thousands of repeated params into one ANY($N::text[])
 	// array. The URL-length limit is otherwise the only bound.
 	eventsMaxFilterValues = 100
+	// eventsMaxQueryLen caps the free-text `q` search length. `q`
+	// ILIKEs across event_type / model / session_id plus a
+	// sessions subquery, and is re-run per dimension under
+	// facets=true, so an unbounded pattern is a cheap
+	// authenticated load amplifier. 256 chars is far past any
+	// realistic search term.
+	eventsMaxQueryLen = 256
 )
 
 // EventsListHandler handles GET /v1/events.
@@ -48,6 +55,7 @@ const (
 // @Param        originating_call_context query  []string false "Filter by originating call context (repeatable)"
 // @Param        mcp_server               query  []string false "Filter by MCP server name from an MCP event's payload (repeatable)"
 // @Param        terminal                 query  bool    false  "Filter to events whose payload terminal flag matches"
+// @Param        q                        query  string  false  "Free-text ILIKE search across event_type, model, session_id, and the session's agent_name and framework"
 // @Param        facets                   query  bool    false  "When true, return per-dimension facet counts instead of the event list"
 // @Param        before                   query  string  false  "Keyset cursor (ISO 8601). When set, only rows with occurred_at < before are returned. Pair with order=desc for newest-first drawer pagination."
 // @Param        order                    query  string  false  "Sort order: asc (default) or desc"
@@ -185,6 +193,17 @@ func EventsListHandler(s store.Querier) http.HandlerFunc {
 			}
 		}
 
+		// Parse optional ``q`` free-text search. Trimmed so a
+		// whitespace-only value is treated as absent (matching the
+		// dashboard's client-side trim), and length-capped — see
+		// eventsMaxQueryLen.
+		searchQuery := strings.TrimSpace(q.Get("q"))
+		if len(searchQuery) > eventsMaxQueryLen {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf(
+				"q exceeds maximum length of %d", eventsMaxQueryLen))
+			return
+		}
+
 		params := store.EventsParams{
 			From:                    from,
 			To:                      to,
@@ -201,6 +220,7 @@ func EventsListHandler(s store.Querier) http.HandlerFunc {
 			MCPServers:              q["mcp_server"],
 			Terminal:                terminal,
 			Frameworks:              q["framework"],
+			Query:                   searchQuery,
 			Before:                  before,
 			Order:                   order,
 			Limit:                   limit,

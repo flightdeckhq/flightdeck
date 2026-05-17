@@ -1816,6 +1816,11 @@ paths:
         in: query
         name: terminal
         type: boolean
+      - description: Free-text ILIKE search across event_type, model, session_id,
+          and the session's agent_name and framework
+        in: query
+        name: q
+        type: string
       - description: When true, return per-dimension facet counts instead of the event
           list
         in: query

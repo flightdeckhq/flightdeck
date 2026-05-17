@@ -15,6 +15,12 @@ export interface AgentFilterState {
   /** Bare-name frameworks observed on the agent's recent
    *  sessions (`recent_sessions[].framework`). */
   frameworks: Set<string>;
+  /** Free-text search from the top-of-page search bar. Matched
+   *  case-insensitively against the agent name, agent_type,
+   *  client_type, the agent's frameworks, and the models on its
+   *  recent sessions. Empty string means no text filter. ANDs with
+   *  the chip dimensions. */
+  search: string;
 }
 
 export const EMPTY_FILTER: AgentFilterState = {
@@ -22,6 +28,7 @@ export const EMPTY_FILTER: AgentFilterState = {
   agentTypes: new Set(),
   clientTypes: new Set(),
   frameworks: new Set(),
+  search: "",
 };
 
 /**
@@ -56,8 +63,32 @@ export function deriveFrameworkOptions(agents: AgentSummary[]): string[] {
 }
 
 /**
- * Apply the active filter chip selection to an agent list. Returns
- * a new array; the input is never mutated.
+ * Case-insensitive substring match of the free-text search against
+ * an agent's name, agent_type, client_type, its frameworks, and the
+ * models on its recent sessions. An empty / whitespace query matches
+ * every agent.
+ */
+export function agentMatchesSearch(
+  agent: AgentSummary,
+  query: string,
+): boolean {
+  const q = query.trim().toLowerCase();
+  if (q === "") return true;
+  const haystack: string[] = [
+    agent.agent_name,
+    agent.agent_type,
+    agent.client_type,
+    ...agentFrameworks(agent),
+  ];
+  for (const s of agent.recent_sessions ?? []) {
+    if (s.model) haystack.push(s.model);
+  }
+  return haystack.some((field) => field.toLowerCase().includes(q));
+}
+
+/**
+ * Apply the active filter chip selection + free-text search to an
+ * agent list. Returns a new array; the input is never mutated.
  */
 export function filterAgents(
   agents: AgentSummary[],
@@ -77,6 +108,7 @@ export function filterAgents(
       const fws = agentFrameworks(a);
       if (!fws.some((fw) => filter.frameworks.has(fw))) return false;
     }
+    if (!agentMatchesSearch(a, filter.search)) return false;
     return true;
   });
 }

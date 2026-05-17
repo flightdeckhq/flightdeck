@@ -11,11 +11,13 @@ import { EventDetailDrawer } from "@/components/fleet/EventDetailDrawer";
 import { ClientTypePill } from "@/components/facets/ClientTypePill";
 import { AgentTypeBadge } from "@/components/facets/AgentTypeBadge";
 import { FrameworkPill } from "@/components/facets/FrameworkPill";
+import { FacetIcon } from "@/components/facets/FacetIcon";
+import { EventTypePill } from "@/components/facets/EventTypePill";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import { getProvider } from "@/lib/models";
 import { isClientType, isAgentType } from "@/lib/agent-identity";
 import { TruncatedText } from "@/components/ui/TruncatedText";
-import { getBadge, getEventDetail, truncateSessionId } from "@/lib/events";
+import { getEventDetail, truncateSessionId } from "@/lib/events";
 import { relativeTime } from "@/lib/agents-format";
 import {
   clampInvestigateSidebarWidth,
@@ -31,6 +33,13 @@ import { cn } from "@/lib/utils";
 
 const PER_PAGE_OPTIONS = [25, 50, 100];
 const DEFAULT_PER_PAGE = 50;
+
+// Delay between the last keystroke in the search box and the URL /
+// fetch update. 300 ms is the standard search-as-you-type debounce:
+// long enough that a fast typist's intermediate keystrokes don't
+// each trigger a server round-trip, short enough that the results
+// feel responsive once typing pauses.
+const SEARCH_DEBOUNCE_MS = 300;
 
 const AUTO_REFRESH_OPTIONS = [
   { label: "Off", ms: 0 },
@@ -65,6 +74,10 @@ export function parseEventsUrlState(sp: URLSearchParams) {
     originatingCallContexts: sp.getAll("originating_call_context"),
     mcpServers: sp.getAll("mcp_server"),
     terminalOnly: sp.get("terminal") === "true",
+    // `q` backs the top-of-page free-text search bar; the server
+    // resolves it via an ILIKE across event_type / model /
+    // session_id and the session's agent_name / framework.
+    q: sp.get("q") ?? "",
     // `run` deep-links the run drawer; `?session=` is the legacy
     // param, redirected to `?run=` on load (see the component).
     run: sp.get("run") ?? "",
@@ -104,6 +117,7 @@ export function buildEventsUrlParams(s: EventsUrlState): URLSearchParams {
     p.append("originating_call_context", v);
   for (const v of s.mcpServers) p.append("mcp_server", v);
   if (s.terminalOnly) p.set("terminal", "true");
+  if (s.q) p.set("q", s.q);
   if (s.run) p.set("run", s.run);
   if (s.page > 1) p.set("page", String(s.page));
   if (s.perPage !== DEFAULT_PER_PAGE) p.set("per_page", String(s.perPage));
@@ -201,9 +215,16 @@ export function Investigate() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const agentLabels = useMemo(() => {
-    const m = new Map<string, { name: string; clientType?: string }>();
+    const m = new Map<
+      string,
+      { name: string; clientType?: string; agentType?: string }
+    >();
     for (const a of fleetAgents) {
-      m.set(a.agent_id, { name: a.agent_name, clientType: a.client_type });
+      m.set(a.agent_id, {
+        name: a.agent_name,
+        clientType: a.client_type,
+        agentType: a.agent_type,
+      });
     }
     return m;
   }, [fleetAgents]);
@@ -261,6 +282,12 @@ export function Investigate() {
   // URL-backed so it deep-links.
   const [selectedEvent, setSelectedEvent] = useState<AgentEvent | null>(null);
 
+  // Search box — local input state so typing stays instant; the URL
+  // `q` filter is updated on a SEARCH_DEBOUNCE_MS trailing debounce.
+  // Seeded from the URL so a `?q=` deep-link / reload pre-fills the
+  // box.
+  const [searchInput, setSearchInput] = useState(urlState.q);
+
   const abortRef = useRef<AbortController>();
 
   // Legacy `?session=` → `?run=` redirect. A bookmark from the
@@ -305,6 +332,7 @@ export function Investigate() {
       originating_call_contexts: state.originatingCallContexts,
       mcp_servers: state.mcpServers,
       terminal: state.terminalOnly ? true : undefined,
+      q: state.q || undefined,
     };
 
     try {
@@ -358,6 +386,31 @@ export function Investigate() {
     },
     [urlState, setSearchParams],
   );
+
+  // Debounce the search box: SEARCH_DEBOUNCE_MS after the last
+  // keystroke, push the trimmed value into the URL `q` state (which
+  // re-triggers doFetch). Skip the write when the debounced value
+  // already equals the URL state so an unrelated URL change (a facet
+  // click, a page nav) doesn't bounce back through here.
+  useEffect(() => {
+    if (searchInput === urlState.q) return;
+    const t = setTimeout(() => {
+      patchUrl({ q: searchInput });
+    }, SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(t);
+  }, [searchInput, urlState.q, patchUrl]);
+
+  // Keep the box in sync when `q` changes from outside the box —
+  // an Escape clear, a `?q=` deep-link, or browser back/forward.
+  // The guard skips the no-op write on the common path where the
+  // box itself drove the change (debounce → patchUrl → urlState.q),
+  // so a fast typist does not pay an extra render per keystroke.
+  useEffect(() => {
+    if (urlState.q !== searchInput) setSearchInput(urlState.q);
+    // searchInput intentionally omitted — this effect reacts to
+    // outside-driven `q` changes, not to the box's own typing.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [urlState.q]);
 
   // Toggle a value in a multi-select facet dimension.
   const toggleFacet = useCallback(
@@ -454,7 +507,31 @@ export function Investigate() {
         className="flex items-center gap-3 border-b px-4 py-2.5"
         style={{ borderColor: "var(--border)" }}
       >
-        <div className="flex-1" />
+        <div className="flex-1">
+          <input
+            type="text"
+            data-testid="events-search-input"
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
+            onKeyDown={(e) => {
+              // Escape clears both the box and the URL `q` filter.
+              if (e.key === "Escape") {
+                e.preventDefault();
+                setSearchInput("");
+                patchUrl({ q: "" });
+              }
+            }}
+            placeholder="Search events…"
+            aria-label="Search events"
+            className="h-7 w-full rounded-md border px-2 focus:outline-none focus:ring-1 focus:ring-primary"
+            style={{
+              fontSize: 12,
+              borderColor: "var(--border)",
+              background: "var(--surface)",
+              color: "var(--text-secondary)",
+            }}
+          />
+        </div>
         <div className="shrink-0">
           <DateRangePicker
             value={dateRange}
@@ -582,15 +659,48 @@ export function Investigate() {
                       className="flex items-center min-w-0 flex-1"
                       style={{ gap: 8 }}
                     >
-                      <TruncatedText text={agentLabel?.name ?? v.value} />
-                      {agentLabel?.clientType &&
-                        isClientType(agentLabel.clientType) && (
-                          <ClientTypePill
-                            clientType={agentLabel.clientType}
-                            size="compact"
-                            testId={`events-facet-client-type-${v.value}`}
+                      {spec.key === "framework" ? (
+                        // FRAMEWORK facet — the value renders as a
+                        // FrameworkPill, the same chrome the event
+                        // row's MODEL cell carries.
+                        <FrameworkPill
+                          framework={v.value}
+                          testId={`events-facet-framework-pill-${v.value}`}
+                        />
+                      ) : (
+                        <>
+                          {/* Per-dimension icon: provider logo for
+                              MODEL, chroma dot for POLICY, category
+                              glyph for ERROR_TYPE / MCP_SERVER /
+                              CLOSE_REASON / ESTIMATED_VIA; nothing
+                              for dimensions with no icon treatment. */}
+                          <FacetIcon
+                            groupKey={spec.key}
+                            value={v.value}
+                            testId={`events-facet-icon-${spec.key}-${v.value}`}
                           />
-                        )}
+                          <TruncatedText
+                            text={agentLabel?.name ?? v.value}
+                          />
+                          {/* AGENT facet — the row's identity chrome:
+                              client_type pill + agent_type badge. */}
+                          {agentLabel?.clientType &&
+                            isClientType(agentLabel.clientType) && (
+                              <ClientTypePill
+                                clientType={agentLabel.clientType}
+                                size="compact"
+                                testId={`events-facet-client-type-${v.value}`}
+                              />
+                            )}
+                          {agentLabel?.agentType &&
+                            isAgentType(agentLabel.agentType) && (
+                              <AgentTypeBadge
+                                agentType={agentLabel.agentType}
+                                testId={`events-facet-agent-type-${v.value}`}
+                              />
+                            )}
+                        </>
+                      )}
                     </span>
                     <span
                       className="shrink-0"
@@ -802,7 +912,6 @@ function EventRow({
   onRowClick: (e: AgentEvent) => void;
   onRunClick: (sessionId: string) => void;
 }) {
-  const badge = getBadge(event.event_type);
   const status = eventStatus(event);
   const detail = getEventDetail(event);
   return (
@@ -892,29 +1001,9 @@ function EventRow({
         </button>
       </td>
       <td style={{ padding: "7px 12px", whiteSpace: "nowrap" }}>
-        <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <span
-            aria-hidden="true"
-            style={{
-              width: 8,
-              height: 8,
-              borderRadius: 999,
-              background: badge.cssVar,
-              flexShrink: 0,
-            }}
-          />
-          <span
-            style={{
-              fontFamily: "var(--font-mono)",
-              fontSize: 10,
-              fontWeight: 600,
-              letterSpacing: "0.05em",
-              color: "var(--text-secondary)",
-            }}
-          >
-            {badge.label}
-          </span>
-        </span>
+        {/* Shared canonical event-type pill — byte-identical to the
+            run drawer and the agent drawer Events tab. */}
+        <EventTypePill eventType={event.event_type} />
       </td>
       <td
         style={{

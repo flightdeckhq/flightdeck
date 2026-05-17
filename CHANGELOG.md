@@ -141,6 +141,17 @@ Fleet swimlane reshape, and the event-grain Events page (D157).
 - **"View entire run →" in the event detail drawer.** The event
   detail drawer's metadata section links to the full run drawer
   for the event's run.
+- **`/events` facet sidebar icons.** Each facet chip now carries a
+  per-dimension icon — provider logo on MODEL, framework pill on
+  FRAMEWORK, client-type pill + agent-type badge on AGENT, a chroma
+  dot on POLICY, and a category glyph on ERROR TYPE / MCP SERVER /
+  CLOSE REASON / ESTIMATED VIA.
+- **Top-of-page search bars on `/events` and `/agents`.** A
+  full-width search input filters events server-side (a new `q`
+  param on `GET /v1/events` — ILIKE across event type, model,
+  session id, and the session's agent name and framework) and the
+  agents roster client-side (name, agent_type, client_type,
+  framework, recent-session model). Escape clears the filter.
 
 ### Changed
 
@@ -171,6 +182,16 @@ Fleet swimlane reshape, and the event-grain Events page (D157).
   nginx edge (dev + prod) serves a permanent 301 from
   `/investigate` preserving the query string. Internal links
   and the `/v1/agents` row navigation updated.
+- **`/agents` filters moved to a left facet sidebar.** The
+  top-of-table filter chip tier is now a left sidebar matching the
+  `/events` page, each entry rendered with its identity icon. The
+  Cost (7d) column renders an em-dash for Claude Code agents — cost
+  applies only to sensor-instrumented agents — and its header
+  carries an explanatory info-icon tooltip.
+- **Unified event-type pill.** The run drawer, the `/events`
+  table, and the agent drawer's Events tab now render the same
+  `EventTypePill`, so the event-type indicator is identical across
+  all three surfaces.
 
 ### Removed
 
@@ -244,6 +265,12 @@ Fleet swimlane reshape, and the event-grain Events page (D157).
   in the events list; a session without one re-emits its full
   base sequence including the authoritative `context.mcp_servers`
   fingerprint.
+- **Swimlane cluster sort follows sub-agent activity.** A sub-agent
+  emitting an event now floats its whole parent + sub-agent cluster
+  to the top of the swimlane: the fleet store resolves the parent
+  from the child event's `parent_session_id` and bumps the parent
+  row's activity timestamp, so a cluster kept alive entirely by its
+  sub-agents no longer sinks into the stale / idle bucket.
 
 ## Unreleased — MCP Protection Policy + operator-actionable enrichment
 

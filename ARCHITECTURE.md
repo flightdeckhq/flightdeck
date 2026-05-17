@@ -1794,7 +1794,7 @@ authoritative parameter-level reference.
 | `GET` | `/v1/sessions/:id` | Session detail: metadata + chronological events + attachments array |
 | `GET` | `/v1/agents` | Paginated agent listing backing the `/agents` page; filters: `agent_type`, `client_type`, `state`, `hostname`, `user`, `os`, `orchestration` (multi-value — OR within a dimension, AND across), `search` (case-insensitive substring on `agent_name` + `hostname`), `updated_since`; `sort` + `order`; `limit` (default 25, max 100) + `offset`. Each row carries the sub-agent rollup fields `agent_role` and `topology` (`lone` / `parent` / `child`) |
 | `GET` | `/v1/agents/:id/summary` | Per-agent activity summary (totals + per-bucket series) over a 1h/24h/7d/30d window. Powers the per-agent landing page (D157). |
-| `GET` | `/v1/events` | Bulk events query: `from` (required), `to`, `flavor`, `event_type`, `session_id`, `agent_id`, `model`, payload-JSONB facet filters (`error_type`, `close_reason`, `estimated_via`, `matched_entry_id`, `originating_call_context`, `mcp_server`, `terminal`), `framework` (`agent_id` + `framework` resolve via a `sessions` subquery), `before` (keyset cursor) + `order` (`asc`/`desc`) for newest-first drawer pagination, `facets=true` to return per-dimension chip counts over the filtered set instead of the event list, `limit` (default 500, max 2000), `offset` (max 100000) |
+| `GET` | `/v1/events` | Bulk events query: `from` (required), `to`, `flavor`, `event_type`, `session_id`, `agent_id`, `model`, payload-JSONB facet filters (`error_type`, `close_reason`, `estimated_via`, `matched_entry_id`, `originating_call_context`, `mcp_server`, `terminal`), `framework` (`agent_id` + `framework` resolve via a `sessions` subquery), `q` (free-text ILIKE search across event_type / model / session_id / agent_name / framework), `before` (keyset cursor) + `order` (`asc`/`desc`) for newest-first drawer pagination, `facets=true` to return per-dimension chip counts over the filtered set instead of the event list, `limit` (default 500, max 2000), `offset` (max 100000) |
 | `GET` | `/v1/events/:id/content` | Event prompt content; 404 when capture was off for the session |
 | `GET` | `/v1/policy` | Sensor preflight: returns the policy applicable to a flavor + session_id |
 | `GET` | `/v1/policies` | List all token policies (org + flavor + session scopes) |
@@ -2146,6 +2146,15 @@ so the join only touches the page's rows; the COUNT query runs on
 `framework` and `client_type` are nullable on `sessions`;
 `agent_type` is `NOT NULL` there.
 
+The optional `q` param is a free-text search powering the `/events`
+page search bar: the handler wraps it in an ILIKE pattern and
+`buildEventsWhere` matches it against the `events` columns
+`event_type`, `model`, and `session_id` (cast to text), plus the
+session-level `agent_name` and `framework` resolved through a
+`sessions` subquery. Because `buildEventsWhere` is shared with the
+facet-count path, `q` narrows the `facets=true` chip counts as well
+as the row list.
+
 ### Server timeouts
 
 `withRESTTimeout` middleware wraps every REST handler in a
@@ -2302,20 +2311,29 @@ Columns, left to right:
 4. **Latency p95 (7d)** — total + sparkline.
 5. **Errors (7d)** — total + sparkline.
 6. **Sessions (7d)** — count.
-7. **Cost USD (7d)** — total.
+7. **Cost USD (7d)** — total. Rendered as a bare em-dash for
+   Claude Code agents: `estimated_cost` covers only
+   sensor-instrumented agents — coding agents bill independently
+   and Flightdeck has no pricing for them. The column header
+   carries an info-icon tooltip stating this.
 8. **Last seen** — relative time with absolute-time tooltip.
 9. **Status** — `AgentStatusBadge` (pulse on active).
 
-Filter chips above the table compose AND across dimensions and
-OR within: `state` (active / idle / stale / lost / closed),
-`agent_type` (coding / production), `client_type` (CC / SDK),
-`framework`. The framework chip set is dynamic — built from the
-`framework` attribution carried on each visible agent's recent
-sessions (`recent_sessions[].framework`, the bare-name
-`sessions.framework` value). An agent matches a framework chip
-when any of its `RecentSessionsPerAgent`-capped recent sessions
-carries that framework; the chip group hides entirely when no
-visible agent has a framework attribution.
+A left facet sidebar — the same visual pattern the `/events`
+page uses — carries the filter dimensions, each chip rendered
+with its dimension's visual: `state` a coloured dot beside the
+value text, `agent_type` an `AgentTypeBadge`, `client_type` a
+`ClientTypePill`, and `framework` a `FrameworkPill` (the pill /
+badge is itself the chip label for those three). Selections compose AND across
+dimensions and OR within. The framework group is dynamic —
+built from the `framework` attribution carried on each visible
+agent's `RecentSessionsPerAgent`-capped recent sessions
+(`recent_sessions[].framework`, the bare-name
+`sessions.framework` value); it hides entirely when no visible
+agent has a framework attribution. A full-width search bar above
+the sidebar + table filters the roster client-side by agent
+name, `agent_type`, `client_type`, framework, and recent-session
+model; Escape clears it.
 
 Sortable column headers on every column except the sparkline
 tiles themselves (sparklines are visual; the sort key is the
@@ -2458,6 +2476,17 @@ flavors with active or idle sessions float to the top of the swimlane and
 stale / closed / lost ones sink to the bottom. Stable secondary order is
 alphabetical.
 
+A sub-agent's activity floats its whole parent + sub-agent cluster:
+the fleet store's `applyUpdate` resolves the parent agent from an
+incoming child event's `parent_session_id` and bumps the parent
+flavor's `last_seen_at` and activity-bucket entry. `sortFlavorsByActivity`
+then reads those bumped values on the next render, so the cluster
+sorts by the latest activity across the parent AND all its
+sub-agents, not the parent's own direct events alone — the
+front-end counterpart of the worker's parent-bump propagation.
+The resolution is best-effort: an unloaded parent is skipped and
+self-heals on the next fleet load.
+
 `sessionStateCounts` is computed via `useMemo` from the live `flavors`
 array on every render and passed down to `SessionStateBar` as a prop.
 
@@ -2480,6 +2509,10 @@ indicator on events whose `has_content` is set; and a status
 chip. The `framework` / `client_type` / `agent_type` values are
 joined onto each event from its `sessions` row by `GET /v1/events`.
 Default sort is newest-first; pagination defaults to page size 50.
+A full-width search bar at the top of the page filters events
+server-side via the `/v1/events` `q` param (free-text ILIKE
+across event type, model, session id, and the session's agent
+name and framework); Escape clears it.
 
 A row click opens the `EventDetailDrawer`. The run-badge column
 opens the run drawer (`SessionDrawer`) scoped to that event's run.
@@ -2499,7 +2532,12 @@ client-type pill disambiguating same-named agents), `event_type`,
 `matched_entry_id`, `originating_call_context`, `mcp_server` (the
 MCP event's `payload.server_name`), and a `terminal` toggle. Each
 chip's count comes from the `/v1/events` facet-count query
-(`facets=true`), computed over the active filter set.
+(`facets=true`), computed over the active filter set. Each chip
+also carries a per-dimension icon: a provider logo on MODEL, a
+`FrameworkPill` on FRAMEWORK, the `ClientTypePill` + `agent_type`
+badge on AGENT, a chroma dot on POLICY, and a `FacetIcon`
+category glyph on `error_type` / `mcp_server` / `close_reason` /
+`estimated_via`.
 `policy_event_type` is not a server facet dimension — the
 dashboard classifies the `event_type` facet's policy-enforcement
 values into a separate POLICY group, and both groups write the

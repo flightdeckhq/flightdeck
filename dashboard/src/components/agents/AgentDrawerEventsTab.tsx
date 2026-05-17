@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { AgentEvent } from "@/lib/types";
-import { getBadge, getEventDetail, truncateSessionId } from "@/lib/events";
+import { getEventDetail, truncateSessionId } from "@/lib/events";
+import { EventTypePill } from "@/components/facets/EventTypePill";
 import { relativeTime } from "@/lib/agents-format";
 import { useAgentEvents } from "@/hooks/useAgentEvents";
 
@@ -63,7 +64,6 @@ export function AgentDrawerEventsTab({
           </div>
         )}
         {events.map((event) => {
-          const badge = getBadge(event.event_type);
           return (
             <div
               key={event.id}
@@ -87,28 +87,7 @@ export function AgentDrawerEventsTab({
                 fontSize: 12,
               }}
             >
-              <span
-                aria-hidden="true"
-                style={{
-                  width: 8,
-                  height: 8,
-                  borderRadius: 999,
-                  background: badge.cssVar,
-                  flexShrink: 0,
-                }}
-              />
-              <span
-                style={{
-                  fontFamily: "var(--font-mono)",
-                  fontSize: 10,
-                  fontWeight: 600,
-                  letterSpacing: "0.06em",
-                  color: "var(--text-secondary)",
-                  minWidth: 64,
-                }}
-              >
-                {badge.label}
-              </span>
+              <EventTypePill eventType={event.event_type} />
               <span
                 style={{
                   flex: 1,

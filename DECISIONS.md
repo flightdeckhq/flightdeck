@@ -8860,3 +8860,47 @@ existing seven columns — no new columns:
 Events reshape this polishes). D114 / D115 (the `client_type` /
 `agent_type` identity vocabulary). D126 (the `framework` attribution
 on `sessions`).
+
+## D159 -- Swimlane parent + sub-agent cluster sort: front-end parent-bump (Strategy A)
+
+**Date:** 2026-05-17
+**Status:** Adopted
+
+**Context.** A parent agent and its sub-agents render as a cluster in
+the Fleet swimlane; `sortFlavorsByActivity` orders clusters by the
+parent flavor's `last_seen_at` and activity bucket. When a sub-agent
+emitted events while the parent had not emitted directly, the
+parent's swimlane row stayed frozen in a stale / idle bucket and the
+whole cluster sank to the bottom — even though the cluster was
+operationally fresh. The worker already bumps the parent SESSION's
+`last_seen_at` on every child event (D155 parent-bump propagation),
+but the fleet WebSocket envelope carries only the triggering event's
+own session, so the dashboard never learned the parent was bumped.
+
+**Decision (Strategy A — front-end resolution).** The fleet store's
+`applyUpdate` resolves the parent agent from an incoming child
+event's `parent_session_id` against the in-memory session→flavor
+lookup and bumps the parent flavor's `last_seen_at` and
+`enteredBucketAt` entry; `sortFlavorsByActivity` then floats the
+cluster on the next render. The resolution is best-effort: a parent
+not yet loaded is skipped and self-heals on the next fleet `load()`
+(parents of in-window children ride along via the `include_parents`
+fetch flag).
+
+**Rejected alternative (Strategy B — backend emission).** Extend the
+worker's `NotifyFleetChange` to carry `parent_session_id` so the API
+hub broadcasts a second fleet update for the parent session, applied
+through the normal frontend path. Strategy B is arguably more honest
+— the parent session genuinely was updated — but it changes the
+NOTIFY payload and WS envelope contract and adds an extra broadcast
+per child event. Strategy A was chosen because the parent lookup is a
+trivial synchronous map read, the parent row is already guaranteed
+in-store via `include_parents:true`, the race is benign (best-effort
+plus self-heal), and it keeps the backend contract untouched. If a
+future need arises for the parent's exact server `last_seen_at`
+(Strategy A bumps to the front-end `now()`), Strategy B is the
+documented upgrade path.
+
+**Related decisions.** D155 (worker parent-bump propagation — the
+backend half this mirrors). D157 (the per-agent landing page + Fleet
+swimlane reshape this polishes).

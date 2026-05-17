@@ -468,6 +468,132 @@ func TestGetEvents_FrameworkFilter(t *testing.T) {
 	}
 }
 
+// TestGetEvents_QueryFilter exercises the free-text `q` filter
+// powering the `/events` page search bar. It seeds two sessions —
+// a match session carrying a per-run-unique token in both its
+// agent_name and framework, and a non-match session — each with one
+// event. Every assertion keys off the unique token so the test is
+// self-isolating against any leftover rows from prior runs or other
+// tests sharing the events table. It covers the three ILIKE paths:
+// agent_name and framework (resolved via the sessions subquery) and
+// event_type (an events-table column).
+func TestGetEvents_QueryFilter(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	from := now.Add(-time.Hour)
+
+	// A per-run-unique token. Both the match session's agent_name and
+	// framework embed it, and the event_type does too, so each ILIKE
+	// path can be exercised with a query that cannot collide with any
+	// other row in the table.
+	token := "qfilter" + randomUUID(t)[:8]
+
+	// Match session: agent_name + framework both carry the token.
+	matchID := randomUUID(t)
+	matchFlavor := "test-events-q-match-" + randomUUID(t)[:8]
+	matchAgent := randomUUID(t)
+	seedAgent(t, s, matchAgent, from, now.Add(-10*time.Minute), 1, 100)
+	if _, err := s.pool.Exec(ctx, `
+		INSERT INTO sessions (
+			session_id, agent_id, flavor, state, agent_name, framework,
+			started_at, last_seen_at, tokens_used,
+			agent_type, client_type
+		) VALUES (
+			$1::uuid, $2::uuid, $3, 'closed', $4, $5,
+			$6, $6, 100, 'coding', 'flightdeck_sensor'
+		)
+	`, matchID, matchAgent, matchFlavor,
+		"agent-"+token, "fw-"+token,
+		now.Add(-30*time.Minute)); err != nil {
+		t.Fatalf("seed match session: %v", err)
+	}
+
+	// Non-match session: an unrelated agent_name + framework.
+	otherID := randomUUID(t)
+	otherFlavor := "test-events-q-other-" + randomUUID(t)[:8]
+	otherAgent := randomUUID(t)
+	seedAgent(t, s, otherAgent, from, now.Add(-10*time.Minute), 1, 100)
+	if _, err := s.pool.Exec(ctx, `
+		INSERT INTO sessions (
+			session_id, agent_id, flavor, state, agent_name, framework,
+			started_at, last_seen_at, tokens_used,
+			agent_type, client_type
+		) VALUES (
+			$1::uuid, $2::uuid, $3, 'closed', 'unrelated-bot', 'langchain',
+			$4, $4, 100, 'coding', 'flightdeck_sensor'
+		)
+	`, otherID, otherAgent, otherFlavor,
+		now.Add(-30*time.Minute)); err != nil {
+		t.Fatalf("seed other session: %v", err)
+	}
+
+	// The match event's event_type also embeds the token so the
+	// events-table-column ILIKE path can be exercised with the same
+	// collision-proof query string.
+	for _, sd := range []struct{ sessionID, flavor, eventType string }{
+		{matchID, matchFlavor, "evt-" + token},
+		{otherID, otherFlavor, "pre_call"},
+	} {
+		if _, err := s.pool.Exec(ctx, `
+			INSERT INTO events (
+				id, session_id, flavor, event_type, occurred_at, has_content
+			) VALUES (
+				gen_random_uuid(), $1::uuid, $2, $3, $4, false
+			)
+		`, sd.sessionID, sd.flavor, sd.eventType,
+			now.Add(-20*time.Minute)); err != nil {
+			t.Fatalf("seed event: %v", err)
+		}
+	}
+	t.Cleanup(func() {
+		_, _ = s.pool.Exec(ctx,
+			`DELETE FROM events WHERE session_id = ANY($1::uuid[])`,
+			[]string{matchID, otherID})
+	})
+
+	// assertOnlyMatch runs GetEvents with the given query and asserts
+	// the result is exactly the one match event — nothing else, and
+	// never the non-match session's event.
+	assertOnlyMatch := func(label, query string) {
+		t.Helper()
+		resp, err := s.GetEvents(ctx, EventsParams{
+			From: from, To: now, Query: query, Limit: 100,
+		})
+		if err != nil {
+			t.Fatalf("GetEvents(%s): %v", label, err)
+		}
+		if resp.Total != 1 || len(resp.Events) != 1 {
+			t.Fatalf("%s: total=%d len=%d, want 1/1",
+				label, resp.Total, len(resp.Events))
+		}
+		if resp.Events[0].SessionID != matchID {
+			t.Errorf("%s returned session %s, want %s",
+				label, resp.Events[0].SessionID, matchID)
+		}
+	}
+
+	// agent_name path — resolved via the sessions subquery.
+	assertOnlyMatch("q=agent_name", "agent-"+token)
+	// framework path — resolved via the sessions subquery.
+	assertOnlyMatch("q=framework", "fw-"+token)
+	// event_type path — a direct events-table column.
+	assertOnlyMatch("q=event_type", "evt-"+token)
+
+	// A query matching nothing returns an empty result.
+	respNone, err := s.GetEvents(ctx, EventsParams{
+		From: from, To: now, Query: "no-such-token-" + token, Limit: 100,
+	})
+	if err != nil {
+		t.Fatalf("GetEvents(no-match): %v", err)
+	}
+	if respNone.Total != 0 || len(respNone.Events) != 0 {
+		t.Errorf("no-match query: total=%d len=%d, want 0/0",
+			respNone.Total, len(respNone.Events))
+	}
+}
+
 // TestGetEvents_SessionIdentityColumns verifies GetEvents projects the
 // session-level identity attributes (framework, client_type,
 // agent_type) onto each Event via the LEFT JOIN to `sessions`. It

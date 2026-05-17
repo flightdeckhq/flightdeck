@@ -3,7 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import { useFleetStore } from "@/store/fleet";
 import type { AgentSummary } from "@/lib/types";
 import { AgentTable } from "@/components/agents/AgentTable";
-import { AgentFilterChips } from "@/components/agents/AgentFilterChips";
+import { AgentFacetSidebar } from "@/components/agents/AgentFacetSidebar";
 import { PerAgentSwimlaneModal } from "@/components/agents/PerAgentSwimlaneModal";
 import { useAgentSummaries } from "@/hooks/useAgentSummary";
 import {
@@ -14,7 +14,7 @@ import {
 
 /**
  * `/agents` route. SentinelOne-grade one-row-per-agent table with
- * KPI sparklines, filter chips, sort, and pagination.
+ * KPI sparklines, a left facet sidebar, sort, and pagination.
  *
  * Reads the fleet roster from the shared `useFleetStore`; the
  * roster is bootstrapped by the FleetWebSocket subscription mounted
@@ -91,14 +91,52 @@ export function Agents() {
         overflow: "hidden",
       }}
     >
-      <AgentFilterChips agents={agents} filter={filter} onChange={setFilter} />
-      <div style={{ flex: 1, overflow: "auto" }}>
-        <AgentTable
-          agents={filtered}
-          summariesByAgentId={summariesByAgentId}
-          onOpenDrawer={openDrawer}
-          onOpenSwimlaneModal={setModalAgent}
+      {/* Top-of-page free-text search — spans the full page width
+          above the facet sidebar + table. Client-side filter (the
+          /agents roster is O(100s) of rows at most). */}
+      <div
+        style={{
+          borderBottom: "1px solid var(--border)",
+          background: "var(--surface)",
+          padding: "8px 12px",
+        }}
+      >
+        <input
+          data-testid="agents-search-input"
+          type="text"
+          value={filter.search}
+          onChange={(e) => setFilter({ ...filter, search: e.target.value })}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") setFilter({ ...filter, search: "" });
+          }}
+          placeholder="Search agents…"
+          aria-label="Search agents"
+          style={{
+            width: "100%",
+            fontSize: 13,
+            padding: "6px 10px",
+            borderRadius: 6,
+            border: "1px solid var(--border)",
+            background: "var(--bg)",
+            color: "var(--text)",
+            outline: "none",
+          }}
         />
+      </div>
+      <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
+        <AgentFacetSidebar
+          agents={agents}
+          filter={filter}
+          onChange={setFilter}
+        />
+        <div style={{ flex: 1, overflow: "auto" }}>
+          <AgentTable
+            agents={filtered}
+            summariesByAgentId={summariesByAgentId}
+            onOpenDrawer={openDrawer}
+            onOpenSwimlaneModal={setModalAgent}
+          />
+        </div>
       </div>
       <PerAgentSwimlaneModal
         agent={modalAgent}

@@ -320,6 +320,10 @@ export interface BulkEventsParams {
   originating_call_contexts?: string[];
   mcp_servers?: string[];
   terminal?: boolean;
+  /** Free-text ILIKE search across event_type, model, session_id,
+   *  and the session's agent_name / framework. Powers the `/events`
+   *  page top-of-page search bar. */
+  q?: string;
 }
 
 export interface BulkEventsResponse {
@@ -358,6 +362,7 @@ function buildEventsQuery(params: BulkEventsParams): URLSearchParams {
   if (params.terminal !== undefined) {
     sp.set("terminal", String(params.terminal));
   }
+  if (params.q) sp.set("q", params.q);
   return sp;
 }
 

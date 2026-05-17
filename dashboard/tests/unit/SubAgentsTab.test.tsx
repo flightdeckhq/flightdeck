@@ -582,7 +582,7 @@ describe("SubAgentsTab — UX revision: chevron-expand-inline split", () => {
     // explicit contract: the inline mini-timeline must reuse the
     // EXACT same event-row component the Timeline tab uses, not a
     // simplified copy. ``EventRow``'s row contract carries an
-    // ``event-badge`` testid (the colour-coded type pill) on
+    // ``event-type-pill`` testid (the colour-coded type pill) on
     // every event, plus the per-type testids
     // (``embeddings-event-row-...``, etc.). Pre-fix the mini-
     // timeline used a stripped-down ``EventDetail`` that emitted
@@ -639,14 +639,14 @@ describe("SubAgentsTab — UX revision: chevron-expand-inline split", () => {
         screen.getByTestId("sub-agents-spawned-from-mini-timeline"),
       ).toBeTruthy(),
     );
-    // Two ``event-badge`` testids appear inside the mini-timeline
+    // Two ``event-type-pill`` testids appear inside the mini-timeline
     // — one per event row. EventRow emits this testid on the
     // colour pill; the legacy ``EventDetail`` did not.
     const miniTimeline = screen.getByTestId(
       "sub-agents-spawned-from-mini-timeline",
     );
     const badges = miniTimeline.querySelectorAll(
-      '[data-testid="event-badge"]',
+      '[data-testid="event-type-pill"]',
     );
     expect(badges.length).toBe(2);
     // Per-event-type generic ``event-row`` testid (set by EventRow

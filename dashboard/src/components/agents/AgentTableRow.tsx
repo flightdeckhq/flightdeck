@@ -213,7 +213,11 @@ function AgentTableRowImpl({
         </span>
       </td>
 
-      {/* Cost USD 7d */}
+      {/* Cost USD 7d. Estimated cost only applies to
+          sensor-instrumented agents — Claude Code agents bill
+          independently and Flightdeck has no pricing for them, so
+          their cell renders a bare em-dash regardless of any
+          summary totals. */}
       <td style={{ padding: "8px 12px" }} data-testid={`agent-row-cost-${agent.agent_id}`}>
         <span
           style={{
@@ -222,7 +226,11 @@ function AgentTableRowImpl({
             color: "var(--text)",
           }}
         >
-          {totals ? formatCost(totals.cost_usd) : "—"}
+          {agent.client_type === ClientType.ClaudeCode
+            ? "—"
+            : totals
+              ? formatCost(totals.cost_usd)
+              : "—"}
         </span>
       </td>
 

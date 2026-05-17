@@ -135,7 +135,7 @@ test.describe("T25 — MCP observability rendering", () => {
         `expected one drawer row for event_type=${eventType}`,
       ).toBeVisible();
       // Badge label is the user-visible signal that this row is MCP.
-      await expect(row.locator('[data-testid="event-badge"]')).toHaveText(
+      await expect(row.locator('[data-testid="event-type-pill"]')).toHaveText(
         BADGE_LABELS[eventType],
       );
       // Server name appears in the row's detail text (per the
@@ -355,7 +355,7 @@ test.describe("T25 — MCP observability rendering", () => {
     // Iterate every MCP event row's badge and confirm scrollWidth
     // <= clientWidth (no horizontal overflow / clip).
     const badges = drawer
-      .locator('[data-event-type^="mcp_"] [data-testid="event-badge"]');
+      .locator('[data-event-type^="mcp_"] [data-testid="event-type-pill"]');
     const count = await badges.count();
     expect(count).toBeGreaterThan(0);
     for (let i = 0; i < count; i++) {

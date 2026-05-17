@@ -126,7 +126,7 @@ describe("LiveFeed", () => {
     const headers = screen.getByTestId("feed-column-headers");
     expect(headers).toBeInTheDocument();
     expect(headers.textContent).toContain("Agent");
-    expect(headers.textContent).toContain("Session");
+    expect(headers.textContent).toContain("Run");
     expect(headers.textContent).toContain("Type");
     expect(headers.textContent).toContain("Detail");
     expect(headers.textContent).toContain("Time");

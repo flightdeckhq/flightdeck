@@ -8,7 +8,7 @@ import (
 )
 
 // AgentListParams carries every filter, sort, search, and pagination
-// option accepted by ``GET /v1/agents``. Every slice is OR-within a
+// option accepted by “GET /v1/agents“. Every slice is OR-within a
 // dimension; slices across dimensions are AND. Empty/zero values
 // mean "no filter on this dimension".
 type AgentListParams struct {
@@ -76,7 +76,7 @@ var AllowedAgentSortColumns = map[string]string{
 		`ELSE 0 END)`,
 }
 
-// AgentListResponse is the JSON shape of ``GET /v1/agents``.
+// AgentListResponse is the JSON shape of “GET /v1/agents“.
 type AgentListResponse struct {
 	Agents  []AgentSummary `json:"agents"`
 	Total   int            `json:"total"`
@@ -86,11 +86,11 @@ type AgentListResponse struct {
 }
 
 // ListAgents runs the filtered + sorted + paginated agents query.
-// Returns a fully-populated AgentListResponse; ``Agents`` is always
+// Returns a fully-populated AgentListResponse; “Agents“ is always
 // a non-nil slice (empty rather than null in JSON).
 //
 // Ordering policy. Primary key is the caller-chosen column; secondary
-// is always ``a.agent_id ASC`` so pages are stable when multiple
+// is always “a.agent_id ASC“ so pages are stable when multiple
 // rows tie on the primary. Without a tie-breaker, two pages could
 // include the same agent (two adjacent reads of ORDER BY
 // last_seen_at DESC silently swap two rows with identical
@@ -215,10 +215,14 @@ func (s *Store) ListAgents(
 }
 
 // GetAgentByID returns a single agent with its rollup state. Returns
-// (nil, nil) when no row matches the id — handler turns this into a
-// 404. Returns (nil, err) on malformed UUID (Postgres surfaces the
-// cast error; handler maps that to a 400). Pattern mirrors
+// (nil, nil) when no row matches the id — the caller turns this into
+// a 404. Returns (nil, err) on malformed UUID (Postgres surfaces the
+// cast error; the caller maps that to a 400). Pattern mirrors
 // GetSession.
+//
+// Sole caller: AgentSummaryHandler, which calls this as a cheap
+// existence check before running the expensive summary aggregate so
+// the /v1/agents/{id}/summary 404 contract stays exact.
 func (s *Store) GetAgentByID(
 	ctx context.Context, agentID string,
 ) (*AgentSummary, error) {

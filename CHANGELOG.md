@@ -2,6 +2,276 @@
 
 All notable changes to Flightdeck are documented here.
 
+## Unreleased — Per-agent landing page + UI reshape
+
+The per-agent landing page (`/agents` page + agent drawer), the
+Fleet swimlane reshape, and the event-grain Events page (D157).
+
+### Added
+
+- **`/agents` route — one-row-per-agent table.** SentinelOne-grade
+  list with KPI sparklines (Tokens / Latency p95 / Errors / Sessions
+  / Cost, all 7-day totals + day-bucketed sparklines over the
+  trailing 7 days, sourced from `GET /v1/agents/:id/summary`). Filter
+  chips compose AND across dimensions and OR within: `state`,
+  `agent_type`, `client_type`, `framework`. Sortable column headers (the
+  numeric column totals are the sort key; the sparkline tiles are
+  visual). Pagination defaults to page size 50. A row click opens
+  the agent drawer; per-row hover also surfaces **Open
+  mini-swimlane** and **Open in events** quick actions. Per-agent
+  KPI values are cached on first load and updated in place from
+  live activity, so the table never fully re-renders when an
+  event arrives.
+- **Per-agent swimlane modal.** Clicking the status badge on any
+  `/agents` row opens a large modal dialog containing
+  a single-agent swimlane scoped to that agent's flavor only.
+  Header carries agent name + topology pill + status badge + KPI
+  totals summary. Time-range picker (5m / 15m / 30m / 1h / 24h,
+  defaults to 1h) affects the modal's events only — the `/agents`
+  table sparklines remain fixed at 7d/day. **Show sub-agents**
+  toggle defaults ON for parents and is disabled + off for lone
+  agents; when ON, the modal renders the parent row plus every
+  sub-agent row with the connector overlay linking each parent to
+  its sub-agents. Clicking an event circle inside the modal opens
+  the event detail panel stacked above the modal without closing it.
+  Closing the modal preserves the `/agents` table's scroll position.
+- **Agents nav link.** Added between Fleet and Events in the top
+  nav.
+- **`AgentSummary.recent_sessions` on `GET /v1/fleet`.** Each
+  agent row carries a per-agent rollup of its most-recent sessions
+  (capped at 5 per agent, newest-first by `started_at`, with
+  `session_id` ascending as a deterministic tie-breaker). Fetched
+  in a single batched query per fleet page; lean projection
+  (identity + lifecycle + `framework` attribution + sub-agent
+  linkage; no enrichment columns). The `framework` field
+  (bare-name `sessions.framework`) backs the `/agents` page
+  framework filter chips. The Fleet swimlane prefers this embedded
+  rollup over the paginated `/v1/sessions` intersection, so an
+  agent's row renders event circles regardless of where its
+  sessions fall in the global sessions page window.
+- **Events table identity enrichment.** Each row on the `/events`
+  page now reads at a glance for "who fired this" and "how it ran":
+  the AGENT cell shows the firing agent's `client_type` pill and
+  `agent_type` badge beside the agent name, and the MODEL cell
+  shows the provider logo and a `framework` pill beside the model
+  (for LLM events). Events that carry captured prompt content show
+  a prompt-capture indicator in the DETAIL cell. `GET /v1/events`
+  projects `framework` / `client_type` / `agent_type` onto every
+  returned event via a join to its session; no columns were added
+  to the table.
+- **`/v1/analytics?filter_agent_id=<uuid>`.** Scopes any analytics
+  metric (including the four sub-agent-aware metrics) to events
+  from sessions owned by a single agent. UUID validated at the
+  handler boundary; composes with the other `filter_*` params via
+  AND.
+- **`GET /v1/agents/{id}/summary`.** Per-agent activity summary
+  over a 1h / 24h / 7d / 30d window. Returns totals (tokens,
+  errors, sessions, cost_usd, latency_p50_ms, latency_p95_ms)
+  and a per-bucket series. Errors count `event_type='llm_error'`
+  only; latency percentiles use `event_type='post_call'`,
+  matching the analytics endpoint convention. Default bucket
+  derived from period (1h/24h → hour, 7d/30d → day).
+- **Run boundary glyphs on the swimlane.** Each agent row
+  carries per-run glyphs at the start X and end X: a filled
+  play-button triangle (▶) at the start and a filled solid
+  square (■) at the end. The square is sized at ~1.3× the
+  triangle's bbox area so the closure reads heavier than
+  the opening — operators scan rows for the square to find
+  where a run actually closed. Hover on either glyph
+  surfaces a tooltip with `run_id` + start + end (or
+  `running`) + state + total tokens. Click on either glyph
+  opens the session drawer scoped to that run. Concurrent
+  runs of the same agent render glyph pairs on offset
+  anchors (top edge / bottom edge); active / idle / stale
+  / lost runs render only the start triangle — absence of
+  the end square communicates "still running."
+- **Agent status badge on swimlane rows.** At the right edge of
+  each swimlane row's label strip, a badge renders the agent's
+  rolled-up state (the highest-priority state across the agent's
+  runs), with a pulsing dot when the state is `active`.
+  Theme-agnostic.
+- **`GET /v1/sessions?include_parents=true`.** Opt-in flag that
+  augments the response with the parent session of every child
+  session in the page, even when the parent falls outside the
+  time-range filter or the `LIMIT` window. The Fleet swimlane
+  opts in so a sub-agent whose parent fell off the 100-row page
+  still resolves topology in the front-end relationship walk;
+  the Events page omits the flag so its pagination math stays
+  exact.
+  `total` continues to count only filtered rows; `sessions[]`
+  may exceed `total` when parents ride along.
+- **Agent drawer.** A right-rail slide-in panel for drilling
+  into one agent. Opens from a click on any `/agents` table row
+  and from the agent-name in the Fleet swimlane label strip.
+  Carries an identity header (name, client/agent-type, provider
+  / OS / orchestration icons, status badge, topology pill,
+  clickable sub-agent linkage pills), collapsible panels for the
+  agent's MCP servers / latest runtime context / recent policy
+  events, and two tabs: a paginated newest-first **Events** list
+  and a paginated sortable **Runs** list. A Runs row opens the
+  run drawer stacked over the agent drawer with a "Back to
+  {agent}" breadcrumb. The drawer is deep-linkable — its open
+  state rides the `?agent_drawer=` URL parameter, and the
+  browser back button closes it.
+- **`GET /v1/events` agent filter.** The bulk events query
+  accepts an `agent_id` parameter, returning every event across
+  all of that agent's runs. The `/v1/sessions` listing also
+  gains an `attachment_count` field (the number of times a run
+  was re-attached), surfaced as the agent drawer Runs-tab
+  attached pill.
+- **`/events` is now an event table.** The Events page lists
+  individual events, one per row — timestamp, agent, run badge,
+  event type, model / framework, a humanized detail string, and
+  a status chip — newest-first, 50 per page. A row opens the
+  event detail; the run-badge column opens the run drawer. The
+  facet sidebar filters at event grain: agent, event type, error
+  type, policy event, framework, model, close reason, estimated
+  via, matched entry, originating call, MCP server, and a
+  terminal toggle — each chip showing a live count.
+- **`GET /v1/events` facet filters + counts.** The bulk events
+  query gains filters for model, framework, and the event
+  payload fields (error type, close reason, estimated via,
+  matched entry, originating call context, MCP server,
+  terminal), plus a `facets` mode that returns per-dimension
+  chip counts over the active filter set.
+- **`?run=` Events-page URL parameter.** The Events page
+  drawer deep-link parameter is now `?run=<id>`; an old
+  `?session=` link is accepted and redirected to `?run=` so
+  existing bookmarks keep working.
+- **"View entire run →" in the event detail drawer.** The event
+  detail drawer's metadata section links to the full run drawer
+  for the event's run.
+- **`/events` facet sidebar icons.** Each facet chip now carries a
+  per-dimension icon — provider logo on MODEL, framework pill on
+  FRAMEWORK, client-type pill + agent-type badge on AGENT, a chroma
+  dot on POLICY, and a category glyph on ERROR TYPE / MCP SERVER /
+  CLOSE REASON / ESTIMATED VIA.
+- **Top-of-page search bars on `/events` and `/agents`.** A
+  full-width search input filters events server-side (a new `q`
+  param on `GET /v1/events` — ILIKE across event type, model,
+  session id, and the session's agent name and framework) and the
+  agents roster client-side (name, agent_type, client_type,
+  framework, recent-session model). Escape clears the filter.
+
+### Changed
+
+- **Swimlane reshape: one row per agent.** Events from every one
+  of an agent's runs stream onto a single timeline row. Sub-agent
+  rows continue to render indented beneath their parent via
+  `data-topology="child"` and `SubAgentConnector.tsx` Bezier
+  paths from each parent spawn event to its child's first event.
+- **Agent label strip ordering.** Left-to-right inside each
+  swimlane row's left panel: optional `ClaudeCodeLogo` (when
+  `client_type === "claude-code"`) → agent name →
+  `ClientTypePill` → agent_type badge → provider icon → OS
+  icon → orchestration icon → `RelationshipPill` (lone /
+  ↳ parent / ⤴ N) → optional `SubAgentLostDot` →
+  `AgentStatusBadge`. The provider / OS / orchestration icons
+  derive from the agent's most-recent session; per-event
+  provider logos on the event circles carry the granular
+  per-call attribution.
+- **Vocabulary rename (Session → Run) in dashboard chrome + docs.**
+  Operator-facing strings ("Total Sessions" → "Total Runs",
+  "Session States" → "Run States", "No sessions found" → "No
+  runs found", etc.) updated across the dashboard, README, and
+  sensor docstring prose. Wire-level identifiers (DB columns,
+  event_type literals, the `session_id` kwarg, URL query params,
+  type discriminants) are unchanged.
+- **Route rename `/investigate` → `/events`.** The Vite router
+  mounts the Investigate page component at `/events`; the
+  nginx edge (dev + prod) serves a permanent 301 from
+  `/investigate` preserving the query string. Internal links
+  and the `/v1/agents` row navigation updated.
+- **`/agents` filters moved to a left facet sidebar.** The
+  top-of-table filter chip tier is now a left sidebar matching the
+  `/events` page, each entry rendered with its identity icon. The
+  Cost (7d) column renders an em-dash for Claude Code agents — cost
+  applies only to sensor-instrumented agents — and its header
+  carries an explanatory info-icon tooltip.
+- **Unified event-type pill.** The run drawer, the `/events`
+  table, and the agent drawer's Events tab now render the same
+  `EventTypePill`, so the event-type indicator is identical across
+  all three surfaces.
+
+### Removed
+
+- **`?view=table` Fleet view toggle + `AgentTable.tsx`.** Fleet
+  renders the swimlane unconditionally. `TopologyCell` was
+  extracted to `dashboard/src/components/fleet/TopologyCell.tsx`
+  before the container deletion so future agent-listing surfaces
+  can consume it.
+- **Swimlane expand-row affordance.** The chevron-toggled
+  expanded session-list drawer, its "Show older runs" pagination
+  affordance, and the "View in Events →" deep-link are gone. The
+  related fleet-store actions (`loadExpandedSessions`,
+  `loadMoreExpandedSessions`) are removed. The full per-agent
+  history surface is provided by the agent drawer.
+- **`/agents?focus=` scroll-and-highlight.** The interim
+  cross-page jump (a `?focus=<agent_id>` URL param that scrolled
+  and highlighted a row on the `/agents` table) is retired. The
+  Fleet swimlane agent-name click now opens the agent drawer
+  directly.
+
+### Fixed
+
+- **Sub-agent rows now materialise + render event circles +
+  anchor connector overlays at default viewport.** The keep-alive
+  watchdog forward-dated session-level timestamps but never bumped
+  the AGENT row's `last_seen_at` (the worker stamps it on
+  session_start only; subsequent tool_call events skip it). Result
+  pre-fix: the agent's row sank into a "stale" bucket, the
+  IntersectionObserver virtualized it off-screen at default
+  viewport, the swimlane row never mounted, event circles never
+  rendered, and the connector overlay reported
+  `data-connector-count="0"` with zero paths even though the
+  fixture's session was present in the API. The watchdog now
+  bumps `agents.last_seen_at` whenever it forward-dates an
+  active-role session.
+- **Sub-agent rows on busy fleets no longer render as `lone`.**
+  Deployments with more than ~20 active agents could push a
+  sub-agent's parent off the 100-row swimlane fetch window;
+  `deriveRelationship` then failed and the sub-agent stamped
+  as topology="lone" instead of indented under its parent.
+  The new `include_parents=true` flag on `GET /v1/sessions`
+  pulls those parents back into the response so the front-end
+  resolver finds them.
+- **`SubAgentLostDot` stickiness.** A sub-agent that ran lost
+  once and then recovered via state-revival kept the red `i`
+  dot lit because the SwimLane scan looked for any historical
+  lost session. The dot now fires only when the MOST RECENT
+  session for a given sub-agent role is in `lost` state; an
+  old lost run followed by a healthy retry leaves the dot off.
+- **Sub-agent connector geometry anchors on first in-domain
+  event.** `Timeline.tsx`'s connector pass previously picked
+  `childEvents[0]` (the child's absolute first event) as the
+  spawn anchor, then checked whether that timestamp fell inside
+  the visible domain. Long-running child sessions whose
+  `session_start` is at an old timestamp but which have fresh
+  `tool_call` events from the keep-alive watchdog at NOW-30s
+  failed that domain check and the connector skipped the pair —
+  even though the child had visible event circles inside the
+  window. The pass now picks the child's first event INSIDE the
+  domain as the anchor, matching the swimlane's visible state.
+- **Idempotent seed treats sessions missing `session_start` as
+  incomplete.** `tests/e2e-fixtures/seed.py::_session_is_complete`
+  previously gated only on event count + `phase4_extras`
+  coverage. A session whose keep-alive extras
+  (`mcp_tool_list` / `mcp_tool_call` / ...) survived a dev DB
+  wipe but whose original `session_start` was gone would pass
+  the completeness check and never re-emit `session_start`. The
+  worker's lazy-create path stamped `context = NULL`, breaking
+  the dashboard's MCP SERVERS panel for the `mcp-active`
+  fixture. The check now also requires a `session_start` event
+  in the events list; a session without one re-emits its full
+  base sequence including the authoritative `context.mcp_servers`
+  fingerprint.
+- **Swimlane cluster sort follows sub-agent activity.** A sub-agent
+  emitting an event now floats its whole parent + sub-agent cluster
+  to the top of the swimlane: the fleet store resolves the parent
+  from the child event's `parent_session_id` and bumps the parent
+  row's activity timestamp, so a cluster kept alive entirely by its
+  sub-agents no longer sinks into the stale / idle bucket.
+
 ## Unreleased — MCP Protection Policy + operator-actionable enrichment
 
 Per-flavor enforcement of which MCP servers an agent is allowed to

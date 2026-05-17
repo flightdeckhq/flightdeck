@@ -50,7 +50,7 @@ test.describe("T14 — Embeddings event renders in drawer", () => {
         foundEmbedRow = true;
         const first = embedRow.first();
         await expect(first).toBeVisible();
-        const badge = first.locator('[data-testid="event-badge"]');
+        const badge = first.locator('[data-testid="event-type-pill"]');
         await expect(badge).toHaveText("EMBED");
         const rowText = (await first.textContent()) ?? "";
         expect(rowText).toContain("text-embedding-3-small");

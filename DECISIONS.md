@@ -8554,3 +8554,353 @@ correction for a v0.6 cleanup PR.
   zero regressions.
 - golangci-lint + ruff + tsc + eslint clean across api / ingestion
   / workers / sensor / dashboard.
+
+## D157 -- Per-agent landing page + Fleet / Events UI reshape
+
+**Date:** 2026-05-16
+**Status:** Adopted
+
+**Context.**
+
+Pre-D157 Flightdeck answered "what is my fleet doing" through two
+surfaces only: the Fleet swimlane and the session-grained
+`/investigate` page. Neither answered the operator's actual first
+question — "which *agent* needs my attention, and what has it been
+doing." The Roadmap carried a single loose bullet ("Per-agent
+landing page: a dedicated agent detail view") that framed the gap
+as one missing page.
+
+Implementation showed the gap was structural, not a single page:
+
+- The Fleet swimlane rendered one row *per session*. A long-lived
+  agent with many runs fragmented across the timeline and its
+  per-agent state was never legible at a glance.
+- `/investigate` listed *sessions* and computed its facet sidebar
+  client-side from per-session aggregate arrays. The operator's
+  Events-page question is "what happened" — an event-shaped
+  question the session grain cannot answer.
+- There was no agent-scoped data surface at all: no per-agent KPI
+  rollup endpoint, no agent drawer, no way to filter analytics or
+  events to a single agent.
+
+D157 is therefore a coordinated reshape, not an additive page: the
+swimlane inverts to one row per agent; `/investigate` inverts to
+event grain and becomes `/events`; a new `/agents` list, agent
+drawer, and per-agent swimlane modal land; and the backend grows
+the per-agent rollup endpoints those surfaces consume. The
+per-agent-landing-page Roadmap bullet is retired by this work.
+
+**Decision.**
+
+D157 ships on one branch (`feat/d157-per-agent-landing-page`), one
+commit per phase. The plan was scoped as four phases; a fifth
+(documentation + final V-pass) was added when the doc surface
+proved large enough to warrant its own gate. The shipped shape:
+
+- **Phase 1 — backend foundations + vocabulary + routing.**
+  `GET /v1/agents/{agent_id}/summary` returns per-bucket totals
+  (tokens, errors, sessions, cost_usd, latency_p50_ms,
+  latency_p95_ms) plus a time series over a 1h / 24h / 7d / 30d
+  window. `filter_agent_id` on `GET /v1/analytics` composes across
+  the standard query path and the recursive sub-agent CTE path.
+  User-visible Session → Run vocabulary rename (rendered strings,
+  README prose, sensor docstring prose only — wire identifiers
+  unchanged). `/investigate` → `/events` route rename, with a
+  permanent nginx 301 from the legacy path preserving the query
+  string.
+- **Phase 2 — Fleet swimlane reshape.** One row per agent; every
+  run's events stream onto that single row. Per-run boundary
+  glyphs, `AgentStatusBadge`, the `AgentSummary.recent_sessions`
+  embedded rollup on `/v1/fleet`, the `include_parents` flag on
+  `/v1/sessions`, and the sub-agent connector geometry fix.
+  `AgentTable.tsx` and the `?view=table` toggle are deleted; the
+  chevron expand-row affordance is removed.
+- **Phase 3 — `/agents` page + per-agent swimlane modal.** A
+  one-row-per-agent sortable table with KPI sparklines and filter
+  chips, plus a status-badge-click modal scoping the swimlane to
+  one agent.
+- **Phase 4 — agent drawer + `/events` event-grain rework.** The
+  agent drawer (Events + Runs tabs, sub-agent linkage pills);
+  `/events` inverted to event grain with a server-side
+  facet-count mode; the run drawer reachable from five entry
+  points; the `?session=` → `?run=` URL-param rename.
+- **Phase 5 — documentation + final V-pass.** This entry, the
+  ARCHITECTURE.md present-tense pass, the CHANGELOG [Unreleased]
+  rollup confirmation, the Helm version bump, and the gated
+  reviewer + Chrome verification pass before the PR opens.
+
+The load-bearing design pivots:
+
+1. **Run boundary glyphs — option B (mixed glyphs).** Each agent
+   row carries a filled play-button triangle (▶) at a run's
+   `started_at` X and a filled solid square (■) at its `ended_at`
+   X, the square sized at roughly 1.3× the triangle's bbox area.
+   The asymmetry is operational: scanning a fleet of rows, the
+   heavier square anchors the eye on "where did this run close,"
+   while the *absence* of a square communicates "still running"
+   at the same glance. Concurrent runs of one agent stagger to
+   top / bottom anchors.
+2. **Trust the backend-supplied topology; fix the data, not the
+   classifier.** The swimlane resolves parent ↔ child
+   relationships client-side from the in-memory roster. The
+   missing-parent bug (a sub-agent rendering as `lone`) was a
+   result-set *coverage* problem — the parent fell outside the
+   100-row `/v1/sessions` page or the time window — not a
+   *classification* problem. The shipped fix keeps the existing
+   client-side walk and supplies it complete inputs:
+   `/v1/sessions?include_parents=true` augments the page with
+   every child's parent regardless of window or `LIMIT`, and the
+   `recent_sessions` lean projection carries the D126 linkage
+   columns (`parent_session_id`, `agent_role`) the walk consumes.
+3. **`AgentSummary.recent_sessions` — a per-agent embedded rollup
+   on `/v1/fleet`.** Each agent row carries its top-`N`
+   most-recent sessions (`store.RecentSessionsPerAgent = 5`,
+   newest-first), populated by one batched `ROW_NUMBER` query per
+   fleet page. The swimlane row's data dependency on its agent's
+   sessions is *per-agent bounded*, not page-bounded — this fixes
+   the empty-row class of bug where a sub-agent's sessions fell
+   outside the global 100-row `/v1/sessions` window.
+4. **`/events` inverts to event grain.** One row per event, not
+   per session. Facet counts come from the server (`facets=true`
+   on `GET /v1/events`) because event volume dwarfs the page
+   size; the prior page's client-side aggregate counting does not
+   scale. Payload-JSONB facet filters land with a dedicated index
+   migration (`000023`).
+5. **The run drawer has five entry points.** `SessionDrawer` —
+   operator-facing prose calls it the run drawer — opens from a
+   swimlane event circle, a swimlane run-bracket glyph, an agent
+   drawer Runs-tab row, the "View entire run →" link in the
+   `EventDetailDrawer`, and the `/events` run-badge column. Entry
+   point 3 alone renders the `← Back to {agent}` breadcrumb.
+6. **`/agents` is a list-with-modal-and-drawer, not a detail
+   route.** The operator's first question is "which agent needs
+   attention," answered by a list. The per-agent swimlane modal
+   (status-badge click — a swimlane peek) and the agent drawer
+   (row click — a data drill-down) handle the follow-up without a
+   route change. Drawer open/close state is URL-backed
+   (`?agent_drawer=<agent_id>`) and mounted once at app level so
+   it opens identically from `/agents` and the Fleet swimlane.
+
+**Rejected alternatives.**
+
+1. *Option A — symmetric brackets at both run ends.* Clutter
+   under realistic event density and a weaker closure cue than
+   the heavier end square. Rejected for the option-B mixed
+   glyphs.
+2. *Per-run swimlane sub-rows (the pre-reshape shape).* Loses
+   agent-level continuity — the whole point of the reshape is one
+   legible per-agent row.
+3. *Backend topology classification fields on `AgentSummary`.*
+   Considered for the missing-parent fix. Rejected: the swimlane
+   already resolves relationships client-side, so stamping a
+   redundant classification on the rollup duplicates logic in a
+   second place. The actual defect was result-set coverage, which
+   `include_parents` addresses directly. The shipped design still
+   carries the raw linkage columns (`parent_session_id`,
+   `agent_role`) on `recent_sessions` — it uses the *data* this
+   option would have supplied, without the *classifier* half.
+4. *Raising the swimlane's `/v1/sessions` `LIMIT`.* Moves the
+   coverage cliff from N≈20 to N=k for any fixed k; the
+   relationship walk's coverage requirement is unbounded in fleet
+   size, while `include_parents` is bounded by the page's child
+   count.
+5. *N+1 per-agent follow-up fetches for recent sessions.*
+   Rejected for `recent_sessions` — one batched query per fleet
+   page instead.
+6. *Surgical in-place inversion of `Investigate.tsx`.* When the
+   unit of display inverts (session grain → event grain) the
+   component's data model, state shape, and facet logic all
+   change at once; a from-scratch rewrite of the page is cleaner
+   to review and verify than a patch series threading through a
+   model that no longer holds. The session-grain E2E specs were
+   deleted rather than migrated for the same reason — the
+   journeys they covered no longer exist.
+7. *A `/agents/:id` detail route.* Operators rarely bookmark a
+   single agent; the drawer keeps roster context and still
+   deep-links via `?agent_drawer=`.
+8. *Keeping `/investigate` session-grain with an event sub-view.*
+   The agent drawer and the swimlane already cover the
+   session / run-shaped views; the Events-page question is
+   event-shaped and wants the page itself at that grain.
+
+**Consequences.**
+
+- The "Per-agent landing page" Roadmap bullet is retired.
+- `/v1/fleet` runs one extra batched query per page (the
+  `recent_sessions` rollup). On `/v1/sessions?include_parents=true`
+  the response `sessions[]` may exceed `total` when extra parents
+  ride along — a documented contract; paginated callers (the
+  Events page list) omit the flag so their pagination math stays
+  exact.
+- Migration `000023` adds eight partial expression indexes on
+  `events`. INSERT write-amplification is bounded: the partial
+  `IS NOT NULL` predicates keep each index to the minority of
+  rows that actually carry the indexed payload field.
+- The Session → Run vocabulary split means "Run" is the
+  user-facing term and "session" remains the wire / DB term. The
+  rename is user-visible-strings-only specifically to keep that
+  split from leaking into identifiers a contributor would grep.
+- Traffic-pattern observations to watch once real fleets are
+  seen: the `recent_sessions` batched-query cost on fleets with
+  50+ agents; the `/events` facet-count query cost over wide time
+  ranges; and whether the swimlane's `1m` live-monitor default
+  matches operators' habitual window or needs revisiting.
+
+**Related decisions.** D126 (sub-agent observability —
+the `parent_session_id` / `agent_role` columns, the sub-agent-aware
+analytics metrics, and the connector overlay this reshape
+rebuilds on). D154 (operator-actionable enrichment dashboard
+surface — the `EnrichmentSummary` / `EventDetailDrawer` the
+event-grain page and run-drawer entry points reuse). D155
+(parent-bump propagation — the parent-revival path that keeps a
+work-delegating parent's single swimlane row live). D098 / D099
+(provider derivation + the static pricing table that back the
+summary endpoint's `cost_usd` aggregate).
+
+**Live-stack verification.**
+
+Each phase passed its own live-stack gate against a dev stack
+rebuilt at branch HEAD before its commit landed:
+
+- *Phase 1.* `GET /v1/agents/<uuid>/summary?period=7d` → 200 with
+  the documented shape; period (1h/24h/7d/30d) and bucket
+  (hour/day/week) overrides honoured; unknown-uuid → 404,
+  malformed → 400. `filter_agent_id` scoped across both metric
+  paths. `GET /investigate` → 301 to `/events`. Vitest 904/904,
+  `go test ./...` clean, integration green, Playwright clean both
+  themes (incl. the new T44 301 spec).
+- *Phase 2.* `docker compose` rebuild of `api` + `dev-reset` +
+  `seed-e2e`; `curl /v1/fleet` confirmed `recent_sessions`
+  populated on every agent; `curl /v1/sessions` confirmed
+  `context.mcp_servers` populated. 204 integration tests pass.
+  Two consecutive `npm run test:e2e` runs: 234 passed / 2
+  skipped / 0 failed each (Rule 40c.1 stability), both themes.
+- *Phase 3.* Dashboard-centric phase — the `/agents` page and the
+  per-agent swimlane modal — plus the `RecentSession.framework`
+  backend amendment. Verified via the Vitest unit suite, the
+  Playwright E2E matrix on both theme projects, and the
+  six-reviewer pipeline (12 findings resolved).
+- *Phase 4.* Go store unit tests + six `/v1/events` integration
+  tests; E2E 250/250 twice-green on both themes; the six-reviewer
+  pipeline run, all blocker and warning findings resolved.
+- *Phase 5.* Documentation-only phase — three docs plus two Helm
+  chart-metadata files, no source change — formally exempt from
+  the runtime V-pass under the Rule 40b / 40c / 40e docs
+  carve-outs. Gated instead by `helm lint` + `helm template` (the
+  chart-metadata change), a documentation cross-reference
+  integrity pass, `git diff` review, and the doc-expert /
+  architect / qa-engineer reviewer pipeline on the Phase 5 diff.
+
+## D158 -- Events table identity enrichment: /v1/events joins sessions for framework / client_type / agent_type
+
+**Date:** 2026-05-16
+**Status:** Adopted
+
+**Context.** The `/events` page lists individual events. An event row
+showed timestamp, agent flavor, run badge, event-type, model, detail,
+and a status chip — but nothing about the *kind* of agent that fired
+it. An operator scanning the table could not tell a Claude Code
+coding session apart from a production sensor agent, see the
+framework, or tell which events carry captured prompt content to
+drill into, without opening each row's drawer.
+
+**Decision.** `GET /v1/events` now projects three session-level
+identity attributes onto every returned event — `framework`,
+`client_type`, `agent_type` — via a `LEFT JOIN` to `sessions` on
+`session_id`. The `events` table stores none of them; they live only
+on `sessions`. The page SELECT wraps the existing filter + ORDER +
+LIMIT/OFFSET in a subquery so `buildEventsWhere`'s unqualified column
+references stay unambiguous and the join only touches the page's
+rows; the COUNT query is unchanged — it runs on `events` alone and
+never includes the join.
+
+The dashboard `EventRow` renders the new fields inline within the
+existing seven columns — no new columns:
+
+- **AGENT cell** gains the `ClientTypePill` and a new
+  `AgentTypeBadge`, matching the identity chrome of the Fleet
+  swimlane label strip and the `/agents` table. Both are
+  session-scoped, so they render for an event of any type.
+- **MODEL cell** gains a `ProviderLogo` and a new `FrameworkPill`.
+  This "how it ran" cluster carries meaning only for LLM calls, so
+  it renders only when the event has a `model`; non-LLM events
+  (tool calls, MCP, policy, errors) keep a bare em-dash.
+- **DETAIL cell** gains a trailing prompt-capture indicator on any
+  event whose `has_content` is set. It lives here, not in the MODEL
+  cell, because captured content is a row-level affordance that
+  spans event types (LLM prompts, MCP `tool_input`, …) while the
+  MODEL cell is empty for non-LLM events.
+
+**Rejected alternatives.**
+
+- *A per-event `events.framework` column.* `ARCHITECTURE.md`'s
+  `events` table DDL block wrongly listed a `framework TEXT` column
+  ("bare name, denorm from sensor payload"). No such column exists —
+  migration `000001` never created it, no later migration adds it,
+  and the worker's `INSERT INTO events` never writes it. The phantom
+  line was removed from `ARCHITECTURE.md`, and the rest of that DDL
+  block was reconciled against migrations `000001` / `000002` /
+  `000013` / `000023` in the same pass — it had further drift (a
+  phantom `created_at` column, a single-column primary key where the
+  real key is composite `(id, occurred_at)`, missing `flavor` and
+  `source` columns, `BIGINT` token types that are really `INTEGER`, a
+  phantom `ON DELETE CASCADE`, and stale index names). Adding a
+  `framework` column for real was rejected: framework is already
+  authoritative on `sessions`, the join is one-to-one and cheap, and
+  a denormalised copy would be one more write-path field to keep
+  consistent.
+- *Dedicated CLIENT / AGENT-TYPE / FRAMEWORK columns.* Rejected for
+  table width: seven columns would have become ten or eleven,
+  forcing horizontal scroll and a `colSpan` change across the
+  empty / loading / error rows. Inline cell enrichment keeps the
+  table compact and reuses the established Fleet / `/agents`
+  identity-chrome pattern.
+
+**Related decisions.** D157 (the per-agent landing page + Fleet /
+Events reshape this polishes). D114 / D115 (the `client_type` /
+`agent_type` identity vocabulary). D126 (the `framework` attribution
+on `sessions`).
+
+## D159 -- Swimlane parent + sub-agent cluster sort: front-end parent-bump (Strategy A)
+
+**Date:** 2026-05-17
+**Status:** Adopted
+
+**Context.** A parent agent and its sub-agents render as a cluster in
+the Fleet swimlane; `sortFlavorsByActivity` orders clusters by the
+parent flavor's `last_seen_at` and activity bucket. When a sub-agent
+emitted events while the parent had not emitted directly, the
+parent's swimlane row stayed frozen in a stale / idle bucket and the
+whole cluster sank to the bottom — even though the cluster was
+operationally fresh. The worker already bumps the parent SESSION's
+`last_seen_at` on every child event (D155 parent-bump propagation),
+but the fleet WebSocket envelope carries only the triggering event's
+own session, so the dashboard never learned the parent was bumped.
+
+**Decision (Strategy A — front-end resolution).** The fleet store's
+`applyUpdate` resolves the parent agent from an incoming child
+event's `parent_session_id` against the in-memory session→flavor
+lookup and bumps the parent flavor's `last_seen_at` and
+`enteredBucketAt` entry; `sortFlavorsByActivity` then floats the
+cluster on the next render. The resolution is best-effort: a parent
+not yet loaded is skipped and self-heals on the next fleet `load()`
+(parents of in-window children ride along via the `include_parents`
+fetch flag).
+
+**Rejected alternative (Strategy B — backend emission).** Extend the
+worker's `NotifyFleetChange` to carry `parent_session_id` so the API
+hub broadcasts a second fleet update for the parent session, applied
+through the normal frontend path. Strategy B is arguably more honest
+— the parent session genuinely was updated — but it changes the
+NOTIFY payload and WS envelope contract and adds an extra broadcast
+per child event. Strategy A was chosen because the parent lookup is a
+trivial synchronous map read, the parent row is already guaranteed
+in-store via `include_parents:true`, the race is benign (best-effort
+plus self-heal), and it keeps the backend contract untouched. If a
+future need arises for the parent's exact server `last_seen_at`
+(Strategy A bumps to the front-end `now()`), Strategy B is the
+documented upgrade path.
+
+**Related decisions.** D155 (worker parent-bump propagation — the
+backend half this mirrors). D157 (the per-agent landing page + Fleet
+swimlane reshape this polishes).

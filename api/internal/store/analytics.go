@@ -11,17 +11,24 @@ import (
 
 // AnalyticsParams holds validated query parameters for GET /v1/analytics.
 type AnalyticsParams struct {
-	Metric          string
-	GroupBy         string
+	Metric           string
+	GroupBy          string
 	GroupBySecondary string
-	Range           string
-	From            time.Time
-	To              time.Time
-	Granularity     string
-	FilterFlavor    string
-	FilterModel     string
-	FilterAgentType string
-	FilterProvider  string
+	Range            string
+	From             time.Time
+	To               time.Time
+	Granularity      string
+	FilterFlavor     string
+	FilterModel      string
+	FilterAgentType  string
+	FilterProvider   string
+
+	// FilterAgentID scopes the analytics window to events from
+	// sessions owned by a single agent. Used by the per-agent
+	// landing page to chart one agent's activity. Empty string
+	// skips the filter (no AND clause emitted). Handler validates
+	// the UUID shape before the value reaches the store.
+	FilterAgentID string
 
 	// D126 — sub-agent observability filters. All three compose via
 	// AND in the WHERE clause. Each is independent and skipped when
@@ -43,10 +50,10 @@ type AnalyticsParams struct {
 	FilterIsSubAgent bool
 }
 
-// DataPoint is a single time series data point. ``Breakdown`` carries
+// DataPoint is a single time series data point. “Breakdown“ carries
 // per-secondary-axis segments when the caller passes a two-dimension
-// ``group_by`` (D126 § 6.4). Single-dim queries leave ``Breakdown``
-// nil — the JSON ``omitempty`` keeps the wire shape byte-identical to
+// “group_by“ (D126 § 6.4). Single-dim queries leave “Breakdown“
+// nil — the JSON “omitempty“ keeps the wire shape byte-identical to
 // the pre-6.4 contract for those callers.
 type DataPoint struct {
 	Date      string            `json:"date"`
@@ -54,8 +61,8 @@ type DataPoint struct {
 	Breakdown []BreakdownBucket `json:"breakdown,omitempty"`
 }
 
-// BreakdownBucket is one segment of a two-dim DataPoint. ``Key`` is
-// the secondary-axis bucket value; ``Value`` is the metric aggregate
+// BreakdownBucket is one segment of a two-dim DataPoint. “Key“ is
+// the secondary-axis bucket value; “Value“ is the metric aggregate
 // for that primary × secondary × time-bucket triple. The sum of all
 // Breakdown[].Value within a single DataPoint equals DataPoint.Value
 // (the row total), so a chart can render either the stacked or the
@@ -80,7 +87,7 @@ type AnalyticsTotals struct {
 
 // AnalyticsResponse is the full response for GET /v1/analytics.
 //
-// ``PartialEstimate`` is only meaningful when ``metric=estimated_cost``
+// “PartialEstimate“ is only meaningful when “metric=estimated_cost“
 // and is true when the window contains post_call rows for models that
 // are not in the static pricing table (pricing.go). The dashboard
 // surfaces an amber disclaimer above the cost chart when this flag
@@ -96,18 +103,18 @@ type AnalyticsResponse struct {
 }
 
 // dimensionSource describes how to project a group-by dimension. When
-// ``needsSessionJoin`` is true and the metric's base table is events,
-// the generated query joins ``sessions s`` to expose session-only
+// “needsSessionJoin“ is true and the metric's base table is events,
+// the generated query joins “sessions s“ to expose session-only
 // columns (host, agent_type) or the unnested framework array.
-// ``expr`` is the SQL fragment written into the SELECT list (may
-// reference ``s.``). ``team`` maps onto ``flavor`` because there is
+// “expr“ is the SQL fragment written into the SELECT list (may
+// reference “s.“). “team“ maps onto “flavor“ because there is
 // no team column yet.
 //
-// ``fromExtras`` is appended verbatim to the FROM clause when non-
-// empty. Used by ``framework`` to add a LEFT JOIN LATERAL
-// ``jsonb_array_elements_text`` so each string in
-// ``sessions.context->'frameworks'`` becomes its own row and sessions
-// with no frameworks still appear under ``'unknown'`` via COALESCE.
+// “fromExtras“ is appended verbatim to the FROM clause when non-
+// empty. Used by “framework“ to add a LEFT JOIN LATERAL
+// “jsonb_array_elements_text“ so each string in
+// “sessions.context->'frameworks'“ becomes its own row and sessions
+// with no frameworks still appear under “'unknown'“ via COALESCE.
 type dimensionSource struct {
 	// exprEvents is the SQL expression for the dimension when the
 	// metric's base table is events (with ``sessions s`` joined in
@@ -126,15 +133,15 @@ type dimensionSource struct {
 	fromExtras string
 }
 
-// frameworkUnnest is the LATERAL unnest used by the ``framework``
+// frameworkUnnest is the LATERAL unnest used by the “framework“
 // dimension. The sensor stores multiple framework versions per
-// session as a JSONB array under ``sessions.context->'frameworks'``
-// (e.g. ``["langchain/0.1.12","crewai/0.42.0"]``). A plain GROUP BY
-// on ``s.framework`` (a legacy unused scalar column) collapsed every
-// row into ``'unknown'``. LEFT JOIN LATERAL so sessions with an
-// empty or missing array still produce one ``NULL`` row that
-// COALESCEs to ``'unknown'`` instead of being dropped. A session
-// tagged ``["crewai","langchain"]`` legitimately counts once under
+// session as a JSONB array under “sessions.context->'frameworks'“
+// (e.g. “["langchain/0.1.12","crewai/0.42.0"]“). A plain GROUP BY
+// on “s.framework“ (a legacy unused scalar column) collapsed every
+// row into “'unknown'“. LEFT JOIN LATERAL so sessions with an
+// empty or missing array still produce one “NULL“ row that
+// COALESCEs to “'unknown'“ instead of being dropped. A session
+// tagged “["crewai","langchain"]“ legitimately counts once under
 // each framework -- totals across frameworks can therefore exceed
 // distinct sessions, which is the honest answer for a multi-valued
 // dimension.
@@ -219,11 +226,11 @@ type metricSpec struct {
 // subagentMetricNames is the set of D126 metrics that operate over
 // the parent / child relationship rather than over a single events
 // or sessions column. They share a query shape distinct from the
-// dynamic-SQL builder used for ``tokens`` / ``sessions`` / ... —
+// dynamic-SQL builder used for “tokens“ / “sessions“ / ... —
 // the recursive CTE for token sums and the correlated subqueries
 // for child_count + first-child latency don't slot into the
-// per-bucket aggregate the existing builder produces. ``QueryAnalytics``
-// dispatches to ``querySubagentAnalytics`` when the requested
+// per-bucket aggregate the existing builder produces. “QueryAnalytics“
+// dispatches to “querySubagentAnalytics“ when the requested
 // metric is in this set.
 //
 // See D126 § 6.4 for the metric definitions and the
@@ -245,7 +252,7 @@ func IsSubagentMetric(metric string) bool {
 }
 
 // metricSpecs returns the specification for the requested metric.
-// ``estimated_cost`` is computed from the static pricing table; see
+// “estimated_cost“ is computed from the static pricing table; see
 // pricing.go / DECISIONS.md D099.
 func metricSpecs() map[string]metricSpec {
 	return map[string]metricSpec{
@@ -332,8 +339,8 @@ func appendBreakdownPoint(
 }
 
 // groupByWireValue mirrors the request param as written by the
-// caller. Single-dim queries echo back ``params.GroupBy`` exactly;
-// two-dim queries return ``primary,secondary`` so a client can
+// caller. Single-dim queries echo back “params.GroupBy“ exactly;
+// two-dim queries return “primary,secondary“ so a client can
 // re-construct the request from the response without an additional
 // round trip. Mirrors the parsing convention in the analytics
 // handler.
@@ -449,6 +456,7 @@ func (s *Store) QueryAnalytics(ctx context.Context, params AnalyticsParams) (*An
 		// join, add it specifically for this filter.
 		if spec.baseTable == "events" && !needsJoin {
 			fromClause = "events e JOIN sessions s ON e.session_id = s.session_id"
+			needsJoin = true
 		}
 		aliasForFilter := "s"
 		if spec.baseTable == "sessions" {
@@ -456,6 +464,24 @@ func (s *Store) QueryAnalytics(ctx context.Context, params AnalyticsParams) (*An
 		}
 		filterSQL += fmt.Sprintf(" AND %s.agent_type = $%d", aliasForFilter, argIdx)
 		filterArgs = append(filterArgs, params.FilterAgentType)
+		argIdx++
+	}
+	if params.FilterAgentID != "" {
+		// agent_id lives on sessions; same join-on-demand pattern as
+		// FilterAgentType so event-based metrics can still narrow to
+		// one agent. The ::uuid cast keeps a malformed value (which
+		// the handler is supposed to have already rejected) from
+		// reaching the planner as a bare text comparison.
+		if spec.baseTable == "events" && !needsJoin {
+			fromClause = "events e JOIN sessions s ON e.session_id = s.session_id"
+			needsJoin = true
+		}
+		aliasForFilter := "s"
+		if spec.baseTable == "sessions" {
+			aliasForFilter = spec.alias
+		}
+		filterSQL += fmt.Sprintf(" AND %s.agent_id = $%d::uuid", aliasForFilter, argIdx)
+		filterArgs = append(filterArgs, params.FilterAgentID)
 		argIdx++
 	}
 
@@ -488,6 +514,7 @@ func (s *Store) QueryAnalytics(ctx context.Context, params AnalyticsParams) (*An
 		params.FilterHasSubAgents || params.FilterIsSubAgent
 	if subagentFiltersActive && spec.baseTable == "events" && !needsJoin {
 		fromClause = "events e JOIN sessions s ON e.session_id = s.session_id"
+		needsJoin = true
 	}
 	subagentAlias := "s"
 	if spec.baseTable == "sessions" {
@@ -758,7 +785,7 @@ const subagentRecursiveCTE = `
 `
 
 // subagentMetricExpr returns the per-session SQL expression for the
-// sub-agent metric. The CTE above projects ``subtree_tokens`` onto
+// sub-agent metric. The CTE above projects “subtree_tokens“ onto
 // every session via the LEFT JOIN inside querySubagentAnalytics, and
 // the per-parent fan-out / latency expressions reference correlated
 // subqueries against the sessions table directly.
@@ -841,6 +868,11 @@ func (s *Store) querySubagentAnalytics(
 	if params.FilterAgentType != "" {
 		filterSQL += fmt.Sprintf(" AND s.agent_type = $%d", argIdx)
 		filterArgs = append(filterArgs, params.FilterAgentType)
+		argIdx++
+	}
+	if params.FilterAgentID != "" {
+		filterSQL += fmt.Sprintf(" AND s.agent_id = $%d::uuid", argIdx)
+		filterArgs = append(filterArgs, params.FilterAgentID)
 		argIdx++
 	}
 	if params.FilterProvider != "" {

@@ -6,16 +6,20 @@ const MAX_BACKOFF_MS = 30_000;
  * WebSocket hook with native exponential backoff reconnect.
  * No external dependencies -- reconnect logic is built in.
  *
- * Phase 4.5 M-16: ``onMessage`` is captured into a ref so a parent
- * that passes a fresh closure on every render does not retrigger
- * connect / reconnect. Pre-fix, an inline ``onMessage={(d) => ...}``
- * caller forced ``connect`` to recreate every render and tore down
- * the WS each time, masking real reconnect telemetry. The handler
- * ref always points at the latest closure so the WS sees current
- * state without forcing a reconnect.
+ * Passing ``url = null`` opts out of the WS subscription entirely
+ * — the hook becomes a no-op. Used by ``useFleet`` under E2E when
+ * the keep-alive WS disable flag is set so periodic fixture-
+ * refresh events from the test harness don't perturb
+ * IntersectionObserver virtualization or sidebar pagination
+ * under parallel-worker load.
+ *
+ * ``onMessage`` is captured into a ref so a parent that passes a
+ * fresh closure on every render does not retrigger connect /
+ * reconnect. The handler ref always points at the latest closure
+ * so the WS sees current state without forcing a reconnect.
  */
 export function useWebSocket(
-  url: string,
+  url: string | null,
   onMessage: (data: string) => void
 ) {
   const wsRef = useRef<WebSocket | null>(null);
@@ -30,6 +34,7 @@ export function useWebSocket(
 
   const connect = useCallback(() => {
     if (!mountedRef.current) return;
+    if (url == null) return;
 
     const ws = new WebSocket(url);
     wsRef.current = ws;

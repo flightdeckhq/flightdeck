@@ -243,9 +243,19 @@ interface SessionDrawerProps {
    * inline navigation works without a flicker.
    */
   onSwitchSession?: (sessionId: string, tab?: DrawerTab) => void;
+  /**
+   * When set, the drawer renders a breadcrumb header — "← Back to
+   * {backLabel}" — and clicking it (or the breadcrumb) invokes
+   * onBack. Used when the drawer is opened as the run drawer from
+   * the agent drawer's Runs tab so the operator can return to the
+   * agent. Both must be supplied together; omitted for the standard
+   * Fleet / Events drawer where there is nothing to go back to.
+   */
+  backLabel?: string;
+  onBack?: () => void;
 }
 
-export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDirectEvent, version = 0, initialTab, onSwitchSession }: SessionDrawerProps) {
+export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDirectEvent, version = 0, initialTab, onSwitchSession, backLabel, onBack }: SessionDrawerProps) {
   // Page-size pill state. Resets to DEFAULT_EVENTS_LIMIT on every
   // drawer open (no localStorage per Supervisor directive for v0.3.0)
   // so a user tuning down to 50 on one session doesn't silently carry
@@ -567,6 +577,7 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
         <motion.div
           key={sessionId}
           data-testid="session-drawer"
+          data-session-id={sessionId}
           className="fixed right-0 top-0 z-40 flex h-full w-[520px] flex-col"
           style={{
             background: "var(--surface)",
@@ -577,6 +588,27 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
           exit={{ x: 520 }}
           transition={{ type: "spring", damping: 25, stiffness: 200 }}
         >
+          {/* Breadcrumb — present only when the drawer is opened as
+              the run drawer from the agent drawer's Runs tab. */}
+          {backLabel && onBack && (
+            <button
+              type="button"
+              data-testid="session-drawer-back"
+              onClick={onBack}
+              className="flex shrink-0 items-center px-4 py-1.5 text-left"
+              style={{
+                border: "none",
+                borderBottom: "1px solid var(--border-subtle)",
+                background: "var(--bg-elevated)",
+                fontSize: 11,
+                fontFamily: "var(--font-mono)",
+                color: "var(--accent)",
+                cursor: "pointer",
+              }}
+            >
+              ← Back to {backLabel}
+            </button>
+          )}
           {/* Header — 56px */}
           <div
             className="flex h-14 shrink-0 items-center justify-between px-4"
@@ -613,7 +645,7 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
                   </span>
                 </>
               )}
-              {!session && <span className="text-[13px]" style={{ color: "var(--text)" }}>Session</span>}
+              {!session && <span className="text-[13px]" style={{ color: "var(--text)" }}>Run</span>}
             </div>
             <div className="flex items-center gap-2">
               {showButton && (
@@ -674,6 +706,8 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
               )}
               <button
                 onClick={onClose}
+                aria-label="Close drawer"
+                data-testid="session-drawer-close"
                 className="flex h-7 w-7 items-center justify-center rounded transition-colors hover:bg-surface-hover"
               >
                 <X size={16} style={{ color: "var(--text-muted)" }} />
@@ -1895,7 +1929,7 @@ function EventDetailView({ event: initialEvent, session, onBack }: { event: Agen
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
       <div className="flex h-8 shrink-0 items-center px-3" style={{ background: "var(--bg-elevated)", borderBottom: "1px solid var(--border-subtle)" }}>
-        <button className="text-xs" style={{ color: "var(--accent)" }} onClick={onBack} data-testid="back-to-session">← Back to session</button>
+        <button className="text-xs" style={{ color: "var(--accent)" }} onClick={onBack} data-testid="back-to-session">← Back to run</button>
       </div>
       <div className="flex h-14 shrink-0 items-center gap-2 px-4" style={{ borderBottom: "1px solid var(--border)" }}>
         <span className="flex h-[18px] min-w-[88px] shrink-0 items-center justify-center whitespace-nowrap rounded px-2 font-mono text-[10px] font-semibold uppercase"

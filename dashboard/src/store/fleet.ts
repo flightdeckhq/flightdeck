@@ -5,6 +5,7 @@ import type {
   CustomDirective,
   FlavorSummary,
   FleetUpdate,
+  RecentSession,
   Session,
   SessionListItem,
   SessionState,
@@ -30,44 +31,16 @@ export type AgentTypeFilter = "all" | "coding" | "production";
 // OVERVIEW state-count rollup, the swimlane agent-row header counts,
 // and the default swimlane event circles all feed from this fetch.
 //
-// Not to be confused with Investigate's default from-window, which is
-// 7 days: Investigate is a history-view (answering "what happened in
-// the last week?") while Fleet is a now-view (answering "what is
-// running right now / did just run?"). The two defaults serve
-// different questions.
+// Not to be confused with the Events page's default from-window,
+// which is 7 days: the Events page is a history-view (answering
+// "what happened in the last week?") while Fleet is a now-view
+// (answering "what is running right now / did just run?"). The two
+// defaults serve different questions.
 //
-// Older per-agent history is loaded on demand via
-// ``loadExpandedSessions(agentId)`` when the user expands an agent
-// row; that path has no lookback bound (server default applies) so
-// the expanded SESSIONS list shows every session under the agent,
-// not just today's subset. See the "last 24h" label in
-// ``FleetPanel.tsx`` that surfaces this windowing to the user so the
-// FLEET OVERVIEW counts vs. lifetime ``total_sessions`` asymmetry is
-// not mysterious.
+// See the "last 24h" label in ``FleetPanel.tsx`` that surfaces
+// this windowing to the user so the FLEET OVERVIEW counts vs.
+// lifetime ``total_sessions`` asymmetry is not mysterious.
 const SWIMLANE_LOOKBACK_MS = 24 * 60 * 60 * 1000; // 24 hours
-
-/**
- * V-DRAWER fix: page size for the per-agent session list rendered
- * inside the expanded swimlane drawer. Mirrors the per-event
- * pagination model the SessionDrawer's EventFeed already uses
- * ("Show older events" button at the bottom) so the patterns match
- * across the two drawer surfaces and a user who has learned one
- * gets the other for free.
- *
- * 25 is a page size, not a cap. ``loadExpandedSessions`` fetches
- * the first 25; ``loadMoreExpandedSessions`` keysets via offset
- * to append the next 25. The drawer renders a "Show older
- * sessions" affordance whenever ``hasMore`` is true so an agent
- * with thousands of historical sessions stays reachable from the
- * swimlane without DOM-blasting the browser. The "View in
- * Investigate →" footer is always present underneath the
- * load-more button as the dedicated full-history surface (filter
- * by event type, sort, drill into events).
- *
- * Server hard-caps at 100 per page; the drawer's 25 stays well
- * inside that and matches typical viewport row heights.
- */
-export const EXPANDED_DRAWER_PAGE_SIZE = 25;
 
 interface FleetState {
   /** Agent-level rows for the Fleet table view and the sidebar
@@ -98,23 +71,6 @@ interface FleetState {
    * within-bucket reordering. See ``lib/fleet-ordering.ts``.
    */
   enteredBucketAt: Map<string, number>;
-  /**
-   * Per-agent on-demand session lists, keyed by ``agent_id``.
-   *
-   * Populated by ``loadExpandedSessions(agentId)`` when the user
-   * expands an agent row in the swimlane. These sessions bypass the
-   * 24-hour ``SWIMLANE_LOOKBACK_MS`` window so the user sees ALL
-   * sessions under the agent, including closed ones from hours or
-   * days ago. Kept in a separate map from ``flavors[].sessions`` so
-   * the main swimlane view is NOT polluted with old sessions -- only
-   * the expanded row reads from this map.
-   *
-   * Policy: fresh fetch on every expand, no caching. Collapsing and
-   * re-expanding the same agent fires a second fetch. WebSocket
-   * updates are NOT mirrored into this map (the expanded list is a
-   * historical view reflecting the server at fetch time).
-   */
-  expandedSessions: Map<string, Session[]>;
 
   load: (opts?: {
     page?: number;
@@ -123,44 +79,6 @@ interface FleetState {
   }) => Promise<void>;
   setAgentTypeFilter: (filter: AgentTypeFilter) => void;
   setFlavorFilter: (flavor: string | null) => void;
-  /**
-   * Fetch the first page (``EXPANDED_DRAWER_PAGE_SIZE`` rows) of
-   * sessions under the given agent_id and stash the result in
-   * ``expandedSessions``. Bypasses ``SWIMLANE_LOOKBACK_MS`` so
-   * old/closed sessions are visible in the expanded SESSIONS list.
-   * Best-effort -- failures leave ``expandedSessions`` untouched
-   * and log to the console.
-   *
-   * Companion ``loadMoreExpandedSessions`` appends subsequent
-   * pages via offset pagination; ``expandedSessionsHasMore``
-   * tracks whether more pages are available per agent.
-   */
-  loadExpandedSessions: (agentId: string) => Promise<void>;
-  /**
-   * Fetch the next page of sessions for ``agentId`` and append to
-   * ``expandedSessions[agentId]``. Used by the SwimLane drawer's
-   * "Show older sessions" affordance. No-op when
-   * ``expandedSessionsHasMore[agentId]`` is false (avoids a
-   * superfluous round-trip when the user mashes the button at the
-   * end of history). Best-effort -- failures leave the list
-   * untouched and log to the console.
-   */
-  loadMoreExpandedSessions: (agentId: string) => Promise<void>;
-  /**
-   * Per-agent flag set by ``loadExpandedSessions`` /
-   * ``loadMoreExpandedSessions`` from the server's ``has_more``
-   * response field. Drives the "Show older sessions" button's
-   * visibility in the expanded swimlane drawer.
-   */
-  expandedSessionsHasMore: Map<string, boolean>;
-  /**
-   * Per-agent loading flag toggled by
-   * ``loadMoreExpandedSessions`` so the "Show older sessions"
-   * button can disable itself + flip its label to "Loading…"
-   * during the in-flight fetch. Mirrors SessionDrawer's
-   * ``loadingOlder`` state for the per-event pagination.
-   */
-  expandedSessionsLoadingMore: Map<string, boolean>;
   /**
    * Last event received via the fleet WebSocket. Updated on every
    * event-bearing ``FleetUpdate``. Subscribers (e.g.
@@ -229,6 +147,40 @@ function listItemToSession(li: SessionListItem): Session {
   };
 }
 
+// ``RecentSession`` (the /v1/fleet embedded rollup) carries a leaner
+// column set than ``SessionListItem`` — no context blob, no
+// token_name, no per-session enrichment arrays. The swimlane only
+// needs the swimlane-row fields (state / started_at / ended_at /
+// last_seen_at / tokens / sub-agent linkage) which both shapes
+// share. Synthesise ``last_seen_at`` the same way ``listItemToSession``
+// does so an unended session sorts as "still recent" without a
+// missing-value fallback further downstream.
+function recentSessionToSession(r: RecentSession): Session {
+  const now = new Date().toISOString();
+  return {
+    session_id: r.session_id,
+    flavor: r.flavor,
+    agent_type: r.agent_type,
+    agent_id: r.agent_id ?? null,
+    agent_name: r.agent_name ?? null,
+    client_type: r.client_type ?? null,
+    host: r.host ?? null,
+    framework: null,
+    model: r.model ?? null,
+    state: r.state,
+    started_at: r.started_at,
+    last_seen_at: r.last_seen_at ?? r.ended_at ?? now,
+    ended_at: r.ended_at ?? null,
+    tokens_used: r.tokens_used,
+    token_limit: r.token_limit ?? null,
+    context: {},
+    capture_enabled: r.capture_enabled,
+    token_name: null,
+    parent_session_id: r.parent_session_id ?? null,
+    agent_role: r.agent_role ?? null,
+  };
+}
+
 function buildFlavors(
   agents: AgentSummary[],
   recentSessions: SessionListItem[],
@@ -256,7 +208,30 @@ function buildFlavors(
     // page or admin tooling; the swimlane just doesn't list them.
     .filter((a) => a.total_sessions > 0)
     .map((a) => {
-      const sessions = byAgent.get(a.agent_id) ?? [];
+      // Merge the embedded /v1/fleet rollup with the paginated
+      // /v1/sessions slice. The embedded shape carries this agent's
+      // most-recent N sessions regardless of where they fall in the
+      // global 100-row sessions page — without it, a sub-agent
+      // whose session was upserted hours ago renders an empty
+      // swimlane row (no event circles, no spawn anchor for the
+      // connector overlay). The paginated slice fills in younger
+      // sessions that may not have made the per-agent top-N cut.
+      //
+      // Merge precedence: paginated wins when both shapes carry the
+      // same session_id. The paginated SessionListItem is the
+      // richer projection (carries ``context`` and ``token_name``;
+      // the lean ``RecentSession`` omits both). Without the
+      // preference, the embedded entry would shadow the paginated
+      // one and the swimlane label strip's OS / orchestration /
+      // provider icons (derived from ``mostRecentSession.context``)
+      // would silently disappear for any agent whose session
+      // happens to be in both shapes.
+      const paginated = byAgent.get(a.agent_id) ?? [];
+      const embedded = (a.recent_sessions ?? []).map(recentSessionToSession);
+      const merged = new Map<string, Session>();
+      for (const s of embedded) merged.set(s.session_id, s);
+      for (const s of paginated) merged.set(s.session_id, s);
+      const sessions = Array.from(merged.values());
       const active = sessions.filter((s) => s.state === "active").length;
       return {
         // The ``flavor`` field carries the agent_id so swimlane rows
@@ -294,9 +269,6 @@ export const useFleetStore = create<FleetState>((set, get) => ({
   flavorFilter: null,
   lastEvent: null,
   enteredBucketAt: new Map<string, number>(),
-  expandedSessions: new Map<string, Session[]>(),
-  expandedSessionsHasMore: new Map<string, boolean>(),
-  expandedSessionsLoadingMore: new Map<string, boolean>(),
 
   load: async (opts = {}) => {
     const page = opts.page ?? 1;
@@ -322,6 +294,16 @@ export const useFleetStore = create<FleetState>((set, get) => ({
           agent_type: apiFilter ? [apiFilter] : undefined,
           limit: 100,
           offset: 0,
+          // Bring in parents of any child sessions that land in
+          // the 100-row window even when the parent is older
+          // than the swimlane lookback (or otherwise outside
+          // the LIMIT cliff). Without this, a sub-agent whose
+          // parent fell off the page renders as topology="lone"
+          // and the connector overlay drops the relationship.
+          // NOTE: with this flag the response's ``total`` may be
+          // less than ``sessions.length`` -- the augmented
+          // parents ride along outside the total accounting.
+          include_parents: true,
         }),
         fetchCustomDirectives().catch(() => [] as CustomDirective[]),
       ]);
@@ -362,112 +344,6 @@ export const useFleetStore = create<FleetState>((set, get) => ({
 
   setAgentTypeFilter: (filter: AgentTypeFilter) => {
     void get().load({ page: 1, agentType: filter });
-  },
-
-  loadExpandedSessions: async (agentId: string) => {
-    try {
-      // V-DRAWER fix: pass ``from`` = the Unix epoch so the
-      // server's 7-day default doesn't kick in. The expanded
-      // swimlane drawer is a "drill into THIS agent's recent
-      // history" surface -- a different mental model from
-      // Investigate's "explore recent activity" default. Pre-fix
-      // the implicit 7-day window made an agent visible in the
-      // swimlane while its expanded drawer read "No sessions to
-      // display" whenever the agent's last session was > 7 days
-      // old, a dead-end hiding an invisible API default. ``new
-      // Date(0)`` is the well-known "no lower bound" sentinel --
-      // preferred over a hard-coded calendar date that would
-      // look stale in five years. ``EXPANDED_DRAWER_PAGE_SIZE``
-      // bounds the initial page; ``loadMoreExpandedSessions``
-      // appends subsequent pages on user demand.
-      const resp = await fetchSessions({
-        agent_id: agentId,
-        from: new Date(0).toISOString(),
-        limit: EXPANDED_DRAWER_PAGE_SIZE,
-        offset: 0,
-      });
-      const sessions = (resp.sessions ?? []).map(listItemToSession);
-      set({
-        expandedSessions: new Map(get().expandedSessions).set(
-          agentId,
-          sessions,
-        ),
-        expandedSessionsHasMore: new Map(
-          get().expandedSessionsHasMore,
-        ).set(agentId, !!resp.has_more),
-      });
-    } catch (err) {
-      console.error(
-        `loadExpandedSessions(${agentId}) failed; expanded row will fall back to the 24h subset`,
-        err,
-      );
-    }
-  },
-
-  loadMoreExpandedSessions: async (agentId: string) => {
-    const state = get();
-    if (!state.expandedSessionsHasMore.get(agentId)) {
-      // No-op when the previous page was the last. Avoids a
-      // superfluous offset=N request when the user mashes the
-      // load-more button at the end of history.
-      return;
-    }
-    if (state.expandedSessionsLoadingMore.get(agentId)) {
-      // A previous click is still in flight. Avoid double-fetch
-      // (would yield duplicate rows in the appended list since
-      // both fetches see the same offset).
-      return;
-    }
-    const current = state.expandedSessions.get(agentId) ?? [];
-    set({
-      expandedSessionsLoadingMore: new Map(
-        state.expandedSessionsLoadingMore,
-      ).set(agentId, true),
-    });
-    try {
-      const resp = await fetchSessions({
-        agent_id: agentId,
-        from: new Date(0).toISOString(),
-        limit: EXPANDED_DRAWER_PAGE_SIZE,
-        offset: current.length,
-      });
-      const newSessions = (resp.sessions ?? []).map(listItemToSession);
-      // Merge with dedupe-by-session_id so a concurrent live
-      // session_start landing on the WebSocket stream between the
-      // user expanding the row and clicking load-more doesn't
-      // double-render. Order preserved: existing rows first, new
-      // rows after, dropped where session_id already present.
-      const seen = new Set(current.map((s) => s.session_id));
-      const merged = [...current];
-      for (const s of newSessions) {
-        if (!seen.has(s.session_id)) {
-          merged.push(s);
-          seen.add(s.session_id);
-        }
-      }
-      set({
-        expandedSessions: new Map(get().expandedSessions).set(
-          agentId,
-          merged,
-        ),
-        expandedSessionsHasMore: new Map(
-          get().expandedSessionsHasMore,
-        ).set(agentId, !!resp.has_more),
-        expandedSessionsLoadingMore: new Map(
-          get().expandedSessionsLoadingMore,
-        ).set(agentId, false),
-      });
-    } catch (err) {
-      console.error(
-        `loadMoreExpandedSessions(${agentId}) failed; existing rows preserved`,
-        err,
-      );
-      set({
-        expandedSessionsLoadingMore: new Map(
-          get().expandedSessionsLoadingMore,
-        ).set(agentId, false),
-      });
-    }
   },
 
   setFlavorFilter: (flavor: string | null) => {
@@ -548,6 +424,50 @@ export const useFleetStore = create<FleetState>((set, get) => ({
           agents: nextAgents,
           enteredBucketAt:
             nextEntries === enteredBucketAt ? enteredBucketAt : nextEntries,
+        });
+      }
+    }
+
+    // A sub-agent event makes the whole parent + sub-agent cluster
+    // operationally fresh. The backend already bumps the parent
+    // SESSION's last_seen_at (parent-bump propagation), but the WS
+    // envelope carries only the child's session — so the parent's
+    // swimlane row would otherwise stay frozen in its stale/idle
+    // bucket and the cluster would not bubble up. Resolve the parent
+    // agent from the child's parent_session_id and bump both its
+    // flavor last_seen_at (lifts the cluster out of the IDLE bucket,
+    // which bucketFor keys on last_seen_at) and its enteredBucketAt
+    // entry (floats it to the top within LIVE / RECENT). Best-effort:
+    // if the parent row is not loaded yet the bump is skipped and
+    // self-heals on the next load() (parents of in-window children
+    // ride along via the include_parents fetch flag).
+    const parentSessionId = update.session.parent_session_id;
+    if (parentSessionId) {
+      const state = get();
+      const parentFlavor = state.flavors.find((f) =>
+        f.sessions.some((s) => s.session_id === parentSessionId),
+      );
+      if (parentFlavor && parentFlavor.flavor !== agentKey) {
+        const now = Date.now();
+        const nowIso = new Date(now).toISOString();
+        const bumpedFlavors = state.flavors.map((f) =>
+          f.flavor === parentFlavor.flavor
+            ? { ...f, last_seen_at: nowIso }
+            : f,
+        );
+        const bumpedEntries = advanceBucketEntry(
+          state.enteredBucketAt,
+          parentFlavor.flavor,
+          parentFlavor.last_seen_at,
+          nowIso,
+          now,
+        );
+        set({
+          flavors: bumpedFlavors,
+          enteredBucketAt:
+            bumpedEntries === state.enteredBucketAt
+              ? state.enteredBucketAt
+              : bumpedEntries,
         });
       }
     }

@@ -130,7 +130,7 @@ export function CommandPalette({
             type="text"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search agents, sessions, events..."
+            placeholder="Search agents, runs, events..."
             className="flex-1 bg-transparent text-sm text-text placeholder:text-text-muted focus:outline-none"
             aria-label="Search"
           />

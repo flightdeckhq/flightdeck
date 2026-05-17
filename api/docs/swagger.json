@@ -293,7 +293,7 @@
         },
         "/v1/agents": {
             "get": {
-                "description": "Returns agents matching the supplied filters. Multi-value filters (state, agent_type, client_type, hostname, user, os, orchestration) accept comma-separated values and repeated query params; values within a dimension are OR, values across dimensions are AND. ``search`` is a case-insensitive substring match against ``agent_name`` and ``hostname``. ``updated_since`` filters on ``last_seen_at \u003e= ts``. State is computed via LATERAL subquery against the most-recent session. Each row also carries D126 sub-agent rollup fields (``agent_role`` — null for root agents, the framework-supplied role string when this agent represents a sub-agent identity; ``topology`` — one of ``lone`` / ``parent`` / ``child``, computed from whether this agent's sessions carry a parent_session_id and whether they are referenced as a parent by other agents). Pagination defaults to 25/page, max 100.",
+                "description": "Returns agents matching the supplied filters. Multi-value filters (state, agent_type, client_type, hostname, user, os, orchestration) accept comma-separated values and repeated query params; values within a dimension are OR, values across dimensions are AND. “search“ is a case-insensitive substring match against “agent_name“ and “hostname“. “updated_since“ filters on “last_seen_at \u003e= ts“. State is computed via LATERAL subquery against the most-recent session. Each row also carries D126 sub-agent rollup fields (“agent_role“ — null for root agents, the framework-supplied role string when this agent represents a sub-agent identity; “topology“ — one of “lone“ / “parent“ / “child“, computed from whether this agent's sessions carry a parent_session_id and whether they are referenced as a parent by other agents). Pagination defaults to 25/page, max 100.",
                 "produces": [
                     "application/json"
                 ],
@@ -409,16 +409,16 @@
                 }
             }
         },
-        "/v1/agents/{agent_id}": {
+        "/v1/agents/{agent_id}/summary": {
             "get": {
-                "description": "Returns the full AgentSummary for a single agent including rollup counters and the LATERAL-computed rollup state. Powers the Investigate chip agent-name resolver so the UI no longer has to fall back to a UUID prefix when the filtered sessions list is empty.",
+                "description": "Returns totals (tokens, errors, sessions, cost_usd, latency_p50_ms, latency_p95_ms) and a per-bucket time series for one agent over the requested period. Powers the per-agent landing page. “period“ is one of “1h“, “24h“, “7d“, “30d“ (default “7d“). “bucket“ is one of “hour“, “day“, “week“; when omitted it is derived from period (1h/24h → hour, 7d/30d → day). Errors count events with “event_type = 'llm_error'“ only — policy events are enforcement decisions, not failures. Sessions is “COUNT(DISTINCT session_id)“ across events in the window. Latency percentiles use “event_type = 'post_call'“ rows only, matching the analytics endpoint convention.",
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
                     "agents"
                 ],
-                "summary": "Get agent detail by id",
+                "summary": "Get per-agent activity summary",
                 "parameters": [
                     {
                         "type": "string",
@@ -426,17 +426,29 @@
                         "name": "agent_id",
                         "in": "path",
                         "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Time window: 1h, 24h, 7d (default), 30d",
+                        "name": "period",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Series bucket granularity: hour, day, week. Defaults derived from period.",
+                        "name": "bucket",
+                        "in": "query"
                     }
                 ],
                 "responses": {
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/store.AgentSummary"
+                            "$ref": "#/definitions/store.AgentSummaryResponse"
                         }
                     },
                     "400": {
-                        "description": "Invalid UUID format",
+                        "description": "Invalid UUID, period, or bucket",
                         "schema": {
                             "$ref": "#/definitions/handlers.ErrorResponse"
                         }
@@ -481,7 +493,7 @@
                     },
                     {
                         "type": "string",
-                        "description": "Dimension(s) (default: flavor). One or two dimensions, comma-separated (D126 § 6.4): ?group_by=dim1 keeps the pre-D126 single-axis shape; ?group_by=dim1,dim2 returns a two-key rollup where dim1 is the primary (outer) axis and dim2 is the secondary (inner) axis. Allowed values in either position: flavor, model, framework, host, agent_type, team, provider, agent_role, parent_session_id. agent_role (D126) groups by the framework-supplied sub-agent role string and parent_session_id (D126 § 6.4) groups by parent UUID; both bucket nulls as '(root)'. Two-dim payloads carry per-DataPoint ``breakdown[]`` segments (key+value); single-dim payloads keep the flat ``value`` shape exactly.",
+                        "description": "Dimension(s) (default: flavor). One or two dimensions, comma-separated (D126 § 6.4): ?group_by=dim1 keeps the pre-D126 single-axis shape; ?group_by=dim1,dim2 returns a two-key rollup where dim1 is the primary (outer) axis and dim2 is the secondary (inner) axis. Allowed values in either position: flavor, model, framework, host, agent_type, team, provider, agent_role, parent_session_id. agent_role (D126) groups by the framework-supplied sub-agent role string and parent_session_id (D126 § 6.4) groups by parent UUID; both bucket nulls as '(root)'. Two-dim payloads carry per-DataPoint “breakdown[]“ segments (key+value); single-dim payloads keep the flat “value“ shape exactly.",
                         "name": "group_by",
                         "in": "query"
                     },
@@ -531,6 +543,12 @@
                         "type": "string",
                         "description": "Filter to specific provider (anthropic, openai, google, xai, mistral, meta, other)",
                         "name": "filter_provider",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter analytics scope to a single agent (UUID). Joins sessions when the metric's base table is events. Powers the per-agent landing page.",
+                        "name": "filter_agent_id",
                         "in": "query"
                     },
                     {
@@ -825,7 +843,7 @@
         },
         "/v1/events": {
             "get": {
-                "description": "Returns events matching time range, flavor, event type, and session filters with pagination. Supports optional ``before`` keyset cursor and ``order`` direction so the session drawer can paginate backwards in time when loading older events for long-running stable sessions.",
+                "description": "Returns events matching time range, flavor, event type, session, agent, model, framework, and event-payload facet filters with pagination. Multi-value filters OR within a dimension and AND across dimensions. Supports an optional “before“ keyset cursor and “order“ direction for newest-first drawer pagination. When “facets=true“ the response is an EventFacets object of per-dimension chip counts computed over the same filter set instead of the paginated event list.",
                 "produces": [
                     "application/json"
                 ],
@@ -854,8 +872,12 @@
                         "in": "query"
                     },
                     {
-                        "type": "string",
-                        "description": "Filter by event type",
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "collectionFormat": "csv",
+                        "description": "Filter by event type (repeatable; OR within)",
                         "name": "event_type",
                         "in": "query"
                     },
@@ -863,6 +885,110 @@
                         "type": "string",
                         "description": "Filter by session ID",
                         "name": "session_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter to every event across all of one agent's runs (UUID; resolved via a sessions subquery)",
+                        "name": "agent_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "collectionFormat": "csv",
+                        "description": "Filter by model (repeatable)",
+                        "name": "model",
+                        "in": "query"
+                    },
+                    {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "collectionFormat": "csv",
+                        "description": "Filter by framework — bare name or versioned context entry (repeatable; resolved via a sessions subquery)",
+                        "name": "framework",
+                        "in": "query"
+                    },
+                    {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "collectionFormat": "csv",
+                        "description": "Filter by payload error type (repeatable)",
+                        "name": "error_type",
+                        "in": "query"
+                    },
+                    {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "collectionFormat": "csv",
+                        "description": "Filter by session_end close reason (repeatable)",
+                        "name": "close_reason",
+                        "in": "query"
+                    },
+                    {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "collectionFormat": "csv",
+                        "description": "Filter by token-estimation method (repeatable)",
+                        "name": "estimated_via",
+                        "in": "query"
+                    },
+                    {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "collectionFormat": "csv",
+                        "description": "Filter by MCP-policy matched entry id (repeatable)",
+                        "name": "matched_entry_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "collectionFormat": "csv",
+                        "description": "Filter by originating call context (repeatable)",
+                        "name": "originating_call_context",
+                        "in": "query"
+                    },
+                    {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "collectionFormat": "csv",
+                        "description": "Filter by MCP server name from an MCP event's payload (repeatable)",
+                        "name": "mcp_server",
+                        "in": "query"
+                    },
+                    {
+                        "type": "boolean",
+                        "description": "Filter to events whose payload terminal flag matches",
+                        "name": "terminal",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Free-text ILIKE search across event_type, model, session_id, and the session's agent_name and framework",
+                        "name": "q",
+                        "in": "query"
+                    },
+                    {
+                        "type": "boolean",
+                        "description": "When true, return per-dimension facet counts instead of the event list",
+                        "name": "facets",
                         "in": "query"
                     },
                     {
@@ -885,7 +1011,7 @@
                     },
                     {
                         "type": "integer",
-                        "description": "Offset for pagination (default 0)",
+                        "description": "Offset for pagination (default 0, max 100000)",
                         "name": "offset",
                         "in": "query"
                     }
@@ -1952,7 +2078,7 @@
         },
         "/v1/sessions": {
             "get": {
-                "description": "Returns sessions matching time range, state, flavor, client_type, agent_type, model, framework, agent_id, context-scalar (user/os/hostname/git_branch/orchestration/...), and search filters with pagination and sort support. Multi-value filters (state, flavor, client_type, framework, agent_type, context-scalar) accept repeated query params and comma-separated values; values within a dimension are OR, values across dimensions are AND. ``q`` is a case-insensitive substring search across agent_name, flavor, host, model, session_id, context.hostname, context.os, context.git_branch, context.python_version, and the frameworks array.",
+                "description": "Returns sessions matching time range, state, flavor, client_type, agent_type, model, framework, agent_id, context-scalar (user/os/hostname/git_branch/orchestration/...), and search filters with pagination and sort support. Multi-value filters (state, flavor, client_type, framework, agent_type, context-scalar) accept repeated query params and comma-separated values; values within a dimension are OR, values across dimensions are AND. “q“ is a case-insensitive substring search across agent_name, flavor, host, model, session_id, context.hostname, context.os, context.git_branch, context.python_version, and the frameworks array.",
                 "produces": [
                     "application/json"
                 ],
@@ -2103,6 +2229,12 @@
                         "type": "boolean",
                         "description": "D126: when true, restrict to child sessions only (parent_session_id IS NOT NULL). Backs the Investigate TOPOLOGY facet 'Is sub-agent' checkbox.",
                         "name": "is_sub_agent",
+                        "in": "query"
+                    },
+                    {
+                        "type": "boolean",
+                        "description": "When true, augment the page with the parent session of every child session in the result -- even when the parent falls outside the time-range filter or the LIMIT window. Default false preserves exact pagination semantics; the Fleet swimlane opts in so a child whose parent fell off the 100-row page still resolves its topology. Returned sessions[] may exceed Total when extra parents land in the response.",
+                        "name": "include_parents",
                         "in": "query"
                     },
                     {
@@ -2578,6 +2710,13 @@
                 "last_seen_at": {
                     "type": "string"
                 },
+                "recent_sessions": {
+                    "description": "RecentSessions carries the agent's most-recent sessions\n(newest first, by started_at). Populated by /v1/fleet so the\nswimlane row renders event circles regardless of whether the\nsession falls inside the paginated /v1/sessions window. The\nper-agent cap is RecentSessionsPerAgent. Empty for agents with\nno sessions; ``omitempty`` keeps the wire shape lean when the\nhelper is not run (e.g. on /v1/agents which keeps the leaner\nprojection).",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/store.RecentSession"
+                    }
+                },
                 "state": {
                     "description": "State rollup: \"active\" when any session under this agent is\ncurrently active; otherwise the most-recent session's state.\nEmpty string when the agent has no sessions yet (freshly\nupserted agent row awaiting its first session linkage).",
                     "type": "string"
@@ -2594,6 +2733,76 @@
                 },
                 "user": {
                     "type": "string"
+                }
+            }
+        },
+        "store.AgentSummaryResponse": {
+            "type": "object",
+            "properties": {
+                "agent_id": {
+                    "type": "string"
+                },
+                "bucket": {
+                    "type": "string"
+                },
+                "period": {
+                    "type": "string"
+                },
+                "series": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/store.AgentSummarySeriesPoint"
+                    }
+                },
+                "totals": {
+                    "$ref": "#/definitions/store.AgentSummaryTotals"
+                }
+            }
+        },
+        "store.AgentSummarySeriesPoint": {
+            "type": "object",
+            "properties": {
+                "cost_usd": {
+                    "type": "number"
+                },
+                "errors": {
+                    "type": "integer"
+                },
+                "latency_p95_ms": {
+                    "type": "integer"
+                },
+                "sessions": {
+                    "type": "integer"
+                },
+                "tokens": {
+                    "type": "integer"
+                },
+                "ts": {
+                    "description": "TS is the bucket's start, truncated to the requested\ngranularity (``date_trunc(bucket, occurred_at)``). Serialised\nas RFC 3339 / ISO 8601 by Go's default JSON encoder.",
+                    "type": "string"
+                }
+            }
+        },
+        "store.AgentSummaryTotals": {
+            "type": "object",
+            "properties": {
+                "cost_usd": {
+                    "type": "number"
+                },
+                "errors": {
+                    "type": "integer"
+                },
+                "latency_p50_ms": {
+                    "type": "integer"
+                },
+                "latency_p95_ms": {
+                    "type": "integer"
+                },
+                "sessions": {
+                    "type": "integer"
+                },
+                "tokens": {
+                    "type": "integer"
                 }
             }
         },
@@ -2781,10 +2990,19 @@
         "store.Event": {
             "type": "object",
             "properties": {
+                "agent_type": {
+                    "type": "string"
+                },
+                "client_type": {
+                    "type": "string"
+                },
                 "event_type": {
                     "type": "string"
                 },
                 "flavor": {
+                    "type": "string"
+                },
+                "framework": {
                     "type": "string"
                 },
                 "has_content": {
@@ -3116,6 +3334,66 @@
                 }
             }
         },
+        "store.RecentSession": {
+            "type": "object",
+            "properties": {
+                "agent_id": {
+                    "type": "string"
+                },
+                "agent_name": {
+                    "type": "string"
+                },
+                "agent_role": {
+                    "type": "string"
+                },
+                "agent_type": {
+                    "type": "string"
+                },
+                "capture_enabled": {
+                    "type": "boolean"
+                },
+                "client_type": {
+                    "type": "string"
+                },
+                "ended_at": {
+                    "type": "string"
+                },
+                "flavor": {
+                    "type": "string"
+                },
+                "framework": {
+                    "description": "Framework is the bare-name framework attribution\n(``sessions.framework`` — e.g. ``langchain``, ``crewai``),\nnil for direct-SDK sessions that ran without a framework.\nBacks the /agents page framework filter chips.",
+                    "type": "string"
+                },
+                "host": {
+                    "type": "string"
+                },
+                "last_seen_at": {
+                    "type": "string"
+                },
+                "model": {
+                    "type": "string"
+                },
+                "parent_session_id": {
+                    "type": "string"
+                },
+                "session_id": {
+                    "type": "string"
+                },
+                "started_at": {
+                    "type": "string"
+                },
+                "state": {
+                    "type": "string"
+                },
+                "token_limit": {
+                    "type": "integer"
+                },
+                "tokens_used": {
+                    "type": "integer"
+                }
+            }
+        },
         "store.ReconcileResult": {
             "type": "object",
             "properties": {
@@ -3369,6 +3647,10 @@
                 },
                 "agent_type": {
                     "type": "string"
+                },
+                "attachment_count": {
+                    "description": "AttachmentCount is the number of recorded re-attachments to\nthis session (rows in ``session_attachments`` — the initial\nsession creation is not an attachment, so a run that has only\never run once reports 0). Surfaced via a correlated subquery\non the listing query — same pattern as ChildCount — so the\nagent drawer Runs tab can render its \"attached\" pill from the\nlisting without a per-row detail fetch.",
+                    "type": "integer"
                 },
                 "capture_enabled": {
                     "type": "boolean"

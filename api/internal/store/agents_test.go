@@ -20,8 +20,8 @@ import (
 // seedAgentForList is a helper that composes seedAgent + any number of
 // sessions, returning the agent_id so tests can target specific
 // fixtures when asserting filter coverage. Unlike
-// ``seedAgent``, this helper leaves counter values synced (they are
-// not the point of these tests). Uses the ``state_override`` arg to
+// “seedAgent“, this helper leaves counter values synced (they are
+// not the point of these tests). Uses the “state_override“ arg to
 // force a specific rollup state via a session, because
 // ReconcileAgents tests prove the rollup is LATERAL-computed from
 // session state.
@@ -796,6 +796,192 @@ func TestGetAgentFleet_D126RollupFields(t *testing.T) {
 	}
 }
 
+// TestGetAgentFleet_RecentSessionsAttached exercises the
+// “recent_sessions“ rollup attached to each “AgentSummary“ on
+// the /v1/fleet response. Seeds an agent with seven sessions
+// spanning two days; asserts the slice carries the most-recent five
+// (cap=“RecentSessionsPerAgent“) in descending “started_at“
+// order. Regression guard for the empty-swimlane-row class of bug:
+// when sub-agent sessions fall outside the paginated /v1/sessions
+// window, the swimlane previously rendered no event circles because
+// “buildFlavors“ had nothing to populate from. The embedded
+// rollup is the contract that makes the row materialise regardless
+// of where the session sits in the global page.
+func TestGetAgentFleet_RecentSessionsAttached(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	agentID := seedAgentForList(t, s,
+		"test-recent-sessions-"+randomUUID(t)[:8],
+		agentListOpts{
+			agentType:  "production",
+			clientType: "claude_code",
+			userName:   "test-recent",
+			hostname:   "test-recent-host",
+			lastSeen:   now,
+		})
+
+	// Seven sessions, spaced one hour apart, oldest first. The
+	// rollup must return the latest five in descending order.
+	sessionIDs := make([]string, 7)
+	for i := 0; i < 7; i++ {
+		sessionIDs[i] = randomUUID(t)
+		startedAt := now.Add(time.Duration(-i) * time.Hour)
+		if _, err := s.pool.Exec(ctx, `
+			INSERT INTO sessions (
+				session_id, agent_id, flavor, state,
+				started_at, last_seen_at, tokens_used,
+				agent_type, client_type
+			) VALUES (
+				$1::uuid, $2::uuid, $3, 'closed',
+				$4, $4, $5,
+				'production', 'claude_code'
+			)
+		`, sessionIDs[i], agentID,
+			"test-recent-sessions",
+			startedAt, 100+i*10); err != nil {
+			t.Fatalf("seed session %d: %v", i, err)
+		}
+	}
+
+	agents, _, err := s.GetAgentFleet(ctx, 200, 0, "")
+	if err != nil {
+		t.Fatalf("GetAgentFleet: %v", err)
+	}
+
+	var found *AgentSummary
+	for i := range agents {
+		if agents[i].AgentID == agentID {
+			found = &agents[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("seeded agent %s missing from fleet", agentID)
+	}
+	if len(found.RecentSessions) != RecentSessionsPerAgent {
+		t.Fatalf("recent_sessions length=%d, want %d",
+			len(found.RecentSessions), RecentSessionsPerAgent)
+	}
+	// Descending started_at means sessionIDs[0..4] (i=0 is newest).
+	for i, rs := range found.RecentSessions {
+		if rs.SessionID != sessionIDs[i] {
+			t.Errorf("position %d session_id=%s, want %s",
+				i, rs.SessionID, sessionIDs[i])
+		}
+		if i > 0 {
+			prev := found.RecentSessions[i-1]
+			// This row's started_at must be at-or-before the
+			// previous row's (descending sort with equal-time
+			// tolerance).
+			if rs.StartedAt.After(prev.StartedAt) {
+				t.Errorf("recent_sessions not descending at %d: "+
+					"prev=%v this=%v", i, prev.StartedAt, rs.StartedAt)
+			}
+		}
+		if rs.AgentID == nil || *rs.AgentID != agentID {
+			t.Errorf("recent_sessions[%d] agent_id mismatch: got=%v",
+				i, rs.AgentID)
+		}
+	}
+}
+
+// TestGetRecentSessionsByAgentIDs_FrameworkProjected guards the
+// “RecentSession.Framework“ projection that backs the /agents
+// page framework filter chips. Seeds three sessions for one agent
+// — two with distinct bare-name frameworks, one with NULL framework
+// (direct-SDK) — and asserts the projection carries each verbatim.
+func TestGetRecentSessionsByAgentIDs_FrameworkProjected(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	agentID := seedAgentForList(t, s,
+		"test-recent-framework-"+randomUUID(t)[:8],
+		agentListOpts{
+			agentType:  "coding",
+			clientType: "flightdeck_sensor",
+			userName:   "test-framework",
+			hostname:   "test-framework-host",
+			lastSeen:   now,
+		})
+
+	// Newest-first: langchain, then crewai, then a NULL-framework
+	// direct-SDK session.
+	type seed struct {
+		sessionID string
+		framework *string
+	}
+	langchain, crewai := "langchain", "crewai"
+	seeds := []seed{
+		{randomUUID(t), &langchain},
+		{randomUUID(t), &crewai},
+		{randomUUID(t), nil},
+	}
+	for i, sd := range seeds {
+		startedAt := now.Add(time.Duration(-i) * time.Hour)
+		if _, err := s.pool.Exec(ctx, `
+			INSERT INTO sessions (
+				session_id, agent_id, flavor, state,
+				started_at, last_seen_at, tokens_used,
+				agent_type, client_type, framework
+			) VALUES (
+				$1::uuid, $2::uuid, $3, 'closed',
+				$4, $4, 100,
+				'coding', 'flightdeck_sensor', $5
+			)
+		`, sd.sessionID, agentID, "test-recent-framework",
+			startedAt, sd.framework); err != nil {
+			t.Fatalf("seed session %d: %v", i, err)
+		}
+	}
+
+	got, err := s.GetRecentSessionsByAgentIDs(
+		ctx, []string{agentID}, RecentSessionsPerAgent,
+	)
+	if err != nil {
+		t.Fatalf("GetRecentSessionsByAgentIDs: %v", err)
+	}
+	rows := got[agentID]
+	if len(rows) != len(seeds) {
+		t.Fatalf("recent sessions len=%d, want %d", len(rows), len(seeds))
+	}
+	// Rows come back newest-first, matching the seed order.
+	for i, sd := range seeds {
+		r := rows[i]
+		switch {
+		case sd.framework == nil && r.Framework != nil:
+			t.Errorf("row %d framework=%q, want nil", i, *r.Framework)
+		case sd.framework != nil && r.Framework == nil:
+			t.Errorf("row %d framework=nil, want %q", i, *sd.framework)
+		case sd.framework != nil && *r.Framework != *sd.framework:
+			t.Errorf("row %d framework=%q, want %q",
+				i, *r.Framework, *sd.framework)
+		}
+	}
+}
+
+// TestGetRecentSessionsByAgentIDs_Empty exercises the empty-input
+// short-circuit. Avoids needlessly round-tripping Postgres when the
+// caller hasn't filled the slice yet.
+func TestGetRecentSessionsByAgentIDs_Empty(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+
+	got, err := s.GetRecentSessionsByAgentIDs(
+		context.Background(), nil, RecentSessionsPerAgent,
+	)
+	if err != nil {
+		t.Fatalf("empty input err: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("empty input map len=%d, want 0", len(got))
+	}
+}
+
 // --- Assertion helpers ---
 
 func assertContainsAgent(t *testing.T, resp *AgentListResponse, agentID string, expected bool) {
@@ -814,7 +1000,7 @@ func assertContainsAgent(t *testing.T, resp *AgentListResponse, agentID string, 
 }
 
 // assertOrder verifies the agents appear in the expected order (only
-// the ids in ``want`` are checked; interleaving rows from other
+// the ids in “want“ are checked; interleaving rows from other
 // fixtures in the shared test DB are ignored).
 func assertOrder(t *testing.T, resp *AgentListResponse, want []string) {
 	t.Helper()

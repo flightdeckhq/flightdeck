@@ -25,11 +25,8 @@ test.describe("T36 — Relationship pill navigation", () => {
       "e2e-test-crewai-researcher",
     );
     await expect(child).toBeVisible();
-    const childWrapper = page.locator(
-      '[data-agent-id]:has([data-testid="swimlane-agent-row-e2e-test-crewai-researcher"])',
-    );
-    await expect(childWrapper).toHaveAttribute("data-rel-mode", "child");
-    const pill = childWrapper.locator('[data-testid="swimlane-relationship-pill"]');
+    await expect(child).toHaveAttribute("data-topology", "child");
+    const pill = child.locator('[data-testid="swimlane-relationship-pill"]');
     await expect(pill).toBeVisible();
     await pill.click();
 

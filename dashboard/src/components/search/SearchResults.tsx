@@ -50,7 +50,7 @@ export function SearchResultsList({
   if (results.sessions.length > 0) {
     groups.push({
       key: "sessions",
-      label: "Sessions",
+      label: "Runs",
       type: "session",
       items: results.sessions,
     });

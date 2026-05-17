@@ -17,6 +17,9 @@ function makeEvent(payload: Record<string, unknown> = {}): AgentEvent {
     latency_ms: null,
     tool_name: null,
     has_content: false,
+    framework: null,
+    client_type: null,
+    agent_type: null,
     occurred_at: "2026-05-09T07:00:00Z",
     payload,
   };
@@ -133,7 +136,7 @@ describe("EnrichmentSummary", () => {
         })}
       />,
     );
-    expect(screen.getByText("Policy actions in this session")).toBeInTheDocument();
+    expect(screen.getByText("Policy actions in this run")).toBeInTheDocument();
     expect(screen.getByText("policy_warn")).toBeInTheDocument();
     expect(screen.getByText("2")).toBeInTheDocument();
     expect(screen.getByText("policy_mcp_block")).toBeInTheDocument();

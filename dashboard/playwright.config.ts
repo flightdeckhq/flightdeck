@@ -1,4 +1,5 @@
 import { defineConfig, devices } from "@playwright/test";
+import { DISABLE_KEEPALIVE_WS_STORAGE_KEY } from "./src/lib/constants";
 
 // D095 + Phase 5 Part 1b hardcoded access token. Every request
 // (page navigations, XHRs, and fetches fired by the app) picks up
@@ -27,9 +28,31 @@ const THEME_STORAGE_KEY = "flightdeck-theme";
 const THEME_DARK = "dark";
 const THEME_LIGHT = "light";
 
+// Keep-alive WS disable flag for E2E. When set to "1", the
+// dashboard's useFleet hook skips its WebSocket subscription so
+// periodic fixture-refresh events from the test harness's
+// keep-alive watchdog (globalSetup spawns it; every 30 s the
+// watchdog re-seeds active-role sessions) cannot perturb
+// IntersectionObserver virtualization or sidebar pagination
+// while a spec polls for an assertion. The flag lives in
+// localStorage so it bootstraps before the first render of every
+// page navigation under E2E. The key constant is imported from
+// ``src/lib/constants.ts`` so Node-side (this file) and browser-
+// side (runtime-config.ts) share one source of truth.
+
 export default defineConfig({
   testDir: "./tests/e2e",
   fullyParallel: true,
+  // Cap workers at 4 to stabilise the suite under WSL + Docker
+  // load. The keep-alive watchdog (globalSetup) mutates the
+  // ``sessions`` table every 30 s; with workers = logical-CPU
+  // count (8-16 on modern dev boxes) the concurrent REST fetches
+  // race that mutation often enough to flake row-presence
+  // assertions even with the dashboard WS subscription disabled.
+  // 4 workers preserves meaningful parallelism while keeping the
+  // contention below the threshold where tests trip on the
+  // watchdog's UPDATE cadence.
+  workers: process.env.CI ? 2 : 4,
   // Rule 40c.1 (E2E stability). One retry on CI is a tolerance
   // buffer for genuine infrastructure blips (stack boot, NATS
   // reconnect, WSL disk flush). Zero locally so flakes surface on
@@ -95,6 +118,7 @@ export default defineConfig({
               origin: "http://localhost:4000",
               localStorage: [
                 { name: THEME_STORAGE_KEY, value: THEME_DARK },
+                { name: DISABLE_KEEPALIVE_WS_STORAGE_KEY, value: "1" },
               ],
             },
           ],
@@ -114,6 +138,7 @@ export default defineConfig({
               origin: "http://localhost:4000",
               localStorage: [
                 { name: THEME_STORAGE_KEY, value: THEME_LIGHT },
+                { name: DISABLE_KEEPALIVE_WS_STORAGE_KEY, value: "1" },
               ],
             },
           ],
@@ -151,6 +176,7 @@ export default defineConfig({
               origin: "http://localhost:4000",
               localStorage: [
                 { name: THEME_STORAGE_KEY, value: THEME_DARK },
+                { name: DISABLE_KEEPALIVE_WS_STORAGE_KEY, value: "1" },
               ],
             },
           ],
@@ -171,6 +197,7 @@ export default defineConfig({
               origin: "http://localhost:4000",
               localStorage: [
                 { name: THEME_STORAGE_KEY, value: THEME_LIGHT },
+                { name: DISABLE_KEEPALIVE_WS_STORAGE_KEY, value: "1" },
               ],
             },
           ],

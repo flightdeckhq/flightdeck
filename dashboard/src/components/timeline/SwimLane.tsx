@@ -1,1013 +1,667 @@
 import { memo, useMemo } from "react";
-import type { ScaleTime } from "d3-scale";
 import { Link } from "react-router-dom";
+import type { ScaleTime } from "d3-scale";
 import type { Session, AgentEvent } from "@/lib/types";
 import { deriveRelationship } from "@/lib/relationship";
+import { findLostSubAgent } from "@/lib/swimlane-lost-sub-agent";
 import {
-  ClientType,
-  type ClientType as ClientTypeT,
+	ClientType,
+	type ClientType as ClientTypeT,
 } from "@/lib/agent-identity";
 import { ClientTypePill } from "@/components/facets/ClientTypePill";
 import { SubAgentLostDot } from "@/components/facets/SubAgentRolePill";
 import { RelationshipPill } from "@/components/facets/RelationshipPill";
 import { TruncatedText } from "@/components/ui/TruncatedText";
-import { SESSION_ROW_HEIGHT, EVENT_CIRCLE_SIZE } from "@/lib/constants";
-import { ChevronRight } from "lucide-react";
-import { SessionEventRow } from "./SessionEventRow";
+import { EVENT_CIRCLE_SIZE } from "@/lib/constants";
+import { ProviderLogo } from "@/components/ui/provider-logo";
+import { OSIcon } from "@/components/ui/OSIcon";
+import { OrchestrationIcon } from "@/components/ui/OrchestrationIcon";
 import { EventNode } from "./EventNode";
+import { RunBracket, bracketAnchors } from "./RunBracket";
+import { AgentStatusBadge } from "./AgentStatusBadge";
 import { useSessionEvents, attachmentsCache } from "@/hooks/useSessionEvents";
 import { isAttachmentStartEvent, isDiscoveryEvent, isEventVisible } from "@/lib/events";
 import { useShowDiscoveryEvents } from "@/lib/discoveryEventsPref";
 import { ClaudeCodeLogo } from "@/components/ui/claude-code-logo";
 import { useFleetStore } from "@/store/fleet";
+import { getProvider, type Provider } from "@/lib/models";
+
+// Per-agent state ordinal. Maximum across the agent's runs picks
+// the badge state shown at the right edge of the label strip:
+// active > idle > stale > closed > lost. Mirrors the server-side
+// ordering in api/internal/store/agents.go.
+const STATE_ORDINAL: Record<string, number> = {
+	active: 5,
+	idle: 4,
+	stale: 3,
+	closed: 2,
+	lost: 1,
+};
+
+type AgentState = "active" | "idle" | "stale" | "closed" | "lost" | "";
+
+// Sessions carry a free-form ``context: Record<string, unknown>``.
+// The label-strip's OS / orchestration icons render only when the
+// most-recent session reported a string for that key.
+function readContextString(
+	session: Session | null,
+	key: string,
+): string | null {
+	if (!session?.context) return null;
+	const v = session.context[key];
+	return typeof v === "string" && v.length > 0 ? v : null;
+}
 
 interface SwimLaneProps {
-  flavor: string;
-  /** D115 identity: human-readable label for the row. When absent
-   *  (legacy pre-v0.4.0 data), falls back to rendering ``flavor``
-   *  directly. */
-  agentName?: string;
-  /** D115 client_type, surfaced as a small pill beside the label. */
-  clientType?: ClientTypeT;
-  /** D115 agent_type -- coding / production -- surfaced as a muted
-   *  badge next to the pill. */
-  agentType?: string;
-  sessions: Session[];
-  /**
-   * Optional override for the expanded SESSIONS list only. When
-   * provided (populated by the fleet store's on-demand
-   * ``loadExpandedSessions`` fetch), the expanded section renders
-   * every session under this agent, including closed / old ones that
-   * fall outside the 24-hour Fleet rollup window. The main
-   * event-circle row above the expansion still uses ``sessions`` so
-   * the timeline above the drawer stays scoped to the Fleet window
-   * and does not gain phantom circles from weeks-old sessions.
-   */
-  expandedSessions?: Session[];
-  /**
-   * D115 ``agent.total_sessions`` lifetime counter. Drives the
-   * "Showing N of M" preamble in the expanded-drawer footer when
-   * the on-demand fetch returned fewer rows than the lifetime
-   * count (capped per ``EXPANDED_DRAWER_SESSION_LIMIT`` plus
-   * server cap). When unset (legacy callers) the footer falls
-   * back to the bare "View in Investigate →" wording.
-   */
-  totalSessionsLifetime?: number;
-  scale: ScaleTime<number, number>;
-  onSessionClick: (sessionId: string, eventId?: string, event?: AgentEvent) => void;
-  expanded: boolean;
-  onToggleExpand: () => void;
-  /**
-   * Width of the event-circles area in pixels. The full row width is
-   * leftPanelWidth + timelineWidth. The right (event circles) panel
-   * is sized exactly to this value so xScale.range = [0, timelineWidth]
-   * and circles cannot escape into adjacent layout space.
-   */
-  timelineWidth: number;
-  /**
-   * Current resizable width of the left label / session-info panel.
-   * Flows from Timeline.tsx's useState into every SwimLane and
-   * SessionEventRow so drag updates on the Flavors header row
-   * resize every row in lockstep.
-   */
-  leftPanelWidth: number;
-  activeFilter?: string | null;
-  sessionVersions?: Record<string, number>;
-  /**
-   * Set of session IDs that match the active CONTEXT sidebar filter.
-   * null = no filters active, every session is fully visible.
-   * Sessions not in the set render at opacity 0.15 with
-   * pointer-events: none.
-   */
-  matchingSessionIds?: Set<string> | null;
-  /**
-   * D126 § 7.fix.A — invoked when the user clicks the always-on
-   * relationship pill (parent or child). The argument is the target
-   * agent_id; the caller scrolls that agent's swimlane row into
-   * view. Optional so legacy callers without sub-agent awareness
-   * still mount the component without a navigation handler.
-   */
-  onScrollToAgent?: (agentId: string) => void;
-  /**
-   * D126 UX revision 2026-05-03 — row topology, drives the
-   * ``data-topology`` attribute on the row container. ``"child"``
-   * activates the indent + bg-tint styling defined in globals.css
-   * via the ``[data-topology="child"]`` selector. Defaults to
-   * ``"root"`` for backward compatibility on callers that don't
-   * pass it (legacy swimlanes mounted before the β-grouping
-   * shipped).
-   */
-  topology?: "root" | "child";
+	flavor: string;
+	/** Human-readable label for the row. When absent (legacy data
+	 *  without an agent name), falls back to rendering ``flavor``
+	 *  directly. */
+	agentName?: string;
+	/** Client_type, surfaced as a small pill beside the label. */
+	clientType?: ClientTypeT;
+	/** Agent_type — coding / production — surfaced as a muted badge
+	 *  next to the pill. */
+	agentType?: string;
+	sessions: Session[];
+	scale: ScaleTime<number, number>;
+	onSessionClick: (sessionId: string, eventId?: string, event?: AgentEvent) => void;
+	/**
+	 * Width of the event-circles area in pixels. The full row width is
+	 * leftPanelWidth + timelineWidth. The right (event circles) panel
+	 * is sized exactly to this value so xScale.range = [0, timelineWidth]
+	 * and circles cannot escape into adjacent layout space.
+	 */
+	timelineWidth: number;
+	/**
+	 * Current resizable width of the left label panel. Flows from
+	 * Timeline.tsx's useState into every SwimLane so drag updates on
+	 * the Flavors header row resize every row in lockstep.
+	 */
+	leftPanelWidth: number;
+	activeFilter?: string | null;
+	sessionVersions?: Record<string, number>;
+	/**
+	 * Set of session IDs that match the active CONTEXT sidebar filter.
+	 * null = no filters active, every session is fully visible.
+	 * Sessions not in the set render at opacity 0.15 with
+	 * pointer-events: none.
+	 */
+	matchingSessionIds?: Set<string> | null;
+	/**
+	 * Invoked when the user clicks the always-on relationship pill
+	 * (parent or child). The argument is the target agent_id; the
+	 * caller scrolls that agent's swimlane row into view. Optional
+	 * so legacy callers without sub-agent awareness still mount the
+	 * component without a navigation handler.
+	 */
+	onScrollToAgent?: (agentId: string) => void;
+	/**
+	 * Row topology, drives the ``data-topology`` attribute on the row
+	 * container. ``"child"`` activates the indent + bg-tint styling
+	 * defined in globals.css via the ``[data-topology="child"]``
+	 * selector. Defaults to ``"root"``.
+	 */
+	topology?: "root" | "child";
 }
+
+const ROW_HEIGHT = 48;
 
 function SwimLaneComponent({
-  flavor,
-  agentName,
-  clientType,
-  agentType,
-  sessions,
-  expandedSessions,
-  totalSessionsLifetime,
-  scale,
-  onSessionClick,
-  expanded,
-  onToggleExpand,
-  timelineWidth,
-  leftPanelWidth,
-  activeFilter,
-  sessionVersions,
-  matchingSessionIds = null,
-  onScrollToAgent,
-  topology = "root",
+	flavor,
+	agentName,
+	clientType,
+	agentType,
+	sessions,
+	scale,
+	onSessionClick,
+	timelineWidth,
+	leftPanelWidth,
+	activeFilter,
+	sessionVersions,
+	matchingSessionIds = null,
+	onScrollToAgent,
+	topology = "root",
 }: SwimLaneProps) {
-  // Live count = sessions that are currently active OR idle. The
-  // server-side `activeCount` prop only counts state="active", but
-  // for the swimlane header we want to count idle sessions as live
-  // too -- an idle agent is still alive and ready to make calls.
-  // Drives both the displayed number and its color (green when > 0,
-  // muted gray when 0).
-  const liveCount = useMemo(
-    () => sessions.filter((s) => s.state === "active" || s.state === "idle").length,
-    [sessions],
-  );
+	// Derive the always-on relationship pill from the same session-
+	// linkage scan used elsewhere, so the swimlane stays in lock-step.
+	// ``flavor`` is the agent_id (the swimlane row keys by agent).
+	const fleetFlavors = useFleetStore((s) => s.flavors);
+	const relationship = useMemo(() => {
+		return deriveRelationship(flavor, sessions, fleetFlavors);
+	}, [flavor, sessions, fleetFlavors]);
 
-  // D126 § 7.fix.A — always-on relationship pill. Derives the row's
-  // place in the sub-agent graph from data already in the fleet
-  // store. ``flavor`` is the agent_id (D115 swimlane re-key); we
-  // cross-reference with ``store.flavors[]`` (which carries every
-  // agent's recent sessions in scope) to find:
-  //   * parent agent_id + name when this row is a child (any of our
-  //     sessions has a parent_session_id pointing to a session under
-  //     a different agent in the store).
-  //   * distinct child-agent count when this row is a parent (other
-  //     agents' sessions list us as their parent_session_id source).
-  //
-  // Lone agents (no inbound or outbound relationship) get neither
-  // pill. Cost: O(N*M) per render where N=fleet agents and M=
-  // sessions per agent in the swimlane window. Memoized on
-  // (agent_id, fleetSessionsVersion) so the scan only re-runs when
-  // either side actually changes.
-  const fleetFlavors = useFleetStore((s) => s.flavors);
-  const relationship = useMemo(() => {
-    return deriveRelationship(flavor, sessions, fleetFlavors);
-  }, [flavor, sessions, fleetFlavors]);
+	// Surfaces a sub-agent whose latest run ended in ``lost`` state
+	// as a red dot on the row label. See findLostSubAgent for the
+	// recency rule; the unit tests for that helper live in
+	// tests/unit/SwimLane-lost-dot-recency.test.ts.
+	const lostSubAgent = useMemo(() => findLostSubAgent(sessions), [sessions]);
 
-  // L8 red dot: any sub-agent session in this row that ended in
-  // ``lost`` state. The clean SubagentStop / child session_end
-  // signal never fired and the worker's state-revival path closed
-  // the row. METHODOLOGY.md L8: surface the failure on the row,
-  // not only inside the event. Captures the role + session id
-  // suffix for the tooltip so an operator can identify which sub-
-  // agent failed without expanding the row.
-  const lostSubAgent = useMemo(() => {
-    for (const s of sessions) {
-      if (s.parent_session_id != null && s.state === "lost") {
-        return {
-          role: s.agent_role ?? undefined,
-          sessionIdSuffix: s.session_id.slice(-8),
-        };
-      }
-    }
-    return null;
-  }, [sessions]);
+	// Per-agent rolled-up state: max ordinal across all runs.
+	// Drives AgentStatusBadge at the right edge of the label strip.
+	const agentState: AgentState = useMemo(() => {
+		let bestState: AgentState = "";
+		let bestOrd = 0;
+		for (const s of sessions) {
+			const ord = STATE_ORDINAL[s.state] ?? 0;
+			if (ord > bestOrd) {
+				bestOrd = ord;
+				bestState = s.state as AgentState;
+			}
+		}
+		return bestState;
+	}, [sessions]);
 
-  // Pick a representative state suffix to display next to the flavor
-  // name when no sessions are currently active or idle. Priority:
-  // stale > closed > lost. Returns "" for active/idle flavors so the
-  // suffix is hidden in the common case.
-  //
-  // The previous implementation used this as a trigger to collapse
-  // the entire row to a compact 28px placeholder with no chevron and
-  // no event circles. That was wrong: closed sessions still have
-  // historical events from the last 1-30 minutes that platform
-  // engineers need to see when they zoom out the time range.
-  // Auto-collapse hid that data and made the swimlane unusable for
-  // historical views. The compact branch is gone -- every flavor
-  // renders at full 48px with full event circles and an expand
-  // chevron, regardless of session state. Sort-by-activity (active
-  // flavors at the top) is preserved -- only the auto-collapse row
-  // is removed.
-  const stateSuffix = useMemo(() => {
-    if (liveCount > 0) return "";
-    const states = new Set(sessions.map((s) => s.state));
-    if (states.has("stale")) return "(stale)";
-    if (states.has("closed")) return "(closed)";
-    if (states.has("lost")) return "(lost)";
-    return "";
-  }, [liveCount, sessions]);
+	// Most-recent session for the agent — drives the provider / OS /
+	// orchestration icons in the label strip. Per-event provider
+	// logos on the event circles below carry the granular per-call
+	// attribution; the label-strip icon answers "what does this
+	// agent look like right now."
+	const mostRecentSession = useMemo<Session | null>(() => {
+		if (sessions.length === 0) return null;
+		let best: Session | null = null;
+		let bestMs = -Infinity;
+		for (const s of sessions) {
+			const ms = new Date(s.started_at).getTime();
+			if (ms > bestMs) {
+				bestMs = ms;
+				best = s;
+			}
+		}
+		return best;
+	}, [sessions]);
 
-  // Source list for the expanded SESSIONS section. Prefers the
-  // on-demand full-history fetch (``expandedSessions``) when present;
-  // falls back to the 24-hour Fleet subset when the fetch has not
-  // resolved yet or failed. Note: the event-circle row above the
-  // expansion uses ``sessions`` (the windowed subset) so circles for
-  // sessions outside the Fleet window do NOT appear on the main
-  // timeline, only in the expanded session list.
-  // ``?? []`` on both branches: TypeScript types the incoming
-  // ``sessions`` prop as ``Session[]`` and ``expandedSessions`` as
-  // ``Session[] | undefined``, but a runtime payload that surprises
-  // the type (e.g. a ``null`` field slipping through a stale
-  // WebSocket deserializer) would crash the expanded drawer's
-  // ``.map`` below. Memoized so the useMemo hooks downstream get a
-  // stable reference when the underlying arrays don't change.
-  const expandedSessionList = useMemo(
-    () => expandedSessions ?? sessions ?? [],
-    [expandedSessions, sessions],
-  );
+	const providerName = useMemo<Provider | null>(() => {
+		const model = mostRecentSession?.model ?? null;
+		if (!model) return null;
+		const p = getProvider(model);
+		return p === "other" ? null : p;
+	}, [mostRecentSession]);
 
-  // Count of sessions that will actually render in the expanded
-  // view. When a CONTEXT filter is active, non-matching sessions
-  // are omitted from the map below, so the maxHeight animation and
-  // the SESSIONS sub-header count should reflect the visible subset.
-  const visibleSessionCount = useMemo(() => {
-    if (matchingSessionIds === null) return expandedSessionList.length;
-    return expandedSessionList.filter((s) =>
-      matchingSessionIds.has(s.session_id),
-    ).length;
-  }, [expandedSessionList, matchingSessionIds]);
+	const osName = readContextString(mostRecentSession, "os");
+	const orchestration = readContextString(mostRecentSession, "orchestration");
 
-  return (
-    <div
-      data-agent-id={flavor}
-      data-rel-mode={relationship.mode}
-      data-topology={topology}
-      style={{ borderBottom: "1px solid var(--border-subtle)" }}
-    >
-      {/* Collapsed flavor header — 48px */}
-      <div
-        className="flex h-12 cursor-pointer items-center"
-        style={{ background: expanded ? "var(--bg-elevated)" : "var(--bg)" }}
-        onClick={onToggleExpand}
-        data-testid={`swimlane-agent-row-${agentName ?? flavor}`}
-      >
-        {/* Left panel — sticky so it stays pinned during horizontal scroll.
-            Width tracks the resizable leftPanelWidth state owned by
-            Timeline.tsx. The ``swimlane-row-label`` class is the
-            indent target for ``[data-topology="child"]`` rows; the
-            CSS rule lives in globals.css so the same class works
-            for swimlane + Investigate sub-rows. */}
-        <div
-          className="swimlane-row-label flex h-full items-center gap-2 px-3"
-          style={{
-            width: leftPanelWidth,
-            flexShrink: 0,
-            background: expanded ? "var(--bg-elevated)" : "var(--surface)",
-            borderRight: "1px solid var(--border)",
-            position: "sticky",
-            left: 0,
-            // z-index 3 sits above event circles (z 2) and grid
-            // lines (z 1) so the column's opaque background covers
-            // the timeline content sliding under it during S-SWIM
-            // horizontal scroll. Same rationale at every other
-            // sticky-left column in this component and SessionEventRow.
-            zIndex: 3,
-            overflow: "hidden",
-          }}
-        >
-          <ChevronRight
-            size={14}
-            // ``shrink-0`` keeps the chevron at its declared 14px even
-            // when the left-panel flex layout is cramped — child rows
-            // inherit a 28px padding-left from the [data-topology=
-            // "child"] CSS rule, which trims the available space and
-            // (without shrink-0) lets flex shrink the SVG below 14px,
-            // making it look like a dot beside the parent's full-size
-            // chevron. Parent rows stay 14px either way; this just
-            // pins the floor for the child case.
-            //
-            // Colour: child-row chevrons render in --accent so the
-            // expand affordance reads as part of the sub-agent's
-            // purple visual group (matching RelationshipPill +
-            // SubAgentRolePill). Parent / lone rows keep the muted
-            // tone so the chevron is unobtrusive on the dominant
-            // root-agent row.
-            className="shrink-0"
-            style={{
-              color: topology === "child" ? "var(--accent)" : "var(--text-muted)",
-              transform: expanded ? "rotate(90deg)" : "rotate(0deg)",
-              transition: "transform 200ms ease",
-            }}
-          />
-          {(clientType === ClientType.ClaudeCode || flavor === "claude-code") && (
-            <ClaudeCodeLogo size={14} className="shrink-0" />
-          )}
-          {/* D115: primary label is agent_name; legacy rows without
-              agent identity fall back to the stored flavor string.
-              ``<TruncatedText/>`` auto-reveals the full value via a
-              native ``title`` tooltip when the row is narrow -- the
-              Phase 2 Supervisor smoke bug was a truncated agent name
-              with no hover reveal. */}
-          <TruncatedText
-            className="text-[13px] font-medium"
-            style={{ color: "var(--text)", minWidth: 0 }}
-            text={agentName ?? flavor}
-          />
-          {clientType && (
-            <ClientTypePill
-              clientType={clientType}
-              size="compact"
-              testId="swimlane-client-type-pill"
-            />
-          )}
-          {relationship.mode === "child" && (
-            <RelationshipPill
-              mode="child"
-              parentName={relationship.parentName}
-              testId="swimlane-relationship-pill"
-              onClick={
-                onScrollToAgent && relationship.parentAgentId
-                  ? () => onScrollToAgent(relationship.parentAgentId!)
-                  : undefined
-              }
-            />
-          )}
-          {relationship.mode === "parent" && relationship.childCount > 0 && (
-            <RelationshipPill
-              mode="parent"
-              childCount={relationship.childCount}
-              testId="swimlane-relationship-pill"
-              onClick={
-                onScrollToAgent && relationship.firstChildAgentId
-                  ? () => onScrollToAgent(relationship.firstChildAgentId!)
-                  : undefined
-              }
-            />
-          )}
-          {lostSubAgent && (
-            <SubAgentLostDot
-              role={lostSubAgent.role}
-              sessionIdSuffix={lostSubAgent.sessionIdSuffix}
-              testId="swimlane-sub-agent-lost-dot"
-            />
-          )}
-          {agentType && (
-            <span
-              className="shrink-0 font-mono text-[10px] uppercase tracking-wide"
-              style={{ color: "var(--text-muted)" }}
-              data-testid="swimlane-agent-type-badge"
-            >
-              {agentType}
-            </span>
-          )}
-          <span
-            className="font-mono text-[11px]"
-            style={{
-              color: liveCount > 0 ? "var(--status-active)" : "var(--text-muted)",
-              flexShrink: 0,
-            }}
-            data-testid="swimlane-active-count"
-          >
-            {liveCount} active
-          </span>
-          {stateSuffix && (
-            <span
-              className="font-mono text-[11px]"
-              style={{ color: "var(--text-muted)", flexShrink: 0 }}
-              data-testid="swimlane-state-suffix"
-            >
-              {stateSuffix}
-            </span>
-          )}
-        </div>
+	// Anchor staggering for concurrent runs of the same agent
+	// (multi-pod K8s with collapsed FLIGHTDECK_HOSTNAME, etc.).
+	// First run on the row's top edge, second + on the bottom.
+	const bracketAnchorMap = useMemo(() => bracketAnchors(sessions), [sessions]);
 
-        {/* Right panel — aggregated events. Sized to exactly
-            timelineWidth so xScale.range = [0, timelineWidth] and
-            circles cannot escape into adjacent layout. overflow:
-            hidden clips any visual that would otherwise leak into
-            the next row. */}
-        <div
-          className="relative h-full flex items-center px-1"
-          style={{
-            width: timelineWidth,
-            flexShrink: 0,
-            overflow: "hidden",
-          }}
-        >
-          <AggregatedSwimLane
-            sessions={sessions}
-            scale={scale}
-            onSessionClick={onSessionClick}
-            flavor={flavor}
-            activeFilter={activeFilter}
-            sessionVersions={sessionVersions}
-          />
-        </div>
-      </div>
+	return (
+		<div
+			data-agent-id={flavor}
+			data-topology={topology}
+			data-testid={`swimlane-agent-row-${agentName ?? flavor}`}
+			className="flex w-full items-stretch border-b"
+			style={{
+				borderColor: "var(--border-subtle)",
+				height: ROW_HEIGHT,
+				// Background lives in the CSS rules for
+				// ``[data-topology="root"]`` and
+				// ``[data-topology="child"]`` so the child-row tint
+				// can override the root surface colour. An inline
+				// ``background: var(--surface)`` here would beat the
+				// data-attribute selector by specificity and the
+				// child rows would render the same colour as root.
+			}}
+		>
+			{/* Left panel — sticky so it stays pinned during horizontal
+			    scroll. Width tracks the resizable leftPanelWidth state
+			    owned by Timeline.tsx. The ``swimlane-row-label`` class
+			    is the indent target for ``[data-topology="child"]`` rows;
+			    the CSS rule lives in globals.css so the same class works
+			    for swimlane + Events page sub-rows. */}
+			<div
+				className="swimlane-row-label flex h-full items-center gap-2 px-3"
+				style={{
+					width: leftPanelWidth,
+					flexShrink: 0,
+					// Background lives on the row container via the
+					// ``[data-topology="..."]`` CSS rules; pulling the
+					// surface colour through ``inherit`` keeps the
+					// sticky panel matching the row tint (otherwise
+					// the panel pin-fights with the row's child tint
+					// and a thin seam of var(--surface) shows under
+					// horizontal scroll).
+					background: "inherit",
+					borderRight: "1px solid var(--border)",
+					position: "sticky",
+					left: 0,
+					zIndex: 3,
+					overflow: "hidden",
+				}}
+			>
+				{(clientType === ClientType.ClaudeCode || flavor === "claude-code") && (
+					<ClaudeCodeLogo size={14} className="shrink-0" />
+				)}
+				{/* Agent name — primary label. The row's ``flavor``
+				    prop carries the agent_id (the swimlane keys rows
+				    by agent — see SwimLaneProps). Clicking it sets
+				    the ``?agent_drawer=`` URL param, which the
+				    app-level AgentDrawerHost reads to open this
+				    agent's drawer inline — no route change, the
+				    Fleet view stays mounted underneath. Truncates
+				    via native ``title`` tooltip when narrow. */}
+				<Link
+					to={{ search: `agent_drawer=${encodeURIComponent(flavor)}` }}
+					data-testid="swimlane-agent-name-link"
+					className="flex min-w-0 items-center"
+					style={{
+						color: "var(--text)",
+						textDecoration: "none",
+						flex: "0 1 auto",
+					}}
+				>
+					<TruncatedText
+						className="text-[13px] font-medium"
+						style={{ color: "var(--text)", minWidth: 0 }}
+						text={agentName ?? flavor}
+					/>
+				</Link>
+				{clientType && (
+					<ClientTypePill
+						clientType={clientType}
+						size="compact"
+						testId="swimlane-client-type-pill"
+					/>
+				)}
+				{agentType && (
+					<span
+						className="shrink-0 font-mono text-[10px] uppercase tracking-wide"
+						style={{ color: "var(--text-muted)" }}
+						data-testid="swimlane-agent-type-badge"
+					>
+						{agentType}
+					</span>
+				)}
+				{providerName && (
+					<ProviderLogo
+						provider={providerName}
+						size={14}
+						className="shrink-0"
+					/>
+				)}
+				{osName && <OSIcon os={osName} size={14} className="shrink-0" />}
+				{orchestration && (
+					<OrchestrationIcon
+						orchestration={orchestration}
+						size={14}
+						className="shrink-0"
+					/>
+				)}
+				{relationship.mode === "child" && (
+					<RelationshipPill
+						mode="child"
+						parentName={relationship.parentName}
+						testId="swimlane-relationship-pill"
+						onClick={
+							onScrollToAgent && relationship.parentAgentId
+								? () => onScrollToAgent(relationship.parentAgentId!)
+								: undefined
+						}
+					/>
+				)}
+				{relationship.mode === "parent" && relationship.childCount > 0 && (
+					<RelationshipPill
+						mode="parent"
+						childCount={relationship.childCount}
+						testId="swimlane-relationship-pill"
+						onClick={
+							onScrollToAgent && relationship.firstChildAgentId
+								? () => onScrollToAgent(relationship.firstChildAgentId!)
+								: undefined
+						}
+					/>
+				)}
+				{lostSubAgent && (
+					<SubAgentLostDot
+						role={lostSubAgent.role}
+						sessionIdSuffix={lostSubAgent.sessionIdSuffix}
+						testId="swimlane-sub-agent-lost-dot"
+					/>
+				)}
+				<AgentStatusBadge state={agentState} />
+			</div>
 
-      {/* Expanded session rows. The +28 in maxHeight reserves space
-          for the SESSIONS sub-header (20px) plus the py-1 padding.
-          SESSION_ROW_HEIGHT is centralised in constants so the
-          animation stays in sync if we ever bump the row height
-          again.
-
-          When a CONTEXT filter is active, matchingSessionIds names
-          the subset of sessions that match. Non-matching sessions
-          are hidden entirely (return null in the map below), so
-          the maxHeight allocation uses visibleSessionCount -- the
-          expanded section collapses to the smaller subset size
-          rather than leaving blank gaps for hidden rows. */}
-      <div
-        data-testid="swimlane-expanded-body"
-        data-expanded={expanded ? "true" : "false"}
-        style={{
-          // When the agent has zero sessions to display (either a
-          // genuinely brand-new agent that has not yet emitted a
-          // session_start, or a data-integrity mismatch where
-          // ``agents.total_sessions`` is out of sync with actual
-          // session rows), reserve a ~36px slot for the empty-state
-          // row below instead of collapsing to the bare 28px header.
-          // Prevents the "I expanded it and nothing visible happened"
-          // UX hit.
-          maxHeight: expanded
-            ? (visibleSessionCount === 0
-                ? SESSION_ROW_HEIGHT + 28 + 8
-                // 28px SESSIONS sub-header + visible rows + 28px
-                // ExpandedDrawerFooter (load-more + Investigate
-                // deep-link). Without the +28 reserve the footer
-                // clips off-screen and the "Show older sessions"
-                // affordance becomes unreachable on the first
-                // expand -- the dead-end class of UX bug the V-
-                // DRAWER fix exists to prevent.
-                : visibleSessionCount * SESSION_ROW_HEIGHT + 28 + 28)
-            : 0,
-          opacity: expanded ? 1 : 0,
-          // overflow: clip (NOT hidden) clips the max-height
-          // animation the same way but does NOT establish a scroll
-          // container. With overflow: hidden the sticky-left columns
-          // on every SessionEventRow and the SESSIONS sub-header
-          // anchor to THIS box (zero-scroll inside it) and drift
-          // with Fleet's outer horizontal scroll -- session
-          // sequence numbers / token counts slid off the left edge
-          // by exactly scrollLeft pixels. clip lets sticky
-          // descendants look past to Fleet's main-content scroll
-          // container so they pin at the viewport edge alongside
-          // the agent header. Same overflow-clip-vs-hidden trick
-          // Timeline.tsx uses on its outer wrapper for the sticky
-          // time axis.
-          overflow: "clip",
-          transition: "max-height 300ms ease, opacity 200ms ease",
-          borderLeft: expanded ? "2px solid var(--accent)" : undefined,
-          background: expanded ? "var(--surface)" : undefined,
-        }}
-      >
-        {expanded && (
-          <div className="py-1">
-            {/* SESSIONS sub-header.
-                Same flex pattern as the FLAVORS row above: a 240px
-                sticky-left label slot pinned to the viewport's left
-                edge, plus a filler that extends the row so the border
-                draws across the timeline. The 32px paddingLeft inside
-                the sticky slot indents the label to match the
-                indented session row labels below. */}
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                height: 20,
-                borderBottom: "1px solid var(--border-subtle)",
-                background: "var(--surface)",
-                width: leftPanelWidth + timelineWidth,
-              }}
-            >
-              <div
-                style={{
-                  width: leftPanelWidth,
-                  flexShrink: 0,
-                  position: "sticky",
-                  left: 0,
-                  zIndex: 3,
-                  background: "var(--surface)",
-                  display: "flex",
-                  alignItems: "center",
-                  height: "100%",
-                  paddingLeft: 32,
-                }}
-              >
-                <span
-                  style={{
-                    fontSize: 10,
-                    fontWeight: 700,
-                    letterSpacing: "0.08em",
-                    color: "var(--text-muted)",
-                    textTransform: "uppercase",
-                    fontFamily: "var(--font-ui)",
-                  }}
-                >
-                  Sessions
-                </span>
-              </div>
-              <div style={{ width: timelineWidth, flexShrink: 0 }} />
-            </div>
-            {visibleSessionCount === 0 && (
-              // Empty state. Fires when the on-demand
-              // ``/v1/sessions?agent_id=<uuid>`` fetch returned zero
-              // rows (data-integrity: the agents rollup counter is
-              // nonzero but no actual session rows exist -- common on
-              // dev DBs that were TRUNCATE'd without reconciling the
-              // rollup) OR the agent is brand-new and has not yet
-              // emitted its first session_start. Either way, surface
-              // the reason rather than leaving the drawer looking
-              // broken-empty.
-              <div
-                data-testid="swimlane-expanded-empty"
-                style={{
-                  paddingLeft: 32,
-                  paddingRight: 16,
-                  height: SESSION_ROW_HEIGHT,
-                  display: "flex",
-                  alignItems: "center",
-                  fontSize: 12,
-                  color: "var(--text-muted)",
-                  fontStyle: "italic",
-                }}
-              >
-                No sessions to display for this agent.
-              </div>
-            )}
-            {expandedSessionList.map((session, sessionIndex) => {
-              // Hide sessions that don't match the active CONTEXT
-              // sidebar filter. matchingSessionIds === null means
-              // no filters are active and every row is fully visible.
-              // Non-matching sessions return null entirely rather
-              // than rendering at 0.15 opacity -- the previous
-              // dimming approach made the UI look broken ("why are
-              // some rows ghosted?") rather than filtered. The
-              // filter status bar in Fleet.tsx surfaces the count
-              // and a clear button so the user knows sessions are
-              // hidden by intent.
-              if (
-                matchingSessionIds !== null &&
-                !matchingSessionIds.has(session.session_id)
-              ) {
-                return null;
-              }
-              return (
-                <SessionEventRow
-                  key={session.session_id}
-                  session={session}
-                  sessionIndex={sessionIndex}
-                  scale={scale}
-                  onClick={(eventId, event) =>
-                    onSessionClick(session.session_id, eventId, event)
-                  }
-                  timelineWidth={timelineWidth}
-                  leftPanelWidth={leftPanelWidth}
-                  activeFilter={activeFilter}
-                  version={sessionVersions?.[session.session_id] ?? 0}
-                />
-              );
-            })}
-            {visibleSessionCount > 0 && (
-              <ExpandedDrawerFooter
-                agentId={flavor}
-                visibleCount={expandedSessionList.length}
-                totalLifetime={totalSessionsLifetime}
-                leftPanelWidth={leftPanelWidth}
-                timelineWidth={timelineWidth}
-              />
-            )}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-/**
- * Footer rendered at the bottom of the expanded swimlane drawer.
- * Surfaces two affordances:
- *
- *  1. ``Show older sessions`` button when the fleet store reports
- *     ``hasMore`` for the agent. Mirrors SessionDrawer's "Show older
- *     events" pattern so users who have learned one drawer's
- *     pagination get the other for free. Disabled while the next
- *     page is in flight; label flips to ``Loading…``.
- *  2. ``View in Investigate →`` deep-link to
- *     ``/investigate?agent_id=<uuid>``. Always visible -- even when
- *     the drawer shows every session, the user might want to filter
- *     by event type, sort, or drill into events, none of which the
- *     drawer supports. Pre-fix the drawer was a dead-end on agents
- *     whose sessions aged out of the API's invisible 7-day default;
- *     the footer is the dedicated full-history surface that
- *     replaces that dead-end with a usable next step.
- *
- * Adaptive count preamble: when ``totalLifetime`` is known and
- * exceeds the rendered count, surfaces ``"Showing N of M"`` so the
- * user understands they're previewing a bounded slice. When equal
- * (everything visible) the preamble is dropped to keep the footer
- * compact.
- */
-function ExpandedDrawerFooter({
-  agentId,
-  visibleCount,
-  totalLifetime,
-  leftPanelWidth,
-  timelineWidth,
-}: {
-  agentId: string;
-  visibleCount: number;
-  totalLifetime?: number;
-  leftPanelWidth: number;
-  timelineWidth: number;
-}) {
-  const hasMore = useFleetStore(
-    (s) => s.expandedSessionsHasMore.get(agentId) ?? false,
-  );
-  const loadingMore = useFleetStore(
-    (s) => s.expandedSessionsLoadingMore.get(agentId) ?? false,
-  );
-  const loadMore = useFleetStore((s) => s.loadMoreExpandedSessions);
-
-  const showCountPreamble =
-    totalLifetime != null && totalLifetime > visibleCount;
-  const remaining = totalLifetime != null
-    ? Math.max(0, totalLifetime - visibleCount)
-    : null;
-
-  return (
-    <div
-      data-testid="swimlane-expanded-footer"
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 12,
-        height: 28,
-        paddingLeft: 32,
-        paddingRight: 16,
-        borderTop: "1px solid var(--border-subtle)",
-        background: "var(--surface)",
-        fontSize: 11,
-        color: "var(--text-muted)",
-        width: leftPanelWidth + timelineWidth,
-        position: "sticky",
-        left: 0,
-        zIndex: 3,
-      }}
-    >
-      {showCountPreamble && (
-        <span data-testid="swimlane-expanded-count-preamble">
-          Showing {visibleCount} of {totalLifetime} sessions
-        </span>
-      )}
-      {hasMore && (
-        <button
-          type="button"
-          data-testid="swimlane-expanded-load-more"
-          disabled={loadingMore}
-          onClick={(e) => {
-            e.stopPropagation();
-            void loadMore(agentId);
-          }}
-          style={{
-            background: "transparent",
-            border: "none",
-            color: "var(--accent)",
-            cursor: loadingMore ? "wait" : "pointer",
-            fontSize: 11,
-            padding: 0,
-          }}
-        >
-          {loadingMore
-            ? "Loading…"
-            : remaining != null && remaining > 0
-              ? `Show older sessions (${remaining} more)`
-              : "Show older sessions"}
-        </button>
-      )}
-      <Link
-        data-testid="swimlane-expanded-investigate-link"
-        to={`/investigate?agent_id=${encodeURIComponent(agentId)}`}
-        onClick={(e) => e.stopPropagation()}
-        style={{
-          marginLeft: "auto",
-          color: "var(--accent)",
-          fontSize: 11,
-          textDecoration: "none",
-        }}
-      >
-        View in Investigate →
-      </Link>
-    </div>
-  );
+			{/* Right panel — aggregated events + run boundary brackets.
+			    Sized to exactly timelineWidth so xScale.range =
+			    [0, timelineWidth] and circles cannot escape into
+			    adjacent layout. overflow: hidden clips any visual that
+			    would otherwise leak into the next row. */}
+			<div
+				className="relative h-full flex items-center px-1"
+				data-testid="swimlane-timeline-panel"
+				style={{
+					width: timelineWidth,
+					flexShrink: 0,
+					overflow: "hidden",
+				}}
+			>
+				<AggregatedSwimLane
+					sessions={sessions}
+					scale={scale}
+					onSessionClick={onSessionClick}
+					flavor={flavor}
+					activeFilter={activeFilter}
+					sessionVersions={sessionVersions}
+					matchingSessionIds={matchingSessionIds}
+				/>
+				{/* Run boundary brackets overlay the aggregated event
+				    circles. Each run renders one bracket pair (start +
+				    end); concurrent runs stagger on top / bottom anchors
+				    so they remain distinguishable. */}
+				{sessions.map((s) => (
+					<RunBracket
+						key={`run-bracket-${s.session_id}`}
+						session={s}
+						scale={scale}
+						timelineWidth={timelineWidth}
+						anchor={bracketAnchorMap.get(s.session_id) ?? "top"}
+						onClick={(sid) => onSessionClick(sid)}
+					/>
+				))}
+			</div>
+		</div>
+	);
 }
 
 export const SwimLane = memo(SwimLaneComponent, (prev, next) => {
-  if (prev.flavor !== next.flavor) return false;
-  if (prev.sessions !== next.sessions) return false;
-  if (prev.expandedSessions !== next.expandedSessions) return false;
-  if (prev.expanded !== next.expanded) return false;
-  if (prev.activeFilter !== next.activeFilter) return false;
-  if (prev.sessionVersions !== next.sessionVersions) return false;
-  if (prev.timelineWidth !== next.timelineWidth) return false;
-  if (prev.leftPanelWidth !== next.leftPanelWidth) return false;
-  if (prev.matchingSessionIds !== next.matchingSessionIds) return false;
-  // Only re-render for scale changes > 1 second. Compare BOTH ends of
-  // the domain: `scaleEnd` drifts in lockstep with wall-clock time, but
-  // `start = scaleEnd - rangeMs` jumps by minutes when the user switches
-  // time window. Gating on scaleEnd alone froze the swimlane after a
-  // 1h→1m switch because scaleEnd barely moved, so the memo bailed out
-  // and the new (tighter) domain never reached the clip/x-position memo.
-  const nextDomain = next.scale.domain();
-  const prevDomain = prev.scale.domain();
-  // d3-scale's `.domain()` always returns [start, end] for a
-  // configured time scale; the explicit guard below satisfies
-  // noUncheckedIndexedAccess. Bailing to false (re-render) on the
-  // theoretically-impossible empty-domain case is safe.
-  const nextStart = nextDomain[0];
-  const nextEnd = nextDomain[1];
-  const prevStart = prevDomain[0];
-  const prevEnd = prevDomain[1];
-  if (!nextStart || !nextEnd || !prevStart || !prevEnd) return false;
-  const domainDeltaEnd = Math.abs(nextEnd.getTime() - prevEnd.getTime());
-  const domainDeltaStart = Math.abs(nextStart.getTime() - prevStart.getTime());
-  if (domainDeltaEnd < 1000 && domainDeltaStart < 1000) return true;
-  return false;
+	if (prev.flavor !== next.flavor) return false;
+	if (prev.agentName !== next.agentName) return false;
+	if (prev.clientType !== next.clientType) return false;
+	if (prev.agentType !== next.agentType) return false;
+	if (prev.topology !== next.topology) return false;
+	if (prev.sessions !== next.sessions) return false;
+	if (prev.activeFilter !== next.activeFilter) return false;
+	if (prev.timelineWidth !== next.timelineWidth) return false;
+	if (prev.leftPanelWidth !== next.leftPanelWidth) return false;
+	if (prev.matchingSessionIds !== next.matchingSessionIds) return false;
+	if (prev.sessionVersions !== next.sessionVersions) return false;
+	if (prev.onSessionClick !== next.onSessionClick) return false;
+	if (prev.onScrollToAgent !== next.onScrollToAgent) return false;
+	// Shallow scale comparison: identical domain bounds reuse memo.
+	const prevDomain = prev.scale.domain();
+	const nextDomain = next.scale.domain();
+	const prevStart = prevDomain[0];
+	const prevEnd = prevDomain[1];
+	const nextStart = nextDomain[0];
+	const nextEnd = nextDomain[1];
+	if (!prevStart || !prevEnd || !nextStart || !nextEnd) return false;
+	const domainDeltaEnd = Math.abs(nextEnd.getTime() - prevEnd.getTime());
+	const domainDeltaStart = Math.abs(nextStart.getTime() - prevStart.getTime());
+	if (domainDeltaEnd < 1000 && domainDeltaStart < 1000) return true;
+	return false;
 });
 
 /**
- * Aggregate "ALL" row that sits above the FLAVORS section. Renders a
- * single non-expandable lane whose event circles are merged from every
- * session across every flavor, so operators get a fleet-wide view of
- * activity without scanning each flavor row.
+ * Aggregate "ALL" row that sits above the per-agent rows. Renders a
+ * single non-expandable lane whose event circles are merged from
+ * every session across every agent, so operators get a fleet-wide
+ * view of activity without scanning each row.
  *
  * Unlike SwimLane, this row:
- *   - has no expand chevron, no active count, no kill controls
- *   - is shorter (36px vs 48px) to signal "summary, not a flavor"
+ *   - has no label-strip pills, no status badge, no run brackets
+ *   - is shorter (36px vs 48px) to signal "summary, not an agent"
  *   - is NOT affected by the CONTEXT sidebar filter (always shows
- *     everything -- it's a fleet-wide overview)
+ *     everything — it's a fleet-wide overview)
  *   - DOES respect the event-type filter bar, like SwimLane does,
  *     because dimming filtered event types is a per-circle concern
- *     handled inside EventNode via `isVisible`
- *
- * No new API or WebSocket subscriptions: AggregatedSessionEvents reads
- * the same per-session events cache populated by the per-flavor rows.
+ *     handled inside EventNode via ``isVisible``
  */
 interface AllSwimLaneProps {
-  flavors: { flavor: string; sessions: Session[] }[];
-  scale: ScaleTime<number, number>;
-  onSessionClick: (sessionId: string, eventId?: string, event?: AgentEvent) => void;
-  timelineWidth: number;
-  leftPanelWidth: number;
-  activeFilter?: string | null;
-  sessionVersions?: Record<string, number>;
-  /**
-   * True when any session (regardless of state) has at least one
-   * cached event inside the current [scaleStart, scaleEnd] domain.
-   * Timeline.tsx computes this once for the whole fleet and hands it
-   * down so the ALL row's hide rule matches what the user sees -- a
-   * row full of circles from closed sessions still surfaces, and an
-   * empty time window hides even while sessions are active.
-   */
-  hasVisibleEventsInWindow: boolean;
+	flavors: { flavor: string; sessions: Session[] }[];
+	scale: ScaleTime<number, number>;
+	onSessionClick: (sessionId: string, eventId?: string, event?: AgentEvent) => void;
+	timelineWidth: number;
+	leftPanelWidth: number;
+	activeFilter?: string | null;
+	sessionVersions?: Record<string, number>;
+	/**
+	 * True when any session has at least one cached event inside the
+	 * current ``[scaleStart, scaleEnd]`` domain. Timeline.tsx computes
+	 * this once for the whole fleet and hands it down so the ALL
+	 * row's hide rule matches what the user sees — a row full of
+	 * circles from closed sessions still surfaces, and an empty time
+	 * window hides even while sessions are active.
+	 */
+	hasVisibleEventsInWindow: boolean;
 }
 
 function AllSwimLaneComponent({
-  flavors,
-  scale,
-  onSessionClick,
-  timelineWidth,
-  leftPanelWidth,
-  activeFilter,
-  sessionVersions,
-  hasVisibleEventsInWindow,
+	flavors,
+	scale,
+	onSessionClick,
+	timelineWidth,
+	leftPanelWidth,
+	activeFilter,
+	sessionVersions,
+	hasVisibleEventsInWindow,
 }: AllSwimLaneProps) {
-  // Hide the ALL row only when there is literally nothing to draw in
-  // the current [scaleStart, scaleEnd] domain. The previous rule
-  // gated on liveSessionCount (active|idle|stale) and incorrectly
-  // hid the row while closed-session circles were still inside the
-  // visible window -- which is exactly when operators need the
-  // fleet-wide summary to stay visible. See Timeline.tsx for the
-  // shared hasVisibleEventsInWindow calculation.
-  if (!hasVisibleEventsInWindow) return null;
-
-  return (
-    <div
-      data-testid="swimlane-all"
-      style={{
-        display: "flex",
-        alignItems: "center",
-        height: 36,
-        borderBottom: "1px solid var(--border-subtle)",
-        background: "var(--bg)",
-      }}
-    >
-      <div
-        style={{
-          width: leftPanelWidth,
-          flexShrink: 0,
-          height: "100%",
-          background: "var(--surface)",
-          borderRight: "1px solid var(--border)",
-          position: "sticky",
-          left: 0,
-          zIndex: 3,
-          display: "flex",
-          alignItems: "center",
-          paddingLeft: 12,
-        }}
-      >
-        <span
-          data-testid="swimlane-all-label"
-          style={{
-            fontSize: 10,
-            fontWeight: 700,
-            letterSpacing: "0.08em",
-            color: "var(--text-muted)",
-            textTransform: "uppercase",
-            fontFamily: "var(--font-ui)",
-          }}
-        >
-          All
-        </span>
-      </div>
-      <div
-        className="relative flex items-center px-1"
-        style={{
-          width: timelineWidth,
-          flexShrink: 0,
-          height: "100%",
-          overflow: "hidden",
-        }}
-      >
-        {flavors.flatMap((f) =>
-          f.sessions.map((session) => (
-            <AggregatedSessionEvents
-              key={`${f.flavor}:${session.session_id}`}
-              session={session}
-              scale={scale}
-              onSessionClick={onSessionClick}
-              flavor={f.flavor}
-              activeFilter={activeFilter}
-              version={sessionVersions?.[session.session_id] ?? 0}
-            />
-          )),
-        )}
-      </div>
-    </div>
-  );
+	if (!hasVisibleEventsInWindow) return null;
+	return (
+		<div
+			data-testid="swimlane-all"
+			style={{
+				display: "flex",
+				alignItems: "center",
+				height: 36,
+				borderBottom: "1px solid var(--border-subtle)",
+				background: "var(--bg)",
+			}}
+		>
+			<div
+				style={{
+					width: leftPanelWidth,
+					flexShrink: 0,
+					height: "100%",
+					background: "var(--surface)",
+					borderRight: "1px solid var(--border)",
+					position: "sticky",
+					left: 0,
+					zIndex: 3,
+					display: "flex",
+					alignItems: "center",
+					paddingLeft: 12,
+				}}
+			>
+				<span
+					data-testid="swimlane-all-label"
+					style={{
+						fontSize: 10,
+						fontWeight: 700,
+						letterSpacing: "0.08em",
+						color: "var(--text-muted)",
+						textTransform: "uppercase",
+						fontFamily: "var(--font-ui)",
+					}}
+				>
+					All
+				</span>
+			</div>
+			<div
+				className="relative flex items-center px-1"
+				style={{
+					width: timelineWidth,
+					flexShrink: 0,
+					height: "100%",
+					overflow: "hidden",
+				}}
+			>
+				{flavors.flatMap((f) =>
+					f.sessions.map((session) => (
+						<AggregatedSessionEvents
+							key={`${f.flavor}:${session.session_id}`}
+							session={session}
+							scale={scale}
+							onSessionClick={onSessionClick}
+							flavor={f.flavor}
+							activeFilter={activeFilter}
+							version={sessionVersions?.[session.session_id] ?? 0}
+						/>
+					)),
+				)}
+			</div>
+		</div>
+	);
 }
 
-/**
- * Memoised wrapper for the ALL row. Mirrors SwimLane.memo's custom
- * equality: bail out for sub-second domain deltas so rAF-driven
- * Timeline re-renders don't propagate into the ALL row's per-session
- * event mapping. Without this, the ALL row re-rendered at the full
- * rAF cadence (~10x/sec) while per-flavor SwimLanes dampened to ~1/s.
- */
 export const AllSwimLane = memo(AllSwimLaneComponent, (prev, next) => {
-  if (prev.flavors !== next.flavors) return false;
-  if (prev.activeFilter !== next.activeFilter) return false;
-  if (prev.sessionVersions !== next.sessionVersions) return false;
-  if (prev.timelineWidth !== next.timelineWidth) return false;
-  if (prev.leftPanelWidth !== next.leftPanelWidth) return false;
-  if (prev.onSessionClick !== next.onSessionClick) return false;
-  if (prev.hasVisibleEventsInWindow !== next.hasVisibleEventsInWindow) return false;
-  // Both domain ends must be stable; see the SwimLane memo above for
-  // why checking only scaleEnd froze the row after time-range changes.
-  const nextDomain = next.scale.domain();
-  const prevDomain = prev.scale.domain();
-  const nextStart = nextDomain[0];
-  const nextEnd = nextDomain[1];
-  const prevStart = prevDomain[0];
-  const prevEnd = prevDomain[1];
-  if (!nextStart || !nextEnd || !prevStart || !prevEnd) return false;
-  const domainDeltaEnd = Math.abs(nextEnd.getTime() - prevEnd.getTime());
-  const domainDeltaStart = Math.abs(nextStart.getTime() - prevStart.getTime());
-  if (domainDeltaEnd < 1000 && domainDeltaStart < 1000) return true;
-  return false;
+	if (prev.flavors !== next.flavors) return false;
+	if (prev.activeFilter !== next.activeFilter) return false;
+	if (prev.sessionVersions !== next.sessionVersions) return false;
+	if (prev.timelineWidth !== next.timelineWidth) return false;
+	if (prev.leftPanelWidth !== next.leftPanelWidth) return false;
+	if (prev.onSessionClick !== next.onSessionClick) return false;
+	if (prev.hasVisibleEventsInWindow !== next.hasVisibleEventsInWindow) return false;
+	const nextDomain = next.scale.domain();
+	const prevDomain = prev.scale.domain();
+	const nextStart = nextDomain[0];
+	const nextEnd = nextDomain[1];
+	const prevStart = prevDomain[0];
+	const prevEnd = prevDomain[1];
+	if (!nextStart || !nextEnd || !prevStart || !prevEnd) return false;
+	const domainDeltaEnd = Math.abs(nextEnd.getTime() - prevEnd.getTime());
+	const domainDeltaStart = Math.abs(nextStart.getTime() - prevStart.getTime());
+	if (domainDeltaEnd < 1000 && domainDeltaStart < 1000) return true;
+	return false;
 });
 
-/** Shows aggregated 20px event circles from all sessions of a flavor. */
+/** Aggregated 20px event circles from all sessions of an agent. */
 function AggregatedSwimLane({
-  sessions,
-  scale,
-  onSessionClick,
-  flavor,
-  activeFilter,
-  sessionVersions,
+	sessions,
+	scale,
+	onSessionClick,
+	flavor,
+	activeFilter,
+	sessionVersions,
+	matchingSessionIds,
 }: {
-  sessions: Session[];
-  scale: ScaleTime<number, number>;
-  onSessionClick: (sessionId: string, eventId?: string, event?: AgentEvent) => void;
-  flavor: string;
-  activeFilter?: string | null;
-  sessionVersions?: Record<string, number>;
+	sessions: Session[];
+	scale: ScaleTime<number, number>;
+	onSessionClick: (sessionId: string, eventId?: string, event?: AgentEvent) => void;
+	flavor: string;
+	activeFilter?: string | null;
+	sessionVersions?: Record<string, number>;
+	matchingSessionIds?: Set<string> | null;
 }) {
-  return (
-    <div className="relative h-full w-full">
-      {sessions.map((session) => (
-        <AggregatedSessionEvents
-          key={session.session_id}
-          session={session}
-          scale={scale}
-          onSessionClick={onSessionClick}
-          flavor={flavor}
-          activeFilter={activeFilter}
-          version={sessionVersions?.[session.session_id] ?? 0}
-        />
-      ))}
-    </div>
-  );
+	return (
+		<div className="relative h-full w-full">
+			{sessions.map((session) => (
+				<AggregatedSessionEvents
+					key={session.session_id}
+					session={session}
+					scale={scale}
+					onSessionClick={onSessionClick}
+					flavor={flavor}
+					activeFilter={activeFilter}
+					version={sessionVersions?.[session.session_id] ?? 0}
+					matchingSessionIds={matchingSessionIds}
+				/>
+			))}
+		</div>
+	);
 }
 
 function AggregatedSessionEvents({
-  session,
-  scale,
-  onSessionClick,
-  flavor,
-  activeFilter,
-  version = 0,
+	session,
+	scale,
+	onSessionClick,
+	flavor,
+	activeFilter,
+	version = 0,
+	matchingSessionIds,
 }: {
-  session: Session;
-  scale: ScaleTime<number, number>;
-  onSessionClick: (sessionId: string, eventId?: string, event?: AgentEvent) => void;
-  flavor: string;
-  activeFilter?: string | null;
-  version?: number;
+	session: Session;
+	scale: ScaleTime<number, number>;
+	onSessionClick: (sessionId: string, eventId?: string, event?: AgentEvent) => void;
+	flavor: string;
+	activeFilter?: string | null;
+	version?: number;
+	matchingSessionIds?: Set<string> | null;
 }) {
-  const isActive = session.state === "active";
-  const { events } = useSessionEvents(session.session_id, isActive, version);
-  // D122 — same dim-on-discovery treatment as SessionEventRow. The
-  // aggregated-row swimlane mirrors per-session circle visibility,
-  // so the predicate must match per-row visibility one-to-one.
-  const [showDiscovery] = useShowDiscoveryEvents();
+	const isActive = session.state === "active";
+	const { events } = useSessionEvents(session.session_id, isActive, version);
+	const [showDiscovery] = useShowDiscoveryEvents();
 
-  // Clip events to the current scale domain before building nodes.
-  // useSessionEvents caches every event ever fetched for a session, so
-  // without this filter a 50-session fleet at a 1-minute view could
-  // render thousands of EventNodes whose x positions lie outside the
-  // 0..timelineWidth canvas -- the circles were clipped visually by
-  // overflow:hidden but still cost full style recalc. Filtering here
-  // keeps them out of the DOM entirely.
-  //
-  // Attachments are sampled inside the memo on the same fetch path
-  // as events so a fresh cache populates both atomically. See
-  // SessionEventRow for the same pattern.
-  const nodes = useMemo(() => {
-    const [domainStart, domainEnd] = scale.domain();
-    if (!domainStart || !domainEnd) return [];
-    const startMs = domainStart.getTime();
-    const endMs = domainEnd.getTime();
-    const attachments = attachmentsCache.get(session.session_id) ?? [];
-    return events
-      .filter((event) => {
-        const t = new Date(event.occurred_at).getTime();
-        return t >= startMs && t <= endMs;
-      })
-      .map((event) => ({
-        id: event.id,
-        x: scale(new Date(event.occurred_at)),
-        eventType: event.event_type,
-        model: event.model,
-        toolName: event.tool_name,
-        tokensTotal: event.tokens_total,
-        latencyMs: event.latency_ms,
-        occurredAt: event.occurred_at,
-        directiveName: event.payload?.directive_name,
-        directiveStatus: event.payload?.directive_status,
-        isAttachment: isAttachmentStartEvent(event, attachments),
-      }));
-    // Phase 4.5 M-29 justification: ``attachments`` is intentionally
-    // omitted; the memo re-runs only when ``events`` / ``scale`` /
-    // ``session.session_id`` / ``version`` change. ``attachments``
-    // identity flips on every render of the parent SwimLane — adding
-    // it to the dep array thrashes the memo. The single field we
-    // read from it (``isAttachmentStartEvent`` lookup) is a function
-    // of ``events`` and stable reference equality of the attachments
-    // entries, so events-as-dep is sufficient in practice.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [events, scale, session.session_id, version]);
+	// Honour the active CONTEXT facet filter: sessions not in the
+	// matching set render at low opacity and ignore pointer events.
+	const matches =
+		matchingSessionIds === null || matchingSessionIds === undefined
+			? true
+			: matchingSessionIds.has(session.session_id);
 
-  return (
-    <>
-      {nodes.map((node) => (
-        <EventNode
-          key={node.id}
-          x={node.x}
-          eventType={node.eventType}
-          sessionId={session.session_id}
-          flavor={flavor}
-          model={node.model}
-          toolName={node.toolName}
-          tokensTotal={node.tokensTotal}
-          latencyMs={node.latencyMs}
-          occurredAt={node.occurredAt}
-          eventId={node.id}
-          directiveName={node.directiveName}
-          directiveStatus={node.directiveStatus}
-          onClick={(eid) => {
-            const fullEvent = events.find((e) => e.id === eid);
-            onSessionClick(session.session_id, eid, fullEvent);
-          }}
-          size={EVENT_CIRCLE_SIZE}
-          isVisible={
-            isEventVisible(node.eventType, activeFilter) &&
-            (showDiscovery || !isDiscoveryEvent(node.eventType))
-          }
-          isAttachment={node.isAttachment}
-        />
-      ))}
-    </>
-  );
+	// Clip events to the current scale domain before building nodes.
+	// useSessionEvents caches every event ever fetched, so without
+	// this filter a 50-agent fleet at a 1-minute view could render
+	// thousands of off-canvas EventNodes that still cost full style
+	// recalc.
+	const nodes = useMemo(() => {
+		const [domainStart, domainEnd] = scale.domain();
+		if (!domainStart || !domainEnd) return [];
+		const startMs = domainStart.getTime();
+		const endMs = domainEnd.getTime();
+		const attachments = attachmentsCache.get(session.session_id) ?? [];
+		return events
+			.filter((event) => {
+				const t = new Date(event.occurred_at).getTime();
+				return t >= startMs && t <= endMs;
+			})
+			.map((event) => ({
+				id: event.id,
+				x: scale(new Date(event.occurred_at)),
+				eventType: event.event_type,
+				model: event.model,
+				toolName: event.tool_name,
+				tokensTotal: event.tokens_total,
+				latencyMs: event.latency_ms,
+				occurredAt: event.occurred_at,
+				directiveName: event.payload?.directive_name,
+				directiveStatus: event.payload?.directive_status,
+				isAttachment: isAttachmentStartEvent(event, attachments),
+			}));
+		// ``attachments`` is intentionally omitted from the dep array;
+		// its identity flips on every parent render and adding it
+		// thrashes the memo. The single field we read from it is a
+		// function of ``events`` and stable reference equality of the
+		// entries, so events-as-dep is sufficient.
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [events, scale, session.session_id, version]);
+
+	return (
+		<div
+			style={{
+				opacity: matches ? 1 : 0.15,
+				pointerEvents: matches ? "auto" : "none",
+				position: "absolute",
+				inset: 0,
+			}}
+		>
+			{nodes.map((node) => (
+				<EventNode
+					key={node.id}
+					x={node.x}
+					eventType={node.eventType}
+					sessionId={session.session_id}
+					flavor={flavor}
+					model={node.model}
+					toolName={node.toolName}
+					tokensTotal={node.tokensTotal}
+					latencyMs={node.latencyMs}
+					occurredAt={node.occurredAt}
+					eventId={node.id}
+					directiveName={node.directiveName}
+					directiveStatus={node.directiveStatus}
+					onClick={(eid) => {
+						const fullEvent = events.find((e) => e.id === eid);
+						onSessionClick(session.session_id, eid, fullEvent);
+					}}
+					size={EVENT_CIRCLE_SIZE}
+					isVisible={
+						isEventVisible(node.eventType, activeFilter) &&
+						(showDiscovery || !isDiscoveryEvent(node.eventType))
+					}
+					isAttachment={node.isAttachment}
+				/>
+			))}
+		</div>
+	);
 }
-

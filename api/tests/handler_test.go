@@ -57,9 +57,9 @@ type mockStore struct {
 	lastAgentListParams *store.AgentListParams
 
 	// GetAgentByID plumbing — by-id lookup map + optional error.
-	agentsByID        map[string]*store.AgentSummary
-	agentByIDErr      error
-	lastAgentByIDArg  string
+	agentsByID       map[string]*store.AgentSummary
+	agentByIDErr     error
+	lastAgentByIDArg string
 
 	// Records the last GetSessions params so handler tests can
 	// assert the parse → store-params mapping. Nil unless set by a
@@ -429,8 +429,17 @@ func (m *mockStore) GetEvents(_ context.Context, params store.EventsParams) (*st
 		if params.Flavor != "" && e.Flavor != params.Flavor {
 			continue
 		}
-		if params.EventType != "" && e.EventType != params.EventType {
-			continue
+		if len(params.EventTypes) > 0 {
+			matched := false
+			for _, et := range params.EventTypes {
+				if e.EventType == et {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				continue
+			}
 		}
 		filtered = append(filtered, e)
 	}
@@ -447,15 +456,19 @@ func (m *mockStore) GetEvents(_ context.Context, params store.EventsParams) (*st
 	}
 	page := filtered[start:end]
 	return &store.EventsResponse{
-		Events:  page,
-		Total:   len(filtered),
-		Limit:   params.Limit,
-		Offset:  params.Offset,
+		Events: page,
+		Total:  len(filtered),
+		Limit:  params.Limit,
+		Offset: params.Offset,
 		// Mirror the production formula in store/events.go so the
 		// mock cannot drift from real semantics under future test
 		// changes. See the GetEvents godoc for the rationale.
 		HasMore: params.Offset+params.Limit <= len(filtered),
 	}, nil
+}
+
+func (m *mockStore) GetEventFacets(_ context.Context, _ store.EventsParams) (*store.EventFacets, error) {
+	return &store.EventFacets{}, nil
 }
 
 func (m *mockStore) SyncDirectives(_ context.Context, flavor string, fingerprints []string) ([]string, error) {
@@ -551,7 +564,7 @@ func (m *mockStore) QueryAnalytics(_ context.Context, params store.AnalyticsPara
 }
 
 // ListAgents records the params it was called with and returns the
-// preconfigured result. Tests that don't set ``agentListResult``
+// preconfigured result. Tests that don't set “agentListResult“
 // get an empty response shape.
 func (m *mockStore) ListAgents(_ context.Context, params store.AgentListParams) (*store.AgentListResponse, error) {
 	m.lastAgentListParams = &params
@@ -569,8 +582,8 @@ func (m *mockStore) ListAgents(_ context.Context, params store.AgentListParams) 
 	}, nil
 }
 
-// GetAgentByID consults ``agentsByID`` and returns the match or
-// nil when the id is absent. Tests set ``agentByIDErr`` to simulate
+// GetAgentByID consults “agentsByID“ and returns the match or
+// nil when the id is absent. Tests set “agentByIDErr“ to simulate
 // a DB failure.
 func (m *mockStore) GetAgentByID(_ context.Context, agentID string) (*store.AgentSummary, error) {
 	m.lastAgentByIDArg = agentID
@@ -583,8 +596,24 @@ func (m *mockStore) GetAgentByID(_ context.Context, agentID string) (*store.Agen
 	return m.agentsByID[agentID], nil
 }
 
+// AgentSummary returns an empty summary so the broader handler
+// test suite continues to satisfy the Querier interface. The
+// per-agent summary endpoint has its own dedicated tests in
+// agent_summary_test.go; tests that need a specific payload
+// either swap a purpose-built stub or extend this method.
+func (m *mockStore) AgentSummary(
+	_ context.Context, params store.AgentSummaryParams,
+) (*store.AgentSummaryResponse, error) {
+	return &store.AgentSummaryResponse{
+		AgentID: params.AgentID,
+		Period:  params.Period,
+		Bucket:  params.Bucket,
+		Series:  []store.AgentSummarySeriesPoint{},
+	}, nil
+}
+
 // ReconcileAgents is a no-op mock: the admin-reconcile handler tests
-// set ``m.reconcileResult`` / ``m.reconcileErr`` per-test (see the
+// set “m.reconcileResult“ / “m.reconcileErr“ per-test (see the
 // reconcile handler tests below) and ignore the context. Tests that
 // don't exercise the reconcile path get a zero-agents response.
 func (m *mockStore) ReconcileAgents(
@@ -2067,6 +2096,34 @@ func TestGetEventsLimitTooLarge(t *testing.T) {
 	}
 }
 
+func TestGetEventsOffsetTooLarge(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.EventsListHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET",
+		"/v1/events?from=2026-01-01T00:00:00Z&offset=999999999", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for offset above the cap, got %d", w.Code)
+	}
+}
+
+func TestGetEventsFilterCardinalityTooLarge(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.EventsListHandler(store.WrapStore(s))
+	var sb strings.Builder
+	sb.WriteString("/v1/events?from=2026-01-01T00:00:00Z")
+	for i := 0; i < 101; i++ {
+		fmt.Fprintf(&sb, "&model=m%d", i)
+	}
+	req := httptest.NewRequest("GET", sb.String(), nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for over-cap filter cardinality, got %d", w.Code)
+	}
+}
+
 func TestGetEventsFlavorFilter(t *testing.T) {
 	s := &mockStore{}
 	handler := handlers.EventsListHandler(store.WrapStore(s))
@@ -2151,7 +2208,7 @@ func TestGetEventsHasMoreFormula(t *testing.T) {
 	}
 }
 
-// D113 drawer pagination: ``before`` keyset cursor threads from the
+// D113 drawer pagination: “before“ keyset cursor threads from the
 // query string into EventsParams.Before as an RFC3339-parsed time.
 func TestGetEvents_Before_ThreadsToStore(t *testing.T) {
 	s := &mockStore{}
@@ -3046,90 +3103,6 @@ func assertStringSliceEqual(t *testing.T, label string, got, want []string) {
 		if got[i] != want[i] {
 			t.Errorf("%s[%d]: got %q want %q", label, i, got[i], want[i])
 		}
-	}
-}
-
-// --- AgentByIDHandler ---
-
-func TestAgentByIDHandler_200_OnHit(t *testing.T) {
-	id := "11111111-2222-3333-4444-555555555555"
-	s := &mockStore{agentsByID: map[string]*store.AgentSummary{
-		id: {
-			AgentID:   id,
-			AgentName: "alice",
-			AgentType: "coding",
-			UserName:  "u1",
-			Hostname:  "h1",
-			State:     "active",
-		},
-	}}
-	h := handlers.AgentByIDHandler(store.WrapStore(s))
-	req := httptest.NewRequest("GET", "/v1/agents/"+id, nil)
-	w := httptest.NewRecorder()
-	h(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
-	}
-	var got store.AgentSummary
-	if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if got.AgentID != id || got.AgentName != "alice" {
-		t.Errorf("body: %+v", got)
-	}
-	if s.lastAgentByIDArg != id {
-		t.Errorf("store arg: want %q, got %q", id, s.lastAgentByIDArg)
-	}
-}
-
-func TestAgentByIDHandler_404_OnMiss(t *testing.T) {
-	id := "11111111-2222-3333-4444-555555555555"
-	// agentsByID is nil / no match — store returns (nil, nil).
-	h := handlers.AgentByIDHandler(store.WrapStore(&mockStore{}))
-	req := httptest.NewRequest("GET", "/v1/agents/"+id, nil)
-	w := httptest.NewRecorder()
-	h(w, req)
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("expected 404, got %d body=%s", w.Code, w.Body.String())
-	}
-	if !strings.Contains(w.Body.String(), "agent not found") {
-		t.Errorf("body: %s", w.Body.String())
-	}
-}
-
-func TestAgentByIDHandler_400_OnInvalidUUID(t *testing.T) {
-	h := handlers.AgentByIDHandler(store.WrapStore(&mockStore{}))
-	req := httptest.NewRequest("GET", "/v1/agents/not-a-uuid", nil)
-	w := httptest.NewRecorder()
-	h(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("expected 400, got %d", w.Code)
-	}
-}
-
-func TestAgentByIDHandler_400_OnEmptyID(t *testing.T) {
-	h := handlers.AgentByIDHandler(store.WrapStore(&mockStore{}))
-	// Request the collection root via the by-id route; trailing slash
-	// with no id should 400 rather than fan out to the list handler
-	// (the mux differentiates /v1/agents vs /v1/agents/).
-	req := httptest.NewRequest("GET", "/v1/agents/", nil)
-	w := httptest.NewRecorder()
-	h(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("expected 400, got %d body=%s", w.Code, w.Body.String())
-	}
-}
-
-func TestAgentByIDHandler_500_OnStoreError(t *testing.T) {
-	id := "11111111-2222-3333-4444-555555555555"
-	s := &mockStore{agentByIDErr: fmt.Errorf("pool exhausted")}
-	h := handlers.AgentByIDHandler(store.WrapStore(s))
-	req := httptest.NewRequest("GET", "/v1/agents/"+id, nil)
-	w := httptest.NewRecorder()
-	h(w, req)
-	if w.Code != http.StatusInternalServerError {
-		t.Errorf("expected 500, got %d", w.Code)
 	}
 }
 

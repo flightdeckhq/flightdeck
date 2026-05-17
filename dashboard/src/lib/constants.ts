@@ -37,21 +37,37 @@ export const FEED_HEIGHT_STORAGE_KEY = "flightdeck-feed-height";
 /** LocalStorage key for persisting theme preference. */
 export const THEME_STORAGE_KEY = "flightdeck-theme";
 
+/**
+ * LocalStorage key for the E2E keep-alive WS disable flag. When
+ * set to "1" or "true", the dashboard's useFleet hook skips its
+ * WebSocket subscription so periodic fixture-refresh events from
+ * the Playwright keep-alive watchdog cannot perturb
+ * IntersectionObserver virtualisation or sidebar pagination.
+ * Production never sets this; the value is only written by
+ * Playwright's per-project storageState bootstrap. Lives here so
+ * playwright.config.ts (Node) and runtime-config.ts (browser)
+ * share one source of truth — a divergent string would silently
+ * break every test without a TypeScript error.
+ */
+export const DISABLE_KEEPALIVE_WS_STORAGE_KEY = "flightdeck-disable-keepalive-ws";
+
 
 /**
  * Width constants for the resizable left panel (flavor labels +
  * session rows) in the Timeline component. The panel state lives in
  * Timeline.tsx's useState with localStorage persistence keyed by
  * LEFT_PANEL_WIDTH_KEY. Min/max are enforced on both initial load
- * and drag. DEFAULT is sized to fit typical 14-char hostnames like
- * "mac-laptop-bob" or "compose-build-2" in the session row label
- * slot without truncation (session number + icons + badge + tokens
- * leave roughly 158px for the label at 320px). Users who drag it
- * narrower or wider get their choice persisted.
+ * and drag. DEFAULT is sized to fit a fully-qualified agent name
+ * (``user@host`` plus an optional ``/role`` suffix — roughly 30-40
+ * chars of mono text) in the swimlane label strip alongside the
+ * trailing pill chrome (client-type pill, agent_type badge,
+ * provider / OS / orchestration icons, topology pill, status
+ * badge) without truncation. MIN/MAX are unchanged so the drag
+ * range — and the localStorage-persisted width — is preserved.
  */
 export const LEFT_PANEL_MIN_WIDTH = 200;
 export const LEFT_PANEL_MAX_WIDTH = 500;
-export const LEFT_PANEL_DEFAULT_WIDTH = 320;
+export const LEFT_PANEL_DEFAULT_WIDTH = 380;
 export const LEFT_PANEL_WIDTH_KEY = "flightdeck-left-panel-width";
 
 /**
@@ -165,6 +181,21 @@ export const TIMELINE_RANGE_MS: Record<string, number> = {
   "30m": 1_800_000,
   "1h": 3_600_000,
 };
+
+/**
+ * Ordered swimlane time-range options. Single source of truth for
+ * the Fleet header time-range picker and the per-agent swimlane
+ * modal picker, so the two surfaces can never drift apart.
+ */
+export const TIME_RANGE_OPTIONS = ["1m", "5m", "15m", "30m", "1h"] as const;
+
+/**
+ * Default swimlane time range on first mount. ``1m`` is the
+ * live-monitor window — what the fleet is doing right now, not the
+ * last hour of history. Shared by the Fleet view and the per-agent
+ * swimlane modal so both open on the same window.
+ */
+export const DEFAULT_TIME_RANGE: (typeof TIME_RANGE_OPTIONS)[number] = "1m";
 
 /**
  * Default lookback window for the Investigate page on first

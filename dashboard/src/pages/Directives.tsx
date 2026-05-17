@@ -220,9 +220,9 @@ function DirectiveCard({ directive }: { directive: CustomDirective }) {
       });
       const label =
         targetMode === "session" && sessionId
-          ? `session ${sessionId}`
-          : `all ${directive.flavor} sessions`;
-      setResult({ ok: true, message: `Directive sent to ${label}. Results will appear in the session timeline.` });
+          ? `run ${sessionId}`
+          : `all ${directive.flavor} runs`;
+      setResult({ ok: true, message: `Directive sent to ${label}. Results will appear in the run timeline.` });
     } catch (e) {
       setResult({ ok: false, message: (e as Error).message });
     } finally {
@@ -312,9 +312,9 @@ function DirectiveCard({ directive }: { directive: CustomDirective }) {
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="flavor">
-                      All {directive.flavor} sessions
+                      All {directive.flavor} runs
                     </SelectItem>
-                    <SelectItem value="session">Specific session</SelectItem>
+                    <SelectItem value="session">Specific run</SelectItem>
                   </SelectContent>
                 </Select>
                 {targetMode === "session" && (
@@ -322,8 +322,8 @@ function DirectiveCard({ directive }: { directive: CustomDirective }) {
                     type="text"
                     value={sessionId}
                     onChange={(e) => setSessionId(e.target.value)}
-                    placeholder="Session ID"
-                    aria-label="Session ID"
+                    placeholder="Run ID"
+                    aria-label="Run ID"
                     className="h-6 rounded border border-border bg-surface px-1.5 text-[11px] text-text focus:outline-none focus:ring-1 focus:ring-[var(--primary)]"
                   />
                 )}
@@ -332,7 +332,7 @@ function DirectiveCard({ directive }: { directive: CustomDirective }) {
               {/* Targeting indicators */}
               {targetMode === "flavor" && (
                 <div className="text-[11px]" style={{ color: "var(--text-muted)" }} data-testid="flavor-disclaimer">
-                  Sessions running older code may skip this directive.
+                  Runs on older sensor versions may skip this directive.
                 </div>
               )}
               {targetMode === "session" && flavorSessions.length > 0 && (

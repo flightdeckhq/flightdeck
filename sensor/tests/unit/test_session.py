@@ -5,11 +5,10 @@ from __future__ import annotations
 import atexit
 import logging
 import signal
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
-
-from typing import Any
 
 from flightdeck_sensor.core.exceptions import ConfigurationError
 from flightdeck_sensor.core.session import Session
@@ -52,7 +51,9 @@ def test_end_is_idempotent() -> None:
     session.start()
     session.end()
     session.end()
-    end_calls = [c for c in client.post_event.call_args_list if c[0][0]["event_type"] == "session_end"]
+    end_calls = [
+        c for c in client.post_event.call_args_list if c[0][0]["event_type"] == "session_end"
+    ]
     assert len(end_calls) == 1
 
 
@@ -75,12 +76,14 @@ def test_sigterm_handler_fires_session_end() -> None:
 
 def test_preflight_populates_policy_cache(mock_control_plane: Any) -> None:
     """Preflight GET /v1/policy populates PolicyCache on start()."""
-    mock_control_plane["set_response"]({
-        "token_limit": 50000,
-        "warn_at_pct": 80,
-        "degrade_at_pct": 90,
-        "block_at_pct": 100,
-    })
+    mock_control_plane["set_response"](
+        {
+            "token_limit": 50000,
+            "warn_at_pct": 80,
+            "degrade_at_pct": 90,
+            "block_at_pct": 100,
+        }
+    )
 
     config = SensorConfig(
         server=mock_control_plane["url"],
@@ -296,9 +299,7 @@ def test_init_no_session_id_does_not_warn(
             )
         finally:
             flightdeck_sensor.teardown()
-    assert not any(
-        "Custom session_id provided" in r.message for r in caplog.records
-    )
+    assert not any("Custom session_id provided" in r.message for r in caplog.records)
 
 
 def test_init_non_uuid_session_id_falls_back_and_warns(
@@ -327,16 +328,20 @@ def test_init_non_uuid_session_id_falls_back_and_warns(
             flightdeck_sensor.teardown()
 
     # Exact wording: "Custom session_id '{value}' is not a valid UUID.
-    # A random session ID will be generated instead."
+    # A random run ID will be generated instead." The kwarg name
+    # ``session_id`` is preserved in the warning text (it names the
+    # caller-supplied parameter); the surrounding prose follows the
+    # run vocabulary.
     assert any(
         "Custom session_id 'my-temporal-workflow-id' is not a valid UUID" in r.message
-        and "random session ID will be generated" in r.message
+        and "random run ID will be generated" in r.message
         for r in caplog.records
     ), f"expected invalid-uuid warning, got: {[r.message for r in caplog.records]}"
 
     # Fallback UUID must itself be a valid UUID and must not equal the
     # caller-supplied string.
     import uuid as _uuid
+
     _uuid.UUID(sid)  # raises if not a UUID
     assert sid != "my-temporal-workflow-id"
 
@@ -376,9 +381,7 @@ def test_post_event_attached_logs_info_once(
     client.post_event.return_value = (None, True)
     with caplog.at_level(logging.INFO, logger="flightdeck_sensor.core.session"):
         session._post_event(EventType.SESSION_START)
-    info_lines = [
-        r.message for r in caplog.records if "Attached to existing session" in r.message
-    ]
+    info_lines = [r.message for r in caplog.records if "Attached to existing session" in r.message]
     assert len(info_lines) == 1, f"expected 1 attach INFO, got {info_lines}"
 
     # Second call: same flag still true, but we've already logged --
@@ -386,9 +389,7 @@ def test_post_event_attached_logs_info_once(
     caplog.clear()
     with caplog.at_level(logging.INFO, logger="flightdeck_sensor.core.session"):
         session._post_event(EventType.POST_CALL)
-    info_lines = [
-        r.message for r in caplog.records if "Attached to existing session" in r.message
-    ]
+    info_lines = [r.message for r in caplog.records if "Attached to existing session" in r.message]
     assert info_lines == []
     session.end()
 
@@ -422,9 +423,7 @@ def test_init_appends_ingest_suffix_when_missing(
     flightdeck_sensor.init(server="http://stack.internal", token="tok", quiet=True)
     try:
         assert flightdeck_sensor._session is not None
-        assert (
-            flightdeck_sensor._session.config.server == "http://stack.internal/ingest"
-        )
+        assert flightdeck_sensor._session.config.server == "http://stack.internal/ingest"
     finally:
         flightdeck_sensor.teardown()
 
@@ -443,13 +442,13 @@ def test_init_preserves_ingest_suffix_when_present(
     monkeypatch.delenv("FLIGHTDECK_TOKEN", raising=False)
     flightdeck_sensor.teardown()
     flightdeck_sensor.init(
-        server="http://stack.internal/ingest", token="tok", quiet=True,
+        server="http://stack.internal/ingest",
+        token="tok",
+        quiet=True,
     )
     try:
         assert flightdeck_sensor._session is not None
-        assert (
-            flightdeck_sensor._session.config.server == "http://stack.internal/ingest"
-        )
+        assert flightdeck_sensor._session.config.server == "http://stack.internal/ingest"
     finally:
         flightdeck_sensor.teardown()
 
@@ -470,13 +469,12 @@ def test_init_preserves_ingest_with_trailing_slash(
     monkeypatch.delenv("FLIGHTDECK_TOKEN", raising=False)
     flightdeck_sensor.teardown()
     flightdeck_sensor.init(
-        server="http://stack.internal/ingest/", token="tok", quiet=True,
+        server="http://stack.internal/ingest/",
+        token="tok",
+        quiet=True,
     )
     try:
         assert flightdeck_sensor._session is not None
-        assert (
-            flightdeck_sensor._session.config.server
-            == "http://stack.internal/ingest/"
-        )
+        assert flightdeck_sensor._session.config.server == "http://stack.internal/ingest/"
     finally:
         flightdeck_sensor.teardown()

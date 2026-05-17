@@ -1,5 +1,24 @@
 import type { Page, Locator } from "@playwright/test";
 
+// Poll for a locator to mount (count > 0) without using a fixed
+// waitForTimeout sleep (qa.md: "No waitForTimeout for
+// synchronization in any test at any level"). Caps polling at
+// ``timeoutMs`` so a row that never materialises returns false
+// quickly. Sample interval is 50 ms — short enough that a
+// commit-cycle race resolves within one or two samples.
+async function pollForMount(
+  locator: Locator,
+  timeoutMs: number,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  const intervalMs = 50;
+  while (Date.now() < deadline) {
+    if ((await locator.count()) > 0) return true;
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  return (await locator.count()) > 0;
+}
+
 // Shared fixture metadata for the E2E suite. Mirrors the canonical
 // dataset seeded by tests/e2e-fixtures/seed.py (via canonical.json).
 // Duplicated here rather than parsed at runtime so test authors see
@@ -140,62 +159,9 @@ export function findSwimlaneRow(page: Page, agentName: string): Locator {
 }
 
 /**
- * Locate the table-view row for an agent by agent_id. agent_id is
- * not stable across seeds unless computed from the canonical
- * identity quintuple -- and we don't want to duplicate that
- * derivation in TS. Fall back to filtering the row set by agent
- * name text, which works because AgentTable renders the full name
- * in a cell (no TruncatedText on the primary name column).
- */
-export function findAgentTableRow(page: Page, agentName: string): Locator {
-  // Exact-text match via Playwright's exact: true to avoid
-  // substring collisions with other fixtures whose agent_name
-  // happens to contain this name as a prefix (e.g.
-  // ``e2e-test-subagent-error`` substring-matches
-  // ``e2e-test-subagent`` queries).
-  return page
-    .locator('[data-testid^="fleet-agent-row-"]')
-    .filter({
-      has: page.getByText(agentName, { exact: true }),
-    });
-}
-
-/**
- * Locate the expanded-body container for an agent. data-expanded is
- * "true" when the row is open. Used by T5 to gate on expansion
- * before scanning the expanded session list.
- *
- * DOM shape (SwimLane.tsx):
- *   <div border-bottom>        — outer wrapper per flavor
- *     <div data-testid="swimlane-agent-row-...">   — clickable header
- *     <div data-testid="swimlane-expanded-body">   — SIBLING of the row
- *   </div>
- *
- * The xpath walks from row → following-sibling at the same depth. The
- * expanded-body sits next to the row inside the flavor's outer
- * wrapper. No `..` parent traversal needed.
- */
-export function findExpandedBody(page: Page, agentName: string): Locator {
-  const row = findSwimlaneRow(page, agentName);
-  return row.locator(
-    "xpath=following-sibling::div[@data-testid='swimlane-expanded-body']",
-  ).first();
-}
-
-/**
- * Parse "?view=" from a URL string. Returns null if absent.
- * Fleet's view toggle persists via URL param; T2 and T9 assert on
- * the expected value.
- */
-export function viewFromUrl(url: string): string | null {
-  const u = new URL(url);
-  return u.searchParams.get("view");
-}
-
-/**
- * Parse a URL for the Investigate deep-link params that Fleet→Investigate
- * emits (agent_id, from, to). Returns the three values as an object.
- * T2 / T7 / T8 assert on the presence and approximate range.
+ * Parse a URL for the Events page deep-link params that surface
+ * agent context (agent_id, from, to). Returns the three values as
+ * an object.
  */
 export function investigateParamsFromUrl(url: string): {
   agentId: string | null;
@@ -211,34 +177,22 @@ export function investigateParamsFromUrl(url: string): {
 }
 
 /**
- * Wait for the Fleet page to settle: SOMETHING in the swimlane or
- * table view has mounted. Prefer this over networkidle, which is
- * flaky under Playwright's HMR dev mode.
+ * Wait for the Fleet page to settle: at least one swimlane row has
+ * mounted. Prefer this over networkidle, which is flaky under
+ * Playwright's HMR dev mode.
  *
- * Critical: this no longer asserts on a *specific* fixture being
- * visible. The Fleet swimlane uses an IntersectionObserver-backed
+ * Critical: does not assert on a *specific* fixture being visible.
+ * The Fleet swimlane uses an IntersectionObserver-backed
  * virtualizer (see VirtualizedSwimLane.tsx), so under realistic
- * data volume (Phase 3 + Phase 4 dev DBs accumulate hundreds of
- * agents) any given fixture may be off-screen at initial render
- * even though it exists. Pinning readiness to a specific fixture
- * was the P2 violation that made T01/T05/T06/T09 flake. After this
- * settles, callers must use ``bringSwimlaneRowIntoView`` to scroll
+ * data volume any given fixture may be off-screen at initial
+ * render. Callers must use ``bringSwimlaneRowIntoView`` to scroll
  * a fixture into view before asserting on it.
  */
 export async function waitForFleetReady(page: Page): Promise<void> {
-  // First swimlane row OR first agent-table row -- whichever shows
-  // up. Doesn't matter which agent that row represents, only that
-  // the page has mounted some data.
   const anySwimlaneRow = page
     .locator('[data-testid^="swimlane-agent-row-"]')
     .first();
-  const anyTableRow = page
-    .locator('[data-testid^="fleet-agent-row-"]')
-    .first();
-  await anySwimlaneRow.or(anyTableRow).waitFor({
-    state: "visible",
-    timeout: 15_000,
-  });
+  await anySwimlaneRow.waitFor({ state: "visible", timeout: 15_000 });
 }
 
 /**
@@ -271,8 +225,16 @@ export async function bringSwimlaneRowIntoView(
   agentName: string,
   opts: { stepPx?: number; maxSteps?: number } = {},
 ): Promise<Locator> {
-  const stepPx = opts.stepPx ?? 600;
-  const maxSteps = opts.maxSteps ?? 80;
+  // Step ~3.3 rows at a time. 200px keeps the IntersectionObserver
+  // sampling window (rootMargin=200 around the visible band)
+  // overlapping between adjacent steps, so a row that materializes
+  // briefly between scrolls is always re-checked before it
+  // virtualizes again. Pre-fix stepPx=600 routinely overshot the
+  // 5-7 row materialization band (rootMargin 200 + clientHeight 320
+  // ≈ 720px of materialized DOM at any one time) and the helper
+  // could miss a row that briefly mounted between samples.
+  const stepPx = opts.stepPx ?? 200;
+  const maxSteps = opts.maxSteps ?? 240;
   const target = page.locator(
     `[data-testid="swimlane-agent-row-${agentName}"]`,
   );
@@ -330,8 +292,16 @@ export async function bringSwimlaneRowIntoView(
       node = node.parentElement;
     }
   });
-  await page.waitForTimeout(150);
-  if ((await target.count()) > 0) {
+  // Poll for the target to materialise after the snap-to-top.
+  // Replaces a pre-fix ``waitForTimeout(150)`` fixed sleep that
+  // violated qa.md ("no waitForTimeout for synchronization") and
+  // was the mechanical root cause of T34's parallel-worker flake
+  // — under workers=4 contention the 150 ms pause was not long
+  // enough for the IntersectionObserver commit. Polling for
+  // count > 0 is deterministic regardless of contention. Cap at
+  // 1.5 s so the helper falls through to the scroll loop quickly
+  // when the target is genuinely off-screen.
+  if (await pollForMount(target, 1_500)) {
     try {
       await target.first().scrollIntoViewIfNeeded({ timeout: 2000 });
       return target;
@@ -370,12 +340,15 @@ export async function bringSwimlaneRowIntoView(
       },
       stepPx,
     );
-    // Let the IntersectionObserver fire and React commit.
-    // 150ms is generous; the observer fires synchronously on layout
-    // and React commits within a few ms, but Playwright's snapshot
-    // can race the layout in HMR mode.
-    await page.waitForTimeout(150);
-    if ((await target.count()) > 0) {
+    // Poll the target's mount state instead of sleeping. The
+    // IntersectionObserver fires synchronously on layout and
+    // React commits within a few ms; under parallel-worker load
+    // the fixed-sleep pre-fix (waitForTimeout(150)) was sometimes
+    // shorter than the commit cycle and the helper would skip
+    // past a briefly-materialised row. ``pollForMount`` caps at
+    // 500 ms — generous enough to absorb a slow commit, short
+    // enough to keep the scroll loop progressing.
+    if (await pollForMount(target, 500)) {
       try {
         await target.first().scrollIntoViewIfNeeded({ timeout: 2000 });
         return target;
@@ -389,35 +362,6 @@ export async function bringSwimlaneRowIntoView(
   }
   // Return the locator anyway so the caller's expect.toBeVisible()
   // produces the useful failure message.
-  return target;
-}
-
-/**
- * Scroll the Fleet table view until the row containing ``agentName``
- * is visible. Table view uses standard pagination (50 rows per
- * page by default), not virtualization -- but if the fixture sits
- * on a later page, we need to navigate to that page first. The
- * table-view variant is intentionally simpler: paginate forward
- * until the row's text appears.
- */
-export async function bringTableRowIntoView(
-  page: Page,
-  agentName: string,
-  opts: { maxPages?: number } = {},
-): Promise<Locator> {
-  const maxPages = opts.maxPages ?? 10;
-  const target = findAgentTableRow(page, agentName);
-  if ((await target.count()) > 0) return target;
-  for (let i = 0; i < maxPages; i += 1) {
-    const nextBtn = page.locator(
-      '[aria-label="Go to next page"], [data-testid="pagination-next"]',
-    );
-    if ((await nextBtn.count()) === 0) break;
-    if ((await nextBtn.first().isDisabled().catch(() => true))) break;
-    await nextBtn.first().click();
-    await page.waitForTimeout(200);
-    if ((await target.count()) > 0) return target;
-  }
   return target;
 }
 

@@ -222,7 +222,7 @@ export function SummaryCards({
         />
       )}
       <SummaryCard
-        label="Total Sessions"
+        label="Total Runs"
         value={formatCompact(sessionsTotal?.value ?? 0)}
         sub={null}
         changePct={sessionsTotal?.changePct}
@@ -230,7 +230,7 @@ export function SummaryCards({
         onClick={() => onSelectProvider(null)}
       />
       <SummaryCard
-        label="Avg Tokens / Session"
+        label="Avg Tokens / Run"
         value={formatCompact(avgPerSession)}
         sub={null}
         active={filterProvider === null}

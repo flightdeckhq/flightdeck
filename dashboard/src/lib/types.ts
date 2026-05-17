@@ -465,6 +465,20 @@ export interface AgentEvent {
   latency_ms: number | null;
   tool_name: string | null;
   has_content: boolean;
+  /**
+   * Session-level identity attributes joined from the event's
+   * `sessions` row on the API side — the events table stores none of
+   * them. `framework` is the bare-name attribution and is null for
+   * events predating framework attribution and for Claude Code
+   * plugin sessions (the plugin observes the runtime, not a Python
+   * framework). `client_type` and `agent_type` are non-null for any
+   * event whose session row exists; typed as nullable wire strings
+   * and narrowed by the `isClientType` / `isAgentType` guards before
+   * rendering.
+   */
+  framework: string | null;
+  client_type: string | null;
+  agent_type: string | null;
   payload?: EventPayloadFields;
   occurred_at: string;
 }
@@ -473,6 +487,34 @@ export interface AgentEvent {
 export interface FeedEvent {
   arrivedAt: number;
   event: AgentEvent;
+}
+
+/** One (value, count) pair in an event-grain facet. */
+export interface EventFacetValue {
+  value: string;
+  count: number;
+}
+
+/**
+ * Per-dimension chip counts for the `/events` event-grain facet
+ * sidebar, from `GET /v1/events?...&facets=true`. Mirrors the Go
+ * `store.EventFacets`. Every dimension is present (empty array when
+ * it has no values). The dashboard derives the `policy_event_type`
+ * facet by classifying the `event_type` dimension — the server does
+ * not return it separately.
+ */
+export interface EventFacets {
+  event_type: EventFacetValue[];
+  model: EventFacetValue[];
+  framework: EventFacetValue[];
+  agent_id: EventFacetValue[];
+  error_type: EventFacetValue[];
+  close_reason: EventFacetValue[];
+  estimated_via: EventFacetValue[];
+  matched_entry_id: EventFacetValue[];
+  originating_call_context: EventFacetValue[];
+  mcp_server: EventFacetValue[];
+  terminal: EventFacetValue[];
 }
 
 /**
@@ -550,6 +592,91 @@ export interface AgentSummary {
    */
   agent_role?: string | null;
   topology: AgentTopology;
+  /**
+   * Most-recent sessions for this agent (newest first by
+   * started_at). Populated by /v1/fleet so the swimlane row renders
+   * event circles even when the session falls outside the 100-row
+   * /v1/sessions page window — a sub-agent whose session was
+   * upserted hours ago no longer materialises an empty timeline
+   * just because it's not in the recent-page intersection. Each
+   * entry mirrors what ``buildFlavors``'s ``listItemToSession``
+   * projection consumes; heavier ``SessionListItem`` enrichment
+   * fields (error_types, policy_event_types, mcp_server_names,
+   * ...) are intentionally absent here. Optional on the wire and
+   * undefined for older deployments; consumers must treat the slice
+   * as a non-authoritative augment of the paginated sessions
+   * response, not a replacement.
+   */
+  recent_sessions?: RecentSession[];
+}
+
+/**
+ * Lean session projection embedded in
+ * ``AgentSummary.recent_sessions``. Shape is the subset of
+ * ``SessionListItem`` fields the swimlane row consumes; mirrors the
+ * Go ``store.RecentSession`` type.
+ */
+export interface RecentSession {
+  session_id: string;
+  flavor: string;
+  agent_type: AgentType;
+  agent_id?: string | null;
+  agent_name?: string | null;
+  client_type?: ClientType | null;
+  host?: string | null;
+  model?: string | null;
+  /** Bare-name framework attribution (``sessions.framework`` —
+   *  e.g. ``langchain``, ``crewai``). Null for direct-SDK sessions
+   *  that ran without a framework. Backs the /agents page
+   *  framework filter chips. */
+  framework?: string | null;
+  state: SessionState;
+  started_at: string;
+  ended_at?: string | null;
+  last_seen_at: string;
+  tokens_used: number;
+  token_limit?: number | null;
+  capture_enabled: boolean;
+  parent_session_id?: string | null;
+  agent_role?: string | null;
+}
+
+/**
+ * Per-agent activity summary as returned by
+ * ``GET /v1/agents/:id/summary?period=&bucket=``. Mirrors the Go
+ * ``store.AgentSummaryResponse`` type. Drives the `/agents` table's
+ * KPI sparklines and the per-agent swimlane modal's header totals.
+ */
+export type AgentSummaryPeriod = "1h" | "24h" | "7d" | "30d";
+export type AgentSummaryBucket = "hour" | "day" | "week";
+
+export interface AgentSummaryTotals {
+  tokens: number;
+  errors: number;
+  sessions: number;
+  cost_usd: number;
+  latency_p50_ms: number;
+  latency_p95_ms: number;
+}
+
+export interface AgentSummarySeriesPoint {
+  /** Bucket start, RFC 3339 / ISO 8601 UTC. */
+  ts: string;
+  tokens: number;
+  errors: number;
+  sessions: number;
+  cost_usd: number;
+  latency_p95_ms: number;
+}
+
+export interface AgentSummaryResponse {
+  agent_id: string;
+  period: AgentSummaryPeriod;
+  bucket: AgentSummaryBucket;
+  totals: AgentSummaryTotals;
+  /** Always non-nil on the wire — empty array when the agent had
+   *  no activity in the window. */
+  series: AgentSummarySeriesPoint[];
 }
 
 /** Top-level fleet response. */
@@ -922,6 +1049,14 @@ export interface SessionListItem {
    * fetch — same shape as ``error_types`` / ``mcp_error_types``.
    */
   child_count?: number;
+  /**
+   * Number of recorded re-attachments to this session (rows in
+   * ``session_attachments`` — the initial creation is not an
+   * attachment, so a run that ran once reports 0). Surfaced via a
+   * correlated subquery on the listing query; the agent drawer
+   * Runs tab renders its "attached" pill when this is > 0.
+   */
+  attachment_count?: number;
 }
 
 /** Paginated response from GET /v1/sessions. */

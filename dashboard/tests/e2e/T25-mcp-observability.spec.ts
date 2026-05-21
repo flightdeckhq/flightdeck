@@ -1,5 +1,11 @@
 import { test, expect, type Page } from "@playwright/test";
-import { MCP_FIXTURE, SENSOR_AGENT, waitForInvestigateReady } from "./_fixtures";
+import {
+  MCP_FIXTURE,
+  SENSOR_AGENT,
+  bringSwimlaneRowIntoView,
+  waitForFleetReady,
+  waitForInvestigateReady,
+} from "./_fixtures";
 
 // T25 — Phase 5: MCP observability rendering.
 //
@@ -153,16 +159,26 @@ test.describe("T25 — MCP observability rendering", () => {
   }) => {
     await openMCPSession(page);
     const drawer = page.locator('[data-testid="session-drawer"]');
-    // Scope to a SUCCESSFUL mcp_tool_call (no MCPErrorIndicator
+    // Scope to a SUCCESSFUL mcp_tool_call ROW (no MCPErrorIndicator
     // child). The seeded fixture emits both a success row (echo
     // tool with phase5-fixture arguments) and a failure row (the
     // MCPErrorIndicator anchor for T25-16). Without the negation,
     // .first() may resolve to the failure row whose arguments
     // payload differs and would fail the contains() assertion
     // below.
+    //
+    // The leading `[data-testid^="mcp-event-row-"]` pins the match
+    // to the row container. `data-event-type` is carried by BOTH
+    // the row container AND the inner EventTypePill span, so a bare
+    // `[data-event-type="mcp_tool_call"]` matches the pill too —
+    // and a pill never contains the MCPErrorIndicator (a sibling),
+    // so `:not(:has(...))` fails to exclude the failure row's pill
+    // and `.first()` would resolve to it. Scoping to the row testid
+    // makes the negation operate on the element that actually owns
+    // the indicator.
     const row = drawer
       .locator(
-        '[data-event-type="mcp_tool_call"]:not(:has([data-testid^="mcp-error-indicator-"]))',
+        '[data-testid^="mcp-event-row-"][data-event-type="mcp_tool_call"]:not(:has([data-testid^="mcp-error-indicator-"]))',
       )
       .first();
     await expect(row).toBeVisible();
@@ -376,6 +392,7 @@ test.describe("T25 — MCP observability rendering", () => {
   }) => {
     page.setViewportSize({ width: 1280, height: 800 });
     await page.goto("/");
+    await waitForFleetReady(page);
     // Click the 5m time-range pill so a slightly aged seed (events
     // are seeded at NOW-50s but the full-suite playwright run can
     // execute T25-13 minutes after the globalSetup seed) still
@@ -385,6 +402,14 @@ test.describe("T25 — MCP observability rendering", () => {
     // test robust against full-suite time drift, not because the
     // production UX needs it.
     await page.getByRole("button", { name: "5m" }).first().click();
+    // Resilience P1/P2: the MCP-bearing SENSOR_AGENT row sits
+    // alphabetically deep in the fleet, and at the 1280×800
+    // viewport the swimlane vertically virtualises rows below the
+    // initial fold. Without an explicit scroll the row's
+    // event circles never mount in the DOM and the hexagon
+    // selector times out. Scrolling matches what a real operator
+    // does when looking for a known agent in a long fleet.
+    await bringSwimlaneRowIntoView(page, SENSOR_AGENT.name);
     const mcpHexagons = page.locator(
       '[data-testid^="session-circle-"][data-mcp-family="true"][data-event-shape="hexagon"]',
     );
@@ -446,8 +471,13 @@ test.describe("T25 — MCP observability rendering", () => {
     // session-level. The synthetic row's containing event row must
     // be a mcp_tool_call (not, say, a sibling embeddings row that
     // happened to inherit the indicator).
+    // Both locators pin `[data-testid^="mcp-event-row-"]` so the
+    // `:has` / `:not(:has(...))` operate on the row container, not
+    // the inner EventTypePill span (which also carries
+    // `data-event-type` but never owns the sibling
+    // MCPErrorIndicator — see T25-7's note).
     const decoratedRow = drawer.locator(
-      '[data-event-type="mcp_tool_call"]:has([data-testid^="mcp-error-indicator-"])',
+      '[data-testid^="mcp-event-row-"][data-event-type="mcp_tool_call"]:has([data-testid^="mcp-error-indicator-"])',
     );
     expect(await decoratedRow.count()).toBeGreaterThan(0);
     // Successful mcp_tool_call rows on the same session must NOT
@@ -456,7 +486,7 @@ test.describe("T25 — MCP observability rendering", () => {
     // WITHOUT an indicator child also exists, so the decoration is
     // not spilling onto every MCP row in the family.
     const undecoratedRow = drawer.locator(
-      '[data-event-type="mcp_tool_call"]:not(:has([data-testid^="mcp-error-indicator-"]))',
+      '[data-testid^="mcp-event-row-"][data-event-type="mcp_tool_call"]:not(:has([data-testid^="mcp-error-indicator-"]))',
     );
     expect(await undecoratedRow.count()).toBeGreaterThan(0);
   });

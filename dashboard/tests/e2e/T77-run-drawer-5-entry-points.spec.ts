@@ -25,9 +25,20 @@ test.describe("T77 — run drawer opens from 5 entry points", () => {
   test("1: a swimlane event circle opens the run drawer", async ({ page }) => {
     await page.goto("/");
     await waitForFleetReady(page);
-    await bringSwimlaneRowIntoView(page, CODING_AGENT.name);
-    const circle = page.locator('[data-testid^="session-circle-"]').first();
+    const row = await bringSwimlaneRowIntoView(page, CODING_AGENT.name);
+    // Scope to the in-view row's circles (not the global ``.first()``)
+    // so a re-render between scroll and click can't resolve the
+    // locator to an off-screen row's circle.
+    const circle = row.locator('[data-testid^="session-circle-"]').first();
     await expect(circle).toBeVisible({ timeout: 10_000 });
+    // A regular click (no ``force``) — ``EventNode.tsx`` carries
+    // ``pointerEvents: "none"`` on the icon glyph, so even when
+    // dense swimlane circles overlap the click routes through to
+    // the circle div that owns the handler. Pre-fix the wrench
+    // icon overlay stole the hit-test, which the older T77 worked
+    // around with ``force: true``. The production fix makes the
+    // workaround unnecessary; dropping it asserts the real shipped
+    // behaviour.
     await circle.click();
     await expect(page.locator('[data-testid="session-drawer"]')).toBeVisible({
       timeout: 10_000,

@@ -34,6 +34,9 @@
  * Theme-agnostic; runs under both projects via the Playwright
  * project matrix.
  */
+import { spawnSync } from "node:child_process";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { test, expect } from "@playwright/test";
 import { waitForFleetReady } from "./_fixtures";
 
@@ -42,6 +45,65 @@ import { waitForFleetReady } from "./_fixtures";
 // bottom edge; the regression guard must scan every child row, not
 // just the visible-by-default subset.
 test.use({ viewport: { width: 1280, height: 2200 } });
+
+// Resolve the seed helper relative to this spec so the worker
+// invocation works regardless of where `npm run test:e2e` is
+// launched from. ``dashboard/package.json`` is ``type: module``
+// so ``__dirname`` is not injected — recover it from ``import.
+// meta.url`` the ESM way, identical to ``globalSetup.ts``.
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+const REPO_ROOT = resolve(__dirname, "..", "..", "..");
+const SEED_SCRIPT = resolve(
+  REPO_ROOT,
+  "tests",
+  "e2e-fixtures",
+  "seed.py",
+);
+
+// Time-anchor T56's fixtures against the wall-clock 1 h window.
+//
+// The dashboard's swimlane time-range picker maxes out at 1 h
+// (TIMELINE_RANGE_MS). The Playwright globalSetup keep-alive
+// watchdog refreshes only the active-role fixtures every 30 s;
+// closed sub-agent fixtures carry their seed-time timestamps
+// forward and after ~1 h of dev-stack uptime they fall outside
+// the 1 h window. T56 then reds out against unchanged code — a
+// flake by Rule 40c.1.
+//
+// Hardening: before every T56 run, invoke ``seed.py
+// --refresh-subagent-events`` to pin the most-recent event of
+// each closed sub-agent fixture to NOW − 30 s (plus bumps to
+// sessions.last_seen_at and agents.last_seen_at). The refresh
+// is idempotent and touches only the 9 closed sub-agent
+// fixtures the assertion below scans, so other specs'
+// invariants (event counts, run-bracket geometry, sub-agent
+// connector overlays) are untouched.
+test.beforeAll(() => {
+  const python = process.env.PYTHON ?? "python3";
+  const result = spawnSync(
+    python,
+    [SEED_SCRIPT, "--refresh-subagent-events"],
+    { cwd: REPO_ROOT, stdio: "pipe" },
+  );
+  // Separate the two failure modes so a missing-interpreter (ENOENT)
+  // doesn't get misdiagnosed as a script crash. Mirrors the pattern
+  // in ``globalSetup.ts``.
+  if (result.error) {
+    throw new Error(
+      `T56 beforeAll: failed to spawn ${python}: ${result.error.message}. ` +
+        `Is ${python} on PATH? Set PYTHON to override.`,
+    );
+  }
+  if (result.status !== 0) {
+    const stderr = result.stderr?.toString() ?? "";
+    const stdout = result.stdout?.toString() ?? "";
+    throw new Error(
+      `T56 beforeAll: seed.py --refresh-subagent-events exited ${result.status}\n` +
+        `stdout: ${stdout}\nstderr: ${stderr}`,
+    );
+  }
+});
 
 test.describe("T56 — Every sub-agent row renders circles", () => {
   test("every visible data-topology=child row has at least one session circle", async ({

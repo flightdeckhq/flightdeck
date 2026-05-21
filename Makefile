@@ -36,8 +36,17 @@ test: ## Run all unit tests
 test-plugin: ## Run the Claude Code plugin unit tests (zero-dep, node --test)
 	cd plugin && node --test tests/*.test.mjs
 
+# test-integration seeds the canonical fixture dataset (seed-e2e)
+# before pytest: the agent-id-parity, fleet-recent-sessions and
+# mcp-fixture-seed integration tests assert against the canonical
+# agents / sessions (the e2e-test-* roles, the mcp-active fixture,
+# framework attribution), so the suite needs them present. seed.py
+# is idempotent -- a re-run against an already-seeded stack is a
+# no-op per session -- so seeding is cheap and safe whether or not
+# the stack was already seeded.
 test-integration: ## Run integration tests (requires running stack)
 	$(MAKE) -C docker dev
+	$(MAKE) seed-e2e
 	$(PYTHON) -m pytest tests/integration -v -m "not manual"
 
 test-sensor-e2e: ## Run sensor respx-driven end-to-end tests (requires running stack)

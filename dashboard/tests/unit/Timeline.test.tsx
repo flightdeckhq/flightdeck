@@ -159,12 +159,57 @@ describe("Timeline", () => {
     expect(screen.getByTestId("swimlane-all-label")).toHaveTextContent("All");
   });
 
+  it("ALL row defaults to collapsed (no pulse pane, toggle present)", () => {
+    // Default state is collapsed (true). The toggle bar renders
+    // but the aggregated pulse pane (``swimlane-all-pulse``) is
+    // gone. ``data-collapsed`` is the single source of truth that
+    // T93 also inspects.
+    localStorage.removeItem("flightdeck-all-row-collapsed");
+    renderWithRouter(<Timeline {...defaultProps} />);
+    const allRow = screen.getByTestId("swimlane-all");
+    expect(allRow.getAttribute("data-collapsed")).toBe("true");
+    expect(screen.getByTestId("swimlane-all-toggle")).toBeInTheDocument();
+    expect(screen.queryByTestId("swimlane-all-pulse")).not.toBeInTheDocument();
+  });
+
+  it("ALL row expands when localStorage flag reads expanded", () => {
+    // The persisted "0" flag reads as expanded; the pulse pane
+    // mounts and ``data-collapsed`` flips. Verifies the
+    // localStorage round-trip end-to-end through Timeline +
+    // AllSwimLane.
+    localStorage.setItem("flightdeck-all-row-collapsed", "0");
+    renderWithRouter(<Timeline {...defaultProps} />);
+    const allRow = screen.getByTestId("swimlane-all");
+    expect(allRow.getAttribute("data-collapsed")).toBe("false");
+    expect(screen.getByTestId("swimlane-all-pulse")).toBeInTheDocument();
+    localStorage.removeItem("flightdeck-all-row-collapsed");
+  });
+
+  it("ALL row toggles to expanded when the toggle button is clicked + persists via localStorage", () => {
+    // Clicking the toggle button must (a) flip ``data-collapsed``
+    // on the wrapper, (b) mount the pulse pane, and (c) write
+    // ``"0"`` to localStorage so a future reload comes back
+    // expanded. Covers the React-side toggle path that T93
+    // exercises end-to-end through Playwright — the unit-level
+    // check converges synchronously while T93's polling absorbs
+    // the dev-stack render tick.
+    localStorage.removeItem("flightdeck-all-row-collapsed");
+    renderWithRouter(<Timeline {...defaultProps} />);
+    const allRow = screen.getByTestId("swimlane-all");
+    expect(allRow.getAttribute("data-collapsed")).toBe("true");
+    fireEvent.click(screen.getByTestId("swimlane-all-toggle"));
+    expect(allRow.getAttribute("data-collapsed")).toBe("false");
+    expect(screen.getByTestId("swimlane-all-pulse")).toBeInTheDocument();
+    expect(localStorage.getItem("flightdeck-all-row-collapsed")).toBe("0");
+    localStorage.removeItem("flightdeck-all-row-collapsed");
+  });
+
   it("ALL row ignores the CONTEXT filter and always shows the full fleet", () => {
     // matchingSessionIds restricts the FLAVORS section to s1 only,
-    // but the ALL row must still iterate over every session in
-    // every flavor regardless. We assert that by counting the
-    // AggregatedSessionEvents children -- one per session in the
-    // unfiltered flavors prop (2 sessions across 2 flavors).
+    // but the ALL row must still surface regardless. Expand it
+    // first so the pulse pane is present and the assertion checks
+    // the actual fleet-wide overview, not just the toggle bar.
+    localStorage.setItem("flightdeck-all-row-collapsed", "0");
     renderWithRouter(
       <Timeline
         {...defaultProps}
@@ -174,7 +219,9 @@ describe("Timeline", () => {
     // research-agent is the only flavor still in the FLAVORS section
     // (coding-agent is culled), but the ALL row still exists.
     expect(screen.getByTestId("swimlane-all")).toBeInTheDocument();
+    expect(screen.getByTestId("swimlane-all-pulse")).toBeInTheDocument();
     expect(screen.queryByText("coding-agent")).not.toBeInTheDocument();
+    localStorage.removeItem("flightdeck-all-row-collapsed");
   });
 
   it("renders all flavors when matchingSessionIds is null", () => {
@@ -306,10 +353,10 @@ describe("Timeline", () => {
   it("grid overlay is positioned only over the right panel at the default left panel width", () => {
     renderWithRouter(<Timeline {...defaultProps} timeRange="5m" />);
     const overlay = screen.getByTestId("timeline-grid-overlay");
-    // LEFT_PANEL_DEFAULT_WIDTH (380px) offset keeps the lines out of
+    // LEFT_PANEL_DEFAULT_WIDTH (460px) offset keeps the lines out of
     // the flavor labels column. The left panel is now resizable;
     // this test locks in the default without regression.
-    expect((overlay as HTMLElement).style.left).toBe("380px");
+    expect((overlay as HTMLElement).style.left).toBe("460px");
     expect((overlay as HTMLElement).style.width).toBe("900px");
   });
 
@@ -317,7 +364,7 @@ describe("Timeline", () => {
     localStorage.removeItem("flightdeck-left-panel-width");
     renderWithRouter(<Timeline {...defaultProps} />);
     const overlay = screen.getByTestId("timeline-grid-overlay");
-    expect((overlay as HTMLElement).style.left).toBe("380px");
+    expect((overlay as HTMLElement).style.left).toBe("460px");
   });
 
   it("reads the stored width from localStorage on mount", () => {
@@ -340,17 +387,37 @@ describe("Timeline", () => {
     localStorage.setItem("flightdeck-left-panel-width", "9999");
     renderWithRouter(<Timeline {...defaultProps} />);
     const overlay = screen.getByTestId("timeline-grid-overlay");
-    expect((overlay as HTMLElement).style.left).toBe("500px");
+    // LEFT_PANEL_MAX_WIDTH bumped 500→640 so operators can drag
+    // wide enough for long names + full pill chrome.
+    expect((overlay as HTMLElement).style.left).toBe("640px");
     localStorage.removeItem("flightdeck-left-panel-width");
   });
 
   it("exposes a resize handle on the time axis sticky spacer", () => {
     // The handle moved from the FLAVORS header to the time axis row's
     // sticky left spacer so it stays visible during vertical scroll.
+    // Hit area widened 6→10px to make the grab target reliable
+    // without changing the visible 1-px column border.
     renderWithRouter(<Timeline {...defaultProps} />);
     const handle = screen.getByTestId("left-panel-resize-handle");
     expect(handle).toBeInTheDocument();
     expect((handle as HTMLElement).style.cursor).toBe("col-resize");
-    expect((handle as HTMLElement).style.width).toBe("6px");
+    expect((handle as HTMLElement).style.width).toBe("10px");
+  });
+
+  it("swimlane-agent-name-link carries the 3rem min-width floor", () => {
+    // Anti-collapse contract: the link MUST keep a readable head at
+    // the 200-px panel floor. The floor is a 3-rem inline minWidth
+    // on the Link element; T94 exercises the layout end-to-end.
+    // This unit assertion locks the spec so a future refactor that
+    // drops the inline style (or reverts to ``min-w-0`` on the
+    // className) fails fast in the unit suite rather than waiting
+    // for the E2E run.
+    renderWithRouter(<Timeline {...defaultProps} />);
+    const links = screen.getAllByTestId("swimlane-agent-name-link");
+    expect(links.length).toBeGreaterThan(0);
+    for (const link of links) {
+      expect((link as HTMLElement).style.minWidth).toBe("3rem");
+    }
   });
 });

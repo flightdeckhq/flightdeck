@@ -1,6 +1,7 @@
 import { memo, useMemo } from "react";
 import { Link } from "react-router-dom";
 import type { ScaleTime } from "d3-scale";
+import { ChevronRight } from "lucide-react";
 import type { Session, AgentEvent } from "@/lib/types";
 import { deriveRelationship } from "@/lib/relationship";
 import { findLostSubAgent } from "@/lib/swimlane-lost-sub-agent";
@@ -11,8 +12,11 @@ import {
 import { ClientTypePill } from "@/components/facets/ClientTypePill";
 import { SubAgentLostDot } from "@/components/facets/SubAgentRolePill";
 import { RelationshipPill } from "@/components/facets/RelationshipPill";
-import { TruncatedText } from "@/components/ui/TruncatedText";
-import { EVENT_CIRCLE_SIZE } from "@/lib/constants";
+import {
+	ALL_ROW_HEIGHT_COLLAPSED,
+	ALL_ROW_HEIGHT_EXPANDED,
+	EVENT_CIRCLE_SIZE,
+} from "@/lib/constants";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import { OSIcon } from "@/components/ui/OSIcon";
 import { OrchestrationIcon } from "@/components/ui/OrchestrationIcon";
@@ -239,23 +243,52 @@ function SwimLaneComponent({
 				    the ``?agent_drawer=`` URL param, which the
 				    app-level AgentDrawerHost reads to open this
 				    agent's drawer inline — no route change, the
-				    Fleet view stays mounted underneath. Truncates
-				    via native ``title`` tooltip when narrow. */}
+				    Fleet view stays mounted underneath.
+				    Ellipsis-truncates at any width with an
+				    always-on native ``title`` tooltip carrying the
+				    full name, so a hover always reveals the
+				    complete value — even when the text fits. The
+				    ellipsis styles live on the link itself (not a
+				    nested TruncatedText) because the user-facing
+				    contract is "the link clips with an ellipsis";
+				    keeping the styles on the named test-id element
+				    makes the computed-style assertion in T92
+				    point at the same element a designer would
+				    inspect.
+
+				    The ``minWidth: "3rem"`` floor (~6 chars + the
+				    ellipsis glyph at 13 px) is the contract that
+				    the name never collapses to zero. ``min-w-0``
+				    on a flex item lets the browser shrink the
+				    element below its content's intrinsic width;
+				    without an explicit floor, the trailing
+				    ``shrink-0`` pills + icons + status badge would
+				    claim every available pixel and the name link
+				    would collapse to 0 at the 200 px panel floor.
+				    The 3-rem floor flips the precedence: as the
+				    column narrows the trailing siblings clip
+				    against the parent's ``overflow: hidden``
+				    boundary BEFORE the name shrinks below
+				    readability. Above ~125 px content width
+				    (which all 460-default and 640-max layouts
+				    are well above) the floor never engages, so
+				    those verified layouts are unchanged. */}
 				<Link
 					to={{ search: `agent_drawer=${encodeURIComponent(flavor)}` }}
 					data-testid="swimlane-agent-name-link"
-					className="flex min-w-0 items-center"
+					title={agentName ?? flavor}
+					className="block text-[13px] font-medium"
 					style={{
 						color: "var(--text)",
 						textDecoration: "none",
 						flex: "0 1 auto",
+						minWidth: "3rem",
+						whiteSpace: "nowrap",
+						overflow: "hidden",
+						textOverflow: "ellipsis",
 					}}
 				>
-					<TruncatedText
-						className="text-[13px] font-medium"
-						style={{ color: "var(--text)", minWidth: 0 }}
-						text={agentName ?? flavor}
-					/>
+					{agentName ?? flavor}
 				</Link>
 				{clientType && (
 					<ClientTypePill
@@ -394,13 +427,28 @@ export const SwimLane = memo(SwimLaneComponent, (prev, next) => {
 
 /**
  * Aggregate "ALL" row that sits above the per-agent rows. Renders a
- * single non-expandable lane whose event circles are merged from
- * every session across every agent, so operators get a fleet-wide
- * view of activity without scanning each row.
+ * single collapsible lane whose event circles are merged from every
+ * session across every agent, so operators get a fleet-wide view of
+ * activity without scanning each row.
+ *
+ * Default state is collapsed — the row reduces to a thin toggle
+ * bar (``ALL_ROW_HEIGHT_COLLAPSED``, matching the AGENTS section
+ * header height directly below) carrying a chevron + "All"
+ * label. Clicking the toggle expands the row to
+ * ``ALL_ROW_HEIGHT_EXPANDED`` with the pulse-line of aggregated
+ * event circles; the preference persists to localStorage via
+ * ``persistAllRowCollapsed`` so the operator's choice survives
+ * reloads. Once the ``/agents`` page exists as a dedicated
+ * fleet-overview surface, the pulse line is redundant for most
+ * operators — hiding it by default keeps the swimlane dense
+ * without removing the affordance.
  *
  * Unlike SwimLane, this row:
  *   - has no label-strip pills, no status badge, no run brackets
- *   - is shorter (36px vs 48px) to signal "summary, not an agent"
+ *   - is shorter than a per-agent row (expanded =
+ *     ``ALL_ROW_HEIGHT_EXPANDED``; collapsed =
+ *     ``ALL_ROW_HEIGHT_COLLAPSED``) to signal "summary, not an
+ *     agent"
  *   - is NOT affected by the CONTEXT sidebar filter (always shows
  *     everything — it's a fleet-wide overview)
  *   - DOES respect the event-type filter bar, like SwimLane does,
@@ -416,14 +464,19 @@ interface AllSwimLaneProps {
 	activeFilter?: string | null;
 	sessionVersions?: Record<string, number>;
 	/**
-	 * True when any session has at least one cached event inside the
-	 * current ``[scaleStart, scaleEnd]`` domain. Timeline.tsx computes
-	 * this once for the whole fleet and hands it down so the ALL
-	 * row's hide rule matches what the user sees — a row full of
-	 * circles from closed sessions still surfaces, and an empty time
-	 * window hides even while sessions are active.
+	 * Whether the ALL row is in collapsed (toggle-bar-only) mode.
+	 * Owned by Timeline.tsx via ``useAllRowCollapsed`` so the
+	 * preference is shared with any future second consumer through
+	 * localStorage + a same-tab CustomEvent. Default is collapsed.
 	 */
-	hasVisibleEventsInWindow: boolean;
+	collapsed: boolean;
+	/**
+	 * Fires when the operator clicks the toggle button. Timeline.tsx
+	 * persists the negated value via ``persistAllRowCollapsed``;
+	 * this prop intentionally takes no argument so the consumer
+	 * decides the next state (and persists it) in one place.
+	 */
+	onToggle: () => void;
 }
 
 function AllSwimLaneComponent({
@@ -434,16 +487,20 @@ function AllSwimLaneComponent({
 	leftPanelWidth,
 	activeFilter,
 	sessionVersions,
-	hasVisibleEventsInWindow,
+	collapsed,
+	onToggle,
 }: AllSwimLaneProps) {
-	if (!hasVisibleEventsInWindow) return null;
+	const rowHeight = collapsed
+		? ALL_ROW_HEIGHT_COLLAPSED
+		: ALL_ROW_HEIGHT_EXPANDED;
 	return (
 		<div
 			data-testid="swimlane-all"
+			data-collapsed={collapsed ? "true" : "false"}
 			style={{
 				display: "flex",
 				alignItems: "center",
-				height: 36,
+				height: rowHeight,
 				borderBottom: "1px solid var(--border-subtle)",
 				background: "var(--bg)",
 			}}
@@ -460,46 +517,68 @@ function AllSwimLaneComponent({
 					zIndex: 3,
 					display: "flex",
 					alignItems: "center",
-					paddingLeft: 12,
+					paddingLeft: 8,
 				}}
 			>
-				<span
-					data-testid="swimlane-all-label"
+				<button
+					type="button"
+					data-testid="swimlane-all-toggle"
+					aria-expanded={!collapsed}
+					aria-label={collapsed ? "Expand ALL row" : "Collapse ALL row"}
+					onClick={onToggle}
+					className="flex h-full cursor-pointer items-center gap-1.5 border-0 bg-transparent p-0 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
 					style={{
-						fontSize: 10,
-						fontWeight: 700,
-						letterSpacing: "0.08em",
 						color: "var(--text-muted)",
-						textTransform: "uppercase",
 						fontFamily: "var(--font-ui)",
 					}}
 				>
-					All
-				</span>
+					<ChevronRight
+						size={12}
+						aria-hidden="true"
+						style={{
+							transition: "transform 0.15s",
+							transform: collapsed ? "rotate(0deg)" : "rotate(90deg)",
+						}}
+					/>
+					<span
+						data-testid="swimlane-all-label"
+						style={{
+							fontSize: 10,
+							fontWeight: 700,
+							letterSpacing: "0.08em",
+							textTransform: "uppercase",
+						}}
+					>
+						All
+					</span>
+				</button>
 			</div>
-			<div
-				className="relative flex items-center px-1"
-				style={{
-					width: timelineWidth,
-					flexShrink: 0,
-					height: "100%",
-					overflow: "hidden",
-				}}
-			>
-				{flavors.flatMap((f) =>
-					f.sessions.map((session) => (
-						<AggregatedSessionEvents
-							key={`${f.flavor}:${session.session_id}`}
-							session={session}
-							scale={scale}
-							onSessionClick={onSessionClick}
-							flavor={f.flavor}
-							activeFilter={activeFilter}
-							version={sessionVersions?.[session.session_id] ?? 0}
-						/>
-					)),
-				)}
-			</div>
+			{!collapsed && (
+				<div
+					data-testid="swimlane-all-pulse"
+					className="relative flex items-center px-1"
+					style={{
+						width: timelineWidth,
+						flexShrink: 0,
+						height: "100%",
+						overflow: "hidden",
+					}}
+				>
+					{flavors.flatMap((f) =>
+						f.sessions.map((session) => (
+							<AggregatedSessionEvents
+								key={`${f.flavor}:${session.session_id}`}
+								session={session}
+								scale={scale}
+								onSessionClick={onSessionClick}
+								flavor={f.flavor}
+								activeFilter={activeFilter}
+								version={sessionVersions?.[session.session_id] ?? 0}
+							/>
+						)),
+					)}
+				</div>
+			)}
 		</div>
 	);
 }
@@ -511,7 +590,8 @@ export const AllSwimLane = memo(AllSwimLaneComponent, (prev, next) => {
 	if (prev.timelineWidth !== next.timelineWidth) return false;
 	if (prev.leftPanelWidth !== next.leftPanelWidth) return false;
 	if (prev.onSessionClick !== next.onSessionClick) return false;
-	if (prev.hasVisibleEventsInWindow !== next.hasVisibleEventsInWindow) return false;
+	if (prev.collapsed !== next.collapsed) return false;
+	if (prev.onToggle !== next.onToggle) return false;
 	const nextDomain = next.scale.domain();
 	const prevDomain = prev.scale.domain();
 	const nextStart = nextDomain[0];

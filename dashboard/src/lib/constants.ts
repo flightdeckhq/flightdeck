@@ -54,21 +54,65 @@ export const DISABLE_KEEPALIVE_WS_STORAGE_KEY = "flightdeck-disable-keepalive-ws
 
 /**
  * Width constants for the resizable left panel (flavor labels +
- * session rows) in the Timeline component. The panel state lives in
- * Timeline.tsx's useState with localStorage persistence keyed by
- * LEFT_PANEL_WIDTH_KEY. Min/max are enforced on both initial load
- * and drag. DEFAULT is sized to fit a fully-qualified agent name
- * (``user@host`` plus an optional ``/role`` suffix — roughly 30-40
- * chars of mono text) in the swimlane label strip alongside the
- * trailing pill chrome (client-type pill, agent_type badge,
- * provider / OS / orchestration icons, topology pill, status
- * badge) without truncation. MIN/MAX are unchanged so the drag
- * range — and the localStorage-persisted width — is preserved.
+ * session rows) in the Timeline component. The panel state lives
+ * in Timeline.tsx's useState with localStorage persistence keyed
+ * by LEFT_PANEL_WIDTH_KEY. Min/max are enforced on both initial
+ * load and drag.
+ *
+ * DEFAULT_WIDTH (460): typical agent name + full pill chrome
+ * fits unmodified on first load. A fully-qualified
+ * ``user@host/role`` plus the trailing client-type pill,
+ * agent_type badge, provider/OS/orchestration icons,
+ * relationship pill, and status badge all render without
+ * triggering the ellipsis fallback in the common case.
+ *
+ * MAX_WIDTH (640): long names + full chrome are draggable.
+ * The cap is generous so an operator with a verbose sub-agent
+ * role string (``omria@Omri-PC/general-purpose-with-context``)
+ * can drag wide enough to read the whole label strip without
+ * truncation.
+ *
+ * MIN_WIDTH (200) is the narrowest layout that keeps the
+ * status badge legible.
+ *
+ * Below the width at which a given name fits, the agent-name
+ * link ellipsis-truncates with an always-on ``title`` tooltip
+ * — see SwimLane.tsx's ``swimlane-agent-name-link`` for the
+ * graceful narrow-width fallback.
  */
 export const LEFT_PANEL_MIN_WIDTH = 200;
-export const LEFT_PANEL_MAX_WIDTH = 500;
-export const LEFT_PANEL_DEFAULT_WIDTH = 380;
+export const LEFT_PANEL_MAX_WIDTH = 640;
+export const LEFT_PANEL_DEFAULT_WIDTH = 460;
 export const LEFT_PANEL_WIDTH_KEY = "flightdeck-left-panel-width";
+
+/**
+ * LocalStorage key for the collapsed/expanded state of the
+ * fleet-wide ALL aggregate row above the AGENTS section in the
+ * Fleet swimlane. Stored as ``"1"`` (collapsed) or ``"0"``
+ * (expanded). Default is collapsed: once the ``/agents`` page
+ * exists as the dedicated fleet-overview surface, the ALL row's
+ * pulse line is redundant for most operators. The toggle bar
+ * stays visible so the row can be expanded on demand; the
+ * preference survives reloads via this key. See
+ * ``lib/allRowCollapsed.ts``.
+ */
+export const ALL_ROW_COLLAPSED_KEY = "flightdeck-all-row-collapsed";
+
+/**
+ * ALL aggregate row heights in pixels.
+ *
+ * COLLAPSED (24): matches the AGENTS section header height
+ * directly below the row, so the two stack as a single visually-
+ * consistent strip when the operator has the pulse pane hidden.
+ * EXPANDED (36): the historical pulse-row height — sized so the
+ * aggregated 22-px event circles plus the row's vertical padding
+ * fit without clipping. Keep these together with
+ * ``ALL_ROW_COLLAPSED_KEY`` so the storage flag, the toggle bar
+ * geometry, and the pulse-pane geometry are all sourced from one
+ * place.
+ */
+export const ALL_ROW_HEIGHT_COLLAPSED = 24;
+export const ALL_ROW_HEIGHT_EXPANDED = 36;
 
 /**
  * Session row height in pixels. Rows now show a primary hostname

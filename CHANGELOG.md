@@ -192,6 +192,37 @@ Fleet swimlane reshape, and the event-grain Events page (D157).
   table, and the agent drawer's Events tab now render the same
   `EventTypePill`, so the event-type indicator is identical across
   all three surfaces.
+- **Swimlane left-panel sizing + agent-name truncation.**
+  `LEFT_PANEL_DEFAULT_WIDTH` 320→460 so a typical
+  `user@host/role` agent name plus the full pill chrome fits on
+  first load without forcing a manual drag.
+  `LEFT_PANEL_MAX_WIDTH` 500→640 so operators with long
+  sub-agent role strings can drag wider. The agent-name link
+  (`swimlane-agent-name-link`) ellipsis-truncates with
+  `white-space: nowrap` + `overflow: hidden` +
+  `text-overflow: ellipsis` directly on the link instead of
+  inheriting `white-space: normal` from its flex ancestor, and
+  carries an always-on `title` attribute equal to the full
+  agent name so a hover reveals the complete value at any
+  column width. The link additionally enforces a
+  `min-width: 3rem` floor — at the 200-px panel minimum the
+  trailing pills, provider/OS/orchestration icons,
+  relationship pill, and status badge clip against the
+  parent's `overflow: hidden` boundary before the name shrinks
+  below readability (the previous `min-w-0` let the name
+  collapse to 0 px at the floor while the operator-priority
+  identifier vanished). The resize handle's transparent
+  hit-area widened 6→10 px around the column's right border
+  for a reliable grab target.
+- **Fleet-wide ALL row is collapsible, default collapsed.**
+  The aggregate pulse line above the AGENTS section now
+  reduces to a 24-px chevron toggle bar by default; clicking
+  the chevron expands the row to its full 36-px pulse pane.
+  The preference persists to
+  `localStorage[ALL_ROW_COLLAPSED_KEY]` so the choice
+  survives reloads. The `/agents` page is now the dedicated
+  fleet-overview surface; the ALL row's pulse remains one
+  click away for the operators who want it.
 
 ### Removed
 
@@ -214,6 +245,17 @@ Fleet swimlane reshape, and the event-grain Events page (D157).
 
 ### Fixed
 
+- **Swimlane resize handle could not extend the agent-label
+  column past 500 px.** The drag wiring was correct
+  (`pointerdown` on the handle, `pointermove` + `pointerup` on
+  `document`, clamped write-through to `localStorage`) but the
+  upper clamp pinned the width at `LEFT_PANEL_MAX_WIDTH=500`.
+  An operator starting from a stored 500-px width saw the
+  rightward drag silently no-op: the `Math.min(500, …)`
+  rejected every wider target and the rendered handle didn't
+  move. Raising the cap to 640 px lets the drag continue
+  through the previous wall; the visible 1-px column border
+  and the localStorage round-trip are unchanged.
 - **Sub-agent rows now materialise + render event circles +
   anchor connector overlays at default viewport.** The keep-alive
   watchdog forward-dated session-level timestamps but never bumped

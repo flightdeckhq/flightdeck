@@ -2688,15 +2688,33 @@ caches.
 with expand-in-place, a shared time axis, and a resizable left panel.
 
 `leftPanelWidth: number` state initialises from
-`localStorage[LEFT_PANEL_WIDTH_KEY]` clamped to `[LEFT_PANEL_MIN_WIDTH,
-LEFT_PANEL_MAX_WIDTH]`. Default is `LEFT_PANEL_DEFAULT_WIDTH` (380).
-A 6px-wide drag handle is rendered absolutely on the right edge of the
-time-axis row's sticky left spacer; the time-axis row is `position:
-sticky; top: 0` against Fleet.tsx's outer scroller, so the handle stays
-visible regardless of vertical scroll position. Mouse drag attaches
-`mousemove` + `mouseup` handlers to `document` and clamps the new width
-on every move; the resulting width is written to localStorage on every
-drag update.
+`localStorage[LEFT_PANEL_WIDTH_KEY]` clamped to
+`[LEFT_PANEL_MIN_WIDTH, LEFT_PANEL_MAX_WIDTH]` = `[200, 640]`. Default
+is `LEFT_PANEL_DEFAULT_WIDTH` (460), sized so a typical
+`user@host/role` agent name plus the full pill chrome
+(client-type pill, agent-type badge, provider/OS/orchestration
+icons, relationship pill, status badge) fits without truncation
+on first load. `LEFT_PANEL_MAX_WIDTH` (640) gives operators room
+to drag wider for verbose sub-agent role strings; below the
+width at which a given name fits, the agent-name link
+ellipsis-truncates with an always-on `title` tooltip (see the
+SwimLane section).
+
+A drag handle is rendered absolutely on the right edge of the
+inner content div, full-height so it stays grabbable as flavor
+rows scroll past. The handle is a transparent 10px-wide
+hit-area positioned at `left: leftPanelWidth - 5` so the 10-px
+grab strip straddles the column's right border without
+displacing the visible 1-px column edge; on hover, the strip
+fills with `var(--accent)` to surface the affordance. The drag
+binds `pointermove` + `pointerup` + `pointercancel` listeners
+on `document` rather than `mousemove`/`mouseup` so Firefox's
+text-selection heuristic over the label strip can't abort the
+drag mid-gesture. The handler clamps the new width on every
+move and writes through to localStorage immediately via
+`persistLeftPanelWidth`, which also dispatches a same-tab
+`CustomEvent` so Fleet.tsx's left-fade overlay tracks the
+column edge in lockstep.
 
 `leftPanelWidth` flows down as a prop through `SwimLane` →
 `SessionEventRow`. Both components include `leftPanelWidth` in their
@@ -2721,6 +2739,25 @@ rightmost line is highlighted as the "now" line in `var(--accent)`; the
 rest are `var(--border)` at low opacity. Constrained to the right-panel
 area only (`left: leftPanelWidth, width: timelineWidth`).
 
+A fleet-wide ALL aggregate row sits above the AGENTS section,
+rendered by `AllSwimLane` in `SwimLane.tsx`. It merges every
+session's events across every agent onto a single pulse line so
+operators see fleet-wide activity without scanning each row.
+Its visibility is collapsible and persisted to
+`localStorage[ALL_ROW_COLLAPSED_KEY]` (`"1"` collapsed, `"0"`
+expanded; default collapsed) via `lib/allRowCollapsed.ts`. When
+collapsed, the row reduces to a 24px-tall toggle bar (matching
+the AGENTS section header height directly below) carrying a
+`ChevronRight` icon + "All" label; clicking the toggle expands
+the row to its full 36px height with the aggregated pulse pane
+(`data-testid="swimlane-all-pulse"`) on the right. The default
+is collapsed because the `/agents` page now serves as the
+dedicated fleet-overview surface — the pulse line is redundant
+for most operators but stays one click away. The ALL row
+ignores the CONTEXT sidebar filter (it's a fleet-wide
+overview, not a filtered subset); the event-type filter bar
+still applies inside each circle via `EventNode.isVisible`.
+
 ### SwimLane
 
 `dashboard/src/components/timeline/SwimLane.tsx` renders one row per
@@ -2743,6 +2780,30 @@ production) → provider icon → OS icon → orchestration icon →
 `SubAgentLostDot` (when the most recent sub-agent session per
 role is in `lost` state) → `AgentStatusBadge` at the right
 edge.
+
+The agent-name link (`data-testid="swimlane-agent-name-link"`)
+sets `white-space: nowrap`, `overflow: hidden`, and
+`text-overflow: ellipsis` directly so a too-narrow column
+ellipsis-truncates the name rather than wrapping or hard-
+clipping. A native `title` attribute carrying the full
+`agent_name` is set unconditionally — hover reveals the
+complete value at any column width, not just when truncated.
+A `min-width: 3rem` floor (~6 chars + the ellipsis glyph at the
+13 px label font) is the anti-collapse contract: at the 200 px
+`LEFT_PANEL_MIN_WIDTH` floor the label strip's trailing pills,
+provider/OS/orchestration icons, relationship pill, and status
+badge collectively exceed the available row space, so the
+parent's `overflow: hidden` clips those trailing siblings
+before the name shrinks below readability. At the 460-px
+default and 640-px maximum widths the floor never engages —
+the link sits comfortably above 3 rem and the trailing chrome
+all renders.
+
+The ellipsis fallback is the graceful narrow-width behaviour;
+the resizable column (see Timeline section above) is the
+operator's primary recourse for a long name, with the
+`localStorage`-persisted width so the choice survives
+reloads.
 The provider / OS / orchestration icons derive from the agent's
 most-recent session; the per-event provider logos on event circles
 carry the granular per-call attribution. Per-agent state is the
@@ -2886,9 +2947,12 @@ tunable magic numbers:
 | `FEED_COL_WIDTHS_KEY` | `flightdeck-feed-col-widths` | localStorage key |
 | `FEED_COL_DEFAULTS` | `{flavor:120, session:80, type:96, detail:400, time:80}` | Default column widths |
 | `LEFT_PANEL_MIN_WIDTH` | 200 | Resizable swimlane left panel lower bound |
-| `LEFT_PANEL_MAX_WIDTH` | 500 | Upper bound |
-| `LEFT_PANEL_DEFAULT_WIDTH` | 380 | Initial width if no localStorage value |
+| `LEFT_PANEL_MAX_WIDTH` | 640 | Upper bound |
+| `LEFT_PANEL_DEFAULT_WIDTH` | 460 | Initial width if no localStorage value |
 | `LEFT_PANEL_WIDTH_KEY` | `flightdeck-left-panel-width` | localStorage key |
+| `ALL_ROW_COLLAPSED_KEY` | `flightdeck-all-row-collapsed` | Fleet ALL-row collapse state |
+| `ALL_ROW_HEIGHT_COLLAPSED` | 24 | ALL-row height when collapsed (matches AGENTS header) |
+| `ALL_ROW_HEIGHT_EXPANDED` | 36 | ALL-row height when expanded (pulse pane) |
 | `SESSION_ROW_HEIGHT` | 48 | Two-line session row height |
 | `TIMELINE_WIDTH_PX` | 900 | Fixed event-circles canvas width |
 | `TIMELINE_RANGE_MS` | `{1m: 60_000, 5m: 300_000, 15m: 900_000, 30m: 1_800_000, 1h: 3_600_000}` | Range labels → ms |

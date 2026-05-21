@@ -13,6 +13,10 @@ import {
   persistLeftPanelWidth,
   readPersistedLeftPanelWidth,
 } from "@/lib/leftPanelWidth";
+import {
+  persistAllRowCollapsed,
+  useAllRowCollapsed,
+} from "@/lib/allRowCollapsed";
 import { TimeAxis } from "./TimeAxis";
 import { AllSwimLane } from "./SwimLane";
 import { VirtualizedSwimLane } from "./VirtualizedSwimLane";
@@ -85,6 +89,19 @@ export function Timeline({
   useEffect(() => {
     leftPanelWidthRef.current = leftPanelWidth;
   }, [leftPanelWidth]);
+
+  // Fleet-wide ALL aggregate row collapse state. Persisted via
+  // ``persistAllRowCollapsed`` to a dedicated localStorage key so
+  // the preference survives reloads independent of the left-panel
+  // width. Default is collapsed (true) — the AllSwimLane renders a
+  // 24px toggle bar that the operator can chevron-expand on
+  // demand. ``useAllRowCollapsed`` subscribes to the same-tab
+  // CustomEvent so a future second consumer would stay in sync
+  // without prop drilling.
+  const allRowCollapsed = useAllRowCollapsed();
+  const handleAllRowToggle = useCallback(() => {
+    persistAllRowCollapsed(!allRowCollapsed);
+  }, [allRowCollapsed]);
 
   const handleResizeStart = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
@@ -694,11 +711,16 @@ export function Timeline({
             the 28-px sticky time-axis spacer above -- that placement
             clipped the grab area to a thin strip next to the top
             pills, which was too small to be discoverable or reliable.
-            Positioned at `left: leftPanelWidth - 3` so the 6-px-wide
-            handle straddles the label column's right border. zIndex
-            10 sits above the sticky time axis (z 4) and the grid
-            overlay (z 1) so the user can still grab it while hovering
-            a pill or a grid line. */}
+            Positioned at `left: leftPanelWidth - 5` so the 10-px-wide
+            transparent hit-area straddles the label column's right
+            border (the column edge stays at `leftPanelWidth`; the
+            transparent strip just gives the operator a generous
+            grab target around it). zIndex 10 sits above the sticky
+            time axis (z 4) and the grid overlay (z 1) so the user
+            can still grab it while hovering a pill or a grid line.
+            The 6-px earlier hit area was hard to land on; 10 px
+            matches what feels right alongside the visible 1-px
+            column border. */}
         <div
           data-testid="left-panel-resize-handle"
           role="separator"
@@ -708,8 +730,8 @@ export function Timeline({
             position: "absolute",
             top: 0,
             bottom: 0,
-            left: leftPanelWidth - 3,
-            width: 6,
+            left: leftPanelWidth - 5,
+            width: 10,
             cursor: "col-resize",
             zIndex: 10,
             background: "transparent",
@@ -776,14 +798,21 @@ export function Timeline({
         </div>
 
         {/* ALL aggregate row.
-            Sits above the FLAVORS section as a single non-expandable
-            lane that merges every session's events into one timeline.
-            Reads from the unfiltered `flavors` prop (NOT
-            filteredFlavors) so it always shows the whole fleet
-            regardless of the CONTEXT sidebar filter -- it's a
-            fleet-wide overview, not a filtered subset. The event-type
-            filter (`activeFilter`) still applies inside each circle
-            via EventNode.isVisible. */}
+            Sits above the FLAVORS section as a single collapsible
+            lane that merges every session's events into one
+            timeline. Default state is collapsed (toggle bar only):
+            once the `/agents` page exists as the dedicated
+            fleet-overview surface, the ALL row's pulse is
+            redundant for most operators. The chevron toggle
+            expands the row; the preference is persisted to
+            localStorage via `persistAllRowCollapsed` so the
+            choice survives reloads. When expanded, the lane
+            reads from the unfiltered `flavors` prop (NOT
+            `filteredFlavors`) so it always shows the whole
+            fleet regardless of the CONTEXT sidebar filter --
+            it's a fleet-wide overview, not a filtered subset.
+            The event-type filter (`activeFilter`) still applies
+            inside each circle via EventNode.isVisible. */}
         <AllSwimLane
           flavors={flavors}
           scale={scale}
@@ -792,7 +821,8 @@ export function Timeline({
           leftPanelWidth={leftPanelWidth}
           activeFilter={activeFilter}
           sessionVersions={sessionVersions}
-          hasVisibleEventsInWindow={hasVisibleEventsInWindow}
+          collapsed={allRowCollapsed}
+          onToggle={handleAllRowToggle}
         />
 
         {/* FLAVORS section header.

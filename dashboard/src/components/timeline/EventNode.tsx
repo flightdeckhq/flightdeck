@@ -233,7 +233,15 @@ function EventNodeComponent({
         onMouseEnter={handleMouseEnter}
         onMouseLeave={handleMouseLeave}
       >
-        <IconComponent size={iconSize} />
+        {/* The glyph is decoration painted inside the clickable
+            circle — never an independent pointer target.
+            ``pointer-events: none`` routes every hover / click
+            through to the circle div that owns the handlers. On a
+            dense swimlane circles overlap; without this an
+            adjacent circle's glyph sits topmost at a neighbour's
+            centre and steals the hit-test (the lucide-wrench
+            tool_call icon was the recurring offender). */}
+        <IconComponent size={iconSize} style={{ pointerEvents: "none" }} />
       </div>
 
       {/* Tooltip rendered in a portal to escape overflow:hidden */}

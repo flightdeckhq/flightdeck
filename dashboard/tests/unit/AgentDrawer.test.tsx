@@ -171,4 +171,62 @@ describe("AgentDrawer", () => {
     // inside act().
     await act(async () => {});
   });
+
+  it("renders the header as a fixed four-row stack (identity / status / actions / sub-agents)", async () => {
+    // Lock the deterministic vertical order. The first three
+    // rows always render; the sub-agent row mounts only when
+    // a parent or child linkage exists. The action-link row
+    // lives in its own container so a wide topology label or
+    // a sub-agent linkage row can't push the action links onto
+    // a wrapping line.
+    seedStore(
+      [
+        mkAgent({
+          agent_id: "agent-parent",
+          agent_name: "parent-agent",
+        }),
+        mkAgent({ agent_id: "agent-child", agent_name: "child-agent" }),
+      ],
+      [
+        mkFlavor("agent-parent", "parent-agent", [mkSession("s-p1")]),
+        mkFlavor("agent-child", "child-agent", [mkSession("s-c1", "s-p1")]),
+      ],
+    );
+    renderDrawer("agent-parent");
+    await act(async () => {});
+    const identity = screen.getByTestId("agent-drawer-header-identity");
+    const status = screen.getByTestId("agent-drawer-header-status");
+    const actions = screen.getByTestId("agent-drawer-header-actions");
+    const subagents = screen.getByTestId("agent-drawer-header-subagents");
+    for (const row of [identity, status, actions, subagents]) {
+      expect(row).toBeInTheDocument();
+    }
+    // Source-order assertion: each header row is a sibling
+    // under the drawer header strip and they appear in the
+    // expected sequence. Walk previousElementSibling chains so
+    // a future addition between them surfaces here.
+    expect(status.previousElementSibling).toBe(identity);
+    expect(actions.previousElementSibling).toBe(status);
+    expect(subagents.previousElementSibling).toBe(actions);
+    // Action-link row contents are stable regardless of the
+    // sub-agent linkage row's presence.
+    expect(
+      actions.querySelector('[data-testid="agent-drawer-open-swimlane"]'),
+    ).not.toBeNull();
+    expect(
+      actions.querySelector('[data-testid="agent-drawer-open-in-events"]'),
+    ).not.toBeNull();
+  });
+
+  it("omits the sub-agent row entirely when no linkage exists", async () => {
+    seedStore([mkAgent({ agent_id: "agent-1" })], []);
+    renderDrawer("agent-1");
+    await act(async () => {});
+    expect(
+      screen.getByTestId("agent-drawer-header-identity"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agent-drawer-header-subagents"),
+    ).toBeNull();
+  });
 });

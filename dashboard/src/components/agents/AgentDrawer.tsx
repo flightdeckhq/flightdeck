@@ -136,73 +136,83 @@ export function AgentDrawer({
             exit={{ x: DRAWER_WIDTH }}
             transition={{ type: "spring", damping: 25, stiffness: 200 }}
           >
-            {/* Header strip */}
+            {/* Header strip — deterministic four-row stack, each
+                row its own container, no ``flex-wrap``. The
+                action-link row lives separately from the
+                status+topology row so a wide topology label or a
+                sub-agent badge can never push the action links
+                onto a wrapping line. Existing testids
+                (``agent-drawer-name``, ``agent-drawer-close``,
+                ``agent-drawer-open-swimlane``,
+                ``agent-drawer-open-in-events``,
+                ``agent-drawer-linkage``) are preserved so
+                existing specs continue to pass; new per-row
+                testids (``agent-drawer-header-*``) anchor T98's
+                vertical-order assertions. */}
             <div
               style={{
                 borderBottom: "1px solid var(--border)",
                 background: "var(--bg-elevated)",
               }}
             >
+              {/* Row 1 — identity + close X. */}
               <div
+                data-testid="agent-drawer-header-identity"
                 style={{
                   display: "flex",
                   alignItems: "center",
-                  justifyContent: "space-between",
+                  gap: 8,
                   padding: "10px 14px",
                 }}
               >
-                <div
-                  style={{ display: "flex", alignItems: "center", gap: 8 }}
-                  data-testid="agent-drawer-identity"
+                {agent.client_type === ClientType.ClaudeCode && (
+                  <ClaudeCodeLogo size={15} />
+                )}
+                <span
+                  style={{
+                    fontFamily: "var(--font-mono)",
+                    fontSize: 14,
+                    fontWeight: 600,
+                    color: "var(--text)",
+                  }}
+                  data-testid="agent-drawer-name"
                 >
-                  {agent.client_type === ClientType.ClaudeCode && (
-                    <ClaudeCodeLogo size={15} />
-                  )}
-                  <span
-                    style={{
-                      fontFamily: "var(--font-mono)",
-                      fontSize: 14,
-                      fontWeight: 600,
-                      color: "var(--text)",
-                    }}
-                    data-testid="agent-drawer-name"
-                  >
-                    {agent.agent_name}
-                  </span>
-                  <ClientTypePill
-                    clientType={agent.client_type}
-                    size="compact"
+                  {agent.agent_name}
+                </span>
+                <ClientTypePill
+                  clientType={agent.client_type}
+                  size="compact"
+                />
+                <span
+                  style={{
+                    fontFamily: "var(--font-mono)",
+                    fontSize: 10,
+                    textTransform: "uppercase",
+                    letterSpacing: "0.06em",
+                    color: "var(--text-muted)",
+                  }}
+                >
+                  {agent.agent_type}
+                </span>
+                {provider && provider !== "other" && (
+                  <ProviderLogo provider={provider} size={13} />
+                )}
+                {typeof latestContext?.os === "string" && (
+                  <OSIcon os={latestContext.os} size={13} />
+                )}
+                {typeof latestContext?.orchestration === "string" && (
+                  <OrchestrationIcon
+                    orchestration={latestContext.orchestration}
+                    size={13}
                   />
-                  <span
-                    style={{
-                      fontFamily: "var(--font-mono)",
-                      fontSize: 10,
-                      textTransform: "uppercase",
-                      letterSpacing: "0.06em",
-                      color: "var(--text-muted)",
-                    }}
-                  >
-                    {agent.agent_type}
-                  </span>
-                  {provider && provider !== "other" && (
-                    <ProviderLogo provider={provider} size={13} />
-                  )}
-                  {typeof latestContext?.os === "string" && (
-                    <OSIcon os={latestContext.os} size={13} />
-                  )}
-                  {typeof latestContext?.orchestration === "string" && (
-                    <OrchestrationIcon
-                      orchestration={latestContext.orchestration}
-                      size={13}
-                    />
-                  )}
-                </div>
+                )}
                 <button
                   type="button"
                   data-testid="agent-drawer-close"
                   onClick={onClose}
                   aria-label="Close agent drawer"
                   style={{
+                    marginLeft: "auto",
                     background: "transparent",
                     border: "none",
                     color: "var(--text-muted)",
@@ -216,14 +226,14 @@ export function AgentDrawer({
                 </button>
               </div>
 
-              {/* Status + topology + Open-in-events row */}
+              {/* Row 2 — status badge + topology. */}
               <div
+                data-testid="agent-drawer-header-status"
                 style={{
                   display: "flex",
                   alignItems: "center",
                   gap: 10,
-                  padding: "0 14px 10px",
-                  flexWrap: "wrap",
+                  padding: "0 14px 8px",
                 }}
               >
                 <AgentStatusBadge
@@ -234,75 +244,89 @@ export function AgentDrawer({
                   agentId={agent.agent_id}
                   topology={agent.topology}
                 />
-                <div
-                  style={{
-                    marginLeft: "auto",
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 12,
-                  }}
-                >
-                  <button
-                    type="button"
-                    data-testid="agent-drawer-open-swimlane"
-                    aria-label={`Open ${agent.agent_name} in swimlane`}
-                    onClick={() => setSwimlaneOpen(true)}
-                    style={{
-                      fontSize: 11,
-                      fontFamily: "var(--font-mono)",
-                      color: "var(--accent)",
-                      background: "transparent",
-                      border: "none",
-                      padding: 0,
-                      cursor: "pointer",
-                    }}
-                  >
-                    Open in swimlane
-                  </button>
-                  <Link
-                    to={`/events?agent_id=${encodeURIComponent(agent.agent_id)}`}
-                    data-testid="agent-drawer-open-in-events"
-                    style={{
-                      fontSize: 11,
-                      fontFamily: "var(--font-mono)",
-                      color: "var(--accent)",
-                      textDecoration: "none",
-                    }}
-                  >
-                    Open in events →
-                  </Link>
-                </div>
               </div>
 
-              {/* Sub-agent linkage pills */}
+              {/* Row 3 — action links, dedicated row so a wide
+                  topology label or a sub-agent pill row can't
+                  push them onto a wrapping line. */}
+              <div
+                data-testid="agent-drawer-header-actions"
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 12,
+                  padding: "0 14px 10px",
+                }}
+              >
+                <button
+                  type="button"
+                  data-testid="agent-drawer-open-swimlane"
+                  aria-label={`Open ${agent.agent_name} in swimlane`}
+                  onClick={() => setSwimlaneOpen(true)}
+                  style={{
+                    fontSize: 11,
+                    fontFamily: "var(--font-mono)",
+                    color: "var(--accent)",
+                    background: "transparent",
+                    border: "none",
+                    padding: 0,
+                    cursor: "pointer",
+                  }}
+                >
+                  Open in swimlane
+                </button>
+                <Link
+                  to={`/events?agent_id=${encodeURIComponent(agent.agent_id)}`}
+                  data-testid="agent-drawer-open-in-events"
+                  style={{
+                    fontSize: 11,
+                    fontFamily: "var(--font-mono)",
+                    color: "var(--accent)",
+                    textDecoration: "none",
+                  }}
+                >
+                  Open in events →
+                </Link>
+              </div>
+
+              {/* Row 4 (conditional) — sub-agent linkage pills. */}
               {(linkage.parent || linkage.children.length > 0) && (
                 <div
-                  data-testid="agent-drawer-linkage"
+                  data-testid="agent-drawer-header-subagents"
                   style={{
                     display: "flex",
                     alignItems: "center",
                     gap: 6,
                     padding: "0 14px 10px",
-                    flexWrap: "wrap",
                   }}
                 >
-                  {linkage.parent && (
-                    <LinkagePill
-                      label={`← parent: ${linkage.parent.agentName}`}
-                      testId="agent-drawer-parent-pill"
-                      onClick={() =>
-                        onSelectAgent(linkage.parent!.agentId)
-                      }
-                    />
-                  )}
-                  {linkage.children.map((child: AgentLink) => (
-                    <LinkagePill
-                      key={child.agentId}
-                      label={`↳ ${child.agentName}`}
-                      testId="agent-drawer-child-pill"
-                      onClick={() => onSelectAgent(child.agentId)}
-                    />
-                  ))}
+                  <div
+                    data-testid="agent-drawer-linkage"
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 6,
+                      flexWrap: "wrap",
+                    }}
+                  >
+                    {linkage.parent && (
+                      <LinkagePill
+                        label={`← parent: ${linkage.parent.agentName}`}
+                        testId="agent-drawer-parent-pill"
+                        onClick={() =>
+                          onSelectAgent(linkage.parent!.agentId)
+                        }
+                      />
+                    )}
+                    {linkage.children.map((child: AgentLink) => (
+                      <LinkagePill
+                        key={child.agentId}
+                        label={`↳ ${child.agentName}`}
+                        testId="agent-drawer-child-pill"
+                        onClick={() => onSelectAgent(child.agentId)}
+                      />
+                    ))}
+                  </div>
                 </div>
               )}
             </div>

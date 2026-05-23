@@ -8966,3 +8966,94 @@ facet sidebar entry.
 this extends). D158 (the sessions JOIN this rides). D098 (provider
 derivation via SQL CASE — same family of session-context-extraction
 patterns).
+
+## D161 -- Runtime-context agent facets on /agents via AgentSummary projection
+
+**What.** The `/agents` page facet sidebar gains the same nine
+runtime-context dimensions `/events` already carries (D160):
+`hostname`, `user`, `os`, `arch`, `git_branch`, `git_repo`,
+`orchestration`, `python_version`, `process_name`. `hostname` and
+`user` are sourced from the existing `agents`-table columns
+(single-valued per agent). The other seven ride a new `LEFT JOIN
+LATERAL` on `GetAgentFleet` / `ListAgents` / `GetAgentByID`
+(`agentLatestContextSQL`) that returns
+`context->>'<key>'` from the agent's MOST RECENT session
+(`ORDER BY started_at DESC LIMIT 1`). New `AgentSummary` fields
+`OS`, `Arch`, `GitBranch`, `GitRepo`, `Orchestration`,
+`PythonVersion`, `ProcessName` (typed `*string`,
+`json:",omitempty"`) carry the projection. Migration 000025 adds
+`sessions_agent_id_started_at_desc_idx` on
+`sessions(agent_id, started_at DESC)` so the per-agent
+LIMIT 1 lookup is a single index seek.
+
+**Why the latest-session semantic.** The `/agents` table is a
+one-row-per-agent surface; the facet sidebar requires a
+single-valued projection per agent. Two alternatives were
+considered:
+
+1. **Union of all values across the agent's sessions.** Rejected:
+   explodes cardinality (an agent that ran across 10 hosts
+   contributes 10 chip rows), and the OR-within-dim semantics no
+   longer align with "this agent has property X" the way operators
+   reason about the table.
+2. **Aggregate-over-all-sessions choice (e.g. mode of os values).**
+   Rejected: hides drift. An agent that just migrated from Linux
+   to macOS would keep showing "Linux" until the mode tipped,
+   masking the migration from operators investigating "what does
+   this agent look like RIGHT NOW".
+
+The latest-session-context projection lands closest to the
+operator's mental model: the facet chip reflects the agent's
+current shape. Historical breadth is exposed via `/events` whose
+D160 facets surface every event's session context independently.
+
+**Why a separate LATERAL, not piggyback on the state rollup.**
+The existing state-rollup LATERAL (`SELECT CASE WHEN EXISTS ...
+THEN 'active' ELSE (SELECT s.state ... LIMIT 1) END`) returns a
+single derived value, not a session row. Piggybacking would
+require either restructuring it to return a record (breaking the
+existing scan order) or doing the JSON extracts inside the CASE
+arms (unreadable). A separate LATERAL is the cleaner shape —
+both lateral subqueries ride the same composite index from
+migration 000025 (`sessions(agent_id, started_at DESC)`) so the
+per-agent overhead is one extra index seek + one heap fetch.
+
+**Why client-side filtering, not new `/v1/fleet` filter params.**
+The `/agents` page already filters client-side over the loaded
+`useFleetStore().agents` slice for the existing four dims
+(state / agent_type / client_type / framework). Adding nine
+matching client-side filter predicates over the new
+`AgentSummary` fields is the natural extension; the alternative
+(server-side filter params with re-fetch on chip toggle) would
+require pagination-aware filter re-fetch logic AND would not
+materially reduce the response size (a typical fleet page is
+~50 rows, all of which stream regardless of filter state for the
+sidebar counts). Keeping filtering client-side preserves the
+chip-flip-as-instantaneous UX. Counts are absolute across the
+unfiltered roster — same contract as the existing four dims.
+
+**Excluded from sidebar (vs D160's nine).** The same exclusions
+that apply to /events apply here: `pid` (per-instance noise,
+non-aggregable), `git_commit` (high cardinality, not useful for
+chip grouping), the orchestration sub-keys (`k8s_pod`,
+`k8s_namespace`, `compose_project`, etc. — orchestration is the
+roll-up). These remain available on the agent drawer's
+"context" panel for drilldown.
+
+**Perf.** Adding seven JSONB extracts via one extra LATERAL on
+`GetAgentFleet` is a single-row lookup per agent. With the
+composite index in place the per-agent latency increase is
+sub-millisecond on the dev stack (50-agent page); even a 200-
+agent page stays well under the existing fleet-response budget.
+Bench against a production-scale fleet should be re-validated
+before scaling past ~500 agents per page.
+
+**Related decisions.** D160 (the event-grain counterpart on
+/v1/events — same nine dimensions, different architecture).
+D157 (the per-agent landing page this extends). D126 § 6.3
+(the precedent for per-agent LATERAL projection — `agent_role`
++ `topology` ride the same shape). The existing
+`idx_sessions_agent_id` from migration 000015 stays in place;
+000025's composite index supersedes it for the per-agent
+latest-session lookup but doesn't replace the single-column
+index that backs broader `agent_id = ?` filters.

@@ -2794,16 +2794,38 @@ const docTemplate = `{
                 "agent_type": {
                     "type": "string"
                 },
+                "arch": {
+                    "type": "string"
+                },
                 "client_type": {
                     "type": "string"
                 },
                 "first_seen_at": {
                     "type": "string"
                 },
+                "git_branch": {
+                    "type": "string"
+                },
+                "git_repo": {
+                    "type": "string"
+                },
                 "hostname": {
                     "type": "string"
                 },
                 "last_seen_at": {
+                    "type": "string"
+                },
+                "orchestration": {
+                    "type": "string"
+                },
+                "os": {
+                    "description": "Runtime-context slice from the agent's MOST RECENT session's\n` + "`" + `sessions.context` + "`" + ` JSONB (D161). An agent that ran across\nmultiple hosts / branches surfaces its latest session's values\nhere — facets are single-valued per agent. Each field is null\nwhen the latest session's context is absent or the JSONB key\nis missing. Sourced via one LATERAL JOIN per agent ordered by\nstarted_at DESC LIMIT 1; the per-agent overhead is bounded by\nthe page size. ` + "`" + `Hostname` + "`" + ` and ` + "`" + `UserName` + "`" + ` above remain the\nauthoritative single-valued slices for those two dims (sourced\nfrom agents-table columns); these seven are the JSONB-only\nslices the operator slices the roster by.",
+                    "type": "string"
+                },
+                "process_name": {
+                    "type": "string"
+                },
+                "python_version": {
                     "type": "string"
                 },
                 "recent_sessions": {

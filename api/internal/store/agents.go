@@ -166,9 +166,12 @@ func (s *Store) ListAgents(
 			a.total_sessions, a.total_tokens,
 			COALESCE(rollup.state, '') AS state,
 			d126.agent_role,
-			d126.topology
+			d126.topology,
+			d161.os, d161.arch, d161.git_branch, d161.git_repo,
+			d161.orchestration, d161.python_version, d161.process_name
 		FROM agents a` + rollupSQL + `
-		LEFT JOIN LATERAL (` + d126AgentRollupSQL + `) d126 ON TRUE` + whereSQL + `
+		LEFT JOIN LATERAL (` + d126AgentRollupSQL + `) d126 ON TRUE
+		LEFT JOIN LATERAL (` + agentLatestContextSQL + `) d161 ON TRUE` + whereSQL + `
 		ORDER BY ` + sortCol + ` ` + direction + `, a.agent_id ASC
 		LIMIT ` + limitPlaceholder + ` OFFSET ` + offsetPlaceholder
 
@@ -188,6 +191,8 @@ func (s *Store) ListAgents(
 			&a.UserName, &a.Hostname, &a.FirstSeenAt, &a.LastSeenAt,
 			&a.TotalSessions, &a.TotalTokens, &rollupState,
 			&a.AgentRole, &topology,
+			&a.OS, &a.Arch, &a.GitBranch, &a.GitRepo,
+			&a.Orchestration, &a.PythonVersion, &a.ProcessName,
 		); err != nil {
 			return nil, fmt.Errorf("scan agent: %w", err)
 		}
@@ -233,7 +238,9 @@ func (s *Store) GetAgentByID(
 			a.total_sessions, a.total_tokens,
 			COALESCE(rollup.state, '') AS state,
 			d126.agent_role,
-			d126.topology
+			d126.topology,
+			d161.os, d161.arch, d161.git_branch, d161.git_repo,
+			d161.orchestration, d161.python_version, d161.process_name
 		FROM agents a
 		LEFT JOIN LATERAL (
 			SELECT CASE
@@ -251,6 +258,7 @@ func (s *Store) GetAgentByID(
 			END AS state
 		) rollup ON TRUE
 		LEFT JOIN LATERAL (` + d126AgentRollupSQL + `) d126 ON TRUE
+		LEFT JOIN LATERAL (` + agentLatestContextSQL + `) d161 ON TRUE
 		WHERE a.agent_id = $1::uuid
 		LIMIT 1`
 
@@ -262,6 +270,8 @@ func (s *Store) GetAgentByID(
 		&a.UserName, &a.Hostname, &a.FirstSeenAt, &a.LastSeenAt,
 		&a.TotalSessions, &a.TotalTokens, &rollupState,
 		&a.AgentRole, &topology,
+		&a.OS, &a.Arch, &a.GitBranch, &a.GitRepo,
+		&a.Orchestration, &a.PythonVersion, &a.ProcessName,
 	)
 	if err != nil {
 		// pgx returns ErrNoRows as a sentinel; bubble up so the

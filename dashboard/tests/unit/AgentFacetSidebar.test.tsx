@@ -285,3 +285,214 @@ describe("AgentFacetSidebar", () => {
     ).toBeInTheDocument();
   });
 });
+
+// ---- D161 runtime-context groups ----
+
+describe("AgentFacetSidebar — D161 runtime-context groups", () => {
+  it("renders the HOSTNAME / USER / OS / ARCH / GIT BRANCH / GIT REPO / ORCHESTRATION / PYTHON / PROCESS groups when at least one agent carries a value", () => {
+    render(
+      <AgentFacetSidebar
+        agents={[
+          mkAgent({
+            agent_id: "a",
+            hostname: "worker-1",
+            user: "alice",
+            os: "Linux",
+            arch: "arm64",
+            git_branch: "main",
+            git_repo: "flightdeck",
+            orchestration: "kubernetes",
+            python_version: "3.12",
+            process_name: "main.py",
+          }),
+        ]}
+        filter={EMPTY_FILTER}
+        onChange={vi.fn()}
+      />,
+    );
+    for (const suffix of [
+      "hostname",
+      "user",
+      "os",
+      "arch",
+      "git_branch",
+      "git_repo",
+      "orchestration",
+      "python_version",
+      "process_name",
+    ]) {
+      expect(
+        screen.getByTestId(`agent-filter-${suffix}-group`),
+      ).toBeInTheDocument();
+    }
+  });
+
+  it("hides D161 groups that no agent populates", () => {
+    // Mirror the FRAMEWORK group's empty behaviour: a dimension
+    // with no values across the roster collapses entirely instead
+    // of rendering an empty group header. The base mkAgent has
+    // hostname + user but no context fields, so the seven JSONB-
+    // derived groups must all hide.
+    render(
+      <AgentFacetSidebar
+        agents={[mkAgent({ agent_id: "a" })]}
+        filter={EMPTY_FILTER}
+        onChange={vi.fn()}
+      />,
+    );
+    // hostname + user populated from agent columns, so present
+    expect(
+      screen.getByTestId("agent-filter-hostname-group"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId("agent-filter-user-group"),
+    ).toBeInTheDocument();
+    // The seven JSONB-derived groups have no values and stay hidden
+    for (const suffix of [
+      "os",
+      "arch",
+      "git_branch",
+      "git_repo",
+      "orchestration",
+      "python_version",
+      "process_name",
+    ]) {
+      expect(
+        screen.queryByTestId(`agent-filter-${suffix}-group`),
+      ).not.toBeInTheDocument();
+    }
+  });
+
+  it("renders each unique value once per group with the correct count", () => {
+    render(
+      <AgentFacetSidebar
+        agents={[
+          mkAgent({ agent_id: "a", os: "Linux" }),
+          mkAgent({ agent_id: "b", os: "Linux" }),
+          mkAgent({ agent_id: "c", os: "Darwin" }),
+          mkAgent({ agent_id: "d", os: null }),
+        ]}
+        filter={EMPTY_FILTER}
+        onChange={vi.fn()}
+      />,
+    );
+    expect(
+      within(screen.getByTestId("agent-filter-os-Linux")).getByText("2"),
+    ).toBeInTheDocument();
+    expect(
+      within(screen.getByTestId("agent-filter-os-Darwin")).getByText("1"),
+    ).toBeInTheDocument();
+    // Null OS agent never contributes a chip — no row for it
+    expect(
+      screen.queryByText((_, el) => el?.textContent === "—"),
+    ).toBeNull();
+  });
+
+  it("clicking an OS entry toggles oss in the filter via onChange", () => {
+    const onChange = vi.fn();
+    render(
+      <AgentFacetSidebar
+        agents={[mkAgent({ agent_id: "a", os: "Linux" })]}
+        filter={EMPTY_FILTER}
+        onChange={onChange}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("agent-filter-os-Linux"));
+    expect(onChange).toHaveBeenCalledTimes(1);
+    const next = onChange.mock.calls[0]![0] as typeof EMPTY_FILTER;
+    expect(next.oss.has("Linux")).toBe(true);
+  });
+
+  it("clicking a git_branch entry toggles gitBranches in the filter via onChange", () => {
+    const onChange = vi.fn();
+    render(
+      <AgentFacetSidebar
+        agents={[mkAgent({ agent_id: "a", git_branch: "main" })]}
+        filter={EMPTY_FILTER}
+        onChange={onChange}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("agent-filter-git_branch-main"));
+    expect(onChange).toHaveBeenCalledTimes(1);
+    const next = onChange.mock.calls[0]![0] as typeof EMPTY_FILTER;
+    expect(next.gitBranches.has("main")).toBe(true);
+  });
+
+  it("uses the shared FacetIcon (same icons as /events) for each D161 dimension", () => {
+    render(
+      <AgentFacetSidebar
+        agents={[
+          mkAgent({
+            agent_id: "a",
+            hostname: "worker-1",
+            user: "alice",
+            os: "Linux",
+            arch: "arm64",
+            git_branch: "main",
+            git_repo: "flightdeck",
+            orchestration: "kubernetes",
+            python_version: "3.12",
+            process_name: "main.py",
+          }),
+        ]}
+        filter={EMPTY_FILTER}
+        onChange={vi.fn()}
+      />,
+    );
+    // FacetIcon emits a testid wrapper around the resolved icon —
+    // its presence proves the sidebar wired the shared component
+    // (so a future change to /events icon mapping flows through).
+    expect(
+      screen.getByTestId("agent-facet-icon-hostname-worker-1"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId("agent-facet-icon-user-alice"),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("agent-facet-icon-os-Linux")).toBeInTheDocument();
+    expect(
+      screen.getByTestId("agent-facet-icon-arch-arm64"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId("agent-facet-icon-git_branch-main"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId("agent-facet-icon-git_repo-flightdeck"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId("agent-facet-icon-orchestration-kubernetes"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId("agent-facet-icon-python_version-3.12"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId("agent-facet-icon-process_name-main.py"),
+    ).toBeInTheDocument();
+  });
+
+  it("sorts D161 values by descending count then ascending value", () => {
+    render(
+      <AgentFacetSidebar
+        agents={[
+          mkAgent({ agent_id: "a", git_branch: "main" }),
+          mkAgent({ agent_id: "b", git_branch: "main" }),
+          mkAgent({ agent_id: "c", git_branch: "feature-z" }),
+          mkAgent({ agent_id: "d", git_branch: "alpha" }),
+        ]}
+        filter={EMPTY_FILTER}
+        onChange={vi.fn()}
+      />,
+    );
+    // main (2) first; alpha + feature-z tied at 1 → sorted by value asc.
+    const group = screen.getByTestId("agent-filter-git_branch-group");
+    const rows = within(group).getAllByRole("button");
+    expect(rows[0]!.getAttribute("data-testid")).toBe(
+      "agent-filter-git_branch-main",
+    );
+    expect(rows[1]!.getAttribute("data-testid")).toBe(
+      "agent-filter-git_branch-alpha",
+    );
+    expect(rows[2]!.getAttribute("data-testid")).toBe(
+      "agent-filter-git_branch-feature-z",
+    );
+  });
+});

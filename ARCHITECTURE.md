@@ -1789,7 +1789,7 @@ authoritative parameter-level reference.
 
 | Method | Path | Purpose |
 |---|---|---|
-| `GET` | `/v1/fleet` | Fleet summary: agents with state rollup, total sessions, total tokens, context_facets |
+| `GET` | `/v1/fleet` | Fleet summary: agents with state rollup, total sessions, total tokens, recent_sessions rollup, and D161 runtime-context projection (`os`, `arch`, `git_branch`, `git_repo`, `orchestration`, `python_version`, `process_name` — sourced from the agent's most recent session's `context` JSONB via a `LEFT JOIN LATERAL`), context_facets |
 | `GET` | `/v1/sessions` | Paginated session listing; filters: `agent_id`, `flavor`, `framework`, `state`, `error_type`, `policy_event_type`, `mcp_server`, `from`, `to`, `q`, `parent_session_id`, `is_sub_agent`, `has_sub_agents`, `agent_role[]`, `include_pure_children`, `include_parents`, `close_reason`, `estimated_via`, `terminal`, `matched_entry_id`, `originating_call_context`; returns per-session aggregates (`error_types[]`, `policy_event_types[]`, `mcp_server_names[]`, `close_reasons[]`, `estimated_via_values[]`, `has_terminal_error`, `matched_entry_ids[]`, `originating_call_contexts[]`), `child_count`, and `attachment_count` (the number of re-attachments to the session, surfaced as the agent drawer Runs-tab attached pill) |
 | `GET` | `/v1/sessions/:id` | Session detail: metadata + chronological events + attachments array |
 | `GET` | `/v1/agents` | Paginated agent listing backing the `/agents` page; filters: `agent_type`, `client_type`, `state`, `hostname`, `user`, `os`, `orchestration` (multi-value — OR within a dimension, AND across), `search` (case-insensitive substring on `agent_name` + `hostname`), `updated_since`; `sort` + `order`; `limit` (default 25, max 100) + `offset`. Each row carries the sub-agent rollup fields `agent_role` and `topology` (`lone` / `parent` / `child`) |
@@ -2240,6 +2240,46 @@ time range surfaces the circles without re-fetching.
 The wire shape uses `omitempty`; consumers treat the field as
 optional and apply the paginated-only path when it is absent.
 
+### `AgentSummary` runtime-context projection (D161)
+
+Each `AgentSummary` row carries seven nullable JSONB-derived
+fields sourced from the agent's MOST RECENT session's
+`sessions.context`: `os`, `arch`, `git_branch`, `git_repo`,
+`orchestration`, `python_version`, `process_name`. `hostname`
+and `user` already live as direct columns on the `agents`
+table (denormalised at agent-upsert time); the seven D161
+fields ride a single shared `LEFT JOIN LATERAL` per agent
+(`agentLatestContextSQL` in `api/internal/store/postgres.go`)
+that runs `SELECT context->>'<key>' ... WHERE agent_id =
+a.agent_id ORDER BY started_at DESC LIMIT 1`. The lateral
+attaches to all three projection paths — `GetAgentFleet`,
+`ListAgents`, `GetAgentByID` — so the response shape is
+byte-identical across `/v1/fleet`, `/v1/agents`, and
+`/v1/agents/:id/summary` agent-row reads.
+
+Sessions with no context, missing keys, or NULL context all
+project as null on the relevant field; the `omitempty` JSON tag
+elides absent values from the wire payload. The dashboard
+treats `null` and "key missing" identically — both mean "no
+value for this agent" and contribute no chip count on the
+`/agents` sidebar.
+
+The `LIMIT 1` lookup rides the composite index
+`sessions_agent_id_started_at_desc_idx` on `sessions(agent_id,
+started_at DESC)` from migration 000025, so the per-agent
+projection is a single index seek (no heap-sort step). The same
+index also speeds the pre-existing state-rollup subquery, which
+performs the identical lookup shape.
+
+**Semantic:** an agent that ran across multiple hosts / branches
+facets by its LATEST run only. This is the single-valued
+projection required by the `/agents` page's one-row-per-agent
+facet model; the alternative (union of all values across
+sessions) would explode cardinality and break the
+single-row-per-agent contract. Operators chasing historical
+breadth use `/events` whose runtime-context facets surface every
+event's session context independently (D160).
+
 ### Swimlane sub-agent connector overlay
 
 `dashboard/src/components/timeline/SubAgentConnector.tsx` renders
@@ -2358,20 +2398,45 @@ displayed row counts reflect actual page slice sizes, not a
 fixed `PAGE_SIZE` multiplier.
 
 A left facet sidebar — the same visual pattern the `/events`
-page uses — carries the filter dimensions, each chip rendered
-with its dimension's visual: `state` a coloured dot beside the
-value text, `agent_type` an `AgentTypeBadge`, `client_type` a
-`ClientTypePill`, and `framework` a `FrameworkPill` (the pill /
-badge is itself the chip label for those three). Selections compose AND across
-dimensions and OR within. The framework group is dynamic —
-built from the `framework` attribution carried on each visible
-agent's `RecentSessionsPerAgent`-capped recent sessions
-(`recent_sessions[].framework`, the bare-name
-`sessions.framework` value); it hides entirely when no visible
-agent has a framework attribution. A full-width search bar above
-the sidebar + table filters the roster client-side by agent
-name, `agent_type`, `client_type`, framework, and recent-session
+page uses — carries thirteen filter dimensions, each chip
+rendered with its dimension's visual:
+
+- **STATE / AGENT TYPE / CLIENT / FRAMEWORK** — `state` a
+  coloured dot beside the value text, `agent_type` an
+  `AgentTypeBadge`, `client_type` a `ClientTypePill`,
+  `framework` a `FrameworkPill` (the pill / badge is itself the
+  chip label for the latter three).
+- **HOSTNAME / USER / OS / ARCH / GIT BRANCH / GIT REPO /
+  ORCHESTRATION / PYTHON / PROCESS** — nine D161 runtime-context
+  dimensions rendered via the shared `FacetIcon` (same icon
+  vocabulary `/events` uses), so the sidebar reads as one icon
+  family across the two pages.
+
+Selections compose AND across dimensions and OR within. Every
+dynamic group (FRAMEWORK + the nine D161 dims) hides entirely
+when no visible agent carries a value in that dimension —
+parity with the FRAMEWORK group's empty behaviour. A full-width
+search bar above the sidebar + table filters the roster
+client-side by agent name, `agent_type`, `client_type`,
+framework, the D161 runtime-context fields, and recent-session
 model; Escape clears it.
+
+Filtering is **fully client-side** over the loaded
+`useFleetStore().agents` slice. The page never re-fetches on
+chip toggle; `filterAgents()` runs in a `useMemo` over the
+roster and the `AgentTable` re-renders with the filtered slice.
+D161 dimensions are sourced from `AgentSummary` fields the
+`/v1/fleet` projection carries: `hostname` and `user` are
+direct agents-table columns (single-valued per agent); the
+other seven (`os`, `arch`, `git_branch`, `git_repo`,
+`orchestration`, `python_version`, `process_name`) come from a
+`LEFT JOIN LATERAL` against each agent's MOST RECENT session's
+`sessions.context` JSONB. An agent that ran across multiple
+hosts / branches facets by its latest run only — a single-row-
+per-agent facet model requires a single-valued projection.
+Agents whose latest session's context omits a key (or whose
+context is NULL) surface that field as null and contribute no
+chip count to the dimension.
 
 Sortable column headers on every column except the sparkline
 tiles themselves (sparklines are visual; the sort key is the

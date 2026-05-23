@@ -9,6 +9,21 @@ Fleet swimlane reshape, and the event-grain Events page (D157).
 
 ### Added
 
+- **`/agents` page sidebar gains 9 runtime-context facets.**
+  HOSTNAME, USER, OS, ARCH, GIT BRANCH, GIT REPO, ORCHESTRATION,
+  PYTHON, PROCESS join the four existing groups (STATE, AGENT
+  TYPE, CLIENT, FRAMEWORK). The icons match `/events` exactly
+  (shared `FacetIcon` component), so the two sidebars read as
+  one icon family. Chip click toggles the filter against the
+  loaded agent roster — filtering stays client-side, no extra
+  API roundtrips. Group hides entirely when no visible agent
+  carries a value in the dimension (mirrors the FRAMEWORK
+  group's empty behaviour). `hostname` and `user` come from the
+  agents-table columns (single-valued per agent); the other
+  seven derive from each agent's MOST RECENT session's
+  `sessions.context` JSONB — an agent that ran across multiple
+  hosts / branches facets by its latest run. Composes AND
+  across dimensions and OR within (parity with `/events`).
 - **`/events` page facet sidebar surfaces the 9 runtime-context
   dimensions.** OS, ARCH, HOST, USER, GIT BRANCH, GIT REPO,
   ORCHESTRATION, PYTHON, PROCESS join the sidebar with category

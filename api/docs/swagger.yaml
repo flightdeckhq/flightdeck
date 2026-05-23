@@ -191,13 +191,39 @@ definitions:
         type: string
       agent_type:
         type: string
+      arch:
+        type: string
       client_type:
         type: string
       first_seen_at:
         type: string
+      git_branch:
+        type: string
+      git_repo:
+        type: string
       hostname:
         type: string
       last_seen_at:
+        type: string
+      orchestration:
+        type: string
+      os:
+        description: |-
+          Runtime-context slice from the agent's MOST RECENT session's
+          `sessions.context` JSONB (D161). An agent that ran across
+          multiple hosts / branches surfaces its latest session's values
+          here — facets are single-valued per agent. Each field is null
+          when the latest session's context is absent or the JSONB key
+          is missing. Sourced via one LATERAL JOIN per agent ordered by
+          started_at DESC LIMIT 1; the per-agent overhead is bounded by
+          the page size. `Hostname` and `UserName` above remain the
+          authoritative single-valued slices for those two dims (sourced
+          from agents-table columns); these seven are the JSONB-only
+          slices the operator slices the roster by.
+        type: string
+      process_name:
+        type: string
+      python_version:
         type: string
       recent_sessions:
         description: |-

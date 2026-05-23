@@ -360,3 +360,224 @@ describe("filterAgents — free-text search dimension (Fix 4)", () => {
     expect(EMPTY_FILTER.search).toBe("");
   });
 });
+
+// ---- D161 runtime-context facets ----
+
+describe("filterAgents — D161 runtime-context dimensions", () => {
+  it("narrows by hostname (agent-table column, single-valued)", () => {
+    const filter: AgentFilterState = {
+      ...EMPTY_FILTER,
+      hostnames: new Set(["worker-7"]),
+    };
+    const result = filterAgents(
+      [
+        mkAgent({ agent_id: "a", hostname: "worker-7" }),
+        mkAgent({ agent_id: "b", hostname: "worker-2" }),
+      ],
+      filter,
+    );
+    expect(result.map((x) => x.agent_id)).toEqual(["a"]);
+  });
+
+  it("narrows by user (agent-table column, single-valued)", () => {
+    const filter: AgentFilterState = {
+      ...EMPTY_FILTER,
+      users: new Set(["alice"]),
+    };
+    const result = filterAgents(
+      [
+        mkAgent({ agent_id: "a", user: "alice" }),
+        mkAgent({ agent_id: "b", user: "bob" }),
+      ],
+      filter,
+    );
+    expect(result.map((x) => x.agent_id)).toEqual(["a"]);
+  });
+
+  it("narrows by os (latest-session context, nullable)", () => {
+    const filter: AgentFilterState = {
+      ...EMPTY_FILTER,
+      oss: new Set(["Linux"]),
+    };
+    const result = filterAgents(
+      [
+        mkAgent({ agent_id: "a", os: "Linux" }),
+        mkAgent({ agent_id: "b", os: "Darwin" }),
+        mkAgent({ agent_id: "c", os: null }),
+      ],
+      filter,
+    );
+    expect(result.map((x) => x.agent_id)).toEqual(["a"]);
+  });
+
+  it("narrows by arch", () => {
+    const filter: AgentFilterState = {
+      ...EMPTY_FILTER,
+      archs: new Set(["arm64"]),
+    };
+    const result = filterAgents(
+      [
+        mkAgent({ agent_id: "a", arch: "arm64" }),
+        mkAgent({ agent_id: "b", arch: "x86_64" }),
+      ],
+      filter,
+    );
+    expect(result.map((x) => x.agent_id)).toEqual(["a"]);
+  });
+
+  it("narrows by git_branch", () => {
+    const filter: AgentFilterState = {
+      ...EMPTY_FILTER,
+      gitBranches: new Set(["main"]),
+    };
+    const result = filterAgents(
+      [
+        mkAgent({ agent_id: "a", git_branch: "main" }),
+        mkAgent({ agent_id: "b", git_branch: "feature-x" }),
+      ],
+      filter,
+    );
+    expect(result.map((x) => x.agent_id)).toEqual(["a"]);
+  });
+
+  it("narrows by git_repo", () => {
+    const filter: AgentFilterState = {
+      ...EMPTY_FILTER,
+      gitRepos: new Set(["flightdeck"]),
+    };
+    const result = filterAgents(
+      [
+        mkAgent({ agent_id: "a", git_repo: "flightdeck" }),
+        mkAgent({ agent_id: "b", git_repo: "other" }),
+      ],
+      filter,
+    );
+    expect(result.map((x) => x.agent_id)).toEqual(["a"]);
+  });
+
+  it("narrows by orchestration", () => {
+    const filter: AgentFilterState = {
+      ...EMPTY_FILTER,
+      orchestrations: new Set(["kubernetes"]),
+    };
+    const result = filterAgents(
+      [
+        mkAgent({ agent_id: "a", orchestration: "kubernetes" }),
+        mkAgent({ agent_id: "b", orchestration: "docker" }),
+      ],
+      filter,
+    );
+    expect(result.map((x) => x.agent_id)).toEqual(["a"]);
+  });
+
+  it("narrows by python_version", () => {
+    const filter: AgentFilterState = {
+      ...EMPTY_FILTER,
+      pythonVersions: new Set(["3.12"]),
+    };
+    const result = filterAgents(
+      [
+        mkAgent({ agent_id: "a", python_version: "3.12" }),
+        mkAgent({ agent_id: "b", python_version: "3.10" }),
+      ],
+      filter,
+    );
+    expect(result.map((x) => x.agent_id)).toEqual(["a"]);
+  });
+
+  it("narrows by process_name", () => {
+    const filter: AgentFilterState = {
+      ...EMPTY_FILTER,
+      processNames: new Set(["main.py"]),
+    };
+    const result = filterAgents(
+      [
+        mkAgent({ agent_id: "a", process_name: "main.py" }),
+        mkAgent({ agent_id: "b", process_name: "worker.py" }),
+      ],
+      filter,
+    );
+    expect(result.map((x) => x.agent_id)).toEqual(["a"]);
+  });
+
+  it("an agent with a null runtime-context field never matches a non-empty chip filter for that dim", () => {
+    // A nullable D161 field (e.g. os=null) on an agent means the
+    // latest session's context didn't carry that key. Searching
+    // for any value on that dim must exclude the agent — operators
+    // filtering by "os=Linux" should not see an agent whose latest
+    // session has no os recorded at all.
+    const filter: AgentFilterState = {
+      ...EMPTY_FILTER,
+      oss: new Set(["Linux"]),
+    };
+    const result = filterAgents(
+      [
+        mkAgent({ agent_id: "a", os: null }),
+        mkAgent({ agent_id: "b", os: undefined }),
+      ],
+      filter,
+    );
+    expect(result).toHaveLength(0);
+  });
+
+  it("ANDs across multiple D161 dims (os + git_branch)", () => {
+    const filter: AgentFilterState = {
+      ...EMPTY_FILTER,
+      oss: new Set(["Linux"]),
+      gitBranches: new Set(["main"]),
+    };
+    const result = filterAgents(
+      [
+        // matches both — survives
+        mkAgent({
+          agent_id: "a",
+          os: "Linux",
+          git_branch: "main",
+        }),
+        // wrong branch
+        mkAgent({
+          agent_id: "b",
+          os: "Linux",
+          git_branch: "feature-x",
+        }),
+        // wrong OS
+        mkAgent({
+          agent_id: "c",
+          os: "Darwin",
+          git_branch: "main",
+        }),
+      ],
+      filter,
+    );
+    expect(result.map((x) => x.agent_id)).toEqual(["a"]);
+  });
+
+  it("agentMatchesSearch folds D161 runtime-context fields into the haystack", () => {
+    // A free-text search for "Linux" should match an agent whose
+    // latest session ran on Linux even without the user opening
+    // the OS sidebar chip — the search bar is the omni-search
+    // entry point.
+    expect(
+      agentMatchesSearch(
+        mkAgent({ agent_id: "a", os: "Linux", arch: "arm64" }),
+        "Linux",
+      ),
+    ).toBe(true);
+    expect(
+      agentMatchesSearch(
+        mkAgent({
+          agent_id: "b",
+          os: "Linux",
+          git_branch: "fix/auth-bug",
+        }),
+        "auth-bug",
+      ),
+    ).toBe(true);
+    expect(
+      agentMatchesSearch(
+        mkAgent({ agent_id: "c", os: null, arch: null }),
+        "Linux",
+      ),
+    ).toBe(false);
+  });
+});

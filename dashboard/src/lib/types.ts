@@ -605,6 +605,23 @@ export interface AgentSummary {
   agent_role?: string | null;
   topology: AgentTopology;
   /**
+   * D161 runtime-context slice from the agent's MOST RECENT
+   * session's ``context`` JSONB. Each is null when the latest
+   * session's context is absent or the JSONB key is missing. The
+   * /agents facet sidebar treats nulls as "no value for this
+   * agent" and excludes them from chip counts. ``hostname`` +
+   * ``user`` above remain the authoritative single-valued slices
+   * (sourced from agents-table columns); these seven are the
+   * JSONB-only slices the operator slices the roster by.
+   */
+  os?: string | null;
+  arch?: string | null;
+  git_branch?: string | null;
+  git_repo?: string | null;
+  orchestration?: string | null;
+  python_version?: string | null;
+  process_name?: string | null;
+  /**
    * Most-recent sessions for this agent (newest first by
    * started_at). Populated by /v1/fleet so the swimlane row renders
    * event circles even when the session falls outside the 100-row

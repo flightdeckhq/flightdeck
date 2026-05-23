@@ -279,6 +279,24 @@ type AgentSummary struct {
 	//              parent_session_id by at least one other session,
 	//              and the agent itself is not a child.
 	Topology string `json:"topology"`
+	// Runtime-context slice from the agent's MOST RECENT session's
+	// `sessions.context` JSONB (D161). An agent that ran across
+	// multiple hosts / branches surfaces its latest session's values
+	// here — facets are single-valued per agent. Each field is null
+	// when the latest session's context is absent or the JSONB key
+	// is missing. Sourced via one LATERAL JOIN per agent ordered by
+	// started_at DESC LIMIT 1; the per-agent overhead is bounded by
+	// the page size. `Hostname` and `UserName` above remain the
+	// authoritative single-valued slices for those two dims (sourced
+	// from agents-table columns); these seven are the JSONB-only
+	// slices the operator slices the roster by.
+	OS             *string `json:"os,omitempty"`
+	Arch           *string `json:"arch,omitempty"`
+	GitBranch      *string `json:"git_branch,omitempty"`
+	GitRepo        *string `json:"git_repo,omitempty"`
+	Orchestration  *string `json:"orchestration,omitempty"`
+	PythonVersion  *string `json:"python_version,omitempty"`
+	ProcessName    *string `json:"process_name,omitempty"`
 	// RecentSessions carries the agent's most-recent sessions
 	// (newest first, by started_at). Populated by /v1/fleet so the
 	// swimlane row renders event circles regardless of whether the
@@ -369,7 +387,9 @@ func (s *Store) GetAgentFleet(
 			a.total_sessions, a.total_tokens,
 			COALESCE(rollup.state, '') AS state,
 			d126.agent_role,
-			d126.topology
+			d126.topology,
+			d161.os, d161.arch, d161.git_branch, d161.git_repo,
+			d161.orchestration, d161.python_version, d161.process_name
 		FROM agents a
 		LEFT JOIN LATERAL (
 			SELECT CASE
@@ -386,7 +406,8 @@ func (s *Store) GetAgentFleet(
 				)
 			END AS state
 		) rollup ON TRUE
-		LEFT JOIN LATERAL (` + d126AgentRollupSQL + `) d126 ON TRUE` + filter + `
+		LEFT JOIN LATERAL (` + d126AgentRollupSQL + `) d126 ON TRUE
+		LEFT JOIN LATERAL (` + agentLatestContextSQL + `) d161 ON TRUE` + filter + `
 		-- ORDER BY: primary last_seen_at DESC matches user expectation
 		-- ("most recently active first"). Secondary client_type ASC
 		-- breaks last_seen_at ties deterministically -- critical for
@@ -419,6 +440,8 @@ func (s *Store) GetAgentFleet(
 			&a.UserName, &a.Hostname, &a.FirstSeenAt, &a.LastSeenAt,
 			&a.TotalSessions, &a.TotalTokens, &rollupState,
 			&a.AgentRole, &topology,
+			&a.OS, &a.Arch, &a.GitBranch, &a.GitRepo,
+			&a.Orchestration, &a.PythonVersion, &a.ProcessName,
 		); err != nil {
 			return nil, 0, fmt.Errorf("scan agent: %w", err)
 		}
@@ -596,6 +619,37 @@ const d126AgentRollupSQL = `
 			) THEN 'parent'
 			ELSE 'lone'
 		END AS topology
+`
+
+// agentLatestContextSQL is the LATERAL subquery that projects the
+// seven runtime-context fields (D161) from an agent's MOST RECENT
+// session's `sessions.context` JSONB. Shared by GetAgentFleet,
+// ListAgents, and GetAgentByID so all three projections stay
+// byte-identical on the new columns.
+//
+// One subquery per agent — bounded by the page size. Each scan
+// rides the composite index on `sessions(agent_id, started_at
+// DESC)` (migration 000025) so the ORDER BY ... LIMIT 1 is a
+// single index lookup. `hostname` and `user` are NOT projected
+// here — those are direct `agents`-table columns and are
+// authoritatively single-valued already.
+//
+// Returns nulls when the agent has no sessions OR the latest
+// session's context is null OR the JSONB key is missing — three
+// cases the consumer collapses to "no value for this agent".
+const agentLatestContextSQL = `
+	SELECT
+		s.context->>'os'             AS os,
+		s.context->>'arch'           AS arch,
+		s.context->>'git_branch'     AS git_branch,
+		s.context->>'git_repo'       AS git_repo,
+		s.context->>'orchestration'  AS orchestration,
+		s.context->>'python_version' AS python_version,
+		s.context->>'process_name'   AS process_name
+	FROM sessions s
+	WHERE s.agent_id = a.agent_id
+	ORDER BY s.started_at DESC
+	LIMIT 1
 `
 
 // GetSession returns a single session by ID, including effective policy thresholds.

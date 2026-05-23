@@ -15,11 +15,26 @@ export interface AgentFilterState {
   /** Bare-name frameworks observed on the agent's recent
    *  sessions (`recent_sessions[].framework`). */
   frameworks: Set<string>;
+  /** D161 runtime-context dimensions. ``hostnames`` and ``users``
+   *  filter the agent-table columns of the same name (single-
+   *  valued per agent). The other seven filter the
+   *  ``AgentSummary`` projection of the agent's MOST RECENT
+   *  session's ``context`` JSONB; an agent with no value (null
+   *  field) never matches any non-empty filter on that dim. */
+  hostnames: Set<string>;
+  users: Set<string>;
+  oss: Set<string>;
+  archs: Set<string>;
+  gitBranches: Set<string>;
+  gitRepos: Set<string>;
+  orchestrations: Set<string>;
+  pythonVersions: Set<string>;
+  processNames: Set<string>;
   /** Free-text search from the top-of-page search bar. Matched
    *  case-insensitively against the agent name, agent_type,
-   *  client_type, the agent's frameworks, and the models on its
-   *  recent sessions. Empty string means no text filter. ANDs with
-   *  the chip dimensions. */
+   *  client_type, the agent's frameworks, runtime-context fields,
+   *  and the models on its recent sessions. Empty string means
+   *  no text filter. ANDs with the chip dimensions. */
   search: string;
 }
 
@@ -28,6 +43,15 @@ export const EMPTY_FILTER: AgentFilterState = {
   agentTypes: new Set(),
   clientTypes: new Set(),
   frameworks: new Set(),
+  hostnames: new Set(),
+  users: new Set(),
+  oss: new Set(),
+  archs: new Set(),
+  gitBranches: new Set(),
+  gitRepos: new Set(),
+  orchestrations: new Set(),
+  pythonVersions: new Set(),
+  processNames: new Set(),
   search: "",
 };
 
@@ -64,9 +88,9 @@ export function deriveFrameworkOptions(agents: AgentSummary[]): string[] {
 
 /**
  * Case-insensitive substring match of the free-text search against
- * an agent's name, agent_type, client_type, its frameworks, and the
- * models on its recent sessions. An empty / whitespace query matches
- * every agent.
+ * an agent's name, agent_type, client_type, its frameworks, the
+ * D161 runtime-context fields, and the models on its recent
+ * sessions. An empty / whitespace query matches every agent.
  */
 export function agentMatchesSearch(
   agent: AgentSummary,
@@ -78,12 +102,43 @@ export function agentMatchesSearch(
     agent.agent_name,
     agent.agent_type,
     agent.client_type,
+    agent.hostname,
+    agent.user,
     ...agentFrameworks(agent),
   ];
+  // Runtime-context dims fold into the haystack only when non-null;
+  // a search for "Linux" should match an agent whose latest session
+  // ran on Linux without forcing the user to switch sidebar chips.
+  for (const v of agentRuntimeContextValues(agent)) {
+    haystack.push(v);
+  }
   for (const s of agent.recent_sessions ?? []) {
     if (s.model) haystack.push(s.model);
   }
   return haystack.some((field) => field.toLowerCase().includes(q));
+}
+
+/**
+ * Project the seven D161 runtime-context fields off an agent as a
+ * compact string list (nulls dropped). Used by `agentMatchesSearch`
+ * for free-text and by `filterAgents` is NOT — the chip filter
+ * predicates inspect each field individually so a misspelled OS
+ * value in one dim cannot accidentally match a chip in another.
+ */
+function agentRuntimeContextValues(agent: AgentSummary): string[] {
+  const out: string[] = [];
+  for (const v of [
+    agent.os,
+    agent.arch,
+    agent.git_branch,
+    agent.git_repo,
+    agent.orchestration,
+    agent.python_version,
+    agent.process_name,
+  ]) {
+    if (v != null && v !== "") out.push(v);
+  }
+  return out;
 }
 
 /**
@@ -107,6 +162,60 @@ export function filterAgents(
     if (filter.frameworks.size > 0) {
       const fws = agentFrameworks(a);
       if (!fws.some((fw) => filter.frameworks.has(fw))) return false;
+    }
+    // D161 runtime-context dims. Each chip filter is single-valued:
+    // an agent matches the chip iff its field is non-null AND the
+    // value is in the active set. A null field can never satisfy a
+    // non-empty filter for that dim — operators searching by, say,
+    // "git_branch=main" should not see agents with no git context.
+    if (filter.hostnames.size > 0 && !filter.hostnames.has(a.hostname)) {
+      return false;
+    }
+    if (filter.users.size > 0 && !filter.users.has(a.user)) {
+      return false;
+    }
+    if (
+      filter.oss.size > 0 &&
+      (a.os == null || !filter.oss.has(a.os))
+    ) {
+      return false;
+    }
+    if (
+      filter.archs.size > 0 &&
+      (a.arch == null || !filter.archs.has(a.arch))
+    ) {
+      return false;
+    }
+    if (
+      filter.gitBranches.size > 0 &&
+      (a.git_branch == null || !filter.gitBranches.has(a.git_branch))
+    ) {
+      return false;
+    }
+    if (
+      filter.gitRepos.size > 0 &&
+      (a.git_repo == null || !filter.gitRepos.has(a.git_repo))
+    ) {
+      return false;
+    }
+    if (
+      filter.orchestrations.size > 0 &&
+      (a.orchestration == null || !filter.orchestrations.has(a.orchestration))
+    ) {
+      return false;
+    }
+    if (
+      filter.pythonVersions.size > 0 &&
+      (a.python_version == null ||
+        !filter.pythonVersions.has(a.python_version))
+    ) {
+      return false;
+    }
+    if (
+      filter.processNames.size > 0 &&
+      (a.process_name == null || !filter.processNames.has(a.process_name))
+    ) {
+      return false;
     }
     if (!agentMatchesSearch(a, filter.search)) return false;
     return true;

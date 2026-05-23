@@ -2331,6 +2331,32 @@ column (not in the sortable `COLUMNS` array) carries an
 **Events ↗** quick action; the empty-state row's `colSpan`
 covers both the sortable columns and the actions column.
 
+**Family grouping** — rows form families with the same visual
+contract as the Fleet swimlane: a parent row is immediately
+followed by its descendants. The active column sort orders
+FAMILIES by the parent's (or lone agent's) sort key +
+direction; within each family the descendants render directly
+under their root, sorted among themselves by the same key +
+direction. Holds for every sortable column. The linkage source
+is `AgentSummary.recent_sessions[].parent_session_id` —
+per-agent backfilled, so a child whose parent's sessions fall
+outside any wall-clock window still groups with its parent.
+Depth-2 chains (grandparent → parent → leaf) flatten to one
+indent level under the root family. Descendant rows carry an additional
+`data-topology="child"` attribute (distinct from
+`data-agent-topology` which mirrors the agent's structural
+topology on the wire); the row's first cell applies a 28-px
+`padding-left` to match the swimlane / Investigate sub-row
+indent. Orphan children — whose parent isn't in the current
+view (filtered out OR off the API window) — render as
+single-row families at their own sort position so a filtered
+view never silently hides a child. Pagination respects family
+boundaries: a family never splits across a page; an oversized
+family (rare — sub-agent fan-out is normally ≤ 10) lands on
+its own oversized page rather than splitting. Page-size is 50;
+displayed row counts reflect actual page slice sizes, not a
+fixed `PAGE_SIZE` multiplier.
+
 A left facet sidebar — the same visual pattern the `/events`
 page uses — carries the filter dimensions, each chip rendered
 with its dimension's visual: `state` a coloured dot beside the

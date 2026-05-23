@@ -161,6 +161,17 @@ Fleet swimlane reshape, and the event-grain Events page (D157).
 
 ### Changed
 
+- **/agents table groups sub-agents directly under their
+  parent.** Rows now form families: the active column sort
+  orders families by the parent's (or lone agent's) sort key,
+  and within each family the descendants render directly under
+  their root, sorted among themselves by the same key. Holds
+  for every sortable column. Depth-2 chains flatten to one
+  indent level under the root family. Orphan children (parent
+  not in the current view) render as single-row families at
+  their own sort position so a filtered view doesn't silently
+  hide a child. Pagination respects family boundaries — a
+  family never splits across a page.
 - **Agent drawer runtime-context panel shows the full session
   context.** The panel previously curated six keys (OS,
   Orchestration, Frameworks, Git branch, Git repo, Host) and

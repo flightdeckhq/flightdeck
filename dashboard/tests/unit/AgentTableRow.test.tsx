@@ -97,6 +97,7 @@ function renderRow(
   opts: {
     onOpenDrawer?: (a: AgentSummary) => void;
     onOpenSwimlaneModal?: (a: AgentSummary) => void;
+    isFamilyDescendant?: boolean;
   } = {},
 ) {
   __resetAgentSummaryCacheForTests();
@@ -111,6 +112,7 @@ function renderRow(
               <tbody>
                 <AgentTableRow
                   agent={agent}
+                  isFamilyDescendant={opts.isFamilyDescendant ?? false}
                   onOpenDrawer={opts.onOpenDrawer ?? (() => {})}
                   onOpenSwimlaneModal={opts.onOpenSwimlaneModal ?? (() => {})}
                 />
@@ -257,5 +259,23 @@ describe("AgentTableRow", () => {
     );
     const cell = await screen.findByTestId("agent-row-cost-a-sensor-empty");
     expect(cell.textContent).toBe("—");
+  });
+
+  it("stamps data-topology='child' when isFamilyDescendant is true", () => {
+    // The family-grouped layout marks descendant rows so the
+    // first-cell indent applies. Default (false) must NOT
+    // stamp the attribute so root + lone rows stay
+    // unattributed.
+    renderRow(mkAgent({ agent_id: "a-child" }), {
+      isFamilyDescendant: true,
+    });
+    const row = screen.getByTestId("agent-row-a-child");
+    expect(row).toHaveAttribute("data-topology", "child");
+  });
+
+  it("omits data-topology when isFamilyDescendant is false (default)", () => {
+    renderRow(mkAgent({ agent_id: "a-root" }));
+    const row = screen.getByTestId("agent-row-a-root");
+    expect(row).not.toHaveAttribute("data-topology");
   });
 });

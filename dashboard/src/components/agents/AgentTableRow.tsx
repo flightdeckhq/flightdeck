@@ -19,6 +19,16 @@ import { AgentSparkline } from "./AgentSparkline";
 
 interface AgentTableRowProps {
   agent: AgentSummary;
+  /** True when this row renders as a descendant under a parent
+   *  row in the current family-grouped page slice. Drives the
+   *  rendering-layout-topology stamp ``data-topology="child"``
+   *  which the existing globals.css rule indents 28 px in the
+   *  first cell (same rule the swimlane and Investigate
+   *  sub-rows use). NOT the same as
+   *  ``data-agent-topology={agent.topology}`` — that one
+   *  reflects the agent's structural topology on the wire.
+   *  This one reflects how the row is laid out in this view. */
+  isFamilyDescendant: boolean;
   /** Row click — opens the agent drawer for this agent. */
   onOpenDrawer: (agent: AgentSummary) => void;
   /** Status-badge click — opens the per-agent swimlane modal. */
@@ -35,6 +45,7 @@ const SPARKLINE_HEIGHT = 22;
 
 function AgentTableRowImpl({
   agent,
+  isFamilyDescendant,
   onOpenDrawer,
   onOpenSwimlaneModal,
 }: AgentTableRowProps) {
@@ -74,6 +85,7 @@ function AgentTableRowImpl({
       data-agent-id={agent.agent_id}
       data-agent-topology={agent.topology}
       data-agent-state={agent.state}
+      data-topology={isFamilyDescendant ? "child" : undefined}
       onClick={handleRowClick}
       style={{
         borderBottom: "1px solid var(--border-subtle)",
@@ -82,7 +94,23 @@ function AgentTableRowImpl({
     >
       {/* Identity */}
       <td
-        style={{ padding: "8px 12px", minWidth: 260 }}
+        // First-cell indent for family descendants: 28 px
+        // matches the swimlane and Investigate sub-row indent
+        // (D126 § 4.1). The existing
+        // ``[data-topology="child"] > td:first-child`` rule in
+        // globals.css can't reach this cell because the
+        // inline ``style`` attribute wins over any selector by
+        // the inline-style specificity floor — so the indent
+        // is applied inline here as the surgical landing
+        // point. Lone agents and family roots keep the 12-px
+        // default.
+        style={{
+          paddingTop: 8,
+          paddingBottom: 8,
+          paddingRight: 12,
+          paddingLeft: isFamilyDescendant ? 28 : 12,
+          minWidth: 260,
+        }}
         data-testid={`agent-row-identity-${agent.agent_id}`}
       >
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -329,6 +357,7 @@ function AgentTableRowImpl({
 export const AgentTableRow = memo(AgentTableRowImpl, (prev, next) => {
   return (
     prev.agent === next.agent &&
+    prev.isFamilyDescendant === next.isFamilyDescendant &&
     prev.onOpenDrawer === next.onOpenDrawer &&
     prev.onOpenSwimlaneModal === next.onOpenSwimlaneModal
   );

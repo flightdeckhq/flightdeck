@@ -4,7 +4,9 @@ import type { AgentSummary, AgentSummaryResponse } from "@/lib/types";
 import {
   type AgentSortColumn,
   type SortState,
-  sortAgents,
+  deriveFamilyDescendantSet,
+  paginateFamilies,
+  sortAgentsWithFamilies,
   toggleSort,
 } from "@/lib/agents-sort";
 import {
@@ -70,14 +72,35 @@ export function AgentTable({
   });
   const [page, setPage] = useState(0);
 
+  // Family-grouped sort: parents (and lone agents) order as
+  // families by the active column; each family's children render
+  // directly under their root. Orphan children (parent not in
+  // the current ``agents`` slice) become single-row families at
+  // their own sort position.
   const sorted = useMemo(
-    () => sortAgents(agents, summariesByAgentId, sort),
+    () => sortAgentsWithFamilies(agents, summariesByAgentId, sort),
     [agents, summariesByAgentId, sort],
   );
+  // Descendant set — drives the per-row ``data-topology="child"``
+  // stamp on ``AgentTableRow`` so the existing
+  // ``[data-topology="child"] > td:first-child`` rule in
+  // ``globals.css`` lands the 28-px first-cell indent.
+  const descendantSet = useMemo(
+    () => deriveFamilyDescendantSet(agents),
+    [agents],
+  );
+  // Family-respecting pagination: a family never splits across a
+  // page boundary. The page renders fewer than ``PAGE_SIZE`` rows
+  // when an in-progress family would straddle. The total counter
+  // below still counts agents (not families).
+  const pages = useMemo(
+    () => paginateFamilies(sorted, descendantSet, PAGE_SIZE),
+    [sorted, descendantSet],
+  );
   const total = sorted.length;
-  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const pageCount = Math.max(1, pages.length);
   const safePage = Math.min(page, pageCount - 1);
-  const slice = sorted.slice(safePage * PAGE_SIZE, (safePage + 1) * PAGE_SIZE);
+  const slice = pages[safePage] ?? [];
 
   return (
     <div data-testid="agent-table-wrapper">
@@ -223,6 +246,7 @@ export function AgentTable({
             <AgentTableRow
               key={a.agent_id}
               agent={a}
+              isFamilyDescendant={descendantSet.has(a.agent_id)}
               onOpenDrawer={onOpenDrawer}
               onOpenSwimlaneModal={onOpenSwimlaneModal}
             />
@@ -247,7 +271,7 @@ export function AgentTable({
           )}
         </tbody>
       </table>
-      {total > PAGE_SIZE && (
+      {pageCount > 1 && (
         <div
           data-testid="agent-table-pagination"
           style={{
@@ -261,9 +285,19 @@ export function AgentTable({
             fontFamily: "var(--font-mono)",
           }}
         >
+          {/* Family-respecting pagination produces variable-size
+              pages, so the displayed range is computed from the
+              actual page slice sizes, not a fixed PAGE_SIZE
+              multiplier. ``startIdx`` is the count of rows on
+              all preceding pages + 1 (1-indexed for display). */}
           <span data-testid="agent-table-pagination-counts">
-            {safePage * PAGE_SIZE + 1}-
-            {Math.min((safePage + 1) * PAGE_SIZE, total)} of {total}
+            {pages.slice(0, safePage).reduce((sum, p) => sum + p.length, 0) +
+              1}
+            -
+            {pages
+              .slice(0, safePage + 1)
+              .reduce((sum, p) => sum + p.length, 0)}{" "}
+            of {total}
           </span>
           <div style={{ display: "flex", gap: 8 }}>
             <button

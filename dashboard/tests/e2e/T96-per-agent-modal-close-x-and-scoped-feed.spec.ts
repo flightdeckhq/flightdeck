@@ -156,4 +156,125 @@ test.describe("T96 — per-agent modal: close X + scoped LiveFeed", () => {
       .poll(visibleFlavors, { timeout: 5_000 })
       .toBeLessThanOrEqual(onCount);
   });
+
+  test("now pole lands inside the visible swim viewport", async ({ page }) => {
+    // The Timeline's natural inner width
+    // (``leftPanelWidth + TIMELINE_WIDTH_PX`` ≈ 1280 px) is
+    // wider than the 80 vw modal at typical viewport widths,
+    // producing a horizontal scrollbar inside the modal's swim
+    // wrapper. The grid-line-now element renders at the
+    // rightmost pixel of the timeline (``x = TIMELINE_WIDTH_PX``
+    // inside the grid overlay); without an explicit scroll-to-
+    // right on open, the user lands at ``scrollLeft=0`` (the
+    // OLDEST edge) and the now pole is clipped past the visible
+    // viewport. The modal snaps ``scrollLeft`` to the rightmost
+    // position when it opens so the now pole surfaces at the
+    // right edge of the visible swim viewport, matching Fleet's
+    // UX where the timeline naturally fits the page width.
+    // Use ``e2e-test-connector-parent`` instead of the first
+    // row: with its sub-agent toggle ON by default the Timeline
+    // has reliably enough scoped agents to overflow the 80 vw
+    // modal width, making the snap-scroll assertion
+    // falsifiable. A ``first()`` lone-agent row could fit inside
+    // the modal width on a wide viewport and pass even if the
+    // ``scrollLeft`` snap regressed entirely.
+    await page.goto("/agents");
+    const row = page
+      .locator('[data-testid^="agent-row-"]')
+      .filter({ hasText: "e2e-test-connector-parent" })
+      .first();
+    await row.scrollIntoViewIfNeeded();
+    await expect(row).toBeVisible({ timeout: 10_000 });
+    const agentId = await row.getAttribute("data-agent-id");
+    await page
+      .locator(`[data-testid="agent-row-open-swimlane-modal-${agentId}"]`)
+      .click();
+    const modal = page.locator('[data-testid="per-agent-swimlane-modal"]');
+    await expect(modal).toBeVisible({ timeout: 10_000 });
+    // The now pole must be inside the modal body's horizontal
+    // bounds — i.e. visible to the user, not clipped past the
+    // scroll wrapper's right edge.
+    await expect
+      .poll(
+        async () => {
+          const bodyBox = await modal
+            .locator('[data-testid="per-agent-swimlane-modal-body"]')
+            .boundingBox();
+          const nowBox = await modal
+            .locator('[data-testid="grid-line-now"]')
+            .first()
+            .boundingBox();
+          if (!bodyBox || !nowBox) return false;
+          return (
+            nowBox.x >= bodyBox.x && nowBox.x + nowBox.width <= bodyBox.x + bodyBox.width
+          );
+        },
+        { timeout: 5_000 },
+      )
+      .toBeTruthy();
+  });
+
+  test("narrowing the picker shrinks the feed", async ({ page }) => {
+    // Picker contract: the feed is a projection of the in-memory
+    // event cache filtered by ``occurred_at >= NOW − TIMELINE_RANGE_MS[r]``.
+    // Switching 1 h → 1 m must drop events older than 1 m without
+    // a re-fetch. Uses ``e2e-test-connector-parent`` for the same
+    // reason the rescope test does — guaranteed fresh ``tool_call``
+    // events on both endpoints from the keep-alive watchdog.
+    await page.goto("/agents");
+    const row = page
+      .locator('[data-testid^="agent-row-"]')
+      .filter({ hasText: "e2e-test-connector-parent" })
+      .first();
+    await row.scrollIntoViewIfNeeded();
+    const agentId = await row.getAttribute("data-agent-id");
+    await page
+      .locator(`[data-testid="agent-row-open-swimlane-modal-${agentId}"]`)
+      .click();
+    const modal = page.locator('[data-testid="per-agent-swimlane-modal"]');
+    await expect(modal).toBeVisible({ timeout: 10_000 });
+
+    // Widen first so the seed covers everything in the 1 h
+    // window. The 1 h pill is the widest option.
+    await modal
+      .locator('[data-testid="per-agent-swimlane-modal-time-1h"]')
+      .click();
+    const feedStrip = modal.locator(
+      '[data-testid="per-agent-swimlane-modal-feed"]',
+    );
+    const visibleRows = async (): Promise<number> =>
+      feedStrip.locator('[data-testid="feed-row"]').count();
+    // Need a baseline with ≥ 1 row so the narrowing assertion
+    // is not vacuously true.
+    await expect
+      .poll(visibleRows, {
+        message: "1 h feed must settle with >= 1 row before narrowing",
+        timeout: 10_000,
+      })
+      .toBeGreaterThan(0);
+    const wideCount = await visibleRows();
+
+    // Narrow to 1 m — the seed window's older events must drop
+    // out. The watchdog re-emits every 30 s so the narrowed
+    // window will typically still carry 1 row from the most
+    // recent tick, but the count must not exceed the wide count.
+    //
+    // ``toBeLessThanOrEqual`` is a monotonicity guard, not proof
+    // of correct filtering: with watchdog ticks every 30 s it is
+    // possible (e.g. ``wideCount === 1``, ``narrowCount === 1``)
+    // for the count to be equal in both windows and the filter
+    // to still be functioning correctly. The unit test
+    // (``PerAgentSwimlaneModal.test.tsx`` -- "LiveFeed receives
+    // only events inside the picker time window") carries the
+    // proof-of-correctness with pinned ``Date.now()`` and
+    // controlled event timestamps. This test guards against the
+    // regression where the picker no longer affects the feed
+    // AT ALL (count would stay constant or grow on narrowing).
+    await modal
+      .locator('[data-testid="per-agent-swimlane-modal-time-1m"]')
+      .click();
+    await expect
+      .poll(visibleRows, { timeout: 5_000 })
+      .toBeLessThanOrEqual(wideCount);
+  });
 });

@@ -2388,21 +2388,38 @@ header's **Open in swimlane** button. It scopes the existing `SwimLane` /
 Modal layout:
 
 - **Header** — agent name, topology pill, status badge (with
-  a rotating gradient ring on active), KPI totals summary, and
-  an explicit close `×` button at the top-right (outside-click
-  and `Esc` also close via Radix's `onOpenChange`).
+  a rotating gradient ring on active; passes
+  `align="inline"` so the badge hugs the topology pill on the
+  left — the badge's default `auto-right` mode applies
+  everywhere else `AgentStatusBadge` ships), KPI totals
+  summary, and an explicit close `×` button at the top-right
+  (outside-click and `Esc` also close via Radix's
+  `onOpenChange`).
 - **Time-range picker** — the five Fleet ranges `1m / 5m /
   15m / 30m / 1h`, defaulting to `1m`. Options and default are
   the shared `TIME_RANGE_OPTIONS` / `DEFAULT_TIME_RANGE`
   constants the Fleet view also reads, so the two pickers
-  cannot drift. Affects the modal's swimlane events only, not
-  the `/agents` table sparklines.
+  cannot drift. Affects both the modal's swimlane events and
+  the live feed strip below — the feed projects a subset of
+  the in-memory event cache filtered by
+  `occurred_at >= NOW − TIMELINE_RANGE_MS[r]` so narrowing the
+  picker drops older rows and widening re-exposes them without
+  a re-fetch. Does not affect the `/agents` table sparklines.
 - **Show sub-agents toggle** — defaults ON for parents
   (`topology === "parent"`), DISABLED + off for lone agents.
   When ON, the modal renders the parent row plus every
   sub-agent row with the existing `SubAgentConnector` overlay.
 - **Swimlane body** — the existing `SwimLane` primitive
-  filtered to the agent's flavor set.
+  filtered to the agent's flavor set. The Timeline's natural
+  inner width (`leftPanelWidth + TIMELINE_WIDTH_PX`) is typically
+  wider than the 80 vw modal viewport, so a horizontal
+  scrollbar appears on the swim wrapper. The modal snaps
+  `scrollLeft` to the rightmost position when it opens, when
+  the picker range changes, and when the scope flips, so the
+  "now" pole at the rightmost pixel of the Timeline surfaces at
+  the right edge of the visible swim viewport (matching Fleet,
+  where the page-width viewport fits the timeline naturally).
+  Manual horizontal scroll between those events is preserved.
 - **Live feed strip** — a `LiveFeed` strip below the swimlane
   body, scoped to the same session set the lanes use.
   Pipeline: per-session `fetchSession` seeds the feed from

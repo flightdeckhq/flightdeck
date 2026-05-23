@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { X } from "lucide-react";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Timeline } from "@/components/timeline/Timeline";
@@ -16,11 +16,12 @@ import {
   formatTokens,
 } from "@/lib/agents-format";
 import type { AgentEvent, AgentSummary, FeedEvent } from "@/lib/types";
-import type { TimeRange } from "@/pages/Fleet";
 import {
   DEFAULT_TIME_RANGE,
   FEED_MAX_EVENTS,
   TIME_RANGE_OPTIONS,
+  TIMELINE_RANGE_MS,
+  type TimeRange,
 } from "@/lib/constants";
 
 interface PerAgentSwimlaneModalProps {
@@ -241,7 +242,43 @@ export function PerAgentSwimlaneModal({
     );
   }, [agentId, lastEvent, scopedSessionIds]);
 
+  // Picker-aware projection. ``feedEvents`` stays a strict
+  // superset of what's visible — older events linger in memory
+  // so widening the picker (e.g. 5m → 1h) re-exposes them
+  // without a re-fetch. The Live feed strip below only sees the
+  // subset whose ``occurred_at`` falls inside the current
+  // picker window. The cutoff is recomputed on every render the
+  // memo runs (timeRange change, new lastEvent arrival), which
+  // is what the swimlane lanes do via their own scale domain.
+  const visibleFeedEvents = useMemo(() => {
+    const cutoffMs = Date.now() - TIMELINE_RANGE_MS[timeRange];
+    return feedEvents.filter(
+      (fe) => new Date(fe.event.occurred_at).getTime() >= cutoffMs,
+    );
+  }, [feedEvents, timeRange]);
+
+  // Modal swim viewport is narrower than the Timeline's natural
+  // ``leftPanelWidth + TIMELINE_WIDTH_PX`` (≈1280 px) at the
+  // 80 vw modal width — anything narrower than that produces a
+  // horizontal scrollbar. The Fleet view sits in the page-width
+  // viewport so the timeline fits and the "now" pole at the
+  // rightmost pixel is visible at the right edge. In the modal,
+  // ``scrollLeft = 0`` on first paint puts the user at the
+  // OLDEST edge of the window — the now pole is rendered but
+  // clipped past the visible scroll viewport. Snap to the
+  // rightmost scroll position when the modal opens, when the
+  // picker range changes, and when the scope flips, so the now
+  // pole surfaces at the right edge of the visible swim
+  // viewport in the same place Fleet shows it. Manual user
+  // scrolling between these events is preserved.
+  const swimScrollRef = useRef<HTMLDivElement | null>(null);
   const open = agent !== null;
+  useLayoutEffect(() => {
+    if (!open) return;
+    const el = swimScrollRef.current;
+    if (!el) return;
+    el.scrollLeft = el.scrollWidth - el.clientWidth;
+  }, [open, timeRange, scopedSessionIdsKey]);
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
@@ -301,6 +338,7 @@ export function PerAgentSwimlaneModal({
                 <AgentStatusBadge
                   state={agent.state}
                   testId="per-agent-swimlane-modal-status"
+                  align="inline"
                 />
                 {/* Explicit close X — outside-click / Esc keep
                     working via Radix's Dialog onOpenChange, but
@@ -452,7 +490,11 @@ export function PerAgentSwimlaneModal({
                 flexDirection: "column",
               }}
             >
-              <div style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
+              <div
+                ref={swimScrollRef}
+                data-testid="per-agent-swimlane-modal-scroll"
+                style={{ flex: 1, minHeight: 0, overflow: "auto" }}
+              >
                 <Timeline
                   flavors={scopedFlavors}
                   timeRange={timeRange}
@@ -470,7 +512,7 @@ export function PerAgentSwimlaneModal({
                 }}
               >
                 <LiveFeed
-                  events={feedEvents}
+                  events={visibleFeedEvents}
                   onEventClick={(event) => setSelectedEvent(event)}
                 />
               </div>

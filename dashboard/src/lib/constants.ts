@@ -214,11 +214,32 @@ export const FEED_COL_DEFAULTS = {
 export const TIMELINE_WIDTH_PX = 900;
 
 /**
- * Map from human-readable time range to absolute milliseconds. The
- * Timeline component uses this to compute the d3 time scale domain
- * and to format the relative-time axis labels.
+ * Ordered swimlane time-range options. Single source of truth for
+ * the Fleet header time-range picker and the per-agent swimlane
+ * modal picker, so the two surfaces can never drift apart.
  */
-export const TIMELINE_RANGE_MS: Record<string, number> = {
+export const TIME_RANGE_OPTIONS = ["1m", "5m", "15m", "30m", "1h"] as const;
+
+/**
+ * Discriminated string-literal type for the swimlane time-range
+ * picker. Derived from ``TIME_RANGE_OPTIONS`` so the picker UI and
+ * the type system share one source of truth — adding a value to
+ * the array immediately widens this type and forces every
+ * ``TIMELINE_RANGE_MS`` consumer + every picker call site to
+ * acknowledge the new option.
+ */
+export type TimeRange = (typeof TIME_RANGE_OPTIONS)[number];
+
+/**
+ * Map from time range to absolute milliseconds. The Timeline
+ * component uses this for the d3 time scale domain + axis labels;
+ * the per-agent modal uses it for the LiveFeed cutoff. Typed as
+ * ``Record<TimeRange, number>`` so adding a ``TIME_RANGE_OPTIONS``
+ * entry without a millisecond value is a compile error and so
+ * consumers don't need a ``?? fallback`` for an unreachable
+ * ``undefined``.
+ */
+export const TIMELINE_RANGE_MS: Record<TimeRange, number> = {
   "1m": 60_000,
   "5m": 300_000,
   "15m": 900_000,
@@ -227,19 +248,12 @@ export const TIMELINE_RANGE_MS: Record<string, number> = {
 };
 
 /**
- * Ordered swimlane time-range options. Single source of truth for
- * the Fleet header time-range picker and the per-agent swimlane
- * modal picker, so the two surfaces can never drift apart.
- */
-export const TIME_RANGE_OPTIONS = ["1m", "5m", "15m", "30m", "1h"] as const;
-
-/**
  * Default swimlane time range on first mount. ``1m`` is the
  * live-monitor window — what the fleet is doing right now, not the
  * last hour of history. Shared by the Fleet view and the per-agent
  * swimlane modal so both open on the same window.
  */
-export const DEFAULT_TIME_RANGE: (typeof TIME_RANGE_OPTIONS)[number] = "1m";
+export const DEFAULT_TIME_RANGE: TimeRange = "1m";
 
 /**
  * Default lookback window for the Investigate page on first

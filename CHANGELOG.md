@@ -372,6 +372,34 @@ Fleet swimlane reshape, and the event-grain Events page (D157).
   from the child event's `parent_session_id` and bumps the parent
   row's activity timestamp, so a cluster kept alive entirely by its
   sub-agents no longer sinks into the stale / idle bucket.
+- **Per-agent modal `LiveFeed` now honours the picker time window.**
+  The modal's feed kept rendering every cached event regardless of
+  the 1 m / 5 m / 15 m / 30 m / 1 h selection; only the swimlane
+  lanes pruned to the picker. The feed now applies the same
+  `occurred_at >= NOW − TIMELINE_RANGE_MS[r]` cutoff on every render,
+  so narrowing 1 h → 1 m drops older rows and widening 1 m → 1 h
+  re-exposes them without a re-fetch (the in-memory event cache is
+  the strict superset).
+- **Per-agent modal status badge sits next to the agent name.**
+  `AgentStatusBadge`'s baked-in `ml-auto` is correct for the
+  swimlane row strip (badge parks at the panel's right edge) but
+  parked the badge visually in the middle of the modal header
+  between the topology pill and the close `×`. The badge now
+  accepts an `align` prop; the modal passes `align="inline"` so
+  the badge hugs the name + topology pill on the left and the
+  close `×`'s own `marginLeft: auto` anchors the right edge.
+- **Per-agent modal swimlane shows the "now" pole at the right
+  edge.** The Timeline's natural inner width
+  (`leftPanelWidth + TIMELINE_WIDTH_PX` ≈ 1280 px) is wider than
+  the 80 vw modal at typical viewport widths, so the scroll
+  wrapper opens at `scrollLeft = 0` — the user lands at the
+  OLDEST edge of the window and the now pole (the rightmost
+  pixel of the timeline) gets clipped past the visible viewport.
+  The modal now snaps `scrollLeft` to the rightmost position
+  when it opens, when the picker range changes, and when the
+  scope flips, so the existing now pole surfaces at the right
+  edge of the visible swim viewport — matching Fleet's UX where
+  the timeline naturally fits the page width.
 
 ## Unreleased — MCP Protection Policy + operator-actionable enrichment
 

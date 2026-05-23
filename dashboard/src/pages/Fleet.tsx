@@ -24,6 +24,7 @@ import {
   SWIM_FADE_WIDTH_PX,
   TIME_RANGE_OPTIONS,
   TIMELINE_RANGE_MS,
+  type TimeRange,
 } from "@/lib/constants";
 import { useLeftPanelWidth } from "@/lib/leftPanelWidth";
 import { useSwimlaneScroll } from "@/lib/useSwimlaneScroll";
@@ -38,12 +39,15 @@ import { eventsCache } from "@/hooks/useSessionEvents";
  * retyped to `"swimlane"` everywhere at once.
  */
 export type ViewMode = "swimlane";
-export type TimeRange = (typeof TIME_RANGE_OPTIONS)[number];
+// ``TimeRange`` re-exported from ``@/lib/constants`` (kept here so
+// pre-existing ``import { TimeRange } from "@/pages/Fleet"`` call
+// sites keep compiling; the canonical source is constants.ts).
+export type { TimeRange };
 
-// Millisecond span per range. Reuses the single TIMELINE_RANGE_MS
-// map in lib/constants.ts (the Timeline component reads the same
-// one), narrowed to the TimeRange key set — one source, no drift.
-const TIME_RANGE_MS = TIMELINE_RANGE_MS as Record<TimeRange, number>;
+// ``TIMELINE_RANGE_MS`` from ``@/lib/constants`` is already typed
+// as ``Record<TimeRange, number>``; alias keeps Fleet-local
+// readability without re-casting.
+const TIME_RANGE_MS = TIMELINE_RANGE_MS;
 
 /**
  * Sort flavors (swimlane-shaped rows) into the three activity buckets

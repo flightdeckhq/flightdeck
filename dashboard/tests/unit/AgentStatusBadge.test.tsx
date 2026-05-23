@@ -36,4 +36,28 @@ describe("AgentStatusBadge", () => {
 			"unknown",
 		);
 	});
+
+	it("default align (auto-right) applies ml-auto", () => {
+		// Default-prop coverage: SwimLane, AgentDrawer, and
+		// AgentTableRow all rely on the default ``auto-right``
+		// alignment to push the badge to the right edge of their
+		// flex containers. If the default were accidentally
+		// inverted to ``inline`` (e.g. during a merge resolution)
+		// every one of those surfaces would silently lose its
+		// right-anchored badge. This test pins the default class.
+		render(<AgentStatusBadge state="active" />);
+		expect(
+			screen.getByTestId("swimlane-agent-status-badge").className,
+		).toMatch(/\bml-auto\b/);
+	});
+
+	it("explicit align='inline' drops ml-auto", () => {
+		// The per-agent modal opts into ``inline`` so the badge
+		// hugs the topology pill on the left rather than
+		// absorbing the space between topology and the close ×.
+		render(<AgentStatusBadge state="active" align="inline" />);
+		expect(
+			screen.getByTestId("swimlane-agent-status-badge").className,
+		).not.toMatch(/\bml-auto\b/);
+	});
 });

@@ -1,19 +1,27 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { X } from "lucide-react";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Timeline } from "@/components/timeline/Timeline";
 import { TopologyCell } from "@/components/fleet/TopologyCell";
 import { AgentStatusBadge } from "@/components/timeline/AgentStatusBadge";
 import { EventDetailDrawer } from "@/components/fleet/EventDetailDrawer";
+import { LiveFeed } from "@/components/fleet/LiveFeed";
 import { useAgentSummary } from "@/hooks/useAgentSummary";
+import { eventsCache } from "@/hooks/useSessionEvents";
 import { useFleetStore } from "@/store/fleet";
+import { fetchSession } from "@/lib/api";
 import {
   formatCost,
   formatLatencyMs,
   formatTokens,
 } from "@/lib/agents-format";
-import type { AgentEvent, AgentSummary } from "@/lib/types";
+import type { AgentEvent, AgentSummary, FeedEvent } from "@/lib/types";
 import type { TimeRange } from "@/pages/Fleet";
-import { DEFAULT_TIME_RANGE, TIME_RANGE_OPTIONS } from "@/lib/constants";
+import {
+  DEFAULT_TIME_RANGE,
+  FEED_MAX_EVENTS,
+  TIME_RANGE_OPTIONS,
+} from "@/lib/constants";
 
 interface PerAgentSwimlaneModalProps {
   /** The agent whose swimlane is being viewed. ``null`` keeps the
@@ -30,11 +38,15 @@ export function PerAgentSwimlaneModal({
   // Show-sub-agents toggle. Default ON for parents (the relationship
   // is the primary reason an operator opens the modal on a parent);
   // DISABLED + off for lone agents (no sub-agents to render).
-  // Re-derived whenever the modal's agent prop changes so opening
-  // the modal on a fresh agent picks up the right default — the
-  // previous useState(showSubAgentsDefault) locked in the value
-  // from the first render (when agent may still have been null).
-  const [showSubAgents, setShowSubAgents] = useState(false);
+  // Lazy useState initialiser reads ``agent?.topology`` once on
+  // mount so the first paint already shows the right scoping —
+  // a bare ``useState(false)`` + post-mount effect would briefly
+  // flash the lone-scoped lanes on slower connections. The
+  // ``useEffect`` below still resets the toggle whenever the
+  // modal re-points at a different agent.
+  const [showSubAgents, setShowSubAgents] = useState(
+    () => agent?.topology === "parent",
+  );
   const [selectedEvent, setSelectedEvent] = useState<AgentEvent | null>(null);
 
   useEffect(() => {
@@ -83,6 +95,151 @@ export function PerAgentSwimlaneModal({
       );
     });
   }, [agent, allFlavors, showSubAgents]);
+
+  // Modal-scoped live feed pipeline. Reads from the SAME source
+  // the swimlane uses (``eventsCache``, populated by
+  // ``useSessionEvents`` per-session fetches) so the feed always
+  // matches what the lanes show.
+  //
+  //   1. On mount + scope change: per-session ``fetchSession``
+  //      for each scoped session_id. Skips sessions already in
+  //      ``eventsCache``; populates the cache on fetch resolve
+  //      so the swimlane's ``useSessionEvents`` reads find it
+  //      pre-warmed. Seeds the feed from the union of cached
+  //      events across the scoped session set.
+  //   2. On every WS tick: ``useFleetStore.lastEvent`` fires.
+  //      If the event's ``session_id`` is in scope: inject it
+  //      into ``eventsCache`` (mirrors Fleet.tsx's
+  //      ``handleNewEvent`` so the swimlane sees the live tick)
+  //      and append a ``FeedEvent`` to the feed state.
+  //
+  // The match key is ``session_id``, not ``flavor`` — the fleet
+  // store's ``flavors[].flavor`` carries the agent_id UUID per
+  // D115 while ``AgentEvent.flavor`` still carries the
+  // seed-time flavor string. ``session_id`` is stable on both
+  // sides. The historical-bulk-events endpoint
+  // (``GET /v1/events?from=…``) is intentionally NOT used here
+  // — it returns events in a wall-clock time window which
+  // diverges from what the swimlane shows for sessions whose
+  // events are older than the picker's range.
+  // Stable scope-key + Set. ``scopedFlavors`` reference flips
+  // every time the fleet store mutates (which happens on every
+  // WS event because the store rewrites its flavors array),
+  // and a naive ``new Set(...)`` per render produces a fresh
+  // Set reference each time. Feeding that into the seed
+  // effect's dep array kept cancelling in-flight fetches
+  // before they could settle. The sorted joined-key is the
+  // structural identity of the scoped set; both the key and
+  // the Set memo are stable across renders that don't change
+  // the actual contents.
+  const scopedSessionIdsKey = useMemo(() => {
+    const ids: string[] = [];
+    for (const f of scopedFlavors) {
+      for (const s of f.sessions) ids.push(s.session_id);
+    }
+    return ids.sort().join(",");
+  }, [scopedFlavors]);
+  const scopedSessionIds = useMemo(
+    () =>
+      new Set(scopedSessionIdsKey ? scopedSessionIdsKey.split(",") : []),
+    [scopedSessionIdsKey],
+  );
+  const lastEvent = useFleetStore((s) => s.lastEvent);
+  const [feedEvents, setFeedEvents] = useState<FeedEvent[]>([]);
+  const arrivalCounter = useRef(0);
+  const agentId = agent?.agent_id;
+
+  // Initial seed (and re-seed on scope change). Per-session
+  // detail fetches resolve in parallel; events from already-
+  // cached sessions read from ``eventsCache`` synchronously.
+  // ``cancelled`` guard prevents a stale fetch from overwriting
+  // a fresh-scope seed if the toggle flips mid-flight.
+  // Deps key off the agent_id string and the scope key so the
+  // effect doesn't re-run on every parent re-render.
+  useEffect(() => {
+    if (!agentId) {
+      setFeedEvents([]);
+      return;
+    }
+    let cancelled = false;
+    const sessionIds = scopedSessionIdsKey
+      ? scopedSessionIdsKey.split(",")
+      : [];
+    Promise.all(
+      sessionIds.map(async (sid) => {
+        const cached = eventsCache.get(sid);
+        if (cached && cached.length > 0) {
+          return { sid, events: cached };
+        }
+        try {
+          const detail = await fetchSession(sid);
+          const evs = detail.events ?? [];
+          if (evs.length > 0) eventsCache.set(sid, evs);
+          return { sid, events: evs };
+        } catch {
+          return { sid, events: [] as AgentEvent[] };
+        }
+      }),
+    )
+      .then((perSession) => {
+        if (cancelled) return;
+        const all: FeedEvent[] = [];
+        for (const { events } of perSession) {
+          for (const ev of events) {
+            all.push({
+              arrivedAt: new Date(ev.occurred_at).getTime(),
+              event: ev,
+            });
+          }
+        }
+        // Newest first; LiveFeed has its own sort but pinning
+        // the order here keeps the slice-cap aligned with what
+        // the operator sees at the top.
+        all.sort((a, b) => b.arrivedAt - a.arrivedAt);
+        setFeedEvents(all.slice(0, FEED_MAX_EVENTS));
+      })
+      // Inner per-session catches swallow fetch errors and
+      // return ``[]`` for that session, so ``Promise.all``
+      // itself doesn't reject under normal flow. A trailing
+      // ``.catch`` is still here to document intent and
+      // suppress any unexpected throw inside the synchronous
+      // ``.then`` body — the seed simply skips and the next
+      // scope change re-fires the effect.
+      .catch(() => {
+        /* unexpected; the next effect run will retry */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [agentId, scopedSessionIdsKey]);
+
+  // Live-tick accumulator. Dedup by ``event.id`` so a re-render
+  // that re-fires the effect with the same lastEvent doesn't
+  // double-append; ``arrivalCounter`` ref mirrors Fleet.tsx's
+  // monotonic stamp so ``FeedEvent.arrivedAt`` stays unique
+  // even when multiple WS events land in the same ms.
+  // Also injects into ``eventsCache`` so the swimlane sees the
+  // live tick alongside the feed (Fleet.tsx does the same in
+  // its handleNewEvent path).
+  useEffect(() => {
+    if (!agentId || !lastEvent) return;
+    if (!scopedSessionIds.has(lastEvent.session_id)) return;
+    const sid = lastEvent.session_id;
+    const cached = eventsCache.get(sid) ?? [];
+    if (!cached.some((e) => e.id === lastEvent.id)) {
+      eventsCache.set(sid, [...cached, lastEvent]);
+    }
+    arrivalCounter.current += 1;
+    const fe: FeedEvent = {
+      arrivedAt: Date.now() + arrivalCounter.current * 0.001,
+      event: lastEvent,
+    };
+    setFeedEvents((prev) =>
+      prev.some((p) => p.event.id === lastEvent.id)
+        ? prev
+        : [fe, ...prev].slice(0, FEED_MAX_EVENTS),
+    );
+  }, [agentId, lastEvent, scopedSessionIds]);
 
   const open = agent !== null;
 
@@ -145,6 +302,34 @@ export function PerAgentSwimlaneModal({
                   state={agent.state}
                   testId="per-agent-swimlane-modal-status"
                 />
+                {/* Explicit close X — outside-click / Esc keep
+                    working via Radix's Dialog onOpenChange, but
+                    the X is the operator's visible affordance.
+                    Reuses the ``.agent-status-chip`` hover +
+                    focus-visible affordance from globals.css;
+                    border + border-radius + background are owned
+                    by that class so we keep only layout-specific
+                    inline properties here. An inline ``border``
+                    value would override the class's hover
+                    border-color and silently kill the affordance.
+                  */}
+                <button
+                  type="button"
+                  onClick={onClose}
+                  data-testid="per-agent-swimlane-modal-close"
+                  aria-label="Close per-agent swimlane modal"
+                  className="agent-status-chip"
+                  style={{
+                    marginLeft: "auto",
+                    justifyContent: "center",
+                    width: 28,
+                    height: 28,
+                    padding: 0,
+                    color: "var(--text-secondary)",
+                  }}
+                >
+                  <X size={16} aria-hidden="true" />
+                </button>
               </div>
 
               {/* KPI totals + controls bar. */}
@@ -194,6 +379,7 @@ export function PerAgentSwimlaneModal({
                       onClick={() => setTimeRange(r)}
                       data-testid={`per-agent-swimlane-modal-time-${r}`}
                       data-active={timeRange === r ? "true" : undefined}
+                      aria-pressed={timeRange === r}
                       style={{
                         fontFamily: "var(--font-mono)",
                         fontSize: 11,
@@ -246,8 +432,15 @@ export function PerAgentSwimlaneModal({
               </div>
             </div>
 
-            {/* Swimlane body — the existing Timeline primitive
-                scoped to the focused agent's flavors. */}
+            {/* Swimlane body + live feed — mirrors Fleet.tsx's
+                "swimlane on top, feed below" layout. The feed is
+                scoped to ``scopedFlavors`` via the dedicated
+                pipeline above so toggling Show sub-agents
+                rescopes both the lanes and the feed in lockstep.
+                A feed row click reuses the same
+                ``setSelectedEvent`` setter the swimlane click
+                does, so the event detail drawer mounted below
+                opens identically from either surface. */}
             <div
               data-testid="per-agent-swimlane-modal-body"
               style={{
@@ -255,15 +448,32 @@ export function PerAgentSwimlaneModal({
                 overflow: "hidden",
                 minHeight: 0,
                 position: "relative",
+                display: "flex",
+                flexDirection: "column",
               }}
             >
-              <Timeline
-                flavors={scopedFlavors}
-                timeRange={timeRange}
-                onNodeClick={(_sessionId, _eventId, event) => {
-                  if (event) setSelectedEvent(event);
+              <div style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
+                <Timeline
+                  flavors={scopedFlavors}
+                  timeRange={timeRange}
+                  onNodeClick={(_sessionId, _eventId, event) => {
+                    if (event) setSelectedEvent(event);
+                  }}
+                />
+              </div>
+              <div
+                data-testid="per-agent-swimlane-modal-feed"
+                style={{
+                  flexShrink: 0,
+                  borderTop: "1px solid var(--border)",
+                  background: "var(--bg)",
                 }}
-              />
+              >
+                <LiveFeed
+                  events={feedEvents}
+                  onEventClick={(event) => setSelectedEvent(event)}
+                />
+              </div>
             </div>
 
             {/* Event detail drawer — mounts inside the Dialog so

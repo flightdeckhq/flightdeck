@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { PerAgentSwimlaneModal } from "@/components/agents/PerAgentSwimlaneModal";
 import { ClientType } from "@/lib/agent-identity";
@@ -153,5 +153,40 @@ describe("PerAgentSwimlaneModal", () => {
     // close affordance is portalled and depends on Radix
     // internals; the controlled-open path is the canonical close.
     expect(screen.queryByTestId("per-agent-swimlane-modal")).toBeNull();
+  });
+
+  it("renders an explicit close X in the header that fires onClose", () => {
+    const onClose = vi.fn();
+    render(
+      <MemoryRouter>
+        <PerAgentSwimlaneModal agent={mkAgent()} onClose={onClose} />
+      </MemoryRouter>,
+    );
+    const closeX = screen.getByTestId("per-agent-swimlane-modal-close");
+    expect(closeX).toBeInTheDocument();
+    expect(closeX).toHaveAttribute(
+      "aria-label",
+      "Close per-agent swimlane modal",
+    );
+    fireEvent.click(closeX);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders a scoped LiveFeed strip below the swimlane body", () => {
+    // The feed strip is the dedicated mount point for the
+    // modal-scoped LiveFeed. The pipeline (per-session
+    // ``fetchSession`` for the seed + ``useFleetStore.lastEvent``
+    // injection into ``eventsCache`` for live ticks) lives inside
+    // the component; this unit test asserts the mount-point
+    // exists when the modal is open. End-to-end scope assertions
+    // (parent only vs parent + sub-agents) belong to T96.
+    render(
+      <MemoryRouter>
+        <PerAgentSwimlaneModal agent={mkAgent()} onClose={() => {}} />
+      </MemoryRouter>,
+    );
+    expect(
+      screen.getByTestId("per-agent-swimlane-modal-feed"),
+    ).toBeInTheDocument();
   });
 });

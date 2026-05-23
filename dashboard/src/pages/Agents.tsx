@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useFleetStore } from "@/store/fleet";
+import { useFleet } from "@/hooks/useFleet";
 import type { AgentSummary } from "@/lib/types";
 import { AgentTable } from "@/components/agents/AgentTable";
 import { AgentFacetSidebar } from "@/components/agents/AgentFacetSidebar";
@@ -16,16 +17,24 @@ import {
  * `/agents` route. SentinelOne-grade one-row-per-agent table with
  * KPI sparklines, a left facet sidebar, sort, and pagination.
  *
- * Reads the fleet roster from the shared `useFleetStore`; the
- * roster is bootstrapped by the FleetWebSocket subscription mounted
- * elsewhere so the page does not re-issue `/v1/fleet` itself.
+ * Reads the fleet roster from the shared `useFleetStore`; calls
+ * `useFleet()` for its side-effect so the WebSocket subscription
+ * is live on this page and the per-agent swimlane modal opened
+ * from a row's STATUS chip receives live event ticks via the
+ * store's `lastEvent` selector. Without that subscription a
+ * direct deep-link to `/agents` (no prior `/fleet` visit) would
+ * leave `lastEvent` null and the modal's feed would never tick.
  *
  * A row click opens that agent's drawer by setting the
  * `?agent_drawer=<agent_id>` URL param — the app-level
  * `AgentDrawerHost` reads it and renders the drawer. The status
- * badge opens the per-agent swimlane modal.
+ * chip opens the per-agent swimlane modal.
  */
 export function Agents() {
+  // Side-effect subscription only — the modal's feed reads from
+  // ``useFleetStore.lastEvent``, not from this hook's return.
+  // useFleet is per-page; navigation cleanly tears down its WS.
+  useFleet();
   const agents = useFleetStore((s) => s.agents);
   const load = useFleetStore((s) => s.load);
   const fleetLoading = useFleetStore((s) => s.loading);

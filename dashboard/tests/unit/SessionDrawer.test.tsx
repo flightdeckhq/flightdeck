@@ -647,6 +647,33 @@ describe("SessionDrawer", () => {
     expect(screen.queryByTestId("runtime-panel")).not.toBeInTheDocument();
   });
 
+  it("RUNTIME panel excludes mcp_servers (rendered by its own dedicated panel)", () => {
+    // Regression guard: ``mcp_servers`` is an array of objects
+    // — falling through to the alphabetical-leftover loop's
+    // ``String(value)`` rendered it as ``[object Object]`` on
+    // every session that carried MCP servers. ``buildRuntimeRows``
+    // explicitly excludes ``mcp_servers`` so the dedicated
+    // MCP SERVERS collapsible panel below is the sole renderer.
+    mockSessionOverride = {
+      context: {
+        hostname: "test-host",
+        mcp_servers: [
+          { name: "ChunkHound", capabilities: {} },
+          { name: "BigQuery", capabilities: {} },
+        ],
+      },
+    };
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    fireEvent.click(screen.getByTestId("runtime-panel-toggle"));
+    // hostname renders normally...
+    expect(screen.getByTestId("runtime-value-hostname")).toHaveTextContent(
+      "test-host",
+    );
+    // ...but mcp_servers must NOT appear in the RUNTIME panel.
+    expect(screen.queryByTestId("runtime-key-mcp_servers")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("runtime-value-mcp_servers")).not.toBeInTheDocument();
+  });
+
   it("RUNTIME panel combines git fields into a single row", () => {
     mockSessionOverride = {
       context: {

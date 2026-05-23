@@ -200,9 +200,29 @@ function RunBoundaryMark({
 	sessionId: string;
 	onClick: () => void;
 }) {
-	const [hovered, setHovered] = useState(false);
-	const onHoverEnter = useCallback(() => setHovered(true), []);
-	const onHoverLeave = useCallback(() => setHovered(false), []);
+	const [tooltipPos, setTooltipPos] = useState<
+		{ left: number; top: number } | null
+	>(null);
+	const onHoverEnter = useCallback(
+		(e: React.MouseEvent<HTMLButtonElement> | React.FocusEvent<HTMLButtonElement>) => {
+			// Anchor the tooltip to the button's viewport rect so
+			// ``position: fixed`` takes it out of the timeline-panel's
+			// ``overflow: hidden`` clip — the tooltip is ~56 px tall
+			// (3 lines × line-height 1.4 + padding + border) which
+			// exceeds the 48-px row, so an absolutely-positioned
+			// child of the panel gets clipped either at the top or
+			// the bottom regardless of anchor. The fixed-coordinate
+			// approach mirrors how ``EventNode`` positions its own
+			// tooltip and is the only way to render off-clip.
+			const rect = e.currentTarget.getBoundingClientRect();
+			setTooltipPos({
+				left: rect.right + TOOLTIP_OFFSET,
+				top: rect.top + rect.height / 2,
+			});
+		},
+		[],
+	);
+	const onHoverLeave = useCallback(() => setTooltipPos(null), []);
 
 	const glyphSize = kind === "start" ? TRIANGLE_WIDTH : SQUARE_SIDE;
 	const glyphHeight = kind === "start" ? TRIANGLE_HEIGHT : SQUARE_SIDE;
@@ -232,7 +252,7 @@ function RunBoundaryMark({
 				border: "none",
 				cursor: "pointer",
 				zIndex: 2,
-				opacity: hovered ? 1 : 0.85,
+				opacity: tooltipPos ? 1 : 0.85,
 				transition: "opacity 120ms ease",
 			}}
 		>
@@ -256,28 +276,24 @@ function RunBoundaryMark({
 					/>
 				)}
 			</svg>
-			{hovered && (
+			{tooltipPos && (
 				<span
 					role="tooltip"
 					data-testid={`swimlane-run-bracket-tooltip-${sessionId.slice(0, 8)}`}
 					style={{
-						position: "absolute",
-						left: glyphSize + TOOLTIP_OFFSET,
-						// Anchor the tooltip to the same vertical edge
-						// as the button so it extends INTO the row,
-						// not past it. Top-anchored buttons (first run
-						// per agent) tooltip from ``top: 0`` and grow
-						// downward — visible in the row's top half.
-						// Bottom-anchored buttons (concurrent runs,
-						// staggered to the row's bottom half) tooltip
-						// from ``bottom: 0`` and grow upward — visible
-						// in the row's bottom half. Pre-fix both
-						// anchored ``top: 0``, which clipped the
-						// bottom-anchored tooltip against the row's
-						// bottom edge (the timeline panel's
-						// ``overflow: hidden``).
-						top: anchor === "top" ? 0 : undefined,
-						bottom: anchor === "bottom" ? 0 : undefined,
+						// ``position: fixed`` against the viewport so
+						// the tooltip escapes the timeline-panel's
+						// ``overflow: hidden`` (which clips at the
+						// row's 48-px height — the tooltip is taller
+						// than that). Anchored to the button's
+						// viewport rect captured at hover time;
+						// ``transform: translateY(-50%)`` vertically
+						// centers the tooltip on the button so neither
+						// edge gets cut.
+						position: "fixed",
+						left: tooltipPos.left,
+						top: tooltipPos.top,
+						transform: "translateY(-50%)",
 						background: "var(--bg-elevated)",
 						color: "var(--text)",
 						border: "1px solid var(--border)",
@@ -288,7 +304,7 @@ function RunBoundaryMark({
 						lineHeight: 1.4,
 						whiteSpace: "pre",
 						pointerEvents: "none",
-						zIndex: 5,
+						zIndex: 100,
 					}}
 				>
 					{tooltip}

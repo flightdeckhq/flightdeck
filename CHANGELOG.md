@@ -371,6 +371,26 @@ Fleet swimlane reshape, and the event-grain Events page (D157).
 
 ### Fixed
 
+- **Child-row status badge bg + run-bracket tooltip + run drawer
+  MCP servers — three regressions cleared.**
+  (1) `--swimlane-row-child-bg` is a semi-transparent overlay
+  (`rgba(255,255,255,0.06)`) painted on the row container; the
+  badge wrapper used to paint the same rgba a third time, which
+  stacked into a visibly brighter rectangle around Active /
+  Closed on every child row. The wrapper now carries NO own
+  background — the row's painted layer shows through cleanly.
+  (2) Run-bracket tooltips are ~56 px tall (3 lines + padding +
+  border) and the row is 48 px; either anchor direction clipped
+  ~10 px against the timeline panel's `overflow: hidden`. The
+  tooltip now renders with `position: fixed` anchored to the
+  button's viewport rect (same pattern `EventNode` uses), so it
+  escapes the panel clip entirely.
+  (3) The session-drawer RUNTIME panel rendered `mcp_servers`
+  (an array of objects) as `[object Object]` because the
+  alphabetical-leftover loop called `String(value)` on it.
+  `buildRuntimeRows` now explicitly excludes `mcp_servers` —
+  its dedicated MCP SERVERS collapsible panel below is the
+  sole renderer.
 - **Child-row status badge no longer reads as a grey rectangle.**
   The previous right-edge-anchor fix gave the badge wrapper
   ``background: inherit``, which resolved to a subtly different

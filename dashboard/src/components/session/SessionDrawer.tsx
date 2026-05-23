@@ -207,7 +207,20 @@ function buildRuntimeRows(
     add("frameworks", context.frameworks);
   }
 
-  // Anything else, alphabetical.
+  // ``mcp_servers`` is an array of objects rendered by the dedicated
+  // MCP SERVERS collapsible panel below — exclude it here so the
+  // alphabetical-leftover loop doesn't ``String()`` it into a
+  // ``[object Object]`` row. Same pattern any future array-of-objects
+  // context field should follow.
+  seen.add("mcp_servers");
+
+  // Anything else, alphabetical. The ``add()`` helper guards
+  // primitive coercion via ``String(value)`` — that works for
+  // strings, numbers, booleans, and string-array values handled
+  // explicitly above, but would render an unexpected
+  // array-of-objects as ``[object Object]``. The exclusion list
+  // immediately above covers every such field the sensor currently
+  // emits; a future array-of-objects field should be added there.
   const remaining = Object.keys(context)
     .filter((k) => !seen.has(k))
     .sort();

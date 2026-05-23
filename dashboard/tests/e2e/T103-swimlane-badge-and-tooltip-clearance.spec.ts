@@ -132,17 +132,19 @@ test.describe("T103 — swimlane right-edge clearance", () => {
     expect(offset!).toBeGreaterThanOrEqual(4);
   });
 
-  test("badge wrapper paints the row tint exactly on child rows (no grey rectangle)", async ({
+  test("badge wrapper is transparent on child rows (no double-stacked overlay)", async ({
     page,
   }) => {
-    // Regression guard: the wrapper used to paint
-    // ``background: inherit`` which resolved to a subtly
-    // different shade than the row container's
-    // ``var(--swimlane-row-child-bg)``, reading as an ugly
-    // grey rectangle around the Active / Closed badge on every
-    // child row. The fix keys the wrapper's background
-    // directly off ``topology`` so the painted shade matches
-    // the row tint pixel-for-pixel.
+    // Regression guard: ``--swimlane-row-child-bg`` is a
+    // SEMI-TRANSPARENT overlay (rgba(255,255,255,0.06) under
+    // neon-dark) painted on the row container AND inherited
+    // by the label strip. If the badge wrapper paints the
+    // same rgba a third time, the area shows as ~18 %
+    // effective opacity vs the surrounding ~12 % — a visible
+    // lighter rectangle around the Active / Closed badge.
+    // The wrapper now carries NO own background — the
+    // row + label strip's already-painted layer shows
+    // through transparently.
     await page.setViewportSize({ width: 1700, height: 900 });
     await page.goto("/");
     await page.waitForSelector('[data-testid="fleet-main-scroll"]', {
@@ -166,29 +168,30 @@ test.describe("T103 — swimlane right-edge clearance", () => {
       )
       .toBeGreaterThan(0);
 
-    const colors = await page.evaluate(() => {
+    const wrapperBg = await page.evaluate(() => {
       const wrapper = document.querySelector(
         '[data-testid^="swimlane-agent-row-"][data-topology="child"] [data-testid="swimlane-badge-wrapper"]',
       ) as HTMLElement | null;
-      const row = wrapper?.closest(
-        '[data-testid^="swimlane-agent-row-"]',
-      ) as HTMLElement | null;
-      return {
-        wrapper: wrapper ? window.getComputedStyle(wrapper).backgroundColor : "",
-        row: row ? window.getComputedStyle(row).backgroundColor : "",
-      };
+      return wrapper ? window.getComputedStyle(wrapper).backgroundColor : "";
     });
-    expect(colors.wrapper).not.toBe("");
-    expect(colors.wrapper).toBe(colors.row);
+    // Transparent computes to ``rgba(0, 0, 0, 0)``. Anything
+    // else means the wrapper is painting a layer on top of the
+    // row's existing layer — the failure mode that produced
+    // the visible rectangle.
+    expect(wrapperBg).toBe("rgba(0, 0, 0, 0)");
   });
 
-  test("bottom-anchored run-bracket tooltip anchors to its button's bottom", async ({
+  test("run-bracket tooltip renders position:fixed and escapes the timeline panel's overflow clip", async ({
     page,
   }) => {
     // Concurrent-runs fixture has two overlapping runs so its
     // row carries one top-anchored and one bottom-anchored
-    // bracket. Hover the bottom-anchored one and assert the
-    // tooltip's bottom edge does not extend below the row.
+    // bracket. The bottom one's tooltip used to clip against
+    // the timeline panel's ``overflow: hidden`` because the
+    // tooltip (~56 px tall) doesn't fit in the row (48 px) —
+    // either anchor direction lost ~10 px. The fix renders the
+    // tooltip with ``position: fixed`` anchored to the
+    // button's viewport rect, which escapes the panel clip.
     await page.setViewportSize({ width: 1700, height: 900 });
     await page.goto("/");
     const row = page
@@ -221,25 +224,31 @@ test.describe("T103 — swimlane right-edge clearance", () => {
     // Trigger React's ``onMouseEnter`` via ``.hover()`` —
     // ``dispatchEvent('mouseenter')`` does NOT fire React's
     // synthetic event handler in current React, so the tooltip
-    // never renders programmatically. Live verification of the
-    // anchor-flip fix is via Cowork's Chrome V-pass; this E2E
-    // check passes when Playwright's mouse simulation latches
-    // and confirms the assertion ``tooltip.bottom <= row.bottom``.
-    await brackets.nth(bottomBracketIndex).hover({ force: true });
+    // never renders programmatically. Wrap in ``expect.poll``
+    // so the hover gets retried if the first attempt races
+    // the swimlane's rAF tick.
     const tooltip = page
       .locator('[data-testid^="swimlane-run-bracket-tooltip-"]')
       .first();
-    await expect(tooltip).toBeVisible({ timeout: 5_000 });
+    await expect
+      .poll(
+        async () => {
+          await brackets.nth(bottomBracketIndex).hover({ force: true });
+          return tooltip.count();
+        },
+        { timeout: 10_000 },
+      )
+      .toBeGreaterThan(0);
 
-    // Tooltip's bottom must NOT extend past the row's bottom
-    // (which would mean the tooltip is anchored from top:0 of a
-    // bottom-positioned bracket — the pre-fix bug).
-    const rowBox = await row.boundingBox();
-    const tipBox = await tooltip.boundingBox();
-    expect(rowBox).not.toBeNull();
-    expect(tipBox).not.toBeNull();
-    expect(tipBox!.y + tipBox!.height).toBeLessThanOrEqual(
-      rowBox!.y + rowBox!.height + 1,
+    // Tooltip must render with ``position: fixed`` so it
+    // escapes the timeline panel's ``overflow: hidden`` clip.
+    // The fixed positioning is what lets it extend visually
+    // past the 48 px row height. Pre-fix the tooltip was
+    // ``position: absolute`` inside the panel and the
+    // overhang got clipped.
+    const tooltipPosition = await tooltip.evaluate(
+      (el) => window.getComputedStyle(el).position,
     );
+    expect(tooltipPosition).toBe("fixed");
   });
 });

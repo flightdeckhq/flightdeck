@@ -374,15 +374,18 @@ function SwimLaneComponent({
 				    past the strip's right edge, where
 				    ``overflow: hidden`` either clipped it entirely
 				    or left it crowded by the first event circle in
-				    the timeline panel. The wrapper paints the
-				    SAME bg colour the row container paints — keyed
-				    directly off ``topology`` (NOT via
-				    ``background: inherit``, which resolved to a
-				    subtly-different shade on child rows and read
-				    as a visible grey rectangle around the badge).
-				    Full row-height ``inset: 0 0 0 auto`` so the
-				    occluded area covers overflowing pills above
-				    AND below the badge text vertically. */}
+				    the timeline panel. The wrapper has NO own
+				    background. Two reasons: (1) ``--surface`` /
+				    ``--swimlane-row-child-bg`` are
+				    semi-transparent overlays on top of the page
+				    bg, so painting the same value here would stack
+				    on top of the row's already-painted layer and
+				    show as a visibly brighter rectangle (12%
+				    effective opacity over 6%); (2) the label
+				    strip's ``overflow: hidden`` already clips any
+				    overflowing flex sibling at the strip's right
+				    edge — the wrapper sits flush against that
+				    edge, so an opaque occluder is unnecessary. */}
 				<div
 					data-testid="swimlane-badge-wrapper"
 					style={{
@@ -390,10 +393,6 @@ function SwimLaneComponent({
 						top: 0,
 						right: 0,
 						bottom: 0,
-						background:
-							topology === "child"
-								? "var(--swimlane-row-child-bg)"
-								: "var(--surface)",
 						paddingLeft: 12,
 						paddingRight: 12,
 						display: "flex",

@@ -366,32 +366,34 @@ function SwimLaneComponent({
 					/>
 				)}
 				{/* Badge is absolutely positioned at the label strip's
-				    right edge with a solid ``background: inherit`` so
-				    it always reads as a fully visible anchor, even
-				    when the label strip's flex content (name +
-				    pills + icons + topology pill) would otherwise
-				    overflow and push the badge into / past the
-				    timeline-panel boundary. The previous in-flex
-				    ``ml-auto`` placement let a wide topology pill
-				    push the badge past the strip's right edge, where
+				    right edge so it always reads as a fully visible
+				    anchor even when the strip's flex content (name
+				    + pills + icons + topology pill) overflows the
+				    strip width — the pre-fix in-flex ``ml-auto``
+				    placement let a wide topology pill push the badge
+				    past the strip's right edge, where
 				    ``overflow: hidden`` either clipped it entirely
 				    or left it crowded by the first event circle in
-				    the timeline panel. Anchoring + the inherited
-				    background occlude any visual overlap and keep
-				    the badge legible on every row, including child
-				    rows whose 28-px indent narrows the available
-				    content width. ``z-index: 4`` sits above the
-				    label-strip flex content but below any sticky
-				    overlay; ``paddingLeft`` creates a soft fade
-				    boundary so siblings clipped by overflow don't
-				    visibly butt against the badge. */}
+				    the timeline panel. The wrapper paints the
+				    SAME bg colour the row container paints — keyed
+				    directly off ``topology`` (NOT via
+				    ``background: inherit``, which resolved to a
+				    subtly-different shade on child rows and read
+				    as a visible grey rectangle around the badge).
+				    Full row-height ``inset: 0 0 0 auto`` so the
+				    occluded area covers overflowing pills above
+				    AND below the badge text vertically. */}
 				<div
+					data-testid="swimlane-badge-wrapper"
 					style={{
 						position: "absolute",
+						top: 0,
 						right: 0,
-						top: "50%",
-						transform: "translateY(-50%)",
-						background: "inherit",
+						bottom: 0,
+						background:
+							topology === "child"
+								? "var(--swimlane-row-child-bg)"
+								: "var(--surface)",
 						paddingLeft: 12,
 						paddingRight: 12,
 						display: "flex",

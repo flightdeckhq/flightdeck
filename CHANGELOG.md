@@ -343,6 +343,18 @@ Fleet swimlane reshape, and the event-grain Events page (D157).
 
 ### Fixed
 
+- **Child-row status badge no longer reads as a grey rectangle.**
+  The previous right-edge-anchor fix gave the badge wrapper
+  ``background: inherit``, which resolved to a subtly different
+  shade than the row container's
+  ``var(--swimlane-row-child-bg)`` on child rows — the badge
+  appeared inside a visible grey block instead of sitting flush
+  on the row tint. The wrapper now paints the row tint
+  variable directly (``var(--surface)`` on root rows,
+  ``var(--swimlane-row-child-bg)`` on child rows), and extends
+  the full row height so overflowing pills above and below the
+  badge text are occluded cleanly without painting a
+  visibly-different rectangle.
 - **Swimlane right-edge clearance — badge, circles, and bracket
   tooltips.** Three related visual overlaps cleared in one
   bundle: (a) the `AgentStatusBadge` is now anchored

@@ -35,36 +35,42 @@ test.describe("T103 — swimlane right-edge clearance", () => {
     await page.waitForSelector('[data-testid="fleet-main-scroll"]', {
       timeout: 10_000,
     });
-    // Child rows (sub-agent fixtures with topology pill on the
-    // label strip) are the failure mode: the pre-fix flex layout
-    // pushed the badge past the strip's right edge when contents
-    // overflowed. Use ``e2e-test-fresh-subagent`` — its row sits
-    // near the top of the swimlane because the keep-alive
-    // watchdog re-emits a fresh tool_call every 30 s, floating
-    // its cluster to the LIVE bucket.
-    const childRow = page
-      .locator('[data-testid^="swimlane-agent-row-"]')
-      .filter({ hasText: "e2e-test-fresh-subagent" })
-      .first();
-    await childRow.scrollIntoViewIfNeeded();
-    await expect(childRow).toBeVisible({ timeout: 10_000 });
+    // The virtualized swimlane can unmount rows mid-scroll, so
+    // read both rects in one ``page.evaluate`` snapshot —
+    // avoids the flake where ``scrollIntoViewIfNeeded`` racing
+    // with virtualization detaches the element between calls.
+    // Any child-topology row works as the regression guard.
+    await expect
+      .poll(
+        () =>
+          page
+            .locator(
+              '[data-testid^="swimlane-agent-row-"][data-topology="child"] [data-testid="swimlane-agent-status-badge"]',
+            )
+            .count(),
+        { timeout: 10_000 },
+      )
+      .toBeGreaterThan(0);
 
-    const labelStrip = childRow.locator(".swimlane-row-label");
-    const badge = childRow.locator(
-      '[data-testid="swimlane-agent-status-badge"]',
-    );
-    await expect(badge).toBeVisible();
-
+    const rects = await page.evaluate(() => {
+      const badge = document.querySelector(
+        '[data-testid^="swimlane-agent-row-"][data-topology="child"] [data-testid="swimlane-agent-status-badge"]',
+      ) as HTMLElement | null;
+      const label = badge?.closest(
+        ".swimlane-row-label",
+      ) as HTMLElement | null;
+      return {
+        badge: badge?.getBoundingClientRect().toJSON() ?? null,
+        label: label?.getBoundingClientRect().toJSON() ?? null,
+      };
+    });
+    expect(rects.badge).not.toBeNull();
+    expect(rects.label).not.toBeNull();
     // The badge's right edge must not extend past the label
-    // strip's right edge — i.e. badge stays inside its
-    // container, not bleeding into the timeline panel area.
-    // A 1-px tolerance accommodates sub-pixel rounding.
-    const labelBox = await labelStrip.boundingBox();
-    const badgeBox = await badge.boundingBox();
-    expect(labelBox).not.toBeNull();
-    expect(badgeBox).not.toBeNull();
-    expect(badgeBox!.x + badgeBox!.width).toBeLessThanOrEqual(
-      labelBox!.x + labelBox!.width + 1,
+    // strip's right edge. 1-px tolerance for sub-pixel
+    // rounding.
+    expect(rects.badge!.x + rects.badge!.width).toBeLessThanOrEqual(
+      rects.label!.x + rects.label!.width + 1,
     );
   });
 
@@ -126,6 +132,56 @@ test.describe("T103 — swimlane right-edge clearance", () => {
     expect(offset!).toBeGreaterThanOrEqual(4);
   });
 
+  test("badge wrapper paints the row tint exactly on child rows (no grey rectangle)", async ({
+    page,
+  }) => {
+    // Regression guard: the wrapper used to paint
+    // ``background: inherit`` which resolved to a subtly
+    // different shade than the row container's
+    // ``var(--swimlane-row-child-bg)``, reading as an ugly
+    // grey rectangle around the Active / Closed badge on every
+    // child row. The fix keys the wrapper's background
+    // directly off ``topology`` so the painted shade matches
+    // the row tint pixel-for-pixel.
+    await page.setViewportSize({ width: 1700, height: 900 });
+    await page.goto("/");
+    await page.waitForSelector('[data-testid="fleet-main-scroll"]', {
+      timeout: 10_000,
+    });
+    // Wait for at least one child row's badge wrapper to mount.
+    // The virtualized swimlane can unmount rows mid-scroll, so
+    // do the entire colour comparison inside a single
+    // ``page.evaluate`` snapshot — read the wrapper + row in one
+    // pass so the closest() / getComputedStyle calls operate on
+    // a stable DOM tree.
+    await expect
+      .poll(
+        () =>
+          page
+            .locator(
+              '[data-testid^="swimlane-agent-row-"][data-topology="child"] [data-testid="swimlane-badge-wrapper"]',
+            )
+            .count(),
+        { timeout: 10_000 },
+      )
+      .toBeGreaterThan(0);
+
+    const colors = await page.evaluate(() => {
+      const wrapper = document.querySelector(
+        '[data-testid^="swimlane-agent-row-"][data-topology="child"] [data-testid="swimlane-badge-wrapper"]',
+      ) as HTMLElement | null;
+      const row = wrapper?.closest(
+        '[data-testid^="swimlane-agent-row-"]',
+      ) as HTMLElement | null;
+      return {
+        wrapper: wrapper ? window.getComputedStyle(wrapper).backgroundColor : "",
+        row: row ? window.getComputedStyle(row).backgroundColor : "",
+      };
+    });
+    expect(colors.wrapper).not.toBe("");
+    expect(colors.wrapper).toBe(colors.row);
+  });
+
   test("bottom-anchored run-bracket tooltip anchors to its button's bottom", async ({
     page,
   }) => {
@@ -162,8 +218,14 @@ test.describe("T103 — swimlane right-edge clearance", () => {
         bottomBracketIndex = i;
       }
     }
-    await brackets.nth(bottomBracketIndex).hover();
-
+    // Trigger React's ``onMouseEnter`` via ``.hover()`` —
+    // ``dispatchEvent('mouseenter')`` does NOT fire React's
+    // synthetic event handler in current React, so the tooltip
+    // never renders programmatically. Live verification of the
+    // anchor-flip fix is via Cowork's Chrome V-pass; this E2E
+    // check passes when Playwright's mouse simulation latches
+    // and confirms the assertion ``tooltip.bottom <= row.bottom``.
+    await brackets.nth(bottomBracketIndex).hover({ force: true });
     const tooltip = page
       .locator('[data-testid^="swimlane-run-bracket-tooltip-"]')
       .first();

@@ -1,5 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, act } from "@testing-library/react";
+import {
+  render,
+  screen,
+  fireEvent,
+  act,
+  waitFor,
+} from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { AgentDrawer } from "@/components/agents/AgentDrawer";
 import { useFleetStore } from "@/store/fleet";
@@ -13,18 +19,21 @@ import type {
 
 // The drawer's tabs + header panels fetch via the hooks; stub the
 // API so the tests exercise the drawer chrome, not the network.
+// ``fetchSessionsMock`` is declared via ``vi.hoisted`` so it lives
+// alongside the hoisted ``vi.mock`` factory below (vitest hoists
+// ``vi.mock`` calls above all imports + module-level statements;
+// a plain ``const`` would land in the temporal dead zone). Tests
+// call ``.mockResolvedValueOnce(...)`` to swap in a session
+// carrying a populated context object for the ContextPanel
+// tests.
+const { fetchSessionsMock } = vi.hoisted(() => ({
+  fetchSessionsMock: vi.fn<() => Promise<SessionsResponse>>(),
+}));
 vi.mock("@/lib/api", async (orig) => {
   const actual = await orig<typeof import("@/lib/api")>();
-  const emptySessions: SessionsResponse = {
-    sessions: [],
-    total: 0,
-    limit: 50,
-    offset: 0,
-    has_more: false,
-  };
   return {
     ...actual,
-    fetchSessions: vi.fn(async () => emptySessions),
+    fetchSessions: fetchSessionsMock,
     fetchBulkEvents: vi.fn(async () => ({
       events: [],
       total: 0,
@@ -34,6 +43,42 @@ vi.mock("@/lib/api", async (orig) => {
     })),
   };
 });
+
+// Build a single-session ``fetchSessions`` response carrying the
+// supplied context object. Used by the ContextPanel tests below
+// to drive the panel through ``useAgentRuns`` → ``latestContext``.
+function withContextSession(
+  agentId: string,
+  context: Record<string, unknown>,
+): SessionsResponse {
+  return {
+    sessions: [
+      {
+        session_id: "s-context",
+        flavor: agentId,
+        agent_type: "coding",
+        agent_id: agentId,
+        agent_name: "test-agent",
+        host: null,
+        framework: null,
+        model: null,
+        state: "active",
+        started_at: "2026-05-15T00:00:00Z",
+        last_seen_at: "2026-05-15T00:00:00Z",
+        ended_at: null,
+        tokens_used: 0,
+        token_limit: null,
+        capture_enabled: false,
+        parent_session_id: null,
+        context,
+      } as unknown as Session,
+    ],
+    total: 1,
+    limit: 50,
+    offset: 0,
+    has_more: false,
+  };
+}
 
 function mkAgent(over: Partial<AgentSummary> = {}): AgentSummary {
   return {
@@ -110,6 +155,17 @@ function renderDrawer(
 describe("AgentDrawer", () => {
   beforeEach(() => {
     seedStore([], []);
+    // Default fetchSessions implementation — no sessions. Tests
+    // that need a populated context override via
+    // ``fetchSessionsMock.mockResolvedValueOnce``.
+    fetchSessionsMock.mockReset();
+    fetchSessionsMock.mockResolvedValue({
+      sessions: [],
+      total: 0,
+      limit: 50,
+      offset: 0,
+      has_more: false,
+    });
   });
 
   it("renders nothing while agentId is null", () => {
@@ -359,6 +415,291 @@ describe("AgentDrawer", () => {
     expect(
       screen.getByTestId("agent-drawer-linkage-children-section"),
     ).toBeInTheDocument();
+  });
+
+  // ContextPanel — see ``CONTEXT_KEYS`` in ``AgentDrawer.tsx``.
+  // Tests open the drawer with the context-panel collapsible
+  // expanded (the panel defaults to closed). Each test seeds
+  // ``fetchSessions`` with a single session carrying the context
+  // object under test.
+
+  async function openContextPanel(agentId: string) {
+    seedStore([mkAgent({ agent_id: agentId })], []);
+    renderDrawer(agentId);
+    await act(async () => {});
+    fireEvent.click(
+      screen.getByTestId("agent-drawer-panel-context-toggle"),
+    );
+    // The CollapsiblePanel mounts its children when ``open``
+    // flips true; act() flushes the toggle's state update, but
+    // the assert-side test code reads the rows container next.
+    // ``waitFor`` polls for the rows container OR the
+    // PanelEmpty mount point so we don't depend on the panel's
+    // open-animation timing — both branches are valid post-
+    // toggle states and the caller asserts whichever it expects.
+    await waitFor(() => {
+      const rows = screen.queryByTestId("agent-drawer-context-rows");
+      const empty = document.querySelector(
+        '[data-testid^="agent-drawer-panel-context"] .panel-empty',
+      );
+      // ``getByText`` over the empty-state copy as a backup —
+      // ``PanelEmpty`` itself doesn't carry a stable testid.
+      const fallbackEmpty = screen.queryByText(
+        /No runtime context for the latest run/,
+      );
+      if (!rows && !empty && !fallbackEmpty) {
+        throw new Error("ContextPanel not yet mounted");
+      }
+    });
+  }
+
+  it("ContextPanel renders the full curated key set in spec order", async () => {
+    // Full context covering every curated key. Spec order is the
+    // order from ``CONTEXT_KEYS``: User, Host, OS, Arch, PID,
+    // Process, Python, Git branch, Git repo, Git commit,
+    // Orchestration, Frameworks.
+    fetchSessionsMock.mockResolvedValueOnce(
+      withContextSession("agent-1", {
+        user: "omria",
+        hostname: "Omri-PC",
+        os: "Linux",
+        arch: "x64",
+        pid: 553196,
+        process_name: "claude-code",
+        python_version: "3.12.4",
+        git_branch: "feat/d157-per-agent-landing-page",
+        git_repo: "flightdeck",
+        git_commit: "97c43156",
+        orchestration: "k8s",
+        frameworks: ["claude-code", "langgraph"],
+      }),
+    );
+    await openContextPanel("agent-1");
+
+    const rowsContainer = screen.getByTestId(
+      "agent-drawer-context-rows",
+    );
+    const renderedKeys = Array.from(
+      rowsContainer.querySelectorAll(
+        '[data-testid^="agent-drawer-context-row-"]',
+      ),
+    ).map((el) => el.getAttribute("data-testid")!.replace(
+      "agent-drawer-context-row-",
+      "",
+    ));
+    expect(renderedKeys).toEqual([
+      "user",
+      "hostname",
+      "os",
+      "arch",
+      "pid",
+      "process_name",
+      "python_version",
+      "git_branch",
+      "git_repo",
+      "git_commit",
+      "orchestration",
+      "frameworks",
+    ]);
+    // Spot-check one value rendered correctly (numeric coercion).
+    expect(
+      screen.getByTestId("agent-drawer-context-row-pid"),
+    ).toHaveTextContent("553196");
+    // Array coercion joins with ", ".
+    expect(
+      screen.getByTestId("agent-drawer-context-row-frameworks"),
+    ).toHaveTextContent("claude-code, langgraph");
+  });
+
+  it("ContextPanel expands orchestration object into indented sub-keys", async () => {
+    // The sensor emits orchestration as an object with type +
+    // sub-keys when k8s / compose is detected. The panel renders
+    // the parent ``Orchestration`` row + indented sub-rows for
+    // each populated sub-key.
+    fetchSessionsMock.mockResolvedValueOnce(
+      withContextSession("agent-1", {
+        os: "Linux",
+        orchestration: {
+          type: "k8s",
+          k8s_pod: "checkout-bot-7d4f8c",
+          k8s_namespace: "production",
+          // unknown sub-key surfaces alphabetically AFTER the
+          // curated set (k8s_cluster, k8s_namespace,
+          // k8s_node, k8s_pod, compose_*)
+          aws_region: "us-east-1",
+        },
+      }),
+    );
+    await openContextPanel("agent-1");
+
+    // Parent Orchestration row with the type as its value.
+    const parent = screen.getByTestId("agent-drawer-context-row-orchestration");
+    expect(parent).toHaveTextContent("k8s");
+    expect(parent.getAttribute("data-context-indent")).toBeNull();
+
+    // Sub-rows are indented and carry humanised labels.
+    const pod = screen.getByTestId("agent-drawer-context-row-k8s_pod");
+    expect(pod.getAttribute("data-context-indent")).toBe("true");
+    expect(pod).toHaveTextContent("checkout-bot-7d4f8c");
+    expect(pod).toHaveTextContent("k8s pod");
+
+    const ns = screen.getByTestId("agent-drawer-context-row-k8s_namespace");
+    expect(ns.getAttribute("data-context-indent")).toBe("true");
+    expect(ns).toHaveTextContent("production");
+
+    const aws = screen.getByTestId("agent-drawer-context-row-aws_region");
+    expect(aws.getAttribute("data-context-indent")).toBe("true");
+    // ``humanizeKey`` deliberately capitalises only the FIRST
+    // character — see the rationale comment on the helper in
+    // ``AgentDrawer.tsx``. ``aws_region`` → ``Aws region``
+    // (not ``Aws Region`` or ``AWS Region``). A future
+    // acronym-aware overhaul of the helper would flip this
+    // assertion.
+    expect(aws).toHaveTextContent("Aws region");
+  });
+
+  it("ContextPanel renders unknown top-level keys generically with humanised labels in alphabetical DOM order", async () => {
+    // Future sensor emissions land here. Unknown keys must be
+    // visible — never silently hidden — and sort
+    // alphabetically below the curated set so the panel order
+    // is stable across renders.
+    fetchSessionsMock.mockResolvedValueOnce(
+      withContextSession("agent-1", {
+        os: "Linux",
+        cloud_provider: "aws",
+        node_version: "v24.15.0",
+      }),
+    );
+    await openContextPanel("agent-1");
+
+    const cp = screen.getByTestId(
+      "agent-drawer-context-row-cloud_provider",
+    );
+    expect(cp).toHaveTextContent("Cloud provider");
+    expect(cp).toHaveTextContent("aws");
+
+    const nv = screen.getByTestId("agent-drawer-context-row-node_version");
+    expect(nv).toHaveTextContent("Node version");
+    expect(nv).toHaveTextContent("v24.15.0");
+
+    // Source-order assertion: ``cloud_provider`` precedes
+    // ``node_version`` alphabetically. ``compareDocumentPosition``
+    // returns 4 for "follows" (the bit ``DOCUMENT_POSITION_FOLLOWING``
+    // = 4) when ``nv`` follows ``cp``. A regression flipping the
+    // unknown-key sort would surface here.
+    const order = cp.compareDocumentPosition(nv);
+    expect(order & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("ContextPanel expands unknown top-level plain-object keys into indented sub-rows", async () => {
+    // Per ts-principal: a top-level unknown key whose value is
+    // a plain object was previously silently dropped — the
+    // "never hidden" contract is only half-true unless we
+    // expand it the same way orchestration expands. Verify the
+    // generic ``expandObjectRows`` path lands.
+    fetchSessionsMock.mockResolvedValueOnce(
+      withContextSession("agent-1", {
+        os: "Linux",
+        cloud: {
+          provider: "aws",
+          region: "us-east-1",
+        },
+      }),
+    );
+    await openContextPanel("agent-1");
+
+    // Parent row carries the label only (no primary value —
+    // ``expandObjectRows`` for an unknown key has no
+    // ``primaryValueSubKey`` set).
+    const parent = screen.getByTestId("agent-drawer-context-row-cloud");
+    expect(parent).toHaveTextContent("Cloud");
+    expect(parent.getAttribute("data-context-indent")).toBeNull();
+
+    // Indented sub-rows render alphabetically.
+    const provider = screen.getByTestId(
+      "agent-drawer-context-row-provider",
+    );
+    expect(provider.getAttribute("data-context-indent")).toBe("true");
+    expect(provider).toHaveTextContent("aws");
+
+    const region = screen.getByTestId(
+      "agent-drawer-context-row-region",
+    );
+    expect(region.getAttribute("data-context-indent")).toBe("true");
+    expect(region).toHaveTextContent("us-east-1");
+  });
+
+  it("ContextPanel renders nested plain-object sub-values as inline summaries", async () => {
+    // Per ts-principal: a plain-object value inside an
+    // already-expanded orchestration sub-key would otherwise
+    // silently drop. ``coerceContextValue`` flattens it to
+    // ``k=v, k=v`` so it stays visible without producing a
+    // 3-deep indent.
+    fetchSessionsMock.mockResolvedValueOnce(
+      withContextSession("agent-1", {
+        orchestration: {
+          type: "k8s",
+          k8s_pod: "checkout-bot",
+          resource_limits: {
+            cpu: "500m",
+            memory: "1Gi",
+          },
+        },
+      }),
+    );
+    await openContextPanel("agent-1");
+
+    const limits = screen.getByTestId(
+      "agent-drawer-context-row-resource_limits",
+    );
+    expect(limits.getAttribute("data-context-indent")).toBe("true");
+    // Inline summary: ``cpu=500m, memory=1Gi`` — order is
+    // ``Object.entries`` insertion order; both pairs must
+    // appear.
+    expect(limits).toHaveTextContent("cpu=500m");
+    expect(limits).toHaveTextContent("memory=1Gi");
+  });
+
+  it("ContextPanel skips empty / null values and excludes mcp_servers", async () => {
+    // Empty string, null, empty array, and unknown complex
+    // object all skip. ``mcp_servers`` (rendered in the MCP
+    // SERVERS panel above) never duplicates into the context
+    // panel.
+    fetchSessionsMock.mockResolvedValueOnce(
+      withContextSession("agent-1", {
+        os: "Linux",
+        user: "",
+        git_branch: null,
+        frameworks: [],
+        mcp_servers: [{ name: "ChunkHound", capabilities: {} }],
+      }),
+    );
+    await openContextPanel("agent-1");
+
+    expect(screen.queryByTestId("agent-drawer-context-row-user")).toBeNull();
+    expect(
+      screen.queryByTestId("agent-drawer-context-row-git_branch"),
+    ).toBeNull();
+    expect(
+      screen.queryByTestId("agent-drawer-context-row-frameworks"),
+    ).toBeNull();
+    expect(
+      screen.queryByTestId("agent-drawer-context-row-mcp_servers"),
+    ).toBeNull();
+    // OS still renders.
+    expect(screen.getByTestId("agent-drawer-context-row-os")).toHaveTextContent(
+      "Linux",
+    );
+  });
+
+  it("ContextPanel renders empty state for null context", async () => {
+    // No sessions → ``latestContext`` is null → panel shows the
+    // pre-existing PanelEmpty message. The full-context redesign
+    // preserves this branch verbatim.
+    await openContextPanel("agent-1");
+    expect(
+      screen.queryByTestId("agent-drawer-context-rows"),
+    ).toBeNull();
   });
 
   it("action row renders both buttons with icon + label structure", async () => {

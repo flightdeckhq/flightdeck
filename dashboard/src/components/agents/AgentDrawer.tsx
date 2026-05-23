@@ -715,17 +715,79 @@ function ChipRow({ items }: { items: string[] }) {
   );
 }
 
-// Context keys surfaced in the latest-run-context panel, in display
-// order. Each value is coerced to a string defensively — context is
-// untyped JSONB and a value may arrive as a string or an array.
+// Curated context keys surfaced in the latest-run-context panel,
+// in deliberate display order. Each value is coerced to a string
+// defensively — ``context`` is untyped JSONB and a value may
+// arrive as a string, number, boolean, or array. Anything not in
+// this list still renders (see ``CONTEXT_HIDDEN_KEYS`` for the
+// short list that's intentionally rendered elsewhere), keyed
+// alphabetically below the known set, so a new sensor-emitted
+// key never gets silently hidden.
 const CONTEXT_KEYS: { key: string; label: string }[] = [
+  { key: "user", label: "User" },
+  { key: "hostname", label: "Host" },
   { key: "os", label: "OS" },
-  { key: "orchestration", label: "Orchestration" },
-  { key: "frameworks", label: "Frameworks" },
+  { key: "arch", label: "Arch" },
+  { key: "pid", label: "PID" },
+  { key: "process_name", label: "Process" },
+  { key: "python_version", label: "Python" },
   { key: "git_branch", label: "Git branch" },
   { key: "git_repo", label: "Git repo" },
-  { key: "hostname", label: "Host" },
+  { key: "git_commit", label: "Git commit" },
+  { key: "orchestration", label: "Orchestration" },
+  { key: "frameworks", label: "Frameworks" },
 ];
+
+const KNOWN_CONTEXT_KEYS = new Set(CONTEXT_KEYS.map((c) => c.key));
+
+// Keys that are rendered in a dedicated drawer panel and must not
+// duplicate into the runtime-context panel. ``mcp_servers`` is
+// the MCP SERVERS chip row above; rendering it here would double-
+// list every entry. Any other dedicated-panel key is added here.
+const CONTEXT_HIDDEN_KEYS = new Set(["mcp_servers"]);
+
+// Sub-keys of the ``orchestration`` object that the sensor emits
+// when the runtime is detected (k8s_*, compose_*, etc.). They
+// render indented directly under the Orchestration label row so
+// the relationship is obvious. Order matches the sensor's
+// emission order; unknown sub-keys still surface alphabetically
+// after the known ones.
+const ORCHESTRATION_SUB_KEYS: { key: string; label: string }[] = [
+  { key: "k8s_pod", label: "k8s pod" },
+  { key: "k8s_namespace", label: "k8s namespace" },
+  { key: "k8s_node", label: "k8s node" },
+  { key: "k8s_cluster", label: "k8s cluster" },
+  { key: "compose_project", label: "compose project" },
+  { key: "compose_service", label: "compose service" },
+];
+
+// Sub-key set lifted to module level for identity stability
+// (matches the ``KNOWN_CONTEXT_KEYS`` / ``CONTEXT_HIDDEN_KEYS``
+// pattern). Includes ``type`` because the orchestration object
+// uses ``type`` as the parent row's primary value, not as an
+// indented sub-row.
+const ORCHESTRATION_SUB_KEY_SET = new Set([
+  ...ORCHESTRATION_SUB_KEYS.map((s) => s.key),
+  "type",
+]);
+
+interface ContextRow {
+  key: string;
+  label: string;
+  value: string;
+  indent?: boolean;
+}
+
+// Title-Case a snake_case sensor key for unknown-key display.
+// ``aws_region`` → ``Aws region``. Intentionally not capitalising
+// every word so the label reads as one phrase rather than a
+// proper noun — keeps generic keys visually distinct from the
+// curated ones above which capitalise deliberate acronyms (OS,
+// PID).
+function humanizeKey(key: string): string {
+  const lower = key.replace(/_/g, " ");
+  return lower.charAt(0).toUpperCase() + lower.slice(1);
+}
 
 function ContextPanel({
   context,
@@ -735,33 +797,158 @@ function ContextPanel({
   if (!context) {
     return <PanelEmpty>No runtime context for the latest run.</PanelEmpty>;
   }
-  const rows = CONTEXT_KEYS.map((c) => ({
-    label: c.label,
-    value: coerceContextValue(context[c.key]),
-  })).filter((r) => r.value !== "");
+  const rows: ContextRow[] = [];
+  // 1. Curated keys in spec order. ``orchestration`` is the one
+  //    curated key the sensor may emit as an object (k8s /
+  //    compose detection) — it expands into the parent row +
+  //    indented sub-rows. A bare string value (sensor pre-
+  //    orchestration-sub-keys) still renders as a flat row.
+  for (const { key, label } of CONTEXT_KEYS) {
+    const raw = context[key];
+    if (key === "orchestration" && isPlainObject(raw)) {
+      rows.push(
+        ...expandObjectRows(key, label, raw, {
+          curatedSubKeys: ORCHESTRATION_SUB_KEYS,
+          curatedSubKeySet: ORCHESTRATION_SUB_KEY_SET,
+          primaryValueSubKey: "type",
+        }),
+      );
+      continue;
+    }
+    const value = coerceContextValue(raw);
+    if (value !== "") rows.push({ key, label, value });
+  }
+  // 2. Unknown top-level keys (not curated, not hidden). Sorted
+  //    alphabetically so the panel stays stable across renders.
+  //    Plain-object unknowns expand into the parent + indented
+  //    sub-rows via the same ``expandObjectRows`` helper — so
+  //    every present key surfaces, no silent drops, matching the
+  //    "future sensor fields never hidden" contract.
+  const unknownKeys = Object.keys(context)
+    .filter(
+      (k) =>
+        !KNOWN_CONTEXT_KEYS.has(k) &&
+        !CONTEXT_HIDDEN_KEYS.has(k),
+    )
+    .sort();
+  for (const k of unknownKeys) {
+    const raw = context[k];
+    if (isPlainObject(raw)) {
+      rows.push(...expandObjectRows(k, humanizeKey(k), raw));
+      continue;
+    }
+    const value = coerceContextValue(raw);
+    if (value !== "") rows.push({ key: k, label: humanizeKey(k), value });
+  }
   if (rows.length === 0) {
     return <PanelEmpty>No runtime context for the latest run.</PanelEmpty>;
   }
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+    <div
+      data-testid="agent-drawer-context-rows"
+      style={{ display: "flex", flexDirection: "column", gap: 3 }}
+    >
       {rows.map((r) => (
-        <div key={r.label} style={{ display: "flex", gap: 8, fontSize: 11 }}>
-          <span style={{ color: "var(--text-muted)", minWidth: 88 }}>
-            {r.label}
-          </span>
+        <div
+          key={r.key}
+          data-testid={`agent-drawer-context-row-${r.key}`}
+          data-context-indent={r.indent ? "true" : undefined}
+          style={{
+            display: "flex",
+            gap: 8,
+            fontSize: 11,
+            paddingLeft: r.indent ? 14 : 0,
+          }}
+        >
           <span
             style={{
-              fontFamily: "var(--font-mono)",
-              color: "var(--text)",
-              wordBreak: "break-word",
+              color: "var(--text-muted)",
+              minWidth: r.indent ? 74 : 88,
             }}
           >
-            {r.value}
+            {r.label}
           </span>
+          {r.value !== "" && (
+            <span
+              style={{
+                fontFamily: "var(--font-mono)",
+                color: "var(--text)",
+                wordBreak: "break-word",
+              }}
+            >
+              {r.value}
+            </span>
+          )}
         </div>
       ))}
     </div>
   );
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return (
+    typeof value === "object" && value !== null && !Array.isArray(value)
+  );
+}
+
+interface ExpandObjectOptions {
+  curatedSubKeys?: { key: string; label: string }[];
+  curatedSubKeySet?: ReadonlySet<string>;
+  /** Sub-key whose value becomes the parent row's primary value
+   *  (e.g. ``type`` for the orchestration object — the parent
+   *  row reads ``Orchestration  k8s``). Other sub-keys still
+   *  render as indented rows below. */
+  primaryValueSubKey?: string;
+}
+
+// Expand a plain-object context value into a parent row +
+// indented sub-rows. Used for both the curated ``orchestration``
+// key and any unknown top-level plain-object key — without this
+// generic expansion, unknown plain-object values would silently
+// drop (``coerceContextValue`` returns ``""`` for objects),
+// violating the "no silent drops" contract that future sensor
+// fields rely on. Sub-keys nested ONE level deep render via the
+// curated list first, then unknown sub-keys alphabetised. A
+// deeper nested object value inside a sub-key is rendered as an
+// inline ``k=v, k=v`` summary via ``coerceContextValue`` —
+// keeping the panel visually flat at one indent level.
+function expandObjectRows(
+  parentKey: string,
+  parentLabel: string,
+  obj: Record<string, unknown>,
+  opts: ExpandObjectOptions = {},
+): ContextRow[] {
+  const {
+    curatedSubKeys = [],
+    curatedSubKeySet = new Set<string>(),
+    primaryValueSubKey,
+  } = opts;
+  const primaryValue = primaryValueSubKey
+    ? coerceContextValue(obj[primaryValueSubKey])
+    : "";
+  const subRows: ContextRow[] = [];
+  for (const sub of curatedSubKeys) {
+    const v = coerceContextValue(obj[sub.key]);
+    if (v !== "") {
+      subRows.push({ key: sub.key, label: sub.label, value: v, indent: true });
+    }
+  }
+  const skipKeys = new Set(curatedSubKeySet);
+  if (primaryValueSubKey) skipKeys.add(primaryValueSubKey);
+  const unknownSubKeys = Object.keys(obj)
+    .filter((k) => !skipKeys.has(k))
+    .sort();
+  for (const k of unknownSubKeys) {
+    const v = coerceContextValue(obj[k]);
+    if (v !== "") {
+      subRows.push({ key: k, label: humanizeKey(k), value: v, indent: true });
+    }
+  }
+  if (primaryValue === "" && subRows.length === 0) return [];
+  return [
+    { key: parentKey, label: parentLabel, value: primaryValue },
+    ...subRows,
+  ];
 }
 
 function coerceContextValue(value: unknown): string {
@@ -771,7 +958,36 @@ function coerceContextValue(value: unknown): string {
     return String(value);
   }
   if (Array.isArray(value)) {
-    return value.filter((v) => typeof v === "string").join(", ");
+    return value
+      .map((v) => {
+        if (typeof v === "string") return v;
+        if (typeof v === "number" || typeof v === "boolean") return String(v);
+        return "";
+      })
+      .filter((v) => v !== "")
+      .join(", ");
+  }
+  if (isPlainObject(value)) {
+    // Inline ``k=v, k=v`` summary for nested plain objects. The
+    // top-level expansion path (``expandObjectRows``) routes
+    // first-level plain objects to indented sub-rows BEFORE
+    // this coercion; this fallback only fires for plain objects
+    // nested INSIDE an expanded sub-key (e.g.
+    // ``orchestration.resource_limits = { cpu: "500m" }``).
+    // Keeping that one extra level visible without further
+    // indent prevents silent drops while keeping the panel
+    // visually flat at one indent level. Nested arrays / further
+    // nested objects within this summary recurse through
+    // ``coerceContextValue`` — circular structures are
+    // theoretically possible but not present in any sensor
+    // context payload today.
+    return Object.entries(value)
+      .map(([k, v]) => {
+        const s = coerceContextValue(v);
+        return s === "" ? "" : `${k}=${s}`;
+      })
+      .filter((s) => s !== "")
+      .join(", ");
   }
   return "";
 }

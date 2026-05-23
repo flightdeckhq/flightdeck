@@ -161,6 +161,20 @@ Fleet swimlane reshape, and the event-grain Events page (D157).
 
 ### Changed
 
+- **Agent drawer runtime-context panel shows the full session
+  context.** The panel previously curated six keys (OS,
+  Orchestration, Frameworks, Git branch, Git repo, Host) and
+  dropped everything else. It now renders **every** populated
+  key in `sessions.context`: the curated set (User, Host, OS,
+  Arch, PID, Process, Python, Git branch, Git repo, Git commit,
+  Orchestration, Frameworks) in fixed order with deliberate
+  labels, followed by any other present key rendered
+  generically (snake_case → "Title case", alphabetised) so a
+  future sensor field is never silently hidden. `orchestration`
+  rendered as an object expands into nested indented sub-rows
+  (k8s pod / namespace / compose project / etc.). `mcp_servers`
+  stays excluded — its dedicated MCP SERVERS panel above
+  renders that data.
 - **Agent drawer header redesigned for clearer affordances.**
   Four sibling rows in deterministic order: identity (with the
   close × anchored right), a plain-muted status + topology

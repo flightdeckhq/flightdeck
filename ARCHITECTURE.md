@@ -2518,8 +2518,29 @@ action row onto a wrapping line.
 
 Below the identity chrome sit three collapsible panels: the MCP
 servers the agent has connected to (union across loaded
-sessions), the latest run's runtime context (git / kubernetes /
-frameworks), and the most recent policy events.
+sessions), the latest run's **runtime context panel**, and the
+most recent policy events.
+
+The runtime-context panel renders **every** key present in
+`sessions.context` for the most recent run, not a curated
+subset. The curated key list — User, Host, OS, Arch, PID,
+Process, Python, Git branch, Git repo, Git commit,
+Orchestration, Frameworks — renders first, in that fixed
+order, with deliberate labels. Any key NOT in the curated set
+renders generically below, alphabetised, with a snake_case →
+"Title case" label (e.g. `node_version` → `Node version`) so
+a new sensor-emitted field is never silently hidden. The
+`orchestration` value renders specially: a bare string emits
+one flat row; an object (k8s / compose detection) expands
+into the parent "Orchestration" row plus indented sub-rows.
+The curated orchestration sub-keys, in emission order, are
+`k8s_pod`, `k8s_namespace`, `k8s_node`, `k8s_cluster`,
+`compose_project`, `compose_service`; any further sub-key the
+sensor emits surfaces alphabetically below the curated set
+with the same humanised-label fallback as top-level unknown
+keys. Empty / null / empty-array values are skipped.
+`mcp_servers` is excluded — its dedicated MCP SERVERS panel
+above renders that data.
 
 Two tabs:
 

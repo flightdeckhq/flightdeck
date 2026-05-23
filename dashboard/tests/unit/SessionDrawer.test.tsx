@@ -672,6 +672,15 @@ describe("SessionDrawer", () => {
     // ...but mcp_servers must NOT appear in the RUNTIME panel.
     expect(screen.queryByTestId("runtime-key-mcp_servers")).not.toBeInTheDocument();
     expect(screen.queryByTestId("runtime-value-mcp_servers")).not.toBeInTheDocument();
+    // Final guard: assert no ``[object Object]`` substring leaks
+    // anywhere inside the RUNTIME panel. The testid-absence checks
+    // above close the named-field path; this catches any future
+    // array-of-objects field that escapes the exclusion list and
+    // gets ``String()``-coerced through the alphabetical-leftover
+    // loop. Scoped to the runtime panel so the MCP SERVERS panel's
+    // own rendering of the same array doesn't false-positive.
+    const runtimePanel = screen.getByTestId("runtime-panel");
+    expect(runtimePanel.textContent ?? "").not.toContain("[object Object]");
   });
 
   it("RUNTIME panel combines git fields into a single row", () => {

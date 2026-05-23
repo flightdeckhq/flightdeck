@@ -76,6 +76,11 @@ const TOOLTIP_BORDER_RADIUS = 4;
 const TOOLTIP_PADDING_Y = 4;
 const TOOLTIP_PADDING_X = 8;
 const TOOLTIP_FONT_SIZE = 11;
+// Renders above the swimlane row buttons (zIndex 2) and any
+// panel chrome that sits in between. The repo has no global
+// z-index token file; this constant is the single source of
+// truth for the bracket tooltip.
+const TOOLTIP_Z_INDEX = 100;
 
 function formatRunTime(iso: string): string {
 	const d = new Date(iso);
@@ -223,6 +228,14 @@ function RunBoundaryMark({
 		[],
 	);
 	const onHoverLeave = useCallback(() => setTooltipPos(null), []);
+	// Note: the tooltip's left/top coordinates are snapshotted from
+	// the button's viewport rect at hover time and are NOT refreshed
+	// if the user scrolls or resizes the window while hovering. The
+	// pointer must stay on the button to keep the tooltip visible,
+	// so any active scroll already moves the operator off-button
+	// and ``onMouseLeave`` fires. ``EventNode`` has the same
+	// no-listener behaviour for the same reason; revisit jointly
+	// if a v1 user reports drift.
 
 	const glyphSize = kind === "start" ? TRIANGLE_WIDTH : SQUARE_SIDE;
 	const glyphHeight = kind === "start" ? TRIANGLE_HEIGHT : SQUARE_SIDE;
@@ -304,7 +317,7 @@ function RunBoundaryMark({
 						lineHeight: 1.4,
 						whiteSpace: "pre",
 						pointerEvents: "none",
-						zIndex: 100,
+						zIndex: TOOLTIP_Z_INDEX,
 					}}
 				>
 					{tooltip}

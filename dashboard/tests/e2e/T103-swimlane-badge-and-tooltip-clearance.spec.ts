@@ -226,7 +226,10 @@ test.describe("T103 — swimlane right-edge clearance", () => {
     // synthetic event handler in current React, so the tooltip
     // never renders programmatically. Wrap in ``expect.poll``
     // so the hover gets retried if the first attempt races
-    // the swimlane's rAF tick.
+    // the swimlane's rAF tick. ``tooltip.count()`` returns 0
+    // when no match exists rather than throwing, so the poll
+    // can recover from any iteration where the swimlane
+    // re-rendered between hover and check.
     const tooltip = page
       .locator('[data-testid^="swimlane-run-bracket-tooltip-"]')
       .first();

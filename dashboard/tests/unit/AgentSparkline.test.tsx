@@ -27,14 +27,39 @@ describe("AgentSparkline", () => {
     expect(screen.getByTestId("agent-sparkline-empty")).toBeInTheDocument();
   });
 
-  it("renders the chart when at least one bucket carries a value", () => {
+  it("renders the placeholder when only one non-zero point exists (sparse data)", () => {
+    // Sparse-data guard: a single non-zero point would render as
+    // a stray accent dot rather than a meaningful line. The
+    // placeholder dash is the deliberate fallback so the column
+    // reads consistently regardless of seed-data density.
+    const series = [point({ tokens: 100 }), point({ tokens: 0 })];
+    render(<AgentSparkline series={series} axis="tokens" />);
+    expect(screen.getByTestId("agent-sparkline-empty")).toBeInTheDocument();
+  });
+
+  it("renders the chart when two or more non-zero points exist", () => {
     const series = [point({ tokens: 100 }), point({ tokens: 200 })];
     render(<AgentSparkline series={series} axis="tokens" />);
     expect(screen.getByTestId("agent-sparkline")).toBeInTheDocument();
   });
 
-  it("respects the axis prop — non-zero on tokens, zero on errors renders chart for tokens only", () => {
-    const series = [point({ tokens: 100, errors: 0 })];
+  it("renders the chart on a longer series with intermittent zeros (>=2 non-zero)", () => {
+    const series = [
+      point({ tokens: 0 }),
+      point({ tokens: 50 }),
+      point({ tokens: 0 }),
+      point({ tokens: 200 }),
+      point({ tokens: 0 }),
+    ];
+    render(<AgentSparkline series={series} axis="tokens" />);
+    expect(screen.getByTestId("agent-sparkline")).toBeInTheDocument();
+  });
+
+  it("respects the axis prop — tokens has two non-zero points, errors has none", () => {
+    const series = [
+      point({ tokens: 100, errors: 0 }),
+      point({ tokens: 200, errors: 0 }),
+    ];
     const { unmount } = render(<AgentSparkline series={series} axis="tokens" />);
     expect(screen.getByTestId("agent-sparkline")).toBeInTheDocument();
     unmount();

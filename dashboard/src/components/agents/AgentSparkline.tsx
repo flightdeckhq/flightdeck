@@ -31,9 +31,17 @@ function AgentSparklineImpl({
   height = 24,
 }: AgentSparklineProps) {
   const data = series.map((p) => ({ v: p[axis] ?? 0 }));
-  const isEmpty = data.length === 0 || data.every((d) => d.v === 0);
+  // Sparse-data guard: a line with a single non-zero data point
+  // collapses visually to a single accent-coloured dot, which
+  // reads as a stray pixel rather than a chart. Render the
+  // neutral placeholder dash when fewer than two non-zero points
+  // exist; two or more points are required to draw a meaningful
+  // line. Subsumes the prior empty-array / all-zero check (both
+  // have zero non-zero points and so collapse into the same
+  // dash path).
+  const isSparse = data.filter((d) => d.v > 0).length < 2;
 
-  if (isEmpty) {
+  if (isSparse) {
     return (
       <div
         data-testid="agent-sparkline-empty"

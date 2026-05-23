@@ -9,6 +9,20 @@ Fleet swimlane reshape, and the event-grain Events page (D157).
 
 ### Added
 
+- **`/v1/events` runtime-context facets + filters (D160).** Nine
+  new dimensions sourced from `sessions.context` join the
+  event-grain facet sidebar + filter set: `os`, `arch`, `host`,
+  `user`, `git_branch`, `git_repo`, `orchestration`,
+  `python_version`, `process_name`. Each resolves through the
+  existing sessions JOIN; new partial expression indexes on
+  `sessions((context->>'<key>'))` (migration 000024) back both
+  the facet GROUP BY scans and the filter predicates. Loaded
+  benchmark on the dev stack: `?facets=true` p50 = 44 ms,
+  p95 = 48 ms (10 sequential calls, ~7000 events). `pid`,
+  `git_commit`, and the orchestration sub-keys
+  (`k8s_pod` / `compose_project` / ...) stay display-only on
+  the agent drawer's context panel — they're high-cardinality
+  or not useful for grouping.
 - **`/agents` route — one-row-per-agent table.** SentinelOne-grade
   list with KPI sparklines (Tokens / Latency p95 / Errors / Sessions
   / Cost, all 7-day totals + day-bucketed sparklines over the

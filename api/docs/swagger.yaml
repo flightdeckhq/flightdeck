@@ -1816,6 +1816,70 @@ paths:
         in: query
         name: terminal
         type: boolean
+      - collectionFormat: csv
+        description: Filter by sessions.context->>'os' (repeatable; resolved via a
+          sessions subquery)
+        in: query
+        items:
+          type: string
+        name: os
+        type: array
+      - collectionFormat: csv
+        description: Filter by sessions.context->>'arch' (repeatable)
+        in: query
+        items:
+          type: string
+        name: arch
+        type: array
+      - collectionFormat: csv
+        description: Filter by sessions.context->>'hostname' (repeatable)
+        in: query
+        items:
+          type: string
+        name: host
+        type: array
+      - collectionFormat: csv
+        description: Filter by sessions.context->>'user' (repeatable)
+        in: query
+        items:
+          type: string
+        name: user
+        type: array
+      - collectionFormat: csv
+        description: Filter by sessions.context->>'git_branch' (repeatable)
+        in: query
+        items:
+          type: string
+        name: git_branch
+        type: array
+      - collectionFormat: csv
+        description: Filter by sessions.context->>'git_repo' (repeatable)
+        in: query
+        items:
+          type: string
+        name: git_repo
+        type: array
+      - collectionFormat: csv
+        description: Filter by sessions.context->>'orchestration' (repeatable)
+        in: query
+        items:
+          type: string
+        name: orchestration
+        type: array
+      - collectionFormat: csv
+        description: Filter by sessions.context->>'python_version' (repeatable)
+        in: query
+        items:
+          type: string
+        name: python_version
+        type: array
+      - collectionFormat: csv
+        description: Filter by sessions.context->>'process_name' (repeatable)
+        in: query
+        items:
+          type: string
+        name: process_name
+        type: array
       - description: Free-text ILIKE search across event_type, model, session_id,
           and the session's agent_name and framework
         in: query

@@ -53,6 +53,20 @@ type EventsParams struct {
 	// Frameworks matches the bare `sessions.framework` OR any entry
 	// of the legacy versioned `sessions.context->'frameworks'` array.
 	Frameworks []string
+	// Session-context facet filters. Each one resolves via a
+	// `SELECT session_id FROM sessions WHERE context->>'<key>' = ANY($N)`
+	// subquery against the partial expression indexes added by
+	// migration 000024. Drives the 9 runtime-context dimensions
+	// on the /v1/events facet sidebar.
+	OSValues       []string
+	Archs          []string
+	Hostnames      []string
+	Users          []string
+	GitBranches    []string
+	GitRepos       []string
+	Orchestrations []string
+	PythonVersions []string
+	ProcessNames   []string
 	// Query is a free-text ILIKE search powering the `/events` page
 	// top-of-page search bar. It matches the events table's
 	// `event_type`, `model`, and `session_id` (cast to text), plus
@@ -98,6 +112,19 @@ type EventFacets struct {
 	OriginatingCallContext []EventFacetValue `json:"originating_call_context"`
 	MCPServer              []EventFacetValue `json:"mcp_server"`
 	Terminal               []EventFacetValue `json:"terminal"`
+	// Runtime-context dimensions sourced from sessions.context.
+	// Each one is computed via the existing sessions JOIN; partial
+	// expression indexes from migration 000024 back the GROUP BY
+	// scans.
+	OS            []EventFacetValue `json:"os"`
+	Arch          []EventFacetValue `json:"arch"`
+	Hostname      []EventFacetValue `json:"hostname"`
+	User          []EventFacetValue `json:"user"`
+	GitBranch     []EventFacetValue `json:"git_branch"`
+	GitRepo       []EventFacetValue `json:"git_repo"`
+	Orchestration []EventFacetValue `json:"orchestration"`
+	PythonVersion []EventFacetValue `json:"python_version"`
+	ProcessName   []EventFacetValue `json:"process_name"`
 }
 
 // facetTopN caps each facet dimension's returned values. The sidebar
@@ -123,6 +150,18 @@ var facetExprAllowlist = map[string]bool{
 	"payload->'policy_decision'->>'matched_entry_id'": true,
 	"s.agent_id::text":                                true,
 	"s.framework":                                     true,
+	// Runtime-context dimensions sourced from sessions.context.
+	// Each expression is also the partial-index key in migration
+	// 000024; the GROUP BY scan rides those indexes.
+	"s.context->>'os'":             true,
+	"s.context->>'arch'":           true,
+	"s.context->>'hostname'":       true,
+	"s.context->>'user'":           true,
+	"s.context->>'git_branch'":     true,
+	"s.context->>'git_repo'":       true,
+	"s.context->>'orchestration'":  true,
+	"s.context->>'python_version'": true,
+	"s.context->>'process_name'":   true,
 }
 
 // buildEventsWhere assembles the shared WHERE clause + args for both
@@ -201,6 +240,45 @@ func buildEventsWhere(params EventsParams) (conditions []string, args []any) {
 		args = append(args, params.Frameworks)
 		argIdx++
 	}
+	// Session-context facet filters. Each one resolves via a
+	// sessions subquery on the indexed ``context->>'<key>'``
+	// expression (migration 000024). Same shape as the
+	// Frameworks block above — `session_id IN (...)` against
+	// the filtered sessions. The ``addContextFilter`` closure
+	// guards against accidental SQL injection by validating the
+	// composed expression against the same ``facetExprAllowlist``
+	// the facet GROUP BY path uses — a future caller passing a
+	// request-derived key would fail closed at the boundary
+	// rather than relying on call-site discipline.
+	addContextFilter := func(key string, vals []string) {
+		if len(vals) == 0 {
+			return
+		}
+		expr := "s.context->>'" + key + "'"
+		if !facetExprAllowlist[expr] {
+			// Defensive — every call site below passes a
+			// hardcoded key that IS in the allowlist. A miss
+			// here means someone added a new context filter
+			// without updating the allowlist; failing the
+			// request closed surfaces that drift loudly.
+			conditions = append(conditions, "1 = 0")
+			return
+		}
+		conditions = append(conditions, fmt.Sprintf(
+			"session_id IN (SELECT session_id FROM sessions "+
+				"WHERE context->>'%s' = ANY($%d::text[]))", key, argIdx))
+		args = append(args, vals)
+		argIdx++
+	}
+	addContextFilter("os", params.OSValues)
+	addContextFilter("arch", params.Archs)
+	addContextFilter("hostname", params.Hostnames)
+	addContextFilter("user", params.Users)
+	addContextFilter("git_branch", params.GitBranches)
+	addContextFilter("git_repo", params.GitRepos)
+	addContextFilter("orchestration", params.Orchestrations)
+	addContextFilter("python_version", params.PythonVersions)
+	addContextFilter("process_name", params.ProcessNames)
 	if params.Query != "" {
 		// Free-text search for the `/events` page search bar. Matches
 		// the events-table columns directly (event_type, model, and
@@ -453,6 +531,47 @@ func (s *Store) GetEventFacets(ctx context.Context, params EventsParams) (*Event
 	}
 	if facets.Framework, err2 = groupBySessionsCol(
 		"s.framework"); err2 != nil {
+		return nil, err2
+	}
+	// Runtime-context dimensions sourced from sessions.context.
+	// Each one is a single GROUP BY through the existing
+	// sessions JOIN; the
+	// partial expression indexes added by migration 000024 back
+	// the scan.
+	if facets.OS, err2 = groupBySessionsCol(
+		"s.context->>'os'"); err2 != nil {
+		return nil, err2
+	}
+	if facets.Arch, err2 = groupBySessionsCol(
+		"s.context->>'arch'"); err2 != nil {
+		return nil, err2
+	}
+	if facets.Hostname, err2 = groupBySessionsCol(
+		"s.context->>'hostname'"); err2 != nil {
+		return nil, err2
+	}
+	if facets.User, err2 = groupBySessionsCol(
+		"s.context->>'user'"); err2 != nil {
+		return nil, err2
+	}
+	if facets.GitBranch, err2 = groupBySessionsCol(
+		"s.context->>'git_branch'"); err2 != nil {
+		return nil, err2
+	}
+	if facets.GitRepo, err2 = groupBySessionsCol(
+		"s.context->>'git_repo'"); err2 != nil {
+		return nil, err2
+	}
+	if facets.Orchestration, err2 = groupBySessionsCol(
+		"s.context->>'orchestration'"); err2 != nil {
+		return nil, err2
+	}
+	if facets.PythonVersion, err2 = groupBySessionsCol(
+		"s.context->>'python_version'"); err2 != nil {
+		return nil, err2
+	}
+	if facets.ProcessName, err2 = groupBySessionsCol(
+		"s.context->>'process_name'"); err2 != nil {
 		return nil, err2
 	}
 

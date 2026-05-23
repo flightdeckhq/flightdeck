@@ -782,3 +782,182 @@ func TestGetEvents_SessionIdentityColumns_NullClientType(t *testing.T) {
 		t.Errorf("AgentType = %q, want coding", *ev.AgentType)
 	}
 }
+
+// TestGetEvents_ContextFacetFilters exercises the 9 runtime-context
+// dimensions sourced from sessions.context (D157 Phase 5 / C1). Two
+// sessions with distinct context JSONB; each new filter param
+// narrows the result set to the matching session, and the
+// facet-count response carries each dimension's distinct values.
+func TestGetEvents_ContextFacetFilters(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	from := now.Add(-time.Hour)
+	to := now.Add(time.Hour)
+
+	// Seed two sessions with distinct context for every one of
+	// the 9 dimensions. Each session emits exactly one event so
+	// per-filter row counts are unambiguous.
+	type sess struct {
+		id       string
+		flavor   string
+		context  string
+		eventTag string
+	}
+	a := sess{
+		id:     randomUUID(t),
+		flavor: "test-ctx-a-" + randomUUID(t)[:8],
+		context: `{
+			"os":"Linux","arch":"x86_64","hostname":"ctx-host-a","user":"ctx-user-a",
+			"git_branch":"main","git_repo":"flightdeck","orchestration":"k8s",
+			"python_version":"3.12.4","process_name":"sensor"
+		}`,
+		eventTag: "ctx-tag-a-" + randomUUID(t)[:8],
+	}
+	b := sess{
+		id:     randomUUID(t),
+		flavor: "test-ctx-b-" + randomUUID(t)[:8],
+		context: `{
+			"os":"Darwin","arch":"arm64","hostname":"ctx-host-b","user":"ctx-user-b",
+			"git_branch":"feature","git_repo":"other","orchestration":"docker-compose",
+			"python_version":"3.11.7","process_name":"pytest"
+		}`,
+		eventTag: "ctx-tag-b-" + randomUUID(t)[:8],
+	}
+	for _, sd := range []sess{a, b} {
+		agentID := randomUUID(t)
+		seedAgent(t, s, agentID, from, now.Add(-10*time.Minute), 1, 100)
+		if _, err := s.pool.Exec(ctx, `
+			INSERT INTO sessions (
+				session_id, agent_id, flavor, state, context,
+				started_at, last_seen_at, tokens_used,
+				agent_type, client_type
+			) VALUES (
+				$1::uuid, $2::uuid, $3, 'closed', $4::jsonb,
+				$5, $5, 100, 'coding', 'flightdeck_sensor'
+			)
+		`, sd.id, agentID, sd.flavor, sd.context,
+			now.Add(-30*time.Minute)); err != nil {
+			t.Fatalf("seed session: %v", err)
+		}
+		// One marker event per session — use the unique flavor so
+		// the test scopes by the seeded sessions only and never
+		// collides with rows from a parallel test.
+		if _, err := s.pool.Exec(ctx, `
+			INSERT INTO events (
+				id, session_id, flavor, event_type,
+				payload, occurred_at, has_content
+			) VALUES (
+				gen_random_uuid(), $1::uuid, $2, $3, '{}'::jsonb, $4, false
+			)
+		`, sd.id, sd.flavor, sd.eventTag,
+			now.Add(-20*time.Minute)); err != nil {
+			t.Fatalf("seed event: %v", err)
+		}
+		t.Cleanup(func() {
+			_, _ = s.pool.Exec(ctx,
+				`DELETE FROM events WHERE session_id = $1::uuid`, sd.id)
+		})
+	}
+
+	// Per-dimension filter: each filter value narrows to exactly
+	// session A (1 event). The flavor filter scopes both sides so
+	// the test never sees other tests' rows.
+	for _, tc := range []struct {
+		name   string
+		params EventsParams
+	}{
+		{"os", EventsParams{OSValues: []string{"Linux"}}},
+		{"arch", EventsParams{Archs: []string{"x86_64"}}},
+		{"hostname", EventsParams{Hostnames: []string{"ctx-host-a"}}},
+		{"user", EventsParams{Users: []string{"ctx-user-a"}}},
+		{"git_branch", EventsParams{GitBranches: []string{"main"}}},
+		{"git_repo", EventsParams{GitRepos: []string{"flightdeck"}}},
+		{"orchestration", EventsParams{Orchestrations: []string{"k8s"}}},
+		{"python_version", EventsParams{PythonVersions: []string{"3.12.4"}}},
+		{"process_name", EventsParams{ProcessNames: []string{"sensor"}}},
+	} {
+		p := tc.params
+		p.From, p.To, p.Limit = from, to, 100
+		p.EventTypes = []string{a.eventTag, b.eventTag}
+		resp, err := s.GetEvents(ctx, p)
+		if err != nil {
+			t.Fatalf("GetEvents(%s): %v", tc.name, err)
+		}
+		if resp.Total != 1 {
+			t.Errorf("%s filter: total=%d, want 1", tc.name, resp.Total)
+		}
+	}
+
+	// Multi-dim AND: filtering on os=Linux AND user=ctx-user-b
+	// matches NEITHER session (A is Linux but user-a; B is
+	// Darwin). Confirms filters compose AND across dimensions.
+	resp, err := s.GetEvents(ctx, EventsParams{
+		From: from, To: to, Limit: 100,
+		EventTypes: []string{a.eventTag, b.eventTag},
+		OSValues:   []string{"Linux"},
+		Users:      []string{"ctx-user-b"},
+	})
+	if err != nil {
+		t.Fatalf("GetEvents AND: %v", err)
+	}
+	if resp.Total != 0 {
+		t.Errorf("os=Linux AND user=ctx-user-b total=%d, want 0", resp.Total)
+	}
+
+	// Multi-value OR within a dimension: hostname=ctx-host-a OR
+	// hostname=ctx-host-b matches both. Confirms repeatable filter
+	// values OR within their dimension.
+	resp, err = s.GetEvents(ctx, EventsParams{
+		From: from, To: to, Limit: 100,
+		EventTypes: []string{a.eventTag, b.eventTag},
+		Hostnames:  []string{"ctx-host-a", "ctx-host-b"},
+	})
+	if err != nil {
+		t.Fatalf("GetEvents OR: %v", err)
+	}
+	if resp.Total != 2 {
+		t.Errorf("hostname OR total=%d, want 2", resp.Total)
+	}
+
+	// Facet counts: each dimension should carry both seeded
+	// values with count=1. Scope by the two marker event_types
+	// so other tests' rows don't leak into the counts.
+	facets, err := s.GetEventFacets(ctx, EventsParams{
+		From: from, To: to,
+		EventTypes: []string{a.eventTag, b.eventTag},
+	})
+	if err != nil {
+		t.Fatalf("GetEventFacets: %v", err)
+	}
+	countOf := func(fvs []EventFacetValue, value string) int {
+		for _, fv := range fvs {
+			if fv.Value == value {
+				return fv.Count
+			}
+		}
+		return 0
+	}
+	for _, tc := range []struct {
+		name   string
+		facet  []EventFacetValue
+		values []string
+	}{
+		{"os", facets.OS, []string{"Linux", "Darwin"}},
+		{"arch", facets.Arch, []string{"x86_64", "arm64"}},
+		{"hostname", facets.Hostname, []string{"ctx-host-a", "ctx-host-b"}},
+		{"user", facets.User, []string{"ctx-user-a", "ctx-user-b"}},
+		{"git_branch", facets.GitBranch, []string{"main", "feature"}},
+		{"git_repo", facets.GitRepo, []string{"flightdeck", "other"}},
+		{"orchestration", facets.Orchestration, []string{"k8s", "docker-compose"}},
+		{"python_version", facets.PythonVersion, []string{"3.12.4", "3.11.7"}},
+		{"process_name", facets.ProcessName, []string{"sensor", "pytest"}},
+	} {
+		for _, v := range tc.values {
+			if got := countOf(tc.facet, v); got != 1 {
+				t.Errorf("%s[%s]=%d, want 1", tc.name, v, got)
+			}
+		}
+	}
+}

@@ -986,6 +986,96 @@ const docTemplate = `{
                         "in": "query"
                     },
                     {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "collectionFormat": "csv",
+                        "description": "Filter by sessions.context-\u003e\u003e'os' (repeatable; resolved via a sessions subquery)",
+                        "name": "os",
+                        "in": "query"
+                    },
+                    {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "collectionFormat": "csv",
+                        "description": "Filter by sessions.context-\u003e\u003e'arch' (repeatable)",
+                        "name": "arch",
+                        "in": "query"
+                    },
+                    {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "collectionFormat": "csv",
+                        "description": "Filter by sessions.context-\u003e\u003e'hostname' (repeatable)",
+                        "name": "host",
+                        "in": "query"
+                    },
+                    {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "collectionFormat": "csv",
+                        "description": "Filter by sessions.context-\u003e\u003e'user' (repeatable)",
+                        "name": "user",
+                        "in": "query"
+                    },
+                    {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "collectionFormat": "csv",
+                        "description": "Filter by sessions.context-\u003e\u003e'git_branch' (repeatable)",
+                        "name": "git_branch",
+                        "in": "query"
+                    },
+                    {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "collectionFormat": "csv",
+                        "description": "Filter by sessions.context-\u003e\u003e'git_repo' (repeatable)",
+                        "name": "git_repo",
+                        "in": "query"
+                    },
+                    {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "collectionFormat": "csv",
+                        "description": "Filter by sessions.context-\u003e\u003e'orchestration' (repeatable)",
+                        "name": "orchestration",
+                        "in": "query"
+                    },
+                    {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "collectionFormat": "csv",
+                        "description": "Filter by sessions.context-\u003e\u003e'python_version' (repeatable)",
+                        "name": "python_version",
+                        "in": "query"
+                    },
+                    {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "collectionFormat": "csv",
+                        "description": "Filter by sessions.context-\u003e\u003e'process_name' (repeatable)",
+                        "name": "process_name",
+                        "in": "query"
+                    },
+                    {
                         "type": "string",
                         "description": "Free-text ILIKE search across event_type, model, session_id, and the session's agent_name and framework",
                         "name": "q",

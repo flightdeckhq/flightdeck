@@ -8904,3 +8904,65 @@ documented upgrade path.
 **Related decisions.** D155 (worker parent-bump propagation — the
 backend half this mirrors). D157 (the per-agent landing page + Fleet
 swimlane reshape this polishes).
+
+## D160 -- Runtime-context event facets on /v1/events
+
+**What.** Nine new facet + filter dimensions added to
+`GET /v1/events`, sourced from `sessions.context`: `os`, `arch`,
+`host`, `user`, `git_branch`, `git_repo`, `orchestration`,
+`python_version`, `process_name` (URL query-param names; the
+`host` param resolves against the `sessions.context->>'hostname'`
+JSONB key — the sensor stores the full `hostname` field but the
+API surface is the shorter `host`). Each one resolves through
+the existing sessions JOIN; the GROUP BY scans ride partial
+expression indexes on `sessions((context->>'<key>'))` from
+migration 000024.
+
+**Why these nine.** The sensor emits ~14 keys in
+`session_start.context` today: the curated nine above plus
+`pid` (per-instance noise, no useful aggregation), `git_commit` (high
+cardinality, also tracked at the sessions level for drill-down but
+not useful as a facet), `frameworks` (already a facet via the bare
+`sessions.framework` column), `mcp_servers` (its own dedicated
+dimension via the MCP-event payload facet), and `node_version` /
+`supports_directives` / `working_dir` (operator-meaningful but low
+filter value at scale). The nine selected are the keys an operator
+would slice the entire event firehose by — "show me everything from
+the staging k8s cluster" (`orchestration` + `hostname`), "what's
+broken on Python 3.12" (`python_version`), "all events from a
+specific developer's branch" (`user` + `git_branch`).
+
+**Why not denormalise onto events.** `events` is the wide hot table
+(millions of rows in production); adding nine columns to every row
+balloons storage by 100×+ for slowly-changing data that's
+session-scoped by definition. The sessions JOIN is already in the
+hot path (event identity columns ship through it per D158); adding
+the 9 partial expression indexes on `sessions` is cheap and the
+planner uses them for the row-set filter AND the facet-count
+GROUP BY.
+
+**Why partial indexes.** A `->>`-equality predicate (`s.context->>'os'
+= ANY(...)`) is NOT served by a GIN index, so each dimension needs
+its own expression index. The partial predicate `WHERE (<expr>) IS
+NOT NULL` keeps each index tiny: only sessions that actually carry
+the key are indexed. The filter predicate `= ANY(...)` strictly
+implies `IS NOT NULL`, so the partial stays usable. Mirrors the
+000023 pattern on `events.payload->>` facets.
+
+**Perf**. Measured against the loaded dev stack with ~7000 events
+across 70+ sessions carrying all nine keys: `GET /v1/events?facets=true`
+p50 = 44 ms, p95 = 48 ms across 10 sequential calls. Acceptable;
+no opt-in `?facets=context|core|all` split needed (the fallback
+path discussed during planning).
+
+**Excluded from facets.** `pid`, `git_commit`, and the orchestration
+sub-keys (`k8s_pod`, `k8s_namespace`, `compose_project`, etc.) stay
+display-only on the agent drawer's context panel — high cardinality,
+not useful for grouping. The drawer's "full context" view (D157,
+implemented in B) surfaces them inline; they don't need their own
+facet sidebar entry.
+
+**Related decisions.** D157 (the per-agent landing page + UI reshape
+this extends). D158 (the sessions JOIN this rides). D098 (provider
+derivation via SQL CASE — same family of session-context-extraction
+patterns).

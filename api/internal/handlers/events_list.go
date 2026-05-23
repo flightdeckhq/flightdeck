@@ -55,6 +55,15 @@ const (
 // @Param        originating_call_context query  []string false "Filter by originating call context (repeatable)"
 // @Param        mcp_server               query  []string false "Filter by MCP server name from an MCP event's payload (repeatable)"
 // @Param        terminal                 query  bool    false  "Filter to events whose payload terminal flag matches"
+// @Param        os                       query  []string false "Filter by sessions.context->>'os' (repeatable; resolved via a sessions subquery)"
+// @Param        arch                     query  []string false "Filter by sessions.context->>'arch' (repeatable)"
+// @Param        host                     query  []string false "Filter by sessions.context->>'hostname' (repeatable)"
+// @Param        user                     query  []string false "Filter by sessions.context->>'user' (repeatable)"
+// @Param        git_branch               query  []string false "Filter by sessions.context->>'git_branch' (repeatable)"
+// @Param        git_repo                 query  []string false "Filter by sessions.context->>'git_repo' (repeatable)"
+// @Param        orchestration            query  []string false "Filter by sessions.context->>'orchestration' (repeatable)"
+// @Param        python_version           query  []string false "Filter by sessions.context->>'python_version' (repeatable)"
+// @Param        process_name             query  []string false "Filter by sessions.context->>'process_name' (repeatable)"
 // @Param        q                        query  string  false  "Free-text ILIKE search across event_type, model, session_id, and the session's agent_name and framework"
 // @Param        facets                   query  bool    false  "When true, return per-dimension facet counts instead of the event list"
 // @Param        before                   query  string  false  "Keyset cursor (ISO 8601). When set, only rows with occurred_at < before are returned. Pair with order=desc for newest-first drawer pagination."
@@ -185,6 +194,16 @@ func EventsListHandler(s store.Querier) http.HandlerFunc {
 			"matched_entry_id":         q["matched_entry_id"],
 			"originating_call_context": q["originating_call_context"],
 			"mcp_server":               q["mcp_server"],
+			// Runtime-context facets sourced from sessions.context.
+			"os":             q["os"],
+			"arch":           q["arch"],
+			"host":           q["host"],
+			"user":           q["user"],
+			"git_branch":     q["git_branch"],
+			"git_repo":       q["git_repo"],
+			"orchestration":  q["orchestration"],
+			"python_version": q["python_version"],
+			"process_name":   q["process_name"],
 		} {
 			if len(vals) > eventsMaxFilterValues {
 				writeError(w, http.StatusBadRequest, fmt.Sprintf(
@@ -220,6 +239,15 @@ func EventsListHandler(s store.Querier) http.HandlerFunc {
 			MCPServers:              q["mcp_server"],
 			Terminal:                terminal,
 			Frameworks:              q["framework"],
+			OSValues:                q["os"],
+			Archs:                   q["arch"],
+			Hostnames:               q["host"],
+			Users:                   q["user"],
+			GitBranches:             q["git_branch"],
+			GitRepos:                q["git_repo"],
+			Orchestrations:          q["orchestration"],
+			PythonVersions:          q["python_version"],
+			ProcessNames:            q["process_name"],
 			Query:                   searchQuery,
 			Before:                  before,
 			Order:                   order,

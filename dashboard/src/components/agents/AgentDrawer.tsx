@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { Link } from "react-router-dom";
+import { Activity, ListTree } from "lucide-react";
 import { useFleetStore } from "@/store/fleet";
 import { type AgentLink, deriveAgentLinkage } from "@/lib/relationship";
-import { AgentStatusBadge } from "@/components/timeline/AgentStatusBadge";
-import { TopologyCell } from "@/components/fleet/TopologyCell";
+import { STATUS_LABEL, StatusDot } from "@/lib/agent-status";
 import { ClientTypePill } from "@/components/facets/ClientTypePill";
 import { ClientType } from "@/lib/agent-identity";
 import { ClaudeCodeLogo } from "@/components/ui/claude-code-logo";
@@ -113,6 +113,28 @@ export function AgentDrawer({
   }, [panelRuns]);
 
   const latestContext = panelRuns[0]?.context ?? null;
+
+  // Topology descriptor for the status row. Names live in row 4
+  // (the linkage pills). Derived from ``linkage``, not from
+  // ``agent.topology``, so depth-2 middle agents that are both a
+  // parent AND a child render BOTH descriptors with a middle dot.
+  //
+  // The "drawer closed" guard is keyed on ``agentId`` (a stable
+  // primitive) rather than ``agent`` (a useMemo-derived object
+  // whose reference re-creates on every fleet WS tick that
+  // mutates any field of the matched agent). The descriptor is
+  // identity-stable under WS churn — only a real linkage shape
+  // change re-computes.
+  const topologyDescriptor = useMemo(() => {
+    if (!agentId) return "";
+    const parts: string[] = [];
+    if (linkage.parent) parts.push("sub-agent");
+    if (linkage.children.length > 0) {
+      parts.push(`spawns ${linkage.children.length}`);
+    }
+    return parts.join(" • ");
+  }, [agentId, linkage.parent, linkage.children.length]);
+
   const open = agent !== null;
 
   const model = agent?.recent_sessions?.[0]?.model ?? null;
@@ -226,35 +248,57 @@ export function AgentDrawer({
                 </button>
               </div>
 
-              {/* Row 2 — status badge + topology. */}
+              {/* Row 2 — status + topology descriptor. Plain
+                  muted text, NOT link-styled: this row is info,
+                  not navigation. The topology descriptor is
+                  intentionally NAME-FREE — row 4 carries the
+                  navigable pills that name the parent / children,
+                  so this row stays a pure summary and there is no
+                  duplication between rows for any topology shape.
+                  Derived from ``linkage`` (not ``agent.topology``)
+                  so depth-2 middle agents that are both children
+                  AND parents read correctly. */}
               <div
                 data-testid="agent-drawer-header-status"
                 style={{
                   display: "flex",
                   alignItems: "center",
-                  gap: 10,
+                  gap: 8,
                   padding: "0 14px 8px",
+                  fontSize: 11,
+                  color: "var(--text-muted)",
                 }}
               >
-                <AgentStatusBadge
+                <StatusDot
                   state={agent.state}
-                  testId="agent-drawer-status"
+                  testId="agent-drawer-status-dot"
                 />
-                <TopologyCell
-                  agentId={agent.agent_id}
-                  topology={agent.topology}
-                />
+                <span
+                  data-testid="agent-drawer-status-label"
+                  style={{ color: "var(--text)" }}
+                >
+                  {STATUS_LABEL[agent.state]}
+                </span>
+                {topologyDescriptor && (
+                  <>
+                    <span aria-hidden="true">|</span>
+                    <span data-testid="agent-drawer-topology-descriptor">
+                      {topologyDescriptor}
+                    </span>
+                  </>
+                )}
               </div>
 
-              {/* Row 3 — action links, dedicated row so a wide
-                  topology label or a sub-agent pill row can't
-                  push them onto a wrapping line. */}
+              {/* Row 3 — action buttons. Bordered, icon + label,
+                  reads as clearly clickable. ``Open in swimlane``
+                  uses the local state setter; ``Open in events``
+                  is a real router Link. */}
               <div
                 data-testid="agent-drawer-header-actions"
                 style={{
                   display: "flex",
                   alignItems: "center",
-                  gap: 12,
+                  gap: 8,
                   padding: "0 14px 10px",
                 }}
               >
@@ -263,69 +307,76 @@ export function AgentDrawer({
                   data-testid="agent-drawer-open-swimlane"
                   aria-label={`Open ${agent.agent_name} in swimlane`}
                   onClick={() => setSwimlaneOpen(true)}
-                  style={{
-                    fontSize: 11,
-                    fontFamily: "var(--font-mono)",
-                    color: "var(--accent)",
-                    background: "transparent",
-                    border: "none",
-                    padding: 0,
-                    cursor: "pointer",
-                  }}
+                  style={drawerActionButtonStyle}
                 >
+                  <Activity size={12} aria-hidden="true" />
                   Open in swimlane
                 </button>
                 <Link
                   to={`/events?agent_id=${encodeURIComponent(agent.agent_id)}`}
                   data-testid="agent-drawer-open-in-events"
+                  aria-label={`Open ${agent.agent_name} in events`}
                   style={{
-                    fontSize: 11,
-                    fontFamily: "var(--font-mono)",
-                    color: "var(--accent)",
+                    ...drawerActionButtonStyle,
                     textDecoration: "none",
                   }}
                 >
-                  Open in events →
+                  <ListTree size={12} aria-hidden="true" />
+                  Open in events
                 </Link>
               </div>
 
-              {/* Row 4 (conditional) — sub-agent linkage pills. */}
+              {/* Row 4 (conditional) — sub-agent / parent linkage
+                  sections. Labelled muted-uppercase headers so the
+                  pills read as a navigation cluster, not a
+                  free-floating chip strip. PARENT renders first
+                  (hierarchical reading order), then SUB-AGENTS.
+                  Both sections can co-exist for depth-2 middle
+                  agents. Pills reuse ``.agent-status-chip`` from
+                  globals.css for the hover + focus-visible
+                  affordance so they read as clickable. */}
               {(linkage.parent || linkage.children.length > 0) && (
                 <div
                   data-testid="agent-drawer-header-subagents"
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 6,
-                    padding: "0 14px 10px",
-                  }}
+                  style={{ padding: "0 14px 10px" }}
                 >
                   <div
                     data-testid="agent-drawer-linkage"
                     style={{
                       display: "flex",
-                      alignItems: "center",
+                      flexDirection: "column",
                       gap: 6,
-                      flexWrap: "wrap",
                     }}
                   >
                     {linkage.parent && (
-                      <LinkagePill
-                        label={`← parent: ${linkage.parent.agentName}`}
-                        testId="agent-drawer-parent-pill"
-                        onClick={() =>
-                          onSelectAgent(linkage.parent!.agentId)
-                        }
-                      />
+                      <LinkageSection
+                        label="Parent"
+                        testId="agent-drawer-linkage-parent-section"
+                      >
+                        <LinkagePill
+                          label={`← parent: ${linkage.parent.agentName}`}
+                          testId="agent-drawer-parent-pill"
+                          onClick={() =>
+                            onSelectAgent(linkage.parent!.agentId)
+                          }
+                        />
+                      </LinkageSection>
                     )}
-                    {linkage.children.map((child: AgentLink) => (
-                      <LinkagePill
-                        key={child.agentId}
-                        label={`↳ ${child.agentName}`}
-                        testId="agent-drawer-child-pill"
-                        onClick={() => onSelectAgent(child.agentId)}
-                      />
-                    ))}
+                    {linkage.children.length > 0 && (
+                      <LinkageSection
+                        label="Sub-agents"
+                        testId="agent-drawer-linkage-children-section"
+                      >
+                        {linkage.children.map((child: AgentLink) => (
+                          <LinkagePill
+                            key={child.agentId}
+                            label={`↳ ${child.agentName}`}
+                            testId="agent-drawer-child-pill"
+                            onClick={() => onSelectAgent(child.agentId)}
+                          />
+                        ))}
+                      </LinkageSection>
+                    )}
                   </div>
                 </div>
               )}
@@ -449,6 +500,68 @@ export function AgentDrawer({
   );
 }
 
+// Shared style for the row-3 action buttons. Bordered, icon +
+// label, reads as a primary affordance. Used by both the
+// ``Open in swimlane`` ``<button>`` and the ``Open in events``
+// ``<Link>`` so the two read identically.
+const drawerActionButtonStyle: React.CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 6,
+  fontSize: 11,
+  fontFamily: "var(--font-mono)",
+  color: "var(--text)",
+  background: "transparent",
+  border: "1px solid var(--border)",
+  borderRadius: 4,
+  padding: "4px 9px",
+  cursor: "pointer",
+};
+
+// Labelled wrapper around one row-4 linkage cluster. Two
+// sections (Parent / Sub-agents) stack vertically inside row 4
+// for depth-2 middle agents that have both. The section label
+// keeps the navigation purpose explicit — the pills alone
+// could read like decorative chips.
+function LinkageSection({
+  label,
+  testId,
+  children,
+}: {
+  label: string;
+  testId: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div
+      data-testid={testId}
+      style={{ display: "flex", flexDirection: "column", gap: 4 }}
+    >
+      <span
+        style={{
+          fontFamily: "var(--font-mono)",
+          fontSize: 9,
+          textTransform: "uppercase",
+          letterSpacing: "0.08em",
+          color: "var(--text-muted)",
+        }}
+      >
+        {label}
+      </span>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          flexWrap: "wrap",
+        }}
+      >
+        {children}
+      </div>
+    </div>
+  );
+}
+
 function LinkagePill({
   label,
   testId,
@@ -458,24 +571,32 @@ function LinkagePill({
   testId: string;
   onClick: () => void;
 }) {
+  // Reuses the shared ``.agent-status-chip`` hover + focus-
+  // visible affordance from globals.css so the pill reads as
+  // clearly interactive. Layout / typography / clipping live
+  // here as inline styles so the chip class stays purely an
+  // interactive-affordance helper. The inline ``borderRadius:
+  // 999`` intentionally overrides the chip class's
+  // ``border-radius: 4px`` to keep the pill capsule-shaped —
+  // the chip class is a generic affordance, the pill applies
+  // its own visual idiom on top.
   return (
     <button
       type="button"
       data-testid={testId}
       onClick={onClick}
+      className="agent-status-chip"
       style={{
         fontFamily: "var(--font-mono)",
         fontSize: 10,
         padding: "2px 7px",
         borderRadius: 999,
-        border: "1px solid var(--border)",
-        background: "transparent",
         color: "var(--text-secondary)",
-        cursor: "pointer",
         maxWidth: 200,
         overflow: "hidden",
         textOverflow: "ellipsis",
         whiteSpace: "nowrap",
+        display: "inline-block",
       }}
     >
       {label}

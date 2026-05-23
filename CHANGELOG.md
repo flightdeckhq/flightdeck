@@ -161,6 +161,20 @@ Fleet swimlane reshape, and the event-grain Events page (D157).
 
 ### Changed
 
+- **Agent drawer header redesigned for clearer affordances.**
+  Four sibling rows in deterministic order: identity (with the
+  close × anchored right), a plain-muted status + topology
+  descriptor row (agent names now appear only in the linkage
+  pills, not repeated in the status row), bordered icon+label
+  action buttons (`Open in swimlane` / `Open in events`) that
+  read as primary actions instead of bare accent-coloured text,
+  and labelled **PARENT** / **SUB-AGENTS** sections that
+  surface the navigation purpose of the linkage cluster.
+  Depth-2 middle agents (with both a parent and children)
+  render the descriptor `sub-agent • spawns N` and both
+  linkage sections. Pills reuse the existing
+  `.agent-status-chip` hover + focus-visible affordance so they
+  read as clearly interactive.
 - **Swimlane reshape: one row per agent.** Events from every one
   of an agent's runs stream onto a single timeline row. Sub-agent
   rows continue to render indented beneath their parent via

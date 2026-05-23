@@ -2470,27 +2470,51 @@ the Fleet swimlane (agent-name click) with no route change. A
 deep-linked `?agent_drawer=` opens it on load; the browser back
 button closes it.
 
-Header:
+Header — four sibling rows, in deterministic vertical order
+(testid `agent-drawer-header-{identity,status,actions,subagents}`).
+The four rows give the layout a fixed grammar: identity, then a
+status descriptor, then primary actions, then navigation. The
+shape stays stable across topology variants — a wide topology
+descriptor or a long sub-agent linkage cluster cannot push the
+action row onto a wrapping line.
 
-- **Identity card** — agent name (monospace), `ClientTypePill`
-  (CC / SDK), `agent_type` badge, provider / OS / orchestration
-  icons.
-- **Status badge** — `AgentStatusBadge` with a rotating
-  gradient ring around the dot on active state
-  (`agent-status-active-ring` class in `globals.css`); degrades
-  to a static soft glow under
-  `@media (prefers-reduced-motion: reduce)`.
-- **Topology pill** — the preserved `TopologyCell` primitive.
-- **Sub-agent linkage pills** — for a `parent` agent, one
-  clickable chip per child agent identity; for a `child` agent,
-  a single `← parent: {agent_name}` pill. Clicking a pill
-  re-points the drawer at the linked agent (rewrites
-  `?agent_drawer=`).
-- **Open in swimlane** — top-right header button that opens
-  the per-agent swimlane modal scoped to this agent, stacked
-  over the drawer.
-- **Open in events →** — top-right deep-link to
-  `/events?agent_id=<id>`.
+- **Row 1 — identity card** — agent name (monospace),
+  `ClientTypePill` (CC / SDK), `agent_type` badge, provider /
+  OS / orchestration icons. Close `×` button anchored to the
+  right edge via `marginLeft: auto`.
+- **Row 2 — status + topology descriptor** — `StatusDot` +
+  `STATUS_LABEL` text, plain muted styling (NOT link-styled —
+  this row is information, not navigation). On active state
+  the dot wears the rotating-gradient `agent-status-active-ring`
+  decoration. A topology descriptor follows the label after a
+  pipe separator, derived from `linkage` (the
+  `deriveAgentLinkage(agentId, flavors)` result — a
+  `{ parent: AgentLink | null; children: AgentLink[] }` object
+  resolved from the fleet-store session graph in
+  `dashboard/src/lib/relationship.ts` — NOT the discrete
+  `agent.topology` field, so depth-2 middle agents that are
+  simultaneously a child AND a parent read correctly):
+  `spawns N` when the agent has children, `sub-agent` when it
+  has a parent, `sub-agent • spawns N` when it has both.
+  **Name-free by contract** — the parent / child agent names
+  live in row 4 pills, never duplicated in row 2.
+- **Row 3 — action buttons** — bordered icon + label buttons.
+  `Open in swimlane` (Activity icon) opens the per-agent
+  swimlane modal stacked over the drawer; `Open in events`
+  (ListTree icon) routes to `/events?agent_id=<id>`. Both
+  carry the same affordance so the two read identically as
+  primary actions. Testids `agent-drawer-open-swimlane` and
+  `agent-drawer-open-in-events`.
+- **Row 4 — linkage sections** (conditional) — labelled
+  uppercase muted headers above the pill rows so the cluster
+  reads as a navigation surface, not free-floating chips.
+  **PARENT** section renders first when the agent has a parent
+  (one `← parent: {name}` pill), then **SUB-AGENTS** when the
+  agent has children (one `↳ {name}` pill per child). Both
+  sections coexist for depth-2 middle agents. Pills wear the
+  shared `.agent-status-chip` hover + focus-visible affordance
+  from `globals.css`. Clicking a pill rewrites
+  `?agent_drawer=` to re-point the drawer at the linked agent.
 
 Below the identity chrome sit three collapsible panels: the MCP
 servers the agent has connected to (union across loaded
@@ -2514,13 +2538,18 @@ Two tabs:
   `← Back to {agent_name}` breadcrumb that returns to the
   drawer.
 
-The drawer reuses `TopologyCell`, `AgentStatusBadge`, and the
-`useAgentSummary` cache, so its identity chrome stays
-byte-identical to the `/agents` table and the swimlane label
-strip. It coexists with the per-agent swimlane modal: the modal
-(status-badge click) is a quick visual peek at one agent's
-swimlane; the drawer (row click) is the drill-down into the
-agent's events, runs, and sub-agent linkage.
+The drawer's identity row reuses the same identity primitives
+the `/agents` table and the swimlane label strip render
+(`ClientTypePill`, provider / OS / orchestration icons,
+`agent_type` badge); the `useAgentSummary` cache keeps the
+header data byte-identical across surfaces. Row 2's
+`StatusDot` + label and row 4's pills both ship from
+`@/lib/agent-status` so the colour-to-state mapping cannot
+drift. It coexists with the per-agent swimlane modal: the
+modal (status-chip click on the `/agents` row) is a quick
+visual peek at one agent's swimlane; the drawer (row click)
+is the drill-down into the agent's events, runs, and
+sub-agent linkage.
 
 ### Fleet view
 

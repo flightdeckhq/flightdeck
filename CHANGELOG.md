@@ -343,6 +343,21 @@ Fleet swimlane reshape, and the event-grain Events page (D157).
 
 ### Fixed
 
+- **Swimlane right-edge clearance — badge, circles, and bracket
+  tooltips.** Three related visual overlaps cleared in one
+  bundle: (a) the `AgentStatusBadge` is now anchored
+  `position: absolute; right: 0` inside the label strip with a
+  solid `background: inherit`, so a wide topology pill no
+  longer pushes the badge past the strip's right edge into the
+  timeline panel area — visible on every row including child
+  rows whose 28-px indent narrows the available content width;
+  (b) event circles render 8 px inset from the timeline panel's
+  left edge (`TIMELINE_LEFT_BUFFER_PX`) so the leftmost circles
+  never crowd the badge boundary; (c) run-bracket tooltips on
+  bottom-anchored brackets (concurrent runs staggered to the
+  row's bottom half) anchor `bottom: 0` and extend UPWARD into
+  the row rather than DOWNWARD past it, where the timeline
+  panel's `overflow: hidden` clipped them.
 - **Swimlane resize handle could not extend the agent-label
   column past 500 px.** The drag wiring was correct
   (`pointerdown` on the handle, `pointermove` + `pointerup` on

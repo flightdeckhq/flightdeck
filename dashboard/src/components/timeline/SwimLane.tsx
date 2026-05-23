@@ -111,6 +111,19 @@ interface SwimLaneProps {
 
 const ROW_HEIGHT = 48;
 
+// Visual breathing-room buffer between the label strip's right
+// edge (where the AgentStatusBadge sits via ``ml-auto``) and the
+// leftmost event circles / run brackets in the timeline panel.
+// Without this buffer, circles render flush against the badge
+// boundary and read as "overlapping" the badge — particularly
+// when the label strip's content is wide enough that the badge
+// itself sits at the very right edge of its container. The
+// buffer is applied to the timeline-panel's inner positioned
+// wrapper rather than to xScale.range so the grid line overlay
+// (rendered by Timeline.tsx, not this component) stays aligned
+// with absolute time positions.
+const TIMELINE_LEFT_BUFFER_PX = 8;
+
 function SwimLaneComponent({
 	flavor,
 	agentName,
@@ -352,7 +365,42 @@ function SwimLaneComponent({
 						testId="swimlane-sub-agent-lost-dot"
 					/>
 				)}
-				<AgentStatusBadge state={agentState} />
+				{/* Badge is absolutely positioned at the label strip's
+				    right edge with a solid ``background: inherit`` so
+				    it always reads as a fully visible anchor, even
+				    when the label strip's flex content (name +
+				    pills + icons + topology pill) would otherwise
+				    overflow and push the badge into / past the
+				    timeline-panel boundary. The previous in-flex
+				    ``ml-auto`` placement let a wide topology pill
+				    push the badge past the strip's right edge, where
+				    ``overflow: hidden`` either clipped it entirely
+				    or left it crowded by the first event circle in
+				    the timeline panel. Anchoring + the inherited
+				    background occlude any visual overlap and keep
+				    the badge legible on every row, including child
+				    rows whose 28-px indent narrows the available
+				    content width. ``z-index: 4`` sits above the
+				    label-strip flex content but below any sticky
+				    overlay; ``paddingLeft`` creates a soft fade
+				    boundary so siblings clipped by overflow don't
+				    visibly butt against the badge. */}
+				<div
+					style={{
+						position: "absolute",
+						right: 0,
+						top: "50%",
+						transform: "translateY(-50%)",
+						background: "inherit",
+						paddingLeft: 12,
+						paddingRight: 12,
+						display: "flex",
+						alignItems: "center",
+						zIndex: 4,
+					}}
+				>
+					<AgentStatusBadge state={agentState} />
+				</div>
 			</div>
 
 			{/* Right panel — aggregated events + run boundary brackets.
@@ -369,29 +417,62 @@ function SwimLaneComponent({
 					overflow: "hidden",
 				}}
 			>
-				<AggregatedSwimLane
-					sessions={sessions}
-					scale={scale}
-					onSessionClick={onSessionClick}
-					flavor={flavor}
-					activeFilter={activeFilter}
-					sessionVersions={sessionVersions}
-					matchingSessionIds={matchingSessionIds}
-				/>
-				{/* Run boundary brackets overlay the aggregated event
-				    circles. Each run renders one bracket pair (start +
-				    end); concurrent runs stagger on top / bottom anchors
-				    so they remain distinguishable. */}
-				{sessions.map((s) => (
-					<RunBracket
-						key={`run-bracket-${s.session_id}`}
-						session={s}
+				{/* Inner positioned wrapper that shifts the entire
+				    event-circles + run-brackets content right by
+				    ``TIMELINE_LEFT_BUFFER_PX`` so circles and brackets
+				    never crowd the label-strip / timeline-panel
+				    boundary (which is where the AgentStatusBadge sits
+				    via ``ml-auto`` at the label strip's right edge).
+				    Absolute children inside this wrapper position via
+				    ``left: x`` relative to its left edge, so the buffer
+				    shifts the leftmost circle inward by 8 px. The
+				    rightmost circles (events at NOW) shift right by the
+				    same 8 px and are clipped by the panel's
+				    ``overflow: hidden`` — acceptable since the now-pole
+				    visual is rendered by Timeline.tsx's grid overlay,
+				    not by this row. */}
+				<div
+					style={{
+						position: "absolute",
+						inset: `0 0 0 ${TIMELINE_LEFT_BUFFER_PX}px`,
+					}}
+				>
+					<AggregatedSwimLane
+						sessions={sessions}
 						scale={scale}
-						timelineWidth={timelineWidth}
-						anchor={bracketAnchorMap.get(s.session_id) ?? "top"}
-						onClick={(sid) => onSessionClick(sid)}
+						onSessionClick={onSessionClick}
+						flavor={flavor}
+						activeFilter={activeFilter}
+						sessionVersions={sessionVersions}
+						matchingSessionIds={matchingSessionIds}
 					/>
-				))}
+					{/* Run boundary brackets overlay the aggregated event
+					    circles. Each run renders one bracket pair (start +
+					    end); concurrent runs stagger on top / bottom anchors
+					    so they remain distinguishable. */}
+					{sessions.map((s) => (
+						<RunBracket
+							key={`run-bracket-${s.session_id}`}
+							session={s}
+							scale={scale}
+							// RunBracket's ``inWindow`` / ``endInWindow``
+							// guards use ``timelineWidth`` to decide
+							// which brackets to render. The buffer
+							// wrapper above shifts every rendered child
+							// 8 px right; a bracket at xStart ≈
+							// timelineWidth would land 8 px past
+							// panel.right and be clipped by
+							// ``overflow: hidden`` — a wasted render.
+							// Subtracting ``TIMELINE_LEFT_BUFFER_PX``
+							// from the effective width tightens the
+							// guards to match the wrapper's reduced
+							// visible-rendering region.
+							timelineWidth={timelineWidth - TIMELINE_LEFT_BUFFER_PX}
+							anchor={bracketAnchorMap.get(s.session_id) ?? "top"}
+							onClick={(sid) => onSessionClick(sid)}
+						/>
+					))}
+				</div>
 			</div>
 		</div>
 	);

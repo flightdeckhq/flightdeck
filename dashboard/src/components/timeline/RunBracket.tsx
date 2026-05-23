@@ -263,7 +263,21 @@ function RunBoundaryMark({
 					style={{
 						position: "absolute",
 						left: glyphSize + TOOLTIP_OFFSET,
-						top: 0,
+						// Anchor the tooltip to the same vertical edge
+						// as the button so it extends INTO the row,
+						// not past it. Top-anchored buttons (first run
+						// per agent) tooltip from ``top: 0`` and grow
+						// downward — visible in the row's top half.
+						// Bottom-anchored buttons (concurrent runs,
+						// staggered to the row's bottom half) tooltip
+						// from ``bottom: 0`` and grow upward — visible
+						// in the row's bottom half. Pre-fix both
+						// anchored ``top: 0``, which clipped the
+						// bottom-anchored tooltip against the row's
+						// bottom edge (the timeline panel's
+						// ``overflow: hidden``).
+						top: anchor === "top" ? 0 : undefined,
+						bottom: anchor === "bottom" ? 0 : undefined,
 						background: "var(--bg-elevated)",
 						color: "var(--text)",
 						border: "1px solid var(--border)",

@@ -9,6 +9,20 @@ Fleet swimlane reshape, and the event-grain Events page (D157).
 
 ### Added
 
+- **`/events` page facet sidebar surfaces the 9 runtime-context
+  dimensions.** OS, ARCH, HOST, USER, GIT BRANCH, GIT REPO,
+  ORCHESTRATION, PYTHON, PROCESS join the sidebar with category
+  glyphs (OSIcon for the OS column, OrchestrationIcon for the
+  orchestration column, lucide glyphs for the rest). Each chip
+  click writes a repeatable URL param (`os`, `arch`, `host`,
+  `user`, `git_branch`, `git_repo`, `orchestration`,
+  `python_version`, `process_name`) and re-fetches the event
+  list with the filter applied server-side. EVENT TYPE and
+  POLICY facet rows now render the colored `EventTypePill`
+  inline (matching the table-row badge chroma) instead of plain
+  text; the remaining icon-less facets (MATCHED ENTRY,
+  ORIGINATING CALL, TERMINAL) gain neutral category glyphs so
+  the sidebar reads as one icon family.
 - **`/v1/events` runtime-context facets + filters (D160).** Nine
   new dimensions sourced from `sessions.context` join the
   event-grain facet sidebar + filter set: `os`, `arch`, `host`,

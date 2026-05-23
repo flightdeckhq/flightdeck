@@ -35,6 +35,44 @@ describe("parseEventsUrlState", () => {
     expect(s.mcpServers).toEqual(["fixture-server"]);
   });
 
+  it("applies runtime-context defaults for an empty query string", () => {
+    const s = parseEventsUrlState(new URLSearchParams());
+    expect(s.osValues).toEqual([]);
+    expect(s.archs).toEqual([]);
+    expect(s.hosts).toEqual([]);
+    expect(s.users).toEqual([]);
+    expect(s.gitBranches).toEqual([]);
+    expect(s.gitRepos).toEqual([]);
+    expect(s.orchestrations).toEqual([]);
+    expect(s.pythonVersions).toEqual([]);
+    expect(s.processNames).toEqual([]);
+  });
+
+  it("reads repeatable runtime-context facet params as arrays", () => {
+    const sp = new URLSearchParams();
+    sp.append("os", "Linux");
+    sp.append("os", "Darwin");
+    sp.append("arch", "x86_64");
+    sp.append("host", "ctx-host-a");
+    sp.append("host", "ctx-host-b");
+    sp.append("user", "omria");
+    sp.append("git_branch", "feat/d160");
+    sp.append("git_repo", "flightdeck");
+    sp.append("orchestration", "k8s");
+    sp.append("python_version", "3.12.4");
+    sp.append("process_name", "sensor");
+    const s = parseEventsUrlState(sp);
+    expect(s.osValues).toEqual(["Linux", "Darwin"]);
+    expect(s.archs).toEqual(["x86_64"]);
+    expect(s.hosts).toEqual(["ctx-host-a", "ctx-host-b"]);
+    expect(s.users).toEqual(["omria"]);
+    expect(s.gitBranches).toEqual(["feat/d160"]);
+    expect(s.gitRepos).toEqual(["flightdeck"]);
+    expect(s.orchestrations).toEqual(["k8s"]);
+    expect(s.pythonVersions).toEqual(["3.12.4"]);
+    expect(s.processNames).toEqual(["sensor"]);
+  });
+
   it("reads the run drawer deep-link param", () => {
     expect(parseEventsUrlState(new URLSearchParams("run=sess-1")).run).toBe(
       "sess-1",
@@ -81,6 +119,35 @@ describe("buildEventsUrlParams round-trip", () => {
     const parsed = parseEventsUrlState(sp);
     const rebuilt = parseEventsUrlState(buildEventsUrlParams(parsed));
     expect(rebuilt).toEqual(parsed);
+  });
+
+  it("round-trips a runtime-context-populated state through parse → build → parse", () => {
+    // Locks the 9 new runtime-context facet params into the
+    // round-trip contract: any future regression that drops a
+    // dim from ``parseEventsUrlState`` or ``buildEventsUrlParams``
+    // surfaces here as a failed equality.
+    const sp = new URLSearchParams();
+    sp.append("os", "Linux");
+    sp.append("os", "Darwin");
+    sp.append("arch", "x86_64");
+    sp.append("host", "ctx-host-a");
+    sp.append("user", "omria");
+    sp.append("git_branch", "main");
+    sp.append("git_repo", "flightdeck");
+    sp.append("orchestration", "docker-compose");
+    sp.append("python_version", "3.12.4");
+    sp.append("process_name", "sensor");
+
+    const parsed = parseEventsUrlState(sp);
+    const rebuilt = parseEventsUrlState(buildEventsUrlParams(parsed));
+    expect(rebuilt).toEqual(parsed);
+    // Sanity — the rebuilt URL serialises the 9 new params under
+    // their public query-string names (not the camelCase state
+    // field names).
+    const built = buildEventsUrlParams(parsed);
+    expect(built.getAll("os")).toEqual(["Linux", "Darwin"]);
+    expect(built.getAll("host")).toEqual(["ctx-host-a"]);
+    expect(built.getAll("git_branch")).toEqual(["main"]);
   });
 
   it("omits default-valued params from the built query string", () => {

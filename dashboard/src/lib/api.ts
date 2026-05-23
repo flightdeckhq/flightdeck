@@ -319,6 +319,25 @@ export interface BulkEventsParams {
   matched_entry_ids?: string[];
   originating_call_contexts?: string[];
   mcp_servers?: string[];
+  /** Runtime-context facet filters sourced from
+   *  ``sessions.context``. Each maps to the corresponding server
+   *  ``EventsParams`` field; the ``hosts`` field serialises as
+   *  ``host`` query params resolved server-side against the
+   *  ``sessions.context->>'hostname'`` JSONB key. The
+   *  ``os_values`` field serialises as the bare ``os`` query
+   *  param — the TS name keeps the conventional plural suffix
+   *  the other context fields use (``archs``, ``users``, ...)
+   *  without colliding with the ``os`` keyword and JS string
+   *  prototype shape. */
+  os_values?: string[];
+  archs?: string[];
+  hosts?: string[];
+  users?: string[];
+  git_branches?: string[];
+  git_repos?: string[];
+  orchestrations?: string[];
+  python_versions?: string[];
+  process_names?: string[];
   terminal?: boolean;
   /** Free-text ILIKE search across event_type, model, session_id,
    *  and the session's agent_name / framework. Powers the `/events`
@@ -359,6 +378,16 @@ function buildEventsQuery(params: BulkEventsParams): URLSearchParams {
   for (const v of params.originating_call_contexts ?? [])
     sp.append("originating_call_context", v);
   for (const v of params.mcp_servers ?? []) sp.append("mcp_server", v);
+  for (const v of params.os_values ?? []) sp.append("os", v);
+  for (const v of params.archs ?? []) sp.append("arch", v);
+  for (const v of params.hosts ?? []) sp.append("host", v);
+  for (const v of params.users ?? []) sp.append("user", v);
+  for (const v of params.git_branches ?? []) sp.append("git_branch", v);
+  for (const v of params.git_repos ?? []) sp.append("git_repo", v);
+  for (const v of params.orchestrations ?? []) sp.append("orchestration", v);
+  for (const v of params.python_versions ?? [])
+    sp.append("python_version", v);
+  for (const v of params.process_names ?? []) sp.append("process_name", v);
   if (params.terminal !== undefined) {
     sp.set("terminal", String(params.terminal));
   }

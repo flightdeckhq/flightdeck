@@ -2670,14 +2670,23 @@ client-type pill disambiguating same-named agents), `event_type`,
 `policy_event_type`, `error_type`, `framework`, `model`,
 `close_reason` (gated to `session_end` events), `estimated_via`,
 `matched_entry_id`, `originating_call_context`, `mcp_server` (the
-MCP event's `payload.server_name`), and a `terminal` toggle. Each
-chip's count comes from the `/v1/events` facet-count query
+MCP event's `payload.server_name`), `terminal` (toggle), plus 9
+runtime-context dims sourced from `sessions.context` (D160): `os`,
+`arch`, `hostname` (URL param `host`), `user`, `git_branch`,
+`git_repo`, `orchestration`, `python_version`, `process_name`.
+Each chip's count comes from the `/v1/events` facet-count query
 (`facets=true`), computed over the active filter set. Each chip
 also carries a per-dimension icon: a provider logo on MODEL, a
 `FrameworkPill` on FRAMEWORK, the `ClientTypePill` + `agent_type`
-badge on AGENT, a chroma dot on POLICY, and a `FacetIcon`
-category glyph on `error_type` / `mcp_server` / `close_reason` /
-`estimated_via`.
+badge on AGENT, the colored `EventTypePill` on EVENT TYPE +
+POLICY (matching the table-row badge chroma at a glance), and a
+`FacetIcon` category glyph everywhere else — `OSIcon` for the OS
+column, `OrchestrationIcon` for the orchestration column, and
+lucide glyphs (Fingerprint / Waypoints / Power for
+`matched_entry_id` / `originating_call_context` / `terminal`;
+Server / User / GitBranch / GitCommit / Cpu / Package / Terminal
+for the runtime-context dims) so the sidebar reads as one icon
+family across every dimension.
 `policy_event_type` is not a server facet dimension — the
 dashboard classifies the `event_type` facet's policy-enforcement
 values into a separate POLICY group, and both groups write the

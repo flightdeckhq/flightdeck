@@ -6,13 +6,16 @@ import {
   CircleSlash,
   Container,
   Cpu,
+  Fingerprint,
   GitBranch,
   GitCommit,
   Package,
   Plug,
+  Power,
   Server,
   Terminal,
   User,
+  Waypoints,
 } from "lucide-react";
 import type { ReactNode } from "react";
 import { OSIcon } from "@/components/ui/OSIcon";
@@ -109,6 +112,16 @@ function pickFacetIcon(groupKey: string, value: string): ReactNode {
   }
   if (groupKey === "git_repo") return <GitCommit {...LUCIDE_PROPS} />;
   if (groupKey === "orchestration") return <Container {...LUCIDE_PROPS} />;
+  // Remaining icon-less facets get neutral category glyphs so the
+  // sidebar reads as one icon family across every dimension. The
+  // shapes are deliberately distinct from the runtime-context
+  // ones above so the operator can scan the column without
+  // crossing wires.
+  if (groupKey === "matched_entry_id") return <Fingerprint {...LUCIDE_PROPS} />;
+  if (groupKey === "originating_call_context") {
+    return <Waypoints {...LUCIDE_PROPS} />;
+  }
+  if (groupKey === "terminal") return <Power {...LUCIDE_PROPS} />;
   return null;
 }
 

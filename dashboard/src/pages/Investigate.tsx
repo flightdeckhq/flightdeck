@@ -73,6 +73,21 @@ export function parseEventsUrlState(sp: URLSearchParams) {
     matchedEntryIds: sp.getAll("matched_entry_id"),
     originatingCallContexts: sp.getAll("originating_call_context"),
     mcpServers: sp.getAll("mcp_server"),
+    // Runtime-context dimensions backed by the server's
+    // ``sessions.context`` facet path. The ``host`` URL param
+    // resolves to the ``sessions.context->>'hostname'`` JSONB key
+    // server-side; the API surface is the shorter ``host`` while
+    // the EventFacets response key is ``hostname`` (sensor's
+    // field name). See DECISIONS.md D160 for the rationale.
+    osValues: sp.getAll("os"),
+    archs: sp.getAll("arch"),
+    hosts: sp.getAll("host"),
+    users: sp.getAll("user"),
+    gitBranches: sp.getAll("git_branch"),
+    gitRepos: sp.getAll("git_repo"),
+    orchestrations: sp.getAll("orchestration"),
+    pythonVersions: sp.getAll("python_version"),
+    processNames: sp.getAll("process_name"),
     terminalOnly: sp.get("terminal") === "true",
     // `q` backs the top-of-page free-text search bar; the server
     // resolves it via an ILIKE across event_type / model /
@@ -99,7 +114,16 @@ type MultiValueUrlField =
   | "estimatedVia"
   | "matchedEntryIds"
   | "originatingCallContexts"
-  | "mcpServers";
+  | "mcpServers"
+  | "osValues"
+  | "archs"
+  | "hosts"
+  | "users"
+  | "gitBranches"
+  | "gitRepos"
+  | "orchestrations"
+  | "pythonVersions"
+  | "processNames";
 
 export function buildEventsUrlParams(s: EventsUrlState): URLSearchParams {
   const p = new URLSearchParams();
@@ -116,6 +140,15 @@ export function buildEventsUrlParams(s: EventsUrlState): URLSearchParams {
   for (const v of s.originatingCallContexts)
     p.append("originating_call_context", v);
   for (const v of s.mcpServers) p.append("mcp_server", v);
+  for (const v of s.osValues) p.append("os", v);
+  for (const v of s.archs) p.append("arch", v);
+  for (const v of s.hosts) p.append("host", v);
+  for (const v of s.users) p.append("user", v);
+  for (const v of s.gitBranches) p.append("git_branch", v);
+  for (const v of s.gitRepos) p.append("git_repo", v);
+  for (const v of s.orchestrations) p.append("orchestration", v);
+  for (const v of s.pythonVersions) p.append("python_version", v);
+  for (const v of s.processNames) p.append("process_name", v);
   if (s.terminalOnly) p.set("terminal", "true");
   if (s.q) p.set("q", s.q);
   if (s.run) p.set("run", s.run);
@@ -171,6 +204,21 @@ const FACET_GROUPS: FacetGroupSpec[] = [
   },
   { key: "mcp_server", label: "MCP SERVER", urlField: "mcpServers" },
   { key: "terminal", label: "TERMINAL", urlField: "terminalOnly" },
+  // Runtime-context facets — D160. Each one resolves server-side
+  // via the existing sessions JOIN against partial expression
+  // indexes on ``sessions((context->>'<key>'))``.
+  { key: "os", label: "OS", urlField: "osValues" },
+  { key: "arch", label: "ARCH", urlField: "archs" },
+  // ``host`` URL param → ``hostname`` facet key (sensor stores the
+  // full ``hostname`` field; the API surface is the shorter
+  // ``host``).
+  { key: "hostname", label: "HOST", urlField: "hosts" },
+  { key: "user", label: "USER", urlField: "users" },
+  { key: "git_branch", label: "GIT BRANCH", urlField: "gitBranches" },
+  { key: "git_repo", label: "GIT REPO", urlField: "gitRepos" },
+  { key: "orchestration", label: "ORCHESTRATION", urlField: "orchestrations" },
+  { key: "python_version", label: "PYTHON", urlField: "pythonVersions" },
+  { key: "process_name", label: "PROCESS", urlField: "processNames" },
 ];
 
 const FACET_TOP_N = 10;
@@ -331,6 +379,17 @@ export function Investigate() {
       matched_entry_ids: state.matchedEntryIds,
       originating_call_contexts: state.originatingCallContexts,
       mcp_servers: state.mcpServers,
+      // Runtime-context dimensions — D160. Each maps to the
+      // corresponding ``EventsParams`` field server-side.
+      os_values: state.osValues,
+      archs: state.archs,
+      hosts: state.hosts,
+      users: state.users,
+      git_branches: state.gitBranches,
+      git_repos: state.gitRepos,
+      orchestrations: state.orchestrations,
+      python_versions: state.pythonVersions,
+      process_names: state.processNames,
       terminal: state.terminalOnly ? true : undefined,
       q: state.q || undefined,
     };
@@ -666,6 +725,17 @@ export function Investigate() {
                         <FrameworkPill
                           framework={v.value}
                           testId={`events-facet-framework-pill-${v.value}`}
+                        />
+                      ) : spec.key === "event_type" ||
+                        spec.key === "policy_event_type" ? (
+                        // EVENT TYPE and POLICY facets — render the
+                        // colored EventTypePill so the sidebar chip
+                        // matches the table row's badge chroma at a
+                        // glance. The pill carries the label + color
+                        // mapping; no separate FacetIcon needed.
+                        <EventTypePill
+                          eventType={v.value}
+                          testId={`events-facet-event-type-pill-${spec.key}-${v.value}`}
                         />
                       ) : (
                         <>
@@ -1131,6 +1201,24 @@ function facetDimension(facets: EventFacets, key: string): EventFacetValue[] {
       return facets.mcp_server;
     case "terminal":
       return facets.terminal;
+    case "os":
+      return facets.os;
+    case "arch":
+      return facets.arch;
+    case "hostname":
+      return facets.hostname;
+    case "user":
+      return facets.user;
+    case "git_branch":
+      return facets.git_branch;
+    case "git_repo":
+      return facets.git_repo;
+    case "orchestration":
+      return facets.orchestration;
+    case "python_version":
+      return facets.python_version;
+    case "process_name":
+      return facets.process_name;
     default:
       return [];
   }
@@ -1160,7 +1248,28 @@ function facetUrlField(key: string): MultiValueUrlField {
       return "originatingCallContexts";
     case "mcp_server":
       return "mcpServers";
+    case "os":
+      return "osValues";
+    case "arch":
+      return "archs";
+    case "hostname":
+      return "hosts";
+    case "user":
+      return "users";
+    case "git_branch":
+      return "gitBranches";
+    case "git_repo":
+      return "gitRepos";
+    case "orchestration":
+      return "orchestrations";
+    case "python_version":
+      return "pythonVersions";
+    case "process_name":
+      return "processNames";
     default:
-      return "eventTypes";
+      // Loud failure rather than silently misfiring filters into
+      // the eventTypes field — a future FACET_GROUPS entry that
+      // forgets to add a case here surfaces immediately in dev.
+      throw new Error(`facetUrlField: unhandled facet key ${key}`);
   }
 }

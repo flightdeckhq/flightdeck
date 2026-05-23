@@ -515,6 +515,18 @@ export interface EventFacets {
   originating_call_context: EventFacetValue[];
   mcp_server: EventFacetValue[];
   terminal: EventFacetValue[];
+  // Runtime-context dimensions sourced from sessions.context. Each
+  // resolves via the server-side sessions JOIN against the partial
+  // expression indexes from migration 000024.
+  os: EventFacetValue[];
+  arch: EventFacetValue[];
+  hostname: EventFacetValue[];
+  user: EventFacetValue[];
+  git_branch: EventFacetValue[];
+  git_repo: EventFacetValue[];
+  orchestration: EventFacetValue[];
+  python_version: EventFacetValue[];
+  process_name: EventFacetValue[];
 }
 
 /**

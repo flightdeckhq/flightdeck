@@ -24,6 +24,20 @@ const h = vi.hoisted(() => {
     originating_call_context: [],
     mcp_server: [],
     terminal: [],
+    // Runtime-context dimensions (D160). Each must be a present
+    // ``[]`` so ``facetDimension(facets, key)`` returns the empty
+    // slice rather than ``undefined`` — the Investigate render
+    // path reads ``.length`` on every group's values, so a
+    // missing field crashes the component test at mount.
+    os: [],
+    arch: [],
+    hostname: [],
+    user: [],
+    git_branch: [],
+    git_repo: [],
+    orchestration: [],
+    python_version: [],
+    process_name: [],
   };
   return {
     events: {
@@ -110,6 +124,20 @@ describe("Investigate (event-grain /events page)", () => {
       originating_call_context: [],
       mcp_server: [],
       terminal: [],
+      // Runtime-context dimensions (D160). Must be present as
+      // empty arrays so the Investigate render path's
+      // ``facets[key].length`` read at the facetGroups memo
+      // doesn't crash with "Cannot read properties of
+      // undefined (reading 'length')" on every component test.
+      os: [],
+      arch: [],
+      hostname: [],
+      user: [],
+      git_branch: [],
+      git_repo: [],
+      orchestration: [],
+      python_version: [],
+      process_name: [],
     };
   });
 

@@ -18,10 +18,17 @@ import { render } from "@testing-library/react";
 import { FacetIcon } from "@/components/facets/FacetIcon";
 
 describe("FacetIcon — icon resolution per dimension", () => {
-  // Dimensions that MUST resolve to a non-null icon node. error_type
-  // / mcp_server / close_reason / estimated_via are the lucide
-  // glyphs Fix 1 newly added; model is the provider logo;
-  // policy_event_type is the chroma dot.
+  // Dimensions that MUST resolve to a non-null icon node. The
+  // first six are pre-existing — lucide category glyphs (Fix 1)
+  // plus the model provider logo and the policy_event_type
+  // chroma dot. The remaining entries cover the 8 runtime-
+  // context dims D160 added on the /events sidebar (OSIcon
+  // resolves ``os`` separately so it has its own entry); a
+  // regression that drops one of them from ``pickFacetIcon``
+  // surfaces here as an icon-less assertion failure. ``terminal``,
+  // ``matched_entry_id``, and ``originating_call_context`` were
+  // icon-less until the small-C polish gave them neutral
+  // category glyphs (Power / Fingerprint / Waypoints).
   const ICON_BEARING: { groupKey: string; value: string }[] = [
     { groupKey: "error_type", value: "rate_limit" },
     { groupKey: "mcp_server", value: "fixture-stdio-server" },
@@ -29,6 +36,18 @@ describe("FacetIcon — icon resolution per dimension", () => {
     { groupKey: "estimated_via", value: "tiktoken" },
     { groupKey: "model", value: "claude-sonnet-4-5" },
     { groupKey: "policy_event_type", value: "policy_warn" },
+    { groupKey: "os", value: "Linux" },
+    { groupKey: "arch", value: "x86_64" },
+    { groupKey: "hostname", value: "dev-box" },
+    { groupKey: "user", value: "omria" },
+    { groupKey: "git_branch", value: "main" },
+    { groupKey: "git_repo", value: "flightdeck" },
+    { groupKey: "orchestration", value: "docker-compose" },
+    { groupKey: "python_version", value: "3.12.4" },
+    { groupKey: "process_name", value: "sensor" },
+    { groupKey: "matched_entry_id", value: "entry-1" },
+    { groupKey: "originating_call_context", value: "sub_agent" },
+    { groupKey: "terminal", value: "true" },
   ];
 
   for (const { groupKey, value } of ICON_BEARING) {
@@ -45,11 +64,12 @@ describe("FacetIcon — icon resolution per dimension", () => {
     });
   }
 
-  // Dimensions Fix 1 leaves icon-free: the AGENT facet (agent_id)
-  // renders identity pills not a FacetIcon glyph, EVENT TYPE
-  // (event_type) renders the EventTypePill family, and TERMINAL is
-  // a boolean toggle facet.
-  const ICON_FREE = ["agent_id", "event_type", "terminal"];
+  // Dimensions left icon-free by FacetIcon: the AGENT facet
+  // (agent_id) renders identity pills not a FacetIcon glyph,
+  // and EVENT TYPE (event_type) renders the EventTypePill family
+  // inline at the call site (the row replaces the FacetIcon with
+  // the colored pill — neither one returns from this helper).
+  const ICON_FREE = ["agent_id", "event_type"];
 
   for (const groupKey of ICON_FREE) {
     it(`renders nothing for the ${groupKey} dimension`, () => {
@@ -89,18 +109,21 @@ describe("FacetIcon — testId wrapper contract", () => {
   });
 
   it("renders no testId node when the dimension has no icon", () => {
+    // ``event_type`` is icon-free at the FacetIcon layer — the
+    // EventTypePill replaces it inline at the call site, so the
+    // helper returns null. A wrapper span with the testid would
+    // be a zero-size hit target and misleading E2E anchor.
     const { container } = render(
       <FacetIcon
-        groupKey="terminal"
-        value="true"
-        testId="events-facet-icon-terminal-true"
+        groupKey="event_type"
+        value="post_call"
+        testId="events-facet-icon-event_type-post_call"
       />,
     );
-    // No icon → no wrapper, even though a testId was supplied. The
-    // sidebar must not emit an empty testid'd span (it would be a
-    // zero-size hit target and a misleading E2E anchor).
     expect(
-      container.querySelector('[data-testid="events-facet-icon-terminal-true"]'),
+      container.querySelector(
+        '[data-testid="events-facet-icon-event_type-post_call"]',
+      ),
       "no testid wrapper must render for an icon-free dimension",
     ).toBeNull();
     expect(container.firstChild).toBeNull();

@@ -33,14 +33,78 @@
   flex-shrink: 0;
 }
 
-/* Swimlane AgentStatusBadge pulse — applied to the inner dot only
- * when state is ``active``. Parametric over the dot's existing
- * background (we don't override colour here; the badge already
- * sets ``--status-active``). Distinct from .pulse-dot so the
- * size + flex-shrink + animation can be tuned per consumer
- * without leaking. */
-.swimlane-status-pulse {
-  animation: pulse-dot 2s ease-in-out infinite;
+/* Active agent indicator — rotating gradient arc around the
+ * StatusDot. Rendered as a ``::before`` pseudo-element on the
+ * dot's own container so it inherits the dot's positioning
+ * context. The conic-gradient is STATIC; only ``transform``
+ * animates (rotate on a pseudo-element is GPU-cheap, so the
+ * /agents STATUS column can paint many of these at once without
+ * jank — animating the conic gradient's angle directly forces a
+ * paint per frame and was rejected). ``pointer-events: none`` so
+ * the decoration never intercepts clicks on the clickable chip
+ * the dot sits inside. Both themes inherit colour from
+ * ``var(--status-active)`` defined in ``themes.css``.
+ *
+ * Reduced-motion fallback: ``prefers-reduced-motion: reduce``
+ * drops the rotation, falls back to a static soft glow at low
+ * opacity so the active state is still visually distinct without
+ * any movement. */
+@keyframes agent-status-active-spin {
+  to { transform: rotate(360deg); }
+}
+.agent-status-active-ring::before {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
+  background: conic-gradient(
+    from 0deg,
+    transparent 0deg 240deg,
+    var(--status-active) 300deg,
+    transparent 360deg
+  );
+  -webkit-mask: radial-gradient(circle, transparent 55%, black 60%);
+          mask: radial-gradient(circle, transparent 55%, black 60%);
+  pointer-events: none;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .agent-status-active-ring::before {
+    animation: agent-status-active-spin 1.4s linear infinite;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .agent-status-active-ring::before {
+    background: var(--status-active);
+    opacity: 0.35;
+  }
+}
+
+/* Shared interactive-chip affordance — a subtle hover + focus-
+ * visible treatment for non-primary buttons that need to read
+ * as click targets without competing with primary actions.
+ * Consumers (each picks the layout/sizing it needs via inline
+ * style): the /agents STATUS column chip wrapping
+ * `AgentStatusBadge` to open the per-agent swimlane modal; the
+ * per-agent modal header's close `×` button. The class name
+ * `agent-status-chip` reflects the original consumer; it now
+ * serves any small icon/chip button that wants the same affordance. */
+.agent-status-chip {
+  display: inline-flex;
+  align-items: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 2px 6px;
+  cursor: pointer;
+  transition: background-color 0.15s, border-color 0.15s;
+}
+.agent-status-chip:hover {
+  background: var(--surface);
+  border-color: var(--border);
+}
+.agent-status-chip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 * {

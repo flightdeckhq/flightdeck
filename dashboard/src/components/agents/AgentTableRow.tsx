@@ -122,6 +122,32 @@ function AgentTableRowImpl({
         </div>
       </td>
 
+      {/* Status — clickable chip wrapping the labeled badge.
+          Hover affordance lives in the ``.agent-status-chip``
+          rule in globals.css. Click stops propagation so the
+          row's own onOpenDrawer handler doesn't fire alongside
+          the modal open. */}
+      <td
+        style={{ padding: "8px 12px" }}
+        data-testid={`agent-row-status-cell-${agent.agent_id}`}
+      >
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            handleBadgeClick();
+          }}
+          data-testid={`agent-row-open-swimlane-modal-${agent.agent_id}`}
+          aria-label={`Open swimlane modal for ${agent.agent_name}`}
+          className="agent-status-chip"
+        >
+          <AgentStatusBadge
+            state={agent.state}
+            testId={`agent-row-status-${agent.agent_id}`}
+          />
+        </button>
+      </td>
+
       {/* Topology */}
       <td
         style={{ padding: "8px 12px", minWidth: 120 }}
@@ -251,7 +277,9 @@ function AgentTableRowImpl({
         </span>
       </td>
 
-      {/* Status badge + hover quick actions */}
+      {/* Actions — Events shortcut only. The status badge moved
+          to the dedicated second-column STATUS chip above; this
+          cell no longer duplicates it. */}
       <td
         style={{ padding: "8px 12px", textAlign: "right" }}
         data-testid={`agent-row-actions-${agent.agent_id}`}
@@ -285,26 +313,6 @@ function AgentTableRowImpl({
             }}
           >
             Events ↗
-          </button>
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              handleBadgeClick();
-            }}
-            data-testid={`agent-row-open-swimlane-modal-${agent.agent_id}`}
-            aria-label={`Open swimlane modal for ${agent.agent_name}`}
-            style={{
-              background: "transparent",
-              border: "none",
-              padding: 0,
-              cursor: "pointer",
-            }}
-          >
-            <AgentStatusBadge
-              state={agent.state}
-              testId={`agent-row-status-${agent.agent_id}`}
-            />
           </button>
         </div>
       </td>

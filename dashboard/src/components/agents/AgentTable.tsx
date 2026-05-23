@@ -38,8 +38,17 @@ interface ColumnSpec {
   align?: "left" | "right";
 }
 
+// STATUS sits second so the operator's eye lands on the
+// rolled-up state immediately after the identity column, and the
+// chip's hover affordance draws attention to it as a clickable
+// shortcut into the per-agent swimlane modal. State stays the
+// default sort. The trailing actions cell (rendered after Last
+// seen) keeps only the Events shortcut; the duplicate status
+// badge that historically lived there is retired now that the
+// chip is its own column.
 const COLUMNS: ColumnSpec[] = [
   { column: "agent_name", label: "Agent" },
+  { column: "state", label: "Status" },
   { column: "topology", label: "Topology" },
   { column: "tokens_7d", label: "Tokens (7d)" },
   { column: "latency_p95_7d", label: "Latency p95 (7d)" },
@@ -47,7 +56,6 @@ const COLUMNS: ColumnSpec[] = [
   { column: "sessions_7d", label: "Sessions (7d)" },
   { column: "cost_usd_7d", label: "Cost (7d)" },
   { column: "last_seen_at", label: "Last seen" },
-  { column: "state", label: "Status", align: "right" },
 ];
 
 export function AgentTable({
@@ -187,6 +195,26 @@ export function AgentTable({
                 </th>
               );
             })}
+            {/* Actions column — not in COLUMNS (not sortable),
+                but the data rows render a trailing <td> for the
+                Events shortcut. The header <th> is required so
+                screen readers can enumerate every column and the
+                empty-state cell's colSpan stays aligned. */}
+            <th
+              scope="col"
+              aria-label="Actions"
+              data-testid="agent-table-th-actions"
+              style={{
+                padding: "8px 12px",
+                fontSize: 11,
+                fontWeight: 600,
+                color: "var(--text-secondary)",
+                textTransform: "uppercase",
+                letterSpacing: "0.06em",
+                whiteSpace: "nowrap",
+                textAlign: "right",
+              }}
+            />
           </tr>
         </thead>
         </TooltipProvider>
@@ -201,8 +229,11 @@ export function AgentTable({
           ))}
           {slice.length === 0 && (
             <tr data-testid="agent-table-empty">
+              {/* +1 spans the trailing actions column whose <th>
+                  lives outside COLUMNS (the row renders an extra
+                  <td> for the Events shortcut). */}
               <td
-                colSpan={COLUMNS.length}
+                colSpan={COLUMNS.length + 1}
                 style={{
                   textAlign: "center",
                   padding: "32px 12px",

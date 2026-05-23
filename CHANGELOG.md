@@ -17,24 +17,29 @@ Fleet swimlane reshape, and the event-grain Events page (D157).
   `agent_type`, `client_type`, `framework`. Sortable column headers (the
   numeric column totals are the sort key; the sparkline tiles are
   visual). Pagination defaults to page size 50. A row click opens
-  the agent drawer; per-row hover also surfaces **Open
-  mini-swimlane** and **Open in events** quick actions. Per-agent
-  KPI values are cached on first load and updated in place from
-  live activity, so the table never fully re-renders when an
-  event arrives.
-- **Per-agent swimlane modal.** Clicking the status badge on any
+  the agent drawer; the STATUS column chip (column 2) opens the
+  per-agent swimlane modal; the actions cell on the right edge
+  carries an **Events ↗** quick action. Per-agent KPI values are
+  cached on first load and updated in place from live activity,
+  so the table never fully re-renders when an event arrives.
+- **Per-agent swimlane modal.** Clicking the STATUS chip on any
   `/agents` row opens a large modal dialog containing
   a single-agent swimlane scoped to that agent's flavor only.
   Header carries agent name + topology pill + status badge + KPI
-  totals summary. Time-range picker (5m / 15m / 30m / 1h / 24h,
-  defaults to 1h) affects the modal's events only — the `/agents`
-  table sparklines remain fixed at 7d/day. **Show sub-agents**
-  toggle defaults ON for parents and is disabled + off for lone
-  agents; when ON, the modal renders the parent row plus every
-  sub-agent row with the connector overlay linking each parent to
-  its sub-agents. Clicking an event circle inside the modal opens
-  the event detail panel stacked above the modal without closing it.
-  Closing the modal preserves the `/agents` table's scroll position.
+  totals summary + an explicit close `×`. Time-range picker
+  (1m / 5m / 15m / 30m / 1h, defaults to 1m, sourced from the
+  shared `TIME_RANGE_OPTIONS` / `DEFAULT_TIME_RANGE` constants)
+  affects the modal's events only — the `/agents` table
+  sparklines remain fixed at 7d/day. **Show sub-agents** toggle
+  defaults ON for parents and is disabled + off for lone agents;
+  when ON, the modal renders the parent row plus every sub-agent
+  row with the connector overlay linking each parent to its
+  sub-agents. A scoped `LiveFeed` strip mounts below the swimlane
+  body, filtered to the same flavor set the lanes use, so the
+  feed and the lanes always agree. Clicking an event circle or
+  feed row inside the modal opens the event detail panel stacked
+  above the modal without closing it. Closing the modal
+  preserves the `/agents` table's scroll position.
 - **Agents nav link.** Added between Fleet and Events in the top
   nav.
 - **`AgentSummary.recent_sessions` on `GET /v1/fleet`.** Each
@@ -88,8 +93,9 @@ Fleet swimlane reshape, and the event-grain Events page (D157).
 - **Agent status badge on swimlane rows.** At the right edge of
   each swimlane row's label strip, a badge renders the agent's
   rolled-up state (the highest-priority state across the agent's
-  runs), with a pulsing dot when the state is `active`.
-  Theme-agnostic.
+  runs). Active state shows a rotating gradient ring around the
+  dot — see the `Changed` entry below for the shipped
+  animation. Theme-agnostic.
 - **`GET /v1/sessions?include_parents=true`.** Opt-in flag that
   augments the response with the parent session of every child
   session in the page, even when the parent falls outside the
@@ -223,6 +229,59 @@ Fleet swimlane reshape, and the event-grain Events page (D157).
   survives reloads. The `/agents` page is now the dedicated
   fleet-overview surface; the ALL row's pulse remains one
   click away for the operators who want it.
+- **/agents STATUS column relocated to second position + flashier
+  active indicator.** The status column moved from the far-right
+  actions cell to the second column (right after AGENT), rendered
+  as a clickable chip with hover affordance that opens the
+  per-agent swimlane modal. The actions cell now carries only the
+  Events shortcut (the duplicate status badge is retired). The
+  active-state animation is a rotating green gradient arc around
+  the dot (replacing the previous fade pulse) and ships through
+  the shared `StatusDot` primitive in
+  `dashboard/src/lib/agent-status.tsx`, so the same indicator
+  renders consistently across the Fleet swimlane, the /agents
+  column chip, the per-agent swimlane modal header, and the
+  agent drawer header. The ring rotates via `transform` on a
+  pseudo-element (GPU-cheap) and degrades to a static soft glow
+  under `prefers-reduced-motion: reduce`.
+- **Per-agent swimlane modal — close X + scoped live feed.** The
+  modal header gained an explicit close `×` (outside-click / Esc
+  still work via Radix). A `LiveFeed` strip mounts below the
+  swimlane body, scoped to the modal's session set: parent only
+  when **Show sub-agents** is off, parent + sub-agents when on.
+  Feed pipeline reads from / writes to the same `eventsCache`
+  the swimlane uses (per-session `fetchSession` for the seed,
+  `useFleetStore.lastEvent` injection for live ticks). Scope
+  filter keys on `session_id` (not `flavor`) because
+  `FlavorSummary.flavor` carries the agent_id UUID per D115
+  while `AgentEvent.flavor` carries the seed-time flavor
+  string — the two never match. The scope set is memoised
+  behind a sorted-joined `scopedSessionIdsKey` string so the
+  seed effect is stable across store mutations. The `/agents`
+  page calls `useFleet()` for its side-effect so `lastEvent`
+  is populated when the modal is opened from that route
+  (`Fleet.tsx` already owned the subscription on `/fleet`).
+  Feed row clicks open the event detail drawer already mounted
+  inside the modal.
+- **/agents KPI sparklines render the neutral dash placeholder
+  for sparse data.** A series with fewer than two non-zero data
+  points (e.g. an ancient agent whose only activity sits in a
+  single 7-day bucket) used to render as a stray accent-coloured
+  dot; the column now collapses any such row to the same
+  placeholder dash the empty-series case already uses, so the
+  KPI column reads consistently regardless of seed-data
+  density.
+- **Agent drawer header — deterministic four-row layout.** The
+  header now lays out as four explicit sibling rows
+  (identity + close `×`, status + topology, action links in
+  their own row, sub-agent linkage pills only when present)
+  with no `flex-wrap`. Pre-fix the action links shared a row
+  with status + topology and right-aligned via `marginLeft:
+  auto + flex-wrap`, so a wide topology label or sub-agent
+  badge would push them onto a wrapping line — their position
+  drifted between agents. The new layout pins the action-link
+  row vertically regardless of topology width or sub-agent
+  presence.
 
 ### Removed
 

@@ -166,6 +166,51 @@ describe("AgentTableRow", () => {
     expect(onOpenDrawer).not.toHaveBeenCalled();
   });
 
+  it("renders the STATUS cell as the second column with a clickable chip", () => {
+    // The relocated STATUS column lives second (right after the
+    // identity cell). The cell wraps the labeled badge in a
+    // ``.agent-status-chip`` button so the hover affordance reads
+    // as a click target. Asserts the cell's DOM position by walking
+    // the row's child <td> list — the second <td> is the status
+    // cell, and the chip button + badge live inside it.
+    renderRow(mkAgent({ agent_id: "a-1" }));
+    const row = screen.getByTestId("agent-row-a-1");
+    const cells = row.querySelectorAll("td");
+    // Identity is cells[0]; status is cells[1]; topology follows.
+    expect(cells[1].getAttribute("data-testid")).toBe(
+      "agent-row-status-cell-a-1",
+    );
+    const chip = screen.getByTestId("agent-row-open-swimlane-modal-a-1");
+    expect(cells[1].contains(chip)).toBe(true);
+    expect((chip as HTMLElement).className).toContain("agent-status-chip");
+    // Badge nests inside the chip (preserves the inner testId).
+    const badge = screen.getByTestId("agent-row-status-a-1");
+    expect(chip.contains(badge)).toBe(true);
+  });
+
+  it("actions cell holds only the Events shortcut — no duplicate status badge", () => {
+    // Pre-fix the actions cell carried both the Events button AND
+    // the status-badge button; with the relocated STATUS column the
+    // actions cell should hold only the Events shortcut so the
+    // operator sees the badge exactly once per row.
+    renderRow(mkAgent({ agent_id: "a-1" }));
+    const actions = screen.getByTestId("agent-row-actions-a-1");
+    expect(
+      actions.querySelector(
+        '[data-testid="agent-row-open-events-a-1"]',
+      ),
+    ).not.toBeNull();
+    // No badge / chip inside the actions cell.
+    expect(
+      actions.querySelector('[data-testid="agent-row-status-a-1"]'),
+    ).toBeNull();
+    expect(
+      actions.querySelector(
+        '[data-testid="agent-row-open-swimlane-modal-a-1"]',
+      ),
+    ).toBeNull();
+  });
+
   it("data-stamps topology and state for E2E / sort selectors", () => {
     renderRow(mkAgent({ agent_id: "a-1", topology: "parent", state: "idle" }));
     const row = screen.getByTestId("agent-row-a-1");

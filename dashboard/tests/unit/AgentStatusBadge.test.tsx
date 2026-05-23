@@ -3,17 +3,17 @@ import { render, screen } from "@testing-library/react";
 import { AgentStatusBadge } from "@/components/timeline/AgentStatusBadge";
 
 describe("AgentStatusBadge", () => {
-	it("applies the swimlane-status-pulse class when state is active", () => {
+	it("applies the agent-status-active-ring class when state is active", () => {
 		render(<AgentStatusBadge state="active" />);
 		const dot = screen.getByTestId("swimlane-agent-status-dot");
-		expect(dot.className).toContain("swimlane-status-pulse");
+		expect(dot.className).toContain("agent-status-active-ring");
 	});
 
-	it("does NOT apply the pulse class on non-active states", () => {
+	it("does NOT apply the active-ring class on non-active states", () => {
 		for (const state of ["idle", "stale", "closed", "lost", ""] as const) {
 			const { unmount } = render(<AgentStatusBadge state={state} />);
 			const dot = screen.getByTestId("swimlane-agent-status-dot");
-			expect(dot.className).not.toContain("swimlane-status-pulse");
+			expect(dot.className).not.toContain("agent-status-active-ring");
 			unmount();
 		}
 	});

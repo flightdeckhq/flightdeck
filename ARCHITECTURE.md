@@ -2317,7 +2317,19 @@ Columns, left to right:
    and Flightdeck has no pricing for them. The column header
    carries an info-icon tooltip stating this.
 8. **Last seen** — relative time with absolute-time tooltip.
-9. **Status** — `AgentStatusBadge` (pulse on active).
+
+Column order shipped (`COLUMNS` array in `AgentTable.tsx`):
+Agent → Status → Topology → Tokens (7d) → Latency p95 (7d) →
+Errors (7d) → Sessions (7d) → Cost (7d) → Last seen. The
+**Status** column sits second (right after Agent); its cell is a
+clickable chip wrapping `AgentStatusBadge` that opens the
+per-agent swimlane modal. The active-state animation is a
+rotating gradient ring around the dot (`agent-status-active-ring`
+class in `globals.css`), degrading to a static soft glow under
+`@media (prefers-reduced-motion: reduce)`. A trailing actions
+column (not in the sortable `COLUMNS` array) carries an
+**Events ↗** quick action; the empty-state row's `colSpan`
+covers both the sortable columns and the actions column.
 
 A left facet sidebar — the same visual pattern the `/events`
 page uses — carries the filter dimensions, each chip rendered
@@ -2340,13 +2352,14 @@ tiles themselves (sparklines are visual; the sort key is the
 column's numeric total). Pagination defaults to page size 50.
 
 Clicking anywhere on a row opens that agent's **agent drawer**
-(see below). The row's status badge opens the per-agent
-swimlane modal; per-row hover additionally reveals an **Open in
-events** quick-action on the right edge (deep-link to
+(see below). The row's **status chip** in column 2 — the
+labeled badge wrapped in a hover-affordance button — opens the
+per-agent swimlane modal; the actions cell on the right edge
+carries an **Events ↗** shortcut (deep-link to
 `/events?agent_id=…`).
 
 Live update contract: the fleet store's `lastEvent` subscription
-patches the affected row's KPI cells and status badge in place;
+patches the affected row's KPI cells and status chip in place;
 the table itself does not re-render. `useAgentSummary`'s
 module-level cache is keyed by the composite
 `(agent_id, period, bucket)` tuple so the table's `7d / day`
@@ -2367,15 +2380,17 @@ malformed value silently no-ops instead of throwing.
 
 `dashboard/src/components/agents/PerAgentSwimlaneModal.tsx`
 opens as a shadcn Dialog at ~80 vw × 80 vh from two surfaces:
-the `/agents` row status badge and the agent drawer header's
-**Open in swimlane** button. It scopes the existing `SwimLane` /
+the `/agents` row STATUS chip (column 2) and the agent drawer
+header's **Open in swimlane** button. It scopes the existing `SwimLane` /
 `VirtualizedSwimLane` primitives to a single agent's flavor
 (plus its sub-agents when the **Show sub-agents** toggle is on).
 
 Modal layout:
 
 - **Header** — agent name, topology pill, status badge (with
-  pulse on active), KPI totals summary.
+  a rotating gradient ring on active), KPI totals summary, and
+  an explicit close `×` button at the top-right (outside-click
+  and `Esc` also close via Radix's `onOpenChange`).
 - **Time-range picker** — the five Fleet ranges `1m / 5m /
   15m / 30m / 1h`, defaulting to `1m`. Options and default are
   the shared `TIME_RANGE_OPTIONS` / `DEFAULT_TIME_RANGE`
@@ -2388,6 +2403,32 @@ Modal layout:
   sub-agent row with the existing `SubAgentConnector` overlay.
 - **Swimlane body** — the existing `SwimLane` primitive
   filtered to the agent's flavor set.
+- **Live feed strip** — a `LiveFeed` strip below the swimlane
+  body, scoped to the same session set the lanes use.
+  Pipeline: per-session `fetchSession` seeds the feed from
+  `eventsCache` for each session in the scoped set (mirroring
+  the swimlane's `useSessionEvents` path so the lane and the
+  feed read from one source of truth, including events older
+  than any wall-clock window); `useFleetStore.lastEvent` ticks
+  every WS event into the feed dedup'd by `event.id` and is
+  also injected into `eventsCache` so the swimlane sees the
+  same live tick. Both streams filter through
+  `scopedSessionIds` (a `Set<string>` of `session_id` values)
+  before merging — `session_id` is the match key, not
+  `flavor`, because `FlavorSummary.flavor` carries the
+  agent_id UUID (D115) while `AgentEvent.flavor` carries the
+  seed-time flavor string; the two never match. The scope set
+  is memoised behind a sorted-joined `scopedSessionIdsKey`
+  string so the seed effect is stable across store mutations.
+  Toggling **Show sub-agents** rescopes the lanes and the
+  feed in lockstep. The modal does not open its own
+  WebSocket — the host page drives `lastEvent`: `Fleet.tsx`
+  via its `useFleet()` call on `/fleet`, `Agents.tsx` via the
+  same hook called purely for its side-effect on `/agents`. A
+  feed row click reuses the same `setSelectedEvent` setter
+  the swimlane circle click does, so the event detail drawer
+  mounted inside the Dialog opens identically from either
+  surface.
 - **Event circle click** — sets the modal's local
   `selectedEvent` state which mounts the existing
   `EventDetailDrawer` inside the Dialog content. The drawer
@@ -2395,9 +2436,11 @@ Modal layout:
   Radix Dialog), so it stacks above the modal without
   Radix focus-trap or backdrop-click conflicts. Closing the
   drawer clears `selectedEvent`; the modal stays open.
-- **Close** — returns to the launching surface at the same
-  scroll position; the URL gains no segments while the modal
-  is open.
+- **Close** — the header's `×` button calls the host's
+  `onClose`; outside-click and `Esc` route through the same
+  path. Returns to the launching surface at the same scroll
+  position; the URL gains no segments while the modal is
+  open.
 
 ### Agent drawer
 
@@ -2415,7 +2458,11 @@ Header:
 - **Identity card** — agent name (monospace), `ClientTypePill`
   (CC / SDK), `agent_type` badge, provider / OS / orchestration
   icons.
-- **Status badge** — `AgentStatusBadge` with pulse-on-active.
+- **Status badge** — `AgentStatusBadge` with a rotating
+  gradient ring around the dot on active state
+  (`agent-status-active-ring` class in `globals.css`); degrades
+  to a static soft glow under
+  `@media (prefers-reduced-motion: reduce)`.
 - **Topology pill** — the preserved `TopologyCell` primitive.
 - **Sub-agent linkage pills** — for a `parent` agent, one
   clickable chip per child agent identity; for a `child` agent,
@@ -2812,10 +2859,16 @@ max-priority state across the agent's runs (active > idle > stale
 defines the ranking used to roll multiple session states up into
 a single per-agent badge state.
 
-`AgentStatusBadge.tsx` renders the state colour dot + label and
-adds a CSS keyframe pulse animation on the dot only when state is
-`active`. Theme-agnostic — colours from `var(--status-*)`
-variables.
+`AgentStatusBadge.tsx` renders the state colour dot + label via
+the shared `StatusDot` primitive (`lib/agent-status.tsx`). When
+state is `active`, the dot picks up the
+`agent-status-active-ring` class which renders a rotating
+gradient arc around the dot on a `::before` pseudo-element —
+the conic-gradient is static, only `transform` rotates so the
+animation is GPU-cheap when many dots paint at once.
+`@media (prefers-reduced-motion: reduce)` falls back to a
+static soft glow. Theme-agnostic — colours resolve to
+`var(--status-*)` custom properties.
 
 `RunBracket.tsx` overlays per-run boundary glyphs on the row.
 The start glyph is a filled play-button triangle (▶) at the

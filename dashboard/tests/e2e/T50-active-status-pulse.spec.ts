@@ -1,19 +1,20 @@
 /**
- * T50 — AgentStatusBadge applies the pulse class iff state is
- * ``active``.
+ * T50 — AgentStatusBadge applies the rotating-ring class iff
+ * state is ``active``.
  *
- * The pulse animation is implemented in globals.css under the
- * ``swimlane-status-pulse`` class. The badge's inner dot picks
- * the class up only when ``data-state="active"`` is set on the
- * surrounding span. Theme-agnostic — colour is driven by a CSS
- * variable, so the assertion is structural (class presence /
- * absence) rather than computed-colour based.
+ * The active indicator is implemented in globals.css under the
+ * ``agent-status-active-ring`` class (rotating gradient arc on a
+ * ``::before`` pseudo-element). The badge's inner dot picks the
+ * class up only when ``data-state="active"`` is set on the
+ * surrounding span. Theme-agnostic — colour resolves to a CSS
+ * custom property, so the assertion is structural (class
+ * presence / absence) rather than computed-colour based.
  */
 import { test, expect } from "@playwright/test";
 import { waitForFleetReady } from "./_fixtures";
 
-test.describe("T50 — Active status pulse", () => {
-	test("active-state badges carry the pulse class; non-active states do not", async ({
+test.describe("T50 — Active status indicator", () => {
+	test("active-state badges carry the active-ring class; non-active states do not", async ({
 		page,
 	}) => {
 		await page.goto("/");
@@ -22,7 +23,7 @@ test.describe("T50 — Active status pulse", () => {
 		const count = await badges.count();
 		expect(count).toBeGreaterThan(0);
 		// Scan every visible badge. For each, the inner dot must
-		// carry the pulse class iff data-state="active".
+		// carry the active-ring class iff data-state="active".
 		for (let i = 0; i < count; i++) {
 			const badge = badges.nth(i);
 			const state = await badge.getAttribute("data-state");
@@ -31,9 +32,9 @@ test.describe("T50 — Active status pulse", () => {
 			);
 			const cls = (await dot.getAttribute("class")) ?? "";
 			if (state === "active") {
-				expect(cls).toContain("swimlane-status-pulse");
+				expect(cls).toContain("agent-status-active-ring");
 			} else {
-				expect(cls).not.toContain("swimlane-status-pulse");
+				expect(cls).not.toContain("agent-status-active-ring");
 			}
 		}
 	});

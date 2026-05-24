@@ -52,7 +52,7 @@ visible focused-row highlight (D162).
   text bolds the case-insensitive match of the query via a
   client-side ``<Highlight>`` helper. Pasted queries with
   ``_`` or ``%`` are matched literally (regex-escaped).
-- **Routing pivot (D162, supersedes F2).** Agent hits open
+- **Routing pivot (D162).** Agent hits open
   the AgentDrawer overlay via ``?agent_drawer=<id>`` on the
   current route instead of navigating to ``/events?agent_id=``.
   Event hits open the EventDetailDrawer overlay via

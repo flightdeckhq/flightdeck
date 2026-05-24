@@ -19,16 +19,17 @@ interface CommandPaletteProps {
   onSelectResult?: (type: "agent" | "session" | "event", item: ResultItem) => void;
 }
 
-/** The RecentAgent shape (api.ts) shares agent_id + agent_name +
- *  agent_type with SearchResultAgent but uses `last_seen_at`
- *  (server field name) instead of `last_seen` (search-result alias).
- *  Bridging here lets the empty-state and the results-state share
- *  one host callback. */
+/** The RecentAgent shape (api.ts) is the full /v1/agents row.
+ *  SearchResultAgent uses `last_seen` (a search-result alias for
+ *  the same value); bridging here lets the empty-state and the
+ *  results-state share one host callback. */
 function recentAgentToSearchResult(a: RecentAgent): SearchResultAgent {
   return {
     agent_id: a.agent_id,
     agent_name: a.agent_name,
     agent_type: a.agent_type,
+    client_type: a.client_type,
+    state: a.state,
     last_seen: a.last_seen_at,
   };
 }

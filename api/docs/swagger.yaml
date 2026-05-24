@@ -210,7 +210,7 @@ definitions:
       os:
         description: |-
           Runtime-context slice from the agent's MOST RECENT session's
-          `sessions.context` JSONB (D161). An agent that ran across
+          `sessions.context` JSONB. An agent that ran across
           multiple hosts / branches surfaces its latest session's values
           here — facets are single-valued per agent. Each field is null
           when the latest session's context is absent or the JSONB key
@@ -758,7 +758,11 @@ definitions:
         type: string
       agent_type:
         type: string
+      client_type:
+        type: string
       last_seen:
+        type: string
+      state:
         type: string
     type: object
   store.SearchResultEvent:

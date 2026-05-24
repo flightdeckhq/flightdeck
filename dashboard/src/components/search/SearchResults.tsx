@@ -1,8 +1,15 @@
 import { useEffect, useRef } from "react";
 import { truncateSessionId } from "@/lib/events";
 import { getProvider } from "@/lib/models";
+import {
+  ClientType,
+  isAgentType,
+  isClientType,
+} from "@/lib/agent-identity";
 import { Highlight } from "@/components/search/Highlight";
 import { EventTypePill } from "@/components/facets/EventTypePill";
+import { AgentTypeBadge } from "@/components/facets/AgentTypeBadge";
+import { ClaudeCodeLogo } from "@/components/ui/claude-code-logo";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import type {
   SearchResults as SearchResultsType,
@@ -148,11 +155,47 @@ export function SearchResultsList({
   );
 }
 
+/** Compact state chip matching AgentTable's chip styling. Green
+ *  background for active runs (consistent with the prior SessionRow
+ *  chip pattern), neutral surface for everything else. Shared by
+ *  AgentRow and SessionRow so a "stale" run and a "stale" agent
+ *  read identically. */
+function StateChip({ state }: { state: string }) {
+  if (!state) return null;
+  const isActive = state === "active";
+  return (
+    <span
+      className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${
+        isActive
+          ? "bg-green-500/20 text-green-400"
+          : "bg-surface-hover text-text-muted"
+      }`}
+    >
+      {state}
+    </span>
+  );
+}
+
 function AgentRow({ item, query }: { item: SearchResultAgent; query: string }) {
+  // Mirror AgentTableRow's identity cluster: ClaudeCodeLogo when
+  // the agent is a Claude Code client, then the agent-type badge,
+  // then the state chip, then the highlighted name, then time.
+  // All primitives are the same components /agents renders so the
+  // two surfaces read as one family.
+  const showClaudeLogo =
+    isClientType(item.client_type) && item.client_type === ClientType.ClaudeCode;
   return (
     <>
-      <Highlight text={item.agent_name} query={query} className="font-medium text-text" />
-      <span className="text-text-muted">{item.agent_type}</span>
+      {showClaudeLogo && <ClaudeCodeLogo size={12} title="" />}
+      {isAgentType(item.agent_type) && (
+        <AgentTypeBadge agentType={item.agent_type} />
+      )}
+      <StateChip state={item.state} />
+      <Highlight
+        text={item.agent_name}
+        query={query}
+        className="font-medium text-text"
+      />
       <span className="ml-auto text-text-muted">{formatTime(item.last_seen)}</span>
     </>
   );
@@ -173,15 +216,13 @@ function SessionRow({
         className="font-mono font-medium text-text"
       />
       <Highlight text={item.flavor} query={query} className="text-text-muted" />
-      <span
-        className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${
-          item.state === "active"
-            ? "bg-green-500/20 text-green-400"
-            : "bg-surface-hover text-text-muted"
-        }`}
-      >
-        {item.state}
-      </span>
+      <StateChip state={item.state} />
+      {item.model && (
+        <span className="flex items-center gap-1 text-text-muted">
+          <ProviderLogo provider={getProvider(item.model)} size={12} title="" />
+          <Highlight text={item.model} query={query} className="text-text-muted" />
+        </span>
+      )}
       <span className="ml-auto text-text-muted">{formatTime(item.started_at)}</span>
     </>
   );

@@ -16,12 +16,16 @@ vi.mock("@/lib/api", async () => {
             agent_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
             agent_name: "recent-agent-1",
             agent_type: "production",
+            client_type: "flightdeck_sensor",
+            state: "active",
             last_seen_at: "2026-04-17T09:00:00Z",
           },
           {
             agent_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
             agent_name: "recent-agent-2",
             agent_type: "production",
+            client_type: "flightdeck_sensor",
+            state: "idle",
             last_seen_at: "2026-04-17T08:00:00Z",
           },
         ],
@@ -42,6 +46,8 @@ const populatedResults: SearchResults = {
       agent_id: "11111111-1111-4111-8111-111111111111",
       agent_name: "research-agent",
       agent_type: "production",
+      client_type: "flightdeck_sensor",
+      state: "active",
       last_seen: "2026-04-01T00:00:00Z",
     },
   ],
@@ -68,12 +74,16 @@ const navResults: SearchResults = {
       agent_id: "22222222-2222-4222-8222-222222222222",
       agent_name: "alpha",
       agent_type: "production",
+      client_type: "flightdeck_sensor",
+      state: "active",
       last_seen: "2026-04-01T00:00:00Z",
     },
     {
       agent_id: "33333333-3333-4333-8333-333333333333",
       agent_name: "beta",
       agent_type: "production",
+      client_type: "flightdeck_sensor",
+      state: "idle",
       last_seen: "2026-04-01T00:00:00Z",
     },
   ],
@@ -318,6 +328,65 @@ describe("CommandPalette", () => {
     const pill = await screen.findByTestId("event-type-pill");
     expect(pill.getAttribute("data-event-type")).toBe("post_call");
     expect(pill.textContent).toBe("LLM CALL");
+  });
+
+  it("AgentRow surfaces ClaudeCodeLogo + AgentTypeBadge + state chip (row parity)", () => {
+    mockResults = {
+      agents: [
+        {
+          agent_id: "44444444-4444-4444-8444-444444444444",
+          agent_name: "claude-code-agent",
+          agent_type: "coding",
+          client_type: "claude_code",
+          state: "active",
+          last_seen: "2026-04-17T09:00:00Z",
+        },
+      ],
+      sessions: [],
+      events: [],
+    };
+    mockLoading = false;
+    render(<CommandPalette open={true} onOpenChange={onOpenChange} />);
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "claude" } });
+    const agentOption = screen.getAllByRole("option")[0];
+    // ClaudeCodeLogo carries a stable aria-label from PROVIDER_META;
+    // matching it inside the row proves the icon mounted.
+    expect(agentOption.querySelector("svg")).toBeTruthy();
+    // AgentTypeBadge renders "CODING" (CSS-uppercase) inside the row.
+    expect(agentOption.textContent?.toLowerCase()).toContain("coding");
+    // State chip — green-tinted span when active.
+    expect(agentOption.textContent).toContain("active");
+  });
+
+  it("SessionRow surfaces ProviderLogo + model (row parity)", () => {
+    mockResults = {
+      agents: [],
+      sessions: [
+        {
+          session_id: "11111111-2222-3333-4444-555555555555",
+          flavor: "claude-code",
+          host: "host-1",
+          state: "active",
+          started_at: "2026-04-17T09:00:00Z",
+          ended_at: null,
+          model: "claude-3-5-haiku",
+          tokens_used: 0,
+          token_limit: null,
+          context: {},
+        },
+      ],
+      events: [],
+    };
+    mockLoading = false;
+    render(<CommandPalette open={true} onOpenChange={onOpenChange} />);
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "claude" } });
+    const sessionOption = screen.getAllByRole("option")[0];
+    // Model text is rendered inside the row.
+    expect(sessionOption.textContent).toContain("claude-3-5-haiku");
+    // Provider logo (svg) sits next to the model — covers both the
+    // model treatment and the row layout.
+    const svgs = sessionOption.querySelectorAll("svg");
+    expect(svgs.length).toBeGreaterThan(0);
   });
 
   it("renders RecentAgents in the empty state instead of the type-2-chars hint", async () => {

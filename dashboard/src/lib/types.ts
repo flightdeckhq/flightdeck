@@ -926,11 +926,18 @@ export interface CustomDirectiveParameter {
   default: unknown;
 }
 
-/** Search result: agent summary. */
+/** Search result: agent summary. client_type + state mirror the
+ *  /v1/agents listing projection so the palette's AgentRow can
+ *  reuse the same identity primitives the /agents table row uses
+ *  (ClaudeCodeLogo, AgentTypeBadge, AgentStatusBadge). state is
+ *  derived via the shared LATERAL rollup on the backend so /v1/search
+ *  and /agents agree on the rolled-up value. */
 export interface SearchResultAgent {
   agent_id: string;
   agent_name: string;
   agent_type: string;
+  client_type: string;
+  state: string;
   last_seen: string;
 }
 

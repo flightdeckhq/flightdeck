@@ -439,6 +439,136 @@ func TestSearch_AgentResultsAreCappedAtFive(t *testing.T) {
 	}
 }
 
+func TestSearch_AgentResultCarriesClientTypeAndState(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	t.Cleanup(cleanup)
+	ctx := context.Background()
+
+	suffix := randomUUID(t)[:8]
+	marker := "ctype-" + suffix
+	agentID := seedSearchAgent(t, s, marker, "h-"+suffix, "u-"+suffix)
+	// One active session attaches a non-empty state to the rollup.
+	_ = seedSearchSessionWithEvents(t, s, agentID, marker,
+		[]struct {
+			EventType string
+			ToolName  string
+			Model     string
+		}{
+			{EventType: "post_call"},
+		})
+	// Force the session row to ``active`` so the rollup picks it up
+	// (seedSearchSessionWithEvents inserts as ``closed``). One inline
+	// UPDATE keeps the helper shape stable for the other tests.
+	if _, err := s.pool.Exec(ctx,
+		`UPDATE sessions SET state='active' WHERE agent_id=$1::uuid`,
+		agentID,
+	); err != nil {
+		t.Fatalf("force active: %v", err)
+	}
+
+	results, err := s.Search(ctx, marker)
+	if err != nil {
+		t.Fatalf("Search(%q): %v", marker, err)
+	}
+	if len(results.Agents) == 0 {
+		t.Fatalf("expected ≥1 agent hit, got 0")
+	}
+	hit := results.Agents[0]
+	// seedSearchAgent uses client_type=flightdeck_sensor.
+	if hit.ClientType != "flightdeck_sensor" {
+		t.Errorf("ClientType: want flightdeck_sensor, got %q", hit.ClientType)
+	}
+	if hit.State != "active" {
+		t.Errorf("State: want active, got %q", hit.State)
+	}
+}
+
+func TestSearch_AgentStateParityWithListAgents(t *testing.T) {
+	// Lock the contract that /v1/search and /agents read the same
+	// rolled-up state for the same agent. Both paths consume
+	// agentStateRollupSQL; this test seeds an agent with a mix of
+	// session states and asserts both APIs return the same value.
+	s, cleanup := newTestStore(t)
+	t.Cleanup(cleanup)
+	ctx := context.Background()
+
+	suffix := randomUUID(t)[:8]
+	marker := "parity-" + suffix
+	agentID := seedSearchAgent(t, s, marker, "h-"+suffix, "u-"+suffix)
+	// Two sessions: one closed (older), one active (newer). The
+	// rollup says "active" iff any session is active, regardless of
+	// recency — so the parity test exercises the EXISTS branch.
+	_ = seedSearchSessionWithEvents(t, s, agentID, marker+"-closed",
+		[]struct {
+			EventType string
+			ToolName  string
+			Model     string
+		}{
+			{EventType: "post_call"},
+		})
+	activeSessionID := seedSearchSessionWithEvents(t, s, agentID, marker+"-active",
+		[]struct {
+			EventType string
+			ToolName  string
+			Model     string
+		}{
+			{EventType: "post_call"},
+		})
+	if _, err := s.pool.Exec(ctx,
+		`UPDATE sessions SET state='active' WHERE session_id=$1::uuid`,
+		activeSessionID,
+	); err != nil {
+		t.Fatalf("force active: %v", err)
+	}
+
+	searchRes, err := s.Search(ctx, marker)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(searchRes.Agents) == 0 {
+		t.Fatalf("Search returned no agents")
+	}
+	searchState := ""
+	for _, a := range searchRes.Agents {
+		if a.AgentID == agentID {
+			searchState = a.State
+			break
+		}
+	}
+	if searchState == "" {
+		t.Fatalf("Search did not return the seeded agent")
+	}
+
+	listRes, err := s.ListAgents(ctx, AgentListParams{
+		Search: marker,
+		Limit:  10,
+	})
+	if err != nil {
+		t.Fatalf("ListAgents: %v", err)
+	}
+	if len(listRes.Agents) == 0 {
+		t.Fatalf("ListAgents returned no agents")
+	}
+	listState := ""
+	for _, a := range listRes.Agents {
+		if a.AgentID == agentID {
+			listState = a.State
+			break
+		}
+	}
+	if listState == "" {
+		t.Fatalf("ListAgents did not return the seeded agent")
+	}
+
+	if searchState != listState {
+		t.Errorf("state parity broken: Search=%q ListAgents=%q (both must read the same rollup)",
+			searchState, listState)
+	}
+	if searchState != "active" {
+		t.Errorf("expected active state from the rollup, got %q", searchState)
+	}
+}
+
 func TestSearch_EventCrossFieldPrecedence(t *testing.T) {
 	s, cleanup := newTestStore(t)
 	t.Cleanup(cleanup)

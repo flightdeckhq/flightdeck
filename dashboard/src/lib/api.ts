@@ -116,13 +116,17 @@ export function fetchFleet(page = 1, perPage = 50, agentType?: string): Promise<
 }
 
 /** Minimal projection of /v1/agents needed for the search palette's
- *  recent-agents empty state — agent_id for routing, agent_name for
- *  display, last_seen_at for sort verification. The endpoint returns
- *  many more fields; we declare only what the UI consumes. */
+ *  recent-agents empty state. client_type + state let the empty-state
+ *  RecentAgents list reuse the same AgentRow identity primitives the
+ *  populated results render (ClaudeCodeLogo, AgentTypeBadge,
+ *  AgentStatusBadge). The endpoint returns many more fields; we
+ *  declare only what the UI consumes. */
 export interface RecentAgent {
   agent_id: string;
   agent_name: string;
   agent_type: string;
+  client_type: string;
+  state: string;
   last_seen_at: string;
 }
 

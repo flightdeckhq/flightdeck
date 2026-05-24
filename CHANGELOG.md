@@ -64,6 +64,17 @@ visible focused-row highlight (D162).
   same ``EventTypePill`` ``/events`` + the run drawer + the
   agent drawer use, so a ``post_call`` (or any event type)
   reads byte-identically across all four surfaces.
+- **Row parity across agent / run / event groups.** Agent
+  rows surface the same identity cluster the ``/agents`` table
+  row uses — ``ClaudeCodeLogo`` for Claude Code clients, the
+  ``AgentTypeBadge``, and a state chip — instead of bare name +
+  grey ``agent_type`` text. Run rows surface ``ProviderLogo``
+  + ``model`` (already on the wire, previously unused). Recent
+  agents in the empty state pick up the same primitives. The
+  ``/v1/search`` agents response gains ``client_type`` and
+  ``state`` (derived via the shared ``agentStateRollupSQL``
+  LATERAL so ``/v1/search`` and ``/v1/agents`` agree on each
+  agent's rolled-up state).
 - **L33 sweep.** Fixed five other places in the dashboard
   where Tailwind alpha modifiers on hex CSS vars compiled to
   no background — badge variants, scope chips on

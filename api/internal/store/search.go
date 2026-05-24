@@ -15,11 +15,20 @@ import (
 // and the AgentDrawer “?agent_drawer=“ param consume. The result
 // type carries it so the dashboard can route a click without a
 // second round-trip to look up the identity.
+//
+// ClientType + State match the /v1/agents listing projection so
+// the palette's AgentRow can reuse the same identity primitives
+// the /agents table row uses (ClaudeCodeLogo for Claude Code
+// clients, AgentTypeBadge, AgentStatusBadge). State is derived
+// via the shared “agentStateRollupSQL“ LATERAL so /v1/search and
+// /agents agree on the rolled-up state per agent.
 type SearchResultAgent struct {
-	AgentID   string `json:"agent_id"`
-	AgentName string `json:"agent_name"`
-	AgentType string `json:"agent_type"`
-	LastSeen  string `json:"last_seen"`
+	AgentID    string `json:"agent_id"`
+	AgentName  string `json:"agent_name"`
+	AgentType  string `json:"agent_type"`
+	ClientType string `json:"client_type"`
+	State      string `json:"state"`
+	LastSeen   string `json:"last_seen"`
 }
 
 // SearchResultSession is a search hit on the sessions table.
@@ -163,27 +172,34 @@ func (s *Store) Search(ctx context.Context, query string) (*SearchResults, error
 	// but seeded / test / cloud agents often don't).
 	g.Go(func() error {
 		rows, err := s.pool.Query(gCtx, `
-			SELECT agent_id::text, agent_name, agent_type, last_seen_at::text
-			FROM (
-				SELECT a.*,
+			SELECT
+				a.agent_id::text,
+				a.agent_name,
+				a.agent_type,
+				COALESCE(a.client_type, '') AS client_type,
+				COALESCE(rollup.state, '') AS state,
+				a.last_seen_at::text
+			FROM agents a
+			LEFT JOIN LATERAL (`+agentStateRollupSQL+`) rollup ON TRUE
+			JOIN LATERAL (
+				SELECT
 					CASE
-						WHEN agent_name ILIKE $3 THEN 0
-						WHEN COALESCE(hostname, '') ILIKE $3 THEN 1
-						WHEN COALESCE(user_name, '') ILIKE $3 THEN 2
-						WHEN agent_name ILIKE $2 THEN 3
-						WHEN COALESCE(hostname, '') ILIKE $2 THEN 4
-						WHEN COALESCE(user_name, '') ILIKE $2 THEN 5
-						WHEN agent_name ILIKE $1 THEN 6
-						WHEN COALESCE(hostname, '') ILIKE $1 THEN 7
-						WHEN COALESCE(user_name, '') ILIKE $1 THEN 8
+						WHEN a.agent_name ILIKE $3 THEN 0
+						WHEN COALESCE(a.hostname, '') ILIKE $3 THEN 1
+						WHEN COALESCE(a.user_name, '') ILIKE $3 THEN 2
+						WHEN a.agent_name ILIKE $2 THEN 3
+						WHEN COALESCE(a.hostname, '') ILIKE $2 THEN 4
+						WHEN COALESCE(a.user_name, '') ILIKE $2 THEN 5
+						WHEN a.agent_name ILIKE $1 THEN 6
+						WHEN COALESCE(a.hostname, '') ILIKE $1 THEN 7
+						WHEN COALESCE(a.user_name, '') ILIKE $1 THEN 8
 						ELSE 99
 					END AS rank
-				FROM agents a
-				WHERE agent_name ILIKE $1
-				   OR COALESCE(hostname, '') ILIKE $1
-				   OR COALESCE(user_name, '') ILIKE $1
-			) ranked
-			ORDER BY rank ASC, last_seen_at DESC
+			) ranked ON TRUE
+			WHERE a.agent_name ILIKE $1
+			   OR COALESCE(a.hostname, '') ILIKE $1
+			   OR COALESCE(a.user_name, '') ILIKE $1
+			ORDER BY ranked.rank ASC, a.last_seen_at DESC
 			LIMIT 5
 		`, pattern, prefixPat, exactPat)
 		if err != nil {
@@ -192,7 +208,10 @@ func (s *Store) Search(ctx context.Context, query string) (*SearchResults, error
 		defer rows.Close()
 		for rows.Next() {
 			var a SearchResultAgent
-			if err := rows.Scan(&a.AgentID, &a.AgentName, &a.AgentType, &a.LastSeen); err != nil {
+			if err := rows.Scan(
+				&a.AgentID, &a.AgentName, &a.AgentType,
+				&a.ClientType, &a.State, &a.LastSeen,
+			); err != nil {
 				return fmt.Errorf("scan agent: %w", err)
 			}
 			results.Agents = append(results.Agents, a)

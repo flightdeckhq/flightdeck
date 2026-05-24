@@ -2133,7 +2133,11 @@ Matched columns per entity:
 - **Agents** — `agent_name`, `hostname`, `user_name`. Sensor-keyed
   agents already embed `user@hostname` in `agent_name`, but seeded /
   test / cloud agents often don't, so both columns are searched
-  independently.
+  independently. Each agent result also carries `client_type` and a
+  LATERAL-derived `state` (via the shared `agentStateRollupSQL`),
+  so the palette's AgentRow renders the same identity primitives
+  as `/agents` (ClaudeCodeLogo, AgentTypeBadge, state chip) and
+  the two surfaces agree on every agent's rolled-up state.
 - **Sessions** — `session_id`, `flavor`, `host`, `model`, plus
   `context->>'hostname'`, `context->>'os'`, `context->>'git_branch'`,
   `context->>'python_version'`, and `(context->'frameworks')::text`.

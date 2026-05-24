@@ -36,6 +36,8 @@ function agent(
     agent_id: agentId,
     agent_name: agentName,
     agent_type: "coding",
+    client_type: "claude_code",
+    state: "active",
     last_seen: "2026-04-17T09:00:00Z",
   };
 }

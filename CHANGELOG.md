@@ -25,13 +25,11 @@ Fleet swimlane reshape, and the event-grain Events page (D157).
   for unrecognised values. Matches the orchestration icon the
   session drawer surfaces in its metadata bar.
 - **`/agents` table sparkline gains a hover tooltip** showing
-  the formatted value (matches the column's units —
-  `formatTokens` / `formatLatencyMs` / integer for errors /
-  `$x.xx` for cost) plus the bucket's date (`May 24`). The
-  sparkline tile is **read-only** — clicking it never opens
-  the agent drawer; only clicks on the rest of the row do.
-  The tooltip renders via `createPortal` to `document.body`
-  so it escapes the table cell's overflow boundary.
+  the formatted value in the column's native unit (tokens,
+  latency, integer error count, or USD cost) plus the bucket's
+  calendar date. The sparkline tile is **read-only** —
+  clicking it never opens the agent drawer; only clicks on
+  the rest of the row do.
 - **`/events` page facet sidebar surfaces the 9 runtime-context
   dimensions.** OS, ARCH, HOST, USER, GIT BRANCH, GIT REPO,
   ORCHESTRATION, PYTHON, PROCESS join the sidebar with category

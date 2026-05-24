@@ -131,6 +131,37 @@ describe("AgentSparkline — hover tooltip + read-only click", () => {
     ).toContain("1.2s");
   });
 
+  it("formats cost_usd values via formatCost ($N.NN branch)", () => {
+    const series: AgentSummarySeriesPoint[] = [
+      point({ cost_usd: 4.2, ts: "2026-05-14T00:00:00Z" }),
+      point({ cost_usd: 1.5, ts: "2026-05-15T00:00:00Z" }),
+    ];
+    render(<AgentSparkline series={series} axis="cost_usd" />);
+    const tile = stubTileRect();
+    fireEvent.mouseMove(tile, { clientX: 2, clientY: 12 });
+    // idx=0 → 4.2 → `formatCost` returns ``$4.20`` for values
+    // between 1 and 100. Asserts the shared formatter is being
+    // used (no inline duplicate).
+    expect(
+      screen.getByTestId("agent-sparkline-tooltip").textContent,
+    ).toContain("$4.20");
+  });
+
+  it("formats sessions as a bare integer (default integer branch)", () => {
+    const series: AgentSummarySeriesPoint[] = [
+      point({ sessions: 12, ts: "2026-05-14T00:00:00Z" }),
+      point({ sessions: 5, ts: "2026-05-15T00:00:00Z" }),
+    ];
+    render(<AgentSparkline series={series} axis="sessions" />);
+    const tile = stubTileRect();
+    fireEvent.mouseMove(tile, { clientX: 2, clientY: 12 });
+    const text = screen.getByTestId("agent-sparkline-tooltip").textContent ?? "";
+    // idx=0 → 12 sessions. Bare integer; no $, no k.
+    expect(text).toMatch(/\b12\b/);
+    expect(text).not.toContain("$");
+    expect(text).not.toContain("k");
+  });
+
   it("formats errors as a bare integer", () => {
     const series: AgentSummarySeriesPoint[] = [
       point({ errors: 3, ts: "2026-05-14T00:00:00Z" }),

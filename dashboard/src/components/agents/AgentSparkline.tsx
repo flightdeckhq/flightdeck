@@ -2,7 +2,7 @@ import { memo, useCallback, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Line, LineChart, ResponsiveContainer } from "recharts";
 import type { AgentSummarySeriesPoint } from "@/lib/types";
-import { formatLatencyMs, formatTokens } from "@/lib/agents-format";
+import { formatCost, formatLatencyMs, formatTokens } from "@/lib/agents-format";
 
 /**
  * One per-row sparkline tile rendered inside the `/agents` table.
@@ -33,6 +33,12 @@ import { formatLatencyMs, formatTokens } from "@/lib/agents-format";
 const PIXEL_HOVER_TOLERANCE = 16;
 const TOOLTIP_OFFSET_PX = 12;
 const TOOLTIP_Z_INDEX = 9999;
+// Single source of truth for the recharts ``LineChart`` margin
+// on this tile. The hover lookup math below subtracts this from
+// the tile's rect to project the visible plot band; the
+// ``LineChart`` margin prop is built from the same constant so
+// the two cannot silently drift.
+const CHART_MARGIN_PX = 2;
 
 interface AgentSparklineProps {
   series: AgentSummarySeriesPoint[];
@@ -56,10 +62,9 @@ function formatAxisValue(
     case "latency_p95_ms":
       return formatLatencyMs(value);
     case "cost_usd":
-      if (value === 0) return "—";
-      if (value >= 100) return `$${value.toFixed(0)}`;
-      if (value >= 1) return `$${value.toFixed(2)}`;
-      return `$${value.toFixed(3)}`;
+      // Defer to the shared formatter so the sparkline tooltip
+      // and the row's Cost column never drift on rounding.
+      return formatCost(value);
     case "errors":
     case "sessions":
     default:
@@ -142,12 +147,13 @@ function AgentSparklineImpl({
   const onMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
     const rect = containerRef.current?.getBoundingClientRect();
     if (!rect || data.length === 0) return;
-    // Recharts inserts a 2-px margin on every side of the
-    // ``LineChart`` (matches the ``margin`` prop below). The plot
-    // area sits inside that band; the leftmost data point lands
-    // at ``margin.left`` and the rightmost at ``width - margin.right``.
-    const innerLeft = 2;
-    const innerWidth = rect.width - 4;
+    // Recharts inserts ``CHART_MARGIN_PX`` on every side of the
+    // ``LineChart`` (the same constant feeds the ``margin`` prop
+    // below). The plot area sits inside that band; the leftmost
+    // data point lands at ``margin.left`` and the rightmost at
+    // ``width - margin.right``.
+    const innerLeft = CHART_MARGIN_PX;
+    const innerWidth = rect.width - CHART_MARGIN_PX * 2;
     const relativeX = e.clientX - rect.left - innerLeft;
     const step = innerWidth / Math.max(1, data.length - 1);
     const idx = Math.max(
@@ -179,7 +185,15 @@ function AgentSparklineImpl({
         onMouseLeave={onMouseLeave}
       >
         <ResponsiveContainer width="100%" height="100%">
-          <LineChart data={data} margin={{ top: 2, right: 2, bottom: 2, left: 2 }}>
+          <LineChart
+            data={data}
+            margin={{
+              top: CHART_MARGIN_PX,
+              right: CHART_MARGIN_PX,
+              bottom: CHART_MARGIN_PX,
+              left: CHART_MARGIN_PX,
+            }}
+          >
             <Line
               type="monotone"
               dataKey="v"

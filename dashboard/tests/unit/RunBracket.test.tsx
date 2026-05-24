@@ -185,6 +185,30 @@ describe("RunBracket", () => {
 		expect(tooltip.textContent).toContain("running");
 	});
 
+	it("tooltip renders via createPortal — parentElement is document.body", () => {
+		// The tooltip must escape both the swimlane timeline panel's
+		// ``overflow: hidden`` clip AND the per-agent swimlane
+		// modal's transform stacking context. Mounting through a
+		// portal anchored to document.body is what guarantees that;
+		// a future regression that reverts to inline render would
+		// re-introduce the clipping the user reported.
+		render(
+			<RunBracket
+				session={makeSession()}
+				scale={makeScale()}
+				timelineWidth={900}
+				anchor="bottom"
+				onClick={vi.fn()}
+			/>,
+		);
+		const startTick = screen.getByTestId("swimlane-run-bracket-start-abcd1234");
+		fireEvent.mouseEnter(startTick);
+		const tooltip = screen.getByTestId(
+			"swimlane-run-bracket-tooltip-abcd1234",
+		);
+		expect(tooltip.parentElement).toBe(document.body);
+	});
+
 	it("click handler fires with the run's session_id", () => {
 		const onClick = vi.fn();
 		render(

@@ -170,25 +170,19 @@ describe("AgentTableRow", () => {
 
   it("sparkline clicks are read-only — they do NOT open the drawer", () => {
     const onOpenDrawer = vi.fn();
-    // Seed enough activity so the sparkline tile renders (not the
-    // sparse-data dash). All three sparkline tiles surface — pick
-    // the first.
+    // The in-test summary cache is empty, so all three sparkline
+    // tiles render the sparse-data dash (one ``agent-sparkline-
+    // empty`` per column). The dash sits inside the same ``<td>``
+    // chain as the chart variant; both must swallow clicks so the
+    // ~80 px tile band is uniformly non-clickable.
     const agent = mkAgent({
       agent_id: "a-spark",
       recent_sessions: [],
     });
     renderRow(agent, { onOpenDrawer });
-    const tiles = screen.queryAllByTestId("agent-sparkline");
-    // Even if the in-test summary cache holds no data and the
-    // sparkline collapses to the dash, the row click vs sparkline
-    // click semantics still apply — the dash sits inside the same
-    // ``<td>`` chain. Click whatever tile is present (sparkline or
-    // dash); the drawer must not open.
-    const sparklineOrDash =
-      tiles[0] ?? screen.queryAllByTestId("agent-sparkline-empty")[0];
-    if (sparklineOrDash) {
-      fireEvent.click(sparklineOrDash);
-    }
+    const dashes = screen.getAllByTestId("agent-sparkline-empty");
+    expect(dashes.length).toBeGreaterThan(0);
+    fireEvent.click(dashes[0]!);
     expect(onOpenDrawer).not.toHaveBeenCalled();
     // The row click STILL opens the drawer — sparkline read-only
     // is a scoped exception, not a row-wide opt-out.

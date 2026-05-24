@@ -89,6 +89,18 @@ describe("FacetIcon — icon resolution per dimension", () => {
     );
     expect(container.firstChild).toBeNull();
   });
+
+  it("renders the Container fallback for an unknown orchestration value", () => {
+    // Known platforms (kubernetes / docker / docker-compose /
+    // aws-ecs / cloud-run) delegate to OrchestrationIcon. Any
+    // value outside that set must still render a glyph — the
+    // generic Container lucide icon — so the chip never reads
+    // as bare text.
+    const { container } = render(
+      <FacetIcon groupKey="orchestration" value="nomad" />,
+    );
+    expect(container.firstChild).not.toBeNull();
+  });
 });
 
 describe("FacetIcon — testId wrapper contract", () => {

@@ -56,9 +56,16 @@ test.describe("T105 — /agents sparkline tooltip + read-only click", () => {
       .toBeGreaterThan(0);
     await sparkline.scrollIntoViewIfNeeded();
 
-    // Sparkline click → no drawer.
+    // Sparkline click → no drawer. Capture the URL before the
+    // click and poll-assert it stays put for a short window;
+    // beats a fixed ``waitForTimeout`` because it surfaces an
+    // actual regression (drawer opens asynchronously) instead
+    // of papering over a race.
+    const urlBefore = page.url();
     await sparkline.click({ force: true });
-    await page.waitForTimeout(300);
+    await expect
+      .poll(() => page.url(), { timeout: 2_000 })
+      .toBe(urlBefore);
     expect(page.url()).not.toContain("agent_drawer=");
 
     // Row click on a non-sparkline area → drawer opens (URL

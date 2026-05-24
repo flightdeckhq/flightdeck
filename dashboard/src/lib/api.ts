@@ -115,6 +115,32 @@ export function fetchFleet(page = 1, perPage = 50, agentType?: string): Promise<
   return fetchJson<FleetResponse>(url);
 }
 
+/** Minimal projection of /v1/agents needed for the search palette's
+ *  recent-agents empty state — agent_id for routing, agent_name for
+ *  display, last_seen_at for sort verification. The endpoint returns
+ *  many more fields; we declare only what the UI consumes. */
+export interface RecentAgent {
+  agent_id: string;
+  agent_name: string;
+  agent_type: string;
+  last_seen_at: string;
+}
+
+interface RecentAgentsResponse {
+  agents: RecentAgent[];
+}
+
+/** Fetches the 5 most-recently-seen agents — drives the search
+ *  palette's empty state (replaces the "Type at least 2 characters"
+ *  hint with a jump-to list). Reuses the existing /v1/agents
+ *  listing endpoint with sort+limit; no new endpoint. */
+export function fetchRecentAgents(signal?: AbortSignal): Promise<RecentAgentsResponse> {
+  return fetchJson<RecentAgentsResponse>(
+    "/v1/agents?sort=last_seen_at&order=desc&limit=5",
+    { signal },
+  );
+}
+
 /**
  * Fetch a single agent's rolling-window activity summary via
  * ``GET /v1/agents/:id/summary?period=&bucket=``. Drives the

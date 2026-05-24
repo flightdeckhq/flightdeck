@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useEffect, useCallback } from "react";
 import {
   BrowserRouter,
   Routes,
@@ -11,6 +11,7 @@ import { Search, Settings as SettingsIcon, Sun, Moon } from "lucide-react";
 import { Fleet } from "@/pages/Fleet";
 import { Agents } from "@/pages/Agents";
 import { AgentDrawer } from "@/components/agents/AgentDrawer";
+import { EventDetailDrawer } from "@/components/fleet/EventDetailDrawer";
 import { Policies } from "@/pages/Policies";
 import { Directives } from "@/pages/Directives";
 import { NotFound } from "@/pages/NotFound";
@@ -18,7 +19,9 @@ import { Analytics } from "@/pages/Analytics";
 import { Investigate } from "@/pages/Investigate";
 import { Settings } from "@/pages/Settings";
 import { CommandPalette } from "@/components/search/CommandPalette";
+import { fetchBulkEvents } from "@/lib/api";
 import type {
+  AgentEvent,
   SearchResultAgent,
   SearchResultEvent,
   SearchResultSession,
@@ -119,46 +122,52 @@ function Nav({ onSearchClick }: { onSearchClick: () => void }) {
 }
 
 /**
- * Routing helper for the global search modal. An agent click routes
- * to the Events page scoped to that agent (``?agent_id=``); a
- * session or event click routes to ``/events?run=<session_id>``,
- * which the Events page picks up to open the run drawer. The
- * legacy ``?session=`` param is still redirected to ``?run=`` by
- * the Events page, so older links keep resolving.
+ * Routing helper for the global search modal. Only the session
+ * branch returns an href that the palette navigates to — agent
+ * and event hits open overlay drawers via URL params on the
+ * current route (see CommandPaletteHost) so the operator stays
+ * where they were instead of being yanked to /events.
  */
+export function buildSearchResultHref(
+  type: "session",
+  item: SearchResultSession,
+): string;
+export function buildSearchResultHref(
+  type: "agent" | "session" | "event",
+  item: SearchResultAgent | SearchResultSession | SearchResultEvent,
+): string;
 export function buildSearchResultHref(
   type: "agent" | "session" | "event",
   item: SearchResultAgent | SearchResultSession | SearchResultEvent,
 ): string {
-  if (type === "agent") {
-    // F2: route to agent_id, not flavor=agent_name. The previous
-    // ``flavor=`` form silently produced an empty session list for
-    // sensor-keyed agents whose agent_name is ``user@hostname`` and
-    // never matches any session.flavor. agent_id is now carried on
-    // SearchResultAgent (D115) and the Investigate parseUrlState
-    // already handles ``?agent_id=<uuid>``.
-    return `/events?agent_id=${encodeURIComponent(
-      (item as SearchResultAgent).agent_id,
-    )}`;
-  }
   if (type === "session") {
     return `/events?run=${encodeURIComponent(
       (item as SearchResultSession).session_id,
     )}`;
   }
-  // event -- route to the parent run's drawer.
-  return `/events?run=${encodeURIComponent(
-    (item as SearchResultEvent).session_id,
-  )}`;
+  if (type === "agent") {
+    // The palette handler now opens the agent drawer overlay via
+    // setSearchParams (the new D supersedes F2). This branch is
+    // kept for deep-link / bookmark callers that need an href
+    // string — same agent_drawer param the in-app overlay uses.
+    return `?agent_drawer=${encodeURIComponent(
+      (item as SearchResultAgent).agent_id,
+    )}`;
+  }
+  // event — overlay via ?event= + ?event_session=, NOT ?run= (that
+  // opens the run drawer; the two would stack).
+  const ev = item as SearchResultEvent;
+  return `?event=${encodeURIComponent(ev.event_id)}&event_session=${encodeURIComponent(ev.session_id)}`;
 }
 
-// Strict RFC-4122 gate for the ``?agent_drawer=`` param. Every
-// agent_id is a uuid5 (the sensor's derive_agent_id), so the
-// canonical 8-4-4-4-12 shape rejects nothing legitimate while a
-// malformed bookmark or crafted URL silently no-ops (the drawer
-// stays closed) instead of opening on garbage.
+// Strict RFC-4122 gate for the ``?agent_drawer=`` and ``?event=`` /
+// ``?event_session=`` params. Every id the dashboard uses is a v4 or
+// v5 UUID; the canonical 8-4-4-4-12 shape rejects nothing legitimate
+// while a malformed bookmark or crafted URL silently no-ops (the
+// drawer stays closed) instead of opening on garbage.
 const AGENT_DRAWER_ID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const EVENT_DRAWER_ID_RE = AGENT_DRAWER_ID_RE;
 
 /**
  * App-level host for the agent drawer. The drawer's open state is
@@ -206,13 +215,81 @@ function AgentDrawerHost() {
 }
 
 /**
+ * App-level host for the event detail drawer. Driven by the
+ * ``?event=<event_id>&event_session=<session_id>`` URL params; the
+ * search palette's event hits set them so the drawer opens as an
+ * overlay on the current route instead of yanking the operator to
+ * /events. Uses ``?event=`` (a fresh namespace) rather than
+ * ``?run=`` so an event-hit click does not also trigger the run
+ * drawer Investigate already mounts on ``?run=``.
+ *
+ * Hydration: a single ``fetchBulkEvents`` call scoped to the
+ * session_id (no new endpoint) provides the AgentEvent the
+ * drawer needs; the matching event is picked by id. While the
+ * fetch is in flight EventDetailDrawer renders null (its prop
+ * gate), so there is no half-rendered shell to manage.
+ */
+function EventDetailDrawerHost() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const rawEvent = searchParams.get("event");
+  const rawSession = searchParams.get("event_session");
+  const active =
+    rawEvent !== null &&
+    rawSession !== null &&
+    EVENT_DRAWER_ID_RE.test(rawEvent) &&
+    EVENT_DRAWER_ID_RE.test(rawSession);
+  const [event, setEvent] = useState<AgentEvent | null>(null);
+
+  useEffect(() => {
+    if (!active || !rawSession || !rawEvent) {
+      setEvent(null);
+      return;
+    }
+    const controller = new AbortController();
+    fetchBulkEvents(
+      { from: "1970-01-01T00:00:00Z", session_id: rawSession, limit: 500 },
+      controller.signal,
+    )
+      .then((resp) => {
+        if (controller.signal.aborted) return;
+        setEvent(resp.events.find((e) => e.id === rawEvent) ?? null);
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setEvent(null);
+      });
+    return () => controller.abort();
+  }, [active, rawSession, rawEvent]);
+
+  const close = useCallback(() => {
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        next.delete("event");
+        next.delete("event_session");
+        return next;
+      },
+      { replace: true },
+    );
+  }, [setSearchParams]);
+
+  if (!active) return null;
+  return <EventDetailDrawer event={event} onClose={close} />;
+}
+
+/**
  * Host component for the Cmd+K search modal + its click routing.
  * Lives inside BrowserRouter so ``useNavigate`` is available; the
  * modal itself renders here so App.tsx stays a single-level wrapper.
+ *
+ * Routing pivot (supersedes F2): agent and event hits open
+ * overlay drawers via setSearchParams on the CURRENT route — the
+ * operator stays where they were. Only session hits navigate, to
+ * /events?run=<id>, because the run drawer lives on that page.
  */
 function CommandPaletteHost() {
   const [searchOpen, setSearchOpen] = useState(false);
   const navigate = useNavigate();
+  const [, setSearchParams] = useSearchParams();
 
   const handleSearchClick = useCallback(() => {
     setSearchOpen(true);
@@ -223,9 +300,27 @@ function CommandPaletteHost() {
       type: "agent" | "session" | "event",
       item: SearchResultAgent | SearchResultSession | SearchResultEvent,
     ) => {
-      navigate(buildSearchResultHref(type, item));
+      if (type === "agent") {
+        setSearchParams((prev) => {
+          const next = new URLSearchParams(prev);
+          next.set("agent_drawer", (item as SearchResultAgent).agent_id);
+          return next;
+        });
+        return;
+      }
+      if (type === "event") {
+        const ev = item as SearchResultEvent;
+        setSearchParams((prev) => {
+          const next = new URLSearchParams(prev);
+          next.set("event", ev.event_id);
+          next.set("event_session", ev.session_id);
+          return next;
+        });
+        return;
+      }
+      navigate(buildSearchResultHref("session", item as SearchResultSession));
     },
-    [navigate],
+    [navigate, setSearchParams],
   );
 
   return (
@@ -249,6 +344,7 @@ function CommandPaletteHost() {
         onSelectResult={handleSelectResult}
       />
       <AgentDrawerHost />
+      <EventDetailDrawerHost />
     </>
   );
 }

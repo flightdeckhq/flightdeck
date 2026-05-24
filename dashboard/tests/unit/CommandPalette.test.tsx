@@ -3,6 +3,33 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { CommandPalette } from "@/components/search/CommandPalette";
 import type { SearchResults } from "@/lib/types";
 
+// Mock /v1/agents so the RecentAgents empty state has a
+// deterministic fixture and doesn't try to hit the network.
+vi.mock("@/lib/api", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/api")>("@/lib/api");
+  return {
+    ...actual,
+    fetchRecentAgents: vi.fn(() =>
+      Promise.resolve({
+        agents: [
+          {
+            agent_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            agent_name: "recent-agent-1",
+            agent_type: "production",
+            last_seen_at: "2026-04-17T09:00:00Z",
+          },
+          {
+            agent_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            agent_name: "recent-agent-2",
+            agent_type: "production",
+            last_seen_at: "2026-04-17T08:00:00Z",
+          },
+        ],
+      }),
+    ),
+  };
+});
+
 const emptyResults: SearchResults = {
   agents: [],
   sessions: [],
@@ -134,9 +161,14 @@ describe("CommandPalette", () => {
     fireEvent.change(input, { target: { value: "research" } });
     expect(screen.getByText("Agents")).toBeInTheDocument();
     expect(screen.getByText("Runs")).toBeInTheDocument();
-    // "research-agent" appears in both agent and session rows
-    expect(screen.getAllByText("research-agent")).toHaveLength(2);
-    expect(screen.getByText("sess-123")).toBeInTheDocument(); // truncated session id
+    // Highlight splits matched text across multiple DOM nodes; both
+    // the agent and session rows contain a <mark> with "research".
+    const marks = screen.getAllByTestId("highlight-match");
+    expect(marks.filter((m) => m.textContent === "research").length).toBeGreaterThanOrEqual(2);
+    // Session id should still be rendered (truncated to the first 8 chars).
+    expect(
+      screen.getAllByText((_, el) => el?.textContent?.includes("sess-123") ?? false).length,
+    ).toBeGreaterThan(0);
   });
 
   it("does not render empty groups", () => {
@@ -163,8 +195,10 @@ describe("CommandPalette", () => {
     );
     const input = screen.getByRole("textbox");
     fireEvent.change(input, { target: { value: "research" } });
-    // Click the agent result (first occurrence -- the agent row's flavor)
-    fireEvent.click(screen.getAllByText("research-agent")[0]);
+    // Click the first agent result. With <Highlight> splitting the
+    // text into multiple nodes, target the option button (the agent
+    // row is the very first option, since agents render first).
+    fireEvent.click(screen.getAllByRole("option")[0]);
     await waitFor(() => {
       expect(onSelectResult).toHaveBeenCalledWith("agent", populatedResults.agents[0]);
       expect(onOpenChange).toHaveBeenCalledWith(false);
@@ -234,5 +268,71 @@ describe("CommandPalette", () => {
     } finally {
       HTMLElement.prototype.scrollIntoView = original;
     }
+  });
+
+  it("renders a per-group count badge next to each group label", () => {
+    mockResults = navResults; // 2 agents, 0 sessions, 0 events
+    mockLoading = false;
+    render(<CommandPalette open={true} onOpenChange={onOpenChange} />);
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "a" } });
+    const badge = screen.getByTestId("search-group-count-agents");
+    expect(badge.textContent).toBe("2");
+    // No Runs / Events groups → no count badge for them.
+    expect(screen.queryByTestId("search-group-count-sessions")).toBeNull();
+    expect(screen.queryByTestId("search-group-count-events")).toBeNull();
+  });
+
+  it("bolds the matched substring inside each row via <Highlight>", () => {
+    mockResults = navResults; // names: "alpha", "beta"
+    mockLoading = false;
+    render(<CommandPalette open={true} onOpenChange={onOpenChange} />);
+    // Query "lph" matches "alpha". The Highlight helper wraps the
+    // matched substring in a <mark data-testid="highlight-match">.
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "lph" } });
+    const marks = screen.getAllByTestId("highlight-match");
+    expect(marks.length).toBeGreaterThan(0);
+    expect(marks[0].textContent?.toLowerCase()).toBe("lph");
+  });
+
+  it("EventRow leads with the canonical EventTypePill", async () => {
+    mockResults = {
+      agents: [],
+      sessions: [],
+      events: [
+        {
+          event_id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+          session_id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+          event_type: "post_call",
+          tool_name: "",
+          model: "claude-3-5-haiku",
+          occurred_at: "2026-04-17T09:00:00Z",
+        },
+      ],
+    };
+    mockLoading = false;
+    render(<CommandPalette open={true} onOpenChange={onOpenChange} />);
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "po" } });
+    // The canonical EventTypePill renders with a stable testid that
+    // /events, the run drawer, and the agent drawer all share — the
+    // palette using the same component is the surface-parity lock.
+    const pill = await screen.findByTestId("event-type-pill");
+    expect(pill.getAttribute("data-event-type")).toBe("post_call");
+    expect(pill.textContent).toBe("LLM CALL");
+  });
+
+  it("renders RecentAgents in the empty state instead of the type-2-chars hint", async () => {
+    mockResults = null;
+    mockLoading = false;
+    render(<CommandPalette open={true} onOpenChange={onOpenChange} />);
+    // No query typed → RecentAgents block appears with fixture rows.
+    await waitFor(() => {
+      expect(screen.getByTestId("recent-agents")).toBeInTheDocument();
+    });
+    expect(screen.getByText("recent-agent-1")).toBeInTheDocument();
+    expect(screen.getByText("recent-agent-2")).toBeInTheDocument();
+    // The old hint copy must no longer appear.
+    expect(
+      screen.queryByText(/Type at least 2 characters/),
+    ).not.toBeInTheDocument();
   });
 });

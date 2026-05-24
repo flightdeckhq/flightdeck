@@ -22,6 +22,12 @@ vi.mock("@/hooks/useSearch", () => ({
   }),
 }));
 
+// Mock RecentAgents so the empty-state path doesn't try to fetch
+// real /v1/agents data in these click-routing tests.
+vi.mock("@/components/search/RecentAgents", () => ({
+  RecentAgents: () => <div data-testid="recent-agents-stub" />,
+}));
+
 function agent(
   agentName: string,
   agentId = "11111111-2222-3333-4444-555555555555",
@@ -61,50 +67,47 @@ function event(eventId: string, sessionId: string): SearchResultEvent {
 }
 
 // ---------------------------------------------------------------
-// buildSearchResultHref -- the pure routing function
+// buildSearchResultHref — the pure routing helper
+//
+// New D supersedes F2: agent and event hits open overlay drawers
+// via URL params on the current route, so the navigate path is
+// only the session branch. The helper still returns hrefs for the
+// other two types so deep-link / bookmark callers have one
+// canonical place to read the param shape.
 // ---------------------------------------------------------------
 
 describe("buildSearchResultHref", () => {
-  it("agent click routes to ?agent_id=<uuid> (F2)", () => {
-    // F2: agent search clicks now route on agent_id, not
-    // flavor=agent_name. Sensor-keyed agents whose agent_name is
-    // ``user@hostname`` never matched any session.flavor; agent_id
-    // resolves correctly via the D115 filter.
-    const href = buildSearchResultHref(
-      "agent",
-      agent("claude-code", "deadbeef-1234-5678-9abc-def012345678"),
-    );
-    expect(href).toBe("/events?agent_id=deadbeef-1234-5678-9abc-def012345678");
-    const sp = new URL("http://x" + href).searchParams;
-    expect(parseEventsUrlState(sp).agentId).toBe(
-      "deadbeef-1234-5678-9abc-def012345678",
-    );
-  });
-
-  it("session click sets ?run=<id>", () => {
+  it("session click navigates to /events?run=<id>", () => {
     const href = buildSearchResultHref("session", session("abc-123", "claude-code"));
     expect(href).toBe("/events?run=abc-123");
     const sp = new URL("http://x" + href).searchParams;
     expect(parseEventsUrlState(sp).run).toBe("abc-123");
   });
 
-  it("event click routes to the parent run's drawer", () => {
-    // Event results open the parent run's drawer via ?run=.
-    const href = buildSearchResultHref("event", event("e1", "s1"));
-    expect(href).toBe("/events?run=s1");
-  });
-
-  it("URL-encodes special characters in the agent_id (F2)", () => {
+  it("agent helper returns a relative ?agent_drawer=<uuid> for deep links", () => {
     const href = buildSearchResultHref(
       "agent",
-      agent("any-name", "id with/slash"),
+      agent("claude-code", "deadbeef-1234-5678-9abc-def012345678"),
     );
-    expect(href).toBe("/events?agent_id=id%20with%2Fslash");
+    expect(href).toBe("?agent_drawer=deadbeef-1234-5678-9abc-def012345678");
+  });
+
+  it("event helper returns ?event=&event_session= (distinct from ?run=)", () => {
+    const href = buildSearchResultHref(
+      "event",
+      event("e1-aaaa-bbbb-cccc-dddd", "s1-aaaa-bbbb-cccc-dddd"),
+    );
+    expect(href).toBe(
+      "?event=e1-aaaa-bbbb-cccc-dddd&event_session=s1-aaaa-bbbb-cccc-dddd",
+    );
+    // Critical: the event helper must NOT emit ?run= — that param
+    // opens the run drawer and would stack two drawers.
+    expect(href).not.toContain("run=");
   });
 });
 
 // ---------------------------------------------------------------
-// CommandPalette integration -- click + keyboard Enter
+// CommandPalette integration — click + keyboard Enter
 // ---------------------------------------------------------------
 
 describe("CommandPalette result click routing", () => {

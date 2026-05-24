@@ -1,5 +1,9 @@
 import { useEffect, useRef } from "react";
 import { truncateSessionId } from "@/lib/events";
+import { getProvider } from "@/lib/models";
+import { Highlight } from "@/components/search/Highlight";
+import { EventTypePill } from "@/components/facets/EventTypePill";
+import { ProviderLogo } from "@/components/ui/provider-logo";
 import type {
   SearchResults as SearchResultsType,
   SearchResultAgent,
@@ -13,6 +17,9 @@ interface SearchResultsProps {
   results: SearchResultsType;
   onSelect: (type: "agent" | "session" | "event", item: ResultItem) => void;
   focusedIndex: number;
+  /** The current query string. Passed down so each row can bold
+   *  the matched substring in its display text. */
+  query: string;
 }
 
 function formatTime(iso: string): string {
@@ -30,6 +37,7 @@ export function SearchResultsList({
   results,
   onSelect,
   focusedIndex,
+  query,
 }: SearchResultsProps) {
   let runningIndex = 0;
   const focusedRef = useRef<HTMLButtonElement | null>(null);
@@ -86,8 +94,14 @@ export function SearchResultsList({
 
         return (
           <div key={group.key}>
-            <div className="px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-text-muted">
-              {group.label}
+            <div className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-text-muted">
+              <span>{group.label}</span>
+              <span
+                className="rounded bg-surface-hover px-1.5 text-[10px] font-normal text-text-muted"
+                data-testid={`search-group-count-${group.key}`}
+              >
+                {group.items.length}
+              </span>
             </div>
             {group.items.map((item, i) => {
               const globalIndex = groupStartIndex + i;
@@ -110,9 +124,15 @@ export function SearchResultsList({
                   className={`flex w-full items-center gap-3 px-3 py-2 text-left text-xs transition-colors ${focusClass}`}
                   onClick={() => onSelect(group.type, item)}
                 >
-                  {group.type === "agent" && <AgentRow item={item as SearchResultAgent} />}
-                  {group.type === "session" && <SessionRow item={item as SearchResultSession} />}
-                  {group.type === "event" && <EventRow item={item as SearchResultEvent} />}
+                  {group.type === "agent" && (
+                    <AgentRow item={item as SearchResultAgent} query={query} />
+                  )}
+                  {group.type === "session" && (
+                    <SessionRow item={item as SearchResultSession} query={query} />
+                  )}
+                  {group.type === "event" && (
+                    <EventRow item={item as SearchResultEvent} query={query} />
+                  )}
                 </button>
               );
             })}
@@ -123,23 +143,31 @@ export function SearchResultsList({
   );
 }
 
-function AgentRow({ item }: { item: SearchResultAgent }) {
+function AgentRow({ item, query }: { item: SearchResultAgent; query: string }) {
   return (
     <>
-      <span className="font-medium text-text">{item.agent_name}</span>
+      <Highlight text={item.agent_name} query={query} className="font-medium text-text" />
       <span className="text-text-muted">{item.agent_type}</span>
       <span className="ml-auto text-text-muted">{formatTime(item.last_seen)}</span>
     </>
   );
 }
 
-function SessionRow({ item }: { item: SearchResultSession }) {
+function SessionRow({
+  item,
+  query,
+}: {
+  item: SearchResultSession;
+  query: string;
+}) {
   return (
     <>
-      <span className="font-mono font-medium text-text">
-        {truncateSessionId(item.session_id)}
-      </span>
-      <span className="text-text-muted">{item.flavor}</span>
+      <Highlight
+        text={truncateSessionId(item.session_id)}
+        query={query}
+        className="font-mono font-medium text-text"
+      />
+      <Highlight text={item.flavor} query={query} className="text-text-muted" />
       <span
         className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${
           item.state === "active"
@@ -154,15 +182,34 @@ function SessionRow({ item }: { item: SearchResultSession }) {
   );
 }
 
-function EventRow({ item }: { item: SearchResultEvent }) {
+function EventRow({ item, query }: { item: SearchResultEvent; query: string }) {
+  // Canonical EventTypePill leads the row — the same component
+  // /events, the run drawer, and the agent drawer render — so a
+  // ``post_call`` (or any other type) reads byte-identically
+  // across all four surfaces. After the pill: raw event_type in
+  // mono muted so a literal query like ``post_call`` shows its
+  // matched substring; then ProviderLogo + model; then a small
+  // mono-muted event id; then the time on the right.
   return (
     <>
-      <span className="font-mono font-medium text-text">
+      <EventTypePill eventType={item.event_type} />
+      <Highlight
+        text={item.event_type}
+        query={query}
+        className="font-mono text-[11px] text-text-muted"
+      />
+      {item.model && (
+        <span className="flex items-center gap-1 text-text-muted">
+          <ProviderLogo provider={getProvider(item.model)} size={12} title="" />
+          <Highlight text={item.model} query={query} className="text-text-muted" />
+        </span>
+      )}
+      {item.tool_name && (
+        <Highlight text={item.tool_name} query={query} className="text-primary" />
+      )}
+      <span className="font-mono text-[11px] text-text-muted">
         {item.event_id.slice(0, 8)}
       </span>
-      <span className="text-text-muted">{item.event_type}</span>
-      {item.model && <span className="text-text-muted">{item.model}</span>}
-      {item.tool_name && <span className="text-primary">{item.tool_name}</span>}
       <span className="ml-auto text-text-muted">{formatTime(item.occurred_at)}</span>
     </>
   );

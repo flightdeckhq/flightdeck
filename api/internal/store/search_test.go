@@ -414,6 +414,31 @@ func TestSearch_CuratedPolicyTermSurfacesPolicyEvents(t *testing.T) {
 	}
 }
 
+func TestSearch_AgentResultsAreCappedAtFive(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	t.Cleanup(cleanup)
+	ctx := context.Background()
+
+	suffix := randomUUID(t)[:8]
+	marker := "cap-" + suffix
+	// Seed 6 agents whose names all contain the marker. Server cap
+	// is 5; a future change that removes or raises LIMIT trips
+	// this test before any caller depends on the new shape.
+	for i := 0; i < 6; i++ {
+		_ = seedSearchAgent(t, s,
+			marker+"-row-"+randomUUID(t)[:4],
+			"h-"+suffix, "u-"+suffix)
+	}
+
+	results, err := s.Search(ctx, marker)
+	if err != nil {
+		t.Fatalf("Search(%q): %v", marker, err)
+	}
+	if len(results.Agents) != 5 {
+		t.Errorf("agents cap: want exactly 5, got %d", len(results.Agents))
+	}
+}
+
 func TestSearch_EventCrossFieldPrecedence(t *testing.T) {
 	s, cleanup := newTestStore(t)
 	t.Cleanup(cleanup)
@@ -436,9 +461,9 @@ func TestSearch_EventCrossFieldPrecedence(t *testing.T) {
 			ToolName  string
 			Model     string
 		}{
-			{EventType: "tool_call", Model: marker},  // rank 2: model exact
+			{EventType: "tool_call", Model: marker},    // rank 2: model exact
 			{EventType: "tool_call", ToolName: marker}, // rank 1: tool_name exact
-			{EventType: marker},                       // rank 0: event_type exact
+			{EventType: marker},                        // rank 0: event_type exact
 		})
 
 	results, err := s.Search(ctx, marker)

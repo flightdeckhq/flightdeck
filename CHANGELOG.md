@@ -4,11 +4,6 @@ All notable changes to Flightdeck are documented here.
 
 ## Unreleased
 
-Aggregate of in-flight feature subsections below; each was its
-own ``## Unreleased — <title>`` heading before the v0.5.0 cut
-and has been folded into one section without any text changes
-to the entries themselves.
-
 ### Global search overhaul
 
 The Cmd/Ctrl+K command palette now searches events by type

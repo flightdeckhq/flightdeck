@@ -60,6 +60,7 @@ export function RecentAgents({ onSelect }: RecentAgentsProps) {
       {agents.map((agent) => (
         <button
           key={agent.agent_id}
+          type="button"
           className="flex w-full items-center gap-3 px-3 py-2 text-left text-xs text-text-muted transition-colors hover:bg-surface-hover"
           onClick={() => onSelect(agent)}
         >

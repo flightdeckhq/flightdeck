@@ -2125,7 +2125,8 @@ list prices change; it is read-only at runtime.
 `GET /v1/search?q=term` returns up to 5 hits per entity, grouped by
 agent / session / event. Implemented as three parallel ranked
 queries via `errgroup` so the slowest field doesn't gate the
-others. Powers the Cmd/Ctrl+K command palette.
+others. Powers the Cmd/Ctrl+K command palette (result routing
+contract: D162).
 
 Matched columns per entity:
 
@@ -2134,8 +2135,8 @@ Matched columns per entity:
   test / cloud agents often don't, so both columns are searched
   independently.
 - **Sessions** — `session_id`, `flavor`, `host`, `model`, plus
-  `context->>hostname`, `context->>os`, `context->>git_branch`,
-  `context->>python_version`, and `(context->'frameworks')::text`.
+  `context->>'hostname'`, `context->>'os'`, `context->>'git_branch'`,
+  `context->>'python_version'`, and `(context->'frameworks')::text`.
 - **Events** — `event_type`, `tool_name`, `model`, plus a curated
   English-term-to-event_types map (`search.go::curatedEventTypeTerms`):
   `llm` → pre_call / post_call / llm_error; `tool` → tool_call /
@@ -2160,6 +2161,28 @@ same row lands in the most semantic slot:
 
 Recency (`occurred_at DESC` for events, `last_seen_at DESC` for
 agents, `started_at DESC` for sessions) is the per-tier tiebreaker.
+
+**Result routing (D162).** The Cmd/Ctrl+K palette routes each
+result type to a different surface — agent and event hits open
+overlay drawers via URL params on the *current* route, run hits
+navigate to the events page:
+
+- agent → `?agent_drawer=<agent_id>` (mounted by
+  `AgentDrawerHost`, app-level overlay).
+- event → `?event=<event_id>&event_session=<session_id>` (mounted
+  by `EventDetailDrawerHost`, app-level overlay; distinct param
+  pair so the run drawer (`?run=`) cannot mount simultaneously).
+  Hydrated via a single `GET /v1/events` page scoped to
+  `session_id`; sessions with more than `EVENT_DRAWER_FETCH_LIMIT`
+  events surface an explicit "not found" empty state rather than
+  rendering an invisible drawer.
+- run → navigates to `/events?run=<session_id>` (the run drawer
+  lives on that page).
+
+External deep links should prepend a base route that makes sense
+when the operator closes the drawer (e.g.
+`/agents?agent_drawer=<id>` or `/events?event=<eid>&event_session=<sid>`)
+rather than a bare `?...` fragment.
 
 ### Bulk events
 

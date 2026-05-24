@@ -128,15 +128,13 @@ function Nav({ onSearchClick }: { onSearchClick: () => void }) {
  * and event hits open overlay drawers via URL params on the
  * current route (see CommandPaletteHost) so the operator stays
  * where they were instead of being yanked to /events.
+ *
+ * Agent + event branches return relative ``?...`` fragments
+ * usable from any route. External deep links should prepend a
+ * meaningful base route (``/agents?agent_drawer=...`` /
+ * ``/events?event=...&event_session=...``) so the underlying
+ * page makes sense if the operator closes the drawer.
  */
-export function buildSearchResultHref(
-  type: "session",
-  item: SearchResultSession,
-): string;
-export function buildSearchResultHref(
-  type: "agent" | "session" | "event",
-  item: SearchResultAgent | SearchResultSession | SearchResultEvent,
-): string;
 export function buildSearchResultHref(
   type: "agent" | "session" | "event",
   item: SearchResultAgent | SearchResultSession | SearchResultEvent,
@@ -163,12 +161,29 @@ export function buildSearchResultHref(
 
 // Strict RFC-4122 gate for the ``?agent_drawer=`` and ``?event=`` /
 // ``?event_session=`` params. Every id the dashboard uses is a v4 or
-// v5 UUID; the canonical 8-4-4-4-12 shape rejects nothing legitimate
-// while a malformed bookmark or crafted URL silently no-ops (the
-// drawer stays closed) instead of opening on garbage.
+// v5 UUID; the canonical 8-4-4-4-12 shape (case-insensitive via /i)
+// rejects nothing legitimate while a malformed bookmark or crafted
+// URL silently no-ops (the drawer stays closed) instead of opening
+// on garbage.
 const AGENT_DRAWER_ID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// Event + session ids share the same shape — intentionally a shared
+// reference so a future tightening lands once.
 const EVENT_DRAWER_ID_RE = AGENT_DRAWER_ID_RE;
+
+// EventDetailDrawerHost hydration parameters.
+//
+// 2000 is the api server's ``eventsMaxLimit`` cap (see
+// ``api/internal/handlers/events_list.go``). Sessions that exceed
+// 2000 events still hit ``has_more=true``; the host surfaces a
+// "not found in latest 2000" empty state in that case rather than
+// rendering an invisible drawer (architect review).
+//
+// 1970-01-01 is the lowest ISO timestamp the events filter accepts;
+// session-scoped queries don't need a tighter floor because the
+// ``session_id`` filter is what narrows the result set.
+const EVENT_DRAWER_FETCH_LIMIT = 2000;
+const EVENT_DRAWER_FETCH_FROM = "1970-01-01T00:00:00Z";
 
 /**
  * App-level host for the agent drawer. The drawer's open state is
@@ -240,23 +255,38 @@ function EventDetailDrawerHost() {
     EVENT_DRAWER_ID_RE.test(rawEvent) &&
     EVENT_DRAWER_ID_RE.test(rawSession);
   const [event, setEvent] = useState<AgentEvent | null>(null);
+  // ``notFound`` is true when the fetch returned a page (possibly
+  // with has_more) but the target event id was absent. Used to
+  // render an explicit empty state rather than an invisible drawer.
+  const [notFound, setNotFound] = useState(false);
 
   useEffect(() => {
     if (!active || !rawSession || !rawEvent) {
       setEvent(null);
+      setNotFound(false);
       return;
     }
     const controller = new AbortController();
+    setNotFound(false);
     fetchBulkEvents(
-      { from: "1970-01-01T00:00:00Z", session_id: rawSession, limit: 500 },
+      {
+        from: EVENT_DRAWER_FETCH_FROM,
+        session_id: rawSession,
+        limit: EVENT_DRAWER_FETCH_LIMIT,
+      },
       controller.signal,
     )
       .then((resp) => {
         if (controller.signal.aborted) return;
-        setEvent(resp.events.find((e) => e.id === rawEvent) ?? null);
+        const hit = resp.events.find((e) => e.id === rawEvent) ?? null;
+        setEvent(hit);
+        setNotFound(hit === null);
       })
       .catch(() => {
-        if (!controller.signal.aborted) setEvent(null);
+        if (!controller.signal.aborted) {
+          setEvent(null);
+          setNotFound(true);
+        }
       });
     return () => controller.abort();
   }, [active, rawSession, rawEvent]);
@@ -274,6 +304,37 @@ function EventDetailDrawerHost() {
   }, [setSearchParams]);
 
   if (!active) return null;
+  if (!event && notFound) {
+    // Surface the miss explicitly so the operator isn't left
+    // staring at a blank screen. Long sessions ( > 2000 events)
+    // and pruned-history sessions land here.
+    return (
+      <div
+        role="dialog"
+        aria-label="Event not found"
+        className="fixed right-0 top-0 z-[60] flex h-full w-[520px] flex-col p-6"
+        style={{
+          background: "var(--surface)",
+          borderLeft: "1px solid var(--border)",
+          color: "var(--text)",
+        }}
+      >
+        <div className="text-sm font-semibold">Event not found</div>
+        <div className="mt-2 text-xs text-text-muted">
+          This event isn&apos;t in the latest {EVENT_DRAWER_FETCH_LIMIT}{" "}
+          events for its run. Open the run drawer to scroll back
+          through older history.
+        </div>
+        <button
+          type="button"
+          className="mt-4 self-start rounded border border-border px-2 py-1 text-xs text-text-muted hover:text-text"
+          onClick={close}
+        >
+          Close
+        </button>
+      </div>
+    );
+  }
   return <EventDetailDrawer event={event} onClose={close} />;
 }
 
@@ -302,8 +363,14 @@ function CommandPaletteHost() {
       item: SearchResultAgent | SearchResultSession | SearchResultEvent,
     ) => {
       if (type === "agent") {
+        // Clear sibling drawer params so opening the agent drawer
+        // from a search hit doesn't stack on top of an existing
+        // event-detail or run drawer (architect review §critical 1).
         setSearchParams((prev) => {
           const next = new URLSearchParams(prev);
+          next.delete("event");
+          next.delete("event_session");
+          next.delete("run");
           next.set("agent_drawer", (item as SearchResultAgent).agent_id);
           return next;
         });
@@ -313,6 +380,8 @@ function CommandPaletteHost() {
         const ev = item as SearchResultEvent;
         setSearchParams((prev) => {
           const next = new URLSearchParams(prev);
+          next.delete("agent_drawer");
+          next.delete("run");
           next.set("event", ev.event_id);
           next.set("event_session", ev.session_id);
           return next;

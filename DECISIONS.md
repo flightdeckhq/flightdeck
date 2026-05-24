@@ -9079,10 +9079,10 @@ in place; 000025's composite index supersedes it for the
 per-agent latest-session lookup but doesn't replace the
 single-column index that backs broader `agent_id = ?` filters.
 
-## D162 -- Global search routing pivot: agent → drawer overlay, event → event-detail overlay (supersedes F2 routing)
+## D162 -- Global search routing pivot: agent → drawer overlay, event → event-detail overlay
 
 Pre-D162 the Cmd/Ctrl+K palette routed an agent hit to
-``/events?agent_id=<uuid>`` (F2) and an event hit to
+``/events?agent_id=<uuid>`` and an event hit to
 ``/events?run=<session_id>``. Both forms NAVIGATED the operator
 to ``/events`` even when they were mid-task on
 ``/policies`` / ``/directives`` / ``/agents`` / ``/analytics``,
@@ -9104,18 +9104,56 @@ D162 ships drawer-overlay routing for both:
   and renders the canonical ``EventDetailDrawer`` — the same
   component ``/events``, the run drawer, and the agent drawer
   use. Distinct param from ``?run=`` so an event hit cannot
-  trigger the run drawer simultaneously (the two would stack).
+  trigger the run drawer simultaneously.
 - **Run hits** still navigate to ``/events?run=<session_id>``
   because the run drawer's mount point lives on that page;
-  unchanged from F2.
+  unchanged.
+
+**Mutual exclusion is enforced in code**, not just by param
+naming. The ``handleSelectResult`` setters in
+``CommandPaletteHost`` ``URLSearchParams.delete`` every sibling
+drawer param before setting their own — so opening an agent
+overlay from a search hit while a run drawer is already open
+clears the ``?run=`` first. Without this the URL could carry
+both params and both drawers would stack.
+
+**Investigate page (``/events``) collision resolution.**
+``Investigate.tsx`` maintains an internal ``selectedEvent``
+state for row clicks. To prevent its own ``EventDetailDrawer``
+from stacking on top of the app-level overlay, a ``useEffect``
+clears ``selectedEvent`` whenever ``?event=`` appears on the
+URL — the app-level host wins. Row clicks continue to use the
+local state path (no URL change), preserving the prior UX.
+
+**Event-drawer hydration cap.** ``EventDetailDrawerHost`` issues
+one ``GET /v1/events`` page with
+``limit=EVENT_DRAWER_FETCH_LIMIT`` (``2000``, the api server's
+``eventsMaxLimit``) scoped to the session_id. If the target
+event id is absent from the page (a session with more than 2000
+events, or a pruned-history session) the host renders an
+explicit "Event not found" panel with a pointer to the run
+drawer for older history, rather than an invisible blank
+drawer. A dedicated single-event endpoint
+(``GET /v1/events/:id``) is a Roadmap follow-up that would
+remove the cap entirely.
+
+**Canonical external deep-link form.** The
+``buildSearchResultHref`` helper returns relative ``?...``
+fragments for the overlay types. External callers (Slack
+notifications, email digests, ARCHITECTURE-documented bookmark
+patterns) should prepend a base route that makes sense if the
+operator closes the drawer — recommended forms:
+``/agents?agent_drawer=<id>`` and
+``/events?event=<eid>&event_session=<sid>``. A bare
+``?agent_drawer=...`` from outside lands on Fleet by default,
+which works but isn't where the drawer was opened from.
 
 What this does NOT change:
 - ``D115`` identity: agents are still keyed by ``agent_id``;
   ``SearchResultAgent.agent_id`` is still the wire value.
 - The Investigate page's own ``?agent_id=`` filter behaviour.
-  The legacy F2 href shape (``/events?agent_id=``) still
-  resolves correctly for any bookmark or saved link that
-  predates D162.
+  The legacy ``/events?agent_id=`` href shape still resolves
+  correctly for any bookmark or saved link that predates D162.
 
 EventRow visual contract: the search-palette EventRow leads
 with the canonical ``EventTypePill`` (the badge

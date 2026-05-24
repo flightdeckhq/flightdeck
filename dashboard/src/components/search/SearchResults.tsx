@@ -87,7 +87,11 @@ export function SearchResultsList({
   }
 
   return (
-    <div className="max-h-80 overflow-y-auto" role="listbox">
+    <div
+      className="max-h-80 overflow-y-auto"
+      role="listbox"
+      aria-label="Search results"
+    >
       {groups.map((group) => {
         const groupStartIndex = runningIndex;
         runningIndex += group.items.length;
@@ -118,6 +122,7 @@ export function SearchResultsList({
                 <button
                   key={`${group.key}-${i}`}
                   ref={isFocused ? focusedRef : undefined}
+                  type="button"
                   role="option"
                   aria-selected={isFocused}
                   data-testid={isFocused ? "search-result-focused" : undefined}

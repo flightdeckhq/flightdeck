@@ -11,8 +11,8 @@ import (
 
 // SearchResultAgent is a search hit on the agents table.
 //
-// AgentID is the wire value the Investigate ``?agent_id=`` filter
-// and the AgentDrawer ``?agent_drawer=`` param consume. The result
+// AgentID is the wire value the Investigate “?agent_id=“ filter
+// and the AgentDrawer “?agent_drawer=“ param consume. The result
 // type carries it so the dashboard can route a click without a
 // second round-trip to look up the identity.
 type SearchResultAgent struct {
@@ -57,8 +57,8 @@ type SearchResults struct {
 
 // curatedEventTypeTerms maps user-facing English terms to the
 // underlying event_type values they should match. Source of truth
-// for the events ILIKE expansion — a query like ``LLM`` returns
-// every event whose event_type appears in this list under ``llm``,
+// for the events ILIKE expansion — a query like “LLM“ returns
+// every event whose event_type appears in this list under “llm“,
 // even though no event_type literally contains the substring
 // "LLM". Lookup keys are lowercased; values are matched verbatim
 // against the events.event_type column (which the sensor emits as
@@ -68,10 +68,10 @@ type SearchResults struct {
 // vocabulary; the unit test pins the list so a silent typo can't
 // shrink coverage.
 var curatedEventTypeTerms = map[string][]string{
-	"llm":    {"pre_call", "post_call", "llm_error"},
-	"tool":   {"tool_call", "mcp_tool_list", "mcp_tool_call"},
-	"policy": {"policy_warn", "policy_degrade", "policy_block", "policy_mcp_warn", "policy_mcp_block"},
-	"error":  {"llm_error", "policy_block", "policy_mcp_block"},
+	"llm":       {"pre_call", "post_call", "llm_error"},
+	"tool":      {"tool_call", "mcp_tool_list", "mcp_tool_call"},
+	"policy":    {"policy_warn", "policy_degrade", "policy_block", "policy_mcp_warn", "policy_mcp_block"},
+	"error":     {"llm_error", "policy_block", "policy_mcp_block"},
 	"embedding": {"embeddings"},
 	"mcp": {
 		"mcp_tool_list", "mcp_tool_call",
@@ -87,13 +87,16 @@ var curatedEventTypeTerms = map[string][]string{
 
 // expandCuratedTerms returns the event_type slice mapped from the
 // query, or nil when the query (case-insensitive) is not a known
-// curated term. The result is safe to pass directly to a Postgres
-// ANY() parameter; pgx accepts nil as an empty array.
+// curated term. pgx/v5 encodes a nil []string as SQL NULL, and
+// “event_type = ANY(NULL)“ is always false — so the curated arm
+// short-circuits to no-match while the ILIKE arms in the WHERE
+// still run. No rows are lost; the curated branch simply doesn't
+// contribute when the term is unknown.
 func expandCuratedTerms(query string) []string {
 	return curatedEventTypeTerms[strings.ToLower(strings.TrimSpace(query))]
 }
 
-// likeEscape escapes LIKE special characters (``\``, ``%``, ``_``)
+// likeEscape escapes LIKE special characters (“\“, “%“, “_“)
 // so user input is matched literally instead of as wildcards.
 // Backslash is escaped first to avoid double-escaping the introduced
 // escapes.
@@ -109,7 +112,7 @@ func sanitizeQuery(q string) string {
 	return "%" + likeEscape(q) + "%"
 }
 
-// sanitizePrefix builds a prefix ILIKE pattern (``q%``).
+// sanitizePrefix builds a prefix ILIKE pattern (“q%“).
 func sanitizePrefix(q string) string {
 	return likeEscape(q) + "%"
 }
@@ -138,8 +141,8 @@ func sanitizeExact(q string) string {
 //   - sessions: session_id > flavor > host > model
 //
 // Events additionally honour a curated English-term-to-event_types
-// map (see curatedEventTypeTerms) at rank 3, so ``LLM`` /
-// ``policy`` / ``embedding`` surface the right events even though
+// map (see curatedEventTypeTerms) at rank 3, so “LLM“ /
+// “policy“ / “embedding“ surface the right events even though
 // no event_type literally contains those substrings.
 func (s *Store) Search(ctx context.Context, query string) (*SearchResults, error) {
 	pattern := sanitizeQuery(query)
@@ -148,7 +151,10 @@ func (s *Store) Search(ctx context.Context, query string) (*SearchResults, error
 	curated := expandCuratedTerms(query)
 	var results SearchResults
 
-	g, ctx := errgroup.WithContext(ctx)
+	// Rename the derived context so the outer ``ctx`` parameter
+	// isn't shadowed — the closures below read ``gCtx`` explicitly,
+	// matching the pattern in postgres.go.
+	g, gCtx := errgroup.WithContext(ctx)
 
 	// Search agents. agents.agent_name is the human-readable label;
 	// hostname and user_name are added so a query for the device or
@@ -156,7 +162,7 @@ func (s *Store) Search(ctx context.Context, query string) (*SearchResults, error
 	// embed them (the sensor's per-host agents do embed user@host,
 	// but seeded / test / cloud agents often don't).
 	g.Go(func() error {
-		rows, err := s.pool.Query(ctx, `
+		rows, err := s.pool.Query(gCtx, `
 			SELECT agent_id::text, agent_name, agent_type, last_seen_at::text
 			FROM (
 				SELECT a.*,
@@ -191,6 +197,9 @@ func (s *Store) Search(ctx context.Context, query string) (*SearchResults, error
 			}
 			results.Agents = append(results.Agents, a)
 		}
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("iterate agents: %w", err)
+		}
 		return nil
 	})
 
@@ -198,8 +207,11 @@ func (s *Store) Search(ctx context.Context, query string) (*SearchResults, error
 	// columns and context JSONB. Ranking promotes session_id /
 	// flavor / host / model exact hits ahead of the JSONB substring
 	// pool, so a UUID paste or a flavor literal lands first.
+	// Rows matched only via context-JSONB fall through to the ``ELSE
+	// 99`` sentinel and sort below all core-column matches — they
+	// still appear in the page, just under the more relevant hits.
 	g.Go(func() error {
-		rows, err := s.pool.Query(ctx, `
+		rows, err := s.pool.Query(gCtx, `
 			SELECT session_id::text, flavor, host, state, started_at::text,
 			       ended_at::text, model, tokens_used, token_limit, context
 			FROM (
@@ -218,7 +230,7 @@ func (s *Store) Search(ctx context.Context, query string) (*SearchResults, error
 						WHEN flavor ILIKE $2 THEN 5
 						WHEN COALESCE(host, '') ILIKE $2 THEN 6
 						WHEN COALESCE(model, '') ILIKE $2 THEN 7
-						ELSE 8
+						ELSE 99
 					END AS rank
 				FROM sessions
 				WHERE session_id::text ILIKE $1
@@ -260,6 +272,9 @@ func (s *Store) Search(ctx context.Context, query string) (*SearchResults, error
 			}
 			results.Sessions = append(results.Sessions, sr)
 		}
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("iterate sessions: %w", err)
+		}
 		return nil
 	})
 
@@ -268,7 +283,7 @@ func (s *Store) Search(ctx context.Context, query string) (*SearchResults, error
 	// like ``LLM``/``policy``/``embedding`` return the right rows
 	// without any event_type literally containing those substrings.
 	g.Go(func() error {
-		rows, err := s.pool.Query(ctx, `
+		rows, err := s.pool.Query(gCtx, `
 			SELECT id::text, session_id::text, event_type, tool_name, model, occurred_at::text
 			FROM (
 				SELECT
@@ -308,6 +323,9 @@ func (s *Store) Search(ctx context.Context, query string) (*SearchResults, error
 				return fmt.Errorf("scan event: %w", err)
 			}
 			results.Events = append(results.Events, e)
+		}
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("iterate events: %w", err)
 		}
 		return nil
 	})

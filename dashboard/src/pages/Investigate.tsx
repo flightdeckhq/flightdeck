@@ -330,6 +330,20 @@ export function Investigate() {
   // URL-backed so it deep-links.
   const [selectedEvent, setSelectedEvent] = useState<AgentEvent | null>(null);
 
+  // When the global search palette routes an event hit, it sets
+  // ``?event=`` + ``?event_session=`` so the app-level
+  // EventDetailDrawerHost can mount on the current route. On
+  // /events that host AND this page's local ``selectedEvent``
+  // would both render an EventDetailDrawer at the same z + position
+  // (architect review §critical 1). When the URL params appear,
+  // relinquish the local slot to the app-level host so there is
+  // exactly one drawer on screen.
+  useEffect(() => {
+    if (searchParams.get("event")) {
+      setSelectedEvent(null);
+    }
+  }, [searchParams]);
+
   // Search box — local input state so typing stays instant; the URL
   // `q` filter is updated on a SEARCH_DEBOUNCE_MS trailing debounce.
   // Seeded from the URL so a `?q=` deep-link / reload pre-fills the

@@ -605,7 +605,7 @@ export interface AgentSummary {
   agent_role?: string | null;
   topology: AgentTopology;
   /**
-   * D161 runtime-context slice from the agent's MOST RECENT
+   * Runtime-context slice from the agent's MOST RECENT
    * session's ``context`` JSONB. Each is null when the latest
    * session's context is absent or the JSONB key is missing. The
    * /agents facet sidebar treats nulls as "no value for this

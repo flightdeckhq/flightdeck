@@ -3,7 +3,7 @@ import { test, expect } from "@playwright/test";
 /**
  * T104 — /agents runtime-context facets filter the agent table.
  *
- * Nine new D161 facet groups land on the /agents page sidebar:
+ * Nine new runtime-context facet groups land on the /agents page sidebar:
  * HOSTNAME, USER, OS, ARCH, GIT BRANCH, GIT REPO, ORCHESTRATION,
  * PYTHON, PROCESS. Each chip click toggles a value in the parent's
  * `AgentFilterState`; the page re-runs `filterAgents()` over the
@@ -14,8 +14,8 @@ import { test, expect } from "@playwright/test";
  *   - Click an OS chip → the agent table narrows (row count drops or
  *     stays — never increases).
  *   - Click an OS chip then a GIT BRANCH chip → table narrows further
- *     (or stays). Confirms client-side AND composition across D161
- *     dimensions.
+ *     (or stays). Confirms client-side AND composition across
+ *     runtime-context dimensions.
  *
  * Theme-agnostic. Uses fixtures the dev stack already populates: the
  * dev Claude Code agent (`omria@Omri-PC`) carries
@@ -34,10 +34,9 @@ test.describe("T104 — /agents runtime-context facets", () => {
     await expect(sidebar).toBeVisible({ timeout: 15_000 });
     const osGroup = page.locator('[data-testid="agent-filter-os-group"]');
     await expect(osGroup).toBeVisible({ timeout: 15_000 });
-    const osChips = osGroup.locator('[data-testid^="agent-filter-os-"]');
-    // Filter out the group container itself (its testid also matches
-    // the prefix); count() against the descendant button locator
-    // returns only the actual chips.
+    // ``button[...]`` filters out the group container itself (whose
+    // testid also matches the ``agent-filter-os-`` prefix) so the
+    // chip locator returns only the actual clickable rows.
     const osChipButtons = osGroup.locator(
       'button[data-testid^="agent-filter-os-"]',
     );
@@ -66,11 +65,9 @@ test.describe("T104 — /agents runtime-context facets", () => {
     // The clicked chip is now in the active state — the inline style
     // background paints with `var(--primary)` mix when active.
     await expect(firstChip).toHaveAttribute("data-active", "true");
-    void osChips; // referenced for documentation; the button-only
-                  // selector is what we actually assert against.
   });
 
-  test("filters compose AND across D161 dimensions", async ({ page }) => {
+  test("filters compose AND across runtime-context dimensions", async ({ page }) => {
     await page.setViewportSize({ width: 1700, height: 1000 });
     await page.goto("/agents");
 
@@ -122,7 +119,7 @@ test.describe("T104 — /agents runtime-context facets", () => {
     await branchChipButtons.first().click();
 
     // Combined OS + GIT BRANCH narrows further (or stays equal).
-    // Confirms AND composition across D161 dims.
+    // Confirms AND composition across runtime-context dims.
     await expect
       .poll(() => agentRows.count(), { timeout: 10_000 })
       .toBeLessThanOrEqual(osOnlyCount);

@@ -1,17 +1,39 @@
-import { memo } from "react";
+import { memo, useCallback, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Line, LineChart, ResponsiveContainer } from "recharts";
 import type { AgentSummarySeriesPoint } from "@/lib/types";
+import { formatLatencyMs, formatTokens } from "@/lib/agents-format";
 
 /**
  * One per-row sparkline tile rendered inside the `/agents` table.
- * Wraps recharts at a small size — no axes, no tooltip, no grid;
- * the tile is a visual cue, the numeric total beside it carries
- * the operator-actionable value.
+ * Wraps recharts at a small size — no axes, no grid; the tile is
+ * a visual cue while the numeric total beside it carries the
+ * operator-actionable value.
+ *
+ * Hover surfaces a tooltip showing the nearest data point's
+ * formatted value (matching the column's numeric format —
+ * ``formatTokens`` / ``formatLatencyMs`` / integer for errors)
+ * + the bucket's date. Tooltip renders via ``createPortal`` to
+ * ``document.body`` with ``zIndex: 9999`` so it always escapes
+ * the table cell's overflow / clipping context.
+ *
+ * Sparkline clicks are SWALLOWED — the operator explicitly
+ * opted for read-only sparkline behaviour, so a click on the
+ * chart never propagates to the row's drawer-open handler. Row
+ * clicks still open the drawer because the table row owns the
+ * outer ``onClick``; the sparkline's ``stopPropagation`` only
+ * fires inside the ~80px tile band.
  *
  * Renders a stable horizontal placeholder dash when the series
- * is empty so the column width doesn't shift between rows whose
- * agents have activity and rows whose agents are idle.
+ * has fewer than two non-zero points so the column width stays
+ * fixed regardless of agent activity. The dash has no tooltip —
+ * there is no data to surface.
  */
+
+const PIXEL_HOVER_TOLERANCE = 16;
+const TOOLTIP_OFFSET_PX = 12;
+const TOOLTIP_Z_INDEX = 9999;
+
 interface AgentSparklineProps {
   series: AgentSummarySeriesPoint[];
   /** Which numeric field of the series point to plot. */
@@ -24,22 +46,69 @@ interface AgentSparklineProps {
   height?: number;
 }
 
+function formatAxisValue(
+  axis: AgentSparklineProps["axis"],
+  value: number,
+): string {
+  switch (axis) {
+    case "tokens":
+      return formatTokens(value);
+    case "latency_p95_ms":
+      return formatLatencyMs(value);
+    case "cost_usd":
+      if (value === 0) return "—";
+      if (value >= 100) return `$${value.toFixed(0)}`;
+      if (value >= 1) return `$${value.toFixed(2)}`;
+      return `$${value.toFixed(3)}`;
+    case "errors":
+    case "sessions":
+    default:
+      return Math.round(value).toString();
+  }
+}
+
+function formatBucketDate(ts: string): string {
+  // Bucket timestamps from /v1/agents/:id/summary come in as ISO
+  // strings at midnight UTC (``bucket=day`` default in the
+  // ``/agents`` table). Render as a short date + month so the
+  // tooltip reads ``May 24`` rather than the full RFC 3339.
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return ts;
+  return d.toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+  });
+}
+
 function AgentSparklineImpl({
   series,
   axis,
   width = 80,
   height = 24,
 }: AgentSparklineProps) {
-  const data = series.map((p) => ({ v: p[axis] ?? 0 }));
-  // Sparse-data guard: a line with a single non-zero data point
-  // collapses visually to a single accent-coloured dot, which
-  // reads as a stray pixel rather than a chart. Render the
-  // neutral placeholder dash when fewer than two non-zero points
-  // exist; two or more points are required to draw a meaningful
-  // line. Subsumes the prior empty-array / all-zero check (both
-  // have zero non-zero points and so collapse into the same
-  // dash path).
+  // Keep ``ts`` on the data row so the tooltip can label the
+  // bucket. The plotted value lives on ``v``; ``ts`` is carried
+  // through for the hover lookup only.
+  const data = series.map((p) => ({ v: p[axis] ?? 0, ts: p.ts }));
   const isSparse = data.filter((d) => d.v > 0).length < 2;
+
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const [hover, setHover] = useState<{
+    px: number;
+    py: number;
+    value: number;
+    ts: string;
+  } | null>(null);
+
+  // Swallow sparkline clicks so the operator's chosen read-only
+  // behaviour holds. The row's outer ``onClick`` still fires on
+  // every other cell, so the drawer continues to open on row
+  // clicks. ``onMouseDown`` is stopped too because Radix-style
+  // pointer-event-handling can route mousedown to outer handlers
+  // independently of click.
+  const swallow = useCallback((e: React.SyntheticEvent) => {
+    e.stopPropagation();
+  }, []);
 
   if (isSparse) {
     return (
@@ -52,6 +121,12 @@ function AgentSparklineImpl({
           alignItems: "center",
           justifyContent: "center",
         }}
+        // The dash carries no data → no tooltip. But the read-
+        // only-click contract still applies (the ~80px sparkline
+        // tile area is uniformly non-clickable whether it renders
+        // a chart or a dash).
+        onClick={swallow}
+        onMouseDown={swallow}
       >
         <div
           style={{
@@ -64,25 +139,87 @@ function AgentSparklineImpl({
     );
   }
 
+  const onMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    const rect = containerRef.current?.getBoundingClientRect();
+    if (!rect || data.length === 0) return;
+    // Recharts inserts a 2-px margin on every side of the
+    // ``LineChart`` (matches the ``margin`` prop below). The plot
+    // area sits inside that band; the leftmost data point lands
+    // at ``margin.left`` and the rightmost at ``width - margin.right``.
+    const innerLeft = 2;
+    const innerWidth = rect.width - 4;
+    const relativeX = e.clientX - rect.left - innerLeft;
+    const step = innerWidth / Math.max(1, data.length - 1);
+    const idx = Math.max(
+      0,
+      Math.min(data.length - 1, Math.round(relativeX / step)),
+    );
+    const point = data[idx];
+    if (!point) return;
+    const pointX = rect.left + innerLeft + idx * step;
+    const pointY = rect.top + rect.height / 2;
+    if (Math.abs(e.clientX - pointX) > PIXEL_HOVER_TOLERANCE) {
+      setHover(null);
+      return;
+    }
+    setHover({ px: pointX, py: pointY, value: point.v, ts: point.ts });
+  };
+
+  const onMouseLeave = () => setHover(null);
+
   return (
-    <div
-      data-testid="agent-sparkline"
-      style={{ width, height }}
-      aria-hidden="true"
-    >
-      <ResponsiveContainer width="100%" height="100%">
-        <LineChart data={data} margin={{ top: 2, right: 2, bottom: 2, left: 2 }}>
-          <Line
-            type="monotone"
-            dataKey="v"
-            stroke="var(--accent)"
-            strokeWidth={1.5}
-            dot={false}
-            isAnimationActive={false}
-          />
-        </LineChart>
-      </ResponsiveContainer>
-    </div>
+    <>
+      <div
+        ref={containerRef}
+        data-testid="agent-sparkline"
+        style={{ width, height, cursor: "default" }}
+        onClick={swallow}
+        onMouseDown={swallow}
+        onMouseMove={onMouseMove}
+        onMouseLeave={onMouseLeave}
+      >
+        <ResponsiveContainer width="100%" height="100%">
+          <LineChart data={data} margin={{ top: 2, right: 2, bottom: 2, left: 2 }}>
+            <Line
+              type="monotone"
+              dataKey="v"
+              stroke="var(--accent)"
+              strokeWidth={1.5}
+              dot={false}
+              isAnimationActive={false}
+            />
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+      {hover &&
+        createPortal(
+          <div
+            data-testid="agent-sparkline-tooltip"
+            role="tooltip"
+            style={{
+              position: "fixed",
+              left: hover.px,
+              top: hover.py - TOOLTIP_OFFSET_PX,
+              transform: "translate(-50%, -100%)",
+              background: "var(--bg-elevated)",
+              color: "var(--text)",
+              border: "1px solid var(--border)",
+              borderRadius: 4,
+              padding: "4px 8px",
+              fontFamily: "var(--font-mono)",
+              fontSize: 11,
+              lineHeight: 1.4,
+              whiteSpace: "nowrap",
+              pointerEvents: "none",
+              zIndex: TOOLTIP_Z_INDEX,
+              boxShadow: "0 2px 8px rgba(0, 0, 0, 0.25)",
+            }}
+          >
+            {formatBucketDate(hover.ts)}: {formatAxisValue(axis, hover.value)}
+          </div>,
+          document.body,
+        )}
+    </>
   );
 }
 

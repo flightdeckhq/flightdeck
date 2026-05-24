@@ -280,7 +280,7 @@ type AgentSummary struct {
 	//              and the agent itself is not a child.
 	Topology string `json:"topology"`
 	// Runtime-context slice from the agent's MOST RECENT session's
-	// `sessions.context` JSONB (D161). An agent that ran across
+	// `sessions.context` JSONB. An agent that ran across
 	// multiple hosts / branches surfaces its latest session's values
 	// here — facets are single-valued per agent. Each field is null
 	// when the latest session's context is absent or the JSONB key
@@ -290,13 +290,13 @@ type AgentSummary struct {
 	// authoritative single-valued slices for those two dims (sourced
 	// from agents-table columns); these seven are the JSONB-only
 	// slices the operator slices the roster by.
-	OS             *string `json:"os,omitempty"`
-	Arch           *string `json:"arch,omitempty"`
-	GitBranch      *string `json:"git_branch,omitempty"`
-	GitRepo        *string `json:"git_repo,omitempty"`
-	Orchestration  *string `json:"orchestration,omitempty"`
-	PythonVersion  *string `json:"python_version,omitempty"`
-	ProcessName    *string `json:"process_name,omitempty"`
+	OS            *string `json:"os,omitempty"`
+	Arch          *string `json:"arch,omitempty"`
+	GitBranch     *string `json:"git_branch,omitempty"`
+	GitRepo       *string `json:"git_repo,omitempty"`
+	Orchestration *string `json:"orchestration,omitempty"`
+	PythonVersion *string `json:"python_version,omitempty"`
+	ProcessName   *string `json:"process_name,omitempty"`
 	// RecentSessions carries the agent's most-recent sessions
 	// (newest first, by started_at). Populated by /v1/fleet so the
 	// swimlane row renders event circles regardless of whether the
@@ -622,17 +622,24 @@ const d126AgentRollupSQL = `
 `
 
 // agentLatestContextSQL is the LATERAL subquery that projects the
-// seven runtime-context fields (D161) from an agent's MOST RECENT
+// seven runtime-context fields from an agent's MOST RECENT
 // session's `sessions.context` JSONB. Shared by GetAgentFleet,
 // ListAgents, and GetAgentByID so all three projections stay
 // byte-identical on the new columns.
 //
 // One subquery per agent — bounded by the page size. Each scan
 // rides the composite index on `sessions(agent_id, started_at
-// DESC)` (migration 000025) so the ORDER BY ... LIMIT 1 is a
-// single index lookup. `hostname` and `user` are NOT projected
-// here — those are direct `agents`-table columns and are
-// authoritatively single-valued already.
+// DESC)` so the ORDER BY ... LIMIT 1 is a single index lookup.
+// `hostname` and `user` are NOT projected here — those are direct
+// `agents`-table columns and are authoritatively single-valued
+// already.
+//
+// IMPORTANT: this fragment references `a.agent_id` from the outer
+// query — every caller MUST alias the outer `agents` table as `a`
+// (`FROM agents a` / `... agents a ...`). Adding a fourth call
+// site with a different alias produces a runtime planner error,
+// not a compile-time failure. Matches the existing convention
+// used by `d126AgentRollupSQL` above.
 //
 // Returns nulls when the agent has no sessions OR the latest
 // session's context is null OR the JSONB key is missing — three

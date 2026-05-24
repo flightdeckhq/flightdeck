@@ -42,8 +42,8 @@ interface AgentFacetSidebarProps {
  * Left-side facet sidebar for the `/agents` table — the same
  * visual pattern as the `/events` (`Investigate.tsx`) sidebar.
  * Renders thirteen facet groups: STATE, AGENT TYPE, CLIENT,
- * FRAMEWORK, plus nine D161 runtime-context dimensions (HOSTNAME,
- * USER, OS, ARCH, GIT BRANCH, GIT REPO, ORCHESTRATION, PYTHON,
+ * FRAMEWORK, plus nine runtime-context dimensions (HOST, USER,
+ * OS, ARCH, GIT BRANCH, GIT REPO, ORCHESTRATION, PYTHON,
  * PROCESS). Each group composes AND across groups and OR within.
  * Clicking an entry toggles its value in the active filter set;
  * the parent owns the `AgentFilterState` and re-runs
@@ -53,9 +53,9 @@ interface AgentFacetSidebarProps {
  * absolute client-side count — the number of `agents` carrying
  * that value across the full (unfiltered) roster.
  *
- * All dynamic groups (FRAMEWORK + the nine D161 dims) hide
- * entirely when no agent carries a value in that dimension — no
- * empty placeholder. `HOSTNAME` and `USER` derive from the
+ * All dynamic groups (FRAMEWORK + the nine runtime-context dims)
+ * hide entirely when no agent carries a value in that dimension —
+ * no empty placeholder. `HOST` and `USER` derive from the
  * single-valued agent columns; the other seven derive from the
  * agent's most-recent session context (`AgentSummary.os`, etc.),
  * which the backend projects via a LATERAL JOIN over the latest
@@ -70,9 +70,10 @@ export function AgentFacetSidebar({
 
   // Absolute per-value counts across the full roster. Each map is
   // keyed by the dimension value; FRAMEWORK counts an agent once
-  // per distinct framework on its recent sessions. The D161 dims
-  // each project a single value per agent (null when missing); the
-  // null is filtered out so chip rows only render real values.
+  // per distinct framework on its recent sessions. The runtime-
+  // context dims each project a single value per agent (null when
+  // missing); the null is filtered out so chip rows only render
+  // real values.
   const stateCounts = countBy(agents, (a) => [a.state]);
   const agentTypeCounts = countBy(agents, (a) => [a.agent_type]);
   const clientTypeCounts = countBy(agents, (a) => [a.client_type]);
@@ -93,8 +94,9 @@ export function AgentFacetSidebar({
     valueOrEmpty(a.process_name),
   );
 
-  // Dynamic options for each D161 group, sorted by descending count
-  // (most-common-first) then by value for deterministic ordering.
+  // Dynamic options for each runtime-context group, sorted by
+  // descending count (most-common-first) then by value for
+  // deterministic ordering.
   const hostnameOptions = sortedOptions(hostnameCounts);
   const userOptions = sortedOptions(userCounts);
   const osOptions = sortedOptions(osCounts);
@@ -213,7 +215,7 @@ export function AgentFacetSidebar({
       )}
 
       <ContextFacetGroup
-        label="HOSTNAME"
+        label="HOST"
         groupKey="hostname"
         testIdSuffix="hostname"
         options={hostnameOptions}
@@ -368,7 +370,7 @@ function sortedOptions(counts: Map<string, number>): string[] {
 }
 
 /**
- * Render a D161 runtime-context facet group — collapses entirely
+ * Render a runtime-context facet group — collapses entirely
  * when no agent carries a value in the dimension (parity with the
  * FRAMEWORK group's empty behaviour). The icon resolves via the
  * shared `FacetIcon` so the row vocabulary matches /events.

@@ -361,9 +361,9 @@ describe("filterAgents — free-text search dimension (Fix 4)", () => {
   });
 });
 
-// ---- D161 runtime-context facets ----
+// ---- runtime-context facets ----
 
-describe("filterAgents — D161 runtime-context dimensions", () => {
+describe("filterAgents — runtime-context dimensions", () => {
   it("narrows by hostname (agent-table column, single-valued)", () => {
     const filter: AgentFilterState = {
       ...EMPTY_FILTER,
@@ -501,7 +501,7 @@ describe("filterAgents — D161 runtime-context dimensions", () => {
   });
 
   it("an agent with a null runtime-context field never matches a non-empty chip filter for that dim", () => {
-    // A nullable D161 field (e.g. os=null) on an agent means the
+    // A nullable runtime-context field (e.g. os=null) on an agent means the
     // latest session's context didn't carry that key. Searching
     // for any value on that dim must exclude the agent — operators
     // filtering by "os=Linux" should not see an agent whose latest
@@ -520,7 +520,7 @@ describe("filterAgents — D161 runtime-context dimensions", () => {
     expect(result).toHaveLength(0);
   });
 
-  it("ANDs across multiple D161 dims (os + git_branch)", () => {
+  it("ANDs across multiple runtime-context dims (os + git_branch)", () => {
     const filter: AgentFilterState = {
       ...EMPTY_FILTER,
       oss: new Set(["Linux"]),
@@ -552,7 +552,7 @@ describe("filterAgents — D161 runtime-context dimensions", () => {
     expect(result.map((x) => x.agent_id)).toEqual(["a"]);
   });
 
-  it("agentMatchesSearch folds D161 runtime-context fields into the haystack", () => {
+  it("agentMatchesSearch folds runtime-context fields into the haystack", () => {
     // A free-text search for "Linux" should match an agent whose
     // latest session ran on Linux even without the user opening
     // the OS sidebar chip — the search bar is the omni-search

@@ -1,4 +1,5 @@
 import { memo, useCallback, useState } from "react";
+import { createPortal } from "react-dom";
 import type { ScaleTime } from "d3-scale";
 import type { Session } from "@/lib/types";
 
@@ -76,11 +77,14 @@ const TOOLTIP_BORDER_RADIUS = 4;
 const TOOLTIP_PADDING_Y = 4;
 const TOOLTIP_PADDING_X = 8;
 const TOOLTIP_FONT_SIZE = 11;
-// Renders above the swimlane row buttons (zIndex 2) and any
-// panel chrome that sits in between. The repo has no global
-// z-index token file; this constant is the single source of
-// truth for the bracket tooltip.
-const TOOLTIP_Z_INDEX = 100;
+// Renders above the swimlane row buttons (zIndex 2), the
+// per-agent swimlane modal's backdrop / chrome, and any other
+// portal layer the dashboard stacks. Matches ``EventNode``'s
+// tooltip z-index so the two hover surfaces never disagree on
+// stacking when both happen to be open against the same modal.
+// The repo has no global z-index token file; this constant is
+// the single source of truth for the bracket tooltip.
+const TOOLTIP_Z_INDEX = 9999;
 
 function formatRunTime(iso: string): string {
 	const d = new Date(iso);
@@ -243,87 +247,106 @@ function RunBoundaryMark({
 	const bottom = anchor === "bottom" ? VERTICAL_MARGIN : undefined;
 
 	return (
-		<button
-			type="button"
-			data-testid={`swimlane-run-bracket-${kind}-${sessionId.slice(0, 8)}`}
-			data-bracket-kind={kind}
-			aria-label={`Open run ${sessionId.slice(0, 8)} (${kind})`}
-			onClick={onClick}
-			onMouseEnter={onHoverEnter}
-			onMouseLeave={onHoverLeave}
-			onFocus={onHoverEnter}
-			onBlur={onHoverLeave}
+		<>
+			<button
+				type="button"
+				data-testid={`swimlane-run-bracket-${kind}-${sessionId.slice(0, 8)}`}
+				data-bracket-kind={kind}
+				aria-label={`Open run ${sessionId.slice(0, 8)} (${kind})`}
+				onClick={onClick}
+				onMouseEnter={onHoverEnter}
+				onMouseLeave={onHoverLeave}
+				onFocus={onHoverEnter}
+				onBlur={onHoverLeave}
+				style={{
+					position: "absolute",
+					left: x - glyphSize / 2,
+					top,
+					bottom,
+					width: glyphSize,
+					height: glyphHeight,
+					padding: 0,
+					background: "transparent",
+					border: "none",
+					cursor: "pointer",
+					zIndex: 2,
+					opacity: tooltipPos ? 1 : 0.85,
+					transition: "opacity 120ms ease",
+				}}
+			>
+				<svg
+					width={glyphSize}
+					height={glyphHeight}
+					viewBox={`0 0 ${glyphSize} ${glyphHeight}`}
+					style={{ display: "block" }}
+					aria-hidden="true"
+				>
+					{kind === "start" ? (
+						<polygon
+							points={`0,0 ${TRIANGLE_WIDTH},${TRIANGLE_HEIGHT / 2} 0,${TRIANGLE_HEIGHT}`}
+							fill="var(--accent)"
+						/>
+					) : (
+						<rect
+							width={SQUARE_SIDE}
+							height={SQUARE_SIDE}
+							fill="var(--accent)"
+						/>
+					)}
+				</svg>
+			</button>
+			{tooltipPos && (
+				<RunBracketTooltipPortal
+					sessionId={sessionId}
+					tooltip={tooltip}
+					tooltipPos={tooltipPos}
+				/>
+			)}
+		</>
+	);
+}
+
+function RunBracketTooltipPortal({
+	sessionId,
+	tooltip,
+	tooltipPos,
+}: {
+	sessionId: string;
+	tooltip: string;
+	tooltipPos: { left: number; top: number };
+}) {
+	// Render the tooltip in a portal anchored to ``document.body`` so
+	// the ``position: fixed`` coordinates resolve against the actual
+	// viewport (not a transformed ancestor's containing block) AND
+	// the tooltip escapes every parent stacking context — the
+	// per-agent swimlane modal, the timeline panel's
+	// ``overflow: hidden`` clip, any framer-motion transform layer
+	// in between. Mirrors the pattern ``EventNode`` already uses.
+	return createPortal(
+		<span
+			role="tooltip"
+			data-testid={`swimlane-run-bracket-tooltip-${sessionId.slice(0, 8)}`}
 			style={{
-				position: "absolute",
-				left: x - glyphSize / 2,
-				top,
-				bottom,
-				width: glyphSize,
-				height: glyphHeight,
-				padding: 0,
-				background: "transparent",
-				border: "none",
-				cursor: "pointer",
-				zIndex: 2,
-				opacity: tooltipPos ? 1 : 0.85,
-				transition: "opacity 120ms ease",
+				position: "fixed",
+				left: tooltipPos.left,
+				top: tooltipPos.top,
+				transform: "translateY(-50%)",
+				background: "var(--bg-elevated)",
+				color: "var(--text)",
+				border: "1px solid var(--border)",
+				borderRadius: TOOLTIP_BORDER_RADIUS,
+				padding: `${TOOLTIP_PADDING_Y}px ${TOOLTIP_PADDING_X}px`,
+				fontFamily: "var(--font-mono)",
+				fontSize: TOOLTIP_FONT_SIZE,
+				lineHeight: 1.4,
+				whiteSpace: "pre",
+				pointerEvents: "none",
+				zIndex: TOOLTIP_Z_INDEX,
 			}}
 		>
-			<svg
-				width={glyphSize}
-				height={glyphHeight}
-				viewBox={`0 0 ${glyphSize} ${glyphHeight}`}
-				style={{ display: "block" }}
-				aria-hidden="true"
-			>
-				{kind === "start" ? (
-					<polygon
-						points={`0,0 ${TRIANGLE_WIDTH},${TRIANGLE_HEIGHT / 2} 0,${TRIANGLE_HEIGHT}`}
-						fill="var(--accent)"
-					/>
-				) : (
-					<rect
-						width={SQUARE_SIDE}
-						height={SQUARE_SIDE}
-						fill="var(--accent)"
-					/>
-				)}
-			</svg>
-			{tooltipPos && (
-				<span
-					role="tooltip"
-					data-testid={`swimlane-run-bracket-tooltip-${sessionId.slice(0, 8)}`}
-					style={{
-						// ``position: fixed`` against the viewport so
-						// the tooltip escapes the timeline-panel's
-						// ``overflow: hidden`` (which clips at the
-						// row's 48-px height — the tooltip is taller
-						// than that). Anchored to the button's
-						// viewport rect captured at hover time;
-						// ``transform: translateY(-50%)`` vertically
-						// centers the tooltip on the button so neither
-						// edge gets cut.
-						position: "fixed",
-						left: tooltipPos.left,
-						top: tooltipPos.top,
-						transform: "translateY(-50%)",
-						background: "var(--bg-elevated)",
-						color: "var(--text)",
-						border: "1px solid var(--border)",
-						borderRadius: TOOLTIP_BORDER_RADIUS,
-						padding: `${TOOLTIP_PADDING_Y}px ${TOOLTIP_PADDING_X}px`,
-						fontFamily: "var(--font-mono)",
-						fontSize: TOOLTIP_FONT_SIZE,
-						lineHeight: 1.4,
-						whiteSpace: "pre",
-						pointerEvents: "none",
-						zIndex: TOOLTIP_Z_INDEX,
-					}}
-				>
-					{tooltip}
-				</span>
-			)}
-		</button>
+			{tooltip}
+		</span>,
+		document.body,
 	);
 }
 

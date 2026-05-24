@@ -19,6 +19,10 @@ import {
 } from "lucide-react";
 import type { ReactNode } from "react";
 import { OSIcon } from "@/components/ui/OSIcon";
+import {
+  OrchestrationIcon,
+  ORCHESTRATION_LABELS,
+} from "@/components/ui/OrchestrationIcon";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import { eventBadgeConfig } from "@/lib/events";
 import { getProvider } from "@/lib/models";
@@ -111,7 +115,20 @@ function pickFacetIcon(groupKey: string, value: string): ReactNode {
     return <Package {...LUCIDE_PROPS} />;
   }
   if (groupKey === "git_repo") return <GitCommit {...LUCIDE_PROPS} />;
-  if (groupKey === "orchestration") return <Container {...LUCIDE_PROPS} />;
+  if (groupKey === "orchestration") {
+    // Brand-specific glyph for recognised platforms (kubernetes,
+    // docker, docker-compose, aws-ecs, cloud-run) — matches the
+    // sensor's session-drawer Orchestration cell so the sidebar
+    // and the drawer agree on the chrome. The
+    // ``ORCHESTRATION_LABELS`` map is the single source of truth
+    // for "is this value a recognised platform"; unknown values
+    // fall back to the generic Container glyph so the chip never
+    // renders bare-text.
+    if (value in ORCHESTRATION_LABELS) {
+      return <OrchestrationIcon orchestration={value} size={12} />;
+    }
+    return <Container {...LUCIDE_PROPS} />;
+  }
   // Remaining icon-less facets get neutral category glyphs so the
   // sidebar reads as one icon family across every dimension. The
   // shapes are deliberately distinct from the runtime-context

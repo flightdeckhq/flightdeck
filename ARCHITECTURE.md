@@ -1792,7 +1792,7 @@ authoritative parameter-level reference.
 | `GET` | `/v1/fleet` | Fleet summary: agents with state rollup, total sessions, total tokens, recent_sessions rollup, and D161 runtime-context projection (`os`, `arch`, `git_branch`, `git_repo`, `orchestration`, `python_version`, `process_name` — sourced from the agent's most recent session's `context` JSONB via a `LEFT JOIN LATERAL`), context_facets |
 | `GET` | `/v1/sessions` | Paginated session listing; filters: `agent_id`, `flavor`, `framework`, `state`, `error_type`, `policy_event_type`, `mcp_server`, `from`, `to`, `q`, `parent_session_id`, `is_sub_agent`, `has_sub_agents`, `agent_role[]`, `include_pure_children`, `include_parents`, `close_reason`, `estimated_via`, `terminal`, `matched_entry_id`, `originating_call_context`; returns per-session aggregates (`error_types[]`, `policy_event_types[]`, `mcp_server_names[]`, `close_reasons[]`, `estimated_via_values[]`, `has_terminal_error`, `matched_entry_ids[]`, `originating_call_contexts[]`), `child_count`, and `attachment_count` (the number of re-attachments to the session, surfaced as the agent drawer Runs-tab attached pill) |
 | `GET` | `/v1/sessions/:id` | Session detail: metadata + chronological events + attachments array |
-| `GET` | `/v1/agents` | Paginated agent listing backing the `/agents` page; filters: `agent_type`, `client_type`, `state`, `hostname`, `user`, `os`, `orchestration` (multi-value — OR within a dimension, AND across), `search` (case-insensitive substring on `agent_name` + `hostname`), `updated_since`; `sort` + `order`; `limit` (default 25, max 100) + `offset`. Each row carries the sub-agent rollup fields `agent_role` and `topology` (`lone` / `parent` / `child`) |
+| `GET` | `/v1/agents` | Paginated agent listing; filters: `agent_type`, `client_type`, `state`, `hostname`, `user`, `os`, `orchestration` (multi-value — OR within a dimension, AND across; `os` and `orchestration` use any-session EXISTS semantics on `sessions.context`), `search` (case-insensitive substring on `agent_name` + `hostname`), `updated_since`; `sort` + `order`; `limit` (default 25, max 100) + `offset`. Each row carries the sub-agent rollup fields `agent_role` and `topology` (`lone` / `parent` / `child`) plus the runtime-context projection (`os`, `arch`, `git_branch`, `git_repo`, `orchestration`, `python_version`, `process_name` — latest-session-only, same source as the `/v1/fleet` projection) |
 | `GET` | `/v1/agents/:id/summary` | Per-agent activity summary (totals + per-bucket series) over a 1h/24h/7d/30d window. Powers the per-agent landing page (D157). |
 | `GET` | `/v1/events` | Bulk events query: `from` (required), `to`, `flavor`, `event_type`, `session_id`, `agent_id`, `model`, payload-JSONB facet filters (`error_type`, `close_reason`, `estimated_via`, `matched_entry_id`, `originating_call_context`, `mcp_server`, `terminal`), `framework` (`agent_id` + `framework` resolve via a `sessions` subquery), session-context facet filters (`os`, `arch`, `host`, `user`, `git_branch`, `git_repo`, `orchestration`, `python_version`, `process_name` — D160; resolved via the sessions JOIN against partial expression indexes on `sessions((context->>'<key>'))` from migration 000024), `q` (free-text ILIKE search across event_type / model / session_id / agent_name / framework), `before` (keyset cursor) + `order` (`asc`/`desc`) for newest-first drawer pagination, `facets=true` to return per-dimension chip counts over the filtered set instead of the event list, `limit` (default 500, max 2000), `offset` (max 100000) |
 | `GET` | `/v1/events/:id/content` | Event prompt content; 404 when capture was off for the session |
@@ -2251,11 +2251,17 @@ table (denormalised at agent-upsert time); the seven D161
 fields ride a single shared `LEFT JOIN LATERAL` per agent
 (`agentLatestContextSQL` in `api/internal/store/postgres.go`)
 that runs `SELECT context->>'<key>' ... WHERE agent_id =
-a.agent_id ORDER BY started_at DESC LIMIT 1`. The lateral
-attaches to all three projection paths — `GetAgentFleet`,
-`ListAgents`, `GetAgentByID` — so the response shape is
-byte-identical across `/v1/fleet`, `/v1/agents`, and
-`/v1/agents/:id/summary` agent-row reads.
+a.agent_id ORDER BY started_at DESC LIMIT 1`.
+
+The lateral attaches to all three agent-row projection paths —
+`GetAgentFleet`, `ListAgents`, `GetAgentByID` — so `/v1/fleet`
+and `/v1/agents` carry an identical agent-row shape on the
+new columns. `/v1/agents/:id/summary` returns
+`AgentSummaryResponse` (totals + per-bucket series) rather
+than `AgentSummary`, so it does NOT surface the projection;
+`GetAgentByID` is called by the summary handler only as a 404
+existence guard and its `AgentSummary` return value is
+discarded.
 
 Sessions with no context, missing keys, or NULL context all
 project as null on the relevant field; the `omitempty` JSON tag
@@ -2426,7 +2432,9 @@ Filtering is **fully client-side** over the loaded
 chip toggle; `filterAgents()` runs in a `useMemo` over the
 roster and the `AgentTable` re-renders with the filtered slice.
 D161 dimensions are sourced from `AgentSummary` fields the
-`/v1/fleet` projection carries: `hostname` and `user` are
+projection carries (delivered to the page via `/v1/fleet`; the
+same fields are also present on `/v1/agents` rows for callers
+that hit that endpoint directly): `hostname` and `user` are
 direct agents-table columns (single-valued per agent); the
 other seven (`os`, `arch`, `git_branch`, `git_repo`,
 `orchestration`, `python_version`, `process_name`) come from a

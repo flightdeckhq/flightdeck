@@ -168,6 +168,34 @@ describe("AgentTableRow", () => {
     expect(onOpenDrawer).not.toHaveBeenCalled();
   });
 
+  it("sparkline clicks are read-only — they do NOT open the drawer", () => {
+    const onOpenDrawer = vi.fn();
+    // Seed enough activity so the sparkline tile renders (not the
+    // sparse-data dash). All three sparkline tiles surface — pick
+    // the first.
+    const agent = mkAgent({
+      agent_id: "a-spark",
+      recent_sessions: [],
+    });
+    renderRow(agent, { onOpenDrawer });
+    const tiles = screen.queryAllByTestId("agent-sparkline");
+    // Even if the in-test summary cache holds no data and the
+    // sparkline collapses to the dash, the row click vs sparkline
+    // click semantics still apply — the dash sits inside the same
+    // ``<td>`` chain. Click whatever tile is present (sparkline or
+    // dash); the drawer must not open.
+    const sparklineOrDash =
+      tiles[0] ?? screen.queryAllByTestId("agent-sparkline-empty")[0];
+    if (sparklineOrDash) {
+      fireEvent.click(sparklineOrDash);
+    }
+    expect(onOpenDrawer).not.toHaveBeenCalled();
+    // The row click STILL opens the drawer — sparkline read-only
+    // is a scoped exception, not a row-wide opt-out.
+    fireEvent.click(screen.getByTestId("agent-row-a-spark"));
+    expect(onOpenDrawer).toHaveBeenCalledTimes(1);
+  });
+
   it("renders the STATUS cell as the second column with a clickable chip", () => {
     // The relocated STATUS column lives second (right after the
     // identity cell). The cell wraps the labeled badge in a

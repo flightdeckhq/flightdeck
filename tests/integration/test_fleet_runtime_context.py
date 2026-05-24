@@ -1,6 +1,6 @@
-"""Integration test: /v1/fleet projects D161 runtime-context fields.
+"""Integration test: /v1/fleet projects runtime-context fields from sessions.
 
-The /agents page sidebar (D161) faceted nine runtime-context
+The /agents page sidebar faceted nine runtime-context
 dimensions: ``hostname``, ``user``, ``os``, ``arch``, ``git_branch``,
 ``git_repo``, ``orchestration``, ``python_version``, ``process_name``.
 ``hostname`` and ``user`` are sourced from agents-table columns; the
@@ -16,7 +16,7 @@ This test pins the contract end-to-end against the live dev stack:
 3. Fetch /v1/fleet and verify the response carries the LATER
    session's context values (NOT the earlier one).
 4. Verify a second agent seeded WITHOUT context returns nulls on
-   every D161 field (so the consumer can collapse to "no value for
+   every runtime-context field (so the consumer can collapse to "no value for
    this agent" without crashing).
 
 The fields land on ``AgentSummary`` with ``omitempty`` JSON tags,
@@ -56,7 +56,7 @@ def _wait_for_agent(
     The agent row appears in the fleet response as soon as the worker
     upserts the agent — but the LATERAL context projection runs at
     query time AND the worker may briefly be mid-flight on the most
-    recent session_start. Callers that need specific D161 field
+    recent session_start. Callers that need specific runtime-context field
     values pass an ``expect`` dict (e.g. ``{"os": "Linux"}``) so the
     poll keeps retrying until every expected key matches; on timeout
     the assertion that follows prints the last-observed shape so the
@@ -115,13 +115,13 @@ def _seed_session_with_context(
     )
 
 
-def test_fleet_projects_d161_runtime_context_from_latest_session() -> None:
+def test_fleet_projects_runtime_context_from_latest_session() -> None:
     """Seed one agent with two sessions where the LATER session carries
     a different context; the projection must return the LATER values.
     """
     suffix = uuid.uuid4().hex[:8]
-    agent_name = f"test-d161-int-{suffix}"
-    flavor = f"d161-int-{suffix}"
+    agent_name = f"test-rc-int-{suffix}"
+    flavor = f"rc-int-{suffix}"
 
     # Earlier session — initial context.
     _seed_session_with_context(
@@ -157,7 +157,7 @@ def test_fleet_projects_d161_runtime_context_from_latest_session() -> None:
     )
     agent = _wait_for_agent(agent_name, expect={"os": "Linux"})
 
-    # Every D161 field must come back with the LATER session's value.
+    # Every projected runtime-context field must come back with the LATER session's value.
     assert agent.get("os") == "Linux", agent
     assert agent.get("arch") == "arm64", agent
     assert agent.get("git_branch") == "main", agent
@@ -167,25 +167,25 @@ def test_fleet_projects_d161_runtime_context_from_latest_session() -> None:
     assert agent.get("process_name") == "new.py", agent
 
 
-def test_fleet_d161_runtime_context_null_when_no_context() -> None:
+def test_fleet_runtime_context_null_when_no_context() -> None:
     """An agent whose latest session was started WITHOUT a context
-    JSONB (worker stamps NULL) must return null for every D161 field;
+    JSONB (worker stamps NULL) must return null for every runtime-context field;
     fields are ``omitempty``, so the keys may be missing or null —
     both shapes mean "no value".
 
     Note: ``make_event`` injects ``DEFAULT_TEST_CONTEXT`` (carrying
     sensor identity fields like ``working_dir``) when a session_start
     doesn't already carry context, so we explicitly set an empty
-    object here so the JSONB IS present but the seven D161 keys are
+    object here so the JSONB IS present but the seven runtime-context keys are
     all missing.
     """
     suffix = uuid.uuid4().hex[:8]
-    agent_name = f"test-d161-empty-{suffix}"
-    flavor = f"d161-empty-{suffix}"
+    agent_name = f"test-rc-empty-{suffix}"
+    flavor = f"rc-empty-{suffix}"
     _seed_session_with_context(
         flavor=flavor,
         agent_name=agent_name,
-        context={},  # explicit empty context — no D161 keys
+        context={},  # explicit empty context — no runtime-context keys
     )
     agent = _wait_for_agent(agent_name)
 
@@ -203,20 +203,20 @@ def test_fleet_d161_runtime_context_null_when_no_context() -> None:
         # agent" — the consumer collapses both to the same chip
         # absence on the sidebar.
         assert agent.get(field) is None, (
-            f"agent {agent_name}: expected D161 field {field!r} "
+            f"agent {agent_name}: expected runtime-context field {field!r} "
             f"to be null/absent on empty context, got {agent.get(field)!r}"
         )
 
 
-def test_fleet_d161_runtime_context_hostname_user_from_agent_columns() -> None:
+def test_fleet_runtime_context_hostname_user_from_agent_columns() -> None:
     """``hostname`` and ``user`` are sourced from the agents-table
     columns (single-valued per agent), NOT the JSONB lateral. Even
     when the latest session's context omits them, the projection
     surfaces the agent-row values.
     """
     suffix = uuid.uuid4().hex[:8]
-    agent_name = f"test-d161-cols-{suffix}"
-    flavor = f"d161-cols-{suffix}"
+    agent_name = f"test-rc-cols-{suffix}"
+    flavor = f"rc-cols-{suffix}"
     # Seed via the shared make_event which derives the agent's
     # ``hostname`` + ``user`` columns from the named args.
     session_id = str(uuid.uuid4())

@@ -10,20 +10,28 @@ Fleet swimlane reshape, and the event-grain Events page (D157).
 ### Added
 
 - **`/agents` page sidebar gains 9 runtime-context facets.**
-  HOSTNAME, USER, OS, ARCH, GIT BRANCH, GIT REPO, ORCHESTRATION,
+  HOST, USER, OS, ARCH, GIT BRANCH, GIT REPO, ORCHESTRATION,
   PYTHON, PROCESS join the four existing groups (STATE, AGENT
-  TYPE, CLIENT, FRAMEWORK). The icons match `/events` exactly
-  (shared `FacetIcon` component), so the two sidebars read as
-  one icon family. Chip click toggles the filter against the
-  loaded agent roster — filtering stays client-side, no extra
-  API roundtrips. Group hides entirely when no visible agent
-  carries a value in the dimension (mirrors the FRAMEWORK
-  group's empty behaviour). `hostname` and `user` come from the
-  agents-table columns (single-valued per agent); the other
-  seven derive from each agent's MOST RECENT session's
-  `sessions.context` JSONB — an agent that ran across multiple
-  hosts / branches facets by its latest run. Composes AND
-  across dimensions and OR within (parity with `/events`).
+  TYPE, CLIENT, FRAMEWORK). Icons match `/events` exactly so
+  the two sidebars read as one family. Chip flip is
+  instantaneous — filtering stays client-side over the loaded
+  roster, no extra API roundtrips. Group hides when no agent
+  carries a value in the dimension. Composes AND across
+  dimensions and OR within.
+- **Orchestration facet chips render the platform's brand
+  glyph** on `/agents`, `/events`, and the Fleet CONTEXT
+  section — Docker whale, Kubernetes wheel, AWS ECS hexagon,
+  Google Cloud Run cloud, plus the generic Container fallback
+  for unrecognised values. Matches the orchestration icon the
+  session drawer surfaces in its metadata bar.
+- **`/agents` table sparkline gains a hover tooltip** showing
+  the formatted value (matches the column's units —
+  `formatTokens` / `formatLatencyMs` / integer for errors /
+  `$x.xx` for cost) plus the bucket's date (`May 24`). The
+  sparkline tile is **read-only** — clicking it never opens
+  the agent drawer; only clicks on the rest of the row do.
+  The tooltip renders via `createPortal` to `document.body`
+  so it escapes the table cell's overflow boundary.
 - **`/events` page facet sidebar surfaces the 9 runtime-context
   dimensions.** OS, ARCH, HOST, USER, GIT BRANCH, GIT REPO,
   ORCHESTRATION, PYTHON, PROCESS join the sidebar with category

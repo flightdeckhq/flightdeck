@@ -2,9 +2,12 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // AgentListParams carries every filter, sort, search, and pagination
@@ -25,6 +28,18 @@ type AgentListParams struct {
 	// Runtime-context filters (derived from sessions.context JSONB
 	// via an EXISTS subquery — an agent matches if ANY of their
 	// sessions recorded the value).
+	//
+	// SEMANTIC DIVERGENCE WARNING: this any-session filter
+	// semantic differs from the latest-session-only semantic the
+	// AgentSummary projection (``OS``, ``Orchestration`` on the
+	// response struct) uses. An agent that once ran on Linux but
+	// most-recently ran on macOS would be FILTERED-IN by
+	// ``?os=Linux`` while its row would render ``os=Darwin``.
+	// The /agents page sidebar relies on the response projection
+	// and filters client-side, so it never hits this divergence;
+	// direct ``/v1/agents?os=...`` callers (other surfaces, ops
+	// tooling) get any-session matching. Documented here so
+	// neither semantic surprises a future contributor.
 	OS            []string
 	Orchestration []string
 
@@ -37,8 +52,10 @@ type AgentListParams struct {
 	UpdatedSince *time.Time
 
 	// Sort column. One of AllowedAgentSortColumns. Empty string
-	// means default (``last_seen_at``). The store panics on an
-	// unknown value; the handler is responsible for the 400.
+	// means default (``last_seen_at``). The store returns an
+	// ``unknown sort column`` error on an unrecognised value; the
+	// handler validates the value before this call so the error
+	// is a belt-and-suspenders guard, not the primary 400 path.
 	Sort string
 
 	// Order: "asc" or "desc". Empty means default (``desc``).
@@ -274,9 +291,11 @@ func (s *Store) GetAgentByID(
 		&a.Orchestration, &a.PythonVersion, &a.ProcessName,
 	)
 	if err != nil {
-		// pgx returns ErrNoRows as a sentinel; bubble up so the
-		// caller can map 404 vs "real error" (cast failure, etc.).
-		if strings.Contains(err.Error(), "no rows in result set") {
+		// pgx returns ErrNoRows as a sentinel; check via errors.Is
+		// so the path is robust across pgx versions and the bytes
+		// of the formatted error message. Matches the pattern used
+		// by every other ``ErrNoRows`` check in the store package.
+		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil //nolint:nilnil // "no match" is not an error
 		}
 		return nil, fmt.Errorf("get agent by id: %w", err)
@@ -321,7 +340,18 @@ func buildAgentFilterClause(params AgentListParams) (conds []string, args []any)
 	}
 
 	// Context-derived filters require an EXISTS subquery on sessions.
-	// An agent matches if ANY of its sessions recorded the value.
+	// An agent matches if ANY of its sessions recorded the value
+	// (any-session semantics — different from the AgentSummary
+	// projection's latest-session semantics; see the divergence
+	// docblock on `AgentListParams.OS` for the rationale).
+	//
+	// SAFETY: ``jsonKey`` is interpolated directly into the SQL
+	// because pgx does not parameterise JSONB extract keys. Every
+	// caller below passes a compile-time string constant from the
+	// closed key set (``os``, ``orchestration``). NEVER pass user
+	// input or a value derived from request data here — that
+	// would re-open the SQL injection surface this closure
+	// guards against by convention.
 	addContextExists := func(jsonKey string, values []string) {
 		if len(values) == 0 {
 			return

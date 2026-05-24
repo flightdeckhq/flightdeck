@@ -15,7 +15,7 @@ export interface AgentFilterState {
   /** Bare-name frameworks observed on the agent's recent
    *  sessions (`recent_sessions[].framework`). */
   frameworks: Set<string>;
-  /** D161 runtime-context dimensions. ``hostnames`` and ``users``
+  /** Runtime-context dimensions. ``hostnames`` and ``users``
    *  filter the agent-table columns of the same name (single-
    *  valued per agent). The other seven filter the
    *  ``AgentSummary`` projection of the agent's MOST RECENT
@@ -89,8 +89,8 @@ export function deriveFrameworkOptions(agents: AgentSummary[]): string[] {
 /**
  * Case-insensitive substring match of the free-text search against
  * an agent's name, agent_type, client_type, its frameworks, the
- * D161 runtime-context fields, and the models on its recent
- * sessions. An empty / whitespace query matches every agent.
+ * runtime-context fields, and the models on its recent sessions.
+ * An empty / whitespace query matches every agent.
  */
 export function agentMatchesSearch(
   agent: AgentSummary,
@@ -119,11 +119,12 @@ export function agentMatchesSearch(
 }
 
 /**
- * Project the seven D161 runtime-context fields off an agent as a
- * compact string list (nulls dropped). Used by `agentMatchesSearch`
- * for free-text and by `filterAgents` is NOT — the chip filter
- * predicates inspect each field individually so a misspelled OS
- * value in one dim cannot accidentally match a chip in another.
+ * Project the seven JSONB-derived runtime-context fields off an
+ * agent as a compact string list (nulls dropped). Used by
+ * `agentMatchesSearch` for free-text folding. NOT consumed by
+ * `filterAgents` — the chip filter predicates inspect each field
+ * individually so a misspelled OS value in one dim cannot
+ * accidentally match a chip in another.
  */
 function agentRuntimeContextValues(agent: AgentSummary): string[] {
   const out: string[] = [];
@@ -163,7 +164,7 @@ export function filterAgents(
       const fws = agentFrameworks(a);
       if (!fws.some((fw) => filter.frameworks.has(fw))) return false;
     }
-    // D161 runtime-context dims. Each chip filter is single-valued:
+    // Runtime-context dims. Each chip filter is single-valued:
     // an agent matches the chip iff its field is non-null AND the
     // value is in the active set. A null field can never satisfy a
     // non-empty filter for that dim — operators searching by, say,

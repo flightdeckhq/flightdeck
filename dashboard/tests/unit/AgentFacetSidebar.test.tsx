@@ -286,10 +286,10 @@ describe("AgentFacetSidebar", () => {
   });
 });
 
-// ---- D161 runtime-context groups ----
+// ---- runtime-context groups ----
 
-describe("AgentFacetSidebar — D161 runtime-context groups", () => {
-  it("renders the HOSTNAME / USER / OS / ARCH / GIT BRANCH / GIT REPO / ORCHESTRATION / PYTHON / PROCESS groups when at least one agent carries a value", () => {
+describe("AgentFacetSidebar — runtime-context groups", () => {
+  it("renders the HOST / USER / OS / ARCH / GIT BRANCH / GIT REPO / ORCHESTRATION / PYTHON / PROCESS groups when at least one agent carries a value", () => {
     render(
       <AgentFacetSidebar
         agents={[
@@ -327,7 +327,7 @@ describe("AgentFacetSidebar — D161 runtime-context groups", () => {
     }
   });
 
-  it("hides D161 groups that no agent populates", () => {
+  it("hides runtime-context groups that no agent populates", () => {
     // Mirror the FRAMEWORK group's empty behaviour: a dimension
     // with no values across the roster collapses entirely instead
     // of rendering an empty group header. The base mkAgent has
@@ -418,7 +418,7 @@ describe("AgentFacetSidebar — D161 runtime-context groups", () => {
     expect(next.gitBranches.has("main")).toBe(true);
   });
 
-  it("uses the shared FacetIcon (same icons as /events) for each D161 dimension", () => {
+  it("uses the shared FacetIcon (same icons as /events) for each runtime-context dimension", () => {
     render(
       <AgentFacetSidebar
         agents={[
@@ -469,7 +469,7 @@ describe("AgentFacetSidebar — D161 runtime-context groups", () => {
     ).toBeInTheDocument();
   });
 
-  it("sorts D161 values by descending count then ascending value", () => {
+  it("sorts runtime-context values by descending count then ascending value", () => {
     render(
       <AgentFacetSidebar
         agents={[

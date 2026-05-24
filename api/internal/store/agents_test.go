@@ -1024,12 +1024,13 @@ func assertOrder(t *testing.T, resp *AgentListResponse, want []string) {
 	}
 }
 
-// --- D161 latest-session context projection ---
+// --- Latest-session runtime-context projection ---
 
 // seedSessionWithContext inserts one session directly, leaving the
-// caller in control of the started_at + context. Used by the D161
-// tests below to prove the AgentSummary projection picks the LATEST
-// session's context when multiple sessions exist under one agent.
+// caller in control of the started_at + context. Used by the
+// runtime-context tests below to prove the AgentSummary projection
+// picks the LATEST session's context when multiple sessions exist
+// under one agent.
 func seedSessionWithContext(
 	t *testing.T, s *Store,
 	agentID, agentType, clientType string,
@@ -1055,7 +1056,7 @@ func seedSessionWithContext(
 	}
 }
 
-func TestListAgents_D161LatestSessionContext_Projected(t *testing.T) {
+func TestListAgents_LatestSessionContextProjected(t *testing.T) {
 	s, cleanup := newTestStore(t)
 	defer cleanup()
 
@@ -1116,12 +1117,12 @@ func TestListAgents_D161LatestSessionContext_Projected(t *testing.T) {
 	mustEq("process_name", "new.py", got.ProcessName)
 }
 
-func TestListAgents_D161LatestSessionContext_NullsWhenAbsent(t *testing.T) {
+func TestListAgents_LatestSessionContextNullsWhenAbsent(t *testing.T) {
 	s, cleanup := newTestStore(t)
 	defer cleanup()
 
-	// An agent with no sessions at all: every D161 context field
-	// must come back nil (no LATERAL row → null projection).
+	// An agent with no sessions at all: every runtime-context
+	// field must come back nil (no LATERAL row → null projection).
 	noSessName := "test-d161-no-sess-" + randomUUID(t)[:8]
 	noSessID := seedAgentForList(t, s, noSessName, agentListOpts{
 		agentType: "coding", clientType: "claude_code",
@@ -1157,7 +1158,7 @@ func TestListAgents_D161LatestSessionContext_NullsWhenAbsent(t *testing.T) {
 		if got.OS != nil || got.Arch != nil || got.GitBranch != nil ||
 			got.GitRepo != nil || got.Orchestration != nil ||
 			got.PythonVersion != nil || got.ProcessName != nil {
-			t.Errorf("%s: expected all D161 fields nil, got "+
+			t.Errorf("%s: expected all runtime-context fields nil, got "+
 				"os=%v arch=%v git_branch=%v git_repo=%v orchestration=%v "+
 				"python_version=%v process_name=%v",
 				name, got.OS, got.Arch, got.GitBranch, got.GitRepo,
@@ -1168,7 +1169,7 @@ func TestListAgents_D161LatestSessionContext_NullsWhenAbsent(t *testing.T) {
 	check("empty-context agent", emptyID)
 }
 
-func TestGetAgentFleet_D161LatestSessionContext(t *testing.T) {
+func TestGetAgentFleet_LatestSessionContextProjected(t *testing.T) {
 	s, cleanup := newTestStore(t)
 	defer cleanup()
 
@@ -1217,7 +1218,7 @@ func TestGetAgentFleet_D161LatestSessionContext(t *testing.T) {
 	}
 }
 
-func TestGetAgentByID_D161LatestSessionContext(t *testing.T) {
+func TestGetAgentByID_LatestSessionContextProjected(t *testing.T) {
 	s, cleanup := newTestStore(t)
 	defer cleanup()
 

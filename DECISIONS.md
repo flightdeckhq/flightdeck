@@ -9018,26 +9018,46 @@ both lateral subqueries ride the same composite index from
 migration 000025 (`sessions(agent_id, started_at DESC)`) so the
 per-agent overhead is one extra index seek + one heap fetch.
 
-**Why client-side filtering, not new `/v1/fleet` filter params.**
-The `/agents` page already filters client-side over the loaded
-`useFleetStore().agents` slice for the existing four dims
-(state / agent_type / client_type / framework). Adding nine
-matching client-side filter predicates over the new
-`AgentSummary` fields is the natural extension; the alternative
-(server-side filter params with re-fetch on chip toggle) would
-require pagination-aware filter re-fetch logic AND would not
-materially reduce the response size (a typical fleet page is
-~50 rows, all of which stream regardless of filter state for the
-sidebar counts). Keeping filtering client-side preserves the
-chip-flip-as-instantaneous UX. Counts are absolute across the
-unfiltered roster — same contract as the existing four dims.
+**Why client-side filtering for sidebar chips, not extending
+`/v1/agents` filter params.** `/v1/agents` already exposes
+server-side filter params for `os` and `orchestration`
+(handlers/agents.go) — those run an EXISTS subquery with
+any-session semantics for direct API callers (ops tooling,
+non-page consumers). Extending that surface to cover the
+remaining seven dims would be one option for wiring the
+sidebar chips; the alternative chosen here keeps the
+`/agents` page filtering client-side over the loaded
+`useFleetStore().agents` slice (the same pattern as the
+existing four dims — state / agent_type / client_type /
+framework). Reasons: (1) chip flip is instantaneous with no
+re-fetch overhead, (2) the sidebar needs absolute counts
+across the unfiltered roster which a filtered API call would
+not provide, (3) a typical fleet page is ~50 rows which is
+trivially filtered in memory.
+
+**SEMANTIC DIVERGENCE WARNING.** The pre-existing server-side
+`?os=` and `?orchestration=` filters on `/v1/agents` use
+**any-session** semantics (an agent matches if ANY of its
+sessions recorded the value) while the new D161 sidebar /
+projection uses **latest-session-only** semantics. An agent
+that once ran on Linux but most-recently ran on macOS would
+be FILTERED-IN by `/v1/agents?os=Linux` while its row would
+render `os=Darwin` and the `/agents` sidebar OS chip for
+"Linux" would NOT match it. The `/agents` page never hits
+this divergence because it filters client-side off the
+latest-session projection; direct `/v1/agents?os=...`
+callers (other surfaces, ops tooling) keep the legacy
+any-session behaviour. Both semantics are intentional;
+documented here so neither surprises a future contributor.
 
 **Excluded from sidebar (vs D160's nine).** The same exclusions
 that apply to /events apply here: `pid` (per-instance noise,
 non-aggregable), `git_commit` (high cardinality, not useful for
-chip grouping), the orchestration sub-keys (`k8s_pod`,
-`k8s_namespace`, `compose_project`, etc. — orchestration is the
-roll-up). These remain available on the agent drawer's
+chip grouping), `node_version` (low-cardinality but operator-
+informational only — exposed via the drawer context panel,
+not the sidebar), and the orchestration sub-keys (`k8s_pod`,
+`k8s_namespace`, `compose_project`, etc. — orchestration is
+the roll-up). These remain available on the agent drawer's
 "context" panel for drilldown.
 
 **Perf.** Adding seven JSONB extracts via one extra LATERAL on
@@ -9050,10 +9070,11 @@ before scaling past ~500 agents per page.
 
 **Related decisions.** D160 (the event-grain counterpart on
 /v1/events — same nine dimensions, different architecture).
-D157 (the per-agent landing page this extends). D126 § 6.3
-(the precedent for per-agent LATERAL projection — `agent_role`
-+ `topology` ride the same shape). The existing
-`idx_sessions_agent_id` from migration 000015 stays in place;
-000025's composite index supersedes it for the per-agent
-latest-session lookup but doesn't replace the single-column
-index that backs broader `agent_id = ?` filters.
+D157 (the per-agent landing page this extends). D126 (the
+sub-agent observability decision — `agent_role` and `topology`
+ride a `LEFT JOIN LATERAL` on the same `AgentSummary`
+projection, establishing the pattern D161 extends). The
+existing `idx_sessions_agent_id` from migration 000015 stays
+in place; 000025's composite index supersedes it for the
+per-agent latest-session lookup but doesn't replace the
+single-column index that backs broader `agent_id = ?` filters.

@@ -141,13 +141,19 @@ test.describe("T84 — /events EventRow identity enrichment", () => {
       "an ERROR TYPE facet chip must render the FacetIcon glyph",
     ).toBeVisible();
 
-    // POLICY chips — chroma dot via FacetIcon (policy-active role
-    // seeds policy_warn / policy_degrade / policy_block).
+    // POLICY chips — coloured EventTypePill replaces the prior
+    // FacetIcon chroma-dot treatment so the sidebar chip matches
+    // the table row's badge chroma at a glance. The pill carries
+    // both the label and the colour mapping; the testid moved
+    // from ``events-facet-icon-policy_event_type-*`` to
+    // ``events-facet-event-type-pill-policy_event_type-*``.
     await expect(
       page
-        .locator('[data-testid^="events-facet-icon-policy_event_type-"]')
+        .locator(
+          '[data-testid^="events-facet-event-type-pill-policy_event_type-"]',
+        )
         .first(),
-      "a POLICY facet chip must render the chroma-dot icon",
+      "a POLICY facet chip must render the coloured EventTypePill",
     ).toBeVisible();
 
     // MCP SERVER chips — lucide glyph via FacetIcon (mcp-active role

@@ -111,6 +111,17 @@ interface SwimLaneProps {
 
 const ROW_HEIGHT = 48;
 
+// Reserved zone at the strip's right edge for the absolutely-
+// positioned AgentStatusBadge wrapper. The wrapper itself sits at
+// ``right: 0`` and is removed from flex flow; without an explicit
+// padding-right on the strip's content, a wide topology pill in
+// the flex flow can land past the badge wrapper's left edge and
+// the badge no longer reads as the rightmost element. T49 pins
+// that contract via getBoundingClientRect x-positions. The 88 px
+// number = 12px left padding + ~50-60px badge content +
+// 12px right padding + a couple of pixels of breathing room.
+const BADGE_RESERVED_ZONE_PX = 88;
+
 // Visual breathing-room buffer between the label strip's right
 // edge (where the AgentStatusBadge sits via ``ml-auto``) and the
 // leftmost event circles / run brackets in the timeline panel.
@@ -228,7 +239,7 @@ function SwimLaneComponent({
 			    the CSS rule lives in globals.css so the same class works
 			    for swimlane + Events page sub-rows. */}
 			<div
-				className="swimlane-row-label flex h-full items-center gap-2 px-3"
+				className="swimlane-row-label flex h-full items-center gap-2"
 				style={{
 					width: leftPanelWidth,
 					flexShrink: 0,
@@ -245,6 +256,15 @@ function SwimLaneComponent({
 					left: 0,
 					zIndex: 3,
 					overflow: "hidden",
+					// Replaces Tailwind's ``px-3`` so the right padding
+					// reserves room for the absolutely-positioned
+					// AgentStatusBadge (see ``BADGE_RESERVED_ZONE_PX``).
+					// Flex pills inside the strip stop before the
+					// badge zone instead of overlapping it, so the
+					// badge always reads as the rightmost element on
+					// the row (T49 contract).
+					paddingLeft: 12,
+					paddingRight: BADGE_RESERVED_ZONE_PX,
 				}}
 			>
 				{(clientType === ClientType.ClaudeCode || flavor === "claude-code") && (

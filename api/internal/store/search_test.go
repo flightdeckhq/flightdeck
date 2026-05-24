@@ -168,7 +168,7 @@ func seedSearchSessionWithEvents(
 
 func TestSearch_AgentMatchesHostnameAndUserName(t *testing.T) {
 	s, cleanup := newTestStore(t)
-	defer cleanup()
+	t.Cleanup(cleanup)
 	ctx := context.Background()
 
 	suffix := randomUUID(t)[:8]
@@ -199,7 +199,7 @@ func TestSearch_AgentMatchesHostnameAndUserName(t *testing.T) {
 
 func TestSearch_AgentRankExactBeatsPrefixBeatsSubstring(t *testing.T) {
 	s, cleanup := newTestStore(t)
-	defer cleanup()
+	t.Cleanup(cleanup)
 	ctx := context.Background()
 
 	suffix := randomUUID(t)[:8]
@@ -235,7 +235,7 @@ func TestSearch_AgentRankExactBeatsPrefixBeatsSubstring(t *testing.T) {
 
 func TestSearch_AgentCrossFieldPrecedence(t *testing.T) {
 	s, cleanup := newTestStore(t)
-	defer cleanup()
+	t.Cleanup(cleanup)
 	ctx := context.Background()
 
 	suffix := randomUUID(t)[:8]
@@ -271,7 +271,7 @@ func TestSearch_AgentCrossFieldPrecedence(t *testing.T) {
 
 func TestSearch_EventTypeLiteralMatch(t *testing.T) {
 	s, cleanup := newTestStore(t)
-	defer cleanup()
+	t.Cleanup(cleanup)
 	ctx := context.Background()
 
 	suffix := randomUUID(t)[:8]
@@ -302,7 +302,7 @@ func TestSearch_EventTypeLiteralMatch(t *testing.T) {
 
 func TestSearch_EventTypeBareLiteralRanksFirst(t *testing.T) {
 	s, cleanup := newTestStore(t)
-	defer cleanup()
+	t.Cleanup(cleanup)
 	ctx := context.Background()
 
 	suffix := randomUUID(t)[:8]
@@ -340,7 +340,7 @@ func TestSearch_EventTypeBareLiteralRanksFirst(t *testing.T) {
 
 func TestSearch_CuratedTermReturnsMappedEventTypes(t *testing.T) {
 	s, cleanup := newTestStore(t)
-	defer cleanup()
+	t.Cleanup(cleanup)
 	ctx := context.Background()
 
 	suffix := randomUUID(t)[:8]
@@ -380,7 +380,7 @@ func TestSearch_CuratedTermReturnsMappedEventTypes(t *testing.T) {
 
 func TestSearch_CuratedPolicyTermSurfacesPolicyEvents(t *testing.T) {
 	s, cleanup := newTestStore(t)
-	defer cleanup()
+	t.Cleanup(cleanup)
 	ctx := context.Background()
 
 	suffix := randomUUID(t)[:8]
@@ -416,7 +416,7 @@ func TestSearch_CuratedPolicyTermSurfacesPolicyEvents(t *testing.T) {
 
 func TestSearch_EventCrossFieldPrecedence(t *testing.T) {
 	s, cleanup := newTestStore(t)
-	defer cleanup()
+	t.Cleanup(cleanup)
 	ctx := context.Background()
 
 	suffix := randomUUID(t)[:8]

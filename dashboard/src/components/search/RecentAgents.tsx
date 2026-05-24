@@ -1,11 +1,8 @@
 import { useEffect, useState } from "react";
 import { fetchRecentAgents, type RecentAgent } from "@/lib/api";
-import {
-  ClientType,
-  isAgentType,
-  isClientType,
-} from "@/lib/agent-identity";
-import { AgentTypeBadge } from "@/components/facets/AgentTypeBadge";
+import { ClientType, isClientType } from "@/lib/agent-identity";
+import { ClientTypePill } from "@/components/facets/ClientTypePill";
+import { StateChip } from "@/components/search/StateChip";
 import { ClaudeCodeLogo } from "@/components/ui/claude-code-logo";
 
 interface RecentAgentsProps {
@@ -65,9 +62,9 @@ export function RecentAgents({ onSelect }: RecentAgentsProps) {
         Recent agents
       </div>
       {agents.map((agent) => {
-        const showClaudeLogo =
-          isClientType(agent.client_type) &&
-          agent.client_type === ClientType.ClaudeCode;
+        const typedClient = isClientType(agent.client_type)
+          ? agent.client_type
+          : null;
         return (
           <button
             key={agent.agent_id}
@@ -75,21 +72,11 @@ export function RecentAgents({ onSelect }: RecentAgentsProps) {
             className="flex w-full items-center gap-3 px-3 py-2 text-left text-xs text-text-muted transition-colors hover:bg-surface-hover"
             onClick={() => onSelect(agent)}
           >
-            {showClaudeLogo && <ClaudeCodeLogo size={12} title="" />}
-            {isAgentType(agent.agent_type) && (
-              <AgentTypeBadge agentType={agent.agent_type} />
+            {typedClient === ClientType.ClaudeCode && <ClaudeCodeLogo size={12} />}
+            {typedClient && (
+              <ClientTypePill clientType={typedClient} size="compact" />
             )}
-            {agent.state && (
-              <span
-                className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${
-                  agent.state === "active"
-                    ? "bg-green-500/20 text-green-400"
-                    : "bg-surface-hover text-text-muted"
-                }`}
-              >
-                {agent.state}
-              </span>
-            )}
+            <StateChip state={agent.state} />
             <span className="font-medium text-text">{agent.agent_name}</span>
           </button>
         );

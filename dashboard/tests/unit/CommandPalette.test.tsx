@@ -330,7 +330,7 @@ describe("CommandPalette", () => {
     expect(pill.textContent).toBe("LLM CALL");
   });
 
-  it("AgentRow surfaces ClaudeCodeLogo + AgentTypeBadge + state chip (row parity)", () => {
+  it("AgentRow surfaces ClaudeCodeLogo + ClientTypePill + state chip (row parity)", () => {
     mockResults = {
       agents: [
         {
@@ -349,13 +349,47 @@ describe("CommandPalette", () => {
     render(<CommandPalette open={true} onOpenChange={onOpenChange} />);
     fireEvent.change(screen.getByRole("textbox"), { target: { value: "claude" } });
     const agentOption = screen.getAllByRole("option")[0];
-    // ClaudeCodeLogo carries a stable aria-label from PROVIDER_META;
-    // matching it inside the row proves the icon mounted.
-    expect(agentOption.querySelector("svg")).toBeTruthy();
-    // AgentTypeBadge renders "CODING" (CSS-uppercase) inside the row.
-    expect(agentOption.textContent?.toLowerCase()).toContain("coding");
+    // ClaudeCodeLogo carries the stable ``Coding agent (Claude Code)``
+    // tooltip / aria-label — query it directly so a stray icon
+    // (chevron, spinner) cannot satisfy the assertion.
+    expect(
+      agentOption.querySelector('svg[aria-label="Coding agent (Claude Code)"]'),
+    ).toBeTruthy();
+    // ClientTypePill renders the brand-cased "Claude Code" label
+    // (CSS-uppercase to "CLAUDE CODE") — the tool-family identity
+    // the operator recognises, not the autonomy axis ("CODING").
+    expect(agentOption.textContent?.toLowerCase()).toContain("claude code");
     // State chip — green-tinted span when active.
     expect(agentOption.textContent).toContain("active");
+  });
+
+  it("AgentRow shows SENSOR pill and omits ClaudeCodeLogo for sensor client_type", () => {
+    mockResults = {
+      agents: [
+        {
+          agent_id: "55555555-5555-4555-8555-555555555555",
+          agent_name: "sensor-agent",
+          agent_type: "production",
+          client_type: "flightdeck_sensor",
+          state: "idle",
+          last_seen: "2026-04-17T09:00:00Z",
+        },
+      ],
+      sessions: [],
+      events: [],
+    };
+    mockLoading = false;
+    render(<CommandPalette open={true} onOpenChange={onOpenChange} />);
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "sensor" } });
+    const agentOption = screen.getAllByRole("option")[0];
+    // Locks the showClaudeLogo guard — sensor-keyed agents must
+    // NOT get the Claude Code mark.
+    expect(
+      agentOption.querySelector('svg[aria-label="Coding agent (Claude Code)"]'),
+    ).toBeNull();
+    // ClientTypePill renders "Sensor" (uppercased to "SENSOR").
+    expect(agentOption.textContent?.toLowerCase()).toContain("sensor");
+    expect(agentOption.textContent).toContain("idle");
   });
 
   it("SessionRow surfaces ProviderLogo + model (row parity)", () => {
@@ -383,10 +417,13 @@ describe("CommandPalette", () => {
     const sessionOption = screen.getAllByRole("option")[0];
     // Model text is rendered inside the row.
     expect(sessionOption.textContent).toContain("claude-3-5-haiku");
-    // Provider logo (svg) sits next to the model — covers both the
-    // model treatment and the row layout.
-    const svgs = sessionOption.querySelectorAll("svg");
-    expect(svgs.length).toBeGreaterThan(0);
+    // ProviderLogo carries the brand-cased provider label as
+    // aria-label (``Anthropic`` for a claude-* model). Querying by
+    // the specific attribute locks the assertion to a real provider
+    // icon rather than any stray svg.
+    expect(
+      sessionOption.querySelector('svg[role="img"][aria-label="Anthropic"]'),
+    ).toBeTruthy();
   });
 
   it("renders RecentAgents in the empty state instead of the type-2-chars hint", async () => {

@@ -2136,7 +2136,7 @@ Matched columns per entity:
   independently. Each agent result also carries `client_type` and a
   LATERAL-derived `state` (via the shared `agentStateRollupSQL`),
   so the palette's AgentRow renders the same identity primitives
-  as `/agents` (ClaudeCodeLogo, AgentTypeBadge, state chip) and
+  as `/agents` (ClaudeCodeLogo, ClientTypePill, state chip) and
   the two surfaces agree on every agent's rolled-up state.
 - **Sessions** — `session_id`, `flavor`, `host`, `model`, plus
   `context->>'hostname'`, `context->>'os'`, `context->>'git_branch'`,

@@ -1,14 +1,11 @@
 import { useEffect, useRef } from "react";
 import { truncateSessionId } from "@/lib/events";
 import { getProvider } from "@/lib/models";
-import {
-  ClientType,
-  isAgentType,
-  isClientType,
-} from "@/lib/agent-identity";
+import { ClientType, isClientType } from "@/lib/agent-identity";
 import { Highlight } from "@/components/search/Highlight";
+import { StateChip } from "@/components/search/StateChip";
 import { EventTypePill } from "@/components/facets/EventTypePill";
-import { AgentTypeBadge } from "@/components/facets/AgentTypeBadge";
+import { ClientTypePill } from "@/components/facets/ClientTypePill";
 import { ClaudeCodeLogo } from "@/components/ui/claude-code-logo";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import type {
@@ -155,41 +152,19 @@ export function SearchResultsList({
   );
 }
 
-/** Compact state chip matching AgentTable's chip styling. Green
- *  background for active runs (consistent with the prior SessionRow
- *  chip pattern), neutral surface for everything else. Shared by
- *  AgentRow and SessionRow so a "stale" run and a "stale" agent
- *  read identically. */
-function StateChip({ state }: { state: string }) {
-  if (!state) return null;
-  const isActive = state === "active";
-  return (
-    <span
-      className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${
-        isActive
-          ? "bg-green-500/20 text-green-400"
-          : "bg-surface-hover text-text-muted"
-      }`}
-    >
-      {state}
-    </span>
-  );
-}
-
 function AgentRow({ item, query }: { item: SearchResultAgent; query: string }) {
   // Mirror AgentTableRow's identity cluster: ClaudeCodeLogo when
-  // the agent is a Claude Code client, then the agent-type badge,
-  // then the state chip, then the highlighted name, then time.
-  // All primitives are the same components /agents renders so the
-  // two surfaces read as one family.
-  const showClaudeLogo =
-    isClientType(item.client_type) && item.client_type === ClientType.ClaudeCode;
+  // the agent is a Claude Code client, then the ClientTypePill
+  // (CLAUDE CODE / SENSOR — the brand label the operator
+  // recognises, not the agent-type autonomy axis), then the state
+  // chip, then the highlighted name, then time. All primitives
+  // are the same components /agents renders so the two surfaces
+  // read as one family.
+  const typedClient = isClientType(item.client_type) ? item.client_type : null;
   return (
     <>
-      {showClaudeLogo && <ClaudeCodeLogo size={12} title="" />}
-      {isAgentType(item.agent_type) && (
-        <AgentTypeBadge agentType={item.agent_type} />
-      )}
+      {typedClient === ClientType.ClaudeCode && <ClaudeCodeLogo size={12} />}
+      {typedClient && <ClientTypePill clientType={typedClient} size="compact" />}
       <StateChip state={item.state} />
       <Highlight
         text={item.agent_name}
@@ -219,7 +194,7 @@ function SessionRow({
       <StateChip state={item.state} />
       {item.model && (
         <span className="flex items-center gap-1 text-text-muted">
-          <ProviderLogo provider={getProvider(item.model)} size={12} title="" />
+          <ProviderLogo provider={getProvider(item.model)} size={12} />
           <Highlight text={item.model} query={query} className="text-text-muted" />
         </span>
       )}
@@ -246,7 +221,7 @@ function EventRow({ item, query }: { item: SearchResultEvent; query: string }) {
       />
       {item.model && (
         <span className="flex items-center gap-1 text-text-muted">
-          <ProviderLogo provider={getProvider(item.model)} size={12} title="" />
+          <ProviderLogo provider={getProvider(item.model)} size={12} />
           <Highlight text={item.model} query={query} className="text-text-muted" />
         </span>
       )}

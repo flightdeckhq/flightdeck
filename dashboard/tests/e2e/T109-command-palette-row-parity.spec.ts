@@ -29,18 +29,22 @@ test.describe("T109 — palette row parity (agent + run)", () => {
     await expect.poll(async () => agentOptions.count()).toBeGreaterThan(0);
 
     const firstAgentRow = agentOptions.first();
-    // The agent-type label is rendered inside the AgentTypeBadge
-    // (CSS-uppercase). Coding agents show "CODING"; production
-    // agents show "PRODUCTION". Either is acceptable — assert the
-    // badge exists at all.
-    await expect(firstAgentRow).toContainText(/coding|production/i);
+    // ClientTypePill renders the brand label ("CLAUDE CODE" or
+    // "SENSOR" today, any future coding-agent tool we add). The
+    // operator recognises this; the agent-type axis (CODING /
+    // PRODUCTION) is too abstract for the palette row.
+    await expect(firstAgentRow).toContainText(/claude code|sensor/i);
     // State chip text. Seeded e2e agents land in one of the locked
     // states; assert one of them appears in the row.
     await expect(firstAgentRow).toContainText(/active|idle|stale|closed|lost/);
-    // ClaudeCodeLogo or another svg primitive should be inside the
-    // row (the icon column is a stable identity primitive).
-    const svgs = firstAgentRow.locator("svg");
-    await expect.poll(async () => svgs.count()).toBeGreaterThan(0);
+    // ClaudeCodeLogo carries the stable ``Coding agent (Claude
+    // Code)`` aria-label — query the SVG by that label so the
+    // assertion can't be satisfied by a stray icon (chevron,
+    // spinner).
+    const claudeLogo = firstAgentRow.locator(
+      'svg[aria-label="Coding agent (Claude Code)"]',
+    );
+    await expect(claudeLogo).toBeVisible();
   });
 
   test("run row carries ProviderLogo + model text", async ({ page }) => {

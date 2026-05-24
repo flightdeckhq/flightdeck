@@ -929,24 +929,27 @@ export interface CustomDirectiveParameter {
 /** Search result: agent summary. client_type + state mirror the
  *  /v1/agents listing projection so the palette's AgentRow can
  *  reuse the same identity primitives the /agents table row uses
- *  (ClaudeCodeLogo, AgentTypeBadge, AgentStatusBadge). state is
- *  derived via the shared LATERAL rollup on the backend so /v1/search
- *  and /agents agree on the rolled-up value. */
+ *  (ClaudeCodeLogo, ClientTypePill, state chip). state is derived
+ *  via the shared LATERAL rollup on the backend so /v1/search and
+ *  /agents agree on the rolled-up value. ``""`` is the wire shape
+ *  for "no rolled-up state" (agent with no sessions yet). */
 export interface SearchResultAgent {
   agent_id: string;
   agent_name: string;
   agent_type: string;
   client_type: string;
-  state: string;
+  state: SessionState | "";
   last_seen: string;
 }
 
-/** Search result: session summary (extended with fields for Investigate table). */
+/** Search result: session summary (extended with fields for Investigate table).
+ *  ``state`` types to ``SessionState`` so the shared StateChip can
+ *  consume the same union the agent rollup uses. */
 export interface SearchResultSession {
   session_id: string;
   flavor: string;
   host: string;
-  state: string;
+  state: SessionState | "";
   started_at: string;
   ended_at: string | null;
   model: string;

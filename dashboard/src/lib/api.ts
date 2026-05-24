@@ -4,6 +4,7 @@ import type {
   AgentSummaryPeriod,
   AgentSummaryResponse,
   SessionDetail,
+  SessionState,
   Policy,
   PolicyRequest,
   DirectiveRequest,
@@ -118,15 +119,16 @@ export function fetchFleet(page = 1, perPage = 50, agentType?: string): Promise<
 /** Minimal projection of /v1/agents needed for the search palette's
  *  recent-agents empty state. client_type + state let the empty-state
  *  RecentAgents list reuse the same AgentRow identity primitives the
- *  populated results render (ClaudeCodeLogo, AgentTypeBadge,
- *  AgentStatusBadge). The endpoint returns many more fields; we
- *  declare only what the UI consumes. */
+ *  populated results render (ClaudeCodeLogo, ClientTypePill, state
+ *  chip). The endpoint returns many more fields; we declare only
+ *  what the UI consumes. ``""`` is the wire shape for "no rolled-up
+ *  state" (agent with no sessions yet). */
 export interface RecentAgent {
   agent_id: string;
   agent_name: string;
   agent_type: string;
   client_type: string;
-  state: string;
+  state: SessionState | "";
   last_seen_at: string;
 }
 

@@ -666,13 +666,13 @@ const agentLatestContextSQL = `
 // GetAgentByID, and the agents arm of Search so the L37 state
 // column reads identically on /agents and /v1/search.
 //
-// IMPORTANT: references ``a.agent_id`` from the outer query —
-// every caller MUST alias the outer ``agents`` table as ``a``
-// (same convention as ``d126AgentRollupSQL`` and
-// ``agentLatestContextSQL`` above).
+// IMPORTANT: references “a.agent_id“ from the outer query —
+// every caller MUST alias the outer “agents“ table as “a“
+// (same convention as “d126AgentRollupSQL“ and
+// “agentLatestContextSQL“ above).
 //
-// Used inside a ``LEFT JOIN LATERAL ( ... ) rollup ON TRUE``
-// clause; callers read ``rollup.state``.
+// Used inside a “LEFT JOIN LATERAL ( ... ) rollup ON TRUE“
+// clause; callers read “rollup.state“.
 const agentStateRollupSQL = `
 	SELECT CASE
 		WHEN EXISTS (

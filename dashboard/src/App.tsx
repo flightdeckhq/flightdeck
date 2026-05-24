@@ -79,6 +79,7 @@ function Nav({ onSearchClick }: { onSearchClick: () => void }) {
           onClick={onSearchClick}
           className="flex items-center gap-1.5 rounded border border-border px-2 py-1 text-xs text-text-muted transition-colors hover:border-primary hover:text-text"
           aria-label="Search"
+          data-testid="nav-search-trigger"
         >
           <Search className="h-3.5 w-3.5" />
           <span className="hidden sm:inline">Search</span>

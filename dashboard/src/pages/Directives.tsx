@@ -118,7 +118,7 @@ export function Directives() {
       </div>
 
       {error && (
-        <div className="mb-4 rounded-md border border-danger/30 bg-danger/10 px-3 py-2 text-xs text-[var(--danger)]">
+        <div className="mb-4 rounded-md border border-[color-mix(in_srgb,var(--danger)_30%,transparent)] bg-[color-mix(in_srgb,var(--danger)_10%,transparent)] px-3 py-2 text-xs text-[var(--danger)]">
           {error}
           <Button size="sm" className="ml-2 h-5 px-2 text-[11px]" onClick={load}>
             Retry

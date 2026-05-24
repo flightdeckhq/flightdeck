@@ -117,27 +117,13 @@ func (s *Store) ListAgents(
 ) (*AgentListResponse, error) {
 	conds, args := buildAgentFilterClause(params)
 
-	// The LATERAL state rollup mirrors GetAgentFleet's shape so the
-	// state column is available for both WHERE filtering and
-	// ORDER BY expressions. Keeping the two queries in lock-step on
-	// the rollup shape prevents drift between fleet-overview and
-	// agents-list state semantics.
+	// LATERAL state rollup is the shared ``agentStateRollupSQL``
+	// (postgres.go) so /agents and /v1/search agree on each
+	// agent's rolled-up state. The clause is wrapped here so the
+	// shared SELECT can be reused under different JOIN kinds /
+	// aliases without baking the join into the constant.
 	rollupSQL := `
-		LEFT JOIN LATERAL (
-			SELECT CASE
-				WHEN EXISTS (
-					SELECT 1 FROM sessions s
-					WHERE s.agent_id = a.agent_id AND s.state = 'active'
-				) THEN 'active'
-				ELSE (
-					SELECT s.state
-					FROM sessions s
-					WHERE s.agent_id = a.agent_id
-					ORDER BY s.started_at DESC
-					LIMIT 1
-				)
-			END AS state
-		) rollup ON TRUE`
+		LEFT JOIN LATERAL (` + agentStateRollupSQL + `) rollup ON TRUE`
 
 	whereSQL := ""
 	if len(conds) > 0 {
@@ -259,21 +245,7 @@ func (s *Store) GetAgentByID(
 			d161.os, d161.arch, d161.git_branch, d161.git_repo,
 			d161.orchestration, d161.python_version, d161.process_name
 		FROM agents a
-		LEFT JOIN LATERAL (
-			SELECT CASE
-				WHEN EXISTS (
-					SELECT 1 FROM sessions s
-					WHERE s.agent_id = a.agent_id AND s.state = 'active'
-				) THEN 'active'
-				ELSE (
-					SELECT s.state
-					FROM sessions s
-					WHERE s.agent_id = a.agent_id
-					ORDER BY s.started_at DESC
-					LIMIT 1
-				)
-			END AS state
-		) rollup ON TRUE
+		LEFT JOIN LATERAL (` + agentStateRollupSQL + `) rollup ON TRUE
 		LEFT JOIN LATERAL (` + d126AgentRollupSQL + `) d126 ON TRUE
 		LEFT JOIN LATERAL (` + agentLatestContextSQL + `) d161 ON TRUE
 		WHERE a.agent_id = $1::uuid

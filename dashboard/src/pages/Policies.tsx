@@ -175,7 +175,7 @@ function TokenBudgetTab() {
       </div>
 
       {error && (
-        <div className="mb-4 rounded-md border border-danger/30 bg-danger/10 px-3 py-2 text-xs text-danger">
+        <div className="mb-4 rounded-md border border-[color-mix(in_srgb,var(--danger)_30%,transparent)] bg-[color-mix(in_srgb,var(--danger)_10%,transparent)] px-3 py-2 text-xs text-danger">
           {error}
         </div>
       )}

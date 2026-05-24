@@ -3,11 +3,13 @@ import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Search, Loader2 } from "lucide-react";
 import { useSearch } from "@/hooks/useSearch";
 import { SearchResultsList } from "@/components/search/SearchResults";
+import { RecentAgents } from "@/components/search/RecentAgents";
 import type {
   SearchResultAgent,
   SearchResultSession,
   SearchResultEvent,
 } from "@/lib/types";
+import type { RecentAgent } from "@/lib/api";
 
 type ResultItem = SearchResultAgent | SearchResultSession | SearchResultEvent;
 
@@ -15,6 +17,21 @@ interface CommandPaletteProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSelectResult?: (type: "agent" | "session" | "event", item: ResultItem) => void;
+}
+
+/** The RecentAgent shape (api.ts) is the full /v1/agents row.
+ *  SearchResultAgent uses `last_seen` (a search-result alias for
+ *  the same value); bridging here lets the empty-state and the
+ *  results-state share one host callback. */
+function recentAgentToSearchResult(a: RecentAgent): SearchResultAgent {
+  return {
+    agent_id: a.agent_id,
+    agent_name: a.agent_name,
+    agent_type: a.agent_type,
+    client_type: a.client_type,
+    state: a.state,
+    last_seen: a.last_seen_at,
+  };
 }
 
 export function CommandPalette({
@@ -113,6 +130,7 @@ export function CommandPalette({
 
   const showNoResults =
     query.length >= 2 && !loading && results && totalItems === 0;
+  const showRecentAgents = query.length < 2 && !loading;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -148,6 +166,7 @@ export function CommandPalette({
             results={results}
             onSelect={handleSelect}
             focusedIndex={focusedIndex}
+            query={query}
           />
         )}
 
@@ -165,11 +184,13 @@ export function CommandPalette({
           </div>
         )}
 
-        {/* Hint when empty */}
-        {query.length < 2 && !loading && (
-          <div className="px-3 py-8 text-center text-xs text-text-muted">
-            Type at least 2 characters to search
-          </div>
+        {/* Empty state — recent agents jump list (replaces the
+            "Type at least 2 characters" hint). Renders only when
+            the operator hasn't typed enough for a real search. */}
+        {showRecentAgents && (
+          <RecentAgents
+            onSelect={(agent) => handleSelect("agent", recentAgentToSearchResult(agent))}
+          />
         )}
       </DialogContent>
     </Dialog>

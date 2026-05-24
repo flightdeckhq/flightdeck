@@ -659,6 +659,36 @@ const agentLatestContextSQL = `
 	LIMIT 1
 `
 
+// agentStateRollupSQL is the LATERAL subquery that derives an
+// agent's rolled-up state from its sessions: "active" if any
+// session is active right now, otherwise the state of the
+// most-recently-started session. Shared by ListAgents,
+// GetAgentByID, and the agents arm of Search so the L37 state
+// column reads identically on /agents and /v1/search.
+//
+// IMPORTANT: references “a.agent_id“ from the outer query —
+// every caller MUST alias the outer “agents“ table as “a“
+// (same convention as “d126AgentRollupSQL“ and
+// “agentLatestContextSQL“ above).
+//
+// Used inside a “LEFT JOIN LATERAL ( ... ) rollup ON TRUE“
+// clause; callers read “rollup.state“.
+const agentStateRollupSQL = `
+	SELECT CASE
+		WHEN EXISTS (
+			SELECT 1 FROM sessions s
+			WHERE s.agent_id = a.agent_id AND s.state = 'active'
+		) THEN 'active'
+		ELSE (
+			SELECT s.state
+			FROM sessions s
+			WHERE s.agent_id = a.agent_id
+			ORDER BY s.started_at DESC
+			LIMIT 1
+		)
+	END AS state
+`
+
 // GetSession returns a single session by ID, including effective policy thresholds.
 // Policy lookup cascades: session scope > flavor scope > org scope.
 func (s *Store) GetSession(ctx context.Context, sessionID string) (*Session, error) {

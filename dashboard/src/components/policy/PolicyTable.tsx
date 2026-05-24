@@ -26,10 +26,14 @@ export interface PolicyTableProps {
 // keeps the chip readable in both themes; org / flavor visually
 // share the accent because both indicate scope-of-application
 // (the prior color split was cosmetic, not semantic).
+// bg-<token>/<N> compiles to no background when <token> resolves
+// to a hex-valued CSS var (Tailwind v3 can't channel-split a hex
+// var without theme cooperation). Use the explicit color-mix
+// arbitrary value so the tint actually paints in both themes.
 const scopeColors: Record<string, string> = {
-  org: "bg-primary/20 text-primary",
-  flavor: "bg-accent/20 text-accent",
-  session: "bg-success/20 text-success",
+  org: "bg-[color-mix(in_srgb,var(--primary)_20%,transparent)] text-primary",
+  flavor: "bg-[color-mix(in_srgb,var(--accent)_20%,transparent)] text-accent",
+  session: "bg-[color-mix(in_srgb,var(--success)_20%,transparent)] text-success",
 };
 
 function formatLimit(value: number | null): string {

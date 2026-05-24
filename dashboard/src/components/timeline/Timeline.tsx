@@ -13,6 +13,10 @@ import {
   persistLeftPanelWidth,
   readPersistedLeftPanelWidth,
 } from "@/lib/leftPanelWidth";
+import {
+  persistAllRowCollapsed,
+  useAllRowCollapsed,
+} from "@/lib/allRowCollapsed";
 import { TimeAxis } from "./TimeAxis";
 import { AllSwimLane } from "./SwimLane";
 import { VirtualizedSwimLane } from "./VirtualizedSwimLane";
@@ -29,23 +33,6 @@ interface TimelineProps {
   flavors: FlavorSummary[];
   flavorFilter?: string | null;
   timeRange: TimeRange;
-  /**
-   * Set of currently-expanded flavor names. Multiple flavors can be
-   * open simultaneously. Owned by Fleet.tsx and toggled via
-   * onExpandFlavor below.
-   */
-  expandedFlavors: Set<string>;
-  onExpandFlavor: (flavor: string) => void;
-  /**
-   * Per-flavor on-demand session lists, keyed by flavor (which is
-   * the agent_id under D115). When the map has an entry for a given
-   * flavor, the SwimLane's expanded SESSIONS drawer renders from it
-   * instead of the 24-hour Fleet-windowed ``f.sessions`` subset, so
-   * old / closed sessions appear in the drawer but NOT on the main
-   * event-circle row. Populated by the fleet store's
-   * ``loadExpandedSessions(agentId)`` action.
-   */
-  expandedSessions?: Map<string, import("@/lib/types").Session[]>;
   onNodeClick: (sessionId: string, eventId?: string, event?: import("@/lib/types").AgentEvent) => void;
   activeFilter?: string | null;
   paused?: boolean;
@@ -74,9 +61,6 @@ export function Timeline({
   flavors,
   flavorFilter,
   timeRange,
-  expandedFlavors,
-  onExpandFlavor,
-  expandedSessions,
   onNodeClick,
   activeFilter,
   paused,
@@ -105,6 +89,19 @@ export function Timeline({
   useEffect(() => {
     leftPanelWidthRef.current = leftPanelWidth;
   }, [leftPanelWidth]);
+
+  // Fleet-wide ALL aggregate row collapse state. Persisted via
+  // ``persistAllRowCollapsed`` to a dedicated localStorage key so
+  // the preference survives reloads independent of the left-panel
+  // width. Default is collapsed (true) — the AllSwimLane renders a
+  // 24px toggle bar that the operator can chevron-expand on
+  // demand. ``useAllRowCollapsed`` subscribes to the same-tab
+  // CustomEvent so a future second consumer would stay in sync
+  // without prop drilling.
+  const allRowCollapsed = useAllRowCollapsed();
+  const handleAllRowToggle = useCallback(() => {
+    persistAllRowCollapsed(!allRowCollapsed);
+  }, [allRowCollapsed]);
 
   const handleResizeStart = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
@@ -270,15 +267,14 @@ export function Timeline({
         f.sessions.some((s) => matchingSessionIds.has(s.session_id)),
       );
     }
-    // D126 UX revision 2026-05-03 — β-grouping. Group child flavors
-    // immediately under their parent flavor in the visible list.
-    // ``deriveRelationship`` resolves each flavor's
-    // ``parentAgentId`` against the visible fleet; ``groupChildren-
-    // UnderParents`` reorders so each child sits right after its
-    // parent. Within a parent group, children sort by their
-    // earliest session's ``started_at`` ASC (spawn-time order).
-    // Lone flavors and parents whose parent isn't visible keep
-    // their natural activity-bucket position from the upstream
+    // β-grouping: group child flavors immediately under their parent
+    // flavor in the visible list. ``deriveRelationship`` resolves
+    // each flavor's ``parentAgentId`` against the visible fleet;
+    // ``groupChildrenUnderParents`` reorders so each child sits
+    // right after its parent. Within a parent group, children sort
+    // by their earliest session's ``started_at`` ASC (spawn-time
+    // order). Lone flavors and parents whose parent isn't visible
+    // keep their natural activity-bucket position from the upstream
     // sort owned by Fleet's store.
     const earliestStartedAt = (f: typeof result[number]): string => {
       let earliest: string | undefined;
@@ -302,18 +298,24 @@ export function Timeline({
     });
   }, [flavors, flavorFilter, matchingSessionIds]);
 
-  // D126 UX revision 2026-05-03 — topology lookup keyed by flavor.
-  // Built once per filteredFlavors change so the per-row prop look-
-  // up stays O(1) at render time. ``"child"`` rows light up the
+  // Topology lookup keyed by flavor. Built once per
+  // filteredFlavors change so the per-row prop lookup stays O(1)
+  // at render time. ``"child"`` rows light up the
   // ``[data-topology="child"]`` indent + bg-tint via globals.css.
+  //
+  // The gate is a pure ``rel.mode === "child"`` check against the
+  // session-linkage scan: any row whose relationship pill reads
+  // "↳ child of {parent}" semantically IS a child, regardless of
+  // whether its parent agent currently lives in the visible
+  // window. The row's own pill stays accurate either way, so the
+  // indent + tint must match the pill. SubAgentConnector.tsx
+  // separately gates connector rendering on both endpoints being
+  // visible — the two concerns decouple cleanly.
   const topologyByFlavor = useMemo(() => {
     const m = new Map<string, "root" | "child">();
-    const visibleIds = new Set(filteredFlavors.map((f) => f.flavor));
     for (const f of filteredFlavors) {
       const rel = deriveRelationship(f.flavor, f.sessions, filteredFlavors);
-      const isChild =
-        rel.mode === "child" && visibleIds.has(rel.parentAgentId);
-      m.set(f.flavor, isChild ? "child" : "root");
+      m.set(f.flavor, rel.mode === "child" ? "child" : "root");
     }
     return m;
   }, [filteredFlavors]);
@@ -358,10 +360,10 @@ export function Timeline({
     });
   }, [scale, rangeMs, scaleEndMs]);
 
-  // D126 § 4.3 — sub-agent time-flow connector overlay. Hooks
-  // declared BEFORE the empty-fleet early return below per the
-  // rules-of-hooks contract; the useLayoutEffect's body short-
-  // circuits cleanly when there's nothing to measure.
+  // Sub-agent time-flow connector overlay. Hooks declared BEFORE
+  // the empty-fleet early return below per the rules-of-hooks
+  // contract; the useLayoutEffect's body short-circuits cleanly
+  // when there's nothing to measure.
   const innerContentRef = useRef<HTMLDivElement | null>(null);
   const [connectorSpecs, setConnectorSpecs] = useState<
     SubAgentConnectorSpec[]
@@ -402,13 +404,18 @@ export function Timeline({
       width: containerRect.width,
       height: containerRect.height,
     });
-    // session_id → row element via the SwimLane outer wrapper's
-    // data-agent-id attribute. Each session lives under exactly one
-    // agent (D126 § 2 identity model) so the lookup is single-hop.
+    // session_id → row element via the SwimLane row's
+    // data-agent-id attribute. The connector geometry must anchor
+    // on a LIVE row (one carrying the actual event circles), not a
+    // VirtualizedSwimLane placeholder spacer; the placeholder also
+    // carries data-agent-id so scrollToAgentRow can still find it
+    // for click-pill-to-jump, but we filter it out here via
+    // ``:not([data-virtualized])`` so a connector line never
+    // anchors to an empty spacer rectangle.
     const sessionToRow = new Map<string, HTMLElement>();
     for (const f of filteredFlavors) {
       const row = container.querySelector<HTMLElement>(
-        `[data-agent-id="${CSS.escape(f.flavor)}"]`,
+        `[data-agent-id="${CSS.escape(f.flavor)}"]:not([data-virtualized])`,
       );
       if (!row) continue;
       for (const s of f.sessions) {
@@ -437,18 +444,29 @@ export function Timeline({
         const parentEvents = eventsCache.get(parentId);
         const childEvents = eventsCache.get(childSession.session_id);
         if (!parentEvents?.length || !childEvents?.length) continue;
-        const childFirstEvent = childEvents[0];
+        // Pick the child's first event INSIDE the visible domain
+        // rather than the absolute first event. A long-running
+        // child session whose ``session_start`` is at an old
+        // timestamp (e.g. seeded at -2h relative to NOW) but
+        // which has fresh tool_call events from the keep-alive
+        // watchdog at NOW-30s would otherwise pick the old
+        // session_start as ``childEvents[0]``, fail the domain
+        // check below, and skip the connector — even though the
+        // child has visible event circles inside the window.
+        // Anchoring on the first in-domain event matches the
+        // visible swimlane state.
+        const childFirstEvent = childEvents.find((e) => {
+          const t = new Date(e.occurred_at).getTime();
+          return t >= domainStart && t <= domainEnd;
+        });
         if (!childFirstEvent) continue;
         const parentSpawnEvent = pickSpawnEvent(parentEvents, childFirstEvent);
         if (!parentSpawnEvent) continue;
         const parentTs = new Date(parentSpawnEvent.occurred_at).getTime();
         const childTs = new Date(childFirstEvent.occurred_at).getTime();
-        if (
-          parentTs < domainStart ||
-          parentTs > domainEnd ||
-          childTs < domainStart ||
-          childTs > domainEnd
-        ) {
+        // The parent's spawn event must ALSO be in domain. The
+        // child anchor above is already in domain by construction.
+        if (parentTs < domainStart || parentTs > domainEnd) {
           continue;
         }
         const parentX =
@@ -479,7 +497,6 @@ export function Timeline({
     filteredFlavors,
     scale,
     leftPanelWidth,
-    expandedFlavors,
     sessionVersions,
     connectorNonce,
   ]);
@@ -536,12 +553,8 @@ export function Timeline({
           clientType={f.client_type}
           agentType={f.agent_type}
           sessions={f.sessions}
-          expandedSessions={expandedSessions?.get(f.flavor)}
-          totalSessionsLifetime={f.session_count}
           scale={scale}
           onSessionClick={onNodeClick}
-          expanded={expandedFlavors.has(f.flavor)}
-          onToggleExpand={() => onExpandFlavor(f.flavor)}
           timelineWidth={timelineWidth}
           leftPanelWidth={leftPanelWidth}
           activeFilter={activeFilter}
@@ -549,8 +562,8 @@ export function Timeline({
           matchingSessionIds={matchingSessionIds}
           topology={topologyByFlavor.get(f.flavor) ?? "root"}
           onScrollToAgent={(agentId) => {
-            // D126 § 7.fix.A — clicking the relationship pill jumps
-            // to another agent's swimlane row. We already stamp
+            // Clicking the relationship pill jumps to another agent's
+            // swimlane row. We already stamp
             // ``data-testid="swimlane-agent-row-<name>"`` on every
             // collapsed header, but the robust selector for client-
             // side scroll uses the agent_id itself; tag added on the
@@ -587,9 +600,6 @@ export function Timeline({
     filteredFlavors,
     topologyByFlavor,
     rawEndMs,
-    expandedSessions,
-    expandedFlavors,
-    onExpandFlavor,
     onNodeClick,
     scale,
     timelineWidth,
@@ -635,11 +645,11 @@ export function Timeline({
         ref={innerContentRef}
         style={{ width: innerWidth, minWidth: "100%", position: "relative" }}
       >
-        {/* D126 § 4.3 — sub-agent connector overlay. Sits at
-            z-index 2 (above grid lines, below event circles) so
-            connector lines paint between the parent's spawn event
-            and the child's first event without obscuring either
-            endpoint. The overlay's pointerEvents are limited to
+        {/* Sub-agent connector overlay. Sits at z-index 2 (above
+            grid lines, below event circles) so connector lines
+            paint between the parent's spawn event and the child's
+            first event without obscuring either endpoint. The
+            overlay's pointerEvents are limited to
             the path stroke so swimlane row clicks pass through
             empty connector space. */}
         <SubAgentConnector
@@ -701,11 +711,16 @@ export function Timeline({
             the 28-px sticky time-axis spacer above -- that placement
             clipped the grab area to a thin strip next to the top
             pills, which was too small to be discoverable or reliable.
-            Positioned at `left: leftPanelWidth - 3` so the 6-px-wide
-            handle straddles the label column's right border. zIndex
-            10 sits above the sticky time axis (z 4) and the grid
-            overlay (z 1) so the user can still grab it while hovering
-            a pill or a grid line. */}
+            Positioned at `left: leftPanelWidth - 5` so the 10-px-wide
+            transparent hit-area straddles the label column's right
+            border (the column edge stays at `leftPanelWidth`; the
+            transparent strip just gives the operator a generous
+            grab target around it). zIndex 10 sits above the sticky
+            time axis (z 4) and the grid overlay (z 1) so the user
+            can still grab it while hovering a pill or a grid line.
+            The 6-px earlier hit area was hard to land on; 10 px
+            matches what feels right alongside the visible 1-px
+            column border. */}
         <div
           data-testid="left-panel-resize-handle"
           role="separator"
@@ -715,8 +730,8 @@ export function Timeline({
             position: "absolute",
             top: 0,
             bottom: 0,
-            left: leftPanelWidth - 3,
-            width: 6,
+            left: leftPanelWidth - 5,
+            width: 10,
             cursor: "col-resize",
             zIndex: 10,
             background: "transparent",
@@ -783,14 +798,21 @@ export function Timeline({
         </div>
 
         {/* ALL aggregate row.
-            Sits above the FLAVORS section as a single non-expandable
-            lane that merges every session's events into one timeline.
-            Reads from the unfiltered `flavors` prop (NOT
-            filteredFlavors) so it always shows the whole fleet
-            regardless of the CONTEXT sidebar filter -- it's a
-            fleet-wide overview, not a filtered subset. The event-type
-            filter (`activeFilter`) still applies inside each circle
-            via EventNode.isVisible. */}
+            Sits above the FLAVORS section as a single collapsible
+            lane that merges every session's events into one
+            timeline. Default state is collapsed (toggle bar only):
+            once the `/agents` page exists as the dedicated
+            fleet-overview surface, the ALL row's pulse is
+            redundant for most operators. The chevron toggle
+            expands the row; the preference is persisted to
+            localStorage via `persistAllRowCollapsed` so the
+            choice survives reloads. When expanded, the lane
+            reads from the unfiltered `flavors` prop (NOT
+            `filteredFlavors`) so it always shows the whole
+            fleet regardless of the CONTEXT sidebar filter --
+            it's a fleet-wide overview, not a filtered subset.
+            The event-type filter (`activeFilter`) still applies
+            inside each circle via EventNode.isVisible. */}
         <AllSwimLane
           flavors={flavors}
           scale={scale}
@@ -799,7 +821,8 @@ export function Timeline({
           leftPanelWidth={leftPanelWidth}
           activeFilter={activeFilter}
           sessionVersions={sessionVersions}
-          hasVisibleEventsInWindow={hasVisibleEventsInWindow}
+          collapsed={allRowCollapsed}
+          onToggle={handleAllRowToggle}
         />
 
         {/* FLAVORS section header.
@@ -867,9 +890,9 @@ export function Timeline({
             spacer. At 50+ flavors a smoke test fleet was exceeding
             9,000 DOM nodes and 80 ms of style-recalc per tick --
             memoization alone couldn't fix that because the absolute
-            DOM footprint was the bottleneck. Expansion state lives
-            in Fleet's `expandedFlavors` Set, so the unmount
-            round-trip is lossless. The ALL row above is NOT
+            DOM footprint was the bottleneck. Per-row state is
+            entirely derived from the agent's session list so the
+            unmount round-trip is lossless. The ALL row above is NOT
             virtualized -- it's always the top row and would defeat
             its own purpose if it flickered between spacer and real
             content. */}

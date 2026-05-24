@@ -54,7 +54,7 @@ beforeEach(() => {
 });
 
 describe("PolicyEditor enhancements", () => {
-  it("scope dropdown shows Organization, Flavor, Session labels", () => {
+  it("scope dropdown shows Organization, Agent, Run labels", () => {
     render(<PolicyEditor onSave={vi.fn()} onCancel={vi.fn()} />);
     // The combobox trigger should show "Organization" for default "org" scope
     const orgTexts = screen.getAllByText("Organization");
@@ -129,7 +129,7 @@ describe("PolicyEditor enhancements", () => {
     );
     expect(screen.getByTestId("session-dropdown")).toBeInTheDocument();
     // The "Or enter session ID directly" fallback is always shown
-    expect(screen.getByText("Or enter session ID directly")).toBeInTheDocument();
+    expect(screen.getByText("Or enter run ID directly")).toBeInTheDocument();
   });
 
   it("degrade model dropdown renders when degrade_at_pct is set", () => {

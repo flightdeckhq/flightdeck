@@ -15,34 +15,23 @@ const FALLBACK_ROW_HEIGHT = 48;
 
 interface VirtualizedSwimLaneProps {
   flavor: string;
-  /** D115 label + pill metadata. Forwarded verbatim to SwimLane. */
+  /** Label + pill metadata. Forwarded verbatim to SwimLane. */
   agentName?: string;
   clientType?: ClientType;
   agentType?: string;
   sessions: Session[];
-  /** Forwarded to SwimLane for the expanded SESSIONS drawer; see
-   *  SwimLane.tsx for the windowing rationale. */
-  expandedSessions?: Session[];
-  /** D115 ``agent.total_sessions`` lifetime counter. Forwarded to
-   *  SwimLane so the expanded-drawer footer can compare against
-   *  the returned ``expandedSessions`` length and surface a
-   *  ``"Showing N of M sessions"`` preamble when truncated. */
-  totalSessionsLifetime?: number;
   scale: ScaleTime<number, number>;
   onSessionClick: (sessionId: string, eventId?: string, event?: AgentEvent) => void;
-  expanded: boolean;
-  onToggleExpand: () => void;
   timelineWidth: number;
   leftPanelWidth: number;
   activeFilter?: string | null;
   sessionVersions?: Record<string, number>;
   matchingSessionIds?: Set<string> | null;
-  /** D126 § 7.fix.A — forwarded to SwimLane for relationship-pill
-   *  click navigation. */
+  /** Forwarded to SwimLane for relationship-pill click navigation. */
   onScrollToAgent?: (agentId: string) => void;
-  /** D126 UX revision 2026-05-03 — row topology (``"root"`` or
-   *  ``"child"``); forwarded verbatim to SwimLane so the
-   *  ``data-topology`` attribute drives the indent + bg tint. */
+  /** Row topology (``"root"`` or ``"child"``); forwarded verbatim to
+   *  SwimLane so the ``data-topology`` attribute drives the indent +
+   *  bg tint. */
   topology?: "root" | "child";
 }
 
@@ -63,9 +52,8 @@ interface VirtualizedSwimLaneProps {
  * layout shift on scroll; the DOM below the visible row count simply
  * doesn't exist.
  *
- * Expansion state is owned by Fleet.tsx's `expandedFlavors` Set, not
- * SwimLane local state, so an unmount/remount on scroll preserves
- * whichever rows the user had opened.
+ * Per-row state is entirely derived from the agent's session list
+ * so an unmount/remount on scroll is lossless.
  *
  * ALL row is intentionally not virtualized (Timeline.tsx keeps
  * AllSwimLane outside this wrapper) because it's always at the top
@@ -127,17 +115,31 @@ export function VirtualizedSwimLane(props: VirtualizedSwimLaneProps) {
   const virtualize = hasIO && !isIntersecting && measuredHeight != null;
 
   if (virtualize) {
+    // The placeholder carries data-agent-id so scrollToAgentRow can
+    // still target a virtualized row for click-pill-to-jump
+    // navigation. Timeline's connector-overlay geometry filters
+    // these out via ``:not([data-virtualized])`` so a parent-or-
+    // child that's currently a spacer doesn't anchor a connector
+    // line at the spacer's empty-rectangle Y.
     return (
       <div
         ref={ref}
         data-testid="virtualized-placeholder"
         data-flavor={props.flavor}
+        data-agent-id={props.flavor}
+        data-virtualized="true"
         aria-hidden="true"
         style={{ height: measuredHeight ?? FALLBACK_ROW_HEIGHT }}
       />
     );
   }
 
+  // Live wrapper does NOT carry data-agent-id — the inner SwimLane
+  // row stamps it on its own outermost element so a single
+  // ``[data-agent-id="X"]`` query returns the row's outermost div
+  // (which also carries data-topology + data-testid). The
+  // virtualized placeholder above DOES stamp data-agent-id because
+  // it stands in for the row when off-screen.
   return (
     <div ref={ref} data-flavor={props.flavor}>
       <SwimLane {...props} />

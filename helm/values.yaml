@@ -1,8 +1,8 @@
 # Default values for the flightdeck chart.
 # All values are documented with their production implications.
 #
-# Image tags are pinned to v0.2.0 because that is the latest tag currently
-# published on Docker Hub. When v0.3.0 images ship, bump image.tag here.
+# Image tags are pinned to v0.3.1, the latest published release tag.
+# Override image.tag (or a per-component tag) to deploy a different release.
 
 nameOverride: ""
 fullnameOverride: ""
@@ -10,7 +10,7 @@ fullnameOverride: ""
 image:
   registry: docker.io
   repository: flightdeckhq
-  tag: "v0.2.0"
+  tag: "v0.3.1"
   pullPolicy: IfNotPresent
   pullSecrets: []
 

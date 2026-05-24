@@ -589,7 +589,7 @@ describe("SessionDrawer", () => {
     fireEvent.click(detailLink);
     // Should show back navigation
     expect(screen.getByTestId("back-to-session")).toBeInTheDocument();
-    expect(screen.getByText("← Back to session")).toBeInTheDocument();
+    expect(screen.getByText("← Back to run")).toBeInTheDocument();
   });
 
   it("back navigation returns to session event list", () => {
@@ -647,6 +647,42 @@ describe("SessionDrawer", () => {
     expect(screen.queryByTestId("runtime-panel")).not.toBeInTheDocument();
   });
 
+  it("RUNTIME panel excludes mcp_servers (rendered by its own dedicated panel)", () => {
+    // Regression guard: ``mcp_servers`` is an array of objects
+    // — falling through to the alphabetical-leftover loop's
+    // ``String(value)`` rendered it as ``[object Object]`` on
+    // every session that carried MCP servers. ``buildRuntimeRows``
+    // explicitly excludes ``mcp_servers`` so the dedicated
+    // MCP SERVERS collapsible panel below is the sole renderer.
+    mockSessionOverride = {
+      context: {
+        hostname: "test-host",
+        mcp_servers: [
+          { name: "ChunkHound", capabilities: {} },
+          { name: "BigQuery", capabilities: {} },
+        ],
+      },
+    };
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    fireEvent.click(screen.getByTestId("runtime-panel-toggle"));
+    // hostname renders normally...
+    expect(screen.getByTestId("runtime-value-hostname")).toHaveTextContent(
+      "test-host",
+    );
+    // ...but mcp_servers must NOT appear in the RUNTIME panel.
+    expect(screen.queryByTestId("runtime-key-mcp_servers")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("runtime-value-mcp_servers")).not.toBeInTheDocument();
+    // Final guard: assert no ``[object Object]`` substring leaks
+    // anywhere inside the RUNTIME panel. The testid-absence checks
+    // above close the named-field path; this catches any future
+    // array-of-objects field that escapes the exclusion list and
+    // gets ``String()``-coerced through the alphabetical-leftover
+    // loop. Scoped to the runtime panel so the MCP SERVERS panel's
+    // own rendering of the same array doesn't false-positive.
+    const runtimePanel = screen.getByTestId("runtime-panel");
+    expect(runtimePanel.textContent ?? "").not.toContain("[object Object]");
+  });
+
   it("RUNTIME panel combines git fields into a single row", () => {
     mockSessionOverride = {
       context: {
@@ -670,7 +706,7 @@ describe("SessionDrawer", () => {
 
   it("events shown newest first", () => {
     render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
-    const badges = screen.getAllByTestId("event-badge");
+    const badges = screen.getAllByTestId("event-type-pill");
     // baseEvents: e1=session_start (10:00), e2=post_call (10:01)
     // Reversed: first badge should be LLM CALL (newest), last should be START (oldest)
     expect(badges[0].textContent).toBe("LLM CALL");
@@ -706,9 +742,9 @@ describe("SessionDrawer", () => {
     render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
 
     // Expect at least one ATTACH badge and at least one START badge.
-    const attachBadges = screen.getAllByTestId("event-badge")
+    const attachBadges = screen.getAllByTestId("event-type-pill")
       .filter((el) => el.textContent === "ATTACH");
-    const startBadges = screen.getAllByTestId("event-badge")
+    const startBadges = screen.getAllByTestId("event-type-pill")
       .filter((el) => el.textContent === "START");
     expect(attachBadges.length).toBe(1);
     expect(startBadges.length).toBe(1);
@@ -747,7 +783,7 @@ describe("SessionDrawer", () => {
     mockAttachments = ["2026-04-07T10:02:01Z"];
     render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
 
-    const badge = screen.getAllByTestId("event-badge")
+    const badge = screen.getAllByTestId("event-type-pill")
       .find((el) => el.textContent === "ATTACH");
     expect(badge).toBeDefined();
     fireEvent.pointerEnter(badge!);
@@ -770,7 +806,7 @@ describe("SessionDrawer", () => {
     // START, never ATTACH.
     mockAttachments = [];
     render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
-    const badges = screen.getAllByTestId("event-badge");
+    const badges = screen.getAllByTestId("event-type-pill");
     expect(badges.some((b) => b.textContent === "ATTACH")).toBe(false);
     expect(badges.some((b) => b.textContent === "START")).toBe(true);
   });

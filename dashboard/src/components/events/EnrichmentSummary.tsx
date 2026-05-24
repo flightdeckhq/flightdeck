@@ -138,7 +138,7 @@ export function EnrichmentSummary({
       )}
 
       {p.policy_actions_summary && (
-        <Section title="Policy actions in this session">
+        <Section title="Policy actions in this run">
           <Grid>
             {Object.entries(p.policy_actions_summary).map(([k, v]) => (
               <Pair key={k} label={k} value={String(v)} />
@@ -181,7 +181,7 @@ export function EnrichmentSummary({
       )}
 
       {p.policy_snapshot && (
-        <Section title="Policy snapshot at session start">
+        <Section title="Policy snapshot at run start">
           <Grid>
             {p.policy_snapshot.token_budget && (
               <>

@@ -75,6 +75,65 @@ MIN_EVENTS_FOR_COMPLETE = 3
 # events are posted before T_TEST starts reading the fleet.
 SEED_READY_TIMEOUT_SEC = 30
 
+# Timestamps for the ``fresh-closed-in-window`` role. Both values
+# must be smaller than the swimlane's default 1-minute (60 s)
+# window so the closed session's start triangle AND end square
+# both land inside the visible band, AND must stay inside the
+# window for the entire 30 s gap between keep-alive cycles. The
+# keep-alive pins started_at = NOW − FRESH_CLOSED_STARTED_AGO_S
+# on every 30 s tick; by the time the next tick fires, the value
+# has drifted to NOW − (FRESH_CLOSED_STARTED_AGO_S + 30). For the
+# bracket pair to render reliably, that worst-case drifted value
+# must still be inside the 60 s window:
+#
+#     FRESH_CLOSED_STARTED_AGO_S + 30 < 60
+#     FRESH_CLOSED_STARTED_AGO_S      < 30
+#
+# Additionally:
+#
+#     FRESH_CLOSED_ENDED_AGO_S < FRESH_CLOSED_STARTED_AGO_S
+#
+# (the run ENDED after it STARTED). FRESH_CLOSED_ENDED_AGO_S has
+# the same drift concern but the constraint is trivially
+# satisfied at 3 (worst case 33, still well inside the 60 s
+# window).
+#
+# 15 / 3 gives 15 s of margin on the started_at axis (NOW − 45 s
+# at worst, still 15 s inside the 60 s window). Earlier 45 / 10
+# values raced the keep-alive cadence and produced intermittent
+# ~15 s windows where the start triangle fell out of the visible
+# domain.
+FRESH_CLOSED_STARTED_AGO_S = 15
+FRESH_CLOSED_ENDED_AGO_S = 3
+
+# How far in the past the ``refresh_subagent_events`` helper pins
+# each closed sub-agent fixture's most-recent event. 30 s lands the
+# event inside the swimlane's default 1 m domain (so a Chrome eye-
+# check sees a fresh circle immediately) while still leaving a
+# comfortable margin from the wall-clock "now" line, so a slow CI
+# runner's clock skew can't push the pinned event past the right-
+# edge boundary between the SQL UPDATE and the dashboard's render.
+SUBAGENT_REFRESH_OFFSET_SEC = 30
+
+# Per-call timeout for the ``docker exec docker-postgres-1 psql``
+# round-trips this script issues for state pins and timestamp
+# updates. Local psql calls complete in well under 200 ms; the
+# 10 s ceiling is a generous belt-and-braces guard for a stalled
+# Docker Desktop daemon or an unhealthy postgres container, after
+# which we want to surface the failure rather than block the
+# Playwright worker indefinitely.
+PSQL_EXEC_TIMEOUT_SEC = 10
+
+# Role-name constant for the ``fresh-subagent-in-window`` fixture.
+# Excluded from ``refresh_subagent_events`` because it is already
+# covered by the active-only keep-alive watchdog (T34's
+# SubAgentConnector anchor that needs both endpoints emitting
+# fresh events). The string also appears in the active-refresh
+# block of ``seed()``; existing call sites are left as-is to
+# scope this change to the new helper, but a future cleanup can
+# point them at this constant too.
+_ROLE_FRESH_SUBAGENT_IN_WINDOW = "fresh-subagent-in-window"
+
 
 def _derive_session_id(agent_name: str, role: str) -> str:
     return str(uuid5(NAMESPACE_FLIGHTDECK, f"flightdeck-e2e/{agent_name}/{role}"))
@@ -134,7 +193,9 @@ def _post_session_events(
     # the ancient session shows up correctly post-fix.
     MAX_SAFE_EVENT_OFFSET = -3600  # 1h ago, well inside the 48h bound
     event_started = max(started, MAX_SAFE_EVENT_OFFSET)
-    event_ended = max(int(ended), MAX_SAFE_EVENT_OFFSET + 60) if ended is not None else None
+    event_ended = (
+        max(int(ended), MAX_SAFE_EVENT_OFFSET + 60) if ended is not None else None
+    )
 
     identity = {
         "agent_type": agent_cfg["agent_type"],
@@ -600,7 +661,9 @@ def _post_session_events(
                         error={
                             "error_type": "invalid_params",
                             "error_class": "McpError",
-                            "message": ("Invalid SQL: 'banned' is not a recognized status"),
+                            "message": (
+                                "Invalid SQL: 'banned' is not a recognized status"
+                            ),
                             "code": -32602,
                         },
                         **mcp_common,
@@ -638,7 +701,9 @@ def _post_session_events(
                                 {
                                     "uri": "mem://demo",
                                     "mimeType": "text/plain",
-                                    "text": ("hello from the flightdeck reference MCP server"),
+                                    "text": (
+                                        "hello from the flightdeck reference MCP server"
+                                    ),
                                 },
                             ],
                         },
@@ -782,6 +847,14 @@ def _session_is_complete(
     events = detail.get("events") or []
     if len(events) < MIN_EVENTS_FOR_COMPLETE:
         return False
+    # The session must carry its authoritative session_start event;
+    # without it, the worker's lazy-create path stamps a NULL context
+    # and the ``context.mcp_servers`` fingerprint never lands.
+    # Counting events alone misses this case when an old dev DB
+    # retains keep-alive extras (mcp_tool_list / mcp_tool_call / ...)
+    # but the original session_start was wiped between runs.
+    if not any(e.get("event_type") == "session_start" for e in events):
+        return False
     extras: list[str] = list((role_cfg or {}).get("phase4_extras") or [])
     if not extras:
         return True
@@ -909,7 +982,9 @@ def _backdate_session(
     try:
         UUID(session_id)
     except (TypeError, ValueError) as exc:
-        raise ValueError(f"_backdate_session: session_id {session_id!r} is not a UUID") from exc
+        raise ValueError(
+            f"_backdate_session: session_id {session_id!r} is not a UUID"
+        ) from exc
     started_secs = abs(int(started_offset_sec))
     started_expr = f"NOW() - INTERVAL '{started_secs} seconds'"
     parts = [
@@ -1023,7 +1098,9 @@ def seed(mode: str = "full") -> None:
     agents_cfg: list[dict[str, Any]] = cfg["agents"]
 
     total_sessions = sum(len(a["session_roles"]) for a in agents_cfg)
-    print(f"[seed] canonical dataset: {len(agents_cfg)} agents, {total_sessions} sessions")
+    print(
+        f"[seed] canonical dataset: {len(agents_cfg)} agents, {total_sessions} sessions"
+    )
 
     seeded: int = 0
     skipped: int = 0
@@ -1053,7 +1130,9 @@ def seed(mode: str = "full") -> None:
                 )
 
         expected_agent_names = [a["agent_name"] for a in agents_cfg]
-        print(f"[seed] waiting for worker to persist {len(expected_agent_names)} agents ...")
+        print(
+            f"[seed] waiting for worker to persist {len(expected_agent_names)} agents ..."
+        )
         _wait_for_fleet_visibility(expected_agent_names, timeout=SEED_READY_TIMEOUT_SEC)
 
     # Backdate aged-closed / stale sessions so their visible timestamps
@@ -1076,7 +1155,14 @@ def seed(mode: str = "full") -> None:
         for role in agent_cfg["session_roles"]:
             role_cfg = roles_cfg[role]
             session_id = _derive_session_id(agent_cfg["agent_name"], role)
-            if role in ("fresh-active", "error-active"):
+            if role in (
+                "fresh-active",
+                "error-active",
+                "concurrent-run-a",
+                "concurrent-run-b",
+                "fresh-subagent-in-window",
+                "connector-parent-fresh",
+            ):
                 # Pin state='active' and last_seen_at to NOW. Runs on
                 # every seed invocation so the session stays fresh
                 # relative to the Playwright run even if the previous
@@ -1095,12 +1181,28 @@ def seed(mode: str = "full") -> None:
                 # line 655). The refresh keeps a visible circle in the
                 # swimlane regardless of how much wall-clock time
                 # passed between seeds.
+                # ALSO bump the corresponding agents.last_seen_at so
+                # the fleet endpoint's bucket sort places this agent
+                # near the top of the swimlane. UpsertAgent fires on
+                # session_start only; subsequent tool_call events
+                # don't touch the agents row, so without this manual
+                # pin the agent's last_seen_at stays frozen at
+                # original seed time. Result pre-fix: the agent ranks
+                # in a "stale" bucket and the IntersectionObserver
+                # virtualizes its row off-screen at default viewport
+                # — connectors and event circles never materialize
+                # because the LIVE row never mounts. Post-fix: the
+                # agent sits at the top of the swimlane and its row
+                # is always in the materialized band.
                 sql = (
-                    f"UPDATE sessions SET "
-                    f"state='active', "
-                    f"last_seen_at=NOW(), "
-                    f"started_at=NOW() - INTERVAL '30 seconds' "
-                    f"WHERE session_id='{session_id}'::uuid"
+                    "UPDATE sessions SET "
+                    "state='active', "
+                    "last_seen_at=NOW(), "
+                    "started_at=NOW() - INTERVAL '30 seconds' "
+                    f"WHERE session_id='{session_id}'::uuid; "
+                    "UPDATE agents SET last_seen_at=NOW() "
+                    f"WHERE agent_id = (SELECT agent_id FROM sessions "
+                    f"WHERE session_id='{session_id}'::uuid)"
                 )
                 try:
                     subprocess.run(
@@ -1140,9 +1242,43 @@ def seed(mode: str = "full") -> None:
                         "hostname": agent_cfg["hostname"],
                         "agent_name": agent_cfg["agent_name"],
                     }
-                    if mode == "active-only":
+                    # Emit a fresh tool_call event in active-only
+                    # mode ONLY for the two specific sessions
+                    # that anchor the Phase 2 SubAgentConnector
+                    # overlay: the ``fresh-subagent-in-window``
+                    # child and its parent ``e2e-test-coding-
+                    # agent/fresh-active`` root. Without an
+                    # in-window event on BOTH endpoints, the
+                    # connector geometry pass produces 0 specs
+                    # and the overlay reports
+                    # data-connector-count="0". Scoping the
+                    # emission to just these two sessions keeps
+                    # the other active-role fixtures'
+                    # event streams stable across keep-alive
+                    # cycles — T14 / T15 / T16 / T17 / T24 /
+                    # T25 assertions on specific event counts
+                    # and orderings stay reliable. Sub-agent
+                    # roles emit ``agent_role`` via the
+                    # make_event helper so the worker's
+                    # UpsertSession preserves the sub-agent
+                    # identity rather than collapsing it into
+                    # a root row.
+                    is_connector_anchor = role in (
+                        "fresh-subagent-in-window",
+                        "connector-parent-fresh",
+                    )
+                    if mode == "active-only" and not is_connector_anchor:
                         backdated += 1
                         continue
+                    role_for_id = role_cfg.get("agent_role")
+                    event_kwargs: dict[str, Any] = {
+                        "framework": agent_cfg["framework"],
+                        "model": agent_cfg["model"],
+                        "host": agent_cfg["host"],
+                        **identity,
+                    }
+                    if role_for_id:
+                        event_kwargs["agent_role"] = role_for_id
                     post_event(
                         make_event(
                             session_id,
@@ -1150,18 +1286,84 @@ def seed(mode: str = "full") -> None:
                             "tool_call",
                             timestamp=_shift_timestamp(-5),
                             tool_name="e2e_refresh",
-                            tool_input={"reason": "seed keeps fresh-active in 1m swimlane window"},
+                            tool_input={
+                                "reason": "seed keeps fresh-active in 1m swimlane window"
+                            },
                             tool_result={"ok": True},
-                            framework=agent_cfg["framework"],
-                            model=agent_cfg["model"],
-                            host=agent_cfg["host"],
-                            **identity,
+                            **event_kwargs,
                         )
                     )
                     backdated += 1
                 except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
                     print(
                         f"  warn: fresh-active refresh for {session_id} failed: {exc}",
+                        file=sys.stderr,
+                    )
+                continue
+            if role == "fresh-closed-in-window":
+                # Anchor fixture for the RunBracket end-square glyph.
+                # Pin state='closed' with started_at AND ended_at
+                # both inside the swimlane's default 1-minute domain
+                # so the square (■) has a place to render — the
+                # other ``recent-closed`` role started 10 min ago
+                # and both endpoints fall outside the 1 min window.
+                # Runs on every keep-alive cycle so the timestamps
+                # don't drift past the window between Playwright
+                # runs.
+                #
+                # Interpolation safety: ``session_id`` is the only
+                # operand that could be injection-sensitive
+                # (UUID-shaped value sourced from the canonical
+                # fixture). It is bound by psql via ``-v sid=<uuid>``
+                # and substituted as ``:'sid'::uuid`` inside the
+                # SQL — psql parses the binding, not Python. The
+                # two INTERVAL operands are integer constants
+                # defined at module scope (not user input) and
+                # are f-string-interpolated into the SQL text;
+                # this is benign because they cannot carry SQL
+                # syntax, but the comment is explicit about which
+                # operands are bound vs interpolated so a future
+                # contributor adding a user-supplied operand
+                # doesn't assume the whole statement is
+                # injection-free.
+                sql = (
+                    "UPDATE sessions SET "
+                    "state='closed', "
+                    f"started_at=NOW() - INTERVAL '{FRESH_CLOSED_STARTED_AGO_S} seconds', "
+                    f"ended_at=NOW() - INTERVAL '{FRESH_CLOSED_ENDED_AGO_S} seconds', "
+                    f"last_seen_at=NOW() - INTERVAL '{FRESH_CLOSED_ENDED_AGO_S} seconds' "
+                    "WHERE session_id=:'sid'::uuid; "
+                    # Also bump the agents.last_seen_at — same
+                    # rationale as the fresh-active block above.
+                    "UPDATE agents SET last_seen_at=NOW() "
+                    "WHERE agent_id = (SELECT agent_id FROM sessions "
+                    "WHERE session_id=:'sid'::uuid)"
+                )
+                try:
+                    subprocess.run(
+                        [
+                            "docker",
+                            "exec",
+                            "-i",
+                            "docker-postgres-1",
+                            "psql",
+                            "-U",
+                            "flightdeck",
+                            "-d",
+                            "flightdeck",
+                            "-v",
+                            f"sid={session_id}",
+                        ],
+                        input=sql,
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
+                        check=False,
+                    )
+                    backdated += 1
+                except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
+                    print(
+                        f"  warn: fresh-closed-in-window refresh for {session_id} failed: {exc}",
                         file=sys.stderr,
                     )
                 continue
@@ -1243,6 +1445,32 @@ def seed(mode: str = "full") -> None:
                                         {"type": "text", "text": "phase5-fixture"},
                                     ],
                                     "isError": False,
+                                },
+                            },
+                        ),
+                        # Re-emit the failed mcp_tool_call so the
+                        # SessionDrawer's default 100-event window
+                        # always carries an MCPErrorIndicator anchor
+                        # for T25-16. Each keep-alive cycle adds one
+                        # error row; T25-16 asserts >=1 indicator
+                        # exists and that NO indicator decorates a
+                        # success row, so the keep-alive emission
+                        # composes cleanly with the test.
+                        (
+                            "mcp_tool_call",
+                            {
+                                "tool_name": "search_database",
+                                "arguments": {
+                                    "query": "users where status='banned'",
+                                },
+                                "error": {
+                                    "error_type": "invalid_params",
+                                    "error_class": "McpError",
+                                    "message": (
+                                        "Invalid SQL: 'banned' is not a "
+                                        "recognized status"
+                                    ),
+                                    "code": -32602,
                                 },
                             },
                         ),
@@ -1347,7 +1575,9 @@ def seed(mode: str = "full") -> None:
                         "session_id": session_id,
                         "event_id": "",
                         "captured_at": (
-                            datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+                            datetime.now(timezone.utc)
+                            .isoformat()
+                            .replace("+00:00", "Z")
                         ),
                     }
                     post_event(
@@ -1554,6 +1784,131 @@ def seed(mode: str = "full") -> None:
     print(f"[seed] done — seeded={seeded} skipped={skipped} backdated={backdated}")
 
 
+def refresh_subagent_events() -> None:
+    """Pin every canonical sub-agent fixture's most-recent event to
+    NOW − ``SUBAGENT_REFRESH_OFFSET_SEC`` seconds and bump its
+    session/agent ``last_seen_at`` to NOW.
+
+    The Playwright keep-alive watchdog (globalSetup.ts) refreshes
+    only the active-role fixtures via ``--reseed-active-only``;
+    closed sub-agent fixtures (claude-subagent, crewai-researcher /
+    -writer, langgraph-research-node / -writer-node, subagent-error,
+    subagent-overflow-input, depth-2-middle / -leaf, etc.) carry
+    their seed-time timestamps forward forever. After ~1 h of dev-
+    stack uptime those events fall outside the swimlane's max 1 h
+    window and T56's "every sub-agent row renders at least one
+    session circle" assertion reds out against unchanged code — a
+    flake by Rule 40c.1.
+
+    This helper is the time-anchor hardener T56 invokes in its
+    ``test.beforeAll`` so the assertion is robust to any dev-stack
+    age. Three SQL updates per sub-agent fixture, idempotent on
+    repeat calls:
+
+      1. ``events``: pin the most-recent row for the session to
+         NOW − ``SUBAGENT_REFRESH_OFFSET_SEC``. Anchoring just
+         the latest event (rather than re-emitting events) keeps
+         event counts stable so the T28-T40 specs that assert
+         on specific per-session event counts don't drift.
+      2. ``sessions.last_seen_at``: set to NOW so the fleet API
+         includes the session in the recent window.
+      3. ``agents.last_seen_at``: set to NOW so the swimlane's
+         bucket sort keeps the agent's row materialised at the
+         default viewport.
+
+    The session's ``state`` is NOT changed — closed fixtures stay
+    closed, the swimlane row continues to render its circles
+    based on event_timeline rows in the window. The session_id
+    derivation matches ``_derive_session_id`` so it is stable
+    across runs (uuid5 from agent_name + role).
+    """
+    with CANONICAL_PATH.open() as fh:
+        cfg = json.load(fh)
+
+    roles_cfg: dict[str, dict[str, Any]] = cfg["session_roles"]
+    agents_cfg: list[dict[str, Any]] = cfg["agents"]
+
+    # Sub-agent roles are those that declare ``parent_role`` in
+    # canonical.json. fresh-subagent-in-window is already covered
+    # by the active-only keep-alive (it is the SubAgentConnector
+    # T34 anchor and needs its parent emitting a fresh event every
+    # cycle); excluding it here avoids double-refresh churn.
+    subagent_roles = {
+        role
+        for role, role_cfg in roles_cfg.items()
+        if "parent_role" in role_cfg and role != _ROLE_FRESH_SUBAGENT_IN_WINDOW
+    }
+
+    refreshed = 0
+    for agent_cfg in agents_cfg:
+        for role in agent_cfg["session_roles"]:
+            if role not in subagent_roles:
+                continue
+            session_id = _derive_session_id(agent_cfg["agent_name"], role)
+            # Single multi-statement SQL pass: pin latest event +
+            # session + agent in one ``docker exec`` round-trip per
+            # fixture. ``session_id`` and the interval operands
+            # are the only interpolated values; both are
+            # f-string-interpolated rather than psql-bound because
+            # they cannot carry SQL syntax — ``session_id`` is a
+            # uuid5-derived UUID literal sourced from this script's
+            # own deterministic helper, and the interval is a
+            # module-level integer constant.
+            sql = (
+                "UPDATE events "
+                f"SET occurred_at = NOW() - INTERVAL '{SUBAGENT_REFRESH_OFFSET_SEC} seconds' "
+                f"WHERE session_id = '{session_id}'::uuid "
+                "  AND occurred_at = ("
+                "    SELECT MAX(occurred_at) FROM events "
+                f"    WHERE session_id = '{session_id}'::uuid"
+                "  ); "
+                "UPDATE sessions SET last_seen_at = NOW() "
+                f"WHERE session_id = '{session_id}'::uuid; "
+                "UPDATE agents SET last_seen_at = NOW() "
+                "WHERE agent_id = ("
+                "  SELECT agent_id FROM sessions "
+                f"  WHERE session_id = '{session_id}'::uuid"
+                ")"
+            )
+            try:
+                result = subprocess.run(
+                    [
+                        "docker",
+                        "exec",
+                        "docker-postgres-1",
+                        "psql",
+                        "-U",
+                        "flightdeck",
+                        "-d",
+                        "flightdeck",
+                        "-c",
+                        sql,
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=PSQL_EXEC_TIMEOUT_SEC,
+                    check=False,
+                )
+                if result.returncode != 0:
+                    print(
+                        f"  warn: subagent refresh for "
+                        f"{agent_cfg['agent_name']}/{role} "
+                        f"({session_id[:8]}) failed: "
+                        f"{result.stderr.strip()}",
+                        file=sys.stderr,
+                    )
+                    continue
+                refreshed += 1
+            except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
+                print(
+                    f"  warn: subagent refresh for "
+                    f"{agent_cfg['agent_name']}/{role} "
+                    f"({session_id[:8]}) failed: {exc}",
+                    file=sys.stderr,
+                )
+    print(f"[seed] subagent-events refresh — refreshed={refreshed}")
+
+
 if __name__ == "__main__":
     import argparse
 
@@ -1564,10 +1919,15 @@ if __name__ == "__main__":
             "only`` runs only the active-role refresh — used by the "
             "Playwright globalSetup keep-alive watchdog so the workers "
             "reconciler doesn't age fresh-class fixtures past "
-            "state='active' during long test runs."
+            "state='active' during long test runs. "
+            "``--refresh-subagent-events`` pins every closed sub-agent "
+            f"fixture's most-recent event to NOW − {SUBAGENT_REFRESH_OFFSET_SEC} s "
+            "so T56's ``every sub-agent row renders at least one "
+            "session circle`` assertion is robust to any dev-stack age."
         ),
     )
-    parser.add_argument(
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument(
         "--reseed-active-only",
         action="store_true",
         help=(
@@ -1577,10 +1937,25 @@ if __name__ == "__main__":
             "policy-active). Idempotent and safe to call repeatedly."
         ),
     )
+    mode_group.add_argument(
+        "--refresh-subagent-events",
+        action="store_true",
+        help=(
+            "Skip seeding entirely. Pin every closed sub-agent "
+            f"fixture's most-recent event to NOW − "
+            f"{SUBAGENT_REFRESH_OFFSET_SEC} s and bump its session + "
+            "agent last_seen_at to NOW. Used by T56 in test.beforeAll "
+            "to harden the 1-h time-window assertion against dev-stack "
+            "age. Idempotent."
+        ),
+    )
     args = parser.parse_args()
-    mode = "active-only" if args.reseed_active_only else "full"
     try:
-        seed(mode=mode)
+        if args.refresh_subagent_events:
+            refresh_subagent_events()
+        else:
+            mode = "active-only" if args.reseed_active_only else "full"
+            seed(mode=mode)
     except Exception as exc:
         print(f"[seed] FAILED: {exc}", file=sys.stderr)
         sys.exit(1)

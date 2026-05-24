@@ -225,7 +225,7 @@ export function FleetPanel({
           repopulates from the new historical fetch. */}
       <div className="space-y-1 px-3 pb-3">
         <SidebarRow label="Agents" value={flavors.length} />
-        <SidebarRow label="Sessions" value={totalSessions} />
+        <SidebarRow label="Runs" value={totalSessions} />
         <SidebarRow label="Active" value={totalActive} valueColor="var(--status-active)" />
         <SidebarRow
           label={timeRange ? `Tokens (${timeRange})` : "Tokens"}
@@ -238,7 +238,7 @@ export function FleetPanel({
         className="flex items-baseline gap-2 px-3 pb-2 pt-2 text-xs font-semibold uppercase tracking-[0.06em]"
         style={{ color: "var(--text-secondary)" }}
       >
-        <span>Session States</span>
+        <span>Run States</span>
         {/* Windowing hint so the sum of state counts vs. the lifetime
             ``total_sessions`` figure elsewhere is not mysterious.
             Controlled by ``SWIMLANE_LOOKBACK_MS`` in the fleet store.
@@ -248,7 +248,7 @@ export function FleetPanel({
           className="text-[10px] font-normal normal-case tracking-normal"
           style={{ color: "var(--text-muted)" }}
           data-testid="session-states-window-label"
-          title="Counts reflect sessions started in the last 24 hours. Expand an agent row to see every session under that agent."
+          title="Counts reflect runs started in the last 24 hours. Expand an agent row to see every run under that agent."
         >
           last 24 hours
         </span>
@@ -799,6 +799,7 @@ function FlavorItem({
 
   return (
     <div
+      data-testid={`fleet-sidebar-agent-${flavor.agent_name ?? flavor.flavor}`}
       className="flex items-center justify-between cursor-pointer py-[5px] px-3 text-[13px] transition-colors hover:bg-surface-hover"
       style={
         isActive
@@ -929,8 +930,8 @@ function FlavorItem({
           <DialogTrigger asChild>
             <button
               data-testid={`flavor-stop-all-button-${flavor.flavor}`}
-              title={`Stop all sessions of ${flavor.flavor}`}
-              aria-label={`Stop all sessions of ${flavor.flavor}`}
+              title={`Stop all runs of ${flavor.flavor}`}
+              aria-label={`Stop all runs of ${flavor.flavor}`}
               className="flex h-5 w-5 items-center justify-center rounded transition-colors"
               style={{
                 background: "rgba(239,68,68,0.15)",
@@ -944,7 +945,7 @@ function FlavorItem({
           </DialogTrigger>
           <DialogContent>
             <DialogTitle>
-              Stop all sessions of {flavor.flavor}?
+              Stop all runs of {flavor.flavor}?
             </DialogTitle>
             <p className="text-sm text-text-muted">
               All {liveSessions.length} active or idle agents of this type

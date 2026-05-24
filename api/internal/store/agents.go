@@ -2,13 +2,16 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // AgentListParams carries every filter, sort, search, and pagination
-// option accepted by ``GET /v1/agents``. Every slice is OR-within a
+// option accepted by “GET /v1/agents“. Every slice is OR-within a
 // dimension; slices across dimensions are AND. Empty/zero values
 // mean "no filter on this dimension".
 type AgentListParams struct {
@@ -25,6 +28,18 @@ type AgentListParams struct {
 	// Runtime-context filters (derived from sessions.context JSONB
 	// via an EXISTS subquery — an agent matches if ANY of their
 	// sessions recorded the value).
+	//
+	// SEMANTIC DIVERGENCE WARNING: this any-session filter
+	// semantic differs from the latest-session-only semantic the
+	// AgentSummary projection (``OS``, ``Orchestration`` on the
+	// response struct) uses. An agent that once ran on Linux but
+	// most-recently ran on macOS would be FILTERED-IN by
+	// ``?os=Linux`` while its row would render ``os=Darwin``.
+	// The /agents page sidebar relies on the response projection
+	// and filters client-side, so it never hits this divergence;
+	// direct ``/v1/agents?os=...`` callers (other surfaces, ops
+	// tooling) get any-session matching. Documented here so
+	// neither semantic surprises a future contributor.
 	OS            []string
 	Orchestration []string
 
@@ -37,8 +52,10 @@ type AgentListParams struct {
 	UpdatedSince *time.Time
 
 	// Sort column. One of AllowedAgentSortColumns. Empty string
-	// means default (``last_seen_at``). The store panics on an
-	// unknown value; the handler is responsible for the 400.
+	// means default (``last_seen_at``). The store returns an
+	// ``unknown sort column`` error on an unrecognised value; the
+	// handler validates the value before this call so the error
+	// is a belt-and-suspenders guard, not the primary 400 path.
 	Sort string
 
 	// Order: "asc" or "desc". Empty means default (``desc``).
@@ -76,7 +93,7 @@ var AllowedAgentSortColumns = map[string]string{
 		`ELSE 0 END)`,
 }
 
-// AgentListResponse is the JSON shape of ``GET /v1/agents``.
+// AgentListResponse is the JSON shape of “GET /v1/agents“.
 type AgentListResponse struct {
 	Agents  []AgentSummary `json:"agents"`
 	Total   int            `json:"total"`
@@ -86,11 +103,11 @@ type AgentListResponse struct {
 }
 
 // ListAgents runs the filtered + sorted + paginated agents query.
-// Returns a fully-populated AgentListResponse; ``Agents`` is always
+// Returns a fully-populated AgentListResponse; “Agents“ is always
 // a non-nil slice (empty rather than null in JSON).
 //
 // Ordering policy. Primary key is the caller-chosen column; secondary
-// is always ``a.agent_id ASC`` so pages are stable when multiple
+// is always “a.agent_id ASC“ so pages are stable when multiple
 // rows tie on the primary. Without a tie-breaker, two pages could
 // include the same agent (two adjacent reads of ORDER BY
 // last_seen_at DESC silently swap two rows with identical
@@ -166,9 +183,12 @@ func (s *Store) ListAgents(
 			a.total_sessions, a.total_tokens,
 			COALESCE(rollup.state, '') AS state,
 			d126.agent_role,
-			d126.topology
+			d126.topology,
+			d161.os, d161.arch, d161.git_branch, d161.git_repo,
+			d161.orchestration, d161.python_version, d161.process_name
 		FROM agents a` + rollupSQL + `
-		LEFT JOIN LATERAL (` + d126AgentRollupSQL + `) d126 ON TRUE` + whereSQL + `
+		LEFT JOIN LATERAL (` + d126AgentRollupSQL + `) d126 ON TRUE
+		LEFT JOIN LATERAL (` + agentLatestContextSQL + `) d161 ON TRUE` + whereSQL + `
 		ORDER BY ` + sortCol + ` ` + direction + `, a.agent_id ASC
 		LIMIT ` + limitPlaceholder + ` OFFSET ` + offsetPlaceholder
 
@@ -188,6 +208,8 @@ func (s *Store) ListAgents(
 			&a.UserName, &a.Hostname, &a.FirstSeenAt, &a.LastSeenAt,
 			&a.TotalSessions, &a.TotalTokens, &rollupState,
 			&a.AgentRole, &topology,
+			&a.OS, &a.Arch, &a.GitBranch, &a.GitRepo,
+			&a.Orchestration, &a.PythonVersion, &a.ProcessName,
 		); err != nil {
 			return nil, fmt.Errorf("scan agent: %w", err)
 		}
@@ -215,10 +237,14 @@ func (s *Store) ListAgents(
 }
 
 // GetAgentByID returns a single agent with its rollup state. Returns
-// (nil, nil) when no row matches the id — handler turns this into a
-// 404. Returns (nil, err) on malformed UUID (Postgres surfaces the
-// cast error; handler maps that to a 400). Pattern mirrors
+// (nil, nil) when no row matches the id — the caller turns this into
+// a 404. Returns (nil, err) on malformed UUID (Postgres surfaces the
+// cast error; the caller maps that to a 400). Pattern mirrors
 // GetSession.
+//
+// Sole caller: AgentSummaryHandler, which calls this as a cheap
+// existence check before running the expensive summary aggregate so
+// the /v1/agents/{id}/summary 404 contract stays exact.
 func (s *Store) GetAgentByID(
 	ctx context.Context, agentID string,
 ) (*AgentSummary, error) {
@@ -229,7 +255,9 @@ func (s *Store) GetAgentByID(
 			a.total_sessions, a.total_tokens,
 			COALESCE(rollup.state, '') AS state,
 			d126.agent_role,
-			d126.topology
+			d126.topology,
+			d161.os, d161.arch, d161.git_branch, d161.git_repo,
+			d161.orchestration, d161.python_version, d161.process_name
 		FROM agents a
 		LEFT JOIN LATERAL (
 			SELECT CASE
@@ -247,6 +275,7 @@ func (s *Store) GetAgentByID(
 			END AS state
 		) rollup ON TRUE
 		LEFT JOIN LATERAL (` + d126AgentRollupSQL + `) d126 ON TRUE
+		LEFT JOIN LATERAL (` + agentLatestContextSQL + `) d161 ON TRUE
 		WHERE a.agent_id = $1::uuid
 		LIMIT 1`
 
@@ -258,11 +287,15 @@ func (s *Store) GetAgentByID(
 		&a.UserName, &a.Hostname, &a.FirstSeenAt, &a.LastSeenAt,
 		&a.TotalSessions, &a.TotalTokens, &rollupState,
 		&a.AgentRole, &topology,
+		&a.OS, &a.Arch, &a.GitBranch, &a.GitRepo,
+		&a.Orchestration, &a.PythonVersion, &a.ProcessName,
 	)
 	if err != nil {
-		// pgx returns ErrNoRows as a sentinel; bubble up so the
-		// caller can map 404 vs "real error" (cast failure, etc.).
-		if strings.Contains(err.Error(), "no rows in result set") {
+		// pgx returns ErrNoRows as a sentinel; check via errors.Is
+		// so the path is robust across pgx versions and the bytes
+		// of the formatted error message. Matches the pattern used
+		// by every other ``ErrNoRows`` check in the store package.
+		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil //nolint:nilnil // "no match" is not an error
 		}
 		return nil, fmt.Errorf("get agent by id: %w", err)
@@ -307,7 +340,18 @@ func buildAgentFilterClause(params AgentListParams) (conds []string, args []any)
 	}
 
 	// Context-derived filters require an EXISTS subquery on sessions.
-	// An agent matches if ANY of its sessions recorded the value.
+	// An agent matches if ANY of its sessions recorded the value
+	// (any-session semantics — different from the AgentSummary
+	// projection's latest-session semantics; see the divergence
+	// docblock on `AgentListParams.OS` for the rationale).
+	//
+	// SAFETY: ``jsonKey`` is interpolated directly into the SQL
+	// because pgx does not parameterise JSONB extract keys. Every
+	// caller below passes a compile-time string constant from the
+	// closed key set (``os``, ``orchestration``). NEVER pass user
+	// input or a value derived from request data here — that
+	// would re-open the SQL injection surface this closure
+	// guards against by convention.
 	addContextExists := func(jsonKey string, values []string) {
 		if len(values) == 0 {
 			return

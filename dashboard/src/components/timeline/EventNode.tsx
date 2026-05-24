@@ -20,8 +20,8 @@ const eventTypeConfig: Record<
   policy_warn: { cssVar: "var(--event-warn)", Icon: AlertTriangle, label: "Policy Warn" },
   policy_block: { cssVar: "var(--event-block)", Icon: XCircle, label: "Policy Block" },
   policy_degrade: { cssVar: "var(--event-degrade)", Icon: ArrowDown, label: "Policy Degrade" },
-  session_start: { cssVar: "var(--event-lifecycle)", Icon: Play, label: "Session Start" },
-  session_end: { cssVar: "var(--event-lifecycle)", Icon: Square, label: "Session End" },
+  session_start: { cssVar: "var(--event-lifecycle)", Icon: Play, label: "Run Start" },
+  session_end: { cssVar: "var(--event-lifecycle)", Icon: Square, label: "Run End" },
   directive_result: { cssVar: "var(--event-directive)", Icon: Check, label: "Directive Result" },
   heartbeat: { cssVar: "var(--event-lifecycle)", Icon: Circle, label: "Heartbeat" },
   // Phase 4 event-type additions. ``embeddings`` reuses the cyan
@@ -160,7 +160,7 @@ function EventNodeComponent({
     FAILED_DIRECTIVE_STATUSES.has(directiveStatus);
   const tooltipLabel =
     isAttachment && eventType === "session_start"
-      ? "Session attached"
+      ? "Run attached"
       : eventType === "directive_result" && directiveStatus
       ? `RESULT · ${directiveStatus}`
       : config.label;
@@ -233,7 +233,15 @@ function EventNodeComponent({
         onMouseEnter={handleMouseEnter}
         onMouseLeave={handleMouseLeave}
       >
-        <IconComponent size={iconSize} />
+        {/* The glyph is decoration painted inside the clickable
+            circle — never an independent pointer target.
+            ``pointer-events: none`` routes every hover / click
+            through to the circle div that owns the handlers. On a
+            dense swimlane circles overlap; without this an
+            adjacent circle's glyph sits topmost at a neighbour's
+            centre and steals the hit-test (the lucide-wrench
+            tool_call icon was the recurring offender). */}
+        <IconComponent size={iconSize} style={{ pointerEvents: "none" }} />
       </div>
 
       {/* Tooltip rendered in a portal to escape overflow:hidden */}

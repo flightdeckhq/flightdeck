@@ -8,14 +8,14 @@ import {
 } from "./_fixtures";
 
 // T22 — S-LBL vocabulary parity. F1 originally shipped a parallel
-// shorthand (``CC`` / ``SDK``) on the Investigate AGENT facet pill
+// shorthand (``CC`` / ``SDK``) on the /events AGENT facet pill
 // that diverged from Fleet's canonical ``CLAUDE CODE`` / ``SENSOR``.
 // This spec locks the labels at the rendered-DOM level so a future
 // commit that re-introduces parallel vocabulary trips here even if
 // the unit test drift is missed.
 //
 // Assertion: for each canonical client_type, the Fleet swimlane pill
-// text and the Investigate AGENT facet pill text are byte-identical.
+// text and the /events AGENT facet pill text are byte-identical.
 // Both themes (Rule 40c.3) — the labels must not depend on theme.
 test.describe("T22 — client_type label parity Fleet ↔ Investigate", () => {
   for (const fixture of [
@@ -35,41 +35,22 @@ test.describe("T22 — client_type label parity Fleet ↔ Investigate", () => {
         .first();
       const fleetText = (await fleetPill.textContent())?.trim().toUpperCase();
 
-      // ---- Investigate AGENT facet pill (S-LBL ground truth) ----
-      await page.goto("/investigate");
+      // ---- /events AGENT facet pill (S-LBL ground truth) ----
+      await page.goto("/events");
       await waitForInvestigateReady(page);
 
-      // The facet pill testid is keyed on agent_id, but specs
-      // operate on agent_name. Resolve via the row's title attr —
-      // ClientTypePill always sets ``title=client_type=<wire>`` so
-      // the facet row containing the agent name has a sibling pill
-      // we can address by combining a hasText filter with a CSS
-      // descendant selector.
-      const facetPill = page
-        .locator('[data-testid^="investigate-agent-facet-pill-"]')
-        .filter({
-          has: page.locator(`xpath=//ancestor::button[contains(., "${fixture.name}")]`),
-        })
-        .first()
-        .or(
-          // Fallback locator: just the first facet pill whose
-          // sibling agent_name text matches. The hierarchy is
-          //   <button>
-          //     <span>...<TruncatedText name/>... <pill /></span>
-          //     <span class="count" />
-          //   </button>
-          // so a button with the agent name and a child pill is
-          // the unambiguous handle.
-          page
-            .locator("button", { hasText: fixture.name })
-            .locator('[data-testid^="investigate-agent-facet-pill-"]')
-            .first(),
-        );
-
-      // The facet may not be open by default — wait for the pill
-      // to materialise via the agent's presence in the result set.
-      // The seeded fixtures ensure both agents always appear.
-      await expect(facetPill).toBeVisible({ timeout: 10_000 });
+      // The AGENT facet pill is keyed on agent_id; specs operate on
+      // agent_name. Find the facet button carrying the agent name,
+      // then read its ClientTypePill child by testid. The seeded
+      // fixtures ensure both agents appear in the AGENT facet.
+      const facetButton = page
+        .locator('[data-testid^="events-facet-pill-agent_id-"]')
+        .filter({ hasText: fixture.name });
+      await expect(facetButton).toBeVisible({ timeout: 10_000 });
+      const facetPill = facetButton.locator(
+        '[data-testid^="events-facet-client-type-"]',
+      );
+      await expect(facetPill).toBeVisible();
       const facetText = (await facetPill.textContent())?.trim().toUpperCase();
 
       // ---- Parity assertion ----

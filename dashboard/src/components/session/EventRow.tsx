@@ -6,6 +6,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { ProviderLogo } from "@/components/ui/provider-logo";
+import { EventTypePill } from "@/components/facets/EventTypePill";
 import {
   attachBadge,
   getBadge,
@@ -88,6 +89,12 @@ export function EventRow({
         data-event-id={event.id}
       >
         {isAttachment ? (
+          // The attachment-marker pill is inlined rather than reusing
+          // <EventTypePill>: TooltipTrigger asChild needs a real
+          // ref-forwarding DOM node, and this pill renders the
+          // re-attachment `attachBadge` rather than getBadge(event_type).
+          // The pill shape is kept byte-identical to EventTypePill on
+          // purpose so the run-drawer event-row pill slot is uniform.
           <TooltipProvider>
             <Tooltip>
               <TooltipTrigger asChild>
@@ -99,7 +106,8 @@ export function EventRow({
                     border: `1px solid color-mix(in srgb, ${badge.cssVar} 30%, transparent)`,
                     borderRadius: 3,
                   }}
-                  data-testid="event-badge"
+                  data-testid="event-type-pill"
+                  data-event-type={event.event_type}
                 >
                   {badge.label}
                 </span>
@@ -110,18 +118,7 @@ export function EventRow({
             </Tooltip>
           </TooltipProvider>
         ) : (
-          <span
-            className="flex h-[18px] min-w-[88px] shrink-0 items-center justify-center whitespace-nowrap rounded px-2 font-mono text-[10px] font-semibold uppercase"
-            style={{
-              background: `color-mix(in srgb, ${badge.cssVar} 15%, transparent)`,
-              color: badge.cssVar,
-              border: `1px solid color-mix(in srgb, ${badge.cssVar} 30%, transparent)`,
-              borderRadius: 3,
-            }}
-            data-testid="event-badge"
-          >
-            {badge.label}
-          </span>
+          <EventTypePill eventType={event.event_type} />
         )}
         <MCPErrorIndicator event={event} />
         <span

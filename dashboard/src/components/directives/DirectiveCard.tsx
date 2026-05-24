@@ -148,7 +148,7 @@ export function DirectiveCard({
           {submitting
             ? "Sending..."
             : sessionId
-              ? "Trigger on this session"
+              ? "Trigger on this run"
               : "Trigger on all active"}
         </Button>
         {sent && (

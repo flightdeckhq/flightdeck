@@ -234,13 +234,13 @@ def init(
     langgraph_agent_node_pattern: str | None = None,
     mcp_block_on_uncertainty: bool = False,
 ) -> None:
-    """Initialize the sensor and start the session.
+    """Initialize the sensor and start the run.
 
     ``token`` here is a Flightdeck **access token** (an ``ftd_...``
     opaque string minted via ``POST /v1/access-tokens``, or the
     literal ``tok_dev`` seed when the server is running with
     ``ENVIRONMENT=dev``). It is NOT an LLM token count -- the
-    platform also tracks input/output token totals on sessions, but
+    platform also tracks input/output token totals on runs, but
     those live under ``tokens_input`` / ``tokens_output`` fields
     and never flow through this parameter. The kwarg name (and the
     ``FLIGHTDECK_TOKEN`` env var) deliberately stayed as ``token``
@@ -255,16 +255,16 @@ def init(
     degrades. Most restrictive threshold wins when both local and server
     policies are active. See DECISIONS.md D035.
 
-    ``session_id`` is an optional caller-supplied identifier. When
-    provided (or when ``FLIGHTDECK_SESSION_ID`` is set, which takes
-    precedence over the kwarg in line with ``FLIGHTDECK_SERVER`` /
-    ``AGENT_FLAVOR``), the sensor uses the caller's value verbatim
-    instead of generating a UUID. If a session with that ID already
+    ``session_id`` is an optional caller-supplied run identifier.
+    When provided (or when ``FLIGHTDECK_SESSION_ID`` is set, which
+    takes precedence over the kwarg in line with ``FLIGHTDECK_SERVER``
+    / ``AGENT_FLAVOR``), the sensor uses the caller's value verbatim
+    instead of generating a UUID. If a run with that ID already
     exists in the control plane, the backend attaches this execution
-    to the prior session; the sensor logs INFO on the first response
+    to the prior run; the sensor logs INFO on the first response
     that confirms attachment. Primary use case: orchestrators
     (Temporal workflows, Airflow DAGs) that re-run the same logical
-    workflow and want a single correlatable session in the fleet view.
+    workflow and want a single correlatable run in the fleet view.
     See DECISIONS.md D094.
 
     ``agent_type`` selects the D114 / D115 agent classification. Must
@@ -287,7 +287,7 @@ def init(
     Reads from environment (overrides parameters):
 
     - ``FLIGHTDECK_API_URL`` -- control-plane base URL (overrides *api_url*)
-    - ``FLIGHTDECK_SESSION_ID`` -- session id hint (overrides *session_id*)
+    - ``FLIGHTDECK_SESSION_ID`` -- run id hint (overrides *session_id*)
     - ``FLIGHTDECK_AGENT_TYPE`` / ``AGENT_TYPE`` -- overrides *agent_type*;
       must be ``coding`` or ``production``
     - ``FLIGHTDECK_AGENT_NAME`` / ``AGENT_FLAVOR`` -- overrides *agent_name*
@@ -357,14 +357,14 @@ def init(
             # passing, e.g. uuid.uuid5(NAMESPACE_URL, workflow_id).
             _log.warning(
                 "Custom session_id '%s' is not a valid UUID. A random "
-                "session ID will be generated instead.",
+                "run ID will be generated instead.",
                 resolved_session_id,
             )
             resolved_session_id = None
         if resolved_session_id:
             _log.warning(
                 "Custom session_id provided: '%s'. This ID will be used "
-                "as-is and will not be auto-generated. If a session with "
+                "as-is and will not be auto-generated. If a run with "
                 "this ID already exists, the backend will attach this "
                 "agent to it.",
                 resolved_session_id,

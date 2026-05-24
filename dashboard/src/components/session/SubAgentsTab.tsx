@@ -214,10 +214,10 @@ function SpawnedFromSection({
 
   return (
     <Section title="Spawned from" testId="sub-agents-spawned-from">
-      {headerLoading && <RowEmpty>Loading parent session…</RowEmpty>}
+      {headerLoading && <RowEmpty>Loading parent run…</RowEmpty>}
       {!headerLoading && !parent && (
         <RowEmpty>
-          Parent session{" "}
+          Parent run{" "}
           <code style={{ fontFamily: "var(--font-mono)" }}>
             {truncateSessionId(parentSessionId)}
           </code>{" "}
@@ -447,7 +447,7 @@ function ExpandableSessionCard({
           type="button"
           onClick={onOpenSession}
           data-testid={sessionIdLinkTestId}
-          title="Open this session in the drawer"
+          title="Open this run in the drawer"
           style={SESSION_ID_LINK_STYLE}
         >
           {sessionIdLabel}

@@ -23,6 +23,9 @@ function makeEvent(id: string, occurred_at: string, event_type = "post_call"): A
     latency_ms: null,
     tool_name: null,
     has_content: false,
+    framework: null,
+    client_type: null,
+    agent_type: null,
     occurred_at,
   };
 }

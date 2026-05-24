@@ -104,7 +104,7 @@ describe("CommandPalette", () => {
     const input = screen.getByRole("textbox");
     fireEvent.change(input, { target: { value: "research" } });
     expect(screen.getByText("Agents")).toBeInTheDocument();
-    expect(screen.getByText("Sessions")).toBeInTheDocument();
+    expect(screen.getByText("Runs")).toBeInTheDocument();
     // "research-agent" appears in both agent and session rows
     expect(screen.getAllByText("research-agent")).toHaveLength(2);
     expect(screen.getByText("sess-123")).toBeInTheDocument(); // truncated session id

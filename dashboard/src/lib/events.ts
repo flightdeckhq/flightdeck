@@ -331,15 +331,15 @@ export function getEventDetail(event: AgentEvent): string {
       return "degraded model";
     }
     case "session_start":
-      return "session started";
+      return "run started";
     case "session_end": {
       // Phase 7 Step 4 (D152): close_reason chip — operator sees
       // why the session ended without opening the drawer.
       const reason = event.payload?.close_reason;
       if (reason && reason !== "normal_exit") {
-        return `session ended · ${reason}`;
+        return `run ended · ${reason}`;
       }
-      return "session ended";
+      return "run ended";
     }
     case "mcp_server_name_changed": {
       // Phase 7 Step 4 (D152) — pre-Step-4 events.ts had no case
@@ -497,9 +497,9 @@ export function getSummaryRows(event: AgentEvent): [string, string][] {
       return rows;
     }
     case "session_start":
-      return [["Event", "session started"]];
+      return [["Event", "run started"]];
     case "session_end":
-      return [["Event", "session ended"]];
+      return [["Event", "run ended"]];
     case "mcp_server_name_changed": {
       // Phase 7 Step 4 (D152) — drawer view for the name-drift
       // event. Worker enriches policy_entries_orphaned when any
@@ -667,7 +667,7 @@ export const EVENT_TYPE_GROUPS: Record<string, string[]> = {
     "mcp_policy_user_remembered",
   ],
   "Directives": ["directive", "directive_result"],
-  "Session": ["session_start", "session_end"],
+  "Run": ["session_start", "session_end"],
   // Phase 5 — MCP filter group spans all six MCP event types. The
   // filter pill colour is the tool family's cyan (rather than the
   // resource green or prompt purple) because tool calls are the
@@ -693,7 +693,7 @@ export const EVENT_FILTER_PILLS = [
   { label: "Errors", color: "var(--event-error)" },
   { label: "Policy", color: "var(--event-warn)" },
   { label: "Directives", color: "var(--event-directive)" },
-  { label: "Session", color: "var(--event-lifecycle)" },
+  { label: "Run", color: "var(--event-lifecycle)" },
 ] as const;
 
 export function isEventVisible(eventType: string, activeFilter: string | null | undefined): boolean {

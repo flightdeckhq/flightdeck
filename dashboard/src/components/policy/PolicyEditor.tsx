@@ -212,14 +212,14 @@ export function PolicyEditor({ policy, onSave, onCancel }: PolicyEditorProps) {
       {/* Scope value — Session */}
       {scope === "session" && (
         <div>
-          <label className="mb-1 block text-xs font-medium text-text">Session</label>
+          <label className="mb-1 block text-xs font-medium text-text">Run</label>
           {activeSessions.length > 0 && (
             <Select
               value={scopeValue}
               onValueChange={setScopeValue}
             >
               <SelectTrigger className="w-full" data-testid="session-dropdown">
-                <SelectValue placeholder="Select session" />
+                <SelectValue placeholder="Select run" />
               </SelectTrigger>
               <SelectContent>
                 {activeSessions.map((s) => (
@@ -237,13 +237,13 @@ export function PolicyEditor({ policy, onSave, onCancel }: PolicyEditorProps) {
             </Select>
           )}
           <div className="mt-1.5">
-            <label className="mb-0.5 block text-[11px] text-text-muted">Or enter session ID directly</label>
+            <label className="mb-0.5 block text-[11px] text-text-muted">Or enter run ID directly</label>
             <input
               type="text"
               className={inputClass}
               value={scopeValue}
               onChange={(e) => setScopeValue(e.target.value)}
-              placeholder="Enter session ID"
+              placeholder="Enter run ID"
             />
           </div>
           {errors.scope_value && (

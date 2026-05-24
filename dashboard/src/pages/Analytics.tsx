@@ -223,7 +223,7 @@ export function Analytics() {
             showDimensionPicker={false}
           />
           <DimensionChart
-            title="Sessions by Model"
+            title="Runs by Model"
             metric="sessions"
             defaultGroupBy="model"
             chartType="bar"

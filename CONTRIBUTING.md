@@ -3,7 +3,7 @@
 ## Prerequisites
 
 - **Go** 1.22+
-- **Python** 3.9+
+- **Python** 3.10+
 - **Node.js** 20+
 - **Docker** and Docker Compose
 - **golangci-lint** (for Go linting)
@@ -106,10 +106,11 @@ Claude Code, or override at the user level in `~/.claude/`.
 
 ## Releasing
 
-Before tagging a release, run `make test-smoke` against a live stack with real
-provider API keys (`ANTHROPIC_API_KEY` + `OPENAI_API_KEY` exported). The
-target runs [`playground/`](playground/), which exercises every framework
-integration end-to-end. Cost: under $0.05 per run.
+Before tagging a release, run `make playground-all` against a live stack with
+real provider API keys (`ANTHROPIC_API_KEY` + `OPENAI_API_KEY` exported). It
+runs every script under [`playground/`](playground/), exercising each framework
+integration end-to-end and skipping any whose API key is absent. Cost: roughly
+$0.50 per full run.
 
 ## Database Migrations
 

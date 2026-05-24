@@ -5,23 +5,24 @@ import {
   waitForFleetReady,
 } from "./_fixtures";
 
-// T20 — truncation-tooltip browser-layer regression guard. T6 covers
-// the same fixture but only at one viewport width; the original
-// follow-up bullet asked specifically for hover-on-truncated +
-// resize-stability coverage to lock in the contract from a real
-// operator perspective.
+// T20 — agent-name-link tooltip browser-layer regression guard.
+// T6 covers the same fixture but at one viewport width; this spec
+// adds hover-on-link + resize-stability coverage so the contract
+// holds from a real operator perspective.
 //
 // What this guards (in addition to T6):
-//   1. The truncated <span title="..."> actually responds to a
-//      mouse hover -- a regression that put a pointer-events:none
-//      ancestor over the row would silently kill the tooltip even
-//      while the title attr remained correct in the DOM.
+//   1. Hovering the link does not strip the ``title`` attribute
+//      (a regression where a parent pointer-events:none ancestor
+//      swallowed the event before the link received it would
+//      still pass a static count assertion but would fail to
+//      deliver the OS tooltip).
 //   2. After resize from narrow → wide → narrow, the title attr
-//      survives -- ResizeObserver must re-fire and the
-//      <TruncatedText> measurement loop must converge to the
-//      correct state again, not freeze on a stale answer from
-//      the first measurement pass.
-test.describe("T20 — Truncation tooltips on narrow viewport", () => {
+//      survives. The Fix-2 contract is "always-on title", so the
+//      attr is unconditional — but the assertion still catches a
+//      future refactor that re-introduces a measurement-loop or
+//      a conditional render that drops the attr on a wide
+//      viewport.
+test.describe("T20 — Agent-name link tooltip survives hover + resize", () => {
   test("hover on a truncated row exposes the full agent_name via title", async ({
     page,
   }) => {
@@ -32,30 +33,19 @@ test.describe("T20 — Truncation tooltips on narrow viewport", () => {
     const row = await bringSwimlaneRowIntoView(page, TRUNCATION_AGENT.name);
     await expect(row).toBeVisible();
 
-    // Resolve the truncated span. <TruncatedText> sets the title
-    // attr after ResizeObserver fires, so poll until it lands.
-    const truncatedSpan = row.locator(
-      `span[title="${TRUNCATION_AGENT.name}"]`,
-    );
+    // The title lives on the swimlane-agent-name-link element
+    // itself. Poll on the attribute to ride out the mount tick.
+    const link = row.locator('[data-testid="swimlane-agent-name-link"]');
     await expect
-      .poll(async () => truncatedSpan.count(), {
+      .poll(async () => link.getAttribute("title"), {
         message:
-          "expected a span with title=<full agent_name> on the truncated row",
+          "expected swimlane-agent-name-link[title] equal to the full agent name",
         timeout: 5_000,
       })
-      .toBeGreaterThanOrEqual(1);
+      .toBe(TRUNCATION_AGENT.name);
 
-    // Hovering must not throw and must not strip the title attr
-    // off the element it lands on. (A regression where a parent
-    // capturing pointerover swallowed the event before the span
-    // received it would still pass the .count() assertion above
-    // but would fail to deliver the OS tooltip; assert the attr
-    // remains intact post-hover.)
-    await truncatedSpan.first().hover();
-    await expect(truncatedSpan.first()).toHaveAttribute(
-      "title",
-      TRUNCATION_AGENT.name,
-    );
+    await link.hover();
+    await expect(link).toHaveAttribute("title", TRUNCATION_AGENT.name);
   });
 
   test("title survives a narrow → wide → narrow resize cycle", async ({
@@ -68,32 +58,29 @@ test.describe("T20 — Truncation tooltips on narrow viewport", () => {
     const row = await bringSwimlaneRowIntoView(page, TRUNCATION_AGENT.name);
     await expect(row).toBeVisible();
 
-    const truncatedSpan = row.locator(
-      `span[title="${TRUNCATION_AGENT.name}"]`,
-    );
+    const link = row.locator('[data-testid="swimlane-agent-name-link"]');
     await expect
-      .poll(async () => truncatedSpan.count(), { timeout: 5_000 })
-      .toBeGreaterThanOrEqual(1);
+      .poll(async () => link.getAttribute("title"), { timeout: 5_000 })
+      .toBe(TRUNCATION_AGENT.name);
 
-    // Wide viewport — the long name now fits, so <TruncatedText>
-    // strips the title (per the negative path documented on the
-    // unit test). We don't strictly need to verify the strip-on-
-    // wide path here (TruncatedText.test.tsx covers it); we just
-    // need to know the resize is observed.
+    // Wide viewport — the always-on contract means the title
+    // stays even though the text now fits. A regression that
+    // re-introduced conditional title would drop the attr on
+    // this step.
     await page.setViewportSize({ width: 1800, height: 900 });
-    await page.waitForTimeout(300);
+    await expect
+      .poll(async () => link.getAttribute("title"), { timeout: 5_000 })
+      .toBe(TRUNCATION_AGENT.name);
 
-    // Back to narrow — ResizeObserver must re-fire and the title
-    // must be back. The bug shape this guards: a measurement loop
-    // that sets the title once on first paint and never recomputes
-    // would leave the now-overflowing span without a tooltip.
+    // Back to narrow — title still present after the resize
+    // cycle, locking in the "always-on" contract end-to-end.
     await page.setViewportSize({ width: 900, height: 900 });
     await expect
-      .poll(async () => truncatedSpan.count(), {
+      .poll(async () => link.getAttribute("title"), {
         message:
-          "title must reattach after the viewport returns to narrow width",
+          "title must remain attached after the viewport returns to narrow width",
         timeout: 5_000,
       })
-      .toBeGreaterThanOrEqual(1);
+      .toBe(TRUNCATION_AGENT.name);
   });
 });

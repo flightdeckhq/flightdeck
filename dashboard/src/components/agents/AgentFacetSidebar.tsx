@@ -1,0 +1,522 @@
+import type { ReactNode } from "react";
+import type { AgentSummary, SessionState } from "@/lib/types";
+import { type AgentType, type ClientType } from "@/lib/agent-identity";
+import {
+  type AgentFilterState,
+  agentFrameworks,
+  deriveFrameworkOptions,
+  toggleFilterValue,
+} from "@/lib/agents-filter";
+import { FacetIcon } from "@/components/facets/FacetIcon";
+import { AgentTypeBadge } from "@/components/facets/AgentTypeBadge";
+import { ClientTypePill } from "@/components/facets/ClientTypePill";
+import { FrameworkPill } from "@/components/facets/FrameworkPill";
+
+/**
+ * Fixed width of the `/agents` facet sidebar. No resize handle —
+ * the static width matches the `/events` sidebar's resting width
+ * for visual rhythm across the two pages. With 13 facet groups the
+ * sidebar overflows below the viewport on shorter screens; the
+ * container scrolls vertically, which is the same behaviour
+ * `/events` has under similar conditions.
+ */
+export const AGENT_FACET_SIDEBAR_WIDTH = 248;
+
+const STATE_OPTIONS: SessionState[] = [
+  "active",
+  "idle",
+  "stale",
+  "lost",
+  "closed",
+];
+const AGENT_TYPE_OPTIONS: AgentType[] = ["coding", "production"];
+const CLIENT_TYPE_OPTIONS: ClientType[] = ["claude_code", "flightdeck_sensor"];
+
+interface AgentFacetSidebarProps {
+  agents: AgentSummary[];
+  filter: AgentFilterState;
+  onChange: (next: AgentFilterState) => void;
+}
+
+/**
+ * Left-side facet sidebar for the `/agents` table — the same
+ * visual pattern as the `/events` (`Investigate.tsx`) sidebar.
+ * Renders thirteen facet groups: STATE, AGENT TYPE, CLIENT,
+ * FRAMEWORK, plus nine runtime-context dimensions (HOST, USER,
+ * OS, ARCH, GIT BRANCH, GIT REPO, ORCHESTRATION, PYTHON,
+ * PROCESS). Each group composes AND across groups and OR within.
+ * Clicking an entry toggles its value in the active filter set;
+ * the parent owns the `AgentFilterState` and re-runs
+ * `filterAgents()` on each change.
+ *
+ * Each entry shows its dimension icon, the value label, and an
+ * absolute client-side count — the number of `agents` carrying
+ * that value across the full (unfiltered) roster.
+ *
+ * All dynamic groups (FRAMEWORK + the nine runtime-context dims)
+ * hide entirely when no agent carries a value in that dimension —
+ * no empty placeholder. `HOST` and `USER` derive from the
+ * single-valued agent columns; the other seven derive from the
+ * agent's most-recent session context (`AgentSummary.os`, etc.),
+ * which the backend projects via a LATERAL JOIN over the latest
+ * session per agent.
+ */
+export function AgentFacetSidebar({
+  agents,
+  filter,
+  onChange,
+}: AgentFacetSidebarProps) {
+  const frameworkOptions = deriveFrameworkOptions(agents);
+
+  // Absolute per-value counts across the full roster. Each map is
+  // keyed by the dimension value; FRAMEWORK counts an agent once
+  // per distinct framework on its recent sessions. The runtime-
+  // context dims each project a single value per agent (null when
+  // missing); the null is filtered out so chip rows only render
+  // real values.
+  const stateCounts = countBy(agents, (a) => [a.state]);
+  const agentTypeCounts = countBy(agents, (a) => [a.agent_type]);
+  const clientTypeCounts = countBy(agents, (a) => [a.client_type]);
+  const frameworkCounts = countBy(agents, (a) => agentFrameworks(a));
+  const hostnameCounts = countBy(agents, (a) => valueOrEmpty(a.hostname));
+  const userCounts = countBy(agents, (a) => valueOrEmpty(a.user));
+  const osCounts = countBy(agents, (a) => valueOrEmpty(a.os));
+  const archCounts = countBy(agents, (a) => valueOrEmpty(a.arch));
+  const gitBranchCounts = countBy(agents, (a) => valueOrEmpty(a.git_branch));
+  const gitRepoCounts = countBy(agents, (a) => valueOrEmpty(a.git_repo));
+  const orchestrationCounts = countBy(agents, (a) =>
+    valueOrEmpty(a.orchestration),
+  );
+  const pythonVersionCounts = countBy(agents, (a) =>
+    valueOrEmpty(a.python_version),
+  );
+  const processNameCounts = countBy(agents, (a) =>
+    valueOrEmpty(a.process_name),
+  );
+
+  // Dynamic options for each runtime-context group, sorted by
+  // descending count (most-common-first) then by value for
+  // deterministic ordering.
+  const hostnameOptions = sortedOptions(hostnameCounts);
+  const userOptions = sortedOptions(userCounts);
+  const osOptions = sortedOptions(osCounts);
+  const archOptions = sortedOptions(archCounts);
+  const gitBranchOptions = sortedOptions(gitBranchCounts);
+  const gitRepoOptions = sortedOptions(gitRepoCounts);
+  const orchestrationOptions = sortedOptions(orchestrationCounts);
+  const pythonVersionOptions = sortedOptions(pythonVersionCounts);
+  const processNameOptions = sortedOptions(processNameCounts);
+
+  return (
+    <div
+      data-testid="agents-facet-sidebar"
+      className="relative flex-shrink-0 overflow-y-auto"
+      style={{
+        width: AGENT_FACET_SIDEBAR_WIDTH,
+        borderRight: "1px solid var(--border-subtle)",
+        background: "var(--surface)",
+      }}
+    >
+      <FacetGroup label="STATE" testId="agent-filter-state-group" first>
+        {STATE_OPTIONS.map((s) => (
+          <FacetEntry
+            key={s}
+            testId={`agent-filter-state-${s}`}
+            active={filter.states.has(s)}
+            count={stateCounts.get(s) ?? 0}
+            label={
+              <FacetIcon
+                groupKey="state"
+                value={s}
+                testId={`agent-facet-icon-state-${s}`}
+              />
+            }
+            text={s}
+            onClick={() =>
+              onChange({
+                ...filter,
+                states: toggleFilterValue(filter.states, s),
+              })
+            }
+          />
+        ))}
+      </FacetGroup>
+
+      <FacetGroup label="AGENT TYPE" testId="agent-filter-agent-type-group">
+        {AGENT_TYPE_OPTIONS.map((t) => (
+          <FacetEntry
+            key={t}
+            testId={`agent-filter-agent-type-${t}`}
+            active={filter.agentTypes.has(t)}
+            count={agentTypeCounts.get(t) ?? 0}
+            label={
+              <AgentTypeBadge
+                agentType={t}
+                testId={`agent-facet-icon-agent_type-${t}`}
+              />
+            }
+            onClick={() =>
+              onChange({
+                ...filter,
+                agentTypes: toggleFilterValue(filter.agentTypes, t),
+              })
+            }
+          />
+        ))}
+      </FacetGroup>
+
+      <FacetGroup label="CLIENT" testId="agent-filter-client-type-group">
+        {CLIENT_TYPE_OPTIONS.map((c) => (
+          <FacetEntry
+            key={c}
+            testId={`agent-filter-client-type-${c}`}
+            active={filter.clientTypes.has(c)}
+            count={clientTypeCounts.get(c) ?? 0}
+            label={
+              <ClientTypePill
+                clientType={c}
+                size="compact"
+                testId={`agent-facet-icon-client_type-${c}`}
+              />
+            }
+            onClick={() =>
+              onChange({
+                ...filter,
+                clientTypes: toggleFilterValue(filter.clientTypes, c),
+              })
+            }
+          />
+        ))}
+      </FacetGroup>
+
+      {frameworkOptions.length > 0 && (
+        <FacetGroup label="FRAMEWORK" testId="agent-filter-framework-group">
+          {frameworkOptions.map((fw) => (
+            <FacetEntry
+              key={fw}
+              testId={`agent-filter-framework-${fw}`}
+              active={filter.frameworks.has(fw)}
+              count={frameworkCounts.get(fw) ?? 0}
+              label={
+                <FrameworkPill
+                  framework={fw}
+                  testId={`agent-facet-icon-framework-${fw}`}
+                />
+              }
+              onClick={() =>
+                onChange({
+                  ...filter,
+                  frameworks: toggleFilterValue(filter.frameworks, fw),
+                })
+              }
+            />
+          ))}
+        </FacetGroup>
+      )}
+
+      <ContextFacetGroup
+        label="HOST"
+        groupKey="hostname"
+        testIdSuffix="hostname"
+        options={hostnameOptions}
+        counts={hostnameCounts}
+        active={filter.hostnames}
+        onToggle={(v) =>
+          onChange({
+            ...filter,
+            hostnames: toggleFilterValue(filter.hostnames, v),
+          })
+        }
+      />
+      <ContextFacetGroup
+        label="USER"
+        groupKey="user"
+        testIdSuffix="user"
+        options={userOptions}
+        counts={userCounts}
+        active={filter.users}
+        onToggle={(v) =>
+          onChange({
+            ...filter,
+            users: toggleFilterValue(filter.users, v),
+          })
+        }
+      />
+      <ContextFacetGroup
+        label="OS"
+        groupKey="os"
+        testIdSuffix="os"
+        options={osOptions}
+        counts={osCounts}
+        active={filter.oss}
+        onToggle={(v) =>
+          onChange({
+            ...filter,
+            oss: toggleFilterValue(filter.oss, v),
+          })
+        }
+      />
+      <ContextFacetGroup
+        label="ARCH"
+        groupKey="arch"
+        testIdSuffix="arch"
+        options={archOptions}
+        counts={archCounts}
+        active={filter.archs}
+        onToggle={(v) =>
+          onChange({
+            ...filter,
+            archs: toggleFilterValue(filter.archs, v),
+          })
+        }
+      />
+      <ContextFacetGroup
+        label="GIT BRANCH"
+        groupKey="git_branch"
+        testIdSuffix="git_branch"
+        options={gitBranchOptions}
+        counts={gitBranchCounts}
+        active={filter.gitBranches}
+        onToggle={(v) =>
+          onChange({
+            ...filter,
+            gitBranches: toggleFilterValue(filter.gitBranches, v),
+          })
+        }
+      />
+      <ContextFacetGroup
+        label="GIT REPO"
+        groupKey="git_repo"
+        testIdSuffix="git_repo"
+        options={gitRepoOptions}
+        counts={gitRepoCounts}
+        active={filter.gitRepos}
+        onToggle={(v) =>
+          onChange({
+            ...filter,
+            gitRepos: toggleFilterValue(filter.gitRepos, v),
+          })
+        }
+      />
+      <ContextFacetGroup
+        label="ORCHESTRATION"
+        groupKey="orchestration"
+        testIdSuffix="orchestration"
+        options={orchestrationOptions}
+        counts={orchestrationCounts}
+        active={filter.orchestrations}
+        onToggle={(v) =>
+          onChange({
+            ...filter,
+            orchestrations: toggleFilterValue(filter.orchestrations, v),
+          })
+        }
+      />
+      <ContextFacetGroup
+        label="PYTHON"
+        groupKey="python_version"
+        testIdSuffix="python_version"
+        options={pythonVersionOptions}
+        counts={pythonVersionCounts}
+        active={filter.pythonVersions}
+        onToggle={(v) =>
+          onChange({
+            ...filter,
+            pythonVersions: toggleFilterValue(filter.pythonVersions, v),
+          })
+        }
+      />
+      <ContextFacetGroup
+        label="PROCESS"
+        groupKey="process_name"
+        testIdSuffix="process_name"
+        options={processNameOptions}
+        counts={processNameCounts}
+        active={filter.processNames}
+        onToggle={(v) =>
+          onChange({
+            ...filter,
+            processNames: toggleFilterValue(filter.processNames, v),
+          })
+        }
+      />
+    </div>
+  );
+}
+
+/**
+ * Project a single runtime-context value to the `countBy` shape:
+ * empty when null/empty (excluded from chip rows), one-element
+ * array otherwise. Nulls deliberately drop out so the sidebar
+ * shows only agents that actually carry the dimension.
+ */
+function valueOrEmpty(v: string | null | undefined): string[] {
+  if (v == null || v === "") return [];
+  return [v];
+}
+
+/**
+ * Sort a count map descending by count, then ascending by value
+ * for ties. Mirrors the `/events` facet ordering so operators see
+ * the same most-common-first layout across pages.
+ */
+function sortedOptions(counts: Map<string, number>): string[] {
+  return [...counts.keys()].sort((a, b) => {
+    const ca = counts.get(a) ?? 0;
+    const cb = counts.get(b) ?? 0;
+    if (ca !== cb) return cb - ca;
+    return a.localeCompare(b);
+  });
+}
+
+/**
+ * Render a runtime-context facet group — collapses entirely
+ * when no agent carries a value in the dimension (parity with the
+ * FRAMEWORK group's empty behaviour). The icon resolves via the
+ * shared `FacetIcon` so the row vocabulary matches /events.
+ */
+function ContextFacetGroup({
+  label,
+  groupKey,
+  testIdSuffix,
+  options,
+  counts,
+  active,
+  onToggle,
+}: {
+  label: string;
+  groupKey: string;
+  testIdSuffix: string;
+  options: string[];
+  counts: Map<string, number>;
+  active: Set<string>;
+  onToggle: (value: string) => void;
+}) {
+  if (options.length === 0) return null;
+  return (
+    <FacetGroup
+      label={label}
+      testId={`agent-filter-${testIdSuffix}-group`}
+    >
+      {options.map((v) => (
+        <FacetEntry
+          key={v}
+          testId={`agent-filter-${testIdSuffix}-${v}`}
+          active={active.has(v)}
+          count={counts.get(v) ?? 0}
+          label={
+            <FacetIcon
+              groupKey={groupKey}
+              value={v}
+              testId={`agent-facet-icon-${testIdSuffix}-${v}`}
+            />
+          }
+          text={v}
+          onClick={() => onToggle(v)}
+        />
+      ))}
+    </FacetGroup>
+  );
+}
+
+/**
+ * Tally how many agents carry each value. `valuesOf` returns the
+ * value(s) an agent contributes (one for single-value dimensions,
+ * zero-or-more for FRAMEWORK). An agent is counted at most once
+ * per distinct value it carries.
+ */
+function countBy(
+  agents: AgentSummary[],
+  valuesOf: (a: AgentSummary) => string[],
+): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const a of agents) {
+    for (const v of new Set(valuesOf(a))) {
+      counts.set(v, (counts.get(v) ?? 0) + 1);
+    }
+  }
+  return counts;
+}
+
+function FacetGroup({
+  label,
+  testId,
+  first,
+  children,
+}: {
+  label: string;
+  testId: string;
+  first?: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <div data-testid={testId}>
+      <div
+        className="font-semibold uppercase"
+        style={{
+          fontSize: 10,
+          fontWeight: 600,
+          letterSpacing: "0.08em",
+          color: "var(--text-muted)",
+          padding: first ? "12px 12px 6px 12px" : "16px 12px 6px 12px",
+        }}
+      >
+        {label}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function FacetEntry({
+  testId,
+  active,
+  count,
+  label,
+  text,
+  onClick,
+}: {
+  testId: string;
+  active: boolean;
+  count: number;
+  /** The dimension's icon or pill — the visual identity of the
+   *  value. */
+  label: ReactNode;
+  /** Optional text that follows the icon. Omitted when the pill /
+   *  badge itself IS the label (AGENT TYPE, CLIENT, FRAMEWORK). */
+  text?: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      data-testid={testId}
+      data-active={active ? "true" : "false"}
+      // Hover tint is a declarative Tailwind variant keyed on
+      // data-active — no DOM-style mutation in event handlers. The
+      // active fill is the inline `background` below (it always wins
+      // over the hover class, so an active entry never tints on
+      // hover).
+      className="flex w-full items-center cursor-pointer transition-colors duration-150 hover:data-[active=false]:bg-[var(--bg-elevated)]"
+      style={{
+        fontSize: 13,
+        padding: "4px 12px",
+        borderRadius: 4,
+        color: active ? "var(--primary)" : "var(--text)",
+        background: active
+          ? "color-mix(in srgb, var(--primary) 15%, transparent)"
+          : undefined,
+      }}
+    >
+      <span
+        className="flex items-center min-w-0 flex-1"
+        style={{ gap: 8 }}
+      >
+        {label}
+        {text && <span className="truncate">{text}</span>}
+      </span>
+      <span style={{ color: "var(--text-muted)", fontSize: 12 }}>{count}</span>
+    </button>
+  );
+}

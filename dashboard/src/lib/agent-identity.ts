@@ -114,3 +114,46 @@ export const CLIENT_TYPE_COLOR: Record<ClientType, ClientTypeColor> = {
     border: "color-mix(in srgb, var(--chart-openai) 35%, transparent)",
   },
 };
+
+/**
+ * Canonical visible labels for the `agent_type` badge (`coding` /
+ * `production`) rendered beside an agent_name in the Fleet swimlane
+ * label strip and the Events table. Kept beside the enum so a future
+ * agent_type forces the caller to supply its label.
+ */
+export const AGENT_TYPE_LABEL: Record<AgentType, string> = {
+  [AgentType.Coding]: "Coding",
+  [AgentType.Production]: "Production",
+};
+
+/**
+ * Colour treatment for the `agent_type` badge, reusing the
+ * `ClientTypeColor` shape so the badge renders as a member of the
+ * same pill family as `ClientTypePill`.
+ *
+ *   coding      → `--primary` (violet). Matches the existing
+ *                 CodingAgentBadge, which the agent-identity colour
+ *                 notes already reserve violet for as the agent_type
+ *                 cue. The special, observer-only category gets the
+ *                 accented treatment so it catches the eye.
+ *   production  → a neutral muted treatment built from
+ *                 `--text-secondary`. Production is the expected
+ *                 default; a quiet badge keeps the row legible
+ *                 ("information-rich without clutter") while still
+ *                 reading as a badge rather than plain text.
+ *
+ * Uses existing theme tokens only — no `themes.css` change — so
+ * dark/light parity is free.
+ */
+export const AGENT_TYPE_COLOR: Record<AgentType, ClientTypeColor> = {
+  [AgentType.Coding]: {
+    bg: "color-mix(in srgb, var(--primary) 15%, transparent)",
+    fg: "var(--primary)",
+    border: "color-mix(in srgb, var(--primary) 35%, transparent)",
+  },
+  [AgentType.Production]: {
+    bg: "color-mix(in srgb, var(--text-secondary) 14%, transparent)",
+    fg: "var(--text-secondary)",
+    border: "color-mix(in srgb, var(--text-secondary) 32%, transparent)",
+  },
+};

@@ -22,8 +22,8 @@ Two-phase operation:
 - After a data cleanup (manual `DELETE` against `sessions` or
   `agents` tables).
 - After a schema migration that touched denormalised columns.
-- When the Fleet page shows implausible session counts
-  (`total_sessions` unrealistically high vs visible session
+- When the Fleet page shows implausible run counts
+  (`total_sessions` unrealistically high vs visible run
   rows).
 - When stale orphan rows from old test runs / smoke fixtures
   are crowding the AGENT facet, the `/v1/agents` listing, or
@@ -42,7 +42,7 @@ Columns reconciled:
 | `first_seen_at`  | `MIN(started_at)` on sessions                  |
 | `last_seen_at`   | `MAX(last_seen_at)` on sessions                |
 
-For an agent with zero actual sessions: `total_sessions` and
+For an agent with zero actual runs: `total_sessions` and
 `total_tokens` are zeroed; `first_seen_at` and `last_seen_at` are
 preserved (overwriting those with NULL via MIN/MAX over an empty
 set would lose the original UpsertAgent timestamps).
@@ -54,7 +54,7 @@ NOW() - orphan_threshold` are physically deleted. The two-clause
 predicate keeps the operation safe:
 
 - `total_sessions = 0` rules out any agent that ever had a real
-  session.
+  run.
 - The staleness clause rules out a freshly upserted agent that the
   worker has not yet wired up to a `session_start` row (the race
   the bare `total_sessions = 0` predicate would lose against the

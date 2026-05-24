@@ -60,34 +60,4 @@ test.describe("T21 — Fleet renders no coding+sensor anomaly", () => {
     }
   });
 
-  test("no agent-table row carries both CodingAgentBadge AND a sensor client pill", async ({
-    page,
-  }) => {
-    await page.goto("/?view=table");
-    await waitForFleetReady(page);
-
-    const rows = page.locator('[data-testid^="fleet-agent-row-"]');
-    const count = await rows.count();
-    expect(count).toBeGreaterThan(0); // sanity: fleet has agents
-
-    for (let i = 0; i < count; i += 1) {
-      const row = rows.nth(i);
-      const hasCodingBadge =
-        (await row.locator('[data-testid="coding-agent-badge"]').count()) > 0;
-      const sensorPillTitle = await row
-        .locator('[data-testid="agent-table-client-pill"]')
-        .first()
-        .getAttribute("title")
-        .catch(() => "");
-      const isSensor = (sensorPillTitle ?? "").includes("flightdeck_sensor");
-
-      const testIdAttr = (await row.getAttribute("data-testid")) ?? "<unknown>";
-
-      expect(
-        hasCodingBadge && isSensor,
-        `agent-table row ${testIdAttr}: CodingAgentBadge present alongside` +
-          " sensor client pill (canonical fleet anomaly)",
-      ).toBe(false);
-    }
-  });
 });

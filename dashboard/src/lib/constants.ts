@@ -37,22 +37,82 @@ export const FEED_HEIGHT_STORAGE_KEY = "flightdeck-feed-height";
 /** LocalStorage key for persisting theme preference. */
 export const THEME_STORAGE_KEY = "flightdeck-theme";
 
+/**
+ * LocalStorage key for the E2E keep-alive WS disable flag. When
+ * set to "1" or "true", the dashboard's useFleet hook skips its
+ * WebSocket subscription so periodic fixture-refresh events from
+ * the Playwright keep-alive watchdog cannot perturb
+ * IntersectionObserver virtualisation or sidebar pagination.
+ * Production never sets this; the value is only written by
+ * Playwright's per-project storageState bootstrap. Lives here so
+ * playwright.config.ts (Node) and runtime-config.ts (browser)
+ * share one source of truth — a divergent string would silently
+ * break every test without a TypeScript error.
+ */
+export const DISABLE_KEEPALIVE_WS_STORAGE_KEY = "flightdeck-disable-keepalive-ws";
+
 
 /**
  * Width constants for the resizable left panel (flavor labels +
- * session rows) in the Timeline component. The panel state lives in
- * Timeline.tsx's useState with localStorage persistence keyed by
- * LEFT_PANEL_WIDTH_KEY. Min/max are enforced on both initial load
- * and drag. DEFAULT is sized to fit typical 14-char hostnames like
- * "mac-laptop-bob" or "compose-build-2" in the session row label
- * slot without truncation (session number + icons + badge + tokens
- * leave roughly 158px for the label at 320px). Users who drag it
- * narrower or wider get their choice persisted.
+ * session rows) in the Timeline component. The panel state lives
+ * in Timeline.tsx's useState with localStorage persistence keyed
+ * by LEFT_PANEL_WIDTH_KEY. Min/max are enforced on both initial
+ * load and drag.
+ *
+ * DEFAULT_WIDTH (460): typical agent name + full pill chrome
+ * fits unmodified on first load. A fully-qualified
+ * ``user@host/role`` plus the trailing client-type pill,
+ * agent_type badge, provider/OS/orchestration icons,
+ * relationship pill, and status badge all render without
+ * triggering the ellipsis fallback in the common case.
+ *
+ * MAX_WIDTH (640): long names + full chrome are draggable.
+ * The cap is generous so an operator with a verbose sub-agent
+ * role string (``omria@Omri-PC/general-purpose-with-context``)
+ * can drag wide enough to read the whole label strip without
+ * truncation.
+ *
+ * MIN_WIDTH (200) is the narrowest layout that keeps the
+ * status badge legible.
+ *
+ * Below the width at which a given name fits, the agent-name
+ * link ellipsis-truncates with an always-on ``title`` tooltip
+ * — see SwimLane.tsx's ``swimlane-agent-name-link`` for the
+ * graceful narrow-width fallback.
  */
 export const LEFT_PANEL_MIN_WIDTH = 200;
-export const LEFT_PANEL_MAX_WIDTH = 500;
-export const LEFT_PANEL_DEFAULT_WIDTH = 320;
+export const LEFT_PANEL_MAX_WIDTH = 640;
+export const LEFT_PANEL_DEFAULT_WIDTH = 460;
 export const LEFT_PANEL_WIDTH_KEY = "flightdeck-left-panel-width";
+
+/**
+ * LocalStorage key for the collapsed/expanded state of the
+ * fleet-wide ALL aggregate row above the AGENTS section in the
+ * Fleet swimlane. Stored as ``"1"`` (collapsed) or ``"0"``
+ * (expanded). Default is collapsed: once the ``/agents`` page
+ * exists as the dedicated fleet-overview surface, the ALL row's
+ * pulse line is redundant for most operators. The toggle bar
+ * stays visible so the row can be expanded on demand; the
+ * preference survives reloads via this key. See
+ * ``lib/allRowCollapsed.ts``.
+ */
+export const ALL_ROW_COLLAPSED_KEY = "flightdeck-all-row-collapsed";
+
+/**
+ * ALL aggregate row heights in pixels.
+ *
+ * COLLAPSED (24): matches the AGENTS section header height
+ * directly below the row, so the two stack as a single visually-
+ * consistent strip when the operator has the pulse pane hidden.
+ * EXPANDED (36): the historical pulse-row height — sized so the
+ * aggregated 22-px event circles plus the row's vertical padding
+ * fit without clipping. Keep these together with
+ * ``ALL_ROW_COLLAPSED_KEY`` so the storage flag, the toggle bar
+ * geometry, and the pulse-pane geometry are all sourced from one
+ * place.
+ */
+export const ALL_ROW_HEIGHT_COLLAPSED = 24;
+export const ALL_ROW_HEIGHT_EXPANDED = 36;
 
 /**
  * Session row height in pixels. Rows now show a primary hostname
@@ -154,17 +214,46 @@ export const FEED_COL_DEFAULTS = {
 export const TIMELINE_WIDTH_PX = 900;
 
 /**
- * Map from human-readable time range to absolute milliseconds. The
- * Timeline component uses this to compute the d3 time scale domain
- * and to format the relative-time axis labels.
+ * Ordered swimlane time-range options. Single source of truth for
+ * the Fleet header time-range picker and the per-agent swimlane
+ * modal picker, so the two surfaces can never drift apart.
  */
-export const TIMELINE_RANGE_MS: Record<string, number> = {
+export const TIME_RANGE_OPTIONS = ["1m", "5m", "15m", "30m", "1h"] as const;
+
+/**
+ * Discriminated string-literal type for the swimlane time-range
+ * picker. Derived from ``TIME_RANGE_OPTIONS`` so the picker UI and
+ * the type system share one source of truth — adding a value to
+ * the array immediately widens this type and forces every
+ * ``TIMELINE_RANGE_MS`` consumer + every picker call site to
+ * acknowledge the new option.
+ */
+export type TimeRange = (typeof TIME_RANGE_OPTIONS)[number];
+
+/**
+ * Map from time range to absolute milliseconds. The Timeline
+ * component uses this for the d3 time scale domain + axis labels;
+ * the per-agent modal uses it for the LiveFeed cutoff. Typed as
+ * ``Record<TimeRange, number>`` so adding a ``TIME_RANGE_OPTIONS``
+ * entry without a millisecond value is a compile error and so
+ * consumers don't need a ``?? fallback`` for an unreachable
+ * ``undefined``.
+ */
+export const TIMELINE_RANGE_MS: Record<TimeRange, number> = {
   "1m": 60_000,
   "5m": 300_000,
   "15m": 900_000,
   "30m": 1_800_000,
   "1h": 3_600_000,
 };
+
+/**
+ * Default swimlane time range on first mount. ``1m`` is the
+ * live-monitor window — what the fleet is doing right now, not the
+ * last hour of history. Shared by the Fleet view and the per-agent
+ * swimlane modal so both open on the same window.
+ */
+export const DEFAULT_TIME_RANGE: TimeRange = "1m";
 
 /**
  * Default lookback window for the Investigate page on first

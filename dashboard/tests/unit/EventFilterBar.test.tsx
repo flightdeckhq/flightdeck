@@ -12,7 +12,7 @@ describe("EventFilterBar", () => {
     expect(screen.getByTestId("filter-pill-Errors")).toBeInTheDocument();
     expect(screen.getByTestId("filter-pill-Policy")).toBeInTheDocument();
     expect(screen.getByTestId("filter-pill-Directives")).toBeInTheDocument();
-    expect(screen.getByTestId("filter-pill-Session")).toBeInTheDocument();
+    expect(screen.getByTestId("filter-pill-Run")).toBeInTheDocument();
   });
 
   it("All pill is active by default when activeFilter is null", () => {

@@ -21,13 +21,42 @@
 // localStorage holds the token and downstream callers use the
 // synchronous getAccessTokenSync() helper.
 
+import { DISABLE_KEEPALIVE_WS_STORAGE_KEY } from "./constants";
+
 export const ACCESS_TOKEN_STORAGE_KEY = "flightdeck-access-token";
+
+// Re-export so existing callers that import the key from this
+// module continue to work. The canonical definition now lives in
+// ``constants.ts`` so playwright.config.ts (Node-side, can't
+// import browser-globals freely) can share the same source of
+// truth without a string duplicate.
+export { DISABLE_KEEPALIVE_WS_STORAGE_KEY };
 
 const RUNTIME_CONFIG_URL = "/runtime-config.json";
 
 interface RuntimeConfig {
   access_token: string;
   api_base_url?: string;
+}
+
+/**
+ * Sync read of the keep-alive WS disable flag from localStorage.
+ * Returns ``true`` when the flag is set to ``"1"`` or ``"true"``
+ * (case-insensitive). Used by ``useFleet`` to conditionally skip
+ * its WebSocket subscription under E2E. Production callers never
+ * see this flag set; the value is only written by Playwright's
+ * per-project storageState bootstrap.
+ */
+export function isKeepaliveWsDisabled(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    const v = window.localStorage.getItem(DISABLE_KEEPALIVE_WS_STORAGE_KEY);
+    if (v == null) return false;
+    const norm = v.trim().toLowerCase();
+    return norm === "1" || norm === "true";
+  } catch {
+    return false;
+  }
 }
 
 let bootstrapPromise: Promise<string> | null = null;

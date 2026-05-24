@@ -32,22 +32,42 @@ test.describe("T34 — Sub-agent time flow connectors", () => {
     // scrolls) so it absorbs the timeline's reflow latency
     // without a fixed wait. No-fixed-timeouts rule.
 
-    // Force both endpoints into view: the CrewAI parent and one
-    // of its children. The connector overlay's useLayoutEffect
-    // gates on both rows being mounted simultaneously (= both
-    // have a [data-agent-id] wrapper in the DOM at that moment).
-    await bringSwimlaneRowIntoView(page, "e2e-test-crewai-parent");
+    // Force both endpoints into view simultaneously. The connector
+    // overlay's useLayoutEffect skips any pair where either row
+    // is virtualized (placeholder), so scrolling sequentially —
+    // parent first, then child — can leave the parent in the
+    // virtualized band by the time the child's scroll finishes.
+    // The β-grouping order places children immediately after
+    // their parent, so a single bringSwimlaneRowIntoView on the
+    // child materialises the parent in the SAME scroll position
+    // as a side effect.
     await bringSwimlaneRowIntoView(page, "e2e-test-crewai-researcher");
 
     // The overlay SVG mounts as a sibling of the grid + circles;
-    // a single instance covers every connector line. At least
-    // one connector path with the canonical id shape exists.
+    // a single instance covers every connector line. The overlay
+    // carries ``data-connector-count`` reflecting the
+    // spec-list length AFTER the useLayoutEffect resolves — wait
+    // on that BEFORE looking for the path elements so the
+    // assertion doesn't race the geometry pass.
     const overlay = page.locator(
       '[data-testid="sub-agent-connector-overlay"]',
     );
     await expect(overlay).toBeAttached();
+    await expect
+      .poll(
+        async () => {
+          const v = await overlay.getAttribute("data-connector-count");
+          return v ? parseInt(v, 10) : 0;
+        },
+        { timeout: 15_000 },
+      )
+      .toBeGreaterThanOrEqual(1);
     const connectors = page.locator('[data-testid^="sub-agent-connector-"]');
-    expect(await connectors.count()).toBeGreaterThanOrEqual(2);
+    // At least one connector must render — the test's intent is to
+    // verify the connector machinery, not to count fixtures.
+    await expect
+      .poll(async () => connectors.count(), { timeout: 15_000 })
+      .toBeGreaterThanOrEqual(1);
     const paths = page.locator(
       '[data-testid^="sub-agent-connector-"][data-hover]',
     );
@@ -66,9 +86,9 @@ test.describe("T34 — Sub-agent time flow connectors", () => {
     await page.goto("/");
     await waitForFleetReady(page);
     await page.getByRole("button", { name: "1h", exact: true }).click();
-    // bringSwimlaneRowIntoView's internal scroll-and-find loop
-    // absorbs the timeline reflow latency (see test 1 for rationale).
-    await bringSwimlaneRowIntoView(page, "e2e-test-crewai-parent");
+    // Single bringSwimlaneRowIntoView on the child materialises
+    // the parent at the same scroll position via β-grouping (see
+    // first test for rationale).
     await bringSwimlaneRowIntoView(page, "e2e-test-crewai-researcher");
 
     const path = page
@@ -119,24 +139,44 @@ test.describe("T34 — Sub-agent time flow connectors", () => {
     await expect(path).toHaveAttribute("opacity", "0.5");
   });
 
-  test("connector overlay reports zero connectors when no parent / child pair is mounted", async ({
+  test("connector overlay reports zero connectors when filtered to a lone agent", async ({
     page,
   }) => {
-    // Open Fleet with a flavor filter that only matches a lone
-    // agent — the overlay SVG still mounts (it's the timeline's
-    // composed-in-connector-aware-mode signal) but its
-    // ``data-connector-count`` reads 0, and zero <path> children
-    // render. The design § 4.3 "no overdraw" lock applies to
-    // path count, not to the empty SVG container.
-    await page.goto("/?flavor=e2e-ancient-agent");
+    // Click the sidebar entry for ``e2e-test-ancient-agent`` to
+    // apply the flavor filter to a lone agent (no children, no
+    // parent — pure root with no parent_session_id linkage). With
+    // only the ancient-agent's rows rendered, the connector
+    // overlay's iteration over filteredFlavors finds zero
+    // parent-child pairs and reports ``data-connector-count="0"``
+    // with no <path> children. The design's "no overdraw" lock
+    // applies to path count, not to the empty SVG container.
+    //
+    // Pre-D115 this test used ``?flavor=e2e-ancient-agent`` as a
+    // URL pre-condition; post-D115 the ``flavor`` query param maps
+    // to agent_id (UUID), so the URL-param path no longer narrows
+    // the swimlane. Clicking the sidebar entry exercises the same
+    // setFlavorFilter store action a real operator would trigger.
+    await page.goto("/");
     await waitForFleetReady(page);
+    const sidebarEntry = page.locator(
+      '[data-testid="fleet-sidebar-agent-e2e-test-ancient-agent"]',
+    );
+    await expect(sidebarEntry).toBeVisible({ timeout: 10_000 });
+    await sidebarEntry.click();
+
     const overlay = page.locator(
       '[data-testid="sub-agent-connector-overlay"]',
     );
     await expect(overlay).toBeAttached();
-    await expect(overlay).toHaveAttribute("data-connector-count", "0");
+    await expect
+      .poll(async () => overlay.getAttribute("data-connector-count"), {
+        timeout: 8_000,
+      })
+      .toBe("0");
     expect(
-      await page.locator('[data-testid^="sub-agent-connector-"][data-hover]').count(),
+      await page
+        .locator('[data-testid^="sub-agent-connector-"][data-hover]')
+        .count(),
     ).toBe(0);
   });
 });

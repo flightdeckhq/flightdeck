@@ -20,9 +20,13 @@ interface EventDetailDrawerProps {
   /** Optional: when provided, the drawer can replace its own event
    * via the originating-jump or surrounding-events click-swap. */
   onSwapEvent?: (event: AgentEvent) => void;
+  /** Optional: when provided, the details tab renders a "View
+   * entire run →" link that opens the run drawer for this event's
+   * run. Omitted by mounters with no run-drawer surface. */
+  onViewRun?: (sessionId: string) => void;
 }
 
-export function EventDetailDrawer({ event, onClose, onSwapEvent }: EventDetailDrawerProps) {
+export function EventDetailDrawer({ event, onClose, onSwapEvent, onViewRun }: EventDetailDrawerProps) {
   const [activeTab, setActiveTab] = useState<Tab>("details");
   // Local override: when the drawer's host doesn't provide
   // onSwapEvent, the originating-jump and surrounding-events
@@ -81,6 +85,7 @@ export function EventDetailDrawer({ event, onClose, onSwapEvent }: EventDetailDr
   return (
     <AnimatePresence>
       <motion.div
+        data-testid="event-detail-drawer"
         className="fixed right-0 top-0 z-[60] flex h-full w-[520px] flex-col"
         style={{
           background: "var(--surface)",
@@ -203,6 +208,25 @@ export function EventDetailDrawer({ event, onClose, onSwapEvent }: EventDetailDr
                   </div>
                 ))}
               </div>
+
+              {onViewRun && (
+                <button
+                  type="button"
+                  data-testid="event-detail-view-run"
+                  onClick={() => onViewRun(displayed.session_id)}
+                  style={{
+                    fontFamily: "var(--font-mono)",
+                    fontSize: 11,
+                    color: "var(--accent)",
+                    background: "transparent",
+                    border: "none",
+                    padding: 0,
+                    cursor: "pointer",
+                  }}
+                >
+                  View entire run →
+                </button>
+              )}
 
               <EnrichmentSummary
                 event={displayed}

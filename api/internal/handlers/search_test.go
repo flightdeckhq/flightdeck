@@ -133,7 +133,7 @@ func TestSearchHandler_HappyPath_Returns200WithPopulatedGroups(t *testing.T) {
 			}},
 			Sessions: []store.SearchResultSession{},
 			Events: []store.SearchResultEvent{{
-				EventID: "00000000-0000-0000-0000-000000000002",
+				EventID:   "00000000-0000-0000-0000-000000000002",
 				SessionID: "00000000-0000-0000-0000-000000000003",
 				EventType: "post_call", OccurredAt: "2026-04-17T09:00:00Z",
 			}},

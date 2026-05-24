@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { truncateSessionId } from "@/lib/events";
 import type {
   SearchResults as SearchResultsType,
@@ -31,6 +32,19 @@ export function SearchResultsList({
   focusedIndex,
 }: SearchResultsProps) {
   let runningIndex = 0;
+  const focusedRef = useRef<HTMLButtonElement | null>(null);
+
+  // Keep the focused row visible as the index moves past the
+  // listbox viewport on ArrowUp / ArrowDown. ``nearest`` is the
+  // gentler scroll mode — only scroll when the row is actually
+  // clipped, no jump when it is already in view.
+  useEffect(() => {
+    // ``scrollIntoView`` is missing on jsdom's HTMLElement (test
+    // env); the optional call lets the component render cleanly in
+    // unit tests that don't stub it. In a real browser the method
+    // always exists.
+    focusedRef.current?.scrollIntoView?.({ block: "nearest" });
+  }, [focusedIndex]);
 
   const groups: {
     key: string;
@@ -78,16 +92,22 @@ export function SearchResultsList({
             {group.items.map((item, i) => {
               const globalIndex = groupStartIndex + i;
               const isFocused = globalIndex === focusedIndex;
+              // Solid focus tokens: bg-primary/<N> compiles to no
+              // background in this theme system because --primary
+              // is a hex var; surface-hover + a left accent bar
+              // gives a visible, theme-aware highlight in both
+              // neon-dark and clean-light.
+              const focusClass = isFocused
+                ? "bg-surface-hover border-l-2 border-primary text-text"
+                : "border-l-2 border-transparent text-text-muted hover:bg-surface-hover";
               return (
                 <button
                   key={`${group.key}-${i}`}
+                  ref={isFocused ? focusedRef : undefined}
                   role="option"
                   aria-selected={isFocused}
-                  className={`flex w-full items-center gap-3 px-3 py-2 text-left text-xs transition-colors ${
-                    isFocused
-                      ? "bg-primary/10 text-text"
-                      : "text-text-muted hover:bg-surface-hover"
-                  }`}
+                  data-testid={isFocused ? "search-result-focused" : undefined}
+                  className={`flex w-full items-center gap-3 px-3 py-2 text-left text-xs transition-colors ${focusClass}`}
                   onClick={() => onSelect(group.type, item)}
                 >
                   {group.type === "agent" && <AgentRow item={item as SearchResultAgent} />}

@@ -11,7 +11,12 @@ const emptyResults: SearchResults = {
 
 const populatedResults: SearchResults = {
   agents: [
-    { agent_name: "research-agent", agent_type: "production", last_seen: "2026-04-01T00:00:00Z" },
+    {
+      agent_id: "11111111-1111-4111-8111-111111111111",
+      agent_name: "research-agent",
+      agent_type: "production",
+      last_seen: "2026-04-01T00:00:00Z",
+    },
   ],
   sessions: [
     {
@@ -20,8 +25,32 @@ const populatedResults: SearchResults = {
       host: "host-1",
       state: "active",
       started_at: "2026-04-01T00:00:00Z",
+      ended_at: null,
+      model: "claude-3-5-haiku",
+      tokens_used: 0,
+      token_limit: null,
+      context: {},
     },
   ],
+  events: [],
+};
+
+const navResults: SearchResults = {
+  agents: [
+    {
+      agent_id: "22222222-2222-4222-8222-222222222222",
+      agent_name: "alpha",
+      agent_type: "production",
+      last_seen: "2026-04-01T00:00:00Z",
+    },
+    {
+      agent_id: "33333333-3333-4333-8333-333333333333",
+      agent_name: "beta",
+      agent_type: "production",
+      last_seen: "2026-04-01T00:00:00Z",
+    },
+  ],
+  sessions: [],
   events: [],
 };
 
@@ -140,5 +169,70 @@ describe("CommandPalette", () => {
       expect(onSelectResult).toHaveBeenCalledWith("agent", populatedResults.agents[0]);
       expect(onOpenChange).toHaveBeenCalledWith(false);
     });
+  });
+
+  it("ArrowDown moves the focused-row marker", () => {
+    mockResults = navResults;
+    mockLoading = false;
+    render(
+      <CommandPalette open={true} onOpenChange={onOpenChange} />,
+    );
+    const input = screen.getByRole("textbox");
+    fireEvent.change(input, { target: { value: "a" } });
+
+    // Initial state: first row is focused.
+    expect(screen.getByTestId("search-result-focused")).toHaveTextContent("alpha");
+
+    // ArrowDown moves to the second row.
+    const dialog = screen.getByRole("dialog");
+    fireEvent.keyDown(dialog, { key: "ArrowDown" });
+    expect(screen.getByTestId("search-result-focused")).toHaveTextContent("beta");
+
+    // ArrowUp goes back.
+    fireEvent.keyDown(dialog, { key: "ArrowUp" });
+    expect(screen.getByTestId("search-result-focused")).toHaveTextContent("alpha");
+  });
+
+  it("focused row carries the visible-highlight tokens", () => {
+    mockResults = navResults;
+    mockLoading = false;
+    render(
+      <CommandPalette open={true} onOpenChange={onOpenChange} />,
+    );
+    const input = screen.getByRole("textbox");
+    fireEvent.change(input, { target: { value: "a" } });
+
+    // Lock the contract — these solid tokens replace the broken
+    // bg-primary/10 (which compiles to no background under the
+    // hex-var theme). If a refactor reverts to an alpha modifier
+    // on a custom-hex var, this test fails immediately.
+    const focused = screen.getByTestId("search-result-focused");
+    expect(focused.className).toContain("bg-surface-hover");
+    expect(focused.className).toContain("border-primary");
+    expect(focused.className).not.toMatch(/bg-primary\/\d/);
+  });
+
+  it("scrolls the focused row into view on arrow-key navigation", () => {
+    mockResults = navResults;
+    mockLoading = false;
+    const scrollIntoView = vi.fn();
+    const original = HTMLElement.prototype.scrollIntoView;
+    HTMLElement.prototype.scrollIntoView = scrollIntoView;
+    try {
+      render(
+        <CommandPalette open={true} onOpenChange={onOpenChange} />,
+      );
+      const input = screen.getByRole("textbox");
+      fireEvent.change(input, { target: { value: "a" } });
+      // Initial mount calls scrollIntoView once for the default
+      // focused row.
+      const baseline = scrollIntoView.mock.calls.length;
+
+      fireEvent.keyDown(screen.getByRole("dialog"), { key: "ArrowDown" });
+      expect(scrollIntoView.mock.calls.length).toBeGreaterThan(baseline);
+      expect(scrollIntoView).toHaveBeenLastCalledWith({ block: "nearest" });
+    } finally {
+      HTMLElement.prototype.scrollIntoView = original;
+    }
   });
 });

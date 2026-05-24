@@ -7,11 +7,16 @@ const buttonVariants = cva(
   "inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary disabled:pointer-events-none disabled:opacity-50",
   {
     variants: {
+      // hover:bg-<token>/<N> drops on hex-valued vars; --primary-hover
+      // is already in themes.css for both themes so the default
+      // variant uses it directly. Destructive has no companion
+      // token, so an explicit color-mix preserves the 90% intent.
       variant: {
-        default: "bg-primary text-white shadow hover:bg-primary/90",
+        default: "bg-primary text-white shadow hover:bg-[var(--primary-hover)]",
         outline: "border border-border bg-transparent hover:bg-surface-hover",
         ghost: "hover:bg-surface-hover",
-        destructive: "bg-danger text-white hover:bg-danger/90",
+        destructive:
+          "bg-danger text-white hover:bg-[color-mix(in_srgb,var(--danger)_90%,transparent)]",
       },
       size: {
         default: "h-9 px-4 py-2",

@@ -2,7 +2,14 @@
 
 All notable changes to Flightdeck are documented here.
 
-## Unreleased — Per-agent landing page + UI reshape
+## Unreleased
+
+Aggregate of in-flight feature subsections below; each was its
+own ``## Unreleased — <title>`` heading before the v0.5.0 cut
+and has been folded into one section without any text changes
+to the entries themselves.
+
+### Per-agent landing page + UI reshape
 
 The per-agent landing page (`/agents` page + agent drawer), the
 Fleet swimlane reshape, and the event-grain Events page (D157).
@@ -528,7 +535,7 @@ Fleet swimlane reshape, and the event-grain Events page (D157).
   edge of the visible swim viewport — matching Fleet's UX where
   the timeline naturally fits the page width.
 
-## Unreleased — MCP Protection Policy + operator-actionable enrichment
+### MCP Protection Policy + operator-actionable enrichment
 
 Per-flavor enforcement of which MCP servers an agent is allowed to
 talk to (D127–D132, D134–D147), plus operator-actionable enrichment
@@ -1231,7 +1238,7 @@ event pipeline. v0.6 enforces policy decisions as configured
   api before the migrator (e.g. future operator-managed Helm
   charts).
 
-## Unreleased — Sub-agent observability
+### Sub-agent observability
 
 First-class events, identity, and dashboard surfaces for sub-agent
 spawn / hand-off / join across Claude Code Task subagents, CrewAI,
@@ -1435,7 +1442,7 @@ interception is a prerequisite that does not exist yet).
   (renaming creates new identity; recursive CTE cost on large
   datasets; forward-reference stub orphans).
 
-## Unreleased — Phase 5 MCP first-class observability
+### Phase 5 MCP first-class observability
 
 Treats Model Context Protocol calls as a first-class event surface
 alongside chat and embeddings. Single PR covering sensor, worker,

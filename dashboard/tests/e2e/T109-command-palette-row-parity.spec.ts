@@ -66,9 +66,12 @@ test.describe("T109 — palette row parity (agent + run)", () => {
     // Model text — seed assigns claude-sonnet-* or gpt-* to e2e
     // sessions; both are valid.
     await expect(firstRunRow).toContainText(/claude-|gpt-/i);
-    // ProviderLogo SVG sits next to the model text — assert a svg
-    // exists inside the row.
-    const svgs = firstRunRow.locator("svg");
-    await expect.poll(async () => svgs.count()).toBeGreaterThan(0);
+    // ProviderLogo renders ``role="img"`` + a brand-cased
+    // ``aria-label`` (from PROVIDER_META). Query by both so a
+    // stray icon (chevron, spinner) cannot satisfy the assertion.
+    const providerLogo = firstRunRow.locator(
+      'svg[role="img"][aria-label]',
+    );
+    await expect(providerLogo).toBeVisible();
   });
 });

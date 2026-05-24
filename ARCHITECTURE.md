@@ -2122,11 +2122,44 @@ list prices change; it is read-only at runtime.
 
 ### Search
 
-`GET /v1/search?q=term` searches agents (`agent_name`), sessions
-(`session_id`, `host`, `flavor`, context JSONB fields), and events
-(`tool_name`, `model`). Results are grouped: max 5 per group, total max
-20. Implemented as parallel ILIKE queries via `errgroup`. Powers the
-Cmd+K command palette.
+`GET /v1/search?q=term` returns up to 5 hits per entity, grouped by
+agent / session / event. Implemented as three parallel ranked
+queries via `errgroup` so the slowest field doesn't gate the
+others. Powers the Cmd/Ctrl+K command palette.
+
+Matched columns per entity:
+
+- **Agents** — `agent_name`, `hostname`, `user_name`. Sensor-keyed
+  agents already embed `user@hostname` in `agent_name`, but seeded /
+  test / cloud agents often don't, so both columns are searched
+  independently.
+- **Sessions** — `session_id`, `flavor`, `host`, `model`, plus
+  `context->>hostname`, `context->>os`, `context->>git_branch`,
+  `context->>python_version`, and `(context->'frameworks')::text`.
+- **Events** — `event_type`, `tool_name`, `model`, plus a curated
+  English-term-to-event_types map (`search.go::curatedEventTypeTerms`):
+  `llm` → pre_call / post_call / llm_error; `tool` → tool_call /
+  mcp_tool_list / mcp_tool_call; `policy` → all five policy_* event
+  types; `error` → llm_error / policy_block / policy_mcp_block;
+  `embedding` → embeddings; `mcp` → every mcp_* + policy_mcp_* +
+  mcp_server_* event; `session` → session_start / session_end;
+  `block` → policy_block / policy_mcp_block; `directive` →
+  directive_result. The map is the source of truth (unit-tested);
+  extending search vocabulary is a single map edit.
+
+Ranking is shared across entities: exact case-insensitive match
+outranks prefix outranks substring. Within each tier, fields have a
+fixed precedence so a query that matches multiple fields on the
+same row lands in the most semantic slot:
+
+- events: event_type > tool_name > model (curated map sits at rank 3,
+  between exact and prefix)
+- agents: agent_name > hostname > user_name
+- sessions: session_id > flavor > host > model (context-JSONB
+  matches share the substring tier)
+
+Recency (`occurred_at DESC` for events, `last_seen_at DESC` for
+agents, `started_at DESC` for sessions) is the per-tier tiebreaker.
 
 ### Bulk events
 
@@ -3237,13 +3270,14 @@ arrive in the response envelope of `POST /v1/events` (see Directives
 section); the sensor's acknowledgement is the `DIRECTIVE_RESULT`
 event.
 
-17 emitted event types:
+21 emitted event types:
 
 `SESSION_START`, `SESSION_END`, `PRE_CALL`, `POST_CALL`, `TOOL_CALL`,
 `EMBEDDINGS`, `LLM_ERROR`, `POLICY_WARN`, `POLICY_DEGRADE`,
-`POLICY_BLOCK`, `DIRECTIVE_RESULT`, `MCP_TOOL_LIST`, `MCP_TOOL_CALL`,
+`POLICY_BLOCK`, `POLICY_MCP_WARN`, `POLICY_MCP_BLOCK`,
+`DIRECTIVE_RESULT`, `MCP_TOOL_LIST`, `MCP_TOOL_CALL`,
 `MCP_RESOURCE_LIST`, `MCP_RESOURCE_READ`, `MCP_PROMPT_LIST`,
-`MCP_PROMPT_GET`.
+`MCP_PROMPT_GET`, `MCP_SERVER_NAME_CHANGED`, `MCP_SERVER_ATTACHED`.
 
 ### `session_start`
 

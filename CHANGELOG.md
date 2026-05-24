@@ -9,6 +9,72 @@ own ``## Unreleased — <title>`` heading before the v0.5.0 cut
 and has been folded into one section without any text changes
 to the entries themselves.
 
+### Global search overhaul
+
+The Cmd/Ctrl+K command palette now searches events by type
+(curated terms plus raw literals), routes hits to the right
+drawer without yanking the operator off-page, and shows a
+visible focused-row highlight (D162).
+
+- **Events search expanded.** ``GET /v1/search?q=`` matches
+  the events ``event_type`` column directly, and a curated
+  English term map (``llm`` / ``tool`` / ``policy`` / ``error``
+  / ``embedding`` / ``mcp`` / ``session`` / ``block`` /
+  ``directive``) expands to the right ``event_type`` set so
+  typing "LLM" surfaces ``pre_call``, ``post_call``, and
+  ``llm_error`` even though no event_type literally contains
+  "LLM". Raw literals (``post_call``, ``warn``, ``resource``,
+  ``attached``) still work via the substring path. Curated map
+  lives in ``api/internal/store/search.go::curatedEventTypeTerms``
+  and is unit-tested as the source of truth.
+- **Agents search broadened.** ``q=`` now ILIKEs ``hostname``
+  and ``user_name`` in addition to ``agent_name``, so a query
+  for the device or operator surfaces the agent even when
+  agent_name doesn't embed them (test fixtures, cloud agents,
+  multi-tenant seeded rows).
+- **Cross-field ranking.** Results within each entity sort
+  exact > prefix > substring, with explicit cross-field
+  precedence inside each tier — events: event_type >
+  tool_name > model; agents: agent_name > hostname > user_name;
+  sessions: session_id > flavor > host > model. Recency
+  (``occurred_at`` / ``last_seen_at`` / ``started_at`` DESC) is
+  the per-tier tiebreaker. The curated map sits between exact
+  and prefix (rank 3) so a semantic match for ``LLM`` outranks
+  a coincidental substring hit on the same row.
+- **Visible focused-row highlight + auto-scroll.** The
+  pre-fix palette used ``bg-primary/10`` on a hex-valued CSS
+  variable, which Tailwind v3 cannot channel-split — the
+  resulting class compiled to no background and the keyboard-
+  navigation marker was invisible. Replaced with solid
+  ``bg-surface-hover`` + ``border-l-2 border-primary``;
+  focused row now also calls ``scrollIntoView`` so arrowing
+  past the listbox's max-h-80 viewport keeps the row in view.
+- **Recent agents jump list.** The empty-state hint ("Type at
+  least 2 characters") is replaced with the 5 most-recently-
+  seen agents fetched via the existing
+  ``/v1/agents?sort=last_seen_at&order=desc&limit=5``.
+- **Matched substring bolding.** Each search hit's display
+  text bolds the case-insensitive match of the query via a
+  client-side ``<Highlight>`` helper. Pasted queries with
+  ``_`` or ``%`` are matched literally (regex-escaped).
+- **Routing pivot (D162, supersedes F2).** Agent hits open
+  the AgentDrawer overlay via ``?agent_drawer=<id>`` on the
+  current route instead of navigating to ``/events?agent_id=``.
+  Event hits open the EventDetailDrawer overlay via
+  ``?event=<eid>&event_session=<sid>`` — a distinct param
+  pair so the run drawer (``?run=``) cannot mount
+  simultaneously. Run hits still navigate to
+  ``/events?run=<id>``.
+- **Canonical EventRow.** The palette's event rows render the
+  same ``EventTypePill`` ``/events`` + the run drawer + the
+  agent drawer use, so a ``post_call`` (or any event type)
+  reads byte-identically across all four surfaces.
+- **L33 sweep.** Fixed five other places in the dashboard
+  where Tailwind alpha modifiers on hex CSS vars compiled to
+  no background — badge variants, scope chips on
+  ``/policies``, primary + destructive button hover, and the
+  Directives / Policies / Settings error banners.
+
 ### Per-agent landing page + UI reshape
 
 The per-agent landing page (`/agents` page + agent drawer), the

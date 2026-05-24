@@ -9078,3 +9078,50 @@ existing `idx_sessions_agent_id` from migration 000015 stays
 in place; 000025's composite index supersedes it for the
 per-agent latest-session lookup but doesn't replace the
 single-column index that backs broader `agent_id = ?` filters.
+
+## D162 -- Global search routing pivot: agent → drawer overlay, event → event-detail overlay (supersedes F2 routing)
+
+Pre-D162 the Cmd/Ctrl+K palette routed an agent hit to
+``/events?agent_id=<uuid>`` (F2) and an event hit to
+``/events?run=<session_id>``. Both forms NAVIGATED the operator
+to ``/events`` even when they were mid-task on
+``/policies`` / ``/directives`` / ``/agents`` / ``/analytics``,
+and an event hit only got the operator as close as the run
+drawer — the run drawer paginates, so the originating event
+itself was often not in the loaded window.
+
+D162 ships drawer-overlay routing for both:
+
+- **Agent hits** set ``?agent_drawer=<agent_id>`` on the current
+  route via ``setSearchParams``. The existing app-level
+  ``AgentDrawerHost`` reads the param and opens the AgentDrawer
+  over whatever page the operator is on. Identity stays
+  ``agent_id`` (D115 unchanged); only the URL surface is new.
+- **Event hits** set ``?event=<event_id>&event_session=<session_id>``
+  on the current route. A new app-level ``EventDetailDrawerHost``
+  reads both params, hydrates the AgentEvent via a single
+  ``fetchBulkEvents`` scoped to ``session_id`` (no new endpoint),
+  and renders the canonical ``EventDetailDrawer`` — the same
+  component ``/events``, the run drawer, and the agent drawer
+  use. Distinct param from ``?run=`` so an event hit cannot
+  trigger the run drawer simultaneously (the two would stack).
+- **Run hits** still navigate to ``/events?run=<session_id>``
+  because the run drawer's mount point lives on that page;
+  unchanged from F2.
+
+What this does NOT change:
+- ``D115`` identity: agents are still keyed by ``agent_id``;
+  ``SearchResultAgent.agent_id`` is still the wire value.
+- The Investigate page's own ``?agent_id=`` filter behaviour.
+  The legacy F2 href shape (``/events?agent_id=``) still
+  resolves correctly for any bookmark or saved link that
+  predates D162.
+
+EventRow visual contract: the search-palette EventRow leads
+with the canonical ``EventTypePill`` (the badge
+``components/facets/EventTypePill.tsx`` exposes) so a
+``post_call`` row reads byte-identically across all four
+surfaces — ``/events``, the run drawer, the agent drawer, and
+the palette. No new theme tokens; the existing ``getBadge``
+colour + label resolution is reused.
+

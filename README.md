@@ -1,7 +1,7 @@
 <div align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="dashboard/public/assets/lockup-dark-hero.png">
-    <img alt="Flightdeck" src="dashboard/public/assets/lockup-light-hero.png" width="480">
+    <source media="(prefers-color-scheme: dark)" srcset="dashboard/public/assets/flightdeck-lockup-dark.svg">
+    <img alt="Flightdeck" src="dashboard/public/assets/flightdeck-lockup-light.svg" width="480">
   </picture>
 </div>
 

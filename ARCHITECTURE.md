@@ -4673,14 +4673,37 @@ bearer token has full access. Production deployments protect these
 routes at the network boundary (firewall / ingress) rather than via
 token scopes.
 
-`POST /v1/admin/reconcile-agents` is a two-phase operator endpoint.
-Phase 1 recomputes the `agents.total_sessions`, `total_tokens`,
-`first_seen_at`, and `last_seen_at` columns from the sessions table on
-demand. Phase 2 deletes orphan rows whose post-reconcile
-`total_sessions = 0` AND `last_seen_at < NOW() - orphan_threshold_secs`
-(default 30 days). Pass `orphan_threshold_secs=0` to skip the delete
-step (counters-only mode). See `docs/reconcile-agents-endpoint.md` for
-the full contract.
+`POST /v1/admin/reconcile-agents` is a two-phase operator endpoint
+that makes the `agents` table correct in one call. Phase 1 recomputes
+the `agents.total_sessions`, `total_tokens`, `first_seen_at`, and
+`last_seen_at` columns against the sessions table ground truth (per-
+agent transaction; per-agent failures land in the response's `errors`
+array and the sweep continues). Phase 2 deletes orphan rows whose
+post-reconcile `total_sessions = 0` AND `last_seen_at < NOW() -
+orphan_threshold_secs` (default 30 days). Pass
+`orphan_threshold_secs=0` to skip the delete step (counters-only
+mode); values `1..59` are rejected with 400 to prevent reaping
+freshly-upserted agents that the worker has not yet wired up to a
+`session_start` row. Concurrent calls serialise via a process-level
+mutex (409 on contention) — multi-replica deployments would need a
+Postgres advisory lock; deferred until the v1 single-replica
+deployment shape is outgrown.
+
+**When to call** — after a data cleanup (manual `DELETE` against
+`sessions` or `agents`), after a schema migration that touched
+denormalised columns, when the Fleet page shows implausible run
+counts (`total_sessions` unrealistically high vs the visible run
+rows), or when stale orphan rows from old test runs / smoke fixtures
+are crowding the AGENT facet, the `/v1/agents` listing, or the
+agent-id resolver. NOT on a schedule — this is for targeted operator
+action; scheduling is out of scope for v1. Reconcile is also not
+atomic against concurrent worker writes (the worker's
+`BumpAgentSessionCount` and `IncrementAgentTokens` execute as
+`SET col = col + N` deltas), so a bump landing between our `SELECT
+COUNT(*)` and `UPDATE SET` overshoots by that delta and creates small
+drift the next reconcile fixes; invoke during quiet windows if
+strict-zero residual drift matters. The full request / response
+contract lives in the Swagger UI at `/api/docs/index.html`.
 
 ### Makefile structure
 

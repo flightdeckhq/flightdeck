@@ -2,7 +2,6 @@ import { useMemo } from "react";
 import { useFleetStore } from "@/store/fleet";
 import { deriveRelationship, scrollToAgentRow } from "@/lib/relationship";
 import { TruncatedText } from "@/components/ui/TruncatedText";
-import { useTheme } from "@/hooks/useTheme";
 import { cn } from "@/lib/utils";
 import type { AgentTopology } from "@/lib/types";
 
@@ -34,7 +33,6 @@ export function TopologyCell({
   agentId: string;
   topology: AgentTopology;
 }) {
-  const { theme } = useTheme();
   const flavors = useFleetStore((s) => s.flavors);
   const ownSessions = useMemo(() => {
     return flavors.find((f) => f.flavor === agentId)?.sessions ?? [];
@@ -44,19 +42,18 @@ export function TopologyCell({
     [agentId, ownSessions, flavors],
   );
 
-  // Accent foreground colour for child + parent pills. The raw
-  // var(--accent) reads dim against a tint built from itself on
-  // the dark surface, so dark theme lightens the foreground
-  // toward white. Light theme gets the live accent. The
-  // background and border are color-mix derivatives of
-  // var(--accent) so the pill stays theme-correct without a new
-  // theme token — same pattern as CLIENT_TYPE_COLOR.
-  const accentText =
-    theme === "dark"
-      ? "color-mix(in srgb, var(--accent) 55%, white)"
-      : "var(--accent)";
+  // Accent pill style for child + parent. Foreground reads from
+  // ``--topology-pill-fg`` (defined per theme block in themes.css)
+  // so the colour tracks the live html.dark / html.light class
+  // and recolours instantly on the Nav's theme toggle. Pre-fix
+  // useTheme()'s per-component useState held a stale local copy
+  // until the cell remounted, leaving the dark-theme lightened
+  // accent on the light surface after a live toggle. Background
+  // and border are color-mix derivatives of --accent (theme-
+  // agnostic by construction) so only the foreground needs the
+  // per-theme variable.
   const accentPillStyle = {
-    color: accentText,
+    color: "var(--topology-pill-fg)",
     background: "color-mix(in srgb, var(--accent) 15%, transparent)",
     border: "1px solid color-mix(in srgb, var(--accent) 40%, transparent)",
   } as const;

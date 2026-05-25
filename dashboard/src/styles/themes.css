@@ -114,6 +114,16 @@
      values read as background noise; higher values shout. */
   --swimlane-row-child-bg: rgba(255, 255, 255, 0.06);
 
+  /* D163 — TopologyCell child / parent pill text colour. The
+     raw --accent reads dim against the accent-tinted background
+     on the dark surface, so dark theme lightens the foreground
+     toward white. Driven from the html.dark / html.light class
+     (managed by useTheme) so a live theme toggle recolours the
+     pill instantly via the CSS cascade — useTheme's per-component
+     useState does not share across mounts, so JS-branched colours
+     would lag the toggle. */
+  --topology-pill-fg: color-mix(in srgb, var(--accent) 55%, white);
+
   /* Fonts */
   --font-ui: "Geist", system-ui, sans-serif;
   --font-mono: "GeistMono", ui-monospace, monospace;
@@ -221,6 +231,12 @@
      5–8% delta range. Same brightness logic as the dark-theme
      value: low enough to feel structural, high enough to read. */
   --swimlane-row-child-bg: rgba(0, 0, 0, 0.06);
+
+  /* D163 — TopologyCell pill foreground. Light theme uses the
+     raw --accent; the accent-tinted background already gives
+     sufficient contrast on the white surface so no lightening
+     is needed. */
+  --topology-pill-fg: var(--accent);
 
   /* Fonts */
   --font-ui: "Geist", system-ui, sans-serif;

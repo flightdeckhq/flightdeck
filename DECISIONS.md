@@ -7271,8 +7271,7 @@ of step 6.8 cleanup before the middleware change.
 **Date:** 2026-05-08
 **Phase:** Phase 7 Step 2 (operator-actionable events)
 
-**Context.** The Phase 7 audit (`docs/phase-7-event-audit.md`)
-surfaced that the five policy enforcement event types
+**Context.** The Phase 7 audit surfaced that the five policy enforcement event types
 (`policy_warn`, `policy_degrade`, `policy_block`, `policy_mcp_warn`,
 `policy_mcp_block`) carried sufficient threshold context for
 operators to see *what* fired but never *which policy row*
@@ -7370,9 +7369,8 @@ rejects the five policy event types with a 400 if the
 **Related decisions.** D131 (the existing MCP-event payload table
 this block extends). D135 (the resolution algorithm whose
 decisions this block surfaces). D149 (the `originating_event_id`
-chain this block ships alongside). Phase 7 audit
-(`docs/phase-7-event-audit.md`) for the audit-derived workflow
-gap analysis.
+chain this block ships alongside). See PR #33 for the
+audit-derived workflow gap analysis.
 
 **Implementation note (Step 2).** Sensor:
 `flightdeck_sensor.core.types.PolicyDecisionSummary` +
@@ -7476,7 +7474,7 @@ falls back to `crypto.randomBytes` shim if missing).
 CONFLICT semantics live alongside but are orthogonal). D131
 (the events whose payloads this chain decorates). D148 (the
 `policy_decision` block this chain ships alongside on policy
-events). Phase 7 audit (`docs/phase-7-event-audit.md`).
+events). See PR #33 for the audit-derived workflow gap analysis.
 
 **Implementation note (Step 2).** Sensor:
 `flightdeck_sensor.core.session.Session._build_payload` mints +
@@ -7594,8 +7592,8 @@ events whose enforcement scope this expands). D135 (the
 resolution algorithm whose decisions now apply to all six call
 sites). D148 (the shared policy_decision block populated on
 every emission). D149 (the originating_event_id chain + the
-7-value originating_call_context enum). The Phase 7 audit
-(`docs/phase-7-event-audit.md`).
+7-value originating_call_context enum). See PR #33 for the
+audit-derived workflow gap analysis.
 
 **Implementation note (Step 3).** Sensor:
 `flightdeck_sensor.interceptor.mcp` —
@@ -7760,9 +7758,8 @@ alongside the captured args via the policy_decision block from
 D148). D148 / D149 (the Step 2 enrichment that extends the
 operator-actionable surface; D150 closes the capture-storage
 parity loop). Phase 4 D-PHASE1 (the LLM-prompt capture
-posture this decision parallels). Phase 7 audit
-(`docs/phase-7-event-audit.md`) for the audit-derived workflow
-gap analysis.
+posture this decision parallels). See PR #33 for the
+audit-derived workflow gap analysis.
 
 **Implementation note (Step 3.b).**
 
@@ -7932,9 +7929,8 @@ this enrichment hangs on). D135 (the resolution algorithm
 `policy_decision_at_attach` records). D140 (the
 `mcp_server_attached` event D152 enriches). D148 / D149 (the
 shared `policy_decision` block + `originating_event_id` chain
-that `policy_decision_at_attach` reuses). Phase 7 audit
-(`docs/phase-7-event-audit.md`) for the audit-derived workflow
-gap analysis.
+that `policy_decision_at_attach` reuses). See PR #33 for the
+audit-derived workflow gap analysis.
 
 **Implementation note (Step 4).**
 
@@ -7976,8 +7972,8 @@ playground/19_mcp_policy_block.py drives the full chain.
 
 **Date:** 2026-05-09. **Status:** Adopted.
 
-**Context.** Phase 7 audit (`docs/phase-7-event-audit.md`) flagged
-the LLM-family event types — `pre_call`, `post_call`, `embeddings`,
+**Context.** The Phase 7 audit flagged the LLM-family event
+types — `pre_call`, `post_call`, `embeddings`,
 `llm_error` — as missing operator-actionable triage metadata.
 Operators reading these events couldn't answer:
 
@@ -9292,13 +9288,21 @@ the same badge family as ``ClientTypePill`` and the
 - ``child`` and ``parent`` (clickable ``<button>``): accent
   tint — ``color-mix(in srgb, var(--accent) 15%, transparent)``
   background, ``color-mix(in srgb, var(--accent) 40%,
-  transparent)`` border. Foreground uses the live accent in
-  light theme and a lightened accent in dark theme
-  (``color-mix(in srgb, var(--accent) 55%, white)``) because
-  the unmodified accent reads dim on the dark surface tint.
-  Mirrors the ``CLIENT_TYPE_COLOR`` shape so the cluster is
-  thematically of-a-piece. Click behaviour preserved verbatim:
-  child scrolls to parent, parent scrolls to first child.
+  transparent)`` border. Foreground reads from
+  ``var(--topology-pill-fg)``, defined per-theme in
+  ``styles/themes.css``: dark theme lightens the accent toward
+  white (``color-mix(in srgb, var(--accent) 55%, white)``)
+  because the unmodified accent reads dim on the dark surface
+  tint; light theme uses the raw ``var(--accent)``. Driving the
+  colour through a CSS variable keyed on the ``html.dark`` /
+  ``html.light`` class means a live theme toggle recolours every
+  pill instantly via the cascade. The earlier draft branched in
+  JS via ``useTheme()`` and held a stale local copy across
+  mounts (the hook is per-component ``useState``, not shared),
+  so a live toggle left the dark-theme lightened accent on the
+  light surface until the cell remounted. Click behaviour
+  preserved verbatim: child scrolls to parent, parent scrolls
+  to first child.
 - ``lone`` (static ``<span>``): muted tint —
   ``color-mix(in srgb, var(--text) 6%, transparent)``
   background, ``var(--border-subtle)`` border,

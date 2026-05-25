@@ -224,12 +224,14 @@ test.describe("T103 — swimlane right-edge clearance", () => {
     // Trigger React's ``onMouseEnter`` via ``.hover()`` —
     // ``dispatchEvent('mouseenter')`` does NOT fire React's
     // synthetic event handler in current React, so the tooltip
-    // never renders programmatically. Wrap in ``expect.poll``
-    // so the hover gets retried if the first attempt races
-    // the swimlane's rAF tick. ``tooltip.count()`` returns 0
-    // when no match exists rather than throwing, so the poll
-    // can recover from any iteration where the swimlane
-    // re-rendered between hover and check.
+    // never renders programmatically. The poll re-hovers and
+    // captures the tooltip's computed ``position`` in the same
+    // tick the tooltip is verified mounted; doing the read
+    // OUTSIDE the poll races a swimlane re-render that can
+    // unmount the tooltip between the poll exit and a
+    // standalone ``evaluate`` call. ``page.evaluate`` returns
+    // ``""`` when the tooltip element is absent so the poll
+    // keeps retrying until it lands.
     const tooltip = page
       .locator('[data-testid^="swimlane-run-bracket-tooltip-"]')
       .first();
@@ -237,21 +239,27 @@ test.describe("T103 — swimlane right-edge clearance", () => {
       .poll(
         async () => {
           await brackets.nth(bottomBracketIndex).hover({ force: true });
-          return tooltip.count();
+          return page.evaluate(() => {
+            // Tooltip selector is duplicated here so the
+            // function runs entirely in the browser frame and
+            // the lookup + computed-style read happen in one
+            // tick. Locator-based evaluate would re-resolve the
+            // selector after the hover, opening a window for a
+            // re-render to invalidate it.
+            const el = document.querySelector(
+              '[data-testid^="swimlane-run-bracket-tooltip-"]',
+            );
+            return el ? window.getComputedStyle(el).position : "";
+          });
         },
-        { timeout: 10_000 },
+        { timeout: 20_000 },
       )
-      .toBeGreaterThan(0);
-
-    // Tooltip must render with ``position: fixed`` so it
-    // escapes the timeline panel's ``overflow: hidden`` clip.
-    // The fixed positioning is what lets it extend visually
-    // past the 48 px row height. Pre-fix the tooltip was
-    // ``position: absolute`` inside the panel and the
-    // overhang got clipped.
-    const tooltipPosition = await tooltip.evaluate(
-      (el) => window.getComputedStyle(el).position,
-    );
-    expect(tooltipPosition).toBe("fixed");
+      // Tooltip must render with ``position: fixed`` so it
+      // escapes the timeline panel's ``overflow: hidden`` clip.
+      // The fixed positioning is what lets it extend visually
+      // past the 48 px row height. Pre-fix the tooltip was
+      // ``position: absolute`` inside the panel and the overhang
+      // got clipped.
+      .toBe("fixed");
   });
 });

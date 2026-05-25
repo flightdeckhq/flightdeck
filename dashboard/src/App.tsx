@@ -28,20 +28,35 @@ import type {
 } from "@/lib/types";
 import { useTheme } from "@/hooks/useTheme";
 
-function Nav({ onSearchClick }: { onSearchClick: () => void }) {
+export function Nav({ onSearchClick }: { onSearchClick: () => void }) {
   const { theme, toggleTheme } = useTheme();
+  const lockupSrc =
+    theme === "dark"
+      ? "/assets/flightdeck-lockup-dark.svg"
+      : "/assets/flightdeck-lockup-light.svg";
 
   return (
     <nav
-      className="flex h-[44px] items-center border-b px-4"
+      className="flex h-[52px] items-center border-b px-4"
       style={{
         background: "var(--surface)",
         borderColor: "var(--border)",
       }}
     >
-      <span className="text-[15px] font-semibold" style={{ color: "var(--text)" }}>
-        Flightdeck
-      </span>
+      <NavLink
+        to="/"
+        end
+        aria-label="Flightdeck, go to Fleet"
+        className="flex items-center"
+        data-testid="nav-lockup-link"
+      >
+        <img
+          src={lockupSrc}
+          alt="Flightdeck"
+          className="h-[36px] w-auto"
+          data-testid="nav-lockup"
+        />
+      </NavLink>
 
       <div className="ml-8 flex items-center gap-6">
         {[

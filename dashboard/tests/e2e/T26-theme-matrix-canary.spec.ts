@@ -21,6 +21,7 @@
  * no fixtures.
  */
 import { test, expect } from "@playwright/test";
+import { THEME_STORAGE_KEY } from "../../src/lib/constants";
 
 test("html element carries the theme class matching the project storageState", async ({
   page,
@@ -31,30 +32,46 @@ test("html element carries the theme class matching the project storageState", a
   // baked into index.html. The "Fleet" anchor lives in the top nav
   // and renders on every route, so it's a reliable mount signal.
   await page.waitForSelector('nav a:has-text("Fleet")', { timeout: 5000 });
-  // useEffect fires after React commit — give it a tick to actually
-  // mutate the classList.
-  await page.waitForTimeout(100);
+  // useTheme's useEffect fires after React commit and mutates the
+  // <html> classList to match the persisted theme. Web-first wait on
+  // the actual state change (the class being one of {dark, light})
+  // rather than a fixed 100ms sleep — surfaces the real failure
+  // condition ("class never flipped") instead of papering a race
+  // with an arbitrary delay.
+  await expect
+    .poll(
+      () => page.evaluate(() => document.documentElement.className),
+      { timeout: 3000 },
+    )
+    .toMatch(/(^|\s)(dark|light)(\s|$)/);
   const cls = await page.evaluate(() => document.documentElement.className);
   // Read the localStorage entry under the same key the dashboard
-  // uses (dashboard/src/lib/constants.ts::THEME_STORAGE_KEY). This
-  // value must agree with playwright.config.ts's THEME_STORAGE_KEY
-  // — drift between the two is one of the regressions this canary
-  // catches.
-  const ls = await page.evaluate(() =>
-    localStorage.getItem("flightdeck-theme"),
+  // uses (``THEME_STORAGE_KEY`` from ``src/lib/constants.ts``). The
+  // canary imports the canonical constant — a hardcoded literal here
+  // would silently desync from the seeded key, hiding the drift this
+  // test exists to catch.
+  const ls = await page.evaluate(
+    (key) => localStorage.getItem(key),
+    THEME_STORAGE_KEY,
   );
   if (testInfo.project.name === "neon-dark") {
     expect(cls, "neon-dark project must mount with html.class=dark").toMatch(
       /(^|\s)dark(\s|$)/,
     );
     expect(cls).not.toMatch(/(^|\s)light(\s|$)/);
-    expect(ls, "neon-dark project must seed localStorage[flightdeck-theme]=dark").toBe("dark");
+    expect(
+      ls,
+      `neon-dark project must seed localStorage[${THEME_STORAGE_KEY}]=dark`,
+    ).toBe("dark");
   } else if (testInfo.project.name === "clean-light") {
     expect(cls, "clean-light project must mount with html.class=light").toMatch(
       /(^|\s)light(\s|$)/,
     );
     expect(cls).not.toMatch(/(^|\s)dark(\s|$)/);
-    expect(ls, "clean-light project must seed localStorage[flightdeck-theme]=light").toBe("light");
+    expect(
+      ls,
+      `clean-light project must seed localStorage[${THEME_STORAGE_KEY}]=light`,
+    ).toBe("light");
   } else {
     test.skip(true, `not a base theme project: ${testInfo.project.name}`);
   }

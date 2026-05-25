@@ -27,15 +27,7 @@ import type {
   SearchResultSession,
 } from "@/lib/types";
 import { useTheme } from "@/hooks/useTheme";
-
-// Named-constant source-of-truth for the navbar lockup image
-// paths. Exported so the Nav unit test consumes the same value
-// the runtime renders, eliminating the duplicate-magic-string
-// drift surface flagged in PR #43 review.
-export const LOCKUP_SRC = {
-  dark: "/assets/flightdeck-lockup-dark.svg",
-  light: "/assets/flightdeck-lockup-light.svg",
-} as const;
+import { LOCKUP_SRC } from "@/lib/constants";
 
 export function Nav({ onSearchClick }: { onSearchClick: () => void }) {
   const { theme, toggleTheme } = useTheme();

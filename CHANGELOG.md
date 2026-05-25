@@ -120,9 +120,10 @@ importing two components.
   table elements with Tailwind classes (no inline ``style``
   props on table internals). One canonical 11/12/px3/py2 spec
   for header / body cells, ``border-b border-border`` +
-  ``bg-surface`` on header rows, ``border-b border-border-
-  subtle`` on body rows, and an ``interactive`` prop on
-  ``TableRow`` for the hover + cursor pattern on clickable rows.
+  ``bg-surface`` on header rows,
+  ``border-b border-border-subtle`` on body rows, and an
+  ``interactive`` prop on ``TableRow`` for the hover + cursor
+  pattern on clickable rows.
 - **Agents and Events migrated.** ``AgentTable.tsx`` +
   ``AgentTableRow.tsx`` (``/agents``) and the inline events
   ``<table>`` + ``EventRow`` in ``Investigate.tsx``

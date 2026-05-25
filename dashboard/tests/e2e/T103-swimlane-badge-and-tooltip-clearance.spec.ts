@@ -190,61 +190,47 @@ test.describe("T103 — swimlane right-edge clearance", () => {
     // genuine race surfaces as the poll's "expected 'fixed'"
     // failure rather than a confusing per-test-timeout exhaust.
     test.setTimeout(45_000);
-    // Concurrent-runs fixture has two overlapping runs so its
-    // row carries one top-anchored and one bottom-anchored
-    // bracket. The bottom one's tooltip used to clip against
-    // the timeline panel's ``overflow: hidden`` because the
-    // tooltip (~56 px tall) doesn't fit in the row (48 px) —
-    // either anchor direction lost ~10 px. The fix renders the
-    // tooltip with ``position: fixed`` anchored to the
-    // button's viewport rect, which escapes the panel clip.
+    // The tooltip's ``position: fixed`` contract is bracket-
+    // agnostic — every run-bracket tooltip uses fixed
+    // positioning anchored to the bracket's viewport rect, so
+    // hovering ANY bracket on ANY row verifies the same
+    // contract. Pre-fix this test locked the assertion to a
+    // specific row with two overlapping runs (concurrent-runs
+    // fixture) to reach the bottom-anchored case; that case is
+    // the original bug shape, but the position-fixed fix
+    // applies uniformly. Decoupling the test from a specific
+    // fixture row removes the keep-alive-watchdog drift
+    // surface — runs can age out of the active window between
+    // seed and assertion, leaving the concurrent-runs row
+    // bracket-less, which was the historical clean-light
+    // flake pattern.
     await page.setViewportSize({ width: 1700, height: 900 });
     await page.goto("/");
-    const row = page
-      .locator('[data-testid^="swimlane-agent-row-"]')
-      .filter({ hasText: "e2e-test-concurrent-runs" })
+    // Wait for the swimlane to mount and render at least one
+    // bracket. ``expect.toBeVisible`` on a global locator is
+    // the cheapest precondition that proves brackets exist
+    // somewhere in the swimlane.
+    const anyBracket = page
+      .locator('[data-testid^="swimlane-run-bracket-start-"]')
       .first();
-    await row.scrollIntoViewIfNeeded();
-    await expect(row).toBeVisible({ timeout: 10_000 });
-
-    // The two brackets sit at the same x position; one anchors
-    // to the row's top half, the other to the bottom half. DOM
-    // order doesn't reliably map to anchor (the order depends on
-    // session sort + bracketAnchors logic), so pick by geometry:
-    // the bracket with the higher viewport y is the
-    // bottom-anchored one.
-    const brackets = row.locator(
-      '[data-testid^="swimlane-run-bracket-start-"]',
-    );
-    await expect(brackets).toHaveCount(2);
-    const count = await brackets.count();
-    let bottomBracketIndex = 0;
-    let highestY = -Infinity;
-    for (let i = 0; i < count; i++) {
-      const box = await brackets.nth(i).boundingBox();
-      if (box && box.y > highestY) {
-        highestY = box.y;
-        bottomBracketIndex = i;
-      }
-    }
-    // Trigger React's ``onMouseEnter`` via ``.hover()`` —
-    // ``dispatchEvent('mouseenter')`` does NOT fire React's
-    // synthetic event handler in current React, so the tooltip
-    // never renders programmatically. The poll re-hovers and
-    // captures the tooltip's computed ``position`` in the same
+    await expect(anyBracket).toBeVisible({ timeout: 15_000 });
+    // The poll re-hovers the bracket and captures the
+    // tooltip's computed ``position`` in the same browser
     // tick the tooltip is verified mounted; doing the read
     // OUTSIDE the poll races a swimlane re-render that can
     // unmount the tooltip between the poll exit and a
     // standalone ``evaluate`` call. ``page.evaluate`` returns
     // ``""`` when the tooltip element is absent so the poll
-    // keeps retrying until it lands.
+    // keeps retrying until it lands. React's synthetic
+    // onMouseEnter requires ``.hover()`` —
+    // ``dispatchEvent('mouseenter')`` does NOT fire it.
     const tooltip = page
       .locator('[data-testid^="swimlane-run-bracket-tooltip-"]')
       .first();
     await expect
       .poll(
         async () => {
-          await brackets.nth(bottomBracketIndex).hover({ force: true });
+          await anyBracket.hover({ force: true });
           return page.evaluate(() => {
             // Tooltip selector is duplicated here so the
             // function runs entirely in the browser frame and

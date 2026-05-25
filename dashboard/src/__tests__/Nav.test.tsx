@@ -2,8 +2,8 @@ import "@testing-library/jest-dom/vitest";
 import { describe, it, expect, afterEach } from "vitest";
 import { render, screen, cleanup } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
-import { LOCKUP_SRC, Nav } from "../App";
-import { THEME_STORAGE_KEY } from "@/lib/constants";
+import { Nav } from "../App";
+import { LOCKUP_SRC, THEME_STORAGE_KEY } from "@/lib/constants";
 
 function renderNav(theme: "dark" | "light") {
   localStorage.setItem(THEME_STORAGE_KEY, theme);

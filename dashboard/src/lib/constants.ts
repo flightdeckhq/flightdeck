@@ -38,6 +38,19 @@ export const FEED_HEIGHT_STORAGE_KEY = "flightdeck-feed-height";
 export const THEME_STORAGE_KEY = "flightdeck-theme";
 
 /**
+ * Navbar lockup image URLs, keyed by active theme. The runtime
+ * Nav consumes the active-theme entry; the unit test consumes
+ * both to verify the per-theme src selection. Lives here rather
+ * than in App.tsx so the test can import the canonical value
+ * without pulling the full App component / router / store
+ * import tree into the unit test's module graph.
+ */
+export const LOCKUP_SRC = {
+  dark: "/assets/flightdeck-lockup-dark.svg",
+  light: "/assets/flightdeck-lockup-light.svg",
+} as const satisfies Record<"dark" | "light", string>;
+
+/**
  * LocalStorage key for the E2E keep-alive WS disable flag. When
  * set to "1" or "true", the dashboard's useFleet hook skips its
  * WebSocket subscription so periodic fixture-refresh events from

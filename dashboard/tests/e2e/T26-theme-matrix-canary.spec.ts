@@ -30,18 +30,25 @@ test("html element carries the theme class matching the project storageState", a
   // Wait for React to mount Nav (the host of useTheme). Without this,
   // we'd race the mount and read the SSR-static <html class="dark">
   // baked into index.html. The "Fleet" anchor lives in the top nav
-  // and renders on every route, so it's a reliable mount signal.
-  await page.waitForSelector('nav a:has-text("Fleet")', { timeout: 5000 });
+  // and renders on every route, so it's a reliable mount signal —
+  // web-first ``toBeVisible`` over the legacy ``waitForSelector`` API.
+  await expect(
+    page.locator('nav a:has-text("Fleet")'),
+  ).toBeVisible({ timeout: 5000 });
   // useTheme's useEffect fires after React commit and mutates the
   // <html> classList to match the persisted theme. Web-first wait on
   // the actual state change (the class being one of {dark, light})
   // rather than a fixed 100ms sleep — surfaces the real failure
   // condition ("class never flipped") instead of papering a race
-  // with an arbitrary delay.
+  // with an arbitrary delay. Explicit ``intervals: [100]`` documents
+  // the poll cadence — Playwright's default is 100 ms today but
+  // making it explicit insulates the test from a framework default
+  // change and matches the project's named-constant-with-justification
+  // principle.
   await expect
     .poll(
       () => page.evaluate(() => document.documentElement.className),
-      { timeout: 3000 },
+      { timeout: 3000, intervals: [100] },
     )
     .toMatch(/(^|\s)(dark|light)(\s|$)/);
   const cls = await page.evaluate(() => document.documentElement.className);

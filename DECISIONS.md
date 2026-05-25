@@ -9262,11 +9262,10 @@ Column-font assignment (Phase 1):
   a trend hint, so the column reads left. The primitive still
   supports ``align="right"`` (e.g. for tables whose cell content
   reads right-anchored), but the Agents convention is
-  left-aligned. An earlier draft of this PR briefly flipped the
-  KPI columns to ``align="right"`` and re-ordered the cell to
-  ``[sparkline][number]``; that choice was reverted because the
-  number-first scan order outweighs the header-vs-rightmost-digit
-  symmetry in this surface.
+  left-aligned. The number-first scan order outweighs the
+  header-vs-rightmost-digit symmetry in this surface; the
+  ``align="right"`` + ``[sparkline][number]`` shape was
+  considered and rejected for that reason.
 - **Events.** Time → ``mono``; Agent (flavor + name) → UI; Run
   id → ``mono``; Type → badge cell; Model → ``mono``; Detail
   → UI.

@@ -2417,13 +2417,15 @@ timestamps, and model strings use `mono`; names, flavors,
 labels, and prose use the default UI font. `TableHead` and
 `TableCell` accept `align="right"` for numeric columns.
 
-Surfaces on the primitive today: `AgentTable.tsx` +
-`AgentTableRow.tsx` (the `/agents` route), and the events
-`<table>` + `EventRow` function inside `Investigate.tsx` (the
-`/events` route). Policy tables (`PolicyTable.tsx`,
-`MCPPolicyEntryTable.tsx`, `MCPPolicyAuditPanel.tsx`), the
-Runs tab inside the Agent drawer (`AgentDrawerRunsTab.tsx`),
-and `Settings.tsx` follow in a separate migration PR.
+Surfaces on the primitive: `AgentTable.tsx` + `AgentTableRow.tsx`
+(the `/agents` route), and the events `<table>` + `EventRow`
+function inside `Investigate.tsx` (the `/events` route).
+Surfaces not yet on the primitive: the policy tables
+(`PolicyTable.tsx`, `MCPPolicyEntryTable.tsx`,
+`MCPPolicyAuditPanel.tsx`), the Runs tab inside the Agent drawer
+(`AgentDrawerRunsTab.tsx`), and `Settings.tsx`. The unmigrated
+surfaces still render their own table chrome; the primitive is
+the canonical contract every future table adoption inherits.
 
 ### Agents table
 
@@ -4686,8 +4688,8 @@ mode); values `1..59` are rejected with 400 to prevent reaping
 freshly-upserted agents that the worker has not yet wired up to a
 `session_start` row. Concurrent calls serialise via a process-level
 mutex (409 on contention) — multi-replica deployments would need a
-Postgres advisory lock; deferred until the v1 single-replica
-deployment shape is outgrown.
+Postgres advisory lock; the process mutex covers the current
+single-replica deployment shape.
 
 **When to call** — after a data cleanup (manual `DELETE` against
 `sessions` or `agents`), after a schema migration that touched
@@ -4696,7 +4698,7 @@ counts (`total_sessions` unrealistically high vs the visible run
 rows), or when stale orphan rows from old test runs / smoke fixtures
 are crowding the AGENT facet, the `/v1/agents` listing, or the
 agent-id resolver. NOT on a schedule — this is for targeted operator
-action; scheduling is out of scope for v1. Reconcile is also not
+action, not a scheduled task. Reconcile is also not
 atomic against concurrent worker writes (the worker's
 `BumpAgentSessionCount` and `IncrementAgentTokens` execute as
 `SET col = col + N` deltas), so a bump landing between our `SELECT

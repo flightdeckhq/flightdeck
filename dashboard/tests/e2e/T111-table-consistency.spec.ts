@@ -6,20 +6,26 @@
  * spec asserts that both surfaces ship the canonical header /
  * row class signature so a future drift (per-page inline styles
  * sneaking back in, or a refactor that bypasses the primitive)
- * surfaces immediately.
+ * surfaces immediately. Also locks the TopologyCell rounded-pill
+ * class signature on /agents so the D163 pill restyle stays
+ * structurally identifiable.
  *
  * Under both Playwright theme projects per Rule 40c.3 — the
  * class signature must be present in both themes; the values
  * themselves are theme-agnostic Tailwind utility classes.
+ *
+ * Class-membership checks use ``classList.contains`` rather than
+ * raw class-string ``.includes`` so a future caller passing an
+ * overriding ``className`` that happens to share a substring
+ * can't pass silently.
  */
-import { test, expect, Page } from "@playwright/test";
+import { test, expect, Locator } from "@playwright/test";
 
 // Canonical class fragments from the primitive (see
 // dashboard/src/components/ui/table.tsx::TableHead /
-// TableCell / TableRow). The class STRING includes these
-// substrings on every header cell / interactive body row
-// when the surface uses the primitive.
-const HEADER_CLASS_FRAGMENTS = [
+// TableCell / TableRow). Every header cell / interactive body
+// row on a primitive-backed table carries these tokens.
+const HEADER_CLASSES = [
   "text-[11px]",
   "font-semibold",
   "uppercase",
@@ -29,36 +35,39 @@ const HEADER_CLASS_FRAGMENTS = [
   "py-2",
 ];
 
-const INTERACTIVE_ROW_CLASS_FRAGMENTS = [
+const INTERACTIVE_ROW_CLASSES = [
   "border-b",
   "border-border-subtle",
   "cursor-pointer",
   "hover:bg-surface-hover",
 ];
 
-async function expectHeaderSignature(page: Page, tableSelector: string) {
-  const firstTh = page.locator(`${tableSelector} thead th`).first();
-  await expect(firstTh).toBeVisible();
-  const cls = (await firstTh.getAttribute("class")) ?? "";
-  for (const fragment of HEADER_CLASS_FRAGMENTS) {
-    expect(
-      cls.includes(fragment),
-      `expected ${tableSelector} header to carry "${fragment}" — got: ${cls}`,
-    ).toBe(true);
-  }
-}
+// TopologyCell pill base — every variant (lone / child / parent)
+// carries this class signature regardless of accent vs muted
+// tint. The colour treatment is in inline ``style`` (driven by
+// theme variables); the class signature is structural.
+const PILL_CLASSES = [
+  "inline-flex",
+  "items-center",
+  "rounded-full",
+  "px-2",
+  "py-0.5",
+  "font-mono",
+  "text-[11px]",
+  "whitespace-nowrap",
+];
 
-async function expectInteractiveRowSignature(
-  page: Page,
-  rowSelector: string,
-) {
-  const row = page.locator(rowSelector).first();
-  await expect(row).toBeVisible();
-  const cls = (await row.getAttribute("class")) ?? "";
-  for (const fragment of INTERACTIVE_ROW_CLASS_FRAGMENTS) {
+async function expectClasses(locator: Locator, classes: string[]) {
+  // ``classList.contains`` reflects DOM truth and is order-
+  // independent — string includes() against the raw class
+  // attribute can pass on incidental substring matches.
+  for (const cls of classes) {
     expect(
-      cls.includes(fragment),
-      `expected ${rowSelector} to carry "${fragment}" — got: ${cls}`,
+      await locator.evaluate(
+        (el, cls) => el.classList.contains(cls),
+        cls,
+      ),
+      `expected classList to contain "${cls}"`,
     ).toBe(true);
   }
 }
@@ -69,7 +78,9 @@ test.describe("T111 — Agents + Events tables share the primitive signature", (
   }) => {
     await page.goto("/agents");
     await expect(page.getByTestId("agent-table")).toBeVisible();
-    await expectHeaderSignature(page, '[data-testid="agent-table"]');
+    const firstTh = page.locator('[data-testid="agent-table"] thead th').first();
+    await expect(firstTh).toBeVisible();
+    await expectClasses(firstTh, HEADER_CLASSES);
   });
 
   test("the Events table header carries the canonical class signature", async ({
@@ -77,7 +88,9 @@ test.describe("T111 — Agents + Events tables share the primitive signature", (
   }) => {
     await page.goto("/events");
     await expect(page.getByTestId("events-table")).toBeVisible();
-    await expectHeaderSignature(page, '[data-testid="events-table"]');
+    const firstTh = page.locator('[data-testid="events-table"] thead th').first();
+    await expect(firstTh).toBeVisible();
+    await expectClasses(firstTh, HEADER_CLASSES);
   });
 
   test("an Agents body row carries the interactive-row signature (border + hover + cursor)", async ({
@@ -85,14 +98,9 @@ test.describe("T111 — Agents + Events tables share the primitive signature", (
   }) => {
     await page.goto("/agents");
     await expect(page.getByTestId("agent-table")).toBeVisible();
-    // Wait until at least one row mounts (the seeded fixture
-    // includes multiple agents). Selecting the first agent-row-*
-    // testid via a CSS attribute selector.
-    await page.waitForSelector('[data-testid^="agent-row-"]');
-    await expectInteractiveRowSignature(
-      page,
-      '[data-testid^="agent-row-"]',
-    );
+    const row = page.locator('[data-testid^="agent-row-"]').first();
+    await expect(row).toBeVisible();
+    await expectClasses(row, INTERACTIVE_ROW_CLASSES);
   });
 
   test("an Events body row carries the interactive-row signature (border + hover + cursor)", async ({
@@ -100,10 +108,24 @@ test.describe("T111 — Agents + Events tables share the primitive signature", (
   }) => {
     await page.goto("/events");
     await expect(page.getByTestId("events-table")).toBeVisible();
-    await page.waitForSelector('[data-testid="events-row"]');
-    await expectInteractiveRowSignature(
-      page,
-      '[data-testid="events-row"]',
-    );
+    const row = page.locator('[data-testid="events-row"]').first();
+    await expect(row).toBeVisible();
+    await expectClasses(row, INTERACTIVE_ROW_CLASSES);
+  });
+
+  test("the topology column pill on /agents carries the D163 rounded-pill class signature", async ({
+    page,
+  }) => {
+    // The TopologyCell restyle (D163 step) replaced inline-style
+    // text with a tinted rounded pill across all three modes
+    // (lone / child / parent). Any of the three pills is
+    // sufficient — they share the same PILL_CLASSES base.
+    await page.goto("/agents");
+    await expect(page.getByTestId("agent-table")).toBeVisible();
+    const pill = page
+      .locator('[data-testid^="agent-table-topology-pill-"]')
+      .first();
+    await expect(pill).toBeVisible();
+    await expectClasses(pill, PILL_CLASSES);
   });
 });

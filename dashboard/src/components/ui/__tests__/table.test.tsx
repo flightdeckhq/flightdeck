@@ -202,6 +202,61 @@ describe("table primitive", () => {
     expect(cls).toContain("bg-surface");
   });
 
+  it("`scope=\"row\"` overrides the \"col\" default on TableHead", () => {
+    // Regression lock for the previous double-set trap where
+    // TableHead set ``scope={props.scope ?? "col"}`` then spread
+    // ``{...props}`` again. React silently dropped undefined from
+    // the spread so the "col" default worked, but an explicit
+    // ``scope="row"`` from a caller wrote the attribute twice and
+    // depended on spread ordering. The fix destructures ``scope``
+    // out of props; this test confirms the override path lands.
+    render(
+      <Table>
+        <TableBody>
+          <TableRow>
+            <TableHead scope="row" data-testid="th">
+              Row label
+            </TableHead>
+          </TableRow>
+        </TableBody>
+      </Table>,
+    );
+    expect(screen.getByTestId("th").getAttribute("scope")).toBe("row");
+  });
+
+  it("`align` prop does not leak the deprecated HTML align attribute to the DOM", () => {
+    // The native HTML ``align`` attribute on ``<th>`` / ``<td>`` was
+    // deprecated in HTML4 and is presentational. The primitive's
+    // ``align`` prop drives a Tailwind text-align utility via
+    // ``alignClass()``; the DOM element should NOT carry the raw
+    // attribute. Locks the contract: callers see Tailwind classes,
+    // never the deprecated HTML attribute.
+    render(
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead align="right" data-testid="th">
+              Cost
+            </TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          <TableRow>
+            <TableCell align="center" data-testid="td">
+              42
+            </TableCell>
+          </TableRow>
+        </TableBody>
+      </Table>,
+    );
+    const th = screen.getByTestId("th");
+    const td = screen.getByTestId("td");
+    expect(th.className).toContain("text-right");
+    expect(th.getAttribute("align")).toBeNull();
+    expect(td.className).toContain("text-center");
+    expect(td.getAttribute("align")).toBeNull();
+  });
+
   it("forwards arbitrary props (data-*, aria-*, onClick) to the underlying elements", () => {
     render(
       <Table>

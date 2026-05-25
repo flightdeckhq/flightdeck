@@ -99,12 +99,17 @@ interface TableHeadProps
 }
 
 export const TableHead = forwardRef<HTMLTableCellElement, TableHeadProps>(
-  function TableHead({ className, align, children, ...props }, ref) {
+  function TableHead({ className, align, scope, children, ...props }, ref) {
+    // ``align`` resolves through ``alignClass()`` only — the native
+    // HTML ``align`` attribute on ``<th>`` was deprecated in HTML4
+    // and CSS overrides it anyway, so passing it to the DOM would be
+    // dead markup. Destructure ``scope`` out of ``props`` so the
+    // explicit default ("col" when unset) doesn't collide with a
+    // duplicate attribute coming through ``{...props}``.
     return (
       <th
         ref={ref}
-        align={align}
-        scope={props.scope ?? "col"}
+        scope={scope ?? "col"}
         className={cn(
           "px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.06em] text-text-secondary whitespace-nowrap",
           alignClass(align),
@@ -130,10 +135,11 @@ interface TableCellProps
 
 export const TableCell = forwardRef<HTMLTableCellElement, TableCellProps>(
   function TableCell({ className, align, mono, children, ...props }, ref) {
+    // ``align`` resolves through ``alignClass()`` only — see TableHead
+    // for the reasoning on dropping the deprecated HTML attribute.
     return (
       <td
         ref={ref}
-        align={align}
         className={cn(
           "px-3 py-2 text-[12px] align-middle",
           mono && "font-mono",

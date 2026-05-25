@@ -92,16 +92,17 @@ function AgentTableRowImpl({
       onClick={handleRowClick}
     >
       {/* Identity — UI font for the name + per-row identity chrome.
-          Family descendants pick up the 28-px first-cell indent;
-          lone agents and family roots keep the primitive's default
-          12-px left padding via px-3. */}
+          Family descendants pick up the 28-px first-cell indent
+          from the ``[data-topology="child"] > td:first-child`` rule
+          in ``styles/globals.css``; that selector's specificity
+          (0,1,2) wins over a Tailwind ``pl-7`` (0,1,0), so the
+          Tailwind class would be dead code if we set it here. The
+          ``data-topology="child"`` stamp on the row above lets the
+          CSS rule fire; this cell only carries the column width
+          minimum. */}
       <TableCell
         data-testid={`agent-row-identity-${agent.agent_id}`}
-        className={
-          isFamilyDescendant
-            ? "pl-7 pr-3 min-w-[260px]"
-            : "min-w-[260px]"
-        }
+        className="min-w-[260px]"
       >
         <div className="flex items-center gap-2">
           {agent.client_type === ClientType.ClaudeCode && (

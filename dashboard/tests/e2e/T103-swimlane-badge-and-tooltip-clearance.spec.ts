@@ -184,6 +184,12 @@ test.describe("T103 — swimlane right-edge clearance", () => {
   test("run-bracket tooltip renders position:fixed and escapes the timeline panel's overflow clip", async ({
     page,
   }) => {
+    // The 20 s poll inside this test plus the surrounding setup
+    // tip past Playwright's 30 s per-test default under 4-workers
+    // parallel pressure occasionally. Extend the budget so a
+    // genuine race surfaces as the poll's "expected 'fixed'"
+    // failure rather than a confusing per-test-timeout exhaust.
+    test.setTimeout(45_000);
     // Concurrent-runs fixture has two overlapping runs so its
     // row carries one top-anchored and one bottom-anchored
     // bracket. The bottom one's tooltip used to clip against

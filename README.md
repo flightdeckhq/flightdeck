@@ -1,4 +1,9 @@
-# Flightdeck
+<div align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="dashboard/public/assets/flightdeck-lockup-dark.svg">
+    <img alt="Flightdeck" src="dashboard/public/assets/flightdeck-lockup-light.svg" width="480">
+  </picture>
+</div>
 
 Flightdeck is a self-hosted observability and control plane for production and coding agents.
 

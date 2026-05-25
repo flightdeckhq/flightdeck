@@ -1789,12 +1789,12 @@ authoritative parameter-level reference.
 
 | Method | Path | Purpose |
 |---|---|---|
-| `GET` | `/v1/fleet` | Fleet summary: agents with state rollup, total sessions, total tokens, recent_sessions rollup, and D161 runtime-context projection (`os`, `arch`, `git_branch`, `git_repo`, `orchestration`, `python_version`, `process_name` — sourced from the agent's most recent session's `context` JSONB via a `LEFT JOIN LATERAL`), context_facets |
+| `GET` | `/v1/fleet` | Fleet summary: agents with state rollup, total sessions, total tokens, recent_sessions rollup, and runtime-context projection (`os`, `arch`, `git_branch`, `git_repo`, `orchestration`, `python_version`, `process_name` — sourced from the agent's most recent session's `context` JSONB via a `LEFT JOIN LATERAL`), context_facets |
 | `GET` | `/v1/sessions` | Paginated session listing; filters: `agent_id`, `flavor`, `framework`, `state`, `error_type`, `policy_event_type`, `mcp_server`, `from`, `to`, `q`, `parent_session_id`, `is_sub_agent`, `has_sub_agents`, `agent_role[]`, `include_pure_children`, `include_parents`, `close_reason`, `estimated_via`, `terminal`, `matched_entry_id`, `originating_call_context`; returns per-session aggregates (`error_types[]`, `policy_event_types[]`, `mcp_server_names[]`, `close_reasons[]`, `estimated_via_values[]`, `has_terminal_error`, `matched_entry_ids[]`, `originating_call_contexts[]`), `child_count`, and `attachment_count` (the number of re-attachments to the session, surfaced as the agent drawer Runs-tab attached pill) |
 | `GET` | `/v1/sessions/:id` | Session detail: metadata + chronological events + attachments array |
 | `GET` | `/v1/agents` | Paginated agent listing; filters: `agent_type`, `client_type`, `state`, `hostname`, `user`, `os`, `orchestration` (multi-value — OR within a dimension, AND across; `os` and `orchestration` use any-session EXISTS semantics on `sessions.context`), `search` (case-insensitive substring on `agent_name` + `hostname`), `updated_since`; `sort` + `order`; `limit` (default 25, max 100) + `offset`. Each row carries the sub-agent rollup fields `agent_role` and `topology` (`lone` / `parent` / `child`) plus the runtime-context projection (`os`, `arch`, `git_branch`, `git_repo`, `orchestration`, `python_version`, `process_name` — latest-session-only, same source as the `/v1/fleet` projection) |
-| `GET` | `/v1/agents/:id/summary` | Per-agent activity summary (totals + per-bucket series) over a 1h/24h/7d/30d window. Powers the per-agent landing page (D157). |
-| `GET` | `/v1/events` | Bulk events query: `from` (required), `to`, `flavor`, `event_type`, `session_id`, `agent_id`, `model`, payload-JSONB facet filters (`error_type`, `close_reason`, `estimated_via`, `matched_entry_id`, `originating_call_context`, `mcp_server`, `terminal`), `framework` (`agent_id` + `framework` resolve via a `sessions` subquery), session-context facet filters (`os`, `arch`, `host`, `user`, `git_branch`, `git_repo`, `orchestration`, `python_version`, `process_name` — D160; resolved via the sessions JOIN against partial expression indexes on `sessions((context->>'<key>'))` from migration 000024), `q` (free-text ILIKE search across event_type / model / session_id / agent_name / framework), `before` (keyset cursor) + `order` (`asc`/`desc`) for newest-first drawer pagination, `facets=true` to return per-dimension chip counts over the filtered set instead of the event list, `limit` (default 500, max 2000), `offset` (max 100000) |
+| `GET` | `/v1/agents/:id/summary` | Per-agent activity summary (totals + per-bucket series) over a 1h/24h/7d/30d window. Powers the per-agent landing page. |
+| `GET` | `/v1/events` | Bulk events query: `from` (required), `to`, `flavor`, `event_type`, `session_id`, `agent_id`, `model`, payload-JSONB facet filters (`error_type`, `close_reason`, `estimated_via`, `matched_entry_id`, `originating_call_context`, `mcp_server`, `terminal`), `framework` (`agent_id` + `framework` resolve via a `sessions` subquery), session-context facet filters (`os`, `arch`, `host`, `user`, `git_branch`, `git_repo`, `orchestration`, `python_version`, `process_name` — resolved via the sessions JOIN against partial expression indexes on `sessions((context->>'<key>'))` from migration 000024), `q` (free-text ILIKE search across event_type / model / session_id / agent_name / framework), `before` (keyset cursor) + `order` (`asc`/`desc`) for newest-first drawer pagination, `facets=true` to return per-dimension chip counts over the filtered set instead of the event list, `limit` (default 500, max 2000), `offset` (max 100000) |
 | `GET` | `/v1/events/:id/content` | Event prompt content; 404 when capture was off for the session |
 | `GET` | `/v1/policy` | Sensor preflight: returns the policy applicable to a flavor + session_id |
 | `GET` | `/v1/policies` | List all token policies (org + flavor + session scopes) |
@@ -1892,7 +1892,7 @@ intended to be exposed only on internal interfaces (firewall / ingress
 level) — production deployments protect them at the network boundary
 rather than via token scopes. Single-tier auth: any valid bearer token
 has full access to every endpoint, including `/v1/admin/*` and the
-MCP protection policy mutations. See DECISIONS.md D156.
+MCP protection policy mutations.
 
 #### Dashboard token configuration
 
@@ -2028,7 +2028,7 @@ renaming fields is not.
 - `filter_agent_id` (optional, UUID). Scopes the analytics window to
   events from sessions owned by a single agent. Composes with the
   other filters via AND. Joins `sessions` when the metric's base
-  table is events. Used by the per-agent landing page (D157).
+  table is events. Used by the per-agent landing page.
 - `filter_parent_session_id`, `filter_is_sub_agent`,
   `filter_has_sub_agents` (optional). Filter analytics scope to
   the children of a specific parent session, to children only, or to
@@ -2062,7 +2062,7 @@ known-performance-characteristic note.
 
 `GET /v1/agents/{agent_id}/summary` returns one agent's activity
 totals plus a per-bucket time series, scoped to a window. Powers
-the per-agent landing page (D157). Query params:
+the per-agent landing page. Query params:
 
 - `period` (optional): `1h`, `24h`, `7d` (default), `30d`.
 - `bucket` (optional): `hour`, `day`, `week`. Derived from
@@ -2125,8 +2125,7 @@ list prices change; it is read-only at runtime.
 `GET /v1/search?q=term` returns up to 5 hits per entity, grouped by
 agent / session / event. Implemented as three parallel ranked
 queries via `errgroup` so the slowest field doesn't gate the
-others. Powers the Cmd/Ctrl+K command palette (result routing
-contract: D162).
+others. Powers the Cmd/Ctrl+K command palette.
 
 Matched columns per entity:
 
@@ -2166,7 +2165,7 @@ same row lands in the most semantic slot:
 Recency (`occurred_at DESC` for events, `last_seen_at DESC` for
 agents, `started_at DESC` for sessions) is the per-tier tiebreaker.
 
-**Result routing (D162).** The Cmd/Ctrl+K palette routes each
+**Result routing.** The Cmd/Ctrl+K palette routes each
 result type to a different surface — agent and event hits open
 overlay drawers via URL params on the *current* route, run hits
 navigate to the events page:
@@ -2262,7 +2261,7 @@ filter chips consume: identity fields (session_id, flavor,
 agent_type, agent_id, agent_name, client_type, host, model,
 framework), lifecycle fields (state, started_at, ended_at,
 last_seen_at, tokens_used, token_limit), the `capture_enabled`
-flag, and the D126 sub-agent linkage columns (parent_session_id,
+flag, and the sub-agent linkage columns (parent_session_id,
 agent_role). `framework` is the bare-name `sessions.framework`
 attribution; it feeds the `/agents` page framework filter chips.
 The heavy correlated-subquery
@@ -2300,14 +2299,13 @@ time range surfaces the circles without re-fetching.
 The wire shape uses `omitempty`; consumers treat the field as
 optional and apply the paginated-only path when it is absent.
 
-### `AgentSummary` runtime-context projection (D161)
-
+### `AgentSummary` runtime-context projection
 Each `AgentSummary` row carries seven nullable JSONB-derived
 fields sourced from the agent's MOST RECENT session's
 `sessions.context`: `os`, `arch`, `git_branch`, `git_repo`,
 `orchestration`, `python_version`, `process_name`. `hostname`
 and `user` already live as direct columns on the `agents`
-table (denormalised at agent-upsert time); the seven D161
+table (denormalised at agent-upsert time); the seven
 fields ride a single shared `LEFT JOIN LATERAL` per agent
 (`agentLatestContextSQL` in `api/internal/store/postgres.go`)
 that runs `SELECT context->>'<key>' ... WHERE agent_id =
@@ -2344,7 +2342,7 @@ facet model; the alternative (union of all values across
 sessions) would explode cardinality and break the
 single-row-per-agent contract. Operators chasing historical
 breadth use `/events` whose runtime-context facets surface every
-event's session context independently (D160).
+event's session context independently.
 
 ### Swimlane sub-agent connector overlay
 
@@ -2396,8 +2394,8 @@ only — never MUI, Ant Design, or Chakra UI.
 ### Table primitive
 
 Every tabular surface in the dashboard renders through one
-shared primitive at `dashboard/src/components/ui/table.tsx`
-(D163). Components exported: `Table`, `TableHeader`,
+shared primitive at `dashboard/src/components/ui/table.tsx`.
+Components exported: `Table`, `TableHeader`,
 `TableBody`, `TableRow`, `TableHead`, `TableCell`. The
 primitive is the single source of table styling — header cells
 are 11-px / `font-semibold` / `uppercase` /
@@ -2507,25 +2505,25 @@ rendered with its dimension's visual:
   `framework` a `FrameworkPill` (the pill / badge is itself the
   chip label for the latter three).
 - **HOSTNAME / USER / OS / ARCH / GIT BRANCH / GIT REPO /
-  ORCHESTRATION / PYTHON / PROCESS** — nine D161 runtime-context
+  ORCHESTRATION / PYTHON / PROCESS** — nine runtime-context
   dimensions rendered via the shared `FacetIcon` (same icon
   vocabulary `/events` uses), so the sidebar reads as one icon
   family across the two pages.
 
 Selections compose AND across dimensions and OR within. Every
-dynamic group (FRAMEWORK + the nine D161 dims) hides entirely
+dynamic group (FRAMEWORK + the nine runtime-context dims) hides entirely
 when no visible agent carries a value in that dimension —
 parity with the FRAMEWORK group's empty behaviour. A full-width
 search bar above the sidebar + table filters the roster
 client-side by agent name, `agent_type`, `client_type`,
-framework, the D161 runtime-context fields, and recent-session
+framework, the runtime-context fields, and recent-session
 model; Escape clears it.
 
 Filtering is **fully client-side** over the loaded
 `useFleetStore().agents` slice. The page never re-fetches on
 chip toggle; `filterAgents()` runs in a `useMemo` over the
 roster and the `AgentTable` re-renders with the filtered slice.
-D161 dimensions are sourced from `AgentSummary` fields the
+Runtime-context dimensions are sourced from `AgentSummary` fields the
 projection carries (delivered to the page via `/v1/fleet`; the
 same fields are also present on `/v1/agents` rows for callers
 that hit that endpoint directly): `hostname` and `user` are
@@ -2626,7 +2624,7 @@ Modal layout:
   `scopedSessionIds` (a `Set<string>` of `session_id` values)
   before merging — `session_id` is the match key, not
   `flavor`, because `FlavorSummary.flavor` carries the
-  agent_id UUID (D115) while `AgentEvent.flavor` carries the
+  agent_id UUID while `AgentEvent.flavor` carries the
   seed-time flavor string; the two never match. The scope set
   is memoised behind a sorted-joined `scopedSessionIdsKey`
   string so the seed effect is stable across store mutations.
@@ -2838,7 +2836,7 @@ client-type pill disambiguating same-named agents), `event_type`,
 `close_reason` (gated to `session_end` events), `estimated_via`,
 `matched_entry_id`, `originating_call_context`, `mcp_server` (the
 MCP event's `payload.server_name`), `terminal` (toggle), plus 9
-runtime-context dims sourced from `sessions.context` (D160): `os`,
+runtime-context dims sourced from `sessions.context`: `os`,
 `arch`, `hostname` (URL param `host`), `user`, `git_branch`,
 `git_repo`, `orchestration`, `python_version`, `process_name`.
 Each chip's count comes from the `/v1/events` facet-count query
@@ -4232,7 +4230,7 @@ sees the deny first.
 (kebab-plural, matching the `/v1/access-tokens` convention).
 Authentication uses the standard Bearer-token middleware that
 covers the rest of the API. Single-tier auth: every authenticated
-bearer token has full access — both reads and mutations (D156).
+bearer token has full access — both reads and mutations.
 
 | Method | Path | Purpose |
 |---|---|---|
@@ -4670,7 +4668,7 @@ per-endpoint request counts.
 ### Operator endpoints
 
 `/v1/admin/*` endpoints share the same Bearer-token auth as
-user-facing endpoints. Single-tier auth (D156): every authenticated
+user-facing endpoints. Single-tier auth: every authenticated
 bearer token has full access. Production deployments protect these
 routes at the network boundary (firewall / ingress) rather than via
 token scopes.

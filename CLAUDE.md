@@ -493,9 +493,12 @@
       methodology notes, pre-existing bugs surfaced during audit,
       and phase-ancestry of individual features.
 
-    D-numbers (D057, D094, D115, etc.) ARE acceptable in ARCHITECTURE
-    when they explain why the system is shaped a particular way — they
-    are durable references that point to DECISIONS.md, not phase tags.
+    D-numbers (D057, D094, D115, etc.) are NOT acceptable in
+    ARCHITECTURE.md either. Decision-record pointers belong in
+    CHANGELOG.md, DECISIONS.md itself, and PR/commit bodies — a
+    reader should not need a D-number lookup to understand what the
+    system does today. Architecture prose states the fact directly
+    with the WHY in plain English.
 
 42. **When any planned decision changes, update docs before merging code.**
     The order is always: update ARCHITECTURE.md → update DECISIONS.md (record

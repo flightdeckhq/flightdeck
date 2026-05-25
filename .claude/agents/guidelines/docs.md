@@ -136,10 +136,15 @@ Flightdeck conventions (see `CLAUDE.md`):
   reflect reality — a codebase that matches a stale `ARCHITECTURE.md`
   is worse than no `ARCHITECTURE.md`. `ARCHITECTURE.md` describes the
   system as it stands today; no phase tags, no "was added in Phase X",
-  no temporal qualifiers. That history lives in `CHANGELOG.md`,
-  `DECISIONS.md`, and PR/commit bodies. D-numbers (D094, D126, D148,
-  etc.) ARE acceptable in `ARCHITECTURE.md` — they point at durable
-  `DECISIONS.md` entries.
+  no temporal qualifiers, AND no `D###` decision-record references.
+  History and decision pointers live in `CHANGELOG.md`,
+  `DECISIONS.md` itself, and PR/commit bodies. The prose in
+  `ARCHITECTURE.md` should state the architectural fact directly with
+  the WHY in plain English; a reader should not need a
+  decision-history lookup to understand what the system does today.
+  Any inline `D###` reference (e.g. `(D157)`, `D161 runtime-context`,
+  `Single-tier auth (D156)`) found in a living architecture doc is a
+  DIRTY finding.
 - **DECISIONS.md as living log (rule 43).** Every pivot lands in
   `DECISIONS.md` immediately: what was planned, what changed, why,
   what was rejected. The order is always update `ARCHITECTURE.md` →

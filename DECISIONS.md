@@ -9163,3 +9163,140 @@ surfaces — ``/events``, the run drawer, the agent drawer, and
 the palette. No new theme tokens; the existing ``getBadge``
 colour + label resolution is reused.
 
+
+## D163 -- Shared table primitive + canonical table styling
+
+The dashboard ships several tabular surfaces (Agents at
+``/agents``, Events at ``/events``, Policies at ``/policies``,
+the Runs tab inside the Agent drawer, Settings). Pre-D163 every
+table built its own ``<table>``/``<thead>``/``<tr>``/``<th>``/
+``<td>`` from scratch, with inline ``style`` props carrying
+slightly different ``padding``, ``fontSize``, ``fontFamily``,
+border colours, and row hover affordances. The Agents table
+shipped 11-px headers + 13-px body + 8/12 padding; the Events
+table shipped 10-px headers + 13-px body + 7/12 padding; their
+font choices for numeric vs. label cells drifted independently.
+The result was three independent styling drifts and one
+shared "looks-like-a-table-but-different-on-every-page"
+problem.
+
+D163 introduces one shared table primitive
+(``dashboard/src/components/ui/table.tsx``) and migrates the
+two worst offenders (Agents, Events) in Phase 1. Policy
+tables (``PolicyTable.tsx``, ``MCPPolicyEntryTable.tsx``,
+``MCPPolicyAuditPanel.tsx``), ``AgentDrawerRunsTab.tsx``, and
+``Settings.tsx`` migrate in Phase 2 (separate PR).
+
+### Primitive
+
+Thin shadcn-style wrappers over native table elements, styled
+with Tailwind classes (no inline ``style`` props on table
+internals). One file. The components:
+
+- ``Table`` — ``<table class="w-full border-collapse">``.
+- ``TableHeader`` — ``<thead>``; sets an internal context flag
+  so the contained ``TableRow`` applies header styling rather
+  than body styling.
+- ``TableBody`` — ``<tbody>``.
+- ``TableRow`` — ``<tr>``. In a header context applies
+  ``border-b border-border bg-surface``. In a body context
+  applies ``border-b border-border-subtle``; the optional
+  ``interactive`` prop adds
+  ``hover:bg-surface-hover cursor-pointer`` for clickable rows.
+- ``TableHead`` — ``<th>`` with
+  ``text-[11px] font-semibold uppercase tracking-[0.06em]``
+  ``text-text-secondary px-3 py-2 whitespace-nowrap``; default
+  left-aligned. ``align="right"`` prop for numeric-column
+  headers.
+- ``TableCell`` — ``<td>`` with
+  ``px-3 py-2 text-[12px] align-middle`` in the UI font by
+  default. ``mono`` prop switches the cell to ``font-mono``;
+  ``align`` is pass-through.
+
+The context-based body-vs-header detection is intentional —
+descendant-selector approaches (e.g. ``[&_tr]:bg-surface`` on
+``TableHeader``) collide with class ordering rules and produce
+non-deterministic styling depending on the generated CSS
+sequence. A React context flag is unambiguous at runtime.
+
+### Body font rule
+
+The primitive's ``mono`` prop on ``TableCell`` codifies the
+data-vs-label split that the existing dashboard already
+applies inconsistently:
+
+- ``mono``: numbers, measurements, IDs, timestamps, model
+  strings. ``font-mono`` resolves to ``var(--font-mono)``
+  (GeistMono via the existing ``.font-mono`` rule in
+  ``styles/globals.css``).
+- UI font (default): names, flavors, labels, prose, descriptive
+  text. ``var(--font-ui)`` (Geist) via the root font-family.
+
+This rule is the canonical contract for every table cell in the
+dashboard — both Phase 1 tables and every Phase 2 table that
+follows. Cells that mix both (e.g. the Events ``MODEL`` cell:
+provider logo + monospace model string + ``FrameworkPill``) use
+``mono`` on the cell and let the embedded components own their
+own typography.
+
+### Phase 1 migration scope
+
+- ``AgentTable.tsx`` + ``AgentTableRow.tsx``: header + rows
+  migrate onto the primitive. Inline-styled ``<table>`` / ``<th>``
+  / ``<td>`` / ``<tr>`` go away. Behaviour preserved verbatim:
+  sort state + arrows + ``aria-sort`` + ``data-sort-active`` +
+  ``data-sort-direction``, family grouping +
+  ``data-topology="child"`` first-cell indent, sparkline tiles,
+  ``ClientTypePill`` / ``AgentStatusBadge`` / ``TopologyCell``,
+  ``cost_usd_7d`` info tooltip, pagination.
+- ``Investigate.tsx`` (events ``<table>``) + the inline
+  ``EventRow`` function: same migration. ``EventTypePill``,
+  ``ClientTypePill``, ``AgentTypeBadge``, ``FrameworkPill``,
+  ``ProviderLogo``, capture indicator, run-id badge,
+  detail-cell truncation, row click + keyboard all preserved.
+
+Column-font assignment (Phase 1):
+
+- **Agents.** Agent → UI; Status, Topology → badge cells (no
+  ``mono`` prop, badges own their own type); Tokens, Latency
+  p95, Errors, Sessions, Cost, Last seen → ``mono`` with
+  numeric headers ``align="right"``.
+- **Events.** Time → ``mono``; Agent (flavor + name) → UI; Run
+  id → ``mono``; Type → badge cell; Model → ``mono``; Detail
+  → UI.
+
+### Rejected alternative — normalise each table in place
+
+The simpler-looking option was to leave the per-table
+``<table>`` shells in place and standardise the inline styles
+across them (one canonical 11/12/px3/py2 spec, hand-applied to
+every cell). Rejected: this is what produced the current drift
+in the first place. Two further tables (Phase 2 Policy
+surfaces, Settings) ship in the next PR and will gain the same
+divergence the moment the canonical spec is updated. A single
+primitive enforces the spec once and lets every future table
+adopt it by importing two components.
+
+### Tests
+
+Primitive ships with a Vitest + RTL test
+(``components/ui/__tests__/table.test.tsx``) that asserts the
+canonical Tailwind classes land on ``TableHead`` and
+``TableCell``, the ``mono`` prop toggles ``font-mono``, the
+``interactive`` prop adds ``hover:bg-surface-hover`` and
+``cursor-pointer``, and header-context rows pick up
+``border-border + bg-surface`` while body-context rows pick up
+``border-border-subtle``.
+
+Existing Agents + Events unit / integration tests remain green
+because every test in the repo asserts on ``data-testid`` and
+text content, not on inline ``style`` values — the migration
+preserves every test id and every interaction surface.
+
+A new E2E (``T111-table-consistency.spec.ts``) asserts that
+the Agents and Events tables share the same header element
+shape (the canonical 11-px header class signature) and that a
+body row in each table picks up the hover-highlight class
+contract, under both ``neon-dark`` and ``clean-light``
+projects per Rule 40c.3.
+

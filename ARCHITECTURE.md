@@ -2393,6 +2393,38 @@ only — never MUI, Ant Design, or Chakra UI.
 - `/directives` — custom directive registry + trigger forms.
 - `/settings` — access token CRUD.
 
+### Table primitive
+
+Every tabular surface in the dashboard renders through one
+shared primitive at `dashboard/src/components/ui/table.tsx`
+(D163). Components exported: `Table`, `TableHeader`,
+`TableBody`, `TableRow`, `TableHead`, `TableCell`. The
+primitive is the single source of table styling — header cells
+are 11-px / `font-semibold` / `uppercase` /
+`tracking-[0.06em]`, body cells are 12-px / `align-middle`
+with `px-3 py-2` padding throughout, header rows carry
+`border-b border-border bg-surface`, body rows carry
+`border-b border-border-subtle`, and an `interactive` prop on
+`TableRow` adds `hover:bg-surface-hover cursor-pointer` for
+clickable rows. Header-vs-body styling is resolved through a
+React context flag that `TableHeader` sets — descendant
+selectors collide with class ordering rules and were rejected.
+
+`TableCell` has a `mono` prop that switches the cell to
+`font-mono` (resolves to `var(--font-mono)` / GeistMono). The
+canonical content rule: numbers, measurements, IDs,
+timestamps, and model strings use `mono`; names, flavors,
+labels, and prose use the default UI font. `TableHead` and
+`TableCell` accept `align="right"` for numeric columns.
+
+Surfaces on the primitive today: `AgentTable.tsx` +
+`AgentTableRow.tsx` (the `/agents` route), and the events
+`<table>` + `EventRow` function inside `Investigate.tsx` (the
+`/events` route). Policy tables (`PolicyTable.tsx`,
+`MCPPolicyEntryTable.tsx`, `MCPPolicyAuditPanel.tsx`), the
+Runs tab inside the Agent drawer (`AgentDrawerRunsTab.tsx`),
+and `Settings.tsx` follow in a separate migration PR.
+
 ### Agents table
 
 `dashboard/src/pages/Agents.tsx` hosts the `/agents` route. The

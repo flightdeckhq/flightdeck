@@ -1,0 +1,186 @@
+import "@testing-library/jest-dom/vitest";
+import { describe, it, expect } from "vitest";
+import { render, screen } from "@testing-library/react";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "../table";
+
+describe("table primitive", () => {
+  it("renders the table/thead/tbody/tr/th/td chain", () => {
+    render(
+      <Table data-testid="t">
+        <TableHeader>
+          <TableRow>
+            <TableHead data-testid="th-a">Tokens</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          <TableRow data-testid="row">
+            <TableCell data-testid="td-a">42</TableCell>
+          </TableRow>
+        </TableBody>
+      </Table>,
+    );
+    const t = screen.getByTestId("t");
+    expect(t.tagName).toBe("TABLE");
+    expect(t.querySelector("thead")).not.toBeNull();
+    expect(t.querySelector("tbody")).not.toBeNull();
+    expect(screen.getByTestId("th-a").tagName).toBe("TH");
+    expect(screen.getByTestId("td-a").tagName).toBe("TD");
+  });
+
+  it("applies the canonical header class signature to TableHead", () => {
+    render(
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead data-testid="th">Time</TableHead>
+          </TableRow>
+        </TableHeader>
+      </Table>,
+    );
+    const th = screen.getByTestId("th");
+    const cls = th.className;
+    // The 11-px / semibold / uppercase / tracking / muted-text /
+    // padding / whitespace contract every header cell shares.
+    expect(cls).toContain("text-[11px]");
+    expect(cls).toContain("font-semibold");
+    expect(cls).toContain("uppercase");
+    expect(cls).toContain("tracking-[0.06em]");
+    expect(cls).toContain("text-text-secondary");
+    expect(cls).toContain("px-3");
+    expect(cls).toContain("py-2");
+    expect(cls).toContain("whitespace-nowrap");
+    // Default scope is "col".
+    expect(th.getAttribute("scope")).toBe("col");
+  });
+
+  it("applies the canonical body class signature to TableCell", () => {
+    render(
+      <Table>
+        <TableBody>
+          <TableRow>
+            <TableCell data-testid="td">name</TableCell>
+          </TableRow>
+        </TableBody>
+      </Table>,
+    );
+    const cls = screen.getByTestId("td").className;
+    expect(cls).toContain("text-[12px]");
+    expect(cls).toContain("align-middle");
+    expect(cls).toContain("px-3");
+    expect(cls).toContain("py-2");
+    expect(cls).not.toContain("font-mono");
+  });
+
+  it("`mono` prop adds font-mono to TableCell", () => {
+    render(
+      <Table>
+        <TableBody>
+          <TableRow>
+            <TableCell mono data-testid="td">
+              1,234
+            </TableCell>
+          </TableRow>
+        </TableBody>
+      </Table>,
+    );
+    expect(screen.getByTestId("td").className).toContain("font-mono");
+  });
+
+  it("`align=right` on TableHead and TableCell flips text alignment", () => {
+    render(
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead align="right" data-testid="th">
+              Cost
+            </TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          <TableRow>
+            <TableCell align="right" data-testid="td">
+              $1.23
+            </TableCell>
+          </TableRow>
+        </TableBody>
+      </Table>,
+    );
+    expect(screen.getByTestId("th").className).toContain("text-right");
+    expect(screen.getByTestId("td").className).toContain("text-right");
+  });
+
+  it("`interactive` body TableRow adds hover + cursor classes", () => {
+    render(
+      <Table>
+        <TableBody>
+          <TableRow interactive data-testid="row">
+            <TableCell>x</TableCell>
+          </TableRow>
+        </TableBody>
+      </Table>,
+    );
+    const cls = screen.getByTestId("row").className;
+    expect(cls).toContain("hover:bg-surface-hover");
+    expect(cls).toContain("cursor-pointer");
+    expect(cls).toContain("border-b");
+    expect(cls).toContain("border-border-subtle");
+  });
+
+  it("non-interactive body TableRow still picks up the border but no hover", () => {
+    render(
+      <Table>
+        <TableBody>
+          <TableRow data-testid="row">
+            <TableCell>x</TableCell>
+          </TableRow>
+        </TableBody>
+      </Table>,
+    );
+    const cls = screen.getByTestId("row").className;
+    expect(cls).toContain("border-border-subtle");
+    expect(cls).not.toContain("hover:bg-surface-hover");
+    expect(cls).not.toContain("cursor-pointer");
+  });
+
+  it("header-context TableRow picks up border-border + bg-surface", () => {
+    render(
+      <Table>
+        <TableHeader>
+          <TableRow data-testid="row">
+            <TableHead>Time</TableHead>
+          </TableRow>
+        </TableHeader>
+      </Table>,
+    );
+    const cls = screen.getByTestId("row").className;
+    expect(cls).toContain("border-border");
+    expect(cls).not.toContain("border-border-subtle");
+    expect(cls).toContain("bg-surface");
+  });
+
+  it("forwards arbitrary props (data-*, aria-*, onClick) to the underlying elements", () => {
+    render(
+      <Table>
+        <TableBody>
+          <TableRow
+            data-testid="row"
+            data-agent-id="a-1"
+            aria-label="row label"
+          >
+            <TableCell>x</TableCell>
+          </TableRow>
+        </TableBody>
+      </Table>,
+    );
+    const row = screen.getByTestId("row");
+    expect(row.getAttribute("data-agent-id")).toBe("a-1");
+    expect(row.getAttribute("aria-label")).toBe("row label");
+  });
+});

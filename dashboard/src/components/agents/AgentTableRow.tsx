@@ -8,6 +8,7 @@ import { ProviderLogo } from "@/components/ui/provider-logo";
 import { getProvider } from "@/lib/models";
 import { TopologyCell } from "@/components/fleet/TopologyCell";
 import { AgentStatusBadge } from "@/components/timeline/AgentStatusBadge";
+import { TableCell, TableRow } from "@/components/ui/table";
 import { useAgentSummary } from "@/hooks/useAgentSummary";
 import {
   formatCost,
@@ -37,8 +38,9 @@ interface AgentTableRowProps {
 
 /**
  * KPI sparkline tile dimensions. The tile shares its row's
- * vertical centre line; the numeric total reads to the left of
- * the chart so the operator's eye lands on the value first.
+ * vertical centre line; the numeric total reads to the LEFT of
+ * the chart so the operator's eye lands on the value first and
+ * the sparkline follows as a trend hint.
  */
 const SPARKLINE_WIDTH = 80;
 const SPARKLINE_HEIGHT = 22;
@@ -80,50 +82,35 @@ function AgentTableRowImpl({
   );
 
   return (
-    <tr
+    <TableRow
+      interactive
       data-testid={`agent-row-${agent.agent_id}`}
       data-agent-id={agent.agent_id}
       data-agent-topology={agent.topology}
       data-agent-state={agent.state}
       data-topology={isFamilyDescendant ? "child" : undefined}
       onClick={handleRowClick}
-      style={{
-        borderBottom: "1px solid var(--border-subtle)",
-        cursor: "pointer",
-      }}
     >
-      {/* Identity */}
-      <td
-        // First-cell indent for family descendants: 28 px
-        // matches the swimlane and Investigate sub-row indent
-        // (D126 § 4.1). The existing
-        // ``[data-topology="child"] > td:first-child`` rule in
-        // globals.css can't reach this cell because the
-        // inline ``style`` attribute wins over any selector by
-        // the inline-style specificity floor — so the indent
-        // is applied inline here as the surgical landing
-        // point. Lone agents and family roots keep the 12-px
-        // default.
-        style={{
-          paddingTop: 8,
-          paddingBottom: 8,
-          paddingRight: 12,
-          paddingLeft: isFamilyDescendant ? 28 : 12,
-          minWidth: 260,
-        }}
+      {/* Identity — UI font for the name + per-row identity chrome.
+          Family descendants pick up the 28-px first-cell indent
+          from the ``[data-topology="child"] > td:first-child`` rule
+          in ``styles/globals.css``; that selector's specificity
+          (0,1,2) wins over a Tailwind ``pl-7`` (0,1,0), so the
+          Tailwind class would be dead code if we set it here. The
+          ``data-topology="child"`` stamp on the row above lets the
+          CSS rule fire; this cell only carries the column width
+          minimum. */}
+      <TableCell
         data-testid={`agent-row-identity-${agent.agent_id}`}
+        className="min-w-[260px]"
       >
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <div className="flex items-center gap-2">
           {agent.client_type === ClientType.ClaudeCode && (
             <ClaudeCodeLogo size={14} />
           )}
           <span
-            style={{
-              fontFamily: "var(--font-mono)",
-              fontSize: 13,
-              fontWeight: 500,
-              color: "var(--text)",
-            }}
+            className="text-[13px] font-medium text-text"
+            data-testid={`agent-row-name-${agent.agent_id}`}
           >
             {agent.agent_name}
           </span>
@@ -133,13 +120,7 @@ function AgentTableRowImpl({
             testId={`agent-row-client-type-${agent.agent_id}`}
           />
           <span
-            style={{
-              fontFamily: "var(--font-mono)",
-              fontSize: 10,
-              color: "var(--text-muted)",
-              textTransform: "uppercase",
-              letterSpacing: "0.06em",
-            }}
+            className="font-mono text-[10px] text-text-muted uppercase tracking-[0.06em]"
             data-testid={`agent-row-agent-type-${agent.agent_id}`}
           >
             {agent.agent_type}
@@ -148,17 +129,14 @@ function AgentTableRowImpl({
             <ProviderLogo provider={provider} size={12} />
           )}
         </div>
-      </td>
+      </TableCell>
 
       {/* Status — clickable chip wrapping the labeled badge.
           Hover affordance lives in the ``.agent-status-chip``
           rule in globals.css. Click stops propagation so the
           row's own onOpenDrawer handler doesn't fire alongside
           the modal open. */}
-      <td
-        style={{ padding: "8px 12px" }}
-        data-testid={`agent-row-status-cell-${agent.agent_id}`}
-      >
+      <TableCell data-testid={`agent-row-status-cell-${agent.agent_id}`}>
         <button
           type="button"
           onClick={(e) => {
@@ -174,26 +152,26 @@ function AgentTableRowImpl({
             testId={`agent-row-status-${agent.agent_id}`}
           />
         </button>
-      </td>
+      </TableCell>
 
       {/* Topology */}
-      <td
-        style={{ padding: "8px 12px", minWidth: 120 }}
+      <TableCell
         data-testid={`agent-row-topology-${agent.agent_id}`}
+        className="min-w-[120px]"
       >
         <TopologyCell agentId={agent.agent_id} topology={agent.topology} />
-      </td>
+      </TableCell>
 
-      {/* Tokens 7d */}
-      <td style={{ padding: "8px 12px" }} data-testid={`agent-row-tokens-${agent.agent_id}`}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+      {/* Tokens 7d — number first, sparkline trailing right. The
+          number's min-width keeps the cell column stable across
+          rows so the sparkline tiles align vertically. */}
+      <TableCell
+        mono
+        data-testid={`agent-row-tokens-${agent.agent_id}`}
+      >
+        <div className="flex items-center gap-2">
           <span
-            style={{
-              fontFamily: "var(--font-mono)",
-              fontSize: 12,
-              color: "var(--text)",
-              minWidth: 50,
-            }}
+            className="min-w-[50px] text-text"
             data-testid={`agent-row-tokens-total-${agent.agent_id}`}
           >
             {totals ? formatTokens(totals.tokens) : "—"}
@@ -205,19 +183,15 @@ function AgentTableRowImpl({
             height={SPARKLINE_HEIGHT}
           />
         </div>
-      </td>
+      </TableCell>
 
       {/* Latency p95 7d */}
-      <td style={{ padding: "8px 12px" }} data-testid={`agent-row-latency-${agent.agent_id}`}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <span
-            style={{
-              fontFamily: "var(--font-mono)",
-              fontSize: 12,
-              color: "var(--text)",
-              minWidth: 50,
-            }}
-          >
+      <TableCell
+        mono
+        data-testid={`agent-row-latency-${agent.agent_id}`}
+      >
+        <div className="flex items-center gap-2">
+          <span className="min-w-[50px] text-text">
             {totals ? formatLatencyMs(totals.latency_p95_ms) : "—"}
           </span>
           <AgentSparkline
@@ -227,21 +201,20 @@ function AgentTableRowImpl({
             height={SPARKLINE_HEIGHT}
           />
         </div>
-      </td>
+      </TableCell>
 
       {/* Errors 7d */}
-      <td style={{ padding: "8px 12px" }} data-testid={`agent-row-errors-${agent.agent_id}`}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+      <TableCell
+        mono
+        data-testid={`agent-row-errors-${agent.agent_id}`}
+      >
+        <div className="flex items-center gap-2">
           <span
-            style={{
-              fontFamily: "var(--font-mono)",
-              fontSize: 12,
-              color:
-                totals && totals.errors > 0
-                  ? "var(--danger)"
-                  : "var(--text-muted)",
-              minWidth: 30,
-            }}
+            className={
+              totals && totals.errors > 0
+                ? "min-w-[30px] text-danger"
+                : "min-w-[30px] text-text-muted"
+            }
           >
             {totals ? totals.errors : "—"}
           </span>
@@ -252,74 +225,53 @@ function AgentTableRowImpl({
             height={SPARKLINE_HEIGHT}
           />
         </div>
-      </td>
+      </TableCell>
 
       {/* Sessions 7d */}
-      <td style={{ padding: "8px 12px" }} data-testid={`agent-row-sessions-${agent.agent_id}`}>
-        <span
-          style={{
-            fontFamily: "var(--font-mono)",
-            fontSize: 12,
-            color: "var(--text)",
-          }}
-        >
-          {totals ? totals.sessions : "—"}
-        </span>
-      </td>
+      <TableCell
+        mono
+        data-testid={`agent-row-sessions-${agent.agent_id}`}
+      >
+        <span className="text-text">{totals ? totals.sessions : "—"}</span>
+      </TableCell>
 
       {/* Cost USD 7d. Estimated cost only applies to
           sensor-instrumented agents — Claude Code agents bill
           independently and Flightdeck has no pricing for them, so
           their cell renders a bare em-dash regardless of any
           summary totals. */}
-      <td style={{ padding: "8px 12px" }} data-testid={`agent-row-cost-${agent.agent_id}`}>
-        <span
-          style={{
-            fontFamily: "var(--font-mono)",
-            fontSize: 12,
-            color: "var(--text)",
-          }}
-        >
+      <TableCell
+        mono
+        data-testid={`agent-row-cost-${agent.agent_id}`}
+      >
+        <span className="text-text">
           {agent.client_type === ClientType.ClaudeCode
             ? "—"
             : totals
               ? formatCost(totals.cost_usd)
               : "—"}
         </span>
-      </td>
+      </TableCell>
 
       {/* Last seen */}
-      <td
-        style={{ padding: "8px 12px" }}
+      <TableCell
+        mono
         title={new Date(agent.last_seen_at).toLocaleString()}
         data-testid={`agent-row-last-seen-${agent.agent_id}`}
       >
-        <span
-          style={{
-            fontFamily: "var(--font-mono)",
-            fontSize: 11,
-            color: "var(--text-muted)",
-          }}
-        >
+        <span className="text-[11px] text-text-muted">
           {relativeTime(agent.last_seen_at)}
         </span>
-      </td>
+      </TableCell>
 
       {/* Actions — Events shortcut only. The status badge moved
           to the dedicated second-column STATUS chip above; this
           cell no longer duplicates it. */}
-      <td
-        style={{ padding: "8px 12px", textAlign: "right" }}
+      <TableCell
+        align="right"
         data-testid={`agent-row-actions-${agent.agent_id}`}
       >
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "flex-end",
-            gap: 8,
-          }}
-        >
+        <div className="flex items-center justify-end gap-2">
           <button
             type="button"
             onClick={(e) => {
@@ -327,24 +279,14 @@ function AgentTableRowImpl({
               handleOpenInEvents();
             }}
             data-testid={`agent-row-open-events-${agent.agent_id}`}
-            className="agent-row-quick-action"
+            className="agent-row-quick-action font-mono text-[10px] px-1.5 py-0.5 rounded-sm border border-border bg-transparent text-text-secondary cursor-pointer"
             aria-label={`Open ${agent.agent_name} in Events`}
-            style={{
-              fontSize: 10,
-              padding: "2px 6px",
-              borderRadius: 3,
-              border: "1px solid var(--border)",
-              background: "transparent",
-              color: "var(--text-secondary)",
-              cursor: "pointer",
-              fontFamily: "var(--font-mono)",
-            }}
           >
             Events ↗
           </button>
         </div>
-      </td>
-    </tr>
+      </TableCell>
+    </TableRow>
   );
 }
 

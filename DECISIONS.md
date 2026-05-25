@@ -7271,8 +7271,7 @@ of step 6.8 cleanup before the middleware change.
 **Date:** 2026-05-08
 **Phase:** Phase 7 Step 2 (operator-actionable events)
 
-**Context.** The Phase 7 audit (`docs/phase-7-event-audit.md`)
-surfaced that the five policy enforcement event types
+**Context.** The Phase 7 audit surfaced that the five policy enforcement event types
 (`policy_warn`, `policy_degrade`, `policy_block`, `policy_mcp_warn`,
 `policy_mcp_block`) carried sufficient threshold context for
 operators to see *what* fired but never *which policy row*
@@ -7370,9 +7369,8 @@ rejects the five policy event types with a 400 if the
 **Related decisions.** D131 (the existing MCP-event payload table
 this block extends). D135 (the resolution algorithm whose
 decisions this block surfaces). D149 (the `originating_event_id`
-chain this block ships alongside). Phase 7 audit
-(`docs/phase-7-event-audit.md`) for the audit-derived workflow
-gap analysis.
+chain this block ships alongside). See PR #33 for the
+audit-derived workflow gap analysis.
 
 **Implementation note (Step 2).** Sensor:
 `flightdeck_sensor.core.types.PolicyDecisionSummary` +
@@ -7476,7 +7474,7 @@ falls back to `crypto.randomBytes` shim if missing).
 CONFLICT semantics live alongside but are orthogonal). D131
 (the events whose payloads this chain decorates). D148 (the
 `policy_decision` block this chain ships alongside on policy
-events). Phase 7 audit (`docs/phase-7-event-audit.md`).
+events). See PR #33 for the audit-derived workflow gap analysis.
 
 **Implementation note (Step 2).** Sensor:
 `flightdeck_sensor.core.session.Session._build_payload` mints +
@@ -7594,8 +7592,8 @@ events whose enforcement scope this expands). D135 (the
 resolution algorithm whose decisions now apply to all six call
 sites). D148 (the shared policy_decision block populated on
 every emission). D149 (the originating_event_id chain + the
-7-value originating_call_context enum). The Phase 7 audit
-(`docs/phase-7-event-audit.md`).
+7-value originating_call_context enum). See PR #33 for the
+audit-derived workflow gap analysis.
 
 **Implementation note (Step 3).** Sensor:
 `flightdeck_sensor.interceptor.mcp` —
@@ -7760,9 +7758,8 @@ alongside the captured args via the policy_decision block from
 D148). D148 / D149 (the Step 2 enrichment that extends the
 operator-actionable surface; D150 closes the capture-storage
 parity loop). Phase 4 D-PHASE1 (the LLM-prompt capture
-posture this decision parallels). Phase 7 audit
-(`docs/phase-7-event-audit.md`) for the audit-derived workflow
-gap analysis.
+posture this decision parallels). See PR #33 for the
+audit-derived workflow gap analysis.
 
 **Implementation note (Step 3.b).**
 
@@ -7932,9 +7929,8 @@ this enrichment hangs on). D135 (the resolution algorithm
 `policy_decision_at_attach` records). D140 (the
 `mcp_server_attached` event D152 enriches). D148 / D149 (the
 shared `policy_decision` block + `originating_event_id` chain
-that `policy_decision_at_attach` reuses). Phase 7 audit
-(`docs/phase-7-event-audit.md`) for the audit-derived workflow
-gap analysis.
+that `policy_decision_at_attach` reuses). See PR #33 for the
+audit-derived workflow gap analysis.
 
 **Implementation note (Step 4).**
 
@@ -7976,8 +7972,8 @@ playground/19_mcp_policy_block.py drives the full chain.
 
 **Date:** 2026-05-09. **Status:** Adopted.
 
-**Context.** Phase 7 audit (`docs/phase-7-event-audit.md`) flagged
-the LLM-family event types — `pre_call`, `post_call`, `embeddings`,
+**Context.** The Phase 7 audit flagged the LLM-family event
+types — `pre_call`, `post_call`, `embeddings`,
 `llm_error` — as missing operator-actionable triage metadata.
 Operators reading these events couldn't answer:
 
@@ -9162,4 +9158,191 @@ with the canonical ``EventTypePill`` (the badge
 surfaces — ``/events``, the run drawer, the agent drawer, and
 the palette. No new theme tokens; the existing ``getBadge``
 colour + label resolution is reused.
+
+
+## D163 -- Shared table primitive + canonical table styling
+
+The dashboard ships several tabular surfaces (Agents at
+``/agents``, Events at ``/events``, Policies at ``/policies``,
+the Runs tab inside the Agent drawer, Settings). Pre-D163 every
+table built its own ``<table>``/``<thead>``/``<tr>``/``<th>``/
+``<td>`` from scratch, with inline ``style`` props carrying
+slightly different ``padding``, ``fontSize``, ``fontFamily``,
+border colours, and row hover affordances. The Agents table
+shipped 11-px headers + 13-px body + 8/12 padding; the Events
+table shipped 10-px headers + 13-px body + 7/12 padding; their
+font choices for numeric vs. label cells drifted independently.
+The result was three independent styling drifts and one
+shared "looks-like-a-table-but-different-on-every-page"
+problem.
+
+D163 introduces one shared table primitive
+(``dashboard/src/components/ui/table.tsx``) and migrates the
+two worst offenders (Agents, Events) in Phase 1. Policy
+tables (``PolicyTable.tsx``, ``MCPPolicyEntryTable.tsx``,
+``MCPPolicyAuditPanel.tsx``), ``AgentDrawerRunsTab.tsx``, and
+``Settings.tsx`` migrate in Phase 2 (separate PR).
+
+### Primitive
+
+Thin shadcn-style wrappers over native table elements, styled
+with Tailwind classes (no inline ``style`` props on table
+internals). One file. The components:
+
+- ``Table`` — ``<table class="w-full border-collapse">``.
+- ``TableHeader`` — ``<thead>``; sets an internal context flag
+  so the contained ``TableRow`` applies header styling rather
+  than body styling.
+- ``TableBody`` — ``<tbody>``.
+- ``TableRow`` — ``<tr>``. In a header context applies
+  ``border-b border-border bg-surface``. In a body context
+  applies ``border-b border-border-subtle``; the optional
+  ``interactive`` prop adds
+  ``hover:bg-surface-hover cursor-pointer`` for clickable rows.
+- ``TableHead`` — ``<th>`` with
+  ``text-[11px] font-semibold uppercase tracking-[0.06em]``
+  ``text-text-secondary px-3 py-2 whitespace-nowrap``; default
+  left-aligned. ``align="right"`` prop for numeric-column
+  headers.
+- ``TableCell`` — ``<td>`` with
+  ``px-3 py-2 text-[12px] align-middle`` in the UI font by
+  default. ``mono`` prop switches the cell to ``font-mono``;
+  ``align`` is pass-through.
+
+The context-based body-vs-header detection is intentional —
+descendant-selector approaches (e.g. ``[&_tr]:bg-surface`` on
+``TableHeader``) collide with class ordering rules and produce
+non-deterministic styling depending on the generated CSS
+sequence. A React context flag is unambiguous at runtime.
+
+### Body font rule
+
+The primitive's ``mono`` prop on ``TableCell`` codifies the
+data-vs-label split that the existing dashboard already
+applies inconsistently:
+
+- ``mono``: numbers, measurements, IDs, timestamps, model
+  strings. ``font-mono`` resolves to ``var(--font-mono)``
+  (GeistMono via the existing ``.font-mono`` rule in
+  ``styles/globals.css``).
+- UI font (default): names, flavors, labels, prose, descriptive
+  text. ``var(--font-ui)`` (Geist) via the root font-family.
+
+This rule is the canonical contract for every table cell in the
+dashboard — both Phase 1 tables and every Phase 2 table that
+follows. Cells that mix both (e.g. the Events ``MODEL`` cell:
+provider logo + monospace model string + ``FrameworkPill``) use
+``mono`` on the cell and let the embedded components own their
+own typography.
+
+### Phase 1 migration scope
+
+- ``AgentTable.tsx`` + ``AgentTableRow.tsx``: header + rows
+  migrate onto the primitive. Inline-styled ``<table>`` / ``<th>``
+  / ``<td>`` / ``<tr>`` go away. Behaviour preserved verbatim:
+  sort state + arrows + ``aria-sort`` + ``data-sort-active`` +
+  ``data-sort-direction``, family grouping +
+  ``data-topology="child"`` first-cell indent, sparkline tiles,
+  ``ClientTypePill`` / ``AgentStatusBadge`` / ``TopologyCell``,
+  ``cost_usd_7d`` info tooltip, pagination.
+- ``Investigate.tsx`` (events ``<table>``) + the inline
+  ``EventRow`` function: same migration. ``EventTypePill``,
+  ``ClientTypePill``, ``AgentTypeBadge``, ``FrameworkPill``,
+  ``ProviderLogo``, capture indicator, run-id badge,
+  detail-cell truncation, row click + keyboard all preserved.
+
+Column-font assignment (Phase 1):
+
+- **Agents.** Agent → UI; Status, Topology → badge cells (no
+  ``mono`` prop, badges own their own type); Tokens, Latency
+  p95, Errors, Sessions, Cost, Last seen → ``mono``,
+  left-aligned. The KPI cell layout is
+  ``[number][sparkline]`` — the operator's eye lands on the
+  numeric total first and the sparkline trails to the right as
+  a trend hint, so the column reads left. The primitive still
+  supports ``align="right"`` (e.g. for tables whose cell content
+  reads right-anchored), but the Agents convention is
+  left-aligned. The number-first scan order outweighs the
+  header-vs-rightmost-digit symmetry in this surface; the
+  ``align="right"`` + ``[sparkline][number]`` shape was
+  considered and rejected for that reason.
+- **Events.** Time → ``mono``; Agent (flavor + name) → UI; Run
+  id → ``mono``; Type → badge cell; Model → ``mono``; Detail
+  → UI.
+
+### TopologyCell pill (within Phase 1)
+
+The Agents table's TOPOLOGY column renders through
+``components/fleet/TopologyCell.tsx``, which pre-D163 emitted
+bare text spans for all three relationships (``lone`` /
+``↳ child of <parent>`` / ``⤴ spawns N``) at 10-11 px with no
+container chrome. D163 restyles the cell to a rounded tinted
+pill across all three modes so the column reads as a member of
+the same badge family as ``ClientTypePill`` and the
+``agent_type`` badge:
+
+- Pill base: ``inline-flex items-center gap-1 rounded-full
+  px-2 py-0.5 font-mono text-[11px] whitespace-nowrap`` with
+  the child label still truncating via ``TruncatedText``.
+- ``child`` and ``parent`` (clickable ``<button>``): accent
+  tint — ``color-mix(in srgb, var(--accent) 15%, transparent)``
+  background, ``color-mix(in srgb, var(--accent) 40%,
+  transparent)`` border. Foreground reads from
+  ``var(--topology-pill-fg)``, defined per-theme in
+  ``styles/themes.css``: dark theme lightens the accent toward
+  white (``color-mix(in srgb, var(--accent) 55%, white)``)
+  because the unmodified accent reads dim on the dark surface
+  tint; light theme uses the raw ``var(--accent)``. Driving the
+  colour through a CSS variable keyed on the ``html.dark`` /
+  ``html.light`` class means a live theme toggle recolours every
+  pill instantly via the cascade. The earlier draft branched in
+  JS via ``useTheme()`` and held a stale local copy across
+  mounts (the hook is per-component ``useState``, not shared),
+  so a live toggle left the dark-theme lightened accent on the
+  light surface until the cell remounted. Click behaviour
+  preserved verbatim: child scrolls to parent, parent scrolls
+  to first child.
+- ``lone`` (static ``<span>``): muted tint —
+  ``color-mix(in srgb, var(--text) 6%, transparent)``
+  background, ``var(--border-subtle)`` border,
+  ``var(--text-muted)`` foreground.
+
+Existing testids
+(``agent-table-topology-pill-{lone,child-<id>,parent-<id>}``)
+preserved.
+
+### Rejected alternative — normalise each table in place
+
+The simpler-looking option was to leave the per-table
+``<table>`` shells in place and standardise the inline styles
+across them (one canonical 11/12/px3/py2 spec, hand-applied to
+every cell). Rejected: this is what produced the current drift
+in the first place. Two further tables (Phase 2 Policy
+surfaces, Settings) ship in the next PR and will gain the same
+divergence the moment the canonical spec is updated. A single
+primitive enforces the spec once and lets every future table
+adopt it by importing two components.
+
+### Tests
+
+Primitive ships with a Vitest + RTL test
+(``components/ui/__tests__/table.test.tsx``) that asserts the
+canonical Tailwind classes land on ``TableHead`` and
+``TableCell``, the ``mono`` prop toggles ``font-mono``, the
+``interactive`` prop adds ``hover:bg-surface-hover`` and
+``cursor-pointer``, and header-context rows pick up
+``border-border + bg-surface`` while body-context rows pick up
+``border-border-subtle``.
+
+Existing Agents + Events unit / integration tests remain green
+because every test in the repo asserts on ``data-testid`` and
+text content, not on inline ``style`` values — the migration
+preserves every test id and every interaction surface.
+
+A new E2E (``T111-table-consistency.spec.ts``) asserts that
+the Agents and Events tables share the same header element
+shape (the canonical 11-px header class signature) and that a
+body row in each table picks up the hover-highlight class
+contract, under both ``neon-dark`` and ``clean-light``
+projects per Rule 40c.3.
 

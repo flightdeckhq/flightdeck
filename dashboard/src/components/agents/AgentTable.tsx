@@ -15,6 +15,14 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { AgentTableRow } from "./AgentTableRow";
 
 interface AgentTableProps {
@@ -34,9 +42,13 @@ const PAGE_SIZE = 50;
 interface ColumnSpec {
   column: AgentSortColumn;
   label: string;
-  /** Visual alignment of the header cell. Numeric KPI columns
-   *  read left-aligned because the sparkline tile follows the
-   *  total to the right; the operator scans the number first. */
+  /** Visual alignment of the header cell. KPI columns read
+   *  left-aligned: the operator scans the numeric total first and
+   *  the sparkline tile follows immediately to the right, so the
+   *  number lands at the left edge of the cell beneath a
+   *  left-aligned header. The primitive supports ``align="right"``
+   *  for tables where the cell content reads right-anchored, but
+   *  the Agents KPI layout is left by convention. */
   align?: "left" | "right";
 }
 
@@ -104,144 +116,106 @@ export function AgentTable({
 
   return (
     <div data-testid="agent-table-wrapper">
-      <table
-        data-testid="agent-table"
-        style={{
-          width: "100%",
-          borderCollapse: "collapse",
-          fontSize: 13,
-        }}
-      >
+      <Table data-testid="agent-table">
         {/* One TooltipProvider for the whole header row — Radix
             renders no DOM node, so it does not break the table's
             thead/tbody structure, and it is not recreated per-`<th>`
             on every sort re-render. */}
         <TooltipProvider>
-        <thead>
-          <tr
-            style={{
-              borderBottom: "1px solid var(--border)",
-              background: "var(--surface)",
-            }}
-          >
-            {COLUMNS.map((col) => {
-              const isActive = sort.column === col.column;
-              const arrow = isActive
-                ? sort.direction === "asc"
-                  ? "↑"
-                  : "↓"
-                : "";
-              return (
-                <th
-                  key={col.column}
-                  scope="col"
-                  data-testid={`agent-table-th-${col.column}`}
-                  data-sort-active={isActive ? "true" : undefined}
-                  data-sort-direction={isActive ? sort.direction : undefined}
-                  aria-sort={
-                    isActive
-                      ? sort.direction === "asc"
-                        ? "ascending"
-                        : "descending"
-                      : "none"
-                  }
-                  tabIndex={0}
-                  style={{
-                    textAlign: col.align ?? "left",
-                    padding: "8px 12px",
-                    fontSize: 11,
-                    fontWeight: 600,
-                    color: "var(--text-secondary)",
-                    textTransform: "uppercase",
-                    letterSpacing: "0.06em",
-                    cursor: "pointer",
-                    userSelect: "none",
-                    whiteSpace: "nowrap",
-                  }}
-                  onClick={() => setSort((s) => toggleSort(s, col.column))}
-                  onKeyDown={(e) => {
-                    // Enter / Space sort the column — `<th>` is not
-                    // in the tab order or keyboard-actionable by
-                    // default, so the explicit tabIndex + handler
-                    // give keyboard users parity with the click.
-                    if (e.key === "Enter" || e.key === " ") {
-                      e.preventDefault();
-                      setSort((s) => toggleSort(s, col.column));
+          <TableHeader>
+            <TableRow>
+              {COLUMNS.map((col) => {
+                const isActive = sort.column === col.column;
+                const arrow = isActive
+                  ? sort.direction === "asc"
+                    ? "↑"
+                    : "↓"
+                  : "";
+                return (
+                  <TableHead
+                    key={col.column}
+                    align={col.align}
+                    data-testid={`agent-table-th-${col.column}`}
+                    data-sort-active={isActive ? "true" : undefined}
+                    data-sort-direction={isActive ? sort.direction : undefined}
+                    aria-sort={
+                      isActive
+                        ? sort.direction === "asc"
+                          ? "ascending"
+                          : "descending"
+                        : "none"
                     }
-                  }}
-                >
-                  {col.label}
-                  {col.column === "cost_usd_7d" && (
-                    // Info affordance for the estimated-cost
-                    // semantics. The trigger stops click /
-                    // keydown propagation so hovering or
-                    // focusing the icon never toggles the
-                    // column sort — the sort stays driven by
-                    // the rest of the `<th>`.
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <span
-                          data-testid="agent-table-cost-info"
-                          tabIndex={0}
-                          aria-label="About cost estimation"
-                          style={{
-                            display: "inline-flex",
-                            verticalAlign: "middle",
-                            marginLeft: 4,
-                            cursor: "help",
-                          }}
-                          onClick={(e) => e.stopPropagation()}
-                          onKeyDown={(e) => e.stopPropagation()}
-                        >
-                          <Info
-                            size={12}
-                            style={{ color: "var(--text-muted)" }}
-                            aria-hidden="true"
-                          />
-                        </span>
-                      </TooltipTrigger>
-                      <TooltipContent>
-                        Estimated from public list prices.
-                        Sensor-instrumented agents only; coding
-                        agents bill independently.
-                      </TooltipContent>
-                    </Tooltip>
-                  )}
-                  {arrow && (
-                    <span
-                      style={{ marginLeft: 4, color: "var(--accent)" }}
-                      aria-hidden="true"
-                    >
-                      {arrow}
-                    </span>
-                  )}
-                </th>
-              );
-            })}
-            {/* Actions column — not in COLUMNS (not sortable),
-                but the data rows render a trailing <td> for the
-                Events shortcut. The header <th> is required so
-                screen readers can enumerate every column and the
-                empty-state cell's colSpan stays aligned. */}
-            <th
-              scope="col"
-              aria-label="Actions"
-              data-testid="agent-table-th-actions"
-              style={{
-                padding: "8px 12px",
-                fontSize: 11,
-                fontWeight: 600,
-                color: "var(--text-secondary)",
-                textTransform: "uppercase",
-                letterSpacing: "0.06em",
-                whiteSpace: "nowrap",
-                textAlign: "right",
-              }}
-            />
-          </tr>
-        </thead>
+                    tabIndex={0}
+                    className="cursor-pointer select-none"
+                    onClick={() => setSort((s) => toggleSort(s, col.column))}
+                    onKeyDown={(e) => {
+                      // Enter / Space sort the column — `<th>` is not
+                      // in the tab order or keyboard-actionable by
+                      // default, so the explicit tabIndex + handler
+                      // give keyboard users parity with the click.
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        setSort((s) => toggleSort(s, col.column));
+                      }
+                    }}
+                  >
+                    {col.label}
+                    {col.column === "cost_usd_7d" && (
+                      // Info affordance for the estimated-cost
+                      // semantics. The trigger stops click /
+                      // keydown propagation so hovering or
+                      // focusing the icon never toggles the
+                      // column sort — the sort stays driven by
+                      // the rest of the `<th>`.
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <span
+                            data-testid="agent-table-cost-info"
+                            tabIndex={0}
+                            aria-label="About cost estimation"
+                            className="ml-1 inline-flex align-middle cursor-help"
+                            onClick={(e) => e.stopPropagation()}
+                            onKeyDown={(e) => e.stopPropagation()}
+                          >
+                            <Info
+                              size={12}
+                              className="text-text-muted"
+                              aria-hidden="true"
+                            />
+                          </span>
+                        </TooltipTrigger>
+                        <TooltipContent>
+                          Estimated from public list prices.
+                          Sensor-instrumented agents only; coding
+                          agents bill independently.
+                        </TooltipContent>
+                      </Tooltip>
+                    )}
+                    {arrow && (
+                      <span
+                        className="ml-1 text-accent"
+                        aria-hidden="true"
+                      >
+                        {arrow}
+                      </span>
+                    )}
+                  </TableHead>
+                );
+              })}
+              {/* Actions column — not in COLUMNS (not sortable), but
+                  data rows render a trailing cell for the Events
+                  shortcut. The header is required so screen readers
+                  enumerate every column and the empty-state cell's
+                  colSpan stays aligned. */}
+              <TableHead
+                align="right"
+                aria-label="Actions"
+                data-testid="agent-table-th-actions"
+              />
+            </TableRow>
+          </TableHeader>
         </TooltipProvider>
-        <tbody>
+        <TableBody>
           {slice.map((a) => (
             <AgentTableRow
               key={a.agent_id}
@@ -252,38 +226,25 @@ export function AgentTable({
             />
           ))}
           {slice.length === 0 && (
-            <tr data-testid="agent-table-empty">
-              {/* +1 spans the trailing actions column whose <th>
+            <TableRow data-testid="agent-table-empty">
+              {/* +1 spans the trailing actions column whose header
                   lives outside COLUMNS (the row renders an extra
-                  <td> for the Events shortcut). */}
-              <td
+                  cell for the Events shortcut). */}
+              <TableCell
                 colSpan={COLUMNS.length + 1}
-                style={{
-                  textAlign: "center",
-                  padding: "32px 12px",
-                  color: "var(--text-muted)",
-                  fontSize: 13,
-                }}
+                align="center"
+                className="py-8 text-text-muted text-[13px]"
               >
                 No agents match the active filters.
-              </td>
-            </tr>
+              </TableCell>
+            </TableRow>
           )}
-        </tbody>
-      </table>
+        </TableBody>
+      </Table>
       {pageCount > 1 && (
         <div
           data-testid="agent-table-pagination"
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            padding: "8px 12px",
-            borderTop: "1px solid var(--border-subtle)",
-            fontSize: 11,
-            color: "var(--text-muted)",
-            fontFamily: "var(--font-mono)",
-          }}
+          className="flex items-center justify-between px-3 py-2 border-t border-border-subtle text-[11px] text-text-muted font-mono"
         >
           {/* Family-respecting pagination produces variable-size
               pages, so the displayed range is computed from the
@@ -299,21 +260,13 @@ export function AgentTable({
               .reduce((sum, p) => sum + p.length, 0)}{" "}
             of {total}
           </span>
-          <div style={{ display: "flex", gap: 8 }}>
+          <div className="flex gap-2">
             <button
               type="button"
               data-testid="agent-table-page-prev"
               disabled={safePage === 0}
               onClick={() => setPage((p) => Math.max(0, p - 1))}
-              style={{
-                fontSize: 11,
-                padding: "2px 8px",
-                borderRadius: 3,
-                border: "1px solid var(--border)",
-                background: "transparent",
-                color: safePage === 0 ? "var(--text-muted)" : "var(--text)",
-                cursor: safePage === 0 ? "not-allowed" : "pointer",
-              }}
+              className="text-[11px] px-2 py-0.5 rounded-sm border border-border bg-transparent text-text disabled:text-text-muted disabled:cursor-not-allowed cursor-pointer"
             >
               ← Prev
             </button>
@@ -321,22 +274,8 @@ export function AgentTable({
               type="button"
               data-testid="agent-table-page-next"
               disabled={safePage >= pageCount - 1}
-              onClick={() =>
-                setPage((p) => Math.min(pageCount - 1, p + 1))
-              }
-              style={{
-                fontSize: 11,
-                padding: "2px 8px",
-                borderRadius: 3,
-                border: "1px solid var(--border)",
-                background: "transparent",
-                color:
-                  safePage >= pageCount - 1
-                    ? "var(--text-muted)"
-                    : "var(--text)",
-                cursor:
-                  safePage >= pageCount - 1 ? "not-allowed" : "pointer",
-              }}
+              onClick={() => setPage((p) => Math.min(pageCount - 1, p + 1))}
+              className="text-[11px] px-2 py-0.5 rounded-sm border border-border bg-transparent text-text disabled:text-text-muted disabled:cursor-not-allowed cursor-pointer"
             >
               Next →
             </button>

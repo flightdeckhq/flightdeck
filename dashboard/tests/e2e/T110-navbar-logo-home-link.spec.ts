@@ -15,6 +15,13 @@ test.describe("T110 — navbar lockup + favicon", () => {
     await page.goto("/agents");
     const lockup = page.getByTestId("nav-lockup");
     await expect(lockup).toBeVisible();
+    // WAI-ARIA decorative pattern: the wrapping NavLink's
+    // aria-label carries the link's accessible name; the img
+    // must not duplicate it via its own alt text. Lock the
+    // contract at E2E so a regression to ``alt="Flightdeck"``
+    // surfaces against the running app's DOM, not just the
+    // unit-level prop assertion.
+    await expect(lockup).toHaveAttribute("alt", "");
     // Wrapped in a link to "/" — the brand-to-home convention.
     const link = page.getByTestId("nav-lockup-link");
     await expect(link).toHaveAttribute("href", "/");

@@ -12,16 +12,16 @@ Flightdeck shows you in real time every LLM call, MCP event, and tool call your 
 We support coding agents like Claude Code and production agents instrumented with the Flightdeck sensor. Drop it in your code (2 lines) and get visibility and control.
 
 <!-- Live fleet view. Recording coming shortly. -->
-![Live fleet view: every agent on a shared timeline streaming events as agents run.](docs/assets/fleet-demo.gif)
+![Live fleet view: every agent on a shared timeline streaming events as agents run.](assets/fleet-demo.gif)
 
 <!-- Agents dashboard. Recording coming shortly. -->
-![Agents dashboard: every agent in your fleet with token, latency, error, and cost trends.](docs/assets/agents-demo.gif)
+![Agents dashboard: every agent in your fleet with token, latency, error, and cost trends.](assets/agents-demo.gif)
 
 <!-- Per-agent swimlane. Recording coming shortly. -->
-![Per-agent swimlane: focused view of a single agent's runs and events.](docs/assets/per-agent-swimlane-demo.gif)
+![Per-agent swimlane: focused view of a single agent's runs and events.](assets/per-agent-swimlane-demo.gif)
 
 <!-- Events search. Recording coming shortly. -->
-![Events search: filter every LLM call, tool use, and policy event by agent, type, framework, and MCP server.](docs/assets/events-demo.gif)
+![Events search: filter every LLM call, tool use, and policy event by agent, type, framework, and MCP server.](assets/events-demo.gif)
 
 > Recordings above are placeholders; the demo GIFs are being recorded.
 

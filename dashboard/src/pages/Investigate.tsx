@@ -17,6 +17,14 @@ import { ProviderLogo } from "@/components/ui/provider-logo";
 import { getProvider } from "@/lib/models";
 import { isClientType, isAgentType } from "@/lib/agent-identity";
 import { TruncatedText } from "@/components/ui/TruncatedText";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { getEventDetail, truncateSessionId } from "@/lib/events";
 import { relativeTime } from "@/lib/agents-format";
 import {
@@ -845,44 +853,22 @@ export function Investigate() {
         {/* Event table */}
         <div className="flex flex-1 flex-col overflow-hidden">
           <div className="flex-1 overflow-auto">
-            <table
-              data-testid="events-table"
-              style={{
-                width: "100%",
-                borderCollapse: "collapse",
-                fontSize: 13,
-              }}
-            >
-              <thead>
-                <tr
-                  style={{
-                    borderBottom: "1px solid var(--border)",
-                    background: "var(--surface)",
-                  }}
-                >
-                  {["Time", "Agent", "Run", "Type", "Model", "Detail", ""].map(
-                    (h, i) => (
-                      <th
-                        key={h || `c${i}`}
-                        scope="col"
-                        style={{
-                          textAlign: "left",
-                          padding: "8px 12px",
-                          fontSize: 10,
-                          fontWeight: 600,
-                          letterSpacing: "0.06em",
-                          textTransform: "uppercase",
-                          color: "var(--text-secondary)",
-                          whiteSpace: "nowrap",
-                        }}
-                      >
-                        {h}
-                      </th>
-                    ),
-                  )}
-                </tr>
-              </thead>
-              <tbody>
+            <Table data-testid="events-table">
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Time</TableHead>
+                  <TableHead>Agent</TableHead>
+                  <TableHead>Run</TableHead>
+                  <TableHead>Type</TableHead>
+                  <TableHead>Model</TableHead>
+                  <TableHead>Detail</TableHead>
+                  {/* Status — small outline pill (e.g. ABORTED,
+                      RATE_LIMIT). Empty label by design; the cell
+                      itself reads narrow on the right edge. */}
+                  <TableHead align="right" aria-label="Status" />
+                </TableRow>
+              </TableHeader>
+              <TableBody>
                 {events.map((event) => (
                   <EventRow
                     key={event.id}
@@ -892,49 +878,40 @@ export function Investigate() {
                   />
                 ))}
                 {!error && !loading && events.length === 0 && (
-                  <tr data-testid="events-table-empty">
-                    <td
+                  <TableRow data-testid="events-table-empty">
+                    <TableCell
                       colSpan={7}
-                      style={{
-                        textAlign: "center",
-                        padding: "32px 12px",
-                        color: "var(--text-muted)",
-                      }}
+                      align="center"
+                      className="py-8 text-text-muted"
                     >
                       No events match the active filters.
-                    </td>
-                  </tr>
+                    </TableCell>
+                  </TableRow>
                 )}
                 {!error && loading && events.length === 0 && (
-                  <tr data-testid="events-table-loading">
-                    <td
+                  <TableRow data-testid="events-table-loading">
+                    <TableCell
                       colSpan={7}
-                      style={{
-                        textAlign: "center",
-                        padding: "32px 12px",
-                        color: "var(--text-muted)",
-                      }}
+                      align="center"
+                      className="py-8 text-text-muted"
                     >
                       Loading events…
-                    </td>
-                  </tr>
+                    </TableCell>
+                  </TableRow>
                 )}
                 {error && (
-                  <tr data-testid="events-table-error">
-                    <td
+                  <TableRow data-testid="events-table-error">
+                    <TableCell
                       colSpan={7}
-                      style={{
-                        textAlign: "center",
-                        padding: "32px 12px",
-                        color: "var(--danger)",
-                      }}
+                      align="center"
+                      className="py-8 text-danger"
                     >
                       Could not load events.
-                    </td>
-                  </tr>
+                    </TableCell>
+                  </TableRow>
                 )}
-              </tbody>
-            </table>
+              </TableBody>
+            </Table>
           </div>
           <Pagination
             total={total}
@@ -999,7 +976,8 @@ function EventRow({
   const status = eventStatus(event);
   const detail = getEventDetail(event);
   return (
-    <tr
+    <TableRow
+      interactive
       data-testid="events-row"
       data-event-id={event.id}
       tabIndex={0}
@@ -1011,36 +989,22 @@ function EventRow({
           onRowClick(event);
         }
       }}
-      style={{
-        borderBottom: "1px solid var(--border-subtle)",
-        cursor: "pointer",
-      }}
     >
-      <td
-        style={{
-          padding: "7px 12px",
-          fontFamily: "var(--font-mono)",
-          fontSize: 11,
-          color: "var(--text-muted)",
-          whiteSpace: "nowrap",
-        }}
+      {/* TIME — relative timestamp, mono. */}
+      <TableCell
+        mono
+        className="text-[11px] text-text-muted whitespace-nowrap"
         title={new Date(event.occurred_at).toLocaleString()}
       >
         {relativeTime(event.occurred_at)}
-      </td>
-      <td style={{ padding: "7px 12px", maxWidth: 280 }}>
-        {/* AGENT cell — "who fired this": agent name plus the
-            session-scoped identity chrome (client_type pill +
-            agent_type badge), matching the Fleet swimlane label
-            strip. Both apply to an event of any type. */}
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 6,
-            minWidth: 0,
-          }}
-        >
+      </TableCell>
+      {/* AGENT — "who fired this": agent name + session-scoped
+          identity chrome (client_type pill + agent_type badge),
+          matching the Fleet swimlane label strip. UI font on the
+          cell; the flavor span keeps its mono treatment because
+          flavors are identifier-style strings. */}
+      <TableCell className="max-w-[280px]">
+        <div className="flex items-center gap-1.5 min-w-0">
           <TruncatedText
             text={event.flavor}
             style={{ fontFamily: "var(--font-mono)", fontSize: 12 }}
@@ -1059,8 +1023,9 @@ function EventRow({
             />
           )}
         </div>
-      </td>
-      <td style={{ padding: "7px 12px" }}>
+      </TableCell>
+      {/* RUN — truncated session id in a click-through badge. */}
+      <TableCell mono>
         <button
           type="button"
           data-testid="events-row-run-badge"
@@ -1070,43 +1035,29 @@ function EventRow({
           }}
           aria-label={`Open run ${event.session_id}`}
           title={`Open run ${event.session_id}`}
-          style={{
-            fontFamily: "var(--font-mono)",
-            fontSize: 10,
-            padding: "1px 5px",
-            borderRadius: 3,
-            border: "1px solid var(--border)",
-            background: "transparent",
-            color: "var(--text-secondary)",
-            cursor: "pointer",
-          }}
+          className="font-mono text-[10px] px-1.5 py-0.5 rounded-sm border border-border bg-transparent text-text-secondary cursor-pointer"
         >
           {truncateSessionId(event.session_id)}
         </button>
-      </td>
-      <td style={{ padding: "7px 12px", whiteSpace: "nowrap" }}>
-        {/* Shared canonical event-type pill — byte-identical to the
-            run drawer and the agent drawer Events tab. */}
+      </TableCell>
+      {/* TYPE — shared canonical event-type pill, byte-identical
+          to the run drawer and the agent drawer Events tab. */}
+      <TableCell className="whitespace-nowrap">
         <EventTypePill eventType={event.event_type} />
-      </td>
-      <td
-        style={{
-          padding: "7px 12px",
-          fontFamily: "var(--font-mono)",
-          fontSize: 11,
-          color: "var(--text-muted)",
-          whiteSpace: "nowrap",
-        }}
+      </TableCell>
+      {/* MODEL — "how it ran": provider logo + model + the
+          framework pill. The cluster only carries meaning for LLM
+          calls (pre/post_call, embeddings); non-LLM events carry
+          no model, so the cell renders a bare em-dash. */}
+      <TableCell
+        mono
+        className="text-[11px] text-text-muted whitespace-nowrap"
       >
-        {/* MODEL cell — "how it ran": provider logo + model + the
-            framework pill. The cluster only carries meaning for LLM
-            calls (pre/post_call, embeddings); non-LLM events carry no
-            model, so the cell stays a bare em-dash. */}
         {event.model ? (
-          <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <span className="flex items-center gap-1.5">
             <span
               data-testid="events-row-provider-logo"
-              style={{ display: "inline-flex" }}
+              className="inline-flex"
             >
               <ProviderLogo
                 provider={getProvider(event.model)}
@@ -1123,34 +1074,19 @@ function EventRow({
         ) : (
           "—"
         )}
-      </td>
-      <td
-        style={{
-          padding: "7px 12px",
-          color: "var(--text)",
-          maxWidth: 0,
-          // overflow:hidden is what makes the maxWidth:0 clamp bite —
-          // without it the inner flex row can push the cell wider
-          // than its table-allotted width. The text span owns the
-          // ellipsis; this keeps the cell itself within bounds.
-          overflow: "hidden",
-        }}
-      >
-        {/* DETAIL cell — the humanized event summary, with a trailing
-            prompt-capture indicator. The indicator is a row-level
-            "content is available to drill into" affordance: it shows
-            for any has_content event regardless of type (LLM prompts,
-            MCP tool_input, …), so it lives here rather than in the
-            LLM-only MODEL cell. */}
-        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+      </TableCell>
+      {/* DETAIL — humanized event summary with a trailing
+          prompt-capture indicator. The indicator is a row-level
+          "content is available to drill into" affordance: it shows
+          for any has_content event regardless of type (LLM
+          prompts, MCP tool_input, …), so it lives here rather
+          than in the LLM-only MODEL cell. ``max-w-0 overflow-hidden``
+          lets the table column give the cell its own bounded width;
+          the text span owns the ellipsis inside. */}
+      <TableCell className="text-text max-w-0 overflow-hidden">
+        <div className="flex items-center gap-1.5">
           <span
-            style={{
-              flex: 1,
-              minWidth: 0,
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-            }}
+            className="flex-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap"
             title={detail}
           >
             {detail}
@@ -1161,31 +1097,33 @@ function EventRow({
               size={13}
               role="img"
               aria-label="Prompt content captured"
-              style={{ color: "var(--text-muted)", flexShrink: 0 }}
+              className="text-text-muted flex-shrink-0"
             >
               <title>Prompt content captured</title>
             </MessageSquareText>
           )}
         </div>
-      </td>
-      <td style={{ padding: "7px 12px", textAlign: "right" }}>
+      </TableCell>
+      {/* STATUS — small outline pill (ABORTED, RATE_LIMIT, …).
+          Carries its own outline colour so the chip reads in
+          context; not a badge component because each status uses
+          a per-status colour the canonical pill set doesn't
+          expose. */}
+      <TableCell align="right">
         {status && (
           <span
             data-testid="events-row-status"
+            className="font-mono text-[9px] px-1.5 py-0.5 rounded-sm border"
             style={{
-              fontFamily: "var(--font-mono)",
-              fontSize: 9,
-              padding: "1px 5px",
-              borderRadius: 3,
-              border: `1px solid ${status.color}`,
+              borderColor: status.color,
               color: status.color,
             }}
           >
             {status.label}
           </span>
         )}
-      </td>
-    </tr>
+      </TableCell>
+    </TableRow>
   );
 }
 

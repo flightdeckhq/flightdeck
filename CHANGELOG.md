@@ -82,6 +82,71 @@ visible focused-row highlight (D162).
   ``/policies``, primary + destructive button hover, and the
   Directives / Policies / Settings error banners.
 
+### Brand assets
+
+The v2.2 Flightdeck brand lands across the dashboard chrome
+and the README — themed lockup in the nav, a real favicon set
+in the browser tab, and a centered hero block on GitHub.
+
+- **Per-theme nav lockup.** The plain "Flightdeck" text in the
+  top nav becomes a themed SVG lockup linked to Fleet. The
+  navbar height grew slightly so the lockup sits balanced with
+  the link bar; clicking the lockup is the canonical home-link
+  affordance, in line with the link bar's "Fleet" item.
+- **Favicon set.** ``dashboard/index.html`` now ships
+  ``<link rel="icon">`` entries for 16/32/48/192 px PNGs plus
+  the 180 px apple-touch-icon — pulled from the v2.2 source
+  app-icon and cropped edge-to-edge so the rounded tile fills
+  the tab cleanly at every size.
+- **README hero.** The plain ``# Flightdeck`` h1 becomes a
+  centered, theme-aware ``<picture>`` block driven by the same
+  two lockup SVGs the navbar uses. GitHub's ``<themed-picture>``
+  wrapper handles the dark / light swap against the user's
+  GitHub UI theme. One asset source backs both surfaces; no
+  drift between repo page and dashboard.
+
+### Consistent table styling
+
+Every tabular surface in the dashboard renders through one
+shared primitive, so the cross-page drift between Agents (11px
+headers, 8/12 padding) and Events (10px headers, 7/12 padding)
+is gone and any future table inherits the same contract by
+importing two components.
+
+- **Shared table primitive.** New
+  ``dashboard/src/components/ui/table.tsx`` exports ``Table``,
+  ``TableHeader``, ``TableBody``, ``TableRow``, ``TableHead``,
+  and ``TableCell`` — thin shadcn-style wrappers over native
+  table elements with Tailwind classes (no inline ``style``
+  props on table internals). One canonical 11/12/px3/py2 spec
+  for header / body cells, ``border-b border-border`` +
+  ``bg-surface`` on header rows,
+  ``border-b border-border-subtle`` on body rows, and an
+  ``interactive`` prop on ``TableRow`` for the hover + cursor
+  pattern on clickable rows.
+- **Agents and Events migrated.** ``AgentTable.tsx`` +
+  ``AgentTableRow.tsx`` (``/agents``) and the inline events
+  ``<table>`` + ``EventRow`` in ``Investigate.tsx``
+  (``/events``) now render through the primitive. Same header
+  size, same row density, same padding, same dividers, same
+  row hover. Headers left-align over their values; the prior
+  drift between the two pages is gone. Behaviour preserved
+  verbatim: sort state + family grouping + sparklines on
+  ``/agents``; event-type pill + client/agent badges +
+  framework pill + capture indicator on ``/events``.
+- **mono-for-data / UI-font-for-labels.** ``TableCell`` has a
+  ``mono`` prop that switches the cell to ``font-mono``. The
+  canonical content rule: numbers, measurements, IDs,
+  timestamps, and model strings use ``mono``; names, flavors,
+  labels, and prose use the default UI font.
+- **Theme-aware topology pill.** ``TopologyCell`` (the
+  TOPOLOGY column on ``/agents``) renders as a rounded tinted
+  pill across all three modes — accent tint for ``child`` /
+  ``parent`` (clickable), muted tint for ``lone`` (static).
+  The pill foreground is driven by a per-theme CSS variable
+  (``--topology-pill-fg``) so the colour recolours instantly
+  on the Nav theme toggle without remounting.
+
 ### Per-agent landing page + UI reshape
 
 The per-agent landing page (`/agents` page + agent drawer), the

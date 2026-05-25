@@ -1,5 +1,8 @@
 import { defineConfig, devices } from "@playwright/test";
-import { DISABLE_KEEPALIVE_WS_STORAGE_KEY } from "./src/lib/constants";
+import {
+  DISABLE_KEEPALIVE_WS_STORAGE_KEY,
+  THEME_STORAGE_KEY,
+} from "./src/lib/constants";
 
 // D095 + Phase 5 Part 1b hardcoded access token. Every request
 // (page navigations, XHRs, and fetches fired by the app) picks up
@@ -19,12 +22,12 @@ const ACCESS_TOKEN = "tok_dev";
 // names, which silently degraded clean-light into a second dark-theme
 // run for an unknown number of phases — Rule 40c.3 (theme coverage)
 // requires the matrix to actually exercise both themes.
-// Mirrors dashboard/src/lib/constants.ts::THEME_STORAGE_KEY exactly.
-// Drift here means the seeded localStorage entry lands at a key the
-// app never reads, useTheme falls to its "dark" default, and the
-// matrix silently runs single-theme — exactly the regression this
-// config fix is closing.
-const THEME_STORAGE_KEY = "flightdeck-theme";
+// ``THEME_STORAGE_KEY`` is imported from ``src/lib/constants.ts`` so
+// the key the seeded localStorage entry lands at is the same key the
+// app reads. A bare string here would silently desync if the
+// constant ever changed — the prior incarnation of this config used
+// a hardcoded ``"flightdeck-theme"`` literal, which is exactly the
+// drift surface the import closes.
 const THEME_DARK = "dark";
 const THEME_LIGHT = "light";
 

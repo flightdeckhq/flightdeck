@@ -27,13 +27,11 @@ import type {
   SearchResultSession,
 } from "@/lib/types";
 import { useTheme } from "@/hooks/useTheme";
+import { LOCKUP_SRC } from "@/lib/constants";
 
 export function Nav({ onSearchClick }: { onSearchClick: () => void }) {
   const { theme, toggleTheme } = useTheme();
-  const lockupSrc =
-    theme === "dark"
-      ? "/assets/flightdeck-lockup-dark.svg"
-      : "/assets/flightdeck-lockup-light.svg";
+  const lockupSrc = theme === "dark" ? LOCKUP_SRC.dark : LOCKUP_SRC.light;
 
   return (
     <nav
@@ -50,9 +48,12 @@ export function Nav({ onSearchClick }: { onSearchClick: () => void }) {
         className="flex items-center"
         data-testid="nav-lockup-link"
       >
+        {/* Decorative img: the wrapping NavLink's aria-label
+            provides the link's accessible name in full. An
+            ``alt`` here would duplicate the announcement. */}
         <img
           src={lockupSrc}
-          alt="Flightdeck"
+          alt=""
           className="h-[44px] w-auto"
           data-testid="nav-lockup"
         />

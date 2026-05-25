@@ -1,9 +1,9 @@
 import "@testing-library/jest-dom/vitest";
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, afterEach } from "vitest";
 import { render, screen, cleanup } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { Nav } from "../App";
-import { THEME_STORAGE_KEY } from "@/lib/constants";
+import { LOCKUP_SRC, THEME_STORAGE_KEY } from "@/lib/constants";
 
 function renderNav(theme: "dark" | "light") {
   localStorage.setItem(THEME_STORAGE_KEY, theme);
@@ -15,21 +15,30 @@ function renderNav(theme: "dark" | "light") {
 }
 
 describe("Nav lockup", () => {
-  beforeEach(() => {
+  // ``cleanup`` is auto-called by Vitest when ``globals: true`` is
+  // set in vitest.config.ts; the explicit call lives in afterEach
+  // (not beforeEach) so it tears down the prior test's DOM rather
+  // than the empty DOM at the next test's start. ``localStorage``
+  // is reset alongside.
+  afterEach(() => {
     cleanup();
     localStorage.clear();
   });
 
   it.each([
-    ["dark" as const, "/assets/flightdeck-lockup-dark.svg"],
-    ["light" as const, "/assets/flightdeck-lockup-light.svg"],
+    ["dark" as const, LOCKUP_SRC.dark],
+    ["light" as const, LOCKUP_SRC.light],
   ])("renders the %s lockup linked to Fleet", (theme, expectedSrc) => {
     renderNav(theme);
 
     const lockup = screen.getByTestId("nav-lockup") as HTMLImageElement;
     expect(lockup).toBeInTheDocument();
     expect(lockup.getAttribute("src")).toBe(expectedSrc);
-    expect(lockup.getAttribute("alt")).toBe("Flightdeck");
+    // The img is intentionally decorative — the link's aria-label
+    // carries the accessible name. ``alt=""`` is the correct
+    // semantic value for a logo whose meaning is fully conveyed by
+    // the surrounding link's label.
+    expect(lockup.getAttribute("alt")).toBe("");
 
     const link = screen.getByTestId("nav-lockup-link") as HTMLAnchorElement;
     expect(link).toBeInTheDocument();

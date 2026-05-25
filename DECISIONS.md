@@ -9259,11 +9259,54 @@ Column-font assignment (Phase 1):
 
 - **Agents.** Agent → UI; Status, Topology → badge cells (no
   ``mono`` prop, badges own their own type); Tokens, Latency
-  p95, Errors, Sessions, Cost, Last seen → ``mono`` with
-  numeric headers ``align="right"``.
+  p95, Errors, Sessions, Cost, Last seen → ``mono``,
+  left-aligned. The KPI cell layout is
+  ``[number][sparkline]`` — the operator's eye lands on the
+  numeric total first and the sparkline trails to the right as
+  a trend hint, so the column reads left. The primitive still
+  supports ``align="right"`` (e.g. for tables whose cell content
+  reads right-anchored), but the Agents convention is
+  left-aligned. An earlier draft of this PR briefly flipped the
+  KPI columns to ``align="right"`` and re-ordered the cell to
+  ``[sparkline][number]``; that choice was reverted because the
+  number-first scan order outweighs the header-vs-rightmost-digit
+  symmetry in this surface.
 - **Events.** Time → ``mono``; Agent (flavor + name) → UI; Run
   id → ``mono``; Type → badge cell; Model → ``mono``; Detail
   → UI.
+
+### TopologyCell pill (within Phase 1)
+
+The Agents table's TOPOLOGY column renders through
+``components/fleet/TopologyCell.tsx``, which pre-D163 emitted
+bare text spans for all three relationships (``lone`` /
+``↳ child of <parent>`` / ``⤴ spawns N``) at 10-11 px with no
+container chrome. D163 restyles the cell to a rounded tinted
+pill across all three modes so the column reads as a member of
+the same badge family as ``ClientTypePill`` and the
+``agent_type`` badge:
+
+- Pill base: ``inline-flex items-center gap-1 rounded-full
+  px-2 py-0.5 font-mono text-[11px] whitespace-nowrap`` with
+  the child label still truncating via ``TruncatedText``.
+- ``child`` and ``parent`` (clickable ``<button>``): accent
+  tint — ``color-mix(in srgb, var(--accent) 15%, transparent)``
+  background, ``color-mix(in srgb, var(--accent) 40%,
+  transparent)`` border. Foreground uses the live accent in
+  light theme and a lightened accent in dark theme
+  (``color-mix(in srgb, var(--accent) 55%, white)``) because
+  the unmodified accent reads dim on the dark surface tint.
+  Mirrors the ``CLIENT_TYPE_COLOR`` shape so the cluster is
+  thematically of-a-piece. Click behaviour preserved verbatim:
+  child scrolls to parent, parent scrolls to first child.
+- ``lone`` (static ``<span>``): muted tint —
+  ``color-mix(in srgb, var(--text) 6%, transparent)``
+  background, ``var(--border-subtle)`` border,
+  ``var(--text-muted)`` foreground.
+
+Existing testids
+(``agent-table-topology-pill-{lone,child-<id>,parent-<id>}``)
+preserved.
 
 ### Rejected alternative — normalise each table in place
 

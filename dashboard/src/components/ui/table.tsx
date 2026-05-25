@@ -69,10 +69,27 @@ export const TableRow = forwardRef<HTMLTableRowElement, TableRowProps>(
 );
 
 interface AlignProp {
-  /** Pass-through to the cell's native `align` attribute. Numeric
-   *  columns use `align="right"` so headers + cells share alignment
-   *  without a per-call style override. */
+  /** Horizontal alignment of the cell's content. Default is
+   *  ``left`` — explicit on TableHead because the native ``<th>``
+   *  default is ``text-align: center`` per HTML spec, which would
+   *  float centered headers off the left-aligned values they sit
+   *  above. Override to ``right`` for numeric columns whose cell
+   *  content reads right-anchored. */
   align?: "left" | "center" | "right";
+}
+
+/**
+ * Resolve {@link AlignProp.align} to a single text-align utility so
+ * exactly one of ``text-left`` / ``text-center`` / ``text-right``
+ * lands on the element. Conditionally adding multiple is fragile —
+ * Tailwind's generated CSS ordering between these utilities is not
+ * a contract, so the same element with both ``text-left`` and
+ * ``text-right`` is non-deterministic. Picking one explicitly is.
+ */
+function alignClass(align: AlignProp["align"]): string {
+  if (align === "right") return "text-right";
+  if (align === "center") return "text-center";
+  return "text-left";
 }
 
 interface TableHeadProps
@@ -90,8 +107,7 @@ export const TableHead = forwardRef<HTMLTableCellElement, TableHeadProps>(
         scope={props.scope ?? "col"}
         className={cn(
           "px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.06em] text-text-secondary whitespace-nowrap",
-          align === "right" && "text-right",
-          align === "center" && "text-center",
+          alignClass(align),
           className,
         )}
         {...props}
@@ -121,8 +137,7 @@ export const TableCell = forwardRef<HTMLTableCellElement, TableCellProps>(
         className={cn(
           "px-3 py-2 text-[12px] align-middle",
           mono && "font-mono",
-          align === "right" && "text-right",
-          align === "center" && "text-center",
+          alignClass(align),
           className,
         )}
         {...props}

@@ -38,8 +38,9 @@ interface AgentTableRowProps {
 
 /**
  * KPI sparkline tile dimensions. The tile shares its row's
- * vertical centre line; the numeric total reads to the right of
- * the chart so a column of values scans down the right edge.
+ * vertical centre line; the numeric total reads to the LEFT of
+ * the chart so the operator's eye lands on the value first and
+ * the sparkline follows as a trend hint.
  */
 const SPARKLINE_WIDTH = 80;
 const SPARKLINE_HEIGHT = 22;
@@ -160,78 +161,74 @@ function AgentTableRowImpl({
         <TopologyCell agentId={agent.agent_id} topology={agent.topology} />
       </TableCell>
 
-      {/* Tokens 7d — number on the right with sparkline floating to
-          its left. The cell aligns right so the column scans down
-          the rightmost digit. */}
+      {/* Tokens 7d — number first, sparkline trailing right. The
+          number's min-width keeps the cell column stable across
+          rows so the sparkline tiles align vertically. */}
       <TableCell
         mono
-        align="right"
         data-testid={`agent-row-tokens-${agent.agent_id}`}
       >
-        <div className="flex items-center justify-end gap-2">
+        <div className="flex items-center gap-2">
+          <span
+            className="min-w-[50px] text-text"
+            data-testid={`agent-row-tokens-total-${agent.agent_id}`}
+          >
+            {totals ? formatTokens(totals.tokens) : "—"}
+          </span>
           <AgentSparkline
             series={series}
             axis="tokens"
             width={SPARKLINE_WIDTH}
             height={SPARKLINE_HEIGHT}
           />
-          <span
-            className="min-w-[50px] text-right text-text"
-            data-testid={`agent-row-tokens-total-${agent.agent_id}`}
-          >
-            {totals ? formatTokens(totals.tokens) : "—"}
-          </span>
         </div>
       </TableCell>
 
       {/* Latency p95 7d */}
       <TableCell
         mono
-        align="right"
         data-testid={`agent-row-latency-${agent.agent_id}`}
       >
-        <div className="flex items-center justify-end gap-2">
+        <div className="flex items-center gap-2">
+          <span className="min-w-[50px] text-text">
+            {totals ? formatLatencyMs(totals.latency_p95_ms) : "—"}
+          </span>
           <AgentSparkline
             series={series}
             axis="latency_p95_ms"
             width={SPARKLINE_WIDTH}
             height={SPARKLINE_HEIGHT}
           />
-          <span className="min-w-[50px] text-right text-text">
-            {totals ? formatLatencyMs(totals.latency_p95_ms) : "—"}
-          </span>
         </div>
       </TableCell>
 
       {/* Errors 7d */}
       <TableCell
         mono
-        align="right"
         data-testid={`agent-row-errors-${agent.agent_id}`}
       >
-        <div className="flex items-center justify-end gap-2">
+        <div className="flex items-center gap-2">
+          <span
+            className={
+              totals && totals.errors > 0
+                ? "min-w-[30px] text-danger"
+                : "min-w-[30px] text-text-muted"
+            }
+          >
+            {totals ? totals.errors : "—"}
+          </span>
           <AgentSparkline
             series={series}
             axis="errors"
             width={SPARKLINE_WIDTH}
             height={SPARKLINE_HEIGHT}
           />
-          <span
-            className={
-              totals && totals.errors > 0
-                ? "min-w-[30px] text-right text-danger"
-                : "min-w-[30px] text-right text-text-muted"
-            }
-          >
-            {totals ? totals.errors : "—"}
-          </span>
         </div>
       </TableCell>
 
       {/* Sessions 7d */}
       <TableCell
         mono
-        align="right"
         data-testid={`agent-row-sessions-${agent.agent_id}`}
       >
         <span className="text-text">{totals ? totals.sessions : "—"}</span>
@@ -244,7 +241,6 @@ function AgentTableRowImpl({
           summary totals. */}
       <TableCell
         mono
-        align="right"
         data-testid={`agent-row-cost-${agent.agent_id}`}
       >
         <span className="text-text">
@@ -259,7 +255,6 @@ function AgentTableRowImpl({
       {/* Last seen */}
       <TableCell
         mono
-        align="right"
         title={new Date(agent.last_seen_at).toLocaleString()}
         data-testid={`agent-row-last-seen-${agent.agent_id}`}
       >

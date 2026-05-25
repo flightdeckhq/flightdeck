@@ -76,6 +76,39 @@ describe("table primitive", () => {
     expect(cls).toContain("px-3");
     expect(cls).toContain("py-2");
     expect(cls).not.toContain("font-mono");
+    // TableCell defaults to explicit text-left so behaviour mirrors
+    // TableHead and doesn't rely on native <td> inherit.
+    expect(cls).toContain("text-left");
+  });
+
+  it("defaults TableHead to text-left so headers sit above left-aligned values (not native <th> center)", () => {
+    // Native <th> default is text-align:center per HTML spec; without
+    // an explicit text-left the header label floats off the left
+    // edge of the column above its left-aligned values. Lock the
+    // explicit default and the override hierarchy: exactly one of
+    // text-{left,center,right} lands on the element so Tailwind
+    // class ordering is not relied on as a tie-breaker.
+    render(
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead data-testid="th-default">Default</TableHead>
+            <TableHead align="right" data-testid="th-right">Right</TableHead>
+            <TableHead align="center" data-testid="th-center">Center</TableHead>
+          </TableRow>
+        </TableHeader>
+      </Table>,
+    );
+    const def = screen.getByTestId("th-default").className;
+    expect(def).toContain("text-left");
+    expect(def).not.toContain("text-right");
+    expect(def).not.toContain("text-center");
+    const right = screen.getByTestId("th-right").className;
+    expect(right).toContain("text-right");
+    expect(right).not.toContain("text-left");
+    const center = screen.getByTestId("th-center").className;
+    expect(center).toContain("text-center");
+    expect(center).not.toContain("text-left");
   });
 
   it("`mono` prop adds font-mono to TableCell", () => {
@@ -93,7 +126,7 @@ describe("table primitive", () => {
     expect(screen.getByTestId("td").className).toContain("font-mono");
   });
 
-  it("`align=right` on TableHead and TableCell flips text alignment", () => {
+  it("`align=right` on TableHead and TableCell flips text alignment and drops the text-left default", () => {
     render(
       <Table>
         <TableHeader>
@@ -112,8 +145,12 @@ describe("table primitive", () => {
         </TableBody>
       </Table>,
     );
-    expect(screen.getByTestId("th").className).toContain("text-right");
-    expect(screen.getByTestId("td").className).toContain("text-right");
+    const th = screen.getByTestId("th").className;
+    expect(th).toContain("text-right");
+    expect(th).not.toContain("text-left");
+    const td = screen.getByTestId("td").className;
+    expect(td).toContain("text-right");
+    expect(td).not.toContain("text-left");
   });
 
   it("`interactive` body TableRow adds hover + cursor classes", () => {

@@ -42,11 +42,13 @@ const PAGE_SIZE = 50;
 interface ColumnSpec {
   column: AgentSortColumn;
   label: string;
-  /** Header alignment. Numeric KPI columns use ``right`` so the
-   *  header reads above the right edge of the numeric cell value
-   *  (Tokens / Latency / Errors / Sessions / Cost). The Last
-   *  seen column carries a relative time + tooltip — it reads
-   *  left-aligned alongside the other label-style columns. */
+  /** Visual alignment of the header cell. KPI columns read
+   *  left-aligned: the operator scans the numeric total first and
+   *  the sparkline tile follows immediately to the right, so the
+   *  number lands at the left edge of the cell beneath a
+   *  left-aligned header. The primitive supports ``align="right"``
+   *  for tables where the cell content reads right-anchored, but
+   *  the Agents KPI layout is left by convention. */
   align?: "left" | "right";
 }
 
@@ -62,11 +64,11 @@ const COLUMNS: ColumnSpec[] = [
   { column: "agent_name", label: "Agent" },
   { column: "state", label: "Status" },
   { column: "topology", label: "Topology" },
-  { column: "tokens_7d", label: "Tokens (7d)", align: "right" },
-  { column: "latency_p95_7d", label: "Latency p95 (7d)", align: "right" },
-  { column: "errors_7d", label: "Errors (7d)", align: "right" },
-  { column: "sessions_7d", label: "Sessions (7d)", align: "right" },
-  { column: "cost_usd_7d", label: "Cost (7d)", align: "right" },
+  { column: "tokens_7d", label: "Tokens (7d)" },
+  { column: "latency_p95_7d", label: "Latency p95 (7d)" },
+  { column: "errors_7d", label: "Errors (7d)" },
+  { column: "sessions_7d", label: "Sessions (7d)" },
+  { column: "cost_usd_7d", label: "Cost (7d)" },
   { column: "last_seen_at", label: "Last seen" },
 ];
 

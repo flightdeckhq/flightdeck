@@ -74,6 +74,71 @@ describe("TopologyCell", () => {
     ).toBeInTheDocument();
   });
 
+  it("renders all three modes as a rounded tinted pill with the canonical class signature", () => {
+    // D163 pill contract: every TopologyCell variant carries the
+    // shared inline-flex / rounded-full / px-2 py-0.5 / font-mono
+    // text-[11px] / whitespace-nowrap class signature so the
+    // column reads as a member of the same badge family. The
+    // foreground / background / border colours are set via inline
+    // style (theme-aware color-mix), not by Tailwind classes.
+    const pillClassFragments = [
+      "inline-flex",
+      "items-center",
+      "rounded-full",
+      "px-2",
+      "py-0.5",
+      "font-mono",
+      "text-[11px]",
+      "whitespace-nowrap",
+    ];
+
+    // lone — static span.
+    useFleetStore.setState({ flavors: [mkFlavor()] });
+    const { unmount: unmountLone } = render(
+      <TopologyCell agentId="agent-1" topology="lone" />,
+    );
+    const lone = screen.getByTestId("agent-table-topology-pill-lone");
+    expect(lone.tagName).toBe("SPAN");
+    for (const fragment of pillClassFragments) {
+      expect(lone.className).toContain(fragment);
+    }
+    unmountLone();
+
+    // child — clickable button.
+    const parentSession = mkSession({ session_id: "p-1", agent_id: "p" });
+    const childSession = mkSession({
+      session_id: "c-1",
+      agent_id: "c",
+      parent_session_id: "p-1",
+    });
+    useFleetStore.setState({
+      flavors: [
+        mkFlavor({ flavor: "p", agent_id: "p", sessions: [parentSession] }),
+        mkFlavor({ flavor: "c", agent_id: "c", sessions: [childSession] }),
+      ],
+    });
+    const { unmount: unmountChild } = render(
+      <TopologyCell agentId="c" topology="child" />,
+    );
+    const child = screen.getByTestId("agent-table-topology-pill-child-c");
+    expect(child.tagName).toBe("BUTTON");
+    for (const fragment of pillClassFragments) {
+      expect(child.className).toContain(fragment);
+    }
+    expect(child.className).toContain("cursor-pointer");
+    unmountChild();
+
+    // parent — clickable button (when it has at least one child to
+    // scroll to).
+    render(<TopologyCell agentId="p" topology="parent" />);
+    const parent = screen.getByTestId("agent-table-topology-pill-parent-p");
+    expect(parent.tagName).toBe("BUTTON");
+    for (const fragment of pillClassFragments) {
+      expect(parent.className).toContain(fragment);
+    }
+    expect(parent.className).toContain("cursor-pointer");
+  });
+
   it("renders the child pill with the parent name when topology is child", () => {
     // Set up a parent + child pair in the fleet store so
     // ``deriveRelationship`` can resolve the child's parent.

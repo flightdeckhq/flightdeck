@@ -53,7 +53,7 @@ export function Nav({ onSearchClick }: { onSearchClick: () => void }) {
         <img
           src={lockupSrc}
           alt="Flightdeck"
-          className="h-[36px] w-auto"
+          className="h-[44px] w-auto"
           data-testid="nav-lockup"
         />
       </NavLink>

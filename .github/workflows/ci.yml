@@ -11,6 +11,17 @@ on:
   # then handles the post-merge run on the default branch.
   push:
     branches: [main]
+  # Manual escape hatch: lets ``gh workflow run ci.yml --ref <branch>``
+  # fire CI against any branch without depending on the pull_request
+  # synchronize webhook. Useful when GitHub Actions silently fails to
+  # register a check-suite for a PR sync (the May 26 2026 incident
+  # surfaced this: Codecov + Claude check-suites registered for the
+  # new commit but the CI workflow's suite was absent, no Actions
+  # runs were queued, and close/reopen of the PR did not retrigger).
+  # Pure additive — adds a "Run workflow" button on the Actions tab +
+  # a CLI dispatch path; existing pull_request + push triggers are
+  # untouched.
+  workflow_dispatch:
 
 # Workflow-level least privilege. Every job inherits ``contents: read``
 # only — enough to clone the repo via actions/checkout, nothing more.

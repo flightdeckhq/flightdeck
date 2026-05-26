@@ -4,6 +4,42 @@ All notable changes to Flightdeck are documented here.
 
 ## Unreleased
 
+### Agents page KPI sparklines — semantic palette + Cost / Sessions coverage
+
+- **Cost and Sessions cells now render sparklines** alongside their
+  numeric totals, matching the existing pattern on Tokens / Latency
+  p95 / Errors. The Cost sparkline is skipped on Claude Code agents
+  (Flightdeck has no pricing for them, so the cell still falls
+  through to a bare em-dash); the Sessions sparkline lights up on
+  every row.
+- **Semantic stroke palette** per axis: errors → ``var(--danger)``
+  (red), cost → ``var(--warning)`` (amber), sessions →
+  ``var(--chart-2)`` (cyan), tokens + latency p95 stay on the brand
+  ``var(--accent)``. Previously every sparkline rendered the brand
+  accent regardless of axis, which made the errors line read as
+  generic activity rather than an alert. The palette lives in a
+  pure ``strokeForAxis`` helper in ``AgentSparkline.tsx`` and is
+  unit-tested against every axis so a future addition cannot drop
+  the colour mapping silently.
+- **Sparkline Y-axis auto-fits to the data range** via
+  ``<YAxis hide domain={['dataMin', 'dataMax']} />``. Recharts'
+  default ``[0, dataMax]`` domain squashed sub-cent cost values
+  (0.001 – 0.005) against the zero anchor and the cost line read
+  flat even when the underlying daily totals fluctuated. Anchoring
+  on the data's actual min/max expands the visible range to fit
+  whatever variation exists. Net effect on the other axes is a
+  no-op when the series already contains a zero point; for the
+  cost axis it's a load-bearing fix.
+- **New E2E (T112)** locks the contract under both themes: a
+  sensor agent's Cost cell carries a sparkline; every row's
+  Sessions cell carries a sparkline; the rendered SVG ``<path>``
+  strokes match the semantic palette; a Claude Code agent's
+  Cost cell shows a bare em-dash with NO sparkline.
+- **T89 helper updated** to query the cost cell as
+  ``td[data-testid^="agent-row-cost-"]`` so the existing prefix
+  selector keeps matching the cell after the inner total-span
+  testid was added.
+
 ### Fixed
 
 - **Sub-agent rows render flush with parents in the Fleet swimlane**

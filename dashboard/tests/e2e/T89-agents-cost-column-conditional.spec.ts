@@ -38,7 +38,12 @@ function costCellForAgent(
   const row = page
     .locator('[data-testid^="agent-row-"][data-agent-id]')
     .filter({ has: page.getByText(agentName, { exact: true }) });
-  return row.locator('[data-testid^="agent-row-cost-"]');
+  // Restrict to the `<td>` so the prefix selector doesn't also
+  // match the inner total `<span data-testid="agent-row-cost-total-…">`
+  // that the cost cell renders alongside its sparkline. The TD is
+  // the cell element the assertions operate on; the inner span
+  // carries the numeric readout.
+  return row.locator('td[data-testid^="agent-row-cost-"]');
 }
 
 test.describe("T89 — cost column is conditional on client_type", () => {

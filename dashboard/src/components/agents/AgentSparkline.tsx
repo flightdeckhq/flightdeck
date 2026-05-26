@@ -1,6 +1,6 @@
 import { memo, useCallback, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Line, LineChart, ResponsiveContainer } from "recharts";
+import { Line, LineChart, ResponsiveContainer, YAxis } from "recharts";
 import type { AgentSummarySeriesPoint } from "@/lib/types";
 import { formatCost, formatLatencyMs, formatTokens } from "@/lib/agents-format";
 
@@ -50,6 +50,35 @@ interface AgentSparklineProps {
   /** Pixel dimensions of the tile. */
   width?: number;
   height?: number;
+}
+
+/**
+ * Axis-keyed stroke palette. Picks a CSS variable so themes can
+ * retune the colour without touching this component. Errors are
+ * red, cost is amber, sessions are cyan to read as a count, and
+ * tokens / latency stay on the brand accent — the rationale is
+ * that errors and cost have semantic "alert" + "$$" colourings
+ * the operator's eye already maps to those concepts, while tokens
+ * and latency are neutral usage signals that share the accent.
+ *
+ * Exported for unit-test parity: jsdom does not measure the
+ * ResponsiveContainer so recharts never renders the SVG path the
+ * stroke would land on. Asserting against the pure function keeps
+ * the contract lockable without spinning up a real layout engine.
+ */
+export function strokeForAxis(axis: AgentSparklineProps["axis"]): string {
+  switch (axis) {
+    case "errors":
+      return "var(--danger)";
+    case "cost_usd":
+      return "var(--warning)";
+    case "sessions":
+      return "var(--chart-2)";
+    case "tokens":
+    case "latency_p95_ms":
+    default:
+      return "var(--accent)";
+  }
 }
 
 function formatAxisValue(
@@ -194,10 +223,23 @@ function AgentSparklineImpl({
               left: CHART_MARGIN_PX,
             }}
           >
+            {/* Hidden YAxis with an auto-fit domain. Recharts' default
+                YAxis domain is ``[0, dataMax]`` which collapses
+                sub-cent cost values (0.001 — 0.005 range) against the
+                ``0`` anchor and the line renders visually flat even
+                though the underlying data fluctuates. Anchoring on
+                ``dataMin`` / ``dataMax`` instead expands the visible
+                range to fit the actual variation, so the cost line
+                rides between the tile's top and bottom edges
+                regardless of how small the absolute values are.
+                Hidden because the sparkline tile carries no axis
+                chrome — the numeric total beside it is the
+                operator-actionable readout. */}
+            <YAxis hide domain={["dataMin", "dataMax"]} />
             <Line
               type="monotone"
               dataKey="v"
-              stroke="var(--accent)"
+              stroke={strokeForAxis(axis)}
               strokeWidth={1.5}
               dot={false}
               isAnimationActive={false}

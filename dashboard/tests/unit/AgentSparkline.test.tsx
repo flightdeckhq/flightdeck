@@ -1,6 +1,9 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
-import { AgentSparkline } from "@/components/agents/AgentSparkline";
+import {
+  AgentSparkline,
+  strokeForAxis,
+} from "@/components/agents/AgentSparkline";
 import type { AgentSummarySeriesPoint } from "@/lib/types";
 
 function point(p: Partial<AgentSummarySeriesPoint>): AgentSummarySeriesPoint {
@@ -65,6 +68,37 @@ describe("AgentSparkline", () => {
     unmount();
     render(<AgentSparkline series={series} axis="errors" />);
     expect(screen.getByTestId("agent-sparkline-empty")).toBeInTheDocument();
+  });
+});
+
+describe("AgentSparkline — stroke colour per axis (semantic palette)", () => {
+  // Each axis maps to a CSS custom property so the table reads the
+  // expected operator-facing colour: errors = red, cost = amber,
+  // sessions = cyan, tokens + latency keep the brand accent. The
+  // recharts <Line> wraps the stroke on the SVG path — but jsdom
+  // does not lay out the ResponsiveContainer so the path never
+  // renders. Asserting against the pure ``strokeForAxis`` helper
+  // locks the wire contract without depending on a real layout
+  // engine; the rendered-DOM coverage lives in T58 (the E2E that
+  // navigates to /agents and inspects the actual SVG strokes).
+  it("errors axis returns var(--danger)", () => {
+    expect(strokeForAxis("errors")).toBe("var(--danger)");
+  });
+
+  it("cost_usd axis returns var(--warning) (amber)", () => {
+    expect(strokeForAxis("cost_usd")).toBe("var(--warning)");
+  });
+
+  it("sessions axis returns var(--chart-2) (cyan)", () => {
+    expect(strokeForAxis("sessions")).toBe("var(--chart-2)");
+  });
+
+  it("tokens axis returns var(--accent)", () => {
+    expect(strokeForAxis("tokens")).toBe("var(--accent)");
+  });
+
+  it("latency_p95_ms axis returns var(--accent)", () => {
+    expect(strokeForAxis("latency_p95_ms")).toBe("var(--accent)");
   });
 });
 

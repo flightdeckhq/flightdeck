@@ -9,7 +9,13 @@
 
 Flightdeck is a self-hosted observability and control plane for production and coding agents.
 
-Every LLM call, MCP event, and tool call your agents make streams to the dashboard as it happens, surfaced as a per-agent timeline and as a live fleet-wide feed. Coding agents attach via the Claude Code plugin in this repo. Production agents add the `flightdeck-sensor` Python package to their entrypoint — `init()` + `patch()`, no other code changes.
+Every LLM call, MCP event, and tool call your agents make streams to the dashboard as it happens, surfaced as a per-agent timeline and as a live fleet-wide feed.
+
+Set token budgets, MCP allow/block rules, and live directives on your production agents.
+
+Coding agents attach via the Claude Code plugin in this repo.
+
+Production agents add the `flightdeck-sensor` Python package to their entrypoint - `init()` + `patch()`, no other code changes.
 
 ![Live fleet view: every agent on a shared timeline streaming events as agents run.](assets/fleet-demo.gif)
 
@@ -32,6 +38,27 @@ make dev
 ```
 
 Dashboard at http://localhost:4000. The dev stack seeds a test token `tok_dev` automatically.
+
+### Coding agents (Claude Code)
+
+Launch Claude Code, then install the plugin from this repo's marketplace inside the REPL:
+
+```text
+/plugin marketplace add flightdeckhq/flightdeck
+/plugin install flightdeck@flightdeck-plugins
+```
+
+That's it for a local stack — the plugin defaults to `http://localhost:4000` with the dev token `tok_dev`, so the Claude Code session shows up in the fleet view within seconds. Tool inputs and LLM call content are captured by default — unlike the Python sensor, which keeps `capture_prompts=False` until you opt in — so the Prompts tab is populated without extra setup.
+
+To point the plugin at a different stack (production, a remote dev server, etc.) export the env vars in the shell *before* launching `claude` — the plugin reads them at every `SessionStart`:
+
+```bash
+export FLIGHTDECK_SERVER="https://flightdeck.example.com"
+export FLIGHTDECK_TOKEN="ftd_..."
+claude
+```
+
+To use a local checkout instead of the marketplace: `claude --plugin-dir /path/to/flightdeck/plugin`.
 
 ### Production agents
 
@@ -59,20 +86,6 @@ client.messages.create(model="claude-sonnet-4-6", ...)
 The agent shows up in the fleet view within seconds.
 
 To run the sensor from source instead of PyPI: `pip install -e sensor/` from the repo root.
-
-### Coding agents (Claude Code)
-
-Point Claude Code at the plugin shipped in this repo:
-
-```bash
-export FLIGHTDECK_SERVER="http://localhost:4000"
-export FLIGHTDECK_TOKEN="tok_dev"
-claude --plugin-dir /path/to/flightdeck/plugin
-```
-
-The Claude Code session shows up in the fleet view within seconds. Tool inputs and LLM call content are captured by default — unlike the Python sensor, which keeps `capture_prompts=False` until you opt in — so the Prompts tab is populated without extra setup.
-
-Replace `/path/to/flightdeck/plugin` with the absolute path to the plugin in your clone. `FLIGHTDECK_SERVER` and `FLIGHTDECK_TOKEN` must be exported in the shell that launches `claude`.
 
 ---
 
@@ -125,13 +138,14 @@ The per-event `framework` field carries the bare name (`langchain`, `crewai`, et
 
 ### Coding agents
 
-Claude Code agents attach via a separate plugin that ships in this repo. Tool inputs and LLM call content are captured by default, so the Prompts tab is populated without extra setup.
+Claude Code agents attach via a separate plugin distributed through this repo's marketplace:
 
-```bash
-export FLIGHTDECK_SERVER="http://localhost:4000"
-export FLIGHTDECK_TOKEN="tok_dev"
-claude --plugin-dir /path/to/flightdeck/plugin
+```text
+/plugin marketplace add flightdeckhq/flightdeck
+/plugin install flightdeck@flightdeck-plugins
 ```
+
+The plugin defaults to `http://localhost:4000` + `tok_dev` for the local-dev path; export `FLIGHTDECK_SERVER` + `FLIGHTDECK_TOKEN` before launching `claude` to point at a different stack. See [Quickstart > Coding agents](#coding-agents-claude-code) for the full flow. Tool inputs and LLM call content are captured by default, so the Prompts tab is populated without extra setup.
 
 Sessions carry `flavor=claude-code`, `agent_type=coding`, and `client_type=claude_code`. The plugin is hook-based and cannot act on directives mid-call; the Stop Agent button is hidden for these sessions. Raw file bodies written by `Write` / `Edit` are never forwarded; tool inputs go through a sanitised whitelist.
 

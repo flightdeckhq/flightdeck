@@ -1,0 +1,29 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "flightdeck-plugins",
+  "description": "Flightdeck observability plugins for Claude Code",
+  "owner": {
+    "name": "Flightdeck",
+    "email": "omri.arnon@gmail.com"
+  },
+  "plugins": [
+    {
+      "name": "flightdeck",
+      "description": "Flightdeck observability for Claude Code sessions — streams every LLM call, tool use, and MCP event to a self-hosted dashboard.",
+      "category": "monitoring",
+      "version": "0.1.0",
+      "homepage": "https://github.com/flightdeckhq/flightdeck",
+      "license": "Apache-2.0",
+      "author": {
+        "name": "Flightdeck",
+        "url": "https://github.com/flightdeckhq"
+      },
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/flightdeckhq/flightdeck.git",
+        "path": "plugin",
+        "ref": "main"
+      }
+    }
+  ]
+}

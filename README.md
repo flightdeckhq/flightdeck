@@ -33,6 +33,27 @@ make dev
 
 Dashboard at http://localhost:4000. The dev stack seeds a test token `tok_dev` automatically.
 
+### Coding agents (Claude Code)
+
+Launch Claude Code, then install the plugin from this repo's marketplace inside the REPL:
+
+```text
+/plugin marketplace add flightdeckhq/flightdeck
+/plugin install flightdeck@flightdeck-plugins
+```
+
+That's it for a local stack — the plugin defaults to `http://localhost:4000` with the dev token `tok_dev`, so the Claude Code session shows up in the fleet view within seconds. Tool inputs and LLM call content are captured by default — unlike the Python sensor, which keeps `capture_prompts=False` until you opt in — so the Prompts tab is populated without extra setup.
+
+To point the plugin at a different stack (production, a remote dev server, etc.) export the env vars in the shell *before* launching `claude` — the plugin reads them at every `SessionStart`:
+
+```bash
+export FLIGHTDECK_SERVER="https://flightdeck.example.com"
+export FLIGHTDECK_TOKEN="ftd_..."
+claude
+```
+
+To use a local checkout instead of the marketplace: `claude --plugin-dir /path/to/flightdeck/plugin`.
+
 ### Production agents
 
 Install the sensor and point your agent at it:
@@ -59,27 +80,6 @@ client.messages.create(model="claude-sonnet-4-6", ...)
 The agent shows up in the fleet view within seconds.
 
 To run the sensor from source instead of PyPI: `pip install -e sensor/` from the repo root.
-
-### Coding agents (Claude Code)
-
-Launch Claude Code, then install the plugin from this repo's marketplace inside the REPL:
-
-```text
-/plugin marketplace add flightdeckhq/flightdeck
-/plugin install flightdeck@flightdeck-plugins
-```
-
-That's it for a local stack — the plugin defaults to `http://localhost:4000` with the dev token `tok_dev`, so the Claude Code session shows up in the fleet view within seconds. Tool inputs and LLM call content are captured by default — unlike the Python sensor, which keeps `capture_prompts=False` until you opt in — so the Prompts tab is populated without extra setup.
-
-To point the plugin at a different stack (production, a remote dev server, etc.) export the env vars in the shell *before* launching `claude` — the plugin reads them at every `SessionStart`:
-
-```bash
-export FLIGHTDECK_SERVER="https://flightdeck.example.com"
-export FLIGHTDECK_TOKEN="ftd_..."
-claude
-```
-
-To use a local checkout instead of the marketplace: `claude --plugin-dir /path/to/flightdeck/plugin`.
 
 ---
 

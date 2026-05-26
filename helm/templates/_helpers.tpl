@@ -99,7 +99,7 @@ set; otherwise to the bundled in-cluster service.
 {{- end -}}
 
 {{/*
-NATS URL -- always the bundled in-cluster service (no escape hatch in v0.3.0).
+NATS URL -- always the bundled in-cluster service (no escape hatch in v0.5.0).
 */}}
 {{- define "flightdeck.natsURL" -}}
 {{- printf "nats://%s:%d" (include "flightdeck.natsServiceName" .) (int .Values.nats.clientPort) -}}

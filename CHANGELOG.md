@@ -2,7 +2,39 @@
 
 All notable changes to Flightdeck are documented here.
 
-## Unreleased
+## v0.5.0 (2026-05-26)
+
+First release since v0.3.1. Consolidates every change merged to ``main``
+between v0.3.1 (Apr 22) and now (May 26), including work originally
+drafted as ``v0.4.0 Phase 1`` (agent identity model) and ``v0.5.0 phase
+4`` (agent communication coverage hardening). Highlights:
+
+- **Plugin marketplace.** ``/plugin marketplace add
+  flightdeckhq/flightdeck`` followed by ``/plugin install
+  flightdeck@flightdeck-plugins`` is now the one-command install path
+  for Claude Code agents.
+- **Agent identity model (D115).** Every event carries a deterministic
+  ``agent_id`` derived from ``(agent_type, user, hostname, client_type,
+  agent_name)``; new ``agents`` table and Fleet view that groups
+  sessions by agent rather than treating each session as a standalone
+  blob.
+- **Agent communication coverage hardening.** Sensor now emits
+  ``embeddings``, ``llm_error`` (14-entry taxonomy), and comprehensive
+  streaming semantics. Closes the "we observe what we claim to
+  observe" gap before launch.
+- **MCP Protection Policy.** Per-server allow/block rules with
+  operator-actionable enrichment, evaluated in the sensor's MCP
+  interceptor and surfaced on the Investigate page.
+- **Dashboard polish.** Per-agent landing page, sparklines for cost
+  and sessions, semantic stroke palette, sub-agent indentation (live
+  via WebSocket, no refresh), global search overhaul, swimlane resize
+  + collapse fixes, shared table primitive (D163) consolidating
+  Agents / Events.
+- **Helm chart.** Bumped to ``version: 0.5.0`` / ``appVersion: 0.5.0``
+  with default ``image.tag: v0.5.0``.
+
+The sections below preserve the per-feature narrative in the order
+the work landed.
 
 ### Agents page KPI sparklines — semantic palette + Cost / Sessions coverage
 
@@ -1890,13 +1922,16 @@ API, dashboard, plugin, integration tests, playground demos, and docs.
   ``str | int`` — the dashboard handles both at render time
   rather than coercing at the wire boundary.
 
-## v0.5.0 — Agent communication coverage hardening (2026-04-25)
+---
+
+### Agent communication coverage hardening
 
 Closes the "we observe what we claim to observe" gap before launch.
 Covers embeddings, comprehensive streaming semantics, structured LLM
 errors, session-lifecycle edge cases, and the polish stack accumulated
-since v0.4.0 Phase 1 (Phase 2 agents API, Phase 3 E2E foundation,
-admin reconciler, fleet/investigate polish, Phase 4 + Phase 4 polish).
+since the agent identity model foundation (Phase 2 agents API, Phase 3
+E2E foundation, admin reconciler, fleet/investigate polish, Phase 4 +
+Phase 4 polish).
 
 ### Added
 
@@ -2039,7 +2074,9 @@ admin reconciler, fleet/investigate polish, Phase 4 + Phase 4 polish).
 
 None for sensor users on v0.4.0 Phase 1.
 
-## v0.4.0 Phase 1 -- Agent identity model foundation (2026-04-22)
+---
+
+### Agent identity model foundation
 
 ### Added
 

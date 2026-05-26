@@ -9,11 +9,11 @@
 
 Flightdeck is a self-hosted observability and control plane for production and coding agents.
 
-Every LLM call, MCP event, and tool call your agents make streams to the dashboard as it happens, on a single timeline per agent. Coding agents attach via the Claude Code plugin in this repo. Production agents add the `flightdeck-sensor` Python package to their entrypoint — `init()` + `patch()`, no other code changes.
+Every LLM call, MCP event, and tool call your agents make streams to the dashboard as it happens, surfaced as a per-agent timeline and as a live fleet-wide feed. Coding agents attach via the Claude Code plugin in this repo. Production agents add the `flightdeck-sensor` Python package to their entrypoint — `init()` + `patch()`, no other code changes.
 
 ![Live fleet view: every agent on a shared timeline streaming events as agents run.](assets/fleet-demo.gif)
 
-![Agents dashboard: every agent in your fleet with token, latency, error, and cost trends. Also a per-agent Swimlane and feed](assets/agents-table-demo.gif)
+![Agents dashboard: every agent in your fleet with token, latency, error, and cost trends, plus a per-agent swimlane and feed.](assets/agents-table-demo.gif)
 
 ![Events search: filter every LLM call, tool use, and policy event by agent, type, framework, and MCP server.](assets/events-table-demo.gif)
 

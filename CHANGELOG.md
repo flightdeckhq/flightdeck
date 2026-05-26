@@ -4,6 +4,33 @@ All notable changes to Flightdeck are documented here.
 
 ## Unreleased
 
+### Fixed
+
+- **Sub-agent indent on /agents now lands on the live WS tick** (no
+  refresh required). Previously the fleet store's WebSocket update
+  path only patched ``total_sessions``, ``last_seen_at`` and
+  ``state`` on the matching agent row — ``recent_sessions`` was
+  never touched. Brand-new agents were not inserted into ``agents[]``
+  at all; the store relied on the async ``load()`` refetch kicked
+  off above to bring them in. That broke
+  ``deriveFamilyDescendantSet`` (which walks
+  ``AgentSummary.recent_sessions[*].parent_session_id`` to resolve
+  parent / child linkage) for any sub-agent that appeared live: the
+  indent didn't appear until the operator hit a full browser refresh.
+  Fix: ``applyUpdate`` now (a) head-prepends the live session into
+  the matching agent's ``recent_sessions`` on every ``session_start``
+  (capped at the same 5-row window the /v1/fleet rollup uses), and
+  (b) synthesises a minimal ``AgentSummary`` row for a brand-new
+  agent_id so the descendant resolver sees both ends of the
+  parent / child edge on the very tick the WS event arrives. The
+  in-flight ``load()`` refetch still runs and replaces the
+  synthetic row with the authoritative shape moments later — until
+  then the live patch keeps the table consistent. Regression-locked
+  by a new ``fleet-applyUpdate-live-descendant.test.ts`` Vitest
+  suite (5 cases): synth-insert shape, descendant-set resolution on
+  the same tick, head-prepend for existing agents, non-start events
+  leave ``recent_sessions`` alone, 5-row window cap.
+
 ### Agents page KPI sparklines — semantic palette + Cost / Sessions coverage
 
 - **Cost and Sessions cells now render sparklines** alongside their

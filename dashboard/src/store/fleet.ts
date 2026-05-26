@@ -147,6 +147,40 @@ function listItemToSession(li: SessionListItem): Session {
   };
 }
 
+// Inverse of ``recentSessionToSession``: convert a full ``Session``
+// shape (the WebSocket envelope's ``update.session`` payload) into
+// the leaner ``RecentSession`` projection that lives on
+// ``AgentSummary.recent_sessions``. Lets ``applyUpdate`` keep
+// ``recent_sessions`` patched live so the
+// ``deriveFamilyDescendantSet`` parent / child resolver finds
+// ``parent_session_id`` immediately — without waiting for the
+// next ``load()`` refetch to repopulate the rollup. Pre-fix the
+// resolver only saw fresh ``parent_session_id`` linkage after a
+// full browser refresh; that's the regression this helper
+// addresses.
+function sessionToRecentSession(s: Session): RecentSession {
+  return {
+    session_id: s.session_id,
+    flavor: s.flavor,
+    agent_type: s.agent_type as RecentSession["agent_type"],
+    agent_id: s.agent_id ?? null,
+    agent_name: s.agent_name ?? null,
+    client_type: s.client_type ?? null,
+    host: s.host ?? null,
+    model: s.model ?? null,
+    framework: s.framework ?? null,
+    state: s.state,
+    started_at: s.started_at,
+    ended_at: s.ended_at ?? null,
+    last_seen_at: s.last_seen_at ?? s.ended_at ?? s.started_at,
+    tokens_used: s.tokens_used,
+    token_limit: s.token_limit ?? null,
+    capture_enabled: s.capture_enabled ?? false,
+    parent_session_id: s.parent_session_id ?? null,
+    agent_role: s.agent_role ?? null,
+  };
+}
+
 // ``RecentSession`` (the /v1/fleet embedded rollup) carries a leaner
 // column set than ``SessionListItem`` — no context blob, no
 // token_name, no per-session enrichment arrays. The swimlane only
@@ -392,26 +426,99 @@ export const useFleetStore = create<FleetState>((set, get) => ({
     // heartbeat updates left the array frozen until the next full
     // load(), which was what made the table view drift out of sync
     // with the swimlane under WebSocket traffic.
+    //
+    // Sub-agent indent on the Agents table also depends on this path:
+    // ``deriveFamilyDescendantSet`` resolves parent / child linkage
+    // by walking ``AgentSummary.recent_sessions[*].parent_session_id``,
+    // so the live patch below has to keep ``recent_sessions`` in sync
+    // (head-prepend the new session, drop the tail past the 5-row
+    // window the API uses). For a brand-new agent that has no row
+    // yet, the ``load()`` refetch kicked off above is async and can
+    // race the table render — so we ALSO eagerly synthesise a
+    // minimal ``AgentSummary`` here from the WS payload, populating
+    // ``recent_sessions`` with the new session at index 0. That
+    // gives the resolver everything it needs to mark the agent as
+    // a descendant on first paint; the in-flight ``load()`` overwrites
+    // the row with the authoritative shape a beat later.
     if (update.session.agent_id) {
       const aid = update.session.agent_id;
       const now = Date.now();
       const nowIso = new Date(now).toISOString();
       const priorAgent = agents.find((a) => a.agent_id === aid);
       const isStart = update.type === "session_start";
-      const nextAgents = agents.map((a) =>
-        a.agent_id === aid
-          ? {
-              ...a,
-              total_sessions: isStart ? a.total_sessions + 1 : a.total_sessions,
-              last_seen_at: nowIso,
-              state:
-                update.session.state === "active" ||
-                update.session.state === "idle"
-                  ? ("active" as SessionState)
-                  : a.state,
-            }
-          : a,
-      );
+
+      // Cap the live ``recent_sessions`` array to match the
+      // server-side rollup window (the /v1/fleet endpoint returns 5
+      // most-recent sessions per agent). Going wider would risk
+      // unbounded growth across a long-running tab; going narrower
+      // could push the parent's session out of its own
+      // recent_sessions on the very same WS tick that introduces a
+      // child, which would break the descendant lookup.
+      const RECENT_SESSIONS_WINDOW = 5;
+
+      let nextAgents: AgentSummary[] = agents;
+
+      if (priorAgent) {
+        // Existing agent — patch in the same fields as before AND
+        // head-prepend the new session into recent_sessions on
+        // session_start so parent_session_id stays resolvable
+        // without a full refetch. Non-start events leave
+        // recent_sessions untouched (the existing entry already
+        // covers the session).
+        nextAgents = agents.map((a) =>
+          a.agent_id === aid
+            ? {
+                ...a,
+                total_sessions: isStart
+                  ? a.total_sessions + 1
+                  : a.total_sessions,
+                last_seen_at: nowIso,
+                state:
+                  update.session.state === "active" ||
+                  update.session.state === "idle"
+                    ? ("active" as SessionState)
+                    : a.state,
+                recent_sessions: isStart
+                  ? [
+                      sessionToRecentSession(update.session),
+                      ...(a.recent_sessions ?? []).filter(
+                        (s) => s.session_id !== update.session.session_id,
+                      ),
+                    ].slice(0, RECENT_SESSIONS_WINDOW)
+                  : a.recent_sessions,
+              }
+            : a,
+        );
+      } else if (isStart) {
+        // Brand-new agent — synthesise a row so the table can render
+        // the agent (and its indent if it carries parent_session_id)
+        // on this tick. ``load()`` kicked off above will replace
+        // this row with the authoritative shape including
+        // total_tokens, topology, framework attribution etc;
+        // until then the synthetic row covers the descendant
+        // resolver's requirements.
+        const synth: AgentSummary = {
+          agent_id: aid,
+          agent_name: update.session.agent_name ?? "—",
+          agent_type:
+            (update.session.agent_type as AgentSummary["agent_type"]) ??
+            "coding",
+          client_type:
+            (update.session.client_type as AgentSummary["client_type"]) ??
+            "flightdeck_sensor",
+          user: "",
+          hostname: update.session.host ?? "",
+          first_seen_at: nowIso,
+          last_seen_at: nowIso,
+          total_sessions: 1,
+          total_tokens: 0,
+          state: "active",
+          topology: update.session.parent_session_id ? "child" : "lone",
+          recent_sessions: [sessionToRecentSession(update.session)],
+        };
+        nextAgents = [...agents, synth];
+      }
+
       if (nextAgents !== agents) {
         const nextEntries = advanceBucketEntry(
           enteredBucketAt,

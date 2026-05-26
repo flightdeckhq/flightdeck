@@ -42,6 +42,20 @@ All notable changes to Flightdeck are documented here.
 
 ### Fixed
 
+- **Sub-agent indent on /agents now lands the moment a child row
+  appears via WebSocket.** Previously the indent only appeared
+  after a full browser refresh: the fleet store's live-update path
+  left the agent rollup's ``recent_sessions`` stale and did not
+  insert brand-new agents into ``agents[]`` at all, so the
+  descendant resolver couldn't see the parent / child edge until
+  the next `/v1/fleet` refetch returned. The live path now
+  head-prepends the new session into the matching agent's
+  ``recent_sessions`` (capped at the same 5-row window the
+  server-side rollup uses) and synthesises a minimal
+  ``AgentSummary`` row for a brand-new agent_id; the in-flight
+  refetch still runs and replaces the synthetic row with the
+  authoritative shape moments later. Regression-locked by a new
+  Vitest suite under ``fleet-applyUpdate-live-descendant.test.ts``.
 - **Sub-agent rows render flush with parents in the Fleet swimlane**
   (regression from D157). The swimlane-row-label strip carried a
   flat inline ``paddingLeft: 12`` to reserve room for the

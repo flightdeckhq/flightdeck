@@ -1,2 +1,8 @@
 test-results/
 playwright-report/
+
+# TypeScript incremental-build cache. Local build artifact written
+# by ``tsc --incremental`` (which ``npm run typecheck`` + ``npm run
+# build`` both invoke) — tracking it churns the diff on every
+# contributor's working tree without changing runtime behaviour.
+tsconfig.tsbuildinfo

@@ -5,25 +5,17 @@
   </picture>
 </div>
 
+---
+
 Flightdeck is a self-hosted observability and control plane for production and coding agents.
 
-Flightdeck shows you in real time every LLM call, MCP event, and tool call your agents make.
+Every LLM call, MCP event, and tool call your agents make streams to the dashboard as it happens, on a single timeline per agent. Coding agents attach via the Claude Code plugin in this repo. Production agents add the `flightdeck-sensor` Python package to their entrypoint — `init()` + `patch()`, no other code changes.
 
-We support coding agents like Claude Code and production agents instrumented with the Flightdeck sensor. Drop it in your code (2 lines) and get visibility and control.
-
-<!-- Live fleet view. Recording coming shortly. -->
 ![Live fleet view: every agent on a shared timeline streaming events as agents run.](assets/fleet-demo.gif)
 
-<!-- Agents dashboard. Recording coming shortly. -->
-![Agents dashboard: every agent in your fleet with token, latency, error, and cost trends.](assets/agents-demo.gif)
+![Agents dashboard: every agent in your fleet with token, latency, error, and cost trends. Also a per-agent Swimlane and feed](assets/agents-table-demo.gif)
 
-<!-- Per-agent swimlane. Recording coming shortly. -->
-![Per-agent swimlane: focused view of a single agent's runs and events.](assets/per-agent-swimlane-demo.gif)
-
-<!-- Events search. Recording coming shortly. -->
-![Events search: filter every LLM call, tool use, and policy event by agent, type, framework, and MCP server.](assets/events-demo.gif)
-
-> Recordings above are placeholders; the demo GIFs are being recorded.
+![Events search: filter every LLM call, tool use, and policy event by agent, type, framework, and MCP server.](assets/events-table-demo.gif)
 
 ---
 
@@ -80,7 +72,7 @@ claude --plugin-dir /path/to/flightdeck/plugin
 
 The Claude Code session shows up in the fleet view within seconds. Tool inputs and LLM call content are captured by default — unlike the Python sensor, which keeps `capture_prompts=False` until you opt in — so the Prompts tab is populated without extra setup.
 
-`--plugin-dir` is the path. Set `FLIGHTDECK_SERVER` and `FLIGHTDECK_TOKEN` in your shell so the plugin picks them up at every Claude Code session.
+Replace `/path/to/flightdeck/plugin` with the absolute path to the plugin in your clone. `FLIGHTDECK_SERVER` and `FLIGHTDECK_TOKEN` must be exported in the shell that launches `claude`.
 
 ---
 
@@ -133,7 +125,7 @@ The per-event `framework` field carries the bare name (`langchain`, `crewai`, et
 
 ### Coding agents
 
-Claude Code agents surface via a separate plugin that ships with this repo. Tool inputs and LLM call content are captured by default, so the Prompts tab is populated without extra setup.
+Claude Code agents attach via a separate plugin that ships in this repo. Tool inputs and LLM call content are captured by default, so the Prompts tab is populated without extra setup.
 
 ```bash
 export FLIGHTDECK_SERVER="http://localhost:4000"

@@ -20,6 +20,7 @@ import {
   advanceBucketEntry,
   seedBucketEntries,
 } from "@/lib/fleet-ordering";
+import { isAgentType, isClientType } from "@/lib/agent-identity";
 
 // D114 vocabulary -- ``coding`` or ``production``. ``all`` suppresses
 // the filter at the query layer.
@@ -41,6 +42,16 @@ export type AgentTypeFilter = "all" | "coding" | "production";
 // this windowing to the user so the FLEET OVERVIEW counts vs.
 // lifetime ``total_sessions`` asymmetry is not mysterious.
 const SWIMLANE_LOOKBACK_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+// Live ``recent_sessions`` window cap on each agent row. Matches the
+// /v1/fleet rollup window the API returns server-side — going wider
+// risks unbounded growth across a long-running tab; going narrower
+// could push a parent's session out of its own ``recent_sessions``
+// on the very tick a child session_start lands and break the
+// descendant lookup the /agents indent relies on. Lives at module
+// scope so the constant is findable + justifiable without reading
+// the WS-update branch that consumes it.
+const RECENT_SESSIONS_WINDOW = 5;
 
 interface FleetState {
   /** Agent-level rows for the Fleet table view and the sidebar
@@ -159,10 +170,17 @@ function listItemToSession(li: SessionListItem): Session {
 // full browser refresh; that's the regression this helper
 // addresses.
 function sessionToRecentSession(s: Session): RecentSession {
+  // ``RecentSession.agent_type`` is the closed ``AgentType`` union,
+  // while the WS-wire ``Session.agent_type`` is typed ``string``.
+  // Validate through the dedicated type-guard so a malformed
+  // upstream cannot smuggle an out-of-vocabulary value onto a
+  // typed field downstream consumers narrow on; default to
+  // ``"coding"`` (the worker's conservative fallback when an
+  // agent's first event arrives without a declared type).
   return {
     session_id: s.session_id,
     flavor: s.flavor,
-    agent_type: s.agent_type as RecentSession["agent_type"],
+    agent_type: isAgentType(s.agent_type) ? s.agent_type : "coding",
     agent_id: s.agent_id ?? null,
     agent_name: s.agent_name ?? null,
     client_type: s.client_type ?? null,
@@ -447,15 +465,6 @@ export const useFleetStore = create<FleetState>((set, get) => ({
       const priorAgent = agents.find((a) => a.agent_id === aid);
       const isStart = update.type === "session_start";
 
-      // Cap the live ``recent_sessions`` array to match the
-      // server-side rollup window (the /v1/fleet endpoint returns 5
-      // most-recent sessions per agent). Going wider would risk
-      // unbounded growth across a long-running tab; going narrower
-      // could push the parent's session out of its own
-      // recent_sessions on the very same WS tick that introduces a
-      // child, which would break the descendant lookup.
-      const RECENT_SESSIONS_WINDOW = 5;
-
       let nextAgents: AgentSummary[] = agents;
 
       if (priorAgent) {
@@ -497,15 +506,26 @@ export const useFleetStore = create<FleetState>((set, get) => ({
         // total_tokens, topology, framework attribution etc;
         // until then the synthetic row covers the descendant
         // resolver's requirements.
+        // Narrow the WS-wire ``agent_type`` / ``client_type`` strings
+        // to the closed unions ``AgentType`` / ``ClientType`` via the
+        // dedicated type-guards (a stale sensor or a hand-rolled
+        // wire client could ship a value outside the vocabulary;
+        // letting that land on a discriminated-union field would
+        // silently break downstream consumers that narrow on it).
+        // Fallbacks match the conservative defaults the worker
+        // uses when an agent's first event arrives without a
+        // declared type.
+        const synthAgentType = isAgentType(update.session.agent_type)
+          ? update.session.agent_type
+          : "coding";
+        const synthClientType = isClientType(update.session.client_type)
+          ? update.session.client_type
+          : "flightdeck_sensor";
         const synth: AgentSummary = {
           agent_id: aid,
           agent_name: update.session.agent_name ?? "—",
-          agent_type:
-            (update.session.agent_type as AgentSummary["agent_type"]) ??
-            "coding",
-          client_type:
-            (update.session.client_type as AgentSummary["client_type"]) ??
-            "flightdeck_sensor",
+          agent_type: synthAgentType,
+          client_type: synthClientType,
           user: "",
           hostname: update.session.host ?? "",
           first_seen_at: nowIso,

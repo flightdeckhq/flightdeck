@@ -227,30 +227,57 @@ function AgentTableRowImpl({
         </div>
       </TableCell>
 
-      {/* Sessions 7d */}
+      {/* Sessions 7d — number first, sparkline trailing. Sessions
+          is a count over the 7d window, so the sparkline is a
+          per-day session count (one bar per day). */}
       <TableCell
         mono
         data-testid={`agent-row-sessions-${agent.agent_id}`}
       >
-        <span className="text-text">{totals ? totals.sessions : "—"}</span>
+        <div className="flex items-center gap-2">
+          <span
+            className="min-w-[30px] text-text"
+            data-testid={`agent-row-sessions-total-${agent.agent_id}`}
+          >
+            {totals ? totals.sessions : "—"}
+          </span>
+          <AgentSparkline
+            series={series}
+            axis="sessions"
+            width={SPARKLINE_WIDTH}
+            height={SPARKLINE_HEIGHT}
+          />
+        </div>
       </TableCell>
 
-      {/* Cost USD 7d. Estimated cost only applies to
-          sensor-instrumented agents — Claude Code agents bill
-          independently and Flightdeck has no pricing for them, so
-          their cell renders a bare em-dash regardless of any
-          summary totals. */}
+      {/* Cost USD 7d — number first, sparkline trailing. Estimated
+          cost only applies to sensor-instrumented agents — Claude
+          Code agents bill independently and Flightdeck has no
+          pricing for them, so their cell renders a bare em-dash
+          and skips the sparkline regardless of any summary
+          totals. */}
       <TableCell
         mono
         data-testid={`agent-row-cost-${agent.agent_id}`}
       >
-        <span className="text-text">
-          {agent.client_type === ClientType.ClaudeCode
-            ? "—"
-            : totals
-              ? formatCost(totals.cost_usd)
-              : "—"}
-        </span>
+        {agent.client_type === ClientType.ClaudeCode ? (
+          <span className="text-text">—</span>
+        ) : (
+          <div className="flex items-center gap-2">
+            <span
+              className="min-w-[50px] text-text"
+              data-testid={`agent-row-cost-total-${agent.agent_id}`}
+            >
+              {totals ? formatCost(totals.cost_usd) : "—"}
+            </span>
+            <AgentSparkline
+              series={series}
+              axis="cost_usd"
+              width={SPARKLINE_WIDTH}
+              height={SPARKLINE_HEIGHT}
+            />
+          </div>
+        )}
       </TableCell>
 
       {/* Last seen */}

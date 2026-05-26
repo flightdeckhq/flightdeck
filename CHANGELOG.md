@@ -4,6 +4,22 @@ All notable changes to Flightdeck are documented here.
 
 ## Unreleased
 
+### Fixed
+
+- **Sub-agent rows render flush with parents in the Fleet swimlane**
+  (regression from D157). The swimlane-row-label strip carried a
+  flat inline ``paddingLeft: 12`` to reserve room for the
+  absolutely-positioned AgentStatusBadge, which beat the
+  ``[data-topology="child"] .swimlane-row-label { padding-left:
+  28px }`` rule in globals.css via inline-style specificity and
+  silently killed the child-row indent introduced by D126. The
+  inline value now branches on the row's ``topology`` prop
+  (``28`` when ``"child"``, ``12`` otherwise) so the child indent
+  lands without giving up the badge-clearance contract (T49 still
+  passes). T46 grew a computed-style assertion that locks the
+  28 / 12 contrast under both themes so a future inline-flatten
+  regression surfaces immediately.
+
 ### Global search overhaul
 
 The Cmd/Ctrl+K command palette now searches events by type

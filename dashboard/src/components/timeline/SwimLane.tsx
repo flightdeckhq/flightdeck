@@ -263,7 +263,19 @@ function SwimLaneComponent({
 					// badge zone instead of overlapping it, so the
 					// badge always reads as the rightmost element on
 					// the row (T49 contract).
-					paddingLeft: 12,
+					//
+					// Inline ``paddingLeft`` MUST branch on topology
+					// because an inline style beats any selector
+					// (including the ``[data-topology="child"]
+					// .swimlane-row-label { padding-left: 28px }``
+					// rule in globals.css). Setting a flat 12 px
+					// here would silently kill the child-row indent
+					// (the regression D157 shipped — child swimlanes
+					// rendered flush with parents instead of 16 px
+					// inset under the parent's left edge). Mirrors
+					// the same inline-override pattern AgentTableRow
+					// used pre-D163.
+					paddingLeft: topology === "child" ? 28 : 12,
 					paddingRight: BADGE_RESERVED_ZONE_PX,
 				}}
 			>

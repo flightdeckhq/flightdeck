@@ -56,6 +56,7 @@ Guarantees that hold regardless of the knob settings:
 | `FLIGHTDECK_TOKEN` | `tok_dev` | Bearer token used in the `Authorization` header. The dev compose accepts `tok_dev` when `ENVIRONMENT=dev`; production deployments leave that unset and require an `ftd_` token minted from the Settings page. |
 | `FLIGHTDECK_CAPTURE_TOOL_INPUTS` | `true` | Captures a sanitised whitelist of tool input fields on each `tool_call` event. Set to `false` to strip tool inputs. |
 | `FLIGHTDECK_CAPTURE_PROMPTS` | `true` | Captures LLM prompts, assistant responses, and tool results. Set to `false` to strip all content bodies from plugin events while keeping metadata and token counts. |
+| `FLIGHTDECK_QUIET` | unset | Set to `1` to suppress the `[flightdeck] WARN:` stderr line emitted on every hook invocation when `FLIGHTDECK_TOKEN` is unset (the seed `tok_dev` default is in use). Intended for test suites that intentionally exercise the zero-config default-token path; production deployments should set `FLIGHTDECK_TOKEN` instead so the warning never fires. |
 | `CLAUDE_SESSION_ID` | unset | Explicit session id override. Wins over every other resolution step -- use this when you want to force a specific id across processes or tests. |
 | `ANTHROPIC_CLAUDE_SESSION_ID` | unset | Alternative name for `CLAUDE_SESSION_ID`, honored second. |
 

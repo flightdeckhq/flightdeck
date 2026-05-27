@@ -4,11 +4,26 @@ All notable changes to Flightdeck are documented here.
 
 ## v0.5.1 (2026-05-27)
 
-Patch release on top of v0.5.0 with one user-visible bugfix and six
-hardening items deferred from v0.5.0. Upgrade is recommended for all
-Helm operators because the bundled-Postgres password fallback that
-silently used the literal ``flightdeck`` as the database superuser
-password has been removed — see the breaking note below.
+Patch release on top of v0.5.0 with one user-visible bugfix, one
+breaking change for Helm operators on the bundled-Postgres path, and
+five additional hardening / infrastructure items deferred from v0.5.0.
+
+### Breaking changes
+
+- **Bundled Postgres password silent default removed (Helm operators
+  on the bundled-Postgres path).** ``helm/templates/_helpers.tpl``
+  used to fall back to the literal ``flightdeck`` when
+  ``postgres.password`` was unset, which left every bundled-Postgres
+  install sharing one well-known superuser credential. The chart now
+  fails fast at render time with an actionable error message when
+  both ``postgres.password`` and ``postgres.externalUrl`` are empty.
+  **Upgrade action**: set
+  ``--set postgres.password=<strong-password>`` on your next
+  ``helm install`` or ``helm upgrade``, or set
+  ``--set postgres.externalUrl=<dsn>`` to point at a managed
+  database. Existing installs already have a password materialised
+  into the Secret from the prior render; rotation is not forced by
+  this release.
 
 ### Fixed
 
@@ -57,25 +72,13 @@ password has been removed — see the breaking note below.
   with the human-readable tag preserved as a comment. Closes the
   supply-chain gap where a compromised major-version tag could
   swap action code under a release run.
-- **Bundled Postgres password silent default removed (breaking for
-  operators).** ``helm/templates/_helpers.tpl`` used to fall back to
-  the literal ``flightdeck`` when ``postgres.password`` was unset,
-  which left every bundled-Postgres install sharing one well-known
-  superuser credential. The chart now fails fast at render time with
-  an actionable error message when both ``postgres.password`` and
-  ``postgres.externalUrl`` are empty.
-  **Upgrade action**: set ``--set postgres.password=<strong-password>``
-  on your next ``helm install`` or ``helm upgrade``, or set
-  ``--set postgres.externalUrl=<dsn>`` to point at a managed database.
-  Existing installs already have a password materialised into the
-  Secret from the prior render; rotation is not forced by this PR.
 - **Plugin warns when the seed token ``tok_dev`` is in use.**
-  ``observe_cli.mjs`` now emits a single ``[flightdeck] WARN`` line
+  ``observe_cli.mjs`` now emits a single ``[flightdeck] WARN:`` line
   on stderr per hook invocation when ``FLIGHTDECK_TOKEN`` is unset,
   surfacing the misconfiguration to operators who shipped the plugin
   without configuring a real token. Suppress with
   ``FLIGHTDECK_QUIET=1`` in suites that intentionally exercise the
-  zero-config default path (D100).
+  zero-config default-token path.
 
 ### CI
 

@@ -964,6 +964,164 @@ func TestGetRecentSessionsByAgentIDs_FrameworkProjected(t *testing.T) {
 	}
 }
 
+// TestGetRecentSessionsByAgentIDs_ParentAgentIDProjected guards the
+// server-side projection that backs the dashboard's family-grouped
+// /agents sort. Without parent_agent_id on the wire, the dashboard
+// has to look up the parent's agent_id by walking session-to-agent
+// maps built from windowed sources (the agent's own recent_sessions
+// — 5-cap — and /v1/sessions — 100-cap server-wide). Both windows
+// can roll past the spawn-context session for a busy parent. The
+// direct projection here removes that dependency.
+//
+// Test layout: one parent agent with one session; two child agents
+// each with one session pointing at the parent's session via
+// parent_session_id. Asserts parent_agent_id is populated on the
+// children and nil on the parent.
+//
+// Cleanup: deletes the seeded sessions + agents at test end so
+// repeated runs against the shared dev DB don't accumulate rows
+// (a pre-existing project-wide test fragility — agents pile up
+// across runs and tip the /agents page past the pagination
+// footer threshold, breaking T61).
+func TestGetRecentSessionsByAgentIDs_ParentAgentIDProjected(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	suffix := randomUUID(t)[:8]
+	t.Cleanup(func() {
+		// Delete sessions first (FK), then agents. Both deletes
+		// are scoped by name prefix so they only touch rows this
+		// test created.
+		_, _ = s.pool.Exec(context.Background(),
+			`DELETE FROM sessions WHERE agent_id IN (
+				SELECT agent_id FROM agents
+				WHERE agent_name LIKE 'test-parentid-%' || $1
+			)`, suffix)
+		_, _ = s.pool.Exec(context.Background(),
+			`DELETE FROM agents WHERE agent_name LIKE 'test-parentid-%' || $1`,
+			suffix)
+	})
+	parentAgentID := seedAgentForList(t, s,
+		"test-parentid-parent-"+suffix,
+		agentListOpts{
+			agentType:  "coding",
+			clientType: "flightdeck_sensor",
+			userName:   "test-parentid",
+			hostname:   "test-parentid-host",
+			lastSeen:   now,
+		})
+	childAgentA := seedAgentForList(t, s,
+		"test-parentid-child-a-"+suffix,
+		agentListOpts{
+			agentType:  "coding",
+			clientType: "flightdeck_sensor",
+			userName:   "test-parentid",
+			hostname:   "test-parentid-host",
+			lastSeen:   now,
+		})
+	childAgentB := seedAgentForList(t, s,
+		"test-parentid-child-b-"+suffix,
+		agentListOpts{
+			agentType:  "coding",
+			clientType: "flightdeck_sensor",
+			userName:   "test-parentid",
+			hostname:   "test-parentid-host",
+			lastSeen:   now,
+		})
+
+	parentSessionID := randomUUID(t)
+	childSessionA := randomUUID(t)
+	childSessionB := randomUUID(t)
+
+	// Parent session — no parent_session_id.
+	if _, err := s.pool.Exec(ctx, `
+		INSERT INTO sessions (
+			session_id, agent_id, flavor, state,
+			started_at, last_seen_at, tokens_used,
+			agent_type, client_type
+		) VALUES (
+			$1::uuid, $2::uuid, $3, 'closed',
+			$4, $4, 100,
+			'coding', 'flightdeck_sensor'
+		)
+	`, parentSessionID, parentAgentID, "test-parentid-parent-"+suffix, now); err != nil {
+		t.Fatalf("seed parent session: %v", err)
+	}
+	// Child sessions — each points at the parent session via
+	// parent_session_id.
+	for _, child := range []struct {
+		sessionID string
+		agentID   string
+		flavor    string
+	}{
+		{childSessionA, childAgentA, "test-parentid-child-a-" + suffix},
+		{childSessionB, childAgentB, "test-parentid-child-b-" + suffix},
+	} {
+		if _, err := s.pool.Exec(ctx, `
+			INSERT INTO sessions (
+				session_id, agent_id, flavor, state,
+				started_at, last_seen_at, tokens_used,
+				agent_type, client_type, parent_session_id
+			) VALUES (
+				$1::uuid, $2::uuid, $3, 'closed',
+				$4, $4, 50,
+				'coding', 'flightdeck_sensor', $5::uuid
+			)
+		`, child.sessionID, child.agentID, child.flavor, now, parentSessionID); err != nil {
+			t.Fatalf("seed child session %s: %v", child.sessionID, err)
+		}
+	}
+
+	got, err := s.GetRecentSessionsByAgentIDs(
+		ctx,
+		[]string{parentAgentID, childAgentA, childAgentB},
+		RecentSessionsPerAgent,
+	)
+	if err != nil {
+		t.Fatalf("GetRecentSessionsByAgentIDs: %v", err)
+	}
+
+	// Parent's session: parent_session_id nil → parent_agent_id nil.
+	parentRows := got[parentAgentID]
+	if len(parentRows) != 1 {
+		t.Fatalf("parent rows len=%d, want 1", len(parentRows))
+	}
+	if parentRows[0].ParentSessionID != nil {
+		t.Errorf("parent ParentSessionID=%q, want nil", *parentRows[0].ParentSessionID)
+	}
+	if parentRows[0].ParentAgentID != nil {
+		t.Errorf("parent ParentAgentID=%q, want nil", *parentRows[0].ParentAgentID)
+	}
+
+	// Each child's session: parent_session_id points at parent's
+	// session; parent_agent_id is the parent agent.
+	for _, childAgent := range []string{childAgentA, childAgentB} {
+		childRows := got[childAgent]
+		if len(childRows) != 1 {
+			t.Fatalf("child %s rows len=%d, want 1", childAgent, len(childRows))
+		}
+		r := childRows[0]
+		if r.ParentSessionID == nil || *r.ParentSessionID != parentSessionID {
+			gotPSID := "<nil>"
+			if r.ParentSessionID != nil {
+				gotPSID = *r.ParentSessionID
+			}
+			t.Errorf("child %s ParentSessionID=%s, want %s",
+				childAgent, gotPSID, parentSessionID)
+		}
+		if r.ParentAgentID == nil || *r.ParentAgentID != parentAgentID {
+			gotPAID := "<nil>"
+			if r.ParentAgentID != nil {
+				gotPAID = *r.ParentAgentID
+			}
+			t.Errorf("child %s ParentAgentID=%s, want %s",
+				childAgent, gotPAID, parentAgentID)
+		}
+	}
+}
+
 // TestGetRecentSessionsByAgentIDs_Empty exercises the empty-input
 // short-circuit. Avoids needlessly round-tripping Postgres when the
 // caller hasn't filled the slice yet.

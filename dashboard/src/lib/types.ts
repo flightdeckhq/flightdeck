@@ -667,6 +667,15 @@ export interface RecentSession {
   token_limit?: number | null;
   capture_enabled: boolean;
   parent_session_id?: string | null;
+  /** Agent_id of the agent that owns ``parent_session_id``,
+   *  projected server-side via a self-join on
+   *  ``sessions.parent_session_id``. Lets the dashboard's family-
+   *  grouped /agents sort resolve a child to its parent without
+   *  having to find the parent's session in any windowed source
+   *  (the per-agent recent_sessions cap is 5; /v1/sessions caps at
+   *  100). Null when ``parent_session_id`` is null OR when the
+   *  parent session has been deleted (FK ON DELETE SET NULL). */
+  parent_agent_id?: string | null;
   agent_role?: string | null;
 }
 

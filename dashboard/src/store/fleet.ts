@@ -169,7 +169,10 @@ function listItemToSession(li: SessionListItem): Session {
 // resolver only saw fresh ``parent_session_id`` linkage after a
 // full browser refresh; that's the regression this helper
 // addresses.
-function sessionToRecentSession(s: Session): RecentSession {
+function sessionToRecentSession(
+  s: Session,
+  parentAgentID?: string | null,
+): RecentSession {
   // ``RecentSession.agent_type`` is the closed ``AgentType`` union,
   // while the WS-wire ``Session.agent_type`` is typed ``string``.
   // Validate through the dedicated type-guard so a malformed
@@ -195,6 +198,7 @@ function sessionToRecentSession(s: Session): RecentSession {
     token_limit: s.token_limit ?? null,
     capture_enabled: s.capture_enabled ?? false,
     parent_session_id: s.parent_session_id ?? null,
+    parent_agent_id: parentAgentID ?? null,
     agent_role: s.agent_role ?? null,
   };
 }
@@ -465,6 +469,22 @@ export const useFleetStore = create<FleetState>((set, get) => ({
       const priorAgent = agents.find((a) => a.agent_id === aid);
       const isStart = update.type === "session_start";
 
+      // Resolve parent_session_id → parent_agent_id at the moment
+      // the session_start lands, so the synthesised / patched
+      // RecentSession row carries the same projection the
+      // /v1/fleet API populates server-side. Walks every agent's
+      // recent_sessions for a session_id match. When the parent
+      // session isn't in any agent's recent_sessions window yet
+      // (the linkage races a parent refresh), the projection
+      // stays null and the next /v1/fleet refetch fills it in.
+      const parentAgentID = update.session.parent_session_id
+        ? agents.find((cand) =>
+            (cand.recent_sessions ?? []).some(
+              (rs) => rs.session_id === update.session.parent_session_id,
+            ),
+          )?.agent_id ?? null
+        : null;
+
       let nextAgents: AgentSummary[] = agents;
 
       if (priorAgent) {
@@ -489,7 +509,7 @@ export const useFleetStore = create<FleetState>((set, get) => ({
                     : a.state,
                 recent_sessions: isStart
                   ? [
-                      sessionToRecentSession(update.session),
+                      sessionToRecentSession(update.session, parentAgentID),
                       ...(a.recent_sessions ?? []).filter(
                         (s) => s.session_id !== update.session.session_id,
                       ),
@@ -534,7 +554,9 @@ export const useFleetStore = create<FleetState>((set, get) => ({
           total_tokens: 0,
           state: "active",
           topology: update.session.parent_session_id ? "child" : "lone",
-          recent_sessions: [sessionToRecentSession(update.session)],
+          recent_sessions: [
+            sessionToRecentSession(update.session, parentAgentID),
+          ],
         };
         nextAgents = [...agents, synth];
       }

@@ -3492,6 +3492,10 @@ const docTemplate = `{
                 "model": {
                     "type": "string"
                 },
+                "parent_agent_id": {
+                    "description": "ParentAgentID is the agent_id of the agent that owns\nParentSessionID, projected server-side via a self-join on\nsessions.parent_session_id. Lets the dashboard's family-\ngrouped /agents sort resolve a child to its parent without\nhaving to find the parent's session in either\nAgentSummary.recent_sessions (5-cap per agent) or the\n/v1/sessions window (100-cap server-wide) — both of which\ncan roll past the spawn-context session for a busy parent.\nNil when ParentSessionID is nil OR the parent session has\nbeen deleted (FK is ON DELETE SET NULL).",
+                    "type": "string"
+                },
                 "parent_session_id": {
                     "type": "string"
                 },

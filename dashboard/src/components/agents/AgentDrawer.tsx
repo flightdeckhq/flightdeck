@@ -65,9 +65,9 @@ export function AgentDrawer({
   const linkage = useMemo(
     () =>
       agentId
-        ? deriveAgentLinkage(agentId, flavors)
+        ? deriveAgentLinkage(agentId, flavors, agents)
         : { parent: null, children: [] },
-    [agentId, flavors],
+    [agentId, flavors, agents],
   );
 
   const [tab, setTab] = useState<DrawerTab>("events");

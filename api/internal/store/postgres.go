@@ -337,7 +337,18 @@ type RecentSession struct {
 	TokenLimit      *int64     `json:"token_limit"`
 	CaptureEnabled  bool       `json:"capture_enabled"`
 	ParentSessionID *string    `json:"parent_session_id,omitempty"`
-	AgentRole       *string    `json:"agent_role,omitempty"`
+	// ParentAgentID is the agent_id of the agent that owns
+	// ParentSessionID, projected server-side via a self-join on
+	// sessions.parent_session_id. Lets the dashboard's family-
+	// grouped /agents sort resolve a child to its parent without
+	// having to find the parent's session in either
+	// AgentSummary.recent_sessions (5-cap per agent) or the
+	// /v1/sessions window (100-cap server-wide) — both of which
+	// can roll past the spawn-context session for a busy parent.
+	// Nil when ParentSessionID is nil OR the parent session has
+	// been deleted (FK is ON DELETE SET NULL).
+	ParentAgentID *string `json:"parent_agent_id,omitempty"`
+	AgentRole     *string `json:"agent_role,omitempty"`
 }
 
 // RecentSessionsPerAgent caps the per-agent rollup on the
@@ -509,6 +520,12 @@ func (s *Store) GetRecentSessionsByAgentIDs(
 		return out, nil
 	}
 
+	// LEFT JOIN sessions back on parent_session_id to project the
+	// parent's agent_id directly. The join is on UUID PK so it's
+	// cheap; per agent the inner SELECT yields perAgent rows max,
+	// so the total join fan-out is bounded by perAgent × len(agentIDs).
+	// parent_s.agent_id is NULL when the session has no parent OR
+	// when the parent session was deleted (FK ON DELETE SET NULL).
 	query := `
 		SELECT
 			t.session_id, t.flavor, t.agent_type, t.agent_id,
@@ -516,7 +533,7 @@ func (s *Store) GetRecentSessionsByAgentIDs(
 			t.state,
 			t.started_at, t.ended_at, t.last_seen_at, t.tokens_used,
 			t.token_limit, t.capture_enabled,
-			t.parent_session_id, t.agent_role
+			t.parent_session_id, t.parent_agent_id, t.agent_role
 		FROM (
 			SELECT
 				s.session_id::text AS session_id,
@@ -541,12 +558,15 @@ func (s *Store) GetRecentSessionsByAgentIDs(
 					LIMIT 1
 				) AS capture_enabled,
 				s.parent_session_id::text AS parent_session_id,
+				parent_s.agent_id::text AS parent_agent_id,
 				s.agent_role,
 				ROW_NUMBER() OVER (
 					PARTITION BY s.agent_id
 					ORDER BY s.started_at DESC, s.session_id ASC
 				) AS rn
 			FROM sessions s
+			LEFT JOIN sessions parent_s
+				ON parent_s.session_id = s.parent_session_id
 			WHERE s.agent_id = ANY($1::uuid[])
 		) t
 		WHERE t.rn <= $2
@@ -565,7 +585,7 @@ func (s *Store) GetRecentSessionsByAgentIDs(
 			&r.Framework, &r.State,
 			&r.StartedAt, &r.EndedAt, &r.LastSeenAt, &r.TokensUsed,
 			&r.TokenLimit, &r.CaptureEnabled,
-			&r.ParentSessionID, &r.AgentRole,
+			&r.ParentSessionID, &r.ParentAgentID, &r.AgentRole,
 		); err != nil {
 			return nil, fmt.Errorf("scan recent session: %w", err)
 		}

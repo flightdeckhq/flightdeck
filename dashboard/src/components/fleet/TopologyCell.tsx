@@ -34,12 +34,20 @@ export function TopologyCell({
   topology: AgentTopology;
 }) {
   const flavors = useFleetStore((s) => s.flavors);
+  // Subscribe to the agents roster so deriveRelationship can read
+  // the server-side ``parent_agent_id`` projection on each
+  // child's recent_sessions[0]. Without this the pill falls back
+  // to the fleet-flavors session-map walk, which fails whenever
+  // the parent's spawn-context session is outside the ~100-session
+  // /v1/sessions window — a busy parent like a long-lived
+  // omria@Omri-PC mislabels every child as "lone".
+  const agents = useFleetStore((s) => s.agents);
   const ownSessions = useMemo(() => {
     return flavors.find((f) => f.flavor === agentId)?.sessions ?? [];
   }, [flavors, agentId]);
   const rel = useMemo(
-    () => deriveRelationship(agentId, ownSessions, flavors),
-    [agentId, ownSessions, flavors],
+    () => deriveRelationship(agentId, ownSessions, flavors, agents),
+    [agentId, ownSessions, flavors, agents],
   );
 
   // Accent pill style for child + parent. Foreground reads from

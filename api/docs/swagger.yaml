@@ -706,6 +706,19 @@ definitions:
         type: string
       model:
         type: string
+      parent_agent_id:
+        description: |-
+          ParentAgentID is the agent_id of the agent that owns
+          ParentSessionID, projected server-side via a self-join on
+          sessions.parent_session_id. Lets the dashboard's family-
+          grouped /agents sort resolve a child to its parent without
+          having to find the parent's session in either
+          AgentSummary.recent_sessions (5-cap per agent) or the
+          /v1/sessions window (100-cap server-wide) — both of which
+          can roll past the spawn-context session for a busy parent.
+          Nil when ParentSessionID is nil OR the parent session has
+          been deleted (FK is ON DELETE SET NULL).
+        type: string
       parent_session_id:
         type: string
       session_id:

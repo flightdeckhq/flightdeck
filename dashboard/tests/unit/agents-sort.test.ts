@@ -10,7 +10,9 @@ import {
 import type {
   AgentSummary,
   AgentSummaryResponse,
+  FlavorSummary,
   RecentSession,
+  Session,
 } from "@/lib/types";
 import { ClientType } from "@/lib/agent-identity";
 
@@ -155,6 +157,7 @@ describe("sortAgents", () => {
 function mkRecentSession(
   sessionId: string,
   parentSessionId?: string,
+  parentAgentId?: string,
 ): RecentSession {
   return {
     session_id: sessionId,
@@ -166,6 +169,45 @@ function mkRecentSession(
     tokens_used: 0,
     capture_enabled: false,
     parent_session_id: parentSessionId,
+    parent_agent_id: parentAgentId,
+  };
+}
+
+// Fleet-store flavor builder for the windowed-parent regression
+// test. The flavor key is the agent_id under the D115 swimlane
+// scheme, so a parent that has spawned 5+ recent sessions still
+// surfaces ALL of them under its flavor's ``sessions`` list (the
+// /v1/sessions window cap is ~200 across all agents, not 5 per
+// agent like RecentSessionsPerAgent on /v1/fleet).
+function mkSession(
+  sessionId: string,
+  parentSessionId?: string | null,
+): Session {
+  return {
+    session_id: sessionId,
+    flavor: "f",
+    agent_type: "coding",
+    host: null,
+    framework: null,
+    model: null,
+    state: "active",
+    started_at: "2026-05-01T00:00:00Z",
+    last_seen_at: "2026-05-14T12:00:00Z",
+    ended_at: null,
+    tokens_used: 0,
+    token_limit: null,
+    parent_session_id: parentSessionId ?? null,
+  };
+}
+
+function mkFlavor(agentId: string, sessions: Session[]): FlavorSummary {
+  return {
+    flavor: agentId,
+    agent_type: "coding",
+    session_count: sessions.length,
+    active_count: sessions.filter((s) => s.state === "active").length,
+    tokens_used_total: sessions.reduce((sum, s) => sum + s.tokens_used, 0),
+    sessions,
   };
 }
 
@@ -394,6 +436,379 @@ describe("sortAgentsWithFamilies", () => {
     // Family root g sorts first; descendants p and l follow,
     // sorted among themselves by tokens DESC (l=300 > p=200).
     expect(result.map((a) => a.agent_id)).toEqual(["g", "l", "p"]);
+  });
+
+  // ---- explicit-row-order coverage --------------------------------------
+  // The supervisor's hotfix brief calls out three scenarios where a
+  // child must not float away from its parent under sort. Each test
+  // below asserts the FULL row sequence (not just "child immediately
+  // follows parent") so a regression that breaks the order
+  // anywhere — even mid-family — surfaces immediately.
+
+  it("STATUS DESC: family stays at parent's rank even when children have different states", () => {
+    // Parent is active; one child idle, one child closed. Under a
+    // naive per-agent sort, the active parent would lead, then the
+    // active lone, then the idle child, then the closed child — the
+    // children would float away. Family-grouped sort keeps the whole
+    // family at the parent's (active) rank.
+    const parent = mkAgentWithParent("p", null, 0, "active");
+    const childIdle = mkAgentWithParent("c-idle", "p", 0, "idle");
+    const childClosed = mkAgentWithParent("c-closed", "p", 0, "closed");
+    const loneActive = mkAgentWithParent("z-lone", null, 0, "active");
+    const loneClosed = mkAgentWithParent("y-lone", null, 0, "closed");
+    const summaries = new Map<string, AgentSummaryResponse>();
+    const result = sortAgentsWithFamilies(
+      [childClosed, loneClosed, parent, childIdle, loneActive],
+      summaries,
+      { column: "state", direction: "desc" },
+    );
+    // Active families first. Among them, the agent_id tie-breaker
+    // ranks "p" < "z-lone". Within the family of p, descendants
+    // sort by state DESC: idle (4) > closed (2), then agent_id ASC
+    // settles ties. Closed lone family lands last.
+    expect(result.map((a) => a.agent_id)).toEqual([
+      "p",
+      "c-idle",
+      "c-closed",
+      "z-lone",
+      "y-lone",
+    ]);
+  });
+
+  it("AGENT name ASC: family stays together at parent's name position", () => {
+    // Children names ("b-doc", "a-plan") would naturally sort BEFORE
+    // the parent ("m-omria") under name ASC. Family grouping
+    // overrides this so children move with their parent.
+    const parent = mkAgent({
+      agent_id: "p",
+      agent_name: "m-omria",
+      recent_sessions: [mkRecentSession("s-p")],
+    });
+    const childDoc = mkAgent({
+      agent_id: "c-doc",
+      agent_name: "b-doc",
+      recent_sessions: [mkRecentSession("s-cdoc", "s-p")],
+    });
+    const childPlan = mkAgent({
+      agent_id: "c-plan",
+      agent_name: "a-plan",
+      recent_sessions: [mkRecentSession("s-cplan", "s-p")],
+    });
+    const loneA = mkAgent({
+      agent_id: "lone-a",
+      agent_name: "a-support",
+      recent_sessions: [mkRecentSession("s-la")],
+    });
+    const loneZ = mkAgent({
+      agent_id: "lone-z",
+      agent_name: "z-research",
+      recent_sessions: [mkRecentSession("s-lz")],
+    });
+    const result = sortAgentsWithFamilies(
+      [parent, childDoc, childPlan, loneA, loneZ],
+      new Map(),
+      { column: "agent_name", direction: "asc" },
+    );
+    // Families sort by root name ASC: "a-support" (lone-a), then
+    // "m-omria" (parent + its children), then "z-research" (lone-z).
+    // Children inside the omria family sort by their own name ASC:
+    // "a-plan" (c-plan) before "b-doc" (c-doc).
+    expect(result.map((a) => a.agent_id)).toEqual([
+      "lone-a",
+      "p",
+      "c-plan",
+      "c-doc",
+      "lone-z",
+    ]);
+  });
+
+  it("TOKENS_7D DESC: family stays at parent's rank even when a child has higher tokens than its parent", () => {
+    // Child has higher tokens than parent AND higher tokens than
+    // every lone agent. A naive per-agent sort would float the
+    // child to the very top. Family-grouped sort keeps it under its
+    // (lower-tokens) parent.
+    const parent = mkAgentWithParent("p", null, 100);
+    const childHigh = mkAgentWithParent("c-high", "p", 9999);
+    const childLow = mkAgentWithParent("c-low", "p", 50);
+    const loneHigh = mkAgentWithParent("z-lone", null, 800);
+    const loneLow = mkAgentWithParent("y-lone", null, 30);
+    const summaries = new Map<string, AgentSummaryResponse>([
+      ["p", mkSummary("p", 100)],
+      ["c-high", mkSummary("c-high", 9999)],
+      ["c-low", mkSummary("c-low", 50)],
+      ["z-lone", mkSummary("z-lone", 800)],
+      ["y-lone", mkSummary("y-lone", 30)],
+    ]);
+    const result = sortAgentsWithFamilies(
+      [parent, childHigh, childLow, loneHigh, loneLow],
+      summaries,
+      { column: "tokens_7d", direction: "desc" },
+    );
+    // Families sort by root tokens DESC: z-lone (800) > p (100) >
+    // y-lone (30). Within the p family, descendants sort by their
+    // own tokens DESC: c-high (9999) before c-low (50). Crucially,
+    // c-high does NOT escape to the top of the table.
+    expect(result.map((a) => a.agent_id)).toEqual([
+      "z-lone",
+      "p",
+      "c-high",
+      "c-low",
+      "y-lone",
+    ]);
+  });
+
+  // ---- windowed-parent regression ---------------------------------------
+  // Production root cause: ``AgentSummary.recent_sessions`` is
+  // capped at 5 per agent on both server (RecentSessionsPerAgent)
+  // and client (RECENT_SESSIONS_WINDOW). A busy parent that has
+  // spawned 5+ sessions since starting a sub-agent rolls the
+  // spawn-context session out of its own window, so
+  // ``sessionToAgent.get(parent_session_id)`` returns undefined on
+  // the recent_sessions-only path and the child becomes a lone
+  // family. The fleet store's flavors view (sourced from
+  // /v1/sessions, ~200-session window) carries the spawn session
+  // and recovers the linkage.
+
+  it("regression: child whose parent's spawn session has rolled out of recent_sessions still groups via fleet flavors", () => {
+    // Parent's recent_sessions contains 5 NEWER sessions; the
+    // spawn-context session "s-spawn" is NOT among them. Child's
+    // recent_sessions still carries parent_session_id = "s-spawn".
+    // Without fleet flavors, the linkage fails and the child
+    // floats away. With fleet flavors (which carry "s-spawn" under
+    // the parent's flavor key), the linkage resolves.
+    const parent = mkAgent({
+      agent_id: "p",
+      agent_name: "p",
+      recent_sessions: [
+        mkRecentSession("s-p-5"),
+        mkRecentSession("s-p-4"),
+        mkRecentSession("s-p-3"),
+        mkRecentSession("s-p-2"),
+        mkRecentSession("s-p-1"),
+      ],
+    });
+    const child = mkAgent({
+      agent_id: "c",
+      agent_name: "c",
+      recent_sessions: [mkRecentSession("s-c", "s-spawn")],
+    });
+    const lone = mkAgent({
+      agent_id: "z",
+      agent_name: "z",
+      recent_sessions: [mkRecentSession("s-z")],
+    });
+    // Per-agent KPI: child has more tokens than parent. Under
+    // tokens DESC and the buggy recent_sessions-only path, child
+    // would sort above its parent (and above lone z too).
+    const summaries = new Map<string, AgentSummaryResponse>([
+      ["p", mkSummary("p", 100)],
+      ["c", mkSummary("c", 9000)],
+      ["z", mkSummary("z", 50)],
+    ]);
+    // Fleet flavors carries the parent's six sessions (the 5 in
+    // recent_sessions PLUS the spawn-context session) under the
+    // parent's agent_id flavor key. This is the realistic shape
+    // the /v1/sessions endpoint feeds into the store: ~200 most-
+    // recent sessions across all agents, not capped per-agent.
+    const flavors: FlavorSummary[] = [
+      mkFlavor("p", [
+        mkSession("s-p-5"),
+        mkSession("s-p-4"),
+        mkSession("s-p-3"),
+        mkSession("s-p-2"),
+        mkSession("s-p-1"),
+        mkSession("s-spawn"),
+      ]),
+      mkFlavor("c", [mkSession("s-c", "s-spawn")]),
+      mkFlavor("z", [mkSession("s-z")]),
+    ];
+
+    // Without fleet flavors: bug repro — child floats above parent
+    // (and above lone z) on tokens DESC.
+    const buggy = sortAgentsWithFamilies(
+      [parent, child, lone],
+      summaries,
+      { column: "tokens_7d", direction: "desc" },
+    );
+    expect(buggy.map((a) => a.agent_id)).toEqual(["c", "p", "z"]);
+
+    // With fleet flavors: family groups properly. Parent's family
+    // (rank 100) ranks above lone z (50); child sits directly
+    // under its parent.
+    const fixed = sortAgentsWithFamilies(
+      [parent, child, lone],
+      summaries,
+      { column: "tokens_7d", direction: "desc" },
+      flavors,
+    );
+    expect(fixed.map((a) => a.agent_id)).toEqual(["p", "c", "z"]);
+  });
+
+  it("regression: windowed-parent descendant set picks up the child when fleet flavors carry the spawn session", () => {
+    // Same data shape — but assert the descendant set directly so
+    // the 28-px indent stamp (driven by ``data-topology="child"``
+    // on ``AgentTableRow``) also fires under the windowed-parent
+    // scenario.
+    const parent = mkAgent({
+      agent_id: "p",
+      recent_sessions: [
+        mkRecentSession("s-p-5"),
+        mkRecentSession("s-p-4"),
+        mkRecentSession("s-p-3"),
+        mkRecentSession("s-p-2"),
+        mkRecentSession("s-p-1"),
+      ],
+    });
+    const child = mkAgent({
+      agent_id: "c",
+      recent_sessions: [mkRecentSession("s-c", "s-spawn")],
+    });
+    const flavors: FlavorSummary[] = [
+      mkFlavor("p", [
+        mkSession("s-p-5"),
+        mkSession("s-p-4"),
+        mkSession("s-p-3"),
+        mkSession("s-p-2"),
+        mkSession("s-p-1"),
+        mkSession("s-spawn"),
+      ]),
+      mkFlavor("c", [mkSession("s-c", "s-spawn")]),
+    ];
+    // Without flavors: linkage unresolvable — descendant set empty.
+    expect(deriveFamilyDescendantSet([parent, child]).has("c")).toBe(false);
+    // With flavors: linkage resolves — child marked as descendant.
+    expect(
+      deriveFamilyDescendantSet([parent, child], flavors).has("c"),
+    ).toBe(true);
+  });
+
+  // ---- direct parent_agent_id projection ---------------------------
+  // After the server-side projection lands, the child's
+  // recent_sessions row carries ``parent_agent_id`` directly. This
+  // is the AUTHORITATIVE source: it's immune to every windowing
+  // scheme. The fallback session-to-agent map (recent_sessions +
+  // fleet flavors) is consulted only when the direct projection is
+  // missing — backwards-compatible with deployments whose API
+  // hasn't been redeployed yet.
+
+  it("direct parent_agent_id resolves the linkage with NO recent_sessions overlap and NO fleet flavors", () => {
+    // Worst-case windowing: parent's spawn session is in NEITHER
+    // the parent's recent_sessions NOR fleet flavors (the deeply-
+    // windowed case the dual-source fix alone couldn't recover).
+    // The direct projection MUST resolve the linkage on its own.
+    const parent = mkAgent({
+      agent_id: "p",
+      agent_name: "p",
+      recent_sessions: [
+        mkRecentSession("s-p-newer-1"),
+        mkRecentSession("s-p-newer-2"),
+        mkRecentSession("s-p-newer-3"),
+        mkRecentSession("s-p-newer-4"),
+        mkRecentSession("s-p-newer-5"),
+      ],
+    });
+    const child = mkAgent({
+      agent_id: "c",
+      agent_name: "c",
+      recent_sessions: [
+        mkRecentSession("s-c", "s-spawn-deeply-old", "p"),
+      ],
+    });
+    const summaries = new Map<string, AgentSummaryResponse>([
+      ["p", mkSummary("p", 100)],
+      ["c", mkSummary("c", 9999)],
+    ]);
+    // No fleet flavors arg AND no overlap on session_ids — the
+    // only thing that lets this resolve is the direct projection.
+    const result = sortAgentsWithFamilies(
+      [parent, child],
+      summaries,
+      { column: "tokens_7d", direction: "desc" },
+    );
+    expect(result.map((a) => a.agent_id)).toEqual(["p", "c"]);
+    expect(deriveFamilyDescendantSet([parent, child]).has("c")).toBe(true);
+  });
+
+  it("direct parent_agent_id wins over a contradicting session-map walk", () => {
+    // Direct projection says "p"; sessionToAgent walk (built from
+    // recent_sessions and fleet flavors) says "ghost". The direct
+    // projection must win — it's the authoritative source-of-truth
+    // from the SQL self-join.
+    const parent = mkAgent({
+      agent_id: "p",
+      recent_sessions: [mkRecentSession("s-p")],
+    });
+    const child = mkAgent({
+      agent_id: "c",
+      recent_sessions: [mkRecentSession("s-c", "s-p", "p")],
+    });
+    // Phantom flavor mis-attributes "s-p" to "ghost". If the
+    // session-map walk fired before the direct projection check,
+    // the linkage would resolve to "ghost" and "c" would render
+    // as a lone family. Direct projection wins → groups under "p".
+    const flavors: FlavorSummary[] = [
+      mkFlavor("ghost", [mkSession("s-p")]),
+    ];
+    const result = sortAgentsWithFamilies(
+      [parent, child],
+      new Map(),
+      { column: "agent_name", direction: "asc" },
+      flavors,
+    );
+    expect(result.map((a) => a.agent_id)).toEqual(["p", "c"]);
+  });
+
+  it("missing direct projection falls back to session-map walk (backwards-compat)", () => {
+    // Pre-projection deployments: parent_agent_id is undefined on
+    // the wire. The fallback session-to-agent map must still
+    // resolve the linkage when parent_session_id is in some
+    // agent's recent_sessions slice. This guards against silently
+    // breaking the old code path during a rollout.
+    const parent = mkAgent({
+      agent_id: "p",
+      recent_sessions: [mkRecentSession("s-p")],
+    });
+    const child = mkAgent({
+      agent_id: "c",
+      // parent_agent_id explicitly undefined.
+      recent_sessions: [mkRecentSession("s-c", "s-p")],
+    });
+    const result = sortAgentsWithFamilies([parent, child], new Map(), {
+      column: "agent_name",
+      direction: "asc",
+    });
+    expect(result.map((a) => a.agent_id)).toEqual(["p", "c"]);
+    expect(deriveFamilyDescendantSet([parent, child]).has("c")).toBe(true);
+  });
+
+  it("fleet-flavors source does not override recent_sessions when both cover a session", () => {
+    // recent_sessions is the per-agent rollup and is immune to the
+    // wall-clock window that fleet flavors live under. When both
+    // sources cover a session_id, recent_sessions wins. This guards
+    // against a malformed flavors payload mis-attributing a session
+    // to a different agent.
+    const parent = mkAgent({
+      agent_id: "p",
+      recent_sessions: [mkRecentSession("s-p")],
+    });
+    const child = mkAgent({
+      agent_id: "c",
+      recent_sessions: [mkRecentSession("s-c", "s-p")],
+    });
+    // Fleet flavors mis-attribute "s-p" to a phantom agent "ghost".
+    // The recent_sessions source already says "s-p" → "p", and
+    // recent_sessions wins. Linkage resolves to "p" correctly.
+    const flavors: FlavorSummary[] = [
+      mkFlavor("ghost", [mkSession("s-p")]),
+      mkFlavor("c", [mkSession("s-c", "s-p")]),
+    ];
+    const result = sortAgentsWithFamilies(
+      [parent, child],
+      new Map(),
+      { column: "agent_name", direction: "asc" },
+      flavors,
+    );
+    expect(result.map((a) => a.agent_id)).toEqual(["p", "c"]);
   });
 });
 

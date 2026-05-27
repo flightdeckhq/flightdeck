@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { Info } from "lucide-react";
 import type { AgentSummary, AgentSummaryResponse } from "@/lib/types";
+import { useFleetStore } from "@/store/fleet";
 import {
   type AgentSortColumn,
   type SortState,
@@ -84,22 +85,34 @@ export function AgentTable({
   });
   const [page, setPage] = useState(0);
 
+  // Augment the parent-resolution input with the fleet store's
+  // flavors view. ``AgentSummary.recent_sessions`` is capped at 5
+  // per agent on both server and client, so a busy parent that
+  // has spawned 5+ sessions since starting a sub-agent can roll
+  // the spawn-context session out of its own window — the linkage
+  // then fails to resolve on that source alone, and the child
+  // floats away from its parent under any sort. The flavors view
+  // carries the broader ``/v1/sessions`` window and recovers the
+  // linkage. The two sources are complementary; see
+  // ``resolveParents`` in agents-sort.ts for the full rationale.
+  const flavors = useFleetStore((s) => s.flavors);
+
   // Family-grouped sort: parents (and lone agents) order as
   // families by the active column; each family's children render
   // directly under their root. Orphan children (parent not in
   // the current ``agents`` slice) become single-row families at
   // their own sort position.
   const sorted = useMemo(
-    () => sortAgentsWithFamilies(agents, summariesByAgentId, sort),
-    [agents, summariesByAgentId, sort],
+    () => sortAgentsWithFamilies(agents, summariesByAgentId, sort, flavors),
+    [agents, summariesByAgentId, sort, flavors],
   );
   // Descendant set — drives the per-row ``data-topology="child"``
   // stamp on ``AgentTableRow`` so the existing
   // ``[data-topology="child"] > td:first-child`` rule in
   // ``globals.css`` lands the 28-px first-cell indent.
   const descendantSet = useMemo(
-    () => deriveFamilyDescendantSet(agents),
-    [agents],
+    () => deriveFamilyDescendantSet(agents, flavors),
+    [agents, flavors],
   );
   // Family-respecting pagination: a family never splits across a
   // page boundary. The page renders fewer than ``PAGE_SIZE`` rows

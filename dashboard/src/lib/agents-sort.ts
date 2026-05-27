@@ -1,4 +1,8 @@
-import type { AgentSummary, AgentSummaryResponse } from "@/lib/types";
+import type {
+  AgentSummary,
+  AgentSummaryResponse,
+  FlavorSummary,
+} from "@/lib/types";
 
 /**
  * Sortable column keys on the `/agents` table. The sparkline tile
@@ -155,19 +159,36 @@ function buildComparator(
 
 /**
  * Resolve each agent's direct parent_agent_id from the bundled
- * ``AgentSummary.recent_sessions``. The walked map is
- * ``session_id → agent_id`` across every agent's recent slice; an
- * agent is a child of P when one of its sessions carries a
+ * ``AgentSummary.recent_sessions``, optionally augmented by the
+ * fleet store's flavors view. The walked map is
+ * ``session_id → agent_id`` across both sources; an agent is a
+ * child of P when one of its sessions carries a
  * ``parent_session_id`` resolving to a session owned by P (and P
  * is a different agent than self).
  *
- * Uses ``recent_sessions`` — NOT the fleet-store flavors — because
- * the fleet flavors are time-windowed; a child whose parent's
- * sessions all fall outside the window won't resolve a parent and
- * won't group with its parent in the table (the Phase-2 L38
- * sub-agent windowing bug). ``recent_sessions`` is per-agent
- * backfilled by the same identity / linkage path the swimlane was
- * fixed to use.
+ * Why two sources: each has its own windowing limit and the two
+ * are complementary.
+ *
+ *   * ``recent_sessions`` is the per-agent rollup the API returns
+ *     on ``/v1/fleet``. It is capped at ``RecentSessionsPerAgent``
+ *     (5, in ``api/internal/store/postgres.go``) and mirrored
+ *     client-side by ``RECENT_SESSIONS_WINDOW`` in
+ *     ``store/fleet.ts``. Immune to a global wall-clock window
+ *     (an old agent with no recent activity still carries its 5
+ *     most-recent sessions), but a busy parent that has spawned
+ *     5+ sessions since starting a sub-agent rolls the spawn-
+ *     context session out of its own window — the linkage then
+ *     fails to resolve on this source alone.
+ *   * ``fleetFlavors`` is the broader session graph the
+ *     ``/v1/sessions`` endpoint feeds into ``useFleetStore``. It
+ *     carries up to ~200 most-recent sessions across all agents.
+ *     Recovers the busy-parent case, but a parent whose sessions
+ *     all fall outside this wall-clock window won't appear here
+ *     (the Phase-2 L38 sub-agent windowing bug).
+ *
+ * Combining the two recovers the linkage in both edge cases.
+ * ``recent_sessions`` wins when both sources cover a session_id
+ * because the per-agent slice is immune to wall-clock churn.
  *
  * Pre-D158 deployments may have ``recent_sessions`` absent — the
  * function treats undefined the same as an empty slice; affected
@@ -177,17 +198,43 @@ function buildComparator(
  * in the map have no resolvable parent within the supplied
  * ``agents`` list (i.e. they're roots OR orphan children).
  */
-function resolveParents(agents: AgentSummary[]): Map<string, string> {
+function resolveParents(
+  agents: AgentSummary[],
+  fleetFlavors?: ReadonlyArray<FlavorSummary>,
+): Map<string, string> {
+  // Build the session_id → agent_id fallback map from the two
+  // windowed sources. Used only when ``parent_agent_id`` is
+  // missing from the child's recent_sessions row (pre-D-prj
+  // deployments, or future SQL refactors that drop the
+  // projection); newer rows resolve directly without consulting
+  // the map at all.
   const sessionToAgent = new Map<string, string>();
   for (const a of agents) {
     for (const s of a.recent_sessions ?? []) {
       sessionToAgent.set(s.session_id, a.agent_id);
     }
   }
+  if (fleetFlavors) {
+    for (const f of fleetFlavors) {
+      for (const s of f.sessions) {
+        if (!sessionToAgent.has(s.session_id)) {
+          sessionToAgent.set(s.session_id, f.flavor);
+        }
+      }
+    }
+  }
   const parentMap = new Map<string, string>();
   for (const a of agents) {
     for (const s of a.recent_sessions ?? []) {
       if (!s.parent_session_id) continue;
+      // Server-projected parent_agent_id wins when present — it
+      // is authoritative and immune to every windowing cap that
+      // affects the fallback map walk below.
+      const direct = s.parent_agent_id;
+      if (direct && direct !== a.agent_id) {
+        parentMap.set(a.agent_id, direct);
+        break;
+      }
       const parentId = sessionToAgent.get(s.parent_session_id);
       if (parentId && parentId !== a.agent_id) {
         parentMap.set(a.agent_id, parentId);
@@ -209,8 +256,9 @@ function resolveParents(agents: AgentSummary[]): Map<string, string> {
  */
 export function deriveFamilyDescendantSet(
   agents: AgentSummary[],
+  fleetFlavors?: ReadonlyArray<FlavorSummary>,
 ): Set<string> {
-  const parentMap = resolveParents(agents);
+  const parentMap = resolveParents(agents, fleetFlavors);
   const agentIdSet = new Set(agents.map((a) => a.agent_id));
   const descendants = new Set<string>();
   for (const a of agents) {
@@ -246,8 +294,9 @@ export function sortAgentsWithFamilies(
   agents: AgentSummary[],
   summariesByAgentId: Map<string, AgentSummaryResponse>,
   sort: SortState,
+  fleetFlavors?: ReadonlyArray<FlavorSummary>,
 ): AgentSummary[] {
-  const parentMap = resolveParents(agents);
+  const parentMap = resolveParents(agents, fleetFlavors);
   const agentIdSet = new Set(agents.map((a) => a.agent_id));
   const agentById = new Map(agents.map((a) => [a.agent_id, a]));
 

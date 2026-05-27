@@ -1,4 +1,4 @@
-import type { FlavorSummary, Session } from "@/lib/types";
+import type { AgentSummary, FlavorSummary, Session } from "@/lib/types";
 
 /**
  * D126 sub-agent relationship rollup. Derives a per-agent place in
@@ -34,6 +34,7 @@ export function deriveRelationship(
   agentId: string,
   sessions: Session[],
   fleetFlavors: FlavorSummary[],
+  agents?: ReadonlyArray<AgentSummary>,
 ): RelationshipResult {
   // Build a session_id → (agent_id, agent_name) lookup from the
   // fleet store. The store partitions sessions per agent under
@@ -60,8 +61,43 @@ export function deriveRelationship(
   // refresh).
   for (const s of sessions) ownSessionIds.add(s.session_id);
 
-  // Child branch — any of our sessions points to a parent_session_id
-  // that resolves to a different agent.
+  // Build an agent_id → name lookup from the agents roster (when
+  // supplied) so the direct ``parent_agent_id`` projection on a
+  // child's ``recent_sessions`` can resolve to a human-readable
+  // parent name without finding the parent session anywhere.
+  const agentIdToName = new Map<string, string>();
+  if (agents) {
+    for (const a of agents) {
+      agentIdToName.set(a.agent_id, a.agent_name);
+    }
+  }
+
+  // Child branch (direct projection) — when the agents roster is
+  // supplied AND one of this agent's recent_sessions carries a
+  // ``parent_agent_id`` pointing at an agent in the roster, that
+  // wins immediately. Authoritative: the server-side self-join on
+  // ``sessions.parent_session_id`` is immune to every windowing
+  // cap that affects the session-to-agent map walk below.
+  if (agents) {
+    const self = agents.find((a) => a.agent_id === agentId);
+    if (self) {
+      for (const rs of self.recent_sessions ?? []) {
+        const direct = rs.parent_agent_id;
+        if (direct && direct !== agentId) {
+          const name = agentIdToName.get(direct);
+          if (name) {
+            return { mode: "child", parentName: name, parentAgentId: direct };
+          }
+        }
+      }
+    }
+  }
+
+  // Child branch (session-map walk) — any of our sessions points
+  // to a parent_session_id that resolves to a different agent via
+  // the fleet-flavors session map. Used when the direct projection
+  // is unavailable (pre-projection deployment OR caller did not
+  // pass ``agents``).
   for (const s of sessions) {
     if (!s.parent_session_id) continue;
     const parent = sessionToAgent.get(s.parent_session_id);
@@ -79,8 +115,30 @@ export function deriveRelationship(
   // click navigation target.
   const childAgents = new Set<string>();
   let firstChildAgentId: string | undefined;
+  // Direct-projection parent branch: any other agent's
+  // ``recent_sessions[].parent_agent_id`` equals this agent_id.
+  // Picks up children whose parent session is outside the
+  // fleet-flavors window.
+  if (agents) {
+    for (const a of agents) {
+      if (a.agent_id === agentId) continue;
+      for (const rs of a.recent_sessions ?? []) {
+        if (rs.parent_agent_id === agentId) {
+          if (!childAgents.has(a.agent_id)) {
+            childAgents.add(a.agent_id);
+            if (!firstChildAgentId) firstChildAgentId = a.agent_id;
+          }
+          break;
+        }
+      }
+    }
+  }
+  // Fallback walk: fleet-flavors path picks up child agents whose
+  // parent_session_id is in this agent's flavor (i.e., the
+  // spawn-context session IS in the broader sessions window).
   for (const f of fleetFlavors) {
     if (f.flavor === agentId) continue;
+    if (childAgents.has(f.flavor)) continue;
     for (const s of f.sessions) {
       if (!s.parent_session_id) continue;
       if (ownSessionIds.has(s.parent_session_id)) {
@@ -129,6 +187,7 @@ export interface AgentLinkage {
 export function deriveAgentLinkage(
   agentId: string,
   fleetFlavors: FlavorSummary[],
+  agents?: ReadonlyArray<AgentSummary>,
 ): AgentLinkage {
   const sessionToAgent = new Map<string, AgentLink>();
   const ownSessionIds = new Set<string>();
@@ -140,37 +199,79 @@ export function deriveAgentLinkage(
     }
   }
 
-  // Parent — the first of our sessions whose parent_session_id
-  // resolves to a different agent.
+  const agentIdToName = new Map<string, string>();
+  if (agents) {
+    for (const a of agents) {
+      agentIdToName.set(a.agent_id, a.agent_name);
+    }
+  }
+
+  // Parent — direct projection wins: the first of THIS agent's
+  // ``recent_sessions[].parent_agent_id`` (when the agents roster
+  // is supplied) that points at a different agent in the roster.
   let parent: AgentLink | null = null;
-  const own = fleetFlavors.find((f) => f.flavor === agentId);
-  if (own) {
-    for (const s of own.sessions) {
-      if (!s.parent_session_id) continue;
-      const p = sessionToAgent.get(s.parent_session_id);
-      if (p && p.agentId !== agentId) {
-        parent = p;
-        break;
+  if (agents) {
+    const self = agents.find((a) => a.agent_id === agentId);
+    if (self) {
+      for (const rs of self.recent_sessions ?? []) {
+        const direct = rs.parent_agent_id;
+        if (direct && direct !== agentId) {
+          const name = agentIdToName.get(direct);
+          if (name) {
+            parent = { agentId: direct, agentName: name };
+            break;
+          }
+        }
+      }
+    }
+  }
+  // Fallback: fleet-flavors session-map walk.
+  if (!parent) {
+    const own = fleetFlavors.find((f) => f.flavor === agentId);
+    if (own) {
+      for (const s of own.sessions) {
+        if (!s.parent_session_id) continue;
+        const p = sessionToAgent.get(s.parent_session_id);
+        if (p && p.agentId !== agentId) {
+          parent = p;
+          break;
+        }
       }
     }
   }
 
-  // Children — every distinct agent with a session pointing back at
-  // one of ours.
+  // Children — direct projection wins: every other agent whose
+  // ``recent_sessions[].parent_agent_id`` equals our agent_id.
+  // Fallback: fleet-flavors walk for the cases where the
+  // spawn-context session IS in the broader sessions window but
+  // the projection happens to be missing.
   const children: AgentLink[] = [];
   const seen = new Set<string>();
+  if (agents) {
+    for (const a of agents) {
+      if (a.agent_id === agentId) continue;
+      for (const rs of a.recent_sessions ?? []) {
+        if (rs.parent_agent_id === agentId) {
+          if (!seen.has(a.agent_id)) {
+            seen.add(a.agent_id);
+            children.push({ agentId: a.agent_id, agentName: a.agent_name });
+          }
+          break;
+        }
+      }
+    }
+  }
   for (const f of fleetFlavors) {
     if (f.flavor === agentId) continue;
+    if (seen.has(f.flavor)) continue;
     for (const s of f.sessions) {
       if (!s.parent_session_id) continue;
       if (ownSessionIds.has(s.parent_session_id)) {
-        if (!seen.has(f.flavor)) {
-          seen.add(f.flavor);
-          children.push({
-            agentId: f.flavor,
-            agentName: f.agent_id && f.agent_name ? f.agent_name : f.flavor,
-          });
-        }
+        seen.add(f.flavor);
+        children.push({
+          agentId: f.flavor,
+          agentName: f.agent_id && f.agent_name ? f.agent_name : f.flavor,
+        });
         break;
       }
     }

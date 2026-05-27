@@ -652,3 +652,103 @@ jobs:
       - name: Tear down stack
         if: always()
         run: make down || true
+
+  # Helm chart lint + render. Catches Chart.yaml/values.yaml schema
+  # drift before release. Specifically guards the v0.5.1 fail-fast
+  # contract on postgres.password — values.yaml leaves it empty so a
+  # bare `helm template` should fail with the required-value message,
+  # and supplying --set postgres.password=... should succeed. Both
+  # branches asserted explicitly so a future refactor that drops the
+  # required-value guard surfaces immediately.
+  helm:
+    name: Helm chart lint
+    runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.16.2
+
+      - name: helm lint
+        run: helm lint helm/
+
+      - name: helm template with password set succeeds
+        run: helm template flightdeck helm/ --set postgres.password=ci-test-password > /dev/null
+
+      - name: helm template WITHOUT password fails with actionable message
+        run: |
+          if helm template flightdeck helm/ > /tmp/helm-out 2> /tmp/helm-err; then
+            echo "EXPECTED FAILURE: helm template should fail when postgres.password is unset"
+            cat /tmp/helm-out
+            exit 1
+          fi
+          if ! grep -q "postgres.password must be set" /tmp/helm-err; then
+            echo "Expected actionable 'postgres.password must be set' message; got:"
+            cat /tmp/helm-err
+            exit 1
+          fi
+
+      - name: helm template with externalUrl skips password requirement
+        run: |
+          helm template flightdeck helm/ \
+            --set postgres.externalUrl=postgres://u:p@h:5432/d?sslmode=require > /dev/null
+
+  # Schema-validate the Claude Code plugin marketplace manifest. The
+  # plugin install path (``/plugin marketplace add flightdeckhq/flightdeck``
+  # then ``/plugin install flightdeck@flightdeck-plugins``) reads
+  # .claude-plugin/marketplace.json directly; a malformed schema would
+  # silently break the one-command install. Validates JSON + required
+  # fields (name, version, plugins[].source.ref) so a future bump that
+  # forgets to update the ref pinning surfaces in CI rather than at
+  # install time.
+  marketplace-schema:
+    name: Marketplace manifest schema
+    runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate marketplace.json structure
+        run: |
+          python3 - <<'PY'
+          import json, sys
+          path = ".claude-plugin/marketplace.json"
+          with open(path) as f:
+              data = json.load(f)
+          errors = []
+          for key in ("name", "description", "owner", "plugins"):
+              if key not in data:
+                  errors.append(f"top-level key missing: {key}")
+          if not isinstance(data.get("plugins"), list) or not data["plugins"]:
+              errors.append("plugins[] must be a non-empty list")
+          for i, p in enumerate(data.get("plugins", [])):
+              for key in ("name", "description", "version", "source"):
+                  if key not in p:
+                      errors.append(f"plugins[{i}] missing key: {key}")
+              src = p.get("source", {})
+              for key in ("source", "url", "path", "ref"):
+                  if key not in src:
+                      errors.append(f"plugins[{i}].source missing key: {key}")
+              # Pin ref to a tag (vX.Y.Z) — moving refs like ``main``
+              # would silently change installable surface on every commit.
+              ref = src.get("ref", "")
+              if not ref.startswith("v") or ref.count(".") != 2:
+                  errors.append(f"plugins[{i}].source.ref must be a tag (vX.Y.Z); got {ref!r}")
+              # plugin version must match the source.ref tag (drift
+              # surfaces as installing an artefact whose package version
+              # disagrees with its git ref).
+              version = p.get("version", "")
+              if ref != "v" + version:
+                  errors.append(f"plugins[{i}].version ({version!r}) must match source.ref ({ref!r}) sans 'v'")
+          if errors:
+              print("marketplace.json validation errors:", file=sys.stderr)
+              for e in errors:
+                  print(f"  - {e}", file=sys.stderr)
+              sys.exit(1)
+          print(f"marketplace.json OK: {len(data['plugins'])} plugin(s) validated")
+          PY

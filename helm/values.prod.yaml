@@ -71,7 +71,7 @@ nats:
 postgres:
   # Production deployments should supply an external managed Postgres via
   # --set postgres.externalUrl=... The bundled StatefulSet is not HA and
-  # has no backup story in v0.5.0. Left empty here so the file stays valid
+  # has no backup story in v0.5.1. Left empty here so the file stays valid
   # for `helm template` runs without requiring a real secret.
   externalUrl: ""
   storage:

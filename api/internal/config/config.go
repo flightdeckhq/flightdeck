@@ -24,13 +24,15 @@ type Config struct {
 // Panics on missing required values -- fail fast on misconfiguration.
 //
 // JWTSecret, AdminEmail, and AdminPassword are scaffolding for a
-// dashboard-side login flow that is not implemented in v0.3.0. No
-// handler, middleware, or dashboard component reads them. They are
-// kept as optional fields so the plumbing (env wiring, Helm chart
-// Secret, future login handler) survives the v0.3.0 cut; no panic
-// gate because panicking for a feature that does not exist would
-// only misdirect operators. See README "Self-hosting" and DECISIONS
-// for the v0.3.0 auth posture (bearer ftd_ tokens only).
+// future dashboard-side login flow. No handler, middleware, or
+// dashboard component reads them as of v0.5.1. They are kept as
+// optional fields so the plumbing (env wiring, Helm chart Secret,
+// future login handler) survives the current cut; no panic gate
+// because panicking for a feature that does not exist would only
+// misdirect operators. See README "Self-hosting" for the current
+// auth posture (bearer ftd_ access tokens issued via the
+// /v1/access-tokens admin endpoints, gated by tok_dev or an
+// existing admin token).
 func Load() Config {
 	env := envOrDefault("FLIGHTDECK_ENV", "development")
 	cfg := Config{

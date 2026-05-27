@@ -2,6 +2,127 @@
 
 All notable changes to Flightdeck are documented here.
 
+## v0.5.1 (2026-05-27)
+
+Patch release on top of v0.5.0 with one user-visible bugfix and six
+hardening items deferred from v0.5.0. Upgrade is recommended for all
+Helm operators because the bundled-Postgres password fallback that
+silently used the literal ``flightdeck`` as the database superuser
+password has been removed — see the breaking note below.
+
+### Fixed
+
+- **Agents table family grouping sticks under any sort.** Children of a
+  busy parent agent (e.g. a long-lived ``omria@Omri-PC`` Claude Code
+  session that has spawned 5+ further sessions since starting a
+  sub-agent) floated away from their parent under every ``/agents``
+  sort because parent resolution walked only
+  ``AgentSummary.recent_sessions``, which is capped at 5 per agent on
+  both the server (``RecentSessionsPerAgent``) and the client
+  (``RECENT_SESSIONS_WINDOW``). When the spawn-context session rolled
+  out of the parent's own 5-row window the linkage couldn't resolve
+  and the child sorted independently. The same windowing class
+  mislabelled the topology pill as ``lone`` instead of ``↳ child of
+  X``. Three-layer fix:
+    1. **api**: ``RecentSession`` now projects ``parent_agent_id``
+       directly via a SQL self-join on ``sessions.parent_session_id``.
+       Authoritative — immune to every windowing scheme. The
+       ``RecentSession`` JSON gains an optional ``parent_agent_id``
+       field (``omitempty``, backwards-compatible).
+    2. **dashboard sort / grouping** (``lib/agents-sort.ts``,
+       ``components/agents/AgentTable.tsx``): ``resolveParents``
+       prefers the direct projection; falls back to a combined
+       ``recent_sessions`` + fleet flavors session map.
+       ``sortAgentsWithFamilies`` and ``deriveFamilyDescendantSet``
+       now accept an optional ``fleetFlavors`` argument.
+    3. **dashboard relationship pill** (``lib/relationship.ts``,
+       ``components/fleet/TopologyCell.tsx``,
+       ``components/agents/AgentDrawer.tsx``): ``deriveRelationship``
+       and ``deriveAgentLinkage`` accept an optional agents roster
+       and apply the same direct-projection-first pattern so the
+       ``↳ child of X`` pill resolves for windowed parents.
+- **/agents pagination test (T61) is robust to extra agents.** The
+  prior gate compared visible-row count against PAGE_SIZE (always 50
+  when pagination is active), which flipped the assertion the wrong
+  way as soon as the fleet exceeded one page. New gate reads the
+  pagination footer's own presence.
+
+### Security / hardening
+
+- **GitHub Actions in ``release.yml`` are pinned to commit SHAs.**
+  All seven actions (``actions/checkout``, ``actions/setup-python``,
+  ``pypa/gh-action-pypi-publish``, ``docker/login-action``,
+  ``docker/setup-buildx-action``, ``docker/build-push-action``,
+  ``softprops/action-gh-release``) now reference an immutable SHA
+  with the human-readable tag preserved as a comment. Closes the
+  supply-chain gap where a compromised major-version tag could
+  swap action code under a release run.
+- **Bundled Postgres password silent default removed (breaking for
+  operators).** ``helm/templates/_helpers.tpl`` used to fall back to
+  the literal ``flightdeck`` when ``postgres.password`` was unset,
+  which left every bundled-Postgres install sharing one well-known
+  superuser credential. The chart now fails fast at render time with
+  an actionable error message when both ``postgres.password`` and
+  ``postgres.externalUrl`` are empty.
+  **Upgrade action**: set ``--set postgres.password=<strong-password>``
+  on your next ``helm install`` or ``helm upgrade``, or set
+  ``--set postgres.externalUrl=<dsn>`` to point at a managed database.
+  Existing installs already have a password materialised into the
+  Secret from the prior render; rotation is not forced by this PR.
+- **Plugin warns when the seed token ``tok_dev`` is in use.**
+  ``observe_cli.mjs`` now emits a single ``[flightdeck] WARN`` line
+  on stderr per hook invocation when ``FLIGHTDECK_TOKEN`` is unset,
+  surfacing the misconfiguration to operators who shipped the plugin
+  without configuring a real token. Suppress with
+  ``FLIGHTDECK_QUIET=1`` in suites that intentionally exercise the
+  zero-config default path (D100).
+
+### CI
+
+- **Helm chart lint + render gate.** New ``helm`` job runs
+  ``helm lint`` and exercises the password-required contract: bare
+  ``helm template`` must fail with the actionable message; with
+  ``--set postgres.password=...`` it must succeed; with
+  ``--set postgres.externalUrl=...`` it must skip the password
+  requirement entirely. Pinned to ``helm v3.16.2``.
+- **Marketplace manifest schema gate.** New ``marketplace-schema``
+  job validates ``.claude-plugin/marketplace.json`` against the
+  Claude Code plugin contract: required top-level keys, required
+  per-plugin keys, ``source.ref`` must be a tag (``vX.Y.Z``) rather
+  than a moving ref like ``main``, and ``plugin.version`` must match
+  ``source.ref`` sans the ``v`` prefix. Catches the class of bug
+  where a version bump forgets to update the marketplace ref.
+
+### Docs
+
+- **Swagger ``info.version`` reads ``0.5.1`` (was ``0.1.0``).**
+  ``api/cmd/main.go`` ``@version`` annotation updated and
+  ``api/docs/`` regenerated. Eliminates the QA-flagged drift between
+  the deployed API version and its self-reported OpenAPI metadata.
+- **Stale config.go auth comment refreshed.** ``Load()`` doc-comment
+  no longer references the v0.3.0 auth posture verbatim; the
+  scaffolding rationale stands but the current bearer-token / admin
+  endpoint surface is described.
+- **Helm version refs bumped** across ``Chart.yaml``, ``values.yaml``,
+  ``values.prod.yaml``, ``templates/_helpers.tpl``,
+  ``templates/postgres/statefulset.yaml``, ``README.md`` Helm
+  section, ``.claude-plugin/marketplace.json`` (version + source.ref),
+  ``plugin/.claude-plugin/plugin.json``, ``plugin/package.json``.
+
+### Tests
+
+- Dashboard unit: 1140 → 1154 tests (+14: 9 ``agents-sort`` covering
+  the windowing regression + explicit row order per sort column +
+  direct-projection-wins-over-walk, 5 ``relationship-linkage``
+  covering ``deriveRelationship`` via agents roster for both child
+  and parent branches).
+- API integration: ``TestGetRecentSessionsByAgentIDs_ParentAgentIDProjected``
+  (with ``t.Cleanup`` so the seeded rows don't pollute the shared
+  dev DB across runs).
+- New ``T113-agents-table-family-grouping-sticky.spec.ts`` E2E spec
+  (4 specs × 2 themes = 8 runs) under STATUS DESC, AGENT name ASC,
+  TOKENS_7D DESC, plus parent-rows-never-carry-data-topology-child.
+
 ## v0.5.0 (2026-05-26)
 
 First release since v0.3.1. Consolidates every change merged to ``main``

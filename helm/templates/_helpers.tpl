@@ -79,10 +79,22 @@ In-cluster hostnames.
 {{- end -}}
 
 {{/*
+Bundled Postgres password. Fails the render when postgres.externalUrl is
+empty AND postgres.password is unset — prior releases silently defaulted
+to the literal "flightdeck", which left every bundled-Postgres install
+sharing one well-known credential. Operators MUST set
+postgres.password (or set postgres.externalUrl to point at a managed DB).
+Single source of truth so the DSN helper and the Secret stay byte-aligned.
+*/}}
+{{- define "flightdeck.postgresPassword" -}}
+{{- required "postgres.password must be set when postgres.externalUrl is empty. Set --set postgres.password=<strong-password> or supply --set postgres.externalUrl=<dsn>. Defaulting to the literal 'flightdeck' (the pre-v0.5.1 behaviour) is unsafe and has been removed." .Values.postgres.password -}}
+{{- end -}}
+
+{{/*
 Bundled Postgres DSN. Only used when .Values.postgres.externalUrl is empty.
 */}}
 {{- define "flightdeck.bundledPostgresURL" -}}
-{{- $pw := .Values.postgres.password | default "flightdeck" -}}
+{{- $pw := include "flightdeck.postgresPassword" . -}}
 {{- printf "postgres://%s:%s@%s:%d/%s?sslmode=%s" .Values.postgres.user $pw (include "flightdeck.postgresServiceName" .) (int .Values.postgres.port) .Values.postgres.database .Values.postgres.sslmode -}}
 {{- end -}}
 
@@ -99,7 +111,7 @@ set; otherwise to the bundled in-cluster service.
 {{- end -}}
 
 {{/*
-NATS URL -- always the bundled in-cluster service (no escape hatch in v0.5.0).
+NATS URL -- always the bundled in-cluster service (no escape hatch in v0.5.1).
 */}}
 {{- define "flightdeck.natsURL" -}}
 {{- printf "nats://%s:%d" (include "flightdeck.natsServiceName" .) (int .Values.nats.clientPort) -}}

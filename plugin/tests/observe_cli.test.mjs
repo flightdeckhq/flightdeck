@@ -729,6 +729,82 @@ describe("observe_cli helpers", () => {
       const cfg = resolveConfig({ FLIGHTDECK_CAPTURE_PROMPTS: "true" });
       assert.equal(cfg.capturePrompts, true);
     });
+
+    // ---- tok_dev WARN coverage (v0.5.1) ---------------------------
+    // The default-token warning was added to surface production
+    // misconfiguration (a plugin install that forgot to set
+    // FLIGHTDECK_TOKEN authenticates every event as the seed
+    // identity). These tests pin the three branches so a future
+    // refactor cannot silently drop the warning, drop the suppression
+    // escape hatch, or fire the warning when an explicit token is set.
+    //
+    // Each test captures process.stderr.write into a buffer and
+    // restores it in finally so a failure inside resolveConfig does
+    // not leave the test runner with a broken stderr stream.
+
+    it("emits tok_dev WARN to stderr when FLIGHTDECK_TOKEN is unset", () => {
+      const written = [];
+      const orig = process.stderr.write.bind(process.stderr);
+      process.stderr.write = (s) => {
+        written.push(s);
+        return true;
+      };
+      let cfg;
+      try {
+        cfg = resolveConfig({});
+      } finally {
+        process.stderr.write = orig;
+      }
+      assert.equal(cfg.token, "tok_dev");
+      assert.ok(
+        written.some((s) =>
+          s.includes("[flightdeck] WARN: using default token 'tok_dev'"),
+        ),
+        "expected tok_dev WARN on stderr when FLIGHTDECK_TOKEN is unset",
+      );
+    });
+
+    it("suppresses tok_dev WARN when FLIGHTDECK_QUIET=1", () => {
+      const written = [];
+      const orig = process.stderr.write.bind(process.stderr);
+      process.stderr.write = (s) => {
+        written.push(s);
+        return true;
+      };
+      let cfg;
+      try {
+        cfg = resolveConfig({ FLIGHTDECK_QUIET: "1" });
+      } finally {
+        process.stderr.write = orig;
+      }
+      // QUIET suppresses the warning; it does NOT change the resolved
+      // token. Both invariants matter.
+      assert.equal(cfg.token, "tok_dev");
+      assert.ok(
+        !written.some((s) => s.includes("tok_dev")),
+        "expected no tok_dev WARN when FLIGHTDECK_QUIET=1",
+      );
+    });
+
+    it("does not emit WARN when FLIGHTDECK_TOKEN is explicitly set", () => {
+      const written = [];
+      const orig = process.stderr.write.bind(process.stderr);
+      process.stderr.write = (s) => {
+        written.push(s);
+        return true;
+      };
+      let cfg;
+      try {
+        cfg = resolveConfig({ FLIGHTDECK_TOKEN: "tok_prod_abc" });
+      } finally {
+        process.stderr.write = orig;
+      }
+      assert.equal(cfg.token, "tok_prod_abc");
+      assert.ok(
+        !written.some((s) => s.includes("tok_dev")),
+        "expected no tok_dev WARN when an explicit token is provided",
+      );
+    });
   });
 
   describe("getSessionId", () => {

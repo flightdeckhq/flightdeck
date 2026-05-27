@@ -146,7 +146,7 @@ export function resolveConfig(env = process.env) {
   // don't pollute their captured stderr assertions.
   if (!explicitToken && env.FLIGHTDECK_QUIET !== "1") {
     process.stderr.write(
-      "[flightdeck] WARN using default token 'tok_dev'. " +
+      "[flightdeck] WARN: using default token 'tok_dev'. " +
         "Set FLIGHTDECK_TOKEN=<your-token> for production. " +
         "Suppress this warning with FLIGHTDECK_QUIET=1.\n",
     );

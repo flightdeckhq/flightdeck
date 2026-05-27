@@ -132,7 +132,25 @@ export function parseBool(value, fallback) {
  */
 export function resolveConfig(env = process.env) {
   const server = (env.FLIGHTDECK_SERVER ?? "").trim() || "http://localhost:4000";
-  const token = (env.FLIGHTDECK_TOKEN ?? "").trim() || "tok_dev";
+  const explicitToken = (env.FLIGHTDECK_TOKEN ?? "").trim();
+  const token = explicitToken || "tok_dev";
+  // Warn loudly on stderr when the seed dev token is in use. Loud is
+  // the point: a production deployment that ships hooks without
+  // FLIGHTDECK_TOKEN configured would otherwise silently authenticate
+  // every POST as the development seed identity. The dev compose stack
+  // accepts tok_dev when ENVIRONMENT=dev, so the warning is harmless
+  // there; a production server that hasn't seeded tok_dev will refuse
+  // the request with 401 (which the existing unreachable-line handler
+  // surfaces). FLIGHTDECK_QUIET=1 suppresses the line so suites that
+  // intentionally exercise the default-token path (D100 / zero-config)
+  // don't pollute their captured stderr assertions.
+  if (!explicitToken && env.FLIGHTDECK_QUIET !== "1") {
+    process.stderr.write(
+      "[flightdeck] WARN using default token 'tok_dev'. " +
+        "Set FLIGHTDECK_TOKEN=<your-token> for production. " +
+        "Suppress this warning with FLIGHTDECK_QUIET=1.\n",
+    );
+  }
   return {
     server,
     token,

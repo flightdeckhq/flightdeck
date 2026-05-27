@@ -395,11 +395,11 @@ helm install flightdeck helm/ \
 
 Without `postgres.externalUrl` the chart ships its own single-instance Postgres StatefulSet (fine for small deployments, not HA, not backed up). NATS is always bundled.
 
-The chart is at `version` 0.5.0 with `appVersion` 0.5.0; the default `image.tag` is `v0.5.0`. See [`helm/values.yaml`](helm/values.yaml) for the full schema, including replicas, HPA bounds, ingress, resources, and security contexts.
+The chart is at `version` 0.5.1 with `appVersion` 0.5.1; the default `image.tag` is `v0.5.1`. See [`helm/values.yaml`](helm/values.yaml) for the full schema, including replicas, HPA bounds, ingress, resources, and security contexts.
 
 | Key | Default | Description |
 |---|---|---|
-| `image.tag` | `v0.5.0` | Image tag applied to ingestion/workers/api/dashboard. |
+| `image.tag` | `v0.5.1` | Image tag applied to ingestion/workers/api/dashboard. |
 | `ingestion.replicas` | `2` | Initial replica count. HPA overrides at runtime when enabled. |
 | `ingestion.hpa.enabled` | `true` | Enable the HorizontalPodAutoscaler for ingestion. |
 | `workers.replicas` | `2` | NATS consumer pod count. |

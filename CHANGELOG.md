@@ -6,8 +6,8 @@ All notable changes to Flightdeck are documented here.
 
 First release since v0.3.1. Consolidates every change merged to ``main``
 between v0.3.1 (Apr 22) and now (May 26), including work originally
-drafted as ``v0.4.0 Phase 1`` (agent identity model) and ``v0.5.0 phase
-4`` (agent communication coverage hardening). Highlights:
+drafted as ``v0.4.0 Phase 1`` (agent identity model) and ``v0.5.0
+Phase 4`` (agent communication coverage hardening). Highlights:
 
 - **Plugin marketplace.** ``/plugin marketplace add
   flightdeckhq/flightdeck`` followed by ``/plugin install
@@ -779,9 +779,8 @@ for every event family (D148–D154) and lifecycle correctness fixes
 (plugin SessionEnd cache invalidation; worker `orphan_timeout`
 reaper completing the close_reason vocabulary). Rides on the
 existing `ClientSession` patch surface (D117) and the standard
-event pipeline. v0.6 enforces policy decisions as configured
-(block raises, warn passes through). See
-**D127–D132, D134–D154**.
+event pipeline. Block decisions raise ``MCPPolicyBlocked``; warn
+decisions log and pass through. See **D127–D132, D134–D154**.
 
 ### Added
 
@@ -877,10 +876,10 @@ event pipeline. v0.6 enforces policy decisions as configured
   EventType only, not an audit-log row.
 - **D132** Plugin remembered-decisions local file with lazy
   control-plane sync.
-- **D133** v0.6 soft-launch warn-only default with
+- **D133** Initial soft-launch warn-only default with
   `FLIGHTDECK_MCP_POLICY_DEFAULT` escape hatch.
   **(Superseded by D145 in step 6.8 cleanup — soft-launch
-  override removed; v0.6 enforces as configured.)**
+  override removed; enforcement is now live as configured.)**
 - **D134** Mode lives on the global policy only; per-flavor
   carries allow / deny entry deltas. Storage CHECK enforces.
 - **D135** Per-server precedence: most-specific scope wins
@@ -1256,9 +1255,9 @@ event pipeline. v0.6 enforces policy decisions as configured
   ``would_have_blocked`` payload field removed everywhere it
   threaded (event-payload type, ingestion validation, dashboard
   renderers, swagger, tests). Dashboard ``MCPSoftLaunchBanner``
-  + ``SOFT_LAUNCH_ACTIVE`` constant removed. Pre-v0.6 has no
-  users to protect against blast-radius; v0.6 enforces as
-  configured.
+  + ``SOFT_LAUNCH_ACTIVE`` constant removed. No pre-release
+  users to protect against blast-radius; enforcement is now
+  live as configured.
 - **Metrics panel from MCP Policies management surface.** The
   ``GET /:flavor/metrics`` endpoint and store method STAY (read-
   open per D147; analytics or future surfaces may consume); only
@@ -2072,7 +2071,7 @@ Phase 4 polish).
 
 ### Breaking changes
 
-None for sensor users on v0.4.0 Phase 1.
+None.
 
 ---
 

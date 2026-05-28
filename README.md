@@ -46,6 +46,7 @@ Launch Claude Code, then install the plugin from this repo's marketplace inside 
 ```text
 /plugin marketplace add flightdeckhq/flightdeck
 /plugin install flightdeck@flightdeck-plugins
+/reload-plugins
 ```
 
 That's it for a local stack — the plugin defaults to `http://localhost:4000` with the dev token `tok_dev`, so the Claude Code session shows up in the fleet view within seconds. Tool inputs and LLM call content are captured by default — unlike the Python sensor, which keeps `capture_prompts=False` until you opt in — so the Prompts tab is populated without extra setup.
